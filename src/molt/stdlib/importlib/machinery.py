@@ -47,6 +47,7 @@ def _resolve_platform() -> str:
 _platform = _resolve_platform()
 
 if _platform == "win32":
+    _MOLT_PATH_SPLITROOT = _require_intrinsic("molt_path_splitroot")
     EXTENSION_SUFFIXES: list[str] = [".pyd", ".dll"]
 elif _platform == "darwin":
     EXTENSION_SUFFIXES: list[str] = [".so", ".dylib"]
@@ -452,10 +453,36 @@ class PathFinder:
 
     @staticmethod
     def invalidate_caches():
-        import os
-
         for path, finder in list(_sys.path_importer_cache.items()):
-            if finder is None or not os.path.isabs(path):
+            if finder is None:
+                del _sys.path_importer_cache[path]
+                continue
+            if _platform == "win32":
+                # Import roots differ from os.path.isabs: a single leading
+                # separator is relative to the current drive. Reuse the native
+                # root parser rather than importing the filesystem facade.
+                if path:
+                    drive, root, _tail = _MOLT_PATH_SPLITROOT(
+                        path, False, True, False
+                    )
+                    root = drive + root
+                    if isinstance(root, bytes):
+                        alternate = b"/"
+                        separator = b"\\"
+                        unc = b"\\\\"
+                    else:
+                        alternate = "/"
+                        separator = "\\"
+                        unc = "\\\\"
+                    root = root.replace(alternate, separator)
+                    absolute = len(root) > 1 and (
+                        root.startswith(unc) or root.endswith(separator)
+                    )
+                else:
+                    absolute = False
+            else:
+                absolute = path.startswith("/")
+            if not absolute:
                 del _sys.path_importer_cache[path]
             elif hasattr(finder, "invalidate_caches"):
                 finder.invalidate_caches()

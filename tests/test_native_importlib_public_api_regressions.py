@@ -738,6 +738,10 @@ print('child-unpublished', '_molt_catalog_pkg.child' not in sys.modules)
 import _molt_catalog_pkg.child
 print('child-ready', _molt_catalog_pkg.child.value == 298)
 """
+    source += (
+        Path(__file__).resolve().parent
+        / "differential/stdlib/importlib_find_spec_invalidate_caches_intrinsic.py"
+    ).read_text(encoding="utf-8")
     binary, env = _build_native_binary_with_env(
         tmp_path,
         source,
@@ -772,4 +776,13 @@ print('child-ready', _molt_catalog_pkg.child.value == 298)
         "child-unpublished True",
         "child-exec",
         "child-ready True",
+        "invalidate://before",
+        "invalidate://before",
+        "invalidate://after",
+        "1",
+        "2",
+        "True",
+        "pathfinder-cache-invalidation True True True True",
+        "invalidation-errors True",
+        "import-root-cases 8" if sys.platform == "win32" else "import-root-cases 4",
     ]

@@ -1631,7 +1631,7 @@ def test_wasm_host_export_applications_have_independent_cold_partitions() -> Non
             for selected in proof_plan._topological_commands(PLAN, command_id=name)
         } == {name, "wasm.build.backend", *runtime_dependencies}
 
-    # Both host-boundary programs use core intrinsics in the admitted micro
+    # The host-boundary programs use core intrinsics in the admitted micro
     # pair. Keep one shared cold build window instead of duplicating prebuilds.
     boundaries = next(
         row for row in PLAN.commands if row.id == "wasm.integration.host-boundaries"
@@ -1639,6 +1639,7 @@ def test_wasm_host_export_applications_have_independent_cold_partitions() -> Non
     assert boundaries.argv[6:] == (
         "tests/test_wasm_split_runtime.py::test_linked_host_export_attribute_error_does_not_return_none",
         "tests/test_wasm_runtime_heavy_regressions.py::test_wasm_open_reports_all_missing_grants_before_mutation",
+        "tests/test_wasm_runtime_heavy_regressions.py::test_wasm_compiled_finder_describes_module_before_initialization",
     )
     assert boundaries.data["timeout_budget"] == "cold"
     assert set(boundaries.dependencies) == {

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import builtins
 import importlib.util
+import ntpath
 import sys
 import types
 from pathlib import Path
@@ -36,6 +37,7 @@ _MACHINERY_INTRINSICS = [
     "molt_importlib_module_spec_type",
     "molt_importlib_compiled_loader",
     "molt_importlib_compiled_loader_types",
+    "molt_path_splitroot",
 ]
 
 # Stands in for the runtime-owned class the facade must bind, not define.
@@ -51,6 +53,13 @@ _RUNTIME_LOADER_TYPES = (
 _RUNTIME_LOADER = _RUNTIME_BUILTIN_IMPORTER()
 
 
+def _splitroot(path, posix, windows_utf16, pathlib):
+    assert (posix, windows_utf16, pathlib) == (False, True, False)
+    # Independent ordinary-root oracle. Native PathCch edge parity requires
+    # Windows execution, not this facade fixture.
+    return ntpath.splitroot(path)
+
+
 def _bootstrap_intrinsics():
     # Identity sentinels only: behavior is tested against the real Rust owner.
     return {
@@ -60,6 +69,7 @@ def _bootstrap_intrinsics():
         "molt_importlib_module_spec_type": lambda: _RUNTIME_MODULE_SPEC,
         "molt_importlib_compiled_loader": lambda: _RUNTIME_LOADER,
         "molt_importlib_compiled_loader_types": lambda: _RUNTIME_LOADER_TYPES,
+        "molt_path_splitroot": _splitroot,
     }
 
 
@@ -107,7 +117,14 @@ def test_module_spec_is_the_runtime_type_authority() -> None:
 
 
 @pytest.mark.parametrize("missing", tuple(_bootstrap_intrinsics()))
-def test_bootstrap_fails_closed_without_runtime_authority(missing: str) -> None:
+def test_bootstrap_fails_closed_without_runtime_authority(
+    missing: str, monkeypatch
+) -> None:
+    intrinsics = _bootstrap_intrinsics()
+    intrinsics["molt_sys_platform"] = lambda: "win32"
+    monkeypatch.setattr(
+        sys.modules[__name__], "_bootstrap_intrinsics", lambda: intrinsics
+    )
     try:
         _load_machinery_module(missing_intrinsics={missing})
     except RuntimeError as exc:
@@ -180,3 +197,73 @@ def test_extension_loader_declares_the_actual_class(monkeypatch) -> None:
     machinery = _load_machinery_module()
     assert declarations == [machinery.ExtensionFileLoader]
     assert machinery.ExtensionFileLoader.__bases__ == (machinery._FileLoader,)
+
+
+@pytest.mark.parametrize("platform", ["linux", "darwin", "win32"])
+def test_cache_invalidation_is_lexical_and_preserves_terminal_errors(
+    monkeypatch, platform
+) -> None:
+    intrinsics = _bootstrap_intrinsics()
+
+    intrinsics["molt_sys_platform"] = lambda: platform
+    monkeypatch.setattr(
+        sys.modules[__name__], "_bootstrap_intrinsics", lambda: intrinsics
+    )
+    machinery = _load_machinery_module()
+    prefix = "C:\\" if platform == "win32" else "/"
+    events = []
+
+    class Finder:
+        def __init__(self, name, fail=False):
+            self.name = name
+            self.fail = fail
+
+        def invalidate_caches(self):
+            events.append(self.name)
+            if self.fail:
+                raise LookupError("cache-stop")
+
+    cache = {}
+    original_import = builtins.__import__
+
+    def guarded_import(name, *args, **kwargs):
+        assert name not in {"os", "os.path"}, "lexical invalidation imported os"
+        return original_import(name, *args, **kwargs)
+
+    with monkeypatch.context() as context:
+        context.setattr(sys, "path_importer_cache", cache)
+        context.setattr(builtins, "__import__", guarded_import)
+        assert machinery.PathFinder.invalidate_caches() is None
+        if platform != "win32":
+            cache[b"/bytes-root"] = Finder("bytes")
+            with pytest.raises(TypeError):
+                machinery.PathFinder.invalidate_caches()
+            cache.clear()
+        cache[None] = None
+        cache["relative"] = Finder("relative")
+        if platform == "win32":
+            cache["\\current-drive"] = Finder("current-drive")
+            cache["/current-drive"] = Finder("current-drive")
+            cache["C:relative"] = Finder("drive-relative")
+            cache["\\\\server\\share\\root"] = Finder("UNC")
+            cache[b"\\relative"] = Finder("bytes-relative")
+            cache[b"C:\\bytes-root"] = Finder("bytes")
+        cache[prefix + "first"] = Finder("first")
+        cache[prefix + "stop"] = Finder("stop", True)
+        cache[prefix + "later"] = Finder("later")
+        with pytest.raises(LookupError, match="cache-stop"):
+            machinery.PathFinder.invalidate_caches()
+        assert events == (["UNC", "bytes"] if platform == "win32" else []) + [
+            "first",
+            "stop",
+        ]
+        assert set(cache) == {
+            prefix + "first",
+            prefix + "stop",
+            prefix + "later",
+            *(
+                ["\\\\server\\share\\root", b"C:\\bytes-root"]
+                if platform == "win32"
+                else []
+            ),
+        }
