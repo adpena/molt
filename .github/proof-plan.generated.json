@@ -366,7 +366,7 @@
     "tests/tools/test_win_job_contract.py",
     "tests/tools/test_windows_process_api.py"
   ],
-  "authority_sha256": "bdf02d908e72cf2227957a8667768dbdfa57801287445a316454f7e1a9af05e1",
+  "authority_sha256": "8d76c7f371599bbb8edf727aaf88843ef57aff0e392d354d5dec6c2a1ea8778b",
   "cargo_environment_policy": {
     "incident_command": "cargo metadata --locked --format-version 1",
     "incident_commit": "20b046b79bd4ca64a8c859f737f6e330377bcc4e",
@@ -8506,6 +8506,7 @@
       "local.docs-architecture.0": "python tools/update_status_blocks.py --check",
       "local.docs-architecture.1": "python tools/check_docs_architecture.py",
       "local.ecosystem-compat.0": "python tools/check_ecosystem_compat.py",
+      "local.encoding-diagnostics.0": "python -m pytest -q tests/tools/test_encoding_gate.py",
       "local.findings-registry.0": "python -m pytest -q tests/tools/test_findings_registry.py",
       "local.frontend-diagnostics.0": "python tools/gen_frontend_diagnostics.py --check",
       "local.frontend-diagnostics.1": "python -m pytest -q tests/test_frontend_diagnostics.py",
@@ -9101,6 +9102,23 @@
         "toolchains": [
           "python",
           "uv"
+        ]
+      },
+      {
+        "command_ids": [
+          "local.encoding-diagnostics.0"
+        ],
+        "description": "Encoding regression diagnostics preserve counts and every affected location.",
+        "gates": [
+          "python -m pytest -q tests/tools/test_encoding_gate.py"
+        ],
+        "globs": [
+          "tools/encoding_gate.py",
+          "tests/tools/test_encoding_gate.py"
+        ],
+        "name": "encoding-diagnostics",
+        "toolchains": [
+          "python"
         ]
       },
       {
@@ -10406,6 +10424,9 @@
         "python"
       ],
       "local.ecosystem-compat.0": [
+        "python"
+      ],
+      "local.encoding-diagnostics.0": [
         "python"
       ],
       "local.findings-registry.0": [
