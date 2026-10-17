@@ -1,6 +1,5 @@
 use super::*;
 use crate::runtime_flags::{self, RuntimeFlag};
-use memchr::memchr;
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_bytes_join(sep_bits: u64, items_bits: u64) -> u64 {
@@ -14,7 +13,6 @@ pub extern "C" fn molt_bytearray_join(sep_bits: u64, items_bits: u64) -> u64 {
 
 fn bytes_join(py: &PyToken<'_>, sep_bits: u64, items_bits: u64, mutable: bool) -> u64 {
     use crate::object::buffer_exports::ScopedBufferExport;
-    use crate::object::foreign::RuntimeBufferLease;
     use molt_cpython_abi::abi_types::PyBUF_SIMPLE;
     unsafe {
         let separator_kind = if mutable {
@@ -292,14 +290,20 @@ enum ByteSearch {
     EndsWith,
 }
 
+/// Clinic's optional `start`/`end` slice bounds as the search ABI passes them.
+#[derive(Clone, Copy)]
+struct SliceBoundBits {
+    start: u64,
+    end: u64,
+    has_start: u64,
+    has_end: u64,
+}
+
 fn byte_search(
     py: &PyToken<'_>,
     hay_bits: u64,
     needle_bits: u64,
-    start_bits: u64,
-    end_bits: u64,
-    has_start_bits: u64,
-    has_end_bits: u64,
+    bounds: SliceBoundBits,
     kind: u32,
     operation: ByteSearch,
 ) -> u64 {
@@ -321,10 +325,10 @@ fn byte_search(
         }
     };
     // Clinic converts both bounds before entering the byte operation.
-    let Some(start) = index(start_bits, has_start_bits, 0) else {
+    let Some(start) = index(bounds.start, bounds.has_start, 0) else {
         return MoltObject::none().bits();
     };
-    let Some(end) = index(end_bits, has_end_bits, isize::MAX) else {
+    let Some(end) = index(bounds.end, bounds.has_end, isize::MAX) else {
         return MoltObject::none().bits();
     };
     let (start, end) = (start as i64, end as i64);
@@ -495,10 +499,12 @@ pub extern "C" fn molt_bytes_find_slice(
             py,
             hay_bits,
             needle_bits,
-            start_bits,
-            end_bits,
-            has_start_bits,
-            has_end_bits,
+            SliceBoundBits {
+                start: start_bits,
+                end: end_bits,
+                has_start: has_start_bits,
+                has_end: has_end_bits,
+            },
             TYPE_ID_BYTES,
             ByteSearch::Find,
         )
@@ -535,10 +541,12 @@ pub extern "C" fn molt_bytes_rfind_slice(
             py,
             hay_bits,
             needle_bits,
-            start_bits,
-            end_bits,
-            has_start_bits,
-            has_end_bits,
+            SliceBoundBits {
+                start: start_bits,
+                end: end_bits,
+                has_start: has_start_bits,
+                has_end: has_end_bits,
+            },
             TYPE_ID_BYTES,
             ByteSearch::RFind,
         )
@@ -591,10 +599,12 @@ pub extern "C" fn molt_bytes_startswith_slice(
             py,
             hay_bits,
             needle_bits,
-            start_bits,
-            end_bits,
-            has_start_bits,
-            has_end_bits,
+            SliceBoundBits {
+                start: start_bits,
+                end: end_bits,
+                has_start: has_start_bits,
+                has_end: has_end_bits,
+            },
             TYPE_ID_BYTES,
             ByteSearch::StartsWith,
         )
@@ -615,10 +625,12 @@ pub extern "C" fn molt_bytes_endswith_slice(
             py,
             hay_bits,
             needle_bits,
-            start_bits,
-            end_bits,
-            has_start_bits,
-            has_end_bits,
+            SliceBoundBits {
+                start: start_bits,
+                end: end_bits,
+                has_start: has_start_bits,
+                has_end: has_end_bits,
+            },
             TYPE_ID_BYTES,
             ByteSearch::EndsWith,
         )
@@ -651,10 +663,12 @@ pub extern "C" fn molt_bytes_count_slice(
             py,
             hay_bits,
             needle_bits,
-            start_bits,
-            end_bits,
-            has_start_bits,
-            has_end_bits,
+            SliceBoundBits {
+                start: start_bits,
+                end: end_bits,
+                has_start: has_start_bits,
+                has_end: has_end_bits,
+            },
             TYPE_ID_BYTES,
             ByteSearch::Count,
         )
@@ -739,10 +753,12 @@ pub extern "C" fn molt_bytearray_find_slice(
             py,
             hay_bits,
             needle_bits,
-            start_bits,
-            end_bits,
-            has_start_bits,
-            has_end_bits,
+            SliceBoundBits {
+                start: start_bits,
+                end: end_bits,
+                has_start: has_start_bits,
+                has_end: has_end_bits,
+            },
             TYPE_ID_BYTEARRAY,
             ByteSearch::Find,
         )
@@ -763,10 +779,12 @@ pub extern "C" fn molt_bytearray_rfind_slice(
             py,
             hay_bits,
             needle_bits,
-            start_bits,
-            end_bits,
-            has_start_bits,
-            has_end_bits,
+            SliceBoundBits {
+                start: start_bits,
+                end: end_bits,
+                has_start: has_start_bits,
+                has_end: has_end_bits,
+            },
             TYPE_ID_BYTEARRAY,
             ByteSearch::RFind,
         )
@@ -787,10 +805,12 @@ pub extern "C" fn molt_bytearray_startswith_slice(
             py,
             hay_bits,
             needle_bits,
-            start_bits,
-            end_bits,
-            has_start_bits,
-            has_end_bits,
+            SliceBoundBits {
+                start: start_bits,
+                end: end_bits,
+                has_start: has_start_bits,
+                has_end: has_end_bits,
+            },
             TYPE_ID_BYTEARRAY,
             ByteSearch::StartsWith,
         )
@@ -811,10 +831,12 @@ pub extern "C" fn molt_bytearray_endswith_slice(
             py,
             hay_bits,
             needle_bits,
-            start_bits,
-            end_bits,
-            has_start_bits,
-            has_end_bits,
+            SliceBoundBits {
+                start: start_bits,
+                end: end_bits,
+                has_start: has_start_bits,
+                has_end: has_end_bits,
+            },
             TYPE_ID_BYTEARRAY,
             ByteSearch::EndsWith,
         )
@@ -847,10 +869,12 @@ pub extern "C" fn molt_bytearray_count_slice(
             py,
             hay_bits,
             needle_bits,
-            start_bits,
-            end_bits,
-            has_start_bits,
-            has_end_bits,
+            SliceBoundBits {
+                start: start_bits,
+                end: end_bits,
+                has_start: has_start_bits,
+                has_end: has_end_bits,
+            },
             TYPE_ID_BYTEARRAY,
             ByteSearch::Count,
         )

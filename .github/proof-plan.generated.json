@@ -369,7 +369,7 @@
     "tests/tools/test_win_job_contract.py",
     "tests/tools/test_windows_process_api.py"
   ],
-  "authority_sha256": "bd03762b1f7a9e5bb705619e804895d6e27744d8462ae57554ee58fc0978fc0e",
+  "authority_sha256": "ce75d4e004de5a84c6bb49461f3c45405483c098068fe9c0005aeb7467e29dbc",
   "cargo_environment_policy": {
     "incident_command": "cargo metadata --locked --format-version 1",
     "incident_commit": "20b046b79bd4ca64a8c859f737f6e330377bcc4e",
@@ -638,6 +638,7 @@
         "Cargo.toml",
         "rust-toolchain.toml",
         ".cargo/**",
+        "fuzz/**",
         "runtime/**",
         "tools/run_cargo_test_truth.py",
         "tools/cargo_test_binary_runner.py",
@@ -665,7 +666,7 @@
         "pr",
         "main"
       ],
-      "timeout_minutes": 318,
+      "timeout_minutes": 346,
       "workflow": ".github/workflows/ci.yml"
     },
     {
@@ -3105,6 +3106,7 @@
         "tests/tools/test_check_runtime_serial_bridge_imports.py",
         "tests/tools/test_check_runtime_symbol_owners.py",
         "tests/tools/test_check_rustfmt.py",
+        "tests/tools/test_check_changed_clippy.py",
         "tests/tools/test_check_stdlib_intrinsic_surface.py",
         "tests/tools/test_check_type_coverage_todos.py",
         "tests/tools/test_ci_triage.py",
@@ -6569,6 +6571,106 @@
     {
       "argv": [
         "cargo",
+        "check",
+        "--locked",
+        "--bins",
+        "--manifest-path",
+        "fuzz/Cargo.toml"
+      ],
+      "cache_domain": "cargo-workspace",
+      "cargo_build_python": false,
+      "cargo_native_units": {
+        "target": [
+          "c++"
+        ]
+      },
+      "cell": "linux-x86_64-rust-native-dev",
+      "dependencies": [],
+      "family": "rust",
+      "id": "rust.check.fuzz",
+      "resource_class": "compiler-build-resource",
+      "tiers": [
+        "pre-push",
+        "pr",
+        "main"
+      ],
+      "timeout_budget": "cross-check",
+      "timeout_seconds": 240,
+      "toolchains": [
+        "rustc",
+        "cargo"
+      ]
+    },
+    {
+      "argv": [
+        "cargo",
+        "check",
+        "--locked",
+        "--bins",
+        "--manifest-path",
+        "runtime/molt-backend/fuzz/Cargo.toml"
+      ],
+      "cache_domain": "cargo-workspace",
+      "cargo_build_python": false,
+      "cargo_native_units": {
+        "target": [
+          "c++"
+        ]
+      },
+      "cell": "linux-x86_64-rust-native-dev",
+      "dependencies": [],
+      "family": "rust",
+      "id": "rust.check.fuzz-backend",
+      "resource_class": "compiler-build-resource",
+      "tiers": [
+        "pre-push",
+        "pr",
+        "main"
+      ],
+      "timeout_budget": "cross-check",
+      "timeout_seconds": 240,
+      "toolchains": [
+        "rustc",
+        "cargo"
+      ]
+    },
+    {
+      "argv": [
+        "cargo",
+        "check",
+        "--locked",
+        "--bins",
+        "--manifest-path",
+        "runtime/molt-runtime/fuzz/Cargo.toml"
+      ],
+      "cache_domain": "cargo-workspace",
+      "cargo_build_python": false,
+      "cargo_native_units": {
+        "target": [
+          "c",
+          "c++"
+        ]
+      },
+      "cell": "linux-x86_64-rust-native-dev",
+      "dependencies": [],
+      "family": "rust",
+      "id": "rust.check.fuzz-runtime",
+      "resource_class": "compiler-build-resource",
+      "tiers": [
+        "pre-push",
+        "pr",
+        "main"
+      ],
+      "timeout_budget": "cold",
+      "timeout_seconds": 1200,
+      "toolchains": [
+        "rustc",
+        "cargo"
+      ]
+    },
+    {
+      "argv": [
+        "cargo",
         "clippy",
         "--locked",
         "--target",
@@ -8120,14 +8222,14 @@
         }
       },
       "rust": {
-        "budget_seconds": 19080,
+        "budget_seconds": 20760,
         "critical_path_seconds": 9000,
         "headroom_seconds": 0,
         "job_reserve_seconds": 240,
-        "projected_makespan_seconds": 18840,
-        "required_job_seconds": 19080,
+        "projected_makespan_seconds": 20520,
+        "required_job_seconds": 20760,
         "resource_capacity_floor_seconds": {
-          "compiler-build-resource": 18840
+          "compiler-build-resource": 20520
         }
       },
       "rust_security": {
@@ -8458,119 +8560,113 @@
       "local.always.7": "python tools/check_generator_manifest.py --check",
       "local.always.8": "python tools/structural_audit.py --check",
       "local.always.9": "python tools/canonicalization_contract.py --check",
-      "local.apparatus-a11.0": "python -m pytest -q tests/tools/test_claims_status.py tests/tools/test_check_sister_landed.py tests/tools/test_commit_serializer.py",
-      "local.apparatus-a11.1": "python tools/claims_status.py --check",
-      "local.apparatus-a11.2": "python tools/check_sister_landed.py --check",
-      "local.apparatus-a11.3": "python tools/commit_serializer.py --check",
-      "local.apparatus-a11.4": "python tools/check_gate_liveness.py --check",
-      "local.apparatus-a8-a12-disk-reclaim.0": "python -m pytest -q tests/tools/test_lane_maturity.py tests/tools/test_powerplay_acceptance.py tests/tools/test_proof_queue_lane_maturity.py tests/tools/test_disk_guard.py tests/tools/test_check_gate_liveness.py",
-      "local.apparatus-a8-a12-disk-reclaim.1": "python tools/check_gate_liveness.py --check",
-      "local.apparatus-a8-a12-disk-reclaim.2": "python tools/apparatus_agent_safety.py --check",
-      "local.apparatus-hooks.0": "python -m pytest -q tests/tools/test_hooks_bash_guard.py tests/tools/test_hooks_landing_gate.py tests/tools/test_hooks_session_digest.py tests/tools/test_hooks_fail_open.py tests/tools/test_hooks_waivers.py tests/tools/test_check_gate_flips.py tests/tools/test_check_gate_liveness.py",
-      "local.apparatus-hooks.1": "python tools/check_gate_liveness.py --check",
-      "local.apparatus-hooks.2": "python tools/check_gate_flips.py --check",
-      "local.apparatus-learning-protection.0": "python -m pytest -q tests/tools/test_apparatus_agent_safety.py tests/tools/test_anti_recurrence_gate.py tests/tools/test_hooks_session_learning.py tests/tools/test_check_gate_liveness.py tests/tools/test_memory_graph.py",
-      "local.apparatus-learning-protection.1": "python tools/apparatus_agent_safety.py --check",
-      "local.apparatus-learning-protection.2": "python tools/anti_recurrence_gate.py --check",
+      "local.apparatus-a11.0": "python tools/claims_status.py --check",
+      "local.apparatus-a11.1": "python tools/check_sister_landed.py --check",
+      "local.apparatus-a11.2": "python tools/commit_serializer.py --check",
+      "local.apparatus-a11.3": "python tools/check_gate_liveness.py --check",
+      "local.apparatus-a11.pytest": "python -m pytest -q -n 4 tests/tools/test_claims_status.py tests/tools/test_check_sister_landed.py tests/tools/test_commit_serializer.py",
+      "local.apparatus-a8-a12-disk-reclaim.0": "python tools/check_gate_liveness.py --check",
+      "local.apparatus-a8-a12-disk-reclaim.1": "python tools/apparatus_agent_safety.py --check",
+      "local.apparatus-a8-a12-disk-reclaim.pytest": "python -m pytest -q -n 4 tests/tools/test_lane_maturity.py tests/tools/test_powerplay_acceptance.py tests/tools/test_proof_queue_lane_maturity.py tests/tools/test_disk_guard.py tests/tools/test_check_gate_liveness.py",
+      "local.apparatus-hooks.0": "python tools/check_gate_liveness.py --check",
+      "local.apparatus-hooks.1": "python tools/check_gate_flips.py --check",
+      "local.apparatus-hooks.pytest": "python -m pytest -q -n 4 tests/tools/test_hooks_bash_guard.py tests/tools/test_hooks_landing_gate.py tests/tools/test_hooks_session_digest.py tests/tools/test_hooks_fail_open.py tests/tools/test_hooks_waivers.py tests/tools/test_check_gate_flips.py tests/tools/test_check_gate_liveness.py",
+      "local.apparatus-learning-protection.0": "python tools/apparatus_agent_safety.py --check",
+      "local.apparatus-learning-protection.1": "python tools/anti_recurrence_gate.py --check",
+      "local.apparatus-learning-protection.pytest": "python -m pytest -q -n 4 tests/tools/test_apparatus_agent_safety.py tests/tools/test_anti_recurrence_gate.py tests/tools/test_hooks_session_learning.py tests/tools/test_check_gate_liveness.py tests/tools/test_memory_graph.py",
       "local.backend-daemon-cache.0": "cargo test --locked --profile dev-fast --config profile.dev-fast.package.cranelift-codegen.opt-level=0 -p molt-backend --no-default-features --features molt-backend/native-backend,molt-backend/wasm-backend,molt-backend/luau-backend,molt-backend/rust-backend,molt-backend/cbor --bin molt-backend daemon -- --test-threads=1",
-      "local.backend-environment-contract.0": "python -m pytest -q tests/cli/test_backend_environment_contract.py tests/cli/test_cli_wasm_codegen_layout.py tests/cli/test_cli_shared_stdlib_cache.py tests/cli/test_cli_runtime_callable_symbols_authority.py tests/cli/test_native_codegen_identity.py tests/cli/test_cli_backend_prewarm.py",
-      "local.backend-environment-contract.1": "python -m pytest -q tests/cli/test_cli_import_collection.py -k 'backend_codegen or backend_daemon or backend_cache_setup or backend_setup or backend_compile or backend_pipeline or backend_dispatch or codegen_selection or fingerprint_env'",
+      "local.backend-environment-contract.0": "python -m pytest -q tests/cli/test_cli_import_collection.py -k 'backend_codegen or backend_daemon or backend_cache_setup or backend_setup or backend_compile or backend_pipeline or backend_dispatch or codegen_selection or fingerprint_env'",
+      "local.backend-environment-contract.pytest": "python -m pytest -q -n 4 tests/cli/test_backend_environment_contract.py tests/cli/test_cli_wasm_codegen_layout.py tests/cli/test_cli_shared_stdlib_cache.py tests/cli/test_cli_runtime_callable_symbols_authority.py tests/cli/test_native_codegen_identity.py tests/cli/test_cli_backend_prewarm.py",
       "local.backend-ir-framing.0": "cargo test --locked --profile release-fast -p molt-backend --features native-backend,cbor --bin molt-backend backend_process::input::tests",
       "local.backend-llvm.0": "cargo test --locked --profile release-fast -p molt-backend-native -p molt-backend --features molt-backend/native-backend,molt-backend/llvm --lib --test ir_contract_validation --no-fail-fast",
-      "local.backend-native.0": "cargo clippy --locked -p molt-backend -p molt-backend-native -p molt-artifact-publish --features molt-backend/native-backend -- -D warnings",
-      "local.backend-native.1": "cargo test --locked --profile release-fast -p molt-backend -p molt-backend-native -p molt-artifact-publish --features molt-backend/native-backend --lib --bins --no-fail-fast",
+      "local.backend-native.0": "cargo test --locked --profile release-fast -p molt-backend -p molt-backend-native -p molt-artifact-publish --features molt-backend/native-backend --lib --bins --no-fail-fast",
       "local.bootstrap-stdlib.0": "python tools/check_stdlib_intrinsics.py --critical-allowlist",
       "local.builtin-binding-guard-authority.0": "python tools/gen_builtin_binding_guards.py --check",
-      "local.builtin-binding-guard-authority.1": "python -m pytest -q tests/test_gen_builtin_binding_guards.py tests/test_frontend_builtin_binding_guards.py",
-      "local.builtin-binding-guard-authority.2": "cargo test --locked -p molt-runtime --lib binding_guards",
+      "local.builtin-binding-guard-authority.1": "cargo test --locked -p molt-runtime --lib binding_guards",
+      "local.builtin-binding-guard-authority.pytest": "python -m pytest -q -n 4 tests/test_gen_builtin_binding_guards.py tests/test_frontend_builtin_binding_guards.py",
       "local.ci-wiring.0": "python tools/gen_proof_plan.py --check",
-      "local.ci-wiring.1": "python -m pytest -q tests/test_proof_plan.py tests/test_ci_workflow_topology.py tests/test_dependabot_config.py tests/test_ci_cargo_cache.py tests/test_generator_manifest.py tests/test_resource_pressure.py tests/test_translation_validate_roots.py tests/tools/test_ci_resource_env.py tests/tools/test_fuzz_compiler_cli.py tests/tools/test_formal_correspondence_truth.py tests/tools/test_nightly_prepare.py tests/tools/test_nightly_profile_feedback.py tests/tools/test_nightly_runtime_bundle.py tests/tools/test_nightly_shard_profile.py tests/tools/test_nightly_sharding.py tests/tools/test_reproducible_build_truth.py",
+      "local.ci-wiring.pytest": "python -m pytest -q -n 4 tests/test_proof_plan.py tests/test_ci_workflow_topology.py tests/test_dependabot_config.py tests/test_ci_cargo_cache.py tests/test_generator_manifest.py tests/test_resource_pressure.py tests/test_translation_validate_roots.py tests/tools/test_ci_resource_env.py tests/tools/test_fuzz_compiler_cli.py tests/tools/test_formal_correspondence_truth.py tests/tools/test_nightly_prepare.py tests/tools/test_nightly_profile_feedback.py tests/tools/test_nightly_runtime_bundle.py tests/tools/test_nightly_shard_profile.py tests/tools/test_nightly_sharding.py tests/tools/test_reproducible_build_truth.py",
       "local.codec-tables.0": "python tools/gen_codecs.py --check",
-      "local.codec-tables.1": "python -m pytest -q tests/test_gen_codecs.py",
+      "local.codec-tables.pytest": "python -m pytest -q -n 4 tests/test_gen_codecs.py",
       "local.compression-stream-state.0": "cargo test --locked --profile dev-fast --no-fail-fast -p molt-runtime-compression -p molt-lang-cpython-abi --lib --test test_numbers -- --test-threads=4",
       "local.cpython-abi-authorities.0": "cargo test --locked --no-fail-fast --profile dev-fast -p molt-lang-cpython-abi --tests -- --test-threads=4",
-      "local.dev-tooling.0": "python -m pytest -q tests/tools/test_setup_project_inputs.py",
-      "local.dev-tooling.1": "python -m pytest -q tests/test_molt_dev.py",
-      "local.dev-tooling.2": "python -m pytest -q tests/tools/test_rust_toolchain_contract.py",
-      "local.dev-tooling.3": "python -m pytest -q tests/tools/test_check_rustfmt.py",
+      "local.dev-tooling.pytest": "python -m pytest -q -n 4 tests/tools/test_setup_project_inputs.py tests/test_molt_dev.py tests/tools/test_rust_toolchain_contract.py tests/tools/test_check_rustfmt.py tests/tools/test_check_changed_clippy.py tests/test_cargo_workspace.py",
       "local.docs-architecture.0": "python tools/update_status_blocks.py --check",
       "local.docs-architecture.1": "python tools/check_docs_architecture.py",
       "local.ecosystem-compat.0": "python tools/check_ecosystem_compat.py",
-      "local.encoding-diagnostics.0": "python -m pytest -q tests/tools/test_encoding_gate.py",
-      "local.findings-registry.0": "python -m pytest -q tests/tools/test_findings_registry.py",
+      "local.encoding-diagnostics.pytest": "python -m pytest -q -n 4 tests/tools/test_encoding_gate.py",
+      "local.findings-registry.pytest": "python -m pytest -q -n 4 tests/tools/test_findings_registry.py",
       "local.frontend-diagnostics.0": "python tools/gen_frontend_diagnostics.py --check",
-      "local.frontend-diagnostics.1": "python -m pytest -q tests/test_frontend_diagnostics.py",
+      "local.frontend-diagnostics.pytest": "python -m pytest -q -n 4 tests/test_frontend_diagnostics.py",
       "local.frontend-python.0": "python -m ty check src",
       "local.frontend-python.1": "python tools/verified_subset.py check",
       "local.frontend-python.2": "python tools/check_dynamic_policy.py",
-      "local.gpu-core.0": "cargo clippy --locked -p molt-gpu --all-targets --all-features -- -D warnings",
-      "local.gpu-runtime.0": "cargo clippy --locked -p molt-gpu-runtime --all-targets --all-features -- -D warnings",
-      "local.gpu-runtime.1": "cargo test --locked -p molt-gpu-runtime --all-features --no-fail-fast",
+      "local.gpu-runtime.0": "cargo test --locked -p molt-gpu-runtime --all-features --no-fail-fast",
       "local.heap-kind-lifetime-authority.0": "python tools/gen_heap_kinds.py --check",
-      "local.heap-kind-lifetime-authority.1": "python -m pytest -q tests/test_gen_heap_kinds.py",
+      "local.heap-kind-lifetime-authority.pytest": "python -m pytest -q -n 4 tests/test_gen_heap_kinds.py",
       "local.host-capability-authority.0": "python tools/gen_host_capabilities.py --check",
-      "local.host-capability-authority.1": "python -m pytest -q tests/test_gen_host_capabilities.py tests/test_capability_policy.py",
+      "local.host-capability-authority.pytest": "python -m pytest -q -n 4 tests/test_gen_host_capabilities.py tests/test_capability_policy.py",
       "local.import-symbol-gate.0": "python tools/import_symbol_gate.py",
-      "local.import-symbol-gate.1": "python -m pytest -q tests/tools/test_import_symbol_gate.py",
+      "local.import-symbol-gate.pytest": "python -m pytest -q -n 4 tests/tools/test_import_symbol_gate.py",
       "local.intrinsic-registry.0": "python tools/gen_intrinsics.py --check",
-      "local.intrinsic-registry.1": "python -m pytest -q tests/test_gen_intrinsics.py",
+      "local.intrinsic-registry.pytest": "python -m pytest -q -n 4 tests/test_gen_intrinsics.py",
       "local.llvm-runtime-abi.0": "python tools/llvm_runtime_abi_audit.py --check",
-      "local.llvm-runtime-abi.1": "python -m pytest -q tests/test_llvm_runtime_abi_audit.py",
-      "local.maintained-zlib-counters.0": "python -m pytest -q tests/cli/test_runtime_source_closure.py",
-      "local.maintained-zlib-counters.1": "cargo test --locked --profile dev-fast -p zlib-rs@0.6.8 --lib --no-default-features --features rust-allocator,std,ZLIB_DEBUG -- counter_wrap --nocapture --test-threads=1",
-      "local.maintained-zlib-counters.2": "python tools/run_runtime_test_gate.py --policy zlib-wasi --profile dev-fast --build-timeout-seconds 300 --child-timeout-seconds 120",
-      "local.memory-graph.0": "python -m pytest -q tests/tools/test_memory_graph.py",
-      "local.memory-graph.1": "python tools/check_memory_graph.py --check",
+      "local.llvm-runtime-abi.pytest": "python -m pytest -q -n 4 tests/test_llvm_runtime_abi_audit.py",
+      "local.maintained-zlib-counters.0": "cargo test --locked --profile dev-fast -p zlib-rs@0.6.8 --lib --no-default-features --features rust-allocator,std,ZLIB_DEBUG -- counter_wrap --nocapture --test-threads=1",
+      "local.maintained-zlib-counters.1": "python tools/run_runtime_test_gate.py --policy zlib-wasi --profile dev-fast --build-timeout-seconds 300 --child-timeout-seconds 120",
+      "local.maintained-zlib-counters.pytest": "python -m pytest -q -n 4 tests/cli/test_runtime_source_closure.py",
+      "local.memory-graph.0": "python tools/check_memory_graph.py --check",
+      "local.memory-graph.pytest": "python -m pytest -q -n 4 tests/tools/test_memory_graph.py",
       "local.native-callable-abi.0": "python tools/gen_native_callable_abi.py --check",
-      "local.native-callable-abi.1": "python -m pytest -q tests/test_gen_native_callable_abi.py",
-      "local.native-callable-abi.2": "cargo test --locked -p molt-ir --lib native_callable_abi",
-      "local.native-callable-abi.3": "cargo test --locked -p molt-backend-native --lib native_callable",
-      "local.native-callable-abi.4": "cargo test --locked -p molt-backend-wasm --features test-util --lib native_callable",
+      "local.native-callable-abi.1": "cargo test --locked -p molt-ir --lib native_callable_abi",
+      "local.native-callable-abi.2": "cargo test --locked -p molt-backend-native --lib native_callable",
+      "local.native-callable-abi.3": "cargo test --locked -p molt-backend-wasm --features test-util --lib native_callable",
+      "local.native-callable-abi.pytest": "python -m pytest -q -n 4 tests/test_gen_native_callable_abi.py",
       "local.native-object-emission.0": "cargo test --locked --profile dev-fast -p object@0.39.1 -p cranelift-object@0.133.3 -p molt-backend --no-default-features --features molt-backend/native-backend --test integration --test basic --test native_extern_linkage --no-fail-fast -- --skip read::coff::coff_extended_relocations --skip read::elf::get_buildid_bad_elf --skip read::elf::get_buildid_less_bad_elf --skip read::elf::zero_sized_section_works --skip read::macho::test_macho_entry_point --skip read::macho::test_go_macho",
       "local.op-kind-registry.0": "python tools/gen_op_kinds.py --check",
       "local.op-kind-registry.1": "python tools/audit_op_kinds.py --check",
-      "local.op-kind-registry.2": "python -m pytest -q tests/test_frontend_op_kind_registry.py tests/test_gen_op_kinds.py",
+      "local.op-kind-registry.pytest": "python -m pytest -q -n 4 tests/test_frontend_op_kind_registry.py tests/test_gen_op_kinds.py",
       "local.performance-measurement.0": "python -m pytest -q -m 'not slow' tests/test_node_runtime.py tests/test_bench_tool.py tests/test_bench_audit.py tests/test_bench_report.py tests/test_temporary_artifacts.py tests/tools/test_direct_run_process_custody.py tests/tools/test_cold_start_decompose.py tests/tools/test_perf_profile_selection.py tests/tools/test_perf_release_integrity.py tests/tools/test_perf_scoreboard.py tests/tools/test_perf_methodology.py tests/tools/test_perf_schema.py tests/tools/test_perf_history.py tests/tools/test_perf_board.py tests/tools/test_perf_authority.py",
-      "local.phase-exit-manifest.0": "python -m pytest -q tests/tools/test_phase_exit_manifest.py tests/tools/test_legacy_inventory.py",
-      "local.phase-exit-manifest.1": "python tools/legacy_inventory.py --check",
+      "local.phase-exit-manifest.0": "python tools/legacy_inventory.py --check",
+      "local.phase-exit-manifest.pytest": "python -m pytest -q -n 4 tests/tools/test_phase_exit_manifest.py tests/tools/test_legacy_inventory.py",
       "local.public-contract.0": "python tools/public_contract_gate.py --check",
-      "local.public-contract.1": "python -m pytest -q tests/tools/test_public_contract_gate.py",
+      "local.public-contract.pytest": "python -m pytest -q -n 4 tests/tools/test_public_contract_gate.py",
       "local.python-effect-capability-authority.0": "python tools/gen_python_effects.py --check",
-      "local.python-effect-capability-authority.1": "python -m pytest -q tests/test_gen_python_effects.py",
-      "local.python-effect-capability-authority.2": "cargo test --locked -p molt-ir --lib python_effects_generated",
+      "local.python-effect-capability-authority.1": "cargo test --locked -p molt-ir --lib python_effects_generated",
+      "local.python-effect-capability-authority.pytest": "python -m pytest -q -n 4 tests/test_gen_python_effects.py",
       "local.python-identity-catalog-authority.0": "python tools/gen_python_identity_catalog.py --check",
-      "local.python-identity-catalog-authority.1": "python -m pytest -q tests/test_gen_python_identity_catalog.py tests/test_python_binding_flow.py tests/test_python_builtin_shape_facts.py",
+      "local.python-identity-catalog-authority.pytest": "python -m pytest -q -n 4 tests/test_gen_python_identity_catalog.py tests/test_python_binding_flow.py tests/test_python_builtin_shape_facts.py",
       "local.runtime-cargo-input-custody.0": "python -m pytest -q -m 'not slow' tests/cli/test_cargo_build_reads.py tests/cli/test_runtime_source_identity.py tests/cli/test_runtime_c_resource_custody.py tests/cli/test_runtime_build_identity.py tests/cli/test_runtime_native_generation.py tests/cli/test_runtime_wasm_single_compile.py tests/cli/test_compiler_identity.py tests/cli/test_runtime_family_authority.py tests/cli/test_cargo_execution_failure_authority.py tests/test_toolchain_identity.py tests/test_runtime_build_python.py",
       "local.runtime-lib.0": "python tools/run_runtime_test_gate.py --profile release-output --build-timeout-seconds 6300 --child-timeout-seconds 120 --parallel-threads 8",
-      "local.runtime-lib.1": "cargo clippy --locked -p molt-backend --features native-backend -- -D warnings",
       "local.runtime-profile-schema-authority.0": "python tools/gen_runtime_profile_schema.py --check",
-      "local.runtime-profile-schema-authority.1": "python -m pytest -q tests/test_gen_runtime_profile_schema.py tests/test_runtime_profile_schema.py",
+      "local.runtime-profile-schema-authority.pytest": "python -m pytest -q -n 4 tests/test_gen_runtime_profile_schema.py tests/test_runtime_profile_schema.py",
       "local.runtime-vfs.0": "cargo clippy --locked -p molt-runtime-vfs --all-targets --all-features -- -D warnings",
       "local.runtime-vfs.1": "cargo test --locked -p molt-runtime-vfs --all-features --no-fail-fast",
-      "local.runtime-vfs.2": "python -m pytest tests/test_browser_vfs.py -q",
+      "local.runtime-vfs.pytest": "python -m pytest -q -n 4 tests/test_browser_vfs.py",
+      "local.rust-clippy-changed.0": "python tools/check_changed_clippy.py --base origin/main",
       "local.rust-toolchain.0": "python tools/check_rust_toolchain.py",
-      "local.rust-toolchain.1": "python -m pytest -q tests/tools/test_rust_toolchain_contract.py",
-      "local.source-extension-package-sets.0": "python -m pytest -q tests/cli/test_source_extension_set_registry.py tests/cli/test_source_extension_manifest_authority.py tests/cli/test_source_extension_link_requirements.py tests/cli/test_source_extension_producer.py tests/cli/test_source_build_environment_probe.py tests/cli/test_source_extension_candidate_attestation.py tests/cli/test_source_extension_candidate_transaction.py tests/cli/test_source_package_seal.py tests/test_exact_json.py tests/cli/test_external_native_scipy_package_seal.py tests/cli/test_atomic_io_authority.py tests/cli/test_python_module_names.py tests/cli/test_source_extension_runtime_imports.py tests/cli/test_source_extension_input_custody.py tests/cli/test_source_extension_target.py tests/cli/test_source_extension_language.py tests/cli/test_source_extension_compiler_target.py tests/cli/test_extension_wheel_retained_inputs.py tests/tools/test_native_link_benchmark.py tests/cli/test_cli_extension_commands.py::test_direct_build_audits_and_reseals_extracted_wheel tests/cli/test_source_extension_invocation.py tests/cli/test_source_extension_compiler_inputs.py",
-      "local.source-extension-proof-policy.0": "python -m pytest -q tests/cli/test_source_extension_link_inputs.py tests/tools/test_source_extension_proof_family.py tests/tools/test_target_derived_toolchains.py tests/tools/test_python_custody_bootstrap.py tests/tools/test_scientific_stack_versions.py",
-      "local.source-extension-proof-policy.1": "python -m pytest -q tests/tools/test_proof_queue.py -k 'proof_queue_pact_witness or proof_queue_rejects_scipy or proof_queue_requires_explicit_scipy or rejects_expected_extension_identity_drift'",
+      "local.rust-toolchain.pytest": "python -m pytest -q -n 4 tests/tools/test_rust_toolchain_contract.py",
+      "local.source-extension-package-sets.pytest": "python -m pytest -q -n 4 tests/cli/test_source_extension_set_registry.py tests/cli/test_source_extension_manifest_authority.py tests/cli/test_source_extension_link_requirements.py tests/cli/test_source_extension_producer.py tests/cli/test_source_build_environment_probe.py tests/cli/test_source_extension_candidate_attestation.py tests/cli/test_source_extension_candidate_transaction.py tests/cli/test_source_package_seal.py tests/test_exact_json.py tests/cli/test_external_native_scipy_package_seal.py tests/cli/test_atomic_io_authority.py tests/cli/test_python_module_names.py tests/cli/test_source_extension_runtime_imports.py tests/cli/test_source_extension_input_custody.py tests/cli/test_source_extension_target.py tests/cli/test_source_extension_language.py tests/cli/test_source_extension_compiler_target.py tests/cli/test_extension_wheel_retained_inputs.py tests/tools/test_native_link_benchmark.py tests/cli/test_cli_extension_commands.py::test_direct_build_audits_and_reseals_extracted_wheel tests/cli/test_source_extension_invocation.py tests/cli/test_source_extension_compiler_inputs.py",
+      "local.source-extension-proof-policy.0": "python -m pytest -q tests/tools/test_proof_queue.py -k 'proof_queue_pact_witness or proof_queue_rejects_scipy or proof_queue_requires_explicit_scipy or rejects_expected_extension_identity_drift'",
+      "local.source-extension-proof-policy.pytest": "python -m pytest -q -n 4 tests/cli/test_source_extension_link_inputs.py tests/tools/test_source_extension_proof_family.py tests/tools/test_target_derived_toolchains.py tests/tools/test_python_custody_bootstrap.py tests/tools/test_scientific_stack_versions.py",
       "local.stringprep-leaf.0": "cargo check --locked --manifest-path Cargo.toml -p molt-runtime-stringprep --lib",
       "local.stringprep-tables.0": "python tools/gen_stringprep_tables.py --check",
-      "local.stringprep-tables.1": "python -m pytest -q tests/test_gen_stringprep_tables.py",
+      "local.stringprep-tables.pytest": "python -m pytest -q -n 4 tests/test_gen_stringprep_tables.py",
       "local.suite-honesty.0": "python tools/check_differential_suite_layout.py",
       "local.suite-honesty.1": "python tools/check_suite_honesty.py",
       "local.table-drift.0": "python tools/check_table_drift.py --check",
-      "local.table-drift.1": "python -m pytest -q tests/test_table_drift_gate.py",
+      "local.table-drift.pytest": "python -m pytest -q -n 4 tests/test_table_drift_gate.py",
       "local.tinygrad-op-contract.0": "python tools/check_tinygrad_pin.py --check",
       "local.tinygrad-op-contract.1": "python tools/gen_gpu_op_contract.py --check",
-      "local.tinygrad-op-contract.2": "python -m pytest -q tests/test_gen_gpu_op_contract.py",
-      "local.tinygrad-upat-static-exec-registry.0": "python -m pytest -q tests/tools/test_tinygrad_upat_static_exec_registry.py",
+      "local.tinygrad-op-contract.pytest": "python -m pytest -q -n 4 tests/test_gen_gpu_op_contract.py",
+      "local.tinygrad-upat-static-exec-registry.pytest": "python -m pytest -q -n 4 tests/tools/test_tinygrad_upat_static_exec_registry.py",
       "local.tir-midend.0": "cargo clippy --locked --profile dev-fast -p molt-ir -p molt-passes -p molt-tir -p molt-backend-wasm --all-targets --all-features -- -D warnings",
       "local.tir-midend.1": "cargo test --locked --profile dev-fast -p molt-ir -p molt-passes -p molt-tir -p molt-backend-wasm --all-features --no-fail-fast",
       "local.wasm-abi-registry.0": "python tools/gen_wasm_abi.py --check",
-      "local.wasm-abi-registry.1": "python -m pytest -q tests/test_gen_wasm_abi.py",
-      "local.wasm-host.0": "cargo clippy --locked -p molt-wasm-host -- -D warnings",
-      "local.wasm-host.1": "cargo build --locked --profile release-fast -p molt-wasm-host"
+      "local.wasm-abi-registry.pytest": "python -m pytest -q -n 4 tests/test_gen_wasm_abi.py",
+      "local.wasm-host.0": "cargo build --locked --profile release-fast -p molt-wasm-host"
     },
+    "pytest_workers": 4,
     "rules": [
       {
         "command_ids": [
@@ -8596,11 +8692,10 @@
       {
         "command_ids": [
           "local.backend-environment-contract.0",
-          "local.backend-environment-contract.1"
+          "local.backend-environment-contract.pytest"
         ],
         "description": "Prove selected operation settings, cache publication policy, runtime bindings and daemon/one-shot consumers.",
         "gates": [
-          "python -m pytest -q tests/cli/test_backend_environment_contract.py tests/cli/test_cli_wasm_codegen_layout.py tests/cli/test_cli_shared_stdlib_cache.py tests/cli/test_cli_runtime_callable_symbols_authority.py tests/cli/test_native_codegen_identity.py tests/cli/test_cli_backend_prewarm.py",
           "python -m pytest -q tests/cli/test_cli_import_collection.py -k 'backend_codegen or backend_daemon or backend_cache_setup or backend_setup or backend_compile or backend_pipeline or backend_dispatch or codegen_selection or fingerprint_env'"
         ],
         "globs": [
@@ -8622,6 +8717,14 @@
           "tests/runtime_build_identity_helper.py"
         ],
         "name": "backend-environment-contract",
+        "pytest": [
+          "tests/cli/test_backend_environment_contract.py",
+          "tests/cli/test_cli_wasm_codegen_layout.py",
+          "tests/cli/test_cli_shared_stdlib_cache.py",
+          "tests/cli/test_cli_runtime_callable_symbols_authority.py",
+          "tests/cli/test_native_codegen_identity.py",
+          "tests/cli/test_cli_backend_prewarm.py"
+        ],
         "toolchains": [
           "python"
         ]
@@ -8648,12 +8751,11 @@
       {
         "command_ids": [
           "local.heap-kind-lifetime-authority.0",
-          "local.heap-kind-lifetime-authority.1"
+          "local.heap-kind-lifetime-authority.pytest"
         ],
         "description": "Heap-kind IDs and lifetime descriptors stay synchronized across runtime, codegen ABI, runtime-core, and Python consumers.",
         "gates": [
-          "python tools/gen_heap_kinds.py --check",
-          "python -m pytest -q tests/test_gen_heap_kinds.py"
+          "python tools/gen_heap_kinds.py --check"
         ],
         "globs": [
           "tools/gen_heap_kinds.py",
@@ -8664,6 +8766,9 @@
           "tests/test_gen_heap_kinds.py"
         ],
         "name": "heap-kind-lifetime-authority",
+        "pytest": [
+          "tests/test_gen_heap_kinds.py"
+        ],
         "toolchains": [
           "python",
           "rustfmt"
@@ -8672,12 +8777,11 @@
       {
         "command_ids": [
           "local.host-capability-authority.0",
-          "local.host-capability-authority.1"
+          "local.host-capability-authority.pytest"
         ],
         "description": "CLI profiles plus native, CPython fallback, and WASM runtime tiers share one generated host-permission authority.",
         "gates": [
-          "python tools/gen_host_capabilities.py --check",
-          "python -m pytest -q tests/test_gen_host_capabilities.py tests/test_capability_policy.py"
+          "python tools/gen_host_capabilities.py --check"
         ],
         "globs": [
           "runtime/host_capabilities.toml",
@@ -8689,6 +8793,10 @@
           "tests/test_gen_host_capabilities.py"
         ],
         "name": "host-capability-authority",
+        "pytest": [
+          "tests/test_gen_host_capabilities.py",
+          "tests/test_capability_policy.py"
+        ],
         "toolchains": [
           "python",
           "uv",
@@ -8698,12 +8806,11 @@
       {
         "command_ids": [
           "local.runtime-profile-schema-authority.0",
-          "local.runtime-profile-schema-authority.1"
+          "local.runtime-profile-schema-authority.pytest"
         ],
         "description": "Runtime process and epoch telemetry share one generated schema across Rust production and Python validation.",
         "gates": [
-          "python tools/gen_runtime_profile_schema.py --check",
-          "python -m pytest -q tests/test_gen_runtime_profile_schema.py tests/test_runtime_profile_schema.py"
+          "python tools/gen_runtime_profile_schema.py --check"
         ],
         "globs": [
           "runtime/runtime_profile_schema.toml",
@@ -8714,6 +8821,10 @@
           "tests/test_gen_runtime_profile_schema.py"
         ],
         "name": "runtime-profile-schema-authority",
+        "pytest": [
+          "tests/test_gen_runtime_profile_schema.py",
+          "tests/test_runtime_profile_schema.py"
+        ],
         "toolchains": [
           "python",
           "rustfmt"
@@ -8723,13 +8834,12 @@
         "command_ids": [
           "local.op-kind-registry.0",
           "local.op-kind-registry.1",
-          "local.op-kind-registry.2"
+          "local.op-kind-registry.pytest"
         ],
         "description": "Op-kind registry: generated-file sync, fail-closed frontend admission, and emitter/registry drift.",
         "gates": [
           "python tools/gen_op_kinds.py --check",
-          "python tools/audit_op_kinds.py --check",
-          "python -m pytest -q tests/test_frontend_op_kind_registry.py tests/test_gen_op_kinds.py"
+          "python tools/audit_op_kinds.py --check"
         ],
         "globs": [
           "tools/gen_op_kinds.py",
@@ -8752,6 +8862,10 @@
           "runtime/molt-backend-wasm/src/**/*.rs"
         ],
         "name": "op-kind-registry",
+        "pytest": [
+          "tests/test_frontend_op_kind_registry.py",
+          "tests/test_gen_op_kinds.py"
+        ],
         "toolchains": [
           "python",
           "rustfmt"
@@ -8760,12 +8874,11 @@
       {
         "command_ids": [
           "local.frontend-diagnostics.0",
-          "local.frontend-diagnostics.1"
+          "local.frontend-diagnostics.pytest"
         ],
         "description": "Typed frontend rejection codes, generated metadata, and structural no-stub invariant.",
         "gates": [
-          "python tools/gen_frontend_diagnostics.py --check",
-          "python -m pytest -q tests/test_frontend_diagnostics.py"
+          "python tools/gen_frontend_diagnostics.py --check"
         ],
         "globs": [
           "tools/gen_frontend_diagnostics.py",
@@ -8776,6 +8889,9 @@
           "tests/test_frontend_diagnostics.py"
         ],
         "name": "frontend-diagnostics",
+        "pytest": [
+          "tests/test_frontend_diagnostics.py"
+        ],
         "toolchains": [
           "python"
         ]
@@ -8783,12 +8899,11 @@
       {
         "command_ids": [
           "local.wasm-abi-registry.0",
-          "local.wasm-abi-registry.1"
+          "local.wasm-abi-registry.pytest"
         ],
         "description": "WASM ABI registry: manifest-owned imports, export policy, runtime-surface matchers, and generated sync.",
         "gates": [
-          "python tools/gen_wasm_abi.py --check",
-          "python -m pytest -q tests/test_gen_wasm_abi.py"
+          "python tools/gen_wasm_abi.py --check"
         ],
         "globs": [
           "tools/gen_wasm_abi.py",
@@ -8806,6 +8921,9 @@
           "tests/test_gen_wasm_abi.py"
         ],
         "name": "wasm-abi-registry",
+        "pytest": [
+          "tests/test_gen_wasm_abi.py"
+        ],
         "toolchains": [
           "python",
           "rustfmt"
@@ -8815,13 +8933,12 @@
         "command_ids": [
           "local.tinygrad-op-contract.0",
           "local.tinygrad-op-contract.1",
-          "local.tinygrad-op-contract.2"
+          "local.tinygrad-op-contract.pytest"
         ],
         "description": "tinygrad ML op-contract FACT: pin freshness + generated op_contract.toml sync (doc 67 Phase 0/1).",
         "gates": [
           "python tools/check_tinygrad_pin.py --check",
-          "python tools/gen_gpu_op_contract.py --check",
-          "python -m pytest -q tests/test_gen_gpu_op_contract.py"
+          "python tools/gen_gpu_op_contract.py --check"
         ],
         "globs": [
           "tools/check_tinygrad_pin.py",
@@ -8835,6 +8952,9 @@
           "bench/friends/repos/tinygrad_off_the_shelf/tinygrad/renderer/cstyle.py"
         ],
         "name": "tinygrad-op-contract",
+        "pytest": [
+          "tests/test_gen_gpu_op_contract.py"
+        ],
         "toolchains": [
           "python"
         ]
@@ -8842,12 +8962,11 @@
       {
         "command_ids": [
           "local.intrinsic-registry.0",
-          "local.intrinsic-registry.1"
+          "local.intrinsic-registry.pytest"
         ],
         "description": "Intrinsic registry: manifest/category sync + generated resolver ownership.",
         "gates": [
-          "python tools/gen_intrinsics.py --check",
-          "python -m pytest -q tests/test_gen_intrinsics.py"
+          "python tools/gen_intrinsics.py --check"
         ],
         "globs": [
           "tools/gen_intrinsics.py",
@@ -8861,6 +8980,9 @@
           "tests/test_gen_intrinsics.py"
         ],
         "name": "intrinsic-registry",
+        "pytest": [
+          "tests/test_gen_intrinsics.py"
+        ],
         "toolchains": [
           "python",
           "rustfmt"
@@ -8869,12 +8991,11 @@
       {
         "command_ids": [
           "local.codec-tables.0",
-          "local.codec-tables.1"
+          "local.codec-tables.pytest"
         ],
         "description": "Text codec registry and generated single-byte charmap tables.",
         "gates": [
-          "python tools/gen_codecs.py --check",
-          "python -m pytest -q tests/test_gen_codecs.py"
+          "python tools/gen_codecs.py --check"
         ],
         "globs": [
           "tools/gen_codecs.py",
@@ -8886,6 +9007,9 @@
           "tests/test_gen_codecs.py"
         ],
         "name": "codec-tables",
+        "pytest": [
+          "tests/test_gen_codecs.py"
+        ],
         "toolchains": [
           "python",
           "uv",
@@ -8895,12 +9019,11 @@
       {
         "command_ids": [
           "local.stringprep-tables.0",
-          "local.stringprep-tables.1"
+          "local.stringprep-tables.pytest"
         ],
         "description": "StringPrep generated Rust tables: generated-file sync.",
         "gates": [
-          "python tools/gen_stringprep_tables.py --check",
-          "python -m pytest -q tests/test_gen_stringprep_tables.py"
+          "python tools/gen_stringprep_tables.py --check"
         ],
         "globs": [
           "tools/gen_stringprep_tables.py",
@@ -8908,6 +9031,9 @@
           "tests/test_gen_stringprep_tables.py"
         ],
         "name": "stringprep-tables",
+        "pytest": [
+          "tests/test_gen_stringprep_tables.py"
+        ],
         "toolchains": [
           "python",
           "rustfmt"
@@ -8916,12 +9042,11 @@
       {
         "command_ids": [
           "local.llvm-runtime-abi.0",
-          "local.llvm-runtime-abi.1"
+          "local.llvm-runtime-abi.pytest"
         ],
         "description": "LLVM preserved runtime calls: availability is not ABI authority.",
         "gates": [
-          "python tools/llvm_runtime_abi_audit.py --check",
-          "python -m pytest -q tests/test_llvm_runtime_abi_audit.py"
+          "python tools/llvm_runtime_abi_audit.py --check"
         ],
         "globs": [
           "tools/llvm_runtime_abi_audit.py",
@@ -8934,18 +9059,19 @@
           "runtime/molt-runtime/src/**/*.rs"
         ],
         "name": "llvm-runtime-abi",
+        "pytest": [
+          "tests/test_llvm_runtime_abi_audit.py"
+        ],
         "toolchains": [
           "python"
         ]
       },
       {
         "command_ids": [
-          "local.source-extension-package-sets.0"
+          "local.source-extension-package-sets.pytest"
         ],
         "description": "Source-extension registry, producer, retained inputs, link and publication contracts; proof-policy consumers are selected separately.",
-        "gates": [
-          "python -m pytest -q tests/cli/test_source_extension_set_registry.py tests/cli/test_source_extension_manifest_authority.py tests/cli/test_source_extension_link_requirements.py tests/cli/test_source_extension_producer.py tests/cli/test_source_build_environment_probe.py tests/cli/test_source_extension_candidate_attestation.py tests/cli/test_source_extension_candidate_transaction.py tests/cli/test_source_package_seal.py tests/test_exact_json.py tests/cli/test_external_native_scipy_package_seal.py tests/cli/test_atomic_io_authority.py tests/cli/test_python_module_names.py tests/cli/test_source_extension_runtime_imports.py tests/cli/test_source_extension_input_custody.py tests/cli/test_source_extension_target.py tests/cli/test_source_extension_language.py tests/cli/test_source_extension_compiler_target.py tests/cli/test_extension_wheel_retained_inputs.py tests/tools/test_native_link_benchmark.py tests/cli/test_cli_extension_commands.py::test_direct_build_audits_and_reseals_extracted_wheel tests/cli/test_source_extension_invocation.py tests/cli/test_source_extension_compiler_inputs.py"
-        ],
+        "gates": [],
         "globs": [
           "config/source_extension_package_sets.toml",
           "config/scientific_stack_versions.toml",
@@ -8993,6 +9119,30 @@
           "tests/cli/test_source_build_environment_probe.py"
         ],
         "name": "source-extension-package-sets",
+        "pytest": [
+          "tests/cli/test_source_extension_set_registry.py",
+          "tests/cli/test_source_extension_manifest_authority.py",
+          "tests/cli/test_source_extension_link_requirements.py",
+          "tests/cli/test_source_extension_producer.py",
+          "tests/cli/test_source_build_environment_probe.py",
+          "tests/cli/test_source_extension_candidate_attestation.py",
+          "tests/cli/test_source_extension_candidate_transaction.py",
+          "tests/cli/test_source_package_seal.py",
+          "tests/test_exact_json.py",
+          "tests/cli/test_external_native_scipy_package_seal.py",
+          "tests/cli/test_atomic_io_authority.py",
+          "tests/cli/test_python_module_names.py",
+          "tests/cli/test_source_extension_runtime_imports.py",
+          "tests/cli/test_source_extension_input_custody.py",
+          "tests/cli/test_source_extension_target.py",
+          "tests/cli/test_source_extension_language.py",
+          "tests/cli/test_source_extension_compiler_target.py",
+          "tests/cli/test_extension_wheel_retained_inputs.py",
+          "tests/tools/test_native_link_benchmark.py",
+          "tests/cli/test_cli_extension_commands.py::test_direct_build_audits_and_reseals_extracted_wheel",
+          "tests/cli/test_source_extension_invocation.py",
+          "tests/cli/test_source_extension_compiler_inputs.py"
+        ],
         "toolchains": [
           "python",
           "uv"
@@ -9001,11 +9151,10 @@
       {
         "command_ids": [
           "local.source-extension-proof-policy.0",
-          "local.source-extension-proof-policy.1"
+          "local.source-extension-proof-policy.pytest"
         ],
         "description": "Source-extension typed invocation, target/toolchain custody and Pact receipt admission. Production inputs preserve this complete shared boundary.",
         "gates": [
-          "python -m pytest -q tests/cli/test_source_extension_link_inputs.py tests/tools/test_source_extension_proof_family.py tests/tools/test_target_derived_toolchains.py tests/tools/test_python_custody_bootstrap.py tests/tools/test_scientific_stack_versions.py",
           "python -m pytest -q tests/tools/test_proof_queue.py -k 'proof_queue_pact_witness or proof_queue_rejects_scipy or proof_queue_requires_explicit_scipy or rejects_expected_extension_identity_drift'"
         ],
         "globs": [
@@ -9071,6 +9220,13 @@
           "tools/proof_queue_pkg/cli.py"
         ],
         "name": "source-extension-proof-policy",
+        "pytest": [
+          "tests/cli/test_source_extension_link_inputs.py",
+          "tests/tools/test_source_extension_proof_family.py",
+          "tests/tools/test_target_derived_toolchains.py",
+          "tests/tools/test_python_custody_bootstrap.py",
+          "tests/tools/test_scientific_stack_versions.py"
+        ],
         "toolchains": [
           "python",
           "uv"
@@ -9116,17 +9272,18 @@
       },
       {
         "command_ids": [
-          "local.tinygrad-upat-static-exec-registry.0"
+          "local.tinygrad-upat-static-exec-registry.pytest"
         ],
         "description": "tinygrad UPat matcher static exec registry: fail-closed generated factory contract.",
-        "gates": [
-          "python -m pytest -q tests/tools/test_tinygrad_upat_static_exec_registry.py"
-        ],
+        "gates": [],
         "globs": [
           "tools/tinygrad_upat_static_exec_registry.py",
           "tests/tools/test_tinygrad_upat_static_exec_registry.py"
         ],
         "name": "tinygrad-upat-static-exec-registry",
+        "pytest": [
+          "tests/tools/test_tinygrad_upat_static_exec_registry.py"
+        ],
         "toolchains": [
           "python",
           "uv"
@@ -9155,31 +9312,35 @@
       },
       {
         "command_ids": [
-          "local.dev-tooling.0",
-          "local.dev-tooling.1",
-          "local.dev-tooling.2",
-          "local.dev-tooling.3"
+          "local.dev-tooling.pytest"
         ],
         "description": "dev drivers, Rust toolchain/formatting custody, or their config/tests: run the failure-mode tests.",
-        "gates": [
-          "python -m pytest -q tests/tools/test_setup_project_inputs.py",
-          "python -m pytest -q tests/test_molt_dev.py",
-          "python -m pytest -q tests/tools/test_rust_toolchain_contract.py",
-          "python -m pytest -q tests/tools/test_check_rustfmt.py"
-        ],
+        "gates": [],
         "globs": [
           ".github/actions/setup-project/**",
           "tests/tools/test_setup_project_inputs.py",
           "tools/dev.py",
           "tools/check_rust_toolchain.py",
           "tools/check_rustfmt.py",
+          "tools/check_changed_clippy.py",
+          "src/molt/cargo_workspace.py",
           "tools/molt_dev.py",
           "tools/proof_plan.toml",
           "tests/tools/test_rust_toolchain_contract.py",
           "tests/tools/test_check_rustfmt.py",
+          "tests/tools/test_check_changed_clippy.py",
+          "tests/test_cargo_workspace.py",
           "tests/test_molt_dev.py"
         ],
         "name": "dev-tooling",
+        "pytest": [
+          "tests/tools/test_setup_project_inputs.py",
+          "tests/test_molt_dev.py",
+          "tests/tools/test_rust_toolchain_contract.py",
+          "tests/tools/test_check_rustfmt.py",
+          "tests/tools/test_check_changed_clippy.py",
+          "tests/test_cargo_workspace.py"
+        ],
         "toolchains": [
           "python",
           "uv"
@@ -9187,17 +9348,18 @@
       },
       {
         "command_ids": [
-          "local.encoding-diagnostics.0"
+          "local.encoding-diagnostics.pytest"
         ],
         "description": "Encoding regression diagnostics preserve counts and every affected location.",
-        "gates": [
-          "python -m pytest -q tests/tools/test_encoding_gate.py"
-        ],
+        "gates": [],
         "globs": [
           "tools/encoding_gate.py",
           "tests/tools/test_encoding_gate.py"
         ],
         "name": "encoding-diagnostics",
+        "pytest": [
+          "tests/tools/test_encoding_gate.py"
+        ],
         "toolchains": [
           "python"
         ]
@@ -9258,12 +9420,11 @@
       {
         "command_ids": [
           "local.rust-toolchain.0",
-          "local.rust-toolchain.1"
+          "local.rust-toolchain.pytest"
         ],
         "description": "Rust version/edition authority: manifests, root toolchain, CI pins, and local installed tools.",
         "gates": [
-          "python tools/check_rust_toolchain.py",
-          "python -m pytest -q tests/tools/test_rust_toolchain_contract.py"
+          "python tools/check_rust_toolchain.py"
         ],
         "globs": [
           "rust-toolchain.toml",
@@ -9278,6 +9439,9 @@
           "tests/tools/test_rust_toolchain_contract.py"
         ],
         "name": "rust-toolchain",
+        "pytest": [
+          "tests/tools/test_rust_toolchain_contract.py"
+        ],
         "toolchains": [
           "python"
         ]
@@ -9285,12 +9449,11 @@
       {
         "command_ids": [
           "local.table-drift.0",
-          "local.table-drift.1"
+          "local.table-drift.pytest"
         ],
         "description": "Cross-language tables (type tags, exception ordinals/names, target-Python versions, C-API module slots): bind actual declarative owners.",
         "gates": [
-          "python tools/check_table_drift.py --check",
-          "python -m pytest -q tests/test_table_drift_gate.py"
+          "python tools/check_table_drift.py --check"
         ],
         "globs": [
           "src/molt/frontend/_types.py",
@@ -9307,18 +9470,19 @@
           "tests/test_table_drift_gate.py"
         ],
         "name": "table-drift",
+        "pytest": [
+          "tests/test_table_drift_gate.py"
+        ],
         "toolchains": [
           "python"
         ]
       },
       {
         "command_ids": [
-          "local.findings-registry.0"
+          "local.findings-registry.pytest"
         ],
         "description": "Findings registry / memo lint / seeded ledger (A4): run the teeth tests.",
-        "gates": [
-          "python -m pytest -q tests/tools/test_findings_registry.py"
-        ],
+        "gates": [],
         "globs": [
           "tools/findings_registry.py",
           "tools/findings_memo_lint.py",
@@ -9326,6 +9490,9 @@
           ".molt/state/findings_registry.jsonl"
         ],
         "name": "findings-registry",
+        "pytest": [
+          "tests/tools/test_findings_registry.py"
+        ],
         "toolchains": [
           "python"
         ]
@@ -9333,11 +9500,10 @@
       {
         "command_ids": [
           "local.memory-graph.0",
-          "local.memory-graph.1"
+          "local.memory-graph.pytest"
         ],
         "description": "A10 memory graph (typed recall over memory/*.md + POINTERS + ledgers + findings), integrity check, and the session_digest / memo-lint recall consumers: run the teeth + the warn-only integrity canary.",
         "gates": [
-          "python -m pytest -q tests/tools/test_memory_graph.py",
           "python tools/check_memory_graph.py --check"
         ],
         "globs": [
@@ -9348,6 +9514,9 @@
           "tests/tools/test_memory_graph.py"
         ],
         "name": "memory-graph",
+        "pytest": [
+          "tests/tools/test_memory_graph.py"
+        ],
         "toolchains": [
           "python"
         ]
@@ -9355,12 +9524,11 @@
       {
         "command_ids": [
           "local.ci-wiring.0",
-          "local.ci-wiring.1"
+          "local.ci-wiring.pytest"
         ],
         "description": "CI workflows or pyproject: the CI-topology contract test.",
         "gates": [
-          "python tools/gen_proof_plan.py --check",
-          "python -m pytest -q tests/test_proof_plan.py tests/test_ci_workflow_topology.py tests/test_dependabot_config.py tests/test_ci_cargo_cache.py tests/test_generator_manifest.py tests/test_resource_pressure.py tests/test_translation_validate_roots.py tests/tools/test_ci_resource_env.py tests/tools/test_fuzz_compiler_cli.py tests/tools/test_formal_correspondence_truth.py tests/tools/test_nightly_prepare.py tests/tools/test_nightly_profile_feedback.py tests/tools/test_nightly_runtime_bundle.py tests/tools/test_nightly_shard_profile.py tests/tools/test_nightly_sharding.py tests/tools/test_reproducible_build_truth.py"
+          "python tools/gen_proof_plan.py --check"
         ],
         "globs": [
           ".github/actions/**",
@@ -9423,6 +9591,24 @@
           "tests/tools/test_ci_resource_env.py"
         ],
         "name": "ci-wiring",
+        "pytest": [
+          "tests/test_proof_plan.py",
+          "tests/test_ci_workflow_topology.py",
+          "tests/test_dependabot_config.py",
+          "tests/test_ci_cargo_cache.py",
+          "tests/test_generator_manifest.py",
+          "tests/test_resource_pressure.py",
+          "tests/test_translation_validate_roots.py",
+          "tests/tools/test_ci_resource_env.py",
+          "tests/tools/test_fuzz_compiler_cli.py",
+          "tests/tools/test_formal_correspondence_truth.py",
+          "tests/tools/test_nightly_prepare.py",
+          "tests/tools/test_nightly_profile_feedback.py",
+          "tests/tools/test_nightly_runtime_bundle.py",
+          "tests/tools/test_nightly_shard_profile.py",
+          "tests/tools/test_nightly_sharding.py",
+          "tests/tools/test_reproducible_build_truth.py"
+        ],
         "toolchains": [
           "python"
         ]
@@ -9431,11 +9617,10 @@
         "command_ids": [
           "local.apparatus-hooks.0",
           "local.apparatus-hooks.1",
-          "local.apparatus-hooks.2"
+          "local.apparatus-hooks.pytest"
         ],
         "description": "Claude Code hook spine + landing gate + waiver grammar: pure-decision teeth + fail-open + gate-liveness canary.",
         "gates": [
-          "python -m pytest -q tests/tools/test_hooks_bash_guard.py tests/tools/test_hooks_landing_gate.py tests/tools/test_hooks_session_digest.py tests/tools/test_hooks_fail_open.py tests/tools/test_hooks_waivers.py tests/tools/test_check_gate_flips.py tests/tools/test_check_gate_liveness.py",
           "python tools/check_gate_liveness.py --check",
           "python tools/check_gate_flips.py --check"
         ],
@@ -9453,6 +9638,15 @@
           "tests/tools/test_check_gate_liveness.py"
         ],
         "name": "apparatus-hooks",
+        "pytest": [
+          "tests/tools/test_hooks_bash_guard.py",
+          "tests/tools/test_hooks_landing_gate.py",
+          "tests/tools/test_hooks_session_digest.py",
+          "tests/tools/test_hooks_fail_open.py",
+          "tests/tools/test_hooks_waivers.py",
+          "tests/tools/test_check_gate_flips.py",
+          "tests/tools/test_check_gate_liveness.py"
+        ],
         "toolchains": [
           "python"
         ]
@@ -9461,11 +9655,10 @@
         "command_ids": [
           "local.apparatus-learning-protection.0",
           "local.apparatus-learning-protection.1",
-          "local.apparatus-learning-protection.2"
+          "local.apparatus-learning-protection.pytest"
         ],
         "description": "Recurring-harm registry, no-agent-termination meta-gate, anti-recurrence advisory, and Stop-session learning persistence.",
         "gates": [
-          "python -m pytest -q tests/tools/test_apparatus_agent_safety.py tests/tools/test_anti_recurrence_gate.py tests/tools/test_hooks_session_learning.py tests/tools/test_check_gate_liveness.py tests/tools/test_memory_graph.py",
           "python tools/apparatus_agent_safety.py --check",
           "python tools/anti_recurrence_gate.py --check"
         ],
@@ -9484,6 +9677,13 @@
           "tests/tools/test_memory_graph.py"
         ],
         "name": "apparatus-learning-protection",
+        "pytest": [
+          "tests/tools/test_apparatus_agent_safety.py",
+          "tests/tools/test_anti_recurrence_gate.py",
+          "tests/tools/test_hooks_session_learning.py",
+          "tests/tools/test_check_gate_liveness.py",
+          "tests/tools/test_memory_graph.py"
+        ],
         "toolchains": [
           "python"
         ]
@@ -9535,11 +9735,10 @@
           "local.apparatus-a11.1",
           "local.apparatus-a11.2",
           "local.apparatus-a11.3",
-          "local.apparatus-a11.4"
+          "local.apparatus-a11.pytest"
         ],
         "description": "Claims self-retirement terminal vocabulary + premise-verification preflight + serialized-commit primitive (M11/M20/M22/M24): teeth + falsifiable self-tests + gate-liveness canary.",
         "gates": [
-          "python -m pytest -q tests/tools/test_claims_status.py tests/tools/test_check_sister_landed.py tests/tools/test_commit_serializer.py",
           "python tools/claims_status.py --check",
           "python tools/check_sister_landed.py --check",
           "python tools/commit_serializer.py --check",
@@ -9558,6 +9757,11 @@
           "tests/tools/test_commit_serializer.py"
         ],
         "name": "apparatus-a11",
+        "pytest": [
+          "tests/tools/test_claims_status.py",
+          "tests/tools/test_check_sister_landed.py",
+          "tests/tools/test_commit_serializer.py"
+        ],
         "toolchains": [
           "python"
         ]
@@ -9566,11 +9770,10 @@
         "command_ids": [
           "local.apparatus-a8-a12-disk-reclaim.0",
           "local.apparatus-a8-a12-disk-reclaim.1",
-          "local.apparatus-a8-a12-disk-reclaim.2"
+          "local.apparatus-a8-a12-disk-reclaim.pytest"
         ],
         "description": "Lane maturity, Variant-II perf acceptance, and completed-lane target reclaim: teeth plus liveness.",
         "gates": [
-          "python -m pytest -q tests/tools/test_lane_maturity.py tests/tools/test_powerplay_acceptance.py tests/tools/test_proof_queue_lane_maturity.py tests/tools/test_disk_guard.py tests/tools/test_check_gate_liveness.py",
           "python tools/check_gate_liveness.py --check",
           "python tools/apparatus_agent_safety.py --check"
         ],
@@ -9588,6 +9791,13 @@
           "tests/tools/test_disk_guard.py"
         ],
         "name": "apparatus-a8-a12-disk-reclaim",
+        "pytest": [
+          "tests/tools/test_lane_maturity.py",
+          "tests/tools/test_powerplay_acceptance.py",
+          "tests/tools/test_proof_queue_lane_maturity.py",
+          "tests/tools/test_disk_guard.py",
+          "tests/tools/test_check_gate_liveness.py"
+        ],
         "toolchains": [
           "python"
         ]
@@ -9595,18 +9805,20 @@
       {
         "command_ids": [
           "local.import-symbol-gate.0",
-          "local.import-symbol-gate.1"
+          "local.import-symbol-gate.pytest"
         ],
         "description": "Every first-party `from molt.x import name` / `from tools.x import name` resolves statically; authority extractions that miss a consumer import fail here, not in a proof lane. The property itself runs in the repository docs-tests command; this rule covers edits to the gate.",
         "gates": [
-          "python tools/import_symbol_gate.py",
-          "python -m pytest -q tests/tools/test_import_symbol_gate.py"
+          "python tools/import_symbol_gate.py"
         ],
         "globs": [
           "tools/import_symbol_gate.py",
           "tests/tools/test_import_symbol_gate.py"
         ],
         "name": "import-symbol-gate",
+        "pytest": [
+          "tests/tools/test_import_symbol_gate.py"
+        ],
         "toolchains": [
           "python"
         ]
@@ -9614,11 +9826,10 @@
       {
         "command_ids": [
           "local.phase-exit-manifest.0",
-          "local.phase-exit-manifest.1"
+          "local.phase-exit-manifest.pytest"
         ],
         "description": "Fixed CENTURY_SYSTEMS_PLAN \u00a75 phase predicate (tools/phase_exit_manifest.py) and the registry-driven legacy_count authority (tools/legacy_inventory.py): teeth plus the live-registry checks.",
         "gates": [
-          "python -m pytest -q tests/tools/test_phase_exit_manifest.py tests/tools/test_legacy_inventory.py",
           "python tools/legacy_inventory.py --check"
         ],
         "globs": [
@@ -9631,6 +9842,10 @@
           "tests/tools/test_legacy_inventory.py"
         ],
         "name": "phase-exit-manifest",
+        "pytest": [
+          "tests/tools/test_phase_exit_manifest.py",
+          "tests/tools/test_legacy_inventory.py"
+        ],
         "toolchains": [
           "python"
         ]
@@ -9638,12 +9853,11 @@
       {
         "command_ids": [
           "local.public-contract.0",
-          "local.public-contract.1"
+          "local.public-contract.pytest"
         ],
         "description": "Every CLI command carries a declared stability tier, public schema declarations match executable producers, and the generated public surface snapshot has not drifted without an explicit --update.",
         "gates": [
-          "python tools/public_contract_gate.py --check",
-          "python -m pytest -q tests/tools/test_public_contract_gate.py"
+          "python tools/public_contract_gate.py --check"
         ],
         "globs": [
           "config/public_contract_v1.toml",
@@ -9667,18 +9881,44 @@
           "tests/tools/test_public_contract_gate.py"
         ],
         "name": "public-contract",
+        "pytest": [
+          "tests/tools/test_public_contract_gate.py"
+        ],
         "toolchains": [
           "python"
         ]
       },
       {
         "command_ids": [
-          "local.backend-native.0",
-          "local.backend-native.1"
+          "local.rust-clippy-changed.0"
         ],
-        "description": "Cranelift/native backend and driver Rust: clippy + owning release-fast library and binary tests.",
+        "description": "Clippy -D warnings with the proof plan's feature, target and profile cells for every Cargo package a change reaches.",
         "gates": [
-          "cargo clippy --locked -p molt-backend -p molt-backend-native -p molt-artifact-publish --features molt-backend/native-backend -- -D warnings",
+          "python tools/check_changed_clippy.py --base origin/main"
+        ],
+        "globs": [
+          "runtime/**",
+          "vendor/rust/**",
+          "deploy/browser/simd-ops-rs/**",
+          "Cargo.toml",
+          "Cargo.lock",
+          "rust-toolchain.toml",
+          "clippy.toml",
+          ".cargo/**"
+        ],
+        "name": "rust-clippy-changed",
+        "toolchains": [
+          "python",
+          "rustc",
+          "cargo"
+        ]
+      },
+      {
+        "command_ids": [
+          "local.backend-native.0"
+        ],
+        "description": "Cranelift/native backend and driver Rust: owning release-fast library and binary tests.",
+        "gates": [
           "cargo test --locked --profile release-fast -p molt-backend -p molt-backend-native -p molt-artifact-publish --features molt-backend/native-backend --lib --bins --no-fail-fast"
         ],
         "globs": [
@@ -9767,11 +10007,10 @@
         "command_ids": [
           "local.maintained-zlib-counters.0",
           "local.maintained-zlib-counters.1",
-          "local.maintained-zlib-counters.2"
+          "local.maintained-zlib-counters.pytest"
         ],
         "description": "Maintained compression provider: complete modular counters and actual source selection.",
         "gates": [
-          "python -m pytest -q tests/cli/test_runtime_source_closure.py",
           "cargo test --locked --profile dev-fast -p zlib-rs@0.6.8 --lib --no-default-features --features rust-allocator,std,ZLIB_DEBUG -- counter_wrap --nocapture --test-threads=1",
           "python tools/run_runtime_test_gate.py --policy zlib-wasi --profile dev-fast --build-timeout-seconds 300 --child-timeout-seconds 120"
         ],
@@ -9792,6 +10031,9 @@
           "tests/cli/test_runtime_source_closure.py"
         ],
         "name": "maintained-zlib-counters",
+        "pytest": [
+          "tests/cli/test_runtime_source_closure.py"
+        ],
         "toolchains": [
           "python",
           "uv",
@@ -9852,12 +10094,10 @@
       },
       {
         "command_ids": [
-          "local.wasm-host.0",
-          "local.wasm-host.1"
+          "local.wasm-host.0"
         ],
-        "description": "Wasmtime host Rust: warning-free clippy + release-fast link build.",
+        "description": "Wasmtime host Rust: release-fast link build.",
         "gates": [
-          "cargo clippy --locked -p molt-wasm-host -- -D warnings",
           "cargo build --locked --profile release-fast -p molt-wasm-host"
         ],
         "globs": [
@@ -9876,32 +10116,10 @@
       },
       {
         "command_ids": [
-          "local.gpu-core.0"
+          "local.gpu-runtime.0"
         ],
-        "description": "GPU compute/render primitive: all-target/all-feature clippy without Python runtime coupling.",
+        "description": "GPU Python-object runtime integration: all-feature runtime contract tests.",
         "gates": [
-          "cargo clippy --locked -p molt-gpu --all-targets --all-features -- -D warnings"
-        ],
-        "globs": [
-          "runtime/molt-gpu/**/*.rs",
-          "runtime/molt-gpu/**/*.toml",
-          "runtime/molt-gpu/Cargo.toml"
-        ],
-        "name": "gpu-core",
-        "toolchains": [
-          "python",
-          "rustc",
-          "cargo"
-        ]
-      },
-      {
-        "command_ids": [
-          "local.gpu-runtime.0",
-          "local.gpu-runtime.1"
-        ],
-        "description": "GPU Python-object runtime integration: all-target/all-feature clippy and runtime contract tests.",
-        "gates": [
-          "cargo clippy --locked -p molt-gpu-runtime --all-targets --all-features -- -D warnings",
           "cargo test --locked -p molt-gpu-runtime --all-features --no-fail-fast"
         ],
         "globs": [
@@ -9920,13 +10138,12 @@
         "command_ids": [
           "local.runtime-vfs.0",
           "local.runtime-vfs.1",
-          "local.runtime-vfs.2"
+          "local.runtime-vfs.pytest"
         ],
         "description": "Runtime VFS satellite crate: all-target clippy, feature coverage, and browser adapter smoke.",
         "gates": [
           "cargo clippy --locked -p molt-runtime-vfs --all-targets --all-features -- -D warnings",
-          "cargo test --locked -p molt-runtime-vfs --all-features --no-fail-fast",
-          "python -m pytest tests/test_browser_vfs.py -q"
+          "cargo test --locked -p molt-runtime-vfs --all-features --no-fail-fast"
         ],
         "globs": [
           "runtime/molt-runtime-vfs/**/*.rs",
@@ -9935,6 +10152,9 @@
           "wasm/molt_vfs_browser.js"
         ],
         "name": "runtime-vfs",
+        "pytest": [
+          "tests/test_browser_vfs.py"
+        ],
         "toolchains": [
           "python",
           "rustc",
@@ -9943,13 +10163,11 @@
       },
       {
         "command_ids": [
-          "local.runtime-lib.0",
-          "local.runtime-lib.1"
+          "local.runtime-lib.0"
         ],
-        "description": "Runtime/object-model Rust: one default-feature image, ordinary and isolated lifecycle semantics, then backend clippy; performance probes remain unrun.",
+        "description": "Runtime/object-model Rust: one default-feature image with ordinary and isolated lifecycle semantics; performance probes remain unrun. Clippy belongs to rust-clippy-changed.",
         "gates": [
-          "python tools/run_runtime_test_gate.py --profile release-output --build-timeout-seconds 6300 --child-timeout-seconds 120 --parallel-threads 8",
-          "cargo clippy --locked -p molt-backend --features native-backend -- -D warnings"
+          "python tools/run_runtime_test_gate.py --profile release-output --build-timeout-seconds 6300 --child-timeout-seconds 120 --parallel-threads 8"
         ],
         "globs": [
           "runtime/molt-runtime/**/*.rs",
@@ -9967,12 +10185,11 @@
         "command_ids": [
           "local.python-effect-capability-authority.0",
           "local.python-effect-capability-authority.1",
-          "local.python-effect-capability-authority.2"
+          "local.python-effect-capability-authority.pytest"
         ],
         "description": "Python and Rust analyses share one dense generated effect lattice and fail-closed capability projections.",
         "gates": [
           "python tools/gen_python_effects.py --check",
-          "python -m pytest -q tests/test_gen_python_effects.py",
           "cargo test --locked -p molt-ir --lib python_effects_generated"
         ],
         "globs": [
@@ -9984,6 +10201,9 @@
           "tests/test_gen_python_effects.py"
         ],
         "name": "python-effect-capability-authority",
+        "pytest": [
+          "tests/test_gen_python_effects.py"
+        ],
         "toolchains": [
           "python",
           "rustc",
@@ -9994,12 +10214,11 @@
       {
         "command_ids": [
           "local.python-identity-catalog-authority.0",
-          "local.python-identity-catalog-authority.1"
+          "local.python-identity-catalog-authority.pytest"
         ],
         "description": "Compiler identities and mutation guards share one generated acquisition catalog.",
         "gates": [
-          "python tools/gen_python_identity_catalog.py --check",
-          "python -m pytest -q tests/test_gen_python_identity_catalog.py tests/test_python_binding_flow.py tests/test_python_builtin_shape_facts.py"
+          "python tools/gen_python_identity_catalog.py --check"
         ],
         "globs": [
           "src/molt/compiler_analysis/python_identity_catalog.toml",
@@ -10011,6 +10230,11 @@
           "tests/test_gen_python_identity_catalog.py"
         ],
         "name": "python-identity-catalog-authority",
+        "pytest": [
+          "tests/test_gen_python_identity_catalog.py",
+          "tests/test_python_binding_flow.py",
+          "tests/test_python_builtin_shape_facts.py"
+        ],
         "toolchains": [
           "python"
         ]
@@ -10019,12 +10243,11 @@
         "command_ids": [
           "local.builtin-binding-guard-authority.0",
           "local.builtin-binding-guard-authority.1",
-          "local.builtin-binding-guard-authority.2"
+          "local.builtin-binding-guard-authority.pytest"
         ],
         "description": "The compiler's guarded builtin specializations and the runtime's namespace guard bits share one generated name table (HF-79).",
         "gates": [
           "python tools/gen_builtin_binding_guards.py --check",
-          "python -m pytest -q tests/test_gen_builtin_binding_guards.py tests/test_frontend_builtin_binding_guards.py",
           "cargo test --locked -p molt-runtime --lib binding_guards"
         ],
         "globs": [
@@ -10039,6 +10262,10 @@
           "tests/test_frontend_builtin_binding_guards.py"
         ],
         "name": "builtin-binding-guard-authority",
+        "pytest": [
+          "tests/test_gen_builtin_binding_guards.py",
+          "tests/test_frontend_builtin_binding_guards.py"
+        ],
         "toolchains": [
           "python",
           "rustc",
@@ -10052,12 +10279,11 @@
           "local.native-callable-abi.1",
           "local.native-callable-abi.2",
           "local.native-callable-abi.3",
-          "local.native-callable-abi.4"
+          "local.native-callable-abi.pytest"
         ],
         "description": "Native-callable ABI registry: generated Python/Rust projections, transport arity, and native/WASM consumer classification.",
         "gates": [
           "python tools/gen_native_callable_abi.py --check",
-          "python -m pytest -q tests/test_gen_native_callable_abi.py",
           "cargo test --locked -p molt-ir --lib native_callable_abi",
           "cargo test --locked -p molt-backend-native --lib native_callable",
           "cargo test --locked -p molt-backend-wasm --features test-util --lib native_callable"
@@ -10084,6 +10310,9 @@
           "tests/test_gen_native_callable_abi.py"
         ],
         "name": "native-callable-abi",
+        "pytest": [
+          "tests/test_gen_native_callable_abi.py"
+        ],
         "toolchains": [
           "python",
           "rustc",
@@ -10425,7 +10654,7 @@
       "local.apparatus-a11.3": [
         "python"
       ],
-      "local.apparatus-a11.4": [
+      "local.apparatus-a11.pytest": [
         "python"
       ],
       "local.apparatus-a8-a12-disk-reclaim.0": [
@@ -10434,7 +10663,7 @@
       "local.apparatus-a8-a12-disk-reclaim.1": [
         "python"
       ],
-      "local.apparatus-a8-a12-disk-reclaim.2": [
+      "local.apparatus-a8-a12-disk-reclaim.pytest": [
         "python"
       ],
       "local.apparatus-hooks.0": [
@@ -10443,7 +10672,7 @@
       "local.apparatus-hooks.1": [
         "python"
       ],
-      "local.apparatus-hooks.2": [
+      "local.apparatus-hooks.pytest": [
         "python"
       ],
       "local.apparatus-learning-protection.0": [
@@ -10452,7 +10681,7 @@
       "local.apparatus-learning-protection.1": [
         "python"
       ],
-      "local.apparatus-learning-protection.2": [
+      "local.apparatus-learning-protection.pytest": [
         "python"
       ],
       "local.backend-daemon-cache.0": [
@@ -10464,7 +10693,7 @@
       "local.backend-environment-contract.0": [
         "python"
       ],
-      "local.backend-environment-contract.1": [
+      "local.backend-environment-contract.pytest": [
         "python"
       ],
       "local.backend-ir-framing.0": [
@@ -10481,12 +10710,6 @@
         "llvm-sdk"
       ],
       "local.backend-native.0": [
-        "python",
-        "rustc",
-        "cargo",
-        "git"
-      ],
-      "local.backend-native.1": [
         "python",
         "rustc",
         "cargo",
@@ -10509,7 +10732,7 @@
         "git",
         "rustfmt"
       ],
-      "local.builtin-binding-guard-authority.2": [
+      "local.builtin-binding-guard-authority.pytest": [
         "python",
         "rustc",
         "cargo",
@@ -10519,7 +10742,7 @@
       "local.ci-wiring.0": [
         "python"
       ],
-      "local.ci-wiring.1": [
+      "local.ci-wiring.pytest": [
         "python"
       ],
       "local.codec-tables.0": [
@@ -10527,7 +10750,7 @@
         "uv",
         "rustfmt"
       ],
-      "local.codec-tables.1": [
+      "local.codec-tables.pytest": [
         "python",
         "uv",
         "rustfmt"
@@ -10544,19 +10767,7 @@
         "cargo",
         "git"
       ],
-      "local.dev-tooling.0": [
-        "python",
-        "uv"
-      ],
-      "local.dev-tooling.1": [
-        "python",
-        "uv"
-      ],
-      "local.dev-tooling.2": [
-        "python",
-        "uv"
-      ],
-      "local.dev-tooling.3": [
+      "local.dev-tooling.pytest": [
         "python",
         "uv"
       ],
@@ -10569,16 +10780,16 @@
       "local.ecosystem-compat.0": [
         "python"
       ],
-      "local.encoding-diagnostics.0": [
+      "local.encoding-diagnostics.pytest": [
         "python"
       ],
-      "local.findings-registry.0": [
+      "local.findings-registry.pytest": [
         "python"
       ],
       "local.frontend-diagnostics.0": [
         "python"
       ],
-      "local.frontend-diagnostics.1": [
+      "local.frontend-diagnostics.pytest": [
         "python"
       ],
       "local.frontend-python.0": [
@@ -10593,19 +10804,7 @@
         "python",
         "uv"
       ],
-      "local.gpu-core.0": [
-        "python",
-        "rustc",
-        "cargo",
-        "git"
-      ],
       "local.gpu-runtime.0": [
-        "python",
-        "rustc",
-        "cargo",
-        "git"
-      ],
-      "local.gpu-runtime.1": [
         "python",
         "rustc",
         "cargo",
@@ -10615,7 +10814,7 @@
         "python",
         "rustfmt"
       ],
-      "local.heap-kind-lifetime-authority.1": [
+      "local.heap-kind-lifetime-authority.pytest": [
         "python",
         "rustfmt"
       ],
@@ -10624,7 +10823,7 @@
         "uv",
         "rustfmt"
       ],
-      "local.host-capability-authority.1": [
+      "local.host-capability-authority.pytest": [
         "python",
         "uv",
         "rustfmt"
@@ -10632,21 +10831,21 @@
       "local.import-symbol-gate.0": [
         "python"
       ],
-      "local.import-symbol-gate.1": [
+      "local.import-symbol-gate.pytest": [
         "python"
       ],
       "local.intrinsic-registry.0": [
         "python",
         "rustfmt"
       ],
-      "local.intrinsic-registry.1": [
+      "local.intrinsic-registry.pytest": [
         "python",
         "rustfmt"
       ],
       "local.llvm-runtime-abi.0": [
         "python"
       ],
-      "local.llvm-runtime-abi.1": [
+      "local.llvm-runtime-abi.pytest": [
         "python"
       ],
       "local.maintained-zlib-counters.0": [
@@ -10665,7 +10864,7 @@
         "git",
         "node"
       ],
-      "local.maintained-zlib-counters.2": [
+      "local.maintained-zlib-counters.pytest": [
         "python",
         "uv",
         "rustc",
@@ -10676,7 +10875,7 @@
       "local.memory-graph.0": [
         "python"
       ],
-      "local.memory-graph.1": [
+      "local.memory-graph.pytest": [
         "python"
       ],
       "local.native-callable-abi.0": [
@@ -10707,7 +10906,7 @@
         "git",
         "rustfmt"
       ],
-      "local.native-callable-abi.4": [
+      "local.native-callable-abi.pytest": [
         "python",
         "rustc",
         "cargo",
@@ -10728,7 +10927,7 @@
         "python",
         "rustfmt"
       ],
-      "local.op-kind-registry.2": [
+      "local.op-kind-registry.pytest": [
         "python",
         "rustfmt"
       ],
@@ -10739,13 +10938,13 @@
       "local.phase-exit-manifest.0": [
         "python"
       ],
-      "local.phase-exit-manifest.1": [
+      "local.phase-exit-manifest.pytest": [
         "python"
       ],
       "local.public-contract.0": [
         "python"
       ],
-      "local.public-contract.1": [
+      "local.public-contract.pytest": [
         "python"
       ],
       "local.python-effect-capability-authority.0": [
@@ -10762,7 +10961,7 @@
         "git",
         "rustfmt"
       ],
-      "local.python-effect-capability-authority.2": [
+      "local.python-effect-capability-authority.pytest": [
         "python",
         "rustc",
         "cargo",
@@ -10772,7 +10971,7 @@
       "local.python-identity-catalog-authority.0": [
         "python"
       ],
-      "local.python-identity-catalog-authority.1": [
+      "local.python-identity-catalog-authority.pytest": [
         "python"
       ],
       "local.runtime-cargo-input-custody.0": [
@@ -10787,17 +10986,11 @@
         "cargo",
         "git"
       ],
-      "local.runtime-lib.1": [
-        "python",
-        "rustc",
-        "cargo",
-        "git"
-      ],
       "local.runtime-profile-schema-authority.0": [
         "python",
         "rustfmt"
       ],
-      "local.runtime-profile-schema-authority.1": [
+      "local.runtime-profile-schema-authority.pytest": [
         "python",
         "rustfmt"
       ],
@@ -10813,7 +11006,13 @@
         "cargo",
         "git"
       ],
-      "local.runtime-vfs.2": [
+      "local.runtime-vfs.pytest": [
+        "python",
+        "rustc",
+        "cargo",
+        "git"
+      ],
+      "local.rust-clippy-changed.0": [
         "python",
         "rustc",
         "cargo",
@@ -10822,10 +11021,10 @@
       "local.rust-toolchain.0": [
         "python"
       ],
-      "local.rust-toolchain.1": [
+      "local.rust-toolchain.pytest": [
         "python"
       ],
-      "local.source-extension-package-sets.0": [
+      "local.source-extension-package-sets.pytest": [
         "python",
         "uv"
       ],
@@ -10833,7 +11032,7 @@
         "python",
         "uv"
       ],
-      "local.source-extension-proof-policy.1": [
+      "local.source-extension-proof-policy.pytest": [
         "python",
         "uv"
       ],
@@ -10847,7 +11046,7 @@
         "python",
         "rustfmt"
       ],
-      "local.stringprep-tables.1": [
+      "local.stringprep-tables.pytest": [
         "python",
         "rustfmt"
       ],
@@ -10860,7 +11059,7 @@
       "local.table-drift.0": [
         "python"
       ],
-      "local.table-drift.1": [
+      "local.table-drift.pytest": [
         "python"
       ],
       "local.tinygrad-op-contract.0": [
@@ -10869,10 +11068,10 @@
       "local.tinygrad-op-contract.1": [
         "python"
       ],
-      "local.tinygrad-op-contract.2": [
+      "local.tinygrad-op-contract.pytest": [
         "python"
       ],
-      "local.tinygrad-upat-static-exec-registry.0": [
+      "local.tinygrad-upat-static-exec-registry.pytest": [
         "python",
         "uv"
       ],
@@ -10892,17 +11091,11 @@
         "python",
         "rustfmt"
       ],
-      "local.wasm-abi-registry.1": [
+      "local.wasm-abi-registry.pytest": [
         "python",
         "rustfmt"
       ],
       "local.wasm-host.0": [
-        "python",
-        "rustc",
-        "cargo",
-        "git"
-      ],
-      "local.wasm-host.1": [
         "python",
         "rustc",
         "cargo",

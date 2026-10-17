@@ -13,6 +13,8 @@ use molt_backend::tir::passes;
 use molt_backend::tir::target_info::TargetInfo;
 use molt_backend::tir::types::TirType;
 use molt_backend::tir::values::{TirValue, ValueId};
+use molt_backend::tir::verify::verify_function;
+use molt_backend::tir::verify_exception_regions;
 
 // --------------------------------------------------------------------------
 // Fuzz target: build random TIR functions from structured fuzz data and run
@@ -224,27 +226,20 @@ fuzz_target!(|data: &[u8]| {
         return;
     };
 
-    // Run the full optimization pipeline.  We catch panics to distinguish
-    // them from expected verification failures (which return empty stats).
-    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        passes::run_pipeline_with_translation_validation(
-            &mut func,
-            &TargetInfo::native_release_fast(),
-        )
-    }));
+    // The pipeline's precondition is verified TIR, which lowering produces,
+    // and it panics when its result fails verification. Random functions that
+    // fail verification before any pass runs are not pass defects.
+    if verify_function(&func).is_err() || verify_exception_regions(&func).is_err() {
+        return;
+    }
 
-    match result {
-        Ok(stats) => {
-            // Empty stats = verification failure, which is acceptable for
-            // random input.  Non-empty = passes completed successfully.
-            for s in &stats {
-                // Sanity: pass names should be non-empty.
-                assert!(!s.name.is_empty(), "optimization pass returned empty name");
-            }
-        }
-        Err(panic_info) => {
-            // Re-panic so the fuzzer registers this as a crash.
-            std::panic::resume_unwind(panic_info);
-        }
+    // Run the full optimization pipeline. A panic is a pass defect.
+    let stats = passes::run_pipeline_with_translation_validation(
+        &mut func,
+        &TargetInfo::native_release_fast(),
+    );
+    for s in &stats {
+        // Sanity: pass names should be non-empty.
+        assert!(!s.name.is_empty(), "optimization pass returned empty name");
     }
 });

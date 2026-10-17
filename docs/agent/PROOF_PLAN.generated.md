@@ -18,7 +18,7 @@ Landing checks execute the generator and authority inputs captured from the exac
 | CI selection families | 5 | 12 |
 | Hashed executable authority inputs | 1 | 367 |
 | Local path rules | 35 | 55 |
-| Unique local commands | 73 | 130 |
+| Unique local commands | 73 | 89 |
 | Handwritten Python classifier rule tables | 5 | 0 |
 
 ## CI families
@@ -51,7 +51,7 @@ GitHub job budgets cover the deterministic command-deadline DAG projection plus 
 | `python_unit` | pre-push, pr, main | yes | `github-matrix` | 41 min | 2400 s per cell | 60 s | 0 s | `python-tests` | none | `python-unit` needs `classify-changes` | 11 |
 | `python_unit_collection` | pr, main | yes | `github-matrix` | 24 min | 1320 s per cell | 60 s | 60 s | `python-tests` | none | `python-unit-collection` needs `classify-changes` | 11 |
 | `native_integration` | pr, main | yes | `github-job` | 53 min | 3000 s | 180 s | 0 s | `compiler-build-resource` | none | `native-integration` needs `classify-changes` | 23 |
-| `rust` | pre-push, pr, main | yes | `github-job` | 318 min | 18840 s | 240 s | 0 s | `compiler-build-resource` | none | `rust-build-unit-smoke` needs `classify-changes` | 21 |
+| `rust` | pre-push, pr, main | yes | `github-job` | 346 min | 20520 s | 240 s | 0 s | `compiler-build-resource` | none | `rust-build-unit-smoke` needs `classify-changes` | 22 |
 | `llvm` | pre-push, pr, main, scheduled | yes | `github-job` | 75 min | 4200 s | 120 s | 180 s | `compiler-build-resource` | none | `llvm-backend` needs `classify-changes` | 38 |
 | `python_security` | pr, main, scheduled | yes | `github-job` | 20 min | 900 s | 60 s | 240 s | `network-audit` | none | `security-hardening` needs `classify-changes` | 4 |
 | `rust_security` | pr, main, scheduled | yes | `github-job` | 21 min | 900 s | 360 s | 0 s | `network-audit` | none | `security-hardening` needs `classify-changes` | 9 |
@@ -292,6 +292,9 @@ The wrapper conflict was reconfirmed by native CI run `30211145633` job `8981749
 | `native.integration.cli-smoke` | `native_integration` | `linux-x86_64-py312-native-dev` | `integration` | 600 s | `compiler-build-resource` | 1 |
 | `rust.clippy.wasi32` | `rust` | `linux-x86_64-rust-wasi-dev` | `cold` | 1200 s | `compiler-build-resource` | 0 |
 | `rust.cargo-locks` | `rust` | `linux-x86_64-rust-native-dev` | `cross-check` | 240 s | `compiler-build-resource` | 0 |
+| `rust.check.fuzz` | `rust` | `linux-x86_64-rust-native-dev` | `cross-check` | 240 s | `compiler-build-resource` | 0 |
+| `rust.check.fuzz-backend` | `rust` | `linux-x86_64-rust-native-dev` | `cross-check` | 240 s | `compiler-build-resource` | 0 |
+| `rust.check.fuzz-runtime` | `rust` | `linux-x86_64-rust-native-dev` | `cold` | 1200 s | `compiler-build-resource` | 0 |
 | `rust.clippy.browser-simd` | `rust` | `linux-x86_64-rust-wasi-dev` | `cross-check` | 240 s | `compiler-build-resource` | 0 |
 | `rust.check.math-aarch64` | `rust` | `linux-x86_64-rust-aarch64-dev` | `cross-check` | 240 s | `compiler-build-resource` | 0 |
 | `rust.test.default-truth` | `rust` | `linux-x86_64-rust-native-dev` | `suite` | 1800 s | `compiler-build-resource` | 0 |
@@ -336,57 +339,57 @@ The wrapper conflict was reconfirmed by native CI run `30211145633` job `8981749
 | Rule | Input globs | Commands |
 |---|---:|---:|
 | `frontend-python` | 1 | 3 |
-| `backend-environment-contract` | 16 | 2 |
+| `backend-environment-contract` | 16 | 1 |
 | `bootstrap-stdlib` | 4 | 1 |
-| `heap-kind-lifetime-authority` | 6 | 2 |
-| `host-capability-authority` | 7 | 2 |
-| `runtime-profile-schema-authority` | 6 | 2 |
-| `op-kind-registry` | 18 | 3 |
-| `frontend-diagnostics` | 6 | 2 |
-| `wasm-abi-registry` | 13 | 2 |
-| `tinygrad-op-contract` | 9 | 3 |
-| `intrinsic-registry` | 9 | 2 |
-| `codec-tables` | 7 | 2 |
-| `stringprep-tables` | 3 | 2 |
-| `llvm-runtime-abi` | 8 | 2 |
-| `source-extension-package-sets` | 44 | 1 |
-| `source-extension-proof-policy` | 60 | 2 |
+| `heap-kind-lifetime-authority` | 6 | 1 |
+| `host-capability-authority` | 7 | 1 |
+| `runtime-profile-schema-authority` | 6 | 1 |
+| `op-kind-registry` | 18 | 2 |
+| `frontend-diagnostics` | 6 | 1 |
+| `wasm-abi-registry` | 13 | 1 |
+| `tinygrad-op-contract` | 9 | 2 |
+| `intrinsic-registry` | 9 | 1 |
+| `codec-tables` | 7 | 1 |
+| `stringprep-tables` | 3 | 1 |
+| `llvm-runtime-abi` | 8 | 1 |
+| `source-extension-package-sets` | 44 | 0 |
+| `source-extension-proof-policy` | 60 | 1 |
 | `suite-honesty` | 4 | 2 |
 | `ecosystem-compat` | 2 | 1 |
-| `tinygrad-upat-static-exec-registry` | 2 | 1 |
+| `tinygrad-upat-static-exec-registry` | 2 | 0 |
 | `docs-architecture` | 4 | 2 |
-| `dev-tooling` | 10 | 4 |
-| `encoding-diagnostics` | 2 | 1 |
+| `dev-tooling` | 14 | 0 |
+| `encoding-diagnostics` | 2 | 0 |
 | `runtime-cargo-input-custody` | 37 | 1 |
-| `rust-toolchain` | 10 | 2 |
-| `table-drift` | 12 | 2 |
-| `findings-registry` | 4 | 1 |
-| `memory-graph` | 5 | 2 |
-| `ci-wiring` | 58 | 2 |
-| `apparatus-hooks` | 11 | 3 |
-| `apparatus-learning-protection` | 12 | 3 |
+| `rust-toolchain` | 10 | 1 |
+| `table-drift` | 12 | 1 |
+| `findings-registry` | 4 | 0 |
+| `memory-graph` | 5 | 1 |
+| `ci-wiring` | 58 | 1 |
+| `apparatus-hooks` | 11 | 2 |
+| `apparatus-learning-protection` | 12 | 2 |
 | `performance-measurement` | 25 | 1 |
-| `apparatus-a11` | 10 | 5 |
-| `apparatus-a8-a12-disk-reclaim` | 11 | 3 |
-| `import-symbol-gate` | 2 | 2 |
-| `phase-exit-manifest` | 7 | 2 |
-| `public-contract` | 19 | 2 |
-| `backend-native` | 8 | 2 |
+| `apparatus-a11` | 10 | 4 |
+| `apparatus-a8-a12-disk-reclaim` | 11 | 2 |
+| `import-symbol-gate` | 2 | 1 |
+| `phase-exit-manifest` | 7 | 1 |
+| `public-contract` | 19 | 1 |
+| `rust-clippy-changed` | 8 | 1 |
+| `backend-native` | 8 | 1 |
 | `backend-daemon-cache` | 5 | 1 |
 | `backend-ir-framing` | 4 | 1 |
 | `native-object-emission` | 5 | 1 |
-| `maintained-zlib-counters` | 14 | 3 |
+| `maintained-zlib-counters` | 14 | 2 |
 | `backend-llvm` | 2 | 1 |
 | `tir-midend` | 11 | 2 |
-| `wasm-host` | 5 | 2 |
-| `gpu-core` | 3 | 1 |
-| `gpu-runtime` | 3 | 2 |
-| `runtime-vfs` | 4 | 3 |
-| `runtime-lib` | 3 | 2 |
-| `python-effect-capability-authority` | 6 | 3 |
-| `python-identity-catalog-authority` | 7 | 2 |
-| `builtin-binding-guard-authority` | 9 | 3 |
-| `native-callable-abi` | 19 | 5 |
+| `wasm-host` | 5 | 1 |
+| `gpu-runtime` | 3 | 1 |
+| `runtime-vfs` | 4 | 2 |
+| `runtime-lib` | 3 | 1 |
+| `python-effect-capability-authority` | 6 | 2 |
+| `python-identity-catalog-authority` | 7 | 1 |
+| `builtin-binding-guard-authority` | 9 | 2 |
+| `native-callable-abi` | 19 | 4 |
 | `stringprep-leaf` | 2 | 1 |
 | `cpython-abi-authorities` | 2 | 1 |
 | `compression-stream-state` | 1 | 1 |

@@ -2315,7 +2315,6 @@ def test_queued_output_binding_reaches_native_wasm_and_compat_consumers(
             "MOLT_DIFF_ROOT": str(tmp_path / "canonical" / "receipts"),
             "MOLT_PROOF_SCRATCH_ROOT": str(scratch),
             "MOLT_DIFF_CARGO_TARGET_DIR": str(tmp_path / "foreign-target"),
-            "MOLT_WASM_TEST_CARGO_TARGET_DIR": str(tmp_path / "foreign-wasm"),
             "MOLT_DIFF_TMPDIR": str(tmp_path / "foreign-scratch"),
             "MOLT_COMPAT_SCRATCH_ROOT": str(tmp_path / "foreign-compat"),
         },
@@ -2330,13 +2329,8 @@ def test_queued_output_binding_reaches_native_wasm_and_compat_consumers(
     assert module.compat_backends._cross_scratch_root(env) == scratch
     for name, value in env.items():
         monkeypatch.setenv(name, value)
-    assert wasm_runner._wasm_test_host_target_dir() == target
-    assert (
-        wasm_runner._wasm_test_target_dir(
-            REPO_ROOT, tmp_path / "output", tmp_path / "canonical"
-        )
-        == target
-    )
+    # WASM test builds and their molt-wasm-host lookup follow the lease.
+    assert wasm_runner.wasm_test_cargo_target_dir(REPO_ROOT) == target
     assert not any(tmp_path.glob("foreign-*"))
 
 

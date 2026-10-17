@@ -332,7 +332,7 @@ pub(super) unsafe fn io_member_value(
         ) {
             let underlying = {
                 let handle = &*handle_ptr;
-                if (handle.attachment == crate::object::FileAttachment::Detached) {
+                if handle.attachment == crate::object::FileAttachment::Detached {
                     return raise_exception::<_>(
                         py,
                         "ValueError",
@@ -373,7 +373,7 @@ pub(super) unsafe fn io_member_value(
         match operation {
             IoOperation::Dictionary | IoOperation::Raw => unreachable!(),
             IoOperation::Closed => {
-                if (handle.attachment == crate::object::FileAttachment::Detached) {
+                if handle.attachment == crate::object::FileAttachment::Detached {
                     return raise_exception::<_>(
                         py,
                         "ValueError",
@@ -383,7 +383,7 @@ pub(super) unsafe fn io_member_value(
                 Some(MoltObject::from_bool(file_handle_is_closed(handle)).bits())
             }
             IoOperation::Name => {
-                if (handle.attachment == crate::object::FileAttachment::Detached) {
+                if handle.attachment == crate::object::FileAttachment::Detached {
                     return raise_exception::<_>(
                         py,
                         "ValueError",
@@ -471,7 +471,7 @@ pub(super) unsafe fn io_member_value(
                 Some(value)
             }
             IoOperation::Closefd => {
-                if (handle.attachment == crate::object::FileAttachment::Detached) {
+                if handle.attachment == crate::object::FileAttachment::Detached {
                     return raise_exception::<_>(
                         py,
                         "ValueError",

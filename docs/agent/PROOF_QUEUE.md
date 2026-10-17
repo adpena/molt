@@ -326,10 +326,10 @@ and documentation commands'
 `TEMP`/`TMP`/`TMPDIR`, as typed build-output bindings; an explicit output-root
 selection also owns these temporary variables for other Cargo operations.
 For admitted Python Cargo drivers, the same policy also binds
-`MOLT_DIFF_CARGO_TARGET_DIR` and `MOLT_WASM_TEST_CARGO_TARGET_DIR` to the leased
-Cargo generation. `MOLT_DIFF_TMPDIR` and `MOLT_COMPAT_SCRATCH_ROOT` are typed
-scratch-output bindings to the existing `MOLT_PROOF_SCRATCH_ROOT`. Compiled
-native and cross-backend guest leaves therefore remain inside the admitted
+`MOLT_DIFF_CARGO_TARGET_DIR` to the leased Cargo generation; WASM test builds
+follow `CARGO_TARGET_DIR` itself (`tests/wasm_linked_runner.py`).
+`MOLT_DIFF_TMPDIR` and `MOLT_COMPAT_SCRATCH_ROOT` are typed scratch-output
+bindings to the existing `MOLT_PROOF_SCRATCH_ROOT`. Compiled native and cross-backend guest leaves therefore remain inside the admitted
 executable roots; `MOLT_DIFF_ROOT` and receipt paths retain their separate custody.
 Output-environment schema v4 records both roles and the admitted cache domain.
 The runtime plan places resource-keyed intermediates beneath the leased base as

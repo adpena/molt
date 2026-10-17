@@ -2252,7 +2252,7 @@ def test_workflows_root_no_artifact_state_inside_the_checkout() -> None:
     sys.path.insert(0, str(REPO_ROOT / "src"))
     from molt.dx import CANONICAL_ROOT_ENV_KEYS
 
-    keys = set(CANONICAL_ROOT_ENV_KEYS) | {"MOLT_WASM_TEST_CARGO_TARGET_DIR"}
+    keys = set(CANONICAL_ROOT_ENV_KEYS)
     offenders = []
     for workflow in sorted(WORKFLOW_ROOT.glob("*.yml")):
         for number, line in enumerate(
@@ -2262,11 +2262,6 @@ def test_workflows_root_no_artifact_state_inside_the_checkout() -> None:
             if match and match[1] in keys and "github.workspace" in match[2]:
                 offenders.append(f"{workflow.name}:{number}: {line.strip()}")
     assert offenders == []
-    wasm_text = _read(".github/workflows/molt-wasm-ci.yml")
-    assert (
-        "printf 'MOLT_WASM_TEST_CARGO_TARGET_DIR=%s\\n' \"$CARGO_TARGET_DIR\""
-        in wasm_text
-    )
 
 
 _MAIN_REF = "github.ref == 'refs/heads/main'"

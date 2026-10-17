@@ -2,13 +2,14 @@
 //!
 //! The compiler must never panic on structurally valid IR (even if semantically
 //! nonsensical). This target derives `Arbitrary` for a subset of IR structures
-//! and feeds them through the full WASM backend pipeline.
+//! and feeds them through the full WASM backend pipeline. The generator emits
+//! only IR that admission accepts, so an admission panic means the generator
+//! has gone stale.
 
 #![no_main]
 use arbitrary::{Arbitrary, Unstructured};
 use libfuzzer_sys::fuzz_target;
-use molt_backend::wasm::WasmBackend;
-use molt_backend::{FunctionIR, OpIR, SimpleIR};
+use molt_backend::{FunctionIR, OpIR, SimpleIR, WasmBackend};
 
 /// A constrained IR generator that produces structurally valid IR.
 #[derive(Debug)]
@@ -16,19 +17,18 @@ struct FuzzIR {
     ir: SimpleIR,
 }
 
-/// Op kinds that the WASM backend can handle without needing external imports
-/// to resolve (pure computational ops).
+/// Registered op kinds that the WASM backend can handle without needing external
+/// imports to resolve (pure computational ops).
 const SAFE_OP_KINDS: &[&str] = &[
     "const",
     "const_bool",
     "const_none",
     "const_float",
-    "return",
+    "ret",
     "nop",
     "label",
     "jump",
-    "jump_if_false",
-    "jump_if_true",
+    "br_if",
 ];
 
 impl<'a> Arbitrary<'a> for FuzzIR {
@@ -107,7 +107,7 @@ fn gen_ops(u: &mut Unstructured, vars: &[&str]) -> arbitrary::Result<Vec<OpIR>> 
                 out: Some(out_name),
                 ..OpIR::default()
             },
-            "return" => {
+            "ret" => {
                 // Pick a variable to return.
                 let var = if !vars.is_empty() {
                     let idx = u.int_in_range(0..=vars.len() - 1)?;
@@ -125,17 +125,12 @@ fn gen_ops(u: &mut Unstructured, vars: &[&str]) -> arbitrary::Result<Vec<OpIR>> 
                 kind,
                 ..OpIR::default()
             },
-            "label" => OpIR {
+            "label" | "jump" => OpIR {
                 kind,
-                s_value: Some(format!("L{}", u.int_in_range(0..=10)?)),
+                value: Some(u.int_in_range(0..=10)?),
                 ..OpIR::default()
             },
-            "jump" => OpIR {
-                kind,
-                s_value: Some(format!("L{}", u.int_in_range(0..=10)?)),
-                ..OpIR::default()
-            },
-            "jump_if_false" | "jump_if_true" => {
+            "br_if" => {
                 let cond = if !vars.is_empty() {
                     let idx = u.int_in_range(0..=vars.len() - 1)?;
                     vars[idx].to_string()
@@ -144,7 +139,7 @@ fn gen_ops(u: &mut Unstructured, vars: &[&str]) -> arbitrary::Result<Vec<OpIR>> 
                 };
                 OpIR {
                     kind,
-                    s_value: Some(format!("L{}", u.int_in_range(0..=10)?)),
+                    value: Some(u.int_in_range(0..=10)?),
                     args: Some(vec![cond]),
                     ..OpIR::default()
                 }
@@ -159,7 +154,7 @@ fn gen_ops(u: &mut Unstructured, vars: &[&str]) -> arbitrary::Result<Vec<OpIR>> 
 
     // Always end with a return.
     ops.push(OpIR {
-        kind: "return".to_string(),
+        kind: "ret".to_string(),
         args: Some(vec!["__ret".to_string()]),
         ..OpIR::default()
     });

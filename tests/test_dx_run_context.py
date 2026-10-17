@@ -154,6 +154,36 @@ def test_target_dir_stable_by_default_session_scoped_only_when_pinned(
     assert "MOLT_SESSION_ID_GENERATED" not in pinned
 
 
+def test_pinned_session_registers_only_its_own_target_for_collection(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The disk guard deletes registered lane targets once idle past the TTL. A
+    # pinned session's isolated target is such a lane; a caller's explicit
+    # target (a checkout's persistent target, a leased proof generation) is not.
+    registered: list[Path] = []
+    monkeypatch.setattr(
+        dx,
+        "_maybe_register_lane_target",
+        lambda _ext_root, target: registered.append(target),
+    )
+    ctx = RunContext(tmp_path, session_prefix="test")
+    lane = ctx.canonical_env({"PATH": "/usr/bin", "MOLT_SESSION_ID": "shard-7"})
+    assert registered == [Path(lane["CARGO_TARGET_DIR"])]
+    assert registered[0] == tmp_path.resolve() / "target" / "sessions" / "shard-7"
+
+    registered.clear()
+    persistent = tmp_path / "persistent-target"
+    explicit = ctx.canonical_env(
+        {
+            "PATH": "/usr/bin",
+            "MOLT_SESSION_ID": "shard-7",
+            "CARGO_TARGET_DIR": str(persistent),
+        }
+    )
+    assert explicit["CARGO_TARGET_DIR"] == str(persistent.resolve())
+    assert registered == []
+
+
 def test_pinned_sessions_sharing_a_long_prefix_get_distinct_targets(
     tmp_path: Path,
 ) -> None:

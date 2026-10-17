@@ -185,11 +185,12 @@ def test_resolve_molt_wasm_host_binary_uses_dev_fast_target_dir(
     )
 
 
+@pytest.mark.usefixtures("developer_host_context")
 def test_resolve_molt_wasm_host_binary_uses_requested_profile(
     monkeypatch, tmp_path: Path
 ) -> None:
+    # Without a run context the project's target is Cargo's <project>/target.
     monkeypatch.delenv("MOLT_WASM_HOST_BIN", raising=False)
-    monkeypatch.delenv("CARGO_TARGET_DIR", raising=False)
     host_bin = tmp_path / "target" / "release-output" / molt_wasm_host_exe_name()
     host_bin.parent.mkdir(parents=True)
     host_bin.write_bytes(b"host")
@@ -464,12 +465,17 @@ def test_build_wasm_linked_treats_symlinked_ext_root_as_repo_local(
         (out_dir / "output_linked.wasm").write_bytes(b"\x00asm")
         return subprocess.CompletedProcess(args[0], 0, "", "")
 
+    monkeypatch.delenv("CARGO_TARGET_DIR", raising=False)
+    monkeypatch.delenv("MOLT_REQUIRE_EXTERNAL_ARTIFACTS", raising=False)
+    monkeypatch.setenv("MOLT_PREFER_EXTERNAL_ARTIFACTS", "1")
     monkeypatch.setenv("MOLT_EXT_ROOT", str(alias_root))
     monkeypatch.setattr(wasm_runner, "_run_wasm_test_process", _fake_run)
     output = wasm_runner.build_wasm_linked(root, src, tmp_path)
     assert output.exists()
     env = cast(dict[str, str], recorded["env"])
-    assert env["CARGO_TARGET_DIR"].startswith(str(root / "target" / "pytest_wasm"))
+    # The alias names the checkout itself, so the target is Cargo's own
+    # <checkout>/target, not a checkouts/ entry under a shared root.
+    assert Path(env["CARGO_TARGET_DIR"]) == root.resolve() / "target"
 
 
 def test_build_wasm_linked_marks_repo_local_output_as_output_not_required_external(
@@ -491,6 +497,8 @@ def test_build_wasm_linked_marks_repo_local_output_as_output_not_required_extern
         return subprocess.CompletedProcess(args[0], 0, "", "")
 
     monkeypatch.delenv("MOLT_EXT_ROOT", raising=False)
+    monkeypatch.delenv("CARGO_TARGET_DIR", raising=False)
+    monkeypatch.delenv("MOLT_PREFER_EXTERNAL_ARTIFACTS", raising=False)
     monkeypatch.delenv("MOLT_REQUIRE_EXTERNAL_ARTIFACTS", raising=False)
     monkeypatch.delenv("CARGO_BUILD_JOBS", raising=False)
     monkeypatch.delenv("MOLT_USE_SCCACHE", raising=False)
@@ -502,9 +510,9 @@ def test_build_wasm_linked_marks_repo_local_output_as_output_not_required_extern
     assert output.exists()
     env = cast(dict[str, str], recorded["env"])
     assert Path(env["MOLT_EXT_ROOT"]).is_relative_to(root / "build" / "wasm")
-    assert Path(env["CARGO_TARGET_DIR"]).is_relative_to(
-        Path(env["MOLT_EXT_ROOT"]) / "target"
-    )
+    # Test outputs move beside the build; the Cargo target stays the
+    # checkout's own, where every other build of this checkout goes.
+    assert Path(env["CARGO_TARGET_DIR"]) == root.resolve() / "target"
     assert "MOLT_REQUIRE_EXTERNAL_ARTIFACTS" not in env
     assert "CARGO_BUILD_JOBS" not in env
 
@@ -528,7 +536,7 @@ def test_wasm_test_build_env_delegates_cargo_parallelism_and_cache_policy(
     monkeypatch.delenv("CARGO_BUILD_JOBS", raising=False)
     monkeypatch.delenv("MOLT_USE_SCCACHE", raising=False)
     # The lane is a fact of the running process; an xdist worker names its
-    # own (test_wasm_test_target_dir_preserves_explicit_and_worker_lanes).
+    # own (test_wasm_build_env_replaces_generated_pytest_session_with_stable_lane).
     monkeypatch.delenv("MOLT_WASM_TEST_LANE", raising=False)
     monkeypatch.delenv("PYTEST_XDIST_WORKER", raising=False)
     monkeypatch.setattr(
@@ -576,39 +584,68 @@ def test_wasm_test_build_env_delegates_cargo_parallelism_and_cache_policy(
     assert explicit["MOLT_USE_SCCACHE"] == "0"
 
 
-def test_wasm_test_target_dir_uses_stable_local_lane(
+def test_wasm_builds_share_one_persistent_target_per_checkout(
     monkeypatch,
     tmp_path: Path,
 ) -> None:
-    root = tmp_path / "repo"
-    root.mkdir()
-    out_dir = tmp_path / "out"
-    monkeypatch.delenv("MOLT_WASM_TEST_LANE", raising=False)
-    monkeypatch.delenv("PYTEST_XDIST_WORKER", raising=False)
+    # HF-45: builds of one checkout reuse one Cargo target although each pins
+    # its own session; two checkouts under one artifact root never share one,
+    # and molt-wasm-host is looked up where the builds went.
+    ext_root = tmp_path / "ext"
+    ext_root.mkdir()
+    first_checkout = tmp_path / "first"
+    second_checkout = tmp_path / "second"
+    first_checkout.mkdir()
+    second_checkout.mkdir()
+    src = tmp_path / "probe.py"
+    src.write_text("print('hi')\n", encoding="utf-8")
+    targets: list[Path] = []
 
-    first = wasm_runner._wasm_test_target_dir(root, out_dir, root)
-    second = wasm_runner._wasm_test_target_dir(root, out_dir, root)
+    def _fake_build(*args, **kwargs):  # type: ignore[no-untyped-def]
+        targets.append(Path(kwargs["env"]["CARGO_TARGET_DIR"]))
+        out_dir = Path(args[0][args[0].index("--out-dir") + 1])
+        out_dir.mkdir(parents=True, exist_ok=True)
+        (out_dir / "output_linked.wasm").write_bytes(b"\x00asm")
+        return subprocess.CompletedProcess(args[0], 0, "", "")
 
-    assert first == root / "target" / "pytest_wasm" / "local"
-    assert second == first
+    monkeypatch.delenv("CARGO_TARGET_DIR", raising=False)
+    monkeypatch.delenv("MOLT_REQUIRE_EXTERNAL_ARTIFACTS", raising=False)
+    monkeypatch.delenv("MOLT_WASM_HOST_BIN", raising=False)
+    monkeypatch.setenv("MOLT_EXT_ROOT", str(ext_root))
+    monkeypatch.setenv("MOLT_PREFER_EXTERNAL_ARTIFACTS", "1")
+    monkeypatch.setattr(wasm_runner, "_run_wasm_test_process", _fake_build)
+    for checkout, out_name in (
+        (first_checkout, "a"),
+        (first_checkout, "b"),
+        (second_checkout, "c"),
+    ):
+        wasm_runner.build_wasm_linked(checkout, src, tmp_path / out_name)
 
+    first, again, second = targets
+    shared = ext_root.resolve() / "target"
+    assert first == again
+    assert first != second
+    assert first.is_relative_to(shared) and second.is_relative_to(shared)
+    assert shared not in {first, second}
+    assert "sessions" not in first.parts
 
-def test_wasm_test_target_dir_preserves_explicit_and_worker_lanes(
-    monkeypatch,
-    tmp_path: Path,
-) -> None:
-    root = tmp_path / "repo"
-    root.mkdir()
-    out_dir = tmp_path / "out"
+    host = first / "dev-fast" / molt_wasm_host_exe_name()
+    host.parent.mkdir(parents=True)
+    host.write_bytes(b"host")
+    wasm_path = tmp_path / "output_linked.wasm"
+    wasm_path.write_bytes(b"\x00asm")
+    (tmp_path / "manifest.json").write_text("{}", encoding="utf-8")
+    monkeypatch.setenv("MOLT_SESSION_ID", "pinned-run-session")
+    monkeypatch.delenv("MOLT_SESSION_ID_GENERATED", raising=False)
+    executed: list[str] = []
 
-    monkeypatch.setenv("PYTEST_XDIST_WORKER", "gw2")
-    monkeypatch.delenv("MOLT_WASM_TEST_LANE", raising=False)
-    worker_target = wasm_runner._wasm_test_target_dir(root, out_dir, root)
-    assert worker_target == root / "target" / "pytest_wasm" / "worker_gw2"
+    def _fake_run(*args, **kwargs):  # type: ignore[no-untyped-def]
+        executed.append(args[0][0])
+        return subprocess.CompletedProcess(args[0], 0, "", "")
 
-    monkeypatch.setenv("MOLT_WASM_TEST_LANE", "custom-lane")
-    explicit_target = wasm_runner._wasm_test_target_dir(root, out_dir, root)
-    assert explicit_target == root / "target" / "pytest_wasm" / "custom-lane"
+    monkeypatch.setattr(wasm_runner, "_run_wasm_test_process", _fake_run)
+    assert wasm_runner.run_wasm_linked(first_checkout, wasm_path).returncode == 0
+    assert executed == [str(host.absolute())]
 
 
 def test_build_wasm_linked_does_not_mutate_process_runtime_env(

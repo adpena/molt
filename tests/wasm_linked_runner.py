@@ -18,6 +18,7 @@ from molt.dx import (
     configured_artifact_root,
     development_artifact_env,
     generated_session_id,
+    project_cargo_target_dir,
     scratch_root,
 )
 from molt.node_runtime import NodeRuntimeError, resolve_node_runtime
@@ -111,27 +112,22 @@ def require_node_binary() -> str:
     return str(node.path)
 
 
-def _wasm_test_host_target_dir() -> Path | None:
-    configured = os.environ.get("MOLT_WASM_TEST_CARGO_TARGET_DIR", "").strip()
-    return Path(configured).expanduser() if configured else None
+def wasm_test_cargo_target_dir(
+    root: Path, env: Mapping[str, str] | None = None
+) -> Path:
+    """The Cargo target WASM tests build into and find molt-wasm-host in.
 
-
-def _wasm_test_target_dir(root: Path, out_dir: Path, artifact_root: Path) -> Path:
-    override = os.environ.get("MOLT_WASM_TEST_CARGO_TARGET_DIR", "").strip()
-    if override:
-        target = Path(override).expanduser()
-        target.mkdir(parents=True, exist_ok=True)
-        return target
-    # Keep wasm parity tests isolated from shared benchmark/build lanes that can
-    # hold long-lived build locks under CARGO_TARGET_DIR.
-    use_external = os.environ.get("MOLT_WASM_TEST_USE_EXTERNAL", "").strip().lower()
-    allow_external = use_external not in {"0", "false", "no", "off"}
-    if allow_external and not _same_location(artifact_root, root):
-        target = artifact_root / "target"
-    else:
-        target = root / "target" / "pytest_wasm" / _wasm_test_lane()
-    target.mkdir(parents=True, exist_ok=True)
-    return target
+    It is the checkout's persistent target, `molt.dx.project_cargo_target_dir`
+    without session scope: an explicit ``CARGO_TARGET_DIR`` wins (the pytest
+    run context, a CI job, a queued proof's leased generation), else the
+    checkout's own target under the artifact root. Each build pins its own
+    session, so a session-scoped target would start cold in every test, and a
+    target shared by checkouts would rebuild whichever sources built last.
+    xdist workers of one checkout share it: Cargo's build lock and the build
+    locks addressed by the target serialize them.
+    """
+    view = os.environ if env is None else env
+    return project_cargo_target_dir(root, view, session_scoped=False)
 
 
 def wasm_ld_unavailable_reason() -> str | None:
@@ -160,7 +156,7 @@ def require_wasm_build_toolchain() -> None:
 def require_wasm_toolchain() -> None:
     root = Path(__file__).resolve().parents[1]
     host_bin = resolve_molt_wasm_host_binary(
-        root, cargo_profile="dev-fast", target_dir=_wasm_test_host_target_dir()
+        root, cargo_profile="dev-fast", target_dir=wasm_test_cargo_target_dir(root)
     )
     if host_bin is None:
         pytest.skip(
@@ -179,8 +175,13 @@ def wasm_test_build_env(
     session_id: str | None = None,
     create_dirs: bool = True,
 ) -> dict[str, str]:
-    """Return shared WASM test policy without overriding Cargo/DX authority."""
+    """Return shared WASM test policy without overriding Cargo/DX authority.
+
+    The pinned build session scopes scratch, never the Cargo target: the
+    target is `wasm_test_cargo_target_dir`, so builds stay warm across tests.
+    """
     base = dict(os.environ if base_env is None else base_env)
+    base["CARGO_TARGET_DIR"] = str(wasm_test_cargo_target_dir(root, base))
     inherited_session_id = base.get("MOLT_SESSION_ID", "").strip()
     if generated_session_id(base):
         inherited_session_id = ""
@@ -196,7 +197,9 @@ def wasm_test_build_env(
     )
     if linked is not None:
         env["MOLT_WASM_LINKED"] = "1" if linked else "0"
-    env.setdefault("MOLT_BUILD_LOCK_TIMEOUT", "45")
+    # Build-lock waiters keep the lock's default budget, one bounded cold
+    # build: xdist workers share the checkout's target, and a shorter budget
+    # fails the waiter behind a legitimate cold backend build.
     env.setdefault("MOLT_CARGO_TIMEOUT", "900")
     env.setdefault("MOLT_BACKEND_DAEMON", "0")
     return env
@@ -215,9 +218,6 @@ def build_wasm_linked(
         root,
         linked=True,
         session_id=f"test-wasm-{_wasm_test_lane()}-{src.stem}-{out_dir.name}",
-    )
-    env["CARGO_TARGET_DIR"] = str(
-        _wasm_test_target_dir(root, out_dir, test_artifact_root)
     )
     env.setdefault("MOLT_MIDEND_MAX_ROUNDS", "2")
     env.setdefault("MOLT_CSE_MAX_ITERS", "6")
@@ -269,7 +269,7 @@ def run_wasm_linked(
     root: Path, wasm_path: Path, *, env_overrides: dict[str, str] | None = None
 ) -> subprocess.CompletedProcess[str]:
     host_bin = resolve_molt_wasm_host_binary(
-        root, cargo_profile="dev-fast", target_dir=_wasm_test_host_target_dir()
+        root, cargo_profile="dev-fast", target_dir=wasm_test_cargo_target_dir(root)
     )
     if host_bin is None:
         raise AssertionError(

@@ -19,7 +19,7 @@ rustup toolchain install "$RUST_NIGHTLY" --profile minimal
 | `fuzz_ir_parse`     | JSON deserialization of SimpleIR (`from_json_str`)      |
 | `fuzz_wasm_compile` | Full WASM compilation pipeline from arbitrary IR        |
 | `fuzz_nan_boxing`   | NaN-boxing encode/decode roundtrip invariants           |
-| `fuzz_ir_passes`    | Optimization passes (fold, inline, escape, RC coalesce) |
+| `fuzz_ir_passes`    | Every SimpleIR pipeline pass, dead ops, dead functions  |
 | `fuzz_ir_validate`  | IR validation with edge-case field combinations         |
 
 ## Running
@@ -42,6 +42,18 @@ done
 # List available targets:
 cargo "+$RUST_NIGHTLY" fuzz list
 ```
+
+The sanitizers need the nightly. Without one, the pinned stable toolchain
+still builds and runs coverage-guided targets: `cargo fuzz run -s none <target>`.
+
+## Build check
+
+The proof plan type-checks every target of the three cargo-fuzz workspaces
+(`fuzz/`, `runtime/molt-backend/fuzz/`, `runtime/molt-runtime/fuzz/`) with
+`cargo check --locked --bins` and the pinned stable toolchain: the commands
+`rust.check.fuzz`, `rust.check.fuzz-backend` and `rust.check.fuzz-runtime`.
+A new cargo-fuzz workspace needs its own command; `tests/test_proof_plan.py`
+fails until it has one.
 
 ## Reproducing Crashes
 

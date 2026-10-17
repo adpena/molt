@@ -120,7 +120,6 @@ def _test_env(artifact_root: Path) -> dict[str, str]:
     env["MOLT_EXTERNAL_STATIC_PACKAGES"] = "pending_call_probe"
     env["MOLT_HERMETIC_MODULE_ROOTS"] = "1"
     env.setdefault("MOLT_BACKEND_DAEMON", "0")
-    env.setdefault("MOLT_BUILD_LOCK_TIMEOUT", "45")
     env.setdefault("MOLT_CARGO_TIMEOUT", "900")
     return env
 
