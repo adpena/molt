@@ -29,6 +29,9 @@ class _DirectoryState(NamedTuple):
 
 
 _NameQuery = Literal["package", "source", "directories"]
+# The entry kind an import consumes under an exact spelling: a package or
+# namespace portion is a directory, a module or initializer is a file.
+ExactEntryKind = Literal["directory", "file"]
 
 
 @dataclass
@@ -36,8 +39,8 @@ class _DirectoryObservation:
     state: _DirectoryState | None
     racy: bool
     entries: tuple[os.DirEntry[str], ...] | None = None
-    entry_names: frozenset[str] = frozenset()
-    exact_names: dict[str, bool] = field(default_factory=dict)
+    entries_by_name: dict[str, os.DirEntry[str]] = field(default_factory=dict)
+    exact_names: dict[tuple[str, ExactEntryKind], bool] = field(default_factory=dict)
     name_queries: dict[_NameQuery, frozenset[str]] = field(default_factory=dict)
     probes: set[Path] = field(default_factory=set)
     has_links: bool = False
@@ -84,6 +87,15 @@ def _read_entries(path: Path) -> tuple[os.DirEntry[str], ...]:
             return tuple(entries)
     except (FileNotFoundError, NotADirectoryError):
         return ()
+
+
+def _holds_exact(
+    entries: dict[str, os.DirEntry[str]], name: str, kind: ExactEntryKind
+) -> bool:
+    entry = entries.get(name)
+    if entry is None:
+        return False
+    return entry.is_dir() if kind == "directory" else entry.is_file()
 
 
 def _names(entries: tuple[os.DirEntry[str], ...], query: _NameQuery) -> frozenset[str]:
@@ -160,7 +172,7 @@ class PythonImportTopology:
             if before != _directory_state(path):
                 self._changed(path)
             observation.entries = entries
-            observation.entry_names = frozenset(entry.name for entry in entries)
+            observation.entries_by_name = {entry.name: entry for entry in entries}
             observation.has_links = any(
                 entry.is_symlink() or getattr(entry, "is_junction", lambda: False)()
                 for entry in entries
@@ -195,13 +207,23 @@ class PythonImportTopology:
         result = self.probe(path)
         return result is not None and stat.S_ISREG(result.mode)
 
-    def contains_exact(self, directory: Path, name: str) -> bool:
+    def contains_exact(self, directory: Path, name: str, kind: ExactEntryKind) -> bool:
+        """Whether ``directory`` holds an entry spelled ``name`` of ``kind``.
+
+        CPython's FileFinder matches the spelling, then uses a package
+        candidate only as a directory and a module only as a file. The kind is
+        therefore part of the fact: a binary published under its module's name
+        beside the source changes no import.
+        """
         directory = _lexical_path(directory)
         observation = self._directory(directory)
-        if name not in observation.exact_names:
+        key = (name, kind)
+        if key not in observation.exact_names:
             self._entries(directory, observation)
-            observation.exact_names[name] = name in observation.entry_names
-        return observation.exact_names[name]
+            observation.exact_names[key] = _holds_exact(
+                observation.entries_by_name, name, kind
+            )
+        return observation.exact_names[key]
 
     def _child_names(self, directory: Path, query: _NameQuery) -> frozenset[str]:
         directory = _lexical_path(directory)
@@ -244,10 +266,10 @@ class PythonImportTopology:
                     continue
                 if observation.exact_names or observation.name_queries:
                     entries = _read_entries(path)
-                    names = {entry.name for entry in entries}
+                    by_name = {entry.name: entry for entry in entries}
                     if any(
-                        (name in names) != found
-                        for name, found in observation.exact_names.items()
+                        _holds_exact(by_name, name, kind) != found
+                        for (name, kind), found in observation.exact_names.items()
                     ):
                         self._changed(path)
                     if any(

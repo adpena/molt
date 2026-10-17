@@ -21,6 +21,7 @@ from molt.cli.python_import_resolution import (
     PythonImportPolicy,
     local_import_targets,
 )
+from molt.cli.python_import_topology import ExactEntryKind
 from molt.compiler_analysis import python_imports
 from molt.compiler_analysis import python_source_keys
 from molt.compiler_analysis import python_effects
@@ -615,9 +616,11 @@ def test_local_resolver_reuses_regular_package_prefix(
     checked: list[Path] = []
     probe_path = LocalPythonModuleResolver._probe_path
 
-    def record_probe_path(self: LocalPythonModuleResolver, candidate: Path):
+    def record_probe_path(
+        self: LocalPythonModuleResolver, candidate: Path, kind: ExactEntryKind
+    ):
         checked.append(candidate)
-        return probe_path(self, candidate)
+        return probe_path(self, candidate, kind)
 
     monkeypatch.setattr(LocalPythonModuleResolver, "_probe_path", record_probe_path)
     resolver = LocalPythonModuleResolver((tmp_path,))
@@ -652,9 +655,11 @@ def test_local_resolver_reuses_namespace_package_prefix(
     checked: list[Path] = []
     probe_path = LocalPythonModuleResolver._probe_path
 
-    def record_probe_path(self: LocalPythonModuleResolver, candidate: Path):
+    def record_probe_path(
+        self: LocalPythonModuleResolver, candidate: Path, kind: ExactEntryKind
+    ):
         checked.append(candidate)
-        return probe_path(self, candidate)
+        return probe_path(self, candidate, kind)
 
     monkeypatch.setattr(LocalPythonModuleResolver, "_probe_path", record_probe_path)
     resolver = LocalPythonModuleResolver(roots)

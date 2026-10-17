@@ -13,7 +13,11 @@ from typing import Literal
 from collections.abc import Iterable
 
 from molt.cli.module_source import PythonSourceSnapshot
-from molt.cli.python_import_topology import PythonImportPath, PythonImportTopology
+from molt.cli.python_import_topology import (
+    ExactEntryKind,
+    PythonImportPath,
+    PythonImportTopology,
+)
 from molt.compiler_analysis import python_binding_flow, python_namespace_writes
 from molt.compiler_analysis.python_namespace_graph import PythonNamespacePremise
 from molt.compiler_analysis.python_binding_flow import (
@@ -357,10 +361,10 @@ class LocalPythonModuleResolver:
             self._inventory_cache[key] = result
             return result
 
-    def _probe_path(self, path: Path) -> PythonImportPath | None:
+    def _probe_path(self, path: Path, kind: ExactEntryKind) -> PythonImportPath | None:
         """Admit each lexical candidate under the shared operation topology."""
         if self.case_exact and not self.import_topology.contains_exact(
-            path.parent, path.name
+            path.parent, path.name, kind
         ):
             return None
         result = self.import_topology.probe(path)
@@ -418,9 +422,11 @@ class LocalPythonModuleResolver:
                 regular_is_package = False
 
                 for location in locations:
-                    package = self._probe_path(location / part)
+                    package = self._probe_path(location / part, "directory")
                     if package is not None and stat.S_ISDIR(package.mode):
-                        initializer = self._probe_path(package.path / "__init__.py")
+                        initializer = self._probe_path(
+                            package.path / "__init__.py", "file"
+                        )
                         if initializer is not None and stat.S_ISREG(initializer.mode):
                             regular_source = initializer.path
                             regular_package_location = package.path
@@ -428,7 +434,7 @@ class LocalPythonModuleResolver:
                             break
                         namespace_locations.append(package.path)
 
-                    source = self._probe_path(location / f"{part}.py")
+                    source = self._probe_path(location / f"{part}.py", "file")
                     if source is not None and stat.S_ISREG(source.mode):
                         regular_source = source.path
                         regular_package_location = None

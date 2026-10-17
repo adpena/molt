@@ -13512,10 +13512,10 @@ def test_shared_module_resolution_cache_reduces_repeated_resolution(
 
     original = LocalPythonModuleResolver._probe_path
 
-    def wrapped(resolver, path):
+    def wrapped(resolver, path, kind):
         nonlocal resolve_calls
         resolve_calls += 1
-        return original(resolver, path)
+        return original(resolver, path, kind)
 
     monkeypatch.setattr(LocalPythonModuleResolver, "_probe_path", wrapped)
 

@@ -13,7 +13,7 @@ if TYPE_CHECKING:
     from molt.cli.python_import_resolution import LocalPythonModuleResolver
 
 from molt.cli import module_source as _module_source
-from molt.cli.python_import_topology import PythonImportTopology
+from molt.cli.python_import_topology import ExactEntryKind, PythonImportTopology
 from molt.source_root import compiler_source_root
 from molt.cli.models import ImportScanMode, _RuntimeImportScanCustody
 from molt.compiler_analysis.python_imports import _ImportDiscoveryProjection
@@ -295,8 +295,10 @@ def _case_exact_file_under(
     if not rel_parts:
         return False
     current = Path(root_text)
-    for part in rel_parts:
-        if not import_topology.contains_exact(current, part):
+    last = len(rel_parts) - 1
+    for index, part in enumerate(rel_parts):
+        kind: ExactEntryKind = "file" if index == last else "directory"
+        if not import_topology.contains_exact(current, part, kind):
             return False
         current /= part
     return import_topology.is_file(current)
