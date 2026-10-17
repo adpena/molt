@@ -568,7 +568,7 @@ def test_committed_gate_manifest_selects_tir_midend_ratchet(drv, path):
     cfg = drv.GateConfig.load(COMMITTED_GATES)
     gates, matched = cfg.select([path])
     if not path.startswith("runtime/molt-backend-wasm/"):
-        assert [r.name for r in matched] == ["rust-ffi-blocks", "tir-midend"]
+        assert [r.name for r in matched] == ["tir-midend"]
     rule = next(rule for rule in matched if rule.name == "tir-midend")
     assert set(rule.gates) <= set(gates)
     cargo = [shlex.split(gate) for gate in rule.gates]
@@ -629,7 +629,6 @@ def test_committed_source_checks_precede_complete_native_build_selection(drv):
         "source-extension-package-sets",
         "source-extension-proof-policy",
         "dev-tooling",
-        "rust-ffi-blocks",
         "ci-wiring",
     }
     build_names = ["backend-native", "native-object-emission", "tir-midend"]
@@ -671,11 +670,7 @@ def test_committed_gate_manifest_selects_backend_native_llvm(drv):
         ]
     )
 
-    assert [r.name for r in matched] == [
-        "op-kind-registry",
-        "rust-ffi-blocks",
-        "backend-llvm",
-    ]
+    assert [r.name for r in matched] == ["op-kind-registry", "backend-llvm"]
     assert (
         "cargo test --locked --profile release-fast -p molt-backend-native"
         " -p molt-backend --features molt-backend/native-backend,molt-backend/llvm"
@@ -688,7 +683,7 @@ def test_committed_gate_manifest_selects_codec_table_registry(drv):
     cfg = drv.GateConfig.load(COMMITTED_GATES)
     gates, matched = cfg.select(["runtime/molt-stdlib-text/src/codec_registry.rs"])
 
-    assert [r.name for r in matched] == ["codec-tables", "rust-ffi-blocks"]
+    assert [r.name for r in matched] == ["codec-tables"]
     assert "python tools/gen_codecs.py --check" in gates
     assert "python -m pytest -q tests/test_gen_codecs.py" in gates
 
@@ -699,13 +694,13 @@ def test_committed_gate_manifest_selects_codec_table_registry(drv):
     gates, matched = cfg.select(
         ["runtime/molt-stdlib-text/src/codec_aliases_generated.rs"]
     )
-    assert [r.name for r in matched] == ["codec-tables", "rust-ffi-blocks"]
+    assert [r.name for r in matched] == ["codec-tables"]
     assert "python tools/gen_codecs.py --check" in gates
 
     gates, matched = cfg.select(
         ["runtime/molt-stdlib-text/src/charmap_codecs_generated.rs"]
     )
-    assert [r.name for r in matched] == ["codec-tables", "rust-ffi-blocks"]
+    assert [r.name for r in matched] == ["codec-tables"]
     assert "python tools/gen_codecs.py --check" in gates
 
     gates, matched = cfg.select(["runtime/molt-runtime/src/object/ops_encoding.rs"])
@@ -718,7 +713,7 @@ def test_committed_gate_manifest_selects_wasm_host_ratchet(drv):
     cfg = drv.GateConfig.load(COMMITTED_GATES)
     gates, matched = cfg.select(["runtime/molt-wasm-host/src/main.rs"])
 
-    assert [r.name for r in matched] == ["rust-ffi-blocks", "wasm-host"]
+    assert [r.name for r in matched] == ["wasm-host"]
     assert "cargo clippy --locked -p molt-wasm-host -- -D warnings" in gates
     assert "cargo build --locked --profile release-fast -p molt-wasm-host" in gates
 

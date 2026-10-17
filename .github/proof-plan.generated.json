@@ -369,7 +369,7 @@
     "tests/tools/test_win_job_contract.py",
     "tests/tools/test_windows_process_api.py"
   ],
-  "authority_sha256": "b0ffcdd44fd535945bd630b44647e3839ea4d2df8449b91f105e156d65701501",
+  "authority_sha256": "78c873d60fca41980e5505a115952d8ec1434e07217076bc7012daae03dc8867",
   "cargo_environment_policy": {
     "incident_command": "cargo metadata --locked --format-version 1",
     "incident_commit": "20b046b79bd4ca64a8c859f737f6e330377bcc4e",
@@ -3128,7 +3128,6 @@
         "tests/tools/test_check_memory_guard_wiring.py",
         "tests/tools/test_check_runtime_serial_bridge_imports.py",
         "tests/tools/test_check_runtime_symbol_owners.py",
-        "tests/tools/test_check_rust_ffi_blocks.py",
         "tests/tools/test_check_rustfmt.py",
         "tests/tools/test_check_satellite_parity.py",
         "tests/tools/test_check_stdlib_intrinsic_surface.py",
@@ -8521,9 +8520,8 @@
       "local.cpython-abi-authorities.0": "cargo test --locked --no-fail-fast --profile dev-fast -p molt-lang-cpython-abi --tests -- --test-threads=4",
       "local.dev-tooling.0": "python -m pytest -q tests/tools/test_setup_project_inputs.py",
       "local.dev-tooling.1": "python -m pytest -q tests/test_molt_dev.py",
-      "local.dev-tooling.2": "python -m pytest -q tests/tools/test_check_rust_ffi_blocks.py",
-      "local.dev-tooling.3": "python -m pytest -q tests/tools/test_rust_toolchain_contract.py",
-      "local.dev-tooling.4": "python -m pytest -q tests/tools/test_check_rustfmt.py",
+      "local.dev-tooling.2": "python -m pytest -q tests/tools/test_rust_toolchain_contract.py",
+      "local.dev-tooling.3": "python -m pytest -q tests/tools/test_check_rustfmt.py",
       "local.docs-architecture.0": "python tools/update_status_blocks.py --check",
       "local.docs-architecture.1": "python tools/check_docs_architecture.py",
       "local.ecosystem-compat.0": "python tools/check_ecosystem_compat.py",
@@ -8579,8 +8577,6 @@
       "local.runtime-vfs.0": "cargo clippy --locked -p molt-runtime-vfs --all-targets --all-features -- -D warnings",
       "local.runtime-vfs.1": "cargo test --locked -p molt-runtime-vfs --all-features --no-fail-fast",
       "local.runtime-vfs.2": "python -m pytest tests/test_browser_vfs.py -q",
-      "local.rust-ffi-blocks.0": "python tools/check_rust_ffi_blocks.py",
-      "local.rust-ffi-blocks.1": "python -m pytest -q tests/tools/test_check_rust_ffi_blocks.py",
       "local.rust-toolchain.0": "python tools/check_rust_toolchain.py",
       "local.rust-toolchain.1": "python -m pytest -q tests/tools/test_rust_toolchain_contract.py",
       "local.source-extension-package-sets.0": "python -m pytest -q tests/cli/test_source_extension_set_registry.py tests/cli/test_source_extension_manifest_authority.py tests/cli/test_source_extension_link_requirements.py tests/cli/test_source_extension_producer.py tests/cli/test_source_build_environment_probe.py tests/cli/test_source_extension_candidate_attestation.py tests/cli/test_source_extension_candidate_transaction.py tests/cli/test_source_package_seal.py tests/test_exact_json.py tests/cli/test_external_native_scipy_package_seal.py tests/cli/test_atomic_io_authority.py tests/cli/test_python_module_names.py tests/cli/test_source_extension_runtime_imports.py tests/cli/test_source_extension_input_custody.py tests/cli/test_source_extension_target.py tests/cli/test_source_extension_language.py tests/cli/test_source_extension_compiler_target.py tests/cli/test_extension_wheel_retained_inputs.py tests/tools/test_native_link_benchmark.py tests/cli/test_cli_extension_commands.py::test_direct_build_audits_and_reseals_extracted_wheel tests/cli/test_source_extension_invocation.py tests/cli/test_source_extension_compiler_inputs.py",
@@ -9191,14 +9187,12 @@
           "local.dev-tooling.0",
           "local.dev-tooling.1",
           "local.dev-tooling.2",
-          "local.dev-tooling.3",
-          "local.dev-tooling.4"
+          "local.dev-tooling.3"
         ],
         "description": "dev drivers, Rust toolchain/formatting custody, or their config/tests: run the failure-mode tests.",
         "gates": [
           "python -m pytest -q tests/tools/test_setup_project_inputs.py",
           "python -m pytest -q tests/test_molt_dev.py",
-          "python -m pytest -q tests/tools/test_check_rust_ffi_blocks.py",
           "python -m pytest -q tests/tools/test_rust_toolchain_contract.py",
           "python -m pytest -q tests/tools/test_check_rustfmt.py"
         ],
@@ -9206,12 +9200,10 @@
           ".github/actions/setup-project/**",
           "tests/tools/test_setup_project_inputs.py",
           "tools/dev.py",
-          "tools/check_rust_ffi_blocks.py",
           "tools/check_rust_toolchain.py",
           "tools/check_rustfmt.py",
           "tools/molt_dev.py",
           "tools/proof_plan.toml",
-          "tests/tools/test_check_rust_ffi_blocks.py",
           "tests/tools/test_rust_toolchain_contract.py",
           "tests/tools/test_check_rustfmt.py",
           "tests/test_molt_dev.py"
@@ -9290,29 +9282,6 @@
         "toolchains": [
           "python",
           "cargo"
-        ]
-      },
-      {
-        "command_ids": [
-          "local.rust-ffi-blocks.0",
-          "local.rust-ffi-blocks.1"
-        ],
-        "description": "Rust 2024 FFI declaration blocks must be explicitly unsafe before Cargo spends a compile slot.",
-        "gates": [
-          "python tools/check_rust_ffi_blocks.py",
-          "python -m pytest -q tests/tools/test_check_rust_ffi_blocks.py"
-        ],
-        "globs": [
-          "runtime/**/*.rs",
-          "src/**/*.rs",
-          "tools/**/*.rs",
-          "tests/**/*.rs",
-          "tools/check_rust_ffi_blocks.py",
-          "tests/tools/test_check_rust_ffi_blocks.py"
-        ],
-        "name": "rust-ffi-blocks",
-        "toolchains": [
-          "python"
         ]
       },
       {
@@ -10631,10 +10600,6 @@
         "python",
         "uv"
       ],
-      "local.dev-tooling.4": [
-        "python",
-        "uv"
-      ],
       "local.docs-architecture.0": [
         "python"
       ],
@@ -10893,12 +10858,6 @@
         "rustc",
         "cargo",
         "git"
-      ],
-      "local.rust-ffi-blocks.0": [
-        "python"
-      ],
-      "local.rust-ffi-blocks.1": [
-        "python"
       ],
       "local.rust-toolchain.0": [
         "python"

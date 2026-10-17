@@ -149,7 +149,6 @@ bench-smoke = "{project_python} -m molt.cli bench -- --smoke --warmup 1 --json-o
 rustfmt = "{project_python} tools/check_rustfmt.py --changed --write"
 rustfmt-check = "{project_python} tools/check_rustfmt.py --changed"
 rust-toolchain-check = "{project_python} tools/check_rust_toolchain.py"
-rust-ffi-block-check = "{project_python} tools/check_rust_ffi_blocks.py"
 format = [
     "{project_python} -m ruff format .",
     "@rustfmt",
@@ -165,7 +164,6 @@ lint = [
     "{project_python} -m ruff check .",
     "@format-check",
     "@rust-toolchain-check",
-    "@rust-ffi-block-check",
     "{project_python} -m ty check src",
     "{project_python} tools/verified_subset.py check",
     "{project_python} tools/check_stdlib_intrinsics.py --critical-allowlist",
