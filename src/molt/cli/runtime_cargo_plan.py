@@ -1190,6 +1190,22 @@ def _cargo_string_list(
     )
 
 
+# The runtime Cargo plan is resolved several times per build, and each
+# resolution asked rustc the same questions again: eight `rustc --print`
+# processes in one warm build. An answer is a function of the compiler binary,
+# its wrappers, a target spec file, the flags, the directory and the
+# environment, so the key names each of them.
+_RUST_TARGET_METADATA: dict[tuple[object, ...], RustcTargetMetadata] = {}
+
+
+def _file_identity(path: Path | str) -> tuple[int, int, int, int] | None:
+    try:
+        metadata = os.stat(path)
+    except OSError:
+        return None
+    return (metadata.st_dev, metadata.st_ino, metadata.st_size, metadata.st_mtime_ns)
+
+
 def _rust_target_metadata(
     rustc: Path,
     target: str | None,
@@ -1198,6 +1214,38 @@ def _rust_target_metadata(
     root: Path,
     env: Mapping[str, str],
     wrappers: Mapping[str, Path] = MappingProxyType({}),
+) -> RustcTargetMetadata:
+    key = (
+        os.fspath(rustc),
+        _file_identity(rustc),
+        tuple(
+            (name, os.fspath(path), _file_identity(path))
+            for name, path in sorted(wrappers.items())
+        ),
+        target,
+        _file_identity(target)
+        if target is not None and target.endswith(".json")
+        else None,
+        flags,
+        os.fspath(root),
+        tuple(sorted(env.items())),
+    )
+    cached = _RUST_TARGET_METADATA.get(key)
+    if cached is None:
+        cached = _RUST_TARGET_METADATA[key] = _query_rust_target_metadata(
+            rustc, target, flags, root=root, env=env, wrappers=wrappers
+        )
+    return cached
+
+
+def _query_rust_target_metadata(
+    rustc: Path,
+    target: str | None,
+    flags: tuple[str, ...],
+    *,
+    root: Path,
+    env: Mapping[str, str],
+    wrappers: Mapping[str, Path],
 ) -> RustcTargetMetadata:
     with (
         tempfile.TemporaryDirectory(prefix="molt-rust-cfg-") as scratch,
@@ -2151,24 +2199,23 @@ def resolve_runtime_cargo_plan(
     target_argument = (
         target if command_target is not None or configured_target is not None else None
     )
-    metadata_cache: dict[
-        tuple[str | None, tuple[str, ...], bool], RustcTargetMetadata
-    ] = {}
+
+    # rustc's answers describe the compiler, not the Cargo settings this plan
+    # adds below (linkers, C tools, encoded flags); every query sees the
+    # environment as it stands here, so equal queries share one answer.
+    probe_environment = MappingProxyType(dict(environment))
 
     def metadata_for(
         query_target: str | None, flags: tuple[str, ...], wrapped: bool
     ) -> RustcTargetMetadata:
-        key = (query_target, flags, wrapped)
-        if key not in metadata_cache:
-            metadata_cache[key] = _rust_target_metadata(
-                rustc,
-                query_target,
-                flags,
-                root=root,
-                env=environment,
-                wrappers=wrappers if wrapped else {},
-            )
-        return metadata_cache[key]
+        return _rust_target_metadata(
+            rustc,
+            query_target,
+            flags,
+            root=root,
+            env=probe_environment,
+            wrappers=wrappers if wrapped else {},
+        )
 
     flag_plan: RustFlagResourcePlan | None = None
 

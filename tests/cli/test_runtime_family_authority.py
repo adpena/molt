@@ -842,7 +842,8 @@ def test_normalized_cfg_metadata_is_reused_for_dependency_and_final_resources(
         facts = "unix\nnormalized" if flags[:2] == normalized else "unix"
         return _metadata(selected, facts)
 
-    monkeypatch.setattr(plans, "_rust_target_metadata", metadata)
+    # Fake the rustc query itself: the reuse under test is the memo above it.
+    monkeypatch.setattr(plans, "_query_rust_target_metadata", metadata)
     monkeypatch.setattr(plans, "_rust_resource_roots", _rust_resource_roots)
     plan = _plan(
         plan_root,
