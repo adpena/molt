@@ -163,6 +163,8 @@ def _observe(entry: tuple[str, str]) -> None:
     if kind == "file" and name.endswith((".pyc", ".pyo")):
         import importlib.util
 
+        # Actual bytecode remains an input even for an unmapped cache name.
+        report_data_file(name)
         try:
             source = importlib.util.source_from_cache(name)
         except (ValueError, NotImplementedError):
@@ -172,7 +174,6 @@ def _observe(entry: tuple[str, str]) -> None:
             # Explicit potential-input facts survive product-root filtering.
             # A readable-open audit is pre-syscall: absence is a probe, never
             # proof that the process created or successfully read this file.
-            report_data_file(name)
             report_data_file(source)
     sink = _SINK
     for observed in names:
