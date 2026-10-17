@@ -2695,8 +2695,6 @@ fn native_fixed_aggregates_execute_aliases_and_box_failure_cleanup() {
         "fixed_slice_discard",
         "fixed_dataclass_tuple",
         "fixed_dataclass_tuple_discard",
-        "fixed_class_new",
-        "fixed_class_new_discard",
         "fixed_subscript_slice",
         "fixed_subscript_slice_discard",
         "fixed_index",
@@ -2731,29 +2729,27 @@ fn native_fixed_aggregates_execute_aliases_and_box_failure_cleanup() {
         (names[7], "slice_new", false),
         (names[8], "dataclass_new", true),
         (names[9], "dataclass_new", false),
-        (names[10], "class_new", true),
-        (names[11], "class_new", false),
-        (names[12], "slice", true),
-        (names[13], "slice", false),
-        (names[14], "index", true),
-        (names[15], "index", false),
-        (names[16], "store_index", false),
-        (names[17], "del_index", false),
-        (names[18], "dict_set", false),
-        (names[19], "dict_update_missing", false),
-        (names[20], "dict_get", true),
-        (names[21], "dict_get", false),
-        (names[22], "set_add", false),
-        (names[23], "vec_sum", true),
-        (names[24], "vec_sum", false),
-        (names[25], "vec_prod", true),
-        (names[26], "vec_prod", false),
-        (names[27], "vec_min", true),
-        (names[28], "vec_min", false),
-        (names[29], "vec_max", true),
-        (names[30], "vec_max", false),
-        (names[31], "operator_index", true),
-        (names[32], "operator_index", false),
+        (names[10], "slice", true),
+        (names[11], "slice", false),
+        (names[12], "index", true),
+        (names[13], "index", false),
+        (names[14], "store_index", false),
+        (names[15], "del_index", false),
+        (names[16], "dict_set", false),
+        (names[17], "dict_update_missing", false),
+        (names[18], "dict_get", true),
+        (names[19], "dict_get", false),
+        (names[20], "set_add", false),
+        (names[21], "vec_sum", true),
+        (names[22], "vec_sum", false),
+        (names[23], "vec_prod", true),
+        (names[24], "vec_prod", false),
+        (names[25], "vec_min", true),
+        (names[26], "vec_min", false),
+        (names[27], "vec_max", true),
+        (names[28], "vec_max", false),
+        (names[29], "operator_index", true),
+        (names[30], "operator_index", false),
     ] {
         let mut args: Vec<String> = if kind == "dataclass_new_values" {
             vec!["none".into(); 3]
@@ -2763,7 +2759,7 @@ fn native_fixed_aggregates_execute_aliases_and_box_failure_cleanup() {
             Vec::new()
         };
         match kind {
-            "class_new" | "operator_index" => args.push("wide".into()),
+            "operator_index" => args.push("wide".into()),
             "index" | "set_add" => args.extend(["wide".into(), "wider".into()]),
             "del_index" => args.extend(["wide".into(), "wide".into()]),
             _ => args.extend(["wide".into(), "wide".into(), "wider".into()]),
@@ -2920,13 +2916,6 @@ fn subscript_words(values:&[u64], expected:&[u64]) -> bool {
 #[no_mangle] pub extern "C" fn molt_dataclass_new(name:u64,fields:u64,values:u64,flags:u64)->u64 {
     assert_eq!(name,NONE); construct_words(&[fields,values,flags])
 }
-#[no_mangle] pub extern "C" fn molt_class_new(name:u64)->u64 {
-    CALLS.fetch_add(1,SeqCst); assert_eq!(molt_exception_pending_fast(),0);
-    assert_eq!(name,0x101); assert_eq!(FIRST.load(SeqCst),1);
-    if CTOR_FAIL.load(SeqCst) != 0 {unsafe {PENDING=1;} return NONE;}
-    molt_inc_ref_obj(name); RESULT_FIRST.store(1,SeqCst); RESULT_SECOND.store(0,SeqCst);
-    RESULT.store(1,SeqCst); 0x200
-}
 #[no_mangle] pub unsafe extern "C" fn molt_guarded_class_def(name:u64,bases:u64,nbases:u64,attrs:u64,nattrs:u64,size:u64,version:u64,flags:u64)->u64 {
     assert_eq!(name,NONE); assert_eq!([nbases,nattrs,size,version,flags],[1,1,16,7,3]);
     let words=unsafe { [*(bases as *const u64), *(attrs as *const u64), *((attrs as *const u64).add(1))] };
@@ -2951,7 +2940,6 @@ extern "C" {
  fn fixed_class()->u64; fn fixed_class_discard();
  fn fixed_slice()->u64; fn fixed_slice_discard();
  fn fixed_dataclass_tuple()->u64; fn fixed_dataclass_tuple_discard();
- fn fixed_class_new()->u64; fn fixed_class_new_discard();
  fn fixed_subscript_slice()->u64; fn fixed_subscript_slice_discard();
  fn fixed_index()->u64; fn fixed_index_discard(); fn fixed_store_index(); fn fixed_del_index();
  fn fixed_dict_set(); fn fixed_dict_update_missing(); fn fixed_dict_get()->u64;
@@ -2985,18 +2973,6 @@ fn main() {unsafe {
    assert_eq!(fixed_calls(),u64::from(failure==0));
    assert_eq!(molt_exception_pending_fast(),u64::from(failure!=0 || consumer_failure!=0));
   }
- }
- for (failure,ctor_failure) in [(0,0),(1,0),(0,1)] {
-  fixed_reset(failure,ctor_failure); let result=fixed_class_new();
-  let success=failure==0 && ctor_failure==0;
-  assert_eq!(result,if success {0x200} else {NONE});
-  assert_eq!(fixed_attempts(),1); assert_eq!(fixed_calls(),u64::from(failure==0));
-  assert_eq!(fixed_live(),if success {2} else {0});
-  assert_eq!(molt_exception_pending_fast(),u64::from(!success));
-  if success {molt_dec_ref_obj(result)} assert_eq!(fixed_live(),0);
-  fixed_reset(failure,ctor_failure); fixed_class_new_discard();
-  assert_eq!(fixed_live(),0); assert_eq!(fixed_attempts(),1);
-  assert_eq!(fixed_calls(),u64::from(failure==0));
  }
  // operator.index returns a fresh owned result after borrowing one boxed input.
  for (failure,consumer_failure) in [(0,0),(1,0),(0,1)] {

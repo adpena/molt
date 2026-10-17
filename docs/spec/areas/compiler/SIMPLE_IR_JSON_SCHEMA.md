@@ -661,16 +661,10 @@ All use the standard `args` + `out` pattern.
 
 | kind                      | Fields used                    | Description                    |
 |---------------------------|--------------------------------|--------------------------------|
-| `class_new`               | `args`, `out`                  | Create new class object        |
 | `class_def`               | `args`, `s_value`, `out`       | Define class with body         |
-| `class_set_base`          | `args`, `out`                  | Set class base                 |
-| `class_apply_set_name`    | `args`, `out`                  | Apply `__set_name__`           |
-| `class_layout_version`    | `args`, `out`                  | Get class layout version       |
 | `class_set_definition`    | `args` [class], `class_definition`, `out` | Stamp a fresh class with its class statement identity |
 | `guard_layout`            | `args` [obj, ver], `class_definition`, `out` | Guard on class statement and layout version |
 | `object_new`              | `out`                          | Create bare object             |
-| `object_set_class`        | `args`, `out`                  | Set object's class ref         |
-| `super_new`               | `args`, `out`                  | Create super() proxy           |
 | `dataclass_new`           | `args`, `out`                  | Create dataclass instance      |
 | `dataclass_get`           | `args`, `out`                  | Dataclass field get            |
 | `dataclass_set`           | `args`, `out`                  | Dataclass field set            |

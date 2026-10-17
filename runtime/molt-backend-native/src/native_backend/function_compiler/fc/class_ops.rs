@@ -3,18 +3,11 @@ use super::super::*;
 /// Single-source kind authority for [`handle_class_op`], consulted by
 /// `op_family::FAMILY_DISPATCH_TABLE`. Mirror the `match op.kind.as_str()` arms below.
 #[cfg(feature = "native-backend")]
-pub(in crate::native_backend::function_compiler) const HANDLED_KINDS: &[&str] = &[
-    "class_new",
-    "class_def",
-    "class_layout_version",
-    "class_set_definition",
-    "class_set_base",
-    "class_apply_set_name",
-    "object_set_class",
-];
+pub(in crate::native_backend::function_compiler) const HANDLED_KINDS: &[&str] =
+    &["class_def", "class_set_definition"];
 use super::var_get_boxed_overflow_safe_fn;
 
-/// Cranelift codegen handlers for class-object ops: `class_new`/`class_def`/`set_base`/`apply_set_name`/`layout_version`/`set_layout_version`/`merge_layout` and `object_set_class`.
+/// Cranelift codegen handlers for the class-statement ops `class_def` and `class_set_definition`.
 ///
 /// Constructor operands and results follow the shared fixed-constructor
 /// ownership transaction, including the first failed materialization.
@@ -61,22 +54,6 @@ pub(in crate::native_backend::function_compiler) fn handle_class_op(
         )
     };
     match op.kind.as_str() {
-        "class_new" => {
-            emit_fixed_aggregate_constructor(
-                op,
-                FixedAggregateConstructor::ClassNew,
-                module,
-                import_ids,
-                builder,
-                import_refs,
-                sealed_blocks,
-                vars,
-                representation_plan,
-                nbc,
-                block_tracked_obj,
-                block_tracked_ptr,
-            );
-        }
         "class_def" => {
             let meta = op.s_value.as_deref().expect("class_def needs s_value");
             let mut parts = meta.split(',');
@@ -130,33 +107,6 @@ pub(in crate::native_backend::function_compiler) fn handle_class_op(
                 block_tracked_ptr,
             );
         }
-        "class_layout_version" => {
-            let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
-            let class_bits = var_get_boxed_overflow_safe(
-                &mut *module,
-                &mut *import_ids,
-                &mut *builder,
-                &mut *import_refs,
-                &mut *sealed_blocks,
-                vars,
-                &args[0],
-                representation_plan,
-            )
-            .expect("Class not found");
-            let callee = SimpleBackend::import_func_id_split(
-                &mut *module,
-                &mut *import_ids,
-                "molt_class_layout_version",
-                &[types::I64],
-                &[types::I64],
-            );
-            let local_callee = module.declare_func_in_func(callee, builder.func);
-            let call = builder.ins().call(local_callee, &[*class_bits]);
-            let res = builder.inst_results(call)[0];
-            if let Some(out__) = op.out.as_ref() {
-                def_var_named(&mut *builder, vars, out__, res);
-            }
-        }
         "class_set_definition" => {
             let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
             let class_bits = var_get_boxed_overflow_safe(
@@ -182,110 +132,6 @@ pub(in crate::native_backend::function_compiler) fn handle_class_op(
             let _ = builder
                 .ins()
                 .call(local_callee, &[*class_bits, definition_slot]);
-        }
-        "class_set_base" => {
-            let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
-            let class_bits = var_get_boxed_overflow_safe(
-                &mut *module,
-                &mut *import_ids,
-                &mut *builder,
-                &mut *import_refs,
-                &mut *sealed_blocks,
-                vars,
-                &args[0],
-                representation_plan,
-            )
-            .expect("Class not found");
-            let base_bits = var_get_boxed_overflow_safe(
-                &mut *module,
-                &mut *import_ids,
-                &mut *builder,
-                &mut *import_refs,
-                &mut *sealed_blocks,
-                vars,
-                &args[1],
-                representation_plan,
-            )
-            .expect("Base class not found");
-            let callee = SimpleBackend::import_func_id_split(
-                &mut *module,
-                &mut *import_ids,
-                "molt_class_set_base",
-                &[types::I64, types::I64],
-                &[types::I64],
-            );
-            let local_callee = module.declare_func_in_func(callee, builder.func);
-            let call = builder.ins().call(local_callee, &[*class_bits, *base_bits]);
-            let res = builder.inst_results(call)[0];
-            if let Some(out__) = op.out.as_ref() {
-                def_var_named(&mut *builder, vars, out__, res);
-            }
-        }
-        "class_apply_set_name" => {
-            let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
-            let class_bits = var_get_boxed_overflow_safe(
-                &mut *module,
-                &mut *import_ids,
-                &mut *builder,
-                &mut *import_refs,
-                &mut *sealed_blocks,
-                vars,
-                &args[0],
-                representation_plan,
-            )
-            .expect("Class not found");
-            let callee = SimpleBackend::import_func_id_split(
-                &mut *module,
-                &mut *import_ids,
-                "molt_class_apply_set_name",
-                &[types::I64],
-                &[types::I64],
-            );
-            let local_callee = module.declare_func_in_func(callee, builder.func);
-            let call = builder.ins().call(local_callee, &[*class_bits]);
-            let res = builder.inst_results(call)[0];
-            if let Some(out__) = op.out.as_ref() {
-                def_var_named(&mut *builder, vars, out__, res);
-            }
-        }
-        "object_set_class" => {
-            let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
-            let obj_bits = var_get_boxed_overflow_safe(
-                &mut *module,
-                &mut *import_ids,
-                &mut *builder,
-                &mut *import_refs,
-                &mut *sealed_blocks,
-                vars,
-                &args[0],
-                representation_plan,
-            )
-            .expect("Object not found");
-            let obj_ptr = unbox_ptr_value(&mut *builder, *obj_bits);
-            let class_bits = var_get_boxed_overflow_safe(
-                &mut *module,
-                &mut *import_ids,
-                &mut *builder,
-                &mut *import_refs,
-                &mut *sealed_blocks,
-                vars,
-                &args[1],
-                representation_plan,
-            )
-            .expect("Class not found");
-            let callee = SimpleBackend::import_func_id_split(
-                &mut *module,
-                &mut *import_ids,
-                "molt_object_set_class",
-                &[types::I64, types::I64],
-                &[types::I64],
-            );
-            let local_callee = module.declare_func_in_func(callee, builder.func);
-            let call = builder.ins().call(local_callee, &[obj_ptr, *class_bits]);
-            let res = builder.inst_results(call)[0];
-            if let Some(out__) = op.out.as_ref() {
-                def_var_named(&mut *builder, vars, out__, res);
-            }
         }
         _ => unreachable!("handler invoked with non-matching op.kind"),
     }

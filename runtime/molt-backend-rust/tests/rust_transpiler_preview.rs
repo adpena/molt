@@ -12,16 +12,10 @@ fn op(kind: &str) -> OpIR {
 
 #[test]
 fn rust_backend_rejects_class_slots_without_object_representation() {
-    let mut class_new = op("class_new");
-    class_new.out = Some("point_cls".to_string());
-
     let mut alloc_obj = op("alloc_class");
     alloc_obj.args = Some(vec!["point_cls".to_string()]);
     alloc_obj.value = Some(24);
     alloc_obj.out = Some("point_obj".to_string());
-
-    let mut set_class = op("object_set_class");
-    set_class.args = Some(vec!["point_obj".to_string(), "point_cls".to_string()]);
 
     let mut none0 = op("const_none");
     none0.out = Some("slot0_init".to_string());
@@ -93,11 +87,9 @@ fn rust_backend_rejects_class_slots_without_object_representation() {
         functions: vec![FunctionIR {
             return_abi: molt_ir::FunctionReturnAbi::Value,
             name: "molt_test_class_slots".to_string(),
-            params: Vec::new(),
+            params: vec!["point_cls".to_string()],
             ops: vec![
-                class_new,
                 alloc_obj,
-                set_class,
                 none0,
                 store0_init,
                 none1,
@@ -131,9 +123,7 @@ fn rust_backend_rejects_class_slots_without_object_representation() {
         .compile_checked(&ir)
         .expect_err("class slot IR requires a real Rust object/type representation");
 
-    assert!(err.contains("class_new requires a Rust backend object/type representation"));
     assert!(err.contains("alloc_class requires a Rust backend class instance representation"));
-    assert!(err.contains("object_set_class requires a Rust backend object/type representation"));
 }
 
 #[test]

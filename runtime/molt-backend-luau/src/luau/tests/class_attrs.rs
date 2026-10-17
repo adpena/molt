@@ -56,37 +56,6 @@ fn test_compile_checked_lowers_type_check_helpers() {
                     args: Some(vec!["bool_cls".to_string(), "int_cls".to_string()]),
                     ..OpIR::default()
                 },
-                OpIR {
-                    kind: "class_new".to_string(),
-                    out: Some("base_cls".to_string()),
-                    ..OpIR::default()
-                },
-                OpIR {
-                    kind: "class_new".to_string(),
-                    out: Some("derived_cls".to_string()),
-                    ..OpIR::default()
-                },
-                OpIR {
-                    kind: "class_set_base".to_string(),
-                    args: Some(vec!["derived_cls".to_string(), "base_cls".to_string()]),
-                    ..OpIR::default()
-                },
-                OpIR {
-                    kind: "object_new".to_string(),
-                    out: Some("obj".to_string()),
-                    ..OpIR::default()
-                },
-                OpIR {
-                    kind: "object_set_class".to_string(),
-                    args: Some(vec!["obj".to_string(), "derived_cls".to_string()]),
-                    ..OpIR::default()
-                },
-                OpIR {
-                    kind: "isinstance".to_string(),
-                    out: Some("obj_is_base".to_string()),
-                    args: Some(vec!["obj".to_string(), "base_cls".to_string()]),
-                    ..OpIR::default()
-                },
             ],
         }],
         profile: None,
@@ -102,10 +71,8 @@ fn test_compile_checked_lowers_type_check_helpers() {
     assert!(
         source.contains("local int_cls = molt_builtin_type(int_tag)")
             && source.contains("local is_int = molt_isinstance(flag, int_cls)")
-            && source.contains("local bool_is_int = molt_issubclass(bool_cls, int_cls)")
-            && source.contains("local base_cls = {__molt_is_type = true}")
-            && source.contains("local obj_is_base = molt_isinstance(obj, base_cls)"),
-        "type-check ops should use named builtin/class metadata, got:\n{source}"
+            && source.contains("local bool_is_int = molt_issubclass(bool_cls, int_cls)"),
+        "type-check ops should use named builtin metadata, got:\n{source}"
     );
     assert!(
         !source.contains("[stub: isinstance]")
@@ -226,18 +193,13 @@ fn test_compile_checked_lowers_descriptor_attribute_authority() {
                         ..OpIR::default()
                     },
                     OpIR {
-                        kind: "class_new".to_string(),
+                        kind: "object_new".to_string(),
                         out: Some("cls".to_string()),
                         ..OpIR::default()
                     },
                     OpIR {
                         kind: "object_new".to_string(),
                         out: Some("obj".to_string()),
-                        ..OpIR::default()
-                    },
-                    OpIR {
-                        kind: "object_set_class".to_string(),
-                        args: Some(vec!["obj".to_string(), "cls".to_string()]),
                         ..OpIR::default()
                     },
                     OpIR {
@@ -518,111 +480,6 @@ fn test_compile_checked_lowers_descriptor_attribute_authority() {
 }
 
 #[test]
-fn test_compile_checked_lowers_class_apply_set_name_authority() {
-    let ir = SimpleIR {
-        functions: vec![
-            FunctionIR {
-                return_abi: molt_ir::FunctionReturnAbi::Void,
-                name: "class_apply_set_name_test".to_string(),
-                params: vec![],
-                param_types: None,
-                source_file: None,
-                is_extern: false,
-                codegen_partition: false,
-                parameter_custody: Vec::new(),
-                execution_context: ExecutionContextPolicy::None,
-                ops: vec![
-                    OpIR {
-                        kind: "func_new".to_string(),
-                        out: Some("set_name_func".to_string()),
-                        s_value: Some("descriptor_set_name".to_string()),
-                        ..OpIR::default()
-                    },
-                    OpIR {
-                        kind: "class_new".to_string(),
-                        out: Some("descriptor_cls".to_string()),
-                        ..OpIR::default()
-                    },
-                    OpIR {
-                        kind: "set_attr_generic_obj".to_string(),
-                        args: Some(vec![
-                            "descriptor_cls".to_string(),
-                            "set_name_func".to_string(),
-                        ]),
-                        s_value: Some("__set_name__".to_string()),
-                        ..OpIR::default()
-                    },
-                    OpIR {
-                        kind: "object_new".to_string(),
-                        out: Some("descriptor".to_string()),
-                        ..OpIR::default()
-                    },
-                    OpIR {
-                        kind: "object_set_class".to_string(),
-                        args: Some(vec!["descriptor".to_string(), "descriptor_cls".to_string()]),
-                        ..OpIR::default()
-                    },
-                    OpIR {
-                        kind: "class_new".to_string(),
-                        out: Some("owner_cls".to_string()),
-                        ..OpIR::default()
-                    },
-                    OpIR {
-                        kind: "set_attr_generic_obj".to_string(),
-                        args: Some(vec!["owner_cls".to_string(), "descriptor".to_string()]),
-                        s_value: Some("field".to_string()),
-                        ..OpIR::default()
-                    },
-                    OpIR {
-                        kind: "class_apply_set_name".to_string(),
-                        args: Some(vec!["owner_cls".to_string()]),
-                        out: Some("none".to_string()),
-                        ..OpIR::default()
-                    },
-                ],
-            },
-            FunctionIR {
-                return_abi: molt_ir::FunctionReturnAbi::Void,
-                name: "descriptor_set_name".to_string(),
-                params: vec!["self".to_string(), "owner".to_string(), "name".to_string()],
-                param_types: None,
-                source_file: None,
-                is_extern: false,
-                codegen_partition: false,
-                parameter_custody: Vec::new(),
-                execution_context: ExecutionContextPolicy::None,
-                ops: vec![OpIR {
-                    kind: "ret_void".to_string(),
-                    ..OpIR::default()
-                }],
-            },
-        ],
-        profile: None,
-    };
-    let mut backend = LuauBackend::new();
-    let source = backend.compile(&ir);
-    assert!(
-        source.contains("function molt_class_apply_set_name")
-            && source.contains("local entries = {}")
-            && source.contains("local hook = molt_get_attr(value, \"__set_name__\")")
-            && source.contains("if hook ~= nil then hook(cls, name) end"),
-        "class_apply_set_name helper should snapshot and dispatch hooks, got:\n{source}"
-    );
-    assert!(
-        source.contains("molt_set_attr(descriptor_cls, \"__set_name__\", set_name_func)")
-            && source.contains("molt_set_attr(owner_cls, \"field\", descriptor)")
-            && source.contains("molt_class_apply_set_name(owner_cls)"),
-        "dunder class attrs and apply op should share attribute authority, got:\n{source}"
-    );
-    assert!(
-        !source.contains("[class op: class_apply_set_name]")
-            && !source.contains("[unsupported op: class_apply_set_name]")
-            && !source.contains("All other dunders"),
-        "class_apply_set_name must not leave stale stub/no-op markers, got:\n{source}"
-    );
-}
-
-#[test]
 fn test_compile_checked_rejects_unavailable_lexical_cell_transport() {
     let ir = SimpleIR {
         functions: vec![FunctionIR {
@@ -737,91 +594,6 @@ fn test_compile_checked_lowers_invoke_ffi_to_luau_capability_error() {
     );
 }
 
-#[test]
-fn test_compile_checked_lowers_object_set_class_metatable() {
-    let ir = SimpleIR {
-        functions: vec![FunctionIR {
-            return_abi: molt_ir::FunctionReturnAbi::Void,
-            name: "object_set_class_test".to_string(),
-            params: vec![],
-            param_types: None,
-            source_file: None,
-            is_extern: false,
-            codegen_partition: false,
-            parameter_custody: Vec::new(),
-            execution_context: ExecutionContextPolicy::None,
-            ops: vec![
-                OpIR {
-                    kind: "object_new".to_string(),
-                    out: Some("obj".to_string()),
-                    ..OpIR::default()
-                },
-                OpIR {
-                    kind: "class_new".to_string(),
-                    out: Some("cls".to_string()),
-                    ..OpIR::default()
-                },
-                OpIR {
-                    kind: "object_set_class".to_string(),
-                    args: Some(vec!["obj".to_string(), "cls".to_string()]),
-                    ..OpIR::default()
-                },
-            ],
-        }],
-        profile: None,
-    };
-    let mut backend = LuauBackend::new();
-    let source = backend.compile(&ir);
-    assert!(
-        source.contains("setmetatable(obj, cls)"),
-        "object_set_class should bind the object to its class metatable, got:\n{source}"
-    );
-    assert!(
-        !source.contains("[class op: object_set_class]"),
-        "object_set_class must not be reported as a class-op marker, got:\n{source}"
-    );
-}
-
-#[test]
-fn test_compile_checked_reads_constructor_layout_version() {
-    let ir = SimpleIR {
-        functions: vec![FunctionIR {
-            return_abi: molt_ir::FunctionReturnAbi::Void,
-            name: "class_layout_metadata_test".to_string(),
-            params: vec![],
-            param_types: None,
-            source_file: None,
-            is_extern: false,
-            codegen_partition: false,
-            parameter_custody: Vec::new(),
-            execution_context: ExecutionContextPolicy::None,
-            ops: vec![
-                OpIR {
-                    kind: "class_new".to_string(),
-                    out: Some("cls".to_string()),
-                    ..OpIR::default()
-                },
-                OpIR {
-                    kind: "class_layout_version".to_string(),
-                    out: Some("version".to_string()),
-                    args: Some(vec!["cls".to_string()]),
-                    ..OpIR::default()
-                },
-            ],
-        }],
-        profile: None,
-    };
-    let mut backend = LuauBackend::new();
-    let source = backend
-        .compile_checked(&ir)
-        .expect("constructor and layout read are admitted");
-    assert!(source.contains("local version = if type(cls) == \"table\""));
-    assert!(!source.contains("[class op: class_layout_version]"));
-}
-
-/// HF-220: Luau tables hold attributes by name, so guarded field ops read and
-/// write by name; a guarded write stores its value operand (the last one),
-/// and the stamp records the class statement's slot on the class table.
 #[test]
 fn class_statement_identity_and_guarded_fields_lower_by_name() {
     let statement = "class:m:P";

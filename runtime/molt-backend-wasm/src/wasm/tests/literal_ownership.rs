@@ -511,7 +511,6 @@ fn owned_runtime_and_constructor_results_release_every_discard_shape() {
         ("dataclass_new_values", 3, 0),
         ("tuple_index", 2, 0),
         ("get_attr_name", 2, 0),
-        ("class_new", 1, 0),
         ("gen_send", 2, 0),
         ("gen_throw", 2, 0),
         ("gen_close", 1, 0),

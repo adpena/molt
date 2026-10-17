@@ -652,20 +652,6 @@ fn dedicated_object_abi_arms_box_raw_operands_and_keep_raw_words() {
             "molt_generator_close",
             "(i64 %boxed_int)",
         ),
-        (
-            "super_new",
-            2,
-            None,
-            "molt_super_new",
-            "(i64 %boxed_int, i64 %boxed_int)",
-        ),
-        (
-            "class_layout_version",
-            1,
-            None,
-            "molt_class_layout_version",
-            "(i64 %boxed_int)",
-        ),
         ("abs", 1, None, "molt_abs_builtin", "(i64 %boxed_int)"),
         (
             "string_format",
@@ -1995,44 +1981,6 @@ fn lower_preserved_context_exit_calls_runtime() {
     let llvm_fn = lower_tir_to_llvm(&func, &backend);
     let ir = llvm_fn.print_to_string().to_string();
     assert!(ir.contains("molt_context_exit"), "{ir}");
-}
-
-#[test]
-fn lower_preserved_super_new_calls_runtime() {
-    let ctx = Context::create();
-    let backend = make_backend(&ctx);
-    let mut func = TirFunction::new(
-        "super_new_preserved".into(),
-        vec![],
-        TirType::DynBox,
-        molt_ir::FunctionReturnAbi::Value,
-    );
-    let type_bits = func.fresh_value();
-    let obj_bits = func.fresh_value();
-    let result = func.fresh_value();
-    let entry = func.blocks.get_mut(&func.entry_block).unwrap();
-    entry
-        .ops
-        .extend([const_none_def(type_bits), const_none_def(obj_bits)]);
-    entry.ops.push(TirOp {
-        dialect: Dialect::Molt,
-        opcode: OpCode::Copy,
-        operands: vec![type_bits, obj_bits],
-        results: vec![result],
-        attrs: {
-            let mut attrs = AttrDict::new();
-            attrs.insert("_original_kind".into(), AttrValue::Str("super_new".into()));
-            attrs
-        },
-        source_span: None,
-    });
-    entry.terminator = Terminator::Return {
-        values: vec![result],
-    };
-
-    let llvm_fn = lower_tir_to_llvm(&func, &backend);
-    let ir = llvm_fn.print_to_string().to_string();
-    assert!(ir.contains("molt_super_new"), "{ir}");
 }
 
 #[test]

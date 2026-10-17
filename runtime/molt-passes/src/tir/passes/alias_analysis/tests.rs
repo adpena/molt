@@ -1368,7 +1368,6 @@ fn runtime_copy_custody_preserves_borrowed_unpublished_and_move_results() {
     }
     for kind in [
         "dict_get",
-        "class_new",
         "list_int_new",
         "gen_send",
         "call_async",

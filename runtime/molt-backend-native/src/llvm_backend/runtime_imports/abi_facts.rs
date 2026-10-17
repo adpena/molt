@@ -13,7 +13,6 @@ use crate::runtime_import_abi::{
 #[cfg(feature = "llvm")]
 pub(crate) const CONSERVATIVE_RUNTIME_IMPORTS: &[RuntimeImportSignature] = &[
     runtime_sig("molt_builtin_type", 1, RuntimeReturnAbi::I64),
-    runtime_sig("molt_class_layout_version", 1, RuntimeReturnAbi::I64),
     runtime_sig("molt_class_set_definition", 2, RuntimeReturnAbi::I64),
     runtime_sig("molt_closure_load", 2, RuntimeReturnAbi::I64),
     runtime_sig("molt_closure_store", 3, RuntimeReturnAbi::I64),
@@ -47,7 +46,6 @@ pub(crate) const CONSERVATIVE_RUNTIME_IMPORTS: &[RuntimeImportSignature] = &[
     runtime_sig("molt_object_field_set", 3, RuntimeReturnAbi::I64),
     runtime_sig("molt_object_field_set_ptr", 3, RuntimeReturnAbi::I64),
     runtime_sig("molt_object_new", 0, RuntimeReturnAbi::I64),
-    runtime_sig("molt_super_new", 2, RuntimeReturnAbi::I64),
     MOLT_TASK_NEW,
     // Fixed-arity construction: a raw word-range address and length.
     runtime_sig("molt_tuple_from_values", 2, RuntimeReturnAbi::I64),
@@ -60,7 +58,6 @@ pub(crate) const CONSERVATIVE_RUNTIME_IMPORTS: &[RuntimeImportSignature] = &[
     MOLT_ASYNCGEN_NEW,
     runtime_sig("molt_function_closure_bits", 1, RuntimeReturnAbi::I64),
     runtime_sig("molt_iter", 1, RuntimeReturnAbi::I64),
-    runtime_sig("molt_object_set_class", 2, RuntimeReturnAbi::I64),
     runtime_sig("molt_stateful_locals_register", 3, RuntimeReturnAbi::I64),
     runtime_sig("molt_string_format", 2, RuntimeReturnAbi::I64),
 ];

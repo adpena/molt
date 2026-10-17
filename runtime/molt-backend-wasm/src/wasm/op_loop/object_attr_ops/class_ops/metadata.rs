@@ -5,33 +5,6 @@ use crate::wasm_binary::emit_call;
 use crate::wasm_import_tracking::TrackedImportIds;
 use wasm_encoder::{Function, Instruction};
 
-pub(super) fn emit_super_new(
-    func: &mut Function,
-    op: &OpIR,
-    import_ids: &TrackedImportIds,
-    locals: &WasmFrameLocals,
-    reloc_enabled: bool,
-) {
-    let args = op.args.as_ref().unwrap();
-    let type_bits = locals[&args[0]];
-    let obj_bits = locals[&args[1]];
-    func.instruction(&Instruction::LocalGet(type_bits));
-    func.instruction(&Instruction::LocalGet(obj_bits));
-    emit_call(
-        func,
-        reloc_enabled,
-        import_ids[crate::wasm_abi_generated::WasmRuntimeImport::SuperNew],
-    );
-    store_runtime_result(
-        func,
-        op,
-        locals,
-        import_ids,
-        reloc_enabled,
-        crate::wasm_abi_generated::WasmRuntimeImport::SuperNew,
-    );
-}
-
 pub(super) fn emit_builtin_type(
     func: &mut Function,
     op: &OpIR,
@@ -79,31 +52,6 @@ pub(super) fn emit_type_of(
         import_ids,
         reloc_enabled,
         crate::wasm_abi_generated::WasmRuntimeImport::TypeOf,
-    );
-}
-
-pub(super) fn emit_class_layout_version(
-    func: &mut Function,
-    op: &OpIR,
-    import_ids: &TrackedImportIds,
-    locals: &WasmFrameLocals,
-    reloc_enabled: bool,
-) {
-    let args = op.args.as_ref().unwrap();
-    let class_bits = locals[&args[0]];
-    func.instruction(&Instruction::LocalGet(class_bits));
-    emit_call(
-        func,
-        reloc_enabled,
-        import_ids[crate::wasm_abi_generated::WasmRuntimeImport::ClassLayoutVersion],
-    );
-    store_runtime_result(
-        func,
-        op,
-        locals,
-        import_ids,
-        reloc_enabled,
-        crate::wasm_abi_generated::WasmRuntimeImport::ClassLayoutVersion,
     );
 }
 
