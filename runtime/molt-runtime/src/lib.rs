@@ -753,12 +753,11 @@ pub(crate) use crate::object::layout::{
 pub(crate) use crate::object::layout::{function_dict_bits, function_set_dict_bits};
 pub use crate::object::memoryview::MoltBufferView;
 pub(crate) use crate::object::memoryview::{
-    BytesLikeSliceError, MOLT_BUFFER_FORMAT_CAP, MOLT_BUFFER_MAX_NDIM, RELEASED_MEMORYVIEW_ERROR,
-    TypedStridedStorage, TypedStridedStorageError, bytes_like_slice, bytes_like_slice_checked,
-    bytes_like_slice_raw, memoryview_bytes_slice, memoryview_collect_bytes,
-    memoryview_format_from_bits, memoryview_format_from_str, memoryview_is_c_contiguous_view,
-    memoryview_linear_offset, memoryview_nbytes, memoryview_strided_offset,
-    raise_released_memoryview,
+    MOLT_BUFFER_FORMAT_CAP, MOLT_BUFFER_MAX_NDIM, RELEASED_MEMORYVIEW_ERROR, TypedStridedStorage,
+    TypedStridedStorageError, bytes_like_slice, bytes_like_slice_raw, memoryview_bytes_slice,
+    memoryview_collect_bytes, memoryview_format_from_bits, memoryview_format_from_str,
+    memoryview_is_c_contiguous_view, memoryview_linear_offset, memoryview_nbytes,
+    memoryview_strided_offset, raise_released_memoryview,
 };
 pub(crate) use crate::object::ops::HashSecret;
 pub use crate::object::ops::*;

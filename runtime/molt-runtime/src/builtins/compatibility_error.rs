@@ -38,8 +38,8 @@ impl CompatibilityError<'_> {
     fn message(self, py: &PyToken<'_>) -> Result<String, &'static str> {
         let target = crate::object::ops_sys::runtime_target_python_info(runtime_state(py));
         let supported_minor = match &self {
-            Self::RawIoBaseReadinto => matches!(target.minor, 12 | 13 | 14 | 15),
-            _ => matches!(target.minor, 12 | 13 | 14),
+            Self::RawIoBaseReadinto => matches!(target.minor, 12..=15),
+            _ => matches!(target.minor, 12..=14),
         };
         if target.major != 3 || !supported_minor {
             return Err("unsupported compatibility-error target");

@@ -52,7 +52,7 @@ pub extern "C" fn __molt_path_raise_os_error(
             Ok(raw) => std::io::Error::from_raw_os_error(raw),
             Err(_) => std::io::Error::other(err_msg.to_string()),
         };
-        return crate::builtins::io::PathIoError::from_native(err).raise(_py, ctx);
+        crate::builtins::io::PathIoError::from_native(err).raise(_py, ctx)
     })
 }
 
