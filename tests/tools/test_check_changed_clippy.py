@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
 
+from molt.cargo_execution_policy import load_ci_cargo_policy
 from molt.cargo_workspace import workspace_package_names
-from tools import check_changed_clippy as gate
+from tools import check_changed_clippy as gate, proof_plan
 from tools.proof_plan import ProofCommand, ProofPlan
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -147,8 +149,10 @@ def test_clippy_command_without_a_package_scope_is_refused() -> None:
         gate.clippy_packages(command)
 
 
-def test_every_local_proof_plan_clippy_command_names_real_packages() -> None:
+def test_every_local_proof_plan_clippy_command_names_real_packages(monkeypatch) -> None:
     """The gate reads the live plan; a renamed crate must not drop a cell."""
+    monkeypatch.setattr(proof_plan.platform, "system", lambda: "Linux")
+    monkeypatch.setattr(proof_plan.platform, "machine", lambda: "x86_64")
     commands = gate.local_clippy_commands(ProofPlan.load())
     assert {command.id for command in commands} >= {
         "rust.clippy.workspace-default",
@@ -164,3 +168,100 @@ def test_every_local_proof_plan_clippy_command_names_real_packages() -> None:
             continue
         packages = gate.clippy_packages(command)
         assert packages is None or packages <= members, command.id
+
+
+@pytest.mark.parametrize(
+    ("system", "machine", "workspace_id", "budget"),
+    [
+        ("Darwin", "arm64", "portability.rust.macos.clippy-workspace", "suite"),
+        (
+            "Linux",
+            "aarch64",
+            "portability.rust.linux-aarch64.clippy-workspace",
+            "suite",
+        ),
+        ("Linux", "x86_64", "rust.clippy.workspace-default", "cross-check"),
+        ("Windows", "AMD64", "rust.clippy.workspace-default", "cross-check"),
+    ],
+)
+def test_local_clippy_reuses_only_the_declared_host_execution(
+    monkeypatch, system: str, machine: str, workspace_id: str, budget: str
+) -> None:
+    monkeypatch.setattr(proof_plan.platform, "system", lambda: system)
+    monkeypatch.setattr(proof_plan.platform, "machine", lambda: machine)
+    plan = ProofPlan.load()
+    by_id = {command.id: command for command in plan.commands}
+    defaults = tuple(
+        command
+        for command in plan.commands
+        if command.argv[:2] == ("cargo", "clippy")
+        and "pre-push" in command.data["tiers"]
+    )
+    expected = tuple(
+        by_id[workspace_id]
+        if command.id == "rust.clippy.workspace-default"
+        else command
+        for command in defaults
+    )
+    actual = gate.local_clippy_commands(plan)
+    assert len(actual) == len(expected)
+    assert all(selected is declared for selected, declared in zip(actual, expected))
+    workspace = by_id[workspace_id]
+    assert workspace.data["timeout_budget"] == budget
+    assert workspace.data[
+        "timeout_seconds"
+    ] == load_ci_cargo_policy().execution_budgets.timeout_seconds(budget)
+    # A matching host policy is selected before reach filtering, so the real
+    # workspace input still reaches the same packages without altering its cell.
+    reached = gate.Reach(frozenset({"molt-ir"}), False, False, frozenset())
+    selected = dict(
+        (command.id, command) for command, _ in gate.select(actual, reached)
+    )
+    assert selected[workspace_id] is workspace
+
+
+@pytest.mark.parametrize(
+    "different",
+    [
+        {"argv": ["cargo", "clippy", "--workspace", "--all-features"]},
+        {"cwd": "."},
+        {"toolchains": ["rustc", "cargo", "python"]},
+        {"cargo_build_python": False},
+        {"cargo_native_units": {"host": ["c", "c++"]}},
+        {"env": {"CARGO_INCREMENTAL": "1"}},
+        {"dependencies": ["rust.test.tir"]},
+        {"resource_class": "python-tests"},
+        {"cache_domain": "none"},
+        {"evidence_outputs": ["different-evidence.json"]},
+        {"future_execution_field": True},
+    ],
+)
+def test_same_argv_host_cell_cannot_change_execution_contract(
+    monkeypatch, different
+) -> None:
+    monkeypatch.setattr(proof_plan.platform, "system", lambda: "Darwin")
+    monkeypatch.setattr(proof_plan.platform, "machine", lambda: "arm64")
+    plan = ProofPlan.load()
+    default = next(c for c in plan.commands if c.id == "rust.clippy.workspace-default")
+    host = next(
+        c for c in plan.commands if c.id == "portability.rust.macos.clippy-workspace"
+    )
+    changed = ProofCommand(host.id, {**host.data, **different})
+    bounded = replace(plan, commands=(default, changed))
+    assert gate.local_clippy_commands(bounded) == (default,)
+
+
+def test_ambiguous_host_execution_is_rejected(monkeypatch) -> None:
+    monkeypatch.setattr(proof_plan.platform, "system", lambda: "Darwin")
+    monkeypatch.setattr(proof_plan.platform, "machine", lambda: "arm64")
+    plan = ProofPlan.load()
+    default = next(c for c in plan.commands if c.id == "rust.clippy.workspace-default")
+    host = next(
+        c for c in plan.commands if c.id == "portability.rust.macos.clippy-workspace"
+    )
+    duplicate = ProofCommand("duplicate-host", host.data)
+    bounded = replace(plan, commands=(default, host, duplicate))
+    with pytest.raises(
+        ValueError, match="multiple equivalent clippy cells for macos/aarch64"
+    ):
+        gate.local_clippy_commands(bounded)

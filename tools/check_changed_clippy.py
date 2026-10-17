@@ -5,7 +5,8 @@ CI runs `cargo clippy -D warnings` in the pre-push, pr and main tiers, but no
 landing gate did, so lints reached main unseen (HF-318). This gate closes that
 path. The pre-push `cargo clippy` commands in tools/proof_plan.toml stay the one
 authority for features, targets and profiles; the gate runs each command whose
-packages the change reaches, unchanged:
+packages the change reaches. An equivalent declared host cell supplies its own
+identity and execution budget; commands without one remain unchanged:
 
 * a changed path inside a workspace member touches that member, and the change
   reaches every member that depends on it (any dependency kind), since an API
@@ -26,6 +27,7 @@ the reached crates.
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import sys
 import tomllib
@@ -49,7 +51,12 @@ from molt.cargo_workspace import (  # noqa: E402
 )
 from tools.command_execution import CommandExecutor  # noqa: E402
 from tools.git_identity import changed_paths as committed_changed_paths  # noqa: E402
-from tools.proof_plan import ProofCommand, ProofPlan  # noqa: E402
+from tools.proof_plan import (  # noqa: E402
+    ProofCommand,
+    ProofPlan,
+    _normalized_arch,
+    _normalized_os,
+)
 from tools.toolchain_env import (  # noqa: E402
     ToolchainNotProvisioned,
     toolchain_environment,
@@ -196,13 +203,56 @@ def clippy_packages(command: ProofCommand) -> frozenset[str] | None:
     return frozenset(packages)
 
 
-def local_clippy_commands(plan: ProofPlan) -> tuple[ProofCommand, ...]:
-    return tuple(
-        command
-        for command in plan.commands
-        if command.argv[:2] == ("cargo", "clippy")
-        and LOCAL_TIER in command.data.get("tiers", ())
+def _execution_contract(command: ProofCommand) -> str:
+    """Ignore only scheduling coordinates; new execution fields must match too."""
+    return json.dumps(
+        {
+            key: value
+            for key, value in command.data.items()
+            if key
+            not in {
+                "id",
+                "family",
+                "cell",
+                "tiers",
+                "timeout_budget",
+                "timeout_seconds",
+            }
+        },
+        sort_keys=True,
     )
+
+
+def local_clippy_commands(plan: ProofPlan) -> tuple[ProofCommand, ...]:
+    host = (_normalized_os(), _normalized_arch())
+    host_cells = {
+        cell.id
+        for cell in plan.matrix_cells
+        if (cell.data["os"], cell.data["arch"]) == host
+    }
+    clippy = tuple(
+        command for command in plan.commands if command.argv[:2] == ("cargo", "clippy")
+    )
+    host_commands: dict[str, list[ProofCommand]] = {}
+    for command in clippy:
+        if command.data["cell"] in host_cells:
+            host_commands.setdefault(_execution_contract(command), []).append(command)
+    selected: dict[str, ProofCommand] = {}
+    for command in clippy:
+        if LOCAL_TIER not in command.data.get("tiers", ()):
+            continue
+        if command.data["cell"] not in host_cells:
+            equivalent = host_commands.get(_execution_contract(command), ())
+            if len(equivalent) > 1:
+                raise ValueError(
+                    f"{command.id}: multiple equivalent clippy cells for "
+                    f"{host[0]}/{host[1]}: "
+                    + ", ".join(candidate.id for candidate in equivalent)
+                )
+            if equivalent:
+                command = equivalent[0]
+        selected[command.id] = command
+    return tuple(selected.values())
 
 
 def select(
