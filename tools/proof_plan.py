@@ -17,6 +17,7 @@ import json
 import os
 import platform
 import re
+import shlex
 import shutil
 from dataclasses import dataclass
 from pathlib import Path
@@ -522,7 +523,20 @@ def toolchain_closure(
     return tuple(closed)
 
 
-_LOCAL_RULE_FIELDS = frozenset({"name", "description", "globs", "gates", "toolchains"})
+_LOCAL_RULE_FIELDS = frozenset(
+    {"name", "description", "globs", "gates", "pytest", "toolchains"}
+)
+_LOCAL_PYTEST_PREFIX = ("python", "-m", "pytest", "-q")
+
+
+def local_pytest_command(targets: Iterable[str], workers: int) -> str:
+    """The one pytest invocation for local gate test targets.
+
+    Integration merges every selected rule's targets into one run, so the
+    interpreter, guard and collection costs are paid once and the tests run
+    on ``workers`` processes.
+    """
+    return shlex.join([*_LOCAL_PYTEST_PREFIX, "-n", str(workers), *targets])
 
 
 def local_rule_field_error(rule: Mapping[str, Any]) -> str | None:
@@ -544,6 +558,7 @@ def local_gate_commands(
         f"local.always.{index}": (command, tuple(data.get("always_toolchains", [])))
         for index, command in enumerate(data.get("always", []))
     }
+    workers = int(data.get("local_pytest_workers", 1))
     for rule in data.get("rule", []):
         commands.update(
             {
@@ -554,7 +569,32 @@ def local_gate_commands(
                 for index, command in enumerate(rule.get("gates", []))
             }
         )
+        if rule.get("pytest"):
+            commands[f"local.{rule['name']}.pytest"] = (
+                local_pytest_command(rule["pytest"], workers),
+                tuple(rule.get("toolchains", [])),
+            )
     return commands
+
+
+def _local_pytest_target_errors(name: str, targets: object) -> list[str]:
+    """A gate's pytest targets are existing test paths or node IDs, never options.
+
+    Options belong to the merged invocation; a target-specific option would
+    silently apply to every other rule's tests in that run.
+    """
+    if not isinstance(targets, list) or not all(
+        isinstance(item, str) and item for item in targets
+    ):
+        return [f"{name}: pytest must be a list of test paths"]
+    errors = []
+    for target in targets:
+        path = target.split("::", 1)[0]
+        if target.startswith("-") or not path.startswith("tests/"):
+            errors.append(f"{name}: pytest target {target!r} must be a tests/ path")
+        elif not (ROOT / path).is_file():
+            errors.append(f"{name}: pytest target {target!r} does not exist")
+    return errors
 
 
 @dataclass(frozen=True, slots=True)
@@ -595,6 +635,7 @@ class ProofPlan:
     local_rules: tuple[dict[str, Any], ...]
     always: tuple[str, ...]
     always_toolchains: tuple[str, ...] = ()
+    local_pytest_workers: int = 0
 
     def toolchain_closure(self, names: Iterable[str]) -> tuple[str, ...]:
         """Expand declared toolchains through the canonical dependency graph."""
@@ -796,6 +837,7 @@ class ProofPlan:
             local_rules=tuple(dict(entry) for entry in data.get("rule", [])),
             always=tuple(data.get("always", [])),
             always_toolchains=tuple(data.get("always_toolchains", [])),
+            local_pytest_workers=int(data.get("local_pytest_workers", 0)),
         )
         errors = plan.validate()
         if errors:
@@ -911,6 +953,8 @@ class ProofPlan:
         if self.receipt_schema != proof_receipts.RECEIPT_SCHEMA:
             errors.append(f"receipt_schema must be {proof_receipts.RECEIPT_SCHEMA!r}")
         self._validate_named_lanes(errors)
+        if self.local_pytest_workers <= 0:
+            errors.append("local_pytest_workers must be positive")
         if self.executor_max_workers <= 0:
             errors.append("executor_max_workers must be positive")
         if not 1 <= self.inventory_hash_workers <= 32:
@@ -2183,6 +2227,7 @@ class ProofPlan:
                     isinstance(item, str) for item in value
                 ):
                     errors.append(f"{name}: {field} must be a list of strings")
+            errors.extend(_local_pytest_target_errors(name, rule.get("pytest", [])))
         return errors
 
     def all_selected(self, *, reason: str, fail_closed: bool = True) -> Selection:
