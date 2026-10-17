@@ -255,7 +255,11 @@ def test_explicit_join_flavor_matches_host_python(tmp_path, module, joiner, part
         tree, source_path=source
     )
     assert len(requests) == 1
-    value = scanner._resolve_static_source_path(requests[0].path, source)
+    from molt.cli.python_import_topology import PythonImportTopology
+
+    value = scanner._resolve_static_source_path(
+        requests[0].path, source, PythonImportTopology()
+    )
     assert value == joiner(*parts)
 
 
@@ -1923,3 +1927,40 @@ def test_element_cache_rejects_untyped_or_incoherent_operation(
         assert not recovered.cache_hit
         assert recovered.scan.source_values == cold.scan.source_values
     assert load(source).cache_hit
+
+
+@pytest.mark.parametrize(
+    ("expression", "change"),
+    [
+        ("'loaded.py'", "create"),
+        ("'loaded.py'", "remove"),
+        ("Path('loaded.py').resolve()", "create"),
+        ("'site'", "create-main"),
+    ],
+)
+def test_a_source_execution_target_is_a_fact_of_the_operation(
+    tmp_path, expression, change
+):
+    """The target decision belongs to this build's import topology."""
+    from molt.cli.python_import_topology import PythonImportTopologyChangedError
+
+    source = write(
+        tmp_path / "entry.py",
+        f"from pathlib import Path\nimport runpy\nrunpy.run_path({expression})\n",
+    )
+    target = tmp_path / "loaded.py"
+    if change == "remove":
+        write(target)
+    cache = _ModuleResolutionCache()
+    first = load(source, resolution_cache=cache)
+    assert bool(first.scan.source_executions) is (change == "remove")
+    metadata = tmp_path.stat()
+    if change == "create":
+        write(target)
+    elif change == "remove":
+        target.unlink()
+    else:
+        write(tmp_path / "site/__main__.py")
+    os.utime(tmp_path, ns=(metadata.st_atime_ns, metadata.st_mtime_ns))
+    with pytest.raises(PythonImportTopologyChangedError):
+        cache.import_topology.validate()
