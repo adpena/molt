@@ -301,7 +301,9 @@ class ExceptionLoweringMixin(GeneratorMixinBase):
         self._emit_active_handler_name_deletes(escaped)
 
     @contextmanager
-    def _scratch_cleanup_on_error(self, cells: Sequence[ScratchCell]) -> Generator[None]:
+    def _scratch_cleanup_on_error(
+        self, cells: Sequence[ScratchCell]
+    ) -> Generator[None]:
         """Unwind expression-owned frame cells through a plain exception landing.
 
         Cells can be appended while lowering; unused slots begin as None. This

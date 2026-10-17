@@ -1323,8 +1323,10 @@ tests/differential/stdlib/intrinsics_module_import_runtime_call.py
 tests/differential/stdlib/io_buffer_ingress.py
 tests/differential/stdlib/io_buffered_peek.py
 tests/differential/stdlib/io_buffered_textio.py
+tests/differential/stdlib/io_bufferedreader_protocol.py
 tests/differential/stdlib/io_bufferedreader_readinto.py
 tests/differential/stdlib/io_bufferedwriter_flush_basic.py
+tests/differential/stdlib/io_bufferedwriter_protocol.py
 tests/differential/stdlib/io_bytesio_basic.py
 tests/differential/stdlib/io_bytesio_getbuffer.py
 tests/differential/stdlib/io_isatty_regular_file.py
