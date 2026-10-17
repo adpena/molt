@@ -5,8 +5,36 @@ from __future__ import annotations
 import os
 from pathlib import Path
 import stat
+import sys
+from collections.abc import Callable
 
-from tests.process_guard_common import run_guarded_test_process
+
+_DONOR_FACTORY: Callable[[], Path] | None = None
+_DONOR: Path | None = None
+
+
+def bind_native_donor_factory(factory: Callable[[], Path] | None) -> None:
+    """Bind the pytest session's lazy directory owner, or release it at teardown."""
+    global _DONOR_FACTORY, _DONOR
+    _DONOR_FACTORY, _DONOR = factory, None
+
+
+def native_executable_donor() -> Path:
+    """One small real native image, built only if this test session needs it.
+
+    Runtime fixture identities repeatedly hash each independent image. Copying
+    the macOS interpreter made each image 18 MB; system binaries carry a
+    restricted flag a copy cannot retain. Windows's interpreter launcher is
+    already small and requires no compilation.
+    """
+    global _DONOR
+    if os.name == "nt":
+        return Path(sys.executable).resolve(strict=True)
+    if _DONOR is None:
+        if _DONOR_FACTORY is None:
+            raise RuntimeError("tests/conftest.py must bind the native donor directory")
+        _DONOR = build_native_executable(_DONOR_FACTORY() / "donor", "fn main() {}\n")
+    return _DONOR
 
 
 def write_mock_executable(path: Path, content: bytes) -> Path:
@@ -44,6 +72,8 @@ def build_native_executable(path: Path, rust_source: str) -> Path:
     needs a fake tool with real process behavior, such as answering differently
     by `argv[0]`, compiles one instead of writing a script.
     """
+    from tests.process_guard_common import run_guarded_test_process
+
     source = path.with_name(f"{path.name}.rs")
     source.write_text(rust_source, encoding="utf-8")
     run_guarded_test_process(

@@ -154,3 +154,19 @@ fn daemon_response_payload_omits_false_optional_fields() {
     assert!(!text.contains("\"health\""));
     assert!(!text.contains("\"error\""));
 }
+
+#[cfg(feature = "native-backend")]
+#[test]
+fn daemon_inline_ir_requires_a_complete_request_frame() {
+    let frame = br#"{"version":1,"jobs":[{"id":"frame","is_wasm":false,"output":"unused.o","cache_key":"frame","ir":{"functions":[]}}]}"#;
+    let mut whitespace = frame.to_vec();
+    whitespace.extend_from_slice(b" \t\r\n");
+    let request = DaemonRequest::from_json_bytes(&whitespace).expect("complete inline request");
+    assert!(request.jobs.unwrap()[0].ir.is_some());
+    for suffix in [b"{}".as_slice(), b"!".as_slice(), frame.as_slice()] {
+        let mut bytes = frame.to_vec();
+        bytes.extend_from_slice(suffix);
+        let error = DaemonRequest::from_json_bytes(&bytes).expect_err("request suffix");
+        assert!(error.contains("trailing"), "{error}");
+    }
+}

@@ -45,39 +45,7 @@ from molt.cli.runtime_wasm_build_spec import (
 )
 from molt.cli.compiler_metadata import _compiler_root
 from molt.wasi_sdk_identity import WasiCAbiProjection
-
-
-# pytest's session temporary-directory factory, bound by tests/conftest.py; the
-# donor is built in it on first use.
-_DONOR_FACTORY = None
-_DONOR: Path | None = None
-
-
-def bind_native_donor_factory(factory) -> None:
-    global _DONOR_FACTORY, _DONOR
-    _DONOR_FACTORY, _DONOR = factory, None
-
-
-def _host_executable_donor() -> Path:
-    """A small real native image of this host, built once per test session.
-
-    Each fixture image is hashed wherever a tree identity covers it, so the
-    donor's size multiplies through every test: the interpreter is 18 MB on
-    macOS. System binaries cannot stand in: macOS marks them ``restricted``,
-    a flag a copy cannot carry. Windows's ``python.exe`` launcher is small.
-    """
-    global _DONOR
-    if os.name == "nt":
-        return Path(sys.executable).resolve(strict=True)
-    if _DONOR is None:
-        if _DONOR_FACTORY is None:
-            raise RuntimeError("tests/conftest.py binds the native donor directory")
-        from tests.executable_test_support import build_native_executable
-
-        _DONOR = build_native_executable(
-            _DONOR_FACTORY.mktemp("native-donor") / "donor", "fn main() {}\n"
-        )
-    return _DONOR
+from tests.executable_test_support import native_executable_donor
 
 
 def _copy_native_image(source: Path, destination: Path) -> None:
@@ -166,7 +134,7 @@ class RuntimeFixtureRoot:
         for path in paths:
             if not path.exists():
                 path.parent.mkdir(parents=True, exist_ok=True)
-                source = _host_executable_donor() if donor is None else donor
+                source = native_executable_donor() if donor is None else donor
                 _copy_native_image(source, path)
                 if donor is None:
                     donor = path

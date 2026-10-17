@@ -225,20 +225,23 @@ def generous_host_memory(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 @pytest.fixture(scope="session", autouse=True)
-def _native_fixture_donor(tmp_path_factory: pytest.TempPathFactory) -> None:
-    """Give synthetic tool images a small donor in this session's temp tree."""
-    from tests.runtime_build_identity_helper import bind_native_donor_factory
+def _native_fixture_donor(tmp_path_factory: pytest.TempPathFactory) -> Iterator[None]:
+    """Bind a lazy donor without loading runtime construction in unrelated tests."""
+    from tests.executable_test_support import bind_native_donor_factory
 
-    bind_native_donor_factory(tmp_path_factory)
+    bind_native_donor_factory(lambda: tmp_path_factory.mktemp("native-donor"))
+    try:
+        yield
+    finally:
+        bind_native_donor_factory(None)
 
 
 @pytest.fixture(scope="session")
 def native_fixture_donor(_native_fixture_donor: None) -> Path:
-    """Build the donor before any test body runs: a test may forbid launching
-    processes, and building the donor launches rustc."""
-    from tests.runtime_build_identity_helper import _host_executable_donor
+    """Build before a requesting test runs: its body may forbid child launches."""
+    from tests.executable_test_support import native_executable_donor
 
-    return _host_executable_donor()
+    return native_executable_donor()
 
 
 @pytest.fixture

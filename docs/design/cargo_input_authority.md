@@ -203,6 +203,26 @@ Each slice is one contract, migrated whole with its consumers and tests:
    the `CompilerSourceGeneration` fence and `_cache_fingerprint`.
 4. **Proof supervisor** (`supervisor_generation.py:197-236`).
 
+## Development fixture cost
+
+Custody-only tool fixtures use independent copies of one small native image,
+owned lazily by the pytest session through `tests/executable_test_support.py`.
+They retain the real executable and SDK identity validators; tests of tool
+behavior still supply actual tools or explicit subprocess protocol fixtures.
+An existing-only or empty image batch never requests the donor, and mutating
+one copy must leave both its siblings and the donor unchanged. The lightweight
+session binder does not import runtime construction or launch a compiler.
+
+The measured macOS arm64 trade is one 93 ms guarded Rust invocation to build a
+462,024-byte image instead of repeatedly copying and hashing the 18,084,128-byte
+interpreter. Across three alternating observations per input, synthetic SDK
+construction (seven independent images, receipt construction and real install
+validation) took medians of 6.9 ms and 56.8 ms respectively. Those are fixture
+costs, not compiler or guest performance results. Windows uses its existing
+small native interpreter launcher; Linux uses the same lazy compiled donor
+policy. Platform execution qualification remains explicit. No fixture code or
+development verification enters emitted programs.
+
 ## Review history
 
 2026-10-17, adversarial review of the first draft, which read the uplifted

@@ -369,7 +369,7 @@
     "tests/tools/test_win_job_contract.py",
     "tests/tools/test_windows_process_api.py"
   ],
-  "authority_sha256": "ebbb4006a829b684857ff05ab9e2885c3ede3698f0303ea90d442053ebdaa9f4",
+  "authority_sha256": "73175f24e28b7beeb21c0067855af4f8e1cb8c93ccb20161107c15c08dfe2860",
   "cargo_environment_policy": {
     "incident_command": "cargo metadata --locked --format-version 1",
     "incident_commit": "20b046b79bd4ca64a8c859f737f6e330377bcc4e",
@@ -6746,7 +6746,7 @@
         "molt-backend-rust",
         "--no-default-features",
         "--features",
-        "molt-backend/native-backend,molt-backend/wasm-backend,molt-backend/luau-backend,molt-backend/rust-backend",
+        "molt-backend/native-backend,molt-backend/wasm-backend,molt-backend/luau-backend,molt-backend/rust-backend,molt-backend/cbor",
         "--",
         "--include-ignored",
         "--skip",
@@ -8502,9 +8502,10 @@
       "local.apparatus-learning-protection.0": "python -m pytest -q tests/tools/test_apparatus_agent_safety.py tests/tools/test_anti_recurrence_gate.py tests/tools/test_hooks_session_learning.py tests/tools/test_check_gate_liveness.py tests/tools/test_memory_graph.py",
       "local.apparatus-learning-protection.1": "python tools/apparatus_agent_safety.py --check",
       "local.apparatus-learning-protection.2": "python tools/anti_recurrence_gate.py --check",
+      "local.backend-ir-framing.0": "cargo test --locked --profile release-fast -p molt-backend --features native-backend,cbor --bin molt-backend backend_process::input::tests",
       "local.backend-llvm.0": "cargo test --locked --profile release-fast -p molt-backend-native -p molt-backend --features molt-backend/native-backend,molt-backend/llvm --lib --test ir_contract_validation --no-fail-fast",
       "local.backend-native.0": "cargo clippy --locked -p molt-backend -p molt-backend-native -p molt-artifact-publish --features molt-backend/native-backend -- -D warnings",
-      "local.backend-native.1": "cargo test --locked --profile release-fast -p molt-backend -p molt-backend-native -p molt-artifact-publish --features molt-backend/native-backend --lib --no-fail-fast",
+      "local.backend-native.1": "cargo test --locked --profile release-fast -p molt-backend -p molt-backend-native -p molt-artifact-publish --features molt-backend/native-backend --lib --bins --no-fail-fast",
       "local.bootstrap-stdlib.0": "python tools/check_stdlib_intrinsics.py --critical-allowlist",
       "local.builtin-binding-guard-authority.0": "python tools/gen_builtin_binding_guards.py --check",
       "local.builtin-binding-guard-authority.1": "python -m pytest -q tests/test_gen_builtin_binding_guards.py tests/test_frontend_builtin_binding_guards.py",
@@ -9700,10 +9701,10 @@
           "local.backend-native.0",
           "local.backend-native.1"
         ],
-        "description": "Cranelift/native backend and driver Rust: clippy + owning release-fast lib tests.",
+        "description": "Cranelift/native backend and driver Rust: clippy + owning release-fast library and binary tests.",
         "gates": [
           "cargo clippy --locked -p molt-backend -p molt-backend-native -p molt-artifact-publish --features molt-backend/native-backend -- -D warnings",
-          "cargo test --locked --profile release-fast -p molt-backend -p molt-backend-native -p molt-artifact-publish --features molt-backend/native-backend --lib --no-fail-fast"
+          "cargo test --locked --profile release-fast -p molt-backend -p molt-backend-native -p molt-artifact-publish --features molt-backend/native-backend --lib --bins --no-fail-fast"
         ],
         "globs": [
           "runtime/molt-backend/**/*.rs",
@@ -9716,6 +9717,27 @@
           "runtime/molt-artifact-publish/Cargo.toml"
         ],
         "name": "backend-native",
+        "toolchains": [
+          "python",
+          "rustc",
+          "cargo"
+        ]
+      },
+      {
+        "command_ids": [
+          "local.backend-ir-framing.0"
+        ],
+        "description": "Run actual binary input receivers with CBOR enabled; the native binary family also proves disabled-feature refusal.",
+        "gates": [
+          "cargo test --locked --profile release-fast -p molt-backend --features native-backend,cbor --bin molt-backend backend_process::input::tests"
+        ],
+        "globs": [
+          "runtime/molt-backend/Cargo.toml",
+          "runtime/molt-backend/src/backend_process/input/**/*.rs",
+          "runtime/molt-ir/src/ir.rs",
+          "runtime/molt-ir/src/ir/ndjson*.rs"
+        ],
+        "name": "backend-ir-framing",
         "toolchains": [
           "python",
           "rustc",
@@ -10446,6 +10468,12 @@
       ],
       "local.apparatus-learning-protection.2": [
         "python"
+      ],
+      "local.backend-ir-framing.0": [
+        "python",
+        "rustc",
+        "cargo",
+        "git"
       ],
       "local.backend-llvm.0": [
         "python",

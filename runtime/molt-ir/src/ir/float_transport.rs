@@ -109,7 +109,9 @@ mod tests {
             let typed: BackendIrDocument = serde_json::from_str(&json).unwrap();
             let mut function = serde_json::to_value(&ir.functions[0]).unwrap();
             function["kind"] = serde_json::json!("function");
-            let ndjson = format!("{function}\n");
+            let ndjson = format!(
+                "{{\"kind\":\"ir_stream_start\"}}\n{function}\n{{\"kind\":\"ir_stream_end\"}}\n"
+            );
             let streamed = BackendIrDocument::from_ndjson_reader(ndjson.as_bytes()).unwrap();
             for document in [manual, typed, streamed] {
                 let actual = document.ir.functions[0].ops[0].f_value.unwrap();

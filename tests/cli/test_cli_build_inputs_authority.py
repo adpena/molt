@@ -286,8 +286,30 @@ def test_frontend_platform_fact_uses_selected_runtime_target(target, expected):
     assert build_inputs._target_sys_platform(target) == expected
 
 
-def test_frontend_native_platform_fact_uses_the_actual_host():
-    assert build_inputs._target_sys_platform("native") == sys.platform
+@pytest.mark.parametrize("target", ["native", "llvm"])
+def test_frontend_native_platform_fact_uses_the_actual_host(target):
+    assert build_inputs._target_sys_platform(target) == sys.platform
+
+
+@pytest.mark.parametrize("target", ["native", "llvm"])
+def test_native_build_configuration_preserves_host_platform(tmp_path, target):
+    from molt.backend_environment import CodegenSelection
+
+    config, failure = build_inputs._prepare_build_config(
+        project_root=tmp_path,
+        warnings=[],
+        json_output=True,
+        target=target,
+        profile="dev",
+        pgo_profile=None,
+        runtime_feedback=None,
+        capabilities=None,
+        codegen=CodegenSelection("llvm" if target == "llvm" else "cranelift"),
+    )
+    assert failure is None
+    assert config is not None
+    assert config.target_sys_platform == sys.platform
+    assert config.codegen.backend == ("llvm" if target == "llvm" else "cranelift")
 
 
 def test_frontend_platform_fact_refuses_an_unadmitted_target():

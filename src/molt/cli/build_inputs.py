@@ -47,6 +47,7 @@ from molt.cli.config_resolution import (
     _coerce_bool,
     _load_molt_config,
     _resolve_build_config,
+    runtime_target,
 )
 from molt.cli.lockfiles import _check_lockfiles
 from molt.cli.models import (
@@ -56,7 +57,6 @@ from molt.cli.models import (
     RuntimeFeedbackSummary,
     Target,
     _BinaryImageScope,
-    runtime_target,
     _BuildEntrySelector,
     _ModuleRootResolution,
     _PreparedBuildConfig,

@@ -26,10 +26,10 @@ from molt.source_root import compiler_source_root
 from molt.wasi_sysroot import resolve_wasi_sysroot_layout
 from tests.process_guard_common import current_thread_only, install_module_view
 from tests.rust.process_guard import run_rust_test_process
+from tests.executable_test_support import native_executable_donor
 from tests.runtime_build_identity_helper import (
     build_python_identity_fixture,
     RuntimeFixtureRoot,
-    _host_executable_donor,
     clear_wasm_toolchain_selection,
     provisioned_wasi_sdk_fixture,
 )
@@ -2398,7 +2398,7 @@ def test_build_python_cleanup_preserves_recorded_failure(
 def test_native_executable_fixture_preserves_independent_images(
     runtime_fixture_root, batch
 ):
-    source = _host_executable_donor()
+    source = native_executable_donor()
     original = hashlib.sha256(source.read_bytes()).hexdigest()
     names = ("native-fixture/first", "native-fixture/second")
     if batch:
@@ -2424,7 +2424,7 @@ def test_native_executable_fixture_preserves_independent_images(
 
 
 def test_native_executable_batch_never_reuses_mutated_donor(runtime_fixture_root):
-    source = _host_executable_donor()
+    source = native_executable_donor()
     original = hashlib.sha256(source.read_bytes()).hexdigest()
     existing = runtime_fixture_root.native_executable("native-fixture/existing")
     existing.write_bytes(b"deliberate custody mutation")
@@ -2449,12 +2449,10 @@ def test_native_executable_batch_retains_images_without_probing_source(
 
     image = runtime_fixture_root.native_executable("retained-image")
     image.write_bytes(b"retained mutation")
-    install_module_view(
-        monkeypatch,
-        "sys",
-        sys,
+    monkeypatch.setattr(
         helper,
-        executable=str(runtime_fixture_root.path / "unavailable-interpreter"),
+        "native_executable_donor",
+        lambda: pytest.fail("an empty or existing-only batch must not request a donor"),
     )
     assert runtime_fixture_root.native_executables(()) == ()
     assert runtime_fixture_root.native_executables(("retained-image",)) == (image,)

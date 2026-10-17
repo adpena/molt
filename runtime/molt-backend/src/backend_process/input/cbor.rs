@@ -1,7 +1,7 @@
 use std::io;
 
 #[cfg(feature = "cbor")]
-use super::source::{invalid_ir_exit, open_ir_file};
+use super::source::{invalid_ir, open_ir_file, require_eof};
 #[cfg(feature = "cbor")]
 use crate::backend_process::io_limits::{read_bounded_request_bytes, stdin_request_limit_bytes};
 
@@ -9,8 +9,18 @@ use crate::backend_process::io_limits::{read_bounded_request_bytes, stdin_reques
 pub(super) fn read_cbor_backend_ir_document(
     _ir_file_path: Option<&str>,
 ) -> io::Result<molt_backend::BackendIrDocument> {
-    eprintln!("CBOR support requires the 'cbor' feature");
-    std::process::exit(1);
+    Err(io::Error::new(
+        io::ErrorKind::Unsupported,
+        "CBOR support requires the 'cbor' feature",
+    ))
+}
+
+#[cfg(feature = "cbor")]
+pub(super) fn decode(reader: &mut impl io::Read) -> io::Result<molt_backend::BackendIrDocument> {
+    let document =
+        ciborium::de::from_reader(&mut *reader).map_err(|err| invalid_ir("CBOR IR", err))?;
+    require_eof(reader, "CBOR IR")?;
+    Ok(document)
 }
 
 #[cfg(feature = "cbor")]
@@ -19,11 +29,7 @@ pub(super) fn read_cbor_backend_ir_document(
 ) -> io::Result<molt_backend::BackendIrDocument> {
     if let Some(ir_path) = ir_file_path {
         let file = open_ir_file(ir_path)?;
-        let reader = io::BufReader::new(file);
-        return match ciborium::de::from_reader::<molt_backend::BackendIrDocument, _>(reader) {
-            Ok(ir) => Ok(ir),
-            Err(err) => invalid_ir_exit("CBOR IR", err),
-        };
+        return decode(&mut io::BufReader::new(file));
     }
 
     let buf = read_bounded_request_bytes(
@@ -31,10 +37,5 @@ pub(super) fn read_cbor_backend_ir_document(
         stdin_request_limit_bytes(),
         "backend stdin request",
     )?;
-    let result = ciborium::de::from_reader::<molt_backend::BackendIrDocument, _>(&buf[..]);
-    drop(buf);
-    match result {
-        Ok(ir) => Ok(ir),
-        Err(err) => invalid_ir_exit("CBOR IR", err),
-    }
+    decode(&mut &buf[..])
 }

@@ -85,12 +85,6 @@ BuildEntrySelectorOrigin = Literal["cli", "config", "legacy"]
 BuildEntrySelectorTarget = Literal["file", "module"]
 
 
-def runtime_target(target: Target) -> Target:
-    """The runtime a compiler target builds for: ``llvm`` is the native host
-    compiled through the LLVM backend."""
-    return "native" if target == "llvm" else target
-
-
 @dataclass(frozen=True)
 class ModuleSyntaxErrorInfo:
     """Lossless parser exception payload; construction owns derived attributes.

@@ -66,12 +66,11 @@ from molt.cli.runtime_wasm_generation import (
     runtime_wasm_generation_path,
 )
 from molt.exact_json import canonical_json_sha256
-from tests.executable_test_support import write_mock_executable
+from tests.executable_test_support import native_executable_donor, write_mock_executable
 from tests.process_guard_common import current_thread_only
 from tests.runtime_build_identity_helper import (
     RuntimeFixtureRoot,
     clear_wasm_toolchain_selection,
-    _host_executable_donor,
     mock_wasm_optimizer_cache_fact,
     mock_wasm_optimizer_publications,
     provisioned_wasi_sdk_fixture,
@@ -593,7 +592,7 @@ def test_synthetic_tools_do_not_mutate_read_only_source_root(
         cargo_command=("cargo", "rustc"),
     )
     sdk = provisioned_wasi_sdk_fixture(runtime_fixture_root)
-    donor = _host_executable_donor()
+    donor = native_executable_donor()
     executable_digest = hashlib.sha256(donor.read_bytes()).hexdigest()
     assert sdk.tool_fact("wasm-ld")["sha256"] == executable_digest
     if os.name == "posix":

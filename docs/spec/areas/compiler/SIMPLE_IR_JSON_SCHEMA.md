@@ -40,6 +40,30 @@ registry and all control-flow references. It does not renumber labels or saved
 states for display: emitted IR must remain replayable, and diagnostic formatting
 must not change the program being inspected.
 
+Every input is exactly one complete frame. The backend accepts the explicit
+codec names `json`, `msgpack`, `cbor` (when enabled), and `ndjson`; an unknown
+explicit codec is an input error, not JSON selection. JSON accepts trailing JSON
+whitespace and rejects any second value or other suffix. MessagePack and CBOR
+require immediate EOF after the decoded value, including for buffered stdin.
+Malformed input returns an error before target admission or emission.
+
+This is a decoder boundary, not a new cache receipt or byte digest. Daemon JSON
+file leases use the same complete-document reader; inline documents remain
+inside one completely decoded JSON request frame. A cache-only hit need not
+open an unused lease. Native batch jobs likewise retain their complete JSON
+artifact/request decoding.
+
+The boundary follows [Serde JSON's whole-reader EOF contract](https://docs.rs/serde_json/1.0.151/serde_json/fn.from_reader.html).
+The binary value decoders require an explicit EOF check on their retained reader;
+a successful value decode alone does not admit the entire input. NDJSON uses
+one framing state machine with its existing function/program semantic checks.
+This preserves the compiler admission separation described in
+[architecture convergence](../../../design/foundation/77_architecture_convergence.md),
+including [Cranelift's explicit IR invariants](https://github.com/bytecodealliance/wasmtime/blob/main/cranelift/docs/ir.md).
+[LLVM bitcode's block lengths and END_BLOCK records](https://llvm.org/docs/BitCodeFormat.html)
+provide a framing analogy: structural completion is explicit and separate from
+the meaning of an IR record. They do not define Molt's JSON or NDJSON policy.
+
 ### Batch JSON
 
 Single JSON object containing all functions:
@@ -64,8 +88,15 @@ stream, including program metadata; `SimpleIR` carries its function stream.
 {"kind":"ir_stream_end"}
 ```
 
-Stream envelope kinds: `ir_stream_start`, `function`, `ir_stream_end`.
-Unknown kinds are silently skipped for forward compatibility.
+The first nonblank record must be `ir_stream_start`, followed by zero or more
+body records and exactly one `ir_stream_end`. EOF is mandatory after the end
+record; a final newline is optional. Blank lines (after trimming whitespace)
+are allowed before, within, and after the frame. Every nonblank record must be
+a JSON object with a string `kind`. Unknown body kinds are ignored for forward
+compatibility; they cannot replace either envelope marker or follow the end.
+Repeated starts, missing markers, and any nonblank suffix are rejected. Both
+`SimpleIR` and `BackendIrDocument` use this framing authority while retaining
+their distinct function-stream and complete-program validation.
 
 ---
 

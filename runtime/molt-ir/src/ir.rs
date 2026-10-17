@@ -19,6 +19,10 @@ use serde_json::Value as JsonValue;
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
 mod float_transport;
+mod ndjson;
+
+#[cfg(test)]
+mod ndjson_tests;
 
 #[derive(Debug, Default, Clone, Deserialize, serde::Serialize)]
 #[serde(default)]
@@ -277,14 +281,7 @@ impl BackendIrDocument {
         let mut profile = None;
         let mut module_registry = None;
         let mut code_slots = crate::code_slots::CodeSlotBindings::default();
-        for line in reader.lines() {
-            let line = line.map_err(|e| format!("NDJSON read error: {e}"))?;
-            let trimmed = line.trim();
-            if trimmed.is_empty() {
-                continue;
-            }
-            let value: JsonValue =
-                serde_json::from_str(trimmed).map_err(|e| format!("NDJSON parse error: {e}"))?;
+        ndjson::read_frame(reader, |value| {
             match value.get("kind").and_then(|v| v.as_str()) {
                 Some("ir_stream_start") => {
                     if let Some(bindings) = value.get("code_slots") {
@@ -306,12 +303,12 @@ impl BackendIrDocument {
                     }
                 }
                 Some("function") => {
-                    functions.push(FunctionIR::from_json_value(&value, "stream.function")?);
+                    functions.push(FunctionIR::from_json_value(value, "stream.function")?);
                 }
-                Some("ir_stream_end") => break,
-                _ => {} // skip unknown kinds for forward compat
+                _ => {} // Ignore unknown body kinds for forward compatibility.
             }
-        }
+            Ok(())
+        })?;
         let ir = SimpleIR::new_validated(functions, profile)?;
         code_slots
             .validate_functions(&ir.functions)
@@ -1073,14 +1070,7 @@ impl SimpleIR {
     pub fn from_ndjson_reader<R: std::io::BufRead>(reader: R) -> Result<Self, String> {
         let mut functions = Vec::new();
         let mut profile = None;
-        for line in reader.lines() {
-            let line = line.map_err(|e| format!("NDJSON read error: {e}"))?;
-            let trimmed = line.trim();
-            if trimmed.is_empty() {
-                continue;
-            }
-            let value: JsonValue =
-                serde_json::from_str(trimmed).map_err(|e| format!("NDJSON parse error: {e}"))?;
+        ndjson::read_frame(reader, |value| {
             match value.get("kind").and_then(|v| v.as_str()) {
                 Some("ir_stream_start") => {
                     if let Some(p) = value.get("profile")
@@ -1090,12 +1080,12 @@ impl SimpleIR {
                     }
                 }
                 Some("function") => {
-                    functions.push(FunctionIR::from_json_value(&value, "stream.function")?);
+                    functions.push(FunctionIR::from_json_value(value, "stream.function")?);
                 }
-                Some("ir_stream_end") => break,
-                _ => {} // skip unknown kinds for forward compat
+                _ => {} // Ignore unknown body kinds for forward compatibility.
             }
-        }
+            Ok(())
+        })?;
         Self::new_validated(functions, profile)
     }
 
@@ -1947,7 +1937,9 @@ mod json_parse_tests {
                 let binary = rmp_serde::to_vec_named(&document).unwrap();
                 let mut streamed = function;
                 streamed["kind"] = serde_json::json!("function");
-                let ndjson = format!("{streamed}\n");
+                let ndjson = format!(
+                    "{{\"kind\":\"ir_stream_start\"}}\n{streamed}\n{{\"kind\":\"ir_stream_end\"}}\n"
+                );
                 let errors = [
                     SimpleIR::from_json_str(&json).unwrap_err(),
                     serde_json::from_str::<SimpleIR>(&json)
