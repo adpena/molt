@@ -8,10 +8,12 @@ from molt.compiler_analysis.python_imports import (
 import ntpath
 import os
 import posixpath
+import stat
 from collections.abc import Collection, Mapping, Sequence
 from pathlib import Path
 
 from molt.cli import module_resolution as _module_resolution
+from molt.cli.python_import_topology import PythonImportTopology
 from molt.cli.models import (
     _CompleteImportScan,
     _ModuleGraphScanAuthority,
@@ -104,12 +106,15 @@ def _expand_static_package_all_star_children(
 
 
 def _resolve_static_source_path(
-    request: str | _StaticSourcePath, source_path: Path
+    request: str | _StaticSourcePath,
+    source_path: Path,
+    import_topology: PythonImportTopology,
 ) -> str | Path:
     if isinstance(request, str):
         return request
     parts = tuple(
-        _resolve_static_source_path(part, source_path) for part in request.parts
+        _resolve_static_source_path(part, source_path, import_topology)
+        for part in request.parts
     )
     head, *tail = parts
     if request.operation == "join":
@@ -125,7 +130,12 @@ def _resolve_static_source_path(
     if request.operation in {"resolve", "absolute"}:
         if not head.is_absolute():
             head = source_path.parent / head
-        return head.resolve() if request.operation == "resolve" else head.absolute()
+        if request.operation == "absolute":
+            return head.absolute()
+        # An existing path resolves through this operation's topology; a
+        # missing one is recorded as a miss and keeps its lexical form.
+        found = import_topology.probe(head)
+        return found.path if found is not None else head.resolve()
     return head
 
 
@@ -229,16 +239,25 @@ def _complete_import_scan(
         sites.append(site)
     executions: list[tuple[str | None, Path]] = []
     seen: set[tuple[str | None, Path]] = set()
+    # Each target decision is an import fact of this operation, so a target
+    # created, removed or retargeted during the build ends it.
+    topology = resolution_cache.import_topology
     for request in requests.source_executions:
-        resolved = Path(_resolve_static_source_path(request.path, source_path))
-        if not resolved.is_absolute():
-            resolved = source_path.parent / resolved
-        resolved = resolved.resolve()
-        if resolved.is_dir():
-            resolved = resolved / "__main__.py"
-        if resolved.suffix not in {".py", ".pyi"} or not resolved.is_file():
+        candidate = Path(
+            _resolve_static_source_path(request.path, source_path, topology)
+        )
+        if not candidate.is_absolute():
+            candidate = source_path.parent / candidate
+        target = topology.probe(candidate)
+        if target is not None and stat.S_ISDIR(target.mode):
+            target = topology.probe(target.path / "__main__.py")
+        if (
+            target is None
+            or not stat.S_ISREG(target.mode)
+            or target.path.suffix not in {".py", ".pyi"}
+        ):
             continue
-        execution = (request.module_name, resolved)
+        execution = (request.module_name, target.path)
         if execution not in seen:
             seen.add(execution)
             executions.append(execution)
