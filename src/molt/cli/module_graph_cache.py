@@ -12,7 +12,7 @@ import functools
 import hashlib
 import os
 import sys
-from dataclasses import asdict
+from dataclasses import asdict, dataclass, field
 from molt.compiler_analysis.python_imports import (
     RuntimeCatalogDeferral,
     SourceImportSite,
@@ -29,8 +29,9 @@ from molt.cli.source_record_store import SourceRecordStore, source_record_store
 from molt.default_paths import _default_molt_cache
 from molt.cli.json_cache import SOURCE_ANALYSIS_CACHE_MAX_BYTES
 from molt.cli.cache_fingerprints import (
+    _SOURCE_TREE_FINGERPRINT_TRANSACTION,
     _frontend_semantic_tooling_fingerprint,
-    _operation_resolved_path,
+    _operation_resolved,
     _source_tree_fingerprint_transaction,
 )
 from molt.cli import module_source as _module_source
@@ -717,7 +718,7 @@ def warm_stdlib_intrinsic_source_facts(
 
 def _resolved_module_cache_key(path_str: str, *parts: str) -> str:
     return hashlib.sha256(
-        "|".join((_operation_resolved_path(path_str), *parts)).encode("utf-8")
+        "|".join((os.fspath(_operation_resolved(path_str)), *parts)).encode("utf-8")
     ).hexdigest()[:24]
 
 
@@ -730,8 +731,9 @@ _IMPORT_SCAN_CACHE_SCHEMA_VERSION = 35
 _TOOLCHAIN_SOURCE_RECORDS = "toolchain_source_records"
 
 
-def _source_records(project_root: Path, path: Path) -> SourceRecordStore:
-    """The store that owns the per-source records of ``path``.
+@dataclass(frozen=True, slots=True)
+class SourceRecordStores:
+    """The two stores a build reads: its project's, then the toolchain's.
 
     A toolchain stdlib source is the same file, with the same records, in
     every project, so its records live in the user-wide cache, as a toolchain
@@ -739,20 +741,61 @@ def _source_records(project_root: Path, path: Path) -> SourceRecordStore:
     build state. Keys hold the absolute path and every read checks the
     captured source digest, so sharing admits nothing stale.
     """
+
+    project_root: Path
+    toolchain_root: Path
+    stdlib_root: Path
+    # ``owner`` tests containment lexically, as ``Path.is_relative_to`` does,
+    # without building every parent of each record's path (6-12 us a call).
+    _stdlib_key: str = field(init=False, repr=False, compare=False)
+    _stdlib_prefix: str = field(init=False, repr=False, compare=False)
+
+    def __post_init__(self) -> None:
+        key = os.path.normcase(os.fspath(self.stdlib_root))
+        object.__setattr__(self, "_stdlib_key", key)
+        object.__setattr__(
+            self, "_stdlib_prefix", key if key.endswith(os.sep) else key + os.sep
+        )
+
+    # The factory, not this operation, owns each connection: a forked worker
+    # inherits the operation but must open its own.
+    @property
+    def project(self) -> SourceRecordStore:
+        return source_record_store(self.project_root)
+
+    @property
+    def toolchain(self) -> SourceRecordStore:
+        return source_record_store(self.toolchain_root)
+
+    def owner(self, path: Path) -> SourceRecordStore:
+        key = os.path.normcase(os.fspath(path))
+        if key == self._stdlib_key or key.startswith(self._stdlib_prefix):
+            return self.toolchain
+        return self.project
+
+
+def _source_record_stores(project_root: Path) -> SourceRecordStores:
+    """The store roots of ``project_root``, resolved once per frontend operation."""
+    transaction = _SOURCE_TREE_FINGERPRINT_TRANSACTION.get()
+    if transaction is not None:
+        stores = transaction.source_record_stores.get(project_root)
+        if stores is not None:
+            return stores
     from molt.cli.module_resolution import _stdlib_root_path
 
-    project, toolchain = _source_record_stores(project_root)
-    return toolchain if path.is_relative_to(_stdlib_root_path()) else project
-
-
-def _source_record_stores(
-    project_root: Path,
-) -> tuple[SourceRecordStore, SourceRecordStore]:
-    """The two stores a build reads: its project's, then the toolchain's."""
-    return (
-        source_record_store(_build_state_root(project_root)),
-        source_record_store(_default_molt_cache() / _TOOLCHAIN_SOURCE_RECORDS),
+    stores = SourceRecordStores(
+        _build_state_root(project_root),
+        _default_molt_cache() / _TOOLCHAIN_SOURCE_RECORDS,
+        _stdlib_root_path(),
     )
+    if transaction is not None:
+        transaction.source_record_stores[project_root] = stores
+    return stores
+
+
+def _source_records(project_root: Path, path: Path) -> SourceRecordStore:
+    """The store that owns the per-source records of ``path``."""
+    return _source_record_stores(project_root).owner(path)
 
 
 def _import_scan_cache_key(
@@ -968,8 +1011,8 @@ def _read_persisted_import_scan_record(
         "dynamic_relative_import_candidates",
         "dynamic_star_modules",
     )
-    for field in fields:
-        values = payload.get(field)
+    for key in fields:
+        values = payload.get(key)
         if not isinstance(values, list) or not all(
             isinstance(item, str) for item in values
         ):
