@@ -4705,6 +4705,21 @@ gates = [
 ]
 
 [[rule]]
+name = "backend-daemon-cache"
+toolchains = ["python", "rustc", "cargo"]
+description = "Exercise typed daemon target identity, LRU and flights on the compiler-authorities feature graph."
+globs = [
+  "runtime/molt-backend/Cargo.toml",
+  "runtime/molt-backend/src/backend_process/cli_args/**/*.rs",
+  "runtime/molt-backend/src/backend_process/native_artifact.rs",
+  "runtime/molt-backend/src/backend_process/daemon/**/*.rs",
+  "runtime/molt-backend/src/main_tests/daemon*.rs",
+]
+gates = [
+  "cargo test --locked --profile dev-fast --config profile.dev-fast.package.cranelift-codegen.opt-level=0 -p molt-backend --no-default-features --features molt-backend/native-backend,molt-backend/wasm-backend,molt-backend/luau-backend,molt-backend/rust-backend,molt-backend/cbor --bin molt-backend daemon -- --test-threads=1",
+]
+
+[[rule]]
 name = "backend-ir-framing"
 toolchains = ["python", "rustc", "cargo"]
 description = "Run actual binary input receivers with CBOR enabled; the native binary family also proves disabled-feature refusal."

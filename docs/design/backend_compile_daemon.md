@@ -46,7 +46,7 @@ the same way. Two concurrent compiles would read each other's values.
   core runs. A job takes its compile slot only after the cache probes and the single-flight wait miss,
   so cache hits and followers never hold one.
 - The in-memory output cache (`DaemonCache`) holds its LRU lock only to look up or insert bytes, never
-  across a compile. Keys carry the request's configuration digest.
+  across a compile. Keys carry the request's configuration namespace and whole typed job target.
 - Single flight: concurrent requests for one cache key compile once. The first caller leads; followers
   wait, then probe the cache again. A leader that caches nothing (an error, or output above the memory
   budget) releases its followers, and each then compiles for itself.
@@ -64,6 +64,64 @@ the same way. Two concurrent compiles would read each other's values.
 - Memory: on Linux the backend installs a soft `RLIMIT_DATA` from its build's budget and keeps the
   inherited hard limit. The daemon widens the soft limit to `compile slots x budget`, the envelope of the
   same number of one-shot backends; each compile still plans within its own request's budget.
+
+### Cache identity and job transitions
+
+The cache and single-flight table use the same typed identity: the caller's
+source key, configuration namespace and complete `DaemonJobTarget`. Native
+identity includes both target triple and object/archive kind. WASM identity
+includes relocation mode and all three layout overrides, retaining absent
+versus explicit zero. Structural equality and hashing derive from the existing
+closed target/options types; adding an option therefore changes identity
+without maintaining a second field list or encoding.
+
+The module and function keys share one immutable target/namespace context.
+Request strings move into the keys; the LRU, its order queue and single-flight
+retain shared handles rather than formatting and copying composite strings.
+Equal module/function source keys share a handle. A bypassed cache or an empty
+source key creates no key or context. Key preparation allocates one context and up to two keys,
+plus a native triple clone when present. Hashing scales with key, namespace and
+triple length; WASM options take fixed work. This performs no serialization,
+cryptographic hash, file read, syscall or guest operation. These costs belong
+to compiler requests, never emitted binaries; no wall-clock improvement is
+claimed without a controlled measurement.
+
+Every cache touch also checks the existing order-compaction threshold. Above
+eight generations per live entry plus 32, one linear heap construction retains
+only the live stamps. This applies to hits as well as insertions: a daemon
+serving an unchanged artifact has bounded bookkeeping instead of growing one
+stale heap node per request. The LRU still evicts the least recently used live
+entry under its byte budget. Lookup/order maintenance is amortized logarithmic
+in live entries, with bounded linear compaction; output bytes remain shared.
+
+The existing job state machine remains:
+
+```text
+target admission -> cache probe -> hit: publish/sync output -> reply
+                         |
+                         +-> probe-only miss: needs_ir -> reply
+                         |
+                         +-> single-flight -> re-probe -> compile slot
+                                                           |
+                                              complete IR -> compile
+                                                           |
+                                               publish -> cache -> reply
+```
+
+A different typed target cannot hit an entry or wait on its flight, even when
+the caller supplies equal source/configuration keys. Cache-only operations do
+not open unused IR leases. Output paths and job IDs select delivery, so changing
+them does not change artifact identity. Diagnostics and native shared-stdlib
+admission keep their existing checks before reuse.
+
+This follows [sccache's inclusion of compiler arguments and architecture in
+cache identity](https://github.com/mozilla/sccache/blob/main/docs/Caching.md)
+and [Bazel's explicit action inputs and command](https://bazel.build/remote/caching).
+Molt's in-process cache keeps structural keys instead of introducing a second
+serialized target schema. The configuration namespace and source key remain
+caller-provided. Binding the admitted semantic environment and actual consumed
+IR to those claims remains open under V1-01; target isolation alone does not
+establish authenticated compiler-input or release provenance.
 
 ### Retirement
 

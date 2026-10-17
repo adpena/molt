@@ -21,7 +21,7 @@ fn decode_shared_stdlib_archive_path(
 }
 
 /// Native transport kind is explicit: an archive is never a relocatable object.
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub(crate) enum NativeArtifactKind {
     #[default]
     Object,
@@ -38,15 +38,6 @@ impl NativeArtifactKind {
             );
         }
         Ok(())
-    }
-
-    /// The protocol label, as `parse` accepts it; daemon cache keys record it.
-    #[cfg(any(test, molt_backend_daemon))]
-    pub(crate) fn as_str(self) -> &'static str {
-        match self {
-            Self::Object => "object",
-            Self::Archive => "archive",
-        }
     }
 
     pub(crate) fn parse(value: &str) -> Result<Self, String> {
@@ -145,18 +136,13 @@ mod tests {
     }
 
     #[test]
-    fn native_transport_protocol_labels_roundtrip_without_aliasing() {
+    fn native_transport_protocol_labels_parse_without_aliasing() {
         for (kind, label) in [
             (NativeArtifactKind::Object, "object"),
             (NativeArtifactKind::Archive, "archive"),
         ] {
-            assert_eq!(kind.as_str(), label);
-            assert_eq!(NativeArtifactKind::parse(kind.as_str()), Ok(kind));
+            assert_eq!(NativeArtifactKind::parse(label), Ok(kind));
         }
-        assert_ne!(
-            NativeArtifactKind::Object.as_str(),
-            NativeArtifactKind::Archive.as_str()
-        );
         assert!(NativeArtifactKind::parse("wasm").is_err());
     }
 

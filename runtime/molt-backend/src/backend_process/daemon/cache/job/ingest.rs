@@ -1,17 +1,18 @@
 use std::path::Path;
 use std::sync::Arc;
 
+use super::super::super::protocol::DaemonCacheKey;
 use super::super::entries::insert_daemon_cache_entries;
 use super::super::shared::DaemonCache;
 
 pub(crate) fn maybe_cache_output_file(
     cache: &DaemonCache,
     output_path: &Path,
-    cache_key: &str,
-    function_cache_key: &str,
+    cache_key: Option<&Arc<DaemonCacheKey>>,
+    function_cache_key: Option<&Arc<DaemonCacheKey>>,
     warnings: &mut Vec<String>,
 ) {
-    if cache_key.is_empty() && function_cache_key.is_empty() {
+    if cache_key.is_none() && function_cache_key.is_none() {
         return;
     }
     let metadata = match std::fs::metadata(output_path) {

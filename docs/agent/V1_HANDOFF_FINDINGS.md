@@ -69,6 +69,15 @@ read pass or emitted-program checks. Its owning binary and codec proofs passed o
 and disabled (HF-309). Consumed-byte origin/cache derivation and
 authenticated release admission remain open under V1-01.
 
+The daemon now owns complete typed target identity across cache lookup,
+publication and single-flight coordination (HF-311). Repeated warm hits also
+keep bounded LRU bookkeeping (HF-312). Actual native and WASM producers exercise
+both cache tiers, changed-target misses and unchanged-target replay on macOS
+arm64. Caller IR/configuration keys still require consumed-input and semantic
+environment binding under V1-01; target isolation does not close that obligation.
+The [daemon design](../design/backend_compile_daemon.md#cache-identity-and-job-transitions)
+owns the legal transitions, costs and limits. Emitted binaries gain no checks.
+
 The current V1-01 input integration reuses the preserved Cargo per-unit reader
 and native generation publisher. Publication now requires coverage for files,
 declared directory roots and package-wide watches. Directory names participate
@@ -1113,6 +1122,8 @@ none is accepted as release debt or as a reason to weaken the declared matrix.
 
 | ID | Defect | Integrated fix and verification boundary |
 |----|--------|-----------------------------------------|
+| HF-311 | Daemon memory-cache and single-flight keys omitted the native target triple and all WASM link/layout options, so equal caller/configuration keys could replay or wait on a different target. | 2026-10-17: one structural key includes the existing whole typed target and caller namespace/source key. Lookup, both publication tiers, LRU and flights share it; request strings move and equal tiers share one handle. Actual native/WASM producer-to-replay controls cover both tiers and every target option, with changed-target misses leaving absent IR leases unopened. The 45-test owning daemon aperture passed on macOS arm64; the native-only graph also owns disabled-WASM parsing. No wire-schema adapter, serialized target list or guest check. [Contract and costs](../design/backend_compile_daemon.md#cache-identity-and-job-transitions). Actual IR/environment binding and other OS qualification remain V1-01 obligations. |
+| HF-312 | Warm cache hits appended order generations without compaction; a daemon serving unchanged artifacts grew bookkeeping with every hit. | 2026-10-17: hits and insertions share one bounded order-compaction owner, using linear heap construction. An independent 1,024-hit control proves bounded bookkeeping, shared output bytes and correct subsequent byte-budget eviction. It passed in the same native/WASM daemon aperture as HF-311. This bounds order metadata relative to live entries; it does not qualify total daemon RSS or release performance. |
 | HF-310 | Same-repository integrations could both run expensive proofs before racing to advance main. The second publication correctly refused but repeated qualification was then required. | The canonical live driver now holds the existing OS file-lock authority across fetch, source selection, gates, publication, confirmation and cleanup, keyed by Git's resolved common directory. Eight current controls passed across real sibling worktrees and an independent process, including stable lockfile identity, success/error/interruption release, dry-run nonmutation and literal POSIX path bytes. No stale-PID/deletion rule or proof-reuse shortcut. The lock is advisory to cooperating drivers in one repository; remote identity/non-fast-forward/ancestor checks remain mandatory for other writers. [Contract and costs](../ops/MULTI_AGENT_COORDINATION.md#serialized-integration); cross-OS qualification remains explicit. |
 | HF-309 | Binary IR readers could admit a valid prefix; NDJSON accepted missing end markers and ignored suffixes; unknown explicit codecs selected JSON. | One closed format selector, same-buffer binary EOF check, shared NDJSON start/body/end/EOF state machine and shared daemon/one-shot JSON decoder now own admission. Literal-byte, short-read, suffix, truncation, bound, EOF failure, daemon publication and lazy-cache controls passed: macOS arm64 release-fast default binary 118 tests and enabled-CBOR reader 5 tests; dev-fast shared IR/passes/TIR/WASM suites also passed in the 54-gate qualification of 5bf80b2ff. The exact 15 worker afterimages are retained. Input generation/byte origin, cache derivation and other OS/release coordinates remain under V1-01; this change adds no digest, second read pass or emitted-program check. |
 | HF-F303 | Hydration fixtures omitted the selected build Python after admission moved into the Cargo plan environment, leaving the real contract unexercised. | The three fixture environments name `MOLT_BUILD_PYTHON`; the repair is already integrated in `49b19350c`. Current 652-test focused verification includes the complete hydration file and real native publication controls. No parser, admission or publisher bypass. |
