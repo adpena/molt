@@ -253,6 +253,36 @@ def test_repository_plugin_exports_only_valid_pytest_hooks():
     manager.check_pending()
 
 
+def test_in_process_pytest_hands_off_before_capture_redirects_output(monkeypatch):
+    """The exec'd guard inherits fds 1 and 2, so they must still be the caller's."""
+
+    class HandedOff(Exception):
+        pass
+
+    def standard_streams() -> tuple[int, int]:
+        return os.fstat(1).st_ino, os.fstat(2).st_ino
+
+    seen: list[tuple[int, int]] = []
+
+    def handoff(argv, env) -> None:
+        seen.append(standard_streams())
+        raise HandedOff
+
+    caller = standard_streams()
+    bootstrap = pytest_memory_guard_bootstrap
+    monkeypatch.delenv(bootstrap.PYTEST_OUTER_GUARD_REEXEC_ENV, raising=False)
+    monkeypatch.setattr(bootstrap, "outer_memory_guard_active", lambda _env: False)
+    monkeypatch.setattr(bootstrap, "handoff_to_outer_guard", handoff)
+    with pytest.raises(HandedOff):
+        pytest.main(
+            [
+                "-q",
+                f"{__file__}::test_repository_plugin_exports_only_valid_pytest_hooks",
+            ]
+        )
+    assert seen == [caller]
+
+
 def test_installation_has_no_global_pytest_hook_but_repository_loads_guard():
     metadata = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text("utf-8"))
     # This metadata drives entry-point autoload in every environment where Molt
