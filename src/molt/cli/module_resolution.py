@@ -3,6 +3,7 @@ from __future__ import annotations
 import ast
 from collections.abc import Callable
 import functools
+import hashlib
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -20,6 +21,7 @@ from molt.compiler_analysis.python_namespace_graph import PythonNamespacePremise
 from molt.compiler_analysis.python_source_keys import (
     PythonSourceKey,
     _PythonAstDigestAdmission,
+    python_ast_digest,
 )
 from molt.target_python import (
     TargetPythonVersion,
@@ -374,6 +376,12 @@ class _ParsedModuleAst:
                 ast_digest_admission=self.admission,
             )
         return self._all_exports_by_target[target_python.tag]
+
+
+# Source text digest, target tag and native roots -> pruned AST digest. The key
+# names the content, so entries stay valid across builds; FIFO bounds it.
+_MODULE_AST_DIGESTS: dict[tuple[bytes, str, tuple[str, ...]], str] = {}
+_MODULE_AST_DIGEST_LIMIT = 4096
 
 
 @dataclass
@@ -741,6 +749,50 @@ class _ModuleResolutionCache:
             raise
         self.ast_cache[cache_key] = tree
         return tree
+
+    def module_ast_digest(
+        self,
+        path: Path,
+        *,
+        native_roots: tuple[str, ...],
+        target_python: TargetPythonVersion,
+    ) -> str:
+        """The AST digest of ``path``'s current source, pruned to ``native_roots``.
+
+        The digest is a function of the source text, the target and the roots,
+        so it is memoized by those values: finalization asks once per round
+        for every runtime-import owner, and a resident process asks again on
+        every build.
+        """
+        source = self.read_module_source(path, retain=False)
+        key = (
+            hashlib.sha256(source.encode("utf-8", "surrogatepass")).digest(),
+            target_python.tag,
+            native_roots,
+        )
+        digest = _MODULE_AST_DIGESTS.get(key)
+        if digest is not None:
+            return digest
+        parsed = self.parse_module_ast(
+            path,
+            source,
+            filename=str(path),
+            retain=bool(native_roots),
+            target_python=target_python,
+        )
+        if native_roots:
+            parsed, _pruned = self.native_support_view(
+                path,
+                parsed.tree,
+                native_roots,
+                ast_digest_admission=parsed.admission,
+                target_python=target_python,
+            )
+        digest = python_ast_digest(parsed.tree)
+        if len(_MODULE_AST_DIGESTS) >= _MODULE_AST_DIGEST_LIMIT:
+            _MODULE_AST_DIGESTS.pop(next(iter(_MODULE_AST_DIGESTS)))
+        _MODULE_AST_DIGESTS[key] = digest
+        return digest
 
     def native_support_view(
         self,

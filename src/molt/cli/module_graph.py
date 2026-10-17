@@ -1416,22 +1416,14 @@ def _finalize_runtime_import_closure(
                 if source_authority is not None
                 else ()
             )
-            parsed = module_resolution_cache.parse_module_ast(
-                path,
-                module_resolution_cache.read_module_source(path, retain=False),
-                filename=str(path),
-                retain=bool(native_roots),
-                target_python=target_python,
-            )
-            if native_roots:
-                parsed, _pruned = module_resolution_cache.native_support_view(
-                    path,
-                    parsed.tree,
-                    native_roots,
-                    ast_digest_admission=parsed.admission,
-                    target_python=target_python,
+            owner_digests_list.append(
+                (
+                    name,
+                    module_resolution_cache.module_ast_digest(
+                        path, native_roots=native_roots, target_python=target_python
+                    ),
                 )
-            owner_digests_list.append((name, python_ast_digest(parsed.tree)))
+            )
         owner_digests = tuple(owner_digests_list)
         policy = _module_import_scanner._module_graph_needs_runtime_import_support(
             module_graph=module_graph,

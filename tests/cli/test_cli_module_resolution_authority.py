@@ -419,3 +419,31 @@ def test_symlink_parent_selector_keeps_filesystem_traversal_order(
     link.symlink_to(other / "deep", target_is_directory=True)
     with pytest.raises(topology.PythonImportTopologyChangedError):
         cache.import_topology.validate()
+
+
+def test_module_ast_digest_follows_source_content(tmp_path) -> None:
+    # Finalization asks for every runtime-import owner's digest once per round,
+    # and a resident process asks again each build. The memo must answer from
+    # the source content alone: an unchanged source is not parsed again, and
+    # any edit yields the digest of the edited source.
+    import ast
+
+    from molt.cli import module_resolution
+    from molt.compiler_analysis.python_source_keys import python_ast_digest
+    from molt.target_python import _DEFAULT_TARGET_PYTHON_VERSION as target
+
+    path = tmp_path / "owner.py"
+    path.write_text("value = 1\n", encoding="utf-8")
+    first = module_resolution._ModuleResolutionCache().module_ast_digest(
+        path, native_roots=(), target_python=target
+    )
+    assert first == python_ast_digest(ast.parse("value = 1\n"))
+
+    fresh = module_resolution._ModuleResolutionCache()
+    assert fresh.module_ast_digest(path, native_roots=(), target_python=target) == first
+    assert fresh.source_parse_count == 0
+
+    path.write_text("value = 2\n", encoding="utf-8")
+    edited = fresh.module_ast_digest(path, native_roots=(), target_python=target)
+    assert edited == python_ast_digest(ast.parse("value = 2\n")) != first
+    assert fresh.source_parse_count == 1
