@@ -11,5 +11,8 @@
 mod dialogs;
 mod lifecycle;
 
-pub use dialogs::*;
-pub use lifecycle::*;
+#[allow(
+    clippy::wildcard_imports,
+    reason = "re-exports the C-ABI intrinsics into crate::intrinsics"
+)]
+pub use {dialogs::*, lifecycle::*};

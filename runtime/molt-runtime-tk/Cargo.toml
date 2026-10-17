@@ -17,3 +17,9 @@ libc = "0.2"
 default = ["tk", "native-tcl"]
 tk = []
 native-tcl = ["tk", "dep:libloading", "dep:molt-runtime-platform"]
+
+# Tk imports stay explicit: a glob import would let a module draw on an
+# ambient set of names that changes with the headless and native-Tcl feature
+# lanes. clippy.toml extends this lint to re-exports and prelude paths.
+[lints.clippy]
+wildcard_imports = "deny"

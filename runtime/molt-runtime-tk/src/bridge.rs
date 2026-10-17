@@ -5,7 +5,12 @@
 //! `tkinter_core.rs` consume this boundary instead of carrying local shim
 //! copies.
 
-use molt_runtime_core::prelude::*;
+use molt_runtime_core::prelude::{
+    MoltObject, OwnedBridgeHandleSnapshot, OwnedRuntimeValue, PyToken, TYPE_ID_LIST, TYPE_ID_TUPLE,
+    bridge_owned_handle_snapshot, obj_from_bits, rt_dec_ref, rt_exception_clear,
+    rt_exception_pending, rt_inc_ref, rt_is_truthy, rt_list, rt_raise_str, rt_str,
+    rt_string_as_bytes, rt_string_from, rt_tuple,
+};
 
 unsafe extern "C" {
     fn __molt_tk_has_capability(name_ptr: *const u8, name_len: usize) -> i32;
