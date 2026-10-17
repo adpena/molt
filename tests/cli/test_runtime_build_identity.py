@@ -29,6 +29,7 @@ from tests.rust.process_guard import run_rust_test_process
 from tests.runtime_build_identity_helper import (
     build_python_identity_fixture,
     RuntimeFixtureRoot,
+    _host_executable_donor,
     clear_wasm_toolchain_selection,
     provisioned_wasi_sdk_fixture,
 )
@@ -2397,7 +2398,7 @@ def test_build_python_cleanup_preserves_recorded_failure(
 def test_native_executable_fixture_preserves_independent_images(
     runtime_fixture_root, batch
 ):
-    source = Path(sys.executable).resolve(strict=True)
+    source = _host_executable_donor()
     original = hashlib.sha256(source.read_bytes()).hexdigest()
     names = ("native-fixture/first", "native-fixture/second")
     if batch:
@@ -2423,7 +2424,7 @@ def test_native_executable_fixture_preserves_independent_images(
 
 
 def test_native_executable_batch_never_reuses_mutated_donor(runtime_fixture_root):
-    source = Path(sys.executable).resolve(strict=True)
+    source = _host_executable_donor()
     original = hashlib.sha256(source.read_bytes()).hexdigest()
     existing = runtime_fixture_root.native_executable("native-fixture/existing")
     existing.write_bytes(b"deliberate custody mutation")
