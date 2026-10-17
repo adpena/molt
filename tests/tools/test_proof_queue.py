@@ -19067,7 +19067,9 @@ def test_apparatus_ledger_observes_live_wal_without_mutation_and_closes(
     logs = tmp_path / "runs"
     _insert_blocked_dependency_fixture(db, logs)
     logs.mkdir()
-    (logs / "failed-parent.log").write_text("ValueError: independent ledger proof\n")
+    (logs / "failed-parent.log").write_text(
+        "ValueError: independent ledger proof\n", encoding="utf-8"
+    )
     opened = []
     original_connect = state._connect
 
