@@ -38,6 +38,17 @@ def runtime_source_paths(
                 project_root / "runtime/build_support",
                 # Compiled by molt-runtime's sitebuiltins implementation.
                 project_root / "LICENSE",
+                # Build scripts compile the C API shims against these headers
+                # (molt.h and shared/), and molt-runtime-constants includes the
+                # WASM table layout; Cargo's dep-info lists all of them.
+                project_root / "include/molt",
+                project_root / "runtime/wasm_table_layout.inc",
+                # molt-runtime compiles these through #[path] in every lane,
+                # even where their own crates are not dependencies.
+                project_root / "runtime/molt-runtime-http/src/functions_logging.rs",
+                project_root / "runtime/molt-runtime-itertools/src/itertools.rs",
+                project_root / "runtime/molt-runtime-path/src/os_ext.rs",
+                project_root / "runtime/molt-runtime-path/src/pathlib.rs",
             ),
         )
     )

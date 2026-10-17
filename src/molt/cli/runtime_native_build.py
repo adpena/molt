@@ -26,6 +26,11 @@ from molt.cli.atomic_io import (
     _atomic_write_json,
 )
 from molt.cli.build_locks import _build_lock, BuildLockAcquisitionError
+from molt.cli.cargo_build_reads import (
+    CargoBuildReadsError,
+    cargo_build_reads,
+    paths_outside,
+)
 from molt.cli.cargo_execution import (
     CargoExecutionResult,
     CargoPlanExecutionError,
@@ -58,7 +63,11 @@ from molt.cli.native_link_manifest import (
 from molt.cli.runtime_artifact_selection import (
     RUNTIME_STATICLIB_ARTIFACTS,
 )
-from molt.cli.runtime_build_identity import resolve_native_runtime_build_identity
+from molt.cli.runtime_build_identity import (
+    resolve_native_runtime_build_identity,
+    runtime_build_tooling_paths,
+)
+from molt.cli.runtime_source_closure import runtime_source_paths
 from molt.cli.runtime_identity_schema import (
     RuntimeBuildIdentity,
     require_native_runtime_staticlib_identity,
@@ -1001,10 +1010,66 @@ def current_native_runtime_build_identity(
     )
 
 
+def _runtime_build_inputs_outside_identity(
+    plan: _NativeRuntimeBuildPlan, build: CargoExecutionResult
+) -> tuple[str, ...]:
+    """Files the build read that the runtime identity does not cover (HF-300).
+
+    Each unit's rustc dep-info and each build script's declared inputs list
+    what the build read. An input outside the identity's roots would let a
+    later build adopt this generation after that file changed, so publication
+    refuses it, as Bazel refuses an undeclared inclusion.
+    """
+    environment = plan.cargo_plan.environment
+    reads = cargo_build_reads(
+        build.stdout,
+        workspace_root=plan.project_root,
+        product_roots=tuple(
+            Path(environment[name])
+            for name in ("CARGO_TARGET_DIR", "CARGO_BUILD_BUILD_DIR")
+            if environment.get(name)
+        ),
+        toolchain_roots=(),
+    )
+    return paths_outside(
+        reads.files,
+        plan.project_root,
+        (
+            *runtime_source_paths(plan.project_root, plan.fingerprint_features),
+            *runtime_build_tooling_paths(plan.project_root),
+        ),
+    )
+
+
 def _publish_native_runtime_build(
     plan: _NativeRuntimeBuildPlan,
     build: CargoExecutionResult,
 ) -> bool:
+    try:
+        uncovered = _runtime_build_inputs_outside_identity(plan, build)
+    except (OSError, CargoBuildReadsError) as exc:
+        uncovered_error: str | None = str(exc)
+        uncovered = ()
+    else:
+        uncovered_error = None
+    if uncovered or uncovered_error is not None:
+        detail = uncovered_error or (
+            "the runtime identity does not cover files the build read: "
+            + ", ".join(uncovered[:8])
+            + (f" and {len(uncovered) - 8} more" if len(uncovered) > 8 else "")
+        )
+        return _record_native_runtime_failure(
+            plan.runtime_state,
+            project_root=plan.project_root,
+            stage="build-input-coverage",
+            summary=f"Refusing to publish the native runtime: {detail}",
+            command=plan.cmd,
+            cargo_stdout=build.stdout,
+            cargo_stderr=build.stderr,
+            returncode=build.returncode,
+            cargo_result=build,
+            emit_diagnostic=not plan.json_output,
+        )
     started = time.perf_counter()
     try:
         generation = publish_native_runtime_generation(

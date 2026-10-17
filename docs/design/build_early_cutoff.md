@@ -304,6 +304,8 @@ which removed the artifact store.
 2. A compact record.
 3. Stage-level cutoff: the runtime and backend identity checks (13 s of a warm
    build) reuse the ledger to prove by stat that nothing changed.
+   Their source half comes from Cargo's own per-unit outputs
+   ([Cargo input authority](cargo_input_authority.md)).
 4. Runtime tables use pinned Unicode data selected by the target Python version;
    native errno uses target headers with CPython's conditional publication
    policy. Retire build Python after all generated consumers migrate.
