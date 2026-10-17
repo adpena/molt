@@ -1010,6 +1010,16 @@ _REGISTRY_JSON = r"""{
     },
     {
       "audience": "user",
+      "default": "1800",
+      "kind": "int",
+      "name": "MOLT_BACKEND_DAEMON_IDLE_TIMEOUT",
+      "output_neutral": false,
+      "owner": "runtime/molt-backend/src/backend_process/io_limits/limits.rs",
+      "summary": "Seconds the backend daemon waits with no connection before it retires and unlinks its socket; 0 keeps it alive, and non-numeric values use 1800.",
+      "values": []
+    },
+    {
+      "audience": "user",
       "default": "5242880",
       "kind": "int",
       "name": "MOLT_BACKEND_DAEMON_LOG_MAX_BYTES",

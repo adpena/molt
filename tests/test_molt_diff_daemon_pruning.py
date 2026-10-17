@@ -323,10 +323,12 @@ def test_molt_diff_build_helper_pruning_preserves_codex_protected_group(
     assert custody_events == [(helper.pid, ["skipped_host_control_lineage"])]
 
 
-def test_molt_diff_verified_missing_socket_daemon_terminates_through_custody(
+def test_molt_diff_never_stops_a_verified_daemon_whose_socket_is_gone(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
+    # A daemon unlinks its socket only when it retires, on request or when
+    # idle; it exits once its accepted connections finish.
     module = _load_diff_module()
     daemon_root = tmp_path / "target" / ".molt_state" / "backend_daemon"
     daemon_root.mkdir(parents=True)
@@ -365,7 +367,62 @@ def test_molt_diff_verified_missing_socket_daemon_terminates_through_custody(
 
     module._prune_backend_daemons()
 
-    assert terminated == [identity.pid]
+    assert terminated == []
+
+
+def test_molt_diff_never_stops_an_older_daemon_beside_its_successor(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    # The older daemon retired and its successor bound the same path.
+    module = _load_diff_module()
+    daemon_root = tmp_path / "target" / ".molt_state" / "backend_daemon"
+    daemon_root.mkdir(parents=True)
+    socket_path = tmp_path / "shared.sock"
+    socket_path.write_text("", encoding="utf-8")
+    identities = [
+        _identity(tmp_path, pid=pid, socket_path=socket_path) for pid in (4321, 4322)
+    ]
+    records = {
+        identity.pid: custody.BackendDaemonIdentityRecord(
+            identity=identity, path=daemon_root / f"{identity.pid}.identity.json"
+        )
+        for identity in identities
+    }
+    processes = [
+        _daemon_process(
+            module,
+            pid=identity.pid,
+            socket_path=socket_path,
+            backend_bin=identity.backend_bin,
+        )
+        for identity in identities
+    ]
+    terminated: list[int] = []
+    monkeypatch.setenv("MOLT_SESSION_ID", "alpha-session")
+    monkeypatch.setenv("MOLT_DIFF_DAEMON_MAX_RSS_KB", "0")
+    monkeypatch.setattr(module, "_diff_backend_daemon_root", lambda: daemon_root)
+    monkeypatch.setattr(module, "_list_backend_daemon_processes", lambda: processes)
+    monkeypatch.setattr(module, "_pid_alive", lambda pid: pid in records)
+    monkeypatch.setattr(module, "_daemon_health", lambda _socket: None)
+    install_module_os_view(monkeypatch, module, name="posix")
+    monkeypatch.setattr(
+        module,
+        "_verified_backend_daemon_record",
+        lambda process, _records_by_pid: records[process.sample.pid],
+    )
+
+    def fake_terminate(recorded_identity, **kwargs) -> bool:
+        terminated.append(recorded_identity.pid)
+        return True
+
+    monkeypatch.setattr(
+        module.daemon_custody, "terminate_backend_daemon_identity", fake_terminate
+    )
+
+    module._prune_backend_daemons()
+
+    assert terminated == []
 
 
 def test_molt_diff_rss_threshold_skips_unverified_daemon(
@@ -414,7 +471,7 @@ def test_molt_diff_rss_threshold_skips_unverified_daemon(
     assert terminated == []
 
 
-def _oversized_daemon(tmp_path: Path, monkeypatch, *, retiring: bool = False):
+def _oversized_daemon(tmp_path: Path, monkeypatch):
     """One verified session daemon over the RSS threshold, with fake custody."""
     module = _load_diff_module()
     daemon_root = tmp_path / "target" / ".molt_state" / "backend_daemon"
@@ -423,7 +480,6 @@ def _oversized_daemon(tmp_path: Path, monkeypatch, *, retiring: bool = False):
     identity = dataclasses.replace(
         _identity(tmp_path, pid=4321, socket_path=socket_path),
         started_at_ns=1,
-        retiring=retiring,
     )
     identity_path = _write_session_identity(daemon_root, identity)
     record = custody.BackendDaemonIdentityRecord(identity=identity, path=identity_path)
@@ -503,9 +559,6 @@ def test_molt_diff_retires_an_idle_oversized_daemon_instead_of_killing_it(
     )
 
     def retire(path: Path, *, timeout: float | None) -> bool:
-        # The record says "retiring" before the daemon is asked.
-        recorded = custody.read_backend_daemon_identity(identity_path)
-        assert recorded is not None and recorded.retiring
         retired.append(path)
         return True
 
@@ -514,8 +567,7 @@ def test_molt_diff_retires_an_idle_oversized_daemon_instead_of_killing_it(
     module._prune_backend_daemons()
 
     assert retired == [socket_path]
-    recorded = custody.read_backend_daemon_identity(identity_path)
-    assert recorded is not None and recorded.retiring
+    assert custody.read_backend_daemon_identity(identity_path) is not None
 
 
 @pytest.mark.parametrize(
@@ -544,15 +596,12 @@ def test_molt_diff_leaves_a_busy_or_silent_oversized_daemon_running(
 
     module._prune_backend_daemons()
 
-    recorded = custody.read_backend_daemon_identity(identity_path)
-    assert recorded is not None and not recorded.retiring
+    assert custody.read_backend_daemon_identity(identity_path) is not None
 
 
 def test_molt_diff_never_stops_a_draining_daemon(tmp_path: Path, monkeypatch) -> None:
     # Retirement unlinked the socket; the daemon exits once drained.
-    module, socket_path, _identity_path = _oversized_daemon(
-        tmp_path, monkeypatch, retiring=True
-    )
+    module, socket_path, _identity_path = _oversized_daemon(tmp_path, monkeypatch)
     assert not socket_path.exists()
 
     module._prune_backend_daemons()

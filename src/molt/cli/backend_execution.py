@@ -553,17 +553,11 @@ def _sweep_orphaned_backend_daemon_locks(
                 _remove_backend_daemon_identity(identity_file)
                 cleaned += 1
                 continue
+            # A daemon that retired removed its own socket. A socket left at
+            # the path is a crashed daemon's or a successor's; the next start
+            # there probes it before removing it.
             _remove_backend_daemon_identity(identity_file)
             cleaned += 1
-            if identity.retiring:
-                # A retired daemon removed its own socket; any socket at that
-                # path now belongs to the daemon that succeeded it.
-                continue
-            try:
-                if identity.socket_path.exists():
-                    identity.socket_path.unlink()
-            except OSError:
-                pass
 
     return cleaned
 
@@ -727,19 +721,6 @@ def _backend_daemon_identity_from_health(
         backend_bin=backend_bin,
         process_command=_backend_daemon_process_command,
         environ=environ,
-    )
-
-
-def _terminate_backend_daemon_identity(
-    identity: _BackendDaemonIdentity,
-    *,
-    grace: float = 1.0,
-) -> bool:
-    return _daemon_custody.terminate_backend_daemon_identity(
-        identity,
-        grace=grace,
-        health_probe=_backend_daemon_health_probe,
-        pid_alive=_pid_alive,
     )
 
 
@@ -1196,6 +1177,34 @@ def retire_backend_daemon(socket_path: Path, *, timeout: float | None) -> bool:
     return health is not None and health.get("retiring") is True
 
 
+def retire_project_backend_daemons(
+    project_root: Path, env: Mapping[str, str], *, timeout: float = 2.0
+) -> tuple[int, ...]:
+    """Ask each live daemon that serves ``project_root`` to retire.
+
+    A retired checkout's daemons would otherwise hold their memory until their
+    idle timeout. Retirement drains, so a build still connected completes.
+    Returns the pids that acknowledged.
+    """
+    root = project_root.resolve()
+    daemon_root = _daemon_custody.backend_daemon_root_from_env(env, project_root=root)
+    retired: list[int] = []
+    for record in _daemon_custody.iter_backend_daemon_identity_records(daemon_root):
+        identity = record.identity
+        if (
+            identity.project_root.resolve() != root
+            # A daemon without its socket is already retiring.
+            or not identity.socket_path.exists()
+            or not _backend_daemon_identity_is_verified(
+                identity, allow_health_probe=False
+            )
+        ):
+            continue
+        if retire_backend_daemon(identity.socket_path, timeout=timeout):
+            retired.append(identity.pid)
+    return tuple(retired)
+
+
 def _backend_daemon_wait_until_ready(
     socket_path: Path,
     *,
@@ -1325,24 +1334,14 @@ def _start_backend_daemon(
                 # queue on that socket; restarting here can orphan a busy
                 # daemon and submit the same heavy full-IR request twice.
                 return publish_ready_custody()
-            elif existing_identity.retiring:
-                # A retiring daemon unlinked its socket and is finishing the
-                # connections it accepted. Start its successor, whose identity
-                # replaces this record; never stop the draining daemon.
-                existing_identity = None
-            else:
-                _terminate_backend_daemon_identity(
-                    existing_identity,
-                    grace=1.0,
-                )
-                _remove_backend_daemon_identity(identity_path)
-                existing_identity = None
+            # The daemon unlinks its socket only when it retires, on request
+            # or when idle, and then exits once its accepted connections
+            # finish. Start its successor, whose identity replaces this
+            # record; never stop the draining daemon.
+            existing_identity = None
         else:
-            _report_daemon_issue(
-                "Ignoring stale backend daemon identity "
-                f"{identity_path}; recorded pid {existing_identity.pid} is not "
-                "a verified live daemon."
-            )
+            # The daemon exited. A clean retirement removed its socket; a
+            # socket left behind is reported and removed below.
             _remove_backend_daemon_identity(identity_path)
             existing_identity = None
     try:
