@@ -4823,6 +4823,64 @@ def test_guarded_identity_timeout_is_terminal_before_command_launch(
     assert not marker.exists()
 
 
+@pytest.mark.parametrize("oversized", [False, True])
+def test_guarded_failure_retains_bounded_exception_notes(
+    tmp_path, monkeypatch, capsys, oversized
+):
+    repo = tmp_path / "noted-failure-repo"
+    repo.mkdir()
+    result = tmp_path / "noted-failure.execution.json"
+    command = [sys.executable, "-c", "raise SystemExit(99)"]
+    request = result.with_suffix(".request.json")
+    request.write_text(
+        json.dumps(
+            {
+                "schema": command_admission.EXECUTION_SCHEMA,
+                "run_id": "noted-failure",
+                "execution_nonce": "b" * 64,
+                "env_override_names": [],
+                "command": command,
+                "envelope": command_admission.envelope_for_command(command),
+                "cwd": str(repo),
+                "resource_family": "python-tests",
+                "result_path": str(result),
+                "timeout_seconds": 30.0,
+            }
+        ),
+        encoding="utf-8",
+    )
+    failure = ValueError("runtime build Python identity probe failed")
+    failure.add_note("Python runtime file symlink escapes custody: /sdk/libpython.so")
+    failure.add_note("cleanup also failed: identity probe failed (exit 2)")
+    if oversized:
+        failure.add_note("é" * 16384)
+    original_notes = list(failure.__notes__)
+    seen = []
+
+    def fail(*args, **kwargs):
+        seen.append(failure)
+        raise failure
+
+    # Same real terminal boundary as the Rust capture control below. No
+    # subprocess, Python capture or supervisor provisioning is needed to
+    # prove how the queue retains an admission owner's noted exception.
+    monkeypatch.setattr(
+        execution_environment, "_deterministic_execution_environment", fail
+    )
+    assert guarded_execution.execute_guarded_request(request) == 2
+    record = json.loads(result.read_text(encoding="utf-8"))
+    assert seen == [failure] and seen[0] is failure
+    assert failure.__notes__ == original_notes
+    assert record["phase"] == "failed" and record["command_started"] is False
+    detail = record["error"]
+    assert detail.startswith("ValueError: runtime build Python identity probe failed\n")
+    assert "Python runtime file symlink escapes custody: /sdk/libpython.so" in detail
+    assert "cleanup also failed: identity probe failed (exit 2)" in detail
+    assert len(detail.encode("utf-8")) <= 16384
+    assert detail.endswith("[exception diagnostic truncated]") is oversized
+    assert "proof command envelope failed: " + detail + "\n" in capsys.readouterr().err
+
+
 @pytest.mark.parametrize("publication_fails", [False, True])
 def test_guarded_rust_capture_failure_preserves_primary_error_and_durable_details(
     tmp_path, monkeypatch, capsys, publication_fails
@@ -4884,7 +4942,9 @@ def test_guarded_rust_capture_failure_preserves_primary_error_and_durable_detail
     if publication_fails:
 
         def fail_publication(*args, **kwargs):
-            raise OSError("diagnostic storage unavailable")
+            error = OSError("diagnostic storage unavailable")
+            error.add_note("secondary storage detail")
+            raise error
 
         monkeypatch.setattr(custody_cas, "put_json", fail_publication)
     assert guarded_execution.execute_guarded_request(request) == 2
@@ -4899,6 +4959,9 @@ def test_guarded_rust_capture_failure_preserves_primary_error_and_durable_detail
         assert "diagnostic storage unavailable" in detail.get(
             "publication_error", ""
         ), detail
+        assert "secondary storage detail" in detail["publication_error"]
+        assert "secondary storage detail" in output
+        assert "secondary storage detail" not in record["error"]
         assert "diagnostic publication failed" in output, {
             "detail": detail,
             "stderr": output,

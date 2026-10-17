@@ -258,6 +258,7 @@ def _runtime_payload(
             "architecture": architecture,
             "linkage": "shared",
             "unicodedata_linkage": "dynamic",
+            "configured_embedding_library": False,
             "scanner_policy": "no-follow-handle-two-snapshot-sha256-v1",
             "import_root_policy": "isolated-active-prefix-roots-v1",
             "native_dependency_policy": policy,
@@ -416,7 +417,7 @@ def test_platform_identity_loads_no_native_image() -> None:
 
 def _selection(paths: list[str], **native: object) -> dict[str, object]:
     return {
-        "schema": "molt-python-startup-selection-v1",
+        "schema": runtime.PYTHON_RUNTIME_SELECTION_SCHEMA,
         "platform": {"operating_system": "windows"},
         "import_paths": [{"lexical": "C:/py/Lib"}],
         "native": {"executable": "C:/py/python.exe", "paths": paths, **native},
@@ -1076,3 +1077,257 @@ def test_framework_linkage_stays_framework(monkeypatch: pytest.MonkeyPatch) -> N
     config = {"Py_ENABLE_SHARED": "0", "PYTHONFRAMEWORK": "Python"}
     monkeypatch.setattr(runtime.sysconfig, "get_config_var", config.get)
     assert runtime._runtime_linkage(None) == "framework"
+
+
+@pytest.fixture
+def configured_embedding_installation(tmp_path, monkeypatch):
+    """A static ELF interpreter with a separate, unmapped declared library."""
+    from molt import python_native_dependency_custody as native
+    from molt import python_native_locations as locations
+    from molt.python_file_node_custody import PythonFileCaptureContext
+    from tests.native_artifact_fixtures import elf_header
+
+    prefix = tmp_path / "installation"
+    stdlib = prefix / "lib" / "python3.14"
+    config_dir = stdlib / "config-3.14-aarch64-linux-gnu"
+    config_dir.mkdir(parents=True)
+    dynload = stdlib / "lib-dynload"
+    dynload.mkdir()
+    executable = prefix / "bin" / "python3.14"
+    executable.parent.mkdir()
+    executable.write_bytes(elf_header(machine=183, kind=2))
+    library_dir = tmp_path / "multiarch"
+    library_dir.mkdir()
+    library = library_dir / "libpython3.14.so.1.0"
+    library_bytes = b"independent configured embedding library fixture"
+    library.write_bytes(library_bytes)
+    alias = config_dir / "libpython3.14.so"
+    try:
+        alias.symlink_to(library)
+    except OSError as exc:
+        pytest.skip(f"symlink creation unavailable: {exc}")
+    config = {
+        "LIBDIR": str(library_dir),
+        "INSTSONAME": library.name,
+        "LDLIBRARY": alias.name,
+        "LIBPL": str(config_dir),
+        "Py_ENABLE_SHARED": 1,
+    }
+    proxy = SimpleNamespace(**vars(runtime.sys))
+    proxy.executable = str(executable)
+    proxy._base_executable = str(executable)
+    proxy.prefix = proxy.base_prefix = str(prefix)
+    proxy.path = [str(stdlib)]
+    monkeypatch.setattr(runtime, "sys", proxy)
+    monkeypatch.setattr(
+        runtime, "sysconfig", SimpleNamespace(get_config_var=config.get)
+    )
+    monkeypatch.setattr(runtime, "unicodedata", SimpleNamespace())
+    monkeypatch.setattr(runtime, "_runtime_library", lambda: None)
+    platform = _runtime_payload(architecture="arm64", version="3.14.4")
+    fields = (
+        "implementation",
+        "version",
+        "cache_tag",
+        "soabi",
+        "abi_flags",
+        "multiarch",
+        "py_debug",
+        "gil_disabled",
+        "operating_system",
+        "architecture",
+        "pointer_bits",
+        "byteorder",
+    )
+    monkeypatch.setattr(
+        runtime, "_platform_identity", lambda: {key: platform[key] for key in fields}
+    )
+    monkeypatch.setattr(
+        runtime,
+        "_base_runtime_paths",
+        lambda: {
+            "stdlib": stdlib,
+            "platstdlib": stdlib,
+            "base-lib-dynload": dynload,
+        },
+    )
+    snapshot = locations.LoadedNativeModuleSnapshot(
+        executable=executable,
+        paths=(executable,),
+        aliases={},
+        contracts=(),
+        macho_identities={},
+    )
+    monkeypatch.setattr(
+        locations, "_loaded_native_module_snapshot", lambda _os: snapshot
+    )
+    monkeypatch.setattr(native, "_loaded_native_module_snapshot", lambda _os: snapshot)
+    with PythonFileCaptureContext() as context:
+        yield SimpleNamespace(
+            context=context,
+            library=library,
+            alias=alias,
+            config=config,
+            library_bytes=library_bytes,
+            directory=library_dir,
+        )
+
+
+def test_configured_embedding_library_preserves_static_loaded_truth(
+    configured_embedding_installation,
+):
+    import hashlib
+
+    fixture = configured_embedding_installation
+    payload = runtime.capture_current_python_runtime(capture_context=fixture.context)
+    runtime.validate_python_runtime_identity(payload)
+    assert payload["capabilities"]["linkage"] == "static"
+    assert payload["capabilities"]["configured_embedding_library"] is True
+    assert payload["capabilities"]["required_explicit_roles"] == [
+        "base-executable",
+        "configured-embedding-library",
+    ]
+    assert runtime.runtime_explicit_file_content(
+        payload, "configured-embedding-library"
+    ) == {
+        "filename": "libpython3.14.so.1.0",
+        "size": len(fixture.library_bytes),
+        "sha256": hashlib.sha256(fixture.library_bytes).hexdigest(),
+    }
+    closure = payload["native_dependency_closure"]
+    provider = next(
+        row
+        for row in closure["components"]
+        if row["roles"] == ["configured-embedding-library"]
+    )
+    assert provider["id"] in closure["root_components"]
+    assert provider["id"] not in closure["observed_components"]
+    assert closure["edges"] == []
+    alias = next(
+        row
+        for root in payload["runtime_roots"]
+        for row in root["entries"]
+        if row["path"].endswith("/libpython3.14.so")
+    )
+    assert alias["target_role"] == "configured-embedding-library"
+    assert alias["target_owner"] == "base-runtime"
+    fixture.context.verify()
+
+
+@pytest.mark.parametrize(
+    "mutation", ["external-bytes", "config-retarget", "declared-provider-retarget"]
+)
+def test_configured_embedding_library_retains_bytes_and_alias_fences(
+    configured_embedding_installation, mutation
+):
+    fixture = configured_embedding_installation
+    runtime.capture_current_python_runtime(capture_context=fixture.context)
+    if mutation == "external-bytes":
+        fixture.library.write_bytes(b"changed external bytes")
+    else:
+        other = fixture.directory / "foreign.so"
+        other.write_bytes(fixture.library_bytes)
+        selected = fixture.alias if mutation == "config-retarget" else fixture.library
+        selected.unlink()
+        selected.symlink_to(other)
+    with pytest.raises((PythonEnvironmentIdentityError, ValueError)):
+        fixture.context.verify()
+
+
+def test_configured_embedding_library_rejects_unowned_external_symlink(
+    configured_embedding_installation,
+):
+    fixture = configured_embedding_installation
+    other = fixture.directory / "foreign.so"
+    other.write_bytes(fixture.library_bytes)
+    fixture.alias.unlink()
+    fixture.alias.symlink_to(other)
+    with pytest.raises(PythonEnvironmentIdentityError, match="symlink escapes custody"):
+        runtime.capture_current_python_runtime(capture_context=fixture.context)
+
+
+def test_configured_embedding_library_absence_is_optional_and_fenced(
+    configured_embedding_installation,
+):
+    fixture = configured_embedding_installation
+    fixture.alias.unlink()
+    fixture.library.unlink()
+    payload = runtime.capture_current_python_runtime(capture_context=fixture.context)
+    runtime.validate_python_runtime_identity(payload)
+    assert payload["capabilities"]["configured_embedding_library"] is False
+    assert payload["capabilities"]["required_explicit_roles"] == ["base-executable"]
+    fixture.library.write_bytes(fixture.library_bytes)
+    with pytest.raises(
+        PythonEnvironmentIdentityError, match="configured_embedding_library"
+    ):
+        fixture.context.verify()
+
+
+def test_configured_embedding_library_reuses_loaded_owner(
+    configured_embedding_installation,
+):
+    fixture = configured_embedding_installation
+    assert runtime._configured_embedding_library(fixture.library) is None
+
+
+@pytest.mark.parametrize("selection", ["directory", "broken", "relative", "traversal"])
+def test_configured_embedding_library_invalid_selection_fails(
+    configured_embedding_installation, selection
+):
+    fixture = configured_embedding_installation
+    if selection == "relative":
+        fixture.config["LIBDIR"] = "relative"
+    elif selection == "traversal":
+        fixture.config["INSTSONAME"] = "../foreign.so"
+    else:
+        fixture.library.unlink()
+        if selection == "directory":
+            fixture.library.mkdir()
+        else:
+            fixture.library.symlink_to(fixture.directory / "missing")
+    with pytest.raises(PythonEnvironmentIdentityError):
+        runtime._configured_embedding_library(None)
+
+
+@pytest.mark.parametrize("fault", ["presence", "role", "component-role"])
+def test_configured_embedding_library_receipt_cannot_omit_owner(
+    configured_embedding_installation, fault
+):
+    fixture = configured_embedding_installation
+    payload = runtime.capture_current_python_runtime(capture_context=fixture.context)
+    if fault == "presence":
+        payload["capabilities"]["configured_embedding_library"] = False
+    elif fault == "role":
+        payload["explicit_files"] = [
+            r
+            for r in payload["explicit_files"]
+            if r["role"] != "configured-embedding-library"
+        ]
+    else:
+        for row in payload["native_dependency_closure"]["components"]:
+            if row["roles"] == ["configured-embedding-library"]:
+                row["roles"] = []
+    _reseal(payload)
+    with pytest.raises(PythonEnvironmentIdentityError):
+        runtime.validate_python_runtime_identity(payload)
+
+
+def test_configured_embedding_library_selector_change_invalidates_capture(
+    configured_embedding_installation,
+):
+    fixture = configured_embedding_installation
+    runtime.capture_current_python_runtime(capture_context=fixture.context)
+    fixture.config["INSTSONAME"] = "different-declared-library.so"
+    with pytest.raises(
+        PythonEnvironmentIdentityError, match="configured_embedding_library"
+    ):
+        fixture.context.verify()
+
+
+@pytest.mark.parametrize("value", [0, 1, "present", None])
+def test_configured_embedding_library_capability_requires_boolean(value):
+    payload = _runtime_payload()
+    payload["capabilities"]["configured_embedding_library"] = value
+    _reseal(payload)
+    with pytest.raises(PythonEnvironmentIdentityError, match="capability vector"):
+        runtime.validate_python_runtime_identity(payload)

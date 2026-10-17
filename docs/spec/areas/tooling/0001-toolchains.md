@@ -514,6 +514,18 @@ or execution-identity claims.
 
 ## Python runtime identity
 
+A configured embedding library and the loaded CPython runtime are distinct
+inputs. A static interpreter may ship a separate libpython for embedding.
+Capture the exact optional install output selected by CPython's
+[installation rule](https://github.com/python/cpython/blob/v3.14.4/Makefile.pre.in#L2247-L2262)
+through the existing file pool and explicit component owner. Keep static linkage
+and the actual loaded-image census unchanged. Installed config aliases may refer
+only to that exact file; matching bytes in another file do not grant custody.
+The startup fence retains the selector and absence, so retargeting, appearance
+and content changes invalidate reuse. A provider identical to the loaded runtime
+reuses its owner. This adds at most one distinct library's bytes to development
+capture, with no extra process or emitted-program work.
+
 Windows runtime architecture comes from CPython `sysconfig.get_platform`, which
 identifies the interpreter build before consulting POSIX cross-build overrides.
 It does not query host-machine WMI or `PROCESSOR_*` environment values. This

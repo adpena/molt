@@ -74,6 +74,7 @@ def runtime_identity_manifest() -> dict[str, object]:
         "architecture": architecture,
         "linkage": "static",
         "unicodedata_linkage": "built-in",
+        "configured_embedding_library": False,
         "scanner_policy": "no-follow-handle-two-snapshot-sha256-v1",
         "import_root_policy": "isolated-active-prefix-roots-v1",
         "native_dependency_policy": dependency_policy,

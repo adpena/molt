@@ -601,7 +601,9 @@ in `libc_compat.rs`. Raw WASI C errno and native CRT/Win32 errors retain their
 own provenance. A public Windows alias may use Winsock without changing the
 corresponding raw CRT value or OSError classification. The zero-argument
 `molt_errno_constants` intrinsic and its tuple-of-dictionaries result are unchanged;
-its internal collector consumes the immutable runtime Python version.
+its internal collector consumes the runtime's selected Python version.
+V1-22 separately tracks retirement of the competing environment version selectors;
+this errno migration does not qualify that initialization boundary.
 
 Mechanism references: [CPython errno publication](https://github.com/python/cpython/blob/v3.15.0/Modules/errnomodule.c),
 [libc header-versus-Rust controls](https://github.com/rust-lang/libc/blob/main/CONTRIBUTING.md#test-before-you-commit),
