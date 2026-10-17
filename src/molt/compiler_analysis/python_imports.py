@@ -2512,6 +2512,9 @@ class _ImportScanRequests(NamedTuple):
     namespace_summary: PythonNamespaceSummary | None = None
     # Set only by a runtime-import owner's scan; completion requires the catalog.
     runtime_catalog: RuntimeCatalogDeferral | None = None
+    # A reached import statement or import-capable call: the program needs the
+    # runtime import protocol (`_uses_runtime_import_protocol`).
+    uses_runtime_import_protocol: bool = False
 
 
 class _ImportDiscoveryProjection(NamedTuple):
@@ -2530,6 +2533,7 @@ class _ImportDiscoveryProjection(NamedTuple):
     namespace_summary: PythonNamespaceSummary | None = None
     # Set only by a runtime-import owner's scan; completion requires the catalog.
     runtime_catalog: RuntimeCatalogDeferral | None = None
+    uses_runtime_import_protocol: bool = False
 
 
 def expand_runtime_catalog(

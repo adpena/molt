@@ -1799,17 +1799,16 @@ def test_runtime_protocol_scanner_uses_completion_reachability(
     dead: bool,
     call: str,
 ) -> None:
+    # Code after a raise contributes nothing, its imports included.
     source = (
-        "import importlib\nimport importlib.util\n"
-        + ("raise RuntimeError()\n" if dead else "")
+        ("raise RuntimeError()\n" if dead else "")
+        + "import importlib\nimport importlib.util\n"
         + call
         + "\n"
     )
-    assert module_import_scanner._tree_uses_runtime_import_protocol(
-        ast.parse(source),
-        module_name="pkg.entry",
-        is_package=False,
-    ) is (not dead)
+    assert _source_import_scan._collect_imports_for_graph(
+        ast.parse(source), "pkg.entry", False
+    ).uses_runtime_import_protocol is (not dead)
 
 
 @pytest.mark.parametrize("full", [False, True])
@@ -2452,11 +2451,9 @@ def test_runtime_protocol_detection_uses_canonical_possible_identity(
     expected: bool,
 ) -> None:
     assert (
-        module_import_scanner._tree_uses_runtime_import_protocol(
-            ast.parse(source),
-            module_name="pkg.entry",
-            is_package=False,
-        )
+        _source_import_scan._collect_imports_for_graph(
+            ast.parse(source), "pkg.entry", False
+        ).uses_runtime_import_protocol
         is expected
     )
 

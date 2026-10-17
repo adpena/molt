@@ -20,7 +20,6 @@ _MODULE_IMPORT_SCANNER_NAMES = (
     "IMPORTER_MODULE_NAME",
     "_IMPORT_SCAN_MODES",
     "_RUNTIME_IMPORT_PROTOCOL_IMPLEMENTATION_MODULES",
-    "_RUNTIME_IMPORT_PROTOCOL_MARKERS",
     "_RUNTIME_IMPORT_SUPPORT_ROOT_MODULES",
     "_DynamicRelativeImportDiscovery",
     "_collect_import_star_modules",
@@ -33,12 +32,9 @@ _MODULE_IMPORT_SCANNER_NAMES = (
     "_explicit_imports_reference_generated_importer",
     "_module_graph_needs_runtime_import_support",
     "_module_init_scan_nodes",
-    "_module_uses_runtime_import_protocol",
-    "_source_may_use_runtime_import_protocol",
     "_StaticImportCallPayload",
     "_static_module_all_exports",
     "_static_string_sequence",
-    "_tree_uses_runtime_import_protocol",
     "_validate_import_scan_mode",
 )
 
@@ -46,7 +42,6 @@ _MODULE_IMPORT_SCANNER_DEFINITIONS = (
     "IMPORTER_MODULE_NAME =",
     "_IMPORT_SCAN_MODES =",
     "_RUNTIME_IMPORT_PROTOCOL_IMPLEMENTATION_MODULES =",
-    "_RUNTIME_IMPORT_PROTOCOL_MARKERS =",
     "_RUNTIME_IMPORT_SUPPORT_ROOT_MODULES =",
     "class _DynamicRelativeImportDiscovery:",
     "def _collect_import_star_modules(",
@@ -59,12 +54,9 @@ _MODULE_IMPORT_SCANNER_DEFINITIONS = (
     "def _explicit_imports_reference_generated_importer(",
     "def _module_graph_needs_runtime_import_support(",
     "def _module_init_scan_nodes(",
-    "def _module_uses_runtime_import_protocol(",
-    "def _source_may_use_runtime_import_protocol(",
     "class _StaticImportCallPayload:",
     "def _static_module_all_exports(",
     "def _static_string_sequence(",
-    "def _tree_uses_runtime_import_protocol(",
     "def _validate_import_scan_mode(",
 )
 
