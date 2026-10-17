@@ -944,15 +944,19 @@ def _load_c_api_scan_surface(
         _source_extension_include_dirs_for_abi_tier,
         _source_extension_python_header_for_abi_tier,
     )
+    from molt.cli.source_extension_invocation import (
+        DEFAULT_SOURCE_EXTENSION_ABI_TIER,
+        SOURCE_EXTENSION_ABI_TIERS,
+    )
 
     header_path = (
         header_path
         or _source_extension_python_header_for_abi_tier(
-            molt_root=molt_root, abi_tier="source-compat"
+            molt_root=molt_root, abi_tier=DEFAULT_SOURCE_EXTENSION_ABI_TIER
         )
     ).resolve()
     include_dirs = (header_path.parent,)
-    for abi_tier in ("source-compat", "cpython-abi"):
+    for abi_tier in SOURCE_EXTENSION_ABI_TIERS:
         canonical_header = _source_extension_python_header_for_abi_tier(
             molt_root=molt_root, abi_tier=abi_tier
         ).resolve()

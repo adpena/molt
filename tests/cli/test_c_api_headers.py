@@ -811,6 +811,33 @@ def test_missing_owned_include_fails_closed(tmp_path: Path, include: str) -> Non
     assert error is not None and "missing local header" in error
 
 
+@pytest.mark.parametrize(
+    "spelling",
+    [
+        "molt",
+        "source",
+        "cpython",
+        "python-abi",
+        "cpython_abi",
+        "CPYTHON-ABI",
+        " source-compat",
+        "",
+    ],
+)
+def test_abi_tier_admits_only_the_two_canonical_spellings(
+    tmp_path: Path,
+    spelling: str,
+) -> None:
+    with pytest.raises(ValueError, match="must be source-compat or cpython-abi"):
+        _source_extension_python_header_for_abi_tier(
+            molt_root=tmp_path, abi_tier=spelling
+        )
+    with pytest.raises(ValueError, match="must be source-compat or cpython-abi"):
+        _source_extension_include_dirs_for_abi_tier(
+            molt_root=tmp_path, abi_tier=spelling
+        )
+
+
 @pytest.mark.parametrize("abi_tier", ["source-compat", "cpython-abi"])
 def test_scan_surface_follows_selected_tier_private_declarations(
     tmp_path: Path,
