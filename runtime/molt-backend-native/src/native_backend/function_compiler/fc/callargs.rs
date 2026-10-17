@@ -6,6 +6,7 @@ use super::super::*;
 pub(in crate::native_backend::function_compiler) const HANDLED_KINDS: &[&str] = &[
     "callargs_new",
     "callargs_push_pos",
+    "callargs_push_method_receiver",
     "callargs_push_kw",
     "callargs_expand_star",
     "callargs_expand_kwstar",
@@ -71,6 +72,51 @@ pub(in crate::native_backend::function_compiler) fn handle_callargs_op(
             let call = builder.ins().call(local_callee, &[zero, zero]);
             let res = builder.inst_results(call)[0];
             bind_owned_runtime_result(op, res, module, import_ids, builder, vars);
+        }
+        "callargs_push_method_receiver" => {
+            let [callargs, receiver] = names else {
+                panic!("validated method receiver prefix takes builder and receiver");
+            };
+            let builder_word = *operands.word(callargs).expect("Callargs builder not found");
+            let receiver_word = *operands.word(receiver).expect("loaded receiver not found");
+            // A loaded pair owns its nullable receiver. Move only real Python
+            // values into the builder; its retaining push must finish before
+            // the original credit ends, including when that push raises.
+            let present = builder.ins().icmp_imm(
+                IntCC::NotEqual,
+                receiver_word,
+                molt_codegen_abi::loaded_method_null_bits(),
+            );
+            let push = builder.create_block();
+            let join = builder.create_block();
+            builder.ins().brif(present, push, &[], join, &[]);
+            switch_to_block_materialized(builder, push);
+            seal_block_once(builder, sealed_blocks, push);
+            let push_fn = import_func_ref(
+                module,
+                import_ids,
+                builder,
+                import_refs,
+                "molt_callargs_push_pos",
+                &[types::I64, types::I64],
+                &[types::I64],
+            );
+            let call = builder.ins().call(push_fn, &[builder_word, receiver_word]);
+            let result = builder.inst_results(call)[0];
+            bind_owned_runtime_result(op, result, module, import_ids, builder, vars);
+            let release = import_func_ref(
+                module,
+                import_ids,
+                builder,
+                import_refs,
+                "molt_dec_ref_obj",
+                &[types::I64],
+                &[],
+            );
+            builder.ins().call(release, &[receiver_word]);
+            jump_block(builder, join, &[]);
+            switch_to_block_materialized(builder, join);
+            seal_block_once(builder, sealed_blocks, join);
         }
         "callargs_push_pos" => {
             let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);

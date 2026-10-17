@@ -401,7 +401,7 @@ def test_raw_dict_increment_decline_runs_the_original_statement() -> None:
 
 
 @pytest.mark.parametrize(
-    "arguments,expected", [("1", "CALL_FUNC"), ("value=1", "CALL_INDIRECT")]
+    "arguments,expected", [("1", "CALL_FUNC"), ("value=1", "CALL_BIND")]
 )
 def test_raw_bridge_attr_call_uses_matching_argument_protocol(
     arguments, expected
@@ -413,7 +413,7 @@ def test_raw_bridge_attr_call_uses_matching_argument_protocol(
 
 
 @pytest.mark.parametrize(
-    "arguments,expected", [("1", "call_func"), ("value=1", "call_indirect")]
+    "arguments,expected", [("1", "call_func"), ("value=1", "call_bind")]
 )
 def test_lowered_bridge_attr_call_uses_matching_argument_protocol(
     arguments, expected
@@ -1200,3 +1200,131 @@ def test_split_scalarization_never_discards_an_undischarged_runtime_guard(
         {"kind": "index", "args": ["fields", "index"], "out": "field"},
     ]
     assert SimpleTIRGenerator._scalarize_string_split_fields_json(ops) == ops
+
+
+@pytest.mark.parametrize(
+    ("declaration", "expression", "prefix", "form"),
+    [
+        ("def", "obj.m(effect())", False, "stack"),
+        ("def", "obj.m(k=effect())", True, "stack"),
+        ("async def", "obj.m(await effect())", True, "stack"),
+        ("async def", "obj.m(k=await effect())", True, "stack"),
+        ("def", "obj.m(*effect())", False, "expanded"),
+        ("def", "obj.m(**effect())", False, "expanded"),
+        ("async def", "obj.m(*(await effect()))", False, "expanded"),
+        ("async def", "obj.m(**(await effect()))", False, "expanded"),
+        ("def", "obj.m(" + ",".join("1" for _ in range(31)) + ")", False, "expanded"),
+    ],
+)
+def test_method_receiver_prefix_is_consumed_before_source_arguments(
+    declaration: str, expression: str, prefix: bool, form: str
+) -> None:
+    """CPython CALL retains a raw receiver; CALL_FUNCTION_EX binds a value.
+
+    The nullable result must never become a Python object in a suspension frame.
+    These exact transport and custody facts distinguish a plausible bound-method
+    fallback, a duplicate receiver push, and loss of source form on scratch reload.
+    Runtime diagnostics/effects remain independently differential-tested.
+    """
+    source = f"{declaration} f(obj, effect):\n    return {expression}\n"
+    ir = compile_to_tir(source)
+    (ops,) = [
+        function["ops"]
+        for function in ir["functions"]
+        if any(
+            op["kind"] in {"load_method", "get_attr_generic_obj"}
+            and op.get("s_value") == "m"
+            for op in function["ops"]
+        )
+    ]
+    loads = [
+        op for op in ops if op["kind"] == "load_method" and op.get("s_value") == "m"
+    ]
+    prefixes = [op for op in ops if op["kind"] == "callargs_push_method_receiver"]
+    if form == "expanded":
+        assert not loads and not prefixes
+        (attribute,) = [
+            op
+            for op in ops
+            if op["kind"] == "get_attr_generic_obj" and op.get("s_value") == "m"
+        ]
+        (call,) = [op for op in ops if op["kind"] in {"call_bind", "call_indirect"}]
+        assert call["argument_custody"] == ["borrowed", "transferred"]
+        (builder,) = [op for op in ops if op["kind"] == "callargs_new"]
+        assert builder["s_value"] == "expanded"
+        assert ops.index(attribute) < ops.index(builder) < ops.index(call)
+        return
+    (load,) = loads
+    if not prefix:
+        assert not prefixes
+        (call,) = [op for op in ops if op["kind"] == "call_loaded_method"]
+        assert call["args"][:2] == [load["var"], load["out"]]
+        return
+    (pushed,) = prefixes
+    (builder,) = [op for op in ops if op["kind"] == "callargs_new"]
+    (call,) = [op for op in ops if op["kind"] == "call_bind"]
+    assert pushed["args"] == [builder["out"], load["out"]]
+    assert "out" not in pushed
+    assert call["argument_custody"] == ["transferred", "transferred"]
+    assert not any(op["kind"] == "call_loaded_method" for op in ops)
+    uses = [op for op in ops if load["out"] in op.get("args", ())]
+    assert uses == [pushed], (
+        "nullable words must be consumed once, without frame/cell storage"
+    )
+    effects = [
+        op for op in ops if op["kind"] in {"call_func", "call_guarded", "state_yield"}
+    ]
+    assert effects and all(ops.index(pushed) < ops.index(effect) for effect in effects)
+    assert ops.index(load) < ops.index(builder) < ops.index(pushed) < ops.index(call)
+
+
+def test_nullable_method_receiver_serializes_only_as_prefix_operand() -> None:
+    assert _map_single(
+        MoltOp(
+            kind="CALLARGS_PUSH_METHOD_RECEIVER",
+            args=[MoltValue("builder")],
+            result=MoltValue("none"),
+            metadata={"self_or_null": "nullable"},
+        )
+    ) == {"kind": "callargs_push_method_receiver", "args": ["builder", "nullable"]}
+
+
+@pytest.mark.parametrize(
+    "declaration,argument", [("def", "k=effect()"), ("async def", "k=await effect()")]
+)
+def test_super_method_prefix_consumes_nullable_before_keyword_or_suspension(
+    declaration: str, argument: str
+) -> None:
+    ir = compile_to_tir(
+        "class Base:\n    def m(self, **kwargs): return kwargs\n"
+        f"class Child(Base):\n    {declaration} f(self, effect):\n        return super().m({argument})\n"
+    )
+    # The builtin-super identity guard may duplicate a flat call's two arms.
+    # An await cannot be duplicated into two resume states: it uses the real
+    # super object, whose method load still consumes its nullable word here.
+    load_kind = "load_method" if declaration == "async def" else "load_super_method"
+    (ops,) = [
+        function["ops"]
+        for function in ir["functions"]
+        if any(
+            op["kind"] == load_kind and op.get("s_value") == "m"
+            for op in function["ops"]
+        )
+    ]
+    (load,) = [op for op in ops if op["kind"] == load_kind and op.get("s_value") == "m"]
+    (prefix,) = [
+        op
+        for op in ops
+        if op["kind"] == "callargs_push_method_receiver"
+        and op["args"][1] == load["out"]
+    ]
+    assert prefix["args"][1] == load["out"]
+    assert [op for op in ops if load["out"] in op.get("args", ())] == [prefix]
+    call = next(op for op in ops[ops.index(prefix) :] if op["kind"] == "call_bind")
+    assert call["argument_custody"] == ["transferred", "transferred"]
+    effects = [
+        op
+        for op in ops[ops.index(load) : ops.index(call)]
+        if op["kind"] in {"call_func", "call_guarded", "state_yield"}
+    ]
+    assert effects and all(ops.index(prefix) < ops.index(op) for op in effects)

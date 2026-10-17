@@ -11,10 +11,10 @@ Validated structured CFG uses `function_body.rs` and `flow_dispatch.rs` separate
 ## Summary
 
 - `compile-error`: `8`
-- `implemented-exact`: `198`
+- `implemented-exact`: `199`
 - `implemented-target-limited`: `15`
 - `not-admitted`: `205`
-- `total`: `426`
+- `total`: `427`
 
 ## Matrix
 
@@ -79,6 +79,7 @@ Validated structured CFG uses `function_body.rs` and `flow_dispatch.rs` separate
 | `callargs_expand_star` | `implemented-exact` | Lowered and outside every generated target-contract limitation. |
 | `callargs_new` | `implemented-exact` | Lowered and outside every generated target-contract limitation. |
 | `callargs_push_kw` | `implemented-exact` | Lowered and outside every generated target-contract limitation. |
+| `callargs_push_method_receiver` | `implemented-exact` | Lowered and outside every generated target-contract limitation. |
 | `callargs_push_pos` | `implemented-exact` | Lowered and outside every generated target-contract limitation. |
 | `cast_int` | `not-admitted` | Shared generated target contract rejects this semantic family before source generation. |
 | `cbor_parse` | `not-admitted` | Operation is unclassified in the generated target-contract authority. |

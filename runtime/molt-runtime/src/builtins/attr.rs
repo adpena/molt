@@ -2111,6 +2111,47 @@ unsafe fn function_descriptor_receiver(
     }
 }
 
+/// Attribute loads bind descriptors; method loads may carry an unbound function
+/// and its receiver separately. Each lookup owns its stack-local output, so a
+/// nested Python lookup cannot publish into the outer instruction's result.
+#[derive(Clone, Copy)]
+pub(crate) enum AttributeLookupMode<'a> {
+    Value,
+    Method(&'a std::cell::Cell<Option<u64>>),
+}
+
+impl AttributeLookupMode<'_> {
+    pub(crate) unsafe fn bind(
+        self,
+        py: &PyToken<'_>,
+        value: u64,
+        owner: Option<u64>,
+        instance: Option<u64>,
+        policy: DescriptorCallPolicy,
+    ) -> Result<Option<u64>, ()> {
+        unsafe {
+            if let Self::Method(receiver) = self
+                && let Some(instance) = instance
+                && let Some(function) = maybe_ptr_from_bits(value)
+                && object_type_id(function) == TYPE_ID_FUNCTION
+                && matches!(
+                    crate::builtins::functions::native_callable::NativeCallableKind::from_class(
+                        py, object_class_bits(function),
+                    ),
+                    None | Some(crate::builtins::functions::native_callable::NativeCallableKind::MethodDescriptor)
+                )
+            {
+                // Like _PyObject_GetMethod, leave receiver validation to CALL:
+                // argument expressions run after LOAD_ATTR selects its callable.
+                inc_ref_bits(py, value);
+                receiver.set(Some(instance));
+                return Ok(Some(value));
+            }
+            bind_descriptor(py, value, owner, instance, policy)
+        }
+    }
+}
+
 /// Bind a descriptor without suppressing its exception. Both instance and owner
 /// preserve exact tagged values; None means that argument is absent. Attribute
 /// fallback belongs to the complete lookup transaction, never this primitive.
@@ -2887,6 +2928,24 @@ pub(crate) unsafe fn object_attr_lookup_with_policy(
     suppress: bool,
 ) -> Result<Option<u64>, ()> {
     unsafe {
+        object_attr_lookup_with_mode(
+            _py,
+            obj_ptr,
+            attr_bits,
+            suppress,
+            AttributeLookupMode::Value,
+        )
+    }
+}
+
+pub(crate) unsafe fn object_attr_lookup_with_mode(
+    _py: &PyToken<'_>,
+    obj_ptr: *mut u8,
+    attr_bits: u64,
+    suppress: bool,
+    mode: AttributeLookupMode<'_>,
+) -> Result<Option<u64>, ()> {
+    unsafe {
         object_attr_lookup_inner(
             _py,
             MoltObject::from_ptr(obj_ptr).bits(),
@@ -2894,6 +2953,7 @@ pub(crate) unsafe fn object_attr_lookup_with_policy(
             attr_bits,
             None,
             suppress,
+            mode,
         )
     }
 }
@@ -2913,7 +2973,15 @@ pub(crate) unsafe fn object_attr_lookup_with_dict(
         if !pointer.is_null() && object_type_id(pointer) == TYPE_ID_DATACLASS {
             return dataclass_attr_lookup_inner(py, pointer, name, Some(dictionary), suppress);
         }
-        object_attr_lookup_inner(py, object, pointer, name, Some(dictionary), suppress)
+        object_attr_lookup_inner(
+            py,
+            object,
+            pointer,
+            name,
+            Some(dictionary),
+            suppress,
+            AttributeLookupMode::Value,
+        )
     }
 }
 
@@ -2926,6 +2994,7 @@ unsafe fn object_attr_lookup_inner(
     attr_bits: u64,
     dictionary: Option<u64>,
     suppress: bool,
+    mode: AttributeLookupMode<'_>,
 ) -> Result<Option<u64>, ()> {
     unsafe {
         crate::gil_assert();
@@ -3024,7 +3093,7 @@ unsafe fn object_attr_lookup_inner(
             // Dictionary callbacks may change both the class namespace and
             // __class__. Keep the selected value, but bind to the live owner.
             match snapshot.and_then(|entry| entry.class_attr_bits) {
-                Some(bits) => bind_descriptor(
+                Some(bits) => mode.bind(
                     _py,
                     bits,
                     Some(type_of_bits(_py, obj_bits)),
@@ -3369,6 +3438,26 @@ pub(crate) unsafe fn dataclass_attr_lookup_inner(
     suppress: bool,
 ) -> Result<Option<u64>, ()> {
     unsafe {
+        dataclass_attr_lookup_with_mode(
+            _py,
+            obj_ptr,
+            attr_bits,
+            dictionary,
+            suppress,
+            AttributeLookupMode::Value,
+        )
+    }
+}
+
+pub(crate) unsafe fn dataclass_attr_lookup_with_mode(
+    _py: &PyToken<'_>,
+    obj_ptr: *mut u8,
+    attr_bits: u64,
+    dictionary: Option<u64>,
+    suppress: bool,
+    mode: AttributeLookupMode<'_>,
+) -> Result<Option<u64>, ()> {
+    unsafe {
         crate::gil_assert();
         let descriptor_policy = if suppress {
             DescriptorCallPolicy::AttributeLookup
@@ -3418,7 +3507,7 @@ pub(crate) unsafe fn dataclass_attr_lookup_inner(
                 return Ok(instance);
             }
             match snapshot.and_then(|entry| entry.class_attr_bits) {
-                Some(bits) => bind_descriptor(
+                Some(bits) => mode.bind(
                     _py,
                     bits,
                     Some(type_of_bits(_py, obj_bits)),

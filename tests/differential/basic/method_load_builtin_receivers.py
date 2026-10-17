@@ -1,8 +1,8 @@
 """Purpose: method calls on builtin receivers keep CPython results and errors (HF-216).
 
-Builtin methods (list, str, dict, int, float, bytes, set) go through the
-generic method load, including receivers whose value is an inline integer or a
-float such as 0.0.
+Native method descriptors retain their class identity during direct method loads,
+including inline integers and floats. Stored and expanded calls bind a method
+value instead; subtype error labels distinguish these instruction forms.
 """
 
 items = []
@@ -37,3 +37,24 @@ try:
     "abc".index("z")
 except ValueError as error:
     print("ValueError", error)
+
+
+class NativeList(list):
+    pass
+
+
+def report_native(label, call):
+    try:
+        print(label, call())
+    except TypeError as error:
+        print(label, type(error).__name__, str(error))
+
+
+native = NativeList([1, 2])
+report_native("native_direct", lambda: native.reverse(1))
+stored = native.reverse
+report_native("native_stored", lambda: stored(1))
+report_native("native_expanded", lambda: native.reverse(*(1,)))
+report_native("native_explicit", lambda: list.reverse(native, 1))
+report_native("native_success", lambda: native.reverse())
+print("native_reversed", native)

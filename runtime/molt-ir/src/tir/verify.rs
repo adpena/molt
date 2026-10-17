@@ -576,7 +576,7 @@ fn verify_terminators(func: &TirFunction, errors: &mut Vec<VerifyError>) {
 }
 
 // ---------------------------------------------------------------------------
-// Loaded method pairs: `self_or_null` is visible only to its call
+// Loaded method pairs: `self_or_null` is visible only to its consuming boundary
 // ---------------------------------------------------------------------------
 
 /// Where a word of a method pair comes from: no reachable edge yet, exactly
@@ -600,7 +600,7 @@ impl PairOrigin {
 
 /// A method load's second result is CPython's `self` or NULL. NULL is a
 /// sentinel word, not a Python value, so no operation may observe it except
-/// operand 1 of a `CallLoadedMethod`. Edges may carry it: a terminator or an
+/// operand 1 of `CallLoadedMethod` or `CallargsPushMethodReceiver`. Edges may carry it: a terminator or an
 /// exception transfer binds it to a block argument, which then carries the
 /// same word. Drop insertion may release it (`DecRef` of the sentinel is a
 /// no-op). The frontend emits one call per load; the number of call
@@ -697,7 +697,24 @@ fn verify_loaded_method_pairs(func: &TirFunction, errors: &mut Vec<VerifyError>)
             if op.opcode == OpCode::DecRef || dominators::is_exception_transfer_edge(op.opcode) {
                 continue;
             }
-            let observed = if op.opcode == OpCode::CallLoadedMethod {
+            let observed = if op.opcode == OpCode::CallargsPushMethodReceiver {
+                match op.operands.get(1).copied() {
+                    Some(value) if loaded.contains(&value) => {
+                        if matches!(origin_of(&origins[1], value), PairOrigin::Mixed) {
+                            errors.push(VerifyError::op(
+                                *bid, op_idx,
+                                "CallargsPushMethodReceiver operand 1 merges self_or_null with words of another load or other values",
+                            ));
+                        }
+                    }
+                    _ => errors.push(VerifyError::op(
+                        *bid,
+                        op_idx,
+                        "CallargsPushMethodReceiver operand 1 must be a method load's self_or_null",
+                    )),
+                }
+                op.operands.iter().take(1).copied().collect()
+            } else if op.opcode == OpCode::CallLoadedMethod {
                 let pair = (op.operands.first().copied(), op.operands.get(1).copied());
                 match pair {
                     (Some(callable), Some(self_or_null)) if loaded.contains(&self_or_null) => {
@@ -794,6 +811,16 @@ fn verify_block_args(func: &TirFunction, errors: &mut Vec<VerifyError>) {
                 continue;
             }
             let Some(AttrValue::Int(label)) = op.attrs.get("value") else {
+                if dominators::exception_edge_binds_handler_arguments(op.opcode) {
+                    errors.push(VerifyError::op(
+                        *bid,
+                        op_index,
+                        format!(
+                            "{:?} requires an integer exception target in value",
+                            op.opcode
+                        ),
+                    ));
+                }
                 continue;
             };
             let Some(target) = exception_targets.get(label) else {
@@ -1063,7 +1090,7 @@ mod tests {
     use super::*;
 
     /// A method load's `self_or_null` is a non-object word (HF-216). The
-    /// verifier admits it as operand 1 of a `CallLoadedMethod`, as a block
+    /// verifier admits it as operand 1 of a call or receiver prefix, as a block
     /// argument carried there, and as a `DecRef` operand, and nowhere else.
     /// A call takes both words of one load, also through a loop header.
     #[test]
@@ -1075,6 +1102,9 @@ mod tests {
 
         enum Shape {
             Direct,
+            Prefix,
+            PrefixOfPlainValue,
+            PrefixObservesBuilder,
             Carried,
             Released,
             Observed,
@@ -1145,6 +1175,25 @@ mod tests {
             };
             match shape {
                 Shape::Direct | Shape::Nameless => entry_ops.push(call(callable, self_or_null)),
+                Shape::Prefix | Shape::PrefixOfPlainValue | Shape::PrefixObservesBuilder => {
+                    let prefix_receiver = if matches!(shape, Shape::PrefixOfPlainValue) {
+                        receiver
+                    } else {
+                        self_or_null
+                    };
+                    let builder = if matches!(shape, Shape::PrefixObservesBuilder) {
+                        self_or_null
+                    } else {
+                        receiver
+                    };
+                    entry_ops.push(op(
+                        OpCode::CallargsPushMethodReceiver,
+                        vec![builder, prefix_receiver],
+                        vec![],
+                        None,
+                    ));
+                    entry_ops.push(op(OpCode::Copy, vec![callable], vec![result], None));
+                }
                 Shape::Carried => {
                     let target = func.fresh_block();
                     let carried_callable = func.fresh_value();
@@ -1302,6 +1351,15 @@ mod tests {
         };
         for (shape, expected) in [
             (Shape::Direct, None),
+            (Shape::Prefix, None),
+            (
+                Shape::PrefixOfPlainValue,
+                Some("operand 1 must be a method load's self_or_null"),
+            ),
+            (
+                Shape::PrefixObservesBuilder,
+                Some("CallargsPushMethodReceiver observes self_or_null"),
+            ),
             (Shape::Carried, None),
             (Shape::Released, None),
             (Shape::Observed, Some("Copy observes self_or_null")),
@@ -2150,6 +2208,39 @@ mod tests {
 
     #[test]
     fn implicit_exception_edges_reject_missing_or_ambiguous_targets_without_panicking() {
+        for value in [
+            None,
+            Some(AttrValue::Str("77".into())),
+            Some(AttrValue::Bool(true)),
+        ] {
+            let mut func = TirFunction::new(
+                "missing_handler".into(),
+                vec![],
+                TirType::None,
+                crate::FunctionReturnAbi::Void,
+            );
+            let mut attrs = AttrDict::new();
+            if let Some(value) = value {
+                attrs.insert("value".into(), value);
+            }
+            let entry = func.blocks.get_mut(&func.entry_block).unwrap();
+            entry.ops.push(TirOp {
+                dialect: Dialect::Molt,
+                opcode: OpCode::CheckException,
+                operands: vec![],
+                results: vec![],
+                attrs,
+                source_span: None,
+            });
+            entry.terminator = Terminator::Return { values: vec![] };
+            let errors = verify_function(&func).expect_err("observation must name its target");
+            assert_eq!(errors.len(), 1, "{errors:?}");
+            assert!(
+                errors[0]
+                    .message
+                    .contains("requires an integer exception target")
+            );
+        }
         for opcode in [OpCode::CheckException, OpCode::TryStart] {
             for labels in [vec![], vec![(99, 77)], vec![(0, 77), (99, 77)]] {
                 for reverse in [false, true] {

@@ -100,7 +100,7 @@ class _ResumeLiveness:
                     arg for arg in op.args[:first_output] if isinstance(arg, MoltValue)
                 ]
                 outputs = [op.result, *op.args[first_output:]]
-                if op.kind == "CALL_LOADED_METHOD":
+                if op.kind in {"CALL_LOADED_METHOD", "CALLARGS_PUSH_METHOD_RECEIVER"}:
                     operands.append(MoltValue(loaded_method_self_name(op)))
                 elif op.kind in {"LOAD_METHOD", "LOAD_SUPER_METHOD"}:
                     self_name = loaded_method_self_name(op)
@@ -1325,7 +1325,7 @@ class AsyncGenVisitorMixin(GeneratorMixinBase):
                     "before and after STATE_SWITCH and live into a resume label",
                 )
             # Frame storage cannot hold the null sentinel, so a method call
-            # whose arguments can suspend takes the generic call lowering.
+            # consumes its receiver into the call builder before any suspension.
             suspended_selves = [
                 name for name in names if name in live.loaded_method_selves
             ]

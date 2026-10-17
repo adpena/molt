@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import ast
+from molt.compiler_analysis.python_call_arguments import call_form
 from molt.compiler_analysis.python_identity_catalog_generated import (
     BUILTIN_SHAPE_NAMES,
 )
@@ -56,16 +57,16 @@ class CallAttributeDispatchMixin(GeneratorMixinBase):
 
         CPython specializes zero-argument ``super()`` as a method receiver when
         the enclosing function has a ``__class__`` cell and a first positional
-        argument. Molt also requires positional arguments that cannot suspend:
-        keyword and starred calls bind through a builder, and a suspension
-        would carry the pair's null word through frame storage.
+        argument. The stack CALL form can prefix a builder before argument
+        evaluation, so keywords and suspension keep the loaded pair protocol.
+        CALL_FUNCTION_EX retains an ordinary bound attribute.
         """
         func = node.func
-        if (
-            not isinstance(func, ast.Attribute)
-            or func.attr == "__class__"
-            or self._call_needs_bind(node)
-        ):
+        if not isinstance(func, ast.Attribute) or func.attr == "__class__":
+            return None
+        if self._sema is None:
+            raise AssertionError("module sema must be populated before lowering calls")
+        if call_form(node, module_imports=self._sema.import_names) != "stack":
             return None
         receiver = func.value
         if not (
@@ -80,7 +81,6 @@ class CallAttributeDispatchMixin(GeneratorMixinBase):
             self.python_class_body_context
             or not self._free_var_cell_available("__class__")
             or not isinstance(self.current_python_first_arg, str)
-            or any(self._expr_may_yield(argument) for argument in node.args)
         ):
             return None
         return receiver

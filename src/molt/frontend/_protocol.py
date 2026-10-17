@@ -71,6 +71,7 @@ from molt.frontend._types import (
 )
 
 if TYPE_CHECKING:
+    from molt.compiler_analysis.python_call_arguments import CallForm
     from molt.frontend.lowering.class_resolution import ClassDefinitionIndex
     from molt.frontend.lowering.function_lifecycle import FrameRestoreScope
     from molt.compiler_analysis.python_function_kind import FunctionKind
@@ -383,8 +384,7 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
 
     def _call_has_bound_builtin_name(self, node: ast.expr) -> bool: ...
 
-    @staticmethod
-    def _call_needs_bind(node: ast.Call) -> bool: ...
+    def _call_needs_bind(self, node: ast.Call) -> bool: ...
 
     def _callable_cell_plan(
         self,
@@ -912,10 +912,17 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
         emit_loop: Callable[[], None],
     ) -> None: ...
 
-    def _emit_call_args(self, args: list[ast.expr]) -> list[MoltValue]: ...
+    def _emit_call_args(
+        self, args: list[ast.expr], *, cleanup: list[ScratchCell] | None = ...
+    ) -> list[MoltValue]: ...
 
     def _emit_call_args_builder(
-        self, node: ast.Call, *, evaluated: tuple[MoltValue, ...] | None = ...
+        self,
+        node: ast.Call,
+        *,
+        evaluated: tuple[MoltValue, ...] | None = ...,
+        initial: MoltValue | None = ...,
+        cleanup: list[ScratchCell] | None = ...,
     ) -> MoltValue: ...
 
     def _emit_call_bind_for_known_module_func(
@@ -2097,7 +2104,7 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
         self, func_id: str, node: ast.Call
     ) -> MoltValue | None: ...
 
-    def _mark_source_call(self, value: object) -> None: ...
+    def _mark_source_call(self, value: object, node: ast.Call) -> None: ...
 
     def _mask_exact_binding_projection(self, names: set[str]) -> Callable[[], None]: ...
 
@@ -2201,6 +2208,8 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
     def _native_support_function_roots(self) -> frozenset[str]: ...
 
     def _new_async_internal_slot(self) -> int: ...
+
+    def _new_call_args_builder(self, form: CallForm) -> MoltValue: ...
 
     def _new_condition_merge(
         self, width: int, names: tuple[str, ...]
@@ -2585,6 +2594,11 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
         nonlocal_decls: set[str],
         private_storage: bool,
     ) -> PythonCellStoragePlan: ...
+
+    @contextmanager
+    def _scratch_cleanup_on_error(
+        self, cells: Sequence[ScratchCell]
+    ) -> Generator[None]: ...
 
     @staticmethod
     def _serialization_control_value(op: MoltOp) -> int: ...

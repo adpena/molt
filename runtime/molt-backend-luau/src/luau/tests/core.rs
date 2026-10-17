@@ -2,6 +2,67 @@ use super::exceptions::luau_tir_roundtrip_function;
 use super::*;
 
 #[test]
+#[ignore = "requires the declared Lune runner; run rust.test.compiler-authorities"]
+fn method_receiver_prefix_preserves_absence_and_python_none_positions() {
+    let op = |kind: &str, args: &[&str], out: Option<&str>| OpIR {
+        kind: kind.into(),
+        args: Some(args.iter().map(|v| (*v).into()).collect()),
+        out: out.map(str::to_string),
+        ..Default::default()
+    };
+    let ir = SimpleIR {
+        functions: vec![
+            FunctionIR {
+                name: "molt_main".into(),
+                return_abi: molt_ir::FunctionReturnAbi::Void,
+                ops: vec![op("ret_void", &[], None)],
+                ..Default::default()
+            },
+            FunctionIR {
+                name: "method_receiver_call".into(),
+                params: vec!["receiver".into(), "callee".into()],
+                return_abi: molt_ir::FunctionReturnAbi::Value,
+                ops: vec![
+                    op("callargs_new", &[], Some("builder")),
+                    op(
+                        "callargs_push_method_receiver",
+                        &["builder", "receiver"],
+                        None,
+                    ),
+                    op("const_none", &[], Some("python_none")),
+                    op("callargs_push_pos", &["builder", "python_none"], None),
+                    op("call_bind", &["callee", "builder"], Some("result")),
+                    op("ret", &["result"], None),
+                ],
+                ..Default::default()
+            },
+        ],
+        profile: None,
+    };
+    let source = LuauBackend::new()
+        .compile_checked(&ir)
+        .expect("typed receiver prefix is supported");
+    let source = format!(
+        r#"{source}
+;(function()
+    local function observe(...) return table.pack(...) end
+    local absent = method_receiver_call(nil, observe)
+    assert(absent.n == 1 and absent[1] == nil)
+    local present = method_receiver_call(9, observe)
+    assert(present.n == 2 and present[1] == 9 and present[2] == nil)
+    print("method-receiver-prefix-ok")
+end)()
+"#
+    );
+    validate_luau_source(&source).expect("receiver prefix source validates");
+    execute_lune_oracle(
+        "method_receiver_prefix",
+        &source,
+        LuneStdout::TrimmedExact("method-receiver-prefix-ok"),
+    );
+}
+
+#[test]
 fn symbolic_module_slots_resolve_from_the_program_registry() {
     let ir = SimpleIR {
         functions: vec![FunctionIR {

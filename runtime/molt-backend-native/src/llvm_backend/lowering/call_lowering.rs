@@ -381,6 +381,71 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
         self.value_types.insert(self_id, TirType::DynBox);
     }
 
+    /// Consume a loaded receiver before evaluating user arguments. The builder
+    /// borrows its existing carrier; push_pos retains a real receiver, whose
+    /// original credit ends even when the push fails. The null sentinel never
+    /// crosses a Python-object or refcount boundary.
+    pub(super) fn emit_callargs_push_method_receiver(&mut self, op: &TirOp) {
+        let &[builder_id, receiver_id] = op.operands.as_slice() else {
+            self.record_fatal(format!(
+                "malformed {op:?}: method receiver prefix takes two operands"
+            ));
+            return;
+        };
+        let builder_value = self.resolve(builder_id);
+        let builder_word = self.ensure_i64(builder_value);
+        let receiver_value = self.resolve(receiver_id);
+        let receiver_word = self.ensure_i64(receiver_value);
+        let i64_ty = self.backend.context.i64_type();
+        let null = i64_ty.const_int(molt_codegen_abi::loaded_method_null_bits() as u64, false);
+        let present = self
+            .backend
+            .builder
+            .build_int_compare(
+                inkwell::IntPredicate::NE,
+                receiver_word,
+                null,
+                "method_receiver_present",
+            )
+            .unwrap();
+        let push = self
+            .backend
+            .context
+            .append_basic_block(self.llvm_fn, "method_receiver_push");
+        let join = self
+            .backend
+            .context
+            .append_basic_block(self.llvm_fn, "method_receiver_done");
+        self.backend
+            .builder
+            .build_conditional_branch(present, push, join)
+            .unwrap();
+        self.backend.builder.position_at_end(push);
+        let push_fn = self.ensure_runtime_i64_fn("molt_callargs_push_pos", 2);
+        let result = self
+            .backend
+            .builder
+            .build_call(
+                push_fn,
+                &[builder_word.into(), receiver_word.into()],
+                "method_receiver_push_result",
+            )
+            .unwrap()
+            .try_as_basic_value()
+            .unwrap_basic();
+        self.bind_owned_runtime_result(op, result);
+        let release = self.ensure_runtime_import(MOLT_DEC_REF_OBJ);
+        self.backend
+            .builder
+            .build_call(release, &[receiver_word.into()], "")
+            .unwrap();
+        self.backend
+            .builder
+            .build_unconditional_branch(join)
+            .unwrap();
+        self.backend.builder.position_at_end(join);
+    }
+
     /// CPython's CALL after a method load: `[callable, self_or_null, args...]`,
     /// a source call that adopts every operand. `molt_call_loaded_method{N}`
     /// (or the spilled entry above four arguments) takes every word over: it

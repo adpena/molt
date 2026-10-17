@@ -59,7 +59,7 @@ class EmissionCoreMixin(GeneratorMixinBase):
                 if isinstance(node, ast.Call):
                     # The instruction that evaluates a source call adopts its
                     # operands, as CPython's CALL does.
-                    self._mark_source_call(result)
+                    self._mark_source_call(result, node)
                 fact = (
                     self.python_binding_index.expression_fact(node)
                     if self.python_binding_index is not None

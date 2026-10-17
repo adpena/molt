@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import ast
 import dis
+import sys
 from typing import Any
 
 import pytest
@@ -18,6 +19,7 @@ from molt.compiler_analysis.python_call_arguments import (
 from molt.frontend import MoltOp, MoltValue
 from molt.frontend._types import AsyncFrameSlot, AsyncFrameSlotRole
 from molt.frontend.lowering.emission_core import EmissionCoreMixin
+from molt.frontend.lowering.exception_lowering import ExceptionLoweringMixin
 from molt.frontend.lowering.local_bindings import LocalBindingMixin
 from molt.frontend.sema import analyze_module
 from molt.frontend.visitors.call_runtime_helpers import CallRuntimeHelperMixin
@@ -159,12 +161,17 @@ def test_emitted_argument_schedule_matches_cpython(source: str) -> None:
 
 
 class _SuspendingArgumentEmitter(
-    _ArgumentEmitter, LocalBindingMixin, EmissionCoreMixin
+    _ArgumentEmitter, LocalBindingMixin, EmissionCoreMixin, ExceptionLoweringMixin
 ):
     def __init__(self) -> None:
         super().__init__()
         self.try_suppress_depth = None
-        self.try_end_labels: list[int] = []
+        self.try_end_labels: list[int] = [-1]
+        self.try_scopes = []
+
+    def next_label(self) -> int:
+        self.serial += 1
+        return self.serial
 
     def is_async(self) -> bool:
         return True
@@ -197,7 +204,18 @@ def test_argument_storage_survives_suspension_and_releases_frame_slots(
     values: dict[str, Any] = {}
     frame: dict[int, Any] = {}
     namespace = {"a": (1, 2), "b": 3, "c": 4}
-    for op in emitter.ops:
+    labels = {
+        op.args[0]: index for index, op in enumerate(emitter.ops) if op.kind == "LABEL"
+    }
+    position = 0
+    while position < len(emitter.ops):
+        op = emitter.ops[position]
+        position += 1
+        if op.kind == "JUMP":
+            position = labels[op.args[0]]
+            continue
+        if op.kind in {"TRY_START", "TRY_END", "LABEL", "CHECK_EXCEPTION"}:
+            continue
         args = [
             values[arg.name] if isinstance(arg, MoltValue) else arg for arg in op.args
         ]
@@ -338,3 +356,90 @@ def test_builder_records_the_call_form(source: str, form: str) -> None:
     created = next(op for op in emitter.ops if op.kind == "CALLARGS_NEW")
     assert created.result is builder
     assert created.metadata == {"call_form": form}
+
+
+def test_rejected_argument_lowering_restores_exception_routing() -> None:
+    emitter = _SuspendingArgumentEmitter()
+    emitter.try_suppress_depth = 0
+    original_labels = emitter.try_end_labels.copy()
+    with pytest.raises(RuntimeError, match="rejected argument"):
+        with emitter._scratch_cleanup_on_error([]):
+            assert emitter.try_end_labels != original_labels
+            assert emitter.try_suppress_depth is None
+            raise RuntimeError("rejected argument")
+    assert emitter.try_end_labels == original_labels
+    assert emitter.try_suppress_depth == 0
+    assert not emitter.ops, "a rejected expression must not emit half a cleanup CFG"
+
+
+def test_each_pending_argument_has_one_frame_owner_until_its_scheduled_push() -> None:
+    """A keyword group retains earlier values; another await must not re-park them.
+
+    Each value needs one scratch owner, and the mutable argument builder reuses
+    its one slot. This fails the former quadratic park/reload assembly without
+    pinning incidental IR counts or execution timings.
+    """
+    emitter = _SuspendingArgumentEmitter()
+    initial = emitter._new_call_args_builder("stack")
+    call = ast.parse(
+        "f(a=await one, b=await two, c=await three, d=await four)", mode="eval"
+    ).body
+    assert isinstance(call, ast.Call)
+    emitter._emit_call_args_builder(call, initial=initial)
+    evaluated = {
+        op.result.name: op.args[0] for op in emitter.ops if op.kind == "EVALUATE"
+    }
+    stored = [op for op in emitter.ops if op.kind == "STORE_CLOSURE"]
+    parked_arguments = [
+        evaluated[op.args[2].name] for op in stored if op.args[2].name in evaluated
+    ]
+    assert parked_arguments == ["one", "two", "three"]
+    builder_slots = {op.args[1] for op in stored if op.args[2].type_hint == "callargs"}
+    assert len(builder_slots) == 1
+
+
+def test_pending_argument_parking_work_scales_linearly() -> None:
+    """Count actual compiler loop work, independent of emitted slot counts.
+
+    Wall time is noisy; opcode tracing exposes a quadratic scan even when it
+    skips already parked entries and emits linear IR. The trace is local to
+    this compiler routine and is restored on every exit.
+    """
+    code = CallRuntimeHelperMixin._emit_call_args_builder.__code__
+
+    def work(width: int) -> int:
+        count = 0
+
+        def trace(frame, event, argument):
+            nonlocal count
+            if frame.f_code is not code:
+                return None
+            frame.f_trace_opcodes = True
+            if (
+                event == "opcode"
+                and code.co_code[frame.f_lasti] == dis.opmap["FOR_ITER"]
+            ):
+                count += 1
+            return trace
+
+        source = "f(" + ", ".join(f"k{i}=await v{i}" for i in range(width)) + ")"
+        call = ast.parse(source, mode="eval").body
+        assert isinstance(call, ast.Call)
+        previous = sys.gettrace()
+        frame = sys._getframe()
+        previous_opcodes = frame.f_trace_opcodes
+        # CPython 3.12 requires this before settrace, including its first call:
+        # https://docs.python.org/3.12/library/sys.html#sys.settrace
+        frame.f_trace_opcodes = True
+        try:
+            sys.settrace(trace)
+            _SuspendingArgumentEmitter()._emit_call_args_builder(call)
+        finally:
+            sys.settrace(previous)
+            frame.f_trace_opcodes = previous_opcodes
+        assert count > 0, "opcode instrumentation did not observe compiler work"
+        return count
+
+    small, large = work(8), work(24)
+    assert small > 0
+    assert large <= 3 * small, (small, large)

@@ -132,7 +132,7 @@ pub enum OpCode {
     /// `self_or_null` a new reference to the receiver; otherwise `callable`
     /// is the attribute and `self_or_null` the null sentinel
     /// (`molt_codegen_abi::loaded_method_null_bits`). Only operand 1 of one
-    /// [`OpCode::CallLoadedMethod`] in the same function may consume
+    /// [`OpCode::CallLoadedMethod`] or [`OpCode::CallargsPushMethodReceiver`] may consume
     /// `self_or_null` (verified).
     LoadMethod,
     /// CPython's `LOAD_DEREF __class__` and `LOAD_SUPER_ATTR` in method form
@@ -169,6 +169,13 @@ pub enum OpCode {
     /// null sentinel it calls `callable(*args)`. A source call: it adopts every
     /// operand (`argument_custody`).
     CallLoadedMethod,
+    /// Prefix an existing Stack CallArgs builder with a loaded receiver.
+    /// Operands: `[builder, self_or_null]`; no results. The builder is borrowed,
+    /// the nullable word is adopted on both continuations. Null is skipped;
+    /// a real receiver is retained by the builder before its loaded owner drops.
+    /// This runs before argument evaluation, so only Python objects (callable
+    /// and builder) ever need frame storage across suspension.
+    CallargsPushMethodReceiver,
     /// Named lookup carries arguments only; metadata-free lookup carries
     /// [name, arguments...]. Use builtin_call() for the executable contract.
     CallBuiltin,

@@ -829,6 +829,8 @@ fn molt_main() {
 
 #[test]
 fn compile_checked_rejects_code_slots_exception_and_refcount_models() {
+    const OBJECT_MODEL_REASON: &str =
+        "operation requires Python aliasing, cycles, None storage, hashing, and object protocols";
     let cases = [
         (
             "code_slots",
@@ -838,7 +840,37 @@ fn compile_checked_rejects_code_slots_exception_and_refcount_models() {
                 value: Some(4),
                 ..OpIR::default()
             },
-            "operation requires Python aliasing, cycles, None storage, hashing, and object protocols",
+            OBJECT_MODEL_REASON,
+        ),
+        (
+            "callargs_builder",
+            Vec::new(),
+            OpIR {
+                kind: "callargs_new".into(),
+                out: Some("builder".into()),
+                ..OpIR::default()
+            },
+            OBJECT_MODEL_REASON,
+        ),
+        (
+            "callargs_positional",
+            vec!["builder".into(), "value".into()],
+            OpIR {
+                kind: "callargs_push_pos".into(),
+                args: Some(vec!["builder".into(), "value".into()]),
+                ..OpIR::default()
+            },
+            OBJECT_MODEL_REASON,
+        ),
+        (
+            "method_receiver_prefix",
+            vec!["builder".into(), "self_or_null".into()],
+            OpIR {
+                kind: "callargs_push_method_receiver".into(),
+                args: Some(vec!["builder".into(), "self_or_null".into()]),
+                ..OpIR::default()
+            },
+            OBJECT_MODEL_REASON,
         ),
         (
             "exception_state",
@@ -895,6 +927,10 @@ fn compile_checked_rejects_code_slots_exception_and_refcount_models() {
             "{name} must reach its own generated admission reason: {error}"
         );
         assert!(backend.output.is_empty(), "{name} emitted partial source");
+        assert!(
+            backend.unsupported_ops.is_empty(),
+            "{name} reached source dispatch before admission"
+        );
     }
 }
 

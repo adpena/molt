@@ -9,6 +9,7 @@ call, function, class, and module visitors.
 from __future__ import annotations
 
 from molt.compiler_analysis.python_imports import normalize_stdlib_module_name
+from molt.compiler_analysis.python_call_arguments import call_form
 
 from molt.compiler_analysis.python_lexical_scope import (
     expression_contains_yield,
@@ -603,7 +604,7 @@ class FunctionMetadataMixin(GeneratorMixinBase):
             and self._known_function_kind(*target) is FunctionKind.SYNC
         )
 
-    def _mark_source_call(self, value: object) -> None:
+    def _mark_source_call(self, value: object, node: ast.Call) -> None:
         """Record the instruction that evaluates a source call expression.
 
         CPython's CALL moves its value-stack operands into the call however
@@ -641,16 +642,13 @@ class FunctionMetadataMixin(GeneratorMixinBase):
         operand_count = len(producer.args) + (producer.kind == "CALL_LOADED_METHOD")
         custody = ["transferred"] * operand_count
         if producer.kind in {"CALL_BIND", "CALL_INDIRECT"}:
-            builder = self._op_by_result.get(producer.args[1].name)
-            form = (
-                (builder.metadata or {}).get("call_form")
-                if builder is not None and builder.kind == "CALLARGS_NEW"
-                else None
-            )
-            if form is None:
-                # Only a source call's argument schedule records its form.
-                return
-            if form == "expanded":
+            if self._sema is None:
+                raise AssertionError(
+                    "module sema must be populated before lowering calls"
+                )
+            # Source syntax owns this fact, even when suspension reloads the
+            # builder from a scratch cell. A value's producer cannot recover it.
+            if call_form(node, module_imports=self._sema.import_names) == "expanded":
                 custody[0] = "borrowed"
         if producer.metadata is None:
             producer.metadata = {}

@@ -540,6 +540,40 @@ mod tests {
     }
 
     #[test]
+    fn method_receiver_prefix_preserves_the_typed_boundary_in_mlir() {
+        let mut function = TirFunction::new(
+            "method_receiver_prefix".into(),
+            vec![TirType::DynBox, TirType::DynBox],
+            TirType::None,
+            molt_backend::ir::FunctionReturnAbi::Void,
+        );
+        let entry = function.blocks.get_mut(&function.entry_block).unwrap();
+        entry.ops.push(TirOp {
+            dialect: Dialect::Molt,
+            opcode: OpCode::CallargsPushMethodReceiver,
+            operands: vec![entry.args[0].id, entry.args[1].id],
+            results: vec![],
+            attrs: AttrDict::new(),
+            source_span: None,
+        });
+        entry.terminator = Terminator::Return { values: vec![] };
+        let ctx = create_mlir_context();
+        let module = tir_to_mlir(&function, &ctx).expect("preserve nullable receiver boundary");
+        assert!(module.as_operation().verify());
+        let text = module_to_string(&module);
+        assert!(
+            text.contains(
+                "\"molt.callargs_push_method_receiver\"(%arg0, %arg1) : (i64, i64) -> ()"
+            ),
+            "{text}"
+        );
+        assert!(
+            !text.contains("func.call"),
+            "a preserved dynamic boundary must not invent a direct symbol: {text}"
+        );
+    }
+
+    #[test]
     fn test_build_add_module() {
         let ctx = create_mlir_context();
         let module = tir_to_mlir(&make_add_func(), &ctx).unwrap();

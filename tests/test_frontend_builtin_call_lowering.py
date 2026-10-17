@@ -660,6 +660,7 @@ def test_dynamic_function_hint_uses_shared_guarded_context_dispatch(
     module_binding: bool,
 ) -> None:
     generator = SimpleTIRGenerator()
+    generator._populate_sema_state(ast.Module(body=[], type_ignores=[]))
     symbol = "__main____target"
     callee = MoltValue("callee", type_hint=f"Func:{symbol}")
     generator.func_symbol_names[symbol] = "target"
@@ -686,6 +687,7 @@ def test_dynamic_callable_result_does_not_inherit_lexical_return_hint(
     hint: TypeHint, expected_kind: str
 ) -> None:
     generator = SimpleTIRGenerator()
+    generator._populate_sema_state(ast.Module(body=[], type_ignores=[]))
     generator.funcs_map["target"] = {"return_hint": "int"}
     generator.classes[ClassId("__main__", "Owner")] = {
         "binding_name": "Owner",
@@ -1242,24 +1244,41 @@ def test_typed_memoryview_tobytes_keeps_keyword_expression(keyword):
     (attribute,) = [
         op
         for op in ops
-        if op["kind"] == "get_attr_generic_obj" and op.get("s_value") == "tobytes"
+        if op["kind"] == "load_method" and op.get("s_value") == "tobytes"
     ]
     assert attribute["args"][0] in _local_reads(ops, "view")
-    effect = _positional_call(
-        ops, _local_reads(ops, "effect"), 0, parameters=("effect",)
-    )
+    (effect,) = [
+        op
+        for op in ops
+        if op["kind"] in {"call_func", "call_guarded"}
+        and op["args"][0] in _local_reads(ops, "effect")
+    ]
+    assert len(effect["args"]) == 1
     (call,) = [
         op
         for op in ops
-        if op["kind"] == "call_indirect" and op["args"][0] == attribute["out"]
+        if op["kind"] == "call_bind" and op["args"][0] == attribute["var"]
     ]
     (push,) = [
         op
         for op in ops
         if op["kind"] == "callargs_push_kw" and op["args"][0] == call["args"][1]
     ]
+    (prefix,) = [
+        op
+        for op in ops
+        if op["kind"] == "callargs_push_method_receiver"
+        and op["args"] == [call["args"][1], attribute["out"]]
+    ]
+    assert call["argument_custody"] == ["transferred", "transferred"]
     assert push["args"][2] == effect["out"]
-    assert ops.index(attribute) < ops.index(effect) < ops.index(push) < ops.index(call)
+    assert (
+        ops.index(attribute)
+        < ops.index(prefix)
+        < ops.index(effect)
+        < ops.index(push)
+        < ops.index(call)
+    )
     assert not any(op["kind"] == "memoryview_tobytes" for op in ops)
 
 

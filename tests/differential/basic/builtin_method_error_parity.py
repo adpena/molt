@@ -2,13 +2,15 @@
 runtime hardcoded incorrectly or for the wrong version. Several of these messages
 changed across CPython 3.12/3.13/3.14, so the runtime gates on the target version
 (runtime_target_at_least); the differential harness derives Molt's target from
-the CPython under test, so this file must match on each of 3.12/3.13/3.14.
+the CPython under test, so this file must match the selected target version.
 
 Covers: divmod-by-zero (int/bigint/float/mixed), list.pop/insert non-int index,
 list.index not-found (repr-based <3.14, static 3.14), dict.update non-iterable
 element, set.remove missing key (KeyError(key)), bytes/bytearray.fromhex parsing,
 float.fromhex non-str argument.
 """
+
+import io
 
 
 def show(label, fn):
@@ -91,3 +93,119 @@ show(
     lambda: empty_bytes.pop(AppendingIndex(empty_bytes)),
 )
 print("bytearray_pop_remaining", empty_bytes)
+
+
+# METH_NOARGS: descriptor receiver validation precedes keyword/count errors.
+# Bound methods use the receiver type's qualified name; explicitly called
+# descriptors use their declaring owner, even for a subclass receiver.
+def noargs_errors(label, bound, descriptor, receiver):
+    show(label + "_bound_pos", lambda: bound(1))
+    show(label + "_bound_two", lambda: bound(1, 2))
+    show(label + "_bound_kw", lambda: bound(extra=1))
+    show(label + "_bound_both", lambda: bound(1, extra=2))
+    show(label + "_explicit_pos", lambda: descriptor(receiver, 1))
+    show(label + "_explicit_kw", lambda: descriptor(receiver, extra=1))
+    show(label + "_explicit_both", lambda: descriptor(receiver, 1, extra=2))
+    show(label + "_missing", lambda: descriptor())
+    show(label + "_missing_kw", lambda: descriptor(extra=1))
+    show(label + "_wrong_receiver", lambda: descriptor(None, 1, extra=2))
+
+
+view = memoryview(b"abc")
+noargs_errors("view_enter", view.__enter__, memoryview.__enter__, view)
+noargs_errors("view_release", view.release, memoryview.release, view)
+show("view_enter_success", lambda: view.__enter__() is view)
+show("view_explicit_enter_success", lambda: memoryview.__enter__(view) is view)
+show("view_release_success", lambda: view.release())
+show("view_released_enter", lambda: view.__enter__())
+# Argument validation still wins over the released-view operation error.
+show("view_released_enter_extra", lambda: view.__enter__(1))
+show("view_released_enter_keyword", lambda: view.__enter__(extra=1))
+
+noargs_errors("bytes_lower", b"ABC".lower, bytes.lower, b"ABC")
+noargs_errors("int_bits", (7).bit_length, int.bit_length, 7)
+noargs_errors("list_reverse", [1, 2].reverse, list.reverse, [1, 2])
+noargs_errors("dict_clear", {1: 2}.clear, dict.clear, {1: 2})
+noargs_errors("set_copy", {1}.copy, set.copy, {1})
+noargs_errors("set_clear", {1}.clear, set.clear, {1})
+noargs_errors("frozen_copy", frozenset({1}).copy, frozenset.copy, frozenset({1}))
+
+
+class NoArgsInt(int):
+    pass
+
+
+class NoArgsList(list):
+    pass
+
+
+class NoArgsSet(set):
+    pass
+
+
+integer_sub = NoArgsInt(7)
+list_sub = NoArgsList([1, 2])
+set_sub = NoArgsSet({1})
+noargs_errors("int_sub_bits", integer_sub.bit_length, int.bit_length, integer_sub)
+noargs_errors("list_sub_reverse", list_sub.reverse, list.reverse, list_sub)
+noargs_errors("set_sub_copy", set_sub.copy, set.copy, set_sub)
+# Exercise source CALL and CALL_FUNCTION_EX ingress as well as stored methods.
+show("int_sub_direct_pos", lambda: integer_sub.bit_length(1))
+show("int_sub_explicit_direct_pos", lambda: int.bit_length(integer_sub, 1))
+show("int_sub_direct_keyword", lambda: integer_sub.bit_length(extra=1))
+show("int_sub_direct_both", lambda: integer_sub.bit_length(1, extra=2))
+show("int_sub_expanded_pos", lambda: integer_sub.bit_length(*(1,)))
+show("int_sub_expanded_kw", lambda: integer_sub.bit_length(**{"extra": 1}))
+show("int_sub_expanded_both", lambda: integer_sub.bit_length(*(1,), **{"extra": 2}))
+show("int_sub_explicit_expanded_pos", lambda: int.bit_length(*(integer_sub, 1)))
+show(
+    "int_sub_explicit_expanded_kw",
+    lambda: int.bit_length(*(integer_sub,), **{"extra": 1}),
+)
+show(
+    "int_sub_explicit_expanded_both",
+    lambda: int.bit_length(*(integer_sub, 1), **{"extra": 2}),
+)
+show("bytes_lower_success", lambda: b"ABC".lower())
+show("int_sub_bits_success", lambda: integer_sub.bit_length())
+show("int_sub_explicit_success", lambda: int.bit_length(integer_sub))
+show("list_sub_reverse_success", lambda: list_sub.reverse())
+print("list_sub_reversed", list_sub)
+show("set_sub_copy_success", lambda: sorted(set_sub.copy()))
+show("frozen_copy_success", lambda: sorted(frozenset({1}).copy()))
+cleared = {1: 2}
+show("dict_clear_success", lambda: cleared.clear())
+print("dict_after_clear", cleared)
+
+# Native IO declarations use the same contract and retain their owner label.
+stream = io.BytesIO(b"abc")
+noargs_errors("io_getvalue", stream.getvalue, io.BytesIO.getvalue, stream)
+noargs_errors("io_readable", stream.readable, io.BytesIO.readable, stream)
+show("io_getvalue_success", lambda: stream.getvalue())
+show("io_readable_success", lambda: stream.readable())
+stream.close()
+
+
+class NativeOuter:
+    class Inner(int):
+        pass
+
+
+nested = NativeOuter.Inner(7)
+nested_bound = nested.bit_length
+show("nested_stored", lambda: nested_bound(1))
+show("nested_direct", lambda: nested.bit_length(1))
+NativeOuter.Inner.__qualname__ = "ChangedQualname"
+show("nested_renamed_stored", lambda: nested_bound(1))
+show("nested_renamed_direct", lambda: nested.bit_length(1))
+NativeOuter.Inner.__name__ = "ChangedName"
+show("nested_name_only_stored", lambda: nested_bound(1))
+
+
+def suspended_native_call():
+    integer_sub.bit_length((yield "native_argument"))
+
+
+suspended = suspended_native_call()
+print("native_suspended_start", next(suspended))
+show("native_suspended_finish", lambda: suspended.send(1))

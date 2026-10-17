@@ -469,6 +469,7 @@ def test_simpleir_operation_shapes_own_wire_and_preserved_tir_admission() -> Non
     data = gen.load_table()
     shapes = {row["kind"]: row for row in data["simpleir_op_shape"]}
     assert {kind: row["operands"] for kind, row in shapes.items()} == {
+        "callargs_push_method_receiver": 2,
         "pos": 1,
         "type_guard": 1,
         "guard_tag": 2,
@@ -3310,6 +3311,7 @@ def test_alias_rc_barrier_predicate_delegates_to_generated_table() -> None:
     alias = _read_rs_module_cluster(tir_path("passes/alias_analysis.rs"))
 
     expected_rc = {
+        "CallargsPushMethodReceiver",
         "Call",
         "CallBuiltin",
         "CallLoadedMethod",
@@ -4313,6 +4315,7 @@ def test_alias_slot_observation_delegates_to_generated_table() -> None:
     alias = tir_path("passes/alias_analysis.rs").read_text(encoding="utf-8")
 
     expected_direct = {
+        "CallargsPushMethodReceiver",
         "AllocTask",
         "BuildDict",
         "BuildList",
@@ -5531,6 +5534,11 @@ def test_operand_ownership_table_renders_exhaustive_and_borrowed() -> None:
             "_ => OperandOwnership::ContainerAbsorb, },"
         ),
         "DeleteVar": ("OpCode::DeleteVar => OperandOwnership::Borrowed,"),
+        "CallargsPushMethodReceiver": (
+            "OpCode::CallargsPushMethodReceiver => match operand_idx { "
+            "0 => OperandOwnership::Borrowed, "
+            "_ => OperandOwnership::Consumed, },"
+        ),
     }
     for row in data["opcode"]:
         name = row["name"]
@@ -5547,6 +5555,9 @@ def test_operand_ownership_table_renders_exhaustive_and_borrowed() -> None:
             assert f"OpCode::{name} => OperandOwnership::Consumed," in region, (
                 f"opcode_operand_ownership_table missing/incorrect consume arm for {name}"
             )
+        elif name == "CallargsPushMethodReceiver":
+            assert row["operand_ownership"] == ["borrowed", "consumed"]
+            assert _rust_tokens(expected_arm[name]) in region_tokens
         elif name == "DeleteVar":
             assert row["operand_ownership"] == ["borrowed", "borrowed"]
             assert _rust_tokens(expected_arm[name]) in region_tokens, (
@@ -5581,7 +5592,7 @@ def test_consuming_kind_table_renders_callargs_consume() -> None:
     """The `[[consuming_kind]]` rows render into `kind_consumed_operand_table`
     with the EXACT CallArgs-builder semantics: `call_bind` /
     `call_indirect` consume the LAST operand (`arity.checked_sub(1)`), every
-    other spelling consumes none (`_ => None`)."""
+    receiver-prefix adopts operand 1; other spellings consume none (`_ => None`)."""
     gen = _gen()
     data = gen.load_table()
     rendered = gen.render_rs(data)
@@ -5593,6 +5604,7 @@ def test_consuming_kind_table_renders_callargs_consume() -> None:
     assert consuming == {
         "call_bind": "last",
         "call_indirect": "last",
+        "callargs_push_method_receiver": 1,
         "frame_home_store": 0,
         "frame_home_cell": 0,
         "frame_home_private_cell": 0,

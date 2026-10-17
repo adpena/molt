@@ -186,6 +186,7 @@ def test_len_lowering():
 )
 def test_positional_dynamic_call_uses_live_callable_without_argument_builder(hint):
     generator = SimpleTIRGenerator()
+    generator._populate_sema_state(ast.Module(body=[], type_ignores=[]))
     callee = MoltValue("live_callable", type_hint=hint)
     result = generator._emit_dynamic_call(
         ast.parse("callee(1)", mode="eval").body, callee

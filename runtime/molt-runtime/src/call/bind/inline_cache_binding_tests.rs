@@ -372,3 +372,88 @@ fn type_epoch_invalidates_every_mro_resolved_call_cache_family() {
     assert!(!type_epoch_matches(recorded));
     assert!(!type_resolution_epoch_is_stable(recorded));
 }
+
+#[test]
+fn native_method_load_preserves_descriptor_identity_and_one_receiver_owner() {
+    let _test = crate::test_support::RuntimeTestTransaction::new();
+    crate::with_gil_entry_nopanic!(py, {
+        unsafe {
+            let name = crate::attr_name_bits_from_bytes(py, b"reverse").unwrap();
+            let label = crate::attr_name_bits_from_bytes(py, b"NoArgsList").unwrap();
+            let class = crate::molt_class_new(label);
+            crate::molt_class_set_base(class, builtin_classes(py).list);
+            assert!(!exception_pending(py));
+            let receiver = crate::call::bind::call_bind_borrowed(py, class, None, &[], &[], &[]);
+            assert!(!exception_pending(py));
+            let pointer = obj_from_bits(receiver)
+                .as_ptr()
+                .expect("list subtype instance");
+            let refs = || (*crate::object::header_from_obj_ptr(pointer)).ref_count_snapshot();
+            let original_refs = refs();
+
+            // Cold and repeated LOAD_ATTR both return the class descriptor,
+            // never a freshly allocated bound-method payload. The pair owns
+            // exactly one receiver reference, released by CALL or the caller.
+            for site in [964, 964] {
+                let loaded = load_method(
+                    py,
+                    MoltObject::from_int(site).bits(),
+                    receiver,
+                    b"reverse".as_ptr(),
+                    7,
+                );
+                assert!(!exception_pending(py));
+                assert_eq!(loaded.self_or_null, receiver);
+                assert_eq!(refs(), original_refs + 1);
+                let descriptor = crate::molt_get_attr_name(builtin_classes(py).list, name);
+                assert_eq!(loaded.callable, descriptor);
+                assert_eq!(
+                    object_type_id(obj_from_bits(loaded.callable).as_ptr().unwrap()),
+                    TYPE_ID_FUNCTION
+                );
+                dec_ref_bits(py, descriptor);
+                let result = call_loaded_method(
+                    py,
+                    loaded.callable,
+                    loaded.self_or_null,
+                    &[MoltObject::from_int(1).bits()],
+                );
+                dec_ref_bits(py, result);
+                let error = crate::exception_last_bits_noinc(py).unwrap();
+                assert_eq!(
+                    crate::format_exception_message(py, obj_from_bits(error).as_ptr().unwrap()),
+                    "list.reverse() takes no arguments (1 given)"
+                );
+                crate::molt_exception_clear();
+                assert_eq!(refs(), original_refs);
+            }
+
+            let bound = crate::molt_get_attr_name(receiver, name);
+            assert_eq!(
+                object_type_id(obj_from_bits(bound).as_ptr().unwrap()),
+                TYPE_ID_BOUND_METHOD
+            );
+            assert_eq!(refs(), original_refs + 1);
+            let result = crate::call::bind::call_bind_borrowed(
+                py,
+                bound,
+                None,
+                &[MoltObject::from_int(1).bits()],
+                &[],
+                &[],
+            );
+            dec_ref_bits(py, result);
+            let error = crate::exception_last_bits_noinc(py).unwrap();
+            assert_eq!(
+                crate::format_exception_message(py, obj_from_bits(error).as_ptr().unwrap()),
+                "NoArgsList.reverse() takes no arguments (1 given)"
+            );
+            crate::molt_exception_clear();
+            dec_ref_bits(py, bound);
+            assert_eq!(refs(), original_refs);
+            for value in [receiver, class, label, name] {
+                dec_ref_bits(py, value);
+            }
+        }
+    });
+}

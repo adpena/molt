@@ -291,6 +291,38 @@ fn home_store_fixture() -> FunctionIR {
     function
 }
 
+fn method_receiver_prefix_fixture() -> FunctionIR {
+    FunctionIR {
+        name: "custody_method_receiver".into(),
+        params: vec!["builder".into(), "receiver".into()],
+        param_types: Some(vec!["dyn".into(), "dyn".into()]),
+        parameter_custody: vec![Borrowed, Transferred],
+        return_abi: molt_ir::FunctionReturnAbi::Value,
+        ops: vec![
+            OpIR {
+                kind: "drop_inserted".into(),
+                ..Default::default()
+            },
+            OpIR {
+                kind: "callargs_push_method_receiver".into(),
+                args: Some(vec!["builder".into(), "receiver".into()]),
+                ..Default::default()
+            },
+            OpIR {
+                kind: "const_none".into(),
+                out: Some("nothing".into()),
+                ..Default::default()
+            },
+            OpIR {
+                kind: "ret".into(),
+                args: Some(vec!["nothing".into()]),
+                ..Default::default()
+            },
+        ],
+        ..Default::default()
+    }
+}
+
 #[test]
 fn native_call_operands_execute_identity_custody_and_mint_failure() {
     let Some(rustc) = native_object_execution::real_rustc() else {
@@ -312,6 +344,7 @@ fn native_call_operands_execute_identity_custody_and_mint_failure() {
     functions.push(builder_fixture("custody_indirect", true));
     functions.push(loop_fixture());
     functions.push(home_store_fixture());
+    functions.push(method_receiver_prefix_fixture());
     for (name, arity, custody) in [
         (
             "custody_target",
@@ -355,6 +388,7 @@ fn native_call_operands_execute_identity_custody_and_mint_failure() {
             "custody_indirect",
             "custody_loop",
             "custody_home_store",
+            "custody_method_receiver",
         ])
         .collect();
     let object = emit_direct_object(compile_selected_functions_direct(functions, &targets));
@@ -384,10 +418,19 @@ fn native_call_operands_execute_identity_custody_and_mint_failure() {
             &molt_codegen_abi::FRAME_HOME_RAW_INT.to_string(),
         )
         .replace("@ABI@", molt_codegen_abi::GENERATED_OBJECT_ABI_SYMBOL);
-    let harness = HARNESS.replace(
-        "@NONE@",
-        &(molt_codegen_abi::box_none_bits() as u64).to_string(),
+    let provider = provider.replace(
+        "@METHOD_NULL@",
+        &(molt_codegen_abi::loaded_method_null_bits() as u64).to_string(),
     );
+    let harness = HARNESS
+        .replace(
+            "@NONE@",
+            &(molt_codegen_abi::box_none_bits() as u64).to_string(),
+        )
+        .replace(
+            "@METHOD_NULL@",
+            &(molt_codegen_abi::loaded_method_null_bits() as u64).to_string(),
+        );
     native_object_execution::link_and_run_native_object(
         &rustc,
         "native-call-operand-custody",
@@ -403,6 +446,7 @@ use core::sync::atomic::{AtomicU64, Ordering::SeqCst};
 const NONE:u64=@NONE@;
 const TRUE:u64=@TRUE@;
 const FALSE:u64=@FALSE@;
+const METHOD_NULL:u64=@METHOD_NULL@;
 #[export_name="@ABI@"] pub static ABI:u8=0;
 static mut PENDING:u8=0;
 static ATTEMPTS:AtomicU64=AtomicU64::new(0);
@@ -417,9 +461,11 @@ static SECOND:AtomicU64=AtomicU64::new(0);
 static EXISTING:AtomicU64=AtomicU64::new(0);
 static OTHER:AtomicU64=AtomicU64::new(0);
 static RESULT:AtomicU64=AtomicU64::new(0);
+static PREFIX_PUSHES:AtomicU64=AtomicU64::new(0);
+static PREFIX_FAIL:AtomicU64=AtomicU64::new(0);
 fn refs(word:u64)->Option<&'static AtomicU64>{match word{0x101=>Some(&FIRST),0x102=>Some(&SECOND),0x501=>Some(&EXISTING),0x502=>Some(&OTHER),0x200=>Some(&RESULT),_=>None}}
 #[no_mangle] pub extern "C" fn molt_inc_ref_obj(word:u64){if let Some(refs)=refs(word){assert!(refs.fetch_add(1,SeqCst)>0,"retain after release");}}
-#[no_mangle] pub extern "C" fn molt_dec_ref_obj(word:u64){if let Some(refs)=refs(word){let old=refs.fetch_sub(1,SeqCst);assert!(old>0,"duplicate release");if old==1&&matches!(word,0x501|0x502)&&ERROR.load(SeqCst)!=0{ERROR.store(0xd00d,SeqCst);}}}
+#[no_mangle] pub extern "C" fn molt_dec_ref_obj(word:u64){assert_ne!(word,METHOD_NULL,"null receiver crossed RC boundary");if let Some(refs)=refs(word){let old=refs.fetch_sub(1,SeqCst);assert!(old>0,"duplicate release");if old==1&&matches!(word,0x501|0x502)&&ERROR.load(SeqCst)!=0&&PREFIX_FAIL.load(SeqCst)==0{ERROR.store(0xd00d,SeqCst);}}}
 #[no_mangle] pub extern "C" fn molt_dec_ref(word:u64){molt_dec_ref_obj(word)}
 #[no_mangle] pub extern "C" fn molt_int_from_i64(raw:i64)->u64{
  assert_eq!(ERROR.load(SeqCst),0,"later box after first failure");let attempt=ATTEMPTS.fetch_add(1,SeqCst)+1;
@@ -475,6 +521,16 @@ fn bind(callable:u64,builder:u64,owned:bool)->u64{assert_eq!(ERROR.load(SeqCst),
 }
 #[no_mangle] pub extern "C" fn custody_reset(mode:u64,fail:u64,guard:u64){for value in [&ATTEMPTS,&CALLS,&ERROR,&ABORTS,&FIRST,&SECOND,&RESULT]{value.store(0,SeqCst);}unsafe{PENDING=0;}EXISTING.store(u64::from(mode!=3),SeqCst);OTHER.store(u64::from(mode<2),SeqCst);MODE.store(mode,SeqCst);FAIL.store(fail,SeqCst);GUARD_FAIL.store(guard,SeqCst);}
 #[no_mangle] pub extern "C" fn custody_check(fail:u64,boxes:u64,guard:u64){let failed=fail!=0||guard!=0;assert_eq!(CALLS.load(SeqCst),u64::from(!failed));assert_eq!(ATTEMPTS.load(SeqCst),if fail!=0{fail}else{boxes});assert_eq!(ERROR.load(SeqCst),if fail!=0{0xb000+fail}else if guard!=0{0xc000}else{0});assert_eq!(ABORTS.load(SeqCst),u64::from(failed));for count in [&FIRST,&SECOND,&EXISTING,&OTHER,&RESULT]{assert_eq!(count.load(SeqCst),0,"owner escaped operation");}}
+#[no_mangle] pub extern "C" fn custody_prefix_reset(present:u64,fail:u64){PREFIX_PUSHES.store(0,SeqCst);PREFIX_FAIL.store(fail,SeqCst);EXISTING.store(present,SeqCst);ERROR.store(0,SeqCst);unsafe{PENDING=0;}}
+#[no_mangle] pub extern "C" fn molt_callargs_push_pos(builder:u64,receiver:u64)->u64{
+ assert_eq!((builder,receiver),(0x777,0x501));assert_eq!(PREFIX_PUSHES.fetch_add(1,SeqCst),0);assert_eq!(EXISTING.load(SeqCst),1);
+ if PREFIX_FAIL.load(SeqCst)!=0{ERROR.store(0xbad,SeqCst);unsafe{PENDING=1;}}else{molt_inc_ref_obj(receiver);}NONE
+}
+#[no_mangle] pub extern "C" fn custody_prefix_check(present:u64,fail:u64){
+ assert_eq!(PREFIX_PUSHES.load(SeqCst),present);assert_eq!(ERROR.load(SeqCst),if present!=0&&fail!=0{0xbad}else{0});
+ assert_eq!(EXISTING.load(SeqCst),u64::from(present!=0&&fail==0),"builder is the sole remaining receiver owner");
+ if present!=0&&fail==0{molt_dec_ref_obj(0x501);}assert_eq!(EXISTING.load(SeqCst),0);PREFIX_FAIL.store(0,SeqCst);
+}
 #[no_mangle] pub extern "C" fn custody_loop_check(fail:u64){assert_eq!(CALLS.load(SeqCst),if fail==0{2}else{(fail-1)/2});assert_eq!(ATTEMPTS.load(SeqCst),if fail==0{4}else{fail});assert_eq!(ERROR.load(SeqCst),if fail==0{0}else{0xb000+fail});assert_eq!(ABORTS.load(SeqCst),0);for count in [&FIRST,&SECOND,&EXISTING,&OTHER,&RESULT]{assert_eq!(count.load(SeqCst),0,"loop owner escaped");}}
 
 // Home publication uses the same counted allocator and pending-error provider.
@@ -544,6 +600,7 @@ pub extern "C" fn custody_home_finish(failure: u64) {
 
 const HARNESS: &str = r#"
 const NONE:u64=@NONE@;
+const METHOD_NULL:u64=@METHOD_NULL@;
 extern "C" {
  fn custody_direct(a:u64,b:u64)->u64; fn custody_internal(a:u64,b:u64)->u64;
  fn custody_guarded(a:u64,b:u64)->u64; fn custody_dynamic(a:u64,b:u64)->u64;
@@ -553,6 +610,8 @@ extern "C" {
  fn custody_loop()->u64; fn custody_loop_check(fail:u64);
  fn custody_reset(mode:u64,fail:u64,guard:u64); fn custody_check(fail:u64,boxes:u64,guard:u64);
  fn custody_home_store(); fn custody_home_reset(failure:u64); fn custody_home_finish(failure:u64);
+ fn custody_method_receiver(builder:u64,receiver:u64)->u64;
+ fn custody_prefix_reset(present:u64,fail:u64); fn custody_prefix_check(present:u64,fail:u64);
  fn molt_dec_ref_obj(value:u64);
 }
 fn main(){unsafe{
@@ -563,5 +622,6 @@ fn main(){unsafe{
  custody_reset(0,0,1);assert_eq!(custody_direct(0x501,0x502),NONE);custody_check(0,2,1);
  for fail in 0..=4{custody_reset(3,fail,0);assert_eq!(custody_loop(),NONE);custody_loop_check(fail);}
  for fail in [0,1]{custody_home_reset(fail);custody_home_store();custody_home_finish(fail);}
+ for present in [0,1]{for fail in [0,1]{custody_prefix_reset(present,fail);assert_eq!(custody_method_receiver(0x777,if present==0{METHOD_NULL}else{0x501}),NONE);custody_prefix_check(present,fail);}}
 }}
 "#;

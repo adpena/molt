@@ -1486,3 +1486,73 @@ fn linearize_multi_block_emits_labels() {
         kinds
     );
 }
+
+#[test]
+fn loaded_method_receiver_prefix_preserves_ownership_through_roundtrip() {
+    use crate::tir::op_kinds_generated::{OperandOwnership, opcode_operand_ownership_table};
+    let mut function = FunctionIR {
+        name: "method_keyword_call".into(),
+        return_abi: molt_ir::FunctionReturnAbi::Value,
+        params: vec!["receiver".into()],
+        ops: vec![
+            OpIR {
+                kind: "load_method".into(),
+                args: Some(vec!["receiver".into()]),
+                s_value: Some("m".into()),
+                var: Some("callable".into()),
+                out: Some("nullable".into()),
+                ..OpIR::default()
+            },
+            OpIR {
+                kind: "callargs_new".into(),
+                out: Some("builder".into()),
+                ..OpIR::default()
+            },
+            OpIR {
+                kind: "callargs_push_method_receiver".into(),
+                args: Some(vec!["builder".into(), "nullable".into()]),
+                ..OpIR::default()
+            },
+            OpIR {
+                kind: "call_bind".into(),
+                args: Some(vec!["callable".into(), "builder".into()]),
+                argument_custody: Some(vec![molt_ir::ParameterCustody::Transferred; 2]),
+                out: Some("result".into()),
+                ..OpIR::default()
+            },
+            OpIR {
+                kind: "ret".into(),
+                args: Some(vec!["result".into()]),
+                ..OpIR::default()
+            },
+        ],
+        ..FunctionIR::default()
+    };
+    for _ in 0..2 {
+        let tir = lower_to_tir(&function);
+        assert!(crate::tir::verify::verify_function(&tir).is_ok());
+        let prefix = tir
+            .blocks
+            .values()
+            .flat_map(|block| &block.ops)
+            .find(|op| op.opcode == OpCode::CallargsPushMethodReceiver)
+            .unwrap();
+        assert!(prefix.results.is_empty());
+        assert_eq!(
+            opcode_operand_ownership_table(prefix.opcode, 0),
+            OperandOwnership::Borrowed
+        );
+        assert_eq!(
+            opcode_operand_ownership_table(prefix.opcode, 1),
+            OperandOwnership::Consumed
+        );
+        function.ops = lower_to_simple_ir(&tir);
+        let prefix = function
+            .ops
+            .iter()
+            .find(|op| op.kind == "callargs_push_method_receiver")
+            .unwrap();
+        assert_eq!(prefix.args.as_ref().unwrap().len(), 2);
+        assert!(prefix.out.is_none() && prefix.argument_custody.is_none());
+    }
+}

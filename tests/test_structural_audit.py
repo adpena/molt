@@ -2522,6 +2522,10 @@ def test_compatibility_protocol_inventory_fails_closed(tmp_path):
     receipt.write_text(
         (ROOT / protocol.SOURCE_RECEIPTS).read_text(encoding="utf-8"), encoding="utf-8"
     )
+    pins = tmp_path / protocol.CPYTHON_SOURCES.relative_to(ROOT)
+    pins.write_text(
+        protocol.CPYTHON_SOURCES.read_text(encoding="utf-8"), encoding="utf-8"
+    )
     for name, source in protocol.projections().items():
         path = tmp_path / name
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -2551,6 +2555,13 @@ def test_compatibility_protocol_inventory_fails_closed(tmp_path):
     ].proved
     assert not protocol.rust_inventory(
         glob, SA.mask_rust_comments_and_strings(glob), False
+    )[0].proved
+    raw_io = "use crate::builtins::compatibility_error::CompatibilityError; CompatibilityError::RawIoBaseReadinto.raise(py);"
+    assert protocol.rust_inventory(
+        raw_io, SA.mask_rust_comments_and_strings(raw_io), True
+    )[0].proved
+    assert not protocol.rust_inventory(
+        raw_io, SA.mask_rust_comments_and_strings(raw_io), False
     )[0].proved
     unknown = rust.replace("MemoryviewLookup", "Unknown")
     assert not protocol.rust_inventory(unknown, unknown, True)[0].proved
@@ -2602,6 +2613,10 @@ def test_compatibility_protocol_generation_requires_receipts_and_witnesses(
     receipt.write_text(
         (ROOT / protocol.SOURCE_RECEIPTS).read_text(encoding="utf-8"), encoding="utf-8"
     )
+    pins = tmp_path / protocol.CPYTHON_SOURCES.relative_to(ROOT)
+    pins.write_text(
+        protocol.CPYTHON_SOURCES.read_text(encoding="utf-8"), encoding="utf-8"
+    )
     with pytest.raises(ValueError, match="missing compatibility witness"):
         protocol.main(["--check"])
     for facts in protocol.OUTCOMES.values():
@@ -2612,6 +2627,77 @@ def test_compatibility_protocol_generation_requires_receipts_and_witnesses(
     assert protocol.main(["--write"]) == 0
     assert protocol.main(["--check"]) == 0
     assert protocol.projection_errors(tmp_path) == []
+
+
+def test_raw_io_compatibility_has_its_own_pinned_target_support(tmp_path):
+    protocol = SA.compatibility_errors
+    import json
+
+    assert protocol.OUTCOMES["RawIoBaseReadinto"].versions == (
+        "3.12",
+        "3.13",
+        "3.14",
+        "3.15",
+    )
+    for outcome, facts in protocol.OUTCOMES.items():
+        if outcome != "RawIoBaseReadinto":
+            assert "3.15" not in facts.versions
+        path = tmp_path / facts.witness
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.touch()
+    data = json.loads((ROOT / protocol.SOURCE_RECEIPTS).read_text(encoding="utf-8"))
+    receipt = tmp_path / protocol.SOURCE_RECEIPTS
+    receipt.parent.mkdir(parents=True, exist_ok=True)
+    receipt.write_text(json.dumps(data), encoding="utf-8")
+    pins = tmp_path / protocol.CPYTHON_SOURCES.relative_to(ROOT)
+    pins.write_text(
+        protocol.CPYTHON_SOURCES.read_text(encoding="utf-8"), encoding="utf-8"
+    )
+    assert protocol.source_errors(tmp_path) == []
+    raw_versions = [
+        row["version"]
+        for row in data["sources"]
+        if row["path"] == "Modules/_io/iobase.c"
+    ]
+    assert len(raw_versions) == 4
+    for version in raw_versions:
+        changed = json.loads(json.dumps(data))
+        changed["sources"] = [
+            row
+            for row in changed["sources"]
+            if (row["version"], row["path"]) != (version, "Modules/_io/iobase.c")
+        ]
+        receipt.write_text(json.dumps(changed), encoding="utf-8")
+        assert (
+            "compatibility source coordinates are incomplete or unpinned"
+            in protocol.source_errors(tmp_path)
+        )
+    changed = json.loads(json.dumps(data))
+    raw_source = next(
+        row for row in changed["sources"] if row["path"] == "Modules/_io/iobase.c"
+    )
+    raw_source["revision"] = "0" * 40
+    receipt.write_text(json.dumps(changed), encoding="utf-8")
+    assert (
+        "compatibility source coordinates are incomplete or unpinned"
+        in protocol.source_errors(tmp_path)
+    )
+    # A changed canonical pin invalidates an unchanged receipt too; the
+    # protocol cannot silently keep its own obsolete source revision.
+    receipt.write_text(json.dumps(data), encoding="utf-8")
+    original_pin = next(
+        row["revision"]
+        for row in data["sources"]
+        if row["path"] == "Modules/_io/iobase.c"
+    )
+    pins.write_text(
+        pins.read_text(encoding="utf-8").replace(original_pin, "0" * 40),
+        encoding="utf-8",
+    )
+    assert (
+        "compatibility source coordinates are incomplete or unpinned"
+        in protocol.source_errors(tmp_path)
+    )
 
 
 def test_compatibility_classification_does_not_exempt_raw_raises(tmp_path):
@@ -3067,6 +3153,10 @@ def test_glob_compatibility_source_coordinates_are_version_specific(tmp_path):
     receipt = tmp_path / protocol.SOURCE_RECEIPTS
     receipt.parent.mkdir(parents=True, exist_ok=True)
     receipt.write_text(json.dumps(data), encoding="utf-8")
+    pins = tmp_path / protocol.CPYTHON_SOURCES.relative_to(ROOT)
+    pins.write_text(
+        protocol.CPYTHON_SOURCES.read_text(encoding="utf-8"), encoding="utf-8"
+    )
     assert protocol.source_errors(tmp_path) == []
     # Modern native splitroot is a C provider; Python fallback bytes alone do
     # not establish its Windows UTF-16 coordinate contract.

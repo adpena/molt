@@ -85,7 +85,7 @@ print(SubFactory.make(9))
 
 class Rebinding(Base):
     def compute(self, x):
-        self = Leaf()
+        self = Leaf()  # noqa: F841 - super() reads this rebound argument
         return super().compute(x)
 
 
@@ -93,3 +93,34 @@ try:
     print(Rebinding().compute(3))
 except TypeError as error:
     print("TypeError", error)
+
+
+
+class CollectBase:
+    def collect(self, *values, **named):
+        return (values, sorted(named.items()))
+
+
+class CollectChild(CollectBase):
+    def keyword(self):
+        return super().collect(1, named=2)
+
+    def expanded(self):
+        return super().collect(*(1,), **{"named": 2})
+
+    def suspended(self):
+        result = super().collect((yield "first"), named=(yield "second"))
+        yield result
+
+
+collect = CollectChild()
+print("super-keyword", collect.keyword())
+print("super-expanded", collect.expanded())
+pending = collect.suspended()
+print("super-suspended", next(pending))
+original = CollectBase.collect
+CollectBase.collect = lambda self, *values, **named: "replacement"
+print("super-suspended", pending.send(3))
+print("super-suspended", pending.send(4))
+pending.close()
+CollectBase.collect = original

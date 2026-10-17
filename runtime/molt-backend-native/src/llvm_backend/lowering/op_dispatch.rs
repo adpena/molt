@@ -343,6 +343,8 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
 
             OpCode::CallLoadedMethod => self.emit_call_loaded_method(op),
 
+            OpCode::CallargsPushMethodReceiver => self.emit_callargs_push_method_receiver(op),
+
             OpCode::CallBuiltin => self.emit_call_builtin(op),
 
             // -- OrdAt: fused ord(container[index]) --
@@ -503,8 +505,17 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 );
             }
 
-            // -- CheckException: inspect the current exception state --
+            // -- CheckException: transfer to its explicit exceptional successor --
             OpCode::CheckException => {
+                let Some(target_label) = op.attrs.get("value").and_then(|v| match v {
+                    AttrValue::Int(v) => Some(*v),
+                    _ => None,
+                }) else {
+                    self.record_fatal(
+                        "check_exception requires an explicit exceptional successor label",
+                    );
+                    return;
+                };
                 let pending_symbol = if op.is_async_work_poll() {
                     "molt_async_work_poll_and_exception_pending"
                 } else {
@@ -522,12 +533,6 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                     self.values.insert(result_id, result);
                     self.value_types.insert(result_id, TirType::DynBox);
                 }
-                let Some(target_label) = op.attrs.get("value").and_then(|v| match v {
-                    AttrValue::Int(v) => Some(*v),
-                    _ => None,
-                }) else {
-                    return;
-                };
                 let Some(target_block_id) = self
                     .func
                     .label_id_map

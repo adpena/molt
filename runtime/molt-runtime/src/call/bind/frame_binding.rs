@@ -450,6 +450,7 @@ pub(super) unsafe fn call_function_with_arguments(
         {
             return call_capi_method_with_bound_args(_py, func_bits, &args);
         }
+        let receiver_origin = args.receiver_origin;
         let view = match args.unpacked_view() {
             Ok(view) => view,
             Err(err) => return err,
@@ -461,6 +462,24 @@ pub(super) unsafe fn call_function_with_arguments(
         let arg_names = match python_argument_names(_py, func_ptr) {
             Ok(Some(names)) => names,
             Ok(None) => {
+                // A fixed one-slot method descriptor takes only its receiver.
+                // C-extension, specialized and Python named binders already had
+                // their opportunity; no argument packing is needed here.
+                if let Some(admitted) =
+                    crate::builtins::functions::native_callable::admit_native_noargs(
+                        _py,
+                        func_ptr,
+                        receiver_origin,
+                        view.pos,
+                        view.kw_names.len(),
+                    )
+                {
+                    return if admitted {
+                        call_function_obj_bound_vec(_py, func_bits, view.pos)
+                    } else {
+                        MoltObject::none().bits()
+                    };
+                }
                 if let Some(bound_args) =
                     builtin_args::bind_positional_builtin_call(_py, func_bits, func_ptr, &view)
                 {

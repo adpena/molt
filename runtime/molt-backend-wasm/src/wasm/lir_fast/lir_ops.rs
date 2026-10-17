@@ -153,6 +153,7 @@ fn emit_lir_op(ctx: &mut LirLowerCtx, op: &LirOp) {
         | OpCode::LoadMethod
         | OpCode::LoadSuperMethod
         | OpCode::CallLoadedMethod
+        | OpCode::CallargsPushMethodReceiver
         | OpCode::CallBuiltin
         | OpCode::StackAlloc
         | OpCode::Free

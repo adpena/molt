@@ -150,6 +150,22 @@ impl LuauBackend {
                     self.emit_unsupported_op(op);
                 }
             }
+            "callargs_push_method_receiver" => {
+                let args = op.args.as_deref().unwrap_or(&[]);
+                if let [callargs, receiver] = args {
+                    let callargs = sanitize_ident(callargs);
+                    let receiver = sanitize_ident(receiver);
+                    // This target's load_method currently yields an already
+                    // bound attribute and nil. Keep its absent receiver out of
+                    // the builder, including nil's positional slot accounting.
+                    self.emit_line(&format!("if {receiver} ~= nil then"));
+                    self.emit_line(&format!("\tmolt_callargs_push_pos({callargs}, {receiver})"));
+                    self.emit_line(&format!("\t{receiver} = nil"));
+                    self.emit_line("end");
+                } else {
+                    self.emit_unsupported_op(op);
+                }
+            }
             "callargs_push_pos" => {
                 let args = op.args.as_deref().unwrap_or(&[]);
                 if let [callargs, value] = args {

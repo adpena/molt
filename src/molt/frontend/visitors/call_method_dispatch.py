@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import ast
+from contextlib import nullcontext
 
 from molt.compiler_analysis.python_inlining import (
     inline_expression_is_frame_independent,
@@ -103,12 +104,20 @@ class CallMethodDispatchMixin(GeneratorMixinBase):
             if suspends
             else None
         )
-        values = self._emit_call_args(args)
-        if cell is not None:
-            receiver = self._consume_scratch_cell(cell)
-        return receiver, values
+        cleanup = [cell] if cell is not None else None
+        with (
+            self._scratch_cleanup_on_error(cleanup)
+            if cleanup is not None
+            else nullcontext()
+        ):
+            values = self._emit_call_args(args, cleanup=cleanup)
+            if cell is not None:
+                receiver = self._consume_scratch_cell(cell)
+            return receiver, values
 
-    def _emit_call_args(self, args: list[ast.expr]) -> list[MoltValue]:
+    def _emit_call_args(
+        self, args: list[ast.expr], *, cleanup: list[ScratchCell] | None = None
+    ) -> list[MoltValue]:
         if not args:
             return []
         if not self.is_async():
@@ -134,18 +143,28 @@ class CallMethodDispatchMixin(GeneratorMixinBase):
             return values
         values = []
         spills: list[tuple[int, ScratchCell]] = []
-        for idx, expr in enumerate(args):
-            arg = self.visit(expr)
-            if arg is None:
-                raise FrontendRejection(
-                    Diagnostic.OPERAND_VALUE, "Unsupported call argument"
-                )
-            values.append(arg)
-            if any(yield_flags[idx + 1 :]):
-                cell = self._new_scratch_cell(arg, type_hint=arg.type_hint)
-                spills.append((idx, cell))
-        for idx, cell in spills:
-            values[idx] = self._consume_scratch_cell(cell)
+        cleanup_cells = cleanup if cleanup is not None else []
+        last_suspension = max(
+            index for index, suspends in enumerate(yield_flags) if suspends
+        )
+        with (
+            self._scratch_cleanup_on_error(cleanup_cells)
+            if last_suspension and cleanup is None
+            else nullcontext()
+        ):
+            for idx, expr in enumerate(args):
+                arg = self.visit(expr)
+                if arg is None:
+                    raise FrontendRejection(
+                        Diagnostic.OPERAND_VALUE, "Unsupported call argument"
+                    )
+                values.append(arg)
+                if idx < last_suspension:
+                    cell = self._new_scratch_cell(arg, type_hint=arg.type_hint)
+                    spills.append((idx, cell))
+                    cleanup_cells.append(cell)
+            for idx, cell in spills:
+                values[idx] = self._consume_scratch_cell(cell)
         return values
 
     def _try_emit_static_dataclass_constructor(

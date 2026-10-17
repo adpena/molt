@@ -4,6 +4,104 @@ use serde_json::json;
 use std::{fs, path::PathBuf};
 
 #[test]
+fn method_receiver_prefix_executes_null_present_and_failed_push_custody() {
+    let node = real_execution_tool(
+        PathBuf::from("node"),
+        "MOLT_REQUIRE_REAL_NODE_TESTS",
+        "method receiver custody",
+    )
+    .expect("Node is required to execute the nullable receiver branch");
+    let (temp, _remove_temp) = wasm_test_temp_dir();
+    let mut function = wasm_test_function(
+        "molt_main",
+        vec!["builder", "receiver"],
+        Some(vec!["dyn", "dyn"]),
+        vec![
+            wasm_test_op("drop_inserted", None, vec![]),
+            wasm_test_op(
+                "callargs_push_method_receiver",
+                None,
+                vec!["builder", "receiver"],
+            ),
+            wasm_test_op("const_none", Some("nothing"), vec![]),
+            wasm_test_op("ret", None, vec!["nothing"]),
+        ],
+    );
+    function.parameter_custody = vec![
+        molt_ir::ParameterCustody::Borrowed,
+        molt_ir::ParameterCustody::Transferred,
+    ];
+    let wasm = wasm_compile_final_ir_for_op_loop_tests_with_diagnostics(
+        SimpleIR {
+            functions: vec![function],
+            profile: None,
+        },
+        Default::default(),
+    )
+    .wasm;
+    wasmparser::Validator::new().validate_all(&wasm).unwrap();
+    let (memory_pages, table_entries) = wasm_import_minimums(&wasm);
+    let path = temp.join("method-receiver.wasm");
+    fs::write(&path, &wasm).unwrap();
+    let config = temp.join("method-receiver.json");
+    fs::write(
+        &config,
+        serde_json::to_vec(&json!({
+            "path":path,"memory_pages":memory_pages,"table_entries":table_entries,
+            "none":molt_codegen_abi::box_none_bits().to_string(),
+            "null":molt_codegen_abi::loaded_method_null_bits().to_string(),
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    run_node_test_script(
+        &node,
+        r#"
+const fs = require('fs'), assert = require('assert/strict');
+const config = JSON.parse(fs.readFileSync(process.argv[1], 'utf8'));
+const none = BigInt(config.none), nullWord = BigInt(config.null), receiver = 0x501n, builder = 0x777n;
+const module = new WebAssembly.Module(fs.readFileSync(config.path));
+for (const present of [false, true]) for (const fail of [false, true]) {
+  let owners = present ? 1 : 0, pushes = 0, pending = false;
+  const imports = {env: {
+    memory:new WebAssembly.Memory({initial:config.memory_pages}),
+    __indirect_function_table:new WebAssembly.Table({initial:config.table_entries,element:'anyfunc'}),
+  }};
+  const providers = {
+    callargs_push_pos: (actualBuilder, value) => {
+      assert.equal(actualBuilder, builder); assert.equal(value, receiver);
+      assert.equal(owners, 1); assert.equal(pushes++, 0);
+      if (fail) pending = true; else owners++;
+      return none;
+    },
+    dec_ref_obj: value => {
+      assert.notEqual(value, nullWord, 'null never crosses a Python RC boundary');
+      if (value === none) return;
+      assert.equal(value, receiver); assert.ok(owners > 0, 'no duplicate release'); owners--;
+    },
+    exception_pending: () => pending ? 1n : 0n,
+    exception_pending_fast: () => pending ? 1n : 0n,
+  };
+  for (const entry of WebAssembly.Module.imports(module)) {
+    imports[entry.module] ??= {};
+    if (entry.kind !== 'function') { assert.ok(entry.module === 'env' && entry.name in imports.env); continue; }
+    imports[entry.module][entry.name] = providers[entry.name] ?? (() => { throw new Error('unexpected runtime call '+entry.name); });
+  }
+  const app = new WebAssembly.Instance(module, imports).exports;
+  assert.equal(app.molt_main(builder, present ? receiver : nullWord), none);
+  assert.equal(pushes, Number(present));
+  assert.equal(pending, present && fail, 'push failure remains pending after release');
+  assert.equal(owners, Number(present && !fail), 'only the builder retains the receiver');
+  if (owners) providers.dec_ref_obj(receiver);
+  assert.equal(owners, 0);
+}
+"#,
+        &[&config],
+        "WASM nullable method receiver custody",
+    );
+}
+
+#[test]
 fn hash_constructor_execution_preserves_owner_and_failure_atomicity() {
     let node = real_execution_tool(
         PathBuf::from("node"),

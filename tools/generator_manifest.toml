@@ -632,7 +632,7 @@ outputs = [
   "src/molt/stdlib/_compatibility_errors.py",
   "runtime/molt-runtime/src/builtins/compatibility_error.rs",
 ]
-source = "tools/compatibility_error_protocol.py + config/python_compatibility_error_sources.json + tools/generator_io.py"
+source = "tools/compatibility_error_protocol.py + config/python_compatibility_error_sources.json + config/cpython_regrtest_sources.toml + tools/cpython_regrtest.py + tools/generator_io.py"
 check_mode = true
 toolchains = []
 check_command = "tools/compatibility_error_protocol.py --check"

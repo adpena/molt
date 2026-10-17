@@ -63,6 +63,13 @@
     },
     {
       "version": "3.12.13",
+      "revision": "3bb231a6a5dc02b95658877318bf61501a7209e9",
+      "path": "Modules/_io/iobase.c",
+      "url": "https://raw.githubusercontent.com/python/cpython/3bb231a6a5dc02b95658877318bf61501a7209e9/Modules/_io/iobase.c",
+      "sha256": "ccdd159eeb82fe58906242e1357f6d558a1a089c033cb3c7eabcc638bb11b71f"
+    },
+    {
+      "version": "3.12.13",
       "url": "https://raw.githubusercontent.com/python/cpython/v3.12.13/Objects/memoryobject.c",
       "path": "Objects/memoryobject.c",
       "sha256": "43728748a34eab47c0f7c7d3e3d7b0f155ee236ce6eb768ba64d202c902f9bb5"
@@ -146,6 +153,13 @@
       "sha256": "53cf958a7a9e4a07f13f7ff13c3d2620e6998e418d4b342263b6b0aa53285af5"
     },
     {
+      "version": "3.13.16",
+      "revision": "cbc944f4bc59639a444dd971c737788ba2283a91",
+      "path": "Modules/_io/iobase.c",
+      "url": "https://raw.githubusercontent.com/python/cpython/cbc944f4bc59639a444dd971c737788ba2283a91/Modules/_io/iobase.c",
+      "sha256": "6386f179c88d51d74a0374aad35671e5371578fcc8e1f89cb901a9d355d66c14"
+    },
+    {
       "version": "3.14.0",
       "url": "https://raw.githubusercontent.com/python/cpython/v3.14.0/Lib/asyncio/base_events.py",
       "path": "Lib/asyncio/base_events.py",
@@ -222,6 +236,20 @@
       "url": "https://raw.githubusercontent.com/python/cpython/v3.14.3/Objects/memoryobject.c",
       "path": "Objects/memoryobject.c",
       "sha256": "afc705f7c5f1543e6fac358034d2f39693576d1abd03b85f8914ca05989fc4b1"
+    },
+    {
+      "version": "3.14.8",
+      "revision": "8e6e75d9102e39bed2a2b279203a396741180f12",
+      "path": "Modules/_io/iobase.c",
+      "url": "https://raw.githubusercontent.com/python/cpython/8e6e75d9102e39bed2a2b279203a396741180f12/Modules/_io/iobase.c",
+      "sha256": "a85fdf5cb43a8217757e271de886e6ed86f4dd929a1059dc875708a366044a62"
+    },
+    {
+      "version": "3.15.0",
+      "revision": "d220409a13b77de7a6c30abe16ea90db01528edc",
+      "path": "Modules/_io/iobase.c",
+      "url": "https://raw.githubusercontent.com/python/cpython/d220409a13b77de7a6c30abe16ea90db01528edc/Modules/_io/iobase.c",
+      "sha256": "d38b6f321127cbca71700fe1587e27ff67c8db09bda54d2a92584d0ca5dd45cf"
     }
   ]
 }

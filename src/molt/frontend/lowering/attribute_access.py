@@ -800,8 +800,9 @@ class AttributeAccessMixin(GeneratorMixinBase):
 
         One frontend value names the (callable, self_or_null) pair the runtime
         returns: a plain function on the receiver's type with the receiver, or
-        any other attribute with the null sentinel. Only CALL_LOADED_METHOD
-        consumes it, and serialization gives the pair its two wire results.
+        any other attribute with the null sentinel. CALL_LOADED_METHOD consumes
+        the pair directly, or CALLARGS_PUSH_METHOD_RECEIVER consumes the nullable
+        receiver before argument assembly. Serialization names both results.
         """
         pair = MoltValue(self.next_var())
         self.emit(

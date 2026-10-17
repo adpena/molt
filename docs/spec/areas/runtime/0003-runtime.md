@@ -319,6 +319,31 @@ selects initialization from its actual class. Explicit descriptor calls perform
 only the requested phase. Constructor input references remain owned across
 conversion callbacks.
 
+Fixed native method descriptors with only a receiver ABI slot share the
+zero-argument admission contract. Receiver validation precedes keyword and
+positional-count diagnostics. Call arguments retain whether dispatch supplied
+the receiver: a materialized bound subtype names its actual type, while an
+explicit descriptor or method-load call names its declaring owner. Method-form
+lookup selects native descriptors through the ordinary attribute transaction;
+custom getters, descriptor precedence and instance shadows retain their public
+lookup semantics. Keyword and suspending calls consume the loaded receiver into
+the existing argument builder before evaluating user arguments. The nullable
+method word never enters Python frame storage. Expanded calls retain their
+ordinary bound-value protocol. Names come from native callable/type
+metadata only when formatting an error; they never select dispatch. Exact
+successful calls keep their direct path, and fallback admission borrows the
+existing argument span. Extension, variadic, wrapper and named-signature
+binders retain their own contracts. This follows pinned CPython's
+[method calls](https://raw.githubusercontent.com/python/cpython/3bb231a6a5dc02b95658877318bf61501a7209e9/Objects/methodobject.c)
+and [descriptor calls](https://raw.githubusercontent.com/python/cpython/3bb231a6a5dc02b95658877318bf61501a7209e9/Objects/descrobject.c).
+
+Suspending argument assembly keeps each pending value in one scratch owner until
+its scheduled push and reuses one builder slot. Parking visits only newly live
+values, so compiler work and frame storage grow linearly with argument count.
+One cold exception landing clears parked owners in reverse order and forwards
+the pending exception; it creates no runtime exception frame. Explicit exception
+successors remain authoritative inside surrounding handlers on every backend.
+
 Native descriptor slots consume the physical payload directly. Source operators
 use class special-method lookup for subtype overrides; exact receiver fast paths
 cannot bypass those overrides. Inherited sequence concat/repeat slots retain
