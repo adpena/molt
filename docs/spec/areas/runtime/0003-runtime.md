@@ -559,3 +559,96 @@ filter initialization or formatting runs. Raw views remain within synchronous
 observation under the caller's live-owner custody and GIL; the observer performs
 no Python call or ownership mutation. These are source-level properties, not
 measured overhead claims.
+
+
+### Native errno publication and build authority
+
+The native public `errno` module is an ordered projection of the selected C
+headers and the target Python version. CPython owns the symbolic names,
+conditional Windows Winsock preferences, introduction versions and insertion
+order; the target C compiler owns macro presence and integer expression values.
+Repeated CPython insertions remain publication events: they can restore a
+reverse-map winner after an intervening alias, even when the forward name
+already exists. The declaration keeps those events and rejects conflicting
+definitions of the same name; raw C symbols remain unique.
+The platform build evaluates a fixed-width data record and reads the target
+object without linking or executing it. The runtime consumes static rows through
+its existing cached dictionary publication, with no per-syscall discovery.
+
+`runtime/molt-runtime-platform/errno_symbols.tsv` is the symbolic publication
+source. The shared build-only reader admits native object format, architecture,
+byte order, extent, defined data-symbol identity and relocation-free contents.
+C assertions additionally witness the effective OS, pointer width and applicable
+CRT ABI. Generated target-side const assertions compare portable raw anchors
+with the existing libc crate, following its header-versus-Rust testing mechanism.
+They never compare a public WSA preference to a CRT value. Absence of a glibc
+macro does not independently prove a musl provider;
+compiler and SDK identity remain properties of the selected toolchain.
+
+The CLI's existing read-time build ledger and selected toolchain custody own
+executable search and SDK identity. An admitted Apple SDK is versioned through
+`SDKSettings.json`; captured C resources, semantic flags and deployment controls
+feed the existing resource-keyed Cargo intermediate generation. The namespace
+preheader is an explicit build-script source dependency. Reuse those owners:
+this evaluator adds neither a header watcher nor a whole-SDK scan. Ordinary
+bare Cargo retains Cargo's declared-input change-detection guarantees; it does
+not claim the CLI's external-resource admission. Qualification also requires the
+actual target consumer, not object inspection alone; current acceptance is
+recorded in V1-23.
+
+Molt's synthetic wasm32 POSIX host-import errors remain a distinct declaration
+in `libc_compat.rs`. Raw WASI C errno and native CRT/Win32 errors retain their
+own provenance. A public Windows alias may use Winsock without changing the
+corresponding raw CRT value or OSError classification. The zero-argument
+`molt_errno_constants` intrinsic and its tuple-of-dictionaries result are unchanged;
+its internal collector consumes the immutable runtime Python version.
+
+Mechanism references: [CPython errno publication](https://github.com/python/cpython/blob/v3.15.0/Modules/errnomodule.c),
+[libc header-versus-Rust controls](https://github.com/rust-lang/libc/blob/main/CONTRIBUTING.md#test-before-you-commit),
+[Clang target and sysroot selection](https://clang.llvm.org/docs/CrossCompilation.html),
+[Cargo build-script target inputs and dependency tracking](https://doc.rust-lang.org/cargo/reference/build-scripts.html),
+and the existing [build early-cutoff contract](../../../design/build_early_cutoff.md).
+These define source policy, not release or unexecuted target acceptance.
+
+### Native errno header namespace preparation
+
+The target-C evaluator places its CPython-derived namespace controls
+before every system header, including `stdint.h`. CPython 3.12–3.15 includes
+`pyconfig.h` before those headers: its explicit `_DARWIN_C_SOURCE`,
+`_NETBSD_SOURCE`, and `__BSD_VISIBLE` definitions reopen extensions; the generated
+system-extension block additionally enables GNU and NetBSD OpenBSD-compatibility
+extensions, while `_BSD_SOURCE` is OpenBSD-only. These controls affect macro
+visibility, not the native raw error-number domain or synthetic WASM errors.
+Windows CRT/WinSock policy is unchanged.
+
+This preheader is not a general `pyconfig.h` replacement. CPython's additional
+POSIX/XOPEN selection depends on the configured target OS/release, and Solaris
+`__EXTENSIONS__` depends on a configure compile probe. These are unqualified
+portability boundaries, not requirements imposed on the six native release
+coordinates from the existing release matrix. Preserve those generic target
+paths without claiming feature-profile or runtime qualification. The Darwin
+compile-only controls prove actual macOS SDK visibility and header ordering,
+not full runtime publication,
+all supported Python versions, or musl ABI identity.
+
+Primary authorities: CPython [3.12 configure.ac](https://github.com/python/cpython/blob/v3.12.13/configure.ac),
+[3.15 configure.ac](https://github.com/python/cpython/blob/v3.15.0/configure.ac),
+[3.15 generated configure](https://github.com/python/cpython/blob/v3.15.0/configure),
+and [Python.h header order](https://github.com/python/cpython/blob/v3.15.0/Include/Python.h).
+
+For Linux GNU, preserve the guarded `_GNU_SOURCE` definition, including an
+explicit value of zero. glibc tests definedness and derives the effective
+POSIX/XOPEN namespace itself. CPython 3.12–3.14 requests POSIX200809/XOPEN700;
+3.15 requests POSIX202405/XOPEN800. This does not require another per-version
+errno compiler profile on the qualified GNU provider: the selected glibc headers
+normalize both requests. Do not substitute one fixed POSIX level for the
+provider's decision or extend this reasoning to musl, Android or another libc.
+The actual errno integer declarations remain header-owned; the GNU `error_t`
+declaration supplies an independent feature-selection witness. Neither a
+compile-only cross object nor Zig's selected minimum glibc ABI version proves
+execution against that glibc release.
+
+Primary mechanisms: [glibc2.31 feature selection](https://github.com/bminor/glibc/blob/glibc-2.31/include/features.h#L173-L197)
+and [glibc2.42 feature selection](https://github.com/bminor/glibc/blob/glibc-2.42/include/features.h),
+plus the pinned CPython configure/template sources above. Existing actual-C
+controls remain in the platform crate's `errno_build_tests::` proof cell.

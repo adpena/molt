@@ -3031,10 +3031,12 @@ dependencies = [
 name = "molt-runtime-platform"
 version = "0.1.0"
 dependencies = [
+ "cc",
  "digest 0.11.3",
  "getrandom 0.4.3",
  "libc",
  "md-5",
+ "object 0.39.1",
  "sha1",
 ]
 

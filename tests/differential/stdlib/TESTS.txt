@@ -1046,6 +1046,7 @@ tests/differential/stdlib/encodings_quopri_codec_basic.py
 tests/differential/stdlib/enum_alias_fidelity.py
 tests/differential/stdlib/enum_basic.py
 tests/differential/stdlib/errno_basic.py
+tests/differential/stdlib/errno_native_publication.py
 tests/differential/stdlib/filecmp_basic.py
 tests/differential/stdlib/filecmp_dircmp_basic.py
 tests/differential/stdlib/fileinput_basic.py
