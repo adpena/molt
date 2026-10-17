@@ -1,7 +1,8 @@
 //! Fuzz target: roundtrip NaN-boxing encode/decode for all value types.
 //!
 //! Invariants tested:
-//! - `from_int(i).as_int() == Some(i)` for all i in the 47-bit signed range
+//! - `from_int(i).as_int() == Some(i)` for all i in the 47-bit signed range,
+//!   and `try_from_int` accepts exactly that range
 //! - `from_float(f).as_float()` returns `Some` and preserves the value (or
 //!   canonicalizes NaN)
 //! - `from_bool(b).as_bool() == Some(b)`
@@ -27,24 +28,29 @@ enum ValueInput {
 fuzz_target!(|input: ValueInput| {
     match input {
         ValueInput::Int(i) => {
-            let obj = MoltObject::from_int(i);
+            // 47-bit signed range: [-(2^46), 2^46 - 1]. `from_int` requires
+            // it; values outside it need a heap BigInt, so `try_from_int`
+            // must accept exactly this range.
+            let min = -(1i64 << 46);
+            let max = (1i64 << 46) - 1;
+            let Some(obj) = MoltObject::try_from_int(i) else {
+                assert!(i < min || i > max, "try_from_int rejected in-range int {i}");
+                return;
+            };
+            assert!(
+                (min..=max).contains(&i),
+                "try_from_int accepted out-of-range int {i}"
+            );
             assert!(obj.is_int(), "from_int must produce is_int");
             assert!(!obj.is_float());
             assert!(!obj.is_bool());
             assert!(!obj.is_none());
             assert!(!obj.is_ptr());
-
-            // 47-bit signed range: [-(2^46), 2^46 - 1]
-            let min = -(1i64 << 46);
-            let max = (1i64 << 46) - 1;
-            if i >= min && i <= max {
-                assert_eq!(
-                    obj.as_int(),
-                    Some(i),
-                    "roundtrip failed for in-range int {i}"
-                );
-            }
-            // Out-of-range values are truncated — just verify no panic.
+            assert_eq!(
+                obj.as_int(),
+                Some(i),
+                "roundtrip failed for in-range int {i}"
+            );
         }
         ValueInput::Float(bits) => {
             let f = f64::from_bits(bits);
