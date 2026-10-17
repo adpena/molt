@@ -10,6 +10,7 @@ import sys
 import time
 import tomllib
 import uuid
+from contextlib import closing
 from pathlib import Path
 
 from tools.proof_queue_pkg import (
@@ -492,30 +493,29 @@ def _cmd_run(args: argparse.Namespace) -> int:
 
 
 def _cmd_status(args: argparse.Namespace) -> int:
-    conn = state._connect(state._db_path(args))
-    conn.row_factory = sqlite3.Row
-    scheduling._refresh_blocked_queued_runs(args, conn)
-    active = list(
-        conn.execute(
-            f"SELECT * FROM proof_runs WHERE status IN ({state.ACTIVE_SQL_STATUSES}) "
-            "ORDER BY started_at"
+    with state._inspection(state._db_path(args)) as conn:
+        conn.row_factory = sqlite3.Row
+        active = list(
+            conn.execute(
+                f"SELECT * FROM proof_runs WHERE status IN ({state.ACTIVE_SQL_STATUSES}) "
+                "ORDER BY started_at"
+            )
         )
-    )
-    recent = list(
-        conn.execute(
-            f"SELECT * FROM proof_runs WHERE status NOT IN ({state.ACTIVE_SQL_STATUSES}) "
-            "ORDER BY finished_at DESC LIMIT ?",
-            (args.recent,),
+        recent = list(
+            conn.execute(
+                f"SELECT * FROM proof_runs WHERE status NOT IN ({state.ACTIVE_SQL_STATUSES}) "
+                "ORDER BY finished_at DESC LIMIT ?",
+                (args.recent,),
+            )
         )
-    )
-    notes_by_run = state._notes_for_run_ids(
-        conn, [row["run_id"] for row in [*active, *recent]]
-    )
-    edges_by_run = state._edges_for_run_ids(
-        conn, [row["run_id"] for row in [*active, *recent]]
-    )
+        notes_by_run = state._notes_for_run_ids(
+            conn, [row["run_id"] for row in [*active, *recent]]
+        )
+        edges_by_run = state._edges_for_run_ids(
+            conn, [row["run_id"] for row in [*active, *recent]]
+        )
+        unresolved = cargo_output_lifecycle.unresolved_dispositions(conn)
     print("proof queue")
-    unresolved = cargo_output_lifecycle.unresolved_dispositions(conn)
     if unresolved:
         print("Cargo output finalization unresolved (proof results unchanged):")
         for finding in unresolved:
@@ -852,7 +852,10 @@ def _cmd_retention(args: argparse.Namespace) -> int:
             limit=args.limit,
         )
     except (OSError, ValueError, sqlite3.Error) as exc:
-        print(f"proof run retention failed: {exc}", file=sys.stderr)
+        if args.json:
+            print(json.dumps({"available": False, "error": str(exc)}, sort_keys=True))
+        else:
+            print(f"proof run retention failed: {exc}", file=sys.stderr)
         return 2
     errors = report.get("errors", [])
     assert isinstance(errors, list)
@@ -903,25 +906,27 @@ def _cmd_evidence(args: argparse.Namespace) -> int:
     run_id = args.run_id or args.run_id_option
     if args.run_id and args.run_id_option and args.run_id != args.run_id_option:
         raise SystemExit("pass one proof run id: positional and --run-id disagree")
-    conn = state._connect(state._db_path(args))
-    conn.row_factory = sqlite3.Row
-    if run_id:
-        scheduling._refresh_blocked_queued_runs(args, conn, run_ids=[run_id])
-    else:
-        scheduling._refresh_blocked_queued_runs(args, conn)
-    if run_id:
-        rows = list(
-            conn.execute("SELECT * FROM proof_runs WHERE run_id = ?", (run_id,))
-        )
-        if not rows:
-            raise SystemExit(f"unknown proof run id {run_id!r}")
-    else:
-        rows = list(
-            conn.execute(
-                "SELECT * FROM proof_runs ORDER BY rowid DESC LIMIT ?", (args.limit,)
+    with state._inspection(state._db_path(args)) as conn:
+        conn.row_factory = sqlite3.Row
+        if run_id:
+            rows = list(
+                conn.execute("SELECT * FROM proof_runs WHERE run_id = ?", (run_id,))
             )
-        )
-    payload = evidence._run_payload_with_notes(conn, rows)
+            if not rows:
+                raise SystemExit(f"unknown proof run id {run_id!r}")
+        else:
+            rows = list(
+                conn.execute(
+                    "SELECT * FROM proof_runs ORDER BY rowid DESC LIMIT ?",
+                    (args.limit,),
+                )
+            )
+        run_ids = [str(row["run_id"]) for row in rows]
+        notes = state._notes_for_run_ids(conn, run_ids)
+        edges = state._edges_for_run_ids(conn, run_ids)
+    payload = evidence._run_payload_with_notes(rows, notes=notes, edges=edges)
+    for row, item in zip(rows, payload, strict=True):
+        item["diagnostics"] = diagnostic_engine._run_diagnostics(row)
     text = json.dumps(payload, indent=2, sort_keys=True)
     if args.output:
         Path(args.output).write_text(text + "\n", encoding="utf-8")
@@ -931,13 +936,12 @@ def _cmd_evidence(args: argparse.Namespace) -> int:
 
 
 def _queue_audit_payload(args: argparse.Namespace) -> dict[str, object]:
-    conn = state._connect(state._db_path(args))
-    conn.row_factory = sqlite3.Row
-    scheduling._refresh_blocked_queued_runs(args, conn)
-    rows = diagnostic_audit._audit_rows(conn, args)
-    run_ids = [str(row["run_id"]) for row in rows]
-    notes_by_run = state._notes_for_run_ids(conn, run_ids)
-    edges_by_run = state._edges_for_run_ids(conn, run_ids)
+    with state._inspection(state._db_path(args)) as conn:
+        conn.row_factory = sqlite3.Row
+        rows = diagnostic_audit._audit_rows(conn, args)
+        run_ids = [str(row["run_id"]) for row in rows]
+        notes_by_run = state._notes_for_run_ids(conn, run_ids)
+        edges_by_run = state._edges_for_run_ids(conn, run_ids)
     issues: list[dict[str, object]] = []
     frontier_failures: list[dict[str, object]] = []
     diagnostic_counts: dict[str, int] = {}
@@ -1339,14 +1343,9 @@ def _cmd_audit(args: argparse.Namespace) -> int:
     return 0
 
 
-def _cmd_diagnose(args: argparse.Namespace) -> int:
-    conn = state._connect(state._db_path(args))
-    scheduling._refresh_blocked_queued_runs(
-        args,
-        conn,
-        run_ids=[args.run_id] if args.run_id else None,
-    )
-    row = diagnostic_audit._diagnose_row(conn, args)
+def _report_diagnosis(
+    args: argparse.Namespace, row: sqlite3.Row
+) -> list[dict[str, object]]:
     diagnostics = diagnostic_engine._run_diagnostics(row)
     payload = evidence._row_to_payload(row)
     payload["diagnostics"] = diagnostics
@@ -1373,7 +1372,23 @@ def _cmd_diagnose(args: argparse.Namespace) -> int:
             if isinstance(artifacts, list) and artifacts:
                 print(f"  artifacts: {', '.join(str(path) for path in artifacts)}")
             print(f"  next: {item['next_action']}")
-    if args.append_note:
+    return diagnostics
+
+
+def _cmd_diagnose(args: argparse.Namespace) -> int:
+    if not args.append_note:
+        with state._inspection(state._db_path(args)) as conn:
+            row = diagnostic_audit._diagnose_row(conn, args)
+        _report_diagnosis(args, row)
+        return 0
+    with closing(state._connect(state._db_path(args))) as conn:
+        scheduling._refresh_blocked_queued_runs(
+            args,
+            conn,
+            run_ids=[args.run_id] if args.run_id else None,
+        )
+        row = diagnostic_audit._diagnose_row(conn, args)
+        diagnostics = _report_diagnosis(args, row)
         note_id = state._insert_note(
             conn,
             run_id=row["run_id"],

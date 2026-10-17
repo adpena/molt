@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from contextlib import closing
 import json
 import os
 import sqlite3
@@ -13,6 +14,7 @@ from molt.dx import CheckoutCustody
 from molt.path_custody import PathCustodyError, canonical_host_path
 from tests.process_guard_common import run_guarded_test_process
 from tools import runtime_wasm_final_preflight as preflight
+from tools.proof_queue_pkg import state as proof_queue_state
 
 
 @pytest.mark.parametrize("explicit_state", [False, True])
@@ -107,27 +109,44 @@ def test_planned_pair_uses_production_control_root(
 
 
 def _queue_db(path: Path, *, rows: tuple[tuple[object, ...], ...]) -> None:
-    with sqlite3.connect(path) as conn:
-        conn.execute(
+    with closing(proof_queue_state._connect(path)) as conn:
+        conn.executemany(
             """
-            CREATE TABLE proof_runs (
-                run_id TEXT, resource_family TEXT, contention_key TEXT,
-                resource_mutex_key TEXT, status TEXT, guard_pid INTEGER,
-                started_at TEXT, command_json TEXT
-            )
-            """
+            INSERT INTO proof_runs (
+                run_id, resource_family, contention_key, resource_mutex_key,
+                status, guard_pid, started_at, command_json,
+                logical_id, reason, cwd, scopes_json, log_path, summary_json
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                (
+                    *row,
+                    str(row[0]),
+                    "independent launch-claim fixture",
+                    str(path.parent),
+                    "[]",
+                    str(path.parent / f"{row[0]}.log"),
+                    str(path.parent / f"{row[0]}.summary.json"),
+                )
+                for row in rows
+            ),
         )
-        conn.executemany("INSERT INTO proof_runs VALUES (?, ?, ?, ?, ?, ?, ?, ?)", rows)
+        conn.commit()
 
 
 def _row(
-    run_id: str, *, status: str = "running", guard_pid: int | None = None
+    run_id: str,
+    *,
+    status: str = "running",
+    guard_pid: int | None = None,
+    contention_key: str = "wasm:final",
+    resource_mutex_key: str | None = "compiler-build-resource",
 ) -> tuple[object, ...]:
     return (
         run_id,
         "wasm",
-        "wasm:final",
-        "compiler-build-resource",
+        contention_key,
+        resource_mutex_key,
         status,
         os.getpid() if guard_pid is None else guard_pid,
         "2026-07-18T00:00:00Z",
@@ -203,13 +222,23 @@ def test_proof_queue_claim_is_typed_and_competing_claims_fail_closed(
     tmp_path: Path,
 ) -> None:
     db = tmp_path / "proof.sqlite3"
-    _queue_db(db, rows=(_row("run-current"), _row("run-other")))
+    # The real producer enforces unique launched contention/mutex claims.
+    # A distinct historical claim with a NULL serialized mutex is still a
+    # competing WASM build by the existing resource-family contract.
+    _queue_db(
+        db,
+        rows=(
+            _row("run-current"),
+            _row("run-other", contention_key="wasm:competing", resource_mutex_key=None),
+        ),
+    )
 
     claim = preflight._proof_queue_claim(db, "run-current")
     conflicts = preflight._proof_queue_conflicts(db, exclude_run_id="run-current")
 
     assert claim.resource_mutex_key == "compiler-build-resource"
     assert [row["run_id"] for row in conflicts] == ["run-other"]
+    assert conflicts[0]["resource_mutex_key"] is None
 
 
 def test_proof_queue_claim_rejects_non_running_row(tmp_path: Path) -> None:
@@ -619,3 +648,73 @@ def test_wasm_reserve_rejects_invalid_value_before_queue_context(
     assert payload["errors"][0].startswith(
         "RuntimeWasmPreflightError: invalid --reserve-gib"
     )
+
+
+@pytest.mark.parametrize("reader", ["claim", "conflicts"])
+@pytest.mark.parametrize("condition", ["missing", "unsupported"])
+def test_queue_launch_readers_refuse_unavailable_schema_without_repair(
+    tmp_path: Path, reader: str, condition: str
+) -> None:
+    db = tmp_path / "proof.sqlite3"
+    if condition == "unsupported":
+        _queue_db(db, rows=(_row("run-current"),))
+        with closing(sqlite3.connect(db)) as writer:
+            writer.execute("ALTER TABLE proof_notes DROP COLUMN body")
+            writer.commit()
+    before = db.read_bytes() if db.exists() else None
+    with pytest.raises(
+        preflight.RuntimeWasmPreflightError, match="cannot inspect proof queue"
+    ):
+        if reader == "claim":
+            preflight._proof_queue_claim(db, "run-current")
+        else:
+            preflight._proof_queue_conflicts(db, exclude_run_id="run-current")
+    assert (db.read_bytes() if db.exists() else None) == before
+
+
+def test_queue_launch_readers_observe_live_wal_and_close_before_return(
+    tmp_path: Path, monkeypatch
+) -> None:
+    db = tmp_path / "proof.sqlite3"
+    # The real producer enforces unique launched contention/mutex claims.
+    # A distinct historical claim with a NULL serialized mutex is still a
+    # competing WASM build by the existing resource-family contract.
+    _queue_db(
+        db,
+        rows=(
+            _row("run-current"),
+            _row("run-other", contention_key="wasm:competing", resource_mutex_key=None),
+        ),
+    )
+    opened = []
+    original_connect = proof_queue_state._connect
+
+    def record_connection(db, *, access="write"):
+        conn = original_connect(db, access=access)
+        if access == "read":
+            opened.append(conn)
+        return conn
+
+    monkeypatch.setattr(proof_queue_state, "_connect", record_connection)
+    with closing(sqlite3.connect(db)) as writer:
+        writer.execute("PRAGMA wal_autocheckpoint=0")
+        writer.execute(
+            "UPDATE proof_runs SET guard_pid=24680 WHERE run_id='run-current'"
+        )
+        writer.execute(
+            "UPDATE proof_runs SET started_at='wal-only-order' WHERE run_id='run-other'"
+        )
+        writer.commit()
+        wal = Path(str(db) + "-wal")
+        assert wal.is_file()
+        before = (db.read_bytes(), wal.read_bytes(), tuple(writer.iterdump()))
+        claim = preflight._proof_queue_claim(db, "run-current")
+        conflicts = preflight._proof_queue_conflicts(db, exclude_run_id="run-current")
+        assert claim.guard_pid == 24680
+        assert len(conflicts) == 1 and conflicts[0]["run_id"] == "run-other"
+        assert conflicts[0]["started_at"] == "wal-only-order"
+        assert (db.read_bytes(), wal.read_bytes(), tuple(writer.iterdump())) == before
+    assert len(opened) == 2
+    for conn in opened:
+        with pytest.raises(sqlite3.ProgrammingError, match="closed"):
+            conn.execute("SELECT 1")

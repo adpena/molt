@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 from pathlib import Path
 import shlex
 import sys
@@ -228,7 +229,14 @@ def main(argv: list[str] | None = None) -> int:
     else:
         parser = _build_parser()
         args = parser.parse_args(raw)
-    return int(args.func(args))
+    try:
+        return int(args.func(args))
+    except state.QueueInspectionError as exc:
+        if getattr(args, "json", False) or args.cmd == "evidence":
+            print(json.dumps({"available": False, "error": str(exc)}, sort_keys=True))
+        else:
+            print(str(exc), file=sys.stderr)
+        return 2
 
 
 def _build_parser() -> argparse.ArgumentParser:

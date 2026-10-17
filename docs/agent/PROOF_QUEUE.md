@@ -1159,10 +1159,33 @@ waits while parents are queued/running and becomes `blocked` if a parent has
 already failed or gone stale. A blocked row is scheduling evidence, not a lost
 proof log: the queue writes a small blocked log, keeps the DAG parent visible in
 `evidence`, and reports the deterministic `proof-dependency-blocked` diagnostic.
-`run`, `status`, `prune-stale`, `evidence`, `audit`, `diagnose`, `notebook`,
-and new submissions reconcile impossible queued dependencies before reporting
-or enforcing contention; do not launch a worker just to clear a dead dependency
-row.
+`run`, `prune-stale`, `notebook`, `diagnose --append-note` and new
+submissions reconcile impossible queued dependencies through their writer
+transition before scheduling or publication. `status`, `evidence`, `audit` and
+plain `diagnose` report stored rows and dependency facts without changing them;
+an inspection never turns a queued row into a persisted blocked row.
+
+The existing queue-state opener owns both access modes. Inspection uses
+[SQLite URI `mode=ro`](https://www.sqlite.org/uri.html), query-only protection
+and the supported reader schema. It never creates a database or directory,
+migrates schema/catalogs, repairs receipts, publishes a notebook, or reconciles
+scheduling. Missing, uninitialized, corrupt or unsupported legacy state is
+explicitly unavailable until an authorized writer initializes or migrates it.
+An initialized empty queue remains readable. Live
+[WAL databases](https://www.sqlite.org/wal.html#read_only_databases) retain
+normal locking and change detection; `immutable=1` is inappropriate because
+concurrent writers remain possible. SQLite may maintain its WAL coordination
+sidecars; read access does not change queue rows or schema. Retention dry runs
+and Cargo disposition readers, the runtime-WASM launch checks, and the apparatus
+ledger share this same opening authority. The state owner validates every column in the reader
+projection before inspection; SQLite failures later in the read scope also report
+unavailability. Each read scope uses an explicit deferred `BEGIN` so related
+SELECTs materialize one consistent database snapshot while WAL writers continue;
+see [SQLite snapshot isolation](https://www.sqlite.org/isolation.html). Scopes
+consume their rows and close before CLI diagnosis, receipt validation and
+rendering. Logs, receipt files and other external observations remain live; the
+database transaction does not give them a filesystem snapshot. Retention retains
+its existing streaming filesystem measurements while its cursor is open.
 
 Queue commands that invoke Python must use:
 

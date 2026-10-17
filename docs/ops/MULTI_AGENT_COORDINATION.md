@@ -116,7 +116,11 @@ uv run --python 3.12 python tools/agent_coordination.py proof-plan
   records, subprocess failures, and unhealthy proof audit results appear in
   `errors` and make the command exit nonzero; unavailable data is never rendered
   as a healthy zero. The summarized proof section includes the full-detail
-  audit command when deeper evidence is needed. Pending ownership requests show
+  audit command when deeper evidence is needed. Queue inspection opens existing
+  state read-only, including a live WAL, and performs no initialization,
+  migration or scheduling reconciliation. Unavailable or unsupported queue state
+  remains an explicit context error until an authorized writer handles it.
+  Pending ownership requests show
   their requester, owner task, exact requested paths, task/request status, record
   path, and timestamps in both text and JSON. Active JSON records also include
   granted `owned_paths` and resolved request state.

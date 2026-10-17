@@ -36,13 +36,13 @@ def _notebooks_root(args: argparse.Namespace) -> Path:
 
 
 def _run_payload_with_notes(
-    conn: sqlite3.Connection, rows: list[sqlite3.Row]
+    rows: list[sqlite3.Row],
+    *,
+    notes: Mapping[str, list[dict[str, object]]],
+    edges: Mapping[str, dict[str, list[dict[str, object]]]],
 ) -> list[dict[str, object]]:
     payload = [_row_to_payload(row) for row in rows]
-    run_ids = [str(item["run_id"]) for item in payload]
-    notes = state._notes_for_run_ids(conn, run_ids)
-    edges = state._edges_for_run_ids(conn, run_ids)
-    for row, item in zip(rows, payload, strict=True):
+    for item in payload:
         run_notes = notes.get(str(item["run_id"]), [])
         run_edges = edges.get(str(item["run_id"]), {"parents": [], "children": []})
         item["notes"] = run_notes
@@ -53,7 +53,6 @@ def _run_payload_with_notes(
             "parent_kind_counts": state._edge_kind_counts(run_edges["parents"]),
             "child_kind_counts": state._edge_kind_counts(run_edges["children"]),
         }
-        item["diagnostics"] = diagnostic_engine._run_diagnostics(row)
     return payload
 
 
@@ -169,7 +168,12 @@ def _write_marimo_notebook(
     ).fetchone()
     if row is None:
         raise SystemExit(f"unknown proof run {run_id!r}")
-    run = _run_payload_with_notes(conn, [row])[0]
+    run = _run_payload_with_notes(
+        [row],
+        notes=state._notes_for_run_ids(conn, [run_id]),
+        edges=state._edges_for_run_ids(conn, [run_id]),
+    )[0]
+    run["diagnostics"] = diagnostic_engine._run_diagnostics(row)
     path = Path(output) if output else _notebooks_root(args) / f"{run_id}.py"
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(_marimo_notebook_text(run), encoding="utf-8")

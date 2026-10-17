@@ -209,26 +209,11 @@ def _row_keys(row: sqlite3.Row) -> set[str]:
     }
 
 
-def _has_table(conn: sqlite3.Connection, name: str) -> bool:
-    return (
-        conn.execute(
-            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?", (name,)
-        ).fetchone()
-        is not None
-    )
-
-
 def _rows(
     conn: sqlite3.Connection, *, run_id: str | None = None
 ) -> Iterator[sqlite3.Row]:
     """Stream the row facts retention reads, oldest first."""
     conn.row_factory = sqlite3.Row
-    columns = {row[1] for row in conn.execute("PRAGMA table_info(proof_runs)")}
-    retention = (
-        "evidence_retention_json"
-        if "evidence_retention_json" in columns
-        else "NULL AS evidence_retention_json"
-    )
     prelaunch = _CONTEXT_FACT.format(path="$.derived_root_custody.prelaunch")
     nonce = _CONTEXT_FACT.format(path="$.execution_nonce_sha256")
     lifecycle = _CONTEXT_FACT.format(path="$.cargo_generation_lifecycle")
@@ -236,7 +221,7 @@ def _rows(
     yield from conn.execute(
         f"""
         SELECT rowid AS retention_rowid, run_id, status, returncode, finished_at, log_path,
-               summary_json, command_envelope_json, {retention},
+               summary_json, command_envelope_json, evidence_retention_json,
                {prelaunch} AS prelaunch_json, {nonce} AS nonce_sha256,
                {lifecycle} AS cargo_lifecycle_json
         FROM proof_runs {where} ORDER BY rowid
@@ -426,8 +411,6 @@ def plan(
     measure_all: bool,
 ) -> tuple[list[RunEvidence], dict[str, int]]:
     """Classify every row; measure protected rows only when ``measure_all``."""
-    if not _has_table(conn, "proof_runs"):
-        return [], {"files": 0, "bytes": 0}
     owners: dict[str, set[str]] = {}
     for run_id, log_path, summary_json in conn.execute(
         "SELECT run_id, log_path, summary_json FROM proof_runs"
@@ -755,16 +738,13 @@ def run_pass(
     if not apply:
         runs: list[RunEvidence] = []
         unowned = {"files": 0, "bytes": 0}
-        if db.exists():
-            # Read only: a dry run never migrates or writes queue state.
-            uri = f"{db.resolve().as_uri()}?mode=ro"
-            with closing(sqlite3.connect(uri, uri=True)) as conn:
-                runs, unowned = plan(
-                    conn,
-                    result_root=result_root,
-                    policy=policy,
-                    measure_all=measure_all,
-                )
+        with state._inspection(db) as conn:
+            runs, unowned = plan(
+                conn,
+                result_root=result_root,
+                policy=policy,
+                measure_all=measure_all,
+            )
         report.update(_summary(runs, unowned))
         report["reclaim"] = [
             _run_payload(run) for run in runs if run.disposition == RECLAIM

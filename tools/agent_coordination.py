@@ -1119,6 +1119,18 @@ def _proof_audit_context(
         )
         return {"source_command": list(command), "available": False}
 
+    if payload.get("available") is False:
+        errors.append(
+            _context_error(
+                "proof.audit",
+                "unavailable",
+                str(payload.get("error", "proof queue is unavailable")),
+                command=command,
+                return_code=result.return_code,
+            )
+        )
+        return {"source_command": list(command), "available": False}
+
     issues = payload.get("issues")
     if not isinstance(issues, list):
         issues = []

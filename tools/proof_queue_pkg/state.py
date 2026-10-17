@@ -10,8 +10,10 @@ import os
 import sqlite3
 import subprocess
 import time
+from contextlib import closing, contextmanager
+from collections.abc import Iterator
 from pathlib import Path
-from typing import Sequence
+from typing import Literal, Sequence
 
 from molt.dx import checkout_custody
 from molt.exact_json import dumps_exact
@@ -191,7 +193,71 @@ def _configured_run_limit(args: argparse.Namespace, *, queue_size: int) -> int:
     return 1
 
 
-def _connect(db: Path) -> sqlite3.Connection:
+class QueueInspectionError(sqlite3.DatabaseError):
+    """Queue state is unavailable to an inspection; no repair was attempted."""
+
+    def __init__(self, db: Path, cause: BaseException) -> None:
+        super().__init__(
+            f"cannot inspect proof queue {db}: {cause}; "
+            "an initialized, readable queue with a supported schema is required; "
+            "an authorized writer owns initialization and migration"
+        )
+
+
+@contextmanager
+def _inspection(db: Path) -> Iterator[sqlite3.Connection]:
+    """Own a complete read operation, including late SQLite failures and close."""
+    try:
+        with closing(_connect(db, access="read")) as conn:
+            # Keep all related SELECTs on one database snapshot. BEGIN is
+            # deferred: the first SELECT establishes the snapshot, and close
+            # releases it without acquiring a writer reservation.
+            conn.execute("BEGIN")
+            yield conn
+    except QueueInspectionError:
+        raise
+    except sqlite3.Error as exc:
+        raise QueueInspectionError(db, exc) from exc
+
+
+def _connect(
+    db: Path, *, access: Literal["read", "write"] = "write"
+) -> sqlite3.Connection:
+    """Open queue state; only writers initialize, migrate and reconcile it.
+
+    Read-only URI mode retains SQLite's live-WAL locking/change detection.
+    `immutable=1` would wrongly assert that concurrent writers cannot exist.
+    """
+    if access == "read":
+        conn: sqlite3.Connection | None = None
+        try:
+            conn = sqlite3.connect(
+                f"{db.resolve(strict=True).as_uri()}?mode=ro",
+                uri=True,
+                timeout=PROOF_QUEUE_SQLITE_BUSY_TIMEOUT_MS / 1000,
+            )
+            conn.execute("PRAGMA query_only=ON")
+            # Prepare the current reader projection without reading history or
+            # silently migrating legacy tables/nullable receipt generations.
+            conn.execute(
+                "SELECT p.rowid, p.run_id, p.logical_id, p.reason, p.status, p.returncode, "
+                "p.command_json, p.command_envelope_json, p.receipt_context_json, "
+                "p.cwd, p.resource_family, p.contention_key, p.resource_mutex_key, "
+                "p.scopes_json, p.env_json, p.git_json, p.log_path, p.summary_json, "
+                "p.guard_pid, p.guard_identity, p.started_at, p.finished_at, "
+                "p.elapsed_s, p.evidence_retention_json, "
+                "n.note_id, n.run_id, n.created_at, n.author, n.kind, n.body, "
+                "e.edge_id, e.parent_run_id, e.child_run_id, e.created_at, "
+                "e.author, e.kind, e.note "
+                "FROM proof_runs p, proof_notes n, proof_run_edges e LIMIT 0"
+            )
+        except (OSError, sqlite3.Error) as exc:
+            if conn is not None:
+                conn.close()
+            raise QueueInspectionError(db, exc) from exc
+        return conn
+    if access != "write":
+        raise ValueError(f"unknown queue database access mode: {access!r}")
     db.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(db)
     conn.execute("PRAGMA journal_mode=WAL")

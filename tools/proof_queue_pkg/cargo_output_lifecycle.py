@@ -27,7 +27,7 @@ def load_terminal_generation(
     db: Path, run_id: str, *, archived_reclaim: bool = False
 ) -> tuple[sqlite3.Row, dict[str, object], dict[str, object], dict[str, object], Path]:
     db = db.resolve()
-    with closing(sqlite3.connect(f"{db.as_uri()}?mode=ro", uri=True)) as conn:
+    with state._inspection(db) as conn:
         row = state._row_by_run_id(conn, run_id)
     if row is None:
         raise ValueError(f"unknown proof run {run_id!r}")
@@ -130,7 +130,7 @@ def apply_disposition(
 
 def _finalize_declared_success(db: Path, run_id: str) -> dict[str, object] | None:
     """Finalize only explicit, committed, independently validated successful runs."""
-    with closing(sqlite3.connect(f"{db.resolve().as_uri()}?mode=ro", uri=True)) as conn:
+    with state._inspection(db) as conn:
         row = state._row_by_run_id(conn, run_id)
     if row is None:
         raise ValueError(f"unknown proof run {run_id!r}")
@@ -235,7 +235,7 @@ def _has_declared_outcome(conn: sqlite3.Connection, run_id: str) -> bool:
 
 def finalize_declared_success(db: Path, run_id: str) -> dict[str, object] | None:
     # Do not fabricate a declaration in failure notes for unrelated/legacy rows.
-    with closing(sqlite3.connect(f"{db.resolve().as_uri()}?mode=ro", uri=True)) as conn:
+    with state._inspection(db) as conn:
         row = state._row_by_run_id(conn, run_id)
     if row is None:
         raise ValueError(f"unknown proof run {run_id!r}")
@@ -278,7 +278,7 @@ def resume_declared_successes(db: Path, *, limit: int = 8) -> None:
     deletion. Historical disposition errors never gate unrelated new work.
     """
     _validate_batch_limit(limit)
-    with closing(sqlite3.connect(f"{db.resolve().as_uri()}?mode=ro", uri=True)) as conn:
+    with state._inspection(db) as conn:
         rows = list(
             conn.execute(
                 f"""
