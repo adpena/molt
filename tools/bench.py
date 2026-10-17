@@ -69,7 +69,7 @@ from molt.dx import (  # noqa: E402
 
 from molt.path_custody import host_path_is_within  # noqa: E402
 from molt.temporary_artifacts import OwnedTemporaryDirectory  # noqa: E402
-from molt.node_runtime import resolve_node_runtime  # noqa: E402
+from molt.node_runtime import NodeExecutionPlan, admit_node_execution  # noqa: E402
 from molt.wasm_artifact import (  # noqa: E402
     wasm_runtime_manifest_entry_path,
     wasm_runtime_manifest_path,
@@ -154,15 +154,43 @@ class MoltInvocation:
     command: tuple[str, ...]
     environment: dict[str, str]
     guest_stderr_path: Path | None = None
+    execution_host: NodeExecutionPlan | None = None
 
 
 def molt_binary_invocation(
-    binary: MoltBinary, environment: dict[str, str]
+    binary: MoltBinary,
+    environment: dict[str, str],
+    *,
+    execution_host: NodeExecutionPlan | None = None,
 ) -> MoltInvocation:
-    """Resolve the execution image once per artifact, outside the sample loop."""
-    env = environment.copy()
+    """Bind an artifact to its admitted host; never reselect a Node per cell."""
     if binary.manifest_path is None:
-        return MoltInvocation((str(binary.path),), env)
+        if execution_host is not None:
+            raise ValueError("native benchmark must not carry a Node execution host")
+        return MoltInvocation((str(binary.path),), environment.copy())
+    if execution_host is None:
+        raise ValueError("WASM benchmark requires an admitted Node execution host")
+    execution_host.verify()
+    env = _wasm_benchmark_run_env(environment)
+    if binary.guest_stderr_path is None:
+        raise ValueError("WASM benchmark artifact lacks its owned guest stderr capture")
+    return MoltInvocation(
+        (
+            str(execution_host.runtime.path),
+            str(REPO_ROOT / "wasm/run_wasm.js"),
+            "--guest-stderr",
+            str(binary.guest_stderr_path),
+            "--",
+            str(binary.manifest_path),
+        ),
+        env,
+        binary.guest_stderr_path,
+        execution_host,
+    )
+
+
+def _wasm_benchmark_run_env(environment: dict[str, str]) -> dict[str, str]:
+    env = environment.copy()
     # A WASM guest has no host-Python dependency. Node policy must be the public
     # runner's policy, not inherited engine flags or warning suppression.
     for key in (
@@ -177,22 +205,14 @@ def molt_binary_invocation(
         "MOLT_WASM_MANIFEST_PATH",
     ):
         env.pop(key, None)
-    node = resolve_node_runtime(
-        source_root=REPO_ROOT, environment=env, guard_prefix="MOLT_BENCH"
-    )
-    if binary.guest_stderr_path is None:
-        raise ValueError("WASM benchmark artifact lacks its owned guest stderr capture")
-    return MoltInvocation(
-        (
-            str(node.path),
-            str(REPO_ROOT / "wasm/run_wasm.js"),
-            "--guest-stderr",
-            str(binary.guest_stderr_path),
-            "--",
-            str(binary.manifest_path),
-        ),
-        env,
-        binary.guest_stderr_path,
+    return env
+
+
+def admit_wasm_execution(environment: dict[str, str]) -> NodeExecutionPlan:
+    return admit_node_execution(
+        source_root=REPO_ROOT,
+        environment=_wasm_benchmark_run_env(environment),
+        guard_prefix="MOLT_BENCH",
     )
 
 

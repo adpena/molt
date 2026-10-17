@@ -1376,8 +1376,9 @@ def build_scoreboard_doc(
     cpython_identity: dict | None = None,
     pypy_version: str | None = None,
     codon_version: str | None = None,
+    execution_host: dict | None = None,
 ) -> dict:
-    """Assemble the nested machine-readable scoreboard (schema 3).
+    """Assemble the nested machine-readable scoreboard under the current schema.
 
     Shape: ``benchmark -> target -> backend -> profile -> {cell fields}``.
     Adds the two-dimensional verdict breakdown + the provenance block.
@@ -1409,6 +1410,7 @@ def build_scoreboard_doc(
     # 2-D-only callers).
     classify_active = any(c.classification is not None for c in cells)
     host = {
+        "execution_host": execution_host,
         "platform": sys.platform,
         "machine": platform.machine(),
         "arch": _host_arch(),
@@ -1654,6 +1656,7 @@ def _rebuild_summary(
         provenance=provenance,
         pypy_version=host.get("pypy"),
         codon_version=host.get("codon"),
+        execution_host=host.get("execution_host"),
     )
     # Preserve the original generation timestamp + git_rev of the measurement.
     doc["generated_at"] = prior.get("generated_at", doc["generated_at"])
@@ -1799,7 +1802,7 @@ def _merge_boards(
             return 3
         if first_doc is None:
             first_doc = doc
-            host = doc["host"]
+            host = dict(doc["host"])
             method = doc["methodology"]
             provenance = dict(prov)
             cpython_version = host["cpython_baseline"]
@@ -1808,9 +1811,25 @@ def _merge_boards(
         else:
             incompatible = [
                 field
-                for field in ("git_rev", "host", "methodology")
+                for field in ("git_rev", "methodology")
                 if doc.get(field) != first_doc.get(field)
             ]
+            from tools.perf_schema import execution_host_key
+
+            next_host = doc["host"]
+            if {k: v for k, v in host.items() if k != "execution_host"} != {
+                k: v for k, v in next_host.items() if k != "execution_host"
+            }:
+                incompatible.append("host")
+            previous_engine = host.get("execution_host")
+            next_engine = next_host.get("execution_host")
+            if previous_engine is not None and next_engine is not None:
+                if execution_host_key(previous_engine) != execution_host_key(
+                    next_engine
+                ):
+                    incompatible.append("host.execution_host")
+            elif next_engine is not None:
+                host["execution_host"] = next_engine
             for field in (
                 "local_head_sha",
                 "merge_base_sha",
@@ -1926,6 +1945,7 @@ def _merge_boards(
         provenance=provenance,
         pypy_version=host.get("pypy"),
         codon_version=host.get("codon"),
+        execution_host=host.get("execution_host"),
     )
     doc["git_rev"] = git_rev
     if host:

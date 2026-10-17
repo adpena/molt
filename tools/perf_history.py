@@ -79,6 +79,32 @@ def _host_class(host: Mapping[str, Any]) -> str:
     )
 
 
+def _execution_host_class(board: Mapping[str, Any]) -> tuple[str, str, int, str] | None:
+    from tools.perf_schema import (
+        SCHEMA_VERSION,
+        board_execution_host_problems,
+        execution_host_key,
+    )
+
+    if (
+        board.get("schema_version") != SCHEMA_VERSION
+        or board.get("source_schema_version") != SCHEMA_VERSION
+    ):
+        raise ValueError("historical scoreboard schema; remeasurement required")
+    cells = list(_flatten_projected_cells(board).values())
+    host = board.get("host", {})
+    if not isinstance(host, Mapping):
+        raise ValueError("board host must be an object")
+    problems = board_execution_host_problems(host, cells)
+    if problems:
+        raise ValueError("; ".join(problems))
+    return (
+        execution_host_key(host.get("execution_host"))
+        if any(cell.get("backend") == "wasm" for cell in cells)
+        else None
+    )
+
+
 def _suite_hash(board: Mapping[str, Any]) -> str:
     """Content hash of the benchmark set this board covers (its cell keys), so a
     board that measured a different suite is a different identity-class."""
@@ -116,6 +142,7 @@ def board_identity(board: Mapping[str, Any]) -> str:
         _methodology_field(board, "methodology_sha256"),
         _suite_hash(board),
         _host_class(board.get("host", {})),
+        json.dumps(_execution_host_class(board)),
     ]
     return hashlib.sha256("||".join(parts).encode("utf-8")).hexdigest()
 
@@ -130,6 +157,7 @@ def identity_class(board: Mapping[str, Any]) -> str:
         _methodology_field(board, "methodology_version"),
         _suite_hash(board),
         _host_class(board.get("host", {})),
+        json.dumps(_execution_host_class(board)),
     ]
     return hashlib.sha256("||".join(parts).encode("utf-8")).hexdigest()[:16]
 
@@ -261,15 +289,17 @@ def latest_authoritative_baseline(
     ]
     if not candidates:
         return None
-    candidates.sort(key=lambda e: e.get("generated_at", ""))
-    best = candidates[-1]
-    fpath = base / str(best.get("path"))
-    if not fpath.exists():
-        return None
-    try:
-        return json.loads(fpath.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return None
+    candidates.sort(key=lambda e: e.get("generated_at", ""), reverse=True)
+    for candidate in candidates:
+        fpath = base / str(candidate.get("path"))
+        try:
+            board = json.loads(fpath.read_text(encoding="utf-8"))
+            # The historical index is not authority for facts missing from bytes.
+            if identity_class(board) == identity_class_key:
+                return board
+        except (OSError, ValueError, TypeError):
+            continue
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -322,6 +352,8 @@ def regressions_vs_baseline(
     (the previously-green-regressed class). A cell still passing but slower than
     baseline by > ``drift_warn_fraction`` is a WARN drift. A within-fraction
     delta is NOT flagged (the no-false-positive gate, doc 64 §5)."""
+    if _execution_host_class(candidate) != _execution_host_class(baseline):
+        raise ValueError("execution hosts are not comparable")
     base_cells = _flatten_projected_cells(baseline)
     cand_cells = _flatten_projected_cells(candidate)
     out: list[Regression] = []
@@ -392,7 +424,13 @@ def regression_gate(
         "warnings": [],
     }
     for name, board in candidate_boards.items():
-        cls = identity_class(board)
+        try:
+            cls = identity_class(board)
+        except ValueError as exc:
+            report["errors"].append(f"[{name}] incomparable execution host: {exc}")
+            report["gate_fails"] = True
+            report["boards"][name] = {"baseline": None, "regressions": []}
+            continue
         baseline = latest_authoritative_baseline(
             name,
             cls,
@@ -441,6 +479,10 @@ def _revision_is_on_origin_main(revision: str) -> bool:
 def promotion_problems(board: Mapping[str, Any]) -> list[str]:
     """Why a projected board cannot become a regression baseline."""
     problems: list[str] = []
+    try:
+        _execution_host_class(board)
+    except ValueError as exc:
+        problems.append(str(exc))
     prov = board.get("provenance")
     if not isinstance(prov, Mapping):
         return ["board has no provenance"]

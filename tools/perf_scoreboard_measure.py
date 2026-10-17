@@ -11,6 +11,7 @@ _SRC_ROOT = Path(__file__).resolve().parents[1] / "src"
 
 from tools import bench  # noqa: E402
 from tools import bench_suites  # noqa: E402
+from molt.node_runtime import NodeRuntimeError  # noqa: E402
 from tools.perf_schema import RED_THRESHOLD, output_parity_evidence  # noqa: E402
 from tools.perf_scoreboard_model import (  # noqa: E402
     PERFSCORE_SESSION_ID,
@@ -89,6 +90,7 @@ def measure_cell(
     codon_runner: Any | None = None,
     repeat: int = 1,
     emit_cycle_profile: bool = False,
+    execution_host: bench.NodeExecutionPlan | None = None,
 ) -> Cell:
     """Build + time one (benchmark, target, backend, profile) cell.
 
@@ -107,6 +109,13 @@ def measure_cell(
     log_lines: list[str] = [f"# {benchmark} | {spec.backend} | {profile}"]
 
     build_env = _perfscore_build_env(spec, profile)
+    if spec.build_target == "wasm":
+        if execution_host is None:
+            execution_host = bench.admit_wasm_execution(build_env)
+        execution_host.verify()
+        cell.execution_host = execution_host.as_record()
+    elif execution_host is not None:
+        raise ValueError("native cell must not carry a Node execution host")
     from tools.perf_scoreboard_build_profiles import profile_selection
 
     selection = profile_selection(spec, profile)
@@ -176,31 +185,33 @@ def measure_cell(
         )
 
         run_args = bench.resolve_benchmark_run_args(str(script_path))
-        from molt.node_runtime import NodeRuntimeError
-
-        try:
-            invocation = bench.molt_binary_invocation(binary, build_env)
-        except NodeRuntimeError as exc:
-            primary = exc
-            _record_molt_failure(
-                cell,
-                bench.classify_molt_process_failure(
-                    phase="run",
-                    returncode=None,
-                    stderr=str(exc),
-                    elapsed_s=None,
-                    default_status="run_host_unavailable",
-                ),
-            )
-            cell.note = str(exc)
-            log_lines.append(f"RUN HOST UNAVAILABLE: {exc}")
-            cell.finalize(budget_ms=budget_ms, authoritative=authoritative)
-            _write_log(log_path, log_lines)
-            return cell
+        invocation = bench.molt_binary_invocation(
+            binary, build_env, execution_host=execution_host
+        )
         molt_cmd, molt_run_env = invocation.command, invocation.environment
 
+        def run_molt(*args: Any, **kwargs: Any) -> RunOutcome:
+            if execution_host is not None:
+                execution_host.verify()
+            outcome = _run_measured_command(*args, **kwargs)
+            if execution_host is not None:
+                try:
+                    execution_host.verify()
+                except NodeRuntimeError:
+                    log_lines.append(
+                        f"INVALIDATED HOST SAMPLE {kwargs.get('label')}: "
+                        f"status={outcome.status} exit={outcome.exit_code} "
+                        f"elapsed_s={outcome.elapsed_s}"
+                    )
+                    if outcome.host_stderr:
+                        log_lines.append(
+                            f"HOST STDERR invalidated sample:\n{outcome.host_stderr}"
+                        )
+                    raise
+            return outcome
+
         # --- COLD samples (first process; retain exact streams for parity) ------
-        cold_molt = _run_measured_command(
+        cold_molt = run_molt(
             [*molt_cmd, *run_args],
             env=molt_run_env,
             rss_mb=rss_mb,
@@ -241,7 +252,7 @@ def measure_cell(
         pass_results: list[tuple[PhaseStats, PhaseStats]] = []
         for pass_idx in range(n_passes):
             molt_warmups = [
-                _run_measured_command(
+                run_molt(
                     [*molt_cmd, *run_args],
                     env=molt_run_env,
                     rss_mb=rss_mb,
@@ -267,7 +278,7 @@ def measure_cell(
                 for sample_idx, run in enumerate(molt_warmups)
             )
             molt_runs = [
-                _run_measured_command(
+                run_molt(
                     [*molt_cmd, *run_args],
                     env=molt_run_env,
                     rss_mb=rss_mb,
@@ -526,6 +537,24 @@ def measure_cell(
             f"warm_speedup={cell.warm_speedup} cold_speedup={cell.cold_speedup} "
             f"startup_tax_ms={cell.startup_tax_ms} verdict={cell.verdict}"
         )
+        _write_log(log_path, log_lines)
+        return cell
+    except NodeRuntimeError as exc:
+        primary = exc
+        _record_molt_failure(
+            cell,
+            bench.classify_molt_process_failure(
+                phase="run",
+                returncode=None,
+                stderr=str(exc),
+                elapsed_s=None,
+                default_status="run_host_changed",
+            ),
+        )
+        cell.molt_ok = False
+        cell.note = str(exc)
+        log_lines.append(f"RUN HOST CHANGED: {exc}")
+        cell.finalize(budget_ms=budget_ms, authoritative=authoritative)
         _write_log(log_path, log_lines)
         return cell
     except BaseException as exc:

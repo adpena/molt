@@ -2718,3 +2718,75 @@ def test_wasm_batch_build_uses_same_explicit_deployment_contract(tmp_path):
     assert params["trusted"] is False
     assert params["linked"] is True and params["require_linked"] is True
     assert params["profile"] == "release" and params["python_version"] == "3.13"
+
+
+def test_benchmark_invocation_uses_only_admitted_engine(monkeypatch, tmp_path):
+    from molt import node_runtime
+    from molt.temporary_artifacts import OwnedTemporaryDirectory
+
+    image = tmp_path / "selected-node"
+    image.write_bytes(b"independent selected engine")
+    monkeypatch.setattr(node_runtime, "resolve_executable", lambda *a, **kw: image)
+    probes = []
+
+    def probe(command, **kwargs):
+        probes.append(command)
+        return subprocess.CompletedProcess(command, 0, "24.1.0\n", "")
+
+    monkeypatch.setattr(node_runtime.process_guard, "run_completed_command", probe)
+    plan = bench_tool.admit_wasm_execution({"MOLT_NODE_BIN": str(image)})
+    owner = OwnedTemporaryDirectory(prefix="invocation-", dir=tmp_path)
+    try:
+        directory = Path(owner.name)
+        capture = directory / "guest-stderr"
+        capture.write_bytes(b"")
+        binary = bench_tool.MoltBinary(
+            directory / "app.wasm",
+            owner,
+            0.1,
+            1.0,
+            manifest_path=directory / "manifest.json",
+            guest_stderr_path=capture,
+        )
+        for _ in range(3):
+            invocation = bench_tool.molt_binary_invocation(
+                binary,
+                {
+                    "MOLT_NODE_BIN": "/unselected/other",
+                    "NODE_OPTIONS": "--not-an-admitted-flag",
+                },
+                execution_host=plan,
+            )
+            assert invocation.command == (
+                str(image),
+                str(REPO_ROOT / "wasm/run_wasm.js"),
+                "--guest-stderr",
+                str(capture),
+                "--",
+                str(directory / "manifest.json"),
+            )
+            assert invocation.execution_host is plan
+            assert "NODE_OPTIONS" not in invocation.environment
+        assert len(probes) == 1
+        with pytest.raises(ValueError, match="requires an admitted"):
+            bench_tool.molt_binary_invocation(binary, {})
+    finally:
+        owner.cleanup()
+
+
+def test_native_invocation_does_no_node_work(monkeypatch, tmp_path):
+    from molt.temporary_artifacts import OwnedTemporaryDirectory
+
+    monkeypatch.setattr(
+        bench_tool,
+        "admit_node_execution",
+        lambda **kw: pytest.fail("native must not admit Node"),
+    )
+    owner = OwnedTemporaryDirectory(prefix="native-", dir=tmp_path)
+    try:
+        binary = bench_tool.MoltBinary(Path(owner.name) / "native", owner, 0.1, 1.0)
+        invocation = bench_tool.molt_binary_invocation(binary, {})
+        assert invocation.execution_host is None
+        assert invocation.command == (str(binary.path),)
+    finally:
+        owner.cleanup()

@@ -1338,13 +1338,13 @@ def test_hot_controller_owns_successful_binary_through_capture_and_cleanup(
 
 @pytest.mark.parametrize("profile", ["dev-fast", "release-output", "wasm-release"])
 @pytest.mark.parametrize("guest_mismatch", [False, True])
+@pytest.mark.parametrize("engine_mutation", [None, "build", "sample"])
 def test_wasm_controller_measures_manifest_deployment_and_exact_guest_output(
-    monkeypatch, source_only_perf_checkout, profile, guest_mismatch
+    monkeypatch, source_only_perf_checkout, profile, guest_mismatch, engine_mutation
 ):
     """Actual builder/measurement/lifetime, independent compiler and sampler seams."""
     import json
     import subprocess
-    from types import SimpleNamespace
 
     source, _custody = source_only_perf_checkout
     builds = []
@@ -1375,6 +1375,8 @@ def test_wasm_controller_measures_manifest_deployment_and_exact_guest_output(
     def compiler(command, **kwargs):
         root = Path(command[command.index("--out-dir") + 1])
         builds.append(root)
+        if engine_mutation == "build":
+            node_path.write_bytes(b"replacement Node engine image")
         assert command[command.index("--target") + 1] == "wasm"
         assert "--linked" in command and "--require-linked" in command
         assert command[command.index("--python-version") + 1] == "3.13"
@@ -1410,24 +1412,36 @@ def test_wasm_controller_measures_manifest_deployment_and_exact_guest_output(
             "",
         )
 
-    def node(**kwargs):
+    from molt import node_runtime
+
+    node_path = source / "selected-node"
+    node_path.write_bytes(b"independent Node engine image")
+    monkeypatch.setattr(node_runtime, "resolve_executable", lambda *a, **kw: node_path)
+    monkeypatch.setattr(node_runtime, "pinned_executable", lambda *a, **kw: None)
+
+    def node_probe(command, **kwargs):
         resolutions.append(kwargs)
-        assert kwargs["environment"].get("NODE_OPTIONS") is None
-        assert kwargs["environment"].get("NODE_NO_WARNINGS") is None
-        assert kwargs["environment"].get("PYTHONHOME") is None
-        assert kwargs["environment"].get("PYTHONPATH") is None
-        return SimpleNamespace(path=Path("/fixture/node"))
+        assert kwargs["env"].get("NODE_OPTIONS") is None
+        assert kwargs["env"].get("NODE_NO_WARNINGS") is None
+        assert kwargs["env"].get("PYTHONHOME") is None
+        assert kwargs["env"].get("PYTHONPATH") is None
+        assert command == [str(node_path), "-p", "process.versions.node"]
+        return subprocess.CompletedProcess(command, 0, "24.1.0\n", "")
+
+    monkeypatch.setattr(node_runtime.process_guard, "run_completed_command", node_probe)
 
     def sample(command, **kwargs):
         calls.append((command, kwargs))
-        is_molt = command[0] == "/fixture/node"
+        if engine_mutation == "sample":
+            node_path.write_bytes(b"replacement Node engine image")
+        is_molt = command[0] == str(node_path)
         stderr = "guest stderr\n"
         if is_molt:
             capture = kwargs["guest_stderr_path"]
             assert capture == builds[0] / "guest-stderr.bin"
             assert capture.is_file()
             assert command == [
-                "/fixture/node",
+                str(node_path),
                 str(source / "wasm/run_wasm.js"),
                 "--guest-stderr",
                 str(capture),
@@ -1453,7 +1467,6 @@ def test_wasm_controller_measures_manifest_deployment_and_exact_guest_output(
     monkeypatch.setattr(
         measure.bench.harness_memory_guard, "guarded_completed_process", compiler
     )
-    monkeypatch.setattr(measure.bench, "resolve_node_runtime", node)
     monkeypatch.setattr(measure.bench, "resolve_benchmark_run_args", lambda path: [])
     monkeypatch.setattr(measure, "_run_measured_command", sample)
     cell = measure.measure_cell(
@@ -1470,7 +1483,16 @@ def test_wasm_controller_measures_manifest_deployment_and_exact_guest_output(
         target_python_version="3.13",
         log_dir=source / "logs",
     )
+    assert cell.execution_host["executable"] == str(node_path)
+    assert cell.execution_host["version"] == "24.1.0"
     assert len(builds) == 1 and len(resolutions) == 1
+    if engine_mutation is not None:
+        assert not cell.molt_ok
+        assert cell.molt_failure_status == "run_host_changed"
+        assert "changed" in cell.note
+        assert len(calls) == (0 if engine_mutation == "build" else 1)
+        assert not builds[0].exists()
+        return
     assert len(calls) == 14  # each runtime: cold + two (warmup + two timed)
     assert cell.build_ok and cell.molt_ok and cell.cpython_ok
     assert cell.run_blocked is False

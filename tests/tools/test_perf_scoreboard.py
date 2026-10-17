@@ -2384,3 +2384,235 @@ def test_merge_of_shard_boards_requires_every_shard(
     assert sorted(merged["benchmarks_run"]) == everything
     assert "shard" not in merged["provenance"]
     assert ps.validate_board(merged) == []
+
+
+@pytest.mark.parametrize(
+    "backend,available", [("wasm", True), ("wasm", False), ("native", True)]
+)
+def test_cli_admits_one_engine_before_cells_and_retains_checkpoints(
+    monkeypatch, tmp_path, backend, available
+):
+    from molt import node_runtime
+    from tools import perf_scoreboard_cli as cli
+    from tools import perf_scoreboard_report as report
+
+    image = tmp_path / "selected-node"
+    image.write_bytes(b"independent board engine")
+    monkeypatch.setenv("MOLT_NODE_BIN", str(image))
+    probes, measured, checkpoints = [], [], []
+
+    def resolve(*args, **kwargs):
+        if not available:
+            raise ValueError("independent missing Node")
+        return image
+
+    def probe(command, **kwargs):
+        assert backend == "wasm", "native board must never probe Node"
+        probes.append(command)
+        return subprocess.CompletedProcess(command, 0, "24.1.0\n", "")
+
+    monkeypatch.setattr(node_runtime, "resolve_executable", resolve)
+    monkeypatch.setattr(node_runtime.process_guard, "run_completed_command", probe)
+    monkeypatch.setattr(cli, "_observe_cpython_runtime", lambda cmd: {})
+    monkeypatch.setattr(cli, "capture_current_python_runtime", lambda: {})
+    monkeypatch.setattr(ps, "_git_rev", lambda: "a" * 40)
+    scripts = [
+        Path("tests/benchmarks/bench_fib.py"),
+        Path("tests/benchmarks/bench_sum.py"),
+    ]
+    oracle_meta = {
+        "cmd": [sys.executable],
+        "executable": sys.executable,
+        "implementation": "CPython",
+        "version": "3.12.15",
+        "sys_platform": sys.platform,
+        "machine": ps.platform.machine(),
+        "arch": ps._host_arch(),
+        "pointer_bits": ps._host_pointer_bits(),
+    }
+    api = dict(vars(ps))
+    api.update(
+        {
+            "_resolve_benchmark_set": lambda *a: scripts,
+            "_resolve_system_cpython": lambda *a: SimpleNamespace(
+                version="3.12.15",
+                display="fixture-python",
+                sys_platform=sys.platform,
+                arch=ps._host_arch(),
+                pointer_bits=ps._host_pointer_bits(),
+                cmd=(sys.executable,),
+                base_executable=sys.executable,
+                host_metadata=lambda: dict(oracle_meta),
+            ),
+            "wait_for_quiescence": lambda **kw: {
+                "quiet": True,
+                "loadavg_1m": 0,
+                "ncpu": 1,
+                "runnable_signal": 0,
+            },
+            "gather_provenance": lambda *a, **kw: {
+                "authoritative": True,
+                "origin_sha": "a" * 40,
+                "local_head_sha": "a" * 40,
+                "merge_base_sha": "a" * 40,
+                "dirty_tree": False,
+                **LOCKED_METHODOLOGY,
+                "backend_binary_identity": {},
+                "runtime_identity": {},
+            },
+            "_load_cold_start_budgets": lambda: {},
+            "_budget_ms_for": lambda *a: 1000,
+            "SCOREBOARD_DIR": tmp_path / "boards",
+            "_attach_regressions": lambda doc: None,
+            "print_summary": lambda doc: None,
+        }
+    )
+
+    class Batch:
+        def __init__(self, *args):
+            assert available
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(ps.bench, "_BenchBatchBuildServer", Batch)
+    api["_perfscore_build_env"] = lambda *a: {}
+
+    def measure_fixture(**kwargs):
+        assert available, "unavailable Node must refuse before any cell/build"
+        plan = kwargs["execution_host"]
+        if backend == "wasm":
+            assert plan.runtime.path == image
+            plan.verify()
+        else:
+            assert plan is None
+        measured.append(plan)
+        monkeypatch.setenv("MOLT_NODE_BIN", str(tmp_path / "unselected-node"))
+        cell = _cell(
+            benchmark=kwargs["script_path"].as_posix(),
+            backend=backend,
+            profile="dev-fast",
+            warm_molt_s=0.1,
+            warm_cpython_s=0.2,
+            cold_molt_s=0.1,
+            cold_cpython_s=0.2,
+        )
+        cell.target = kwargs["spec"].target
+        cell.execution_host = plan.as_record() if plan is not None else None
+        cell.finalize(budget_ms=1000)
+        return cell
+
+    api["measure_cell"] = measure_fixture
+
+    def checkpoint(path, *args, **kwargs):
+        report._checkpoint(path, *args, **kwargs)
+        checkpoints.append(json.loads(path.read_text(encoding="utf-8")))
+
+    api["_checkpoint"] = checkpoint
+    output = tmp_path / "result.json"
+    rc = cli.main(
+        api,
+        [
+            "--backend",
+            backend,
+            "--profile",
+            "dev-fast",
+            "--out",
+            str(output),
+            "--no-gate",
+        ],
+    )
+    if not available:
+        assert rc == 2 and not measured and not probes and not output.exists()
+        return
+    assert rc == 0 and len(measured) == 2 and len(checkpoints) == 2
+    assert len(probes) == (1 if backend == "wasm" else 0)
+    assert measured[0] is measured[1]
+    doc = json.loads(output.read_text(encoding="utf-8"))
+    expected = measured[0].as_record() if backend == "wasm" else None
+    assert doc["host"]["execution_host"] == expected
+    assert all(d["host"]["execution_host"] == expected for d in checkpoints)
+    assert all(c["execution_host"] == expected for c in schema.flatten_cells(doc))
+
+
+def test_direct_wasm_cell_refuses_missing_node_before_build(monkeypatch, tmp_path):
+    from molt.node_runtime import NodeRuntimeError
+
+    monkeypatch.setattr(measure, "_perfscore_build_env", lambda *a: {})
+
+    def absent(env):
+        raise NodeRuntimeError("independent missing Node")
+
+    monkeypatch.setattr(measure.bench, "admit_wasm_execution", absent)
+    monkeypatch.setattr(
+        measure.bench,
+        "prepare_molt_binary",
+        lambda *a, **kw: pytest.fail("must refuse before build"),
+    )
+    with pytest.raises(NodeRuntimeError, match="missing Node"):
+        measure.measure_cell(
+            script_path=ps.REPO_ROOT / "tests/benchmarks/bench_fib.py",
+            spec=ps.BACKENDS_BY_NAME["wasm"],
+            profile="dev-fast",
+            samples=1,
+            warmup=0,
+            rss_mb=64,
+            timeout_s=1,
+            batch_server=None,
+            cpython_cmd=("fixture-python",),
+            target_python_version="3.12",
+            log_dir=ps.REPO_ROOT / "logs",
+        )
+
+
+@pytest.mark.parametrize("change", ["bytes", "version", "missing", "path"])
+def test_baseline_comparison_and_dimensional_win_bind_execution_engine(
+    tmp_path, change
+):
+    from tests.tools.test_perf_schema import _node_observation
+    from tools import perf_scoreboard_model as model
+    import copy
+
+    engine = _node_observation()
+    old = _cell(
+        backend="wasm",
+        warm_molt_s=0.1,
+        warm_cpython_s=0.2,
+        cold_molt_s=0.1,
+        cold_cpython_s=0.2,
+    )
+    old.execution_host = copy.deepcopy(engine)
+    old.finalize(budget_ms=1000)
+    _release_evidence(old)
+    current = _cell(
+        backend="wasm",
+        warm_molt_s=0.15,
+        warm_cpython_s=0.2,
+        cold_molt_s=0.15,
+        cold_cpython_s=0.2,
+    )
+    current.execution_host = copy.deepcopy(engine)
+    if change == "bytes":
+        current.execution_host["identity"]["sha256"] = "b" * 64
+    elif change == "version":
+        current.execution_host["version"] = "24.2.0"
+    elif change == "missing":
+        current.execution_host = None
+    else:
+        current.execution_host["executable"] = "/relocated/node"
+    current.binary_size_kib = old.binary_size_kib / 2
+    current.finalize(budget_ms=1000)
+    _release_evidence(current)
+    prior = _board([old])
+    prior["host"]["execution_host"] = old.execution_host
+    candidate = _board([current])
+    candidate["host"]["execution_host"] = current.execution_host
+    path = tmp_path / "baseline.json"
+    path.write_text(json.dumps(prior), encoding="utf-8")
+    newly_red, regressed = ps.diff_against_baseline(candidate, path)
+    dimensional = model._dimensional_improvement(current, asdict(old))
+    if change == "path":
+        assert not newly_red and regressed and dimensional
+    else:
+        assert newly_red and "INCOMPARABLE execution host" in newly_red[0]
+        assert not regressed and dimensional is None

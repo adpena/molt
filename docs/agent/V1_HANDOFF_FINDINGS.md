@@ -61,7 +61,25 @@ retain the historical repair evidence without treating it as release acceptance.
 
 ## Active integration
 
-The current V1-01/V1-07 integration migrates WASM benchmark execution through
+The current V1-01 input integration reuses the preserved Cargo per-unit reader
+and native generation publisher. Publication now requires coverage for files,
+declared directory roots and package-wide watches. Directory names participate
+in the existing source-tree digest, including empty-directory additions and
+removals. Cargo's strict environment decoding, Windows OUT_DIR and UNC paths,
+ambiguous evidence refusal and whitespace-trimmed build-script directives share
+the same reader; that reader belongs to the runtime tooling identity. The
+[Cargo input design](../design/cargo_input_authority.md) records the transition
+and costs. Runtime-family input records, environment completeness, cross-platform
+qualification and authenticated compiler/runtime used-byte admission remain
+open. These are compiler/development checks, with no emitted-program work.
+On macOS arm64, a current native `dev` build with `dev-fast` compiler/runtime,
+edge stdlib and target Python 3.12 passed actual Cargo coverage and atomic
+generation publication. Its `bench_sum` executable matches CPython 3.12.15 in
+stdout/stderr/exit with empty executable and Python import paths, and both
+guarded processes close their descendants. This qualifies that publication and
+execution cell only; other platforms, profiles and WASM publication stay open.
+
+The V1-01/V1-07 measurement integration executes WASM benchmarks through
 the declared deployment manifest and the public runner, and consumes typed
 guard timing/RSS/closure facts directly. It removes two Python wrapper launches
 per sample and guest-stderr metadata parsing. Child time excludes guard cleanup;
@@ -74,9 +92,13 @@ refuses the missing WASM startup budget, and a busy host cannot establish
 performance acceptance. Every failed cold, warmup or warm attempt now refuses
 measurement acceptance across both runtimes and all repeats; a failed reference
 run cannot become a compatibility exclusion. Full authenticated release admission
-remains open. Node engine version/content is not yet part of the serialized
-scoreboard host identity, so cross-engine comparison remains unqualified under
-V1-07 alongside the missing budgets and positive producer admission.
+remains open. Schema 5 carries the admitted Node engine's version/content from
+one plan per WASM invocation through each cell, checkpoint, projection, merge
+and history receiver. Changed engine bytes or version split comparability;
+relocating identical bytes does not. Native boards perform no Node admission.
+Legacy records retain their original schema and require remeasurement. This is
+host observation, not loaded-byte attestation; missing budgets, full target
+qualification and positive release producer admission remain V1-07 obligations.
 
 The bounded linked-WASM `bench_sum` development-profile execution passes all
 16 observations against CPython 3.12.13 with exact stdout/stderr/exit parity,

@@ -49,6 +49,12 @@ def test_source_closure_deduplicates_features_and_keeps_shared_inputs(
             tmp_path / "Cargo.lock",
             tmp_path / "runtime/build_support",
             tmp_path / "LICENSE",
+            tmp_path / "include/molt",
+            tmp_path / "runtime/wasm_table_layout.inc",
+            tmp_path / "runtime/molt-runtime-http/src/functions_logging.rs",
+            tmp_path / "runtime/molt-runtime-itertools/src/itertools.rs",
+            tmp_path / "runtime/molt-runtime-path/src/os_ext.rs",
+            tmp_path / "runtime/molt-runtime-path/src/pathlib.rs",
         )
     ]
 

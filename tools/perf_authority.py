@@ -678,7 +678,7 @@ def release_cell_problems(cell: Mapping[str, Any]) -> list[str]:
     """
     import math
 
-    problems: list[str] = []
+    problems: list[str] = perf_schema.cell_execution_host_problems(cell)
     for field in ("build_ok", "molt_ok", "cpython_ok", "stable", "measured_quiescent"):
         if cell.get(field) is not True:
             problems.append(f"{field} must be true")
@@ -918,7 +918,10 @@ def scoreboard_observed_toolchain_problems(doc: Mapping[str, Any]) -> list[str]:
     """
     import re
 
-    problems: list[str] = []
+    host = doc.get("host", {})
+    problems: list[str] = perf_schema.board_execution_host_problems(
+        host if isinstance(host, Mapping) else {}, perf_schema.flatten_cells(doc)
+    )
 
     def check_identity(value: Any, label: str) -> None:
         if (

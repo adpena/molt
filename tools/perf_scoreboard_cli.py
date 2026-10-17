@@ -4,11 +4,13 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 from pathlib import Path
 import sys
 from collections.abc import Mapping
 from typing import Any
 
+from molt.node_runtime import NodeRuntimeError
 from molt.toolchain_identity import executable_content_identity
 from molt.python_runtime_identity import (
     capture_current_python_runtime,
@@ -479,6 +481,16 @@ def main(api: Mapping[str, Any], argv: list[str]) -> int:
     specs_profiles = [
         (api["BACKENDS_BY_NAME"][b], p) for b in backends for p in profiles
     ]
+    execution_host = None
+    if any(spec.build_target == "wasm" for spec, _profile in specs_profiles):
+        try:
+            execution_host = api["bench"].admit_wasm_execution(os.environ.copy())
+        except NodeRuntimeError as exc:
+            print(f"[scoreboard] execution host unavailable: {exc}", file=sys.stderr)
+            return 2
+    execution_host_record = (
+        execution_host.as_record() if execution_host is not None else None
+    )
     provenance = api["gather_provenance"](
         specs_profiles,
         quiescence=quiescence,
@@ -632,25 +644,37 @@ def main(api: Mapping[str, Any], argv: list[str]) -> int:
                         file=sys.stderr,
                         flush=True,
                     )
-                    cell = api["measure_cell"](
-                        script_path=script,
-                        spec=spec,
-                        profile=profile,
-                        samples=ns.samples,
-                        warmup=ns.warmup,
-                        rss_mb=ns.rss_mb,
-                        timeout_s=ns.timeout,
-                        batch_server=batch_server,
-                        cpython_cmd=cpython_oracle.cmd,
-                        target_python_version=target_python.short,
-                        log_dir=log_dir,
-                        budget_ms=cell_budget_ms,
-                        authoritative=effective_authoritative,
-                        pypy_bin=pypy_bin,
-                        codon_runner=codon_runner,
-                        repeat=ns.repeat,
-                        emit_cycle_profile=ns.emit_cycle_profile,
-                    )
+                    try:
+                        cell = api["measure_cell"](
+                            script_path=script,
+                            spec=spec,
+                            profile=profile,
+                            samples=ns.samples,
+                            warmup=ns.warmup,
+                            rss_mb=ns.rss_mb,
+                            timeout_s=ns.timeout,
+                            batch_server=batch_server,
+                            cpython_cmd=cpython_oracle.cmd,
+                            target_python_version=target_python.short,
+                            log_dir=log_dir,
+                            budget_ms=cell_budget_ms,
+                            authoritative=effective_authoritative,
+                            pypy_bin=pypy_bin,
+                            codon_runner=codon_runner,
+                            repeat=ns.repeat,
+                            emit_cycle_profile=ns.emit_cycle_profile,
+                            execution_host=execution_host
+                            if spec.build_target == "wasm"
+                            else None,
+                        )
+                    except NodeRuntimeError as exc:
+                        print(
+                            f"[scoreboard] execution host changed: {exc}",
+                            file=sys.stderr,
+                        )
+                        if codon_runner is not None:
+                            codon_runner.close()
+                        return 2
                     if cell.build_ok:
                         from tools.perf_scoreboard_build_profiles import (
                             record_measured_build_identity,
@@ -698,6 +722,7 @@ def main(api: Mapping[str, Any], argv: list[str]) -> int:
                             cpython_identity=cpython_identity,
                             pypy_version=pypy_version,
                             codon_version=codon_version,
+                            execution_host=execution_host_record,
                         )
                     except api["ScoreboardSchemaError"] as exc:
                         api["_print_schema_error"](exc)
@@ -748,6 +773,7 @@ def main(api: Mapping[str, Any], argv: list[str]) -> int:
         cpython_identity=cpython_identity,
         pypy_version=pypy_version,
         codon_version=codon_version,
+        execution_host=execution_host_record,
     )
     if ns.print_provenance:
         api["_print_provenance"](provenance)

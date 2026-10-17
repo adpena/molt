@@ -81,7 +81,7 @@ def cargo_build_reads(
     directories: set[Path] = set()
     environment: dict[str, str | None] = {}
 
-    def admit(path: Path) -> None:
+    def admit(path: Path, *, whole_package: bool = False) -> None:
         resolved = Path(os.path.realpath(path))
         if _under_any(resolved, skipped) or _under_any(resolved, covered):
             return
@@ -97,7 +97,11 @@ def cargo_build_reads(
             ) from exc
         if stat.S_ISDIR(metadata.st_mode):
             directories.add(resolved)
-            files.update(_files_under(resolved))
+            contents = (
+                _package_files(resolved) if whole_package else _files_under(resolved)
+            )
+            for entry in contents:
+                admit(entry)
         elif stat.S_ISREG(metadata.st_mode):
             files.add(resolved)
         else:
@@ -158,7 +162,7 @@ def cargo_build_reads(
                 path = Path(entry)
                 admit(path if path.is_absolute() else package / path)
             if not changed and not variables:
-                files.update(_package_files(package))
+                admit(package, whole_package=True)
     if units == 0:
         raise CargoBuildReadsError("the Cargo build reported no local unit")
     return CargoBuildReads(
@@ -249,12 +253,10 @@ def _records_out_dir(dep_info: Path, out_dir: object) -> bool:
     # candidate only if Cargo kept one, which the caller cannot prove.
     if not isinstance(out_dir, str):
         return False
-    expected = _ENV_DEP + "OUT_DIR=" + out_dir
-    try:
-        text = _read_bounded(dep_info)
-    except CargoBuildReadsError:
-        return False
-    return any(line == expected for line in text.splitlines())
+    # Every candidate must be inspectable before uniqueness is established.
+    # Ignoring an unreadable candidate could select an older feature lane.
+    _, environment = _read_dep_info(dep_info)
+    return environment.get("OUT_DIR") == out_dir
 
 
 def _strings(value: object) -> list[str]:
@@ -289,18 +291,22 @@ def _read_dep_info(path: Path) -> tuple[tuple[str, ...], dict[str, str | None]]:
     for line in _read_bounded(path).splitlines():
         if line.startswith(_ENV_DEP):
             name, separator, value = line[len(_ENV_DEP) :].partition("=")
-            environment[name] = _unescape_env_value(value) if separator else None
+            environment[_unescape_env(name)] = (
+                _unescape_env(value) if separator else None
+            )
             continue
         target, separator, deps = line.partition(": ")
         if not separator or not first_rule:
             continue
         first_rule = False
-        tokens = iter(token for token in deps.split(" ") if token)
+        tokens = iter(deps.split())
         for token in tokens:
             while token.endswith("\\"):
                 following = next(tokens, None)
                 if following is None:
-                    break
+                    raise CargoBuildReadsError(
+                        f"rustc dep-info has a trailing backslash: {path}"
+                    )
                 token = token[:-1] + " " + following
             entries.append(token)
     if first_rule:
@@ -308,20 +314,26 @@ def _read_dep_info(path: Path) -> tuple[tuple[str, ...], dict[str, str | None]]:
     return tuple(entries), environment
 
 
-def _unescape_env_value(value: str) -> str:
-    # rustc escapes backslashes and newlines in recorded values.
+def _unescape_env(value: str) -> str:
+    # Cargo decodes exactly these escapes in both variable names and values.
     result: list[str] = []
     escaped = False
     for character in value:
         if escaped:
+            if character not in ("n", "r", "\\"):
+                raise CargoBuildReadsError(
+                    f"unknown rustc environment escape: {character!r}"
+                )
             result.append(
-                "\n" if character == "n" else "\r" if character == "r" else character
+                "\n" if character == "n" else "\r" if character == "r" else "\\"
             )
             escaped = False
         elif character == "\\":
             escaped = True
         else:
             result.append(character)
+    if escaped:
+        raise CargoBuildReadsError("unterminated rustc environment escape")
     return "".join(result)
 
 
@@ -329,6 +341,7 @@ def _read_build_script_output(path: Path) -> tuple[tuple[str, ...], tuple[str, .
     changed: list[str] = []
     variables: list[str] = []
     for line in _read_bounded(path).splitlines():
+        line = line.strip()
         for prefix in _RERUN_IF_CHANGED:
             if line.startswith(prefix):
                 changed.append(line[len(prefix) :])
@@ -376,7 +389,14 @@ def _local_package_root(package_id: object) -> Path | None:
         return None
     url = package_id[start + len("path+") :].rstrip(")")
     parsed = urlparse(url.split("#", 1)[0])
-    return Path(os.path.realpath(url2pathname(parsed.path)))
+    # File URL authorities carry UNC hosts; dropping one silently changes the
+    # package root on Windows. localhost denotes this host in a file URI.
+    path = (
+        "//" + parsed.netloc + parsed.path
+        if parsed.netloc and parsed.netloc != "localhost"
+        else parsed.path
+    )
+    return Path(os.path.realpath(url2pathname(path)))
 
 
 def _under_any(path: Path, roots: Sequence[Path]) -> bool:

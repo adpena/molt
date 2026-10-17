@@ -419,3 +419,71 @@ def test_checked_in_quiet_native_is_historical_projection_fixture() -> None:
     cells = schema.flatten_cells(doc)
     assert cells
     assert all(cell.get("benchmark") for cell in cells)
+
+
+def _node_observation(*, path="/opt/node", version="24.1.0", digest="a" * 64):
+    return {
+        "kind": "node",
+        "executable": path,
+        "version": version,
+        "identity": {
+            "entrypoint": "node",
+            "content_filename": "node",
+            "size": 1024,
+            "sha256": digest,
+        },
+    }
+
+
+def test_wasm_execution_observation_survives_schema_and_typed_projection():
+    engine = _node_observation()
+    cell = _cell(
+        target="wasm", backend="wasm", profile="wasm-release", execution_host=engine
+    )
+    doc = _doc(cell)
+    doc["host"]["execution_host"] = engine
+    assert schema.validate_board(doc) == []
+    assert schema.PerfCell.from_payload(cell).execution_host == engine
+
+
+@pytest.mark.parametrize("missing", ["cell", "host", "both"])
+def test_missing_historical_wasm_host_is_unqualified(missing):
+    engine = _node_observation()
+    cell = _cell(target="wasm", backend="wasm", execution_host=engine)
+    doc = _doc(cell)
+    doc["host"]["execution_host"] = engine
+    if missing in {"cell", "both"}:
+        cell.pop("execution_host")
+    if missing in {"host", "both"}:
+        doc["host"].pop("execution_host")
+    assert any("execution_host" in p for p in schema.validate_board(doc))
+
+
+@pytest.mark.parametrize("changed", ["version", "digest", "size"])
+def test_cell_engine_must_match_board_admission(changed):
+    engine = _node_observation()
+    cell = _cell(target="wasm", backend="wasm", execution_host=_node_observation())
+    if changed == "version":
+        cell["execution_host"]["version"] = "24.2.0"
+    elif changed == "digest":
+        cell["execution_host"]["identity"]["sha256"] = "b" * 64
+    else:
+        cell["execution_host"]["identity"]["size"] += 1
+    doc = _doc(cell)
+    doc["host"]["execution_host"] = engine
+    assert (
+        "WASM cell execution_host differs from board execution_host"
+        in schema.validate_board(doc)
+    )
+
+
+def test_native_host_cannot_masquerade_as_node():
+    assert schema.validate_cell(_cell(execution_host=_node_observation()))
+
+
+def test_engine_comparability_ignores_install_path_and_filename():
+    left = _node_observation()
+    right = _node_observation(path="D:/tools/node-copy.exe")
+    right["identity"]["entrypoint"] = "node-copy.exe"
+    right["identity"]["content_filename"] = "node-copy.exe"
+    assert schema.execution_host_key(left) == schema.execution_host_key(right)

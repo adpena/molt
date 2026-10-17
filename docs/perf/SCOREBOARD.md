@@ -114,8 +114,13 @@ gate that cannot fail certifies nothing.
 
 ## Provenance — the anti-stale-lore enforcement (council ruling A + B)
 
-Every board carries the exact tree + tool + artifact identity it was measured
-against, under the top-level `provenance` block:
+The top-level `provenance` block records source revision, methodology, and
+selected or observed tool/artifact identities. These observations do not prove
+which compiler/runtime bytes were loaded or provide authenticated release
+custody; the existing used-byte and release-admission holds remain in force.
+[The methodology contract and lock](../../config/perf_methodology.toml) own the
+current version (v3). Historical records retain the version they measured:
+
 
 ```jsonc
 "provenance": {
@@ -125,10 +130,10 @@ against, under the top-level `provenance` block:
   "dirty_tree":              false,
   "diverges_from_origin":    false,
   "methodology_schema":      "molt-perf-methodology-v1",
-  "methodology_version":     1,                // config/perf_methodology.toml
+  "methodology_version":     3,                // current canonical methodology; never rewrite older records
   "methodology_sha256":      "<digest of the methodology files>",
   "methodology_locked":      true,             // content matches its version's lock
-  "backend_binary_identity": { "native/release-fast": "<digest of the measured compiler bytes>" },
+  "backend_binary_identity": { "native/release-fast": "<digest of observed selected compiler bytes>" },
   "runtime_identity":        { "native/release-fast": "<digest of the linked runtime library>" },
   "authoritative":           true,
   "authoritative_reason":    "revision is on origin/main, clean, methodology locked"
@@ -459,12 +464,12 @@ gate constants, required top-level/provenance/host/summary/cell fields, and the
 `FAIL_COLD_BUDGET`, `WARN_COLD_FLOOR`, `UNSTABLE`), `validate_cell()` now
 fails closed unless the build/run booleans, binary size, compile time, cold and
 warm timings, speedups, startup tax, RSS peaks, and log artifact are present. A
-measured runnable cell must also carry affirmative schema-v4 `output_parity`
+measured runnable cell must also carry affirmative schema-v5 `output_parity`
 evidence from `tools.compat.comparison`: exact stdout, exact user stderr, exact
 exit status, and stable output across the cold observation plus every existing
 warmup and timed warm sample. The receipt stores hashes and the first mismatching sample
 identity, never raw output. Missing, legacy-boolean, mismatching, or unstable
-evidence is `RUN_ERROR`, never a performance verdict. Schema-v3 boards remain
+evidence is `RUN_ERROR`, never a performance verdict. Schema-v3/v4 boards remain
 historical; `--rebuild-summary` and `--merge` refuse to promote them without a
 fresh measurement.
  A
@@ -477,6 +482,31 @@ launcher wrapper. `tools/perf_scoreboard.py` validates every CPython scoreboard
 document before writing it, including checkpoint partials, rebuild-summary
 rewrites, merge outputs, and final run artifacts; a schema violation raises
 `ScoreboardSchemaError` and leaves the target artifact untouched.
+Schema v5 additionally binds WASM execution to a `host.execution_host` observation
+and each WASM cell's `execution_host`: `kind: "node"`, the absolute selected
+`executable`, observed `version`, and the canonical executable `identity`
+(`entrypoint`, `content_filename`, `size`, `sha256`). Native cells carry null.
+The CLI admits one typed Node plan per invocation before any benchmark build,
+and passes that plan through every WASM cell and its facts through every
+checkpoint. Standalone cell measurement uses the same admission owner.
+
+Comparability uses engine kind, version, size and SHA-256. An identical image at
+a different install path or basename remains comparable; a changed image at the
+same version, or a changed version, does not. Merge reconciles native and WASM
+lanes and rejects conflicting engines. Board projections retain exact cell paths
+and source schema; history revalidates stored observations instead of trusting
+an index's claimed comparability class. Missing legacy facts cannot establish a
+comparison, regression baseline or release result. Baseline diff and dimensional
+improvement likewise refuse to compare different execution engines.
+
+The plan performs one content hash and one version probe at admission. Metadata
+fences surround samples and precede builds/artifact binding (one POSIX `lstat`
+per fence; a Windows handle ChangeTime query). Replacement, including observed
+replace-and-restore, refuses the cell without selecting another Node. These
+checks do not hold the image open through OS execution, do not attest loaded
+bytes, and do not close the release receipt gap. Ordinary WASM runner calls keep
+the existing resolver/probe path without benchmark hashing or fencing.
+
 `tools/perf_causality.py` owns the deterministic cycle-symbol/taxonomy join that
 fills `fact_class`, `suspected_missing_fact`, `pypy_advantage_class`,
 `reference_class`, `codon_semantics`, and `attribution_confidence`; the
@@ -511,12 +541,13 @@ Written to `bench/scoreboard/cpython_<gitrev>.json`. Per-cell logs in
 
 ```jsonc
 {
-  "schema_version": 4,
+  "schema_version": 5,
   "kind": "cpython_floor_scoreboard",
   "generated_at": "<iso8601 utc>",
   "git_rev": "<full sha>",
   "provenance": { /* see the Provenance section above */ },
   "host": {
+    "execution_host": null, // native-only; WASM carries the admitted Node record
     "platform": "darwin",
     "machine": "arm64",
     "arch": "aarch64",
@@ -623,7 +654,7 @@ artifact, **not** a speedup board, and never feeds the release gate.
 
 ```jsonc
 {
-  "schema_version": 4,
+  "schema_version": 5,
   "kind": "hot_only_cycle_profile",
   "git_rev": "<full sha>",
   "backend": "native", "target": "native", "profile": "release-fast",

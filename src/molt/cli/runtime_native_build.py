@@ -1013,7 +1013,7 @@ def current_native_runtime_build_identity(
 def _runtime_build_inputs_outside_identity(
     plan: _NativeRuntimeBuildPlan, build: CargoExecutionResult
 ) -> tuple[str, ...]:
-    """Files the build read that the runtime identity does not cover (HF-300).
+    """Build inputs the runtime identity does not cover (HF-300).
 
     Each unit's rustc dep-info and each build script's declared inputs list
     what the build read. An input outside the identity's roots would let a
@@ -1032,7 +1032,7 @@ def _runtime_build_inputs_outside_identity(
         toolchain_roots=(),
     )
     return paths_outside(
-        reads.files,
+        (*reads.files, *reads.directories),
         plan.project_root,
         (
             *runtime_source_paths(plan.project_root, plan.fingerprint_features),
@@ -1054,7 +1054,7 @@ def _publish_native_runtime_build(
         uncovered_error = None
     if uncovered or uncovered_error is not None:
         detail = uncovered_error or (
-            "the runtime identity does not cover files the build read: "
+            "the runtime identity does not cover build inputs: "
             + ", ".join(uncovered[:8])
             + (f" and {len(uncovered) - 8} more" if len(uncovered) > 8 else "")
         )
