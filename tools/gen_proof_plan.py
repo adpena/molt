@@ -559,14 +559,13 @@ def _markdown_projection(plan: ProofPlan) -> str:
             "",
             "## Local integration families",
             "",
-            "| Rule | Input globs | Commands | Fresh toolchain |",
-            "|---|---:|---:|---:|",
+            "| Rule | Input globs | Commands |",
+            "|---|---:|---:|",
         ]
     )
     for rule in plan.local_rules:
         lines.append(
-            f"| `{rule['name']}` | {len(rule['globs'])} | {len(rule['gates'])} | "
-            f"{'yes' if rule.get('require_fresh_toolchain', False) else 'no'} |"
+            f"| `{rule['name']}` | {len(rule['globs'])} | {len(rule['gates'])} |"
         )
     lines.extend(
         [

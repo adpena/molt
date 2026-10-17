@@ -360,6 +360,36 @@ def test_generated_local_dx_projection_has_stable_command_ids() -> None:
     ]
 
 
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("require_fresh_toolchain", True),
+        ("toolchians", ["cargo"]),
+        ("gate", ["cargo test"]),
+    ],
+)
+def test_local_rule_schema_rejects_unconsumed_fields(field, value) -> None:
+    from tools import molt_dev
+
+    first, *rest = PLAN.local_rules
+    invalid = {**first, field: value}
+    errors = replace(PLAN, local_rules=(invalid, *rest)).validate()
+    assert any(
+        "unknown local rule fields" in error and field in error for error in errors
+    )
+    source = (
+        '[[rule]]\nname="native"\nglobs=["*.rs"]\ngates=["cargo test"]\ntoolchains=["cargo"]\n'
+        + field
+        + " = "
+        + json.dumps(value)
+        + "\n"
+    )
+    with pytest.raises(
+        molt_dev.DriverError, match="unknown local rule fields.*" + field
+    ):
+        molt_dev.GateConfig.parse(source, "unconsumed policy fixture")
+
+
 def test_compiler_runtime_partition_preserves_disjoint_test_and_tool_ownership() -> (
     None
 ):
@@ -841,7 +871,6 @@ def test_maintained_object_sources_select_owning_and_actual_consumers(path):
     assert classes["llvm"] is False
     gates, matched = molt_dev.GateConfig.load(PLAN.path).select([path])
     rule = next(r for r in matched if r.name == "native-object-emission")
-    assert rule.require_fresh_toolchain
     assert set(rule.gates) <= set(gates)
     for argv in (
         next(c.argv for c in PLAN.commands if c.id == "rust.test.compiler-authorities"),

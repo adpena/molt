@@ -334,59 +334,59 @@ The wrapper conflict was reconfirmed by native CI run `30211145633` job `8981749
 
 ## Local integration families
 
-| Rule | Input globs | Commands | Fresh toolchain |
-|---|---:|---:|---:|
-| `frontend-python` | 1 | 3 | no |
-| `bootstrap-stdlib` | 4 | 1 | no |
-| `heap-kind-lifetime-authority` | 7 | 2 | no |
-| `host-capability-authority` | 7 | 2 | no |
-| `runtime-profile-schema-authority` | 6 | 2 | no |
-| `op-kind-registry` | 18 | 3 | no |
-| `frontend-diagnostics` | 6 | 2 | no |
-| `wasm-abi-registry` | 13 | 2 | no |
-| `tinygrad-op-contract` | 9 | 3 | no |
-| `intrinsic-registry` | 9 | 2 | no |
-| `codec-tables` | 7 | 2 | no |
-| `stringprep-tables` | 3 | 2 | no |
-| `llvm-runtime-abi` | 8 | 2 | no |
-| `source-extension-package-sets` | 54 | 3 | no |
-| `suite-honesty` | 4 | 2 | no |
-| `ecosystem-compat` | 2 | 1 | no |
-| `tinygrad-upat-static-exec-registry` | 2 | 1 | no |
-| `docs-architecture` | 4 | 2 | no |
-| `dev-tooling` | 12 | 5 | no |
-| `encoding-diagnostics` | 2 | 1 | no |
-| `runtime-cargo-input-custody` | 33 | 1 | no |
-| `rust-ffi-blocks` | 6 | 2 | no |
-| `rust-toolchain` | 10 | 2 | no |
-| `table-drift` | 12 | 2 | no |
-| `findings-registry` | 4 | 1 | no |
-| `memory-graph` | 5 | 2 | no |
-| `ci-wiring` | 58 | 2 | no |
-| `apparatus-hooks` | 11 | 3 | no |
-| `apparatus-learning-protection` | 12 | 3 | no |
-| `apparatus-a11` | 10 | 5 | no |
-| `apparatus-a8-a12-disk-reclaim` | 11 | 3 | no |
-| `import-symbol-gate` | 2 | 2 | no |
-| `phase-exit-manifest` | 7 | 2 | no |
-| `public-contract` | 19 | 2 | no |
-| `backend-native` | 8 | 2 | yes |
-| `native-object-emission` | 5 | 1 | yes |
-| `maintained-zlib-counters` | 14 | 3 | yes |
-| `backend-llvm` | 2 | 1 | yes |
-| `tir-midend` | 9 | 2 | yes |
-| `wasm-host` | 5 | 2 | yes |
-| `gpu-core` | 3 | 1 | no |
-| `gpu-runtime` | 3 | 2 | no |
-| `runtime-vfs` | 4 | 3 | yes |
-| `runtime-lib` | 3 | 2 | yes |
-| `python-effect-capability-authority` | 6 | 3 | no |
-| `python-identity-catalog-authority` | 7 | 2 | no |
-| `builtin-binding-guard-authority` | 9 | 3 | no |
-| `native-callable-abi` | 19 | 5 | no |
-| `stringprep-leaf` | 2 | 1 | no |
-| `cpython-abi-authorities` | 2 | 1 | no |
-| `compression-stream-state` | 1 | 1 | no |
+| Rule | Input globs | Commands |
+|---|---:|---:|
+| `frontend-python` | 1 | 3 |
+| `bootstrap-stdlib` | 4 | 1 |
+| `heap-kind-lifetime-authority` | 7 | 2 |
+| `host-capability-authority` | 7 | 2 |
+| `runtime-profile-schema-authority` | 6 | 2 |
+| `op-kind-registry` | 18 | 3 |
+| `frontend-diagnostics` | 6 | 2 |
+| `wasm-abi-registry` | 13 | 2 |
+| `tinygrad-op-contract` | 9 | 3 |
+| `intrinsic-registry` | 9 | 2 |
+| `codec-tables` | 7 | 2 |
+| `stringprep-tables` | 3 | 2 |
+| `llvm-runtime-abi` | 8 | 2 |
+| `source-extension-package-sets` | 54 | 3 |
+| `suite-honesty` | 4 | 2 |
+| `ecosystem-compat` | 2 | 1 |
+| `tinygrad-upat-static-exec-registry` | 2 | 1 |
+| `docs-architecture` | 4 | 2 |
+| `dev-tooling` | 12 | 5 |
+| `encoding-diagnostics` | 2 | 1 |
+| `runtime-cargo-input-custody` | 33 | 1 |
+| `rust-ffi-blocks` | 6 | 2 |
+| `rust-toolchain` | 10 | 2 |
+| `table-drift` | 12 | 2 |
+| `findings-registry` | 4 | 1 |
+| `memory-graph` | 5 | 2 |
+| `ci-wiring` | 58 | 2 |
+| `apparatus-hooks` | 11 | 3 |
+| `apparatus-learning-protection` | 12 | 3 |
+| `apparatus-a11` | 10 | 5 |
+| `apparatus-a8-a12-disk-reclaim` | 11 | 3 |
+| `import-symbol-gate` | 2 | 2 |
+| `phase-exit-manifest` | 7 | 2 |
+| `public-contract` | 19 | 2 |
+| `backend-native` | 8 | 2 |
+| `native-object-emission` | 5 | 1 |
+| `maintained-zlib-counters` | 14 | 3 |
+| `backend-llvm` | 2 | 1 |
+| `tir-midend` | 9 | 2 |
+| `wasm-host` | 5 | 2 |
+| `gpu-core` | 3 | 1 |
+| `gpu-runtime` | 3 | 2 |
+| `runtime-vfs` | 4 | 3 |
+| `runtime-lib` | 3 | 2 |
+| `python-effect-capability-authority` | 6 | 3 |
+| `python-identity-catalog-authority` | 7 | 2 |
+| `builtin-binding-guard-authority` | 9 | 3 |
+| `native-callable-abi` | 19 | 5 |
+| `stringprep-leaf` | 2 | 1 |
+| `cpython-abi-authorities` | 2 | 1 |
+| `compression-stream-state` | 1 | 1 |
 
 ## Selection contract
 

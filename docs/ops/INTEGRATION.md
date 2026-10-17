@@ -91,8 +91,8 @@ code, so `integrate` is CI-usable (exit `0` ok, `1` a check failed, `2` usage).
 | 2 | **Push exit codes lie** (rtk/sandbox swallow; 144-detached pushes can “succeed”) | `verify-push` / the push step **fetch** the remote and confirm `origin/<branch>` **contains** the tip via `merge-base --is-ancestor`. Cleanup is gated on that, never on the push command's exit. |
 | 3 | **Worktree cleanup loses work** | cleanup **refuses** if unpushed commits exist (`origin/main..HEAD` non-empty) **or** tracked staged/unstaged changes exist (excluding the ignore set). `--force` requires **naming the sha** being abandoned (deliberate + auditable). The main worktree is never removed. |
 | 4 | **Partial WIP salvage** (split staged vs unstaged) | `secure-wip` enumerates **all** tracked modifications from `git status --porcelain -z` (staged + unstaged + adds), honors partner-excludes, and commits them in **ONE** `WIP-RECOVERY`-marked commit scoped to an explicit pathspec (a pre-staged excluded file is left out). |
-| 5 | **diff/ls/stat lie under rtk** | Every comparison verdict uses git **plumbing** (`rev-list`, `diff-tree`/`patch-id`, `rev-parse`, `merge-base --is-ancestor`, `status --porcelain -z`, `worktree list --porcelain`) captured as bytes, or python file ops (`pathlib`, `filecmp.cmp(shallow=False)`). Never a human-readable shell text tool whose output the proxy can rewrite. |
-| 6 | **Stale-binary misattribution** | `verify-toolchain` reports binary mtime vs the **newest commit touching Rust sources** (`runtime/**`, `Cargo.*`) and runs a configurable **behavior-marker probe** against the binary (always under `tools/safe_run.py`). A green marker on a stale binary is still flagged stale. `--reference` byte-compares against a prior binary to catch a no-op rebuild. |
+| 5 | **diff/ls/stat lie under rtk** | Every comparison verdict uses git **plumbing** (`rev-list`, `diff-tree`/`patch-id`, `rev-parse`, `merge-base --is-ancestor`, `status --porcelain -z`, `worktree list --porcelain`) captured as bytes, or python file ops (`pathlib` and owned content admission). Never a human-readable shell text tool whose output the proxy can rewrite. |
+| 6 | **Stale-binary misattribution** | Each selected Cargo gate owns its declared package, feature, profile and target graph against the captured integration source. Product compiler reuse binds source/toolchain inputs and executable bytes through the existing compiler admission. A Git date, marker substring or byte difference cannot attest a different artifact; deterministic identical output is valid. |
 | 7 | **.venv interpreter flips** (3.12 ↔ 3.14t across `uv` calls) | `python-oracle --python-version 3.12` resolves a candidate (uv → PATH → `sys.executable`), and **verifies `sys.version_info`** before accepting it. An interpreter that does not self-report the requested version is **refused**, never used. |
 | 8 | **Content-marker verification** | `integrate --marker` checks declared `exists:`/`contains:` markers post-rebase, pre-push, via python file ops. |
 | 9 | **Liveness/recovery probes** | `probe --file <p> --pid <n>` reports size+mtime (`os.stat`) and pid liveness (`os.kill(pid, 0)`) — replacing ad-hoc shell one-liners. Non-zero exit if a file is missing or a pid is dead. |
@@ -103,10 +103,9 @@ code, so `integrate` is CI-usable (exit `0` ok, `1` a check failed, `2` usage).
 
 | Subcommand | Purpose |
 |---|---|
-| `integrate` | fetch → rebase → verify-commits → markers → gates → push → confirm → cleanup. `--dry-run`, `--no-push`, `--cleanup-worktree`, `--marker`, `--extra-gate`, `--expected-upstream`, `--ignore` (cleanup only), toolchain-freshness flags. |
+| `integrate` | fetch → rebase → verify-commits → markers → gates → push → confirm → cleanup. `--dry-run`, `--no-push`, `--cleanup-worktree`, `--marker`, `--extra-gate`, `--expected-upstream`, `--ignore` (cleanup only). |
 | `secure-wip` | Commit **all** tracked modifications in one `WIP-RECOVERY` commit. `--dry-run`, `-m/--message`, `--ignore`, `--include-untracked`. |
 | `verify-push` | Confirm `origin/<branch>` contains a tip sha by fetch + ancestor. `--tip`, `--json`. |
-| `verify-toolchain` | Behavior-marker probe + binary-freshness report. `--marker`, `--probe-arg`, `--require-fresh`, `--reference`, `--require-differs`, `--json`. |
 | `probe` | File size+mtime / pid liveness via python ops. `--file`, `--pid`, `--json`. |
 | `python-oracle` | Resolve + PIN + verify a CPython version before use. `--python-version`, `--no-uv`, `--json`. |
 | `detached-run` | Spawn a command as a `setsid` daemon with a state dir (hazard 11). `--name`, `--cwd`, `--env K=V`, `--replace`, `--state-dir`, `--json`, `-- cmd…`. The spawning tool call itself must run unsandboxed; verify in a *later* call. |
@@ -143,13 +142,35 @@ gates are de-duplicated preserving first-seen order. Rules ship for: native &
 LLVM backend Rust, TIR midend Rust, WASM host Rust, runtime/object-model Rust,
 frontend & bootstrap stdlib Python, the op-kind registry, the suite-honesty and
 ecosystem-compat ratchets, docs architecture, the dev tooling itself (a
-self-gate that runs `tests/test_molt_dev.py`), and CI/pyproject wiring. A rule may set
-`require_fresh_toolchain = true` so a Rust change additionally demands a fresh
-built binary (hazard 6) when `--toolchain-binary` is supplied.
+self-gate that runs `tests/test_molt_dev.py`), and CI/pyproject wiring. Local
+rules have one closed field set; unknown or retired policy fields fail
+admission rather than becoming unused promises.
 
 Gate command strings mirror the canonical invocations in
 `pyproject.toml [tool.molt.dx.commands]`. Edit the manifest to add a
 change-class; the driver's own tests assert the committed manifest stays valid.
+
+Compiler identity uses the existing owners: `backend_binary.admitted_backend_binary`
+for a developer checkout, `compiler_identity.backend_build_admission` for the
+selected Cargo/toolchain/feature/profile/CPU inputs, and
+`compiler_identity.installed_compiler_admission` for shipped installations.
+Actual program semantics use the differential and release witness authorities.
+No separately supplied binary can prove the different test images built by the
+selected Cargo gates, so integration has no post-gate timestamp or marker lane.
+
+This follows [Cargo's target/profile and dep-info model](https://doc.rust-lang.org/cargo/reference/build-cache.html)
+and [rustc's dependency fingerprints and unchanged query results](https://rustc-dev-guide.rust-lang.org/queries/incremental-compilation-in-detail.html).
+A commit after a successful build does not change compiler inputs; identical
+rebuild output is desirable determinism. The existing content receipt must still
+reject changed source/toolchain inputs and changed executable bytes even when
+file sizes or timestamps are preserved. Cargo's own build scheduling remains
+separate from Molt's product content admission.
+
+Removing the obsolete diagnostic lane avoids its Git query, reference reads
+and optional guarded marker process. It adds no source scan, toolchain discovery
+or compiler build after the gates. This is development-side work; emitted
+program behavior and runtime cost are unchanged. No latency improvement is
+claimed without a matched measurement.
 
 Shell gates project the shared Cargo environment policy before launch, including
 compound commands. Selected sccache wrappers disable incremental compilation and
@@ -210,7 +231,7 @@ them and the doc records them so they are canonical, not tribal.
   python3 tools/safe_run.py --rss-mb 2048 --timeout 15 -- ./binary [args]
   # exit 124 = TIMEOUT, 137 = OOM, else the child's own code.
   ```
-  `verify-toolchain`'s probe always routes the binary through `safe_run.py`.
+  `difftest` runs generated programs through this guard.
 - **Canonical WASM runner.** WASM artifacts run through the canonical node host
   shim `wasm/run_wasm.js` (the same shim the wasm differential calibration
   uses); do not hand-roll a host.
@@ -247,10 +268,6 @@ python3 tools/molt_dev.py secure-wip -m "in-progress alias-root drop fix"
 # Confirm a push actually landed (do not trust the push's exit code):
 python3 tools/molt_dev.py verify-push --tip HEAD
 
-# Verify a freshly built binary is not stale and carries the expected marker:
-python3 tools/molt_dev.py verify-toolchain ./target-devtool/release-fast/molt-app \
-    --marker "native=148" --require-fresh
-
 # Pin and verify CPython 3.12 before a calibration run:
 PY=$(python3 tools/molt_dev.py python-oracle --python-version 3.12) && "$PY" -V
 
@@ -260,11 +277,13 @@ python3 tools/molt_dev.py probe --pid 12345 --file logs/calib.log
 
 ## Where the contract is tested
 
-`tests/test_molt_dev.py` proves **every** hazard countermeasure with a
-failure-mode test on real temp git repositories (bare-origin clones), mirroring
-the `tests/test_check_suite_honesty.py` guard-test style: dropped-commit
-detection fires; push-confirm catches a non-landed tip; cleanup refuses unpushed
-and dirty trees; secure-wip captures staged + unstaged; marker mismatch fails;
-gate-manifest selection is correct; the stale-binary and interpreter-pin
-countermeasures fire. The `dev-tooling` gate rule runs this test file whenever
-the driver, its config, or its tests change — so the driver gates **itself**.
+`tests/test_molt_dev.py` exercises the driver's Git and process countermeasures
+on real temporary repositories with a bare origin: commit preservation, push
+confirmation, cleanup refusal, WIP capture, source markers, selected-gate failure
+and interpreter admission. The `dev-tooling` rule runs that owner whenever the
+driver, its config or tests change. `tests/test_proof_plan.py` exercises local
+policy admission and projection. Compiler identity remains qualified by the
+existing CLI artifact-custody owners: `test_compiler_identity.py`,
+`test_cli_backend_binary_materialization.py`, `test_native_toolchain_transfer.py`
+and `test_installed_compiler.py` under `tests/cli/`. They distinguish wrong-source,
+changed executable and metadata-only changes, preserving independent oracles.

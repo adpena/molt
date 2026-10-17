@@ -14,12 +14,11 @@ Why each verdict avoids shell text tools (hazard 5)
 Under the rtk proxy / sandbox, `git diff`, `ls`, `stat`, and `cmp` can print
 misleading output (filtered, cached, or summarized). So every COMPARISON this
 driver makes — "is this sha in that range", "does origin contain this tip",
-"did this file change", "are these two binaries identical" — is computed from
+"did this file change" — is computed from
 git plumbing (`rev-list`, `cat-file`, `patch-id`, `rev-parse`) captured as
-bytes via subprocess, or from python file ops (`pathlib` + `filecmp` / a
-chunked byte compare), NEVER from a human-readable shell text tool whose output
-the proxy may rewrite. The plumbing commands emit machine-stable IDs that no
-proxy reformats.
+bytes via subprocess, or from python file ops, NEVER from a human-readable
+shell text tool whose output the proxy may rewrite. The plumbing commands emit
+machine-stable IDs that no proxy reformats.
 
 The hazard inventory -> countermeasure map (the spec this file implements)
 -------------------------------------------------------------------------
@@ -50,18 +49,18 @@ The hazard inventory -> countermeasure map (the spec this file implements)
   5. diff/ls/stat lie under rtk
        -> see the section above; all verdicts use plumbing + python file ops.
   6. Stale-binary misattribution
-       -> `verify-toolchain` runs a configurable BEHAVIOR-MARKER probe program
-          against a built binary (e.g. the SETATTR error-message marker) and
-          reports the binary mtime vs the newest commit touching Rust runtime/
-          backend sources, so a green result can never be credited to a stale
-          artifact. `integrate` can require freshness via a gate manifest flag.
+       -> Selected Cargo gates own their package/feature/profile test images
+          against the captured source. Product builds admit compiler source,
+          toolchain inputs and executable content through the existing compiler
+          admission owner. Git dates and byte-identical output do not establish
+          or refute that identity; there is no second post-gate binary check.
   7. .venv interpreter flips (3.12 <-> 3.14t across uv calls)
        -> `python-oracle` resolves the requested CPython version, PINS it, and
           verifies `sys.version` before returning the interpreter path;
           calibration/differential tooling routes through it.
   8. Content-marker verification
-       -> the gate manifest's per-change `markers` (file-exists / file-contains)
-          are checked post-rebase, pre-push, via python file ops.
+       -> declared `integrate --marker` checks (file-exists / file-contains)
+          run post-rebase, pre-push, via python file ops.
   9. Liveness/recovery probes (agent transcripts, daemon pids)
        -> `probe` reports size+mtime (python `os.stat`) and pid liveness
           (`os.kill(pid, 0)`), replacing ad-hoc shell one-liners.
@@ -116,7 +115,6 @@ Subcommands
                     re-run safe; --dry-run plans without mutating)
   secure-wip        commit ALL tracked modifications in one recovery commit
   verify-push       confirm origin/<branch> contains a tip sha (by fetch+ancestor)
-  verify-toolchain  behavior-marker probe + binary-freshness report
   probe             file size+mtime / pid liveness (python ops)
   python-oracle     resolve + PIN + verify a CPython version before use
   detached-run      spawn a setsid daemon that survives harness detach
@@ -128,14 +126,12 @@ Subcommands
 from __future__ import annotations
 
 import argparse
-import filecmp
 import json
 import os
 import shlex
 import subprocess
 import sys
 import tempfile
-import time
 import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -395,7 +391,6 @@ class GateRule:
     globs: list[str]
     gates: list[str]
     description: str = ""
-    require_fresh_toolchain: bool = False
 
 
 @dataclass
@@ -420,7 +415,7 @@ class GateConfig:
 
     @staticmethod
     def parse(source: str, label: str, *, root: Path | None = None) -> "GateConfig":
-        from tools.proof_plan import local_gate_commands
+        from tools.proof_plan import local_gate_commands, local_rule_field_error
 
         try:
             data = tomllib.loads(source)
@@ -428,6 +423,8 @@ class GateConfig:
             raise DriverError(f"gate manifest is not valid TOML ({label}): {exc}")
         rules: list[GateRule] = []
         for entry in data.get("rule", []):
+            if field_error := local_rule_field_error(entry):
+                raise DriverError(field_error)
             name = entry.get("name")
             globs = entry.get("globs")
             gates = entry.get("gates")
@@ -447,9 +444,6 @@ class GateConfig:
                     globs=globs,
                     gates=gates,
                     description=str(entry.get("description", "")),
-                    require_fresh_toolchain=bool(
-                        entry.get("require_fresh_toolchain", False)
-                    ),
                 )
             )
         always = data.get("always", [])
@@ -532,19 +526,8 @@ class GateConfig:
 
 
 # --------------------------------------------------------------------------
-# verify-toolchain (hazard 6): behavior-marker probe + binary freshness
+# Content marker byte membership
 # --------------------------------------------------------------------------
-
-# Source globs whose newest commit defines "the toolchain". A built binary
-# OLDER than the newest such commit is stale (its behavior predates the source).
-RUST_SOURCE_GLOBS = (
-    "runtime/**/*.rs",
-    "runtime/**/Cargo.toml",
-    "vendor/rust/**/*.rs",
-    "vendor/rust/**/Cargo.toml",
-    "Cargo.toml",
-    "Cargo.lock",
-)
 
 
 def _file_contains(path: Path, needle: str) -> bool:
@@ -560,192 +543,6 @@ def _file_contains(path: Path, needle: str) -> bool:
     except OSError:
         return False
     return needle.encode("utf-8") in data
-
-
-def _binaries_identical(a: Path, b: Path) -> bool:
-    """True iff two files are byte-identical (filecmp deep compare, hazard 5).
-
-    Uses filecmp.cmp(shallow=False) — a real content comparison, never `cmp`/
-    `diff` shell text whose output a proxy could rewrite. The "are these two
-    binaries identical" verdict (e.g. confirming a rebuild actually CHANGED the
-    artifact, so a stale binary can never be mistaken for a fresh one) is a pure
-    python file op.
-    """
-    if not a.exists() or not b.exists():
-        return False
-    return filecmp.cmp(str(a), str(b), shallow=False)
-
-
-def newest_rust_commit_epoch(git: Git) -> tuple[int, str] | None:
-    """(committer-epoch, sha) of the newest commit touching a Rust-source glob.
-
-    Used to judge binary freshness: a binary's mtime must be >= this epoch to
-    be the product of current sources. Returns None when no such commit exists
-    (e.g. a shallow clone with no history for those paths) — the caller then
-    reports freshness as UNKNOWN rather than asserting a false pass.
-    """
-    args = [
-        "log",
-        "-1",
-        "--format=%ct %H",
-        "--",
-        *RUST_SOURCE_GLOBS,
-    ]
-    proc = git._run(args, check=False)
-    line = proc.stdout.strip()
-    if proc.returncode != 0 or not line:
-        return None
-    epoch_str, _, sha = line.partition(" ")
-    try:
-        return int(epoch_str), sha.strip()
-    except ValueError:
-        return None
-
-
-@dataclass
-class ToolchainReport:
-    binary: str
-    binary_exists: bool
-    binary_mtime: float | None
-    newest_rust_epoch: int | None
-    newest_rust_sha: str | None
-    fresh: bool | None  # None == unknown (no reference commit)
-    marker_required: str | None
-    marker_found: bool | None  # None == not probed
-    probe_exit: int | None
-    # None == no reference given; True == binary DIFFERS from the reference
-    # (a rebuild that genuinely changed the artifact); False == byte-identical
-    # to the reference (suspicious: the rebuild produced the SAME binary).
-    differs_from_reference: bool | None = None
-
-    def to_dict(self) -> dict:
-        return {
-            "binary": self.binary,
-            "binary_exists": self.binary_exists,
-            "binary_mtime": self.binary_mtime,
-            "newest_rust_epoch": self.newest_rust_epoch,
-            "newest_rust_sha": self.newest_rust_sha,
-            "fresh": self.fresh,
-            "marker_required": self.marker_required,
-            "marker_found": self.marker_found,
-            "probe_exit": self.probe_exit,
-            "differs_from_reference": self.differs_from_reference,
-        }
-
-
-def _resolve_safe_run(probed_repo: Path) -> Path:
-    """Locate tools/safe_run.py (the mandatory binary guard).
-
-    Prefers the driver's own repo (DEFAULT_REPO) since safe_run ships with this
-    driver; falls back to the probed repo's copy. Raises if neither exists, so a
-    binary is NEVER run unguarded (CLAUDE.md: no raw binary execution).
-    """
-    candidates = [
-        DEFAULT_REPO / "tools" / "safe_run.py",
-        probed_repo / "tools" / "safe_run.py",
-    ]
-    for c in candidates:
-        if c.exists():
-            return c
-    raise DriverError(
-        "tools/safe_run.py not found in the driver repo or the probed repo; "
-        "refusing to run the binary unguarded (a runaway could OOM the host)."
-    )
-
-
-def _toolchain_probe_command(binary: Path, probe_args: list[str]) -> list[str]:
-    if os.name == "nt" and binary.suffix.lower() in {".bat", ".cmd"}:
-        comspec = os.environ.get("COMSPEC") or os.environ.get("ComSpec") or "cmd.exe"
-        quoted = subprocess.list2cmdline([str(binary), *probe_args])
-        return [comspec, "/d", "/s", "/c", f"call {quoted}"]
-    return [str(binary), *probe_args]
-
-
-def verify_toolchain(
-    git: Git,
-    binary: Path,
-    *,
-    marker: str | None,
-    probe_args: list[str],
-    rss_mb: int,
-    timeout: int,
-    reference: Path | None = None,
-) -> ToolchainReport:
-    """Probe a built binary for a behavior marker and judge its freshness.
-
-    Freshness (hazard 6): binary mtime >= newest Rust-source commit epoch. The
-    marker probe RUNS the binary (always under tools/safe_run.py so a runaway
-    can never OOM the host) and checks the marker substring in its combined
-    output via a python op. A green marker on a STALE binary is still flagged
-    stale, so a pass can never be misattributed to an old artifact.
-    """
-    exists = binary.exists()
-    mtime = binary.stat().st_mtime if exists else None
-    ref = newest_rust_commit_epoch(git)
-    newest_epoch = ref[0] if ref else None
-    newest_sha = ref[1] if ref else None
-    if mtime is None or newest_epoch is None:
-        fresh: bool | None = None
-    else:
-        fresh = mtime >= newest_epoch
-
-    marker_found: bool | None = None
-    probe_exit: int | None = None
-    if marker is not None:
-        if not exists:
-            marker_found = False
-        else:
-            # Always route the binary through safe_run.py (CLAUDE.md: never run
-            # a compiled binary unguarded). safe_run.py is part of THIS driver's
-            # canonical toolchain, so resolve it relative to the driver's own
-            # repo (DEFAULT_REPO) — NOT the arbitrary repo being probed, which
-            # may be a detached worktree/clone without tools/. Fall back to the
-            # probed repo's copy only if the driver's is somehow absent.
-            safe_run = _resolve_safe_run(git.repo)
-            out_fd, out_name = tempfile.mkstemp(prefix="molt_dev_probe_", suffix=".out")
-            os.close(out_fd)
-            out_path = Path(out_name)
-            try:
-                cmd = [
-                    sys.executable,
-                    str(safe_run),
-                    "--rss-mb",
-                    str(rss_mb),
-                    "--timeout",
-                    str(timeout),
-                    "--quiet",
-                    "--",
-                    *_toolchain_probe_command(binary, probe_args),
-                ]
-                proc = _run_driver_command_bytes(
-                    cmd,
-                    cwd=git.repo,
-                    env=os.environ.copy(),
-                    timeout=float(timeout) + 30.0,
-                    prefix="MOLT_DEV",
-                )
-                out_path.write_bytes((proc.stdout or b"") + (proc.stderr or b""))
-                probe_exit = proc.returncode
-                marker_found = _file_contains(out_path, marker)
-            finally:
-                out_path.unlink(missing_ok=True)
-
-    differs: bool | None = None
-    if reference is not None:
-        differs = not _binaries_identical(binary, reference)
-
-    return ToolchainReport(
-        binary=str(binary),
-        binary_exists=exists,
-        binary_mtime=mtime,
-        newest_rust_epoch=newest_epoch,
-        newest_rust_sha=newest_sha,
-        fresh=fresh,
-        marker_required=marker,
-        marker_found=marker_found,
-        probe_exit=probe_exit,
-        differs_from_reference=differs,
-    )
 
 
 # --------------------------------------------------------------------------
@@ -1106,7 +903,6 @@ def cmd_integrate(args: argparse.Namespace) -> int:
     # --- step 5: gates (hazard 10) ------------------------------------------
     gate_cmds: list[str] = []
     matched_rules: list[GateRule] = []
-    require_fresh = False
     # Policy comes from the same immutable commit whose clean source executes it.
     policy = git._run(["show", f"{selected_commit}:tools/{GATES_CONFIG_NAME}"]).stdout
     config = GateConfig.parse(
@@ -1118,7 +914,6 @@ def cmd_integrate(args: argparse.Namespace) -> int:
         run_git=lambda arguments: git._run(arguments).stdout,
     )
     gate_cmds, matched_rules = config.select(touched)
-    require_fresh = any(r.require_fresh_toolchain for r in matched_rules)
     gate_cmds = list(gate_cmds) + list(args.extra_gate or [])
     _step(
         f"gates ({len(gate_cmds)} selected for {len(touched)} touched path(s); "
@@ -1144,30 +939,6 @@ def cmd_integrate(args: argparse.Namespace) -> int:
                 "before push; fix the gate and re-run."
             )
         _ok(f"gate passed: {cmd}")
-
-    # Optional toolchain-freshness requirement (gate manifest opt-in).
-    if require_fresh and args.toolchain_binary:
-        _step("verify toolchain freshness (gate-required)")
-        report = verify_toolchain(
-            git,
-            Path(args.toolchain_binary).resolve(),
-            marker=args.toolchain_marker,
-            probe_args=list(args.toolchain_probe_arg or []),
-            rss_mb=args.rss_mb,
-            timeout=args.timeout,
-        )
-        _print_toolchain_report(report)
-        if report.fresh is False:
-            raise DriverError(
-                "toolchain binary is STALE (hazard 6): its mtime predates the "
-                "newest Rust-source commit. A gate result on a stale binary is "
-                "untrustworthy. Rebuild and re-run."
-            )
-    elif require_fresh:
-        _warn(
-            "a matched gate rule requires a fresh toolchain but no "
-            "--toolchain-binary was given; freshness NOT verified"
-        )
 
     # --- step 6: push (only after every gate is green) ----------------------
     _step(f"push to {upstream_ref}")
@@ -1231,45 +1002,6 @@ def cmd_integrate(args: argparse.Namespace) -> int:
 
     _ok("integrate complete: pushed + confirmed.")
     return EXIT_OK
-
-
-def _print_toolchain_report(report: ToolchainReport) -> None:
-    _say(f"    binary: {report.binary} (exists={report.binary_exists})")
-    if report.binary_mtime is not None:
-        _say(
-            "    binary mtime: "
-            + time.strftime("%Y-%m-%dT%H:%M:%S", time.localtime(report.binary_mtime))
-        )
-    if report.newest_rust_sha:
-        _say(
-            f"    newest Rust commit: {report.newest_rust_sha[:9]} "
-            f"(epoch {report.newest_rust_epoch})"
-        )
-    if report.fresh is None:
-        _warn("freshness UNKNOWN (missing binary or no reference commit)")
-    elif report.fresh:
-        _ok("binary is FRESH (mtime >= newest Rust commit)")
-    else:
-        _fail("binary is STALE (mtime < newest Rust commit)")
-    if report.marker_required is not None:
-        if report.marker_found:
-            _ok(
-                f"behavior marker present: {report.marker_required!r} "
-                f"(probe exit {report.probe_exit})"
-            )
-        else:
-            _fail(
-                f"behavior marker ABSENT: {report.marker_required!r} "
-                f"(probe exit {report.probe_exit})"
-            )
-    if report.differs_from_reference is not None:
-        if report.differs_from_reference:
-            _ok("binary DIFFERS from the reference (a genuine rebuild)")
-        else:
-            _warn(
-                "binary is BYTE-IDENTICAL to the reference — the rebuild "
-                "produced the same artifact (stale-binary suspicion)"
-            )
 
 
 # --------------------------------------------------------------------------
@@ -1398,39 +1130,6 @@ def cmd_verify_push(args: argparse.Namespace) -> int:
         f"{git.short(tip_full)} — push NOT confirmed (do not clean up)"
     )
     return EXIT_FAIL
-
-
-# --------------------------------------------------------------------------
-# Subcommand: verify-toolchain (hazard 6, standalone)
-# --------------------------------------------------------------------------
-
-
-def cmd_verify_toolchain(args: argparse.Namespace) -> int:
-    repo = Path(args.repo).resolve()
-    git = Git(repo)
-    binary = Path(args.binary).resolve()
-    reference = Path(args.reference).resolve() if args.reference else None
-    report = verify_toolchain(
-        git,
-        binary,
-        marker=args.marker,
-        probe_args=list(args.probe_arg or []),
-        rss_mb=args.rss_mb,
-        timeout=args.timeout,
-        reference=reference,
-    )
-    if args.json:
-        print(json.dumps(report.to_dict()))
-    _print_toolchain_report(report)
-
-    failed = False
-    if args.require_fresh and report.fresh is not True:
-        failed = True
-    if args.marker is not None and report.marker_found is not True:
-        failed = True
-    if args.require_differs and report.differs_from_reference is not True:
-        failed = True
-    return EXIT_FAIL if failed else EXIT_OK
 
 
 # --------------------------------------------------------------------------
@@ -1982,19 +1681,6 @@ def build_parser() -> argparse.ArgumentParser:
         default=os.environ.get("MOLT_SESSION_ID", "devtool"),
         help="MOLT_SESSION_ID to export for gates (default env or 'devtool')",
     )
-    p_int.add_argument("--toolchain-binary", help="binary for gate-required freshness")
-    p_int.add_argument(
-        "--toolchain-marker", help="behavior marker for the freshness probe"
-    )
-    p_int.add_argument(
-        "--toolchain-probe-arg",
-        action="append",
-        help="arg to the probe binary (repeatable)",
-    )
-    p_int.add_argument(
-        "--rss-mb", type=int, default=2048, help="safe_run RSS cap (MiB)"
-    )
-    p_int.add_argument("--timeout", type=int, default=30, help="safe_run timeout (s)")
     p_int.set_defaults(func=cmd_integrate)
 
     # secure-wip
@@ -2028,33 +1714,6 @@ def build_parser() -> argparse.ArgumentParser:
     p_vp.add_argument("--tip", help="tip sha to confirm (default HEAD)")
     p_vp.add_argument("--json", action="store_true", help="emit JSON result to stdout")
     p_vp.set_defaults(func=cmd_verify_push)
-
-    # verify-toolchain
-    p_vt = sub.add_parser(
-        "verify-toolchain", help="behavior-marker probe + binary-freshness report"
-    )
-    _add_repo_arg(p_vt)
-    p_vt.add_argument("binary", help="path to the built binary to probe")
-    p_vt.add_argument("--marker", help="behavior-marker substring to require in output")
-    p_vt.add_argument(
-        "--probe-arg", action="append", help="arg to pass to the binary (repeatable)"
-    )
-    p_vt.add_argument(
-        "--require-fresh", action="store_true", help="exit non-zero if binary is stale"
-    )
-    p_vt.add_argument(
-        "--reference",
-        help="a prior binary to byte-compare against (detect a no-op rebuild)",
-    )
-    p_vt.add_argument(
-        "--require-differs",
-        action="store_true",
-        help="exit non-zero if the binary is byte-identical to --reference",
-    )
-    p_vt.add_argument("--rss-mb", type=int, default=2048, help="safe_run RSS cap (MiB)")
-    p_vt.add_argument("--timeout", type=int, default=15, help="safe_run timeout (s)")
-    p_vt.add_argument("--json", action="store_true", help="emit JSON report to stdout")
-    p_vt.set_defaults(func=cmd_verify_toolchain)
 
     # probe
     p_pr = sub.add_parser("probe", help="file size+mtime / pid liveness (python ops)")

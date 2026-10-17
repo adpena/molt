@@ -366,7 +366,7 @@
     "tests/tools/test_win_job_contract.py",
     "tests/tools/test_windows_process_api.py"
   ],
-  "authority_sha256": "93bd0a517922eb5ce4c8cc55da8ca3bee72083371d6bda353f35c7b9a08a49f9",
+  "authority_sha256": "6999cfc9e6d805071de5e1da495ddca30af02d82be98640858eb15e8fe79ab6d",
   "cargo_environment_policy": {
     "incident_command": "cargo metadata --locked --format-version 1",
     "incident_commit": "20b046b79bd4ca64a8c859f737f6e330377bcc4e",
@@ -9580,7 +9580,7 @@
           "local.backend-native.0",
           "local.backend-native.1"
         ],
-        "description": "Cranelift/native backend and driver Rust: clippy + owning release-fast lib tests, fresh binary.",
+        "description": "Cranelift/native backend and driver Rust: clippy + owning release-fast lib tests.",
         "gates": [
           "cargo clippy --locked -p molt-backend -p molt-backend-native -p molt-artifact-publish --features molt-backend/native-backend -- -D warnings",
           "cargo test --locked --profile release-fast -p molt-backend -p molt-backend-native -p molt-artifact-publish --features molt-backend/native-backend --lib --no-fail-fast"
@@ -9596,7 +9596,6 @@
           "runtime/molt-artifact-publish/Cargo.toml"
         ],
         "name": "backend-native",
-        "require_fresh_toolchain": true,
         "toolchains": [
           "python",
           "rustc",
@@ -9619,7 +9618,6 @@
           "runtime/molt-backend/tests/native_extern_linkage.rs"
         ],
         "name": "native-object-emission",
-        "require_fresh_toolchain": true,
         "toolchains": [
           "python",
           "rustc",
@@ -9655,7 +9653,6 @@
           "tests/cli/test_runtime_source_closure.py"
         ],
         "name": "maintained-zlib-counters",
-        "require_fresh_toolchain": true,
         "toolchains": [
           "python",
           "uv",
@@ -9677,7 +9674,6 @@
           "runtime/molt-backend-native/src/llvm_backend/**/*.rs"
         ],
         "name": "backend-llvm",
-        "require_fresh_toolchain": true,
         "toolchains": [
           "python",
           "rustc",
@@ -9707,7 +9703,6 @@
           "runtime/molt-tir/Cargo.toml"
         ],
         "name": "tir-midend",
-        "require_fresh_toolchain": true,
         "toolchains": [
           "python",
           "rustc",
@@ -9732,7 +9727,6 @@
           "runtime/molt-artifact-publish/Cargo.toml"
         ],
         "name": "wasm-host",
-        "require_fresh_toolchain": true,
         "toolchains": [
           "python",
           "rustc",
@@ -9800,7 +9794,6 @@
           "wasm/molt_vfs_browser.js"
         ],
         "name": "runtime-vfs",
-        "require_fresh_toolchain": true,
         "toolchains": [
           "python",
           "rustc",
@@ -9823,7 +9816,6 @@
           "runtime/**/Cargo.toml"
         ],
         "name": "runtime-lib",
-        "require_fresh_toolchain": true,
         "toolchains": [
           "python",
           "rustc",
