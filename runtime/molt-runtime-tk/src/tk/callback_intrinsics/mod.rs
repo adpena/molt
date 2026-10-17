@@ -17,9 +17,8 @@ mod timers;
 mod tkwait;
 mod traces;
 
-pub use binds::*;
-pub use event_subst::*;
-pub use filehandlers::*;
-pub use timers::*;
-pub use tkwait::*;
-pub use traces::*;
+#[allow(
+    clippy::wildcard_imports,
+    reason = "re-exports the C-ABI intrinsics into crate::intrinsics"
+)]
+pub use {binds::*, event_subst::*, filehandlers::*, timers::*, tkwait::*, traces::*};

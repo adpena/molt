@@ -1,0 +1,3 @@
+# `wildcard_imports` (denied in Cargo.toml) also covers re-exports and paths
+# through a module named `prelude`, so no Tk module can import an ambient name set.
+warn-on-all-wildcard-imports = true

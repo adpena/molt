@@ -18,7 +18,7 @@ Landing checks execute the generator and authority inputs captured from the exac
 | CI selection families | 5 | 12 |
 | Hashed executable authority inputs | 1 | 367 |
 | Local path rules | 35 | 55 |
-| Unique local commands | 73 | 131 |
+| Unique local commands | 73 | 130 |
 | Handwritten Python classifier rule tables | 5 | 0 |
 
 ## CI families
@@ -224,7 +224,6 @@ The wrapper conflict was reconfirmed by native CI run `30211145633` job `8981749
 | `repository.build-graph` | `repository_policy` | `linux-x86_64-py312-repository-policy` | `explicit` | 120 s | `repository-policy` | 0 |
 | `repository.runtime-symbol-owners` | `repository_policy` | `linux-x86_64-py312-repository-policy` | `explicit` | 120 s | `repository-policy` | 0 |
 | `repository.runtime-serial-bridge-imports` | `repository_policy` | `linux-x86_64-py312-repository-policy` | `explicit` | 120 s | `repository-policy` | 0 |
-| `repository.tk-import-authority` | `repository_policy` | `linux-x86_64-py312-repository-policy` | `explicit` | 120 s | `repository-policy` | 0 |
 | `repository.perf-gate-wiring` | `repository_policy` | `linux-x86_64-py312-repository-policy` | `explicit` | 120 s | `repository-policy` | 0 |
 | `repository.ratio-direction` | `repository_policy` | `linux-x86_64-py312-repository-policy` | `explicit` | 120 s | `repository-policy` | 0 |
 | `repository.subagent-contract` | `repository_policy` | `linux-x86_64-py312-repository-policy` | `explicit` | 120 s | `repository-policy` | 0 |

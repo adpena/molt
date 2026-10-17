@@ -369,7 +369,7 @@
     "tests/tools/test_win_job_contract.py",
     "tests/tools/test_windows_process_api.py"
   ],
-  "authority_sha256": "78c873d60fca41980e5505a115952d8ec1434e07217076bc7012daae03dc8867",
+  "authority_sha256": "104ab40f6bb70f43e47156039c589abd06c499501e340594de06d27ad1bd8c73",
   "cargo_environment_policy": {
     "incident_command": "cargo metadata --locked --format-version 1",
     "incident_commit": "20b046b79bd4ca64a8c859f737f6e330377bcc4e",
@@ -2656,30 +2656,6 @@
         "uv",
         "run",
         "python3",
-        "tools/check_tk_import_authority.py"
-      ],
-      "cache_domain": "uv",
-      "cell": "linux-x86_64-py312-repository-policy",
-      "dependencies": [],
-      "family": "repository_policy",
-      "id": "repository.tk-import-authority",
-      "resource_class": "repository-policy",
-      "tiers": [
-        "pre-push",
-        "pr",
-        "main"
-      ],
-      "timeout_seconds": 120,
-      "toolchains": [
-        "python",
-        "uv"
-      ]
-    },
-    {
-      "argv": [
-        "uv",
-        "run",
-        "python3",
         "tools/check_perf_gate_wiring.py"
       ],
       "cache_domain": "uv",
@@ -3131,7 +3107,6 @@
         "tests/tools/test_check_rustfmt.py",
         "tests/tools/test_check_satellite_parity.py",
         "tests/tools/test_check_stdlib_intrinsic_surface.py",
-        "tests/tools/test_check_tk_import_authority.py",
         "tests/tools/test_check_type_coverage_todos.py",
         "tests/tools/test_ci_triage.py",
         "tests/tools/test_command_execution.py",
@@ -8142,7 +8117,7 @@
         "projected_makespan_seconds": 2820,
         "required_job_seconds": 2940,
         "resource_capacity_floor_seconds": {
-          "repository-policy": 2685
+          "repository-policy": 2655
         }
       },
       "rust": {
@@ -8428,7 +8403,6 @@
       "python tools/build_graph_audit.py --check",
       "python tools/check_runtime_symbol_owners.py",
       "python tools/check_runtime_serial_bridge_imports.py",
-      "python tools/check_tk_import_authority.py",
       "python tools/check_perf_gate_wiring.py",
       "python tools/check_ratio_direction.py",
       "python tools/check_subagent_contract.py",
@@ -8458,8 +8432,7 @@
       "local.always.20",
       "local.always.21",
       "local.always.22",
-      "local.always.23",
-      "local.always.24"
+      "local.always.23"
     ],
     "commands": {
       "local.always.0": "python -m ruff check .",
@@ -8475,11 +8448,10 @@
       "local.always.18": "python tools/check_runtime_symbol_owners.py",
       "local.always.19": "python tools/check_runtime_serial_bridge_imports.py",
       "local.always.2": "python tools/check_rust_toolchain.py",
-      "local.always.20": "python tools/check_tk_import_authority.py",
-      "local.always.21": "python tools/check_perf_gate_wiring.py",
-      "local.always.22": "python tools/check_ratio_direction.py",
-      "local.always.23": "python tools/check_subagent_contract.py",
-      "local.always.24": "python tools/check_perf_plane_gate.py",
+      "local.always.20": "python tools/check_perf_gate_wiring.py",
+      "local.always.21": "python tools/check_ratio_direction.py",
+      "local.always.22": "python tools/check_subagent_contract.py",
+      "local.always.23": "python tools/check_perf_plane_gate.py",
       "local.always.3": "python tools/check_rustfmt.py --changed",
       "local.always.4": "python tools/generators.py check",
       "local.always.5": "python tools/check_environment_registry.py --check",
@@ -10355,17 +10327,6 @@
         "node"
       ],
       "local.always.23": [
-        "python",
-        "git",
-        "target-pythons.3.12",
-        "uv",
-        "target-pythons.3.13",
-        "target-pythons.3.14",
-        "rustfmt",
-        "browser-acorn",
-        "node"
-      ],
-      "local.always.24": [
         "python",
         "git",
         "target-pythons.3.12",

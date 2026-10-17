@@ -1,4 +1,4 @@
-use molt_runtime_core::prelude::*;
+use molt_runtime_core::prelude::{MoltObject, obj_from_bits, rt_dec_ref};
 
 use crate::bridge::decode_value_list_bits;
 
