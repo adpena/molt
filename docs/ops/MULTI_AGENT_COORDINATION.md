@@ -21,6 +21,32 @@ The goal is highest expected signal per machine hour:
 - durable evidence in canonical artifact roots;
 - no silent blocking, duplicate rebuild storms, or spammy full-suite reruns.
 
+## Serialized integration
+
+A live `tools/molt_dev.py integrate` owns one OS file lock in Git's resolved
+common directory, shared by the primary checkout and every linked worktree.
+The handle covers fetch, source selection, gates, push confirmation and cleanup.
+A competing integration refuses before fetch or proof execution; it does not
+poll, sleep or spend resources qualifying a second candidate. Dry-run creates
+no lock. Independent source implementation and unrelated builds remain free to
+proceed in their own trees.
+
+This follows [Cargo's filesystem-lock ownership](https://doc.rust-lang.org/stable/nightly-rustc/cargo/util/flock/index.html)
+using Molt's existing cross-platform file-lock authority. Git common-directory
+resolution preserves byte-exact Git path output and is also shared with
+main-worktree environment discovery. Admission
+adds one Git metadata query and one lock acquisition per live integration, with
+one small persistent lock file. The OS handle owns exclusion: file presence,
+PID age and timestamps do not. Never delete the lock file to release it; normal
+completion, exceptions and process exit release the handle. This is development
+coordination and adds no work to emitted programs.
+
+The lock is advisory and repository-local. Current cooperating drivers share
+it; older drivers, independent clones and external writers do not. Upstream
+identity checks, ordinary non-fast-forward rejection and fetch/ancestor push
+confirmation therefore remain mandatory. A publication race is a refusal,
+never permission to force-push or reuse qualification for changed inputs.
+
 ## Startup Discovery
 
 Every agent that may run builds, differential tests, conformance, regrtest,

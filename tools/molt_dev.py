@@ -171,6 +171,10 @@ from tools.git_identity import (  # noqa: E402
     require_git_object_id,
 )
 from tools.release.git_source_snapshot import immutable_git_environment  # noqa: E402
+from molt.file_locks import (  # noqa: E402
+    _release_file_lock,
+    _try_acquire_file_lock,
+)
 
 from tools.molt_dev_detached import (  # noqa: E402
     DETACHED_STATE_ROOT,
@@ -601,6 +605,33 @@ class Marker:
 # --------------------------------------------------------------------------
 
 
+def _git_common_directory(repo: Path) -> Path | None:
+    """Resolve the shared Git namespace once, including linked worktrees."""
+    proc = _run_driver_command_bytes(
+        ["git", "rev-parse", "--git-common-dir"],
+        cwd=repo,
+        env=immutable_git_environment(os.environ),
+        timeout=30.0,
+        prefix="MOLT_DEV",
+    )
+    if proc.returncode != 0:
+        return None
+    if not proc.stdout.endswith(b"\n"):
+        raise DriverError("Git common directory is not newline terminated")
+    raw = proc.stdout[:-1]
+    if os.name == "nt" and raw.endswith(b"\r"):
+        raw = raw[:-1]
+    common = Path(os.fsdecode(raw))
+    return (common if common.is_absolute() else repo / common).resolve()
+
+
+def _integration_lock_path(repo: Path) -> Path:
+    common = _git_common_directory(repo)
+    if common is None:
+        raise DriverError("cannot resolve the Git common directory for integration")
+    return common / "molt-integrate.lock"
+
+
 def _resolve_repo_venv(repo: Path, env: dict[str, str]) -> Path | None:
     """Use the shared explicit selectors, then the checkout or main-worktree venv.
 
@@ -617,15 +648,8 @@ def _resolve_repo_venv(repo: Path, env: dict[str, str]) -> Path | None:
         or own.is_symlink()
     ):
         return selected
-    proc = _run_driver_command(
-        ["git", "rev-parse", "--git-common-dir"],
-        cwd=repo,
-        timeout=30.0,
-    )
-    if proc.returncode == 0:
-        common = Path(proc.stdout.strip())
-        if not common.is_absolute():
-            common = (repo / common).resolve()
+    common = _git_common_directory(repo)
+    if common is not None:
         main_repo = common.parent
         candidate = main_repo / ".venv"
         if candidate.exists() or candidate.is_symlink():
@@ -761,6 +785,22 @@ def _assert_integration_source(git: Git, commit: str) -> None:
 
 
 def cmd_integrate(args: argparse.Namespace) -> int:
+    if args.dry_run:
+        return _integrate_exclusive(args)
+    lock_path = _integration_lock_path(Path(args.repo).resolve())
+    handle = _try_acquire_file_lock(lock_path)
+    if handle is None:
+        raise DriverError(
+            "another integration owns this Git repository; no fetch or gates ran. "
+            "Retry after it finishes; do not remove the integration lock file."
+        )
+    try:
+        return _integrate_exclusive(args)
+    finally:
+        _release_file_lock(handle)
+
+
+def _integrate_exclusive(args: argparse.Namespace) -> int:
     repo = Path(args.repo).resolve()
     git = Git(repo)
     remote = args.remote
