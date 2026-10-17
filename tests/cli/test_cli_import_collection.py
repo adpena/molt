@@ -12624,8 +12624,21 @@ def test_prepare_native_link_uses_owned_stdlib_object_for_link_command(
         captured_link_cmd[index : index + len(forced_stdlib)] == forced_stdlib
         for index in range(len(captured_link_cmd))
     )
-    assert str(prepared.link_output) in captured_link_cmd
-    assert str(output_binary) not in captured_link_cmd
+    # The executed link writes only the private stage. The published path may
+    # appear once, as the name Apple ld signs that stage as.
+    assert captured_link_cmd[captured_link_cmd.index("-o") + 1] == str(
+        prepared.link_output
+    )
+    signed_as = (
+        [captured_link_cmd.index("-final_output") + 2]
+        if "-final_output" in captured_link_cmd
+        else []
+    )
+    assert [
+        index
+        for index, argument in enumerate(captured_link_cmd)
+        if argument == str(output_binary)
+    ] == signed_as
     assert str(output_binary) in prepared.link_cmd
     assert not staged_stdlib.exists()
 
