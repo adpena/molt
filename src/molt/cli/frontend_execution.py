@@ -8,6 +8,7 @@ from concurrent.futures.process import BrokenProcessPool
 from pathlib import Path
 from typing import Any, Callable, Collection, Mapping, Sequence, cast
 
+from molt import compiler_process
 from molt import input_report as _input_report
 from molt.frontend import ClassId, ClassInfo
 from molt.type_facts import TypeFacts
@@ -241,7 +242,7 @@ def _run_frontend_parallel_enabled_layers(
     parallel_pool_usable = True
     executor = ProcessPoolExecutor(
         max_workers=frontend_parallel_config.workers,
-        initializer=_input_report.worker_initializer,
+        initializer=compiler_process.worker_initializer,
         initargs=(_input_report.worker_log_dir(),),
     )
     try:
@@ -255,7 +256,7 @@ def _run_frontend_parallel_enabled_layers(
                 executor.shutdown(wait=False, cancel_futures=True)
                 executor = ProcessPoolExecutor(
                     max_workers=frontend_parallel_config.workers,
-                    initializer=_input_report.worker_initializer,
+                    initializer=compiler_process.worker_initializer,
                     initargs=(_input_report.worker_log_dir(),),
                 )
                 parallel_pool_usable = True

@@ -716,17 +716,13 @@ assert 'molt' not in sys.modules, 'dependency environment preloaded another Molt
 sys.path.insert(0, {str(root / "src")!r})
 assert sys.flags.isolated == sys.flags.ignore_environment == sys.flags.no_user_site == 1
 assert sys.flags.safe_path and sys.flags.hash_randomization == 1
-pid = os.getpid()
 sys.argv = ['molt', '--help']
+# The process entry ends this process; a restart through exec would lose
+# these callbacks, so their output proves the startup was retained.
 atexit.register(lambda: print('isolated-normal-exit'))
-try:
-    runpy.run_module('molt.cli', run_name='__main__', alter_sys=True)
-except SystemExit as exc:
-    assert exc.code == 0
-else:
-    raise AssertionError('help did not terminate normally')
-assert os.getpid() == pid
-print('isolated-source::' + sys.modules['molt'].__file__)
+atexit.register(lambda: print('isolated-source::' + sys.modules['molt'].__file__))
+runpy.run_module('molt.cli', run_name='__main__', alter_sys=True)
+raise AssertionError('the molt process entry returned to its caller')
 """
     result = run_cli_test_process(
         [str(python), "-I", "-B", "-c", script],
