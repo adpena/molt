@@ -279,7 +279,6 @@ def _append_diagnostics(
                     "src/molt/cli/external_native.py",
                     "src/molt/cli/extension_seal.py",
                     "src/molt/cli/source_extension_producer.py",
-                    "tools/pact_seal_witness_roots.py",
                 ),
             )
         )
