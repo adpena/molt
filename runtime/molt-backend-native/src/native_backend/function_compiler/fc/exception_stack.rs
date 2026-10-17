@@ -11,12 +11,10 @@ pub(in crate::native_backend::function_compiler) const HANDLED_KINDS: &[&str] = 
     "exception_stack_enter",
     "exception_stack_exit",
     "exception_stack_set_depth",
-    "exception_enter_handler",
-    "exception_resolve_captured",
 ];
 use super::var_get_boxed_overflow_safe_fn;
 
-/// Cranelift codegen handlers for the exception-stack runtime ops: `push`/`pop`/`clear`/`depth`/`enter`/`exit`/`set_depth`/`enter_handler`/`resolve_captured`.
+/// Cranelift codegen handlers for the exception-stack runtime ops: `push`/`pop`/`clear`/`depth`/`enter`/`exit`/`set_depth`.
 ///
 /// Extracted verbatim from `compile_func_inner`'s per-op dispatch (M1).
 /// Each arm body is byte-for-byte identical to the original; only the access
@@ -196,60 +194,6 @@ pub(in crate::native_backend::function_compiler) fn handle_exception_stack_op(
             {
                 let res = builder.inst_results(call)[0];
                 def_var_named(&mut *builder, vars, out_name.clone(), res);
-            }
-        }
-        "exception_enter_handler" => {
-            let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
-            let captured = var_get_boxed_overflow_safe(
-                &mut *module,
-                &mut *import_ids,
-                &mut *builder,
-                &mut *import_refs,
-                &mut *sealed_blocks,
-                vars,
-                &args[0],
-                representation_plan,
-            )
-            .expect("Captured exception not found");
-            let callee = SimpleBackend::import_func_id_split(
-                &mut *module,
-                &mut *import_ids,
-                "molt_exception_enter_handler",
-                &[types::I64],
-                &[types::I64],
-            );
-            let local_callee = module.declare_func_in_func(callee, builder.func);
-            let call = builder.ins().call(local_callee, &[*captured]);
-            let res = builder.inst_results(call)[0];
-            if let Some(out__) = op.out.as_ref() {
-                def_var_named(&mut *builder, vars, out__, res);
-            }
-        }
-        "exception_resolve_captured" => {
-            let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
-            let captured = var_get_boxed_overflow_safe(
-                &mut *module,
-                &mut *import_ids,
-                &mut *builder,
-                &mut *import_refs,
-                &mut *sealed_blocks,
-                vars,
-                &args[0],
-                representation_plan,
-            )
-            .expect("Captured exception not found");
-            let callee = SimpleBackend::import_func_id_split(
-                &mut *module,
-                &mut *import_ids,
-                "molt_exception_resolve_captured",
-                &[types::I64],
-                &[types::I64],
-            );
-            let local_callee = module.declare_func_in_func(callee, builder.func);
-            let call = builder.ins().call(local_callee, &[*captured]);
-            let res = builder.inst_results(call)[0];
-            if let Some(out__) = op.out.as_ref() {
-                def_var_named(&mut *builder, vars, out__, res);
             }
         }
         _ => unreachable!("handler invoked with non-matching op.kind"),

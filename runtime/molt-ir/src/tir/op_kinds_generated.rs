@@ -218,13 +218,10 @@ pub fn simpleir_kind_is_registered(kind: &str) -> bool {
             | "exception_clear"
             | "exception_context_set"
             | "exception_current"
-            | "exception_enter_handler"
             | "exception_finally_pending_observer"
-            | "exception_kind"
             | "exception_last"
             | "exception_last_pending"
             | "exception_match_builtin"
-            | "exception_message"
             | "exception_new"
             | "exception_new_builtin"
             | "exception_new_builtin_empty"
@@ -234,9 +231,7 @@ pub fn simpleir_kind_is_registered(kind: &str) -> bool {
             | "exception_pop"
             | "exception_push"
             | "exception_region_drops_inserted"
-            | "exception_resolve_captured"
             | "exception_set_last"
-            | "exception_set_value"
             | "exception_stack_clear"
             | "exception_stack_depth"
             | "exception_stack_enter"
@@ -1705,11 +1700,9 @@ pub fn simpleir_runtime_requirements_table(kind: &str) -> Option<SimpleIrRuntime
         | "exception_clear"
         | "exception_context_set"
         | "exception_finally_pending_observer"
-        | "exception_kind"
         | "exception_last"
         | "exception_last_pending"
         | "exception_match_builtin"
-        | "exception_message"
         | "exception_new"
         | "exception_new_builtin"
         | "exception_new_builtin_empty"
@@ -1719,7 +1712,6 @@ pub fn simpleir_runtime_requirements_table(kind: &str) -> Option<SimpleIrRuntime
         | "exception_pop"
         | "exception_push"
         | "exception_set_last"
-        | "exception_set_value"
         | "exception_stack_clear"
         | "exception_stack_depth"
         | "exception_stack_enter"
@@ -2657,13 +2649,10 @@ pub fn copy_kind_mints_owned_value_table(kind: &str) -> bool {
             | "exception_clear"
             | "exception_context_set"
             | "exception_current"
-            | "exception_enter_handler"
             | "exception_finally_pending_observer"
-            | "exception_kind"
             | "exception_last"
             | "exception_last_pending"
             | "exception_match_builtin"
-            | "exception_message"
             | "exception_new"
             | "exception_new_builtin"
             | "exception_new_builtin_empty"
@@ -2671,9 +2660,7 @@ pub fn copy_kind_mints_owned_value_table(kind: &str) -> bool {
             | "exception_new_from_class"
             | "exception_pop"
             | "exception_push"
-            | "exception_resolve_captured"
             | "exception_set_last"
-            | "exception_set_value"
             | "exception_stack_clear"
             | "exception_stack_depth"
             | "exception_stack_enter"
@@ -3625,7 +3612,7 @@ pub fn simpleir_kind_raises_pending_exception(kind: &str) -> bool {
 /// Generated from `simpleir_pending_exception_clear_kinds`.
 #[inline]
 pub fn simpleir_kind_clears_pending_exception(kind: &str) -> bool {
-    matches!(kind, "exception_clear" | "exception_enter_handler")
+    matches!(kind, "exception_clear")
 }
 
 /// Whether this SimpleIR spelling is the generated async-work poll.

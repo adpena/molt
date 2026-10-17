@@ -1190,40 +1190,16 @@ pub(crate) fn op_loop_runtime_call(kind: &str, marked: bool) -> Option<OpLoopRun
             required_imports: &[WasmRuntimeImport::ExceptionStackSetDepth],
             discard_result: false,
         }),
-        "exception_enter_handler" => Some(OpLoopRuntimeCallSpec {
-            import: WasmRuntimeImport::ExceptionEnterHandler,
-            args: &[OpLoopRuntimeArgSpec::Local(0)],
-            required_imports: &[WasmRuntimeImport::ExceptionEnterHandler],
-            discard_result: false,
-        }),
-        "exception_resolve_captured" => Some(OpLoopRuntimeCallSpec {
-            import: WasmRuntimeImport::ExceptionResolveCaptured,
-            args: &[OpLoopRuntimeArgSpec::Local(0)],
-            required_imports: &[WasmRuntimeImport::ExceptionResolveCaptured],
-            discard_result: false,
-        }),
         "exceptiongroup_combine" => Some(OpLoopRuntimeCallSpec {
             import: WasmRuntimeImport::ExceptiongroupCombine,
             args: &[OpLoopRuntimeArgSpec::Local(0)],
             required_imports: &[WasmRuntimeImport::ExceptiongroupCombine],
             discard_result: false,
         }),
-        "exception_kind" => Some(OpLoopRuntimeCallSpec {
-            import: WasmRuntimeImport::ExceptionKind,
-            args: &[OpLoopRuntimeArgSpec::Local(0)],
-            required_imports: &[WasmRuntimeImport::ExceptionKind],
-            discard_result: false,
-        }),
         "exception_class" => Some(OpLoopRuntimeCallSpec {
             import: WasmRuntimeImport::ExceptionClass,
             args: &[OpLoopRuntimeArgSpec::Local(0)],
             required_imports: &[WasmRuntimeImport::ExceptionClass],
-            discard_result: false,
-        }),
-        "exception_message" => Some(OpLoopRuntimeCallSpec {
-            import: WasmRuntimeImport::ExceptionMessage,
-            args: &[OpLoopRuntimeArgSpec::Local(0)],
-            required_imports: &[WasmRuntimeImport::ExceptionMessage],
             discard_result: false,
         }),
         "exception_context_set" => Some(OpLoopRuntimeCallSpec {
@@ -1470,15 +1446,6 @@ pub(crate) fn op_loop_runtime_call(kind: &str, marked: bool) -> Option<OpLoopRun
                 OpLoopRuntimeArgSpec::Local(1),
             ],
             required_imports: &[WasmRuntimeImport::ExceptiongroupMatch],
-            discard_result: false,
-        }),
-        "exception_set_value" => Some(OpLoopRuntimeCallSpec {
-            import: WasmRuntimeImport::ExceptionSetValue,
-            args: &[
-                OpLoopRuntimeArgSpec::Local(0),
-                OpLoopRuntimeArgSpec::Local(1),
-            ],
-            required_imports: &[WasmRuntimeImport::ExceptionSetValue],
             discard_result: false,
         }),
         "slice" => Some(OpLoopRuntimeCallSpec {

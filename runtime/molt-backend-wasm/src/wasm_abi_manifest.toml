@@ -759,9 +759,11 @@ type = 0
 name = "exception_context_set"
 type = 2
 
+# No op kind lowers to this import (HF-197); it keeps its boxed ABI declaration.
 [[import]]
 name = "exception_kind"
 type = 2
+boxed_call = true
 
 [[import]]
 name = "exception_last"
@@ -784,13 +786,17 @@ name = "exception_match_builtin"
 return_contract = "owned_object"
 type = 3
 
+# No op kind lowers to this import (HF-197); it keeps its boxed ABI declaration.
 [[import]]
 name = "exception_resolve_captured"
 type = 2
+boxed_call = true
 
+# No op kind lowers to this import (HF-197); it keeps its boxed ABI declaration.
 [[import]]
 name = "exception_message"
 type = 2
+boxed_call = true
 
 [[import]]
 name = "exception_new"
@@ -839,9 +845,11 @@ type = 0
 name = "exception_set_last"
 type = 2
 
+# No op kind lowers to this import (HF-197); it keeps its boxed ABI declaration.
 [[import]]
 name = "exception_set_value"
 type = 3
+boxed_call = true
 
 [[import]]
 name = "exception_stack_clear"
@@ -6392,12 +6400,8 @@ kinds = [
   "set_pop",
   "exception_stack_exit",
   "exception_stack_set_depth",
-  "exception_enter_handler",
-  "exception_resolve_captured",
   "exceptiongroup_combine",
-  "exception_kind",
   "exception_class",
-  "exception_message",
   "exception_context_set",
   "exception_set_last",
 ]
@@ -6432,7 +6436,6 @@ kinds = [
   "exception_new",
   "exception_new_from_class",
   "exceptiongroup_match",
-  "exception_set_value",
 ]
 
 [[op_loop_runtime_call_group]]
