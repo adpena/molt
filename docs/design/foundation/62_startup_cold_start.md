@@ -50,6 +50,14 @@ leaking onto the user's first run.** Concretely, the steady state is:
    tax. (When a real Developer-ID identity is configured via the existing
    `_codesign_sign` path, that is used instead; ad-hoc is the floor.)
 
+   *Implemented floor (2026-10-17):* Apple ld signs the private link stage ad
+   hoc under the published name (`native_link_output_flags`: `-adhoc_codesign`,
+   `-final_output`), and `_native_publication_stage` runs `codesign -f -s -` only
+   on a Mach-O image that strip or another tool rewrote, or whose signature does
+   not name the published binary. Non-Mach-O targets are never signed. A linker
+   signature and a `codesign` signature cost the same at first launch: 111.1 ms
+   against 111.9 ms median over 12 fresh binaries (warm 2.6 ms against 2.8 ms).
+
 2. **Page-in is a contiguous hot prefix, not a scatter.** The shipped artifact's
    hot startup path (entry → `molt_runtime_init`'s 12 phases → the entry module's
    top-level code) is laid out **first and contiguous** in `__TEXT`, via a
@@ -104,7 +112,7 @@ ordering the artifact, and gating the result** — not re-measuring.
 | **Cold-start decomposition** | `tools/cold_start_decompose.py` (788 ln) + `docs/perf/COLD_START.md` | Decomposes the same-path tax into `process-launch/dyld` (18 ms OS floor), `binary-page-in` (~0 same-path, size-driven), `molt-runtime-init` (0.127 ms), `module-init` (≈0); isolates `macos-codesign-first-launch` (~70 ms) on the no-op C as **one-time**, never summed; FRESH vs SAME path modes; `MOLT_TRACE_RUNTIME_INIT` ladder; `DYLD_PRINT_STATISTICS` cross-check | Measures but does **not** *fix*: no build-time codesign, no order-file, no first-launch budget. The "highest-leverage = binary-page-in (size-driven)" pick names the lever; this arc *builds* it |
 | **Cold-start budget board** | `bench/scoreboard/cold_start_budget.json` | Per-(backend,profile) `startup_tax_ms` CEILING; `native/release-fast` 380 ms, `llvm/release-fast` 340 ms (v0 = measured baseline); notes release-output unseeded + Y1 `< 100 ms` | No `first-launch` budget distinct from `same-path`; release-output unseeded; not ratcheted; not split codesign-out |
 | **Decomposition data** | `bench/scoreboard/cold_start_decomposition.json` | The measured per-component table (codesign 70 ms one-time, dyld 18 ms, page-in ~0, init 0.127 ms) seeding the budget | The before/after fixture for the codesign + order-file wins |
-| **Native ad-hoc codesign** | `src/molt/cli/native_toolchain.py` `_codesign_binary` (`codesign -f -s -`) | Ad-hoc signs a Mach-O; called for the **daemon binary** (`__init__.py:27484`) and **BOLT output** (`_atomic_copy_file(codesign=True)`) | **NOT called for the user binary** after `_post_link_strip(output_binary)` (`__init__.py:20842`) — the load-bearing gap (§3.1) |
+| **Native ad-hoc codesign** | `native_link_plan.py::native_link_output_flags` (Apple ld signs the link stage as the published name); `build_results.py::_native_publication_stage` (re-signs a rewritten Mach-O image through `native_toolchain.py::_codesign_binary`) | Every published Mach-O user binary is ad-hoc signed; an unmodified Apple ld stage keeps the linker's signature, so a dev edit build runs no `codesign` | ld64.lld and zig sign under the stage name, so their images pay the `codesign` pass; a non-Darwin host cannot re-sign (unverified cell); the identity dispatch and cost reporting of §3.1 stay open |
 | **Real-identity codesign** | `src/molt/cli/__init__.py` `_codesign_sign` / `_codesign_identity_info` (lines ~3750–3805) | `codesign -s <identity>` + display/verify for a configured Developer-ID | The "preferred over ad-hoc when configured" branch the build-time signer dispatches to (§3.1) |
 | **Native link driver** | `native_link_plan.py` + `native_link_command.py::_build_native_link_plan`; finalization in `build_results.py::_finalize_native_link_candidate` | target-specific dead stripping, export policy, validation, stripping, and atomic publication | No measured order-file / ordered-section policy for page-in locality yet; profile through the canonical link benchmark before changing it (§3.2) |
 | **Profile-derived order file (unimplemented)** | Existing `native_link_plan.py` / `native_link_command.py` link authority | The former Rust BOLT placeholder is retired; it never emitted measured symbols and had no production callers | Measured macOS profile import and startup-hot order generation remain open (§3.2); integrate with the existing link plan |
@@ -224,6 +232,12 @@ depends on 1; Phase 5 depends on 2. Phase 1 is the fastest, highest-leverage sta
 ## 3. The structural facts / mechanisms to build (each tied to the class it retires)
 
 ### 3.1 FACT: `sign_native_artifact` — one signing authority, paid at build time — retires "first-launch codesign tax"
+
+> **Status (2026-10-17):** the ad-hoc floor below is implemented differently: the
+> linker signs at link time and `_native_publication_stage` owns the re-sign
+> decision (see the steady-state item 1 note). User binaries no longer ship
+> unsigned. The identity dispatch, the build-payload cost record and the
+> cross-host warning remain open.
 
 **The waste class:** every freshly built/copied/downloaded molt native binary on
 macOS pays ~70 ms of Gatekeeper/code-signature validation on its *first* launch

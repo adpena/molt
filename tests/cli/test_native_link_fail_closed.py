@@ -9,7 +9,7 @@ import sys
 import pytest
 
 from molt.cli import backend_output_pipeline, extension_commands, native_toolchain
-from molt.cli import link_pipeline, native_link_command
+from molt.cli import build_results, link_pipeline, native_link_command
 from tests.process_guard_common import install_module_view
 
 
@@ -194,23 +194,32 @@ def test_bolt_source_rejection_reclaims_admitted_private_candidates(
     monkeypatch.setenv("MOLT_KEEP_SYMBOLS", "1")
     monkeypatch.delenv("MOLT_SKIP_BINARY_VALIDITY_CHECK", raising=False)
     monkeypatch.delenv("MOLT_BUILD_SMOKE_EXEC", raising=False)
-    signed: list[Path] = []
+    staged: list[Path] = []
 
     def optimize(command, **kwargs):
         assert command[2] == str(original)
         bolt_binary.write_bytes(bytes(elf_header(kind=2)))
         return subprocess.CompletedProcess(command, 0, "", "")
 
-    def sign(stage: Path, destination: Path) -> None:
-        signed.append(stage)
-        assert destination == output
+    validate = build_results._assert_native_binary_valid
+
+    def validate_then_mutate(stage: Path, target_triple: str | None) -> None:
+        # Stage validation is the last step before the source fence.
+        validate(stage, target_triple)
+        staged.append(stage)
         assert output.read_bytes() == b"previous public binary"
         if mutation == "rewrite":
             source.write_text("value = 2\n", encoding="utf-8")
         else:
             source.unlink()
 
+    def sign(stage: Path, destination: Path) -> None:
+        raise AssertionError("BOLT writes ELF images, which carry no signature")
+
     monkeypatch.setattr(native_toolchain, "_run_completed_command", optimize)
+    monkeypatch.setattr(
+        build_results, "_assert_native_binary_valid", validate_then_mutate
+    )
     monkeypatch.setattr(atomic_io, "_codesign_atomic_copy_temp", sign)
     assert (
         native_toolchain._run_bolt_post_link(
@@ -230,7 +239,7 @@ def test_bolt_source_rejection_reclaims_admitted_private_candidates(
     assert output.read_bytes() == b"previous public binary"
     assert selection_output.read_bytes() == b"previous public selection"
     assert not bolt_binary.exists() and not selection.exists()
-    assert signed and all(not stage.exists() for stage in signed)
+    assert staged and all(not stage.exists() for stage in staged)
     assert not original.exists() if owned_input else original == output
     assert unrelated.read_bytes() == b"retained"
 

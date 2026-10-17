@@ -232,18 +232,16 @@ def test_collect_cargo_native_link_deps_ignores_stale_inactive_build_outputs(
     assert "-llzma" not in link_flags
 
 
-def test_build_native_link_plan_includes_metal_frameworks_when_runtime_gpu_metal_enabled(
-    monkeypatch,
-    tmp_path: Path,
-) -> None:
-    monkeypatch.setenv("MOLT_RUNTIME_GPU_METAL", "1")
+def _darwin_native_link_plan(
+    monkeypatch, tmp_path: Path, *, driver: tuple[str, ...] = ("clang",)
+):
     target_triple = "aarch64-apple-darwin"
     # The plan's driver comes from host compiler discovery (zig or
-    # MOLT_CROSS_CC off macOS); this case checks only the framework flags.
+    # MOLT_CROSS_CC off macOS); these cases check only the planned flags.
     monkeypatch.setattr(
         native_link_command,
         "_build_native_link_driver_command",
-        lambda **kwargs: (["clang", "-target", target_triple], None, target_triple),
+        lambda **kwargs: ([*driver, "-target", target_triple], None, target_triple),
     )
     build_identity = native_runtime_staticlib_identity(
         cargo_profile="dev-fast",
@@ -277,10 +275,128 @@ def test_build_native_link_plan_includes_metal_frameworks_when_runtime_gpu_metal
         runtime_build_identity=build_identity,
         stdlib_obj_path=None,
     )
+    return plan, output_binary
+
+
+def test_build_native_link_plan_includes_metal_frameworks_when_runtime_gpu_metal_enabled(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setenv("MOLT_RUNTIME_GPU_METAL", "1")
+    plan, _output = _darwin_native_link_plan(monkeypatch, tmp_path)
 
     assert "-framework" in plan.command
     assert "Metal" in plan.command
     assert "-lobjc" in plan.command
+
+
+@pytest.mark.parametrize(
+    ("driver", "signs"),
+    [(("clang",), True), (("clang", "-fuse-ld=lld"), False), (("zig", "cc"), False)],
+)
+def test_only_apple_ld_is_told_the_published_name_of_its_stage(
+    monkeypatch, tmp_path: Path, driver: tuple[str, ...], signs: bool
+) -> None:
+    from molt.cli.native_link_plan import native_link_execution_command
+
+    plan, output = _darwin_native_link_plan(monkeypatch, tmp_path, driver=driver)
+    stage = output.with_name(".app.stage")
+    with native_link_execution_command(
+        plan, planned_output=output, execution_output=stage
+    ) as command:
+        # The stage replaces the -o operand; the signature still names the
+        # published binary.
+        assert command[command.index("-o") + 1] == str(stage)
+        if signs:
+            assert "-Wl,-adhoc_codesign" in command
+            final = command.index("-final_output")
+            assert command[final - 1] == command[final + 1] == "-Xlinker"
+            assert command[final + 2] == str(output)
+        else:
+            assert "-final_output" not in command
+            assert "-Wl,-adhoc_codesign" not in command
+
+
+@pytest.mark.skipif(
+    sys.platform != "darwin", reason="actual Apple ld and codesign oracle"
+)
+@pytest.mark.parametrize("arch", ["arm64", "x86_64"])
+def test_apple_ld_signs_a_private_stage_as_the_published_binary(
+    monkeypatch, tmp_path: Path, arch: str
+) -> None:
+    import platform
+
+    from molt import file_publication
+    from molt.cli import atomic_io, build_results
+    from molt.cli.native_link_plan import (
+        native_link_capabilities,
+        native_link_output_flags,
+    )
+    from molt.native_artifact_header import read_macho_code_signature
+
+    clang = shutil.which("clang")
+    if clang is None:
+        pytest.skip("clang is unavailable")
+    target = resolve_native_target_spec(
+        "aarch64-apple-darwin" if arch == "arm64" else "x86_64-apple-darwin"
+    )
+    flags = native_link_output_flags(
+        capabilities=native_link_capabilities(target=target, linker_hint=None),
+        output=tmp_path / "out" / "app",
+    )
+    output = tmp_path / "out" / "app"
+    output.parent.mkdir()
+    source = tmp_path / "main.c"
+    source.write_text("int main(void) { return 0; }\n", encoding="utf-8")
+    obj = tmp_path / "main.o"
+    run_cli_test_process(
+        [clang, "-arch", arch, "-c", str(source), "-o", str(obj)],
+        check=True,
+        timeout=60,
+    )
+    stages = [
+        file_publication.staged_file_path(output, purpose="native-link")
+        for _ in range(2)
+    ]
+    for stage in stages:
+        run_cli_test_process(
+            [clang, "-arch", arch, str(obj), "-o", str(stage), *flags],
+            check=True,
+            timeout=60,
+        )
+    # The stage name never reaches the published bytes.
+    assert stages[0].read_bytes() == stages[1].read_bytes()
+    signature = read_macho_code_signature(stages[0])
+    assert signature is not None
+    assert signature.identifier == "app"
+    assert signature.ad_hoc and signature.covers_image
+    # Apple's own decoder and verifier are the oracle for both.
+    described = run_cli_test_process(
+        ["codesign", "-dv", str(stages[0])], check=True, timeout=30
+    ).stderr
+    assert "Identifier=app\n" in described
+    assert f"flags=0x{signature.flags:x}(adhoc,linker-signed)" in described
+    assert f"hashes={signature.code_slots}+" in described
+    run_cli_test_process(
+        ["codesign", "--verify", "--strict", str(stages[0])], check=True, timeout=30
+    )
+
+    def no_codesign(*_args: object) -> None:
+        raise AssertionError("the linker signature already names the binary")
+
+    monkeypatch.setattr(atomic_io, "_codesign_atomic_copy_temp", no_codesign)
+    assert (
+        build_results._finalize_native_link_candidate(
+            candidate=stages[0],
+            output_binary=output,
+            target_triple=target.triple,
+            strip=False,
+        )
+        is None
+    )
+    stages[1].unlink()
+    if platform.machine() == arch:
+        run_cli_test_process([str(output)], check=True, timeout=10)
 
 
 def test_append_darwin_runtime_frameworks_skips_non_darwin_target() -> None:

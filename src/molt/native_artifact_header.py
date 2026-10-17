@@ -516,6 +516,133 @@ def _universal(reader: NativeReader, magic: bytes) -> NativeArtifact:
     return NativeArtifact(tuple(headers), universal=True)
 
 
+# Embedded code-signature layout from Apple's <kern/cs_blobs.h>; every blob
+# field is big-endian whatever the image byte order.
+_LC_CODE_SIGNATURE = 0x1D
+_CSMAGIC_EMBEDDED_SIGNATURE = 0xFADE0CC0
+_CSMAGIC_CODEDIRECTORY = 0xFADE0C02
+_CSSLOT_CODEDIRECTORY = 0
+_CS_ADHOC = 0x2
+_CS_SUPPORTSCODELIMIT64 = 0x20300
+
+
+@dataclass(frozen=True, slots=True)
+class MachOCodeSignature:
+    """One thin image's embedded code directory; a shape, not a trust claim."""
+
+    identifier: str
+    flags: int
+    code_limit: int
+    code_slots: int
+    page_size: int
+    signature_offset: int
+
+    @property
+    def ad_hoc(self) -> bool:
+        return bool(self.flags & _CS_ADHOC)
+
+    @property
+    def covers_image(self) -> bool:
+        """The page hashes span every byte before the signature itself."""
+        return self.code_limit == self.signature_offset and self.code_slots == -(
+            -self.code_limit // self.page_size
+        )
+
+
+def _macho_code_signature(
+    reader: NativeReader, header: NativeHeader
+) -> MachOCodeSignature | None:
+    assert isinstance(header.metadata, MachOHeader)
+    metadata = header.metadata
+    alignment = 8 if header.bits == 64 else 4
+    offset = metadata.header_size
+    end = offset + metadata.command_bytes
+    signature: tuple[int, int] | None = None
+    for _ in range(metadata.command_count):
+        command, size = struct.unpack(
+            header.endian + "II", reader.read(offset, 8, "Mach-O load command")
+        )
+        if size < 8 or size % alignment or size > end - offset:
+            raise NativeArtifactError("Mach-O load command size is invalid")
+        if command == _LC_CODE_SIGNATURE:
+            if size != 16 or signature is not None:
+                raise NativeArtifactError("Mach-O code-signature command is invalid")
+            signature = struct.unpack(
+                header.endian + "II",
+                reader.read(offset + 8, 8, "Mach-O code-signature command"),
+            )
+        offset += size
+    if signature is None:
+        return None
+    signature_offset, signature_size = signature
+    blob = reader.slice(signature_offset, signature_size, "Mach-O code signature")
+    magic, length, count = struct.unpack(
+        ">III", blob.read(0, 12, "code-signature superblob")
+    )
+    if magic != _CSMAGIC_EMBEDDED_SIGNATURE or not 12 + 8 * count <= length:
+        raise NativeArtifactError("Mach-O code-signature superblob is invalid")
+    blob = blob.slice(0, length, "code-signature superblob")
+    directories = [
+        blob_offset
+        for slot, blob_offset in (
+            struct.unpack(">II", blob.read(12 + 8 * index, 8, "code-signature index"))
+            for index in range(count)
+        )
+        if slot == _CSSLOT_CODEDIRECTORY
+    ]
+    if len(directories) != 1:
+        raise NativeArtifactError("Mach-O code signature has no single code directory")
+    directory = blob.slice(
+        directories[0], length - directories[0], "code directory extent"
+    )
+    fixed = directory.read(0, 44, "code directory")
+    (
+        magic,
+        length,
+        version,
+        flags,
+        _hash_offset,
+        identifier_offset,
+        _special_slots,
+        code_slots,
+        code_limit,
+        _hash_size,
+        _hash_type,
+        _platform,
+        page_shift,
+    ) = struct.unpack_from(">IIIIIIIIIBBBB", fixed)
+    if magic != _CSMAGIC_CODEDIRECTORY or not 1 <= page_shift <= 31:
+        raise NativeArtifactError("Mach-O code directory is invalid")
+    directory = directory.slice(0, length, "code directory")
+    if version >= _CS_SUPPORTSCODELIMIT64:
+        (code_limit64,) = struct.unpack(
+            ">Q", directory.read(56, 8, "code directory 64-bit code limit")
+        )
+        code_limit = code_limit64 or code_limit
+    if not identifier_offset < length:
+        raise NativeArtifactError("Mach-O code-directory identifier is out of range")
+    text = directory.read(
+        identifier_offset, length - identifier_offset, "code-directory identifier"
+    )
+    terminator = text.find(b"\0")
+    if terminator <= 0:
+        raise NativeArtifactError("Mach-O code-directory identifier is unterminated")
+    try:
+        identifier = text[:terminator].decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise NativeArtifactError(
+            "Mach-O code-directory identifier is not UTF-8"
+        ) from exc
+    return MachOCodeSignature(
+        identifier=identifier,
+        flags=flags,
+        code_limit=code_limit,
+        code_slots=code_slots,
+        page_size=1 << page_shift,
+        signature_offset=signature_offset,
+    )
+
+
 def decode_native_artifact(reader: NativeReader) -> NativeArtifact:
     magic = reader.read(0, 4, "native artifact magic")
     try:
@@ -542,7 +669,7 @@ def native_artifact_from_bytes(data: bytes) -> NativeArtifact:
     )
 
 
-def native_artifact_from_file(stream: BinaryIO) -> NativeArtifact:
+def _file_reader(stream: BinaryIO) -> NativeReader:
     metadata = os.fstat(stream.fileno())
     if not stat.S_ISREG(metadata.st_mode):
         raise NativeArtifactError("native artifact is not a regular file")
@@ -551,9 +678,35 @@ def native_artifact_from_file(stream: BinaryIO) -> NativeArtifact:
         stream.seek(offset)
         return stream.read(size)
 
-    return decode_native_artifact(NativeReader(metadata.st_size, read_at))
+    return NativeReader(metadata.st_size, read_at)
+
+
+def native_artifact_from_file(stream: BinaryIO) -> NativeArtifact:
+    return decode_native_artifact(_file_reader(stream))
 
 
 def read_native_artifact(path: Path) -> NativeArtifact:
     with path.open("rb") as stream:
         return native_artifact_from_file(stream)
+
+
+def macho_code_signature_from_bytes(data: bytes) -> MachOCodeSignature | None:
+    return _thin_macho_code_signature(
+        NativeReader(len(data), lambda offset, size: data[offset : offset + size])
+    )
+
+
+def read_macho_code_signature(path: Path) -> MachOCodeSignature | None:
+    """Decode a thin Mach-O image's embedded code directory; None if unsigned."""
+    with path.open("rb") as stream:
+        return _thin_macho_code_signature(_file_reader(stream))
+
+
+def _thin_macho_code_signature(reader: NativeReader) -> MachOCodeSignature | None:
+    artifact = decode_native_artifact(reader)
+    header = artifact.headers[0]
+    if artifact.universal or header.object_format is not NativeObjectFormat.MACHO:
+        raise NativeArtifactError(
+            "a code signature belongs to one thin Mach-O image, not this artifact"
+        )
+    return _macho_code_signature(reader, header)

@@ -453,3 +453,58 @@ def fat_macho(
         cursor = (len(image) + 255) & ~255
         image.extend(bytes(cursor - len(image)))
     return image
+
+
+def signed_macho_image(
+    identifier: str | None,
+    *,
+    cpu: int = 0x0100000C,
+    pages: int = 2,
+    flags: int = 0x20002,
+    code_slots: int | None = None,
+) -> bytearray:
+    """A thin Mach-O executable with one embedded code directory (cs_blobs.h).
+
+    ``identifier=None`` leaves the image unsigned. The hash slots stay zero:
+    callers test the signature's shape, not its page hashes.
+    """
+    signed = identifier is not None
+    image = macho_header(
+        cpu=cpu, command_count=int(signed), command_bytes=16 if signed else 0
+    )
+    code_limit = pages * 4096
+    image.extend(bytes(code_limit - len(image)))
+    if identifier is None:
+        return image
+    name = identifier.encode("utf-8") + b"\0"
+    slots = pages if code_slots is None else code_slots
+    # Version 0x20400 fixed fields end after execSegFlags, at byte 88.
+    hash_offset = 88 + len(name)
+    length = hash_offset + slots * 32
+    directory = bytearray(length)
+    struct.pack_into(
+        ">IIIIIIIIIBBBBI",
+        directory,
+        0,
+        0xFADE0C02,
+        length,
+        0x20400,
+        flags,
+        hash_offset,
+        88,
+        0,
+        slots,
+        code_limit,
+        32,
+        2,
+        0,
+        12,
+        0,
+    )
+    directory[88:hash_offset] = name
+    superblob = bytearray(20)
+    struct.pack_into(">IIIII", superblob, 0, 0xFADE0CC0, 20 + length, 1, 0, 20)
+    superblob.extend(directory)
+    struct.pack_into("<IIII", image, 32, 0x1D, 16, code_limit, len(superblob))
+    image.extend(superblob)
+    return image
