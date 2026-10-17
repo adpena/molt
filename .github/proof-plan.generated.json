@@ -369,7 +369,7 @@
     "tests/tools/test_win_job_contract.py",
     "tests/tools/test_windows_process_api.py"
   ],
-  "authority_sha256": "ac63a7c61372c96ff91ced74af93ac5937bf2177c29960c88fec71577a702262",
+  "authority_sha256": "562c379ee2c5614f3e604ff80a4cf37969701c96c9121b3b8ad386cdcc137ae6",
   "cargo_environment_policy": {
     "incident_command": "cargo metadata --locked --format-version 1",
     "incident_commit": "20b046b79bd4ca64a8c859f737f6e330377bcc4e",
@@ -8648,7 +8648,7 @@
           "local.heap-kind-lifetime-authority.0",
           "local.heap-kind-lifetime-authority.1"
         ],
-        "description": "Heap-kind IDs and lifetime descriptors stay synchronized across runtime, codegen ABI, runtime-core, and audit consumers.",
+        "description": "Heap-kind IDs and lifetime descriptors stay synchronized across runtime, codegen ABI, runtime-core, and Python consumers.",
         "gates": [
           "python tools/gen_heap_kinds.py --check",
           "python -m pytest -q tests/test_gen_heap_kinds.py"
@@ -8656,7 +8656,6 @@
         "globs": [
           "tools/gen_heap_kinds.py",
           "runtime/heap_kinds.toml",
-          "runtime/heap_kinds.generated.json",
           "runtime/molt-codegen-abi/src/heap_kinds_generated.rs",
           "runtime/molt-runtime-core/src/heap_kinds_generated.rs",
           "runtime/molt-runtime/src/object/heap_kinds_generated.rs",

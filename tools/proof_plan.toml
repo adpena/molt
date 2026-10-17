@@ -3838,11 +3838,10 @@ gates = [
 [[rule]]
 name = "heap-kind-lifetime-authority"
 toolchains = ["python", "rustfmt"]
-description = "Heap-kind IDs and lifetime descriptors stay synchronized across runtime, codegen ABI, runtime-core, and audit consumers."
+description = "Heap-kind IDs and lifetime descriptors stay synchronized across runtime, codegen ABI, runtime-core, and Python consumers."
 globs = [
   "tools/gen_heap_kinds.py",
   "runtime/heap_kinds.toml",
-  "runtime/heap_kinds.generated.json",
   "runtime/molt-codegen-abi/src/heap_kinds_generated.rs",
   "runtime/molt-runtime-core/src/heap_kinds_generated.rs",
   "runtime/molt-runtime/src/object/heap_kinds_generated.rs",

@@ -413,7 +413,7 @@ The inventory includes older and future Python 3 minor spellings, full eight-dig
 | `tools/fuzz_compiler_safe.py` | 2 | scattered-assumption | `3.12` |
 | `tools/gen_compat_platform_availability.py` | 11 | scattered-assumption | `3.12` |
 | `tools/gen_cpython_abi_layout.py` | 2 | scattered-assumption | `3.12` |
-| `tools/gen_cpython_coverage.py` | 14 | authority-routed | `version_info` |
+| `tools/gen_cpython_coverage.py` | 7 | authority-routed | `version_info` |
 | `tools/gen_cpython_type_slots.py` | 1 | scattered-assumption | `3.12` |
 | `tools/gen_diff_lanes.py` | 3 | operational-tooling | `3.12` |
 | `tools/gen_intrinsics.py` | 1 | scattered-assumption | `3.11` |

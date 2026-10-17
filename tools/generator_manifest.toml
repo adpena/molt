@@ -126,7 +126,6 @@ discovery_only = false
 [[generator]]
 tool = "tools/gen_cpython_coverage.py"
 outputs = [
-  "runtime/molt-cpython-abi/cpython_abi_coverage.generated.json",
   "docs/spec/areas/compat/surfaces/cpython_abi_coverage.generated.md",
   "docs/spec/areas/compat/surfaces/cpython_version_assumptions.generated.md",
 ]
@@ -158,7 +157,6 @@ outputs = [
   "runtime/molt-codegen-abi/src/heap_kinds_generated.rs",
   "runtime/molt-runtime-core/src/heap_kinds_generated.rs",
   "runtime/molt-runtime/src/object/heap_kinds_generated.rs",
-  "runtime/heap_kinds.generated.json",
   "src/molt/heap_kinds_generated.py",
 ]
 source = "runtime/heap_kinds.toml + tools/generator_io.py"

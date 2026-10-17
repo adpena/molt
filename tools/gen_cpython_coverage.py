@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 
-import json
 import re
 import tomllib
 from collections import Counter
@@ -26,7 +25,6 @@ _COMMANDS = CommandExecutor.for_file(__file__)
 ROOT = Path(__file__).resolve().parents[1]
 CONFIG = ROOT / "config" / "cpython_coverage.toml"
 STABLE_ABI = ROOT / "config" / "cpython_stable_abi_3_12.toml"
-MATRIX = ROOT / "runtime" / "molt-cpython-abi" / "cpython_abi_coverage.generated.json"
 DOC = (
     ROOT
     / "docs"
@@ -132,136 +130,71 @@ def _stability(symbol: str, stable_abi: set[str] | None = None) -> str:
     return "public-version-specific"
 
 
-def _surface(symbol: str, declaration: str) -> str:
-    if declaration.startswith("static"):
-        if symbol.endswith("Type") or symbol.endswith("_Type"):
-            return "type-object"
-        return "data"
-    return "function"
+# ABI surfaces that are not exported symbols (struct layouts, flag values and
+# module slots), each with its stability class.
+STRUCTURAL_SURFACES = (
+    ("PyObject.layout", "public-version-specific"),
+    ("PyTypeObject.layout", "public-version-specific"),
+    ("Py_TPFLAGS", "stable-values-version-specific-layout"),
+    ("PyModuleDef_Slot", "stable-abi"),
+    ("object-header.immortal-refcount", "private-representation"),
+)
 
 
-def coverage_complete(matrix_symbols: set[str], live_symbols: set[str]) -> bool:
-    return matrix_symbols == live_symbols
-
-
-def _exports() -> list[dict[str, object]]:
-    rows: dict[str, dict[str, object]] = {}
+def _export_stabilities() -> dict[str, str]:
+    """Each exported C symbol mapped to its stability class."""
     stable_abi = _stable_abi_symbols()
+    symbols: set[str] = set()
     for path in sorted((SOURCE_ROOT / "src").rglob("*.rs")):
         text = path.read_text(encoding="utf-8")
-        for match in DECL_PATTERN.finditer(text):
-            declaration = match.group(1)
-            symbol = match.group(2)
-            rows[symbol] = {
-                "symbol": symbol,
-                "surface": _surface(symbol, declaration),
-                "verified_at": "3.12",
-                "stability": _stability(symbol, stable_abi),
-                "source": path.relative_to(ROOT).as_posix(),
-            }
+        symbols.update(match.group(2) for match in DECL_PATTERN.finditer(text))
     exports_file = SOURCE_ROOT / "shims" / "pyarg_variadic.exports"
     for raw in exports_file.read_text(encoding="utf-8").splitlines():
         symbol = raw.strip()
         if symbol and not symbol.startswith("#"):
-            rows[symbol] = {
-                "symbol": symbol,
-                "surface": "function",
-                "verified_at": "3.12",
-                "stability": _stability(symbol, stable_abi),
-                "source": exports_file.relative_to(ROOT).as_posix(),
-            }
-    return [rows[name] for name in sorted(rows)]
+            symbols.add(symbol)
+    return {symbol: _stability(symbol, stable_abi) for symbol in sorted(symbols)}
 
 
-def _matrix(config: dict[str, object]) -> dict[str, object]:
-    divergences = list(config.get("divergence", []))
-    by_surface = {str(row["surface"]): row for row in divergences}
-    symbols = _exports()
-    for row in symbols:
-        divergence = by_surface.get(str(row["symbol"]))
-        if divergence:
-            row["known_divergence"] = divergence
-    structural = [
-        {
-            "symbol": "PyObject.layout",
-            "surface": "layout",
-            "verified_at": "3.12",
-            "stability": "version-specific-public",
-            "source": "runtime/molt-cpython-abi/src/abi_types.rs",
-        },
-        {
-            "symbol": "PyTypeObject.layout",
-            "surface": "layout",
-            "verified_at": "3.12",
-            "stability": "version-specific-public",
-            "source": "runtime/molt-cpython-abi/src/abi_types.rs",
-        },
-        {
-            "symbol": "Py_TPFLAGS",
-            "surface": "flags",
-            "verified_at": "3.12",
-            "stability": "stable-values-version-specific-layout",
-            "source": "runtime/molt-cpython-abi/include/Python.h",
-        },
-        {
-            "symbol": "PyModuleDef_Slot",
-            "surface": "module-slot",
-            "verified_at": "3.12",
-            "stability": "stable-abi",
-            "source": "runtime/molt-cpython-abi/include/Python.h",
-            "known_divergence": by_surface["PyModuleDef_Slot.Py_mod_gil"],
-        },
-        {
-            "symbol": "object-header.immortal-refcount",
-            "surface": "layout",
-            "verified_at": "3.12",
-            "stability": "private-representation",
-            "source": "runtime/molt-cpython-abi/src/abi_types.rs",
-            "known_divergence": by_surface["object-header.immortal-refcount"],
-        },
-    ]
-    counts = Counter(str(row["stability"]) for row in symbols + structural)
-    return {
-        "schema_version": 1,
-        "authority": "TargetPythonVersion",
-        "verified_tuples": config.get("verified", []),
-        "candidate_tuples": config.get("candidate", []),
-        "counts": {
-            "total": len(symbols) + len(structural),
-            **dict(sorted(counts.items())),
-        },
-        "symbols": symbols,
-        "structural_surfaces": structural,
-        "future_divergences": divergences,
-    }
-
-
-def _render_doc(matrix: dict[str, object]) -> str:
-    counts = matrix["counts"]
+def _render_doc(config: dict[str, object]) -> str:
+    counts = Counter(_export_stabilities().values())
+    counts.update(stability for _surface, stability in STRUCTURAL_SURFACES)
     lines = [
         "# CPython ABI Coverage (generated)",
         "",
-        "Generated by `tools/gen_cpython_coverage.py`; do not edit by hand.",
+        "Generated by `tools/gen_cpython_coverage.py` from "
+        "`config/cpython_coverage.toml`; do not edit by hand.",
         "",
         "## Verified boundary",
         "",
     ]
-    for row in matrix["verified_tuples"]:
+    for row in config.get("verified", []):
         lines.append(
             f"- CPython {row['cpython']} on {row['platform']}: {row['evidence']}"
         )
-    lines.extend(["", "## Counts", "", f"- Total surfaces: {counts['total']}"])
-    for key, value in counts.items():
-        if key != "total":
-            lines.append(f"- `{key}`: {value}")
+    lines.extend(["", "## Unverified candidates", ""])
+    for row in config.get("candidate", []):
+        lines.append(
+            f"- CPython {row['cpython']} on {row['platform']} ({row['status']}): "
+            f"{row['evidence']}"
+        )
+    lines.extend(["", "## Counts", "", f"- Total surfaces: {counts.total()}"])
+    for key, value in sorted(counts.items()):
+        lines.append(f"- `{key}`: {value}")
+    lines.extend(["", "## Known divergences in later CPython versions", ""])
+    for row in config.get("divergence", []):
+        lines.append(
+            f"- `{row['surface']}` (CPython {row['introduced']}): {row['summary']} "
+            f"Source: <{row['source']}>"
+        )
     lines.extend(
         [
             "",
             "## Contract",
             "",
-            "Every exported C symbol discovered from `#[unsafe(no_mangle)]` declarations and the variadic shim export list is present in the JSON matrix. Structural layout, flag, and module-slot surfaces are included separately. Public symbols are conservatively classified as version-specific unless a stronger stable-ABI contract is explicitly represented; `_Py*` is private and `PyUnstable_*` is unstable.",
+            "The counts cover every exported C symbol discovered from `#[unsafe(no_mangle)]` declarations and the variadic shim export list, plus the structural layout, flag, and module-slot surfaces. Public symbols are conservatively classified as version-specific unless a stronger stable-ABI contract is explicitly represented; `_Py*` is private and `PyUnstable_*` is unstable.",
             "",
-            "The matrix records 3.13/3.14 divergence surfaces for future work; it does not claim support for those versions.",
+            "The divergence list records 3.13/3.14 surfaces for future work; it does not claim support for those versions.",
         ]
     )
     return "\n".join(lines) + "\n"
@@ -355,10 +288,8 @@ def _audit(config: dict[str, object]) -> str:
 
 def _outputs(config: dict[str, object] | None = None) -> dict[Path, str]:
     resolved_config = _load_config() if config is None else config
-    matrix = _matrix(resolved_config)
     return {
-        MATRIX: json.dumps(matrix, indent=2, sort_keys=True) + "\n",
-        DOC: _render_doc(matrix),
+        DOC: _render_doc(resolved_config),
         AUDIT: _audit(resolved_config),
     }
 
