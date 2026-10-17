@@ -40,6 +40,7 @@ from molt.cli.native_link_plan import (
     NativeTargetSpec,
     native_link_capabilities,
     native_artifact_link_arguments,
+    native_link_output_flags,
     native_link_policy_flags,
     native_linker_name_from_driver_command,
     native_link_policy,
@@ -384,6 +385,9 @@ def _build_native_link_plan(
                 str(output_binary),
             ]
         )
+    link_inputs.extend(
+        native_link_output_flags(capabilities=capabilities, output=output_binary)
+    )
     link_cmd.extend(link_inputs)
     sidecars: list[NativeLinkSidecar] = []
 

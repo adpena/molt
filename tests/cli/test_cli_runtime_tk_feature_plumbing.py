@@ -657,6 +657,8 @@ def test_prepare_native_link_preserves_codegen_runtime_for_stdlib_profile(
                 linker=NativeLinkerKind.SYSTEM,
                 object_format=selected_target.object_format,
                 explicit_no_icf_flag=None,
+                # The fake command passes no -final_output flag.
+                signs_as_final_output=False,
             ),
             command=("clang", str(runtime_lib), "-o", str(output_binary)),
             runtime_inputs=read_native_link_flags(

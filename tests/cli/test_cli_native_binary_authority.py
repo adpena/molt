@@ -207,15 +207,15 @@ def test_actual_native_finalization_consumer_rejects_before_publication(
     assert {"strip_wall_ns", "validate_wall_ns", "publish_wall_ns"} <= timings.keys()
     assert all(value >= 0 for value in timings.values())
     assert not selection.exists()
+    # An ELF image carries no code signature, whatever the host.
+    assert published == []
     if valid:
         assert error is None
-        assert len(published) == 1 and published[0] != output
         assert output.read_bytes() == payload
         assert not candidate.exists()
         assert selection_output.read_bytes() == b"new-selection"
     else:
         assert "native candidate validation failed" in error
-        assert len(published) == 1 and published[0] != output
         assert output.read_bytes() == b"previous-generation"
         # A rejected private candidate is discarded like a published one; the
         # error carries the diagnosis, and no staging binary leaks.
