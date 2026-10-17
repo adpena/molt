@@ -1277,8 +1277,7 @@ pub extern "C" fn molt_string_join(sep_bits: u64, items_bits: u64) -> u64 {
                 std::ptr::copy_nonoverlapping(part.data, cursor, part.len);
                 cursor = cursor.add(part.len);
             }
-            let out_bits = MoltObject::from_ptr(out_ptr).bits();
-            out_bits
+            MoltObject::from_ptr(out_ptr).bits()
         }
     })
 }

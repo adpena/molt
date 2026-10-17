@@ -409,12 +409,11 @@ fn file_seek(_py: &PyToken<'_>, handle_bits: u64, offset_bits: u64, whence_bits:
         {
             return buffered_writer::seek(_py, handle_bits, ptr, offset_bits, whence_bits);
         }
-        if crate::builtins::numbers::index_i64_integral_bits(offset_bits).is_none()
-            || crate::builtins::numbers::index_i64_integral_bits(whence_bits).is_none()
+        if (crate::builtins::numbers::index_i64_integral_bits(offset_bits).is_none()
+            || crate::builtins::numbers::index_i64_integral_bits(whence_bits).is_none())
+            && let Err(error) = buffered::prepare_conversion(_py, ptr)
         {
-            if let Err(error) = buffered::prepare_conversion(_py, ptr) {
-                return error;
-            }
+            return error;
         }
         if let Err(error) = buffered::prepare(_py, ptr, &[b"seekable", b"write", b"seek"], false) {
             return error;
@@ -836,10 +835,9 @@ pub extern "C" fn molt_file_truncate(handle_bits: u64, size_bits: u64) -> u64 {
             }
             if !obj_from_bits(size_bits).is_none()
                 && crate::builtins::numbers::index_i64_integral_bits(size_bits).is_none()
+                && let Err(error) = buffered::prepare_conversion(_py, ptr)
             {
-                if let Err(error) = buffered::prepare_conversion(_py, ptr) {
-                    return error;
-                }
+                return error;
             }
             if let Err(error) =
                 buffered::prepare(_py, ptr, &[b"write", b"truncate", b"tell"], false)

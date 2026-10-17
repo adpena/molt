@@ -45,6 +45,7 @@ Hazard -> proving test(s):
 from __future__ import annotations
 
 import json
+import re
 import shlex
 import shutil
 import os
@@ -512,6 +513,42 @@ def test_committed_gate_manifest_is_valid(drv):
     assert "wasm-host" in names
 
 
+def test_selected_rules_run_their_pytest_targets_in_one_invocation(drv):
+    source = """
+local_pytest_workers = 3
+always = ["python tools/check_a.py"]
+[[rule]]
+name = "first"
+globs = ["src/a/**"]
+gates = ["python tools/check_first.py"]
+pytest = ["tests/test_a.py", "tests/test_shared.py"]
+toolchains = ["python"]
+[[rule]]
+name = "second"
+globs = ["src/b/**"]
+gates = ["cargo test -p b"]
+pytest = ["tests/test_shared.py", "tests/test_b.py::test_one"]
+toolchains = ["python"]
+[[rule]]
+name = "unmatched"
+globs = ["src/c/**"]
+gates = []
+pytest = ["tests/test_c.py"]
+toolchains = ["python"]
+"""
+    cfg = drv.GateConfig.parse(source, "merged pytest fixture")
+    gates, matched = cfg.select(["src/a/x.py", "src/b/y.py"])
+    assert [rule.name for rule in matched] == ["first", "second"]
+    # One pytest run at the first contributing rule's place, each target once.
+    assert gates == [
+        "python tools/check_a.py",
+        "python tools/check_first.py",
+        "python -m pytest -q -n 3 tests/test_a.py tests/test_shared.py "
+        "tests/test_b.py::test_one",
+        "cargo test -p b",
+    ]
+
+
 @pytest.mark.parametrize(
     "path",
     [
@@ -620,7 +657,10 @@ def test_committed_gate_manifest_selects_tir_midend_ratchet(drv, path):
     cfg = drv.GateConfig.load(COMMITTED_GATES)
     gates, matched = cfg.select([path])
     if not path.startswith("runtime/molt-backend-wasm/"):
-        assert [r.name for r in matched] == ["tir-midend"]
+        assert [r.name for r in matched] == [
+            "rust-clippy-changed",
+            "tir-midend",
+        ]
     rule = next(rule for rule in matched if rule.name == "tir-midend")
     assert set(rule.gates) <= set(gates)
     cargo = [shlex.split(gate) for gate in rule.gates]
@@ -647,19 +687,15 @@ def test_committed_gate_manifest_selects_tir_midend_ratchet(drv, path):
 )
 def test_committed_native_policy_includes_owning_crate(drv, path):
     cfg = drv.GateConfig.load(COMMITTED_GATES)
-    _, matched = cfg.select([path])
+    gates, matched = cfg.select([path])
     rule = next(rule for rule in matched if rule.name == "backend-native")
-    clippy, tests = [shlex.split(gate) for gate in rule.gates]
-    for command in (clippy, tests):
-        packages = {command[i + 1] for i, token in enumerate(command) if token == "-p"}
-        assert packages == {
-            "molt-backend",
-            "molt-backend-native",
-            "molt-artifact-publish",
-        }
-        assert "--locked" in command
-        assert command[command.index("--features") + 1] == "molt-backend/native-backend"
-    assert clippy[1] == "clippy" and clippy[-3:] == ["--", "-D", "warnings"]
+    (tests,) = [shlex.split(gate) for gate in rule.gates]
+    packages = {tests[i + 1] for i, token in enumerate(tests) if token == "-p"}
+    assert packages == {"molt-backend", "molt-backend-native", "molt-artifact-publish"}
+    assert "--locked" in tests
+    assert tests[tests.index("--features") + 1] == "molt-backend/native-backend"
+    # Clippy for these crates is the changed-crate gate's plan cells.
+    assert "python tools/check_changed_clippy.py --base origin/main" in gates
     assert tests[1] == "test" and "--lib" in tests and "--no-fail-fast" in tests
     assert tests[tests.index("--profile") + 1] == "release-fast"
 
@@ -684,7 +720,10 @@ def test_committed_source_checks_precede_complete_native_build_selection(drv):
         "ci-wiring",
     }
     build_names = ["backend-native", "native-object-emission", "tir-midend"]
-    assert {rule.name for rule in matched} == source_names | set(build_names)
+    lint_gate = "python tools/check_changed_clippy.py --base origin/main"
+    assert {rule.name for rule in matched} == source_names | set(build_names) | {
+        "rust-clippy-changed"
+    }
     source_rules = [rule for rule in matched if rule.name in source_names]
     build_rules = [rule for rule in matched if rule.name in build_names]
     assert [rule.name for rule in build_rules] == build_names
@@ -693,9 +732,9 @@ def test_committed_source_checks_precede_complete_native_build_selection(drv):
     assert source_gates <= set(gates)
     assert set(build_gates) <= set(gates)
     assert gates[: len(cfg.always)] == cfg.always
-    assert max(gates.index(gate) for gate in source_gates) < min(
-        gates.index(gate) for gate in build_gates
-    )
+    # Clippy fails a lint after the source checks and before any build.
+    assert max(gates.index(gate) for gate in source_gates) < gates.index(lint_gate)
+    assert gates.index(lint_gate) < min(gates.index(gate) for gate in build_gates)
     assert gates[-len(build_gates) :] == build_gates
     assert len(gates) == len(set(gates))
 
@@ -709,7 +748,11 @@ def test_committed_gate_manifest_selects_molt_ir_op_kind_registry(drv):
     assert "python tools/audit_op_kinds.py --check" in gates
 
     gates, matched = cfg.select(["runtime/molt-ir/src/tir/op_kinds.toml"])
-    assert [r.name for r in matched] == ["op-kind-registry", "tir-midend"]
+    assert [r.name for r in matched] == [
+        "op-kind-registry",
+        "rust-clippy-changed",
+        "tir-midend",
+    ]
     assert "python tools/gen_op_kinds.py --check" in gates
     assert "python tools/audit_op_kinds.py --check" in gates
 
@@ -722,7 +765,11 @@ def test_committed_gate_manifest_selects_backend_native_llvm(drv):
         ]
     )
 
-    assert [r.name for r in matched] == ["op-kind-registry", "backend-llvm"]
+    assert [r.name for r in matched] == [
+        "op-kind-registry",
+        "rust-clippy-changed",
+        "backend-llvm",
+    ]
     assert (
         "cargo test --locked --profile release-fast -p molt-backend-native"
         " -p molt-backend --features molt-backend/native-backend,molt-backend/llvm"
@@ -735,9 +782,13 @@ def test_committed_gate_manifest_selects_codec_table_registry(drv):
     cfg = drv.GateConfig.load(COMMITTED_GATES)
     gates, matched = cfg.select(["runtime/molt-stdlib-text/src/codec_registry.rs"])
 
-    assert [r.name for r in matched] == ["codec-tables"]
+    assert [r.name for r in matched] == [
+        "codec-tables",
+        "rust-clippy-changed",
+    ]
     assert "python tools/gen_codecs.py --check" in gates
-    assert "python -m pytest -q tests/test_gen_codecs.py" in gates
+    merged = next(gate for gate in gates if gate.startswith("python -m pytest"))
+    assert "tests/test_gen_codecs.py" in shlex.split(merged)
 
     gates, matched = cfg.select(["src/molt/stdlib/encodings/cp1252.py"])
     assert "codec-tables" in {r.name for r in matched}
@@ -746,27 +797,38 @@ def test_committed_gate_manifest_selects_codec_table_registry(drv):
     gates, matched = cfg.select(
         ["runtime/molt-stdlib-text/src/codec_aliases_generated.rs"]
     )
-    assert [r.name for r in matched] == ["codec-tables"]
+    assert [r.name for r in matched] == [
+        "codec-tables",
+        "rust-clippy-changed",
+    ]
     assert "python tools/gen_codecs.py --check" in gates
 
     gates, matched = cfg.select(
         ["runtime/molt-stdlib-text/src/charmap_codecs_generated.rs"]
     )
-    assert [r.name for r in matched] == ["codec-tables"]
+    assert [r.name for r in matched] == [
+        "codec-tables",
+        "rust-clippy-changed",
+    ]
     assert "python tools/gen_codecs.py --check" in gates
 
     gates, matched = cfg.select(["runtime/molt-runtime/src/object/ops_encoding.rs"])
     assert "codec-tables" in {r.name for r in matched}
     assert "python tools/gen_codecs.py --check" in gates
-    assert "python -m pytest -q tests/test_gen_codecs.py" in gates
+    merged = next(gate for gate in gates if gate.startswith("python -m pytest"))
+    assert "tests/test_gen_codecs.py" in shlex.split(merged)
 
 
 def test_committed_gate_manifest_selects_wasm_host_ratchet(drv):
     cfg = drv.GateConfig.load(COMMITTED_GATES)
     gates, matched = cfg.select(["runtime/molt-wasm-host/src/main.rs"])
 
-    assert [r.name for r in matched] == ["wasm-host"]
-    assert "cargo clippy --locked -p molt-wasm-host -- -D warnings" in gates
+    assert [r.name for r in matched] == [
+        "rust-clippy-changed",
+        "wasm-host",
+    ]
+    # Clippy for every reached crate belongs to the changed-crate gate.
+    assert "python tools/check_changed_clippy.py --base origin/main" in gates
     assert "cargo build --locked --profile release-fast -p molt-wasm-host" in gates
 
 
@@ -1405,7 +1467,7 @@ gates = ["echo build-started > build-started.txt"]
     # A failing gate halts integrate LOUDLY (DriverError) BEFORE push.
     with pytest.raises(drv.DriverError) as exc:
         drv.cmd_integrate(ns)
-    assert "gate failed (exit 3): exit 3" in str(exc.value)
+    assert re.search(r"gate failed \(exit 3\) after \d+\.\d s: exit 3", str(exc.value))
     assert not (work / "build-started.txt").exists()
     # Nothing was pushed (origin unchanged).
     origin_main = _git(work, "rev-parse", "origin/main").stdout.strip()
@@ -1742,6 +1804,18 @@ def test_integrate_gates_build_into_the_checkouts_cargo_target(
         }
         assert target == str(project_cargo_target_dir(work.resolve(), without))
         assert not Path(target).is_relative_to(work.resolve())
+
+
+def test_gate_time_summary_names_the_total_and_the_slowest_gates(drv):
+    summary = drv.gate_time_summary(
+        [(1.0, "ruff"), (612.25, "pytest serial"), (3.5, "clippy"), (40.0, "cargo")],
+        top=2,
+    )
+    assert summary.splitlines() == [
+        "    gates: 4 in 656.8 s; slowest:",
+        "        612.2 s  pytest serial",
+        "         40.0 s  cargo",
+    ]
 
 
 def test_integrate_dry_run_never_resolves_or_acquires_integration_lock(

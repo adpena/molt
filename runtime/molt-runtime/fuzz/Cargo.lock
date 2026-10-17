@@ -1053,10 +1053,12 @@ dependencies = [
 name = "molt-runtime-platform"
 version = "0.1.0"
 dependencies = [
+ "cc",
  "digest",
  "getrandom 0.4.3",
  "libc",
  "md-5",
+ "object",
  "sha1",
 ]
 
@@ -1256,6 +1258,15 @@ dependencies = [
  "objc2",
  "objc2-core-foundation",
  "objc2-foundation",
+]
+
+[[package]]
+name = "object"
+version = "0.39.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2e5a6c098c7a3b6547378093f5cc30bc54fd361ce711e05293a5cc589562739b"
+dependencies = [
+ "memchr",
 ]
 
 [[package]]

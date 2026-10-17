@@ -7,7 +7,9 @@ const XZ_MEMBER: &str = "fd377a585a000004e6d6b446020021010c0000008f98419ce004180
 const ALONE_MEMBER: &str = "5d00000400ffffffffffffffff00319bc8b0567f59bfde125ea5e4a89ff47cbf6edfd1d37e270e5238ddfd9246b9a4fae6a6dcc27250e0543d0ac5452549c934efb95e3ddd11421a82de9d89379b4038349c1be57d40c9ea859570fef3020c6bec83dee7a5bfd4afab3c6e434572f797470fcd7f391c944b09332c9d293131b1094be00125d7b76866b818ca21ade1b8b6fad33849a23c61aee6a7b88a1df8908f877a103dbc10e4f618190f3840eee76c1abd1f971d7792157c03c13d1551b7cae77f39251b42197a52dec76550123ab6897f7facf4f1a79ea499c4e5dc3f8950f9ba74ea155531df5130596ca139165c8e66de230c2025423af6429fd1924da341591033470fa9555bb6afea427f97bb174a77a9f7ffffb8bc6a00";
 fn fixture(hex: &str) -> Vec<u8> {
     hex.as_bytes()
-        .chunks_exact(2)
+        .as_chunks::<2>()
+        .0
+        .iter()
         .map(|pair| u8::from_str_radix(std::str::from_utf8(pair).unwrap(), 16).unwrap())
         .collect()
 }

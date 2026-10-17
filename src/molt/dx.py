@@ -1854,16 +1854,20 @@ class RunContext:
         elif session_pinned:
             env.pop("MOLT_SESSION_ID_GENERATED", None)
         target_session_id = env["MOLT_SESSION_ID"] if session_pinned else None
-        install_default(
-            "CARGO_TARGET_DIR",
-            cargo_target_dir_for_artifact_root(
-                ext_root, target_session_id, source_root=self.root
-            ),
+        session_target = cargo_target_dir_for_artifact_root(
+            ext_root, target_session_id, source_root=self.root
         )
-        if create_dirs and target_session_id is not None:
+        install_default("CARGO_TARGET_DIR", session_target)
+        if (
+            create_dirs
+            and target_session_id is not None
+            and env["CARGO_TARGET_DIR"] == str(session_target)
+        ):
             # This is an ISOLATED per-lane target dir; register it so a completed
             # lane's dir is TTL-garbage-collected without a manual rm (item 4).
-            _maybe_register_lane_target(Path(ext_root), Path(env["CARGO_TARGET_DIR"]))
+            # A caller's own target (explicit CARGO_TARGET_DIR) is never a lane:
+            # registering it would let the collector delete a persistent target.
+            _maybe_register_lane_target(Path(ext_root), session_target)
         install_default("MOLT_DIFF_CARGO_TARGET_DIR", env["CARGO_TARGET_DIR"])
         # Incremental ON by default (fast warm rebuilds against the persistent
         # per-checkout CARGO_TARGET_DIR above). _ensure_sccache_wrapper forces

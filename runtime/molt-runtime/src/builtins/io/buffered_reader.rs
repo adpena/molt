@@ -124,11 +124,11 @@ unsafe fn raw_read<T: ?Sized>(
         };
         let previous = crate::builtins::exceptions::take_raised(py);
         raise_exception::<u64>(py, "OSError", "raw readinto() failed");
-        if let RaisedSnapshot::Thread(prior) | RaisedSnapshot::Task(_, prior) = previous {
-            if let Some(current) = crate::builtins::exceptions::exception_last_bits_noinc(py) {
-                exception_replace_field_bits(py, current, ExceptionFieldSlot::Cause, prior)
-                    .expect("IO conversion error admits its cause");
-            }
+        if let RaisedSnapshot::Thread(prior) | RaisedSnapshot::Task(_, prior) = previous
+            && let Some(current) = crate::builtins::exceptions::exception_last_bits_noinc(py)
+        {
+            exception_replace_field_bits(py, current, ExceptionFieldSlot::Cause, prior)
+                .expect("IO conversion error admits its cause");
         }
         io_chain_close_error(py, previous);
         return Err(MoltObject::none().bits());
@@ -414,12 +414,11 @@ pub(super) unsafe fn read(
             result
         } else {
             let result = unsafe { fill(py, pointer, raw.bits()) };
-            if let Ok(RawRead::Count(count)) = result {
-                if count != 0 {
-                    if let Err(error) = unsafe { consume(py, pointer, &mut output, remaining) } {
-                        return error;
-                    }
-                }
+            if let Ok(RawRead::Count(count)) = result
+                && count != 0
+                && let Err(error) = unsafe { consume(py, pointer, &mut output, remaining) }
+            {
+                return error;
             }
             result
         };

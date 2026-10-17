@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import ast
 import json
+from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
 import re
@@ -167,6 +168,19 @@ _MOLT_COMPATIBILITY_ERROR = _require_intrinsic("molt_compatibility_error")
     )
     + "\n\ndel _require_intrinsic\n"
 )
+
+
+def _minor_pattern(versions: Iterable[str]) -> str:
+    """The Rust match pattern for a set of 3.x target minors.
+
+    A contiguous run of three or more renders as an inclusive range, the form
+    clippy::manual_range_patterns requires; any other set stays an OR pattern.
+    """
+    minors = [int(version.split(".")[1]) for version in versions]
+    if len(minors) > 2 and sorted(minors) == list(range(min(minors), max(minors) + 1)):
+        return f"{min(minors)}..={max(minors)}"
+    return " | ".join(str(minor) for minor in minors)
+
 
 RUST_SOURCE = (
     """// CPython compatibility outcomes projected by tools/compatibility_error_protocol.py.
@@ -374,13 +388,11 @@ mod tests {
 }
 """.replace(
         "__RAW_IO_MINORS__",
-        " | ".join(
-            version.split(".")[1] for version in OUTCOMES["RawIoBaseReadinto"].versions
-        ),
+        _minor_pattern(OUTCOMES["RawIoBaseReadinto"].versions),
     )
     .replace(
         "__COMMON_MINORS__",
-        " | ".join(version.split(".")[1] for version in TARGETS),
+        _minor_pattern(TARGETS),
     )
     .replace(
         "__ARMS__",

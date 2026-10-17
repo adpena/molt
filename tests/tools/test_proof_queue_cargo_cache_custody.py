@@ -2283,7 +2283,6 @@ def test_python_driver_output_roles_survive_acquisition_and_parent_validation(
         MOLT_PROOF_SCRATCH_ROOT=str(scratch),
         MOLT_DIFF_ROOT=receipts,
         MOLT_DIFF_CARGO_TARGET_DIR="old-diff-target",
-        MOLT_WASM_TEST_CARGO_TARGET_DIR="old-wasm-target",
         MOLT_DIFF_TMPDIR="old-diff-scratch",
         MOLT_COMPAT_SCRATCH_ROOT="old-compat-scratch",
     )
@@ -2292,7 +2291,6 @@ def test_python_driver_output_roles_survive_acquisition_and_parent_validation(
         bound = lease.environment
         assert bound["CARGO_TARGET_DIR"] == str(lease.target)
         assert bound["MOLT_DIFF_CARGO_TARGET_DIR"] == str(lease.target)
-        assert bound["MOLT_WASM_TEST_CARGO_TARGET_DIR"] == str(lease.target)
         assert bound["MOLT_DIFF_TMPDIR"] == str(scratch)
         assert bound["MOLT_COMPAT_SCRATCH_ROOT"] == str(scratch)
         assert bound["MOLT_DIFF_ROOT"] == receipts
@@ -2316,7 +2314,6 @@ def test_python_driver_output_roles_survive_acquisition_and_parent_validation(
             **inputs["env"],
             "MOLT_PROOF_SCRATCH_ROOT": str(tmp_path / "other-proof-nonce"),
             "MOLT_DIFF_CARGO_TARGET_DIR": "different-diff-target",
-            "MOLT_WASM_TEST_CARGO_TARGET_DIR": "different-wasm-target",
             "MOLT_DIFF_TMPDIR": "different-diff-scratch",
             "MOLT_COMPAT_SCRATCH_ROOT": "different-compat-scratch",
         }
@@ -2355,7 +2352,6 @@ def test_python_driver_output_roles_survive_acquisition_and_parent_validation(
         validate(final)
         for name in (
             "MOLT_DIFF_CARGO_TARGET_DIR",
-            "MOLT_WASM_TEST_CARGO_TARGET_DIR",
             "MOLT_DIFF_TMPDIR",
             "MOLT_COMPAT_SCRATCH_ROOT",
         ):

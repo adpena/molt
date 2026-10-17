@@ -246,7 +246,7 @@ pub(super) unsafe fn file_handle_raw_bits(py: &PyToken<'_>, object: *mut u8) -> 
         }
         let (state, readable, writable, closefd, name, mode, memory) = {
             let handle = &*pointer;
-            if (handle.attachment == crate::object::FileAttachment::Detached) {
+            if handle.attachment == crate::object::FileAttachment::Detached {
                 return Some(MoltObject::none().bits());
             }
             if handle.buffer_bits != 0 && !obj_from_bits(handle.buffer_bits).is_none() {
@@ -377,7 +377,7 @@ pub(crate) fn file_handle_require_attached(
             "I/O operation on uninitialized object",
         ));
     }
-    if (handle.attachment == crate::object::FileAttachment::Detached) {
+    if handle.attachment == crate::object::FileAttachment::Detached {
         Err(raise_exception::<u64>(
             _py,
             "ValueError",

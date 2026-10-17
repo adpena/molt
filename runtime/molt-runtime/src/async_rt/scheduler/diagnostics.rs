@@ -4,7 +4,7 @@ use crate::{
     ASYNC_PENDING_COUNT, ASYNC_POLL_COUNT, header_from_obj_ptr, profile_hit, runtime_state,
 };
 use std::collections::HashMap;
-use std::sync::{Mutex, OnceLock};
+use std::sync::Mutex;
 
 #[inline]
 pub(super) fn debug_current_task() -> bool {

@@ -415,6 +415,13 @@ _REGISTRY_JSON = r"""{
       "retired": "2026-10-14"
     },
     {
+      "name": "MOLT_WASM_TEST_CARGO_TARGET_DIR",
+      "note": "set CARGO_TARGET_DIR: WASM tests build into, and find molt-wasm-host in, the checkout's persistent target (molt.dx.project_cargo_target_dir)",
+      "rejected_by": [],
+      "replacement": "",
+      "retired": "2026-10-17"
+    },
+    {
       "name": "MOLT_WIRE",
       "note": "",
       "rejected_by": [],
@@ -8490,21 +8497,11 @@ _REGISTRY_JSON = r"""{
     {
       "audience": "developer",
       "default": "",
-      "kind": "path",
-      "name": "MOLT_WASM_TEST_CARGO_TARGET_DIR",
-      "output_neutral": false,
-      "owner": "tests/wasm_linked_runner.py",
-      "summary": "Cargo target directory for the linked wasm parity tests' molt-wasm-host lookup and wasm test builds; when unset the tests use <MOLT_EXT_ROOT>/target when external artifacts are allowed, else target/pytest_wasm/<lane> under the repository, tools/disk_guard.py never reclaims it, and the wasm CI workflow sets it to the session target directory. Admitted Python Cargo proofs bind it to the leased Cargo generation for both host lookup and builds.",
-      "values": []
-    },
-    {
-      "audience": "developer",
-      "default": "",
       "kind": "string",
       "name": "MOLT_WASM_TEST_LANE",
       "output_neutral": false,
       "owner": "tests/wasm_linked_runner.py",
-      "summary": "Lane name that isolates WASM test artifacts: tests/wasm_linked_runner.py uses it as the directory name under target/pytest_wasm and inside generated session ids, and when unset it uses worker_<PYTEST_XDIST_WORKER> under pytest-xdist and local otherwise.",
+      "summary": "Lane name inside the build session ids that tests/wasm_linked_runner.py pins for WASM test builds; when unset it uses worker_<PYTEST_XDIST_WORKER> under pytest-xdist and local otherwise. It never selects the Cargo target: every lane of one checkout builds into that checkout's persistent target.",
       "values": []
     },
     {
@@ -8514,7 +8511,7 @@ _REGISTRY_JSON = r"""{
       "name": "MOLT_WASM_TEST_USE_EXTERNAL",
       "output_neutral": false,
       "owner": "tests/wasm_linked_runner.py",
-      "summary": "Lets the linked wasm parity tests place build outputs and the cargo target directory under the external artifact root when it differs from the repository; unset or any value other than 0, false, no, or off (case-insensitive) allows it, and the wasm CI workflow sets it to 1.",
+      "summary": "Lets the linked wasm parity tests place build outputs under the external artifact root when it differs from the repository; unset or any value other than 0, false, no, or off (case-insensitive) allows it, and the wasm CI workflow sets it to 1. The Cargo target is always the checkout's persistent target (molt.dx.project_cargo_target_dir).",
       "values": []
     },
     {

@@ -190,7 +190,8 @@ pub extern "C" fn molt_zlib_decompress(
 pub(crate) enum ZlibFailure {
     Memory,
     Initialization(i32),
-    Stream(i32, Option<ZlibMessage>),
+    // Boxed so the cold message keeps every Result<_, ZlibFailure> small.
+    Stream(i32, Option<Box<ZlibMessage>>),
 }
 
 impl ZlibFailure {
@@ -198,7 +199,7 @@ impl ZlibFailure {
         match self {
             Self::Memory => "out of memory".to_owned(),
             Self::Initialization(code) => zlib_error_message(*code, None, phase),
-            Self::Stream(code, message) => zlib_error_message(*code, message.as_ref(), phase),
+            Self::Stream(code, message) => zlib_error_message(*code, message.as_deref(), phase),
         }
     }
 }
@@ -223,8 +224,11 @@ pub(crate) fn compress_bytes(input: &[u8], level: i32, wbits: i32) -> Result<Vec
         .map_err(|_| ZlibFailure::Memory)?;
     match result.status {
         Ok(ZlibStatus::StreamEnd) => Ok(result.output),
-        Err(code) => Err(ZlibFailure::Stream(code, result.message)),
-        Ok(_) => Err(ZlibFailure::Stream(zlib::Z_BUF_ERROR, result.message)),
+        Err(code) => Err(ZlibFailure::Stream(code, result.message.map(Box::new))),
+        Ok(_) => Err(ZlibFailure::Stream(
+            zlib::Z_BUF_ERROR,
+            result.message.map(Box::new),
+        )),
     }
 }
 
@@ -256,8 +260,11 @@ pub(crate) fn decompress_bytes(
     match result.status {
         Ok(ZlibStatus::StreamEnd) => Ok(result.output),
         Err(zlib::Z_MEM_ERROR) => Err(ZlibFailure::Memory),
-        Err(code) => Err(ZlibFailure::Stream(code, result.message)),
-        Ok(_) => Err(ZlibFailure::Stream(zlib::Z_BUF_ERROR, result.message)),
+        Err(code) => Err(ZlibFailure::Stream(code, result.message.map(Box::new))),
+        Ok(_) => Err(ZlibFailure::Stream(
+            zlib::Z_BUF_ERROR,
+            result.message.map(Box::new),
+        )),
     }
 }
 
@@ -610,7 +617,7 @@ impl CompressorHandle {
                 });
             }
             if output.len() == size {
-                size = size.checked_mul(2).unwrap_or(usize::MAX);
+                size = size.saturating_mul(2);
             }
         }
     }

@@ -14,6 +14,7 @@ import subprocess
 import sys
 import threading
 import time
+import tomllib
 from typing import Any
 from types import SimpleNamespace
 
@@ -33,6 +34,7 @@ from tools import (
     proof_receipts,
     toolchain_probe,
 )
+from tools.dependency_manifests import cargo_workspace_dirs
 from tools.proof_queue_pkg import command_admission, supervisor_custody
 from tools.proof_queue_pkg import custody as proof_queue_custody
 from tools.proof_queue_pkg import evidence as proof_queue_evidence
@@ -357,7 +359,41 @@ def test_generated_local_dx_projection_has_stable_command_ids() -> None:
     projected = next(rule for rule in local["rules"] if rule["name"] == first["name"])
     assert projected["command_ids"] == [
         f"local.{first['name']}.{index}" for index, _ in enumerate(first["gates"])
+    ] + ([f"local.{first['name']}.pytest"] if first.get("pytest") else [])
+    assert local["pytest_workers"] == PLAN.local_pytest_workers > 0
+
+
+@pytest.mark.parametrize(
+    "target,message",
+    [
+        ("-k fast", "must be a tests/ path"),
+        ("src/molt/dx.py", "must be a tests/ path"),
+        ("tests/no_such_test_file.py", "does not exist"),
+    ],
+)
+def test_local_pytest_targets_are_existing_test_paths(target, message) -> None:
+    first, *rest = PLAN.local_rules
+    invalid = {**first, "pytest": [target]}
+    errors = replace(PLAN, local_rules=(invalid, *rest)).validate()
+    assert any(message in error and target in error for error in errors), errors
+
+
+def test_local_pytest_targets_project_one_command_per_rule() -> None:
+    rule = next(rule for rule in PLAN.local_rules if rule.get("pytest"))
+    commands = proof_plan.local_gate_commands(
+        {"rule": [rule], "local_pytest_workers": PLAN.local_pytest_workers}
+    )
+    command, tools = commands[f"local.{rule['name']}.pytest"]
+    assert shlex.split(command) == [
+        "python",
+        "-m",
+        "pytest",
+        "-q",
+        "-n",
+        str(PLAN.local_pytest_workers),
+        *rule["pytest"],
     ]
+    assert tools == tuple(rule["toolchains"])
 
 
 @pytest.mark.parametrize(
@@ -388,6 +424,33 @@ def test_local_rule_schema_rejects_unconsumed_fields(field, value) -> None:
         molt_dev.DriverError, match="unknown local rule fields.*" + field
     ):
         molt_dev.GateConfig.parse(source, "unconsumed policy fixture")
+
+
+def test_every_cargo_fuzz_workspace_has_a_build_check() -> None:
+    """No other command compiles a fuzz workspace, so its targets broke unseen (HF-319)."""
+    fuzz_workspaces = set()
+    for directory in cargo_workspace_dirs(proof_plan.ROOT):
+        manifest = tomllib.loads(
+            (proof_plan.ROOT / directory / "Cargo.toml").read_text(encoding="utf-8")
+        )
+        if manifest.get("package", {}).get("metadata", {}).get("cargo-fuzz") is True:
+            fuzz_workspaces.add(directory.as_posix())
+    assert {"fuzz", "runtime/molt-backend/fuzz", "runtime/molt-runtime/fuzz"} <= (
+        fuzz_workspaces
+    )
+    checks = {
+        command.argv[5].removesuffix("/Cargo.toml"): command
+        for command in PLAN.commands
+        if command.argv[:5]
+        == ("cargo", "check", "--locked", "--bins", "--manifest-path")
+    }
+    assert set(checks) == fuzz_workspaces
+    for workspace, command in checks.items():
+        assert command.family == "rust"
+        assert "pre-push" in command.data["tiers"]
+        assert "c++" in proof_plan.cargo_native_units(command.data)["target"]
+        changed = PLAN.select([f"{workspace}/fuzz_targets/new_target.rs"])
+        assert "rust" in {family.name for family in changed.selected}, workspace
 
 
 def test_compiler_runtime_partition_preserves_disjoint_test_and_tool_ownership() -> (
@@ -947,8 +1010,10 @@ def test_maintained_zlib_changes_prove_real_provider_and_consumer_custody(
     rule = next(rule for rule in matched if rule.name == "maintained-zlib-counters")
     assert _classes(path)["rust"] is True
     assert set(rule.gates) <= set(gates)
-    assert "python -m pytest -q tests/cli/test_runtime_source_closure.py" in rule.gates
-    local = tuple(rule.gates[1].split())
+    assert "tests/cli/test_runtime_source_closure.py" in rule.pytest
+    merged = next(gate for gate in gates if gate.startswith("python -m pytest"))
+    assert "tests/cli/test_runtime_source_closure.py" in shlex.split(merged)
+    local = tuple(next(g for g in rule.gates if g.startswith("cargo test")).split())
     ci = next(
         command.argv
         for command in PLAN.commands
@@ -981,7 +1046,8 @@ def test_maintained_zlib_changes_prove_real_provider_and_consumer_custody(
     assert wasi.family == "rust" and wasi.data["cell"] == "linux-x86_64-rust-wasi-dev"
     assert {"node", "rustc", "cargo"} <= set(wasi.toolchains)
     assert not proof_plan.cargo_native_units(wasi.data)
-    for argv in (wasi.argv, tuple(rule.gates[2].split())):
+    local_wasi = next(g for g in rule.gates if "run_runtime_test_gate.py" in g)
+    for argv in (wasi.argv, tuple(local_wasi.split())):
         assert "tools/run_runtime_test_gate.py" in argv
         assert argv[argv.index("--policy") + 1] == "zlib-wasi"
         assert argv[argv.index("--profile") + 1] == "dev-fast"
@@ -6278,6 +6344,10 @@ def test_native_c_obligation_is_declared_only_for_confirmed_c_builders():
         }
     )
     expected["mlir.test.backend"] = {"host": ["c++"]}  # TableGen
+    # libFuzzer is C++; the runtime fuzz workspace also builds the runtime's C.
+    expected["rust.check.fuzz"] = {"target": ["c++"]}
+    expected["rust.check.fuzz-backend"] = {"target": ["c++"]}
+    expected["rust.check.fuzz-runtime"] = {"target": ["c", "c++"]}
     assert declared == set(expected)
     from tools.proof_queue_pkg.policy import _canonical_cargo_proof_command
 

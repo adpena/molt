@@ -52,12 +52,18 @@ import sys
 from pathlib import Path
 
 
-REPO_ROOT = Path(__file__).resolve().parent.parent
-if str(REPO_ROOT) not in sys.path:
-    sys.path.insert(0, str(REPO_ROOT))
+_REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
+
+from tools.import_file import bind_repository_imports  # noqa: E402
+
+bind_repository_imports(__file__)
 
 from tools.command_execution import CommandExecutor  # noqa: E402
 from tools.git_identity import repository_source_paths  # noqa: E402
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
 
 _COMMANDS = CommandExecutor.for_file(__file__)
 
