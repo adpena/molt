@@ -840,12 +840,7 @@ def _retire_idle_backend_daemon(
         return False
     from molt.cli.backend_execution import retire_backend_daemon
 
-    # Record retirement first, so no pruner stops the daemon while it drains.
-    daemon_custody.mark_backend_daemon_retiring(record)
-    if retire_backend_daemon(process.socket_path, timeout=_DAEMON_CONTROL_TIMEOUT_S):
-        return True
-    daemon_custody.write_backend_daemon_identity(record.path, record.identity)
-    return False
+    return retire_backend_daemon(process.socket_path, timeout=_DAEMON_CONTROL_TIMEOUT_S)
 
 
 def _prune_custody_event_path() -> Path:
@@ -1050,14 +1045,10 @@ def _prune_backend_daemons() -> None:
         processes_by_socket.setdefault(process.socket_path, []).append(process)
     records_by_pid = _current_session_backend_daemon_records_by_pid()
     for socket_path, processes in processes_by_socket.items():
-        # A retiring daemon has unlinked its socket and exits once drained,
-        # so no rule below may stop it.
         verified = [
             process
             for process in processes
-            if (record := _verified_backend_daemon_record(process, records_by_pid))
-            is not None
-            and not record.identity.retiring
+            if _verified_backend_daemon_record(process, records_by_pid) is not None
         ]
         if max_rss_kb > 0:
             filtered: list[_BackendDaemonProcess] = []
@@ -1075,17 +1066,12 @@ def _prune_backend_daemons() -> None:
                     continue
                 filtered.append(process)
             verified = filtered
-        if not verified:
+        # A daemon unlinks its socket only when it retires, and a successor
+        # may bind the same path; either way the older daemon is draining and
+        # exits by itself, so it is never stopped. Only a sole daemon that
+        # still holds its socket and stops answering is pruned.
+        if len(verified) != 1 or not socket_path.exists():
             continue
-        if not socket_path.exists():
-            for process in verified:
-                _terminate_verified_backend_daemon(process, records_by_pid)
-            continue
-        if len(verified) > 1:
-            # Keep the newest pid; terminate duplicate daemons bound to the same socket.
-            for process in verified[:-1]:
-                _terminate_verified_backend_daemon(process, records_by_pid)
-            verified = verified[-1:]
         if _daemon_health(socket_path) is None:
             process = verified[0]
             age_sec = process.sample.elapsed_sec
