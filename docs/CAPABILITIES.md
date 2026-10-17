@@ -77,6 +77,18 @@ parsing or dependency traversal. Target availability is checked separately from
 permissions. The runtime does not predict requirements of arbitrary future
 callbacks or request capabilities for branches that will not execute.
 
+Import argument validation and `importlib.util.resolve_name` need no filesystem
+grant. Cached modules, compiled providers and in-memory finders can likewise
+complete without host search. A valid request such as
+`importlib.import_module('.', 'pkg')` resolves to `pkg`; if its selected finder
+must search host paths, that search requires `fs.read`. Denial remains a
+`PermissionError` and an audit decision, rather than becoming a missing module.
+Only an authorized search that finds no provider establishes absence. CPython
+equivalence tests grant the required authority; separate policy tests exercise
+no grant and explicit deny. The owning
+[import contract](spec/areas/compat/contracts/import_system_contract.md) records
+the finder and loader boundary.
+
 File opening normalizes arguments and the path before selecting permissions.
 The selected route combines mode requirements with its virtual mount's read and
 write grants in one check, before invoking an opener or accessing a backend.
