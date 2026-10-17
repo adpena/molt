@@ -408,8 +408,9 @@ LANDED (346e3563b) and is the pattern to generalize.
 - R3a `molt-check` TIR translation validator: Repr may only move UP the
   lattice; built on `runtime/molt-passes/src/representation_facts.rs` +
   `typed_repr_report.rs`. This is the drift gate that catches silent-OOB
-  class bugs (GAP-3) at IR level. Adapt existing egg/egraph_simplify.rs +
-  fuzz_tir_passes.rs infrastructure; do NOT greenfield.
+  class bugs (GAP-3) at IR level. Adapt the existing fuzz_tir_passes
+  infrastructure; do NOT greenfield. (The old egg prototype
+  egraph_simplify.rs rewrote a toy language, not TIR; HF-281 deleted it.)
 - R3b Loop-body int/float RAW-LANE specialization: native
   iadd/imul/fadd/fdiv in loop bodies with box/unbox hoisted to loop
   boundaries. Ingredients: `runtime/molt-passes/src/tir/scalar_carriers.rs`,

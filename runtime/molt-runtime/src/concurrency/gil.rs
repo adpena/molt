@@ -585,12 +585,6 @@ where
 // gil_assert: available on both targets
 // ---------------------------------------------------------------------------
 
-#[cfg(feature = "molt_debug_gil")]
-pub(crate) fn gil_assert() {
-    assert!(gil_held(), "GIL required for runtime mutation");
-}
-
-#[cfg(not(feature = "molt_debug_gil"))]
 pub(crate) fn gil_assert() {
     debug_assert!(gil_held(), "GIL required for runtime mutation");
 }

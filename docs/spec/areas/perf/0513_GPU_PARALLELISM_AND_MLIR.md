@@ -227,7 +227,7 @@ Key rule: `poll()` must never block.
 
 | Crate | Version | Purpose | Evaluation Status |
 |-------|---------|---------|-------------------|
-| `egg` | 0.9 | E-graph equality saturation for kernel expression optimization | Prototype exists (`molt-backend --features egraphs`) |
+| `egg` | 0.11 | E-graph equality saturation for kernel expression optimization | Not integrated; the unwired toy prototype was deleted (HF-281) |
 | `mlir-sys` | 0.3+ | Raw MLIR C-API bindings for GPU dialect lowering | Not evaluated — requires LLVM/MLIR build |
 | `inkwell` | 0.5+ | Safe LLVM IR builder (alternative to mlir-sys for NVPTX) | Not evaluated |
 | `cudarc` | 0.12+ | Safe CUDA runtime/driver API bindings | Not evaluated |
