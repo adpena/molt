@@ -17,7 +17,11 @@ from tools.import_file import bind_repository_imports  # noqa: E402
 
 bind_repository_imports(__file__)
 
+from tools.command_execution import CommandExecutor  # noqa: E402
 from tools.generator_io import generator_main  # noqa: E402
+from tools.git_identity import repository_source_paths  # noqa: E402
+
+_COMMANDS = CommandExecutor.for_file(__file__)
 
 ROOT = Path(__file__).resolve().parents[1]
 CONFIG = ROOT / "config" / "cpython_coverage.toml"
@@ -263,41 +267,63 @@ def _render_doc(matrix: dict[str, object]) -> str:
     return "\n".join(lines) + "\n"
 
 
+def _read_source_git(cwd: Path, arguments: list[str]) -> bytes:
+    return _COMMANDS.run(
+        ["git", *arguments], cwd=cwd, capture_output=True, timeout=30, check=True
+    ).stdout
+
+
+def _audit_sources(bases: tuple[Path, ...]) -> list[Path]:
+    """Git-admitted sources under each of ``bases``, in configuration order.
+
+    Git owns the ignore rules, so build output inside a source root (a Cargo
+    target, a trybuild tree) never enters the projection and every host
+    generates the same rows.
+    """
+    admitted = [
+        path
+        for path in repository_source_paths(
+            ROOT, run_git=_read_source_git, include_untracked=True
+        )
+        if path.suffix in AUDIT_SUFFIXES
+    ]
+    return [
+        path
+        for base in bases
+        for path in sorted(path for path in admitted if path.is_relative_to(base))
+    ]
+
+
 def _audit(config: dict[str, object]) -> str:
     rows: list[tuple[str, int, str, str]] = []
-    for base in _audit_source_roots(config):
-        for path in sorted(base.rglob("*")):
-            if path.suffix not in AUDIT_SUFFIXES:
-                continue
-            text = path.read_text(encoding="utf-8", errors="replace")
-            matches = VERSION_PATTERN.finditer(text)
-            first_match = next(matches, None)
-            if first_match is None:
-                continue
-            match_count = 1 + sum(1 for _match in matches)
-            routed = (
-                "TargetPythonVersion" in text
-                or "target_python" in text
-                or path == CONFIG
+    for path in _audit_sources(_audit_source_roots(config)):
+        text = path.read_text(encoding="utf-8", errors="replace")
+        matches = VERSION_PATTERN.finditer(text)
+        first_match = next(matches, None)
+        if first_match is None:
+            continue
+        match_count = 1 + sum(1 for _match in matches)
+        routed = (
+            "TargetPythonVersion" in text or "target_python" in text or path == CONFIG
+        )
+        operational = (
+            "uv run --python" in text
+            or "PYTHON_VERSION" in text
+            or "sys.version_info" in text
+        )
+        classification = (
+            "authority-routed"
+            if routed
+            else ("operational-tooling" if operational else "scattered-assumption")
+        )
+        rows.append(
+            (
+                path.relative_to(ROOT).as_posix(),
+                match_count,
+                classification,
+                first_match.group(0),
             )
-            operational = (
-                "uv run --python" in text
-                or "PYTHON_VERSION" in text
-                or "sys.version_info" in text
-            )
-            classification = (
-                "authority-routed"
-                if routed
-                else ("operational-tooling" if operational else "scattered-assumption")
-            )
-            rows.append(
-                (
-                    path.relative_to(ROOT).as_posix(),
-                    match_count,
-                    classification,
-                    first_match.group(0),
-                )
-            )
+        )
     totals = Counter(row[2] for row in rows)
     lines = [
         "# CPython Version-Assumption Audit (generated)",

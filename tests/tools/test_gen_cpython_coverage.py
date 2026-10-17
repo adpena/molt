@@ -5,7 +5,15 @@ from pathlib import Path
 
 import pytest
 
+from tests.process_guard_common import run_guarded_test_process
 from tools import gen_cpython_coverage
+
+
+def _source_repository(root: Path) -> Path:
+    """A real Git root: the audit admits only Git's source inventory."""
+    completed = run_guarded_test_process(["git", "init", "-q", str(root)])
+    assert completed.returncode == 0, completed.stderr
+    return root
 
 
 def test_live_exports_are_covered_by_matrix() -> None:
@@ -103,7 +111,7 @@ def test_audit_version_inventory_is_independent_of_supported_minors(
     expected: str | None,
     kind: str | None,
 ) -> None:
-    scan = tmp_path / "scan"
+    scan = _source_repository(tmp_path) / "scan"
     scan.mkdir()
     (scan / "probe.py").write_text(source, encoding="utf-8")
     monkeypatch.setattr(gen_cpython_coverage, "ROOT", tmp_path)
@@ -119,7 +127,7 @@ def test_audit_version_inventory_is_independent_of_supported_minors(
 def test_audit_retains_file_level_review_classification(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    scan = tmp_path / "scan"
+    scan = _source_repository(tmp_path) / "scan"
     scan.mkdir()
     for name, source in {
         "configured.toml": 'version = "3.15"',
@@ -144,3 +152,23 @@ def test_audit_retains_file_level_review_classification(
     assert "- `scattered-assumption` files: 1" in rendered
     assert "raw lexical hits" in rendered
     assert "do not prove authority routing or semantic conformance" in rendered
+
+
+def test_audit_ignores_build_output_inside_a_source_root(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A Cargo target under a source root never reaches the projection."""
+    scan = _source_repository(tmp_path) / "scan"
+    (scan / "target-local" / "out").mkdir(parents=True)
+    (tmp_path / ".gitignore").write_text("target-*/\n", encoding="utf-8")
+    (scan / "probe.py").write_text('version = "3.15"\n', encoding="utf-8")
+    (scan / "target-local" / "out" / "ssl.h").write_text(
+        "#define OPENSSL_VERSION 3.3\n", encoding="utf-8"
+    )
+    monkeypatch.setattr(gen_cpython_coverage, "ROOT", tmp_path)
+    rendered = gen_cpython_coverage._audit(
+        {"version_assumption_audit": {"source_roots": ["scan"]}}
+    )
+    assert [line for line in rendered.splitlines() if line.startswith("| `")] == [
+        "| `scan/probe.py` | 1 | scattered-assumption | `3.15` |"
+    ]
