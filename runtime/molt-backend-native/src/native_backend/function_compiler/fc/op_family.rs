@@ -90,7 +90,6 @@ pub(in crate::native_backend::function_compiler) enum NativeOpFamily {
     ContextMgmt,
     ExceptionStack,
     ExceptionControl,
-    FileIo,
     ControlFlow,
     Loops,
     Memory,
@@ -209,7 +208,6 @@ pub(in crate::native_backend::function_compiler) const FAMILY_DISPATCH_TABLE: &[
         NativeOpFamily::ExceptionControl,
         super::exception_control::HANDLED_KINDS,
     ),
-    (NativeOpFamily::FileIo, super::file_io::HANDLED_KINDS),
     (
         NativeOpFamily::ControlFlow,
         super::control_flow::HANDLED_KINDS,

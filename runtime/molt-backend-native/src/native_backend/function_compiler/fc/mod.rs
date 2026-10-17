@@ -92,7 +92,6 @@ pub(in crate::native_backend::function_compiler) mod dict_ops;
 pub(in crate::native_backend::function_compiler) mod exception_control;
 pub(in crate::native_backend::function_compiler) mod exception_stack;
 pub(in crate::native_backend::function_compiler) mod exceptions;
-pub(in crate::native_backend::function_compiler) mod file_io;
 pub(in crate::native_backend::function_compiler) mod funcobj;
 pub(in crate::native_backend::function_compiler) mod generators;
 pub(in crate::native_backend::function_compiler) mod list_index_fast_path;

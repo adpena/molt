@@ -649,7 +649,6 @@ simpleir_unstructured_control_semantics_kinds = [
     "goto", "jump", "label",
 ]
 simpleir_host_capability_semantics_kinds = [
-    "file_open", "file_read", "file_write", "file_close", "file_flush",
     "invoke_ffi",
     "gpu_thread_id",
 ]
@@ -957,11 +956,6 @@ classifier_owned_value = [
     "exception_stack_set_depth",
     "exceptiongroup_combine",
     "exceptiongroup_match",
-    "file_close",
-    "file_flush",
-    "file_open",
-    "file_read",
-    "file_write",
     "float_from_obj",
     "frame_home_take",
     "frame_locals",
@@ -975,7 +969,6 @@ classifier_owned_value = [
     "gen_throw",
     "get_attr_name_default",
     "get_attr_special_obj",
-    "getargv",
     "getframe",
     "has_attr_name",
     "id",
@@ -1076,7 +1069,6 @@ classifier_owned_value = [
     "string_strip",
     "string_upper",
     "super_new",
-    "sys_executable",
     "trunc",
     "tuple_count",
     "tuple_from_list",

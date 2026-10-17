@@ -726,39 +726,6 @@ fn test_compile_checked_rejects_native_awaitable_without_async_runtime() {
 }
 
 #[test]
-fn test_compile_checked_rejects_file_marker() {
-    let ir = SimpleIR {
-        functions: vec![FunctionIR {
-            return_abi: molt_ir::FunctionReturnAbi::Void,
-            name: "file_test".to_string(),
-            params: vec![],
-            param_types: None,
-            source_file: None,
-            is_extern: false,
-            codegen_partition: false,
-            parameter_custody: Vec::new(),
-            execution_context: ExecutionContextPolicy::None,
-            ops: vec![OpIR {
-                kind: "file_open".to_string(),
-                out: Some("v0".to_string()),
-                ..OpIR::default()
-            }],
-        }],
-        profile: None,
-    };
-    let mut backend = LuauBackend::new();
-    let err = backend
-        .compile_checked(&ir)
-        .expect_err("compile_checked must reject unsupported file operations");
-    assert!(
-        err.contains("rejected before source generation")
-            && err.contains("`file_open`")
-            && err.contains("host filesystem"),
-        "error should come from generated pre-source admission, got: {err}"
-    );
-}
-
-#[test]
 fn test_compile_checked_rejects_context_marker() {
     let ir = SimpleIR {
         functions: vec![FunctionIR {
