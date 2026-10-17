@@ -2313,3 +2313,95 @@ def test_build_python_cleanup_preserves_recorded_failure(
     diagnostic = json.loads(capsys.readouterr().err)
     assert "Cargo failed" in diagnostic["primary_failure"]
     assert "exit 9" in diagnostic["error"]
+
+
+@pytest.mark.parametrize("batch", [False, True])
+def test_native_executable_fixture_preserves_independent_images(
+    runtime_fixture_root, batch
+):
+    source = Path(sys.executable).resolve(strict=True)
+    original = hashlib.sha256(source.read_bytes()).hexdigest()
+    names = ("native-fixture/first", "native-fixture/second")
+    if batch:
+        first, second = runtime_fixture_root.native_executables(names)
+    else:
+        first, second = (runtime_fixture_root.native_executable(name) for name in names)
+    for image in (first, second):
+        assert not image.is_symlink()
+        assert not image.samefile(source)
+        assert hashlib.sha256(image.read_bytes()).hexdigest() == original
+        assert image.stat().st_mode & 0o111 == source.stat().st_mode & 0o111
+    assert not first.samefile(second)
+    with first.open("r+b") as stream:
+        stream.write(b"changed fixture")
+    assert hashlib.sha256(second.read_bytes()).hexdigest() == original
+    assert hashlib.sha256(source.read_bytes()).hexdigest() == original
+    assert runtime_fixture_root.native_executable(names[0]) == first
+    assert first.read_bytes().startswith(b"changed fixture")
+    first.unlink()
+    first.write_bytes(b"retargeted fixture")
+    assert hashlib.sha256(second.read_bytes()).hexdigest() == original
+    assert hashlib.sha256(source.read_bytes()).hexdigest() == original
+
+
+def test_native_executable_batch_never_reuses_mutated_donor(runtime_fixture_root):
+    source = Path(sys.executable).resolve(strict=True)
+    original = hashlib.sha256(source.read_bytes()).hexdigest()
+    existing = runtime_fixture_root.native_executable("native-fixture/existing")
+    existing.write_bytes(b"deliberate custody mutation")
+    retained, first, second = runtime_fixture_root.native_executables(
+        (
+            "native-fixture/existing",
+            "native-fixture/new-first",
+            "native-fixture/new-second",
+        )
+    )
+    assert retained == existing
+    assert retained.read_bytes() == b"deliberate custody mutation"
+    assert not first.samefile(second)
+    for image in (first, second):
+        assert hashlib.sha256(image.read_bytes()).hexdigest() == original
+
+
+def test_native_executable_batch_retains_images_without_probing_source(
+    runtime_fixture_root, monkeypatch
+):
+    from tests import runtime_build_identity_helper as helper
+
+    image = runtime_fixture_root.native_executable("retained-image")
+    image.write_bytes(b"retained mutation")
+    install_module_view(
+        monkeypatch,
+        "sys",
+        sys,
+        helper,
+        executable=str(runtime_fixture_root.path / "unavailable-interpreter"),
+    )
+    assert runtime_fixture_root.native_executables(()) == ()
+    assert runtime_fixture_root.native_executables(("retained-image",)) == (image,)
+    assert runtime_fixture_root.native_executable("retained-image") == image
+    assert image.read_bytes() == b"retained mutation"
+
+
+@pytest.mark.parametrize("relative", ["../outside", "."])
+def test_native_executable_batch_confines_every_path_before_copy(
+    runtime_fixture_root, relative
+):
+    with pytest.raises(ValueError, match="native executable fixture"):
+        runtime_fixture_root.native_executables(("not-created", relative))
+    assert not (runtime_fixture_root.path / "not-created").exists()
+
+
+@pytest.mark.skipif(sys.platform != "darwin", reason="Apple copyfile error contract")
+def test_native_executable_copy_error_preserves_existing_destination(tmp_path):
+    import ctypes
+
+    from tests.runtime_build_identity_helper import _copy_native_image
+
+    if not hasattr(ctypes.CDLL("/usr/lib/libSystem.B.dylib"), "clonefile"):
+        pytest.skip("host lacks COPYFILE_CLONE capability")
+    destination = tmp_path / "existing-image"
+    destination.write_bytes(b"existing fixture must survive")
+    with pytest.raises(FileExistsError):
+        _copy_native_image(Path(sys.executable).resolve(strict=True), destination)
+    assert destination.read_bytes() == b"existing fixture must survive"

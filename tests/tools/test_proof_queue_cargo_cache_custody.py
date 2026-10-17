@@ -32,6 +32,8 @@ pytestmark = pytest.mark.usefixtures("cargo_output_implementation_source")
 
 @pytest.fixture(autouse=True)
 def source_admission(monkeypatch):
+    """Model neighbors' space; retain the real probe for actual Cargo oracles."""
+    actual_free_space = cache.disk_capacity._default_measure_free_bytes
     monkeypatch.setattr(
         execution_environment,
         "repository_source_paths",
@@ -42,6 +44,7 @@ def source_admission(monkeypatch):
         "_default_measure_free_bytes",
         lambda path: 1 << 50,
     )
+    return actual_free_space
 
 
 def _capture(inputs, overlays=(), *, hash_workers=1):
@@ -2461,7 +2464,9 @@ def test_workspace_refuses_unsafe_or_incompatible_reuse(tmp_path, boundary):
 
 @pytest.mark.slow
 @pytest.mark.usefixtures("standard_finders")
-def test_workspace_real_cargo_warm_and_declared_edits(tmp_path):
+def test_workspace_real_cargo_warm_and_declared_edits(
+    tmp_path, monkeypatch, source_admission
+):
     import shutil
     import py_compile
     from tests.test_python_external_custody import _ExternalFixture
@@ -2469,6 +2474,10 @@ def test_workspace_real_cargo_warm_and_declared_edits(tmp_path):
     from tools.proof_queue_pkg.process_image_capture import capture_image
     from tools.harness_memory_guard import guarded_completed_process
 
+    # Modeled neighbors use admitted space; this real crate measures the disk.
+    monkeypatch.setattr(
+        cache.disk_capacity, "_default_measure_free_bytes", source_admission
+    )
     cargo = shutil.which("cargo")
     if cargo is None:
         pytest.skip("real Cargo oracle requires Cargo")
@@ -2478,6 +2487,7 @@ def test_workspace_real_cargo_warm_and_declared_edits(tmp_path):
     # The fixture supplies a .pth declaration and active external import root;
     # it does not fabricate hashes or exclude the checkout from custody.
     editable = _ExternalFixture(tmp_path)
+    bytecode = editable.imports / "module.pyc"
     location = locate_current_python_environment()
     python_images = [
         capture_image(role, Path(location[field]), preserve_path=True)
@@ -2517,6 +2527,8 @@ def test_workspace_real_cargo_warm_and_declared_edits(tmp_path):
         CARGO_INCREMENTAL="0",
         MOLT_USE_SCCACHE="0",
         MOLT_PROOF_SCRATCH_ROOT=str(tmp_path / "scratch"),
+        # The dependency-free fixture owns its headroom, not the runtime floor.
+        MOLT_DISK_GUARD_HIGH_WATER_GB="1",
     )
     inputs["command"] = [
         cargo,
@@ -2566,7 +2578,9 @@ def test_workspace_real_cargo_warm_and_declared_edits(tmp_path):
             run_id=f"oracle-{index}",
             execution_nonce_sha256=hashlib.sha256(str(index).encode()).hexdigest(),
         )
-        py_compile.compile(str(editable.imports / "module.py"), doraise=True)
+        py_compile.compile(
+            str(editable.imports / "module.py"), cfile=str(bytecode), doraise=True
+        )
         external_custody = editable.capture()
         editable.validate(external_custody)
         inputs["toolchains"] = {
@@ -2582,6 +2596,7 @@ def test_workspace_real_cargo_warm_and_declared_edits(tmp_path):
             row["path"] for row in inputs["toolchains"]["python"]["file_custody"]
         }
         assert str(editable.imports / "module.py") in captured_paths
+        assert str(bytecode) in captured_paths
         assert any(path.endswith(".pyc") for path in captured_paths)
         _capture(inputs, overlays=overlays)
         lease = cache.acquire(**inputs)

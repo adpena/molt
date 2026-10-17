@@ -21,6 +21,7 @@ from molt.cli.source_build_inventory import SourceBuildInventory
 from molt.exact_json import canonical_json_sha256
 from molt.python_file_node_custody import VerifiedTreeFile
 from molt.toolchain_identity import stable_regular_file_identity
+from tests.process_guard_common import run_guarded_test_process
 from tests.python_environment_test_support import build_environment_manifest
 
 
@@ -278,16 +279,31 @@ def test_cython_execution_ignores_existing_bytecode_without_modifying_it(tmp_pat
     source = tmp_path / "cached_generator.py"
     source.write_bytes(b"value = 'bad!'\n")
     stamp = source.stat()
-    cache = Path(py_compile.compile(str(source), doraise=True))
+    cache = (
+        tmp_path
+        / "__pycache__"
+        / (f"cached_generator.{sys.implementation.cache_tag}.pyc")
+    )
+    py_compile.compile(
+        str(source),
+        cfile=str(cache),
+        doraise=True,
+        invalidation_mode=py_compile.PycInvalidationMode.TIMESTAMP,
+    )
     poisoned = cache.read_bytes()
     source.write_bytes(b"value = 'good'\n")
     os.utime(source, ns=(stamp.st_atime_ns, stamp.st_mtime_ns))
+    script = (
+        f"import sys; sys.path.insert(0, {str(tmp_path)!r}); "
+        "import cached_generator; print(cached_generator.value)"
+    )
+    stale = run_guarded_test_process(
+        [sys.executable, "-B", "-I", "-c", script], timeout=30, check=True
+    )
+    assert stale.stdout.strip() == "bad!"
     tool = cython.CythonTool("test", sys.executable, tmp_path / "absent-cache")
     result = tool.run(
-        [
-            "-c",
-            f"import sys; sys.path.insert(0, {str(tmp_path)!r}); import cached_generator; print(cached_generator.value)",
-        ],
+        ["-c", script],
         capture_output=True,
         text=True,
         timeout=30,
