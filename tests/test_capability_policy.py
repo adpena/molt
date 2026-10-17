@@ -119,13 +119,17 @@ def test_manifest_decode_and_integrity_check_share_one_byte_snapshot(
     from molt.capability_manifest import sign_manifest
 
     path = tmp_path / "capabilities.json"
-    unsigned = '{"allow":["fs.read"]}'
+    unsigned = '{"capabilities":{"allow":["fs.read"]}}'
     path.write_text(unsigned, encoding="utf-8")
     signature = sign_manifest(path)
     snapshot_a = (
-        '{"allow":["fs.read"],"signature":' + repr(signature).replace("'", '"') + "}"
+        '{"capabilities":{"allow":["fs.read"]},"signature":'
+        + repr(signature).replace("'", '"')
+        + "}"
     ).encode()
-    snapshot_b = b'{"allow":["net"],"signature":"sha256:' + b"0" * 64 + b'"}'
+    snapshot_b = (
+        b'{"capabilities":{"allow":["net"]},"signature":"sha256:' + b"0" * 64 + b'"}'
+    )
     path.write_bytes(snapshot_a)
 
     original_read_bytes = Path.read_bytes
@@ -151,7 +155,7 @@ def test_run_cli_and_manifest_grants_form_one_explicit_runtime_policy(
     from molt.cli.script_commands import _apply_run_capability_policy
 
     path = tmp_path / "capabilities.json"
-    path.write_text('{"allow":["fs.read"]}', encoding="utf-8")
+    path.write_text('{"capabilities":{"allow":["fs.read"]}}', encoding="utf-8")
     env: dict[str, str] = {}
     error = _apply_run_capability_policy(
         env,
