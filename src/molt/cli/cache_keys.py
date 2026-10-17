@@ -3,7 +3,7 @@ from __future__ import annotations
 import ast
 import hashlib
 import json
-from typing import Any, Iterable, Iterator, Mapping, TextIO
+from typing import Any, Iterable, Mapping, TextIO
 
 from molt.frontend import (
     BoundMethodHint,
@@ -262,21 +262,69 @@ def _cache_backend_payload_ir(ir: Mapping[str, Any]) -> dict[str, Any]:
     }
 
 
-def _iter_cache_json_payload_bytes(payload_ir: Mapping[str, Any]) -> Iterator[bytes]:
-    yield _cache_json_payload_bytes(payload_ir)
-
-
-def _cache_json_payload_bytes(payload_ir: Mapping[str, Any]) -> bytes:
+def _cache_json_payload_bytes(value: object) -> bytes:
+    """The canonical JSON of any IR value: a payload, a header or a function."""
     encoder = json.JSONEncoder(
         sort_keys=True,
         separators=(",", ":"),
         default=_json_ir_default,
     )
-    return encoder.encode(_cache_json_value(payload_ir)).encode("utf-8")
+    return encoder.encode(_cache_json_value(value)).encode("utf-8")
 
 
-def _cache_payload_digest(payload_ir: Mapping[str, Any]) -> str:
-    return hashlib.sha256(_cache_json_payload_bytes(payload_ir)).hexdigest()
+# Domain tag of the Merkle payload digest; framing is fixed so no two payloads
+# share an encoding: tag, header digest, function count, function digests.
+_PAYLOAD_DIGEST_TAG = b"molt.cache-payload.merkle.v1\0"
+
+
+class FunctionDigests:
+    """The canonical-JSON SHA-256 of each IR function, taken once per owner.
+
+    A payload digest is a Merkle node over its functions' digests, so the
+    module payload and the shared stdlib key, which hold the same function
+    objects, encode each function once instead of once per payload. Bazel
+    action keys and Go's build cache combine input digests the same way.
+    The owner holds every function it digested, so an identity is never
+    reused for another object; it must not outlive an IR that a pass may
+    rewrite in place.
+    """
+
+    __slots__ = ("_by_identity",)
+
+    def __init__(self) -> None:
+        self._by_identity: dict[int, tuple[object, bytes]] = {}
+
+    def digest(self, function: object) -> bytes:
+        held = self._by_identity.get(id(function))
+        if held is not None and held[0] is function:
+            return held[1]
+        digest = hashlib.sha256(_cache_json_payload_bytes(function)).digest()
+        self._by_identity[id(function)] = (function, digest)
+        return digest
+
+
+def _cache_payload_digest(
+    payload_ir: Mapping[str, Any], function_digests: FunctionDigests | None = None
+) -> str:
+    """Identify a payload by its header and the digest of each function.
+
+    Two payloads share a digest exactly when their canonical JSON encodings
+    are equal (up to SHA-256 collisions).
+    """
+    functions = payload_ir.get("functions")
+    digest = hashlib.sha256(_PAYLOAD_DIGEST_TAG)
+    if not isinstance(functions, list):
+        digest.update(b"\0")
+        digest.update(hashlib.sha256(_cache_json_payload_bytes(payload_ir)).digest())
+        return digest.hexdigest()
+    owner = function_digests if function_digests is not None else FunctionDigests()
+    header = {key: value for key, value in payload_ir.items() if key != "functions"}
+    digest.update(b"\1")
+    digest.update(hashlib.sha256(_cache_json_payload_bytes(header)).digest())
+    digest.update(len(functions).to_bytes(8, "big"))
+    for function in functions:
+        digest.update(owner.digest(function))
+    return digest.hexdigest()
 
 
 def _cache_key_for_payload_digest(
@@ -354,9 +402,10 @@ def _cache_key_for_payload_ir(
     compiler_fingerprint: str | None = None,
     tooling_fingerprint: str | None = None,
     payload_digest: str | None = None,
+    function_digests: FunctionDigests | None = None,
 ) -> str:
     if payload_digest is None:
-        payload_digest = _cache_payload_digest(payload_ir)
+        payload_digest = _cache_payload_digest(payload_ir, function_digests)
     return _cache_key_for_payload_digest(
         payload_digest,
         target=target,
@@ -377,6 +426,7 @@ def _cache_key(
     payload_digest: str | None = None,
     compiler_fingerprint: str | None = None,
     tooling_fingerprint: str | None = None,
+    function_digests: FunctionDigests | None = None,
 ) -> str:
     if payload_ir is None:
         payload_ir = _cache_ir_payload_ir(ir)
@@ -389,6 +439,7 @@ def _cache_key(
         compiler_fingerprint=compiler_fingerprint,
         tooling_fingerprint=tooling_fingerprint,
         payload_digest=payload_digest,
+        function_digests=function_digests,
     )
 
 
