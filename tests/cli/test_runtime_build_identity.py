@@ -29,6 +29,7 @@ from tests.rust.process_guard import run_rust_test_process
 from tests.runtime_build_identity_helper import (
     build_python_identity_fixture,
     RuntimeFixtureRoot,
+    clear_wasm_toolchain_selection,
     provisioned_wasi_sdk_fixture,
 )
 from molt.llvm_toolchain import (
@@ -36,6 +37,7 @@ from molt.llvm_toolchain import (
     project_wasm_toolchain_environment,
     load_wasi_sdk_installation,
     LlvmToolchainConfigError,
+    WasiSdkInstallation,
 )
 from molt.cli.runtime_cargo_plan import resolve_runtime_cargo_plan
 from molt.cli import runtime_cargo_plan as cargo_plans
@@ -97,7 +99,9 @@ def _test_plan(
     )
 
 
-def _provision_toolchain(root: Path) -> schema.RuntimeToolchainContentManifest:
+def _provision_toolchain(
+    root: Path, *, wasi_sdk: WasiSdkInstallation | None = None
+) -> schema.RuntimeToolchainContentManifest:
     env = dict(os.environ)
     env.pop("PYTHONPATH", None)
     env.update(
@@ -110,7 +114,8 @@ def _provision_toolchain(root: Path) -> schema.RuntimeToolchainContentManifest:
             "RUSTC_WORKSPACE_WRAPPER": "",
         }
     )
-    env.update(project_wasm_toolchain_environment(_sdk(root), environ={}))
+    if wasi_sdk is not None:
+        env.update(project_wasm_toolchain_environment(wasi_sdk, environ={}))
     plan = _test_plan(root, env)
     return identity.provision_wasm_runtime_toolchain_content_manifest(
         project_root=root,
@@ -131,6 +136,7 @@ def _resolve(
     extra_env: dict[str, str] | None = None,
     artifact_selection: RuntimeArtifactSelection = RUNTIME_WASM_COMBINED_ARTIFACTS,
     runtime_features: tuple[str, ...] = ("stdlib_micro",),
+    wasi_sdk: WasiSdkInstallation | None = None,
 ) -> schema.RuntimeBuildIdentity:
     target = None if kind == "native" else "wasm32-wasip1"
     ambient = cargo_plans._CargoEnvironment(os.environ)
@@ -163,8 +169,8 @@ def _resolve(
                 for name in ("CC", "CXX", "AR", "RANLIB")
             }
         )
-    if kind != "native":
-        env.update(project_wasm_toolchain_environment(_sdk(root), environ={}))
+    if kind != "native" and wasi_sdk is not None:
+        env.update(project_wasm_toolchain_environment(wasi_sdk, environ={}))
     env.update(extra_env or {})
     env["RUSTFLAGS"] = base_rustflags
     plan = _test_plan(root, env, response_path=response_path, target_triple=target)
@@ -231,9 +237,25 @@ def _resolve(
 
 
 @pytest.fixture
-def identity_root(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+def identity_root(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, readonly_wasi_sdk
+) -> Path:
     from molt.cli.cargo_target_cfg import parse_rustc_target_metadata
 
+    original_plan = _test_plan
+    clear_wasm_toolchain_selection(monkeypatch)
+
+    def plan_with_sdk(root, env, *, target_triple="wasm32-wasip1", **kwargs):
+        if target_triple in {"wasm32-wasip1", "wasm32-unknown-unknown"} and not any(
+            key in env for key in ("WASI_SDK_PATH", "WASI_SDK_PREFIX")
+        ):
+            env = {
+                **project_wasm_toolchain_environment(readonly_wasi_sdk(), environ={}),
+                **env,
+            }
+        return original_plan(root, env, target_triple=target_triple, **kwargs)
+
+    monkeypatch.setattr(sys.modules[__name__], "_test_plan", plan_with_sdk)
     original_run = cargo_plans.process_guard.run_completed_command
 
     def tool_probe(command, **kwargs):
@@ -276,7 +298,6 @@ def identity_root(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
         "runtime_build_tooling_paths",
         lambda root: (root / "runtime-planner.py",),
     )
-    _sdk(tmp_path)
     archive_root = tmp_path / "archives"
     archive_root.mkdir()
     (archive_root / "libcompiler_builtins.rlib").write_bytes(b"rust compiler builtins")
@@ -393,10 +414,12 @@ def test_runtime_features_change_exact_compile_and_member_identity(
 def test_identity_observes_mutable_source_and_retains_managed_sdk_generation(
     identity_root: Path,
 ) -> None:
+    installation = _sdk(identity_root)
     before = _resolve(
         identity_root,
         kind="shared",
         publication="strip-final-link-metadata-v1",
+        wasi_sdk=installation,
     )
     (identity_root / "runtime" / "src" / "lib.rs").write_text(
         "pub fn runtime_changed() {}\n", encoding="utf-8"
@@ -405,11 +428,11 @@ def test_identity_observes_mutable_source_and_retains_managed_sdk_generation(
         identity_root,
         kind="shared",
         publication="strip-final-link-metadata-v1",
+        wasi_sdk=installation,
     )
     assert after_source.digest != before.digest
     assert after_source.family_digest != before.family_digest
 
-    installation = _sdk(identity_root)
     load_wasi_sdk_installation(
         compiler_source_root(), installation.prefix, verify_tree=True
     )
@@ -420,6 +443,7 @@ def test_identity_observes_mutable_source_and_retains_managed_sdk_generation(
         identity_root,
         kind="shared",
         publication="strip-final-link-metadata-v1",
+        wasi_sdk=installation,
     )
     assert after_header.digest == after_source.digest
     assert after_header.family_digest == after_source.family_digest
@@ -427,6 +451,45 @@ def test_identity_observes_mutable_source_and_retains_managed_sdk_generation(
         load_wasi_sdk_installation(
             compiler_source_root(), installation.prefix, verify_tree=True
         )
+
+
+def test_readonly_sdk_reuse_keeps_real_receipt_and_function_owned_inputs(
+    identity_root, readonly_wasi_sdk, monkeypatch
+):
+    from molt import llvm_toolchain, wasi_sdk_identity
+
+    shared = readonly_wasi_sdk()
+    assert readonly_wasi_sdk() is not shared
+    # Independently exercise complete production receipt/tree verification once;
+    # the unit plans below must consume this same admitted generation.
+    llvm_toolchain.load_wasi_sdk_installation(
+        compiler_source_root(), shared.prefix, verify_tree=True
+    )
+    receipt = shared.prefix / ".molt-wasi-sdk.json"
+    before = receipt.read_bytes()
+    assert not receipt.stat().st_mode & 0o222
+    assert not shared.wasm_ld.stat().st_mode & 0o222
+    assert not shared.prefix.is_relative_to(identity_root)
+
+    def forbidden_tree_capture(_root):
+        pytest.fail("read-only plan republished or rehashed an SDK generation")
+
+    for owner in (llvm_toolchain, wasi_sdk_identity):
+        monkeypatch.setattr(
+            owner,
+            "wasi_sdk_tree_identity",
+            current_thread_only(forbidden_tree_capture, owner.wasi_sdk_tree_identity),
+        )
+    first = _resolve(
+        identity_root, kind="shared", publication="strip-final-link-metadata-v1"
+    )
+    repeated = _resolve(
+        identity_root, kind="shared", publication="strip-final-link-metadata-v1"
+    )
+    assert first == repeated
+    assert not (identity_root / "toolchains").exists()
+    assert (identity_root / "runtime" / "src" / "lib.rs").is_file()
+    assert receipt.read_bytes() == before
 
 
 def test_canonical_profile_and_publication_transform_are_identity_inputs(
@@ -901,7 +964,7 @@ def test_bind_build_python_signature_uses_admitted_identity_without_a_probe(
 
 @pytest.mark.parametrize("producer", ["native", "wasm-cpython-abi"])
 def test_no_plan_provisioning_pins_generator_before_capture(
-    tmp_path, monkeypatch, runtime_fixture_root, producer
+    tmp_path, monkeypatch, runtime_fixture_root, producer, readonly_wasi_sdk
 ):
     from functools import partial
 
@@ -913,8 +976,9 @@ def test_no_plan_provisioning_pins_generator_before_capture(
     environment = {
         "MOLT_BUILD_PYTHON": os.path.relpath(sys.executable, tmp_path),
     }
-    sdk = provisioned_wasi_sdk_fixture(runtime_fixture_root)
-    environment.update(project_wasm_toolchain_environment(sdk, environ={}))
+    sdk = readonly_wasi_sdk() if producer == "wasm-cpython-abi" else None
+    if sdk is not None:
+        environment.update(project_wasm_toolchain_environment(sdk, environ={}))
     monkeypatch.setattr(
         identity,
         "resolve_runtime_cargo_plan",
@@ -938,6 +1002,7 @@ def test_no_plan_provisioning_pins_generator_before_capture(
             cargo_command=("cargo", "rustc"),
         )
     else:
+        assert sdk is not None
         identity._wasm_compile_toolchain_content(
             project_root=tmp_path,
             env=environment,
@@ -1154,6 +1219,7 @@ def test_identity_serialization_is_detached_and_rejects_nested_mutation(
 def test_identity_is_location_independent_including_response_files(
     identity_root: Path, tmp_path: Path
 ) -> None:
+    _sdk(identity_root)
     relocated = tmp_path / "relocated" / "tree"
     shutil.copytree(identity_root, relocated)
     first_response = identity_root / "runtime-link.rsp"
@@ -1167,6 +1233,7 @@ def test_identity_is_location_independent_including_response_files(
         publication="strip-final-link-metadata-v1",
         response_path=first_response,
         base_rustflags=f"-C panic=abort --sysroot={identity_root / 'wasi-sysroot'}",
+        wasi_sdk=_sdk(identity_root),
     )
     second = _resolve(
         relocated,
@@ -1174,6 +1241,7 @@ def test_identity_is_location_independent_including_response_files(
         publication="strip-final-link-metadata-v1",
         response_path=second_response,
         base_rustflags=f"-C panic=abort --sysroot={relocated / 'wasi-sysroot'}",
+        wasi_sdk=_sdk(relocated),
     )
     serialized = json.dumps(first.to_dict(), sort_keys=True)
 
@@ -1768,8 +1836,12 @@ fn main() {
 def test_portable_manifest_is_evidence_not_live_capture_authority(
     identity_root: Path, monkeypatch: pytest.MonkeyPatch, resource: str
 ) -> None:
+    installation = _sdk(identity_root)
     before = _resolve(
-        identity_root, kind="shared", publication="strip-final-link-metadata-v1"
+        identity_root,
+        kind="shared",
+        publication="strip-final-link-metadata-v1",
+        wasi_sdk=installation,
     )
     manifest_path = identity_root / "toolchain.json"
     before.toolchain_manifest.write(manifest_path)
@@ -1791,7 +1863,10 @@ def test_portable_manifest_is_evidence_not_live_capture_authority(
             identity, "_python_identity", lambda _env, **_kwargs: python
         )
     after = _resolve(
-        identity_root, kind="shared", publication="strip-final-link-metadata-v1"
+        identity_root,
+        kind="shared",
+        publication="strip-final-link-metadata-v1",
+        wasi_sdk=installation,
     )
     if resource == "python":
         assert after.toolchain_manifest != restored
@@ -1808,12 +1883,13 @@ def test_portable_manifest_is_evidence_not_live_capture_authority(
 def test_managed_manifest_keeps_provisioned_generation_until_explicit_verification(
     identity_root: Path,
 ) -> None:
-    before = _provision_toolchain(identity_root)
+    installation = _sdk(identity_root)
+    before = _provision_toolchain(identity_root, wasi_sdk=installation)
     archive = _c_abi(identity_root).path("libc")
     original = archive.read_bytes()
     archive.write_bytes(original[:-1] + bytes([original[-1] ^ 1]))
 
-    after = _provision_toolchain(identity_root)
+    after = _provision_toolchain(identity_root, wasi_sdk=installation)
 
     assert after.digest == before.digest
     with pytest.raises(LlvmToolchainConfigError, match="filesystem tree differs"):
@@ -1825,10 +1901,11 @@ def test_managed_manifest_keeps_provisioned_generation_until_explicit_verificati
 def test_toolchain_manifest_is_relocatable_and_rejects_tampering(
     identity_root: Path, tmp_path: Path
 ) -> None:
+    _sdk(identity_root)
     relocated = tmp_path / "relocated-toolchain"
     shutil.copytree(identity_root, relocated)
-    first = _provision_toolchain(identity_root)
-    second = _provision_toolchain(relocated)
+    first = _provision_toolchain(identity_root, wasi_sdk=_sdk(identity_root))
+    second = _provision_toolchain(relocated, wasi_sdk=_sdk(relocated))
     assert first == second
     portable = json.dumps(first.to_dict(), sort_keys=True)
     assert str(identity_root) not in portable
