@@ -608,7 +608,7 @@ _REGISTRY_JSON = r"""{
     },
     {
       "name": "MOLT_GENERATOR",
-      "owner": "tools/gen_intrinsics.py",
+      "owner": "tools/generator_io.py",
       "summary": "Guard scope for code generators that launch subprocesses."
     },
     {
