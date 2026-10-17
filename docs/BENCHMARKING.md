@@ -96,8 +96,19 @@ all existing warmup runs, and all timed warm samples. Runtime profiler/leak
 modes are disabled for this user-output boundary. The board stores only hashes,
 stability axes, and the first mismatch sample identity. Missing or failed
 evidence is `RUN_ERROR`; a
-faster wrong or unstable output can never be GREEN. Historical schema-v3 boards
-remain historical and cannot be rebuilt/merged into schema v4 without remeasurement.
+faster wrong or unstable output can never be GREEN. Historical schema-v3/v4 boards
+remain historical and cannot be rebuilt/merged into schema v5 without remeasurement.
+A WASM scoreboard invocation admits one Node executable before benchmark builds:
+its exact resolved path, version, byte size and SHA-256 accompany the board and
+every WASM cell as `execution_host`. Cells reuse that plan; native-only boards
+perform no Node selection, probe or hashing and emit a null execution host.
+Direct `measure_cell` callers admit the same plan before building when they have
+not supplied one. A missing or replaced image refuses measurement; selection
+never silently changes between cells. History and merge compare version and
+content, independent of installation path or executable basename. Missing legacy
+engine facts remain unqualified. These are host observations, not proof of the
+bytes loaded by the operating system; release admission holds still apply.
+
 Scoreboard measurements consume the shared guard's typed process result directly.
 Guest output cannot supply elapsed time, RSS, exit classification or closure
 metadata. The optional WASM capture binds the original regular file before

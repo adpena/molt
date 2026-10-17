@@ -110,6 +110,7 @@ authority_inputs = [
   "src/molt/cli/runtime_paths.py",
   "src/molt/cli/runtime_wasm_build_policy.py",
   "src/molt/metric_ratios.py",
+  "src/molt/node_runtime.py",
   "src/molt/target_python.py",
   "tests/tools/test_check_perf_gate_wiring.py",
   "tests/tools/test_perf_authority.py",
@@ -128,6 +129,7 @@ authority_inputs = [
   "tools/perf_authority.py",
   "tools/perf_board.py",
   "tools/perf_causality.py",
+  "tools/perf_history.py",
   "tools/perf_methodology.py",
   "config/perf_methodology.toml",
   "tools/compat/comparison.py",
@@ -4288,6 +4290,7 @@ name = "runtime-cargo-input-custody"
 toolchains = ["python", "cargo"]
 description = "Runtime/compiler Cargo inputs: external resource freshness, Python generator signatures, producer transport, and execution failure custody."
 globs = [
+  "src/molt/cli/cargo_build_reads.py",
   "src/molt/cli/cargo_command.py",
   "src/molt/cli/cargo_execution.py",
   "src/molt/cli/cargo_resource_custody.py",
@@ -4299,6 +4302,7 @@ globs = [
   "src/molt/cli/runtime_identity_schema.py",
   "src/molt/cli/runtime_native_build.py",
   "src/molt/cli/runtime_native_generation.py",
+  "src/molt/cli/runtime_source_closure.py",
   "src/molt/cli/runtime_wasm_build_spec.py",
   "src/molt/cli/runtime_wasm_build_support.py",
   "src/molt/cli/runtime_wasm_pair_build.py",
@@ -4316,6 +4320,8 @@ globs = [
   "tests/test_runtime_build_python.py",
   "tests/cli/test_runtime_c_resource_custody.py",
   "tests/cli/test_runtime_build_identity.py",
+  "tests/cli/test_cargo_build_reads.py",
+  "tests/cli/test_runtime_source_identity.py",
   "tests/cli/test_runtime_native_generation.py",
   "tests/cli/test_runtime_wasm_single_compile.py",
   "tests/cli/test_compiler_identity.py",
@@ -4323,7 +4329,7 @@ globs = [
   "tests/cli/test_cargo_execution_failure_authority.py",
 ]
 gates = [
-  "python -m pytest -q -m 'not slow' tests/cli/test_runtime_c_resource_custody.py tests/cli/test_runtime_build_identity.py tests/cli/test_runtime_native_generation.py tests/cli/test_runtime_wasm_single_compile.py tests/cli/test_compiler_identity.py tests/cli/test_runtime_family_authority.py tests/cli/test_cargo_execution_failure_authority.py tests/test_toolchain_identity.py tests/test_runtime_build_python.py",
+  "python -m pytest -q -m 'not slow' tests/cli/test_cargo_build_reads.py tests/cli/test_runtime_source_identity.py tests/cli/test_runtime_c_resource_custody.py tests/cli/test_runtime_build_identity.py tests/cli/test_runtime_native_generation.py tests/cli/test_runtime_wasm_single_compile.py tests/cli/test_compiler_identity.py tests/cli/test_runtime_family_authority.py tests/cli/test_cargo_execution_failure_authority.py tests/test_toolchain_identity.py tests/test_runtime_build_python.py",
 ]
 
 # --- Rust 2024 FFI declaration authority ---------------------------------
@@ -4553,12 +4559,16 @@ globs = [
   "tools/bench.py", "tools/bench_audit.py", "tools/bench_reporting.py",
   "tools/safe_run.py", "tools/cold_start_decompose.py", "tools/perf_scoreboard*.py",
   "config/perf_methodology.toml", "tests/test_bench_tool.py", "tests/test_bench_audit.py",
+  "src/molt/node_runtime.py", "tests/test_node_runtime.py",
+  "tools/perf_schema.py", "tools/perf_history.py", "tools/perf_board.py", "tools/perf_authority.py",
+  "tests/tools/test_perf_schema.py", "tests/tools/test_perf_history.py",
+  "tests/tools/test_perf_board.py", "tests/tools/test_perf_authority.py",
   "tests/tools/test_direct_run_process_custody.py", "tests/tools/test_cold_start_decompose.py",
   "tests/tools/test_perf_profile_selection.py", "tests/tools/test_perf_release_integrity.py",
   "tests/tools/test_perf_scoreboard.py", "tests/tools/test_perf_methodology.py",
 ]
 gates = [
-  "python -m pytest -q -m 'not slow' tests/test_bench_tool.py tests/test_bench_audit.py tests/test_bench_report.py tests/test_temporary_artifacts.py tests/tools/test_direct_run_process_custody.py tests/tools/test_cold_start_decompose.py tests/tools/test_perf_profile_selection.py tests/tools/test_perf_release_integrity.py tests/tools/test_perf_scoreboard.py tests/tools/test_perf_methodology.py",
+  "python -m pytest -q -m 'not slow' tests/test_node_runtime.py tests/test_bench_tool.py tests/test_bench_audit.py tests/test_bench_report.py tests/test_temporary_artifacts.py tests/tools/test_direct_run_process_custody.py tests/tools/test_cold_start_decompose.py tests/tools/test_perf_profile_selection.py tests/tools/test_perf_release_integrity.py tests/tools/test_perf_scoreboard.py tests/tools/test_perf_methodology.py tests/tools/test_perf_schema.py tests/tools/test_perf_history.py tests/tools/test_perf_board.py tests/tools/test_perf_authority.py",
 ]
 
 # --- APPARATUS Wave 4 A11 claims custody + preflight + commit serializer ---

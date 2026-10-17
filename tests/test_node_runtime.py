@@ -177,3 +177,106 @@ def test_pinned_node_reads_child_tool_state_not_ambient(tmp_path, monkeypatch):
     )
     assert actual.path == discovery.executable
     assert not (tmp_path / "ambient").exists()
+
+
+def test_benchmark_admission_hashes_and_probes_once(monkeypatch, tmp_path):
+    import hashlib
+
+    image = tmp_path / "selected-node"
+    image.write_bytes(b"independent execution image")
+    monkeypatch.setattr(node_runtime, "resolve_executable", lambda *a, **kw: image)
+    probes = _probe(monkeypatch)
+    plan = node_runtime.admit_node_execution(
+        source_root=tmp_path, environment={"MOLT_NODE_BIN": str(image)}
+    )
+    for _ in range(5):
+        plan.verify()
+    assert probes == [(str(image), "-p", "process.versions.node")]
+    assert plan.as_record() == {
+        "kind": "node",
+        "executable": str(image),
+        "version": "24.1.0",
+        "identity": {
+            "entrypoint": image.name,
+            "content_filename": image.name,
+            "size": len(b"independent execution image"),
+            "sha256": hashlib.sha256(image.read_bytes()).hexdigest(),
+        },
+    }
+
+
+def test_ordinary_resolver_does_no_benchmark_identity_work(monkeypatch, tmp_path):
+    image = tmp_path / "ordinary-node"
+    monkeypatch.setattr(node_runtime, "resolve_executable", lambda *a, **kw: image)
+    monkeypatch.setattr(
+        node_runtime,
+        "executable_content_identity",
+        lambda *a, **kw: pytest.fail("ordinary runner must not hash Node"),
+    )
+    monkeypatch.setattr(
+        node_runtime,
+        "stable_regular_file_version",
+        lambda *a, **kw: pytest.fail("ordinary runner must not fence Node"),
+    )
+    _probe(monkeypatch)
+    assert (
+        node_runtime.resolve_node_runtime(
+            source_root=tmp_path, environment={"MOLT_NODE_BIN": str(image)}
+        ).path
+        == image
+    )
+
+
+@pytest.mark.parametrize("during_probe", [False, True])
+def test_admission_rejects_transient_image_replacement(
+    monkeypatch, tmp_path, during_probe
+):
+    image = tmp_path / "node"
+    original = b"original image"
+    image.write_bytes(original)
+    monkeypatch.setattr(node_runtime, "resolve_executable", lambda *a, **kw: image)
+
+    def replace_and_restore():
+        replacement = tmp_path / "replacement"
+        replacement.write_bytes(b"differentimage")
+        replacement.replace(image)
+        image.write_bytes(original)
+
+    def probe(command, **kwargs):
+        if during_probe:
+            replace_and_restore()
+        return subprocess.CompletedProcess(command, 0, "24.1.0\n", "")
+
+    monkeypatch.setattr(node_runtime.process_guard, "run_completed_command", probe)
+    if during_probe:
+        with pytest.raises(node_runtime.NodeRuntimeError, match="changed"):
+            node_runtime.admit_node_execution(
+                source_root=tmp_path, environment={"MOLT_NODE_BIN": str(image)}
+            )
+    else:
+        plan = node_runtime.admit_node_execution(
+            source_root=tmp_path, environment={"MOLT_NODE_BIN": str(image)}
+        )
+        replace_and_restore()
+        with pytest.raises(node_runtime.NodeRuntimeError, match="changed"):
+            plan.verify()
+
+
+def test_admitted_path_does_not_follow_retargeted_selection(monkeypatch, tmp_path):
+    first, second, selected = (tmp_path / name for name in ("first", "second", "node"))
+    first.write_bytes(b"first image")
+    second.write_bytes(b"second image")
+    try:
+        selected.symlink_to(first)
+    except OSError:
+        pytest.skip("host cannot create an executable-selection symlink")
+    monkeypatch.setattr(node_runtime, "resolve_executable", lambda *a, **kw: selected)
+    probes = _probe(monkeypatch)
+    plan = node_runtime.admit_node_execution(
+        source_root=tmp_path, environment={"MOLT_NODE_BIN": str(selected)}
+    )
+    selected.unlink()
+    selected.symlink_to(second)
+    plan.verify()
+    assert plan.runtime.path == first
+    assert probes == [(str(first), "-p", "process.versions.node")]

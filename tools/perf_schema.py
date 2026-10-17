@@ -23,7 +23,7 @@ from tools.compat.comparison import (
     compare_outputs,
 )
 
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 RED_THRESHOLD = 1.00
 UNSTABLE_CV = 0.20
 
@@ -511,6 +511,7 @@ class PerfCell:
     codon_ratio: float | None
     codon_equivalent: bool | None
     output_parity: dict[str, Any] | None
+    execution_host: dict[str, Any] | None
     log_artifact: str | None
     fact_class: str | None
     suspected_missing_fact: str | None
@@ -551,6 +552,7 @@ class PerfCell:
             codon_ratio=_optional_float(payload.get("codon_ratio")),
             codon_equivalent=_optional_bool(payload.get("codon_equivalent")),
             output_parity=_optional_dict(payload.get("output_parity")),
+            execution_host=_optional_dict(payload.get("execution_host")),
             log_artifact=_optional_str(payload.get("log_artifact")),
             fact_class=_optional_str(payload.get("fact_class")),
             suspected_missing_fact=_optional_str(payload.get("suspected_missing_fact")),
@@ -775,8 +777,101 @@ def output_parity_passes(value: object) -> bool:
     )
 
 
-def validate_cell(cell: Mapping[str, Any]) -> list[str]:
+def execution_host_problems(value: object, *, required: bool = True) -> list[str]:
+    """Validate observed engine facts; absent legacy facts never imply a host."""
+    import re
+    from pathlib import PurePosixPath, PureWindowsPath
+
+    if value is None and not required:
+        return []
+    from tools.perf_scoreboard_build_profiles import canonical_content_identity
+
+    if not isinstance(value, Mapping):
+        return ["execution_host missing; historical/unbound WASM result"]
     problems: list[str] = []
+    if (
+        set(value) != {"kind", "executable", "version", "identity"}
+        or value.get("kind") != "node"
+    ):
+        problems.append("execution_host must contain exact Node observation fields")
+    executable = value.get("executable")
+    if not isinstance(executable, str) or not (
+        PurePosixPath(executable).is_absolute()
+        or PureWindowsPath(executable).is_absolute()
+    ):
+        problems.append("execution_host executable must be an absolute selected path")
+    version = value.get("version")
+    if (
+        not isinstance(version, str)
+        or re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+(?:[-+][0-9A-Za-z.-]+)?", version)
+        is None
+    ):
+        problems.append("execution_host version must be an observed Node version")
+    if not canonical_content_identity(
+        value.get("identity"),
+        frozenset({"entrypoint", "content_filename", "size", "sha256"}),
+    ):
+        problems.append("execution_host lacks a canonical executable content identity")
+    return problems
+
+
+def execution_host_key(value: object) -> tuple[str, str, int, str]:
+    """Comparable engine bytes/version, independent of install path or basename."""
+    problems = execution_host_problems(value)
+    if problems:
+        raise ValueError("; ".join(problems))
+    assert isinstance(value, Mapping)
+    identity = value["identity"]
+    return (
+        str(value["kind"]),
+        str(value["version"]),
+        identity["size"],
+        identity["sha256"],
+    )
+
+
+def cell_execution_host_problems(cell: Mapping[str, Any]) -> list[str]:
+    value = cell.get("execution_host")
+    if cell.get("backend") == "wasm":
+        return execution_host_problems(value)
+    return [] if value is None else ["native execution_host must be null"]
+
+
+def cell_execution_hosts_comparable(
+    left: Mapping[str, Any], right: Mapping[str, Any]
+) -> bool:
+    if cell_execution_host_problems(left) or cell_execution_host_problems(right):
+        return False
+    if left.get("backend") == "wasm" and right.get("backend") == "wasm":
+        return execution_host_key(left.get("execution_host")) == execution_host_key(
+            right.get("execution_host")
+        )
+    return left.get("backend") != "wasm" and right.get("backend") != "wasm"
+
+
+def board_execution_host_problems(
+    host: Mapping[str, Any], cells: Sequence[Mapping[str, Any]]
+) -> list[str]:
+    """Bind all WASM cells to the board's admitted external execution engine."""
+    wasm = [cell for cell in cells if cell.get("backend") == "wasm"]
+    value = host.get("execution_host")
+    problems = execution_host_problems(value, required=bool(wasm))
+    for cell in cells:
+        problems.extend(
+            f"cell {cell.get('benchmark')}: {p}"
+            for p in cell_execution_host_problems(cell)
+        )
+    if not problems and wasm:
+        key = execution_host_key(value)
+        if any(execution_host_key(cell.get("execution_host")) != key for cell in wasm):
+            problems.append(
+                "WASM cell execution_host differs from board execution_host"
+            )
+    return problems
+
+
+def validate_cell(cell: Mapping[str, Any]) -> list[str]:
+    problems: list[str] = cell_execution_host_problems(cell)
     missing = REQUIRED_CELL_FIELDS - set(cell)
     if missing:
         problems.append(
@@ -924,6 +1019,7 @@ def validate_board(doc: Mapping[str, Any]) -> list[str]:
     except (TypeError, ValueError) as exc:
         problems.append(f"doc is not JSON-serializable: {exc}")
     cells = flatten_cells(doc)
+    problems.extend(board_execution_host_problems(_mapping(doc.get("host")), cells))
     if not cells:
         problems.append("no cells emitted")
     for cell in cells:

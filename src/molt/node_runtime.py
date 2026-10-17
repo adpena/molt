@@ -11,7 +11,14 @@ import subprocess
 from molt import process_guard
 from molt.source_root import compiler_source_root
 from molt.tool_releases import pinned_executable
-from molt.toolchain_identity import resolve_executable
+from molt.toolchain_identity import (
+    StableRegularFileVersion,
+    executable_content_identity,
+    resolve_executable,
+    stable_regular_file_version,
+    verify_stable_regular_file_identity,
+    verify_stable_regular_file_metadata,
+)
 
 
 MIN_NODE_MAJOR = 18
@@ -65,12 +72,11 @@ def _probe_node(
     return NodeRuntime(path=path, version=version, major=major)
 
 
-def resolve_node_runtime(
+def _select_node_path(
     *,
     source_root: Path | None = None,
     environment: Mapping[str, str] | None = None,
-    guard_prefix: str = "MOLT_CROSS",
-) -> NodeRuntime:
+) -> tuple[Path, Path]:
     """Select explicit, attested pinned, or PATH-selected Node.
 
     An invalid explicit selection never falls back. The provisioned release is
@@ -91,18 +97,14 @@ def resolve_node_runtime(
             path = resolve_executable(requested, environment=env, label="MOLT_NODE_BIN")
         except (OSError, ValueError) as exc:
             raise NodeRuntimeError(f"MOLT_NODE_BIN is invalid: {exc}") from exc
-        return _probe_node(
-            path, source_root=root, environment=env, guard_prefix=guard_prefix
-        )
+        return root, path
 
     try:
         pinned = pinned_executable("node", root, environ=env)
     except (OSError, RuntimeError, ValueError) as exc:
         raise NodeRuntimeError(f"pinned Node custody is invalid: {exc}") from exc
     if pinned is not None:
-        return _probe_node(
-            pinned, source_root=root, environment=env, guard_prefix=guard_prefix
-        )
+        return root, pinned
 
     try:
         path = resolve_executable("node", environment=env, label="Node host")
@@ -111,6 +113,100 @@ def resolve_node_runtime(
             f"Node >= {MIN_NODE_MAJOR} is unavailable on PATH; "
             "install Node or set MOLT_NODE_BIN"
         ) from exc
+    return root, path
+
+
+def resolve_node_runtime(
+    *,
+    source_root: Path | None = None,
+    environment: Mapping[str, str] | None = None,
+    guard_prefix: str = "MOLT_CROSS",
+) -> NodeRuntime:
+    """Resolve and probe an ordinary host without benchmark identity work."""
+    root, path = _select_node_path(source_root=source_root, environment=environment)
     return _probe_node(
-        path, source_root=root, environment=env, guard_prefix=guard_prefix
+        path,
+        source_root=root,
+        environment=os.environ if environment is None else environment,
+        guard_prefix=guard_prefix,
     )
+
+
+@dataclass(frozen=True, slots=True)
+class NodeExecutionPlan:
+    """One admitted benchmark host; observations are not used-byte attestation."""
+
+    runtime: NodeRuntime
+    entrypoint: str
+    content_filename: str
+    size: int
+    sha256: str
+    file_version: StableRegularFileVersion
+
+    def verify(self) -> None:
+        """Fence replacements without rehashing the engine for each sample.
+
+        Windows needs a handle ChangeTime query; POSIX needs one lstat. A closed
+        handle interval cannot prove which bytes the OS eventually executed.
+        """
+        try:
+            if os.name == "nt":
+                verify_stable_regular_file_identity(
+                    self.file_version, label="Node execution host"
+                )
+            else:
+                verify_stable_regular_file_metadata(
+                    self.file_version, label="Node execution host"
+                )
+        except (OSError, ValueError) as exc:
+            raise NodeRuntimeError(str(exc)) from exc
+
+    def as_record(self) -> dict[str, object]:
+        return {
+            "kind": "node",
+            "executable": str(self.runtime.path),
+            "version": self.runtime.version,
+            "identity": {
+                "entrypoint": self.entrypoint,
+                "content_filename": self.content_filename,
+                "size": self.size,
+                "sha256": self.sha256,
+            },
+        }
+
+
+def admit_node_execution(
+    *,
+    source_root: Path | None = None,
+    environment: Mapping[str, str] | None = None,
+    guard_prefix: str = "MOLT_BENCH",
+) -> NodeExecutionPlan:
+    """Select, hash and version-probe once, retaining that exact executable.
+
+    Shared selection/probe owners keep explicit/pinned/PATH policy identical to
+    ordinary runners. Resolve indirection before admission: later samples never
+    reselect an ambient Node or follow a retargeted entrypoint symlink.
+    """
+    root, selected = _select_node_path(source_root=source_root, environment=environment)
+    try:
+        path = selected.resolve(strict=True)
+        version = stable_regular_file_version(path, label="Node execution host")
+        identity = executable_content_identity(path, label="Node execution host")
+        runtime = _probe_node(
+            path,
+            source_root=root,
+            environment=os.environ if environment is None else environment,
+            guard_prefix=guard_prefix,
+        )
+        plan = NodeExecutionPlan(
+            runtime,
+            str(identity["entrypoint"]),
+            str(identity["content_filename"]),
+            int(identity["size"]),
+            str(identity["sha256"]),
+            version,
+        )
+        plan.verify()
+        return plan
+    except (OSError, ValueError) as exc:
+        raise NodeRuntimeError(f"Node execution admission failed: {exc}") from exc

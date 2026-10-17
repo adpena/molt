@@ -63,6 +63,7 @@ _RUNTIME_BUILD_TOOLING_RELPATHS = (
     "src/molt/_wasm_runtime_exports.py",
     "src/molt/cargo_execution_policy.py",
     "src/molt/capability_policy.py",
+    "src/molt/cli/cargo_build_reads.py",
     "src/molt/cli/cargo_command.py",
     "src/molt/cli/cargo_execution.py",
     "src/molt/cli/cargo_profiles.py",
@@ -136,10 +137,16 @@ def _runtime_tree_candidates(
     root: Path,
     *,
     logical_root: str,
+    directories: list[str],
 ) -> Iterator[tuple[str, Path]]:
     pending: list[tuple[Path, str]] = [(root, "")]
     while pending:
         directory, relative_prefix = pending.pop()
+        directories.append(
+            f"{logical_root}/{relative_prefix.replace(os.sep, '/')}"
+            if relative_prefix
+            else logical_root
+        )
         _input_report.report_directory(directory)
         try:
             with os.scandir(directory) as iterator:
@@ -348,6 +355,7 @@ class RuntimeTreeIndex:
     root_paths: dict[str, Path]
     missing: frozenset[str]
     root_files: dict[str, tuple[str, ...]]
+    root_directories: dict[str, tuple[str, ...]]
     sizes: dict[str, int]
     digests: dict[str, str]
 
@@ -356,6 +364,7 @@ class RuntimeTreeIndex:
         root_labels: dict[str, Path] = {}
         files: dict[str, _TreeInputCandidate] = {}
         root_files: dict[str, tuple[str, ...]] = {}
+        root_directories: dict[str, tuple[str, ...]] = {}
         missing: set[str] = set()
         for logical_root, raw_path in roots:
             try:
@@ -377,6 +386,7 @@ class RuntimeTreeIndex:
             if logical_root in root_files or logical_root in missing:
                 continue
             candidates: list[tuple[str, Path]] = []
+            directories: list[str] = []
             try:
                 root_stat = path.lstat()
             except FileNotFoundError:
@@ -386,7 +396,9 @@ class RuntimeTreeIndex:
                 candidates.append((logical_root, path))
             elif stat_module.S_ISDIR(root_stat.st_mode):
                 candidates.extend(
-                    _runtime_tree_candidates(path, logical_root=logical_root)
+                    _runtime_tree_candidates(
+                        path, logical_root=logical_root, directories=directories
+                    )
                 )
             else:
                 raise ValueError(
@@ -405,6 +417,7 @@ class RuntimeTreeIndex:
                     path=candidate,
                 )
             root_files[logical_root] = tuple(label for label, _path in candidates)
+            root_directories[logical_root] = tuple(directories)
         captures = _capture_tree_input_files(
             tuple(files[label] for label in sorted(files))
         )
@@ -417,6 +430,7 @@ class RuntimeTreeIndex:
             root_paths=root_labels,
             missing=frozenset(missing),
             root_files=root_files,
+            root_directories=root_directories,
             sizes={label: size for label, (size, _digest) in captures.items()},
             digests={label: digest for label, (_size, digest) in captures.items()},
         )
@@ -427,6 +441,7 @@ class RuntimeTreeIndex:
         """Project the exact ``_tree_identity`` summary of captured ``roots``."""
         root_labels: set[str] = set()
         labels: set[str] = set()
+        directories: set[str] = set()
         missing: list[str] = []
         for logical_root, raw_path in roots:
             if self.root_paths.get(logical_root) != raw_path.resolve(strict=False):
@@ -438,12 +453,17 @@ class RuntimeTreeIndex:
                 missing.append(logical_root)
             else:
                 labels.update(self.root_files[logical_root])
+                directories.update(self.root_directories[logical_root])
         if require_all and missing:
             raise ValueError(
                 "required runtime inputs are missing: " + ", ".join(missing)
             )
         hasher = hashlib.sha256()
         total_size = 0
+        for label in sorted(directories):
+            hasher.update(b"directory\0")
+            hasher.update(label.encode())
+            hasher.update(b"\0")
         for label in sorted(labels):
             size = self.sizes[label]
             total_size += size

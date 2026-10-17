@@ -332,6 +332,9 @@ class Cell:
     compile_time_s: float | None = None
     build_observation: dict[str, Any] | None = None
 
+    # Selected execution host observation; native has no external engine.
+    execution_host: dict[str, object] | None = None
+
     # Run facts.
     run_blocked: bool = False
     run_blocked_reason: str | None = None
@@ -744,6 +747,10 @@ def _dimensional_improvement(cell: "Cell", baseline_cell: dict | None) -> str | 
     flip but materially better elsewhere" lane (Rule 4).
     """
     if not baseline_cell:
+        return None
+    from tools.perf_schema import cell_execution_hosts_comparable
+
+    if not cell_execution_hosts_comparable(vars(cell), baseline_cell):
         return None
     wins: list[str] = []
 

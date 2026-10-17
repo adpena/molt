@@ -78,6 +78,21 @@ def test_tree_identity_is_the_index_projection(release_source):
         )
 
 
+def test_empty_directory_addition_invalidates_a_source_receipt(release_source):
+    recorded = _recorded(release_source, ())
+    added = release_source / "runtime/core/new-headers"
+    added.mkdir()
+    with pytest.raises(ValueError, match="source"):
+        identity.verify_runtime_source_trees(release_source, [((), recorded)])
+    changed = _recorded(release_source, ())
+    assert changed["file_count"] == recorded["file_count"]
+    assert changed["total_size"] == recorded["total_size"]
+    added.rmdir()
+    with pytest.raises(ValueError, match="source"):
+        identity.verify_runtime_source_trees(release_source, [((), changed)])
+    assert _recorded(release_source, ()) == recorded
+
+
 def test_a_receipt_from_other_sources_is_rejected(release_source):
     recorded = [_recorded(release_source, features) for features in _FEATURES]
     (release_source / "runtime" / "net" / "lib.rs").write_bytes(b"patched")

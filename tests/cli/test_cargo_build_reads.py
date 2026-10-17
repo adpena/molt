@@ -22,6 +22,13 @@ def _escape(entry: str) -> str:
     return entry.replace(" ", "\\ ")
 
 
+def _env_line(name: str, value: str) -> str:
+    def encoded(text: str) -> str:
+        return text.replace("\\", "\\\\").replace("\n", "\\n").replace("\r", "\\r")
+
+    return f"# env-dep:{encoded(name)}={encoded(value)}"
+
+
 def _unit(
     deps: Path,
     package: Path | None,
@@ -38,7 +45,7 @@ def _unit(
     dep_info = deps / f"{stem}.d"
     lines = [f"{_escape(os.fspath(output))}: {' '.join(map(_escape, entries))}", ""]
     lines += [f"{_escape(entry)}:" for entry in entries]
-    lines += [""] + [f"# env-dep:{k}={v}" for k, v in (environment or {}).items()]
+    lines += [""] + [_env_line(k, v) for k, v in (environment or {}).items()]
     _write(dep_info, "\n".join(lines) + "\n")
     _write(output)
     package_id = (
@@ -185,7 +192,7 @@ def test_build_scripts_contribute_their_declared_inputs(workspace) -> None:
         "vendor/object/README.md",
         "vendor/object/src/lib.rs",
     ]
-    assert _relative(root, result.directories) == ["include/shared"]
+    assert _relative(root, result.directories) == ["include/shared", "vendor/object"]
     assert ("LIBSQLITE3_FLAGS", None) in result.environment
 
 
@@ -334,7 +341,7 @@ def test_uplifted_units_resolve_to_the_dep_info_this_build_used(workspace) -> No
         _write(
             deps / f"crate-{metadata}.d",
             f"{_escape(os.fspath(deps / f'libcrate-{metadata}.a'))}: {_escape(source)}\n"
-            f"\n# env-dep:OUT_DIR={out_dir}\n",
+            "\n" + _env_line("OUT_DIR", out_dir) + "\n",
         )
     # Another local unit in deps tells the reader where this build's units live.
     helper = _unit(deps, root / "vendor" / "zlib", "zlib", ["vendor/zlib/src/lib.rs"])
@@ -370,7 +377,7 @@ def test_an_ambiguous_uplifted_unit_is_refused(workspace) -> None:
     for metadata in ("aaaaaaaaaaaaaaaa", "bbbbbbbbbbbbbbbb"):
         _write(
             deps / f"crate-{metadata}.d",
-            f"x: runtime/crate/src/lib.rs\n\n# env-dep:OUT_DIR={out_dir}\n",
+            "x: runtime/crate/src/lib.rs\n\n" + _env_line("OUT_DIR", out_dir) + "\n",
         )
     helper = _unit(deps, root / "vendor" / "zlib", "zlib", ["vendor/zlib/src/lib.rs"])
     _write(Path(out_dir).parent / "output", "cargo:rerun-if-changed=build.rs\n")
@@ -392,3 +399,155 @@ def test_an_ambiguous_uplifted_unit_is_refused(workspace) -> None:
     )
     with pytest.raises(reads.CargoBuildReadsError, match="several dep-info"):
         _read(workspace, helper, executed, root_unit)
+
+
+@pytest.mark.parametrize("declaration", ["directory", "package"])
+@pytest.mark.parametrize("populated", [False, True])
+def test_publication_requires_the_watched_root_not_only_present_files(
+    workspace, monkeypatch, declaration: str, populated: bool
+) -> None:
+    from molt.cli import runtime_build_identity, runtime_native_build
+
+    root, crate, target = workspace
+    watched = root / "include" / "new-headers" if declaration == "directory" else crate
+    watched.mkdir(parents=True, exist_ok=True)
+    if populated:
+        _write(watched / "existing.h")
+    # Individual current files cannot cover future additions to a watched root.
+    covered = tuple(path for path in root.rglob("*") if path.is_file())
+    roots = tuple((path.relative_to(root).as_posix(), path) for path in covered)
+    before = runtime_build_identity._tree_identity(roots, require_all=True)
+    message = _unit(target / "deps", crate, "crate", ["runtime/crate/src/lib.rs"])
+    script = _script(
+        target / "build",
+        crate,
+        "crate",
+        ["cargo:rerun-if-changed=../../include/new-headers"]
+        if declaration == "directory"
+        else [],
+    )
+    plan = SimpleNamespace(
+        cargo_plan=SimpleNamespace(environment={"CARGO_TARGET_DIR": os.fspath(target)}),
+        project_root=root,
+        fingerprint_features=(),
+        runtime_state=None,
+        cmd=["cargo", "rustc"],
+        json_output=True,
+    )
+    build = SimpleNamespace(stdout=message + "\n" + script, stderr="", returncode=0)
+    monkeypatch.setattr(
+        runtime_native_build, "runtime_source_paths", lambda *_: covered
+    )
+    monkeypatch.setattr(
+        runtime_native_build, "runtime_build_tooling_paths", lambda *_: ()
+    )
+    failures = []
+
+    def refuse(_state, **fields):
+        failures.append(fields)
+        return False
+
+    def publish(*_args, **_kwargs):
+        pytest.fail("a generation with an uncovered watched root reached publication")
+
+    monkeypatch.setattr(runtime_native_build, "_record_native_runtime_failure", refuse)
+    monkeypatch.setattr(
+        runtime_native_build, "publish_native_runtime_generation", publish
+    )
+    assert runtime_native_build._publish_native_runtime_build(plan, build) is False
+    assert failures[0]["stage"] == "build-input-coverage"
+    assert watched.relative_to(root).as_posix() in failures[0]["summary"]
+    _write(watched / "added.h")
+    assert runtime_build_identity._tree_identity(roots, require_all=True) == before
+
+    # A recursive identity root covers additions without enumerating files twice.
+    monkeypatch.setattr(
+        runtime_native_build, "runtime_source_paths", lambda *_: (root,)
+    )
+    assert (
+        runtime_native_build._runtime_build_inputs_outside_identity(plan, build) == ()
+    )
+
+
+def test_uplifted_candidate_decodes_literal_windows_out_dir(tmp_path: Path) -> None:
+    dep_info = _write(
+        tmp_path / "crate-1.d",
+        "crate: src/lib.rs\n# env-dep:OUT_DIR=C:\\\\build\\\\target\\\\out\n",
+    )
+    message = {
+        "target": {"kind": ["staticlib"], "name": "crate"},
+        "filenames": [os.fspath(tmp_path / "release" / "libcrate.a")],
+    }
+    assert (
+        reads._unit_dep_info(message, (tmp_path,), r"C:\build\target\out") == dep_info
+    )
+
+
+def test_dep_info_decodes_environment_names_and_values(tmp_path: Path) -> None:
+    dep_info = _write(
+        tmp_path / "unit.d",
+        "out: src/lib.rs\tinclude.h\n# env-dep:LINE\\nNAME=line1\\nline2\\r\\\\\n",
+    )
+    files, environment = reads._read_dep_info(dep_info)
+    assert files == ("src/lib.rs", "include.h")
+    assert environment == {"LINE\nNAME": "line1\nline2\r\\"}
+
+
+@pytest.mark.parametrize(
+    "line",
+    [
+        "# env-dep:NAME=bad\\q",
+        "# env-dep:NAME=end\\",
+        "# env-dep:BAD\\q=value",
+        "out: src\\",
+    ],
+)
+def test_malformed_dep_info_is_refused(tmp_path: Path, line: str) -> None:
+    dep_info = _write(
+        tmp_path / "unit.d",
+        "out: src/lib.rs\n" + line + "\n" if line.startswith("#") else line + "\n",
+    )
+    with pytest.raises(reads.CargoBuildReadsError):
+        reads._read_dep_info(dep_info)
+
+
+def test_local_package_file_uri_preserves_unc_authority(monkeypatch) -> None:
+    import nturl2path
+
+    converted = []
+
+    def windows_file_path(url_path):
+        converted.append(url_path)
+        return nturl2path.url2pathname(url_path)
+
+    monkeypatch.setattr(reads, "url2pathname", windows_file_path)
+    actual = reads._local_package_root("path+file://server/share/my%20pkg#pkg@0.1.0")
+    assert converted == ["//server/share/my%20pkg"]
+    assert actual == Path(os.path.realpath(r"\\server\share\my pkg"))
+
+
+def test_uninspectable_candidate_cannot_establish_uplifted_uniqueness(tmp_path) -> None:
+    _write(tmp_path / "crate-1.d", "x: src/lib.rs\n# env-dep:OUT_DIR=/out\n")
+    _write(tmp_path / "crate-2.d", "x: src/lib.rs\n# env-dep:OUT_DIR=/bad\\q\n")
+    message = {
+        "target": {"kind": ["staticlib"], "name": "crate"},
+        "filenames": [os.fspath(tmp_path / "release" / "libcrate.a")],
+    }
+    with pytest.raises(reads.CargoBuildReadsError):
+        reads._unit_dep_info(message, (tmp_path,), "/out")
+
+
+def test_build_script_trimming_retains_every_declared_input(workspace) -> None:
+    root, crate, target = workspace
+    message = _unit(target / "deps", crate, "crate", ["runtime/crate/src/lib.rs"])
+    script = _script(
+        target / "build",
+        crate,
+        "crate",
+        [
+            "cargo:rerun-if-changed=build.rs",
+            "  cargo:rerun-if-changed=../../include/api.h  ",
+        ],
+    )
+    result = _read(workspace, message, script)
+    assert root.resolve() / "include/api.h" in result.files

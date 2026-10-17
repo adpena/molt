@@ -349,3 +349,73 @@ def test_history_index_bytes_do_not_depend_on_the_clock(tmp_path: Path) -> None:
     assert (first / "cpython" / "index.json").read_bytes() == (
         second / "cpython" / "index.json"
     ).read_bytes()
+
+
+def _wasm_board(
+    *, path="/opt/node", version="24.1.0", digest="a" * 64, revision="a" * 40
+):
+    from tests.tools.test_perf_schema import _node_observation
+
+    engine = _node_observation(path=path, version=version, digest=digest)
+    cell = _cell(backend="wasm", target="wasm", execution_host=engine)
+    source = _source_doc([cell], git_rev=revision)
+    source["host"]["execution_host"] = engine
+    return pb.project_all(source)["cpython"]
+
+
+def test_history_class_and_address_bind_node_bytes_and_version():
+    a = _wasm_board()
+    copied = _wasm_board(path="D:/node/copied.exe")
+    copied["host"]["execution_host"]["identity"]["entrypoint"] = "copied.exe"
+    copied["host"]["execution_host"]["identity"]["content_filename"] = "copied.exe"
+    assert ph.identity_class(a) == ph.identity_class(copied)
+    assert ph.board_identity(a) == ph.board_identity(copied)
+    for different in (_wasm_board(digest="b" * 64), _wasm_board(version="24.2.0")):
+        assert ph.identity_class(a) != ph.identity_class(different)
+        assert ph.board_identity(a) != ph.board_identity(different)
+        import pytest
+
+        with pytest.raises(ValueError, match="not comparable"):
+            ph.regressions_vs_baseline(a, different)
+
+
+def test_history_does_not_record_or_compare_unbound_legacy_engine(tmp_path):
+    import pytest
+
+    board = _wasm_board()
+    board["host"].pop("execution_host")
+    with pytest.raises(ValueError, match="execution_host"):
+        ph.record_board(board, history_dir=tmp_path)
+    report = ph.regression_gate({"cpython": board}, history_dir=tmp_path)
+    assert report["gate_fails"] and "execution host" in report["errors"][0]
+
+
+def test_history_index_cannot_launder_changed_engine_bytes(tmp_path):
+    import json
+
+    board = _wasm_board()
+    entry = ph.record_board(board, history_dir=tmp_path)
+    path = tmp_path / entry.path
+    forged = _wasm_board(digest="b" * 64)
+    path.write_text(json.dumps(forged), encoding="utf-8")
+    assert (
+        ph.latest_authoritative_baseline(
+            "cpython", ph.identity_class(board), history_dir=tmp_path
+        )
+        is None
+    )
+
+
+def test_history_uses_same_image_at_new_path_but_not_same_version_new_image(tmp_path):
+    base = _wasm_board()
+    ph.record_board(base, history_dir=tmp_path)
+    relocated = _wasm_board(path="/other/node", revision="b" * 40)
+    report = ph.regression_gate({"cpython": relocated}, history_dir=tmp_path)
+    assert report["boards"]["cpython"]["baseline_git_rev"] == "a" * 40
+    changed = _wasm_board(digest="b" * 64, revision="b" * 40)
+    assert (
+        ph.regression_gate({"cpython": changed}, history_dir=tmp_path)["boards"][
+            "cpython"
+        ]["baseline"]
+        is None
+    )

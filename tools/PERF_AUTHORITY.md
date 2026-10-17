@@ -25,6 +25,25 @@ that actually ran, including its profile, feature set and runtime identity, and
 fail closed when that execution identity is absent. Profile declarations and
 source-checkout measurements do not qualify the installed release matrix.
 
+WASM scoreboard execution records one admitted Node plan per invocation in
+schema-v5 board and cell `execution_host` facts. The path names the exact selected
+executable; comparability uses engine kind, observed version, byte size and
+SHA-256 rather than its installation path or basename. A different engine image
+or version splits history and refuses merging. Missing historical observations
+are unqualified; no legacy board is relabelled by rebuilding a summary.
+
+This follows [pyperf's runtime metadata model](https://pyperf.readthedocs.io/en/latest/api.html#metadata),
+which records executable, implementation and version. Molt adds canonical content
+identity because a version string cannot distinguish locally rebuilt engines.
+Admission hashes once and probes once for a WASM invocation, then reuses the typed
+plan across cells. Native-only invocations do neither. Pre-build and surrounding
+sample metadata fences detect observed replacement without repeated image reads:
+POSIX uses `lstat`, Windows queries ChangeTime through a handle. Their cost is
+constant per boundary and independent of image size; the initial read scales
+with image bytes. No added work runs inside the guest, and ordinary Node consumers
+retain their existing lightweight resolver. This is observed execution-host
+identity, not loaded-byte attestation or installed-release qualification.
+
 LLVM is required by E2 and the verified-subset policy. The production compiler
 feature set includes LLVM through the admitted, pinned static SDK path. That
 build policy is not a six-host execution or performance result. Installed

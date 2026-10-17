@@ -299,6 +299,7 @@ def _grouped_table(
             "benchmark": cell.get("benchmark"),
             "target": cell.get("target"),
             "backend": cell.get("backend"),
+            "execution_host": cell.get("execution_host"),
             "profile": cell.get("profile"),
             "warm_speedup": cell.get("warm_speedup"),
             "cold_speedup": cell.get("cold_speedup"),
@@ -368,6 +369,16 @@ def project(
     source board's authoritative flag — a non-authoritative source can only emit
     ADVISORY warm verdicts (Rule 3)."""
     owned = projection.select(cells)
+    from tools.perf_schema import board_execution_host_problems
+
+    host = dict(source_meta.get("host", {}))
+    host_problems = board_execution_host_problems(host, owned)
+    if source_meta.get("schema_version") != SCHEMA_VERSION:
+        host_problems.append("historical source schema; remeasurement required")
+    if host_problems:
+        board_authoritative = False
+    if not any(cell.get("backend") == "wasm" for cell in owned):
+        host["execution_host"] = None
     outcomes: dict[str, GateOutcome] = {}
     for cell in owned:
         outcomes[_cell_key(cell)] = projection.gate_predicate(
@@ -430,8 +441,13 @@ def project(
                 "divergence(s): a lane regressed where another lane is green"
             )
 
+    if host_problems:
+        summary["board_state"] = GATE_FAIL if owned else GATE_ADVISORY
+        summary["board_reason"] = "; ".join(host_problems)
+
     return {
         "schema_version": SCHEMA_VERSION,
+        "source_schema_version": source_meta.get("schema_version"),
         "kind": projection.kind,
         "board": projection.name,
         "description": projection.description,
@@ -448,7 +464,8 @@ def project(
         "red_threshold": RED_THRESHOLD,
         "group_by": list(projection.group_by),
         "provenance": dict(source_meta.get("provenance", {})),
-        "host": dict(source_meta.get("host", {})),
+        "host": host,
+        "execution_host_problems": host_problems,
         "summary": summary,
         "table": _grouped_table(owned, outcomes, projection.group_by),
     }
@@ -469,6 +486,7 @@ def project_all(
     from tools.perf_authority import scoreboard_release_eligibility
 
     source_meta = {
+        "schema_version": source_doc.get("schema_version"),
         "e2_eligibility": scoreboard_release_eligibility(source_doc),
         "generated_at": source_doc.get("generated_at"),
         "git_rev": source_doc.get("git_rev"),

@@ -62,6 +62,10 @@ def _cell(**overrides: object) -> dict[str, object]:
         "repeat_stability": "STABLE_ABOVE",
     }
     cell.update(overrides)
+    if cell["backend"] == "wasm":
+        from tests.tools.test_perf_schema import _node_observation
+
+        cell["execution_host"] = _node_observation()
     return cell
 
 
@@ -87,6 +91,9 @@ def _source_doc(cells: list[dict[str, object]], *, authoritative: bool = True) -
             "methodology_locked": True,
         },
         "host": {
+            "execution_host": next(
+                (c["execution_host"] for c in cells if c["backend"] == "wasm"), None
+            ),
             "platform": "linux",
             "arch": "x86_64",
             "pointer_bits": 64,
@@ -304,3 +311,47 @@ def test_board_cli_runs_when_launched_by_path_outside_the_checkout(
         (out_dir / f"cpython_{'a' * 12}.json").read_text(encoding="utf-8")
     )
     assert board["e2_eligibility"]["scope"] == "canonical-core-E2"
+
+
+def test_wasm_host_facts_propagate_and_missing_facts_are_unqualified():
+    cell = _cell(backend="wasm", target="wasm")
+    source = _source_doc([cell])
+    board = pb.project_all(source)["cpython"]
+    assert board["host"]["execution_host"] == cell["execution_host"]
+    assert (
+        next(iter(next(iter(board["table"].values())).values()))["release-fast"][
+            "execution_host"
+        ]
+        == cell["execution_host"]
+    )
+    assert board["source_authoritative"] is True
+    source["host"].pop("execution_host")
+    historical = pb.project_all(source)["cpython"]
+    assert historical["source_authoritative"] is False
+    assert historical["execution_host_problems"]
+    assert historical["summary"]["board_state"] == pb.GATE_FAIL
+
+
+def test_each_projection_preserves_its_cells_exact_execution_host():
+    cell = _cell(
+        backend="wasm",
+        target="wasm",
+        pypy_ratio=2.0,
+        codon_ratio=2.0,
+        codon_equivalent=True,
+    )
+    source = _source_doc([cell])
+    for board in pb.project_all(source).values():
+        leaves = []
+
+        def walk(node):
+            if "gate" in node:
+                leaves.append(node)
+            else:
+                for child in node.values():
+                    walk(child)
+
+        walk(board["table"])
+        assert len(leaves) == 1
+        assert leaves[0]["execution_host"] == cell["execution_host"]
+        assert board["host"]["execution_host"] == cell["execution_host"]

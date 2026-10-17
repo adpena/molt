@@ -54,7 +54,7 @@ def profile_binding_problems(
     ]
 
 
-def _canonical_content_identity(identity: object, fields: frozenset[str]) -> bool:
+def canonical_content_identity(identity: object, fields: frozenset[str]) -> bool:
     import re
 
     return (
@@ -82,7 +82,7 @@ def _measured_runtime_digest(observation: Mapping[str, object]) -> str | None:
     if runtime is None:
         return None
     identity = runtime.get("identity") if isinstance(runtime, Mapping) else None
-    if not _canonical_content_identity(
+    if not canonical_content_identity(
         identity, frozenset({"filename", "size", "sha256"})
     ):
         error = runtime.get("error") if isinstance(runtime, Mapping) else None
@@ -106,7 +106,7 @@ def record_measured_build_identity(
 
     compiler = observation.get("compiler") if isinstance(observation, Mapping) else None
     identity = compiler.get("identity") if isinstance(compiler, Mapping) else None
-    if not _canonical_content_identity(
+    if not canonical_content_identity(
         identity, frozenset({"entrypoint", "content_filename", "size", "sha256"})
     ):
         raise ValueError("measured build lacks a canonical selected compiler identity")

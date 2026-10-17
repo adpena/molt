@@ -704,6 +704,7 @@ def test_runtime_tooling_authority_excludes_orthogonal_cli_files(
     }
     assert "pyproject.toml" in authority_paths
     assert "src/molt/cli/cargo_command.py" in authority_paths
+    assert "src/molt/cli/cargo_build_reads.py" in authority_paths
     assert "src/molt/pyproject.toml" not in authority_paths
     for relative in authority_paths:
         path = tmp_path / relative
@@ -716,7 +717,7 @@ def test_runtime_tooling_authority_excludes_orthogonal_cli_files(
     unrelated.write_text("# unrelated 2\n", encoding="utf-8")
     _, after_unrelated = identity._capture_runtime_build_trees(tmp_path, ())
     assert "src/molt/rust_toolchain.py" in authority_paths
-    owned = tmp_path / "src/molt/rust_toolchain.py"
+    owned = tmp_path / "src/molt/cli/cargo_build_reads.py"
     owned.write_text("# runtime authority changed\n", encoding="utf-8")
     _, after_owned = identity._capture_runtime_build_trees(tmp_path, ())
 

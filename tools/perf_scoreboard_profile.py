@@ -696,6 +696,7 @@ def _emit_hot_only_board(
         "symbolicate_mechanism": f"{MOLT_KEEP_SYMBOLS_ENV}=1 (link-strip + post-link strip skipped)",
         "launch_refusal_fraction": LAUNCH_DOMINANCE_REFUSAL_FRACTION,
         "cpython_baseline": cpython_version,
+        "execution_host": None,
         "quiescence": quiescence,
         "methodology": (
             "Inner-repeat the benchmark main() N times in ONE process so launch/"

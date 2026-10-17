@@ -406,6 +406,13 @@ def diff_against_baseline(
         old = prior_cells.get(key)
         if old is None:
             continue
+        from tools.perf_schema import cell_execution_hosts_comparable
+
+        if not cell_execution_hosts_comparable(c, old):
+            newly_red.append(
+                f"{key}: INCOMPARABLE execution host; no regression comparison"
+            )
+            continue
         new_ratio = c.get("warm_speedup")
         old_ratio = old.get("warm_speedup")
         # "Newly gating" = a green-or-warn cell that became a hard gate fail.
@@ -633,6 +640,7 @@ def _checkpoint(
     cpython_identity: dict | None = None,
     pypy_version: str | None = None,
     codon_version: str | None = None,
+    execution_host: dict | None = None,
 ) -> None:
     from tools.perf_scoreboard import build_scoreboard_doc
 
@@ -647,5 +655,6 @@ def _checkpoint(
         cpython_identity=cpython_identity,
         pypy_version=pypy_version,
         codon_version=codon_version,
+        execution_host=execution_host,
     )
     _write_scoreboard_doc_atomic(path, doc, context=f"checkpoint {path}")

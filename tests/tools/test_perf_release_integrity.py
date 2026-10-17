@@ -668,3 +668,102 @@ def test_measure_cell_preserves_replaced_allocation_and_original_error(
     allocated.rmdir()
     moved.rename(allocated)
     owner.cleanup()
+
+
+def _wasm_merge_source(benchmark, engine):
+    from tools import perf_schema
+
+    doc = _merge_source("wasm", benchmark)
+    cell = perf_schema.flatten_cells(doc)[0]
+    cell["execution_host"] = copy.deepcopy(engine)
+    cell["target"] = "wasm"
+    cell["profile"] = "wasm-release"
+    doc["scoreboard"] = {benchmark: {"wasm": {"wasm": {"wasm-release": cell}}}}
+    doc["provenance"]["backend_binary_identity"] = {"wasm/wasm-release": "binary-wasm"}
+    doc["provenance"]["runtime_identity"] = {}
+    doc["host"]["execution_host"] = copy.deepcopy(engine)
+    return doc
+
+
+@pytest.mark.parametrize(
+    "difference",
+    ["bytes", "version", "missing", "relocated", "native-union", "missing-budget"],
+)
+def test_merge_execution_engine_comparability(
+    monkeypatch, tmp_path, capsys, difference
+):
+    from tests.tools.test_perf_schema import _node_observation
+    from tools import perf_schema
+
+    import json
+    from tools import perf_scoreboard_model as model
+
+    # Exercise the actual policy-file loader and lookup. This independently
+    # supplied test policy is not a new live WASM budget or a lookup bypass.
+    policy = {"budgets": {"native/release-fast": {"budget_ms": 1000}}}
+    if difference != "missing-budget":
+        policy["budgets"]["wasm/wasm-release"] = {"budget_ms": 1000}
+    policy_path = tmp_path / "synthetic-cold-policy.json"
+    policy_path.write_text(json.dumps(policy), encoding="utf-8")
+    monkeypatch.setattr(model, "COLD_START_BUDGET_PATH", policy_path)
+
+    engine = _node_observation()
+    a = _wasm_merge_source(CANONICAL_PERF_BENCHMARKS[0], engine)
+    b = _wasm_merge_source(CANONICAL_PERF_BENCHMARKS[1], engine)
+    if difference == "native-union":
+        a = _merge_source("native", CANONICAL_PERF_BENCHMARKS[0])
+    elif difference == "missing":
+        b["host"].pop("execution_host")
+        perf_schema.flatten_cells(b)[0].pop("execution_host")
+    else:
+        changed = b["host"]["execution_host"]
+        if difference == "bytes":
+            changed["identity"]["sha256"] = "b" * 64
+        elif difference == "version":
+            changed["version"] = "24.2.0"
+        elif difference == "relocated":
+            changed["executable"] = "D:/node/renamed.exe"
+            changed["identity"]["entrypoint"] = "renamed.exe"
+            changed["identity"]["content_filename"] = "renamed.exe"
+        perf_schema.flatten_cells(b)[0]["execution_host"] = copy.deepcopy(changed)
+    rc, merged = _merge(tmp_path, [a, b])
+    if difference in {"bytes", "version", "missing", "missing-budget"}:
+        assert rc == 3 and merged is None
+        if difference == "missing-budget":
+            assert (
+                "cold-start budget missing or invalid for wasm/wasm-release"
+                in capsys.readouterr().err
+            )
+    else:
+        assert rc == 0 and perf_schema.validate_board(merged) == []
+        cells = perf_schema.flatten_cells(merged)
+        assert (
+            cells[1]["execution_host"]["executable"]
+            == b["host"]["execution_host"]["executable"]
+        )
+        assert merged["host"]["execution_host"] is not None
+
+
+def test_release_receiver_requires_engine_facts_without_relaxing_other_holds():
+    from tests.tools.test_perf_schema import _node_observation
+    from tools import perf_authority, perf_schema
+
+    cell = winning_cell()
+    cell["backend"] = "wasm"
+    assert any("execution_host" in problem for problem in release_cell_problems(cell))
+    cell["execution_host"] = _node_observation()
+    assert release_cell_problems(cell) == []
+    doc = _wasm_merge_source(CANONICAL_PERF_BENCHMARKS[0], cell["execution_host"])
+    assert not perf_authority.scoreboard_release_eligibility(doc)["eligible"]
+    perf_schema.flatten_cells(doc)[0]["execution_host"]["version"] = "24.2.0"
+    assert any(
+        "execution_host differs" in p
+        for p in perf_authority.scoreboard_observed_toolchain_problems(doc)
+    )
+
+
+def test_schema_four_is_never_promoted_by_merge(tmp_path):
+    doc = _merge_source("native", CANONICAL_PERF_BENCHMARKS[0])
+    doc["schema_version"] = 4
+    rc, merged = _merge(tmp_path, [doc])
+    assert rc == 3 and merged is None
