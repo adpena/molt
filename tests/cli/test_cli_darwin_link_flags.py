@@ -333,10 +333,13 @@ def test_apple_ld_signs_a_private_stage_as_the_published_binary(
         native_link_output_flags,
     )
     from molt.native_artifact_header import read_macho_code_signature
+    from molt.platform_toolchain import select_darwin_toolchain
 
-    clang = shutil.which("clang")
-    if clang is None:
-        pytest.skip("clang is unavailable")
+    # This oracle tests Apple's linker across both Mach-O architectures. A
+    # PATH-selected LLVM may intentionally contain only the host code generator.
+    toolchain = select_darwin_toolchain(dict(os.environ))
+    environment = {**os.environ, **toolchain.environment()}
+    clang = str(toolchain.tools["clang"])
     target = resolve_native_target_spec(
         "aarch64-apple-darwin" if arch == "arm64" else "x86_64-apple-darwin"
     )
@@ -351,6 +354,7 @@ def test_apple_ld_signs_a_private_stage_as_the_published_binary(
     obj = tmp_path / "main.o"
     run_cli_test_process(
         [clang, "-arch", arch, "-c", str(source), "-o", str(obj)],
+        env=environment,
         check=True,
         timeout=60,
     )
@@ -361,6 +365,7 @@ def test_apple_ld_signs_a_private_stage_as_the_published_binary(
     for stage in stages:
         run_cli_test_process(
             [clang, "-arch", arch, str(obj), "-o", str(stage), *flags],
+            env=environment,
             check=True,
             timeout=60,
         )

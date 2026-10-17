@@ -449,9 +449,9 @@ def _corrupt(image: bytearray, offset: int, fmt: str, value: int) -> bytes:
 
 def _unterminated_identifier(image: bytearray) -> bytes:
     directory = 8192 + 20
-    (length,) = struct.unpack_from(">I", image, directory + 4)
-    image[directory + length - 1] = ord("A")
-    return _corrupt(image, directory + 20, ">I", length - 1)
+    (hash_offset,) = struct.unpack_from(">I", image, directory + 16)
+    image[directory + 88 : directory + hash_offset] = b"A" * (hash_offset - 88)
+    return bytes(image)
 
 
 @pytest.mark.parametrize(
@@ -479,3 +479,184 @@ def test_code_signature_belongs_to_one_thin_macho_image() -> None:
     for payload in (elf_header(), fat_macho((signed_macho_image("app"),))):
         with pytest.raises(NativeArtifactError, match="one thin Mach-O image"):
             macho_code_signature_from_bytes(bytes(payload))
+
+
+@pytest.mark.parametrize(
+    ("offset", "fmt", "value", "message"),
+    [
+        (16, ">I", 0xFFFFFFFF, "hash array"),
+        (16, ">I", 0, "special hashes"),
+        (24, ">I", 3, "special hashes"),
+        (28, ">I", 0xFFFFFFFF, "hash array"),
+        (36, "B", 0, "hash type and size"),
+        (36, "B", 20, "hash type and size"),
+        (37, "B", 255, "hash type and size"),
+        (20, ">I", 12, "identifier is out of range"),
+        (20, ">I", 92, "identifier overlaps hashes"),
+        (44, ">I", 4, "scatter overlaps its header"),
+        (44, ">I", 156, "scatter.*truncated"),
+        (44, ">I", 92, "scatter overlaps hashes"),
+        (8, ">I", 0x10000, "code directory is invalid"),
+        (8, ">I", 0x30000, "code directory is invalid"),
+    ],
+)
+def test_code_directory_rejects_false_coverage_fields(offset, fmt, value, message):
+    # Independent literal ABI offsets, not offsets/widths obtained from the decoder.
+    image = signed_macho_image("app")
+    struct.pack_into(fmt, image, 8212 + offset, value)
+    with pytest.raises(NativeArtifactError, match=message):
+        macho_code_signature_from_bytes(bytes(image))
+
+
+@pytest.mark.parametrize(
+    ("version", "minimum"),
+    [
+        (0x20001, 44),
+        (0x20100, 48),
+        (0x20200, 52),
+        (0x20300, 64),
+        (0x20400, 88),
+        (0x20500, 96),
+        (0x20600, 108),
+    ],
+)
+def test_code_directory_requires_its_versioned_fixed_fields(version, minimum):
+    image = signed_macho_image("app")
+    struct.pack_into(">II", image, 8216, minimum - 1, version)
+    with pytest.raises(NativeArtifactError, match="versioned code directory header"):
+        macho_code_signature_from_bytes(bytes(image))
+
+
+def _replace_code_directory(image: bytearray, directory: bytes) -> bytes:
+    # One index at 8204; its payload starts at 8212. Adjust all enclosing lengths.
+    image[8212:] = directory
+    struct.pack_into(">I", image, 8216, len(directory))
+    struct.pack_into(">I", image, 8196, 20 + len(directory))
+    struct.pack_into("<I", image, 44, 20 + len(directory))
+    return bytes(image)
+
+
+def test_claimed_code_slots_need_real_hash_array_bytes():
+    image = signed_macho_image("app")
+    # Both page hashes are absent; limit/slot arithmetic still describes 8192 bytes.
+    image = _replace_code_directory(image, image[8212 : 8212 + 92])
+    with pytest.raises(NativeArtifactError, match="hash array"):
+        macho_code_signature_from_bytes(image)
+
+
+@pytest.mark.parametrize(("kind", "width"), [(1, 20), (2, 32), (3, 20), (4, 48)])
+def test_declared_digest_widths_and_special_slots_are_admitted(kind, width):
+    image = signed_macho_image("app")
+    directory = bytearray(image[8212 : 8212 + 92])
+    # Two special hashes precede two ordinary hashes, all inside the directory.
+    struct.pack_into(">I", directory, 16, 92 + 2 * width)
+    struct.pack_into(">I", directory, 24, 2)
+    struct.pack_into("BB", directory, 36, width, kind)
+    directory.extend(bytes(4 * width))
+    signature = macho_code_signature_from_bytes(
+        _replace_code_directory(image, directory)
+    )
+    assert signature is not None and signature.covers_image
+
+
+def test_scattered_directory_does_not_claim_contiguous_image_coverage():
+    image = signed_macho_image("app")
+    directory = bytearray(image[8212:])
+    struct.pack_into(">I", directory, 44, len(directory))
+    # A valid terminated vector which starts at page 7, not page zero.
+    directory.extend(struct.pack(">IIQQ", 2, 7, 0, 0))
+    directory.extend(bytes(24))
+    signature = macho_code_signature_from_bytes(
+        _replace_code_directory(image, directory)
+    )
+    assert signature is not None and signature.scattered and not signature.covers_image
+
+
+def test_infinite_page_size_describes_one_hash_slot():
+    image = signed_macho_image("app", code_slots=1)
+    image[8212 + 39] = 0  # cs_blobs.h: pageSize=0 denotes one unlimited page.
+    signature = macho_code_signature_from_bytes(bytes(image))
+    assert signature is not None and signature.covers_image
+
+
+@pytest.mark.parametrize("blob_offset", [12, 8192])
+def test_signature_index_cannot_alias_index_or_escape_superblob(blob_offset):
+    image = signed_macho_image("app")
+    struct.pack_into(">I", image, 8208, blob_offset)
+    with pytest.raises(NativeArtifactError, match="overlaps its index|truncated"):
+        macho_code_signature_from_bytes(bytes(image))
+
+
+def test_signature_identifier_scan_does_not_read_the_hash_array():
+    from molt import native_artifact_header as headers
+
+    image = signed_macho_image("app")
+    directory = bytearray(image[8212:])
+    directory.extend(bytes(1024 * 1024))
+    payload = _replace_code_directory(image, directory)
+    reads: list[tuple[int, int]] = []
+
+    def read_at(offset, size):
+        reads.append((offset, size))
+        return payload[offset : offset + size]
+
+    signature = headers._thin_macho_code_signature(NativeReader(len(payload), read_at))
+    assert signature is not None and signature.identifier == "app"
+    assert max(size for _, size in reads) <= 4096
+    assert not any(offset < 8368 and offset + size > 8304 for offset, size in reads)
+
+
+def test_signature_duplicate_index_stops_without_scanning_the_remaining_table():
+    from molt import native_artifact_header as headers
+
+    image = signed_macho_image("app")
+    directory = bytes(image[8212:])
+    count = 1_000_000
+    directory_offset = 12 + 8 * count
+    blob_length = directory_offset + len(directory)
+    header = bytearray(image[:48])
+    struct.pack_into("<I", header, 44, blob_length)
+    blocks = {
+        0: bytes(header),
+        8192: struct.pack(">III", 0xFADE0CC0, blob_length, count),
+        8204: struct.pack(">II", 0, directory_offset),
+        8212: struct.pack(">II", 0, directory_offset),
+        8192 + directory_offset: directory,
+    }
+    reads: list[tuple[int, int]] = []
+
+    def read_at(offset, size):
+        reads.append((offset, size))
+        for start, data in blocks.items():
+            if start <= offset and offset + size <= start + len(data):
+                return data[offset - start : offset - start + size]
+        raise AssertionError(f"unnecessary read after duplicate index: {offset}/{size}")
+
+    with pytest.raises(NativeArtifactError, match="single code directory"):
+        headers._thin_macho_code_signature(NativeReader(8192 + blob_length, read_at))
+    assert len(reads) < 20
+
+
+@pytest.mark.parametrize("terminated", [True, False])
+def test_long_identifier_is_read_in_bounded_chunks(terminated):
+    from molt import native_artifact_header as headers
+
+    name = "n" * 9000
+    image = signed_macho_image(name)
+    if not terminated:
+        image[8212 + 88 + len(name)] = ord("n")
+    reads: list[int] = []
+
+    def read_at(offset, size):
+        assert size <= 4096
+        reads.append(size)
+        return bytes(image[offset : offset + size])
+
+    reader = NativeReader(len(image), read_at)
+    if terminated:
+        signature = headers._thin_macho_code_signature(reader)
+        assert signature is not None and signature.identifier == name
+    else:
+        with pytest.raises(NativeArtifactError, match="unterminated"):
+            headers._thin_macho_code_signature(reader)
+    assert len(reads) < 20

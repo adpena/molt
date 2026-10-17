@@ -524,6 +524,18 @@ _CSMAGIC_CODEDIRECTORY = 0xFADE0C02
 _CSSLOT_CODEDIRECTORY = 0
 _CS_ADHOC = 0x2
 _CS_SUPPORTSCODELIMIT64 = 0x20300
+# Apple's cs_blobs.h versioned fixed fields and digest widths. These are layout
+# checks only; the selected linker and publication custody own the image bytes.
+_CODE_DIRECTORY_HEADERS = (
+    (0x20001, 44),
+    (0x20100, 48),
+    (0x20200, 52),
+    (0x20300, 64),
+    (0x20400, 88),
+    (0x20500, 96),
+    (0x20600, 108),
+)
+_CODE_DIRECTORY_HASH_SIZES = {1: 20, 2: 32, 3: 20, 4: 48}
 
 
 @dataclass(frozen=True, slots=True)
@@ -536,6 +548,7 @@ class MachOCodeSignature:
     code_slots: int
     page_size: int
     signature_offset: int
+    scattered: bool
 
     @property
     def ad_hoc(self) -> bool:
@@ -543,9 +556,11 @@ class MachOCodeSignature:
 
     @property
     def covers_image(self) -> bool:
-        """The page hashes span every byte before the signature itself."""
-        return self.code_limit == self.signature_offset and self.code_slots == -(
-            -self.code_limit // self.page_size
+        """A bounded contiguous hash array describes the image, without hashing it."""
+        return (
+            not self.scattered
+            and self.code_limit == self.signature_offset
+            and self.code_slots == -(-self.code_limit // self.page_size)
         )
 
 
@@ -572,9 +587,15 @@ def _macho_code_signature(
                 reader.read(offset + 8, 8, "Mach-O code-signature command"),
             )
         offset += size
+    if offset != end:
+        raise NativeArtifactError(
+            "Mach-O load commands do not fill their declared extent"
+        )
     if signature is None:
         return None
     signature_offset, signature_size = signature
+    if signature_offset < end:
+        raise NativeArtifactError("Mach-O code signature overlaps load commands")
     blob = reader.slice(signature_offset, signature_size, "Mach-O code signature")
     magic, length, count = struct.unpack(
         ">III", blob.read(0, 12, "code-signature superblob")
@@ -582,18 +603,30 @@ def _macho_code_signature(
     if magic != _CSMAGIC_EMBEDDED_SIGNATURE or not 12 + 8 * count <= length:
         raise NativeArtifactError("Mach-O code-signature superblob is invalid")
     blob = blob.slice(0, length, "code-signature superblob")
-    directories = [
-        blob_offset
-        for slot, blob_offset in (
-            struct.unpack(">II", blob.read(12 + 8 * index, 8, "code-signature index"))
-            for index in range(count)
+    index_end = 12 + 8 * count
+    directory_offset: int | None = None
+    for index in range(count):
+        slot, blob_offset = struct.unpack(
+            ">II", blob.read(12 + 8 * index, 8, "code-signature index")
         )
-        if slot == _CSSLOT_CODEDIRECTORY
-    ]
-    if len(directories) != 1:
+        if slot == _CSSLOT_CODEDIRECTORY and directory_offset is not None:
+            raise NativeArtifactError(
+                "Mach-O code signature has no single code directory"
+            )
+        if blob_offset < index_end:
+            raise NativeArtifactError("code-signature blob overlaps its index")
+        _, blob_length = struct.unpack(
+            ">II", blob.read(blob_offset, 8, "code-signature indexed blob")
+        )
+        if blob_length < 8:
+            raise NativeArtifactError("code-signature indexed blob length is invalid")
+        blob.extent(blob_offset, blob_length, "code-signature indexed blob")
+        if slot == _CSSLOT_CODEDIRECTORY:
+            directory_offset = blob_offset
+    if directory_offset is None:
         raise NativeArtifactError("Mach-O code signature has no single code directory")
     directory = blob.slice(
-        directories[0], length - directories[0], "code directory extent"
+        directory_offset, length - directory_offset, "code directory extent"
     )
     fixed = directory.read(0, 44, "code directory")
     (
@@ -601,34 +634,96 @@ def _macho_code_signature(
         length,
         version,
         flags,
-        _hash_offset,
+        hash_offset,
         identifier_offset,
-        _special_slots,
+        special_slots,
         code_slots,
         code_limit,
-        _hash_size,
-        _hash_type,
+        hash_size,
+        hash_type,
         _platform,
         page_shift,
     ) = struct.unpack_from(">IIIIIIIIIBBBB", fixed)
-    if magic != _CSMAGIC_CODEDIRECTORY or not 1 <= page_shift <= 31:
+    if (
+        magic != _CSMAGIC_CODEDIRECTORY
+        or not _CODE_DIRECTORY_HEADERS[0][0] <= version <= 0x2F000
+        or not 0 <= page_shift <= 31
+    ):
         raise NativeArtifactError("Mach-O code directory is invalid")
     directory = directory.slice(0, length, "code directory")
+    fixed_size = max(
+        size for minimum, size in _CODE_DIRECTORY_HEADERS if version >= minimum
+    )
+    directory.extent(0, fixed_size, "versioned code directory header")
+    if _CODE_DIRECTORY_HASH_SIZES.get(hash_type) != hash_size:
+        raise NativeArtifactError("code-directory hash type and size disagree")
+    hashes_start = hash_offset - special_slots * hash_size
+    hashes_end = hash_offset + code_slots * hash_size
+    if hashes_start < fixed_size:
+        raise NativeArtifactError("code-directory special hashes overlap its header")
+    directory.extent(
+        hashes_start, hashes_end - hashes_start, "code-directory hash array"
+    )
+    scattered = False
+    if version >= 0x20100:
+        (scatter_offset,) = struct.unpack(
+            ">I", directory.read(44, 4, "code-directory scatter offset")
+        )
+        scattered = scatter_offset != 0
+        if scattered:
+            if scatter_offset < fixed_size:
+                raise NativeArtifactError("code-directory scatter overlaps its header")
+            # Each SC_Scatter is 24 bytes, terminated by count=0. A scatter
+            # directory cannot establish the contiguous fast-path claim.
+            while True:
+                if scatter_offset < hashes_end and scatter_offset + 24 > hashes_start:
+                    raise NativeArtifactError("code-directory scatter overlaps hashes")
+                entry = directory.read(scatter_offset, 24, "code-directory scatter")
+                if struct.unpack_from(">I", entry)[0] == 0:
+                    break
+                scatter_offset += 24
     if version >= _CS_SUPPORTSCODELIMIT64:
         (code_limit64,) = struct.unpack(
             ">Q", directory.read(56, 8, "code directory 64-bit code limit")
         )
         code_limit = code_limit64 or code_limit
-    if not identifier_offset < length:
+    if not fixed_size <= identifier_offset < length:
         raise NativeArtifactError("Mach-O code-directory identifier is out of range")
-    text = directory.read(
-        identifier_offset, length - identifier_offset, "code-directory identifier"
-    )
-    terminator = text.find(b"\0")
-    if terminator <= 0:
+    if hashes_start <= identifier_offset < hashes_end:
+        raise NativeArtifactError("code-directory identifier overlaps hashes")
+    identifier_end = hashes_start if identifier_offset < hashes_start else length
+    text: bytes | bytearray
+    cursor = identifier_offset
+    while cursor < identifier_end:
+        chunk = directory.read(
+            cursor, min(4096, identifier_end - cursor), "code-directory identifier"
+        )
+        terminator = chunk.find(b"\0")
+        if terminator >= 0:
+            if cursor == identifier_offset:
+                text = chunk[:terminator]
+            else:
+                # Scan before allocating: an unterminated malformed tail never
+                # becomes an image-sized Python buffer. Only the returned name
+                # requires storage proportional to its length.
+                text = bytearray()
+                name_end = cursor + terminator
+                for start in range(identifier_offset, name_end, 4096):
+                    text.extend(
+                        directory.read(
+                            start,
+                            min(4096, name_end - start),
+                            "code-directory identifier",
+                        )
+                    )
+            break
+        cursor += len(chunk)
+    else:
         raise NativeArtifactError("Mach-O code-directory identifier is unterminated")
+    if not text:
+        raise NativeArtifactError("Mach-O code-directory identifier is empty")
     try:
-        identifier = text[:terminator].decode("utf-8")
+        identifier = text.decode("utf-8")
     except UnicodeDecodeError as exc:
         raise NativeArtifactError(
             "Mach-O code-directory identifier is not UTF-8"
@@ -638,8 +733,9 @@ def _macho_code_signature(
         flags=flags,
         code_limit=code_limit,
         code_slots=code_slots,
-        page_size=1 << page_shift,
+        page_size=(1 << page_shift) if page_shift else max(code_limit, 1),
         signature_offset=signature_offset,
+        scattered=scattered,
     )
 
 
