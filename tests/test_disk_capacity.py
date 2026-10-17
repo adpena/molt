@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from decimal import localcontext
 import json
+import os
+from types import SimpleNamespace
 from pathlib import Path
 
 import pytest
@@ -381,3 +383,238 @@ def test_scratch_admission_measures_each_scratch_volume_against_the_budget(
     assert str(ram.resolve() / "gs") in message
     assert str(disk.resolve() / "gs") not in message.split(" diagnostic=")[0]
     assert "MOLT_SCRATCH_BUDGET_GB" in message
+
+
+def test_darwin_ample_raw_capacity_never_queries_estimated_capacity(
+    tmp_path, monkeypatch
+):
+    from molt import disk_capacity
+
+    monkeypatch.setattr(disk_capacity, "sys", SimpleNamespace(platform="darwin"))
+    required = DEFAULT_MINIMUM_HEADROOM_BYTES
+    monkeypatch.setattr(
+        disk_capacity, "_default_measure_free_bytes", lambda path: required
+    )
+
+    def unexpected(path):
+        raise AssertionError("ample raw capacity must not consult the native estimate")
+
+    monkeypatch.setattr(disk_capacity, "_darwin_important_usage_bytes", unexpected)
+    probe = require_build_capacity([tmp_path], env={}).probes[0]
+    assert probe.free_bytes == probe.available_bytes == required
+    assert probe.important_usage_bytes is None
+    assert probe.measurement == "filesystem"
+
+
+@pytest.mark.parametrize(
+    "estimated", [0, DEFAULT_MINIMUM_HEADROOM_BYTES - 1, DEFAULT_MINIMUM_HEADROOM_BYTES]
+)
+def test_darwin_low_raw_capacity_uses_explicit_native_measurement(
+    tmp_path, monkeypatch, estimated
+):
+    from molt import disk_capacity
+
+    monkeypatch.setattr(disk_capacity, "sys", SimpleNamespace(platform="darwin"))
+    monkeypatch.setattr(disk_capacity, "_default_measure_free_bytes", lambda path: 7)
+    calls = []
+    monkeypatch.setattr(
+        disk_capacity,
+        "_darwin_important_usage_bytes",
+        lambda path: calls.append(path) or estimated,
+    )
+    if estimated < DEFAULT_MINIMUM_HEADROOM_BYTES:
+        with pytest.raises(DiskCapacityError) as caught:
+            require_build_capacity([tmp_path / "missing"], env={})
+        probe = caught.value.diagnostic["probes"][0]
+    else:
+        probe = (
+            require_build_capacity([tmp_path / "missing"], env={}).probes[0].as_dict()
+        )
+    assert calls == [tmp_path.resolve()]
+    assert probe["free_bytes"] == 7
+    assert probe["important_usage_bytes"] == probe["available_bytes"] == estimated
+    assert probe["measurement"] == "darwin-important-usage"
+
+
+@pytest.mark.parametrize(
+    "bad", [-1, True, "123", None, 1 << 63, OSError("native failure")]
+)
+def test_darwin_estimate_failure_retains_raw_evidence_without_fallback(
+    tmp_path, monkeypatch, bad
+):
+    from molt import disk_capacity
+
+    monkeypatch.setattr(disk_capacity, "sys", SimpleNamespace(platform="darwin"))
+    monkeypatch.setattr(disk_capacity, "_default_measure_free_bytes", lambda path: 7)
+
+    def native(path):
+        if isinstance(bad, Exception):
+            raise bad
+        return bad
+
+    monkeypatch.setattr(disk_capacity, "_darwin_important_usage_bytes", native)
+    with pytest.raises(DiskCapacityError) as caught:
+        require_build_capacity([tmp_path], env={})
+    probe = caught.value.diagnostic["probes"][0]
+    assert probe["free_bytes"] == 7
+    assert probe["available_bytes"] is None
+    assert probe["measurement"] == "darwin-important-usage"
+    assert probe["error"]
+
+
+@pytest.mark.parametrize("platform", ["linux", "win32"])
+def test_other_platforms_keep_their_filesystem_measurement(
+    tmp_path, monkeypatch, platform
+):
+    from molt import disk_capacity
+
+    monkeypatch.setattr(disk_capacity, "sys", SimpleNamespace(platform=platform))
+    monkeypatch.setattr(disk_capacity, "_default_measure_free_bytes", lambda path: 7)
+
+    def unexpected(path):
+        raise AssertionError("Darwin API on another host")
+
+    monkeypatch.setattr(disk_capacity, "_darwin_important_usage_bytes", unexpected)
+    with pytest.raises(DiskCapacityError) as caught:
+        require_build_capacity([tmp_path], env={})
+    assert caught.value.diagnostic["probes"][0]["measurement"] == "filesystem"
+
+
+@pytest.mark.parametrize(
+    "failure", [None, "api", "url", "copy", "missing", "type", "conversion", "negative"]
+)
+def test_native_capacity_releases_owned_cf_objects(tmp_path, monkeypatch, failure):
+    import ctypes
+    from molt import disk_capacity
+
+    # Substitute only this owner's native boundary. Process-global ctypes is
+    # also used by independent samplers and must remain intact.
+    released = []
+    encoded_paths = []
+
+    class Function:
+        def __init__(self, callback):
+            self.callback = callback
+
+        def __call__(self, *args):
+            return self.callback(*args)
+
+    class Foundation:
+        def __init__(self):
+            self.CFURLCreateFromFileSystemRepresentation = Function(self.create)
+            self.CFURLCopyResourcePropertyForKey = Function(self.copy)
+            self.CFGetTypeID = Function(lambda value: 8 if failure == "type" else 7)
+            self.CFNumberGetTypeID = Function(lambda: 7)
+            self.CFNumberGetValue = Function(self.number)
+            self.CFErrorGetCode = Function(lambda value: 42)
+            self.CFRelease = Function(
+                lambda value: released.append(
+                    value.value if hasattr(value, "value") else value
+                )
+            )
+
+        def create(self, allocator, path, length, directory):
+            assert allocator is None and directory == 1 and length == len(path)
+            encoded_paths.append(path)
+            return 0 if failure == "url" else 9 + len(encoded_paths)
+
+        def copy(self, url, key, value, error):
+            assert url in {10, 11} and key.value == 70
+            value._obj.value = 0 if failure == "missing" else url + 10
+            if failure == "copy":
+                error._obj.value = 30
+                return 0
+            return 1
+
+        def number(self, value, kind, result):
+            assert value.value in {20, 21} and kind == 4
+            result._obj.value = (
+                -1 if failure == "negative" else 123 + (value.value - 20) * 333
+            )
+            return int(failure != "conversion")
+
+    foundation = Foundation()
+    loads = []
+
+    def api():
+        loads.append("capacity")
+        if failure == "api":
+            raise OSError("native capacity API is unavailable")
+        return foundation, ctypes.c_void_p(70)
+
+    monkeypatch.setattr(disk_capacity, "_darwin_capacity_api", api)
+    path = tmp_path / "café storage"
+    if failure is None:
+        assert disk_capacity._darwin_important_usage_bytes(path) == 123
+        assert disk_capacity._darwin_important_usage_bytes(path) == 456
+    else:
+        with pytest.raises((OSError, ValueError)):
+            disk_capacity._darwin_important_usage_bytes(path)
+    assert loads == ["capacity"] * (2 if failure is None else 1)
+    expected_paths = [] if failure == "api" else [os.fsencode(path)]
+    if failure is None:
+        expected_paths *= 2
+    assert encoded_paths == expected_paths
+    expected_releases = [] if failure in {"api", "url"} else [20, 10]
+    if failure is None:
+        expected_releases += [21, 11]
+    if failure == "copy":
+        expected_releases = [20, 30, 10]
+    elif failure == "missing":
+        expected_releases = [10]
+    assert released == expected_releases
+
+
+def test_darwin_capacity_binding_uses_native_abi_and_caches_only_the_api(tmp_path):
+    import ctypes
+    import sys
+    from molt import disk_capacity
+
+    if sys.platform != "darwin":
+        pytest.skip("CoreFoundation bindings require a Darwin host")
+    binding = disk_capacity._darwin_capacity_api()
+    assert disk_capacity._darwin_capacity_api() is binding
+    cf, key = binding
+    assert key.value
+    # CFNumber.h declares CFNumberType as CFIndex (signed long on Darwin).
+    assert cf.CFNumberGetValue.argtypes == [
+        ctypes.c_void_p,
+        ctypes.c_long,
+        ctypes.c_void_p,
+    ]
+    assert cf.CFURLCreateFromFileSystemRepresentation.argtypes == [
+        ctypes.c_void_p,
+        ctypes.c_char_p,
+        ctypes.c_long,
+        ctypes.c_ubyte,
+    ]
+    for _ in range(2):
+        value = disk_capacity._darwin_important_usage_bytes(tmp_path)
+        assert isinstance(value, int) and value >= 0
+
+
+@pytest.mark.parametrize(
+    "gib, expected",
+    [
+        (0.0, 0),
+        (1.0, 1073741824),
+        (20.0, 21474836480),
+        (2.0**-31, 1),
+        (3.0 * 2.0**-31, 2),
+        (float.fromhex("0x1.fffffffffffffp+32"), 9223372036854774784),
+    ],
+)
+def test_float_capacity_budget_rounds_up_within_signed_byte_range(gib, expected):
+    from molt.disk_capacity import capacity_bytes_from_gib
+
+    assert capacity_bytes_from_gib(gib) == expected
+
+
+@pytest.mark.parametrize(
+    "gib", [-1.0, float("nan"), float("inf"), -float("inf"), 1e308, 8589934592.0]
+)
+def test_float_capacity_budget_rejects_nonfinite_negative_and_out_of_range(gib):
+    from molt.disk_capacity import capacity_bytes_from_gib
+
+    with pytest.raises(ValueError, match="capacity must be finite and non-negative"):
+        capacity_bytes_from_gib(gib)

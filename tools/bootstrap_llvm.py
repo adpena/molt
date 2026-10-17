@@ -33,6 +33,7 @@ ROOT = Path(__file__).resolve().parents[1]
 SRC_ROOT = ROOT / "src"
 
 
+from molt.disk_capacity import capacity_bytes_from_gib, probe_capacity  # noqa: E402
 from molt.file_hashing import _windows_change_time_ns  # noqa: E402
 from molt.llvm_toolchain import (  # noqa: E402
     _llvm_attestation_custody,
@@ -232,11 +233,19 @@ def _preflight_resources(
     required_free_gb: float,
     required_memory_gb: float,
 ) -> None:
-    existing = path
-    while not existing.exists() and existing.parent != existing:
-        existing = existing.parent
-    free_gb = shutil.disk_usage(existing).free / (1024**3)
-    if free_gb < required_free_gb:
+    try:
+        required_bytes = capacity_bytes_from_gib(required_free_gb)
+    except ValueError as exc:
+        raise SystemExit(
+            f"invalid --required-free-gb value {required_free_gb!r}: {exc}"
+        ) from None
+    capacity = probe_capacity(path, required_bytes=required_bytes)
+    if capacity.error is not None or capacity.available_bytes is None:
+        raise SystemExit(
+            f"LLVM bootstrap cannot measure capacity under {path}: {capacity.error}"
+        )
+    free_gb = capacity.available_bytes / (1024**3)
+    if not capacity.ready:
         raise SystemExit(
             f"LLVM bootstrap requires at least {required_free_gb:.1f} GiB free under "
             f"{path}; only {free_gb:.1f} GiB is available. Free canonical custody "
@@ -1540,7 +1549,7 @@ def main(argv: list[str] | None = None) -> int:
     )
     _preflight_resources(
         managed.root if is_canonical else prefix.parent,
-        required_free_gb=max(0.0, args.required_free_gb),
+        required_free_gb=args.required_free_gb,
         required_memory_gb=max(0.0, args.required_memory_gb),
     )
     url = release.url if release is not None else str(args.development_source_url)

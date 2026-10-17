@@ -65,6 +65,7 @@ def test_queue_refuses_low_capacity_before_provisioning_and_retains_receipt(
         evidence, "_try_write_marimo_notebook", lambda *args, **kwargs: None
     )
     monkeypatch.setattr(disk_capacity, "_default_measure_free_bytes", lambda path: 0)
+    monkeypatch.setattr(disk_capacity, "_darwin_important_usage_bytes", lambda path: 0)
     monkeypatch.delenv(disk_capacity.DISK_GUARD_HIGH_WATER_ENV, raising=False)
 
     def never_provision(*args: object, **kwargs: object) -> None:
@@ -180,6 +181,7 @@ def test_supervisor_build_refuses_capacity_before_starting_cargo(
 ) -> None:
     target = tmp_path / "supervisor-target"
     monkeypatch.setattr(disk_capacity, "_default_measure_free_bytes", lambda path: 0)
+    monkeypatch.setattr(disk_capacity, "_darwin_important_usage_bytes", lambda path: 0)
 
     def never_run(*args: object, **kwargs: object) -> None:
         pytest.fail("supervisor capacity rejection started Cargo")

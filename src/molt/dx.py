@@ -18,6 +18,7 @@ from pathlib import Path
 from typing import Literal, Mapping, Sequence, cast
 
 from molt.cargo_execution_policy import cargo_compiler_wrappers, sccache_server_endpoint
+from molt.disk_capacity import capacity_bytes_from_gib, probe_capacity
 from molt.default_paths import (
     DEFAULT_MOLT_CACHE_MAX_AGE_DAYS,
     DEFAULT_MOLT_CACHE_MAX_GB,
@@ -638,22 +639,6 @@ def _env_bool(
         if normalized in FALSE_VALUES:
             return False
     return default
-
-
-def _env_float(
-    env: Mapping[str, str],
-    name: str,
-    *,
-    default: float,
-) -> float:
-    raw = env.get(name, "").strip()
-    if not raw:
-        return default
-    try:
-        parsed = float(raw)
-    except ValueError:
-        return default
-    return parsed if parsed >= 0 else default
 
 
 def development_artifacts_requested(env: Mapping[str, str]) -> bool:
@@ -1277,7 +1262,14 @@ def select_external_artifact_root(
     ):
         return None
 
-    min_free_gb = _env_float(env, "MOLT_EXTERNAL_MIN_FREE_GB", default=20.0)
+    configured = env.get("MOLT_EXTERNAL_MIN_FREE_GB", "").strip()
+    try:
+        min_free_gb = float(configured) if configured else 20.0
+        required_bytes = capacity_bytes_from_gib(min_free_gb)
+    except ValueError as exc:
+        raise DxConfigError(
+            f"invalid MOLT_EXTERNAL_MIN_FREE_GB value {configured!r}: {exc}"
+        ) from None
     repo_root = repo_root.resolve()
     for raw_candidate in _candidate_roots(repo_root, env):
         candidate = (
@@ -1286,14 +1278,8 @@ def select_external_artifact_root(
         candidate = candidate.resolve()
         if candidate == repo_root or repo_root in candidate.parents:
             continue
-        parent = _nearest_existing_parent(candidate)
-        if parent is None:
-            continue
-        try:
-            usage = shutil.disk_usage(parent)
-        except OSError:
-            continue
-        if usage.free < min_free_gb * 1024 * 1024 * 1024:
+        capacity = probe_capacity(candidate, required_bytes=required_bytes)
+        if not capacity.ready:
             continue
         if not _artifact_root_accepts_child_dirs(
             candidate,

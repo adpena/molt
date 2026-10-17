@@ -1970,3 +1970,86 @@ def test_workspace_targets_execute_own_cargo_sources(tmp_path):
     os.utime(source, (changed, changed))
     build_and_run("a", "33", fresh=False)
     build_and_run("b", "22", fresh=True)
+
+
+@pytest.mark.parametrize(
+    "estimated", [0, 20 * 1024**3 - 1, 20 * 1024**3, OSError("capacity unavailable")]
+)
+def test_external_root_uses_native_capacity_at_its_own_budget(
+    tmp_path, monkeypatch, estimated
+):
+    from molt import disk_capacity
+    from types import SimpleNamespace
+
+    repo = tmp_path / "repo"
+    external = tmp_path / "external"
+    repo.mkdir()
+    external.mkdir()
+    monkeypatch.setattr(disk_capacity, "sys", SimpleNamespace(platform="darwin"))
+    monkeypatch.setattr(disk_capacity, "_default_measure_free_bytes", lambda path: 7)
+
+    def native(path):
+        if isinstance(estimated, Exception):
+            raise estimated
+        return estimated
+
+    monkeypatch.setattr(disk_capacity, "_darwin_important_usage_bytes", native)
+    selected = dx.select_external_artifact_root(
+        repo,
+        {"MOLT_EXTERNAL_ARTIFACT_ROOTS": str(external)},
+        create_dirs=False,
+        prefer_external=True,
+    )
+    assert selected == (external.resolve() if estimated == 20 * 1024**3 else None)
+
+
+@pytest.mark.parametrize(
+    "configured", ["invalid", "-1", "NaN", "inf", "-inf", "1e999", "8589934592"]
+)
+def test_external_capacity_setting_rejects_invalid_value_before_selection(
+    tmp_path, monkeypatch, configured
+):
+    monkeypatch.setattr(
+        dx,
+        "_candidate_roots",
+        lambda *args: pytest.fail("invalid budget reached candidate selection"),
+    )
+    with pytest.raises(dx.DxConfigError, match="invalid MOLT_EXTERNAL_MIN_FREE_GB"):
+        dx.select_external_artifact_root(
+            tmp_path,
+            {"MOLT_EXTERNAL_MIN_FREE_GB": configured},
+            create_dirs=False,
+            prefer_external=True,
+        )
+
+
+@pytest.mark.parametrize(
+    "configured, expected",
+    [(None, 21474836480), ("  ", 21474836480), ("0", 0), ("0.0000000005", 1)],
+)
+def test_external_capacity_setting_preserves_default_zero_and_fractional_bytes(
+    tmp_path, monkeypatch, configured, expected
+):
+    from molt.disk_capacity import DiskCapacityProbe
+
+    repo = tmp_path / "repo"
+    external = tmp_path / "external"
+    repo.mkdir()
+    external.mkdir()
+    observed = []
+
+    def probe(path, *, required_bytes):
+        observed.append(required_bytes)
+        return DiskCapacityProbe(path, path, expected, required_bytes)
+
+    monkeypatch.setattr(dx, "probe_capacity", probe)
+    env = {"MOLT_EXTERNAL_ARTIFACT_ROOTS": str(external)}
+    if configured is not None:
+        env["MOLT_EXTERNAL_MIN_FREE_GB"] = configured
+    assert (
+        dx.select_external_artifact_root(
+            repo, env, create_dirs=False, prefer_external=True
+        )
+        == external.resolve()
+    )
+    assert observed == [expected]

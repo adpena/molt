@@ -614,6 +614,9 @@ def test_verifier_build_refused_below_the_capacity_floor_starts_no_cargo(
 
     monkeypatch.setattr(rust_ir_verifier, "_COMMANDS", _RecordingCommands())
     monkeypatch.setattr(disk_capacity, "_default_measure_free_bytes", measure)
+    monkeypatch.setattr(
+        disk_capacity, "_darwin_important_usage_bytes", lambda path: free_bytes
+    )
     monkeypatch.delenv(disk_capacity.DISK_GUARD_HIGH_WATER_ENV, raising=False)
     env = {"CARGO_TARGET_DIR": str(tmp_path / "verifier-target")}
 

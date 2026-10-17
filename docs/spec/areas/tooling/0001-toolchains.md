@@ -971,6 +971,36 @@ through the shared force-override projection so configuration cannot restore an
 unowned output destination. Compiling synthetic probes admit build capacity on
 their owned scratch filesystem before launch. These checks are development tooling only.
 
+Build and scratch admission, external artifact-root selection, LLVM bootstrap,
+and final runtime-WASM preflight share `molt.disk_capacity` while retaining their
+own budgets. A raw filesystem free-space observation that meets the budget is
+sufficient. Only on Darwin, when raw free space is insufficient, admission queries
+Apple's `volumeAvailableCapacityForImportantUsage` through CoreFoundation. Apple
+[defines this estimate](https://developer.apple.com/documentation/foundation/checking-volume-storage-capacity)
+for resources required by an application, including space expected to become
+available by purging replaceable resources. [Time Machine local snapshots count
+as available space and macOS removes them as needed](https://support.apple.com/en-us/102154).
+Molt neither deletes snapshots nor requests a purge. Only immutable native ABI bindings are cached. The query uses a fresh URL;
+no capacity answer is cached across admission operations. Missing, malformed or
+failed native estimates reject admission; a successful zero remains zero.
+An ample raw observation does not query the native estimate, including on disk
+images. These observations estimate capacity, reserve no space, and do not replace
+ordinary allocation-error handling.
+
+External-root, LLVM and final-WASM GiB budgets share a bounded conversion to
+whole bytes. Zero is explicit, fractional bytes round up, and malformed, negative,
+nonfinite or oversized values fail with the owning frontend diagnostic before
+selection or queue-context work. Build and scratch environment budgets retain
+their existing positive exact-decimal contract.
+
+Capacity receipts retain raw `free_bytes`, the optional `important_usage_bytes`,
+explicit `measurement`, and `available_bytes` used for admission. A supplied
+measurement owns the complete observation and does not trigger a second platform
+query. Final-WASM preflight groups paths by filesystem device within each pass,
+so different mounts sharing the same path anchor remain distinct. Reclamation
+telemetry in `disk_guard` continues to measure raw free-space changes; a change
+in estimated purgeable capacity is not evidence that Molt reclaimed bytes.
+
 Registered proof entrypoints require an exact registered argv, regardless of how
 many variants exist. A transport or payload near-match cannot become a Python
 leaf and lose its declared child tools. Parameterized commands require their

@@ -384,6 +384,11 @@ def test_guarded_exec_refuses_a_cargo_compile_below_the_capacity_floor(
         return disk_capacity.DEFAULT_MINIMUM_HEADROOM_BYTES - 1
 
     monkeypatch.setattr(disk_capacity, "_default_measure_free_bytes", measure)
+    monkeypatch.setattr(
+        disk_capacity,
+        "_darwin_important_usage_bytes",
+        lambda path: disk_capacity.DEFAULT_MINIMUM_HEADROOM_BYTES - 1,
+    )
     monkeypatch.delenv(disk_capacity.DISK_GUARD_HIGH_WATER_ENV, raising=False)
     target = tmp_path / "proof-target"
     monkeypatch.setenv("CARGO_TARGET_DIR", str(target))
