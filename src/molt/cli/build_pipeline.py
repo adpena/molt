@@ -185,6 +185,7 @@ def _run_build_pipeline(
             ir=prepared_backend_ir.ir,
             output_artifact=output_layout.output_artifact,
             project_root=prepared_build_roots.project_root,
+            molt_root=prepared_build_roots.molt_root,
             json_output=json_output,
             verbose=verbose,
             validate_inputs=prepared_frontend_pipeline_bundle.module_source_catalog.validate,

@@ -30,15 +30,16 @@ def _mlir_backend_executable_name(*, os_name: str | None = None) -> str:
     )
 
 
-def _find_mlir_backend_binary(project_root: Path) -> Path | None:
+def _find_mlir_backend_binary(molt_root: Path) -> Path | None:
     """Locate the ``molt-backend-mlir`` binary.
 
-    Molt builds the standalone backend into the project's Cargo target
-    (`_cargo_target_root`), and only that target is searched; an installed
-    binary on ``PATH`` is the alternative.
+    Molt builds the standalone backend into the compiler checkout's Cargo
+    target (`_cargo_target_root(molt_root)`), as it builds the native backend,
+    and only that target is searched; an installed binary on ``PATH`` is the
+    alternative. The project being compiled owns neither.
     """
     executable_name = _mlir_backend_executable_name()
-    target = _cargo_target_root(project_root)
+    target = _cargo_target_root(molt_root)
     for profile in ("release", "release-fast", "debug"):
         candidate = target / profile / executable_name
         if candidate.is_file():
@@ -49,14 +50,14 @@ def _find_mlir_backend_binary(project_root: Path) -> Path | None:
     return None
 
 
-def _ensure_mlir_backend_binary(project_root: Path) -> tuple[Path | None, str | None]:
+def _ensure_mlir_backend_binary(molt_root: Path) -> tuple[Path | None, str | None]:
     """Resolve or build the standalone MLIR backend with one toolchain family."""
 
-    existing = _find_mlir_backend_binary(project_root)
+    existing = _find_mlir_backend_binary(molt_root)
     if existing is not None:
         return existing, None
 
-    manifest = project_root / "runtime" / "molt-backend-mlir" / "Cargo.toml"
+    manifest = molt_root / "runtime" / "molt-backend-mlir" / "Cargo.toml"
     if not manifest.is_file():
         return None, (
             "MLIR backend binary is absent and this installation does not contain "
@@ -67,14 +68,14 @@ def _ensure_mlir_backend_binary(project_root: Path) -> tuple[Path | None, str | 
         return None, "MLIR backend is not built and cargo is unavailable on PATH"
     try:
         env = mlir_toolchain_environment(
-            project_root,
+            molt_root,
             environ=_cargo_build_env(),
         )
     except LlvmToolchainConfigError as exc:
         return None, str(exc)
     # The standalone workspace would default to its own target; build where
     # `_find_mlir_backend_binary` looks.
-    env["CARGO_TARGET_DIR"] = os.fspath(_cargo_target_root(project_root))
+    env["CARGO_TARGET_DIR"] = os.fspath(_cargo_target_root(molt_root))
 
     command = [
         cargo,
@@ -87,7 +88,7 @@ def _ensure_mlir_backend_binary(project_root: Path) -> tuple[Path | None, str | 
     try:
         result = _run_subprocess_captured_to_tempfiles(
             command,
-            cwd=project_root,
+            cwd=molt_root,
             env=env,
             timeout=1800,
             progress_label="MLIR backend build",
@@ -99,7 +100,7 @@ def _ensure_mlir_backend_binary(project_root: Path) -> tuple[Path | None, str | 
         detail = stderr[-4000:] if stderr else "cargo returned no diagnostic"
         return None, f"MLIR backend build failed:\n{detail}"
 
-    built = _find_mlir_backend_binary(project_root)
+    built = _find_mlir_backend_binary(molt_root)
     if built is None:
         return None, "MLIR backend build succeeded but published no discoverable binary"
     return built, None
@@ -110,13 +111,14 @@ def _run_mlir_backend_pipeline(
     ir: dict[str, Any],
     output_artifact: Path,
     project_root: Path,
+    molt_root: Path,
     json_output: bool,
     verbose: bool,
     validate_inputs: Callable[[], None],
     emit_llvm: bool = False,
 ) -> int:
     """Run the standalone MLIR backend binary and write the emitted artifact."""
-    mlir_bin, build_error = _ensure_mlir_backend_binary(project_root)
+    mlir_bin, build_error = _ensure_mlir_backend_binary(molt_root)
     if mlir_bin is None:
         msg = (
             "Error: MLIR backend binary not found.\n"
@@ -136,7 +138,7 @@ def _run_mlir_backend_pipeline(
 
     try:
         mlir_env = mlir_toolchain_environment(
-            project_root,
+            molt_root,
             environ=os.environ.copy(),
             require=False,
         )
@@ -148,7 +150,7 @@ def _run_mlir_backend_pipeline(
             output_artifact, create_parent=True, role="MLIR output"
         )
         candidate = file_publication.staged_file_path(
-            output_artifact, purpose="mlir", suffix=output_artifact.suffix
+            output_artifact, purpose="mlir", suffix=output_artifact.suffix or ".tmp"
         )
     except (OSError, ValueError) as exc:
         return _fail(f"Cannot stage MLIR output: {exc}", json_output, command="build")
