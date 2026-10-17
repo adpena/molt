@@ -5223,7 +5223,10 @@ def test_executor_real_cargo_test_timeout_retains_completed_incremental_cache(
     (project / "hang.rs").write_text(
         "#[test]\nfn hanging_test() {\n"
         'std::fs::write(std::env::var("TEST_STARTED_FILE").unwrap(), b"started").unwrap();\n'
-        "loop { std::thread::sleep(std::time::Duration::from_secs(1)); }\n}\n",
+        'match std::env::var("TEST_MODE").unwrap().as_str() {\n'
+        '"ready" => (),\n'
+        '"hang" => loop { std::thread::sleep(std::time::Duration::from_secs(1)); },\n'
+        '_ => panic!("unknown fixture mode"),\n}\n}\n',
         encoding="utf-8",
     )
     started = project / "test-started"
@@ -5237,15 +5240,22 @@ def test_executor_real_cargo_test_timeout_retains_completed_incremental_cache(
         "MOLT_DISK_GUARD_HIGH_WATER_GB": "1",
     }
     manifest = ["--manifest-path", str(project / "Cargo.toml"), "--test", "hang"]
-    # Compile outside the timed partition: the 12-second budget then covers only
-    # the hanging test, on any host speed (a cold compile under Rosetta alone
-    # exceeds it).
+    # Compile and execute outside the timed partition. --no-run leaves first
+    # executable launch unproved (including host loader/security work), so it
+    # cannot establish readiness for the short timeout/cleanup oracle.
     build = run_guarded_test_process(
-        ["cargo", "test", "--offline", "--no-run", *manifest],
-        env={**os.environ, **cargo_env},
+        ["cargo", "test", "--offline", *manifest],
+        env={
+            **os.environ,
+            **cargo_env,
+            "TEST_STARTED_FILE": str(started),
+            "TEST_MODE": "ready",
+        },
         timeout=600,
     )
     assert build.returncode == 0, build.stderr
+    assert started.read_bytes() == b"started", build
+    started.unlink()
     incremental = target / "debug" / "incremental"
     compiled = sorted(path.name for path in incremental.iterdir())
     assert compiled
@@ -5256,7 +5266,11 @@ def test_executor_real_cargo_test_timeout_retains_completed_incremental_cache(
             "timeout_seconds": 12,
             "toolchains": ["cargo", "python"],
             "argv": ["cargo", "test", "--offline", *manifest],
-            "env": {**cargo_env, "TEST_STARTED_FILE": str(started)},
+            "env": {
+                **cargo_env,
+                "TEST_STARTED_FILE": str(started),
+                "TEST_MODE": "hang",
+            },
         },
     )
     plan = _synthetic_executor_plan((command,), limits={"resource-a": 1})

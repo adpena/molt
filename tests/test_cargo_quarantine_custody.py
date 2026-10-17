@@ -111,12 +111,14 @@ int main(int argc, char **argv) {
 """,
         encoding="utf-8",
     )
+    # Include first-image assessment in the existing cold fixture budget.
+    cold_timeout = 30
     compiled = run_custody_subject_process(
         ["clang", str(source), "-o", str(binary)],
         cwd=tmp_path,
         capture_output=True,
         text=True,
-        timeout=30,
+        timeout=cold_timeout,
     )
     assert compiled.returncode == 0, compiled.stderr
     measured = run_custody_subject_process(
@@ -124,7 +126,7 @@ int main(int argc, char **argv) {
         cwd=tmp_path,
         capture_output=True,
         text=True,
-        timeout=10,
+        timeout=cold_timeout,
     )
     assert measured.returncode == 0, measured.stderr
     stdout = measured.stdout

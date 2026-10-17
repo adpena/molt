@@ -352,11 +352,12 @@ def test_apple_ld_signs_a_private_stage_as_the_published_binary(
     source = tmp_path / "main.c"
     source.write_text("int main(void) { return 0; }\n", encoding="utf-8")
     obj = tmp_path / "main.o"
+    cold_timeout = 60  # Cold image execution shares its compile/link budget.
     run_cli_test_process(
         [clang, "-arch", arch, "-c", str(source), "-o", str(obj)],
         env=environment,
         check=True,
-        timeout=60,
+        timeout=cold_timeout,
     )
     stages = [
         file_publication.staged_file_path(output, purpose="native-link")
@@ -367,7 +368,7 @@ def test_apple_ld_signs_a_private_stage_as_the_published_binary(
             [clang, "-arch", arch, str(obj), "-o", str(stage), *flags],
             env=environment,
             check=True,
-            timeout=60,
+            timeout=cold_timeout,
         )
     # The stage name never reaches the published bytes.
     assert stages[0].read_bytes() == stages[1].read_bytes()
@@ -401,7 +402,7 @@ def test_apple_ld_signs_a_private_stage_as_the_published_binary(
     )
     stages[1].unlink()
     if platform.machine() == arch:
-        run_cli_test_process([str(output)], check=True, timeout=10)
+        run_cli_test_process([str(output)], check=True, timeout=cold_timeout)
 
 
 def test_append_darwin_runtime_frameworks_skips_non_darwin_target() -> None:
@@ -490,6 +491,7 @@ def test_native_compile_and_link_use_the_explicit_sdk(tmp_path, monkeypatch):
     }
     # Clang's JoinedOrSeparate -isysroot grammar keeps '=' in the operand;
     # it is not an equals alias. Use actual header lookup as the oracle.
+    cold_timeout = 60  # Cold image execution shares its compile/link budget.
     rejected = run_cli_test_process(
         [
             command[0],
@@ -502,7 +504,7 @@ def test_native_compile_and_link_use_the_explicit_sdk(tmp_path, monkeypatch):
         env=clean_environment,
         check=False,
         text=True,
-        timeout=60,
+        timeout=cold_timeout,
     )
     assert rejected.returncode != 0
     assert (
@@ -515,16 +517,16 @@ def test_native_compile_and_link_use_the_explicit_sdk(tmp_path, monkeypatch):
         env=clean_environment,
         check=True,
         text=True,
-        timeout=60,
+        timeout=cold_timeout,
     )
     run_cli_test_process(
         [*command, str(obj), "-o", str(binary)],
         env=clean_environment,
         check=True,
         text=True,
-        timeout=60,
+        timeout=cold_timeout,
     )
-    run_cli_test_process([str(binary)], check=True, timeout=10)
+    run_cli_test_process([str(binary)], check=True, timeout=cold_timeout)
 
 
 @pytest.mark.parametrize("selector", ["argument", "cflags"])
