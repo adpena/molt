@@ -2606,45 +2606,6 @@ def _count_enum_variants(rust_text: str, enum_name: str) -> set[str]:
     return variants
 
 
-@_audit_probe
-def probe_registry_reconciliation(root: Path) -> list[Finding]:
-    """Confidence (INFO) check: the [[opcode]] effect-oracle table is rendered as
-    an EXHAUSTIVE rustc match, so coverage is compiler-enforced — this only
-    reports parser-agreement so a drift in the *parser* (not the data) surfaces."""
-    ops_rs = root / "runtime/molt-ir/src/tir/ops.rs"
-    toml_path = root / "runtime/molt-ir/src/tir/op_kinds.toml"
-    findings: list[Finding] = []
-    if not ops_rs.is_file() or not toml_path.is_file():
-        return findings
-    variants = _count_enum_variants(
-        ops_rs.read_text(errors="replace", encoding="utf-8"), "OpCode"
-    )
-    toml_text = _source_text(toml_path)
-    opcode_rows = set(
-        re.findall(r'^\s*opcode\s*=\s*"([A-Za-z0-9_]+)"', toml_text, re.MULTILINE)
-    )
-    # Fallback: rows may key by [[opcode]] then name field; also accept name=.
-    if not opcode_rows:
-        opcode_rows = set(
-            re.findall(r'^\s*name\s*=\s*"([A-Za-z0-9_]+)"', toml_text, re.MULTILINE)
-        )
-    findings.append(
-        Finding(
-            probe="registry_reconciliation",
-            severity="info",
-            title=f"OpCode variants={len(variants)} · [[opcode]] rows≈{len(opcode_rows)}",
-            location="runtime/molt-ir/src/tir/{ops.rs,op_kinds.toml}",
-            detail="effect oracle is an exhaustive (no-wildcard) match — coverage is "
-            "rustc-enforced; this line is parser confidence only, not a gate",
-            suggested_action="no action unless a NEW non-exhaustive opcode classifier "
-            "appears (probe semantic_fallthrough catches those)",
-            class_retired="",
-            metric=0,
-        )
-    )
-    return findings
-
-
 # --- process-wide stdlib patches in tests (HF-F181) -------------------------
 
 # Shared stdlib modules whose attributes every caller in a pytest process reads,
@@ -3354,7 +3315,6 @@ PROBES = (
     probe_native_scalar_plan_authority,
     probe_repr_name_scalar_authority,
     probe_duplicate_authorities,
-    probe_registry_reconciliation,
     probe_process_wide_test_patches,
     probe_build_failure_test_skips,
     probe_stdlib_raw_intrinsic_names,
@@ -3402,8 +3362,6 @@ def run_all(root: Path, path_scope: frozenset[str] | None = None) -> list[Findin
     with audit_operation(root, path_scope):
         _prewarm_rust_projections(root)
         for probe in PROBES:
-            if path_scope is not None and probe is probe_registry_reconciliation:
-                continue
             findings.extend(probe(root))
     findings.sort(key=lambda f: f.sort_key())
     return findings
