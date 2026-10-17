@@ -32,13 +32,13 @@ def test_classifies_luau_op_arms_from_fixture() -> None:
             "bridge_unavailable" => {
                 self.emit_line("local out: any = error({__type=\"RuntimeError\", __msg=\"Molt bridge unavailable: \" .. tostring(msg)})");
             }
-            "object_set_class" => {
-                self.emit_line("setmetatable(obj, class)");
+            "class_set_definition" => {
+                self.emit_line("if type(cls) == \"table\" then cls.__molt_class_definition = 1 end");
             }
-            "class_layout_version" => {
-                self.emit_line("local out = if type(cls.__molt_layout_version) == \"number\" then cls.__molt_layout_version else 0");
+            "alloc_class" => {
+                self.emit_line("local out = setmetatable({}, cls)");
             }
-            "class_apply_set_name" => {
+            "object_new_bound" => {
                 self.emit_line(&format!("-- [class op: {}]", op.kind));
             }
             "classmethod_new" => {
@@ -98,9 +98,10 @@ def test_classifies_luau_op_arms_from_fixture() -> None:
     assert rows["br_if"].status == "compile-error"
     assert "Checked Luau emission rejects" in rows["br_if"].note
     assert rows["bridge_unavailable"].status == "not-admitted"
-    assert rows["object_set_class"].status == "implemented-exact"
-    assert rows["class_apply_set_name"].status == "not-admitted"
-    assert rows["class_layout_version"].status == "implemented-exact"
+    assert rows["class_set_definition"].status == "implemented-exact"
+    assert rows["object_new_bound"].status == "not-admitted"
+    assert "semantic stub markers" in rows["object_new_bound"].note
+    assert rows["alloc_class"].status == "implemented-exact"
     assert rows["classmethod_new"].status == "not-admitted"
     assert rows["staticmethod_new"].status == "not-admitted"
     assert rows["property_new"].status == "not-admitted"

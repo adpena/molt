@@ -2027,7 +2027,7 @@ def test_shared_rust_admission_proof_requires_dominating_validation(tmp_path):
     assert consumer is not None
     denied = proven_rejected_kinds(ROOT, consumer)
     assert denied is not None
-    assert {"class_new", "module_import", "const_bytes", "int"} <= denied
+    assert {"alloc_class", "module_import", "const_bytes", "int"} <= denied
     assert "const_str" not in denied
     code_validation = """self.code_slots
             .validate_functions(&ir.functions)

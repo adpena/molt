@@ -73,10 +73,6 @@
     "ownedvalue_never_emitted": [
       "asyncgen_new",
       "call_async",
-      "class_apply_set_name",
-      "class_layout_version",
-      "class_new",
-      "class_set_base",
       "dict_update_kwstar",
       "enumerate",
       "exception_active",
@@ -86,7 +82,6 @@
       "getframe",
       "is_bound_method",
       "is_native_awaitable",
-      "object_set_class",
       "pow_mod",
       "round",
       "string_split_field_end",
@@ -94,7 +89,6 @@
       "string_split_field_len_from_bounds",
       "string_split_field_ord_at_bounds",
       "string_split_field_start",
-      "super_new",
       "trunc"
     ],
     "llvm_boxed_runtime_abi_mismatch": [],

@@ -7,31 +7,6 @@ use crate::wasm_binary::emit_call;
 use crate::wasm_import_tracking::TrackedImportIds;
 use wasm_encoder::{Function, Instruction};
 
-pub(super) fn emit_class_new(
-    func: &mut Function,
-    op: &OpIR,
-    import_ids: &TrackedImportIds,
-    locals: &WasmFrameLocals,
-    reloc_enabled: bool,
-) {
-    let args = op.args.as_ref().unwrap();
-    let name = locals[&args[0]];
-    func.instruction(&Instruction::LocalGet(name));
-    emit_call(
-        func,
-        reloc_enabled,
-        import_ids[crate::wasm_abi_generated::WasmRuntimeImport::ClassNew],
-    );
-    store_runtime_result(
-        func,
-        op,
-        locals,
-        import_ids,
-        reloc_enabled,
-        crate::wasm_abi_generated::WasmRuntimeImport::ClassNew,
-    );
-}
-
 pub(super) fn emit_class_def(
     func: &mut Function,
     op: &OpIR,
@@ -127,56 +102,4 @@ pub(super) fn emit_class_def(
             import_ids[crate::wasm_abi_generated::WasmRuntimeImport::DecRefObj],
         );
     }
-}
-
-pub(super) fn emit_class_set_base(
-    func: &mut Function,
-    op: &OpIR,
-    import_ids: &TrackedImportIds,
-    locals: &WasmFrameLocals,
-    reloc_enabled: bool,
-) {
-    let args = op.args.as_ref().unwrap();
-    let class_bits = locals[&args[0]];
-    let base_bits = locals[&args[1]];
-    func.instruction(&Instruction::LocalGet(class_bits));
-    func.instruction(&Instruction::LocalGet(base_bits));
-    emit_call(
-        func,
-        reloc_enabled,
-        import_ids[crate::wasm_abi_generated::WasmRuntimeImport::ClassSetBase],
-    );
-    store_runtime_result(
-        func,
-        op,
-        locals,
-        import_ids,
-        reloc_enabled,
-        crate::wasm_abi_generated::WasmRuntimeImport::ClassSetBase,
-    );
-}
-
-pub(super) fn emit_class_apply_set_name(
-    func: &mut Function,
-    op: &OpIR,
-    import_ids: &TrackedImportIds,
-    locals: &WasmFrameLocals,
-    reloc_enabled: bool,
-) {
-    let args = op.args.as_ref().unwrap();
-    let class_bits = locals[&args[0]];
-    func.instruction(&Instruction::LocalGet(class_bits));
-    emit_call(
-        func,
-        reloc_enabled,
-        import_ids[crate::wasm_abi_generated::WasmRuntimeImport::ClassApplySetName],
-    );
-    store_runtime_result(
-        func,
-        op,
-        locals,
-        import_ids,
-        reloc_enabled,
-        crate::wasm_abi_generated::WasmRuntimeImport::ClassApplySetName,
-    );
 }

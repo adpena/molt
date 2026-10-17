@@ -792,7 +792,6 @@ def test_d10_projects_full_runtime_return_authority_and_actual_aliases(
         "exception_push",
         "exception_pop",
         "type_of",
-        "class_layout_version",
         "list_int_new",
     ):
         assert contracts[kind] == "owned_object", kind

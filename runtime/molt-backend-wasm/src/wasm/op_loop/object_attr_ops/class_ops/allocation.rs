@@ -55,36 +55,3 @@ pub(super) fn emit_object_new_bound(
         WasmRuntimeImport::ObjectNewBound,
     );
 }
-
-pub(super) fn emit_object_set_class(
-    func: &mut Function,
-    op: &OpIR,
-    import_ids: &TrackedImportIds,
-    locals: &WasmFrameLocals,
-    reloc_enabled: bool,
-) {
-    let args = op.args.as_ref().unwrap();
-    let obj = locals[&args[0]];
-    let class_obj = locals[&args[1]];
-    func.instruction(&Instruction::LocalGet(obj));
-    emit_call(
-        func,
-        reloc_enabled,
-        import_ids[crate::wasm_abi_generated::WasmRuntimeImport::HandleResolve],
-    );
-    func.instruction(&Instruction::I64ExtendI32U);
-    func.instruction(&Instruction::LocalGet(class_obj));
-    emit_call(
-        func,
-        reloc_enabled,
-        import_ids[crate::wasm_abi_generated::WasmRuntimeImport::ObjectSetClass],
-    );
-    store_runtime_result(
-        func,
-        op,
-        locals,
-        import_ids,
-        reloc_enabled,
-        crate::wasm_abi_generated::WasmRuntimeImport::ObjectSetClass,
-    );
-}

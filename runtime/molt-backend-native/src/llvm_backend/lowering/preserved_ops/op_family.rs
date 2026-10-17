@@ -197,7 +197,6 @@ mod tests {
             ("exception_stack_exit", 1),
             ("exception_set_last", 1),
             ("exception_context_set", 1),
-            ("class_apply_set_name", 1),
             ("str_from_obj", 1),
             ("repr_from_obj", 1),
             ("int_from_obj", 3),

@@ -7,14 +7,13 @@ pub(in crate::native_backend::function_compiler) const HANDLED_KINDS: &[&str] = 
     "bound_method_new",
     "object_new",
     "object_new_bound",
-    "super_new",
     "classmethod_new",
     "staticmethod_new",
     "property_new",
 ];
 use super::var_get_boxed_overflow_safe_fn;
 
-/// Cranelift codegen handlers for object/descriptor construction: `object_new`/`object_new_bound`/`super_new`/`classmethod_new`/`staticmethod_new`/`property_new`/`bound_method_new`.
+/// Cranelift codegen handlers for object/descriptor construction: `object_new`/`object_new_bound`/`classmethod_new`/`staticmethod_new`/`property_new`/`bound_method_new`.
 ///
 /// Extracted verbatim from `compile_func_inner`'s per-op dispatch (M1).
 /// Each arm body is byte-for-byte identical to the original; only the access
@@ -143,44 +142,6 @@ pub(in crate::native_backend::function_compiler) fn handle_object_construct_op(
             );
             let local_callee = module.declare_func_in_func(callee, builder.func);
             let call = builder.ins().call(local_callee, &[*cls_bits]);
-            let res = builder.inst_results(call)[0];
-            if let Some(out__) = op.out.as_ref() {
-                def_var_named(&mut *builder, vars, out__, res);
-            }
-        }
-        "super_new" => {
-            let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
-            let type_bits = var_get_boxed_overflow_safe(
-                &mut *module,
-                &mut *import_ids,
-                &mut *builder,
-                &mut *import_refs,
-                &mut *sealed_blocks,
-                vars,
-                &args[0],
-                representation_plan,
-            )
-            .expect("Type not found");
-            let obj_bits = var_get_boxed_overflow_safe(
-                &mut *module,
-                &mut *import_ids,
-                &mut *builder,
-                &mut *import_refs,
-                &mut *sealed_blocks,
-                vars,
-                &args[1],
-                representation_plan,
-            )
-            .expect("Object not found");
-            let callee = SimpleBackend::import_func_id_split(
-                &mut *module,
-                &mut *import_ids,
-                "molt_super_new",
-                &[types::I64, types::I64],
-                &[types::I64],
-            );
-            let local_callee = module.declare_func_in_func(callee, builder.func);
-            let call = builder.ins().call(local_callee, &[*type_bits, *obj_bits]);
             let res = builder.inst_results(call)[0];
             if let Some(out__) = op.out.as_ref() {
                 def_var_named(&mut *builder, vars, out__, res);

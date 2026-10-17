@@ -77,7 +77,6 @@ pub fn escape_analysis(func_ir: &mut FunctionIR) {
         "raise",
         "store",
         "guarded_field_set",
-        "object_set_class",
     ]
     .iter()
     .copied()

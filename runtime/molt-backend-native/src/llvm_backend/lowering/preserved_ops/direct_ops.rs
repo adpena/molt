@@ -14,7 +14,6 @@ pub(super) const HANDLED_KINDS: &[&str] = &[
     "store_var",
     "copy_var",
     "gen_send",
-    "super_new",
     "class_def",
     "exception_new_builtin",
     "exception_new_builtin_empty",
@@ -31,9 +30,7 @@ pub(super) const HANDLED_KINDS: &[&str] = &[
     "exception_current",
     "exception_clear",
     "builtin_type",
-    "class_layout_version",
     "class_set_definition",
-    "object_set_class",
     "string_format",
     "object_new",
     "exception_match_builtin",
@@ -135,20 +132,6 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                     RuntimeResultCustody::Boxed(RuntimeBoxedReturn::OwnedValue),
                     kind,
                     "gen_send",
-                );
-                true
-            }
-            "super_new" => {
-                if op.operands.len() != 2 {
-                    return false;
-                }
-                let func = self.ensure_runtime_i64_fn("molt_super_new", 2);
-                self.emit_positional_runtime_call(
-                    op,
-                    func,
-                    RuntimeResultCustody::Boxed(RuntimeBoxedReturn::OwnedValue),
-                    kind,
-                    "super_new",
                 );
                 true
             }
@@ -405,21 +388,6 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 );
                 true
             }
-            "class_layout_version" => {
-                let Some(&class_id) = op.operands.first() else {
-                    return false;
-                };
-                let version_fn = self.ensure_runtime_i64_fn("molt_class_layout_version", 1);
-                self.emit_borrowed_runtime_call(
-                    op,
-                    version_fn,
-                    &[RuntimeArg::Operand(class_id)],
-                    RuntimeResultCustody::Boxed(RuntimeBoxedReturn::OwnedValue),
-                    kind,
-                    "class_layout_version",
-                );
-                true
-            }
             // operands = [class]; the stamp names its class statement in
             // `class_definition` (HF-220).
             "class_set_definition" => {
@@ -438,28 +406,6 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                     RuntimeResultCustody::Boxed(RuntimeBoxedReturn::OwnedValue),
                     kind,
                     "class_set_definition",
-                );
-                true
-            }
-            // The receiver is an object address, not a boxed operand; the
-            // class is borrowed.
-            "object_set_class" => {
-                if op.operands.len() != 2 {
-                    return false;
-                }
-                let obj_bits = self.ensure_i64(self.resolve(op.operands[0]));
-                let obj_ptr_bits = self.unbox_ptr_bits(obj_bits);
-                let set_fn = self.ensure_runtime_i64_fn("molt_object_set_class", 2);
-                self.emit_borrowed_runtime_call(
-                    op,
-                    set_fn,
-                    &[
-                        RuntimeArg::Word(obj_ptr_bits.into()),
-                        RuntimeArg::Operand(op.operands[1]),
-                    ],
-                    RuntimeResultCustody::Boxed(RuntimeBoxedReturn::OwnedValue),
-                    kind,
-                    "object_set_class",
                 );
                 true
             }

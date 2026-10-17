@@ -3228,7 +3228,6 @@ fn runtime_copy_results_release_or_transfer_only_their_own_reference() {
         ("dict_get", 3),
         ("list_copy", 1),
         ("list_int_new", 2),
-        ("class_new", 1),
         ("module_new", 1),
         ("exception_current", 0),
         ("gen_send", 2),

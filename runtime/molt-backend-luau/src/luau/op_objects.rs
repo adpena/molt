@@ -33,12 +33,6 @@ impl LuauBackend {
             // ================================================================
             // Function/class/module objects
             // ================================================================
-            "class_new" => {
-                let out = self.out_var(op);
-                self.emit_line(&format!("local {out} = {{__molt_is_type = true}}"));
-                // Self-referential __index enables Luau's inline caching
-                self.emit_line(&format!("{out}.__index = {out}"));
-            }
             "module_new" | "object_new" => {
                 let out = self.out_var(op);
                 self.emit_line(&format!("local {out} = {{}}"));
@@ -51,18 +45,6 @@ impl LuauBackend {
                     .map(|value| sanitize_ident(value))
                     .unwrap_or_else(|| "nil".to_string());
                 self.emit_line(&format!("local {out} = molt_builtin_type({tag})"));
-            }
-            "super_new" => {
-                let out = self.out_var(op);
-                let args = op.args.as_deref().unwrap_or(&[]);
-                if args.len() >= 2 {
-                    let class = sanitize_ident(&args[0]);
-                    self.emit_line(&format!(
-                        "local {out} = setmetatable({{}}, {{__index = getmetatable({class}).__index}})"
-                    ));
-                } else {
-                    self.emit_line(&format!("local {out} = {{}}"));
-                }
             }
             "classmethod_new" | "staticmethod_new" | "property_new" => {
                 if let Some(ref out_name) = op.out {
@@ -109,36 +91,6 @@ impl LuauBackend {
                 }
             }
 
-            "class_set_base" => {
-                let args = op.args.as_deref().unwrap_or(&[]);
-                if args.len() >= 2 {
-                    let class = sanitize_ident(&args[0]);
-                    let base = sanitize_ident(&args[1]);
-                    self.emit_line(&format!("setmetatable({class}, {{__index = {base}}})"));
-                }
-            }
-            "object_set_class" => {
-                let args = op.args.as_deref().unwrap_or(&[]);
-                if args.len() >= 2 {
-                    let obj = sanitize_ident(&args[0]);
-                    let class = sanitize_ident(&args[1]);
-                    self.emit_line(&format!("setmetatable({obj}, {class})"));
-                }
-            }
-            "class_layout_version" => {
-                if let Some(ref out_name) = op.out {
-                    let out = sanitize_ident(out_name);
-                    let args = op.args.as_deref().unwrap_or(&[]);
-                    if let Some(class) = args.first() {
-                        let class = sanitize_ident(class);
-                        self.emit_line(&format!(
-                            "local {out} = if type({class}) == \"table\" and type({class}.__molt_layout_version) == \"number\" then {class}.__molt_layout_version else 0"
-                        ));
-                    } else {
-                        self.emit_line(&format!("local {out} = 0"));
-                    }
-                }
-            }
             // The class statement's program slot, recorded beside the layout
             // version on the class table it created (HF-220).
             "class_set_definition" => {
@@ -154,19 +106,6 @@ impl LuauBackend {
                 self.emit_line(&format!(
                     "if type({class}) == \"table\" then {class}.__molt_class_definition = {slot} end"
                 ));
-            }
-            "class_apply_set_name" => {
-                let args = op.args.as_deref().unwrap_or(&[]);
-                if let Some(class) = args.first() {
-                    let class = sanitize_ident(class);
-                    self.emit_line(&format!("molt_class_apply_set_name({class})"));
-                }
-                if let Some(ref out_name) = op.out
-                    && out_name != "none"
-                {
-                    let out = sanitize_ident(out_name);
-                    self.emit_line(&format!("local {out} = nil"));
-                }
             }
             "module_import" | "module_import_from" | "module_import_star" => {
                 self.emit_unsupported_op(op);
