@@ -8,6 +8,35 @@ const SHARED_STDLIB_CACHE_ENV_KEYS: &[&str] = &[
     "MOLT_STDLIB_CACHE_MANIFEST",
 ];
 
+fn cache_fixture_job(target: DaemonJobTarget, source: &str) -> DaemonJobRequest {
+    DaemonJobRequest {
+        id: "cache-fixture".to_string(),
+        target,
+        output: String::new(),
+        cache_key: source.to_string(),
+        function_cache_key: None,
+        skip_module_output_if_synced: false,
+        skip_function_output_if_synced: false,
+        probe_cache_only: true,
+        ir: None,
+        ir_path: None,
+        config_namespace: None,
+    }
+}
+
+/// Seed only the byte-store boundary in admission tests. The target-isolation
+/// controls below populate their entries through actual compilation instead.
+fn seed_daemon_cache(cache: &DaemonCache, kind: &str, source: &str, bytes: &[u8]) {
+    let value = serde_json::json!({
+        "id": "cache-fixture", "output": "unused", "cache_key": source,
+        "is_wasm": kind == "wasm",
+        "native_output_kind": if kind == "wasm" { None } else { Some(kind) },
+    });
+    let mut job = DaemonJobRequest::from_json_value(&value, "fixture").unwrap();
+    let (key, _) = job.take_artifact_cache_keys();
+    cache.insert(key.expect("nonempty fixture key"), Arc::from(bytes));
+}
+
 #[test]
 #[cfg(all(feature = "native-backend", any(unix, windows)))]
 fn daemon_non_unicode_stdlib_request_cannot_bypass_admission_on_any_native_transport() {
@@ -39,10 +68,7 @@ fn daemon_non_unicode_stdlib_request_cannot_bypass_admission_on_any_native_trans
             for warm in [false, true] {
                 let cache = DaemonCache::new(None);
                 if warm {
-                    cache.insert(
-                        format!("artifact-v1:{kind}:same"),
-                        Arc::from(b"cached".as_slice()),
-                    );
+                    seed_daemon_cache(&cache, kind, "same", b"cached");
                 }
                 let output = root.join(format!("{kind}-{probe}-{warm}"));
                 let value = serde_json::json!({
@@ -68,10 +94,7 @@ fn daemon_non_unicode_stdlib_request_cannot_bypass_admission_on_any_native_trans
     #[cfg(feature = "wasm-backend")]
     {
         let cache = DaemonCache::new(None);
-        cache.insert(
-            "artifact-v1:wasm:same".into(),
-            Arc::from(b"wasm".as_slice()),
-        );
+        seed_daemon_cache(&cache, "wasm", "same", b"wasm");
         let output = root.join("wasm-output");
         let value = serde_json::json!({
             "id":"wasm", "is_wasm":true, "output":output.to_string_lossy(),
@@ -128,10 +151,7 @@ fn daemon_native_object_contract_is_checked_before_cached_or_probe_admission() {
         for warm in [false, true] {
             let cache = DaemonCache::new(None);
             if warm {
-                cache.insert(
-                    "artifact-v1:object:same".into(),
-                    Arc::from(b"cached object".as_slice()),
-                );
+                seed_daemon_cache(&cache, "object", "same", b"cached object");
             }
             let output = root.join(format!("object-{probe}-{warm}.o"));
             let value = serde_json::json!({
@@ -154,10 +174,7 @@ fn daemon_native_object_contract_is_checked_before_cached_or_probe_admission() {
     #[cfg(feature = "wasm-backend")]
     {
         let cache = DaemonCache::new(None);
-        cache.insert(
-            "artifact-v1:wasm:same".into(),
-            Arc::from(b"wasm cache".as_slice()),
-        );
+        seed_daemon_cache(&cache, "wasm", "same", b"wasm cache");
         let output = root.join("wasm-output.wasm");
         let value = serde_json::json!({
             "id": "wasm", "is_wasm": true, "output": output.to_string_lossy(),
@@ -202,10 +219,7 @@ fn daemon_cache_artifact_kinds_cannot_alias_even_for_equal_caller_keys() {
             miss.needs_ir,
             "other artifact kinds cannot satisfy this cache probe"
         );
-        cache.insert(
-            format!("artifact-v1:{kind}:same-functions"),
-            Arc::from(expected),
-        );
+        seed_daemon_cache(&cache, kind, "same-functions", expected);
         let job = DaemonJobRequest::from_json_value(&request, "job").expect("parse replay job");
         let hit = compile_single_job(job, &cache);
         assert!(hit.cached && hit.output_written);
@@ -214,15 +228,115 @@ fn daemon_cache_artifact_kinds_cannot_alias_even_for_equal_caller_keys() {
     std::fs::remove_dir_all(root).expect("clean test directory");
 }
 
+/// Exercise both producers and both lookup tiers. Equal caller keys and
+/// namespaces are deliberate: the daemon must own target isolation itself.
+fn assert_compiled_cache_target_isolation(
+    target_fields: serde_json::Value,
+    alternatives: &[(&str, serde_json::Value)],
+) {
+    let root = molt_ir::debug_artifacts::prepare_unique_debug_artifact_path("daemon-target-cache")
+        .expect("unique fixture path");
+    std::fs::create_dir(&root).expect("create fixture");
+    for tier in ["module", "function"] {
+        let cache = DaemonCache::new(None);
+        let original = root.join(format!("{tier}-original"));
+        let mut request = target_fields.clone();
+        request["id"] = "original".into();
+        request["output"] = original.to_str().unwrap().into();
+        request["cache_key"] = if tier == "module" { "same" } else { "" }.into();
+        request["function_cache_key"] = if tier == "function" { "same" } else { "" }.into();
+        request["ir"] = serde_json::json!({
+            "functions": [{
+                "return_abi": "void", "name": "molt_main", "params": [],
+                "ops": [{"kind": "ret_void"}]
+            }],
+            "profile": null
+        });
+        let compile = |value: &serde_json::Value| {
+            let mut job = DaemonJobRequest::from_json_value(value, "job").expect("parse job");
+            job.config_namespace = Some("same-config".to_string());
+            compile_single_job(job, &cache)
+        };
+        let built = compile(&request);
+        assert!(
+            built.ok && !built.cached && built.output_written,
+            "{tier}: cold compilation failed: {:?}",
+            built.message
+        );
+        let expected = std::fs::read(&original).expect("compiled output");
+        assert!(!expected.is_empty());
+        let missing_ir = root.join("absent-ir.json");
+        assert!(!missing_ir.exists());
+        request.as_object_mut().unwrap().remove("ir");
+        request["ir_path"] = missing_ir.to_str().unwrap().into();
+        request["probe_cache_only"] = true.into();
+        for (index, (field, value)) in alternatives.iter().enumerate() {
+            let output = root.join(format!("{tier}-different-{index}"));
+            let mut changed = request.clone();
+            changed[*field] = value.clone();
+            changed["output"] = output.to_str().unwrap().into();
+            let miss = compile(&changed);
+            assert!(
+                miss.ok && miss.needs_ir && !miss.cached && !miss.output_written,
+                "{tier}/{field}={value}: different target reused cached bytes: {miss:?}"
+            );
+            assert!(!output.exists(), "a miss must not publish output");
+        }
+        // The changed-target probes must neither evict nor replace the
+        // producer's entry. A different output/id is still the same artifact.
+        let replay = root.join(format!("{tier}-same-target"));
+        request["id"] = "replay".into();
+        request["output"] = replay.to_str().unwrap().into();
+        let hit = compile(&request);
+        assert!(hit.ok && hit.cached && !hit.needs_ir && hit.output_written);
+        assert_eq!(std::fs::read(replay).unwrap(), expected);
+        assert!(!missing_ir.exists());
+        assert_eq!(cache.usage().0, 1, "only the actual producer inserts");
+    }
+    std::fs::remove_dir_all(root).expect("remove fixture");
+}
+
+#[cfg(feature = "native-backend")]
+#[test]
+fn daemon_compiled_native_cache_isolates_every_target_option_and_lookup_tier() {
+    let _env = TestEnvGuard::clear(&DAEMON_REQUEST_ENV_KEYS);
+    assert_compiled_cache_target_isolation(
+        serde_json::json!({"is_wasm": false, "native_output_kind": "object"}),
+        &[
+            ("target_triple", "aarch64-unknown-linux-gnu".into()),
+            ("target_triple", "x86_64-pc-windows-msvc".into()),
+            ("native_output_kind", "archive".into()),
+        ],
+    );
+}
+
+#[cfg(feature = "wasm-backend")]
+#[test]
+fn daemon_compiled_wasm_cache_isolates_every_target_option_and_lookup_tier() {
+    let _env = TestEnvGuard::clear(&DAEMON_REQUEST_ENV_KEYS);
+    assert_compiled_cache_target_isolation(
+        serde_json::json!({"is_wasm": true}),
+        &[
+            ("wasm_link", true.into()),
+            ("wasm_data_base", 1_048_576.into()),
+            ("wasm_data_base", 0.into()),
+            ("wasm_table_base", 4096.into()),
+            ("wasm_split_runtime_app_table_base", 8192.into()),
+        ],
+    );
+}
+
 #[test]
 fn daemon_cache_get_bytes_updates_lru_without_cloning() {
     let mut cache = DaemonLru::new(None);
-    cache.insert("module".to_string(), Arc::from(vec![1, 2, 3, 4]));
+    let (key, _) = cache_fixture_job(served_target(), "module").take_artifact_cache_keys();
+    let key = key.unwrap();
+    cache.insert(Arc::clone(&key), Arc::from(vec![1, 2, 3, 4]));
 
-    let bytes = cache.get_bytes("module").expect("cache hit");
+    let bytes = cache.get_bytes(&key).expect("cache hit");
     assert_eq!(bytes.as_ref(), &[1, 2, 3, 4]);
 
-    let entry = cache.entries.get("module").expect("entry retained");
+    let entry = cache.entries.get(&key).expect("entry retained");
     assert_eq!(entry.bytes.as_ref(), &[1, 2, 3, 4]);
     assert_eq!(entry.stamp, cache.clock);
 }
@@ -231,12 +345,45 @@ fn daemon_cache_get_bytes_updates_lru_without_cloning() {
 fn daemon_cache_can_share_bytes_across_keys() {
     let mut cache = DaemonLru::new(None);
     let shared = Arc::<[u8]>::from(vec![9, 8, 7, 6]);
-    cache.insert("module".to_string(), Arc::clone(&shared));
-    cache.insert("function".to_string(), shared);
+    let (module_key, _) = cache_fixture_job(served_target(), "module").take_artifact_cache_keys();
+    let (function_key, _) =
+        cache_fixture_job(served_target(), "function").take_artifact_cache_keys();
+    let module_key = module_key.unwrap();
+    let function_key = function_key.unwrap();
+    cache.insert(Arc::clone(&module_key), Arc::clone(&shared));
+    cache.insert(Arc::clone(&function_key), shared);
 
-    let module = cache.entries.get("module").expect("module entry");
-    let function = cache.entries.get("function").expect("function entry");
+    let module = cache.entries.get(&module_key).expect("module entry");
+    let function = cache.entries.get(&function_key).expect("function entry");
     assert!(Arc::ptr_eq(&module.bytes, &function.bytes));
+}
+
+#[test]
+fn daemon_hit_only_cache_bounds_order_memory_and_preserves_eviction() {
+    let mut cache = DaemonLru::new(Some(8));
+    let (first, _) = cache_fixture_job(served_target(), "first").take_artifact_cache_keys();
+    let (second, _) = cache_fixture_job(served_target(), "second").take_artifact_cache_keys();
+    let (third, _) = cache_fixture_job(served_target(), "third").take_artifact_cache_keys();
+    let (first, second, third) = (first.unwrap(), second.unwrap(), third.unwrap());
+    let payload = Arc::<[u8]>::from([1, 2, 3, 4].as_slice());
+    cache.insert(Arc::clone(&first), Arc::clone(&payload));
+    cache.insert(Arc::clone(&second), Arc::from([5, 6, 7, 8].as_slice()));
+    for _ in 0..1024 {
+        let hit = cache.get_bytes(&first).expect("warm first entry");
+        assert!(Arc::ptr_eq(&hit, &payload));
+        assert!(
+            cache.order.len() <= 64,
+            "hit-only traffic must not retain a generation for every lookup"
+        );
+    }
+    assert_eq!(cache.entries.len(), 2);
+    assert_eq!(cache.bytes, 8);
+    cache.insert(Arc::clone(&third), Arc::from([9, 10, 11, 12].as_slice()));
+    assert!(cache.get_bytes(&second).is_none(), "evict the cold entry");
+    assert!(Arc::ptr_eq(&cache.get_bytes(&first).unwrap(), &payload));
+    assert_eq!(cache.get_bytes(&third).unwrap().as_ref(), &[9, 10, 11, 12]);
+    assert_eq!(cache.entries.len(), 2);
+    assert_eq!(cache.bytes, 8);
 }
 
 #[test]
@@ -251,18 +398,15 @@ fn daemon_default_cache_limit_scales_with_host_memory() {
     );
 }
 
-/// A job target this build's daemon serves, and the label its cache keys carry.
+/// A job target this build's daemon serves.
 #[cfg(feature = "wasm-backend")]
-fn served_target() -> (DaemonJobTarget, &'static str) {
-    (DaemonJobTarget::Wasm(WasmTargetOptions::default()), "wasm")
+fn served_target() -> DaemonJobTarget {
+    DaemonJobTarget::Wasm(WasmTargetOptions::default())
 }
 
 #[cfg(not(feature = "wasm-backend"))]
-fn served_target() -> (DaemonJobTarget, &'static str) {
-    (
-        DaemonJobTarget::Native(NativeTargetOptions::default()),
-        "object",
-    )
+fn served_target() -> DaemonJobTarget {
+    DaemonJobTarget::Native(NativeTargetOptions::default())
 }
 
 #[test]
@@ -276,7 +420,7 @@ fn daemon_probe_cache_only_returns_needs_ir_on_miss() {
     let result = compile_single_job(
         DaemonJobRequest {
             id: "job0".to_string(),
-            target: served_target().0,
+            target: served_target(),
             output: "/tmp/unused.o".to_string(),
             cache_key: "module".to_string(),
             function_cache_key: Some("function".to_string()),
@@ -300,10 +444,8 @@ fn daemon_probe_cache_only_returns_needs_ir_on_miss() {
 fn daemon_probe_cache_only_hits_without_reading_ir() {
     let _env_guard = TestEnvGuard::clear(SHARED_STDLIB_CACHE_ENV_KEYS);
     let cache = DaemonCache::new(None);
-    cache.insert(
-        format!("artifact-v1:{}:module", served_target().1),
-        Arc::from(vec![1_u8, 2, 3]),
-    );
+    let (key, _) = cache_fixture_job(served_target(), "module").take_artifact_cache_keys();
+    cache.insert(key.unwrap(), Arc::from(vec![1_u8, 2, 3]));
     let nonce = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .expect("clock")
@@ -316,7 +458,7 @@ fn daemon_probe_cache_only_hits_without_reading_ir() {
         let result = compile_single_job(
             DaemonJobRequest {
                 id: "job0".to_string(),
-                target: served_target().0,
+                target: served_target(),
                 output: output.to_string_lossy().into_owned(),
                 cache_key: "module".to_string(),
                 function_cache_key: Some("function".to_string()),
@@ -344,10 +486,7 @@ fn daemon_cache_hit_requires_matching_shared_stdlib_artifact() {
     let _env_guard = TestEnvGuard::capture(SHARED_STDLIB_CACHE_ENV_KEYS);
 
     let cache = DaemonCache::new(None);
-    cache.insert(
-        "artifact-v1:archive:module".to_string(),
-        Arc::from(vec![1_u8, 2, 3]),
-    );
+    seed_daemon_cache(&cache, "archive", "module", &[1_u8, 2, 3]);
     let nonce = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .expect("clock")
@@ -413,10 +552,7 @@ fn daemon_diagnostics_bypass_warm_module_and_function_cache_entries() {
     for &(kind, is_wasm) in served {
         for tier in ["module", "function"] {
             let cache = DaemonCache::new(None);
-            cache.insert(
-                format!("artifact-v1:{kind}:{tier}"),
-                Arc::from(b"cached output".as_slice()),
-            );
+            seed_daemon_cache(&cache, kind, tier, b"cached output");
             for (case, dump, timing) in [
                 ("ordinary", None, None),
                 ("timing", None, Some("1")),

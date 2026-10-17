@@ -369,7 +369,7 @@
     "tests/tools/test_win_job_contract.py",
     "tests/tools/test_windows_process_api.py"
   ],
-  "authority_sha256": "93c4048b821e557b69cefef72a387e9c7d23719eb3267790edc3f962853bdd55",
+  "authority_sha256": "396285335281d8689f8f8f1e7db948246c32dc09bf1474c06f313b6e2188b75a",
   "cargo_environment_policy": {
     "incident_command": "cargo metadata --locked --format-version 1",
     "incident_commit": "20b046b79bd4ca64a8c859f737f6e330377bcc4e",
@@ -8502,6 +8502,7 @@
       "local.apparatus-learning-protection.0": "python -m pytest -q tests/tools/test_apparatus_agent_safety.py tests/tools/test_anti_recurrence_gate.py tests/tools/test_hooks_session_learning.py tests/tools/test_check_gate_liveness.py tests/tools/test_memory_graph.py",
       "local.apparatus-learning-protection.1": "python tools/apparatus_agent_safety.py --check",
       "local.apparatus-learning-protection.2": "python tools/anti_recurrence_gate.py --check",
+      "local.backend-daemon-cache.0": "cargo test --locked --profile dev-fast --config profile.dev-fast.package.cranelift-codegen.opt-level=0 -p molt-backend --no-default-features --features molt-backend/native-backend,molt-backend/wasm-backend,molt-backend/luau-backend,molt-backend/rust-backend,molt-backend/cbor --bin molt-backend daemon -- --test-threads=1",
       "local.backend-ir-framing.0": "cargo test --locked --profile release-fast -p molt-backend --features native-backend,cbor --bin molt-backend backend_process::input::tests",
       "local.backend-llvm.0": "cargo test --locked --profile release-fast -p molt-backend-native -p molt-backend --features molt-backend/native-backend,molt-backend/llvm --lib --test ir_contract_validation --no-fail-fast",
       "local.backend-native.0": "cargo clippy --locked -p molt-backend -p molt-backend-native -p molt-artifact-publish --features molt-backend/native-backend -- -D warnings",
@@ -9725,6 +9726,28 @@
       },
       {
         "command_ids": [
+          "local.backend-daemon-cache.0"
+        ],
+        "description": "Exercise typed daemon target identity, LRU and flights on the compiler-authorities feature graph.",
+        "gates": [
+          "cargo test --locked --profile dev-fast --config profile.dev-fast.package.cranelift-codegen.opt-level=0 -p molt-backend --no-default-features --features molt-backend/native-backend,molt-backend/wasm-backend,molt-backend/luau-backend,molt-backend/rust-backend,molt-backend/cbor --bin molt-backend daemon -- --test-threads=1"
+        ],
+        "globs": [
+          "runtime/molt-backend/Cargo.toml",
+          "runtime/molt-backend/src/backend_process/cli_args/**/*.rs",
+          "runtime/molt-backend/src/backend_process/native_artifact.rs",
+          "runtime/molt-backend/src/backend_process/daemon/**/*.rs",
+          "runtime/molt-backend/src/main_tests/daemon*.rs"
+        ],
+        "name": "backend-daemon-cache",
+        "toolchains": [
+          "python",
+          "rustc",
+          "cargo"
+        ]
+      },
+      {
+        "command_ids": [
           "local.backend-ir-framing.0"
         ],
         "description": "Run actual binary input receivers with CBOR enabled; the native binary family also proves disabled-feature refusal.",
@@ -10468,6 +10491,12 @@
       ],
       "local.apparatus-learning-protection.2": [
         "python"
+      ],
+      "local.backend-daemon-cache.0": [
+        "python",
+        "rustc",
+        "cargo",
+        "git"
       ],
       "local.backend-ir-framing.0": [
         "python",

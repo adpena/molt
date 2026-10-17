@@ -5,24 +5,38 @@ use molt_backend::json_boundary::{
 };
 use serde_json::Value as JsonValue;
 
-use super::model::{DaemonJobRequest, DaemonJobTarget};
+use super::model::{DaemonCacheContext, DaemonCacheKey, DaemonJobRequest, DaemonJobTarget};
+use std::sync::Arc;
 
 impl DaemonJobRequest {
-    /// Caller keys identify IR/codegen inputs; transport kind is independently
-    /// owned here so even equal caller keys cannot replay a different artifact.
-    pub(crate) fn artifact_cache_key(&self, key: &str) -> String {
-        let key = key.trim();
-        if key.is_empty() {
-            return String::new();
+    /// Move caller strings into one pair of backend-enforced target identities.
+    /// Empty keys disable their tier; equal keys share one allocation. This runs
+    /// once before cache admission and does not open an IR lease.
+    pub(crate) fn take_artifact_cache_keys(
+        &mut self,
+    ) -> (Option<Arc<DaemonCacheKey>>, Option<Arc<DaemonCacheKey>>) {
+        let module = nonempty_key(std::mem::take(&mut self.cache_key));
+        let function = self.function_cache_key.take().and_then(nonempty_key);
+        if module.is_none() && function.is_none() {
+            return (None, None);
         }
-        match self.config_namespace.as_deref() {
-            // Configurations share one daemon without evicting each other.
-            Some(namespace) => format!(
-                "artifact-v1:{namespace}:{}:{key}",
-                self.target.artifact_kind()
-            ),
-            None => format!("artifact-v1:{}:{key}", self.target.artifact_kind()),
-        }
+        let context = Arc::new(DaemonCacheContext {
+            config_namespace: self.config_namespace.take(),
+            target: self.target.clone(),
+        });
+        let same = module == function;
+        let module = module.map(|source| {
+            Arc::new(DaemonCacheKey {
+                context: Arc::clone(&context),
+                source,
+            })
+        });
+        let function = if same {
+            module.as_ref().map(Arc::clone)
+        } else {
+            function.map(|source| Arc::new(DaemonCacheKey { context, source }))
+        };
+        (module, function)
     }
 
     pub(crate) fn from_json_value(value: &JsonValue, ctx: &str) -> Result<Self, String> {
@@ -71,16 +85,12 @@ impl DaemonJobRequest {
     }
 }
 
-impl DaemonJobTarget {
-    /// The transport label every cache key of this job carries.
-    fn artifact_kind(&self) -> &'static str {
-        match self {
-            #[cfg(feature = "native-backend")]
-            Self::Native(options) => options.output_kind.as_str(),
-            #[cfg(feature = "wasm-backend")]
-            Self::Wasm(_) => "wasm",
-        }
-    }
+fn nonempty_key(mut key: String) -> Option<String> {
+    let end = key.trim_end().len();
+    key.truncate(end);
+    let start = key.len() - key.trim_start().len();
+    key.drain(..start);
+    (!key.is_empty()).then_some(key)
 }
 
 type JsonObject = serde_json::Map<String, JsonValue>;
@@ -146,7 +156,7 @@ mod tests {
         use crate::backend_process::{NativeArtifactKind, NativeTargetOptions};
         let mut value =
             serde_json::json!({"id":"job", "is_wasm":false, "output":"output", "cache_key":"same"});
-        let job = DaemonJobRequest::from_json_value(&value, "job").expect("default object job");
+        let mut job = DaemonJobRequest::from_json_value(&value, "job").expect("default object job");
         assert_eq!(
             job.target,
             DaemonJobTarget::Native(NativeTargetOptions {
@@ -154,11 +164,10 @@ mod tests {
                 output_kind: NativeArtifactKind::Object,
             })
         );
-        assert_eq!(job.artifact_cache_key("same"), "artifact-v1:object:same");
-        assert!(job.artifact_cache_key("  ").is_empty());
+        let object_key = job.take_artifact_cache_keys().0.unwrap();
         value["native_output_kind"] = "archive".into();
-        let job = DaemonJobRequest::from_json_value(&value, "job").expect("archive job");
-        assert_eq!(job.artifact_cache_key("same"), "artifact-v1:archive:same");
+        let mut job = DaemonJobRequest::from_json_value(&value, "job").expect("archive job");
+        assert_ne!(object_key, job.take_artifact_cache_keys().0.unwrap());
         value["is_wasm"] = true.into();
         assert!(DaemonJobRequest::from_json_value(&value, "job").is_err());
         value["is_wasm"] = false.into();
@@ -174,7 +183,7 @@ mod tests {
 
     #[cfg(feature = "wasm-backend")]
     #[test]
-    fn wasm_job_carries_its_layout_and_its_own_cache_label() {
+    fn wasm_job_carries_its_complete_layout() {
         // src/molt/cli/backend_execution.py sends every layout field.
         let value = serde_json::json!({
             "id": "job", "is_wasm": true, "output": "app.wasm", "cache_key": "same",
@@ -191,7 +200,6 @@ mod tests {
                 split_runtime_app_table_base: Some(8192),
             })
         );
-        assert_eq!(job.artifact_cache_key("same"), "artifact-v1:wasm:same");
     }
 
     #[cfg(not(feature = "wasm-backend"))]

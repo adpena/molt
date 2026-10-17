@@ -59,7 +59,7 @@ pub(crate) enum BackendTarget {
 
 /// `--target-triple` and `--native-output-kind`, or a daemon job's fields.
 #[cfg(feature = "native-backend")]
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub(crate) struct NativeTargetOptions {
     pub(crate) target_triple: Option<String>,
     pub(crate) output_kind: NativeArtifactKind,
@@ -69,7 +69,7 @@ pub(crate) struct NativeTargetOptions {
 /// override keeps `WasmCompileOptions::default()`, which reads the
 /// `MOLT_WASM_*` environment when the module compiles.
 #[cfg(feature = "wasm-backend")]
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub(crate) struct WasmTargetOptions {
     pub(crate) link_relocs: bool,
     pub(crate) data_base: Option<u32>,

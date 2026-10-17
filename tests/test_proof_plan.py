@@ -788,6 +788,28 @@ def test_ir_input_receivers_run_with_enabled_and_disabled_cbor() -> None:
         assert "backend_process::input::tests" in argv
 
 
+def test_daemon_cache_runs_actual_native_and_wasm_binary_receivers() -> None:
+    local = next(
+        rule for rule in PLAN.local_rules if rule["name"] == "backend-daemon-cache"
+    )
+    assert "runtime/molt-backend/src/backend_process/daemon/**/*.rs" in local["globs"]
+    assert "runtime/molt-backend/src/main_tests/daemon*.rs" in local["globs"]
+    compiler = next(
+        row for row in PLAN.commands if row.id == "rust.test.compiler-authorities"
+    )
+    compiler_features = set(
+        compiler.argv[compiler.argv.index("--features") + 1].split(",")
+    )
+    argv = shlex.split(local["gates"][0])
+    assert argv[argv.index("--bin") + 1] == "molt-backend"
+    assert argv[argv.index("--profile") + 1] == "dev-fast"
+    assert "--no-default-features" in argv
+    features = set(argv[argv.index("--features") + 1].split(","))
+    assert {"molt-backend/native-backend", "molt-backend/wasm-backend"} <= features
+    assert features == compiler_features
+    assert argv[argv.index("--bin") + 2 :] == ["daemon", "--", "--test-threads=1"]
+
+
 def test_cpython_abi_owner_reuses_the_compiler_graph_and_registered_local_lane() -> (
     None
 ):

@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
 
+use super::super::protocol::DaemonCacheKey;
 use super::state::DaemonLru;
 
 /// The daemon's compiled-output cache, shared by concurrent connections.
@@ -11,7 +12,7 @@ use super::state::DaemonLru;
 pub(crate) struct DaemonCache {
     lru: Mutex<DaemonLru>,
     max_bytes: Option<usize>,
-    in_flight: Mutex<HashMap<String, Arc<InFlight>>>,
+    in_flight: Mutex<HashMap<Arc<DaemonCacheKey>, Arc<InFlight>>>,
 }
 
 #[derive(Default)]
@@ -33,7 +34,7 @@ pub(crate) enum Flight<'a> {
 
 pub(crate) struct FlightGuard<'a> {
     cache: &'a DaemonCache,
-    key: String,
+    key: Arc<DaemonCacheKey>,
     flight: Arc<InFlight>,
 }
 
@@ -63,11 +64,11 @@ impl DaemonCache {
         self.max_bytes
     }
 
-    pub(crate) fn get_bytes(&self, key: &str) -> Option<Arc<[u8]>> {
+    pub(crate) fn get_bytes(&self, key: &DaemonCacheKey) -> Option<Arc<[u8]>> {
         lock(&self.lru).get_bytes(key)
     }
 
-    pub(crate) fn insert(&self, key: String, value: Arc<[u8]>) {
+    pub(crate) fn insert(&self, key: Arc<DaemonCacheKey>, value: Arc<[u8]>) {
         lock(&self.lru).insert(key, value);
     }
 
@@ -83,14 +84,14 @@ impl DaemonCache {
     }
 
     /// Join `key`'s single flight.
-    pub(crate) fn begin(&self, key: &str) -> Flight<'_> {
+    pub(crate) fn begin(&self, key: &Arc<DaemonCacheKey>) -> Flight<'_> {
         let leader = {
             let mut in_flight = lock(&self.in_flight);
-            match in_flight.get(key) {
+            match in_flight.get(key.as_ref()) {
                 Some(existing) => Err(Arc::clone(existing)),
                 None => {
                     let flight = Arc::new(InFlight::default());
-                    in_flight.insert(key.to_string(), Arc::clone(&flight));
+                    in_flight.insert(Arc::clone(key), Arc::clone(&flight));
                     Ok(flight)
                 }
             }
@@ -98,7 +99,7 @@ impl DaemonCache {
         match leader {
             Ok(flight) => Flight::Leader(FlightGuard {
                 cache: self,
-                key: key.to_string(),
+                key: Arc::clone(key),
                 flight,
             }),
             Err(existing) => {
@@ -120,72 +121,5 @@ impl DaemonCache {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use std::sync::atomic::Ordering;
-    use std::thread;
-
-    /// Blocks until `count` callers wait on `flight`.
-    fn await_waiters(flight: &InFlight, count: usize) {
-        while flight.waiting.load(Ordering::SeqCst) < count {
-            thread::yield_now();
-        }
-    }
-
-    #[test]
-    fn one_caller_compiles_and_concurrent_callers_reuse_its_output() {
-        let cache = Arc::new(DaemonCache::new(None));
-        let Flight::Leader(guard) = cache.begin("module") else {
-            panic!("the first caller leads");
-        };
-        let followers: Vec<_> = (0..4)
-            .map(|_| {
-                let cache = Arc::clone(&cache);
-                thread::spawn(move || {
-                    matches!(cache.begin("module"), Flight::Waited)
-                        && cache.get_bytes("module").as_deref() == Some(b"out".as_slice())
-                })
-            })
-            .collect();
-        await_waiters(&guard.flight, 4);
-        cache.insert("module".to_string(), Arc::from(b"out".as_slice()));
-        drop(guard);
-        for follower in followers {
-            assert!(
-                follower.join().expect("follower"),
-                "a follower compiled again"
-            );
-        }
-        // The flight ended, so the next caller for the key leads again.
-        assert!(matches!(cache.begin("module"), Flight::Leader(_)));
-    }
-
-    #[test]
-    fn a_leader_without_output_releases_its_followers() {
-        let cache = Arc::new(DaemonCache::new(None));
-        let Flight::Leader(guard) = cache.begin("module") else {
-            panic!("the first caller leads");
-        };
-        let follower = {
-            let cache = Arc::clone(&cache);
-            thread::spawn(move || {
-                matches!(cache.begin("module"), Flight::Waited)
-                    && cache.get_bytes("module").is_none()
-            })
-        };
-        await_waiters(&guard.flight, 1);
-        // A failed or oversized compile caches nothing; the follower then
-        // compiles for itself instead of waiting forever.
-        drop(guard);
-        assert!(follower.join().expect("follower"));
-    }
-
-    #[test]
-    fn flights_for_different_keys_do_not_block_each_other() {
-        let cache = DaemonCache::new(None);
-        let first = cache.begin("first");
-        let second = cache.begin("second");
-        assert!(matches!(first, Flight::Leader(_)));
-        assert!(matches!(second, Flight::Leader(_)));
-    }
-}
+#[path = "shared_tests.rs"]
+mod tests;

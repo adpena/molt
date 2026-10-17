@@ -21,7 +21,7 @@ pub(crate) struct DaemonJobRequest {
 
 /// The artifact a daemon job builds. The daemon serves native and WASM jobs
 /// for the backends this binary contains; the request parser refuses others.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub(crate) enum DaemonJobTarget {
     #[cfg(feature = "native-backend")]
     Native(NativeTargetOptions),
@@ -40,4 +40,19 @@ pub(crate) struct DaemonRequest {
     pub(crate) jobs: Option<Vec<DaemonJobRequest>>,
     /// The request's backend settings, installed per compiling thread.
     pub(crate) environment: std::sync::Arc<molt_backend::backend_environment::BackendEnvironment>,
+}
+
+/// The backend-owned request dimensions shared by both caller cache tiers.
+/// Deriving structural identity includes every field of the closed target options.
+#[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub(super) struct DaemonCacheContext {
+    pub(super) config_namespace: Option<String>,
+    pub(super) target: DaemonJobTarget,
+}
+
+/// A cache/flight identity, not a serialized wire key or consumed-IR receipt.
+#[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub(crate) struct DaemonCacheKey {
+    pub(super) context: std::sync::Arc<DaemonCacheContext>,
+    pub(super) source: String,
 }
