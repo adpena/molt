@@ -641,8 +641,8 @@ IR-correctness pieces touch the safety-adjacent DFE so carry A-lane discipline
   §5 here). This is the "<2MB binary + per-attr liveness" terminus (doc 65 Rung 8 / doc 51
   §6).
 - **Gate per increment:** `reach_coverage.py` UP; the relevant size dimension DOWN;
-  differential parity; the 21e satellite-parity guard (`check_satellite_parity.py`)
-  unaffected (this *reduces* what links, never changes satellite/in-tree equivalence).
+  differential parity; 21e's single-source satellite ownership unaffected (this
+  *reduces* what links, never adds an in-tree copy of satellite code).
   **Unbounded** — the monthly cadence (doc 65 §7) for the footprint class.
 
 **Landing report format (every phase — doc 64 §1 + CLAUDE.md PERF/SPEED + doc 61 SIZE
@@ -691,8 +691,8 @@ dropped-live-symbol differential failures (the correctness floor / the equivalen
   `_runtime_feature_gates.py` consumer data) are duals. Phase 5 closes the loop: the reachability fact tells the tier-feature gate
   whether a satellite crate has any live symbol, so a tier links a satellite ONLY when
   needed — making 21e's "link only what's used" *fact-driven* instead of feature-flag-
-  curated. This arc must not disturb 21e's parity guard (`check_satellite_parity.py`): it
-  reduces what links; it never changes satellite↔in-tree equivalence.
+  curated. This arc must not disturb 21e's single-source rule: it reduces what links;
+  it never adds an in-tree copy of satellite code.
 - **Doc 21b (crate graph).** The reachability fact lives in `molt-tir` (the IR crate) and is
   consumed by `molt-backend` and the CLI through the existing public surface (`lib.rs:43-50`)
   — respecting the crate dependency direction; no new cross-crate cycle.

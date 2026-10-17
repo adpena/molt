@@ -1,8 +1,8 @@
 # Suite-Honesty Ratchet
 
 Task #46 — the conformance-manifest seed for the 5-year parity axis. Modeled on
-the satellite-parity (`tools/check_satellite_parity.py`) and ecosystem-compat
-(`tools/check_ecosystem_compat.py`) guards: a fail-closed, **down-only** ratchet
+the ecosystem-compat guard (`tools/check_ecosystem_compat.py`): a fail-closed,
+**down-only** ratchet
 so the differential suite can never read as green while a tracked test is failing,
 and can never keep a fixed test on the known-bad list.
 
@@ -183,8 +183,8 @@ uv run --python 3.12 python tools/calib_daemon.py --log RUN.log --pidfile RUN.pi
 ```
 
 Wired in CI as a `docs-gates` step in `.github/workflows/ci.yml` and as a `lint`
-gate in `pyproject.toml`, alongside `check_ecosystem_compat` / `check_dynamic_policy`
-/ `check_satellite_parity`. The test suite is `tests/test_check_suite_honesty.py`.
+gate in `pyproject.toml`, alongside `check_ecosystem_compat` / `check_dynamic_policy`.
+The test suite is `tests/test_check_suite_honesty.py`.
 
 ## The relationship to the other expected-fail channels
 

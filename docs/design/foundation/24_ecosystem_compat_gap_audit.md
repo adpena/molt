@@ -4,6 +4,11 @@
 
 # Ecosystem Compatibility Gap Audit (Dynamism-Bounded, Planning-Grade)
 
+> **Note (2026-10-17, HF-280):** `tools/check_satellite_parity.py`, its baseline and the
+> `runtime/molt-runtime/tests/satellite_parity.rs` test are deleted. Every in-tree/satellite
+> pair was deleted or single-sourced by 2026-06-27, so the guard's `PAIRS` table was empty
+> and it checked nothing. Mentions of the guard below are history.
+
 > **Honesty header — read first.** The mission brief states this is "the only
 > user-named lane with NO committed audit." That is **not accurate**: a prior
 > recon, `docs/design/foundation/17_ecosystem-third-party-compat-gap-audit.md`,
