@@ -45,8 +45,8 @@ RATCHET
 Same monotonic-non-increasing shape as ``tools/dead_code_allow_ratchet.py``: the
 committed baseline count may only DECREASE (burn down to zero — the goal), never
 rise. The baseline is fingerprinted by ``file::rule`` (line-number independent)
-so an unrelated edit that shifts lines does not churn it, and so a fixed
-violation cannot be silently replaced by a brand-new one at net-zero count.
+so an unrelated edit that shifts lines does not churn it. Counts detect growth
+within each file/rule group; they do not retain individual call-site identities.
 
 Usage:
     python tools/encoding_gate.py            # or --check: fail if NEW violations
@@ -116,7 +116,7 @@ class Violation:
 
     @property
     def fingerprint(self) -> str:
-        """Line-number-independent identity: same site survives unrelated edits."""
+        """Line-number-independent file/rule group; locations remain separate."""
         return f"{self.relpath}::{self.rule}"
 
     def location(self) -> str:
@@ -397,7 +397,7 @@ def scan(root: Path = ROOT) -> list[Violation]:
 
 
 def _counts(violations: list[Violation]) -> dict[str, int]:
-    """Per-site (``file::rule``) violation counts — line-number independent.
+    """Per-group (``file::rule``) violation counts — line-number independent.
 
     Keying by ``file::rule`` (not by line) means an unrelated edit that shifts
     lines does not churn the baseline, while a per-key COUNT (not a mere set)
@@ -427,7 +427,8 @@ def regressions(counts: dict[str, int], base_by_site: dict[str, int]) -> list[st
 
     A brand-new ``file::rule`` has baseline 0, so any occurrence trips it; an
     existing key trips on +1. This is strictly stronger than a total-count
-    ratchet — it cannot be fooled by fixing one site and adding another.
+    ratchet: fixing one group cannot hide growth in another. Replacements at
+    net-zero count within the same group are not distinguishable.
     """
     return sorted(fp for fp, c in counts.items() if c > base_by_site.get(fp, 0))
 
@@ -481,25 +482,43 @@ def _cmd_check(violations: list[Violation], root: Path) -> int:
     base_total = int(base.get("total", sum(base_by_site.values())))
     counts = _counts(violations)
     total = sum(counts.values())
-    by_fp: dict[str, Violation] = {v.fingerprint: v for v in violations}
     risen = regressions(counts, base_by_site)
 
     if risen:
+        by_fp: dict[str, list[Violation]] = {fp: [] for fp in risen}
+        for violation in violations:
+            locations = by_fp.get(violation.fingerprint)
+            if locations is not None:
+                locations.append(violation)
+        excess = sum(counts[fp] - base_by_site.get(fp, 0) for fp in risen)
+        current = sum(counts[fp] for fp in risen)
         print(
-            f"encoding_gate: FAIL -- {len(risen)} encoding-unsafe call site(s) rose "
-            f"above baseline:",
+            f"encoding_gate: FAIL -- {excess} excess encoding-unsafe call site(s) "
+            f"in {len(risen)} file/rule group(s) above baseline; "
+            f"showing all {current} current call site(s):",
             file=sys.stderr,
         )
         for fp in risen:
             was = base_by_site.get(fp, 0)
             now = counts[fp]
-            delta = "NEW" if was == 0 else f"{was}->{now}"
+            delta = f"{'NEW; ' if was == 0 else ''}{was}->{now}, +{now - was}"
             print(
-                f"    {by_fp[fp].location()}: {by_fp[fp].rule}  ({delta})",
+                f"    {fp}  ({delta})",
                 file=sys.stderr,
             )
+            for violation in by_fp[fp]:
+                print(
+                    f"        {violation.location()}: {violation.rule}",
+                    file=sys.stderr,
+                )
         print(
-            '\nName the encoding explicitly (encoding="utf-8") on the flagged call, '
+            "\nFor groups with existing baseline counts, all current locations "
+            "are shown; the count-only baseline cannot identify which individual "
+            "sites are new.",
+            file=sys.stderr,
+        )
+        print(
+            '\nName the encoding explicitly (encoding="utf-8") on unsafe calls, '
             "or open the file in binary mode (text=... -> add encoding= for "
             "subprocess). If the finding is genuinely a false positive, rebaseline "
             "with `python tools/encoding_gate.py --update` and justify it in the "

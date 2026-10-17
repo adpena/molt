@@ -140,6 +140,48 @@ def test_regressions_allows_burn_down() -> None:
     assert eg.regressions(counts, base) == []
 
 
+def test_check_reports_all_current_locations_in_regressed_groups(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    baseline = tmp_path / "tools" / "encoding_gate_baseline.json"
+    baseline.parent.mkdir()
+    baseline_bytes = (
+        b'{"total": 2, "by_site": {"tools/report.py::open-no-encoding": 1, '
+        b'"tools/report.py::write_text-no-encoding": 1}}\n'
+    )
+    baseline.write_bytes(baseline_bytes)
+    source = (
+        'open("first")\n'
+        "p.read_text()\n"
+        'open("second")\n'
+        "p.read_text()\n"
+        'p.write_text("existing")\n'
+    )
+    expected = (
+        "encoding_gate: FAIL -- 3 excess encoding-unsafe call site(s) in 2 "
+        "file/rule group(s) above baseline; showing all 4 current call site(s):\n"
+        "    tools/report.py::open-no-encoding  (1->2, +1)\n"
+        "        tools/report.py:1: open-no-encoding\n"
+        "        tools/report.py:3: open-no-encoding\n"
+        "    tools/report.py::read_text-no-encoding  (NEW; 0->2, +2)\n"
+        "        tools/report.py:2: read_text-no-encoding\n"
+        "        tools/report.py:4: read_text-no-encoding\n"
+    )
+    outputs = []
+    for _ in range(2):
+        assert eg._cmd_check(eg.scan_source(source, "tools/report.py"), tmp_path) == 2
+        captured = capsys.readouterr()
+        assert captured.out == ""
+        assert captured.err.startswith(expected)
+        assert "count-only baseline cannot identify which individual sites are new" in (
+            captured.err
+        )
+        assert "write_text-no-encoding" not in captured.err
+        outputs.append(captured.err)
+    assert outputs[0] == outputs[1]
+    assert baseline.read_bytes() == baseline_bytes
+
+
 # ---------------------------------------------------------------------------
 # Integration -- the real CLI has teeth (fails on a planted violation)
 # ---------------------------------------------------------------------------

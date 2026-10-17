@@ -4207,6 +4207,14 @@ gates = [
   "python -m pytest -q tests/tools/test_check_rustfmt.py",
 ]
 
+# --- Encoding gate diagnostics -----------------------------------------
+[[rule]]
+name = "encoding-diagnostics"
+toolchains = ["python"]
+description = "Encoding regression diagnostics preserve counts and every affected location."
+globs = ["tools/encoding_gate.py", "tests/tools/test_encoding_gate.py"]
+gates = ["python -m pytest -q tests/tools/test_encoding_gate.py"]
+
 # --- Runtime Cargo input custody ----------------------------------------
 [[rule]]
 name = "runtime-cargo-input-custody"
