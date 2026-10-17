@@ -3,6 +3,7 @@ from __future__ import annotations
 from molt.compiler_analysis import python_import_scan as _source_import_scan
 
 import ast
+import json
 from pathlib import Path
 
 import pytest
@@ -24,6 +25,7 @@ from molt.compiler_analysis.python_import_scan import (
 )
 from molt.cli.module_resolution import _ModuleResolutionCache
 from tests.runtime_import_owner_test_support import scan_as_runtime_owner
+from tests.source_record_test_support import replace_source_record, source_records
 from molt.target_python import _DEFAULT_TARGET_PYTHON_VERSION
 from molt.compiler_analysis.python_source_keys import (
     _PythonAstDigestAdmission,
@@ -796,15 +798,19 @@ def test_owner_analysis_persists_source_pure_and_completes_each_catalog(
     second = analyze(widened)
     assert second[5] is True, "a later custody generation reuses the persisted scan"
     assert set(second[1]) == set(widened.modules)
-    record = module_graph_cache._import_scan_cache_path(
+    record = module_graph_cache._read_import_scan_payload(
         tmp_path,
-        owner,
-        module_name="pkg.entry",
-        is_package=False,
-        import_scan_mode="full",
-        runtime_catalog_owner=True,
-    ).read_text(encoding="utf-8")
-    assert "admitted.target" not in record and "admitted.later" not in record
+        module_graph_cache._import_scan_cache_key(
+            owner,
+            module_name="pkg.entry",
+            is_package=False,
+            import_scan_mode="full",
+            runtime_catalog_owner=True,
+        ),
+    )
+    assert record is not None
+    assert "admitted.target" not in json.dumps(record)
+    assert "admitted.later" not in json.dumps(record)
 
 
 @pytest.mark.parametrize(
@@ -1212,7 +1218,6 @@ def test_persisted_scan_retains_explicit_dynamic_star_provenance(
     monkeypatch: pytest.MonkeyPatch,
     damage: str | None,
 ) -> None:
-    import json
     from molt.cli import module_graph_cache, module_source
     from molt.cli.module_graph_discovery import _load_module_import_scan
 
@@ -1250,21 +1255,20 @@ def test_persisted_scan_retains_explicit_dynamic_star_provenance(
         snapshot=module_source.PythonSourceSnapshot.capture(owner),
     )
     if damage is not None:
-        path = module_graph_cache._import_scan_cache_path(
-            tmp_path,
+        key = module_graph_cache._import_scan_cache_key(
             owner,
             module_name="entry",
             is_package=False,
             import_scan_mode="full",
         )
-        payload = json.loads(path.read_text(encoding="utf-8"))
+        payload = source_records(tmp_path, "import-scan")[key]
         if damage == "missing":
             del payload["dynamic_star_modules"]
         elif damage == "invalid":
             payload["dynamic_star_modules"] = [1]
         else:
             payload["version"] -= 1
-        path.write_text(json.dumps(payload), encoding="utf-8")
+        replace_source_record(tmp_path, "import-scan", key, payload)
     restored = module_graph_cache._read_persisted_import_scan_record(
         tmp_path,
         owner,

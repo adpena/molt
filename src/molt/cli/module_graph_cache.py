@@ -25,12 +25,8 @@ from pathlib import Path
 from itertools import pairwise
 from typing import Any, cast, get_args
 
-from molt.cli.artifact_state import _build_state_subdir_cached
-from molt.cli.json_cache import (
-    SOURCE_ANALYSIS_CACHE_MAX_BYTES,
-    _read_cached_json_object,
-    _write_cached_json_object,
-)
+from molt.cli.source_record_store import SourceRecordStore, source_record_store
+from molt.cli.json_cache import SOURCE_ANALYSIS_CACHE_MAX_BYTES
 from molt.cli.cache_fingerprints import (
     _frontend_semantic_tooling_fingerprint,
     _operation_resolved_path,
@@ -492,18 +488,15 @@ def _stdlib_intrinsic_namespace_summary(
             f"stdlib intrinsic import evidence ({module_name}: {path}, "
             f"Python {target_python.short}) cannot read source: {exc}"
         ) from exc
-    cache_path = _import_scan_cache_path(
-        project_root,
+    record_key = _import_scan_cache_key(
         path,
         module_name=module_name,
         is_package=path.name == "__init__.py",
         import_scan_mode="full",
         target_python=target_python,
-    ).with_suffix(".intrinsic.json")
-    expected = _intrinsic_source_identity(snapshot, module_name, target_python, None)
-    payload = _read_cached_json_object(
-        cache_path, max_bytes=SOURCE_ANALYSIS_CACHE_MAX_BYTES
     )
+    expected = _intrinsic_source_identity(snapshot, module_name, target_python, None)
+    payload = _read_intrinsic_facts_payload(project_root, record_key)
     if payload is not None:
         identity = payload.get("identity")
         if (
@@ -564,20 +557,17 @@ def _stdlib_intrinsic_source_facts(
             f"stdlib intrinsic import evidence ({module_name}: {path}, "
             f"Python {target_python.short}) cannot read source: {exc}"
         ) from exc
-    cache_path = _import_scan_cache_path(
-        project_root,
+    record_key = _import_scan_cache_key(
         path,
         module_name=module_name,
         is_package=path.name == "__init__.py",
         import_scan_mode="full",
         target_python=target_python,
-    ).with_suffix(".intrinsic.json")
+    )
     identity = _intrinsic_source_identity(
         snapshot, module_name, target_python, namespace_premise
     )
-    payload = _read_cached_json_object(
-        cache_path, max_bytes=SOURCE_ANALYSIS_CACHE_MAX_BYTES
-    )
+    payload = _read_intrinsic_facts_payload(project_root, record_key)
     if payload is not None and payload.get("identity") == identity:
         try:
             if (
@@ -616,6 +606,7 @@ def _stdlib_intrinsic_source_facts(
     )
     # The key and result describe the same captured bytes even if the pathname
     # changes during analysis. A subsequent read admits only its fresh digest.
+    store = _source_records(project_root)
     try:
         _write_persisted_import_scan(
             project_root,
@@ -628,14 +619,20 @@ def _stdlib_intrinsic_source_facts(
             snapshot=snapshot,
             target_python=target_python,
         )
-        _write_cached_json_object(
-            cache_path,
-            {"identity": identity, "facts": _encode_intrinsic_source_facts(facts)},
-        )
     except OSError as exc:
+        failure: str | None = str(exc)
+    else:
+        stored = store.put(
+            "intrinsic-facts",
+            record_key,
+            {"identity": identity, "facts": _encode_intrinsic_source_facts(facts)},
+            generation=_frontend_semantic_tooling_fingerprint(),
+        )
+        failure = None if stored else f"{store.path} is unavailable"
+    if failure is not None:
         count("publication_failures")
         print(
-            f"molt: warning: cannot cache intrinsic source facts for {path}: {exc}",
+            f"molt: warning: cannot cache intrinsic source facts for {path}: {failure}",
             file=sys.stderr,
         )
     return facts
@@ -727,8 +724,11 @@ def _resolved_module_cache_key(path_str: str, *parts: str) -> str:
 _IMPORT_SCAN_CACHE_SCHEMA_VERSION = 34
 
 
-def _import_scan_cache_path(
-    project_root: Path,
+def _source_records(project_root: Path) -> SourceRecordStore:
+    return source_record_store(_build_state_root(project_root))
+
+
+def _import_scan_cache_key(
     path: Path,
     *,
     module_name: str,
@@ -740,11 +740,7 @@ def _import_scan_cache_path(
     native_support_function_roots: tuple[str, ...] = (),
     target_python: TargetPythonVersion = _DEFAULT_TARGET_PYTHON_VERSION,
     runtime_catalog_owner: bool = False,
-) -> Path:
-    root = _build_state_subdir_cached(
-        os.fspath(_build_state_root(project_root)),
-        "import_scan_cache",
-    )
+) -> str:
     key_parts = [
         module_name,
         "pkg" if is_package else "mod",
@@ -757,11 +753,31 @@ def _import_scan_cache_path(
         target_python.tag,
         _frontend_semantic_tooling_fingerprint(),
     ]
-    cache_key = _resolved_module_cache_key(
-        os.fspath(path),
-        *key_parts,
+    return _resolved_module_cache_key(os.fspath(path), *key_parts)
+
+
+def _read_intrinsic_facts_payload(
+    project_root: Path, record_key: str
+) -> Mapping[str, Any] | None:
+    """The stored intrinsic facts for ``record_key``; its reader qualifies them."""
+    return _source_records(project_root).get(
+        "intrinsic-facts",
+        record_key,
+        generation=_frontend_semantic_tooling_fingerprint(),
+        max_bytes=SOURCE_ANALYSIS_CACHE_MAX_BYTES,
     )
-    return root / f"{path.stem}.{cache_key}.json"
+
+
+def _read_import_scan_payload(
+    project_root: Path, record_key: str
+) -> Mapping[str, Any] | None:
+    """The stored import-scan payload for ``record_key``; its reader qualifies it."""
+    return _source_records(project_root).get(
+        "import-scan",
+        record_key,
+        generation=_frontend_semantic_tooling_fingerprint(),
+        max_bytes=SOURCE_ANALYSIS_CACHE_MAX_BYTES,
+    )
 
 
 def _encode_source_path(path: str | _StaticSourcePath) -> Any:
@@ -820,8 +836,7 @@ def _read_persisted_import_scan_record(
     target_python: TargetPythonVersion = _DEFAULT_TARGET_PYTHON_VERSION,
     runtime_catalog_owner: bool = False,
 ) -> _ImportScanRequests | None:
-    cache_path = _import_scan_cache_path(
-        project_root,
+    record_key = _import_scan_cache_key(
         path,
         module_name=module_name,
         is_package=is_package,
@@ -833,9 +848,7 @@ def _read_persisted_import_scan_record(
         target_python=target_python,
         runtime_catalog_owner=runtime_catalog_owner,
     )
-    payload = _read_cached_json_object(
-        cache_path, max_bytes=SOURCE_ANALYSIS_CACHE_MAX_BYTES
-    )
+    payload = _read_import_scan_payload(project_root, record_key)
     if payload is None:
         return None
     # Source records are a closed versioned protocol. Retired projections and
@@ -1275,8 +1288,7 @@ def _write_persisted_import_scan(
         "requires_runtime_package_anchor": scan.requires_runtime_package_anchor,
         "runtime_catalog": _encode_runtime_catalog_deferral(scan.runtime_catalog),
     }
-    cache_path = _import_scan_cache_path(
-        project_root,
+    record_key = _import_scan_cache_key(
         path,
         module_name=module_name,
         is_package=is_package,
@@ -1288,5 +1300,9 @@ def _write_persisted_import_scan(
         target_python=target_python,
         runtime_catalog_owner=runtime_catalog_owner,
     )
-    cache_path.parent.mkdir(parents=True, exist_ok=True)
-    _write_cached_json_object(cache_path, payload)
+    _source_records(project_root).put(
+        "import-scan",
+        record_key,
+        payload,
+        generation=_frontend_semantic_tooling_fingerprint(),
+    )

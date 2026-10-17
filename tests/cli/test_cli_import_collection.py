@@ -153,6 +153,7 @@ from tests.wasm_object_fixtures import (
     wasm_exporting_i64_unary_symbols as _wasm_exporting_i64_unary_symbols,
 )
 from tests.process_guard_common import current_thread_only, install_module_view
+from tests.source_record_test_support import replace_source_record, source_records
 from molt.cli import build_locks as cli_build_locks
 from molt.cli import env_paths as cli_env_paths
 from molt.cli import extension_manifest as cli_extension_manifest
@@ -13905,10 +13906,8 @@ def test_persisted_module_scan_requires_summary_before_publication(
         )
         == scan
     )
-    cache_path = cli_module_graph_cache._import_scan_cache_path(
-        tmp_path, module_path, **options
-    )
-    published = cache_path.read_bytes()
+    key = cli_module_graph_cache._import_scan_cache_key(module_path, **options)
+    published = source_records(tmp_path, "import-scan")[key]
 
     with pytest.raises(ValueError, match="requires a namespace summary"):
         cli_module_graph_cache._write_persisted_import_scan(
@@ -13918,11 +13917,10 @@ def test_persisted_module_scan_requires_summary_before_publication(
             scan=scan._replace(namespace_summary=None),
             snapshot=snapshot,
         )
-    assert cache_path.read_bytes() == published
+    assert source_records(tmp_path, "import-scan")[key] == published
 
-    malformed = json.loads(published)
-    malformed["namespace_summary"] = None
-    cli_json_cache._write_cached_json_object(cache_path, malformed)
+    malformed = dict(published, namespace_summary=None)
+    replace_source_record(tmp_path, "import-scan", key, malformed)
     assert (
         cli_module_graph_cache._read_persisted_import_scan_record(
             tmp_path, module_path, **options, snapshot=snapshot

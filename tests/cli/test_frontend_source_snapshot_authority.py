@@ -24,6 +24,7 @@ from molt.cli import module_source
 from molt.cli import module_graph
 from molt.cli import python_source_closure as source_closure
 from molt.cli.module_source import PythonSourceSnapshot
+from molt.cli.source_record_store import SourceRecordStore
 from molt.cli.models import (
     ImportScanMode,
     _CompleteImportScan,
@@ -666,17 +667,15 @@ def test_malformed_execution_projection_rejects_entire_scan(
             )
             == request
         )
-        path = scans._import_scan_cache_path(tmp_path, source, **options)
-        payload = scans._read_cached_json_object(path)
+        key = scans._import_scan_cache_key(source, **options)
+        payload = scans._read_import_scan_payload(tmp_path, key)
         assert payload is not None
         malformed = dict(payload, source_executions=[{"module": "child", "path": 17}])
 
-        def read_malformed(
-            _path: Path, *, max_bytes: int | None = None
-        ) -> dict[str, Any]:
+        def read_malformed(_root: Path, _key: str) -> dict[str, Any]:
             return malformed
 
-        monkeypatch.setattr(scans, "_read_cached_json_object", read_malformed)
+        monkeypatch.setattr(scans, "_read_import_scan_payload", read_malformed)
         assert (
             scans._read_persisted_import_scan_record(tmp_path, source, **options)
             is None
@@ -774,13 +773,20 @@ def test_direct_operation_failure_preserves_outer_and_releases_owned_transaction
     counts = _count_semantic_work(monkeypatch)
     published_fingerprints: list[str] = []
 
-    def fail_publication(_path: Path, payload: dict[str, Any]) -> NoReturn:
+    def fail_publication(
+        _store: SourceRecordStore,
+        _kind: str,
+        _key: str,
+        payload: Mapping[str, Any],
+        *,
+        generation: str,
+    ) -> NoReturn:
         fingerprint = payload["compiler_fingerprint"]
-        assert isinstance(fingerprint, str)
+        assert isinstance(fingerprint, str) and fingerprint == generation
         published_fingerprints.append(fingerprint)
         raise OSError("publication interrupted")
 
-    monkeypatch.setattr(scans, "_write_cached_json_object", fail_publication)
+    monkeypatch.setattr(SourceRecordStore, "put", fail_publication)
 
     def write() -> None:
         scans._write_persisted_import_scan(

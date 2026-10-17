@@ -860,6 +860,9 @@ fail closed; the inventory itself makes no claim about current file bytes.
   builds across a whole differential run.
 - `MOLT_CLI_PROFILE=<dir>/{pid}.prof` writes a cProfile of each `molt` command;
   `{pid}` keeps parallel builds apart. Read it with `python -m pstats`.
+- Import scans and intrinsic source facts persist in one SQLite table,
+  `source_records.sqlite` in the build state root (`molt.cli.source_record_store`);
+  it keeps the four newest compiler generations used within a week.
 - A `molt` process paces the collector for its large heap and ends without
   freeing it (`molt.compiler_process`). A profiler or debugger that runs the
   module, such as `python -m cProfile -o out.prof -m molt.cli build ...`, still

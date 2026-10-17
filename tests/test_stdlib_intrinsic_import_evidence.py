@@ -17,6 +17,7 @@ from molt.stdlib_intrinsic_policy import (
     stdlib_module_static_imports,
 )
 from molt.target_python import _DEFAULT_TARGET_PYTHON_VERSION
+from tests.source_record_test_support import source_records
 
 
 def test_intrinsic_relationships_do_not_turn_dynamic_metadata_into_static_edges(
@@ -1011,9 +1012,7 @@ def test_intrinsic_source_metadata_rebinds_facts_but_reuses_syntax_summary(
         "intrinsic_source_misses": 3,
         "intrinsic_source_hits": 3,
     }
-    assert (
-        len(list((tmp_path / "cache/import_scan_cache").glob("*.intrinsic.json"))) == 1
-    )
+    assert len(source_records(tmp_path, "intrinsic-facts")) == 1
     # A graph premise changes binding facts, never syntax. The warm syntax
     # projection therefore requires neither a guessed premise nor a new parse.
     original_parse = cache._parse_source_for_target
@@ -1076,12 +1075,12 @@ def test_malformed_cached_namespace_summary_recomputes_canonical_syntax(
     facts = cache._stdlib_intrinsic_source_facts(
         tmp_path, "entry", path, target_python=_DEFAULT_TARGET_PYTHON_VERSION
     )
-    read = cache._read_cached_json_object
+    read = cache._read_intrinsic_facts_payload
     parse = cache._parse_source_for_target
     parses = []
 
-    def corrupt(path, **kwargs):
-        payload = copy.deepcopy(read(path, **kwargs))
+    def corrupt(project_root, key):
+        payload = copy.deepcopy(read(project_root, key))
         assert payload is not None
         payload["facts"]["namespace_summary"][field] = invalid
         return payload
@@ -1090,7 +1089,7 @@ def test_malformed_cached_namespace_summary_recomputes_canonical_syntax(
         parses.append(1)
         return parse(*args, **kwargs)
 
-    monkeypatch.setattr(cache, "_read_cached_json_object", corrupt)
+    monkeypatch.setattr(cache, "_read_intrinsic_facts_payload", corrupt)
     monkeypatch.setattr(cache, "_parse_source_for_target", counted)
     summary = cache._stdlib_intrinsic_namespace_summary(
         tmp_path, "entry", path, target_python=_DEFAULT_TARGET_PYTHON_VERSION
@@ -1164,15 +1163,15 @@ def test_intrinsic_metadata_rejects_boolean_namespace_member_mask(
         premise,
         target_python=_DEFAULT_TARGET_PYTHON_VERSION,
     )
-    read = cache._read_cached_json_object
+    read = cache._read_intrinsic_facts_payload
 
-    def corrupt(path, **kwargs):
-        payload = copy.deepcopy(read(path, **kwargs))
+    def corrupt(project_root, key):
+        payload = copy.deepcopy(read(project_root, key))
         assert payload is not None
         payload["identity"]["namespace_premise"]["member_writes"] = False
         return payload
 
-    monkeypatch.setattr(cache, "_read_cached_json_object", corrupt)
+    monkeypatch.setattr(cache, "_read_intrinsic_facts_payload", corrupt)
     counts = {}
     assert (
         cache._stdlib_intrinsic_source_facts(
