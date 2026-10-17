@@ -1989,11 +1989,57 @@ def test_a_stdlib_scan_is_shared_by_every_project(tmp_path, isolated_molt_cache)
 
     scan(first)
     assert scan(second).cache_hit
-    project_store, toolchain_store = records._source_record_stores(first)
+    stores = records._source_record_stores(first)
+    project_store, toolchain_store = stores.project, stores.toolchain
     assert records._source_records(first, source) is toolchain_store
-    assert toolchain_store is records._source_record_stores(second)[1]
+    assert toolchain_store is records._source_record_stores(second).toolchain
     assert toolchain_store.path.is_relative_to(isolated_molt_cache)
     # A project's own source keeps its records in its build state.
     own = write(first / "own.py")
     assert records._source_records(first, own) is project_store
     assert project_store.path.is_relative_to(records._build_state_root(first))
+
+
+@pytest.mark.parametrize(
+    ("root", "path"),
+    [
+        ("lib/stdlib", "lib/stdlib"),
+        ("lib/stdlib", "lib/stdlib/keyword.py"),
+        ("lib/stdlib", "lib/stdlib/asyncio/events.py"),
+        ("lib/stdlib", "lib/stdlib2/keyword.py"),
+        ("lib/stdlib", "lib/keyword.py"),
+        ("lib/stdlib", "other/lib/stdlib/keyword.py"),
+        ("", "lib/keyword.py"),
+    ],
+)
+def test_record_store_owner_is_lexical_containment(tmp_path, root, path):
+    """``owner`` decides as ``Path.is_relative_to`` does, without its parents walk."""
+    anchor = Path(tmp_path.anchor) if not root else tmp_path
+    stdlib, source = anchor / root, tmp_path / path
+    stores = records.SourceRecordStores(tmp_path / "state", tmp_path / "shared", stdlib)
+    expected = stores.toolchain if source.is_relative_to(stdlib) else stores.project
+    assert stores.owner(source) is expected
+
+
+def test_one_operation_resolves_the_record_store_roots_once(tmp_path, monkeypatch):
+    """A build reads about 11,000 records; none may resolve the roots again."""
+    from molt.cli.cache_fingerprints import _source_tree_fingerprint_transaction
+
+    resolved: list[Path] = []
+    stores = records.SourceRecordStores
+
+    def counted(*roots: Path) -> records.SourceRecordStores:
+        resolved.append(roots[0])
+        return stores(*roots)
+
+    monkeypatch.setattr(records, "SourceRecordStores", counted)
+    sources = [write(tmp_path / f"m{index}.py") for index in range(3)]
+    with _source_tree_fingerprint_transaction():
+        # The cold pass writes each record; the warm pass reads it back.
+        assert not any(load(path, module_name=path.stem).cache_hit for path in sources)
+        assert all(load(path, module_name=path.stem).cache_hit for path in sources)
+    assert len(resolved) == 1
+    # A new operation resolves again, so a changed environment reaches it.
+    with _source_tree_fingerprint_transaction():
+        records._source_records(tmp_path, sources[0])
+    assert len(resolved) == 2

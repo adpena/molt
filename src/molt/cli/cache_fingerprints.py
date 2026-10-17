@@ -33,6 +33,7 @@ from molt.cli.python_source_closure import (
 
 
 if TYPE_CHECKING:
+    from molt.cli.module_graph_cache import SourceRecordStores
     from molt.cli.module_source import PythonSourceSnapshot
     from molt.cli.rust_cpu_policy import RustCpuPolicy
 
@@ -328,9 +329,12 @@ class _SourceTreeFingerprintTransaction:
     frontend_semantic_sources: dict[Path, _FrontendSemanticSourceSnapshot] = field(
         default_factory=dict
     )
-    # Each module path resolves once per operation; a graph keys one module
-    # under many import contexts.
-    resolved_paths: dict[str, str] = field(default_factory=dict)
+    # Each path resolves once per operation; a graph keys one module under
+    # many import contexts and scans it under many premises.
+    resolved_paths: dict[str, Path] = field(default_factory=dict)
+    # Each project's source-record store roots resolve once per operation;
+    # one build reads about 11,000 records.
+    source_record_stores: dict[Path, SourceRecordStores] = field(default_factory=dict)
 
 
 _SOURCE_TREE_FINGERPRINT_TRANSACTION: ContextVar[
@@ -365,15 +369,19 @@ def _source_tree_fingerprint_transaction() -> Generator[None]:
         _SOURCE_TREE_FINGERPRINT_TRANSACTION.reset(transaction_token)
 
 
-def _operation_resolved_path(path_str: str) -> str:
-    """Resolve ``path_str`` once per frontend operation, never across them."""
+def _operation_resolved(path: str | os.PathLike[str]) -> Path:
+    """Resolve ``path`` once per frontend operation, never across them.
+
+    ``realpath`` stats every component of the path; one edit-rebuild resolves
+    each scanned module under every premise it is scanned for.
+    """
+    key = os.fspath(path)
     transaction = _SOURCE_TREE_FINGERPRINT_TRANSACTION.get()
     if transaction is None:
-        return str(Path(path_str).resolve())
-    resolved = transaction.resolved_paths.get(path_str)
+        return Path(key).resolve()
+    resolved = transaction.resolved_paths.get(key)
     if resolved is None:
-        resolved = str(Path(path_str).resolve())
-        transaction.resolved_paths[path_str] = resolved
+        resolved = transaction.resolved_paths[key] = Path(key).resolve()
     return resolved
 
 

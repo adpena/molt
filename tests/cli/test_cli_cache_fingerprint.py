@@ -866,6 +866,36 @@ def test_source_tree_fingerprint_transaction_does_not_escape_context(
     assert second != first
 
 
+def test_an_operation_resolves_a_path_once_and_the_next_resolves_again(
+    tmp_path: Path,
+) -> None:
+    first, second = tmp_path / "first", tmp_path / "second"
+    first.mkdir()
+    second.mkdir()
+    link = tmp_path / "link"
+    try:
+        link.symlink_to(first, target_is_directory=True)
+    except OSError as exc:
+        pytest.skip(f"symlinks unavailable: {exc}")
+    selector = link / "module.py"
+
+    with CACHE_FINGERPRINTS._source_tree_fingerprint_transaction():
+        resolved = CACHE_FINGERPRINTS._operation_resolved(selector)
+        link.unlink()
+        link.symlink_to(second, target_is_directory=True)
+        # Tooling and sources hold still within one operation.
+        assert CACHE_FINGERPRINTS._operation_resolved(selector) is resolved
+    assert resolved == first.resolve() / "module.py"
+    # A new build sees the retargeted link.
+    with CACHE_FINGERPRINTS._source_tree_fingerprint_transaction():
+        assert CACHE_FINGERPRINTS._operation_resolved(selector) == (
+            second.resolve() / "module.py"
+        )
+    assert CACHE_FINGERPRINTS._operation_resolved(selector) == (
+        second.resolve() / "module.py"
+    )
+
+
 def test_source_tree_cache_fingerprint_uses_clean_pathspec_state(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:

@@ -34,6 +34,7 @@ from molt.compiler_analysis.python_source_keys import PythonSourceKey
 from molt.backend_environment import CodegenSelection
 from molt.cli.output import CliFailure as _CliFailure
 from molt.cli.rust_cpu_policy import RustCpuPolicy
+from molt.cli.cache_fingerprints import _operation_resolved
 from molt.cli.python_import_topology import PythonImportTopology
 from molt.native_callable_exports import (
     NativeCallableExport as _ExternalNativeCallableExport,
@@ -105,7 +106,9 @@ class _CanonicalPackagePaths(tuple[Path, ...]):
     def __new__(cls, paths: tuple[Path, ...]) -> _CanonicalPackagePaths:
         if isinstance(paths, cls):
             return paths
-        return super().__new__(cls, dict.fromkeys(path.resolve() for path in paths))
+        return super().__new__(
+            cls, dict.fromkeys(_operation_resolved(path) for path in paths)
+        )
 
 
 @dataclass(frozen=True)
@@ -138,7 +141,7 @@ class _ModuleSourceScanAuthority:
             or any(c not in "0123456789abcdef" for c in self.source_sha256)
         ):
             raise ValueError("invalid source scan byte identity")
-        object.__setattr__(self, "source_path", self.source_path.resolve())
+        object.__setattr__(self, "source_path", _operation_resolved(self.source_path))
         if self.is_package is None:
             object.__setattr__(
                 self, "is_package", self.source_path.name == "__init__.py"
@@ -166,7 +169,9 @@ class _ModuleSourceScanAuthority:
             )
 
     def validate(self, module_name: str, source_path: Path) -> None:
-        if self.module_name != module_name or self.source_path != source_path.resolve():
+        if self.module_name != module_name or self.source_path != _operation_resolved(
+            source_path
+        ):
             raise ValueError(f"module scan lost source authority: {module_name!r}")
 
     def validate_generation(self, source_sha256: str | None) -> None:
@@ -1147,7 +1152,7 @@ class _RuntimeImportScanCustody:
         self._validate_sources()
         for name, path in self.catalog:
             actual = graph.get(name)
-            if actual is None or actual.resolve() != path:
+            if actual is None or _operation_resolved(actual) != path:
                 raise ValueError(
                     f"runtime import catalog lost source authority: {name!r}"
                 )

@@ -13,9 +13,8 @@ from molt.cli import module_graph_cache
 
 def _store_paths(project_root: Path) -> tuple[Path, ...]:
     """The project's own store, then the toolchain's shared stdlib store."""
-    return tuple(
-        store.path for store in module_graph_cache._source_record_stores(project_root)
-    )
+    stores = module_graph_cache._source_record_stores(project_root)
+    return (stores.project.path, stores.toolchain.path)
 
 
 def source_records(project_root: Path, kind: str) -> dict[str, dict[str, Any]]:
