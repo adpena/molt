@@ -852,68 +852,6 @@ fn loop_index_copies_accept_all_result_shapes() {
 }
 
 #[test]
-fn scalar_parse_families_share_object_admission_and_owned_result_sinks() {
-    for kind in ["json_parse", "msgpack_parse", "cbor_parse"] {
-        for literal in [None, Some("const_str"), Some("const_bytes")] {
-            for result in [None, Some("none"), Some("unused"), Some("result")] {
-                let bound = result == Some("result");
-                let mut ops = Vec::new();
-                if let Some(literal) = literal {
-                    let mut input = wasm_test_op(literal, Some("input"), vec![]);
-                    input.bytes = Some(b"23".to_vec());
-                    ops.push(input);
-                }
-                ops.push(wasm_test_op(kind, result, vec!["input"]));
-                if literal.is_some() {
-                    ops.push(wasm_test_op("dec_ref", None, vec!["input"]));
-                }
-                ops.push(wasm_test_op(
-                    "ret",
-                    None,
-                    vec![if bound { "result" } else { "none" }],
-                ));
-                let (operators, imports) = compile_literal_body(
-                    if literal.is_some() {
-                        vec![]
-                    } else {
-                        vec!["input"]
-                    },
-                    ops,
-                );
-                assert!(
-                    !imports.contains_key("alloc"),
-                    "{kind}: parser buffer is not a language object"
-                );
-                assert!(
-                    !imports.contains_key("handle_resolve"),
-                    "{kind}: parser buffer is a raw pointer"
-                );
-                assert!(!imports.contains_key("scratch_alloc"));
-                assert!(!imports.contains_key("scratch_free"));
-                assert!(!imports.contains_key(&format!("{kind}_scalar")));
-                let return_call = format!(
-                    "Call {{ function_index: {} }}",
-                    imports[&format!("{kind}_scalar_obj")]
-                );
-                let index = operators.iter().position(|op| op == &return_call).unwrap();
-                assert_eq!(
-                    call_count(&operators, imports[&format!("{kind}_scalar_obj")]),
-                    1
-                );
-                if bound {
-                    assert!(operators[index + 1].starts_with("LocalSet {"));
-                } else {
-                    assert_eq!(
-                        operators[index + 1],
-                        format!("Call {{ function_index: {} }}", imports["dec_ref_obj"])
-                    );
-                }
-            }
-        }
-    }
-}
-
-#[test]
 fn direct_calls_release_only_owned_value_results() {
     for (kind, target, argc, owns_result, returns_value) in [
         ("call", "molt_classmethod_new", 1, true, true),

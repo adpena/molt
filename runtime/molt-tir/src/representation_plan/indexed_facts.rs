@@ -1283,7 +1283,6 @@ pub(super) fn simple_op_produces_non_scalar_value(kind: &str) -> bool {
             | "build_dict"
             | "build_list"
             | "builtin_type"
-            | "buffer2d_new"
             | "callargs_new"
             | "class_new"
             | "classmethod_new"

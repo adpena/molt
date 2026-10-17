@@ -784,9 +784,6 @@ def test_d10_projects_full_runtime_return_authority_and_actual_aliases(
     contracts = runtime_operation_return_specs(load_manifest())
     for kind in (
         "abs",
-        "json_parse",
-        "msgpack_parse",
-        "cbor_parse",
         "gen_send",
         "gen_throw",
         "gen_close",

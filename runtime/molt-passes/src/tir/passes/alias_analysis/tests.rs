@@ -1371,7 +1371,6 @@ fn runtime_copy_custody_preserves_borrowed_unpublished_and_move_results() {
         "class_new",
         "list_int_new",
         "gen_send",
-        "json_parse",
         "call_async",
         "list_append",
     ] {

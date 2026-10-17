@@ -219,9 +219,6 @@ impl LuauBackend {
                     "molt_frame_set_line({context}, {line}, {col}, {end_col})"
                 ));
             }
-            "json_parse" | "msgpack_parse" | "cbor_parse" => {
-                self.emit_unsupported_op(op);
-            }
             "invoke_ffi" => {
                 let diagnostic =
                     "{__type=\"RuntimeError\", __msg=\"Luau target does not support FFI\"}";
@@ -232,7 +229,7 @@ impl LuauBackend {
                     self.emit_line(&format!("error({diagnostic})"));
                 }
             }
-            "memoryview_cast" | "complex_from_obj" => {
+            "complex_from_obj" => {
                 self.emit_unsupported_op(op);
             }
             "bytearray_fill_range" => {
