@@ -32,13 +32,15 @@ def test_native_finalization_fences_source_after_signing(
 ) -> None:
     from molt.cli import atomic_io
     from molt.cli.module_source import _ModuleSourceCatalog, _ModuleSourceLease
-    from tests.native_artifact_fixtures import elf_header
+    from tests.native_artifact_fixtures import signed_macho_image
 
     source = tmp_path / "app.py"
     source.write_text("value = 1\n", encoding="utf-8")
     catalog = _ModuleSourceCatalog({"app": _ModuleSourceLease.path_backed(source)})
+    # A Mach-O image another tool wrote is re-signed as the published name,
+    # the last step before publication.
     candidate = tmp_path / "candidate"
-    program = bytes(elf_header(kind=2))
+    program = bytes(signed_macho_image(candidate.name))
     candidate.write_bytes(program)
     output = tmp_path / "app"
     output.write_bytes(b"previous program")
@@ -57,7 +59,7 @@ def test_native_finalization_fences_source_after_signing(
     error = build_results._finalize_native_link_candidate(
         candidate=candidate,
         output_binary=output,
-        target_triple="x86_64-unknown-linux-gnu",
+        target_triple="aarch64-apple-darwin",
         strip=False,
         validate_inputs=catalog.validate,
     )

@@ -129,6 +129,10 @@ class NativeLinkCapabilities:
     linker: NativeLinkerKind
     object_format: NativeObjectFormat
     explicit_no_icf_flag: str | None
+    # Apple ld signs a Mach-O image ad hoc under its -final_output name, so a
+    # private stage is signed as the published binary at link time. ld64.lld
+    # and zig name the signature after the -o operand instead.
+    signs_as_final_output: bool
 
 
 @dataclass(frozen=True, slots=True)
@@ -374,6 +378,22 @@ def native_link_policy_flags(
     return tuple(flags)
 
 
+def native_link_output_flags(
+    *, capabilities: NativeLinkCapabilities, output: Path
+) -> tuple[str, ...]:
+    """Name the published binary to a link that writes a private stage.
+
+    Apple ld then signs the stage ad hoc as ``output``: the bytes carry no
+    stage name and need no post-link codesign pass (1.4-3.2 s on a 68 MiB dev
+    binary). ``-adhoc_codesign`` signs x86_64 images too, which ld leaves
+    unsigned by default, so every Mach-O arch publishes the same way.
+    ``-Xlinker`` keeps a path with a comma intact.
+    """
+    if not capabilities.signs_as_final_output:
+        return ()
+    return ("-Wl,-adhoc_codesign", "-Xlinker", "-final_output", "-Xlinker", str(output))
+
+
 def _host_target_triple(
     *, host_platform: str | None = None, host_arch: str | None = None
 ) -> str:
@@ -484,6 +504,10 @@ def native_link_capabilities(
         linker=linker,
         object_format=target.object_format,
         explicit_no_icf_flag=no_icf,
+        signs_as_final_output=(
+            target.object_format is NativeObjectFormat.MACHO
+            and linker is NativeLinkerKind.SYSTEM
+        ),
     )
 
 

@@ -1,8 +1,9 @@
 from __future__ import annotations
 
-from molt.cli.native_link_plan import resolve_native_target_spec
+from molt.cli.native_link_plan import NativeObjectFormat, resolve_native_target_spec
 
 from tests.cli.native_link_test_support import native_codegen_binding
+from tests.native_artifact_fixtures import signed_macho_image
 
 from copy import deepcopy
 import json
@@ -432,15 +433,23 @@ def test_native_consumer_reuses_published_bytes_and_relinks_tampering(
         link_pipeline, "_darwin_link_validation_failure", lambda **kwargs: None
     )
     linked: list[Path] = []
+    darwin = (
+        resolve_native_target_spec(target).object_format is NativeObjectFormat.MACHO
+    )
 
     def run(*, link_cmd, **kwargs):
         candidate = Path(link_cmd[link_cmd.index("-o") + 1])
-        candidate.write_bytes(b"raw binary")
+        if darwin:
+            # Apple ld signs the stage under its -final_output name.
+            named = Path(link_cmd[link_cmd.index("-final_output") + 2])
+            candidate.write_bytes(bytes(signed_macho_image(named.name)))
+        else:
+            candidate.write_bytes(b"raw binary")
         linked.append(candidate)
         return subprocess.CompletedProcess(link_cmd, 0, "", "")
 
     def sign(candidate, destination):
-        candidate.write_bytes(candidate.read_bytes() + b" signed")
+        raise AssertionError("no linked image here needs a post-link signature")
 
     monkeypatch.setattr(link_pipeline, "_run_native_link_command", run)
     monkeypatch.setattr(atomic_io, "_codesign_atomic_copy_temp", sign)
@@ -521,7 +530,9 @@ def test_native_consumer_reuses_published_bytes_and_relinks_tampering(
         strip_after_link=False,
     )
     assert status == 0 and not warnings
-    assert binary.read_bytes() == b"raw binary signed"
+    assert binary.read_bytes() == (
+        bytes(signed_macho_image(binary.name)) if darwin else b"raw binary"
+    )
     assert prepare().link_skipped and len(linked) == 1
     before = app.stat()
     os.utime(app, ns=(before.st_atime_ns, before.st_mtime_ns + 2_000_000_000))

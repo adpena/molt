@@ -23,6 +23,7 @@ from molt.native_artifact_header import (
     NativeArtifactError,
     NativeReader,
     decode_native_artifact,
+    macho_code_signature_from_bytes,
     native_artifact_from_bytes,
     native_artifact_from_file,
 )
@@ -33,6 +34,7 @@ from tests.native_artifact_fixtures import (
     fat_macho,
     macho_header,
     pe_header,
+    signed_macho_image,
 )
 
 
@@ -419,3 +421,61 @@ def test_singleton_universal_container_is_not_an_exact_thin_release(endian, fat6
 def test_macho_cpu_abi_cannot_disagree_with_header_width_without_a_target(cpu, bits):
     with pytest.raises(NativeArtifactError, match="header width disagree"):
         native_artifact_from_bytes(bytes(macho_header(cpu=cpu, bits=bits)))
+
+
+def test_code_directory_names_the_identity_and_the_signed_extent() -> None:
+    signature = macho_code_signature_from_bytes(bytes(signed_macho_image("app")))
+    assert signature is not None
+    assert (signature.identifier, signature.flags) == ("app", 0x20002)
+    assert (signature.code_limit, signature.signature_offset) == (8192, 8192)
+    assert (signature.code_slots, signature.page_size) == (2, 4096)
+    assert signature.ad_hoc and signature.covers_image
+    assert macho_code_signature_from_bytes(bytes(signed_macho_image(None))) is None
+    # A directory whose slots stop short of the image does not cover it.
+    short = macho_code_signature_from_bytes(
+        bytes(signed_macho_image("app", code_slots=1))
+    )
+    assert short is not None and not short.covers_image
+    unsigned_flags = macho_code_signature_from_bytes(
+        bytes(signed_macho_image("app", flags=0))
+    )
+    assert unsigned_flags is not None and not unsigned_flags.ad_hoc
+
+
+def _corrupt(image: bytearray, offset: int, fmt: str, value: int) -> bytes:
+    struct.pack_into(fmt, image, offset, value)
+    return bytes(image)
+
+
+def _unterminated_identifier(image: bytearray) -> bytes:
+    directory = 8192 + 20
+    (length,) = struct.unpack_from(">I", image, directory + 4)
+    image[directory + length - 1] = ord("A")
+    return _corrupt(image, directory + 20, ">I", length - 1)
+
+
+@pytest.mark.parametrize(
+    "mutate,message",
+    [
+        # Load command size beyond the declared command bytes.
+        (lambda image: _corrupt(image, 36, "<I", 64), "load command size"),
+        # Signature extent beyond the end of the file.
+        (lambda image: _corrupt(image, 44, "<I", 1 << 20), "truncated"),
+        (lambda image: _corrupt(image, 8192, ">I", 0xFADE0C01), "superblob"),
+        (lambda image: _corrupt(image, 8192 + 12, ">I", 5), "single code directory"),
+        (lambda image: _corrupt(image, 8192 + 20, ">I", 0xFADE0C01), "code directory"),
+        # Identifier offset past the end of the code directory.
+        (lambda image: _corrupt(image, 8192 + 20 + 20, ">I", 4096), "out of range"),
+        # The identifier runs to the end of the code directory.
+        (_unterminated_identifier, "unterminated"),
+    ],
+)
+def test_code_directory_decoding_is_bounded(mutate, message: str) -> None:
+    with pytest.raises(NativeArtifactError, match=message):
+        macho_code_signature_from_bytes(mutate(signed_macho_image("app")))
+
+
+def test_code_signature_belongs_to_one_thin_macho_image() -> None:
+    for payload in (elf_header(), fat_macho((signed_macho_image("app"),))):
+        with pytest.raises(NativeArtifactError, match="one thin Mach-O image"):
+            macho_code_signature_from_bytes(bytes(payload))
