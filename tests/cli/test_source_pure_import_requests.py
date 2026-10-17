@@ -335,8 +335,8 @@ def test_malformed_path_request_misses_without_crashing(
     load(source)
     original = records._read_import_scan_payload
 
-    def corrupt(project_root, key):
-        payload = original(project_root, key)
+    def corrupt(project_root, path, key):
+        payload = original(project_root, path, key)
         assert payload is not None
         return dict(payload, source_executions=[{"module": "bad", "path": bad_path}])
 
@@ -401,8 +401,8 @@ def test_malformed_source_fact_containers_force_cold_regeneration(
     assert load(source).cache_hit
     original = records._read_import_scan_payload
 
-    def corrupt(project_root, key):
-        payload = copy.deepcopy(original(project_root, key))
+    def corrupt(project_root, path, key):
+        payload = copy.deepcopy(original(project_root, path, key))
         assert payload is not None
         values = payload["source_values"]
         if container == "sites":
@@ -1210,8 +1210,8 @@ def test_source_cache_rejects_retired_or_incoherent_protocol(
     assert load(source).cache_hit
     original = records._read_import_scan_payload
 
-    def corrupt(project_root, key):
-        payload = copy.deepcopy(original(project_root, key))
+    def corrupt(project_root, path, key):
+        payload = copy.deepcopy(original(project_root, path, key))
         assert payload is not None
         if defect == "old-schema":
             payload["version"] -= 1
@@ -1361,7 +1361,7 @@ def test_persisted_source_requests_bind_complete_namespace_premise(
             path, **options, namespace_premise=premise
         )
         paths.append(cache_key)
-        payloads.append(records._read_import_scan_payload(tmp_path, cache_key))
+        payloads.append(records._read_import_scan_payload(tmp_path, path, cache_key))
     assert len(set(paths)) == len(premises)
     for premise, request in zip(premises, requests):
         assert (
@@ -1377,7 +1377,7 @@ def test_persisted_source_requests_bind_complete_namespace_premise(
             local.setattr(
                 records,
                 "_read_import_scan_payload",
-                lambda _root, _key, payload=payloads[(index + 1) % len(premises)]: (
+                lambda _root, _path, _key, payload=payloads[(index + 1) % len(premises)]: (
                     payload
                 ),
             )
@@ -1394,7 +1394,7 @@ def test_persisted_source_requests_bind_complete_namespace_premise(
     missing = dict(payloads[0])
     del missing["namespace_premise"]
     monkeypatch.setattr(
-        records, "_read_import_scan_payload", lambda _root, _key: missing
+        records, "_read_import_scan_payload", lambda _root, _path, _key: missing
     )
     assert (
         records._read_persisted_import_scan_record(
@@ -1444,10 +1444,12 @@ def test_malformed_persisted_namespace_premise_is_not_an_empty_graph(
     cache_key = records._import_scan_cache_key(
         path, **options, namespace_premise=premise
     )
-    payload = copy.deepcopy(records._read_import_scan_payload(tmp_path, cache_key))
+    payload = copy.deepcopy(
+        records._read_import_scan_payload(tmp_path, path, cache_key)
+    )
     payload["namespace_premise"] = invalid
     monkeypatch.setattr(
-        records, "_read_import_scan_payload", lambda _root, _key: payload
+        records, "_read_import_scan_payload", lambda _root, _path, _key: payload
     )
     assert (
         records._read_persisted_import_scan_record(
@@ -1474,8 +1476,8 @@ def test_source_base_cache_rejects_incoherent_provenance(tmp_path, monkeypatch, 
     assert load(source).cache_hit
     read = records._read_import_scan_payload
 
-    def corrupt(project_root, key):
-        payload = copy.deepcopy(read(project_root, key))
+    def corrupt(project_root, path, key):
+        payload = copy.deepcopy(read(project_root, path, key))
         values = payload["source_values"]
         if defect == "missing-bases":
             del values["bases"]
@@ -1774,8 +1776,8 @@ def test_function_completion_cache_rejects_retired_or_incoherent_records(
     assert load(source).cache_hit
     read = records._read_import_scan_payload
 
-    def corrupt(project_root, key):
-        payload = copy.deepcopy(read(project_root, key))
+    def corrupt(project_root, path, key):
+        payload = copy.deepcopy(read(project_root, path, key))
         values = payload["source_values"]
         if defect == "short-function":
             values["functions"][0] = values["functions"][0][:4]
@@ -1908,8 +1910,8 @@ def test_element_cache_rejects_untyped_or_incoherent_operation(
     assert load(source).cache_hit
     read = records._read_import_scan_payload
 
-    def corrupt(project_root, key):
-        payload = copy.deepcopy(read(project_root, key))
+    def corrupt(project_root, path, key):
+        payload = copy.deepcopy(read(project_root, path, key))
         elements = payload["source_values"]["elements"]
         if defect == "old-width":
             elements[0] = [elements[0][0], elements[0][2]]
@@ -1964,3 +1966,34 @@ def test_a_source_execution_target_is_a_fact_of_the_operation(
     os.utime(tmp_path, ns=(metadata.st_atime_ns, metadata.st_mtime_ns))
     with pytest.raises(PythonImportTopologyChangedError):
         cache.import_topology.validate()
+
+
+def test_a_stdlib_scan_is_shared_by_every_project(tmp_path, isolated_molt_cache):
+    """The toolchain's stdlib records live once, for every project."""
+    from molt.cli.module_resolution import _stdlib_root_path
+
+    stdlib = _stdlib_root_path()
+    source = stdlib / "keyword.py"
+    first, second = tmp_path / "first", tmp_path / "second"
+    for project in (first, second):
+        project.mkdir()
+
+    def scan(project: Path):
+        return load(
+            source,
+            module_name="keyword",
+            project_root=project,
+            roots=[stdlib],
+            stdlib_root=stdlib,
+        )
+
+    scan(first)
+    assert scan(second).cache_hit
+    project_store, toolchain_store = records._source_record_stores(first)
+    assert records._source_records(first, source) is toolchain_store
+    assert toolchain_store is records._source_record_stores(second)[1]
+    assert toolchain_store.path.is_relative_to(isolated_molt_cache)
+    # A project's own source keeps its records in its build state.
+    own = write(first / "own.py")
+    assert records._source_records(first, own) is project_store
+    assert project_store.path.is_relative_to(records._build_state_root(first))

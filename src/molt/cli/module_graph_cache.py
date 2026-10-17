@@ -26,6 +26,7 @@ from itertools import pairwise
 from typing import Any, cast, get_args
 
 from molt.cli.source_record_store import SourceRecordStore, source_record_store
+from molt.default_paths import _default_molt_cache
 from molt.cli.json_cache import SOURCE_ANALYSIS_CACHE_MAX_BYTES
 from molt.cli.cache_fingerprints import (
     _frontend_semantic_tooling_fingerprint,
@@ -496,7 +497,7 @@ def _stdlib_intrinsic_namespace_summary(
         target_python=target_python,
     )
     expected = _intrinsic_source_identity(snapshot, module_name, target_python, None)
-    payload = _read_intrinsic_facts_payload(project_root, record_key)
+    payload = _read_intrinsic_facts_payload(project_root, path, record_key)
     if payload is not None:
         identity = payload.get("identity")
         if (
@@ -567,7 +568,7 @@ def _stdlib_intrinsic_source_facts(
     identity = _intrinsic_source_identity(
         snapshot, module_name, target_python, namespace_premise
     )
-    payload = _read_intrinsic_facts_payload(project_root, record_key)
+    payload = _read_intrinsic_facts_payload(project_root, path, record_key)
     if payload is not None and payload.get("identity") == identity:
         try:
             if (
@@ -606,7 +607,7 @@ def _stdlib_intrinsic_source_facts(
     )
     # The key and result describe the same captured bytes even if the pathname
     # changes during analysis. A subsequent read admits only its fresh digest.
-    store = _source_records(project_root)
+    store = _source_records(project_root, path)
     try:
         _write_persisted_import_scan(
             project_root,
@@ -724,8 +725,34 @@ def _resolved_module_cache_key(path_str: str, *parts: str) -> str:
 _IMPORT_SCAN_CACHE_SCHEMA_VERSION = 35
 
 
-def _source_records(project_root: Path) -> SourceRecordStore:
-    return source_record_store(_build_state_root(project_root))
+# Toolchain stdlib records live in the user-wide cache, beside the shared
+# module-lowering slot.
+_TOOLCHAIN_SOURCE_RECORDS = "toolchain_source_records"
+
+
+def _source_records(project_root: Path, path: Path) -> SourceRecordStore:
+    """The store that owns the per-source records of ``path``.
+
+    A toolchain stdlib source is the same file, with the same records, in
+    every project, so its records live in the user-wide cache, as a toolchain
+    ships one prebuilt standard library; a project's own sources stay in its
+    build state. Keys hold the absolute path and every read checks the
+    captured source digest, so sharing admits nothing stale.
+    """
+    from molt.cli.module_resolution import _stdlib_root_path
+
+    project, toolchain = _source_record_stores(project_root)
+    return toolchain if path.is_relative_to(_stdlib_root_path()) else project
+
+
+def _source_record_stores(
+    project_root: Path,
+) -> tuple[SourceRecordStore, SourceRecordStore]:
+    """The two stores a build reads: its project's, then the toolchain's."""
+    return (
+        source_record_store(_build_state_root(project_root)),
+        source_record_store(_default_molt_cache() / _TOOLCHAIN_SOURCE_RECORDS),
+    )
 
 
 def _import_scan_cache_key(
@@ -757,10 +784,10 @@ def _import_scan_cache_key(
 
 
 def _read_intrinsic_facts_payload(
-    project_root: Path, record_key: str
+    project_root: Path, path: Path, record_key: str
 ) -> Mapping[str, Any] | None:
     """The stored intrinsic facts for ``record_key``; its reader qualifies them."""
-    return _source_records(project_root).get(
+    return _source_records(project_root, path).get(
         "intrinsic-facts",
         record_key,
         generation=_frontend_semantic_tooling_fingerprint(),
@@ -769,10 +796,10 @@ def _read_intrinsic_facts_payload(
 
 
 def _read_import_scan_payload(
-    project_root: Path, record_key: str
+    project_root: Path, path: Path, record_key: str
 ) -> Mapping[str, Any] | None:
     """The stored import-scan payload for ``record_key``; its reader qualifies it."""
-    return _source_records(project_root).get(
+    return _source_records(project_root, path).get(
         "import-scan",
         record_key,
         generation=_frontend_semantic_tooling_fingerprint(),
@@ -848,7 +875,7 @@ def _read_persisted_import_scan_record(
         target_python=target_python,
         runtime_catalog_owner=runtime_catalog_owner,
     )
-    payload = _read_import_scan_payload(project_root, record_key)
+    payload = _read_import_scan_payload(project_root, path, record_key)
     if payload is None:
         return None
     # Source records are a closed versioned protocol. Retired projections and
@@ -1308,7 +1335,7 @@ def _write_persisted_import_scan(
         target_python=target_python,
         runtime_catalog_owner=runtime_catalog_owner,
     )
-    _source_records(project_root).put(
+    _source_records(project_root, path).put(
         "import-scan",
         record_key,
         payload,
