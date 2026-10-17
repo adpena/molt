@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import subprocess
+import sys
 import tomllib
 from collections.abc import Mapping
 from dataclasses import replace
@@ -2608,6 +2609,7 @@ def test_combined_runtime_plan_applies_target_policy_after_cargo_features(
     environment = {
         "CARGO_HOME": str(plan_root / "cargo-home"),
         "WASI_SDK_PATH": str(sdk.sdk),
+        "MOLT_BUILD_PYTHON": sys.executable,
     }
     if flag_origin != "target":
         separator = "\x1f" if flag_origin == "CARGO_ENCODED_RUSTFLAGS" else " "
@@ -2701,6 +2703,7 @@ def test_standalone_cpython_abi_plan_applies_simd_after_cargo_features(
     environment = {
         "CARGO_HOME": str(plan_root / "cargo-home"),
         "WASI_SDK_PATH": str(sdk.sdk),
+        "MOLT_BUILD_PYTHON": sys.executable,
     }
     if flag_origin != "target":
         separator = "\x1f" if flag_origin == "CARGO_ENCODED_RUSTFLAGS" else " "
