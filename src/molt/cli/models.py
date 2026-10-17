@@ -1883,6 +1883,11 @@ class _ImportAdmissionPolicy:
     native_artifact_plan: _ExternalPackageNativeArtifactPlan = field(
         default_factory=_ExternalPackageNativeArtifactPlan
     )
+    # One discovery asks about the same few hundred paths about 21,000 times;
+    # each answer costs a realpath, so the policy remembers it.
+    _roots_by_path: dict[Path, Path | None] = field(
+        default_factory=dict, init=False, compare=False, hash=False, repr=False
+    )
 
     def __post_init__(self) -> None:
         external_roots = tuple(
@@ -1907,11 +1912,23 @@ class _ImportAdmissionPolicy:
         )
 
     def _external_root_for_path(self, path: Path) -> Path | None:
+        if not self.external_roots:
+            return None
+        try:
+            return self._roots_by_path[path]
+        except KeyError:
+            pass
         resolved_path = path.resolve()
-        for root in self.external_roots:
-            if resolved_path == root or resolved_path.is_relative_to(root):
-                return root
-        return None
+        found = next(
+            (
+                root
+                for root in self.external_roots
+                if resolved_path == root or resolved_path.is_relative_to(root)
+            ),
+            None,
+        )
+        self._roots_by_path[path] = found
+        return found
 
     def _package_admitted(self, module_name: str) -> bool:
         for package in self.admitted_external_packages:
