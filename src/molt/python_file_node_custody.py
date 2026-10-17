@@ -8,6 +8,7 @@ import os
 import stat
 import time
 import unicodedata
+from collections import deque
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from pathlib import Path, PurePath
 from typing import TypeVar, cast
@@ -775,6 +776,70 @@ def _snapshot_difference(
     return "snapshot identity changed"
 
 
+def _external_alias_chain_snapshot(
+    path: Path, *, label: str
+) -> dict[Path, tuple[int, ...]]:
+    """Retain only the finite path objects traversed by one external alias.
+
+    Link generations catch retarget-and-restore of intermediate indirections.
+    Real parent directories bind object/type, not unrelated directory contents.
+    Path.resolve and the stable file handle remain the terminal authority.
+    """
+    lexical = path.absolute()
+    current = Path(lexical.anchor)
+    pending = deque(lexical.parts[1:])
+    snapshots: dict[Path, tuple[int, ...]] = {}
+    expansions = 0
+    components = 0
+    while pending:
+        components += 1
+        if components > 4096:
+            raise PythonEnvironmentIdentityError(
+                f"{label} external alias exceeds path component limit: {path}"
+            )
+        component = pending.popleft()
+        if component == "..":
+            current = current.parent
+            continue
+        candidate = current / component
+        metadata = candidate.lstat()
+        indirect = stat.S_ISLNK(metadata.st_mode) or _metadata_is_junction(metadata)
+        identity = (
+            _path_stat_identity(metadata)
+            if indirect or not stat.S_ISDIR(metadata.st_mode)
+            else (metadata.st_mode, metadata.st_dev, metadata.st_ino)
+        )
+        prior = snapshots.setdefault(candidate, identity)
+        if prior != identity:
+            raise PythonEnvironmentIdentityError(
+                f"{label} external alias changed during traversal: {candidate}"
+            )
+        if indirect:
+            expansions += 1
+            if expansions > 256:
+                raise PythonEnvironmentIdentityError(
+                    f"{label} external alias cycles or exceeds link expansion limit: {path}"
+                )
+            target = Path(os.readlink(candidate))
+            if target.is_absolute():
+                current = Path(target.anchor)
+                target_parts = target.parts[1:]
+            else:
+                target_parts = target.parts
+            pending.extendleft(reversed(target_parts))
+            if len(pending) + components > 4096:
+                raise PythonEnvironmentIdentityError(
+                    f"{label} external alias exceeds path component limit: {path}"
+                )
+        else:
+            if pending and not stat.S_ISDIR(metadata.st_mode):
+                raise PythonEnvironmentIdentityError(
+                    f"{label} external alias traverses a non-directory: {candidate}"
+                )
+            current = candidate
+    return snapshots
+
+
 def _stable_tree_inventory(
     root: Path,
     *,
@@ -784,6 +849,7 @@ def _stable_tree_inventory(
     excluded: frozenset[str] = frozenset(),
     pruned_components: frozenset[str] = frozenset(),
     external_symlink_roles: Mapping[str, Path] | None = None,
+    capture_external_files: bool = False,
 ) -> tuple[dict[str, object], set[str], dict[str, os.stat_result]]:
     """Capture a tree with one hash per file object and a closing snapshot."""
 
@@ -815,6 +881,8 @@ def _stable_tree_inventory(
     }
     rows: list[dict[str, object]] = []
     files: set[str] = set()
+    external_targets: dict[Path, tuple[tuple[int, ...], Path]] = {}
+    external_topology: dict[Path, tuple[int, ...]] = {}
     for relative, path, metadata in before:
         if stat.S_ISDIR(metadata.st_mode):
             rows.append(
@@ -843,7 +911,7 @@ def _stable_tree_inventory(
             )
         try:
             resolved = path.resolve(strict=True)
-        except OSError as exc:
+        except (OSError, RuntimeError) as exc:
             raise PythonEnvironmentIdentityError(
                 f"{label} contains a broken symlink: {path}"
             ) from exc
@@ -856,6 +924,42 @@ def _stable_tree_inventory(
                 raise PythonEnvironmentIdentityError(
                     f"{label} directory symlink escapes custody: {path} -> {resolved}"
                 ) from None
+            external_targets[path] = (_path_stat_identity(metadata), resolved)
+            try:
+                chain_snapshot = _external_alias_chain_snapshot(path, label=label)
+                if path.resolve(strict=True) != resolved:
+                    raise PythonEnvironmentIdentityError(
+                        f"{label} external alias changed during traversal: {path}"
+                    )
+            except (OSError, RuntimeError) as exc:
+                raise PythonEnvironmentIdentityError(
+                    f"{label} external alias changed during traversal: {path}"
+                ) from exc
+            for chain_path, generation in chain_snapshot.items():
+                if external_topology.setdefault(chain_path, generation) != generation:
+                    raise PythonEnvironmentIdentityError(
+                        f"{label} external alias topology changed: {chain_path}"
+                    )
+            if capture_external_files:
+                target_metadata = resolved.lstat()
+                if not stat.S_ISREG(target_metadata.st_mode):
+                    raise PythonEnvironmentIdentityError(
+                        f"{label} external symlink target is not a regular file: {path}"
+                    )
+                node = pool.bind(
+                    resolved, target_metadata, label=f"{label} external file"
+                )
+                rows.append(
+                    {
+                        "path": relative,
+                        "kind": "symlink",
+                        "target_owner": "file-node",
+                        "node": node,
+                        "access": _semantic_access(target_metadata),
+                    }
+                )
+                files.add(relative)
+                continue
             external_matches: list[str] = []
             for external_role, external_path in sorted(
                 (external_symlink_roles or {}).items()
@@ -930,6 +1034,36 @@ def _stable_tree_inventory(
     expected_membership = _snapshot_fingerprint(before_root, before)
 
     def verify_membership() -> None:
+        for chain_path, generation in external_topology.items():
+            try:
+                metadata = chain_path.lstat()
+            except OSError as exc:
+                raise PythonEnvironmentIdentityError(
+                    f"{label} external alias topology changed: {chain_path}"
+                ) from exc
+            current = (
+                (metadata.st_mode, metadata.st_dev, metadata.st_ino)
+                if len(generation) == 3
+                else _path_stat_identity(metadata)
+            )
+            if current != generation:
+                raise PythonEnvironmentIdentityError(
+                    f"{label} external alias topology changed: {chain_path}"
+                )
+        for alias, (link_identity, target) in external_targets.items():
+            try:
+                same_target = (
+                    _path_stat_identity(alias.lstat()) == link_identity
+                    and alias.resolve(strict=True) == target
+                )
+            except (OSError, RuntimeError) as exc:
+                raise PythonEnvironmentIdentityError(
+                    f"{label} external file alias changed: {alias}"
+                ) from exc
+            if not same_target:
+                raise PythonEnvironmentIdentityError(
+                    f"{label} external file alias changed: {alias}"
+                )
         after_root, after = _tree_membership_snapshot(
             canonical,
             label=label,
@@ -1006,6 +1140,7 @@ def _validate_inventory_entries(
     label: str,
     nodes: Mapping[str, Mapping[str, object]],
     external_runtime_roles: Mapping[str, object] | None = None,
+    allow_external_file_nodes: bool = False,
 ) -> tuple[list[Mapping[str, object]], set[str], set[str]]:
     if not isinstance(value, list):
         raise PythonEnvironmentIdentityError(f"{label} entries are invalid")
@@ -1049,6 +1184,14 @@ def _validate_inventory_entries(
                     set(raw)
                     == {"path", "kind", "target_owner", "target", "node", "access"}
                     and _valid_relative_payload_path(raw.get("target"))
+                    and raw.get("node") in nodes
+                    and _valid_access(raw.get("access"))
+                )
+                if valid:
+                    referenced_nodes.add(str(raw["node"]))
+            elif owner == "file-node" and allow_external_file_nodes:
+                valid = (
+                    set(raw) == {"path", "kind", "target_owner", "node", "access"}
                     and raw.get("node") in nodes
                     and _valid_access(raw.get("access"))
                 )

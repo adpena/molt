@@ -1363,9 +1363,6 @@ def selected_runtime_fixture(tmp_path, monkeypatch):
                     types.SimpleNamespace(__file__=str(unicode_file)),
                 )
                 scope.setattr(runtime, "_runtime_library", lambda: real_library)
-                scope.setattr(
-                    runtime, "_configured_embedding_library_path", lambda: None
-                )
                 roles = (
                     "stdlib",
                     "platstdlib",

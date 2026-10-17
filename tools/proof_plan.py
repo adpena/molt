@@ -2785,7 +2785,6 @@ def validate_selected_python_runtime(
             "prefix",
             "base_prefix",
             "runtime_library",
-            "configured_embedding_library",
             "base_paths",
             "import_paths",
             "import_directories",

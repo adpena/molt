@@ -5,7 +5,6 @@ from __future__ import annotations
 import os
 import platform
 import re
-import stat
 import sys
 import sysconfig
 import unicodedata
@@ -43,9 +42,9 @@ from molt.python_native_locations import (
     native_census_disagreement,
 )
 
-PYTHON_RUNTIME_IDENTITY_SCHEMA = "molt.python-runtime-closure.v6"
-PYTHON_RUNTIME_CAPABILITY_SCHEMA = "molt.cpython-runtime-capabilities.v2"
-PYTHON_RUNTIME_SELECTION_SCHEMA = "molt-python-startup-selection-v2"
+PYTHON_RUNTIME_IDENTITY_SCHEMA = "molt.python-runtime-closure.v7"
+PYTHON_RUNTIME_CAPABILITY_SCHEMA = "molt.cpython-runtime-capabilities.v3"
+PYTHON_RUNTIME_SELECTION_SCHEMA = "molt-python-startup-selection-v3"
 # The build Python identity that runtime build receipts record; admission
 # produces it and the runtime identity schema validates it.
 BUILD_PYTHON_IDENTITY_SCHEMA = "molt.runtime-build-python.v1"
@@ -245,68 +244,11 @@ def _runtime_linkage(runtime_library: Path | None) -> str:
     return "static" if runtime_library is None else "shared"
 
 
-def _configured_embedding_library_path() -> Path | None:
-    """Exact optional install output declared by CPython's Makefile policy.
-
-    Non-framework altbininstall uses LIBDIR/INSTSONAME; DLL builds use
-    BINDIR/DLLLIBRARY. Framework aliases already have the loaded runtime owner.
-    This selects one file, never a directory inventory or a search fallback.
-    """
-    if sysconfig.get_config_var("PYTHONFRAMEWORK"):
-        return None
-    dll = sysconfig.get_config_var("DLLLIBRARY")
-    directory_key, filename_key = (
-        ("BINDIR", "DLLLIBRARY") if dll else ("LIBDIR", "INSTSONAME")
-    )
-    filename = sysconfig.get_config_var(filename_key)
-    if filename in (None, ""):
-        return None
-    directory = sysconfig.get_config_var(directory_key)
-    if (
-        not isinstance(filename, str)
-        or filename in {".", ".."}
-        or any(part in filename for part in ("/", "\\", "\0"))
-        or not isinstance(directory, str)
-        or not Path(directory).is_absolute()
-    ):
-        raise PythonEnvironmentIdentityError(
-            "configured CPython embedding library selection is invalid"
-        )
-    return Path(directory) / filename
-
-
-def _configured_embedding_library(runtime_library: Path | None) -> Path | None:
-    """A separately installed provider is content, not a fabricated loaded image."""
-    selected = _configured_embedding_library_path()
-    if selected is None:
-        return None
-    try:
-        selected.lstat()
-    except FileNotFoundError:
-        # Runtime-only installations legitimately omit optional embedding outputs.
-        # The startup-selection fence still records this exact negative lookup.
-        return None
-    try:
-        resolved = selected.resolve(strict=True)
-        if not stat.S_ISREG(resolved.stat().st_mode):
-            raise PythonEnvironmentIdentityError(
-                f"configured CPython embedding library is not a regular file: {selected}"
-            )
-        if runtime_library is not None and resolved.samefile(runtime_library):
-            return None
-    except (OSError, RuntimeError) as exc:
-        raise PythonEnvironmentIdentityError(
-            f"cannot resolve configured CPython embedding library: {selected}"
-        ) from exc
-    return resolved
-
-
 def _required_runtime_roles(
     platform_identity: Mapping[str, object],
     *,
     linkage: str,
     unicodedata_dynamic: bool,
-    configured_embedding_library: bool,
 ) -> tuple[tuple[str, ...], tuple[str, ...]]:
     operating_system = str(platform_identity["operating_system"])
     root_roles = ["platstdlib", "stdlib"]
@@ -315,8 +257,6 @@ def _required_runtime_roles(
     else:
         root_roles.append("base-lib-dynload")
     explicit_roles = ["base-executable"]
-    if configured_embedding_library:
-        explicit_roles.append("configured-embedding-library")
     if linkage in {"shared", "framework"}:
         explicit_roles.append("runtime-library")
     if unicodedata_dynamic:
@@ -329,13 +269,11 @@ def _runtime_capabilities(
     *,
     linkage: str,
     unicodedata_dynamic: bool,
-    configured_embedding_library: bool,
 ) -> dict[str, object]:
     root_roles, explicit_roles = _required_runtime_roles(
         platform_identity,
         linkage=linkage,
         unicodedata_dynamic=unicodedata_dynamic,
-        configured_embedding_library=configured_embedding_library,
     )
     operating_system = str(platform_identity["operating_system"])
     dependency_policy = _NATIVE_DEPENDENCY_POLICIES[operating_system]
@@ -348,7 +286,6 @@ def _runtime_capabilities(
         "architecture": platform_identity["architecture"],
         "linkage": linkage,
         "unicodedata_linkage": "dynamic" if unicodedata_dynamic else "built-in",
-        "configured_embedding_library": configured_embedding_library,
         "scanner_policy": "no-follow-handle-two-snapshot-sha256-v1",
         "import_root_policy": "isolated-active-prefix-roots-v1",
         "native_dependency_policy": dependency_policy,
@@ -508,7 +445,6 @@ def current_python_runtime_selection() -> dict[str, object]:
     base = Path(getattr(sys, "_base_executable", None) or sys.executable)
     base_prefix = Path(sys.base_prefix).resolve(strict=True)
     library = _runtime_library()
-    configured_library = _configured_embedding_library_path()
     directories, archives = _runtime_import_candidates(base_prefix, platform_payload)
 
     def location(path: Path) -> dict[str, object]:
@@ -532,9 +468,6 @@ def current_python_runtime_selection() -> dict[str, object]:
         "prefix": location(Path(sys.prefix)),
         "base_prefix": location(Path(sys.base_prefix)),
         "runtime_library": None if library is None else location(library),
-        "configured_embedding_library": (
-            None if configured_library is None else location(configured_library)
-        ),
         "base_paths": {
             role: location(path) for role, path in _base_runtime_paths().items()
         },
@@ -578,7 +511,6 @@ def _capture_runtime_with_context(
     ).resolve(strict=True)
     runtime_library = _runtime_library()
     linkage = _runtime_linkage(runtime_library)
-    configured_library = _configured_embedding_library(runtime_library)
     unicode_file = getattr(unicodedata, "__file__", None)
     unicode_path = Path(unicode_file).resolve(strict=True) if unicode_file else None
     unicodedata_dynamic = unicode_path is not None
@@ -586,7 +518,6 @@ def _capture_runtime_with_context(
         platform_payload,
         linkage=linkage,
         unicodedata_dynamic=unicodedata_dynamic,
-        configured_embedding_library=configured_library is not None,
     )
     required_root_roles = cast(list[str], capabilities["required_root_roles"])
     required_root_role_set = set(required_root_roles)
@@ -655,8 +586,6 @@ def _capture_runtime_with_context(
         explicit_paths["runtime-library"] = runtime_library
     if unicode_path is not None:
         explicit_paths["unicodedata"] = unicode_path
-    if configured_library is not None:
-        explicit_paths["configured-embedding-library"] = configured_library
     native_dependency_closure = _native_dependency_closure(
         explicit_paths,
         operating_system=str(platform_payload["operating_system"]),
@@ -672,7 +601,7 @@ def _capture_runtime_with_context(
             label="Python runtime",
             pool=pool,
             pruned_components=PYTHON_RUNTIME_PRUNED_COMPONENTS,
-            external_symlink_roles=explicit_paths,
+            capture_external_files=True,
         )
         runtime_roots.append(inventory)
     root_entries = {
@@ -832,7 +761,6 @@ def validate_python_runtime_identity(payload: object) -> dict[str, object]:
         "architecture",
         "linkage",
         "unicodedata_linkage",
-        "configured_embedding_library",
         "scanner_policy",
         "import_root_policy",
         "native_dependency_policy",
@@ -851,8 +779,6 @@ def validate_python_runtime_identity(payload: object) -> dict[str, object]:
         payload,
         linkage=str(linkage),
         unicodedata_dynamic=unicode_linkage == "dynamic",
-        configured_embedding_library=capabilities.get("configured_embedding_library")
-        is True,
     )
     if (
         capabilities.get("schema") != PYTHON_RUNTIME_CAPABILITY_SCHEMA
@@ -862,7 +788,6 @@ def validate_python_runtime_identity(payload: object) -> dict[str, object]:
         or capabilities.get("architecture") != payload.get("architecture")
         or linkage not in ("static", "shared", "framework")
         or unicode_linkage not in ("built-in", "dynamic")
-        or type(capabilities.get("configured_embedding_library")) is not bool
         or capabilities.get("scanner_policy")
         != "no-follow-handle-two-snapshot-sha256-v1"
         or capabilities.get("import_root_policy") != "isolated-active-prefix-roots-v1"
@@ -930,14 +855,6 @@ def validate_python_runtime_identity(payload: object) -> dict[str, object]:
         raise PythonEnvironmentIdentityError(
             "Python runtime explicit-file closure is not canonical"
         )
-    roles_by_node: dict[str, set[str]] = {}
-    for role, node in explicit_role_nodes.items():
-        roles_by_node.setdefault(node, set()).add(role)
-    external_runtime_roles = {
-        role: node
-        for role, node in explicit_role_nodes.items()
-        if len(roles_by_node[node]) == 1
-    }
     roots = payload.get("runtime_roots")
     if not isinstance(roots, list) or not roots:
         raise PythonEnvironmentIdentityError("Python runtime root closure is invalid")
@@ -958,7 +875,7 @@ def validate_python_runtime_identity(payload: object) -> dict[str, object]:
             root.get("entries"),
             label="Python runtime",
             nodes=nodes_by_id,
-            external_runtime_roles=external_runtime_roles,
+            allow_external_file_nodes=True,
         )
         root_id = root.get("id")
         expected_node_ids = sorted(
