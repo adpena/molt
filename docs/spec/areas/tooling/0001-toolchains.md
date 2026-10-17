@@ -514,17 +514,25 @@ or execution-identity claims.
 
 ## Python runtime identity
 
-A configured embedding library and the loaded CPython runtime are distinct
-inputs. A static interpreter may ship a separate libpython for embedding.
-Capture the exact optional install output selected by CPython's
-[installation rule](https://github.com/python/cpython/blob/v3.14.4/Makefile.pre.in#L2247-L2262)
-through the existing file pool and explicit component owner. Keep static linkage
-and the actual loaded-image census unchanged. Installed config aliases may refer
-only to that exact file; matching bytes in another file do not grant custody.
-The startup fence retains the selector and absence, so retargeting, appearance
-and content changes invalidate reuse. A provider identical to the loaded runtime
-reuses its owner. This adds at most one distinct library's bytes to development
-capture, with no extra process or emitted-program work.
+Runtime tree aliases bind each reached external regular file into the existing
+content-node pool. Every alias references an owned node; root and global node
+closure reject missing or orphaned content. This follows the explicit reference
+closure used by [Nix store objects](https://nix.dev/manual/nix/2.35/store/store-object)
+and the declared-input rule behind [Bazel incremental builds](https://bazel.build/docs/sandboxing).
+Installed Python is mutable: capture retains observed link generations, parent
+object identities, exact terminal resolution and stable file handles until the
+owner closes. Retargeting and restoring an observed indirection invalidates reuse.
+External directories, special files, broken links and cycles fail. Environment
+and package inventories retain their separate, closed alias policies.
+
+Only reached file bytes are hashed, once per physical file across the capture.
+Unreached optional embedding libraries add no work. External alias traversal has
+finite link and component bounds and retains shared metadata without copying
+pending paths per expansion; internal aliases avoid this extra traversal.
+Static/shared linkage and the loaded-image census describe actual loaded images,
+independently of tree content. This adds no process, directory inventory, watcher
+or emitted-program work. It is live-host custody, not a filesystem sandbox or an
+immutable store.
 
 Windows runtime architecture comes from CPython `sysconfig.get_platform`, which
 identifies the interpreter build before consulting POSIX cross-build overrides.

@@ -258,7 +258,6 @@ def _runtime_payload(
             "architecture": architecture,
             "linkage": "shared",
             "unicodedata_linkage": "dynamic",
-            "configured_embedding_library": False,
             "scanner_policy": "no-follow-handle-two-snapshot-sha256-v1",
             "import_root_policy": "isolated-active-prefix-roots-v1",
             "native_dependency_policy": policy,
@@ -332,7 +331,7 @@ def _runtime_payload(
 
 
 def _add_external_runtime_symlink(
-    payload: dict[str, Any], role: str, path: str
+    payload: dict[str, Any], node: str, path: str
 ) -> None:
     root = payload["runtime_roots"][0]
     access = {"readable": True, "writable": False, "executable": True}
@@ -349,13 +348,18 @@ def _add_external_runtime_symlink(
         {
             "path": path,
             "kind": "symlink",
-            "target_owner": "base-runtime",
-            "target_role": role,
+            "target_owner": "file-node",
+            "node": node,
             "access": access,
         }
     )
     root["entries"].sort(key=lambda row: (row["path"].casefold(), row["path"]))
     root["file_count"] += 1
+    if node in {row["id"] for row in payload["file_nodes"]}:
+        root["node_ids"] = sorted(
+            set(root["node_ids"]) | {node},
+            key=lambda value: int(value.removeprefix("file-node-")),
+        )
     root["manifest_sha256"] = canonical_json_sha256(root["entries"])
     _reseal(payload)
 
@@ -496,7 +500,7 @@ def test_macos_framework_runtime_receipt_references_attested_runtime_library() -
     payload = _runtime_payload(operating_system="macos")
     _add_external_runtime_symlink(
         payload,
-        "runtime-library",
+        "file-node-1",
         "lib/python3.12/config-3.12-darwin/libpython3.12.a",
     )
 
@@ -506,21 +510,21 @@ def test_macos_framework_runtime_receipt_references_attested_runtime_library() -
         for entry in validated["runtime_roots"][0]["entries"]
         if entry["path"] == "lib/python3.12/config-3.12-darwin/libpython3.12.a"
     )
-    assert row["target_owner"] == "base-runtime"
-    assert row["target_role"] == "runtime-library"
-    assert runtime.runtime_explicit_file_content(validated, row["target_role"]) == {
+    assert row["target_owner"] == "file-node"
+    assert row["node"] == "file-node-1"
+    assert runtime.runtime_explicit_file_content(validated, "runtime-library") == {
         "filename": "libpython.so",
         "size": 2,
         "sha256": "2" * 64,
     }
 
 
-@pytest.mark.parametrize("role", ["base-executable", "runtime-library", "unicodedata"])
-def test_runtime_receipt_accepts_only_attested_external_component_roles(
-    role: str,
+@pytest.mark.parametrize("node", ["file-node-0", "file-node-1", "file-node-2"])
+def test_runtime_receipt_external_alias_reuses_existing_file_node(
+    node: str,
 ) -> None:
     payload = _runtime_payload()
-    _add_external_runtime_symlink(payload, role, f"links/{role}")
+    _add_external_runtime_symlink(payload, node, f"links/{node}")
 
     assert runtime.validate_python_runtime_identity(payload) == payload
 
@@ -528,7 +532,7 @@ def test_runtime_receipt_accepts_only_attested_external_component_roles(
 @pytest.mark.parametrize(
     "role", ["framework/Python", "base-dlls", "runtime-library-alias"]
 )
-def test_runtime_receipt_rejects_unattested_external_component_role(role: str) -> None:
+def test_runtime_receipt_rejects_role_spelling_as_external_node(role: str) -> None:
     payload = _runtime_payload(operating_system="macos")
     _add_external_runtime_symlink(payload, role, "lib/python3.12/config/link")
 
@@ -536,15 +540,14 @@ def test_runtime_receipt_rejects_unattested_external_component_role(role: str) -
         runtime.validate_python_runtime_identity(payload)
 
 
-def test_runtime_external_role_retains_explicit_file_attestation() -> None:
+def test_runtime_external_alias_retains_independent_explicit_file_attestation() -> None:
     payload = _runtime_payload(operating_system="macos")
     _add_external_runtime_symlink(
         payload,
-        "runtime-library",
+        "file-node-1",
         "lib/python3.12/config-3.12-darwin/libpython3.12.a",
     )
-    # Use a distinct file object, not another explicit component: the latter
-    # is rejected earlier by the separate ambiguous-role ownership check.
+    # An alias node cannot substitute for the independently attested loaded role.
     payload["file_nodes"].append({"id": "file-node-3", "size": 4, "sha256": "4" * 64})
     payload["explicit_files"][1]["node"] = "file-node-3"
     _reseal(payload)
@@ -555,19 +558,19 @@ def test_runtime_external_role_retains_explicit_file_attestation() -> None:
         runtime.validate_python_runtime_identity(payload)
 
 
-def test_runtime_external_role_rejects_ambiguous_explicit_file_identity() -> None:
+def test_runtime_external_alias_does_not_infer_role_from_node_identity() -> None:
     payload = _runtime_payload(operating_system="macos")
     _add_external_runtime_symlink(
         payload,
-        "runtime-library",
+        "file-node-1",
         "lib/python3.12/config-3.12-darwin/libpython3.12.a",
     )
     payload["explicit_files"][1]["node"] = "file-node-0"
     payload["native_dependency_closure"]["components"][0]["node"] = "file-node-0"
     _reseal(payload)
 
-    with pytest.raises(PythonEnvironmentIdentityError, match="symlink entry"):
-        runtime.validate_python_runtime_identity(payload)
+    # The alias owns node 1 independently; loaded-role coincidence is not its owner.
+    assert runtime.validate_python_runtime_identity(payload) == payload
 
 
 @pytest.mark.parametrize("operating_system", ["windows", "linux"])
@@ -1080,8 +1083,8 @@ def test_framework_linkage_stays_framework(monkeypatch: pytest.MonkeyPatch) -> N
 
 
 @pytest.fixture
-def configured_embedding_installation(tmp_path, monkeypatch):
-    """A static ELF interpreter with a separate, unmapped declared library."""
+def external_alias_installation(tmp_path, monkeypatch):
+    """Finite static ELF runtime with independently known external input bytes."""
     from molt import python_native_dependency_custody as native
     from molt import python_native_locations as locations
     from molt.python_file_node_custody import PythonFileCaptureContext
@@ -1165,6 +1168,8 @@ def configured_embedding_installation(tmp_path, monkeypatch):
     with PythonFileCaptureContext() as context:
         yield SimpleNamespace(
             context=context,
+            stdlib=stdlib,
+            executable=executable,
             library=library,
             alias=alias,
             config=config,
@@ -1173,161 +1178,263 @@ def configured_embedding_installation(tmp_path, monkeypatch):
         )
 
 
-def test_configured_embedding_library_preserves_static_loaded_truth(
-    configured_embedding_installation,
+def test_runtime_external_alias_retarget_during_snapshot_precedes_content_capture(
+    external_alias_installation, monkeypatch
+):
+    from molt import python_file_node_custody as files
+
+    fixture = external_alias_installation
+    other = fixture.directory / "other-provider"
+    other.write_bytes(b"unadmitted provider")
+    snapshot = files._external_alias_chain_snapshot
+
+    def retarget(path, *, label):
+        captured = snapshot(path, label=label)
+        if path == fixture.alias:
+            path.unlink()
+            path.symlink_to(other)
+        return captured
+
+    monkeypatch.setattr(files, "_external_alias_chain_snapshot", retarget)
+    with pytest.raises(
+        PythonEnvironmentIdentityError, match="changed during traversal"
+    ):
+        runtime.capture_current_python_runtime(capture_context=fixture.context)
+    # Only the admitted executable was read, never either external provider.
+    assert fixture.context.inventory_profile()["hashed_files"] == 1
+    assert fixture.context.inventory_profile()["hashed_bytes"] == (
+        fixture.executable.stat().st_size
+    )
+
+
+def test_runtime_external_aliases_own_exact_nodes_without_loaded_roles(
+    external_alias_installation,
 ):
     import hashlib
 
-    fixture = configured_embedding_installation
+    fixture = external_alias_installation
+    site = fixture.directory / "sitecustomize.py"
+    site_bytes = b"known distro customization input\n"
+    site.write_bytes(site_bytes)
+    (fixture.stdlib / "sitecustomize.py").symlink_to(site)
+    (fixture.stdlib / "library-alias").symlink_to(fixture.library)
     payload = runtime.capture_current_python_runtime(capture_context=fixture.context)
     runtime.validate_python_runtime_identity(payload)
     assert payload["capabilities"]["linkage"] == "static"
-    assert payload["capabilities"]["configured_embedding_library"] is True
-    assert payload["capabilities"]["required_explicit_roles"] == [
-        "base-executable",
-        "configured-embedding-library",
-    ]
-    assert runtime.runtime_explicit_file_content(
-        payload, "configured-embedding-library"
-    ) == {
-        "filename": "libpython3.14.so.1.0",
-        "size": len(fixture.library_bytes),
-        "sha256": hashlib.sha256(fixture.library_bytes).hexdigest(),
-    }
+    assert payload["capabilities"]["required_explicit_roles"] == ["base-executable"]
     closure = payload["native_dependency_closure"]
-    provider = next(
-        row
-        for row in closure["components"]
-        if row["roles"] == ["configured-embedding-library"]
-    )
-    assert provider["id"] in closure["root_components"]
-    assert provider["id"] not in closure["observed_components"]
+    assert len(closure["components"]) == 1
+    assert closure["components"][0]["roles"] == ["base-executable"]
+    assert closure["root_components"] == closure["observed_components"]
     assert closure["edges"] == []
-    alias = next(
-        row
-        for root in payload["runtime_roots"]
-        for row in root["entries"]
-        if row["path"].endswith("/libpython3.14.so")
+    roots = payload["runtime_roots"]
+    rows = {row["path"]: row for root in roots for row in root["entries"]}
+    librow = rows["config-3.14-aarch64-linux-gnu/libpython3.14.so"]
+    assert librow["target_owner"] == "file-node"
+    assert rows["library-alias"]["node"] == librow["node"]
+    nodes = {node["id"]: node for node in payload["file_nodes"]}
+    for row, data in (
+        (librow, fixture.library_bytes),
+        (rows["sitecustomize.py"], site_bytes),
+    ):
+        assert nodes[row["node"]]["sha256"] == hashlib.sha256(data).hexdigest()
+        assert nodes[row["node"]]["size"] == len(data)
+    assert len(nodes) == 3  # Executable plus two distinct external file objects.
+    assert fixture.context.inventory_profile()["hashed_files"] == 3
+    assert fixture.context.inventory_profile()["hashed_bytes"] == (
+        fixture.executable.stat().st_size + len(fixture.library_bytes) + len(site_bytes)
     )
-    assert alias["target_role"] == "configured-embedding-library"
-    assert alias["target_owner"] == "base-runtime"
     fixture.context.verify()
 
 
 @pytest.mark.parametrize(
-    "mutation", ["external-bytes", "config-retarget", "declared-provider-retarget"]
+    "mutation", ["bytes", "alias", "terminal", "intermediate", "parent"]
 )
-def test_configured_embedding_library_retains_bytes_and_alias_fences(
-    configured_embedding_installation, mutation
+def test_runtime_external_alias_retains_content_and_resolution(
+    external_alias_installation,
+    mutation,
 ):
-    fixture = configured_embedding_installation
+    fixture = external_alias_installation
+    intermediate = fixture.directory / "selected.so"
+    intermediate.symlink_to(fixture.library)
+    fixture.alias.unlink()
+    fixture.alias.symlink_to(intermediate)
+    if mutation == "parent":
+        selected_directory = fixture.directory / "selected-directory"
+        selected_directory.symlink_to(fixture.directory, target_is_directory=True)
+        fixture.alias.unlink()
+        fixture.alias.symlink_to(selected_directory / fixture.library.name)
     runtime.capture_current_python_runtime(capture_context=fixture.context)
-    if mutation == "external-bytes":
-        fixture.library.write_bytes(b"changed external bytes")
+    if mutation == "bytes":
+        fixture.library.write_bytes(b"changed input bytes")
     else:
-        other = fixture.directory / "foreign.so"
-        other.write_bytes(fixture.library_bytes)
-        selected = fixture.alias if mutation == "config-retarget" else fixture.library
+        other = fixture.directory / "replacement"
+        if mutation == "parent":
+            other.mkdir()
+            (other / fixture.library.name).write_bytes(fixture.library_bytes)
+            selected = selected_directory
+        else:
+            other.write_bytes(fixture.library_bytes)
+            selected = {
+                "alias": fixture.alias,
+                "terminal": fixture.library,
+                "intermediate": intermediate,
+            }[mutation]
         selected.unlink()
-        selected.symlink_to(other)
+        selected.symlink_to(other, target_is_directory=mutation == "parent")
     with pytest.raises((PythonEnvironmentIdentityError, ValueError)):
         fixture.context.verify()
 
 
-def test_configured_embedding_library_rejects_unowned_external_symlink(
-    configured_embedding_installation,
-):
-    fixture = configured_embedding_installation
-    other = fixture.directory / "foreign.so"
-    other.write_bytes(fixture.library_bytes)
+def test_unreached_configured_library_is_not_an_input(external_alias_installation):
+    fixture = external_alias_installation
     fixture.alias.unlink()
-    fixture.alias.symlink_to(other)
-    with pytest.raises(PythonEnvironmentIdentityError, match="symlink escapes custody"):
+    payload = runtime.capture_current_python_runtime(capture_context=fixture.context)
+    runtime.validate_python_runtime_identity(payload)
+    assert len(payload["file_nodes"]) == 1
+    assert fixture.context.inventory_profile()["hashed_files"] == 1
+    fixture.library.write_bytes(b"unreached configured library is irrelevant")
+    fixture.config["INSTSONAME"] = "other-unreached-library.so"
+    fixture.context.verify()
+
+
+@pytest.mark.parametrize("target", ["directory", "broken", "cycle", "fifo"])
+def test_runtime_external_alias_rejects_nonregular_targets(
+    external_alias_installation, target
+):
+    import os
+
+    fixture = external_alias_installation
+    fixture.library.unlink()
+    if target == "directory":
+        fixture.library.mkdir()
+    elif target == "cycle":
+        fixture.library.symlink_to(fixture.alias)
+    elif target == "fifo":
+        if not hasattr(os, "mkfifo"):
+            pytest.skip("FIFO creation unavailable")
+        os.mkfifo(fixture.library)
+    with pytest.raises((PythonEnvironmentIdentityError, OSError, RuntimeError)):
         runtime.capture_current_python_runtime(capture_context=fixture.context)
 
 
-def test_configured_embedding_library_absence_is_optional_and_fenced(
-    configured_embedding_installation,
+@pytest.mark.parametrize(
+    "fault",
+    [
+        "missing-node",
+        "unknown-node",
+        "root-node-omitted",
+        "extra-field",
+        "old-role",
+        "orphan-node",
+    ],
+)
+def test_runtime_external_alias_receipt_requires_closed_content_nodes(
+    external_alias_installation, fault
 ):
-    fixture = configured_embedding_installation
+    fixture = external_alias_installation
+    payload = runtime.capture_current_python_runtime(capture_context=fixture.context)
+    root = payload["runtime_roots"][0]
+    alias = next(row for row in root["entries"] if row["kind"] == "symlink")
+    if fault == "missing-node":
+        payload["file_nodes"].pop()
+    elif fault == "unknown-node":
+        alias["node"] = "file-node-999"
+    elif fault == "root-node-omitted":
+        root["node_ids"] = []
+    elif fault == "extra-field":
+        alias["target"] = "/unowned/absolute/path"
+    elif fault == "old-role":
+        del alias["node"]
+        alias.update(target_owner="base-runtime", target_role="base-executable")
+    else:
+        payload["file_nodes"].append(
+            {
+                "id": f"file-node-{len(payload['file_nodes'])}",
+                "size": 3,
+                "sha256": "1" * 64,
+            }
+        )
+    root["manifest_sha256"] = canonical_json_sha256(root["entries"])
+    _reseal(payload)
+    with pytest.raises(PythonEnvironmentIdentityError):
+        runtime.validate_python_runtime_identity(payload)
+
+
+def test_external_file_nodes_are_not_admitted_in_environment_inventory(
+    external_alias_installation,
+):
+    from molt import python_file_node_custody as files
+
+    fixture = external_alias_installation
+    payload = runtime.capture_current_python_runtime(capture_context=fixture.context)
+    nodes = {row["id"]: row for row in payload["file_nodes"]}
+    with pytest.raises(PythonEnvironmentIdentityError, match="symlink entry"):
+        files._validate_inventory_entries(
+            payload["runtime_roots"][0]["entries"], label="environment", nodes=nodes
+        )
+    with pytest.raises(PythonEnvironmentIdentityError, match="symlink escapes custody"):
+        files._stable_tree_inventory(
+            fixture.stdlib,
+            root_id="environment",
+            label="environment",
+            pool=files._FileNodePool(),
+        )
+
+
+@pytest.mark.parametrize("indirection", ["file", "parent"])
+def test_runtime_external_intermediate_restore_is_detected(
+    external_alias_installation, indirection
+):
+    fixture = external_alias_installation
+    link = fixture.directory / "selected"
+    original = fixture.library if indirection == "file" else fixture.directory
+    link.symlink_to(original, target_is_directory=indirection == "parent")
     fixture.alias.unlink()
-    fixture.library.unlink()
+    fixture.alias.symlink_to(
+        link if indirection == "file" else link / fixture.library.name
+    )
+    runtime.capture_current_python_runtime(capture_context=fixture.context)
+    changed = fixture.directory / "other"
+    if indirection == "file":
+        changed.write_bytes(b"transient different provider")
+    else:
+        changed.mkdir()
+        (changed / fixture.library.name).write_bytes(b"transient different provider")
+    link.unlink()
+    link.symlink_to(changed, target_is_directory=indirection == "parent")
+    assert fixture.alias.read_bytes() == b"transient different provider"
+    link.unlink()
+    link.symlink_to(original, target_is_directory=indirection == "parent")
+    assert fixture.alias.resolve() == fixture.library.resolve()
+    with pytest.raises(
+        PythonEnvironmentIdentityError, match="external alias topology changed"
+    ):
+        fixture.context.verify()
+
+
+def test_runtime_external_chain_expansion_is_bounded(external_alias_installation):
+    from molt import python_file_node_custody as files
+
+    fixture = external_alias_installation
+    target = fixture.library
+    for number in range(257):
+        link = fixture.directory / f"link-{number}"
+        link.symlink_to(target)
+        target = link
+    with pytest.raises(PythonEnvironmentIdentityError, match="link expansion limit"):
+        files._external_alias_chain_snapshot(target, label="fixture")
+
+
+def test_runtime_external_relative_alias_chain_is_owned(external_alias_installation):
+    import os
+
+    fixture = external_alias_installation
+    intermediate = fixture.directory / "selected.so"
+    intermediate.symlink_to(fixture.library.name)
+    fixture.alias.unlink()
+    fixture.alias.symlink_to(os.path.relpath(intermediate, fixture.alias.parent))
     payload = runtime.capture_current_python_runtime(capture_context=fixture.context)
     runtime.validate_python_runtime_identity(payload)
-    assert payload["capabilities"]["configured_embedding_library"] is False
-    assert payload["capabilities"]["required_explicit_roles"] == ["base-executable"]
-    fixture.library.write_bytes(fixture.library_bytes)
-    with pytest.raises(
-        PythonEnvironmentIdentityError, match="configured_embedding_library"
-    ):
-        fixture.context.verify()
-
-
-def test_configured_embedding_library_reuses_loaded_owner(
-    configured_embedding_installation,
-):
-    fixture = configured_embedding_installation
-    assert runtime._configured_embedding_library(fixture.library) is None
-
-
-@pytest.mark.parametrize("selection", ["directory", "broken", "relative", "traversal"])
-def test_configured_embedding_library_invalid_selection_fails(
-    configured_embedding_installation, selection
-):
-    fixture = configured_embedding_installation
-    if selection == "relative":
-        fixture.config["LIBDIR"] = "relative"
-    elif selection == "traversal":
-        fixture.config["INSTSONAME"] = "../foreign.so"
-    else:
-        fixture.library.unlink()
-        if selection == "directory":
-            fixture.library.mkdir()
-        else:
-            fixture.library.symlink_to(fixture.directory / "missing")
-    with pytest.raises(PythonEnvironmentIdentityError):
-        runtime._configured_embedding_library(None)
-
-
-@pytest.mark.parametrize("fault", ["presence", "role", "component-role"])
-def test_configured_embedding_library_receipt_cannot_omit_owner(
-    configured_embedding_installation, fault
-):
-    fixture = configured_embedding_installation
-    payload = runtime.capture_current_python_runtime(capture_context=fixture.context)
-    if fault == "presence":
-        payload["capabilities"]["configured_embedding_library"] = False
-    elif fault == "role":
-        payload["explicit_files"] = [
-            r
-            for r in payload["explicit_files"]
-            if r["role"] != "configured-embedding-library"
-        ]
-    else:
-        for row in payload["native_dependency_closure"]["components"]:
-            if row["roles"] == ["configured-embedding-library"]:
-                row["roles"] = []
-    _reseal(payload)
-    with pytest.raises(PythonEnvironmentIdentityError):
-        runtime.validate_python_runtime_identity(payload)
-
-
-def test_configured_embedding_library_selector_change_invalidates_capture(
-    configured_embedding_installation,
-):
-    fixture = configured_embedding_installation
-    runtime.capture_current_python_runtime(capture_context=fixture.context)
-    fixture.config["INSTSONAME"] = "different-declared-library.so"
-    with pytest.raises(
-        PythonEnvironmentIdentityError, match="configured_embedding_library"
-    ):
-        fixture.context.verify()
-
-
-@pytest.mark.parametrize("value", [0, 1, "present", None])
-def test_configured_embedding_library_capability_requires_boolean(value):
-    payload = _runtime_payload()
-    payload["capabilities"]["configured_embedding_library"] = value
-    _reseal(payload)
-    with pytest.raises(PythonEnvironmentIdentityError, match="capability vector"):
-        runtime.validate_python_runtime_identity(payload)
+    assert len(payload["file_nodes"]) == 2
+    fixture.context.verify()
