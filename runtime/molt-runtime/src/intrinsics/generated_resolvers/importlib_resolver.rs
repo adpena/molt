@@ -25,6 +25,10 @@ pub(super) fn resolve_symbol(symbol: &str) -> Option<u64> {
                 crate::molt_importlib_zip_source_exec_payload as *const (),
             ))
         }
+        "molt_importlib_zip_archive_path" => Some(crate::builtins::functions::runtime_fn_addr(
+            "crate::molt_importlib_zip_archive_path",
+            crate::molt_importlib_zip_archive_path as *const (),
+        )),
         "molt_importlib_zip_read_entry" => Some(crate::builtins::functions::runtime_fn_addr(
             "crate::molt_importlib_zip_read_entry",
             crate::molt_importlib_zip_read_entry as *const (),
@@ -155,30 +159,14 @@ pub(super) fn resolve_symbol(symbol: &str) -> Option<u64> {
                 crate::molt_importlib_compiled_loader_types as *const (),
             ))
         }
-        "molt_importlib_find_spec_orchestrate" => {
-            Some(crate::builtins::functions::runtime_fn_addr(
-                "crate::molt_importlib_find_spec_orchestrate",
-                crate::molt_importlib_find_spec_orchestrate as *const (),
-            ))
-        }
-        "molt_importlib_pathfinder_find_spec" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_importlib_pathfinder_find_spec",
-            crate::molt_importlib_pathfinder_find_spec as *const (),
+        "molt_importlib_admit_spec" => Some(crate::builtins::functions::runtime_fn_addr(
+            "crate::molt_importlib_admit_spec",
+            crate::molt_importlib_admit_spec as *const (),
         )),
         "molt_importlib_filefinder_find_spec" => Some(crate::builtins::functions::runtime_fn_addr(
             "crate::molt_importlib_filefinder_find_spec",
             crate::molt_importlib_filefinder_find_spec as *const (),
         )),
-        "molt_importlib_invalidate_caches" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_importlib_invalidate_caches",
-            crate::molt_importlib_invalidate_caches as *const (),
-        )),
-        "molt_importlib_filefinder_invalidate" => {
-            Some(crate::builtins::functions::runtime_fn_addr(
-                "crate::molt_importlib_filefinder_invalidate",
-                crate::molt_importlib_filefinder_invalidate as *const (),
-            ))
-        }
         "molt_importlib_reload" => Some(crate::builtins::functions::runtime_fn_addr(
             "crate::molt_importlib_reload",
             crate::molt_importlib_reload as *const (),

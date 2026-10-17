@@ -302,9 +302,7 @@ pub enum OperationId {
     FfiBridge,
     ImportlibExecExtension,
     ImportlibExtensionLoaderPayload,
-    ImportlibFindSpecFromPathHooksImpl,
-    ImportlibFindSpecPayload,
-    ImportlibFindSpecWithRuntimeStateBits,
+    ImportlibFilefinderFindSpec,
     ImportlibFindInPathPayload,
     ImportlibMetadataDistPaths,
     ImportlibMetadataDistributionsPayload,
@@ -333,6 +331,8 @@ pub enum OperationId {
     ImportlibResourcesReaderResourcePathFromRoots,
     ImportlibResourcesResourcePathFromPackage,
     ImportlibResourcesResourcePathFromPackageParts,
+    ImportlibSpecExtension,
+    ImportlibZipArchivePath,
     ImportlibZipReadEntry,
     ImportlibZipSourceExecPayload,
     OsLinkAt,
@@ -514,13 +514,7 @@ impl OperationId {
             "ffi.bridge" => Some(Self::FfiBridge),
             "importlib.exec.extension" => Some(Self::ImportlibExecExtension),
             "importlib.extension_loader_payload" => Some(Self::ImportlibExtensionLoaderPayload),
-            "importlib.find_spec.from_path_hooks_impl" => {
-                Some(Self::ImportlibFindSpecFromPathHooksImpl)
-            }
-            "importlib.find_spec.payload" => Some(Self::ImportlibFindSpecPayload),
-            "importlib.find_spec.with_runtime_state_bits" => {
-                Some(Self::ImportlibFindSpecWithRuntimeStateBits)
-            }
+            "importlib.filefinder.find_spec" => Some(Self::ImportlibFilefinderFindSpec),
             "importlib.find.in_path_payload" => Some(Self::ImportlibFindInPathPayload),
             "importlib.metadata.dist_paths" => Some(Self::ImportlibMetadataDistPaths),
             "importlib.metadata.distributions_payload" => {
@@ -587,6 +581,8 @@ impl OperationId {
             "importlib.resources.resource_path_from_package_parts" => {
                 Some(Self::ImportlibResourcesResourcePathFromPackageParts)
             }
+            "importlib.spec.extension" => Some(Self::ImportlibSpecExtension),
+            "importlib.zip.archive_path" => Some(Self::ImportlibZipArchivePath),
             "importlib.zip.read_entry" => Some(Self::ImportlibZipReadEntry),
             "importlib.zip.source_exec_payload" => Some(Self::ImportlibZipSourceExecPayload),
             "os.link_at" => Some(Self::OsLinkAt),
@@ -771,11 +767,7 @@ impl OperationId {
             Self::FfiBridge => "ffi.bridge",
             Self::ImportlibExecExtension => "importlib.exec.extension",
             Self::ImportlibExtensionLoaderPayload => "importlib.extension_loader_payload",
-            Self::ImportlibFindSpecFromPathHooksImpl => "importlib.find_spec.from_path_hooks_impl",
-            Self::ImportlibFindSpecPayload => "importlib.find_spec.payload",
-            Self::ImportlibFindSpecWithRuntimeStateBits => {
-                "importlib.find_spec.with_runtime_state_bits"
-            }
+            Self::ImportlibFilefinderFindSpec => "importlib.filefinder.find_spec",
             Self::ImportlibFindInPathPayload => "importlib.find.in_path_payload",
             Self::ImportlibMetadataDistPaths => "importlib.metadata.dist_paths",
             Self::ImportlibMetadataDistributionsPayload => {
@@ -840,6 +832,8 @@ impl OperationId {
             Self::ImportlibResourcesResourcePathFromPackageParts => {
                 "importlib.resources.resource_path_from_package_parts"
             }
+            Self::ImportlibSpecExtension => "importlib.spec.extension",
+            Self::ImportlibZipArchivePath => "importlib.zip.archive_path",
             Self::ImportlibZipReadEntry => "importlib.zip.read_entry",
             Self::ImportlibZipSourceExecPayload => "importlib.zip.source_exec_payload",
             Self::OsLinkAt => "os.link_at",
@@ -1042,9 +1036,7 @@ impl OperationId {
             Self::FfiBridge => &[CapabilityId::PythonBridge],
             Self::ImportlibExecExtension => &[CapabilityId::FsRead],
             Self::ImportlibExtensionLoaderPayload => &[CapabilityId::FsRead],
-            Self::ImportlibFindSpecFromPathHooksImpl => &[CapabilityId::FsRead],
-            Self::ImportlibFindSpecPayload => &[CapabilityId::FsRead],
-            Self::ImportlibFindSpecWithRuntimeStateBits => &[CapabilityId::FsRead],
+            Self::ImportlibFilefinderFindSpec => &[CapabilityId::FsRead],
             Self::ImportlibFindInPathPayload => &[CapabilityId::FsRead],
             Self::ImportlibMetadataDistPaths => &[CapabilityId::FsRead],
             Self::ImportlibMetadataDistributionsPayload => &[CapabilityId::FsRead],
@@ -1073,6 +1065,8 @@ impl OperationId {
             Self::ImportlibResourcesReaderResourcePathFromRoots => &[CapabilityId::FsRead],
             Self::ImportlibResourcesResourcePathFromPackage => &[CapabilityId::FsRead],
             Self::ImportlibResourcesResourcePathFromPackageParts => &[CapabilityId::FsRead],
+            Self::ImportlibSpecExtension => &[CapabilityId::FsRead],
+            Self::ImportlibZipArchivePath => &[CapabilityId::FsRead],
             Self::ImportlibZipReadEntry => &[CapabilityId::FsRead],
             Self::ImportlibZipSourceExecPayload => &[CapabilityId::FsRead],
             Self::OsLinkAt => &[CapabilityId::FsWrite],
@@ -1266,9 +1260,7 @@ impl OperationId {
             Self::FfiBridge => &[],
             Self::ImportlibExecExtension => &[],
             Self::ImportlibExtensionLoaderPayload => &[],
-            Self::ImportlibFindSpecFromPathHooksImpl => &[],
-            Self::ImportlibFindSpecPayload => &[],
-            Self::ImportlibFindSpecWithRuntimeStateBits => &[],
+            Self::ImportlibFilefinderFindSpec => &[],
             Self::ImportlibFindInPathPayload => &[],
             Self::ImportlibMetadataDistPaths => &[],
             Self::ImportlibMetadataDistributionsPayload => &[],
@@ -1297,6 +1289,8 @@ impl OperationId {
             Self::ImportlibResourcesReaderResourcePathFromRoots => &[],
             Self::ImportlibResourcesResourcePathFromPackage => &[],
             Self::ImportlibResourcesResourcePathFromPackageParts => &[],
+            Self::ImportlibSpecExtension => &[],
+            Self::ImportlibZipArchivePath => &[],
             Self::ImportlibZipReadEntry => &[],
             Self::ImportlibZipSourceExecPayload => &[],
             Self::OsLinkAt => &[],
@@ -1478,9 +1472,7 @@ impl OperationId {
             Self::FfiBridge => &[],
             Self::ImportlibExecExtension => &[],
             Self::ImportlibExtensionLoaderPayload => &[],
-            Self::ImportlibFindSpecFromPathHooksImpl => &[],
-            Self::ImportlibFindSpecPayload => &[],
-            Self::ImportlibFindSpecWithRuntimeStateBits => &[],
+            Self::ImportlibFilefinderFindSpec => &[],
             Self::ImportlibFindInPathPayload => &[],
             Self::ImportlibMetadataDistPaths => &[],
             Self::ImportlibMetadataDistributionsPayload => &[],
@@ -1509,6 +1501,8 @@ impl OperationId {
             Self::ImportlibResourcesReaderResourcePathFromRoots => &[],
             Self::ImportlibResourcesResourcePathFromPackage => &[],
             Self::ImportlibResourcesResourcePathFromPackageParts => &[],
+            Self::ImportlibSpecExtension => &[],
+            Self::ImportlibZipArchivePath => &[],
             Self::ImportlibZipReadEntry => &[],
             Self::ImportlibZipSourceExecPayload => &[],
             Self::OsLinkAt => &[],
@@ -1690,9 +1684,7 @@ impl OperationId {
             Self::FfiBridge => &[],
             Self::ImportlibExecExtension => &[],
             Self::ImportlibExtensionLoaderPayload => &[],
-            Self::ImportlibFindSpecFromPathHooksImpl => &[],
-            Self::ImportlibFindSpecPayload => &[],
-            Self::ImportlibFindSpecWithRuntimeStateBits => &[],
+            Self::ImportlibFilefinderFindSpec => &[],
             Self::ImportlibFindInPathPayload => &[],
             Self::ImportlibMetadataDistPaths => &[],
             Self::ImportlibMetadataDistributionsPayload => &[],
@@ -1721,6 +1713,8 @@ impl OperationId {
             Self::ImportlibResourcesReaderResourcePathFromRoots => &[],
             Self::ImportlibResourcesResourcePathFromPackage => &[],
             Self::ImportlibResourcesResourcePathFromPackageParts => &[],
+            Self::ImportlibSpecExtension => &[],
+            Self::ImportlibZipArchivePath => &[],
             Self::ImportlibZipReadEntry => &[],
             Self::ImportlibZipSourceExecPayload => &[],
             Self::OsLinkAt => &[],
@@ -1902,9 +1896,7 @@ impl OperationId {
             Self::FfiBridge => &[],
             Self::ImportlibExecExtension => &[],
             Self::ImportlibExtensionLoaderPayload => &[],
-            Self::ImportlibFindSpecFromPathHooksImpl => &[],
-            Self::ImportlibFindSpecPayload => &[],
-            Self::ImportlibFindSpecWithRuntimeStateBits => &[],
+            Self::ImportlibFilefinderFindSpec => &[],
             Self::ImportlibFindInPathPayload => &[],
             Self::ImportlibMetadataDistPaths => &[],
             Self::ImportlibMetadataDistributionsPayload => &[],
@@ -1933,6 +1925,8 @@ impl OperationId {
             Self::ImportlibResourcesReaderResourcePathFromRoots => &[],
             Self::ImportlibResourcesResourcePathFromPackage => &[],
             Self::ImportlibResourcesResourcePathFromPackageParts => &[],
+            Self::ImportlibSpecExtension => &[],
+            Self::ImportlibZipArchivePath => &[],
             Self::ImportlibZipReadEntry => &[],
             Self::ImportlibZipSourceExecPayload => &[],
             Self::OsLinkAt => &[],

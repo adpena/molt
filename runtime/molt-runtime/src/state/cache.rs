@@ -320,7 +320,6 @@ define_runtime_static_names! {
     source_from_cache_name => b"source_from_cache",
     source_suffixes_name => b"SOURCE_SUFFIXES",
     sourceless_file_loader_name => b"SourcelessFileLoader",
-    spec_cache_name => b"_SPEC_CACHE",
     spec_from_file_location_name => b"spec_from_file_location",
     spec_from_loader_name => b"spec_from_loader",
     submodule_search_locations_name => b"submodule_search_locations",

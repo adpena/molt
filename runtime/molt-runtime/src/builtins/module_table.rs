@@ -113,6 +113,13 @@ pub(crate) struct RegistryRow {
     pub(crate) module_flags: u8,
 }
 
+/// Borrowed metadata from the installed immutable registry; no module owner.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) struct CompiledModuleSpec {
+    pub(crate) origin: &'static str,
+    pub(crate) is_package: bool,
+}
+
 #[derive(Debug)]
 pub(crate) struct ModuleRegistry {
     base: *const u8,
@@ -202,6 +209,31 @@ impl ModuleRegistry {
             }
         }
         None
+    }
+
+    fn execution_target_id(&self, mut id: u32) -> u32 {
+        loop {
+            let row = self.row(id);
+            if row.kind != MODULE_KIND_ALIAS {
+                return id;
+            }
+            id = row
+                .alias_target
+                .expect("alias target validated at registry install");
+        }
+    }
+
+    /// Immutable description of an executable catalog row, without touching
+    /// module state or invoking an initializer. Alias metadata belongs to the
+    /// terminal provider. Reserved/no-body rows cannot supply an executable
+    /// compiled loader, including namespace-parent rows without an init lane.
+    pub(crate) fn compiled_spec(&self, name: &str) -> Option<CompiledModuleSpec> {
+        let id = self.execution_target_id(self.id_of(name)?);
+        let row = self.row(id);
+        (row.module_flags & MODULE_FLAG_HAS_BODY != 0).then(|| CompiledModuleSpec {
+            origin: self.origin_of(id),
+            is_package: row.module_flags & MODULE_FLAG_PACKAGE != 0,
+        })
     }
 
     fn parse(blob: *const u8) -> Result<Self, String> {
@@ -395,16 +427,8 @@ pub(crate) fn module_id_of(name: &str) -> Option<u32> {
 /// body and remain ordinary co-publication views.
 pub(crate) fn module_execution_target_name(name: &str) -> Option<&'static str> {
     let registry = module_registry()?;
-    let mut id = registry.id_of(name)?;
-    loop {
-        let row = registry.row(id);
-        if row.kind != MODULE_KIND_ALIAS {
-            return Some(registry.name_of(id));
-        }
-        id = row
-            .alias_target
-            .expect("alias target validated at registry install");
-    }
+    let id = registry.execution_target_id(registry.id_of(name)?);
+    Some(registry.name_of(id))
 }
 
 /// Catalog admission for fresh execution. `None` means no registry is
@@ -412,16 +436,8 @@ pub(crate) fn module_execution_target_name(name: &str) -> Option<&'static str> {
 /// no-body row and must not enter the importer or allocate transaction state.
 pub(crate) fn module_execution_target_has_body(name: &str) -> Option<bool> {
     let registry = module_registry()?;
-    let mut id = registry.id_of(name)?;
-    loop {
-        let row = registry.row(id);
-        if row.kind != MODULE_KIND_ALIAS {
-            return Some(row.module_flags & MODULE_FLAG_HAS_BODY != 0);
-        }
-        id = row
-            .alias_target
-            .expect("alias target validated at registry install");
-    }
+    let id = registry.execution_target_id(registry.id_of(name)?);
+    Some(registry.row(id).module_flags & MODULE_FLAG_HAS_BODY != 0)
 }
 
 pub(crate) fn module_catalog_is_package(name: &str) -> Option<bool> {
@@ -1590,6 +1606,10 @@ pub(crate) fn isolate_import_dispatch(py: &PyToken<'_>, name: &str) -> u64 {
 // ─── Gate G4: the ensure state machine, driven transition by transition ─────
 
 #[cfg(test)]
+#[path = "module_table/catalog_tests.rs"]
+mod catalog_tests;
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use std::sync::atomic::AtomicU64 as TestCounter;
@@ -1600,16 +1620,16 @@ mod tests {
     /// Mirror of the Python layout authority (`molt.cli.module_registry`),
     /// used to build a synthetic registry blob for the state-machine tests.
     /// Divergence from the real writer fails `ModuleRegistry::parse`.
-    struct BlobBuilder {
+    pub(super) struct BlobBuilder {
         rows: Vec<BlobRow>,
     }
 
     impl BlobBuilder {
-        fn new() -> Self {
+        pub(super) fn new() -> Self {
             Self { rows: Vec::new() }
         }
 
-        fn row(
+        pub(super) fn row(
             &mut self,
             name: &str,
             init_ptr: u64,
@@ -1634,7 +1654,7 @@ mod tests {
             self
         }
 
-        fn build(&self) -> Vec<u8> {
+        pub(super) fn build(&self) -> Vec<u8> {
             let mut sorted = self.rows.clone();
             sorted.sort_by(|a, b| a.0.cmp(&b.0));
             assert_eq!(

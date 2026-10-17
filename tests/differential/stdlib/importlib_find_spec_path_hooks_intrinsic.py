@@ -5,13 +5,21 @@ import importlib.util
 import sys
 
 
+class _Loader:
+    def create_module(self, spec):
+        return None
+
+    def exec_module(self, module):
+        return None
+
+
 class _PathFinder:
     def find_spec(self, fullname, target=None):
         if fullname != "molt_path_target":
             return None
         spec = importlib.machinery.ModuleSpec(
             fullname,
-            loader=None,
+            loader=_Loader(),
             origin="pathhook://finder",
             is_package=False,
         )
@@ -30,7 +38,7 @@ orig_path_hooks = list(sys.path_hooks)
 orig_path = list(sys.path)
 orig_cache = dict(sys.path_importer_cache)
 try:
-    sys.meta_path[:] = []
+    sys.meta_path[:] = [importlib.machinery.PathFinder]
     sys.path_hooks[:] = [_path_hook]
     sys.path[:] = ["molt://hook"]
     sys.path_importer_cache.clear()

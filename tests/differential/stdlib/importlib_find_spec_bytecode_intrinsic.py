@@ -19,9 +19,6 @@ with open(pkg_pyc, "wb") as handle:
 
 orig_path = list(sys.path)
 orig_modules = {name: sys.modules.get(name) for name in ("bcmod", "bcpkg")}
-spec_cache = getattr(importlib.util, "_SPEC_CACHE", None)
-if isinstance(spec_cache, dict):
-    spec_cache.clear()
 
 try:
     sys.path[:] = [root]
@@ -34,8 +31,6 @@ finally:
             sys.modules.pop(name, None)
         else:
             sys.modules[name] = previous
-    if isinstance(spec_cache, dict):
-        spec_cache.clear()
 
 mod_origin = os.path.normpath(mod_spec.origin) if mod_spec and mod_spec.origin else ""
 pkg_origin = os.path.normpath(pkg_spec.origin) if pkg_spec and pkg_spec.origin else ""

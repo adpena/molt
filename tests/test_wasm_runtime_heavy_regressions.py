@@ -75,6 +75,82 @@ def test_wasm_asyncio_task_basic_has_no_table_ref_trap(
     _assert_no_recursive_mutex_panic(run.stderr)
 
 
+@pytest.mark.parametrize("layout", ["linked", "split"])
+def test_wasm_compiled_finder_describes_module_before_initialization(
+    tmp_path: Path,
+    layout: str,
+) -> None:
+    root = Path(__file__).resolve().parents[1]
+    node = resolve_node_runtime(source_root=root, guard_prefix="MOLT_WASM_TEST")
+    (tmp_path / "_molt_wasm_catalog_subject.py").write_text(
+        "print('subject-exec')\nvalue = 297\n", encoding="utf-8"
+    )
+    src = tmp_path / "catalog_probe.py"
+    src.write_text(
+        "import importlib.machinery\n"
+        "import importlib.util\n"
+        "import sys\n"
+        "print('package-metadata', importlib.__path__ is\n"
+        "      importlib.__spec__.submodule_search_locations)\n"
+        "name = '_molt_wasm_catalog_subject'\n"
+        "print('absent', name not in sys.modules)\n"
+        "spec = importlib.util.find_spec(name)\n"
+        "print('spec', spec.name == name,\n"
+        "      spec.loader is importlib.machinery._MOLT_LOADER)\n"
+        "print('unpublished', name not in sys.modules)\n"
+        "import _molt_wasm_catalog_subject\n"
+        "print('ready', _molt_wasm_catalog_subject.value == 297)\n",
+        encoding="utf-8",
+    )
+    if layout == "linked":
+        output = build_wasm_linked(root, src, tmp_path, extra_args=["--no-trusted"])
+        manifest = wasm_runtime_manifest_path(output)
+    else:
+        from tests.test_wasm_split_runtime import _build_split
+
+        output_dir = tmp_path / "split"
+        build = _build_split(
+            src,
+            output_dir,
+            extra_args=["--build-profile", "dev", "--no-trusted"],
+        )
+        assert build.returncode == 0, build.stdout + build.stderr
+        manifest = output_dir / "manifest.json"
+    env = os.environ.copy()
+    for key in (
+        "MOLT_WASM_TABLE_BASE",
+        "MOLT_RUNTIME_WASM",
+        "MOLT_WASM_MANIFEST_PATH",
+        "MOLT_VFS_BUNDLE",
+    ):
+        env.pop(key, None)
+    env.update(
+        PATH="",
+        PYTHONPATH="",
+        PYTHONHOME="",
+        MOLT_CAPABILITY_TIER="none",
+        MOLT_CAPABILITIES="",
+    )
+    run = _run_wasm_test_process(
+        [
+            str(node.path),
+            str(root / "wasm" / "run_wasm.js"),
+            str(manifest),
+        ],
+        cwd=tmp_path,
+        env=env,
+    )
+    assert run.returncode == 0, run.stdout + run.stderr
+    assert run.stdout.splitlines() == [
+        "package-metadata True",
+        "absent True",
+        "spec True True",
+        "unpublished True",
+        "subject-exec",
+        "ready True",
+    ]
+
+
 def test_wasm_zipimport_package_lookup_parity(
     tmp_path: Path,
 ) -> None:

@@ -26,6 +26,25 @@ def _load_module(name, path_text):
     return module
 
 
+BACKSLASH = chr(92)
+WINDOWS_ARCHIVE = 'C:' + BACKSLASH + 'cache.zip' + BACKSLASH + 'app.zip'
+archive_calls = []
+read_calls = []
+
+
+def _zip_archive_path(path):
+    archive_calls.append(path)
+    return {{
+        'pkg.zip': ('pkg.zip', ''),
+        WINDOWS_ARCHIVE + BACKSLASH + 'nested': (WINDOWS_ARCHIVE, 'nested'),
+    }}.get(path)
+
+
+def _zip_read_entry(archive, inner):
+    read_calls.append((archive, inner))
+    return b'payload'
+
+
 install_registry({{
     "molt_token_payload_312": lambda: {{
         "_payload_schema": "molt.token_payload.312.v1",
@@ -46,8 +65,8 @@ install_registry({{
     "molt_importlib_zip_source_exec_payload": lambda fullname, archive, inner, is_package: {{
         "source": "VALUE = 7\\n"
     }},
-    "molt_importlib_zip_read_entry": lambda archive, inner: b"payload",
-    "molt_capabilities_require": lambda cap: None,
+    "molt_importlib_zip_read_entry": _zip_read_entry,
+    "molt_importlib_zip_archive_path": _zip_archive_path,
 }})
 
 machinery_mod = _types.ModuleType("importlib.machinery")
@@ -84,6 +103,22 @@ imported = zipimport_mod.zipimporter("pkg.zip")
 spec = imported.find_spec("pkg.mod")
 data = imported.get_data("pkg.zip/pkg/mod.py")
 
+try:
+    zipimport_mod.zipimporter("missing.zip")
+except zipimport_mod.ZipImportError:
+    rejected_archive = True
+else:
+    rejected_archive = False
+
+# Project the Windows facade constants without changing the host's os module.
+zipimport_mod.path_sep = BACKSLASH
+zipimport_mod.alt_path_sep = '/'
+windows_importer = zipimport_mod.zipimporter('C:/cache.zip/app.zip/nested')
+windows_mixed_data = windows_importer.get_data(WINDOWS_ARCHIVE + '/nested/pkg/mod.py')
+windows_native_data = windows_importer.get_data(
+    WINDOWS_ARCHIVE + BACKSLASH + 'nested' + BACKSLASH + 'pkg' + BACKSLASH + 'mod.py'
+)
+
 checks = {{
     "token": (
         token_mod.ENDMARKER == 0
@@ -99,6 +134,22 @@ checks = {{
         and imported.get_source("pkg.mod") == "VALUE = 7\\n"
         and data == b"payload"
         and "molt_importlib_zip_read_entry" not in zipimport_mod.__dict__
+        and imported.archive == 'pkg.zip'
+        and imported.prefix == ''
+        and rejected_archive
+        and windows_importer.archive == WINDOWS_ARCHIVE
+        and windows_importer.prefix == 'nested' + BACKSLASH
+        and windows_mixed_data == b'payload'
+        and windows_native_data == b'payload'
+        and archive_calls == [
+            'pkg.zip', 'missing.zip', WINDOWS_ARCHIVE + BACKSLASH + 'nested'
+        ]
+        and read_calls == [
+            ('pkg.zip', 'pkg/mod.py'),
+            (WINDOWS_ARCHIVE, 'nested/pkg/mod.py'),
+            (WINDOWS_ARCHIVE, 'nested/pkg/mod.py'),
+        ]
+        and "molt_importlib_zip_archive_path" not in zipimport_mod.__dict__
     ),
 }}
 

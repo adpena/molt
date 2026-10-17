@@ -1,8 +1,10 @@
-"""Purpose: validate find_spec cache-key sensitivity for runtime importer state."""
+"""Purpose: validate find_spec observes current public importer state."""
 
 import importlib.machinery
 import importlib.util
+import os.path
 import sys
+import types
 
 
 META_TARGET = "molt_find_spec_meta_sig_target"
@@ -10,6 +12,7 @@ PATH_TARGET = "molt_find_spec_path_sig_target"
 CACHE_TARGET = "molt_find_spec_cache_sig_target"
 PATH_ENTRY = "molt://sig-path"
 CACHE_ENTRY = "molt://sig-cache"
+PUBLISHED_TARGET = "molt_find_spec_published_target"
 
 
 class _Loader:
@@ -58,6 +61,20 @@ class _PathFinder:
         return spec
 
 
+class _PublishingFinder:
+    def __init__(self, module, provisional):
+        self.module = module
+        self.provisional = provisional
+        self.calls = 0
+
+    def find_spec(self, fullname, path=None, target=None):
+        if fullname != PUBLISHED_TARGET:
+            return None
+        self.calls += 1
+        sys.modules[fullname] = self.module
+        return self.provisional
+
+
 def _make_path_hook(module_name, entry, origin):
     def _path_hook(path):
         _path_hook.calls += 1
@@ -73,9 +90,23 @@ orig_meta_path = list(sys.meta_path)
 orig_path_hooks = list(sys.path_hooks)
 orig_path = list(sys.path)
 orig_cache = dict(sys.path_importer_cache)
-spec_cache = getattr(importlib.util, "_SPEC_CACHE", None)
-if isinstance(spec_cache, dict):
-    spec_cache.clear()
+missing = object()
+orig_published = sys.modules.get(PUBLISHED_TARGET, missing)
+
+# Only the final selected spec may trigger native artifact admission. The
+# unused provisional artifact is never created or loaded.
+published_spec = importlib.machinery.ModuleSpec(
+    PUBLISHED_TARGET, _Loader(), origin="published://ordinary"
+)
+published_module = types.ModuleType(PUBLISHED_TARGET)
+published_module.__spec__ = published_spec
+unused_extension = os.path.abspath("molt_hf297_unused_provisional.so")
+provisional_spec = importlib.machinery.ModuleSpec(
+    PUBLISHED_TARGET,
+    importlib.machinery.ExtensionFileLoader(PUBLISHED_TARGET, unused_extension),
+    origin=unused_extension,
+)
+publishing_finder = _PublishingFinder(published_module, provisional_spec)
 
 spec_meta_1 = None
 spec_meta_2 = None
@@ -88,13 +119,13 @@ hook_b_calls = 0
 hook_cache_calls = 0
 
 try:
-    # Meta-path mutation should change the find_spec cache key.
+    # Each call must use the current meta-path finder.
     sys.meta_path[:] = [_MetaFinder(META_TARGET, "meta://first")]
     spec_meta_1 = importlib.util.find_spec(META_TARGET)
     sys.meta_path[:] = [_MetaFinder(META_TARGET, "meta://second")]
     spec_meta_2 = importlib.util.find_spec(META_TARGET)
 
-    # path_hooks mutation should change the find_spec cache key.
+    # Clearing the public importer cache must select the current path hook.
     hook_a = _make_path_hook(PATH_TARGET, PATH_ENTRY, "pathhook://first")
     hook_b = _make_path_hook(PATH_TARGET, PATH_ENTRY, "pathhook://second")
     sys.meta_path[:] = [importlib.machinery.PathFinder]
@@ -108,7 +139,7 @@ try:
     hook_a_calls = hook_a.calls
     hook_b_calls = hook_b.calls
 
-    # path_importer_cache value identity should change the cache key.
+    # Each call must use the current public path_importer_cache value.
     hook_cache = _make_path_hook(CACHE_TARGET, CACHE_ENTRY, "cache://from-hook")
     sys.meta_path[:] = [importlib.machinery.PathFinder]
     sys.path[:] = [CACHE_ENTRY]
@@ -120,14 +151,26 @@ try:
     )
     spec_cache_2 = importlib.util.find_spec(CACHE_TARGET)
     hook_cache_calls = hook_cache.calls
+
+    # The callback publishes an ordinary spec before returning an unused native
+    # provisional result; CPython selects the newly published public spec.
+    sys.modules.pop(PUBLISHED_TARGET, None)
+    sys.meta_path[:] = [publishing_finder]
+    selected_spec = importlib.util.find_spec(PUBLISHED_TARGET)
+    published_cache_identity = sys.modules[PUBLISHED_TARGET] is published_module
+    assert selected_spec is published_spec
+    assert publishing_finder.calls == 1
+    assert published_cache_identity
 finally:
     sys.meta_path[:] = orig_meta_path
     sys.path_hooks[:] = orig_path_hooks
     sys.path[:] = orig_path
     sys.path_importer_cache.clear()
     sys.path_importer_cache.update(orig_cache)
-    if isinstance(spec_cache, dict):
-        spec_cache.clear()
+    if orig_published is missing:
+        sys.modules.pop(PUBLISHED_TARGET, None)
+    else:
+        sys.modules[PUBLISHED_TARGET] = orig_published
 
 print(spec_meta_1.origin if spec_meta_1 else None)
 print(spec_meta_2.origin if spec_meta_2 else None)
@@ -138,3 +181,5 @@ print(hook_b_calls)
 print(spec_cache_1.origin if spec_cache_1 else None)
 print(spec_cache_2.origin if spec_cache_2 else None)
 print(hook_cache_calls)
+print("published-selection", selected_spec is published_spec, publishing_finder.calls)
+print("published-cache", published_cache_identity)

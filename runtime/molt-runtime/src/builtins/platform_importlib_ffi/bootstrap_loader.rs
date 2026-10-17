@@ -977,329 +977,6 @@ pub extern "C" fn molt_importlib_coerce_module_name(
     })
 }
 
-pub(in super::super) fn importlib_coerce_search_paths_values(
-    _py: &PyToken<'_>,
-    value_bits: u64,
-    label: &str,
-) -> Result<Vec<String>, u64> {
-    let mut paths: Vec<String> = Vec::new();
-    if obj_from_bits(value_bits).is_none() {
-        // value is None -> ()
-    } else if let Some(text) = string_obj_to_owned(obj_from_bits(value_bits)) {
-        if !text.is_empty() {
-            paths.push(text);
-        }
-    } else {
-        let iter_bits = molt_iter(value_bits);
-        if exception_pending(_py) {
-            clear_exception(_py);
-            return Err(raise_exception::<_>(_py, "RuntimeError", label));
-        }
-        loop {
-            let pair_bits = molt_iter_next(iter_bits);
-            let Some(pair_ptr) = maybe_ptr_from_bits(pair_bits) else {
-                clear_exception(_py);
-                return Err(raise_exception::<_>(_py, "RuntimeError", label));
-            };
-            unsafe {
-                if object_type_id(pair_ptr) != TYPE_ID_TUPLE {
-                    clear_exception(_py);
-                    return Err(raise_exception::<_>(_py, "RuntimeError", label));
-                }
-            }
-            if unsafe { crate::object::seq_access::locked_len(pair_ptr) } < 2 {
-                clear_exception(_py);
-                return Err(raise_exception::<_>(_py, "RuntimeError", label));
-            }
-            let Some(done) = (unsafe { crate::object::seq_access::pin_item(_py, pair_ptr, 1) })
-            else {
-                clear_exception(_py);
-                return Err(raise_exception::<_>(_py, "RuntimeError", label));
-            };
-            if is_truthy(_py, obj_from_bits(done.bits())) {
-                break;
-            }
-            let Some(value) = (unsafe { crate::object::seq_access::pin_item(_py, pair_ptr, 0) })
-            else {
-                clear_exception(_py);
-                return Err(raise_exception::<_>(_py, "RuntimeError", label));
-            };
-            let text_bits = unsafe { call_callable1(_py, builtin_classes(_py).str, value.bits()) };
-            if exception_pending(_py) {
-                clear_exception(_py);
-                if !obj_from_bits(text_bits).is_none() {
-                    dec_ref_bits(_py, text_bits);
-                }
-                return Err(raise_exception::<_>(_py, "RuntimeError", label));
-            }
-            let Some(text) = string_obj_to_owned(obj_from_bits(text_bits)) else {
-                if !obj_from_bits(text_bits).is_none() {
-                    dec_ref_bits(_py, text_bits);
-                }
-                clear_exception(_py);
-                return Err(raise_exception::<_>(_py, "RuntimeError", label));
-            };
-            if !obj_from_bits(text_bits).is_none() {
-                dec_ref_bits(_py, text_bits);
-            }
-            if !text.is_empty() {
-                paths.push(text);
-            }
-        }
-    }
-    Ok(paths)
-}
-
-pub(super) fn importlib_alloc_string_tuple_bits(
-    _py: &PyToken<'_>,
-    values: &[String],
-) -> Result<u64, u64> {
-    let mut value_bits_vec: Vec<u64> = Vec::with_capacity(values.len());
-    for value in values {
-        let bits = match alloc_str_bits(_py, value) {
-            Ok(bits) => bits,
-            Err(err) => {
-                for owned in value_bits_vec {
-                    if !obj_from_bits(owned).is_none() {
-                        dec_ref_bits(_py, owned);
-                    }
-                }
-                return Err(err);
-            }
-        };
-        value_bits_vec.push(bits);
-    }
-    let tuple_ptr = alloc_tuple(_py, &value_bits_vec);
-    for owned in value_bits_vec {
-        if !obj_from_bits(owned).is_none() {
-            dec_ref_bits(_py, owned);
-        }
-    }
-    if tuple_ptr.is_null() {
-        Err(crate::builtins::exceptions::ExceptionSentinel::exception_sentinel())
-    } else {
-        Ok(MoltObject::from_ptr(tuple_ptr).bits())
-    }
-}
-
-pub(super) fn importlib_finder_signature_tuple_bits(
-    _py: &PyToken<'_>,
-    finders_bits: u64,
-    label: &str,
-) -> Result<u64, u64> {
-    let mut ids: Vec<u64> = Vec::new();
-    let iter_bits = molt_iter(finders_bits);
-    if exception_pending(_py) {
-        clear_exception(_py);
-        return Err(raise_exception::<_>(_py, "RuntimeError", label));
-    }
-    loop {
-        let pair_bits = molt_iter_next(iter_bits);
-        let Some(pair_ptr) = maybe_ptr_from_bits(pair_bits) else {
-            clear_exception(_py);
-            return Err(raise_exception::<_>(_py, "RuntimeError", label));
-        };
-        unsafe {
-            if object_type_id(pair_ptr) != TYPE_ID_TUPLE {
-                clear_exception(_py);
-                return Err(raise_exception::<_>(_py, "RuntimeError", label));
-            }
-        }
-        if unsafe { crate::object::seq_access::locked_len(pair_ptr) } < 2 {
-            clear_exception(_py);
-            return Err(raise_exception::<_>(_py, "RuntimeError", label));
-        }
-        let Some(done) = (unsafe { crate::object::seq_access::pin_item(_py, pair_ptr, 1) }) else {
-            clear_exception(_py);
-            return Err(raise_exception::<_>(_py, "RuntimeError", label));
-        };
-        if is_truthy(_py, obj_from_bits(done.bits())) {
-            break;
-        }
-        let Some(value) = (unsafe { crate::object::seq_access::pin_item(_py, pair_ptr, 0) }) else {
-            clear_exception(_py);
-            return Err(raise_exception::<_>(_py, "RuntimeError", label));
-        };
-        let id_bits = crate::molt_id(value.bits());
-        if exception_pending(_py) {
-            clear_exception(_py);
-            if !obj_from_bits(id_bits).is_none() {
-                dec_ref_bits(_py, id_bits);
-            }
-            for owned in ids {
-                if !obj_from_bits(owned).is_none() {
-                    dec_ref_bits(_py, owned);
-                }
-            }
-            return Err(raise_exception::<_>(_py, "RuntimeError", label));
-        }
-        ids.push(id_bits);
-    }
-    let tuple_ptr = alloc_tuple(_py, &ids);
-    for owned in ids {
-        if !obj_from_bits(owned).is_none() {
-            dec_ref_bits(_py, owned);
-        }
-    }
-    if tuple_ptr.is_null() {
-        Err(crate::builtins::exceptions::ExceptionSentinel::exception_sentinel())
-    } else {
-        Ok(MoltObject::from_ptr(tuple_ptr).bits())
-    }
-}
-
-pub(super) fn importlib_path_importer_cache_signature_tuple_bits(
-    _py: &PyToken<'_>,
-    path_importer_cache_bits: u64,
-    label: &str,
-) -> Result<u64, u64> {
-    if obj_from_bits(path_importer_cache_bits).is_none() {
-        let empty_ptr = alloc_tuple(_py, &[]);
-        if empty_ptr.is_null() {
-            return Err(crate::builtins::exceptions::ExceptionSentinel::exception_sentinel());
-        }
-        return Ok(MoltObject::from_ptr(empty_ptr).bits());
-    }
-
-    let Some(cache_ptr) = obj_from_bits(path_importer_cache_bits).as_ptr() else {
-        return Err(raise_exception::<_>(_py, "RuntimeError", label));
-    };
-    if unsafe { object_type_id(cache_ptr) } != TYPE_ID_DICT {
-        return Err(raise_exception::<_>(_py, "RuntimeError", label));
-    }
-
-    let mut pairs: Vec<(String, u64)> = Vec::new();
-    let Some(entries) = (unsafe {
-        crate::object::ops_dict::dict_snapshot(
-            _py,
-            cache_ptr,
-            crate::object::ops_dict::DictSnapshotKind::Entries,
-        )
-    }) else {
-        return Err(MoltObject::none().bits());
-    };
-    for idx in (0..entries.len()).step_by(2) {
-        let key_bits = entries[idx];
-        let value_bits = entries[idx + 1];
-        let Some(key) = string_obj_to_owned(obj_from_bits(key_bits)) else {
-            continue;
-        };
-        let id_bits = crate::molt_id(value_bits);
-        if exception_pending(_py) {
-            clear_exception(_py);
-            if !obj_from_bits(id_bits).is_none() {
-                dec_ref_bits(_py, id_bits);
-            }
-            for (_k, owned) in pairs {
-                if !obj_from_bits(owned).is_none() {
-                    dec_ref_bits(_py, owned);
-                }
-            }
-            return Err(raise_exception::<_>(_py, "RuntimeError", label));
-        }
-        pairs.push((key, id_bits));
-    }
-    pairs.sort_by(|lhs, rhs| lhs.0.cmp(&rhs.0));
-
-    let mut pair_tuple_bits: Vec<u64> = Vec::with_capacity(pairs.len());
-    for (key, id_bits) in pairs {
-        let key_bits = match alloc_str_bits(_py, &key) {
-            Ok(bits) => bits,
-            Err(err) => {
-                if !obj_from_bits(id_bits).is_none() {
-                    dec_ref_bits(_py, id_bits);
-                }
-                for owned in pair_tuple_bits {
-                    if !obj_from_bits(owned).is_none() {
-                        dec_ref_bits(_py, owned);
-                    }
-                }
-                return Err(err);
-            }
-        };
-        let item_ptr = alloc_tuple(_py, &[key_bits, id_bits]);
-        if !obj_from_bits(key_bits).is_none() {
-            dec_ref_bits(_py, key_bits);
-        }
-        if !obj_from_bits(id_bits).is_none() {
-            dec_ref_bits(_py, id_bits);
-        }
-        if item_ptr.is_null() {
-            for owned in pair_tuple_bits {
-                if !obj_from_bits(owned).is_none() {
-                    dec_ref_bits(_py, owned);
-                }
-            }
-            return Err(crate::builtins::exceptions::ExceptionSentinel::exception_sentinel());
-        }
-        pair_tuple_bits.push(MoltObject::from_ptr(item_ptr).bits());
-    }
-    let out_ptr = alloc_tuple(_py, &pair_tuple_bits);
-    for owned in pair_tuple_bits {
-        if !obj_from_bits(owned).is_none() {
-            dec_ref_bits(_py, owned);
-        }
-    }
-    if out_ptr.is_null() {
-        Err(crate::builtins::exceptions::ExceptionSentinel::exception_sentinel())
-    } else {
-        Ok(MoltObject::from_ptr(out_ptr).bits())
-    }
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_importlib_coerce_search_paths(value_bits: u64, label_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
-        let label = match string_arg_from_bits(_py, label_bits, "label") {
-            Ok(value) => value,
-            Err(bits) => return bits,
-        };
-        let paths = match importlib_coerce_search_paths_values(_py, value_bits, &label) {
-            Ok(value) => value,
-            Err(bits) => return bits,
-        };
-        match importlib_alloc_string_tuple_bits(_py, &paths) {
-            Ok(bits) => bits,
-            Err(bits) => bits,
-        }
-    })
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_importlib_finder_signature(finders_bits: u64, label_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
-        let label = match string_arg_from_bits(_py, label_bits, "label") {
-            Ok(value) => value,
-            Err(bits) => return bits,
-        };
-        match importlib_finder_signature_tuple_bits(_py, finders_bits, &label) {
-            Ok(bits) => bits,
-            Err(err) => err,
-        }
-    })
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_importlib_path_importer_cache_signature(
-    path_importer_cache_bits: u64,
-    label_bits: u64,
-) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
-        let label = match string_arg_from_bits(_py, label_bits, "label") {
-            Ok(value) => value,
-            Err(bits) => return bits,
-        };
-        match importlib_path_importer_cache_signature_tuple_bits(
-            _py,
-            path_importer_cache_bits,
-            &label,
-        ) {
-            Ok(bits) => bits,
-            Err(err) => err,
-        }
-    })
-}
-
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_importlib_package_root_from_origin(path_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
@@ -1323,6 +1000,54 @@ pub extern "C" fn molt_traceback_exception_suppress_context(value_bits: u64) -> 
         match traceback_exception_suppress_context_bits(_py, value_bits) {
             Ok(value) => MoltObject::from_bool(value).bits(),
             Err(bits) => bits,
+        }
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_importlib_zip_archive_path(path_bits: u64) -> u64 {
+    crate::with_gil_entry_nopanic!(py, {
+        let path = match string_arg_from_bits(py, path_bits, "archive path") {
+            Ok(value) => value,
+            Err(bits) => return bits,
+        };
+        if let Err(error) = crate::require_operation::<u64>(
+            py,
+            crate::OperationId::ImportlibZipArchivePath,
+            AuditArgs::None,
+        ) {
+            return error;
+        }
+        let Some((archive, prefix)) = split_zip_archive_path(&path) else {
+            return MoltObject::none().bits();
+        };
+        // Use the same central-directory parser as native discovery. A regular
+        // file with an archive suffix is not enough to claim a path hook.
+        #[cfg(feature = "stdlib_archive")]
+        let admitted = zip_archive_open(&archive).is_ok();
+        #[cfg(not(feature = "stdlib_archive"))]
+        let admitted = false;
+        if !admitted {
+            return MoltObject::none().bits();
+        }
+        let archive_bits = match alloc_str_bits(py, &archive) {
+            Ok(bits) => bits,
+            Err(bits) => return bits,
+        };
+        let prefix_bits = match alloc_str_bits(py, &prefix) {
+            Ok(bits) => bits,
+            Err(bits) => {
+                dec_ref_bits(py, archive_bits);
+                return bits;
+            }
+        };
+        let result = alloc_tuple(py, &[archive_bits, prefix_bits]);
+        dec_ref_bits(py, archive_bits);
+        dec_ref_bits(py, prefix_bits);
+        if result.is_null() {
+            crate::builtins::exceptions::ExceptionSentinel::exception_sentinel()
+        } else {
+            MoltObject::from_ptr(result).bits()
         }
     })
 }

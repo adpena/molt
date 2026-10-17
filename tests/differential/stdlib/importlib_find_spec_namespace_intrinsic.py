@@ -21,9 +21,6 @@ orig_meta_path = list(sys.meta_path)
 orig_path_hooks = list(sys.path_hooks)
 orig_cache = dict(sys.path_importer_cache)
 orig_modules = {name: sys.modules.get(name) for name in ("nspkg", "nspkg.mod")}
-spec_cache = getattr(importlib.util, "_SPEC_CACHE", None)
-if isinstance(spec_cache, dict):
-    spec_cache.clear()
 
 try:
     sys.path[:] = [left_root, right_root]
@@ -40,8 +37,6 @@ finally:
             sys.modules.pop(name, None)
         else:
             sys.modules[name] = previous
-    if isinstance(spec_cache, dict):
-        spec_cache.clear()
 
 locations = (
     set(os.path.normpath(path) for path in (spec_pkg.submodule_search_locations or []))

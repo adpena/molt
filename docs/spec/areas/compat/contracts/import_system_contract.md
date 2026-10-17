@@ -78,6 +78,67 @@ arbitrary source file: the source/sourceless loaders execute admitted compiled
 bodies, and dynamic native extensions retain their separate target, ABI and
 execution admission. No host or fallback Python interpreter is introduced.
 
+Finder dispatch follows the ordered protocol in
+[CPython 3.12.13's `_find_spec`](https://github.com/python/cpython/blob/v3.12.13/Lib/importlib/_bootstrap.py)
+and [`util.find_spec`](https://github.com/python/cpython/blob/v3.12.13/Lib/importlib/util.py).
+[PyPy's Python 3.11 bootstrap](https://github.com/pypy/pypy/blob/py3.11/lib-python/3/importlib/_bootstrap.py)
+uses the same ordered callback/result boundary; its older legacy finder fallback
+is outside Molt's Python 3.12+ contract. Molt compiles the Python protocol into the
+program and retains native physical lookup and extension admission. This adds no
+host interpreter or fallback interpreter.
+
+The protocol uses ordered control flow; persistent initialization state stays in
+the existing module registry. [V8's module state model](https://chromium.googlesource.com/v8/v8/+/refs/heads/main/src/objects/module.h)
+likewise separates legal lifecycle transitions and terminal errors, although
+Python's transitions and exception behavior remain governed by CPython.
+[rustc's incremental query model](https://rustc-dev-guide.rust-lang.org/queries/incremental-compilation-in-detail.html)
+requires pure computations and tracked dependencies for result reuse. Arbitrary
+finder callbacks have neither guarantee, so their identity cannot justify a
+cached result. These are implementation constraints, not an additional runtime
+state-machine framework or a development-time verifier shipped to users.
+[MLIR's analysis preservation rules](https://mlir.llvm.org/docs/PassManagement/#analysis-management)
+make the corresponding reuse obligation explicit: a transformation must establish
+which analyses remain valid. Molt's path-to-finder cache is part of the Python
+protocol; it does not establish preservation of arbitrary finder results.
+
+| Discovery state | Next action or terminal outcome |
+| --- | --- |
+| Public cached module | Return its `__spec__`; a cached `None` returns `None`, while missing/`None` metadata raises `ValueError`. |
+| Uncached child | Import the parent through the existing module transaction, then pass its exact `__path__` object to the finders. |
+| Registered finder returns `None` | Advance only to the next registered finder. Exhaustion, including an empty meta path, returns `None`. |
+| Finder raises | Propagate that exception after the single specified call; `TypeError` is not an arity probe. |
+| Finder supplies a spec | Select any callback-published public spec under CPython's precedence rule, apply extension admission, then return it. |
+
+Finder results are not memoized by finder identity: both absence and successful
+results can change on the next invocation. `PathFinder` alone consults path hooks
+and owns the public path-to-finder cache, including cached `None`. A hook returning
+`None` finishes that path's hook selection; only `ImportError` rejects a hook.
+`FileFinder` is a native physical lookup leaf over its explicit directory, with
+no hook reentry, hidden bootstrap path injection, or module-name authorization
+exception. Raw extension discovery and metadata validation share the same native
+resolution owner. Invalidating a stateless `FileFinder` preserves its identity;
+`PathFinder` retires negative and relative entries and calls retained finders'
+invalidators.
+
+Protocol traversal is linear in the finders and path entries actually visited;
+each selected callback runs once. It performs no whole-cache identity scan,
+result serialization or speculative retry. The immutable compiled catalog reuses
+the module registry's existing name index. Physical lookup and extension metadata
+validation retain their separate I/O costs and admission decisions.
+
+Package metadata comes from the generated module prologue and existing loader
+transaction. The importlib facade does not reconstruct `__path__` from `__file__`
+or import filesystem machinery to repair that metadata. Describing a compiled
+provider therefore does not initialize `os` or acquire its filesystem providers.
+
+The existing runtime-owned `BuiltinImporter` is registered before `PathFinder`
+for Molt's compiled providers. Its read-only projection uses the admitted module
+registry and the shared compiled loader; describing a provider does not execute
+or publish it. Custom meta paths remain authoritative. This is Molt's existing
+compiled-provider classification, not a claim that compiled source modules are
+CPython builtins. Full loader-plan, namespace-refresh, concurrency and target
+qualification remain tracked in the release ledger.
+
 Gates: `tests/test_module_registry_gates.py` (G1/G3/G7, single-owner and
 chain-is-gone structural gates) and the runtime G4 state machine unit
 (`g4_ensure_state_machine_transitions`).

@@ -274,7 +274,12 @@ def test_isolate_import_module_order_is_explicit_import_bounded() -> None:
     assert _isolate_import_module_order(["sys"], set()) == []
 
 
-def _build_split(source_file: Path, output_dir: Path) -> subprocess.CompletedProcess:
+def _build_split(
+    source_file: Path,
+    output_dir: Path,
+    *,
+    extra_args: list[str] | None = None,
+) -> subprocess.CompletedProcess:
     """Run ``molt build --target wasm --split-runtime`` and return the result."""
     env = _split_runtime_build_env()
 
@@ -292,6 +297,8 @@ def _build_split(source_file: Path, output_dir: Path) -> subprocess.CompletedPro
         "--out-dir",
         str(output_dir),
     ]
+    if extra_args:
+        cmd.extend(extra_args)
     return _run_wasm_test_process(
         cmd,
         env=env,

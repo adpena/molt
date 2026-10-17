@@ -320,6 +320,12 @@ runtime_name = "molt_importlib_module_spec_parent"
 import_name = "importlib_module_spec_parent"
 callable_arity = 1
 
+[[reserved_runtime_callable]]
+index = 30
+runtime_name = "molt_importlib_compiled_loader_find_spec"
+import_name = "importlib_compiled_loader_find_spec"
+callable_arity = 4
+
 
 # Return contracts derive from boxed-call semantics, poll-table membership,
 # or an unambiguous void/non-i64 machine result. Compiler-only i64 returns
@@ -3344,20 +3350,16 @@ name = "importlib_extension_loader_payload"
 type = 5
 
 [[import]]
+name = "importlib_admit_spec"
+type = 3
+
+[[import]]
 name = "importlib_filefinder_find_spec"
 type = 5
 
 [[import]]
-name = "importlib_filefinder_invalidate"
-type = 2
-
-[[import]]
 name = "importlib_find_in_path_package_context"
 type = 3
-
-[[import]]
-name = "importlib_find_spec_orchestrate"
-type = 12
 
 [[import]]
 name = "importlib_frozen_external_payload"
@@ -3383,10 +3385,6 @@ type = 3
 [[import]]
 name = "importlib_import_required"
 type = 2
-
-[[import]]
-name = "importlib_invalidate_caches"
-type = 0
 
 [[import]]
 name = "importlib_load_module_shim"
@@ -3431,10 +3429,6 @@ type = 2
 [[import]]
 name = "importlib_package_root_from_origin"
 type = 2
-
-[[import]]
-name = "importlib_pathfinder_find_spec"
-type = 5
 
 [[import]]
 name = "importlib_read_file"
@@ -3610,6 +3604,10 @@ type = 9
 
 [[import]]
 name = "importlib_validate_resource_name"
+type = 2
+
+[[import]]
+name = "importlib_zip_archive_path"
 type = 2
 
 [[import]]

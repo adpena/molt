@@ -2975,24 +2975,19 @@ pub(crate) const IMPORT_REGISTRY: &[RuntimeImportSpec] = &[
         type_idx: 5,
     },
     RuntimeImportSpec {
+        import: WasmRuntimeImport::ImportlibAdmitSpec,
+        name: "importlib_admit_spec",
+        type_idx: 3,
+    },
+    RuntimeImportSpec {
         import: WasmRuntimeImport::ImportlibFilefinderFindSpec,
         name: "importlib_filefinder_find_spec",
         type_idx: 5,
     },
     RuntimeImportSpec {
-        import: WasmRuntimeImport::ImportlibFilefinderInvalidate,
-        name: "importlib_filefinder_invalidate",
-        type_idx: 2,
-    },
-    RuntimeImportSpec {
         import: WasmRuntimeImport::ImportlibFindInPathPackageContext,
         name: "importlib_find_in_path_package_context",
         type_idx: 3,
-    },
-    RuntimeImportSpec {
-        import: WasmRuntimeImport::ImportlibFindSpecOrchestrate,
-        name: "importlib_find_spec_orchestrate",
-        type_idx: 12,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ImportlibFrozenExternalPayload,
@@ -3023,11 +3018,6 @@ pub(crate) const IMPORT_REGISTRY: &[RuntimeImportSpec] = &[
         import: WasmRuntimeImport::ImportlibImportRequired,
         name: "importlib_import_required",
         type_idx: 2,
-    },
-    RuntimeImportSpec {
-        import: WasmRuntimeImport::ImportlibInvalidateCaches,
-        name: "importlib_invalidate_caches",
-        type_idx: 0,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ImportlibLoadModuleShim,
@@ -3083,11 +3073,6 @@ pub(crate) const IMPORT_REGISTRY: &[RuntimeImportSpec] = &[
         import: WasmRuntimeImport::ImportlibPackageRootFromOrigin,
         name: "importlib_package_root_from_origin",
         type_idx: 2,
-    },
-    RuntimeImportSpec {
-        import: WasmRuntimeImport::ImportlibPathfinderFindSpec,
-        name: "importlib_pathfinder_find_spec",
-        type_idx: 5,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ImportlibReadFile,
@@ -3297,6 +3282,11 @@ pub(crate) const IMPORT_REGISTRY: &[RuntimeImportSpec] = &[
     RuntimeImportSpec {
         import: WasmRuntimeImport::ImportlibValidateResourceName,
         name: "importlib_validate_resource_name",
+        type_idx: 2,
+    },
+    RuntimeImportSpec {
+        import: WasmRuntimeImport::ImportlibZipArchivePath,
+        name: "importlib_zip_archive_path",
         type_idx: 2,
     },
     RuntimeImportSpec {
@@ -5103,6 +5093,11 @@ pub(crate) const IMPORT_REGISTRY: &[RuntimeImportSpec] = &[
         import: WasmRuntimeImport::ImportlibModuleSpecParent,
         name: "importlib_module_spec_parent",
         type_idx: 2,
+    },
+    RuntimeImportSpec {
+        import: WasmRuntimeImport::ImportlibCompiledLoaderFindSpec,
+        name: "importlib_compiled_loader_find_spec",
+        type_idx: 7,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::CompatibilityError,
@@ -15047,23 +15042,17 @@ pub(crate) fn wasm_runtime_import(name: &str) -> Option<WasmRuntimeImport> {
         "molt_importlib_extension_loader_payload" => {
             Some(WasmRuntimeImport::ImportlibExtensionLoaderPayload)
         }
+        "importlib_admit_spec" => Some(WasmRuntimeImport::ImportlibAdmitSpec),
+        "molt_importlib_admit_spec" => Some(WasmRuntimeImport::ImportlibAdmitSpec),
         "importlib_filefinder_find_spec" => Some(WasmRuntimeImport::ImportlibFilefinderFindSpec),
         "molt_importlib_filefinder_find_spec" => {
             Some(WasmRuntimeImport::ImportlibFilefinderFindSpec)
-        }
-        "importlib_filefinder_invalidate" => Some(WasmRuntimeImport::ImportlibFilefinderInvalidate),
-        "molt_importlib_filefinder_invalidate" => {
-            Some(WasmRuntimeImport::ImportlibFilefinderInvalidate)
         }
         "importlib_find_in_path_package_context" => {
             Some(WasmRuntimeImport::ImportlibFindInPathPackageContext)
         }
         "molt_importlib_find_in_path_package_context" => {
             Some(WasmRuntimeImport::ImportlibFindInPathPackageContext)
-        }
-        "importlib_find_spec_orchestrate" => Some(WasmRuntimeImport::ImportlibFindSpecOrchestrate),
-        "molt_importlib_find_spec_orchestrate" => {
-            Some(WasmRuntimeImport::ImportlibFindSpecOrchestrate)
         }
         "importlib_frozen_external_payload" => {
             Some(WasmRuntimeImport::ImportlibFrozenExternalPayload)
@@ -15081,8 +15070,6 @@ pub(crate) fn wasm_runtime_import(name: &str) -> Option<WasmRuntimeImport> {
         "molt_importlib_import_or_fallback" => Some(WasmRuntimeImport::ImportlibImportOrFallback),
         "importlib_import_required" => Some(WasmRuntimeImport::ImportlibImportRequired),
         "molt_importlib_import_required" => Some(WasmRuntimeImport::ImportlibImportRequired),
-        "importlib_invalidate_caches" => Some(WasmRuntimeImport::ImportlibInvalidateCaches),
-        "molt_importlib_invalidate_caches" => Some(WasmRuntimeImport::ImportlibInvalidateCaches),
         "importlib_load_module_shim" => Some(WasmRuntimeImport::ImportlibLoadModuleShim),
         "molt_importlib_load_module_shim" => Some(WasmRuntimeImport::ImportlibLoadModuleShim),
         "importlib_metadata_dist_paths" => Some(WasmRuntimeImport::ImportlibMetadataDistPaths),
@@ -15132,10 +15119,6 @@ pub(crate) fn wasm_runtime_import(name: &str) -> Option<WasmRuntimeImport> {
         }
         "molt_importlib_package_root_from_origin" => {
             Some(WasmRuntimeImport::ImportlibPackageRootFromOrigin)
-        }
-        "importlib_pathfinder_find_spec" => Some(WasmRuntimeImport::ImportlibPathfinderFindSpec),
-        "molt_importlib_pathfinder_find_spec" => {
-            Some(WasmRuntimeImport::ImportlibPathfinderFindSpec)
         }
         "importlib_read_file" => Some(WasmRuntimeImport::ImportlibReadFile),
         "molt_importlib_read_file" => Some(WasmRuntimeImport::ImportlibReadFile),
@@ -15353,6 +15336,8 @@ pub(crate) fn wasm_runtime_import(name: &str) -> Option<WasmRuntimeImport> {
         "molt_importlib_validate_resource_name" => {
             Some(WasmRuntimeImport::ImportlibValidateResourceName)
         }
+        "importlib_zip_archive_path" => Some(WasmRuntimeImport::ImportlibZipArchivePath),
+        "molt_importlib_zip_archive_path" => Some(WasmRuntimeImport::ImportlibZipArchivePath),
         "importlib_zip_read_entry" => Some(WasmRuntimeImport::ImportlibZipReadEntry),
         "molt_importlib_zip_read_entry" => Some(WasmRuntimeImport::ImportlibZipReadEntry),
         "importlib_zip_source_exec_payload" => {
@@ -16099,6 +16084,12 @@ pub(crate) fn wasm_runtime_import(name: &str) -> Option<WasmRuntimeImport> {
         "molt_importlib_module_spec_repr" => Some(WasmRuntimeImport::ImportlibModuleSpecRepr),
         "importlib_module_spec_parent" => Some(WasmRuntimeImport::ImportlibModuleSpecParent),
         "molt_importlib_module_spec_parent" => Some(WasmRuntimeImport::ImportlibModuleSpecParent),
+        "importlib_compiled_loader_find_spec" => {
+            Some(WasmRuntimeImport::ImportlibCompiledLoaderFindSpec)
+        }
+        "molt_importlib_compiled_loader_find_spec" => {
+            Some(WasmRuntimeImport::ImportlibCompiledLoaderFindSpec)
+        }
         "compatibility_error" => Some(WasmRuntimeImport::CompatibilityError),
         "molt_compatibility_error" => Some(WasmRuntimeImport::CompatibilityError),
         "tk_available" => Some(WasmRuntimeImport::TkAvailable),

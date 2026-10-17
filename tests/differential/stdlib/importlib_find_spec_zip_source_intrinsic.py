@@ -15,9 +15,6 @@ with zipfile.ZipFile(archive, "w") as zf:
 
 orig_path = list(sys.path)
 orig_modules = {name: sys.modules.get(name) for name in ("zipmod", "zpkg")}
-spec_cache = getattr(importlib.util, "_SPEC_CACHE", None)
-if isinstance(spec_cache, dict):
-    spec_cache.clear()
 
 try:
     sys.path[:] = [archive]
@@ -53,6 +50,3 @@ print(
 )
 print(mod is not None and getattr(mod, "value", None) == 11)
 print(pkg is not None and getattr(pkg, "flag", None) == 7)
-
-if isinstance(spec_cache, dict):
-    spec_cache.clear()
