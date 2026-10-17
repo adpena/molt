@@ -16,6 +16,8 @@ from tests.runtime_build_identity_helper import (
     RuntimeFixtureRoot,
     native_runtime_staticlib_identity,
     runtime_cargo_plan,
+    runtime_cargo_unit_stdout,
+    write_runtime_crate,
 )
 
 
@@ -74,14 +76,19 @@ def plan(
     ],
 )
 def test_native_generation_failure_rejects_artifact(
-    plan, monkeypatch: pytest.MonkeyPatch, error_type
+    plan, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, error_type
 ) -> None:
     def fail(*_args, **_kwargs):
         raise error_type("generation custody failure")
 
     monkeypatch.setattr(runtime, "publish_native_runtime_generation", fail)
+    # The build-input coverage check runs first and reads Cargo's real output.
+    write_runtime_crate(tmp_path)
+    stdout = runtime_cargo_unit_stdout(
+        tmp_path, tmp_path / "target" / "dev-fast" / "libmolt_runtime.a"
+    )
     result = CargoExecutionResult(
-        subprocess.CompletedProcess(plan.cmd, 0, "cargo output", "cargo warning"),
+        subprocess.CompletedProcess(plan.cmd, 0, stdout, "cargo warning"),
         attempts=(),
         retry_reason=None,
     )
@@ -93,7 +100,7 @@ def test_native_generation_failure_rejects_artifact(
     assert failure.evidence_path is not None
     payload = json.loads(failure.evidence_path.read_text(encoding="utf-8"))
     assert payload["command"] == plan.cmd
-    assert payload["cargo_stdout"] == "cargo output"
+    assert payload["cargo_stdout"] == stdout
     assert payload["cargo_stderr"] == "cargo warning"
 
 
