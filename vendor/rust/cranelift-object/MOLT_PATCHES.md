@@ -20,6 +20,14 @@ relocations: those operations have different semantics. The native target
 constructor selects non-PIC COFF addressing; ELF and Mach-O keep their PIC
 policy. No extra CLIF scan or function-reference duplication is needed.
 
+The normalized `Cargo.toml` uses `unused_lifetimes` and
+`unused_macro_rules` for its inherited Rust lint keys. Cargo's
+[manifest lint normalization](https://github.com/rust-lang/cargo/pull/17051)
+deprecates hyphenated spellings; the existing `warn` levels and all other
+package settings are retained. `Cargo.toml.orig` remains the unmodified archive
+source: its `[lints] workspace = true` refers to the upstream workspace, while
+this maintained path package consumes the normalized standalone manifest.
+
 The root `Cargo.toml` selects this source through `[patch.crates-io]`.
 Retire the local patch only after an upstream version implements this complete
 contract and the actual native COFF consumer and addend controls pass against

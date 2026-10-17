@@ -126,8 +126,8 @@ priority = -1
 [lints.rust]
 trivial_numeric_casts = "warn"
 unstable_features = "warn"
-unused-lifetimes = "warn"
-unused-macro-rules = "warn"
+unused_lifetimes = "warn"
+unused_macro_rules = "warn"
 unused_extern_crates = "warn"
 unused_import_braces = "warn"
 
