@@ -291,6 +291,14 @@ def test_operation_cache_keys_follow_selected_inputs_and_ignore_ambient_custody(
     sized = setup(profile="release-size")
     assert sized.backend_environment["MOLT_BACKEND_OPT_LEVEL"] == "speed_and_size"
     assert sized.cache_key != baseline.cache_key
+    monkeypatch.setenv("MOLT_DUMP_CLIF", "")
+    diagnostic = setup()
+    assert diagnostic.cache_enabled is False
+    assert diagnostic.cache_key is None and diagnostic.function_cache_key is None
+    assert diagnostic.cache_path is None and diagnostic.function_cache_path is None
+    # Execute-only still owns its required stdlib output for final linking.
+    assert diagnostic.stdlib_object_path is not None
+    assert diagnostic.stdlib_cache_entry_path is None
 
 
 @pytest.mark.parametrize("is_wasm", [False, True])
