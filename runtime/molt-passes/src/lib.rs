@@ -16,6 +16,7 @@
 
 pub mod memory_budget;
 pub mod representation_facts;
+pub mod resident_cache;
 pub mod tir;
 
 pub use molt_ir::tir as ir_tir;

@@ -12,6 +12,7 @@ license = "Apache-2.0"
 # lowering or backend code.
 
 [dependencies]
+hashlink = "0.12.2"
 libc = "0.2"
 molt-ir = { path = "../molt-ir" }
 num-integer = "0.1"

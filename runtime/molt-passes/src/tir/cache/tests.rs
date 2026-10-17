@@ -161,7 +161,7 @@ fn warm_memory_hits_share_storage_and_do_not_copy_artifact_bytes() {
     let first = cache.get(&hash).unwrap();
     let second = cache.get(&hash).unwrap();
     assert!(Arc::ptr_eq(&first, &second));
-    let lru_capacity = cache.memory_lru.capacity();
+    let lru_capacity = cache.resident.capacity();
     let start = std::time::Instant::now();
     let (_, allocations) = count_thread_allocations(|| {
         for _ in 0..10_000 {
@@ -179,11 +179,11 @@ fn warm_memory_hits_share_storage_and_do_not_copy_artifact_bytes() {
         allocations, 0,
         "resident cache hits must remain allocation-free"
     );
-    assert_eq!(cache.memory_lru.len(), 1);
+    assert_eq!(cache.resident.len(), 1);
     assert_eq!(
-        cache.memory_lru.capacity(),
+        cache.resident.capacity(),
         lru_capacity,
-        "warm hits must mutate the indexed LRU node in place"
+        "warm hits must promote the existing LRU node in place"
     );
 }
 
@@ -430,7 +430,7 @@ fn external_poison_invalidates_an_already_resident_hit_and_equal_put() {
         Err(CompilationCacheWriteError::Integrity(_))
     ));
     assert!(resident.get(&hash).is_none());
-    assert!(!resident.resident.contains_key(hash.as_str()));
+    assert!(resident.resident.peek(hash.as_str()).is_none());
     assert!(matches!(
         resident.put(&hash, b"first"),
         Err(CompilationCacheWriteError::Integrity(_))
@@ -563,7 +563,7 @@ fn impossible_durable_poison_fails_closed_and_drops_resident_payload() {
         .expect_err("known divergence must fail closed even without durable capacity");
     assert!(matches!(error, CompilationCacheWriteError::Integrity(_)));
     assert!(cache.get(&hash).is_none());
-    assert!(!cache.resident.contains_key(hash.as_str()));
+    assert!(cache.resident.peek(hash.as_str()).is_none());
     assert!(!cache.artifact_path(&hash).unwrap().exists());
     assert!(!cache.poison_path(&hash).unwrap().exists());
 }
@@ -637,25 +637,30 @@ fn tracked_files(dir: &std::path::Path) -> Vec<(String, u64)> {
 #[test]
 fn memory_eviction_keeps_artifacts_on_disk() {
     let dir = tmp_cache_dir();
-    let mut cache = CompilationCache::open_with_memory_limit(dir, 8);
     let h1 = fixture_hash("fn_1", b"body 1");
     let h2 = fixture_hash("fn_2", b"body 2");
     let h3 = fixture_hash("fn_3", b"body 3");
+    let mut probe = CompilationCache::open_with_memory_limit(dir.clone(), usize::MAX);
+    probe.store_memory_data(&h1, Arc::from(b"1111".as_slice()));
+    let entry_bytes = probe.stats().resident_bytes;
+    assert!(entry_bytes > 4, "metadata participates in admission");
+    let budget = 2 * entry_bytes;
+    let mut cache = CompilationCache::open_with_memory_limit(dir, budget);
 
     cache.put(&h1, b"1111").unwrap();
     cache.put(&h2, b"2222").unwrap();
-    assert_eq!(cache.stats().resident_bytes, 8);
+    assert_eq!(cache.stats().resident_entries, 2);
     cache.put(&h3, b"3333").unwrap();
-    assert!(cache.stats().resident_bytes <= 8);
+    assert!(cache.stats().resident_bytes <= budget);
     assert!(
-        !cache.resident.contains_key(h1.as_str()),
-        "the least recently used payload leaves memory first"
+        cache.resident.peek(h1.as_str()).is_none(),
+        "evict the cold entry"
     );
 
     let before = cache.stats().telemetry.disk_hits;
     assert_eq!(cache.get(&h1).as_deref(), Some(b"1111".as_slice()));
     assert_eq!(cache.stats().telemetry.disk_hits, before + 1);
-    assert!(cache.stats().resident_bytes <= 8);
+    assert!(cache.stats().resident_bytes <= budget);
 }
 
 #[test]
@@ -677,13 +682,17 @@ fn memory_cache_does_not_retain_oversized_artifacts() {
 }
 
 #[test]
-fn indexed_lru_scales_with_many_entries_and_bounded_residency() {
+fn resident_lru_scales_with_many_entries_and_bounded_residency() {
     const ENTRY_BYTES: usize = 1024;
     const RESIDENT_ENTRIES: usize = 128;
     const TOTAL_ENTRIES: usize = 20_000;
 
-    let mut cache = make_cache_with_memory_limit(ENTRY_BYTES * RESIDENT_ENTRIES);
+    let dir = tmp_cache_dir();
     let artifact = Arc::<[u8]>::from(vec![0x6b; ENTRY_BYTES]);
+    let mut probe = CompilationCache::open_with_memory_limit(dir.clone(), usize::MAX);
+    probe.store_memory_data(&format!("{:064x}", 0), Arc::clone(&artifact));
+    let entry_bytes = probe.stats().resident_bytes;
+    let mut cache = CompilationCache::open_with_memory_limit(dir, entry_bytes * RESIDENT_ENTRIES);
     let start = std::time::Instant::now();
     for index in 0..TOTAL_ENTRIES {
         cache.store_memory_data(&format!("{index:064x}"), Arc::clone(&artifact));
@@ -691,27 +700,55 @@ fn indexed_lru_scales_with_many_entries_and_bounded_residency() {
     let elapsed = start.elapsed();
 
     assert_eq!(cache.resident.len(), RESIDENT_ENTRIES);
-    assert_eq!(cache.memory_lru.len(), RESIDENT_ENTRIES);
-    assert_eq!(cache.stats().resident_bytes, ENTRY_BYTES * RESIDENT_ENTRIES);
-    for (heap_index, node) in cache.memory_lru.iter().enumerate() {
-        assert_eq!(
-            cache.resident[node.content_hash.as_ref()].memory_lru_index,
-            heap_index
-        );
-        if heap_index > 0 {
-            let parent = (heap_index - 1) / 2;
-            assert!(!cache.memory_lru_less(heap_index, parent));
-        }
-    }
-    // The newest entries survive: residency is least-recently-used.
+    assert_eq!(cache.stats().resident_bytes, entry_bytes * RESIDENT_ENTRIES);
     assert!(
         cache
             .resident
-            .contains_key(format!("{:064x}", TOTAL_ENTRIES - 1).as_str())
+            .peek(format!("{:064x}", TOTAL_ENTRIES - 1).as_str())
+            .is_some()
     );
-    assert!(!cache.resident.contains_key(format!("{:064x}", 0).as_str()));
-    eprintln!("indexed LRU: {TOTAL_ENTRIES} insertions, {RESIDENT_ENTRIES} resident, {elapsed:?}");
+    assert!(
+        cache
+            .resident
+            .peek(format!("{:064x}", 0).as_str())
+            .is_none()
+    );
+    eprintln!("resident LRU: {TOTAL_ENTRIES} insertions, {RESIDENT_ENTRIES} resident, {elapsed:?}");
     assert!(elapsed < std::time::Duration::from_secs(5));
+}
+
+#[test]
+fn tiny_artifacts_cannot_hide_resident_key_and_quarantine_path_cost() {
+    let mut cache = make_cache_with_memory_limit(64);
+    let hash = fixture_hash("tiny", b"body");
+    cache.put(&hash, b"x").unwrap();
+    assert_eq!(
+        cache.stats().resident_entries,
+        0,
+        "the 64-byte key alone exhausts the budget"
+    );
+    assert_eq!(cache.get(&hash).as_deref(), Some(b"x".as_slice()));
+    assert_eq!(
+        cache.stats().resident_bytes,
+        0,
+        "disk hits obey the same ownership budget"
+    );
+}
+
+#[test]
+fn tiny_artifacts_charge_long_quarantine_paths_before_retention() {
+    let mut root = tmp_cache_dir();
+    for _ in 0..16 {
+        root.push("long-cache-component".repeat(7));
+    }
+    // Exercise memory admission without requiring the host filesystem to admit
+    // this path length. The quarantine path alone exceeds the memory budget.
+    assert!(root.as_os_str().as_encoded_bytes().len() > 1024);
+    let mut cache = CompilationCache::open_with_memory_limit(root, 1024);
+    let hash = fixture_hash("path", b"body");
+    cache.store_memory_data(&hash, Arc::from([1].as_slice()));
+    assert_eq!(cache.stats().resident_entries, 0);
+    assert_eq!(cache.stats().resident_bytes, 0);
 }
 
 #[test]
