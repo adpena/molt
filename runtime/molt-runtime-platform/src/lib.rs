@@ -3,7 +3,7 @@
 pub mod env_support;
 pub mod fnmatch;
 pub mod importlib_support;
-#[cfg(target_arch = "wasm32")]
+#[cfg(any(target_arch = "wasm32", test))]
 pub mod libc_compat;
 #[cfg(unix)]
 pub mod msghdr;

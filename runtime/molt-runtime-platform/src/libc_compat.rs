@@ -83,40 +83,54 @@ pub const SIG_BLOCK: i32 = 0;
 pub const SIG_UNBLOCK: i32 = 1;
 pub const SIG_SETMASK: i32 = 2;
 
-pub const EACCES: i32 = 13;
-pub const EAGAIN: i32 = 11;
-pub const EALREADY: i32 = 114;
-pub const EAFNOSUPPORT: i32 = 97;
-pub const EBADF: i32 = 9;
-pub const ECHILD: i32 = 10;
-pub const ECONNABORTED: i32 = 103;
-pub const ECONNREFUSED: i32 = 111;
-pub const ECONNRESET: i32 = 104;
-pub const EEXIST: i32 = 17;
-pub const EHOSTUNREACH: i32 = 113;
-pub const EINPROGRESS: i32 = 115;
-pub const EINTR: i32 = 4;
-pub const EIO: i32 = 5;
-// Synthetic POSIX domain exported by Molt, not raw WASI preview1 errno.
-pub const ELOOP: i32 = 40;
-pub const EROFS: i32 = 30;
-pub const EISCONN: i32 = 106;
-pub const EISDIR: i32 = 21;
-pub const EINVAL: i32 = 22;
-pub const ENOENT: i32 = 2;
-pub const ENOMEM: i32 = 12;
-pub const ENOSYS: i32 = 38;
-pub const ENOTDIR: i32 = 20;
-pub const EPERM: i32 = 1;
-pub const EPIPE: i32 = 32;
-pub const EPROTOTYPE: i32 = 91;
-pub const ESRCH: i32 = 3;
-pub const ETIMEDOUT: i32 = 110;
-pub const EWOULDBLOCK: i32 = 11;
+// Synthetic POSIX errno domain exported by Molt, not raw WASI preview1 errno.
+// Each declaration owns both the runtime constant and its Python export.
+// Publication order is significant: errno.errorcode keeps the last alias.
+macro_rules! synthetic_errno {
+    ($($name:ident = $value:expr;)+) => {
+        $(pub const $name: i32 = $value;)+
+        pub const ERRNO_CONSTANTS: &[(&str, i64)] = &[
+            $((stringify!($name), $name as i64),)+
+        ];
+    };
+}
 
+synthetic_errno! {
+    EACCES = 13;
+    EALREADY = 114;
+    EAFNOSUPPORT = 97;
+    EBADF = 9;
+    ECHILD = 10;
+    ECONNABORTED = 103;
+    ECONNREFUSED = 111;
+    ECONNRESET = 104;
+    EEXIST = 17;
+    EHOSTUNREACH = 113;
+    EINPROGRESS = 115;
+    EINTR = 4;
+    EIO = 5;
+    ELOOP = 40;
+    EROFS = 30;
+    EISCONN = 106;
+    EISDIR = 21;
+    EINVAL = 22;
+    ENOENT = 2;
+    ENOMEM = 12;
+    ENOSYS = 38;
+    ENOTDIR = 20;
+    EPERM = 1;
+    EPIPE = 32;
+    EPROTOTYPE = 91;
+    ESRCH = 3;
+    ETIMEDOUT = 110;
+    EWOULDBLOCK = EAGAIN;
+    ESHUTDOWN = 108;
+    // CPython publishes EAGAIN after EWOULDBLOCK, so it owns the reverse name.
+    EAGAIN = 11;
+}
+
+// getaddrinfo has a separate error namespace, exported by socket only.
 pub const EAI_NONAME: i32 = 8;
-
-pub const ESHUTDOWN: i32 = 108;
 
 // Deterministic sysconf identifiers used by the wasm-side `os.sysconf` subset.
 // Match the canonical values exposed through `os.sysconf_names` in the current
@@ -192,5 +206,46 @@ pub fn metadata_error_errno(error: &std::io::Error) -> i32 {
         ErrorKind::ReadOnlyFilesystem => EROFS,
         ErrorKind::Unsupported => ENOSYS,
         _ => EIO,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn synthetic_errno_exports_cover_runtime_errors_and_alias_precedence() {
+        use std::collections::HashMap;
+        use std::io::{Error, ErrorKind};
+
+        let names: HashMap<_, _> = ERRNO_CONSTANTS.iter().copied().collect();
+        assert_eq!(names.len(), ERRNO_CONSTANTS.len(), "duplicate errno name");
+        // Independent synthetic POSIX values; raw WASI numbers differ.
+        for (name, value) in [
+            ("EIO", 5),
+            ("ENOMEM", 12),
+            ("ENOSYS", 38),
+            ("EPROTOTYPE", 91),
+            ("EAFNOSUPPORT", 97),
+            ("EISCONN", 106),
+            ("ESHUTDOWN", 108),
+        ] {
+            assert_eq!(names.get(name), Some(&value));
+        }
+        for kind in [
+            ErrorKind::Other,
+            ErrorKind::Unsupported,
+            ErrorKind::NotFound,
+        ] {
+            let code = i64::from(metadata_error_errno(&Error::from(kind)));
+            assert!(names.values().any(|value| *value == code));
+        }
+        assert!(names.keys().all(|name| !name.starts_with("EAI_")));
+        assert_eq!(names["EWOULDBLOCK"], names["EAGAIN"]);
+        let reverse: HashMap<_, _> = ERRNO_CONSTANTS
+            .iter()
+            .map(|&(name, code)| (code, name))
+            .collect();
+        assert_eq!(reverse[&11], "EAGAIN");
     }
 }

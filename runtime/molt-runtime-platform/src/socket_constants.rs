@@ -29,31 +29,7 @@ use crate::libc_compat as libc;
 
 #[cfg(target_arch = "wasm32")]
 pub fn collect_errno_constants() -> Vec<(&'static str, i64)> {
-    vec![
-        ("EACCES", libc::EACCES as i64),
-        ("EAGAIN", libc::EAGAIN as i64),
-        ("EALREADY", libc::EALREADY as i64),
-        ("EBADF", libc::EBADF as i64),
-        ("ECHILD", libc::ECHILD as i64),
-        ("ECONNABORTED", libc::ECONNABORTED as i64),
-        ("ECONNREFUSED", libc::ECONNREFUSED as i64),
-        ("ECONNRESET", libc::ECONNRESET as i64),
-        ("EEXIST", libc::EEXIST as i64),
-        ("EHOSTUNREACH", libc::EHOSTUNREACH as i64),
-        ("EINPROGRESS", libc::EINPROGRESS as i64),
-        ("EINTR", libc::EINTR as i64),
-        ("EINVAL", libc::EINVAL as i64),
-        ("EISDIR", libc::EISDIR as i64),
-        ("ELOOP", libc::ELOOP as i64),
-        ("EROFS", libc::EROFS as i64),
-        ("ENOENT", libc::ENOENT as i64),
-        ("ENOTDIR", libc::ENOTDIR as i64),
-        ("EPERM", libc::EPERM as i64),
-        ("EPIPE", libc::EPIPE as i64),
-        ("ESRCH", libc::ESRCH as i64),
-        ("ETIMEDOUT", libc::ETIMEDOUT as i64),
-        ("EWOULDBLOCK", libc::EWOULDBLOCK as i64),
-    ]
+    crate::libc_compat::ERRNO_CONSTANTS.to_vec()
 }
 
 #[cfg(not(target_arch = "wasm32"))]
