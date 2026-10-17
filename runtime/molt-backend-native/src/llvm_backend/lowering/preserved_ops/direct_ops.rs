@@ -40,7 +40,6 @@ pub(super) const HANDLED_KINDS: &[&str] = &[
     "type_of",
     "missing",
     "get_attr_name_default",
-    "context_depth",
     "dataclass_new",
     "dataclass_new_values",
     "abs",
@@ -579,21 +578,6 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                     kind,
                     "get_attr_name_default",
                 );
-                true
-            }
-            "context_depth" => {
-                let depth_fn = self.ensure_runtime_i64_fn("molt_context_depth", 0);
-                let result = self
-                    .backend
-                    .builder
-                    .build_call(depth_fn, &[], "context_depth")
-                    .unwrap()
-                    .try_as_basic_value()
-                    .unwrap_basic();
-                if let Some(&result_id) = op.results.first() {
-                    self.values.insert(result_id, result);
-                    self.value_types.insert(result_id, TirType::DynBox);
-                }
                 true
             }
             "dataclass_new" => self.emit_dataclass_new(op),

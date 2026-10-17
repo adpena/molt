@@ -553,7 +553,6 @@ fn retired_exact_runtime_kinds_take_the_admitted_boxed_route() {
         ("string_join", 2),
         ("module_set_attr", 3),
         ("exception_stack_exit", 1),
-        ("context_unwind_to", 2),
         ("callargs_push_pos", 2),
         ("callargs_expand_star", 2),
         ("code_new", 9),
