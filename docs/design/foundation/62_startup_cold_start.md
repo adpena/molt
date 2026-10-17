@@ -58,6 +58,15 @@ leaking onto the user's first run.** Concretely, the steady state is:
    signature and a `codesign` signature cost the same at first launch: 111.1 ms
    against 111.9 ms median over 12 fresh binaries (warm 2.6 ms against 2.8 ms).
 
+   The fast path checks the versioned CodeDirectory header, digest kind and
+   width, complete special/code hash arrays, identifier extent and contiguous
+   image coverage against Apple's [ABI](https://github.com/apple-oss-distributions/xnu/blob/main/osfmk/kern/cs_blobs.h)
+   and [structural validator](https://github.com/apple-oss-distributions/xnu/blob/main/bsd/kern/ubc_subr.c).
+   This is a bounded shape check, not cryptographic page verification. The
+   selected linker and publication custody own the unchanged bytes; real Apple
+   linker tests independently verify the final signature with `codesign --verify
+   --strict` on arm64 and x86_64. No image hash pass or guest check is added.
+
 2. **Page-in is a contiguous hot prefix, not a scatter.** The shipped artifact's
    hot startup path (entry → `molt_runtime_init`'s 12 phases → the entry module's
    top-level code) is laid out **first and contiguous** in `__TEXT`, via a

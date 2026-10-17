@@ -1181,3 +1181,43 @@ def test_linux_host_triple_projects_musl_abi(monkeypatch):
     target = resolve_native_target_spec(None, host_platform="linux", host_arch="x86_64")
     assert target.triple == "x86_64-unknown-linux-musl"
     assert target.cargo_target is None
+
+
+@pytest.mark.parametrize(
+    "corruption", ["hash-offset", "hash-width", "hash-kind", "absent-hashes"]
+)
+def test_malformed_linker_signature_cannot_publish_or_invoke_signing(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, corruption: str
+) -> None:
+    import struct
+
+    output = tmp_path / "app"
+    output.write_bytes(b"previously published")
+    candidate = file_publication.staged_file_path(output, purpose="native-link")
+    image = signed_macho_image("app")
+    if corruption == "hash-offset":
+        struct.pack_into(">I", image, 8212 + 16, 0xFFFFFFFF)
+    elif corruption == "hash-width":
+        image[8212 + 36] = 0
+    elif corruption == "hash-kind":
+        image[8212 + 37] = 255
+    else:
+        del image[8212 + 92 :]
+        struct.pack_into(">I", image, 8212 + 4, 92)
+        struct.pack_into(">I", image, 8192 + 4, 112)
+        struct.pack_into("<I", image, 44, 112)
+    candidate.write_bytes(image)
+
+    def no_sign(*_args):
+        raise AssertionError("malformed signatures must fail closed before signing")
+
+    monkeypatch.setattr(atomic_io, "_codesign_atomic_copy_temp", no_sign)
+    result = build_results._finalize_native_link_candidate(
+        candidate=candidate,
+        output_binary=output,
+        target_triple="aarch64-apple-darwin",
+        strip=False,
+    )
+    assert result is not None and "atomic native publication failed" in result
+    assert output.read_bytes() == b"previously published"
+    assert not candidate.exists()
