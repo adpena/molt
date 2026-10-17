@@ -571,20 +571,15 @@ touch)."
   `runtime/molt-backend-rust/src/{rust.rs, rust/**}`. Path ->
   `molt_lower::representation_plan::ScalarRepresentationPlan` (the SOLE
   molt-lower item it names).
-- **`egraph_simplify.rs`** is referenced ONLY by `molt-backend/src/lib.rs`
-  (`#[cfg(feature="egraphs")] pub mod egraph_simplify;`) -- NOT by
-  `runtime/molt-backend-rust/src/rust.rs` (verified). 21b
-  parenthesizes it "(+ opt egraph_simplify.rs)" with molt-backend-rust, but the current consumer
-  is the driver. **Decision: KEEP `egraph_simplify.rs` in molt-backend (driver) for now; do NOT
-  fabricate a molt-backend-rust dep on it.** Flag a follow-up to move it into molt-backend-rust
-  under an `egraphs` feature IF/WHEN `runtime/molt-backend-rust/src/rust.rs` consumes it.
+- **`egraph_simplify.rs`** no longer exists. It was an unwired `egg` prototype behind an
+  `egraphs` feature that no cell enabled; HF-281 deleted both.
 
 ### 8.2 Cargo.toml / wiring
 - `molt-backend-luau/Cargo.toml`: deps `molt-lower`; features `luau-backend=["molt-lower/..."]`
   (luau-backend is currently a no-op `[]` at molt-backend/Cargo.toml:65 -- becomes
   `dep:molt-backend-luau`), `test-util`.
 - `molt-backend-rust/Cargo.toml`: deps `molt-lower`; features `rust-backend` ->
-  `dep:molt-backend-rust`, `test-util`. (No `egraphs` -- egraph_simplify stays in the driver.)
+  `dep:molt-backend-rust`, `test-util`.
 - `molt-backend/src/lib.rs`: `#[cfg(feature="luau-backend")] pub mod luau;` (:63-64) -> `pub use
   molt_backend_luau::luau;` (preserves `molt_backend::luau::LuauBackend` main.rs:12); same for
   `rust` (:65-66 -> `pub use molt_backend_rust::rust;`, preserves `molt_backend::rust::RustBackend`
@@ -634,14 +629,14 @@ replaced by NAMED IMPORTS, not by widening the source.
 - `molt-backend-native/Cargo.toml`: deps `molt-lower`, `molt-codegen-abi`, `cranelift-*`(opt, copy
   the per-arch cranelift blocks from molt-backend/Cargo.toml:12-16,53-57), `molt-backend-llvm =
   { path = "../molt-backend-llvm", optional = true }` (THE native->llvm edge), `libc`,
-  `windows-sys`(target-gated, copy :42-51), `serde`/`serde_json`/`sha2`/`rayon`,
-  `tikv-jemallocator`(opt). Features: `native-backend = ["dep:cranelift-codegen", ...,
+  `windows-sys`(target-gated, copy :42-51), `serde`/`serde_json`/`sha2`/`rayon`.
+  Features: `native-backend = ["dep:cranelift-codegen", ...,
   "molt-lower/native-backend"]`, `llvm = ["dep:molt-backend-llvm", "molt-backend-llvm/llvm",
-  "molt-lower/llvm"]`, `jemalloc`, `test-util=["molt-lower/test-util"]`.
+  "molt-lower/llvm"]`, `test-util=["molt-lower/test-util"]`.
 - `molt-backend/Cargo.toml`: `molt-backend-native = { path = "...", optional = true }`;
   `native-backend = ["dep:molt-backend-native", "molt-backend-native/native-backend"]`; `llvm =
   ["molt-backend-native/llvm"]` (llvm now under native, per 21 section-2.1 wiring). Move the
-  cranelift + windows-sys + jemalloc deps OUT of molt-backend (into molt-backend-native) unless
+  cranelift + windows-sys deps OUT of molt-backend (into molt-backend-native) unless
   the driver still needs them (it does not -- they were native-only).
 - `molt-backend/src/lib.rs`: `#[cfg(feature="native-backend")] mod native_backend;` (:28-29) + the
   `pub use crate::native_backend::{CompileOutput, NativeBackendModuleContext, SimpleBackend}`
@@ -677,7 +672,7 @@ helpers `should_dump_ir`/`dump_ir_ops`/`externalize_function_with_signature`/`Tr
 daemon-only ones stay), `main.rs` (~239 KB -- the daemon: `run_daemon`,
 `partition_functions_for_batches` :290, batch/health/cache, the `[[bin]]`),
 `bin/typed_repr_report.rs` (a separate diagnostic binary reading TIR -- stays, or moves to
-molt-lower's bin). `egraph_simplify.rs` (per 8.1 decision, stays under `egraphs`).
+molt-lower's bin).
 
 ### 10.2 Cargo.toml -- the feature fan-in (21 section-2.1 target wiring, verified-applicable)
 ```
@@ -700,7 +695,6 @@ llvm           = ["molt-backend-native/llvm"]      # llvm under native (the real
 wasm-backend   = ["dep:molt-backend-wasm", "molt-backend-wasm/wasm-backend"]
 luau-backend   = ["dep:molt-backend-luau"]
 rust-backend   = ["dep:molt-backend-rust"]
-egraphs        = ["egg"]                            # egraph_simplify stays in the driver
 ```
 ROOT `Cargo.toml` members now lists `molt-ir, molt-passes, molt-lower, molt-codegen-abi,
 molt-backend-{native,llvm,wasm,luau,rust}, molt-backend` (molt-tir removed in S2).

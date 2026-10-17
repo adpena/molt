@@ -91,7 +91,7 @@ the TIR→WASM lowering already lives in molt-lower, so the encoder is a clean c
 `molt-tir`. Seam: one SimpleIR-to-Luau authority with no parallel pre-SimpleIR
 lowering path.
 
-**`molt-backend-rust`** — `rust.rs` (+ opt `egraph_simplify.rs`); deps `molt-lower`; ~5K.
+**`molt-backend-rust`** — `rust.rs`; deps `molt-lower`; ~5K.
 Seam: smallest, zero cross-backend edges; a leaf consumer.
 
 ### Layer 4 — driver

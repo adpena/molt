@@ -339,7 +339,7 @@ The wrapper conflict was reconfirmed by native CI run `30211145633` job `8981749
 | `frontend-python` | 1 | 3 |
 | `backend-environment-contract` | 16 | 2 |
 | `bootstrap-stdlib` | 4 | 1 |
-| `heap-kind-lifetime-authority` | 7 | 2 |
+| `heap-kind-lifetime-authority` | 6 | 2 |
 | `host-capability-authority` | 7 | 2 |
 | `runtime-profile-schema-authority` | 6 | 2 |
 | `op-kind-registry` | 18 | 3 |

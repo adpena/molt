@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 from pathlib import Path
 
 import pytest
@@ -16,11 +15,13 @@ def _source_repository(root: Path) -> Path:
     return root
 
 
-def test_live_exports_are_covered_by_matrix() -> None:
-    matrix = json.loads(gen_cpython_coverage.MATRIX.read_text(encoding="utf-8"))
-    assert {row["symbol"] for row in matrix["symbols"]} == {
-        row["symbol"] for row in gen_cpython_coverage._exports()
-    }
+def test_coverage_doc_projects_every_configured_tuple_and_divergence() -> None:
+    config = gen_cpython_coverage._load_config()
+    doc = gen_cpython_coverage._outputs(config)[gen_cpython_coverage.DOC]
+    for row in config["verified"] + config["candidate"]:
+        assert f"CPython {row['cpython']} on {row['platform']}" in doc
+    for row in config["divergence"]:
+        assert f"- `{row['surface']}` (CPython {row['introduced']})" in doc
 
 
 def test_private_and_unstable_classification_is_fail_closed() -> None:

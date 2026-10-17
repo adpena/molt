@@ -1,7 +1,7 @@
 //! Machine-readable L7 numeric performance attestation.
 //!
 //! This is deliberately an ignored, release-only integration test. Run it via
-//! `tools/bench/run_l7_numeric_attestation.py`; the runner executes the compiled
+//! `tools/numeric_attestation/run_l7_numeric_attestation.py`; the runner executes the compiled
 //! test binary directly so build time is excluded and process peak RSS can be
 //! sampled independently of the Rust allocator counters below.
 
@@ -819,7 +819,7 @@ fn attestation_json(cases: &[CaseResult], affinity_mask: usize) -> String {
     let run_nonce = required_env("MOLT_L7_RUN_NONCE");
     let cases = cases.iter().map(case_json).collect::<Vec<_>>().join(",");
     format!(
-        r#"{{"schema_version":{},"kind":"l7_numeric_performance_attestation","profile":"release","allocator_scope":"rust_global_allocator","sample_count":{},"host":{{"os":{},"arch":{},"logical_cpus":{}}},"execution_control":{{"affinity_mask":{},"scope":"current_benchmark_thread"}},"source":{{"git_commit":{},"git_dirty":{},"rustc":{},"build_fingerprint":{},"run_nonce":{}}},"scope":{{"native":true,"wasm32":false,"assembly":false,"code_size":false,"component_rss_only":true}},"coverage":{{"runtime_hook_payload":"ABI boundary control only; real BigInt work is in l7_numeric_runtime_perf_attestation","c_header_probe":"compiled test-gated overlay consumer for canonical scalar type identity, arithmetic chaining, managed non-scalars, and foreign numeric objects","legacy_raw_pointer_lane":false,"process_peak_rss":"component harness only; added by tools/bench/run_l7_numeric_attestation.py","absolute_gates":"canonical scalar/managed/foreign/singleton reads, successful float packs, and complex primitives must remain allocation-free"}},"cases":[{}]}}"#,
+        r#"{{"schema_version":{},"kind":"l7_numeric_performance_attestation","profile":"release","allocator_scope":"rust_global_allocator","sample_count":{},"host":{{"os":{},"arch":{},"logical_cpus":{}}},"execution_control":{{"affinity_mask":{},"scope":"current_benchmark_thread"}},"source":{{"git_commit":{},"git_dirty":{},"rustc":{},"build_fingerprint":{},"run_nonce":{}}},"scope":{{"native":true,"wasm32":false,"assembly":false,"code_size":false,"component_rss_only":true}},"coverage":{{"runtime_hook_payload":"ABI boundary control only; real BigInt work is in l7_numeric_runtime_perf_attestation","c_header_probe":"compiled test-gated overlay consumer for canonical scalar type identity, arithmetic chaining, managed non-scalars, and foreign numeric objects","legacy_raw_pointer_lane":false,"process_peak_rss":"component harness only; added by tools/numeric_attestation/run_l7_numeric_attestation.py","absolute_gates":"canonical scalar/managed/foreign/singleton reads, successful float packs, and complex primitives must remain allocation-free"}},"cases":[{}]}}"#,
         SCHEMA_VERSION,
         SAMPLE_COUNT,
         json_string(std::env::consts::OS),
@@ -882,7 +882,7 @@ fn compiled_prebuilt_direct_refcount_retains_identity_until_zero() {
 }
 
 #[test]
-#[ignore = "release profiler; use tools/bench/run_l7_numeric_attestation.py"]
+#[ignore = "release profiler; use tools/numeric_attestation/run_l7_numeric_attestation.py"]
 fn l7_numeric_performance_attestation() {
     assert!(
         !cfg!(debug_assertions),

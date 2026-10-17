@@ -1039,7 +1039,7 @@ The `molt_call_bind_ic` system uses call-site IDs (FNV hashes of `func_name + op
 
 ### 6.4 Egraph Simplification
 
-The `egraph_simplify` module (feature-gated) can optimize Cranelift IR after emission. Inlined refcount operations create opportunities for the egraph:
+Molt has no e-graph pass today (the unwired `egraph_simplify` prototype was deleted by HF-281). Cranelift's own aegraph mid-end runs on emitted IR. Inlined refcount operations create opportunities for an e-graph:
 - Adjacent `inc_ref_obj(x) ... dec_ref_obj(x)` can be recognized as identity.
 - Tag checks on the same value across operations can be CSE'd.
 - Branch conditions that are provably true/false from prior checks can be folded.
