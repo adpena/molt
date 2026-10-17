@@ -9,6 +9,7 @@ from typing import Any
 from tests.process_guard_common import (
     install_module_view,
     install_thread_module_view,
+    run_guarded_test_process,
 )
 from tools import guarded_entrypoints, process_sentinel
 from tools.memory_guard_core import process_custody
@@ -195,7 +196,7 @@ def test_process_groups_require_repo_context_for_generic_molt_names() -> None:
 def test_guarded_entrypoints_are_repo_sentinel_tokens() -> None:
     module = process_sentinel
 
-    assert set(module.GUARDED_ENTRYPOINT_TOKENS) == (
+    assert set(module.guarded_entrypoint_tokens()) == (
         set(guarded_entrypoints.guarded_entrypoint_tokens(REPO_ROOT))
     )
     assert {
@@ -205,7 +206,23 @@ def test_guarded_entrypoints_are_repo_sentinel_tokens() -> None:
         "/bench/scripts/run_db_stub.py",
         "/bench/luau/run_benchmarks.py",
         "/tests/benchmarks/bench_generator.py",
-    }.issubset(module.GUARDED_ENTRYPOINT_TOKENS)
+    }.issubset(module.guarded_entrypoint_tokens())
+
+
+def test_importing_the_sentinel_scans_no_sources() -> None:
+    # A build imports the guard only to launch a child; the 1,100-file
+    # entrypoint scan belongs to the first process classification.
+    probe = (
+        "from tools import guarded_entrypoints, process_sentinel\n"
+        "print(guarded_entrypoints._guarded_entrypoint_tokens.cache_info().misses)\n"
+        "process_sentinel.molt_process_tokens()\n"
+        "print(guarded_entrypoints._guarded_entrypoint_tokens.cache_info().misses)\n"
+    )
+    result = run_guarded_test_process(
+        [sys.executable, "-c", probe], cwd=REPO_ROOT, timeout=120
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.split() == ["0", "1"]
 
 
 def test_guarded_entrypoint_scan_prefilters_non_candidates(
@@ -279,7 +296,7 @@ def test_process_groups_match_guarded_entrypoints() -> None:
             rss_kb=100,
             command=f"/usr/bin/python /repo/molt{token} --unit",
         )
-        for idx, token in enumerate(module.GUARDED_ENTRYPOINT_TOKENS, start=10)
+        for idx, token in enumerate(module.guarded_entrypoint_tokens(), start=10)
     }
 
     groups = module.process_groups(samples, root=root, self_pid=9999)
@@ -2487,10 +2504,10 @@ def test_molt_command_classification_cache_matches_uncached() -> None:
                     root,
                     windows_model,
                     module.INSPECTION_COMMAND_TOKENS,
-                    module.REPO_SCOPED_MOLT_ENTRYPOINT_TOKENS,
+                    module.repo_scoped_molt_entrypoint_tokens(),
                     module.REPO_SCOPED_MOLT_ARTIFACT_ROOT_TOKENS,
                     module.REPO_SCOPED_MOLT_ARTIFACT_IDENTITY_TOKENS,
-                    module.MOLT_PROCESS_TOKENS,
+                    module.molt_process_tokens(),
                 )
                 fresh = module._cached_molt_command_classification.__wrapped__(*args)
                 assert module._cached_molt_command_classification(*args) == fresh
@@ -2575,11 +2592,8 @@ def test_is_molt_process_cache_keys_on_token_authorities(monkeypatch) -> None:
     )
     assert not module.is_molt_process(sample, root=WINDOWS_ROOT, self_pid=9999)
     with monkeypatch.context() as patched:
-        patched.setattr(
-            module,
-            "MOLT_PROCESS_TOKENS",
-            (*module.MOLT_PROCESS_TOKENS, "custom-molt-lane-token"),
-        )
+        tokens = (*module.molt_process_tokens(), "custom-molt-lane-token")
+        patched.setattr(module, "molt_process_tokens", lambda: tokens)
         assert module.is_molt_process(sample, root=WINDOWS_ROOT, self_pid=9999)
     assert not module.is_molt_process(sample, root=WINDOWS_ROOT, self_pid=9999)
 

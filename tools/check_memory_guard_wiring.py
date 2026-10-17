@@ -654,7 +654,7 @@ def _process_sentinel_tokens(root: Path) -> tuple[str, ...]:
         return ()
     from tools import process_sentinel  # noqa: PLC0415
 
-    return tuple(process_sentinel.GUARDED_ENTRYPOINT_TOKENS)
+    return process_sentinel.guarded_entrypoint_tokens()
 
 
 def _subprocess_guard_targets(root: Path) -> tuple[Path, ...]:
