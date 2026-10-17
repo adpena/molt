@@ -1,7 +1,9 @@
-"""Native I/O provider facade for Molt."""
+"""Native I/O provider facade for Molt.
 
-import sys as _sys
-from operator import index as _index
+Every program's core closure contains this module, so it binds runtime
+intrinsics and imports no other module: an import statement here would give a
+print-only program the runtime import machinery.
+"""
 
 from _intrinsics import require_intrinsic as _require_intrinsic
 
@@ -35,27 +37,13 @@ BytesIO = _MOLT_IO_CLASS("BytesIO")
 StringIO = _MOLT_IO_CLASS("StringIO")
 
 
-def _default_text_encoding():
-    return "utf-8" if _sys.flags.utf8_mode else "locale"
+_MOLT_TEXT_ENCODING = _require_intrinsic("molt_io_text_encoding")
 
 
 def text_encoding(encoding, stacklevel=2, /):
     """Return the explicit encoding or the current default text selector."""
-    stacklevel = _index(stacklevel)
-    if stacklevel < -2147483648 or stacklevel > 2147483647:
-        raise OverflowError("Python int too large to convert to C int")
-    if encoding is None:
-        encoding = _default_text_encoding()
-        if _sys.flags.warn_default_encoding:
-            import warnings
-
-            # The native public callable has no Python wrapper frame in CPython.
-            warnings.warn(
-                "'encoding' argument not specified.",
-                EncodingWarning,
-                max(1, stacklevel) + 1,
-            )
-    return encoding
+    # The runtime owns CPython's C rule, warning and stack level included.
+    return _MOLT_TEXT_ENCODING(encoding, stacklevel)
 
 
 text_encoding.__text_signature__ = "($module, encoding, stacklevel=2, /)"

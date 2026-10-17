@@ -643,6 +643,7 @@ INTRINSIC_SYMBOL_NAMES: dict[str, str] = {
     "molt_glob_iter": "molt_glob_iter",
     "molt_io_class": "molt_io_class",
     "molt_io_default_buffer_size": "molt_io_default_buffer_size",
+    "molt_io_text_encoding": "molt_io_text_encoding",
     "molt_file_open": "molt_file_open",
     "molt_file_open_ex": "molt_file_open_ex",
     "molt_file_read": "molt_file_read",

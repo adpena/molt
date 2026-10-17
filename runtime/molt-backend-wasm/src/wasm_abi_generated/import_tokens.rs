@@ -1521,6 +1521,7 @@ pub(crate) enum WasmRuntimeImport {
     GlobIter,
     IoClass,
     IoDefaultBufferSize,
+    IoTextEncoding,
     FileOpenEx,
     FileRead1,
     FileReadall,

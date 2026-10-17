@@ -673,6 +673,8 @@ def test_pathlib_text_methods_use_selected_open_and_preserve_failure_order(
         {
             "molt_io_class": lambda name: getattr(host_provider, name),
             "molt_io_default_buffer_size": lambda: host_provider.DEFAULT_BUFFER_SIZE,
+            # CPython's C rule, which the runtime intrinsic implements.
+            "molt_io_text_encoding": host_provider.text_encoding,
             "molt_builtin_class_lookup": lambda name: getattr(host_provider, name),
             "molt_function_set_builtin": promotions.append,
         },

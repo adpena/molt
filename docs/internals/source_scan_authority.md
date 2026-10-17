@@ -312,7 +312,12 @@ is admitted. Closure publication applies only changed source rows. Frozen graphs
 cannot substitute for the live operation's writer and value provenance.
 
 Runtime policy is a projection of the current source authority, not an entry-name
-classifier. Its operation-local memo contains booleans keyed by source content,
+classifier. Every import statement a graph module executes uses the runtime
+import protocol (it can reach `builtins.__import__`), so the core-closure
+bootstrap sources that every program contains, such as `_io`, bind runtime
+intrinsics and import nothing else; one import there gives `print(1)` the importlib
+machinery. `tests/cli/test_runtime_import_scan_custody.py` (the print-only
+micro program) and `tests/test_io_private_module_surface.py` check it. Its operation-local memo contains booleans keyed by source content,
 module/package identity, scan mode, and target; it retains no AST or source.
 Preparation and native materialization use the same runtime closure finalizer.
 New roots, promoted modes, or native imports participate in closure convergence

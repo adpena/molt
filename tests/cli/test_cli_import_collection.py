@@ -3723,9 +3723,10 @@ def test_generated_importer_import_plan_includes_runtime_support_modules(
 
     assert "importlib.util" in import_plan.module_graph
     assert "importlib.machinery" in import_plan.module_graph
-    # importlib/__init__.py imports machinery explicitly. Its support closure
-    # must retain that source dependency as well as the runtime dispatch root.
-    assert "importlib.machinery" in import_plan.explicit_imports
+    # The runtime-support closure's own imports are dispatch roots, not
+    # program imports. A bootstrap source that imported modules (HF-F269) once
+    # made the core closure list machinery here.
+    assert "importlib.machinery" not in import_plan.explicit_imports
     assert "importlib.machinery" in import_plan.runtime_import_dispatch_roots
     assert "importlib._bootstrap" in import_plan.runtime_import_dispatch_roots
     assert "importlib._bootstrap_external" in import_plan.runtime_import_dispatch_roots

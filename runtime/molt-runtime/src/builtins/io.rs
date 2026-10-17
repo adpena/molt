@@ -66,8 +66,8 @@ mod construct;
 pub(crate) use construct::buffered_writer_new_method;
 pub use construct::{
     molt_buffered_init, molt_buffered_new, molt_bytesio_init, molt_bytesio_new, molt_io_class,
-    molt_io_default_buffer_size, molt_stringio_init, molt_stringio_new, molt_text_io_wrapper_init,
-    molt_text_io_wrapper_new,
+    molt_io_default_buffer_size, molt_io_text_encoding, molt_stringio_init, molt_stringio_new,
+    molt_text_io_wrapper_init, molt_text_io_wrapper_new,
 };
 #[path = "io/read.rs"]
 mod read;

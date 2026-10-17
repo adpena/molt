@@ -4509,6 +4509,13 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         python_name: None,
     },
     IntrinsicSpec {
+        name: "molt_io_text_encoding",
+        symbol: "molt_io_text_encoding",
+        arity: 2,
+        defaults: &[],
+        python_name: None,
+    },
+    IntrinsicSpec {
         name: "molt_file_open",
         symbol: "molt_file_open",
         arity: 2,
