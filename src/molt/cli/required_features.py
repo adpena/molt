@@ -32,6 +32,10 @@ with ``func_new`` retains its body, including lazily bound intrinsic references.
 Only bodies eliminated from this closure contribute no requirement; importing
 ``re`` can retain regex symbols even without an explicit regex call.
 
+A build computes ``ReachedIntrinsics`` once (``reached_intrinsic_symbols``)
+and derives both the refusal and ``RequiredLinkFeatures`` from that one symbol
+set, so the whole-program closure runs once per build.
+
 ``RequiredLinkFeatures`` maps each reached intrinsic to its link-affecting Cargo
 feature via the generated
 ``molt._runtime_feature_gates.link_affecting_feature_gate_for_symbol`` authority
@@ -91,21 +95,18 @@ _INTRINSIC_SYMBOL_OP_KINDS: frozenset[str] = frozenset({"builtin_func", "const_s
 
 
 def reached_intrinsic_symbols_by_feature(
-    functions: Sequence[Mapping[str, object]],
-    *,
-    extra_roots: Iterable[str] = (),
+    reached_symbols: Iterable[str],
 ) -> dict[str, set[str]]:
-    """Map each required link-affecting feature to the reached intrinsic symbols.
+    """Map each required link-affecting feature to its reached intrinsic symbols.
 
-    Scans only the *reachable* functions for ``builtin_func``/``const_str`` ops
-    whose ``s_value`` is a link-affecting intrinsic symbol (per
-    ``link_affecting_feature_gate_for_symbol``), grouping the reached symbols by
-    the feature that defines them. Core/ungated/resolver-only symbols map to
-    ``None`` and are dropped (they are always linkable, never a requirement).
+    Groups ``reached_symbols`` (``reached_intrinsic_symbols``) by the
+    link-affecting feature that defines each one (per
+    ``link_affecting_feature_gate_for_symbol``). Core/ungated/resolver-only
+    symbols map to ``None`` and are dropped (they are always linkable, never a
+    requirement).
     """
-    symbols = reached_intrinsic_symbols(functions, extra_roots=extra_roots)
     by_feature: dict[str, set[str]] = {}
-    for symbol in symbols:
+    for symbol in reached_symbols:
         feature = link_affecting_feature_gate_for_symbol(symbol)
         if feature is None:
             continue
@@ -149,11 +150,7 @@ def reached_intrinsic_symbols(
     return frozenset(symbols)
 
 
-def required_link_features(
-    functions: Sequence[Mapping[str, object]],
-    *,
-    extra_roots: Iterable[str] = (),
-) -> frozenset[str]:
+def required_link_features(reached_symbols: Iterable[str]) -> frozenset[str]:
     """The minimal set of link-affecting Cargo features the reached code needs.
 
     ``RequiredLinkFeatures`` in the design: every distinct link-affecting feature
@@ -162,18 +159,15 @@ def required_link_features(
     superset of this, and the compile-time refusal fires when the selected
     profile's ceiling omits any of these.
     """
-    return frozenset(
-        reached_intrinsic_symbols_by_feature(functions, extra_roots=extra_roots)
-    )
+    return frozenset(reached_intrinsic_symbols_by_feature(reached_symbols))
 
 
 def reachability_profile_feature_refusal(
-    functions: Sequence[Mapping[str, object]],
+    reached_symbols: frozenset[str],
     *,
     profile_name: str,
     profile_features: frozenset[str],
     target_triple: str | None = None,
-    extra_roots: Iterable[str] = (),
 ) -> str | None:
     """Report all target and profile requirements absent from reached code's runtime.
 
@@ -183,7 +177,7 @@ def reachability_profile_feature_refusal(
     exact reached intrinsic symbols (the ``molt_*`` names whose definitions the
     excluded feature provides) and the actionable remedy. Independently report
     every reached intrinsic with no provider on the selected target. Both checks
-    use one reachability closure; neither failure category hides the other, and
+    read ``reached_symbols``; neither failure category hides the other, and
     neither symbol list is truncated. Returns ``None`` when all required symbols
     have target providers and their features are within the profile ceiling.
 
@@ -193,7 +187,6 @@ def reachability_profile_feature_refusal(
     compile-time refusal, exactly the design's "no silent divergence / no raw
     link error" contract.
     """
-    reached_symbols = reached_intrinsic_symbols(functions, extra_roots=extra_roots)
     target_os: str | None = None
     if any(supported_target_oses_for_symbol(symbol) for symbol in reached_symbols):
         if target_triple in {"wasm32-wasip1", "wasm32-unknown-unknown"}:

@@ -1906,17 +1906,17 @@ def _static_backend_ir_module_call_closure_issue(
 
 
 def _reachability_feature_refusal(
-    ir: Mapping[str, Any],
+    reached_symbols: frozenset[str],
     *,
     stdlib_profile: str | None,
     target: str,
     target_triple: str | None = None,
-    extra_roots: Collection[str] = (),
 ) -> str | None:
     """Refuse when the reached SimpleIR needs a feature the profile excludes.
 
-    Computes ``RequiredLinkFeatures`` from the finalized merged backend IR and
-    compares it against the selected profile's per-target link-affecting feature
+    Compares the requirements of ``reached_symbols`` (the finalized merged
+    backend IR's ``ReachedIntrinsics``) against the selected profile's
+    per-target link-affecting feature
     ceiling (``runtime_features.profile_link_features``). Returns a truthful,
     reached-intrinsic refusal message when a required feature is excluded, or
     ``None`` to proceed. The ceiling is computed for the build target's triple so
@@ -1924,9 +1924,6 @@ def _reachability_feature_refusal(
     against the native surface. ``RequiredLinkFeatures`` itself is
     target-independent (a property of the reached IR).
     """
-    functions = ir.get("functions")
-    if not isinstance(functions, list):
-        return None
     is_wasm = target in {"wasm", "wasm-freestanding"} or target.startswith("wasm32")
     if target_triple is None and is_wasm:
         target_triple = (
@@ -1945,11 +1942,10 @@ def _reachability_feature_refusal(
         )
     )
     return _required_features.reachability_profile_feature_refusal(
-        functions,
+        reached_symbols,
         profile_name=stdlib_profile or DEFAULT_STDLIB_PROFILE,
         profile_features=profile_features,
         target_triple=target_triple,
-        extra_roots=extra_roots,
     )
 
 
@@ -2316,13 +2312,22 @@ def _prepare_backend_ir(
     # features the REACHED code actually needs and refuses BEFORE codegen/link
     # (with a truthful, reached-intrinsic message) when the selected profile's
     # ceiling omits one. This is the only requirement fact; stdlib source scans
-    # are classifiers/audits, never link-feature authority.
+    # are classifiers/audits, never link-feature authority. The closure runs
+    # once; the refusal and the link features both read its symbols.
+    functions_for_features = ir.get("functions")
+    reached_symbols = (
+        _required_features.reached_intrinsic_symbols(
+            cast(Sequence[Mapping[str, object]], functions_for_features),
+            extra_roots=runtime_feature_roots,
+        )
+        if isinstance(functions_for_features, list)
+        else frozenset()
+    )
     feature_refusal = _reachability_feature_refusal(
-        ir,
+        reached_symbols,
         stdlib_profile=stdlib_profile,
         target=target,
         target_triple=target_triple,
-        extra_roots=runtime_feature_roots,
     )
     if feature_refusal is not None:
         return None, fail(feature_refusal, json_output, command="build")
@@ -2333,15 +2338,7 @@ def _prepare_backend_ir(
     )
     if module_call_issue is not None:
         return None, fail(module_call_issue, json_output, command="build")
-    functions_for_features = ir.get("functions")
-    required_link_features = (
-        _required_features.required_link_features(
-            cast(Sequence[Mapping[str, object]], functions_for_features),
-            extra_roots=runtime_feature_roots,
-        )
-        if isinstance(functions_for_features, list)
-        else frozenset()
-    )
+    required_link_features = _required_features.required_link_features(reached_symbols)
     emit_ir_error = _write_emitted_ir(emit_ir_path, ir, validate_inputs=validate_inputs)
     if emit_ir_error is not None:
         return None, fail(emit_ir_error, json_output, command="build")
