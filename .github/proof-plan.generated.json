@@ -369,7 +369,7 @@
     "tests/tools/test_win_job_contract.py",
     "tests/tools/test_windows_process_api.py"
   ],
-  "authority_sha256": "1dec6d05bbff18e7fee6d03ac8f7a0363fc4a2be4bc9b0ce4171113806ccef90",
+  "authority_sha256": "8c199e9fd420aa3c815daaa4d3661e9f4df3867412d550c26ecad0baa31cadf3",
   "cargo_environment_policy": {
     "incident_command": "cargo metadata --locked --format-version 1",
     "incident_commit": "20b046b79bd4ca64a8c859f737f6e330377bcc4e",
@@ -638,6 +638,7 @@
         "Cargo.toml",
         "rust-toolchain.toml",
         ".cargo/**",
+        "fuzz/**",
         "runtime/**",
         "tools/run_cargo_test_truth.py",
         "tools/cargo_test_binary_runner.py",
@@ -665,7 +666,7 @@
         "pr",
         "main"
       ],
-      "timeout_minutes": 318,
+      "timeout_minutes": 346,
       "workflow": ".github/workflows/ci.yml"
     },
     {
@@ -6570,6 +6571,106 @@
     {
       "argv": [
         "cargo",
+        "check",
+        "--locked",
+        "--bins",
+        "--manifest-path",
+        "fuzz/Cargo.toml"
+      ],
+      "cache_domain": "cargo-workspace",
+      "cargo_build_python": false,
+      "cargo_native_units": {
+        "target": [
+          "c++"
+        ]
+      },
+      "cell": "linux-x86_64-rust-native-dev",
+      "dependencies": [],
+      "family": "rust",
+      "id": "rust.check.fuzz",
+      "resource_class": "compiler-build-resource",
+      "tiers": [
+        "pre-push",
+        "pr",
+        "main"
+      ],
+      "timeout_budget": "cross-check",
+      "timeout_seconds": 240,
+      "toolchains": [
+        "rustc",
+        "cargo"
+      ]
+    },
+    {
+      "argv": [
+        "cargo",
+        "check",
+        "--locked",
+        "--bins",
+        "--manifest-path",
+        "runtime/molt-backend/fuzz/Cargo.toml"
+      ],
+      "cache_domain": "cargo-workspace",
+      "cargo_build_python": false,
+      "cargo_native_units": {
+        "target": [
+          "c++"
+        ]
+      },
+      "cell": "linux-x86_64-rust-native-dev",
+      "dependencies": [],
+      "family": "rust",
+      "id": "rust.check.fuzz-backend",
+      "resource_class": "compiler-build-resource",
+      "tiers": [
+        "pre-push",
+        "pr",
+        "main"
+      ],
+      "timeout_budget": "cross-check",
+      "timeout_seconds": 240,
+      "toolchains": [
+        "rustc",
+        "cargo"
+      ]
+    },
+    {
+      "argv": [
+        "cargo",
+        "check",
+        "--locked",
+        "--bins",
+        "--manifest-path",
+        "runtime/molt-runtime/fuzz/Cargo.toml"
+      ],
+      "cache_domain": "cargo-workspace",
+      "cargo_build_python": false,
+      "cargo_native_units": {
+        "target": [
+          "c",
+          "c++"
+        ]
+      },
+      "cell": "linux-x86_64-rust-native-dev",
+      "dependencies": [],
+      "family": "rust",
+      "id": "rust.check.fuzz-runtime",
+      "resource_class": "compiler-build-resource",
+      "tiers": [
+        "pre-push",
+        "pr",
+        "main"
+      ],
+      "timeout_budget": "cold",
+      "timeout_seconds": 1200,
+      "toolchains": [
+        "rustc",
+        "cargo"
+      ]
+    },
+    {
+      "argv": [
+        "cargo",
         "clippy",
         "--locked",
         "--target",
@@ -8121,14 +8222,14 @@
         }
       },
       "rust": {
-        "budget_seconds": 19080,
+        "budget_seconds": 20760,
         "critical_path_seconds": 9000,
         "headroom_seconds": 0,
         "job_reserve_seconds": 240,
-        "projected_makespan_seconds": 18840,
-        "required_job_seconds": 19080,
+        "projected_makespan_seconds": 20520,
+        "required_job_seconds": 20760,
         "resource_capacity_floor_seconds": {
-          "compiler-build-resource": 18840
+          "compiler-build-resource": 20520
         }
       },
       "rust_security": {

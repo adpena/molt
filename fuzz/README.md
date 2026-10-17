@@ -43,6 +43,18 @@ done
 cargo "+$RUST_NIGHTLY" fuzz list
 ```
 
+The sanitizers need the nightly. Without one, the pinned stable toolchain
+still builds and runs coverage-guided targets: `cargo fuzz run -s none <target>`.
+
+## Build check
+
+The proof plan type-checks every target of the three cargo-fuzz workspaces
+(`fuzz/`, `runtime/molt-backend/fuzz/`, `runtime/molt-runtime/fuzz/`) with
+`cargo check --locked --bins` and the pinned stable toolchain: the commands
+`rust.check.fuzz`, `rust.check.fuzz-backend` and `rust.check.fuzz-runtime`.
+A new cargo-fuzz workspace needs its own command; `tests/test_proof_plan.py`
+fails until it has one.
+
 ## Reproducing Crashes
 
 When a crash is found, libFuzzer saves the input to `fuzz/artifacts/<target>/`.
