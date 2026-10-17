@@ -18,8 +18,8 @@
 ## Progress Summary (Generated)
 - Total audited modules: `949`
 - `intrinsic-backed`: `36`
-- `intrinsic-partial`: `161`
-- `intrinsic-support`: `28`
+- `intrinsic-partial`: `162`
+- `intrinsic-support`: `27`
 - `python-compiled`: `344`
 - `stub`: `380`
 - `policy-gate`: `0`
@@ -115,8 +115,10 @@
 - `_functools`
 - `_intrinsics`
 - `_io`
+- `_locale`
 - `_multiprocessing`
 - `_posixsubprocess`
+- `_pyio`
 - `_signal`
 - `_sitebuiltins`
 - `_socket`
@@ -211,7 +213,6 @@
 - `logging.config`
 - `lzma`
 - `multiprocessing._core`
-- `multiprocessing.spawn`
 - `os`
 - `pathlib`
 - `pickle`
@@ -277,10 +278,10 @@
 - `_ctypes`
 - `_decimal`
 - `_heapq`
-- `_locale`
 - `_lzma`
 - `_pickle`
 - `_pydecimal`
+- `_pyio_text`
 - `_random`
 - `_ssl`
 - `_struct`
@@ -296,7 +297,6 @@
 - `compression.zlib`
 - `email._header_value_parser`
 - `email._policybase`
-- `multiprocessing._api_surface`
 - `operator`
 - `xml.etree.cElementTree`
 
@@ -322,8 +322,6 @@
 - `_py_abc`
 - `_py_warnings`
 - `_pydatetime`
-- `_pyio`
-- `_pyio_text`
 - `_pylong`
 - `_sha1`
 - `_sha2`
@@ -549,6 +547,7 @@
 - `mimetypes`
 - `molt.stdlib`
 - `multiprocessing`
+- `multiprocessing._api_surface`
 - `multiprocessing.connection`
 - `multiprocessing.context`
 - `multiprocessing.dummy`
@@ -568,6 +567,7 @@
 - `multiprocessing.resource_tracker`
 - `multiprocessing.shared_memory`
 - `multiprocessing.sharedctypes`
+- `multiprocessing.spawn`
 - `multiprocessing.synchronize`
 - `multiprocessing.util`
 - `numbers`
