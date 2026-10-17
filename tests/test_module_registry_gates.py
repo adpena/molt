@@ -602,6 +602,51 @@ def test_rewrite_lowers_literal_module_import_to_ensure() -> None:
     assert {"kind": "check_exception", "value": 1} in ops
 
 
+def test_rewrite_lowers_a_lone_plain_import_and_keeps_siteless_functions() -> None:
+    from molt.cli import backend_ir as BACKEND_IR
+
+    registry = _sample_registry()
+    # `import pkg.sub` is this function's only import site: the transaction
+    # call names its builtin callee and nothing else marks the function.
+    plain_import: list[dict[str, Any]] = [
+        {
+            "kind": "builtin_func",
+            "s_value": "molt_importlib_import_transaction",
+            "out": "v0",
+        },
+        {"kind": "const_str", "s_value": "pkg.sub", "out": "v1"},
+        {"kind": "const_none", "out": "v2"},
+        {"kind": "tuple_new", "args": [], "out": "v3"},
+        {"kind": "const", "value": 0, "out": "v4"},
+        {
+            "kind": "call_func",
+            "args": ["v0", "v1", "v2", "v2", "v3", "v4"],
+            "out": "v5",
+        },
+        {"kind": "ret_void"},
+    ]
+    siteless: list[dict[str, Any]] = [
+        {"kind": "builtin_func", "s_value": "molt_len", "out": "v0"},
+        {"kind": "call", "s_value": "molt_print_obj", "args": [], "out": "v1"},
+        {"kind": "call_func", "args": ["v0"], "out": "v2"},
+        {"kind": "ret_void"},
+    ]
+    functions = [
+        {"name": "importer", "params": [], "ops": plain_import},
+        {"name": "plain", "params": [], "ops": siteless},
+    ]
+
+    assert BACKEND_IR._rewrite_native_import_lanes(functions, registry) is None
+
+    ops = functions[0]["ops"]
+    calls = [op for op in ops if op.get("s_value") == "molt_module_ensure"]
+    # `import a.b` ensures a.b, then binds the top-level module.
+    assert [_ensure_call_module_name(ops, op) for op in calls] == ["pkg.sub", "pkg"]
+    assert calls[-1]["out"] == "v5"
+    assert not [op for op in ops if op.get("kind") == "call_func"]
+    assert functions[1]["ops"] is siteless
+
+
 def test_literal_import_owner_survives_registry_growth_and_aliases() -> None:
     from copy import deepcopy
     from molt.cli import backend_ir

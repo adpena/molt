@@ -654,6 +654,30 @@ def _literal_plain_import_transaction_name(
     return name
 
 
+def _has_import_lane_site(ops: list[Any]) -> bool:
+    """Whether ``ops`` hold an op that ``_rewrite_native_import_lanes`` reads.
+
+    The rewrite changes a direct ``molt_init_*`` call, a ``module_import`` or a
+    plain-import transaction call, and that call's callee is a
+    ``builtin_func`` of the transaction symbol in the same function. Most
+    functions hold none of these, so one scan of their kinds skips them.
+    """
+    for op in ops:
+        if not isinstance(op, dict):
+            continue
+        kind = op.get("kind")
+        if kind == "module_import":
+            return True
+        if kind == "call":
+            symbol = op.get("s_value")
+            if isinstance(symbol, str) and symbol.startswith("molt_init_"):
+                return True
+        elif kind == "builtin_func":
+            if op.get("s_value") == _IMPORT_TRANSACTION_SYMBOL:
+                return True
+    return False
+
+
 def _rewrite_native_import_lanes(
     functions: Sequence[dict[str, Any]],
     registry: ModuleRegistry,
@@ -684,7 +708,7 @@ def _rewrite_native_import_lanes(
     rewrite_map = _registry_init_symbol_rewrite_map(registry)
     for func in functions:
         ops = func.get("ops")
-        if not isinstance(ops, list):
+        if not isinstance(ops, list) or not _has_import_lane_site(ops):
             continue
         const_str_by_var: dict[str, str] = {}
         builtin_func_by_var: dict[str, str] = {}
@@ -692,7 +716,7 @@ def _rewrite_native_import_lanes(
         empty_tuple_vars: set[str] = set()
         const_int_by_var: dict[str, int] = {}
         for op in ops:
-            if not isinstance(op, Mapping) or not isinstance(op.get("out"), str):
+            if not isinstance(op, dict) or not isinstance(op.get("out"), str):
                 continue
             kind = op.get("kind")
             out = op["out"]
@@ -706,11 +730,11 @@ def _rewrite_native_import_lanes(
                 empty_tuple_vars.add(out)
             elif kind == "const" and isinstance(op.get("value"), int):
                 const_int_by_var[out] = op["value"]
-        next_var = _next_tir_var_index([op for op in ops if isinstance(op, Mapping)])
+        next_var = _next_tir_var_index([op for op in ops if isinstance(op, dict)])
         new_ops: list[dict[str, Any]] = []
         changed = False
         for op in ops:
-            if not isinstance(op, Mapping):
+            if not isinstance(op, dict):
                 new_ops.append(op)
                 continue
             kind = op.get("kind")
@@ -834,7 +858,7 @@ def _rewrite_native_import_lanes(
                         )
                     changed = True
                     continue
-            new_ops.append(op if isinstance(op, dict) else op)
+            new_ops.append(op)
         if changed:
             func["ops"] = new_ops
     return None
