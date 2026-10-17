@@ -231,6 +231,33 @@ def test_unrelated_build_output_does_not_change_a_single_name_lookup(tmp_path):
     )
 
 
+@pytest.mark.parametrize("output", ["binary", "package"])
+def test_only_a_package_named_like_a_module_changes_its_lookup(tmp_path, output):
+    """A build publishes `item` beside `item.py`; only a directory can shadow it."""
+    source = tmp_path / "item.py"
+    source.write_text("pass\n", encoding="utf-8")
+    cache = module_resolution._ModuleResolutionCache()
+    assert (
+        cache.resolve_module("item", [tmp_path], tmp_path / "stdlib", set()) == source
+    )
+    metadata = tmp_path.stat()
+    shadow = tmp_path / "item"
+    if output == "binary":
+        shadow.write_bytes(b"\x7fELF published program")
+    else:
+        shadow.mkdir()
+        (shadow / "__init__.py").write_text("pass\n", encoding="utf-8")
+    os.utime(tmp_path, ns=(metadata.st_atime_ns, metadata.st_mtime_ns))
+    # CPython's FileFinder is the oracle: a file named `item` binds nothing.
+    expected = source if output == "binary" else shadow / "__init__.py"
+    assert _cpython_origin("item", [tmp_path]) == str(expected)
+    if output == "binary":
+        cache.import_topology.validate()
+    else:
+        with pytest.raises(topology.PythonImportTopologyChangedError):
+            cache.import_topology.validate()
+
+
 @pytest.mark.parametrize("alias", [False, True])
 def test_root_alias_retarget_is_not_hidden_by_identical_source_bytes(
     tmp_path, monkeypatch, alias
