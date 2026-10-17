@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import multiprocessing
 import os
 from dataclasses import replace
@@ -580,19 +581,34 @@ def test_binding_readmits_member_content_and_freezes_nested_payload(
     from molt import toolchain_identity
     from molt.cli import runtime_wasm_generation as module
 
-    generation, _, _ = _publish_pair(tmp_path)
+    owned_root = tmp_path / "owned"
+    owned_root.mkdir()
+    generation, _, _ = _publish_pair(owned_root)
+    foreign = tmp_path / "foreign.bin"
+    foreign.write_bytes(b"unrelated descriptor traffic")
 
     captured = []
     capture = toolchain_identity.stable_regular_file_handle_identity
 
     def current(opened, **kwargs):
-        captured.append(opened.path)
+        if opened.path.is_relative_to(owned_root):
+            captured.append(opened.path)
         return capture(opened, **kwargs)
 
     monkeypatch.setattr(
         toolchain_identity, "stable_regular_file_handle_identity", current
     )
     monkeypatch.setattr(module, "stable_regular_file_handle_identity", current)
+    with toolchain_identity.open_stable_regular_file(
+        foreign, label="foreign"
+    ) as opened:
+        observed = toolchain_identity.stable_regular_file_handle_identity(
+            opened, label="foreign"
+        )
+        assert opened.stream.read() == b"unrelated descriptor traffic"
+    assert (
+        observed.sha256 == hashlib.sha256(b"unrelated descriptor traffic").hexdigest()
+    )
     binding = bind_runtime_wasm_codegen(generation, None)
     assert captured == [
         generation.shared,
@@ -691,11 +707,15 @@ def test_hydration_reuses_source_receipt_and_readmits_destination_content(
     source = tmp_path / "source"
     source.mkdir()
     generation, shared_identity, reloc_identity = _publish_pair(source)
+    destination = tmp_path / "dest"
+    foreign = tmp_path / "foreign.bin"
+    foreign.write_bytes(b"unrelated descriptor traffic")
     captured = []
     original = toolchain_identity.stable_regular_file_handle_identity
 
     def capture(opened, **kwargs):
-        captured.append(opened.path)
+        if any(opened.path.is_relative_to(root) for root in (source, destination)):
+            captured.append(opened.path)
         return original(opened, **kwargs)
 
     def no_reread(*args, **kwargs):
@@ -706,11 +726,21 @@ def test_hydration_reuses_source_receipt_and_readmits_destination_content(
         toolchain_identity, "stable_regular_file_handle_identity", capture
     )
     monkeypatch.setattr(module, "stable_regular_file_handle_identity", capture)
+    with toolchain_identity.open_stable_regular_file(
+        foreign, label="foreign"
+    ) as opened:
+        observed = toolchain_identity.stable_regular_file_handle_identity(
+            opened, label="foreign"
+        )
+        assert opened.stream.read() == b"unrelated descriptor traffic"
+    assert (
+        observed.sha256 == hashlib.sha256(b"unrelated descriptor traffic").hexdigest()
+    )
     hydrated = hydrate_runtime_wasm_generation(
         source_manifest=generation.manifest,
         source_generation=generation,
-        dest_shared=tmp_path / "dest" / "molt_runtime.wasm",
-        dest_reloc=tmp_path / "dest" / "molt_runtime_reloc.wasm",
+        dest_shared=destination / "molt_runtime.wasm",
+        dest_reloc=destination / "molt_runtime_reloc.wasm",
         expected_shared_identity=shared_identity,
         expected_reloc_identity=reloc_identity,
     )

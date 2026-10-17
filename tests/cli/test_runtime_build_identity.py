@@ -1507,14 +1507,21 @@ def test_cargo_configuration_parses_and_identifies_one_owned_read(
     config = tmp_path / "config.toml"
     raw = b"[build]\njobs = 3\n"
     config.write_bytes(raw)
+    foreign = tmp_path / "foreign.bin"
+    foreign.write_bytes(b"unrelated descriptor traffic")
     opens = []
     open_descriptor = toolchain_identity.open_stable_read_descriptor
 
     def counted_open(path: Path) -> int:
-        opens.append(path)
+        if Path(path) == config:
+            opens.append(path)
         return open_descriptor(path)
 
     monkeypatch.setattr(toolchain_identity, "open_stable_read_descriptor", counted_open)
+    with toolchain_identity.open_stable_regular_file(
+        foreign, label="foreign"
+    ) as opened:
+        assert opened.stream.read() == b"unrelated descriptor traffic"
     captured = cargo_plans._capture_config(config, label="fixture config")
     assert captured.document == {"build": {"jobs": 3}}
     assert captured.identity.sha256 == hashlib.sha256(raw).hexdigest()

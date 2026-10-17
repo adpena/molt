@@ -72,6 +72,11 @@ percentages. Required conformance and release matrix gates still apply.
   invariant. Do not weaken assertions, regenerate expectations, swallow errors,
   or add skips/xfails merely to make an implementation pass; changes to expected
   behavior need an independently justified contract change.
+  Shared file-read observers count their subject-owned inputs across threads;
+  unrelated background reads must not change that oracle. Keep the real
+  descriptor/content checks and exercise unrelated traffic when testing this
+  boundary. Mutation and forbidden-operation injections retain their declared
+  scope.
 - **Make failures reproducible.** Control randomness, time and environment at
   their real boundaries; use bounded synchronization rather than sleep-based
   timing assumptions. Preserve minimized fuzz/differential inputs, seed and

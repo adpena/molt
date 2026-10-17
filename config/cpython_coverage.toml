@@ -6,10 +6,10 @@ cpython = "3.12"
 platform = "windows"
 
 [version_assumption_audit]
-# Repo-relative source families whose CPython-version literals must stay routed
-# through TargetPythonVersion or be reported as explicit operational/scattered
-# assumptions. This is the source authority for the generated audit, rather
-# than a hidden root list in the producer.
+# Repo-relative source families for the raw lexical version inventory, including
+# older/future Python 3 minors. Text-marker classifications flag review sites;
+# they do not prove authority routing, target support or semantic conformance.
+# TargetPythonVersion owns supported-target admission. This list owns scan scope.
 source_roots = ["src", "runtime", "config", "tools"]
 
 [[verified]]

@@ -24,6 +24,8 @@ def test_capture_bytes_and_identity_share_one_stable_read(tmp_path, monkeypatch)
     path = tmp_path / "source.py"
     data = b"# coding: utf-8\nprint('captured')\n"
     path.write_bytes(data)
+    foreign = tmp_path / "foreign.bin"
+    foreign.write_bytes(b"unrelated descriptor traffic")
     opened_paths = []
     read_sizes = []
     original_open = identity.open_stable_regular_file
@@ -37,16 +39,24 @@ def test_capture_bytes_and_identity_share_one_stable_read(tmp_path, monkeypatch)
             return self.stream.read(size)
 
     @contextmanager
-    def counted_open(path, **kwargs):
-        opened_paths.append(path)
-        with original_open(path, **kwargs) as opened:
-            yield replace(opened, stream=CountedStream(opened.stream))
+    def counted_open(candidate, **kwargs):
+        subject = Path(candidate) == path
+        if subject:
+            opened_paths.append(candidate)
+        with original_open(candidate, **kwargs) as opened:
+            yield (
+                replace(opened, stream=CountedStream(opened.stream))
+                if subject
+                else opened
+            )
 
     monkeypatch.setattr(
         identity,
         "open_stable_regular_file",
-        current_thread_only(counted_open, identity.open_stable_regular_file),
+        counted_open,
     )
+    with identity.open_stable_regular_file(foreign, label="foreign") as opened:
+        assert opened.stream.read() == b"unrelated descriptor traffic"
     captured, raw = identity.capture_stable_regular_file(path, label="fixture")
     assert raw == data
     assert captured.path == path
@@ -565,18 +575,23 @@ def test_executable_digest_and_header_share_one_owned_descriptor(tmp_path, monke
     path = tmp_path / "tool.exe"
     data = b"MZ00payload"
     path.write_bytes(data)
+    foreign = tmp_path / "foreign.bin"
+    foreign.write_bytes(b"unrelated descriptor traffic")
     opened = []
     descriptor = identity.open_stable_read_descriptor
 
-    def open_descriptor(path):
-        opened.append(path)
-        return descriptor(path)
+    def open_descriptor(candidate):
+        if Path(candidate) == path:
+            opened.append(candidate)
+        return descriptor(candidate)
 
     monkeypatch.setattr(
         identity,
         "open_stable_read_descriptor",
-        current_thread_only(open_descriptor, identity.open_stable_read_descriptor),
+        open_descriptor,
     )
+    with identity.open_stable_regular_file(foreign, label="foreign") as foreign_opened:
+        assert foreign_opened.stream.read() == b"unrelated descriptor traffic"
     lexical, resolved, size, digest, header = identity._stable_file_content(
         path, label="fixture"
     )
@@ -597,11 +612,14 @@ def test_version_probe_hashes_once_and_closes_generation_fence(
     path = tmp_path / "tool.exe"
     data = b"MZ" + b"0" * 64
     path.write_bytes(data)
+    foreign = tmp_path / "foreign.bin"
+    foreign.write_bytes(b"unrelated descriptor traffic")
     calls = []
     capture = identity.stable_regular_file_handle_identity
 
     def counted(opened, **kwargs):
-        calls.append(opened.path)
+        if opened.path == path:
+            calls.append(opened.path)
         return capture(opened, **kwargs)
 
     def run(argv, **kwargs):
@@ -614,7 +632,13 @@ def test_version_probe_hashes_once_and_closes_generation_fence(
     monkeypatch.setattr(
         identity,
         "stable_regular_file_handle_identity",
-        current_thread_only(counted, identity.stable_regular_file_handle_identity),
+        counted,
+    )
+    with identity.open_stable_regular_file(foreign, label="foreign") as opened:
+        observed = identity.stable_regular_file_handle_identity(opened, label="foreign")
+        assert opened.stream.read() == b"unrelated descriptor traffic"
+    assert (
+        observed.sha256 == hashlib.sha256(b"unrelated descriptor traffic").hexdigest()
     )
     install_module_view(
         monkeypatch,
@@ -648,17 +672,26 @@ def test_native_content_and_cargo_custody_share_one_hash_authority(
 
     path = tmp_path / "tool.exe"
     path.write_bytes(header + b"payload")
+    foreign = tmp_path / "foreign.bin"
+    foreign.write_bytes(b"unrelated descriptor traffic")
     capture = identity.stable_regular_file_handle_identity
     calls = []
 
     def counted(opened, **kwargs):
-        calls.append(opened.path)
+        if opened.path == path:
+            calls.append(opened.path)
         return capture(opened, **kwargs)
 
     monkeypatch.setattr(
         identity,
         "stable_regular_file_handle_identity",
-        current_thread_only(counted, identity.stable_regular_file_handle_identity),
+        counted,
+    )
+    with identity.open_stable_regular_file(foreign, label="foreign") as opened:
+        observed = identity.stable_regular_file_handle_identity(opened, label="foreign")
+        assert opened.stream.read() == b"unrelated descriptor traffic"
+    assert (
+        observed.sha256 == hashlib.sha256(b"unrelated descriptor traffic").hexdigest()
     )
     content = identity.native_executable_content_identity(path, label="fixture")
     assert calls == [path]
@@ -832,6 +865,8 @@ def test_attested_read_checks_content_with_one_owned_read(
 ):
     path = tmp_path / "payload"
     path.write_bytes(b"before")
+    foreign = tmp_path / "foreign.bin"
+    foreign.write_bytes(b"unrelated descriptor traffic")
     captured = identity.stable_regular_file_identity(path, label="fixture")
     if mutate:
         before = path.stat()
@@ -859,16 +894,24 @@ def test_attested_read_checks_content_with_one_owned_read(
             return self.stream.read(size)
 
     @contextmanager
-    def counted_open(path, **kwargs):
-        opens.append(path)
-        with open_stable(path, **kwargs) as opened:
-            yield replace(opened, stream=CountedStream(opened.stream))
+    def counted_open(candidate, **kwargs):
+        subject = Path(candidate) == path
+        if subject:
+            opens.append(candidate)
+        with open_stable(candidate, **kwargs) as opened:
+            yield (
+                replace(opened, stream=CountedStream(opened.stream))
+                if subject
+                else opened
+            )
 
     monkeypatch.setattr(
         identity,
         "open_stable_regular_file",
-        current_thread_only(counted_open, identity.open_stable_regular_file),
+        counted_open,
     )
+    with identity.open_stable_regular_file(foreign, label="foreign") as opened:
+        assert opened.stream.read() == b"unrelated descriptor traffic"
     if mutate:
         with pytest.raises(
             identity.StableRegularFileChangedError, match="content changed"
@@ -1370,15 +1413,22 @@ def test_digest_cache_never_records_a_racy_file(
     cache = identity.FileDigestCache(store, max_age_ns=10**18)
     cache.identity(header, label="header")
     cache.flush()
+    foreign = tmp_path / "foreign.bin"
+    foreign.write_bytes(b"unrelated descriptor traffic")
 
     hashed = []
     original = identity.stable_regular_file_identity
 
     def counted(path, **kwargs):
-        hashed.append(path)
+        if Path(path) == header:
+            hashed.append(path)
         return original(path, **kwargs)
 
     monkeypatch.setattr(identity, "stable_regular_file_identity", counted)
+    observed = identity.stable_regular_file_identity(foreign, label="foreign")
+    assert (
+        observed.sha256 == hashlib.sha256(b"unrelated descriptor traffic").hexdigest()
+    )
     identity.FileDigestCache(store, max_age_ns=10**18).identity(header, label="header")
 
     assert hashed == [header]

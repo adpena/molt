@@ -38,14 +38,18 @@ def test_snapshot_decodes_one_captured_generation(
 ) -> None:
     path = tmp_path / "source.py"
     path.write_bytes(content)
+    foreign = tmp_path / "foreign.bin"
+    foreign.write_bytes(b"unrelated descriptor traffic")
     read_bytes = Path.read_bytes
     reads: list[Path] = []
 
     def counted_read(self: Path) -> bytes:
-        reads.append(self)
+        if self == path:
+            reads.append(self)
         return read_bytes(self)
 
     monkeypatch.setattr(Path, "read_bytes", counted_read)
+    assert foreign.read_bytes() == b"unrelated descriptor traffic"
     snapshot = PythonSourceSnapshot.capture(path)
     assert snapshot.content == content
     assert snapshot.text == expected
