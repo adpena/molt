@@ -3792,6 +3792,7 @@
     "io_class": "molt_io_class",
     "io_default_buffer_size": "molt_io_default_buffer_size",
     "io_member_get": "molt_io_member_get",
+    "io_text_encoding": "molt_io_text_encoding",
     "io_wait": "molt_io_wait",
     "io_wait_new": "molt_io_wait_new",
     "ipaddress_drop": "molt_ipaddress_drop",

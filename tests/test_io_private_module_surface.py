@@ -46,6 +46,7 @@ _resolver = install_registry({{
     "molt_function_set_builtin": lambda function: _promotions.append((function.__name__, function.__text_signature__)),
     "molt_io_class": _io_class,
     "molt_io_default_buffer_size": lambda: _host_native_io.DEFAULT_BUFFER_SIZE,
+    "molt_io_text_encoding": _host_native_io.text_encoding,
     "molt_builtin_class_lookup": _builtin_class_lookup,
 }})
 _resolve = _resolver.require_intrinsic
@@ -142,7 +143,7 @@ checks = {{
         and _without_open_public.StringIO("memory").read() == "memory"
     ),
     "intrinsics": _intrinsic_requests
-    == ["molt_io_class", "molt_builtin_class_lookup", "molt_io_default_buffer_size", "molt_function_set_builtin"] * 2,
+    == ["molt_io_class", "molt_builtin_class_lookup", "molt_io_default_buffer_size", "molt_io_text_encoding", "molt_function_set_builtin"] * 2,
     "promotion": _promotions == [("text_encoding", "($module, encoding, stacklevel=2, /)")] * 2,
     "unsupported_operation": (
         _private.UnsupportedOperation.__module__ == "io"
@@ -212,6 +213,12 @@ def test__io_public_surface_matches_expected_shape() -> None:
 
 @pytest.mark.parametrize("buffer_size", [8192, 131072])
 def test_text_encoding_public_contract_and_warning_frames(monkeypatch, buffer_size):
+    """`_io` delegates to the runtime's CPython rule; `_pyio` keeps the pure one.
+
+    The runtime implements `_io.text_encoding` (encoding, warning and stack
+    level) and runtime tests prove it; here the wrapper must hand it the call
+    unchanged, carry the CPython signature and import nothing.
+    """
     import _io as native_io
     import importlib.util
     import warnings
@@ -220,9 +227,16 @@ def test_text_encoding_public_contract_and_warning_frames(monkeypatch, buffer_si
     from tests.stdlib_intrinsic_registry import intrinsic_registry
 
     promotions = []
+    calls = []
+
+    def native_text_encoding(encoding, stacklevel):
+        calls.append((encoding, stacklevel))
+        return "native"
+
     hooks = {
         "molt_io_class": lambda name: getattr(native_io, name),
         "molt_io_default_buffer_size": lambda: buffer_size,
+        "molt_io_text_encoding": native_text_encoding,
         "molt_builtin_class_lookup": lambda name: getattr(native_io, name),
         "molt_function_set_builtin": lambda function: promotions.append(function),
     }
@@ -239,6 +253,24 @@ def test_text_encoding_public_contract_and_warning_frames(monkeypatch, buffer_si
         private.text_encoding.__text_signature__
         == "($module, encoding, stacklevel=2, /)"
     )
+    # A core-closure facade binds intrinsics only; an import statement would
+    # give every program the runtime import machinery (HF-F269).
+    import ast
+
+    tree = ast.parse((STDLIB_ROOT / "_io.py").read_text(encoding="utf-8"))
+    assert [
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, (ast.Import, ast.ImportFrom))
+        and not (isinstance(node, ast.ImportFrom) and node.module == "_intrinsics")
+    ] == []
+
+    sentinel = object()
+    assert private.text_encoding(sentinel) == "native"
+    assert private.text_encoding(None, sentinel) == "native"
+    assert calls == [(sentinel, 2), (None, sentinel)]
+    with pytest.raises(TypeError):
+        private.text_encoding(encoding=None)
 
     with monkeypatch.context() as patch, intrinsic_registry(hooks):
         patch.setitem(sys.modules, "_io", private)
@@ -255,45 +287,22 @@ def test_text_encoding_public_contract_and_warning_frames(monkeypatch, buffer_si
 
     assert pure.DEFAULT_BUFFER_SIZE == buffer_size
 
-    sentinel = object()
     for utf8_mode, expected in ((0, "locale"), (1, "utf-8")):
         flags = SimpleNamespace(utf8_mode=utf8_mode, warn_default_encoding=0)
-        monkeypatch.setattr(private, "_sys", SimpleNamespace(flags=flags))
         monkeypatch.setattr(pure, "sys", SimpleNamespace(flags=flags))
-        assert private.text_encoding(None) == pure.text_encoding(None) == expected
-        assert private.text_encoding(sentinel) is sentinel
+        assert pure.text_encoding(None) == expected
         assert pure.text_encoding(encoding=sentinel, stacklevel=object()) is sentinel
-    with pytest.raises(TypeError):
-        private.text_encoding(encoding=None)
-    for value, error in (
-        (1.0, TypeError),
-        (2**31, OverflowError),
-        (-(2**31) - 1, OverflowError),
-    ):
-        with pytest.raises(error):
-            private.text_encoding("explicit", value)
-
-    class StackLevel:
-        def __index__(self):
-            return 1
-
-    assert private.text_encoding("explicit", StackLevel()) == "explicit"
 
     flags = SimpleNamespace(utf8_mode=0, warn_default_encoding=1)
-    monkeypatch.setattr(private, "_sys", SimpleNamespace(flags=flags))
     monkeypatch.setattr(pure, "sys", SimpleNamespace(flags=flags))
-    for function in (private.text_encoding, pure.text_encoding):
-        for level in (-1, 0, 1):
-            with warnings.catch_warnings(record=True) as caught:
-                warnings.simplefilter("always")
-                function(None, level)
-            assert len(caught) == 1
-            warning = caught[0]
-            assert warning.category is EncodingWarning
-            assert str(warning.message) == "'encoding' argument not specified."
-            expected_path = (
-                STDLIB_ROOT / "_pyio.py"
-                if function is pure.text_encoding and level <= 0
-                else Path(__file__)
-            )
-            assert Path(warning.filename) == expected_path
+    for level in (-1, 0, 1):
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            pure.text_encoding(None, level)
+        assert len(caught) == 1
+        warning = caught[0]
+        assert warning.category is EncodingWarning
+        # CPython's pure module ends the sentence; its C module does not.
+        assert str(warning.message) == "'encoding' argument not specified."
+        expected_path = STDLIB_ROOT / "_pyio.py" if level <= 0 else Path(__file__)
+        assert Path(warning.filename) == expected_path

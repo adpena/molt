@@ -5619,6 +5619,11 @@ pub(crate) const RUNTIME_CALLABLE_IMPORTS: &[RuntimeCallableImportSpec] = &[
         arity: 0,
     },
     RuntimeCallableImportSpec {
+        runtime_name: "molt_io_text_encoding",
+        import: WasmRuntimeImport::IoTextEncoding,
+        arity: 2,
+    },
+    RuntimeCallableImportSpec {
         runtime_name: "molt_file_open_ex",
         import: WasmRuntimeImport::FileOpenEx,
         arity: 8,
@@ -13885,6 +13890,7 @@ pub(crate) fn runtime_callable_import(runtime_name: &str) -> Option<WasmRuntimeI
         "molt_glob_iter" => Some(WasmRuntimeImport::GlobIter),
         "molt_io_class" => Some(WasmRuntimeImport::IoClass),
         "molt_io_default_buffer_size" => Some(WasmRuntimeImport::IoDefaultBufferSize),
+        "molt_io_text_encoding" => Some(WasmRuntimeImport::IoTextEncoding),
         "molt_file_open_ex" => Some(WasmRuntimeImport::FileOpenEx),
         "molt_file_read1" => Some(WasmRuntimeImport::FileRead1),
         "molt_file_readall" => Some(WasmRuntimeImport::FileReadall),

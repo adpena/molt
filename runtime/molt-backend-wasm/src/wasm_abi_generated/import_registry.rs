@@ -7595,6 +7595,11 @@ pub(crate) const IMPORT_REGISTRY: &[RuntimeImportSpec] = &[
         type_idx: 0,
     },
     RuntimeImportSpec {
+        import: WasmRuntimeImport::IoTextEncoding,
+        name: "io_text_encoding",
+        type_idx: 3,
+    },
+    RuntimeImportSpec {
         import: WasmRuntimeImport::FileOpenEx,
         name: "file_open_ex",
         type_idx: 28,
@@ -17354,6 +17359,8 @@ pub(crate) fn wasm_runtime_import(name: &str) -> Option<WasmRuntimeImport> {
         "molt_io_class" => Some(WasmRuntimeImport::IoClass),
         "io_default_buffer_size" => Some(WasmRuntimeImport::IoDefaultBufferSize),
         "molt_io_default_buffer_size" => Some(WasmRuntimeImport::IoDefaultBufferSize),
+        "io_text_encoding" => Some(WasmRuntimeImport::IoTextEncoding),
+        "molt_io_text_encoding" => Some(WasmRuntimeImport::IoTextEncoding),
         "file_open_ex" => Some(WasmRuntimeImport::FileOpenEx),
         "molt_file_open_ex" => Some(WasmRuntimeImport::FileOpenEx),
         "file_read1" => Some(WasmRuntimeImport::FileRead1),

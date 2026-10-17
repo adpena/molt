@@ -5,6 +5,59 @@ pub extern "C" fn molt_io_default_buffer_size() -> u64 {
     crate::with_gil_entry_nopanic!(py, { MoltObject::from_int(default_buffer_size(py)).bits() })
 }
 
+/// `_io.text_encoding(encoding, stacklevel=2, /)`, as CPython's
+/// Modules/_io/_iomodule.c defines it for every supported target: an explicit
+/// encoding returns unchanged; otherwise an EncodingWarning under
+/// `-X warn_default_encoding`, then "utf-8" in UTF-8 mode or "locale". The
+/// startup flags and warning engine are the ones `open` and `TextIOWrapper`
+/// use. The `_io` wrapper that carries the CPython signature is one Python
+/// frame, so a CPython level of 0 or 1 (the caller) is level 2 here.
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_io_text_encoding(encoding_bits: u64, stacklevel_bits: u64) -> u64 {
+    crate::with_gil_entry_nopanic!(_py, {
+        // Argument Clinic converts `int stacklevel` before reading `encoding`.
+        let Some(stacklevel) = crate::builtins::numbers::index_c_int_from_obj(_py, stacklevel_bits)
+        else {
+            return MoltObject::none().bits();
+        };
+        if !obj_from_bits(encoding_bits).is_none() {
+            inc_ref_bits(_py, encoding_bits);
+            return encoding_bits;
+        }
+        let (warn_default_encoding, utf8_mode) = {
+            let startup = crate::builtins::platform::startup_encoding(_py);
+            (startup.warn_default_encoding, startup.utf8_mode)
+        };
+        if warn_default_encoding {
+            let category =
+                crate::builtins::exceptions::exception_type_bits_from_name(_py, "EncodingWarning");
+            let message_ptr = alloc_string(_py, b"'encoding' argument not specified");
+            if category == 0 || message_ptr.is_null() {
+                return MoltObject::none().bits();
+            }
+            let message = crate::builtins::exceptions::ExceptionValue::adopt(
+                _py,
+                MoltObject::from_ptr(message_ptr).bits(),
+            );
+            let level = i64::from(stacklevel.max(1)) + 1;
+            if !crate::builtins::warnings_ext::emit_warning_object(
+                _py,
+                message.bits(),
+                category,
+                level,
+            ) {
+                return MoltObject::none().bits();
+            }
+        }
+        let selector: &[u8] = if utf8_mode { b"utf-8" } else { b"locale" };
+        let ptr = alloc_string(_py, selector);
+        if ptr.is_null() {
+            return MoltObject::none().bits();
+        }
+        MoltObject::from_ptr(ptr).bits()
+    })
+}
+
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_io_class(name_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {

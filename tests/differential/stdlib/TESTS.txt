@@ -1334,6 +1334,7 @@ tests/differential/stdlib/io_stringio_newline.py
 tests/differential/stdlib/io_stringio_seek_tell.py
 tests/differential/stdlib/io_text_encoding_charmap.py
 tests/differential/stdlib/io_text_encoding_cp1252.py
+tests/differential/stdlib/io_text_encoding_native.py
 tests/differential/stdlib/io_text_encoding_utf8_sig.py
 tests/differential/stdlib/io_text_encodings_utf16_utf32.py
 tests/differential/stdlib/io_text_seek_cookie.py

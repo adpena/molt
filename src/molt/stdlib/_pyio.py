@@ -21,7 +21,6 @@ else:
 
 import io
 from io import __all__, SEEK_SET, SEEK_CUR, SEEK_END
-from _io import _default_text_encoding
 from _intrinsics import require_intrinsic as _require_intrinsic
 
 # Derive the target default from the runtime, independently of mutable module
@@ -64,7 +63,10 @@ def text_encoding(encoding, stacklevel=2):
     However, please consider using encoding="utf-8" for new APIs.
     """
     if encoding is None:
-        encoding = _default_text_encoding()
+        if sys.flags.utf8_mode:
+            encoding = "utf-8"
+        else:
+            encoding = "locale"
         if sys.flags.warn_default_encoding:
             import warnings
 

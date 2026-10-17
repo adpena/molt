@@ -159,6 +159,10 @@ pub(super) fn resolve_symbol(symbol: &str) -> Option<u64> {
             "crate::molt_io_default_buffer_size",
             crate::molt_io_default_buffer_size as *const (),
         )),
+        "molt_io_text_encoding" => Some(crate::builtins::functions::runtime_fn_addr(
+            "crate::molt_io_text_encoding",
+            crate::molt_io_text_encoding as *const (),
+        )),
         "molt_io_member_get" => Some(crate::builtins::functions::runtime_fn_addr(
             "crate::molt_io_member_get",
             crate::molt_io_member_get as *const (),
