@@ -22,6 +22,8 @@ from tests.cli.native_link_test_support import write_test_static_archive
 from tests.runtime_build_identity_helper import (
     native_runtime_staticlib_identity,
     runtime_cargo_plan,
+    runtime_cargo_unit_stdout,
+    write_runtime_crate,
 )
 
 
@@ -140,15 +142,7 @@ def test_native_selection_does_not_admit_incomplete_or_redirected_receipt(tmp_pa
 
 @pytest.fixture
 def native_build(tmp_path, runtime_fixture_root, monkeypatch):
-    crate = tmp_path / "runtime" / "molt-runtime"
-    source = crate / "src" / "lib.rs"
-    source.parent.mkdir(parents=True)
-    source.write_bytes(b"before")
-    (crate / "Cargo.toml").write_text(
-        '[package]\nname = "molt-runtime"\nversion = "0.1.0"\n'
-        'edition = "2024"\n[lib]\ncrate-type = ["staticlib"]\n',
-        encoding="utf-8",
-    )
+    source = write_runtime_crate(tmp_path)
     captures = []
     commands = []
     plans = []
@@ -203,35 +197,11 @@ def native_build(tmp_path, runtime_fixture_root, monkeypatch):
         write_test_static_archive(
             scratch, payload=repr((source.read_bytes(), captures[-1])).encode()
         )
-        # Cargo's per-unit output owns its dep-info; the uplifted scratch
-        # archive remains the generation publisher's input. Keep the real
-        # coverage reader and canonical runtime source roots in this fixture.
-        unit = scratch.parent / "deps" / "libmolt_runtime-0123456789abcdef.a"
-        unit.parent.mkdir(parents=True, exist_ok=True)
-        unit.write_bytes(scratch.read_bytes())
-        (unit.parent / "molt_runtime-0123456789abcdef.d").write_text(
-            f"{unit.name}: runtime/molt-runtime/src/lib.rs\n",
-            encoding="utf-8",
-        )
-        artifact = {
-            "reason": "compiler-artifact",
-            "package_id": f"path+{crate.resolve().as_uri()}#0.1.0",
-            "manifest_path": os.fspath(crate / "Cargo.toml"),
-            "target": {
-                "kind": ["staticlib"],
-                "crate_types": ["staticlib"],
-                "name": "molt_runtime",
-                "src_path": os.fspath(source),
-            },
-            "filenames": [os.fspath(unit)],
-            "executable": None,
-            "fresh": False,
-        }
         return CargoExecutionResult(
             subprocess.CompletedProcess(
                 plan.command,
                 0,
-                json.dumps(artifact) + "\n",
+                runtime_cargo_unit_stdout(tmp_path, scratch),
                 "note: native-static-libs: -lc\n",
             ),
             attempts=(),

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import os
 import shutil
 import sys
@@ -796,3 +797,48 @@ def runtime_cargo_plan(
         installation,
         _cargo_build_directory_base(root, environment),
     ).with_build_directory()
+
+
+def write_runtime_crate(project_root: Path, source: bytes = b"before") -> Path:
+    """A molt-runtime crate whose source closure the runtime identity resolves."""
+    crate = project_root / "runtime" / "molt-runtime"
+    path = crate / "src" / "lib.rs"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(source)
+    (crate / "Cargo.toml").write_text(
+        '[package]\nname = "molt-runtime"\nversion = "0.1.0"\n'
+        'edition = "2024"\n[lib]\ncrate-type = ["staticlib"]\n',
+        encoding="utf-8",
+    )
+    return path
+
+
+def runtime_cargo_unit_stdout(project_root: Path, scratch: Path) -> str:
+    """Cargo's message for the molt-runtime unit that wrote ``scratch``.
+
+    Cargo's per-unit output owns its dep-info; the uplifted scratch archive
+    remains the generation publisher's input, so the real coverage reader and
+    the canonical runtime source roots both run.
+    """
+    crate = project_root / "runtime" / "molt-runtime"
+    unit = scratch.parent / "deps" / "libmolt_runtime-0123456789abcdef.a"
+    unit.parent.mkdir(parents=True, exist_ok=True)
+    unit.write_bytes(scratch.read_bytes() if scratch.exists() else b"")
+    (unit.parent / "molt_runtime-0123456789abcdef.d").write_text(
+        f"{unit.name}: runtime/molt-runtime/src/lib.rs\n", encoding="utf-8"
+    )
+    artifact = {
+        "reason": "compiler-artifact",
+        "package_id": f"path+{crate.resolve().as_uri()}#0.1.0",
+        "manifest_path": os.fspath(crate / "Cargo.toml"),
+        "target": {
+            "kind": ["staticlib"],
+            "crate_types": ["staticlib"],
+            "name": "molt_runtime",
+            "src_path": os.fspath(crate / "src" / "lib.rs"),
+        },
+        "filenames": [os.fspath(unit)],
+        "executable": None,
+        "fresh": False,
+    }
+    return json.dumps(artifact) + "\n"
