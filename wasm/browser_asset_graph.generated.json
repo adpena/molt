@@ -179,7 +179,7 @@
       "reference_facts": [],
       "references": [],
       "role": "shared",
-      "sha256": "25398fbd305afbb2a5638db4aa90b4db1c3f8953e830ba04b7dbe25a7f082fd3",
+      "sha256": "b1b246ebe427d4a86ce83ffd7cf9dbb00680a70d2f50bb9b93ddd7f66f438655",
       "source_type": "script"
     },
     "host_capabilities_generated.js": {
@@ -188,7 +188,7 @@
       "reference_facts": [],
       "references": [],
       "role": "browser",
-      "sha256": "da2d7274d391157f4b7647e255d226fdc215cb884ae44675e0c4c4e665fa2ba6",
+      "sha256": "6b5480f58c256847af417ba0fff058a3ef43fff88450d1ce7a17b48e58ac84da",
       "source_type": "module"
     },
     "loader_bridge.js": {
@@ -401,7 +401,7 @@
       "reference_facts": [],
       "references": [],
       "role": "node",
-      "sha256": "cf0f615b2949594925a9e3ed6c40bd9564763c429ed57b4892a785f0038e7e80",
+      "sha256": "f6c9b888d801134357607bc6d20bd0ff8152985840b5575acd178637eaa52d3b",
       "source_type": "data"
     }
   },

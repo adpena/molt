@@ -5023,6 +5023,11 @@ pub const RUNTIME_CALLABLE_ABIS: &[RuntimeCallableAbi] = &[
         trampoline_abi: RuntimeCallableTrampolineAbi::UnpackArgs,
     },
     RuntimeCallableAbi {
+        symbol: "molt_importlib_admit_spec",
+        arity: 2,
+        trampoline_abi: RuntimeCallableTrampolineAbi::UnpackArgs,
+    },
+    RuntimeCallableAbi {
         symbol: "molt_importlib_bootstrap_payload",
         arity: 2,
         trampoline_abi: RuntimeCallableTrampolineAbi::UnpackArgs,
@@ -5050,6 +5055,11 @@ pub const RUNTIME_CALLABLE_ABIS: &[RuntimeCallableAbi] = &[
     RuntimeCallableAbi {
         symbol: "molt_importlib_compiled_loader_exec_module",
         arity: 2,
+        trampoline_abi: RuntimeCallableTrampolineAbi::UnpackArgs,
+    },
+    RuntimeCallableAbi {
+        symbol: "molt_importlib_compiled_loader_find_spec",
+        arity: 4,
         trampoline_abi: RuntimeCallableTrampolineAbi::UnpackArgs,
     },
     RuntimeCallableAbi {
@@ -5098,18 +5108,8 @@ pub const RUNTIME_CALLABLE_ABIS: &[RuntimeCallableAbi] = &[
         trampoline_abi: RuntimeCallableTrampolineAbi::UnpackArgs,
     },
     RuntimeCallableAbi {
-        symbol: "molt_importlib_filefinder_invalidate",
-        arity: 1,
-        trampoline_abi: RuntimeCallableTrampolineAbi::UnpackArgs,
-    },
-    RuntimeCallableAbi {
         symbol: "molt_importlib_find_in_path_package_context",
         arity: 2,
-        trampoline_abi: RuntimeCallableTrampolineAbi::UnpackArgs,
-    },
-    RuntimeCallableAbi {
-        symbol: "molt_importlib_find_spec_orchestrate",
-        arity: 5,
         trampoline_abi: RuntimeCallableTrampolineAbi::UnpackArgs,
     },
     RuntimeCallableAbi {
@@ -5145,11 +5145,6 @@ pub const RUNTIME_CALLABLE_ABIS: &[RuntimeCallableAbi] = &[
     RuntimeCallableAbi {
         symbol: "molt_importlib_import_transaction",
         arity: 5,
-        trampoline_abi: RuntimeCallableTrampolineAbi::UnpackArgs,
-    },
-    RuntimeCallableAbi {
-        symbol: "molt_importlib_invalidate_caches",
-        arity: 0,
         trampoline_abi: RuntimeCallableTrampolineAbi::UnpackArgs,
     },
     RuntimeCallableAbi {
@@ -5230,11 +5225,6 @@ pub const RUNTIME_CALLABLE_ABIS: &[RuntimeCallableAbi] = &[
     RuntimeCallableAbi {
         symbol: "molt_importlib_package_root_from_origin",
         arity: 1,
-        trampoline_abi: RuntimeCallableTrampolineAbi::UnpackArgs,
-    },
-    RuntimeCallableAbi {
-        symbol: "molt_importlib_pathfinder_find_spec",
-        arity: 3,
         trampoline_abi: RuntimeCallableTrampolineAbi::UnpackArgs,
     },
     RuntimeCallableAbi {
@@ -5464,6 +5454,11 @@ pub const RUNTIME_CALLABLE_ABIS: &[RuntimeCallableAbi] = &[
     },
     RuntimeCallableAbi {
         symbol: "molt_importlib_validate_resource_name",
+        arity: 1,
+        trampoline_abi: RuntimeCallableTrampolineAbi::UnpackArgs,
+    },
+    RuntimeCallableAbi {
+        symbol: "molt_importlib_zip_archive_path",
         arity: 1,
         trampoline_abi: RuntimeCallableTrampolineAbi::UnpackArgs,
     },

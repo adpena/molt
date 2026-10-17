@@ -18,6 +18,10 @@ _MoltLoader, BuiltinImporter, FrozenImporter = _require_intrinsic(
 
 _LoaderBasics = _MoltLoader
 _MOLT_LOADER = _require_intrinsic("molt_importlib_compiled_loader")()
+_MOLT_IMPORTLIB_ADMIT_SPEC = _require_intrinsic("molt_importlib_admit_spec")
+_MOLT_IMPORTLIB_FILEFINDER_FIND_SPEC = _require_intrinsic(
+    "molt_importlib_filefinder_find_spec"
+)
 
 
 SOURCE_SUFFIXES = [".py"]
@@ -401,20 +405,60 @@ def _raise_loader_pending_exception() -> None:
 
 class PathFinder:
     @classmethod
-    def find_spec(
-        cls,
-        fullname: str,
-        path: object | None = None,
-        target: object | None = None,
-    ):
-        del cls, target
-        _ensure_intrinsics()
-        import sys as _sys
+    def find_spec(cls, fullname, path=None, target=None):
+        if path is None:
+            path = _sys.path
+        portions = None
+        for entry in path:
+            if not isinstance(entry, str):
+                continue
+            if entry == "":
+                import os
 
-        machinery_module = _sys.modules.get(__name__)
-        if machinery_module is None:
-            raise RuntimeError("importlib.machinery module unavailable")
-        return _MOLT_IMPORTLIB_PATHFINDER_FIND_SPEC(fullname, path, machinery_module)
+                try:
+                    entry = os.getcwd()
+                except FileNotFoundError:
+                    continue
+            try:
+                finder = _sys.path_importer_cache[entry]
+            except KeyError:
+                finder = None
+                for hook in _sys.path_hooks:
+                    try:
+                        finder = hook(entry)
+                    except ImportError:
+                        continue
+                    break
+                _sys.path_importer_cache[entry] = finder
+            if finder is None:
+                continue
+            spec = finder.find_spec(fullname, target)
+            if spec is None:
+                continue
+            _MOLT_IMPORTLIB_ADMIT_SPEC(fullname, spec)
+            if spec.loader is not None:
+                return spec
+            locations = spec.submodule_search_locations
+            if locations is None:
+                raise ImportError("spec missing loader")
+            if portions is None:
+                portions = []
+            portions.extend(locations)
+        if portions:
+            spec = ModuleSpec(fullname, None)
+            spec.submodule_search_locations = portions
+            return spec
+        return None
+
+    @staticmethod
+    def invalidate_caches():
+        import os
+
+        for path, finder in list(_sys.path_importer_cache.items()):
+            if finder is None or not os.path.isabs(path):
+                del _sys.path_importer_cache[path]
+            elif hasattr(finder, "invalidate_caches"):
+                finder.invalidate_caches()
 
 
 class FileFinder:
@@ -428,17 +472,16 @@ class FileFinder:
     @classmethod
     def path_hook(cls, *loader_details):
         def _path_hook(path: str):
-            if not isinstance(path, str):
-                raise ImportError("only str paths are supported")
+            import os
+
+            if not isinstance(path, str) or not os.path.isdir(path):
+                raise ImportError("only directories are supported", path=path)
             return cls(path, *loader_details)
 
         return _path_hook
 
     def find_spec(self, fullname: str, target: object | None = None):
         del target
-        _ensure_intrinsics()
-        import sys as _sys
-
         machinery_module = _sys.modules.get(__name__)
         if machinery_module is None:
             raise RuntimeError("importlib.machinery module unavailable")
@@ -447,14 +490,33 @@ class FileFinder:
         )
 
     def invalidate_caches(self) -> None:
-        _ensure_intrinsics()
-        result = _MOLT_IMPORTLIB_FILEFINDER_INVALIDATE(self.path)
-        if result is not None:
-            raise RuntimeError(
-                "invalid importlib filefinder invalidate intrinsic result: expected None"
-            )
+        # The native leaf has no directory-result cache. PathFinder owns the
+        # separate path-to-finder cache and never re-enters it from this leaf.
         return None
 
+def _zip_path_hook(path):
+    # Import archive machinery only when this path can name an archive. The
+    # constructor verifies the file; a directory named *.zip still reaches the
+    # directory hook after the archive hook rejects it.
+    lower = path.lower().replace("\\", "/")
+    if not any(
+        lower.endswith(suffix) or suffix + "/" in lower
+        for suffix in (".zip", ".whl", ".egg")
+    ):
+        raise ImportError("not an archive path")
+    from zipimport import zipimporter
+
+    return zipimporter(path)
+
+
+_default_path_hooks = [
+    _zip_path_hook,
+    FileFinder.path_hook(
+        (ExtensionFileLoader, EXTENSION_SUFFIXES),
+        (SourceFileLoader, SOURCE_SUFFIXES),
+        (SourcelessFileLoader, BYTECODE_SUFFIXES),
+    ),
+]
 
 class NamespaceLoader:
     def __init__(self, name: str, path, path_finder=None) -> None:
@@ -520,9 +582,6 @@ def _validate_resource_name(resource: str) -> str:
 
 
 _MOLT_IMPORTLIB_READ_FILE = None
-_MOLT_IMPORTLIB_PATHFINDER_FIND_SPEC = None
-_MOLT_IMPORTLIB_FILEFINDER_FIND_SPEC = None
-_MOLT_IMPORTLIB_FILEFINDER_INVALIDATE = None
 _MOLT_IMPORTLIB_SOURCEFILELOADER_EXEC_MODULE = None
 _MOLT_IMPORTLIB_ZIP_SOURCE_LOADER_EXEC_MODULE = None
 _MOLT_IMPORTLIB_EXTENSION_LOADER_CREATE_MODULE = None
@@ -542,9 +601,6 @@ _MOLT_IMPORTLIB_INTRINSICS_READY = False
 
 def _ensure_intrinsics() -> None:
     global _MOLT_IMPORTLIB_READ_FILE
-    global _MOLT_IMPORTLIB_PATHFINDER_FIND_SPEC
-    global _MOLT_IMPORTLIB_FILEFINDER_FIND_SPEC
-    global _MOLT_IMPORTLIB_FILEFINDER_INVALIDATE
     global _MOLT_IMPORTLIB_SOURCEFILELOADER_EXEC_MODULE
     global _MOLT_IMPORTLIB_ZIP_SOURCE_LOADER_EXEC_MODULE
     global _MOLT_IMPORTLIB_EXTENSION_LOADER_CREATE_MODULE
@@ -563,15 +619,6 @@ def _ensure_intrinsics() -> None:
     if _MOLT_IMPORTLIB_INTRINSICS_READY:
         return
     importlib_read_file = _require_intrinsic("molt_importlib_read_file")
-    importlib_pathfinder_find_spec = _require_intrinsic(
-        "molt_importlib_pathfinder_find_spec"
-    )
-    importlib_filefinder_find_spec = _require_intrinsic(
-        "molt_importlib_filefinder_find_spec"
-    )
-    importlib_filefinder_invalidate = _require_intrinsic(
-        "molt_importlib_filefinder_invalidate"
-    )
     importlib_sourcefileloader_exec_module = _require_intrinsic(
         "molt_importlib_sourcefileloader_exec_module"
     )
@@ -612,9 +659,6 @@ def _ensure_intrinsics() -> None:
     exception_last_pending = _require_intrinsic("molt_exception_last_pending")
 
     _MOLT_IMPORTLIB_READ_FILE = importlib_read_file
-    _MOLT_IMPORTLIB_PATHFINDER_FIND_SPEC = importlib_pathfinder_find_spec
-    _MOLT_IMPORTLIB_FILEFINDER_FIND_SPEC = importlib_filefinder_find_spec
-    _MOLT_IMPORTLIB_FILEFINDER_INVALIDATE = importlib_filefinder_invalidate
     _MOLT_IMPORTLIB_SOURCEFILELOADER_EXEC_MODULE = (
         importlib_sourcefileloader_exec_module
     )

@@ -2802,7 +2802,7 @@ timeout_budget = "cold"
 timeout_env = ["MOLT_CARGO_TIMEOUT", "MOLT_WASM_TEST_TIMEOUT_SEC"]
 cache_domain = "cargo-workspace"
 dependencies = ["wasm.build.backend", "wasm.build.shared-runtime"]
-argv = ["python3", "tools/venv_exec.py", "python3", "-m", "pytest", "-q", "tests/test_wasm_split_runtime.py::test_linked_host_export_attribute_error_does_not_return_none", "tests/test_wasm_runtime_heavy_regressions.py::test_wasm_open_reports_all_missing_grants_before_mutation"]
+argv = ["python3", "tools/venv_exec.py", "python3", "-m", "pytest", "-q", "tests/test_wasm_split_runtime.py::test_linked_host_export_attribute_error_does_not_return_none", "tests/test_wasm_runtime_heavy_regressions.py::test_wasm_open_reports_all_missing_grants_before_mutation", "tests/test_wasm_runtime_heavy_regressions.py::test_wasm_compiled_finder_describes_module_before_initialization"]
 toolchains = ["python", "uv", "node", "rustc", "cargo", "ld.lld", "wasm-ld", "wasm-tools", "wasi-clang", "wasm-opt"]
 cargo_build_python = true
 

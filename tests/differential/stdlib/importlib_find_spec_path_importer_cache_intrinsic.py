@@ -39,17 +39,12 @@ _path_hook.calls = 0
 orig_path_hooks = list(sys.path_hooks)
 orig_path = list(sys.path)
 orig_cache = dict(sys.path_importer_cache)
-spec_cache = getattr(importlib.util, "_SPEC_CACHE", None)
-if isinstance(spec_cache, dict):
-    spec_cache.clear()
 
 try:
     sys.path_hooks[:] = [_path_hook]
     sys.path[:] = ["molt://cache-hook"]
     sys.path_importer_cache.clear()
     spec1 = importlib.util.find_spec("molt_cache_target")
-    if isinstance(spec_cache, dict):
-        spec_cache.clear()
     spec2 = importlib.util.find_spec("molt_cache_target")
     cache_has_entry = "molt://cache-hook" in sys.path_importer_cache
 finally:
@@ -57,8 +52,6 @@ finally:
     sys.path[:] = orig_path
     sys.path_importer_cache.clear()
     sys.path_importer_cache.update(orig_cache)
-    if isinstance(spec_cache, dict):
-        spec_cache.clear()
 
 print(spec1 is not None)
 print(spec2 is not None)

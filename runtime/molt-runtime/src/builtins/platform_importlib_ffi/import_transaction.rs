@@ -25,9 +25,12 @@ pub(super) fn importlib_find_in_path_payload(
         Ok(value) => value,
         Err(bits) => return bits,
     };
-    let Some(resolution) = importlib_find_in_path(&fullname, &search_paths, package_context) else {
-        return MoltObject::none().bits();
-    };
+    let resolution =
+        match importlib_resolve_spec_in_paths(_py, &fullname, &search_paths, package_context) {
+            Ok(Some(resolution)) => resolution,
+            Ok(None) => return MoltObject::none().bits(),
+            Err(bits) => return bits,
+        };
     let origin_bits = match resolution.origin.as_deref() {
         Some(origin) => match alloc_str_bits(_py, origin) {
             Ok(bits) => bits,

@@ -5504,6 +5504,11 @@ pub const RUNTIME_BOXED_ABIS: &[RuntimeBoxedAbi] = &[
         result: RuntimeBoxedReturn::OwnedValue,
     },
     RuntimeBoxedAbi {
+        symbol: "molt_importlib_admit_spec",
+        arity: 2,
+        result: RuntimeBoxedReturn::OwnedValue,
+    },
+    RuntimeBoxedAbi {
         symbol: "molt_importlib_bootstrap_payload",
         arity: 2,
         result: RuntimeBoxedReturn::OwnedValue,
@@ -5531,6 +5536,11 @@ pub const RUNTIME_BOXED_ABIS: &[RuntimeBoxedAbi] = &[
     RuntimeBoxedAbi {
         symbol: "molt_importlib_compiled_loader_exec_module",
         arity: 2,
+        result: RuntimeBoxedReturn::OwnedValue,
+    },
+    RuntimeBoxedAbi {
+        symbol: "molt_importlib_compiled_loader_find_spec",
+        arity: 4,
         result: RuntimeBoxedReturn::OwnedValue,
     },
     RuntimeBoxedAbi {
@@ -5579,18 +5589,8 @@ pub const RUNTIME_BOXED_ABIS: &[RuntimeBoxedAbi] = &[
         result: RuntimeBoxedReturn::OwnedValue,
     },
     RuntimeBoxedAbi {
-        symbol: "molt_importlib_filefinder_invalidate",
-        arity: 1,
-        result: RuntimeBoxedReturn::OwnedValue,
-    },
-    RuntimeBoxedAbi {
         symbol: "molt_importlib_find_in_path_package_context",
         arity: 2,
-        result: RuntimeBoxedReturn::OwnedValue,
-    },
-    RuntimeBoxedAbi {
-        symbol: "molt_importlib_find_spec_orchestrate",
-        arity: 5,
         result: RuntimeBoxedReturn::OwnedValue,
     },
     RuntimeBoxedAbi {
@@ -5621,11 +5621,6 @@ pub const RUNTIME_BOXED_ABIS: &[RuntimeBoxedAbi] = &[
     RuntimeBoxedAbi {
         symbol: "molt_importlib_import_required",
         arity: 1,
-        result: RuntimeBoxedReturn::OwnedValue,
-    },
-    RuntimeBoxedAbi {
-        symbol: "molt_importlib_invalidate_caches",
-        arity: 0,
         result: RuntimeBoxedReturn::OwnedValue,
     },
     RuntimeBoxedAbi {
@@ -5706,11 +5701,6 @@ pub const RUNTIME_BOXED_ABIS: &[RuntimeBoxedAbi] = &[
     RuntimeBoxedAbi {
         symbol: "molt_importlib_package_root_from_origin",
         arity: 1,
-        result: RuntimeBoxedReturn::OwnedValue,
-    },
-    RuntimeBoxedAbi {
-        symbol: "molt_importlib_pathfinder_find_spec",
-        arity: 3,
         result: RuntimeBoxedReturn::OwnedValue,
     },
     RuntimeBoxedAbi {
@@ -5940,6 +5930,11 @@ pub const RUNTIME_BOXED_ABIS: &[RuntimeBoxedAbi] = &[
     },
     RuntimeBoxedAbi {
         symbol: "molt_importlib_validate_resource_name",
+        arity: 1,
+        result: RuntimeBoxedReturn::OwnedValue,
+    },
+    RuntimeBoxedAbi {
+        symbol: "molt_importlib_zip_archive_path",
         arity: 1,
         result: RuntimeBoxedReturn::OwnedValue,
     },
@@ -13079,14 +13074,14 @@ pub fn runtime_boxed_op_abi(kind: &str) -> Option<&'static RuntimeBoxedAbi> {
         "bytes_find_slice" => Some(&RUNTIME_BOXED_ABIS[240]),
         "bytes_startswith" => Some(&RUNTIME_BOXED_ABIS[246]),
         "bytes_startswith_slice" => Some(&RUNTIME_BOXED_ABIS[247]),
-        "string_count" => Some(&RUNTIME_BOXED_ABIS[2165]),
-        "string_count_slice" => Some(&RUNTIME_BOXED_ABIS[2166]),
-        "string_endswith" => Some(&RUNTIME_BOXED_ABIS[2167]),
-        "string_endswith_slice" => Some(&RUNTIME_BOXED_ABIS[2168]),
-        "string_find" => Some(&RUNTIME_BOXED_ABIS[2170]),
-        "string_find_slice" => Some(&RUNTIME_BOXED_ABIS[2171]),
-        "string_startswith" => Some(&RUNTIME_BOXED_ABIS[2193]),
-        "string_startswith_slice" => Some(&RUNTIME_BOXED_ABIS[2194]),
+        "string_count" => Some(&RUNTIME_BOXED_ABIS[2164]),
+        "string_count_slice" => Some(&RUNTIME_BOXED_ABIS[2165]),
+        "string_endswith" => Some(&RUNTIME_BOXED_ABIS[2166]),
+        "string_endswith_slice" => Some(&RUNTIME_BOXED_ABIS[2167]),
+        "string_find" => Some(&RUNTIME_BOXED_ABIS[2169]),
+        "string_find_slice" => Some(&RUNTIME_BOXED_ABIS[2170]),
+        "string_startswith" => Some(&RUNTIME_BOXED_ABIS[2192]),
+        "string_startswith_slice" => Some(&RUNTIME_BOXED_ABIS[2193]),
         _ => None,
     }
 }

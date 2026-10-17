@@ -1064,8 +1064,7 @@ fn extension_spec_boundary_rejects_missing_manifest_sidecar() {
         let search_paths = vec![tmp.to_string_lossy().into_owned()];
 
         crate::with_gil_entry_nopanic!(_py, {
-            let out =
-                importlib_find_spec_payload(_py, &module_name, &search_paths, None, 1, 0, false);
+            let out = importlib_resolve_spec_in_paths(_py, &module_name, &search_paths, false);
             assert!(
                 out.is_err(),
                 "expected spec boundary failure for missing manifest"
@@ -1100,8 +1099,7 @@ fn extension_spec_boundary_rejects_invalid_manifest_payload() {
         let search_paths = vec![tmp.to_string_lossy().into_owned()];
 
         crate::with_gil_entry_nopanic!(_py, {
-            let out =
-                importlib_find_spec_payload(_py, &module_name, &search_paths, None, 1, 0, false);
+            let out = importlib_resolve_spec_in_paths(_py, &module_name, &search_paths, false);
             assert!(
                 out.is_err(),
                 "expected spec boundary failure for invalid manifest"
@@ -1140,10 +1138,9 @@ fn extension_spec_boundary_accepts_valid_manifest() {
         let search_paths = vec![tmp.to_string_lossy().into_owned()];
 
         crate::with_gil_entry_nopanic!(_py, {
-            let payload =
-                importlib_find_spec_payload(_py, &module_name, &search_paths, None, 1, 0, false)
-                    .expect("spec boundary should pass")
-                    .expect("extension spec should resolve");
+            let payload = importlib_resolve_spec_in_paths(_py, &module_name, &search_paths, false)
+                .expect("spec boundary should pass")
+                .expect("extension spec should resolve");
             assert_eq!(payload.loader_kind, "extension");
             assert_eq!(
                 payload.origin.as_deref(),
@@ -1184,8 +1181,7 @@ fn extension_spec_boundary_rejects_manifest_module_mismatch() {
         let search_paths = vec![tmp.to_string_lossy().into_owned()];
 
         crate::with_gil_entry_nopanic!(_py, {
-            let out =
-                importlib_find_spec_payload(_py, &module_name, &search_paths, None, 1, 0, false);
+            let out = importlib_resolve_spec_in_paths(_py, &module_name, &search_paths, false);
             assert!(
                 out.is_err(),
                 "expected spec boundary failure for manifest module mismatch"
@@ -1224,10 +1220,9 @@ fn extension_spec_boundary_revalidates_cache_after_artifact_mutation() {
         let search_paths = vec![tmp.to_string_lossy().into_owned()];
 
         crate::with_gil_entry_nopanic!(_py, {
-            let payload =
-                importlib_find_spec_payload(_py, &module_name, &search_paths, None, 1, 0, false)
-                    .expect("first spec boundary pass should succeed")
-                    .expect("first extension spec should resolve");
+            let payload = importlib_resolve_spec_in_paths(_py, &module_name, &search_paths, false)
+                .expect("first spec boundary pass should succeed")
+                .expect("first extension spec should resolve");
             assert_eq!(payload.loader_kind, "extension");
             assert_eq!(
                 payload.origin.as_deref(),
@@ -1239,8 +1234,7 @@ fn extension_spec_boundary_revalidates_cache_after_artifact_mutation() {
             .expect("mutate extension artifact");
 
         crate::with_gil_entry_nopanic!(_py, {
-            let out =
-                importlib_find_spec_payload(_py, &module_name, &search_paths, None, 1, 0, false);
+            let out = importlib_resolve_spec_in_paths(_py, &module_name, &search_paths, false);
             assert!(
                 out.is_err(),
                 "expected spec boundary failure after extension mutation"
@@ -1824,7 +1818,7 @@ fn importlib_find_in_path_package_context_resolves_submodule() {
 }
 
 #[test]
-fn importlib_find_spec_payload_package_context_prefers_module_root_projection() {
+fn importlib_spec_resolution_preserves_explicit_paths_over_bootstrap_roots() {
     let stamp = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
@@ -1858,6 +1852,7 @@ fn importlib_find_spec_payload_package_context_prefers_module_root_projection() 
     let module_roots = staged_root.to_string_lossy().into_owned();
     let pwd = tmp.to_string_lossy().into_owned();
     let staged_ext_text = staged_ext.to_string_lossy().into_owned();
+    let stale_ext_text = stale_ext.to_string_lossy().into_owned();
     let stale_search_paths = vec![stale_pkg.to_string_lossy().into_owned()];
 
     // Extension capabilities are admitted at cold bootstrap; the projected
@@ -1877,13 +1872,26 @@ fn importlib_find_spec_payload_package_context_prefers_module_root_projection() 
                         sys_bootstrap_state_from_module_file(py, Some(bootstrap_module_file()))
                     });
                     assert!(bootstrap.include_cwd);
-                    let payload_result = importlib_find_spec_payload(
+                    let missing =
+                        importlib_resolve_spec_in_paths(_py, "nativepkg._native", &[], true)
+                            .expect("empty explicit paths");
+                    assert!(
+                        missing.is_none(),
+                        "bootstrap roots must not supply a raw path miss"
+                    );
+                    let stale = importlib_resolve_spec_in_paths(
                         _py,
                         "nativepkg._native",
                         &stale_search_paths,
-                        Some(bootstrap_module_file()),
-                        1,
-                        0,
+                        true,
+                    )
+                    .expect("explicit stale path")
+                    .expect("stale extension");
+                    assert_eq!(stale.origin.as_deref(), Some(stale_ext_text.as_str()));
+                    let payload_result = importlib_resolve_spec_in_paths(
+                        _py,
+                        "nativepkg._native",
+                        &[staged_pkg.to_string_lossy().into_owned()],
                         true,
                     );
                     let payload = match payload_result {
@@ -2768,11 +2776,34 @@ fn extension_spec_origin_suffix_and_descriptor_errors_remain_independent_of_load
             "extension.so",
             "extensions.zip/extension.dll",
             "extension.dylib",
+            "MODULE.PyD",
+            "λ/extension.So",
+            "archive.whl/pkg/EXTENSION.DLL",
+            "outer.zip/inner.egg/extension.DYLIB/",
+            "archive.zip\\extension.SO\\",
         ] {
             let spec = extension_spec_bits_for_tests(py, "role_extension", path);
             assert_eq!(
                 importlib_extension_spec_target(py, "role_extension", spec),
                 Ok(Some(("role_extension".to_string(), path.to_string())))
+            );
+            dec_ref_bits(py, spec);
+        }
+        for path in [
+            "",
+            "so",
+            "extension.py",
+            "extension.so.py",
+            "extension.so/",
+            "extension.dll\\",
+            "archive.zip/extension.so.py",
+            "archive.zip/extension.py/",
+            "archive.SO.zip",
+        ] {
+            let spec = extension_spec_bits_for_tests(py, "role_extension", path);
+            assert_eq!(
+                importlib_extension_spec_target(py, "role_extension", spec),
+                Ok(None)
             );
             dec_ref_bits(py, spec);
         }

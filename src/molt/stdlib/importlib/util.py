@@ -21,9 +21,7 @@ _MOLT_IMPORTLIB_SOURCE_FROM_CACHE = _require_intrinsic(
     "molt_importlib_source_from_cache"
 )
 _MOLT_IMPORTLIB_RESOLVE_NAME = _require_intrinsic("molt_importlib_resolve_name")
-_MOLT_IMPORTLIB_FIND_SPEC_ORCHESTRATE = _require_intrinsic(
-    "molt_importlib_find_spec_orchestrate"
-)
+_MOLT_IMPORTLIB_ADMIT_SPEC = _require_intrinsic("molt_importlib_admit_spec")
 _MOLT_IMPORTLIB_ENSURE_DEFAULT_META_PATH = _require_intrinsic(
     "molt_importlib_ensure_default_meta_path"
 )
@@ -63,9 +61,6 @@ class LazyLoader(metaclass=_abc.ABCMeta):
 MAGIC_NUMBER = b"\x00\x00\x00\x00"
 types = sys.modules.get("types", sys)
 
-_SPEC_CACHE: dict[tuple[object, ...], ModuleSpec | None] = {}
-
-
 def _ensure_default_meta_path() -> None:
     _MOLT_IMPORTLIB_ENSURE_DEFAULT_META_PATH(_machinery)
 
@@ -98,32 +93,67 @@ def resolve_name(name: str, package: str | None) -> str:
     return _MOLT_IMPORTLIB_RESOLVE_NAME(name, package)
 
 
-def _path_snapshot() -> tuple[str, ...]:
-    try:
-        return tuple(sys.path)
-    except Exception:
-        return ()
-
-
-def _importlib_module_file() -> str | None:
-    module_file = globals().get("__file__")
-    if isinstance(module_file, str) and module_file:
-        return module_file
-    return None
-
-
 _ensure_default_meta_path()
 
 
+def _find_spec(name, path, target=None):
+    # CPython's ordered finder protocol. Finder callbacks own their state;
+    # neither successful results nor absence may be memoized by object identity.
+    meta_path = sys.meta_path
+    if meta_path is None:
+        raise ImportError("sys.meta_path is None, Python is likely shutting down")
+    if not meta_path:
+        from _warnings import warn
+
+        warn("sys.meta_path is empty", ImportWarning)
+    is_reload = name in sys.modules
+    for finder in meta_path:
+        try:
+            find_spec = finder.find_spec
+        except AttributeError:
+            continue
+        spec = find_spec(name, path, target)
+        if spec is not None:
+            if not is_reload and name in sys.modules:
+                try:
+                    published_spec = sys.modules[name].__spec__
+                except AttributeError:
+                    pass
+                else:
+                    if published_spec is not None:
+                        spec = published_spec
+            _MOLT_IMPORTLIB_ADMIT_SPEC(name, spec)
+            return spec
+    return None
+
+
 def find_spec(name: str, package: str | None = None):
-    resolved = resolve_name(name, package)
-    return _MOLT_IMPORTLIB_FIND_SPEC_ORCHESTRATE(
-        resolved,
-        _path_snapshot(),
-        _importlib_module_file(),
-        _SPEC_CACHE,
-        _machinery,
-    )
+    fullname = resolve_name(name, package) if name.startswith(".") else name
+    if fullname not in sys.modules:
+        parent_name = fullname.rpartition(".")[0]
+        if parent_name:
+            parent = __import__(parent_name, fromlist=["__path__"])
+            try:
+                parent_path = parent.__path__
+            except AttributeError as exc:
+                raise ModuleNotFoundError(
+                    f"__path__ attribute not found on {parent_name!r} "
+                    f"while trying to find {fullname!r}",
+                    name=fullname,
+                ) from exc
+        else:
+            parent_path = None
+        return _find_spec(fullname, parent_path)
+    module = sys.modules[fullname]
+    if module is None:
+        return None
+    try:
+        spec = module.__spec__
+    except AttributeError:
+        raise ValueError(f"{name}.__spec__ is not set") from None
+    if spec is None:
+        raise ValueError(f"{name}.__spec__ is None")
+    return spec
 
 
 def module_from_spec(spec: ModuleSpec):

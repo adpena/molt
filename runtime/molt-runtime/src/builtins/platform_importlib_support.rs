@@ -35,35 +35,6 @@ pub(super) struct ImportlibPathResolution {
     pub(super) zip_inner_path: Option<String>,
 }
 
-pub(super) struct ImportlibFindSpecPayload {
-    pub(super) origin: Option<String>,
-    pub(super) is_package: bool,
-    pub(super) submodule_search_locations: Option<Vec<String>>,
-    pub(super) cached: Option<String>,
-    pub(super) is_builtin: bool,
-    pub(super) has_location: bool,
-    pub(super) loader_kind: String,
-    pub(super) zip_archive: Option<String>,
-    pub(super) zip_inner_path: Option<String>,
-    pub(super) meta_path_count: i64,
-    pub(super) path_hooks_count: i64,
-}
-
-pub(super) struct ImportlibParentSearchPathsPayload {
-    pub(super) has_parent: bool,
-    pub(super) parent_name: Option<String>,
-    pub(super) search_paths: Vec<String>,
-    pub(super) needs_parent_spec: bool,
-    pub(super) package_context: bool,
-}
-
-pub(super) struct ImportlibRuntimeStateViewBits {
-    pub(super) modules_bits: u64,
-    pub(super) meta_path_bits: u64,
-    pub(super) path_hooks_bits: u64,
-    pub(super) path_importer_cache_bits: u64,
-}
-
 pub(super) struct ImportlibSpecFromFileLocationPayload {
     pub(super) path: String,
     pub(super) is_package: bool,
@@ -729,47 +700,6 @@ pub(super) fn importlib_search_paths(
     out
 }
 
-pub(super) fn importlib_module_root_package_context_paths(
-    _py: &PyToken<'_>,
-    fullname: &str,
-    module_file: Option<String>,
-) -> Vec<String> {
-    let parts: Vec<&str> = fullname.split('.').collect();
-    if parts.len() <= 1 {
-        return Vec::new();
-    }
-    let sep = bootstrap_path_sep();
-    let state = sys_bootstrap_state_from_module_file(_py, module_file);
-    let mut out: Vec<String> = Vec::new();
-    let mut seen: HashSet<String> = HashSet::new();
-    for root in state.module_roots_entries {
-        let package_path = path_join_many_text(root, &parts[..parts.len() - 1], sep);
-        append_unique_path_hashed(&mut out, &mut seen, &package_path);
-    }
-    out
-}
-
-pub(super) fn importlib_find_spec_search_paths(
-    _py: &PyToken<'_>,
-    fullname: &str,
-    search_paths: &[String],
-    module_file: Option<String>,
-    package_context: bool,
-) -> Vec<String> {
-    let mut out: Vec<String> = Vec::new();
-    let mut seen: HashSet<String> = HashSet::new();
-    if package_context {
-        for entry in importlib_module_root_package_context_paths(_py, fullname, module_file.clone())
-        {
-            append_unique_path_hashed(&mut out, &mut seen, &entry);
-        }
-    }
-    for entry in importlib_search_paths(_py, search_paths, module_file) {
-        append_unique_path_hashed(&mut out, &mut seen, &entry);
-    }
-    out
-}
-
 pub(super) fn importlib_bootstrap_payload(
     _py: &PyToken<'_>,
     search_paths: &[String],
@@ -996,34 +926,19 @@ pub(super) fn importlib_enforce_extension_spec_boundary(
     importlib_require_extension_metadata(_py, module_name, origin)
 }
 
-pub(super) fn importlib_find_spec_payload(
-    _py: &PyToken<'_>,
+/// Resolve only the explicitly supplied path entries. Caller-owned bootstrap
+/// search policy must not be injected into a raw path-entry lookup.
+pub(super) fn importlib_resolve_spec_in_paths(
+    py: &PyToken<'_>,
     fullname: &str,
     search_paths: &[String],
-    module_file: Option<String>,
-    meta_path_count: i64,
-    path_hooks_count: i64,
     package_context: bool,
-) -> Result<Option<ImportlibFindSpecPayload>, u64> {
-    let resolved =
-        importlib_find_spec_search_paths(_py, fullname, search_paths, module_file, package_context);
-    let Some(resolution) = importlib_find_in_path(fullname, &resolved, package_context) else {
+) -> Result<Option<ImportlibPathResolution>, u64> {
+    let Some(resolution) = importlib_find_in_path(fullname, search_paths, package_context) else {
         return Ok(None);
     };
-    importlib_enforce_extension_spec_boundary(_py, fullname, &resolution)?;
-    Ok(Some(ImportlibFindSpecPayload {
-        origin: resolution.origin,
-        is_package: resolution.is_package,
-        submodule_search_locations: resolution.submodule_search_locations,
-        cached: resolution.cached,
-        is_builtin: false,
-        has_location: resolution.has_location,
-        loader_kind: resolution.loader_kind,
-        zip_archive: resolution.zip_archive,
-        zip_inner_path: resolution.zip_inner_path,
-        meta_path_count,
-        path_hooks_count,
-    }))
+    importlib_enforce_extension_spec_boundary(py, fullname, &resolution)?;
+    Ok(Some(resolution))
 }
 
 pub(super) fn importlib_metadata_record_payload(path: &str) -> Vec<ImportlibMetadataRecordEntry> {
@@ -1875,15 +1790,22 @@ pub(super) fn importlib_source_extension_loader_contract(
 }
 
 pub(super) fn importlib_path_has_extension_suffix(path: &str) -> bool {
-    let lower = path.to_ascii_lowercase();
-    lower.ends_with(".so")
-        || lower.ends_with(".pyd")
-        || lower.ends_with(".dll")
-        || lower.ends_with(".dylib")
+    [b".so".as_slice(), b".pyd", b".dll", b".dylib"]
+        .iter()
+        .any(|suffix| {
+            path.as_bytes()
+                .get(path.len().saturating_sub(suffix.len())..)
+                .is_some_and(|tail| tail.eq_ignore_ascii_case(suffix))
+        })
 }
 
 pub(super) fn importlib_path_looks_like_extension(path: &str) -> bool {
-    if let Some((_archive_path, inner_path)) = split_zip_archive_path(path) {
+    // Only a trailing separator can make the archive parser's trimmed inner
+    // path have a different terminal suffix. Ordinary files need no archive
+    // scan, lowercase copy, or owned archive/member strings to classify them.
+    if path.ends_with(['/', '\\'])
+        && let Some((_archive_path, inner_path)) = split_zip_archive_path(path)
+    {
         return importlib_path_has_extension_suffix(&inner_path);
     }
     importlib_path_has_extension_suffix(path)
@@ -1968,6 +1890,12 @@ pub(super) fn importlib_enforce_extension_spec_object_boundary(
     else {
         return Ok(());
     };
+
+    crate::require_operation::<u64>(
+        _py,
+        crate::OperationId::ImportlibSpecExtension,
+        AuditArgs::None,
+    )?;
 
     if split_zip_archive_path(&path).is_none() {
         match importlib_path_is_file(_py, &path) {

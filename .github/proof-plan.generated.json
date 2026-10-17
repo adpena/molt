@@ -366,7 +366,7 @@
     "tests/tools/test_win_job_contract.py",
     "tests/tools/test_windows_process_api.py"
   ],
-  "authority_sha256": "08fc87e748406917fcc80fd5f2f2d546bf543ddfc70ae4635bf74e9bd83c0e04",
+  "authority_sha256": "7deeb74f3cce1f5ed086a76d4d76586a2e09f79b1fbb8fdb614a51aef2a8084e",
   "cargo_environment_policy": {
     "incident_command": "cargo metadata --locked --format-version 1",
     "incident_commit": "20b046b79bd4ca64a8c859f737f6e330377bcc4e",
@@ -4129,7 +4129,8 @@
         "pytest",
         "-q",
         "tests/test_wasm_split_runtime.py::test_linked_host_export_attribute_error_does_not_return_none",
-        "tests/test_wasm_runtime_heavy_regressions.py::test_wasm_open_reports_all_missing_grants_before_mutation"
+        "tests/test_wasm_runtime_heavy_regressions.py::test_wasm_open_reports_all_missing_grants_before_mutation",
+        "tests/test_wasm_runtime_heavy_regressions.py::test_wasm_compiled_finder_describes_module_before_initialization"
       ],
       "cache_domain": "cargo-workspace",
       "cargo_build_python": true,

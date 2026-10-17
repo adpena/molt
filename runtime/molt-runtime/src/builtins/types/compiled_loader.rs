@@ -104,7 +104,32 @@ fn compiled_loader_derived_class(py: &PyToken<'_>, frozen: bool) -> u64 {
             {
                 return false;
             }
-            loader_class_module(py, dict_ptr, b"_frozen_importlib")
+            if !loader_class_module(py, dict_ptr, b"_frozen_importlib") {
+                return false;
+            }
+            if frozen {
+                return true;
+            }
+            let none = MoltObject::none().bits();
+            let method = crate::builtins::methods::builtin_func_bits_with_signature(
+                py,
+                crate::builtins::functions::native_callable::NativeCallableSpec::declared(
+                    NativeCallableKind::ClassMethodDescriptor,
+                    class_bits,
+                    "find_spec",
+                ),
+                crate::builtins::functions::runtime_fn_addr(
+                    "molt_importlib_compiled_loader_find_spec",
+                    molt_importlib_compiled_loader_find_spec as *const (),
+                ),
+                4,
+                &[none, none],
+                0,
+                &[b"cls", b"fullname", b"path", b"target"],
+                false,
+                false,
+            );
+            set_class_method(py, dict_ptr, "find_spec", method)
         },
     )
 }
@@ -136,6 +161,89 @@ fn compiled_loader_singleton(py: &PyToken<'_>) -> u64 {
             return 0;
         }
         bits
+    })
+}
+
+/// A finder over the immutable application catalog. Merely describing a
+/// compiled module neither initializes it nor publishes into sys.modules.
+/// The descriptor binds subclasses normally, but the spec keeps the existing
+/// runtime loader singleton: its create/exec methods are instance descriptors.
+/// Discovery must not instantiate a user subclass or invoke its initializer.
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_importlib_compiled_loader_find_spec(
+    _class_bits: u64,
+    fullname_bits: u64,
+    _path_bits: u64,
+    _target_bits: u64,
+) -> u64 {
+    crate::with_gil_entry_nopanic!(py, {
+        let Some(name) = string_obj_to_owned(obj_from_bits(fullname_bits)) else {
+            return raise_exception::<_>(py, "TypeError", "module name must be str");
+        };
+        let Some(metadata) = crate::builtins::module_table::module_registry()
+            .and_then(|registry| registry.compiled_spec(&name))
+        else {
+            return MoltObject::none().bits();
+        };
+        let origin = metadata.origin;
+        let is_package = metadata.is_package;
+        let origin_ptr = alloc_string(py, origin.as_bytes());
+        if origin_ptr.is_null() {
+            return MoltObject::none().bits();
+        }
+        let origin_bits = MoltObject::from_ptr(origin_ptr).bits();
+        let loader_bits = compiled_loader_singleton(py);
+        if loader_bits == 0 || exception_pending(py) {
+            dec_ref_bits(py, origin_bits);
+            return MoltObject::none().bits();
+        }
+        let spec = super::module_spec::alloc_module_spec(
+            py,
+            fullname_bits,
+            loader_bits,
+            origin_bits,
+            MoltObject::from_bool(is_package).bits(),
+        );
+        dec_ref_bits(py, origin_bits);
+        let Some(spec_bits) = spec else {
+            return MoltObject::none().bits();
+        };
+        // A static extension package has a descriptive origin rather than a
+        // directory. Leave its canonical empty locations intact; never insert
+        // an empty path (which would accidentally authorize cwd discovery).
+        if is_package
+            && let Some(root) = std::path::Path::new(origin).parent()
+            && !root.as_os_str().is_empty()
+        {
+            let root_text = root.to_string_lossy();
+            let root_ptr = alloc_string(py, root_text.as_bytes());
+            if root_ptr.is_null() {
+                dec_ref_bits(py, spec_bits);
+                return MoltObject::none().bits();
+            }
+            let root_bits = MoltObject::from_ptr(root_ptr).bits();
+            let paths = alloc_list(py, &[root_bits]);
+            dec_ref_bits(py, root_bits);
+            if paths.is_null() {
+                dec_ref_bits(py, spec_bits);
+                return MoltObject::none().bits();
+            }
+            let paths_bits = MoltObject::from_ptr(paths).bits();
+            let Some(attr) = attr_name_bits_from_bytes(py, b"submodule_search_locations") else {
+                dec_ref_bits(py, paths_bits);
+                dec_ref_bits(py, spec_bits);
+                return MoltObject::none().bits();
+            };
+            let result = molt_set_attr_name(spec_bits, attr, paths_bits);
+            dec_ref_bits(py, attr);
+            dec_ref_bits(py, paths_bits);
+            dec_ref_bits(py, result);
+            if exception_pending(py) {
+                dec_ref_bits(py, spec_bits);
+                return MoltObject::none().bits();
+            }
+        }
+        spec_bits
     })
 }
 
@@ -378,6 +486,10 @@ pub extern "C" fn molt_importlib_compiled_loader_load_module(
         imported
     })
 }
+
+#[cfg(test)]
+#[path = "compiled_loader/catalog_tests.rs"]
+mod catalog_tests;
 
 #[cfg(test)]
 mod tests {

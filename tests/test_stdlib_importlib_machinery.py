@@ -14,9 +14,8 @@ SCRIPT_PATH = REPO_ROOT / "src" / "molt" / "stdlib" / "importlib" / "machinery.p
 
 _MACHINERY_INTRINSICS = [
     "molt_importlib_read_file",
-    "molt_importlib_pathfinder_find_spec",
+    "molt_importlib_admit_spec",
     "molt_importlib_filefinder_find_spec",
-    "molt_importlib_filefinder_invalidate",
     "molt_importlib_sourcefileloader_exec_module",
     "molt_importlib_zip_source_loader_exec_module",
     "molt_importlib_extension_loader_exec_module",
@@ -55,6 +54,8 @@ _RUNTIME_LOADER = _RUNTIME_BUILTIN_IMPORTER()
 def _bootstrap_intrinsics():
     # Identity sentinels only: behavior is tested against the real Rust owner.
     return {
+        "molt_importlib_admit_spec": lambda fullname, spec: None,
+        "molt_importlib_filefinder_find_spec": lambda fullname, path, machinery: None,
         "molt_importlib_extension_loader_type_declare": lambda cls: None,
         "molt_importlib_module_spec_type": lambda: _RUNTIME_MODULE_SPEC,
         "molt_importlib_compiled_loader": lambda: _RUNTIME_LOADER,

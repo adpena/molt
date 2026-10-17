@@ -539,15 +539,7 @@ name = "importlib.extension_loader_payload"
 capabilities = ["fs.read"]
 
 [[operation]]
-name = "importlib.find_spec.from_path_hooks_impl"
-capabilities = ["fs.read"]
-
-[[operation]]
-name = "importlib.find_spec.payload"
-capabilities = ["fs.read"]
-
-[[operation]]
-name = "importlib.find_spec.with_runtime_state_bits"
+name = "importlib.filefinder.find_spec"
 capabilities = ["fs.read"]
 
 [[operation]]
@@ -660,6 +652,14 @@ capabilities = ["fs.read"]
 
 [[operation]]
 name = "importlib.resources.resource_path_from_package_parts"
+capabilities = ["fs.read"]
+
+[[operation]]
+name = "importlib.spec.extension"
+capabilities = ["fs.read"]
+
+[[operation]]
+name = "importlib.zip.archive_path"
 capabilities = ["fs.read"]
 
 [[operation]]

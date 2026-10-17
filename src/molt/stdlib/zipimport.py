@@ -8,10 +8,8 @@ from importlib.machinery import ModuleSpec as _ModuleSpec
 from importlib.machinery import _ZipSourceLoader as _ZipSourceLoader
 from types import ModuleType as _ModuleType
 from typing import Any as _Any
-import marshal as _marshal
 import os as _os
 import sys as _sys
-import time as _time
 
 __all__ = ["zipimporter", "ZipImportError"]
 
@@ -26,9 +24,6 @@ STRING_END_ARCHIVE = b"PK\x05\x06"
 path_sep = _os.sep
 alt_path_sep = _os.altsep or ""
 cp437_table = bytes(range(256)).decode("cp437")
-marshal = _marshal
-sys = _sys
-time = _time
 
 _MOLT_IMPORTLIB_FIND_IN_PATH_PACKAGE_CONTEXT = _require_intrinsic(
     "molt_importlib_find_in_path_package_context"
@@ -37,24 +32,7 @@ _MOLT_IMPORTLIB_ZIP_SOURCE_EXEC_PAYLOAD = _require_intrinsic(
     "molt_importlib_zip_source_exec_payload"
 )
 _MOLT_IMPORTLIB_ZIP_READ_ENTRY = _require_intrinsic("molt_importlib_zip_read_entry")
-_MOLT_CAPABILITIES_REQUIRE = _require_intrinsic("molt_capabilities_require")
-
-
-def _split_archive_path(path: str) -> tuple[str, str]:
-    text = str(path)
-    if not text:
-        return "", ""
-    lower = text.lower()
-    idx = lower.rfind(".zip")
-    if idx == -1:
-        return "", text
-    idx += 4
-    archive = text[:idx]
-    rest = text[idx:]
-    if rest.startswith(("/", _os.sep)):
-        rest = rest.lstrip("/\\")
-    rest = rest.replace("\\", "/").strip("/")
-    return archive, rest
+_MOLT_IMPORTLIB_ZIP_ARCHIVE_PATH = _require_intrinsic("molt_importlib_zip_archive_path")
 
 
 def _normalize_inner_path(path: str) -> str:
@@ -95,13 +73,16 @@ def _source_payload_from_resolution(
 
 class zipimporter:
     def __init__(self, path: str) -> None:
-        _MOLT_CAPABILITIES_REQUIRE("fs.read")
         archive_path = str(path)
-        archive, prefix = _split_archive_path(archive_path)
-        self.archive = archive
-        self.prefix = f"{prefix}/" if prefix else ""
-        if not self.archive:
-            raise ZipImportError("archive path is empty")
+        if not archive_path:
+            raise ZipImportError("archive path is empty", path=path)
+        if alt_path_sep:
+            archive_path = archive_path.replace(alt_path_sep, path_sep)
+        resolved = _MOLT_IMPORTLIB_ZIP_ARCHIVE_PATH(archive_path)
+        if resolved is None:
+            raise ZipImportError("not a Zip file", path=path)
+        self.archive, prefix = resolved
+        self.prefix = prefix.replace("/", path_sep) + path_sep if prefix else ""
         self._search_root = self.archive if not prefix else f"{self.archive}/{prefix}"
 
     def _resolve(self, fullname: str) -> dict[str, _Any]:
@@ -187,17 +168,14 @@ class zipimporter:
 
     def get_data(self, pathname: str) -> bytes:
         raw = str(pathname)
-        archive, inner = _split_archive_path(raw)
-        if archive:
-            if archive != self.archive:
-                raise OSError(f"zipimporter cannot handle path {raw!r}")
-        else:
-            inner = _normalize_inner_path(raw)
-            archive = self.archive
+        if alt_path_sep:
+            raw = raw.replace(alt_path_sep, path_sep)
+        archive_prefix = self.archive + path_sep
+        inner = raw[len(archive_prefix):] if raw.startswith(archive_prefix) else raw
         inner = _normalize_inner_path(inner)
         if not inner:
             raise OSError(f"can't read archive root {raw!r}")
-        data = _MOLT_IMPORTLIB_ZIP_READ_ENTRY(archive, inner)
+        data = _MOLT_IMPORTLIB_ZIP_READ_ENTRY(self.archive, inner)
         if not isinstance(data, bytes):
             raise ZipImportError("invalid zip entry payload: bytes expected")
         return data

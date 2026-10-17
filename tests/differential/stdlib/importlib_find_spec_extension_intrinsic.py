@@ -13,9 +13,6 @@ with open(ext_path, "wb") as handle:
 
 orig_path = list(sys.path)
 orig_modules = {name: sys.modules.get(name) for name in ("extdemo",)}
-spec_cache = getattr(importlib.util, "_SPEC_CACHE", None)
-if isinstance(spec_cache, dict):
-    spec_cache.clear()
 
 try:
     sys.path[:] = [root]
@@ -27,8 +24,6 @@ finally:
             sys.modules.pop(name, None)
         else:
             sys.modules[name] = previous
-    if isinstance(spec_cache, dict):
-        spec_cache.clear()
 
 origin = os.path.normpath(spec.origin) if spec and spec.origin else ""
 print(spec is not None)

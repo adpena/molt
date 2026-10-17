@@ -195,13 +195,7 @@ class OperationId(StrEnum):
     FFI_BRIDGE = "ffi.bridge"
     IMPORTLIB_EXEC_EXTENSION = "importlib.exec.extension"
     IMPORTLIB_EXTENSION_LOADER_PAYLOAD = "importlib.extension_loader_payload"
-    IMPORTLIB_FIND_SPEC_FROM_PATH_HOOKS_IMPL = (
-        "importlib.find_spec.from_path_hooks_impl"
-    )
-    IMPORTLIB_FIND_SPEC_PAYLOAD = "importlib.find_spec.payload"
-    IMPORTLIB_FIND_SPEC_WITH_RUNTIME_STATE_BITS = (
-        "importlib.find_spec.with_runtime_state_bits"
-    )
+    IMPORTLIB_FILEFINDER_FIND_SPEC = "importlib.filefinder.find_spec"
     IMPORTLIB_FIND_IN_PATH_PAYLOAD = "importlib.find.in_path_payload"
     IMPORTLIB_METADATA_DIST_PATHS = "importlib.metadata.dist_paths"
     IMPORTLIB_METADATA_DISTRIBUTIONS_PAYLOAD = (
@@ -266,6 +260,8 @@ class OperationId(StrEnum):
     IMPORTLIB_RESOURCES_RESOURCE_PATH_FROM_PACKAGE_PARTS = (
         "importlib.resources.resource_path_from_package_parts"
     )
+    IMPORTLIB_SPEC_EXTENSION = "importlib.spec.extension"
+    IMPORTLIB_ZIP_ARCHIVE_PATH = "importlib.zip.archive_path"
     IMPORTLIB_ZIP_READ_ENTRY = "importlib.zip.read_entry"
     IMPORTLIB_ZIP_SOURCE_EXEC_PAYLOAD = "importlib.zip.source_exec_payload"
     OS_LINK_AT = "os.link_at"
@@ -487,13 +483,7 @@ OPERATION_CAPABILITIES: Final[Mapping[OperationId, tuple[CapabilityId, ...]]] = 
             OperationId.FFI_BRIDGE: (CapabilityId.PYTHON_BRIDGE,),
             OperationId.IMPORTLIB_EXEC_EXTENSION: (CapabilityId.FS_READ,),
             OperationId.IMPORTLIB_EXTENSION_LOADER_PAYLOAD: (CapabilityId.FS_READ,),
-            OperationId.IMPORTLIB_FIND_SPEC_FROM_PATH_HOOKS_IMPL: (
-                CapabilityId.FS_READ,
-            ),
-            OperationId.IMPORTLIB_FIND_SPEC_PAYLOAD: (CapabilityId.FS_READ,),
-            OperationId.IMPORTLIB_FIND_SPEC_WITH_RUNTIME_STATE_BITS: (
-                CapabilityId.FS_READ,
-            ),
+            OperationId.IMPORTLIB_FILEFINDER_FIND_SPEC: (CapabilityId.FS_READ,),
             OperationId.IMPORTLIB_FIND_IN_PATH_PAYLOAD: (CapabilityId.FS_READ,),
             OperationId.IMPORTLIB_METADATA_DIST_PATHS: (CapabilityId.FS_READ,),
             OperationId.IMPORTLIB_METADATA_DISTRIBUTIONS_PAYLOAD: (
@@ -560,6 +550,8 @@ OPERATION_CAPABILITIES: Final[Mapping[OperationId, tuple[CapabilityId, ...]]] = 
             OperationId.IMPORTLIB_RESOURCES_RESOURCE_PATH_FROM_PACKAGE_PARTS: (
                 CapabilityId.FS_READ,
             ),
+            OperationId.IMPORTLIB_SPEC_EXTENSION: (CapabilityId.FS_READ,),
+            OperationId.IMPORTLIB_ZIP_ARCHIVE_PATH: (CapabilityId.FS_READ,),
             OperationId.IMPORTLIB_ZIP_READ_ENTRY: (CapabilityId.FS_READ,),
             OperationId.IMPORTLIB_ZIP_SOURCE_EXEC_PAYLOAD: (CapabilityId.FS_READ,),
             OperationId.OS_LINK_AT: (CapabilityId.FS_WRITE,),

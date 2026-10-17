@@ -207,9 +207,7 @@ This is the generated human projection of the canonical built-in host permission
 | `ffi.bridge` | `python.bridge` | all | all | all | all |
 | `importlib.exec.extension` | `fs.read` | all | all | all | all |
 | `importlib.extension_loader_payload` | `fs.read` | all | all | all | all |
-| `importlib.find_spec.from_path_hooks_impl` | `fs.read` | all | all | all | all |
-| `importlib.find_spec.payload` | `fs.read` | all | all | all | all |
-| `importlib.find_spec.with_runtime_state_bits` | `fs.read` | all | all | all | all |
+| `importlib.filefinder.find_spec` | `fs.read` | all | all | all | all |
 | `importlib.find.in_path_payload` | `fs.read` | all | all | all | all |
 | `importlib.metadata.dist_paths` | `fs.read` | all | all | all | all |
 | `importlib.metadata.distributions_payload` | `fs.read` | all | all | all | all |
@@ -238,6 +236,8 @@ This is the generated human projection of the canonical built-in host permission
 | `importlib.resources.reader.resource_path_from_roots` | `fs.read` | all | all | all | all |
 | `importlib.resources.resource_path_from_package` | `fs.read` | all | all | all | all |
 | `importlib.resources.resource_path_from_package_parts` | `fs.read` | all | all | all | all |
+| `importlib.spec.extension` | `fs.read` | all | all | all | all |
+| `importlib.zip.archive_path` | `fs.read` | all | all | all | all |
 | `importlib.zip.read_entry` | `fs.read` | all | all | all | all |
 | `importlib.zip.source_exec_payload` | `fs.read` | all | all | all | all |
 | `os.link_at` | `fs.write` | all | all | all | all |
