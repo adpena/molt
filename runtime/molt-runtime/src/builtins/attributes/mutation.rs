@@ -987,10 +987,8 @@ unsafe fn module_delattr_namespace(
                     }
                     return Ok(());
                 }
-                let module_name = string_obj_to_owned(obj_from_bits(module_name_bits(obj_ptr)))
-                    .unwrap_or_default();
-                let msg = format!("module '{module_name}' has no attribute '{attr_name}'");
-                raise_exception::<()>(_py, "AttributeError", &msg);
+                // CPython's module `__annotations__` setter names only the key.
+                raise_exception::<()>(_py, "AttributeError", "__annotations__");
                 return Err(());
             }
             let annotate_bits = intern_static_name(
@@ -1011,10 +1009,14 @@ unsafe fn module_delattr_namespace(
                 return Ok(());
             }
         }
-        let module_name =
-            string_obj_to_owned(obj_from_bits(module_name_bits(obj_ptr))).unwrap_or_default();
-        let msg = format!("module '{module_name}' has no attribute '{attr_name}'");
-        attr_error_with_message(_py, &msg);
+        // A delete has no module message family: CPython's generic setattr
+        // reports the type, and records `name` and `obj` from 3.13.
+        let module = MoltObject::from_ptr(obj_ptr);
+        if crate::object::ops_sys::runtime_target_at_least(_py, 3, 13) {
+            attr_error_with_obj(_py, type_name(_py, module), attr_name, module.bits());
+        } else {
+            attr_error(_py, type_name(_py, module), attr_name);
+        }
         Err(())
     }
 }

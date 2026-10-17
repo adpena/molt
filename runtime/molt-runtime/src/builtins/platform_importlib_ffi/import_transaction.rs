@@ -524,7 +524,6 @@ pub extern "C" fn molt_importlib_export_attrs(
 
         let mut pairs: Vec<u64> = Vec::with_capacity(export_names.len() * 2);
         let mut owned: Vec<u64> = Vec::with_capacity(export_names.len() * 2);
-        let missing = missing_bits(_py);
         for export_name in export_names {
             let attr_name_bits = match alloc_str_bits(_py, &export_name) {
                 Ok(bits) => bits,
@@ -538,7 +537,8 @@ pub extern "C" fn molt_importlib_export_attrs(
                     return err;
                 }
             };
-            let value_bits = molt_getattr_builtin(module_bits, attr_name_bits, missing);
+            // A required lookup: a miss raises the module's own AttributeError.
+            let value_bits = crate::molt_get_attr_name(module_bits, attr_name_bits);
             if !obj_from_bits(attr_name_bits).is_none() {
                 dec_ref_bits(_py, attr_name_bits);
             }
@@ -554,23 +554,6 @@ pub extern "C" fn molt_importlib_export_attrs(
                 }
                 return MoltObject::none().bits();
             }
-            if is_missing_bits(_py, value_bits) {
-                if !obj_from_bits(value_bits).is_none() {
-                    dec_ref_bits(_py, value_bits);
-                }
-                for bits in owned {
-                    dec_ref_bits(_py, bits);
-                }
-                if !obj_from_bits(module_bits).is_none() {
-                    dec_ref_bits(_py, module_bits);
-                }
-                return raise_exception::<_>(
-                    _py,
-                    "AttributeError",
-                    &format!("module '{module_name}' has no attribute '{export_name}'"),
-                );
-            }
-
             let key_bits = match alloc_str_bits(_py, &export_name) {
                 Ok(bits) => bits,
                 Err(err) => {

@@ -2780,6 +2780,15 @@ fn lune_oracle_isolated_module_cache_and_attribute_consumers_execute_published_d
     assert(type(namespace) == "table" and type(static) == "function")
     assert(static == dynamic and dynamic == named)
     assert(molt_call_checked(static, molt_pack_list(1, nil, 3)) == 3)
+    -- A miss names the module only through a str __name__ (CPython).
+    local function miss(module)
+        local ok, err = pcall(molt_module_get_name, module, "missing")
+        assert(not ok and err.__type == "AttributeError")
+        return err.__msg
+    end
+    assert(miss({{__name__ = "plain"}}) == "module 'plain' has no attribute 'missing'")
+    assert(miss({{}}) == "module has no attribute 'missing'")
+    assert(miss({{__name__ = 5}}) == "module has no attribute 'missing'")
     print("luau-isolated-builtin-cache-ok")
 end)()
 "#,
