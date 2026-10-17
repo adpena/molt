@@ -337,6 +337,17 @@ binders retain their own contracts. This follows pinned CPython's
 [method calls](https://raw.githubusercontent.com/python/cpython/3bb231a6a5dc02b95658877318bf61501a7209e9/Objects/methodobject.c)
 and [descriptor calls](https://raw.githubusercontent.com/python/cpython/3bb231a6a5dc02b95658877318bf61501a7209e9/Objects/descrobject.c).
 
+Native C type readiness and default slot-wrapper publication preserve the same
+method pair and receiver ownership. Default-getter admission uses the canonical
+wrapper adapter, wrapped slot and actual declaring-owner ancestry; a public
+attribute name alone cannot establish that identity. Custom hooks and unrelated
+declaring owners keep their ordinary descriptor behavior. The owning rule is
+CPython's [method lookup](https://github.com/python/cpython/blob/v3.12.13/Objects/object.c)
+and [slot update](https://github.com/python/cpython/blob/v3.12.13/Objects/typeobject.c).
+Foreign method-descriptor invocation follows its native type flag; other
+descriptors retain their binding protocol. Binding and explicit invocation keep
+their distinct receiver validation and diagnostics through the shared owner.
+
 Descriptor receiver errors and C type projections share the physical native
 type name, independently of public `__name__` and `__qualname__`. Native
 declarations retain their creation module in existing class storage; later

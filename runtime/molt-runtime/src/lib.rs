@@ -8,6 +8,8 @@
 //!   critical sections small and avoid taking them while holding the GIL for long paths.
 //! - Avoid blocking host I/O while holding the GIL; release or schedule work instead.
 #![cfg_attr(target_arch = "wasm32", allow(unused))]
+// A missing kind import can turn a constant pattern into a catch-all binding.
+#![deny(unreachable_patterns)]
 
 #[cfg(all(target_arch = "wasm32", feature = "cext_loader"))]
 compile_error!("feature `cext_loader` is unsupported on wasm32 targets");

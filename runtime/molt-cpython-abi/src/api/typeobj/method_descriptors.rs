@@ -106,7 +106,7 @@ unsafe extern "C" fn method_get(
         return unsafe { descriptors::new_reference(descr) };
     }
     let _pins = unsafe { Pins::new([descr, receiver, owner]) };
-    if !unsafe { descriptors::receiver(descr, receiver) } {
+    if !unsafe { descriptors::receiver(descr, receiver, descriptors::ReceiverContext::Binding) } {
         return ptr::null_mut();
     }
     let method = descr.cast::<PyMethodDescrObject>();
@@ -220,7 +220,7 @@ unsafe extern "C" fn method_vectorcall(
     else {
         return ptr::null_mut();
     };
-    if !unsafe { descriptors::receiver(descr, values[0]) } {
+    if !unsafe { descriptors::receiver(descr, values[0], descriptors::ReceiverContext::Call) } {
         return ptr::null_mut();
     }
     let Some((convention, target)) = (unsafe { method_parts((*method).d_method) }) else {

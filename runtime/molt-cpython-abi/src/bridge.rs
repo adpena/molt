@@ -2329,6 +2329,57 @@ pub unsafe fn molt_foreign_type_name(c_ptr: usize) -> *const std::os::raw::c_cha
     unsafe { (*tp).tp_name }
 }
 
+/// Method descriptors promise that an explicit receiver call is equivalent to
+/// binding followed by invocation. Special-method lookup uses this native type
+/// flag, preserving call-time admission and avoiding a temporary bound object.
+///
+/// # Safety
+/// `descriptor` is a live foreign object under the runtime GIL.
+pub unsafe fn foreign_is_method_descriptor(descriptor: usize) -> bool {
+    unsafe {
+        let descriptor = std::ptr::with_exposed_provenance_mut::<PyObject>(descriptor);
+        let kind = (*descriptor).ob_type;
+        !kind.is_null() && (*kind).tp_flags & crate::abi_types::Py_TPFLAGS_METHOD_DESCRIPTOR != 0
+    }
+}
+
+/// Classify a foreign getter wrapper against the selected runtime default.
+/// Both class views use the canonical bridge and remain pinned through native
+/// ancestry inspection. This never projects the receiver or invokes its hooks.
+///
+/// # Safety
+/// `descriptor` is a live foreign object and both handles denote live classes.
+pub unsafe fn native_default_getattribute_wrapper(
+    descriptor: usize,
+    receiver_class: u64,
+    default_class: u64,
+) -> Result<bool, crate::ErrorIndicatorSet> {
+    unsafe {
+        let descriptor = std::ptr::with_exposed_provenance_mut::<PyObject>(descriptor);
+        if (*descriptor).ob_type != &raw mut crate::abi_types::PyWrapperDescr_Type {
+            return Ok(false);
+        }
+        let _descriptor = crate::api::refcount::OwnedPyObject::from_borrowed(descriptor);
+        let receiver = crate::api::refcount::OwnedPyObject::from_owned(
+            GLOBAL_BRIDGE.borrowed_handle_to_new_pyobj(receiver_class),
+        );
+        if receiver.as_ptr().is_null() {
+            return Err(crate::ErrorIndicatorSet);
+        }
+        let default = crate::api::refcount::OwnedPyObject::from_owned(
+            GLOBAL_BRIDGE.borrowed_handle_to_new_pyobj(default_class),
+        );
+        if default.as_ptr().is_null() {
+            return Err(crate::ErrorIndicatorSet);
+        }
+        Ok(crate::api::typeobj::default_getattribute_wrapper(
+            descriptor,
+            receiver.as_ptr().cast(),
+            default.as_ptr().cast(),
+        ))
+    }
+}
+
 /// The C admission boundary accepts the actual receiver type. Managed callers
 /// enter only when their MRO contains a foreign type; no receiver is projected.
 ///

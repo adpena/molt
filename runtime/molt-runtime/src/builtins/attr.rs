@@ -2432,6 +2432,35 @@ unsafe fn descriptor_invoke(
 ) -> Result<Option<u64>, ()> {
     unsafe {
         crate::gil_assert();
+        if let Some(receiver) = instance
+            && let Some(pointer) = maybe_ptr_from_bits(value)
+        {
+            use crate::builtins::functions::native_callable::NativeCallableKind;
+            let direct = match object_type_id(pointer) {
+                TYPE_ID_FUNCTION => matches!(
+                    NativeCallableKind::from_class(py, object_class_bits(pointer)),
+                    Some(
+                        NativeCallableKind::MethodDescriptor
+                            | NativeCallableKind::WrapperDescriptor
+                    )
+                ),
+                crate::TYPE_ID_FOREIGN => molt_cpython_abi::bridge::foreign_is_method_descriptor(
+                    crate::object::foreign::foreign_ptr_from_obj(pointer),
+                ),
+                _ => false,
+            };
+            if direct {
+                // CPython lookup_maybe_method/call_attribute leave admission
+                // to CALL for METHOD_DESCRIPTOR; binding has a different error
+                // protocol. Ordinary descriptor __get__ hooks still run below.
+                inc_ref_bits(py, value);
+                inc_ref_bits(py, receiver);
+                let result = args.call_with_receiver(py, value, receiver);
+                dec_ref_bits(py, receiver);
+                dec_ref_bits(py, value);
+                return result.map(Some);
+            }
+        }
         if let Some(pointer) = maybe_ptr_from_bits(value)
             && object_type_id(pointer) == TYPE_ID_FUNCTION
         {

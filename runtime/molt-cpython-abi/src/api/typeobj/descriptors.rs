@@ -93,7 +93,18 @@ pub(super) unsafe fn publish(object: *mut PyObject) -> *mut PyObject {
     }
 }
 
-pub(super) unsafe fn receiver(descr: *mut PyObject, object: *mut PyObject) -> bool {
+/// Binding and invocation use different wrapper-descriptor error contracts.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(super) enum ReceiverContext {
+    Binding,
+    Call,
+}
+
+pub(super) unsafe fn receiver(
+    descr: *mut PyObject,
+    object: *mut PyObject,
+    context: ReceiverContext,
+) -> bool {
     if descr.is_null() || object.is_null() {
         unsafe { errors::PyErr_BadInternalCall() };
         return false;
@@ -121,9 +132,16 @@ pub(super) unsafe fn receiver(descr: *mut PyObject, object: *mut PyObject) -> bo
     };
     let actual = unsafe { super::object_type_name(object) };
     unsafe {
-        type_error(&format!(
-            "descriptor '{name}' for '{expected}' objects doesn't apply to a '{actual}' object"
-        ))
+        let message = if context == ReceiverContext::Call
+            && (*descr).ob_type == &raw mut PyWrapperDescr_Type
+        {
+            format!("descriptor '{name}' requires a '{expected}' object but received a '{actual}'")
+        } else {
+            format!(
+                "descriptor '{name}' for '{expected}' objects doesn't apply to a '{actual}' object"
+            )
+        };
+        type_error(&message)
     };
     false
 }
@@ -233,7 +251,7 @@ unsafe extern "C" fn getset_get(
         return unsafe { new_reference(descr) };
     }
     let _pins = unsafe { Pins::new([descr, object]) };
-    if !unsafe { receiver(descr, object) } {
+    if !unsafe { receiver(descr, object, ReceiverContext::Binding) } {
         return ptr::null_mut();
     }
     let definition = unsafe { (*descr.cast::<PyGetSetDescrObject>()).d_getset };
@@ -259,7 +277,7 @@ unsafe extern "C" fn getset_set(
     value: *mut PyObject,
 ) -> c_int {
     let _pins = unsafe { Pins::new([descr, object, value]) };
-    if !unsafe { receiver(descr, object) } {
+    if !unsafe { receiver(descr, object, ReceiverContext::Binding) } {
         return -1;
     }
     let definition = unsafe { (*descr.cast::<PyGetSetDescrObject>()).d_getset };
@@ -288,7 +306,7 @@ unsafe extern "C" fn member_get(
         return unsafe { new_reference(descr) };
     }
     let _pins = unsafe { Pins::new([descr, object]) };
-    if !unsafe { receiver(descr, object) } {
+    if !unsafe { receiver(descr, object, ReceiverContext::Binding) } {
         return ptr::null_mut();
     }
     let definition = unsafe { (*descr.cast::<PyMemberDescrObject>()).d_member };
@@ -305,7 +323,7 @@ unsafe extern "C" fn member_set(
     value: *mut PyObject,
 ) -> c_int {
     let _pins = unsafe { Pins::new([descr, object, value]) };
-    if !unsafe { receiver(descr, object) } {
+    if !unsafe { receiver(descr, object, ReceiverContext::Binding) } {
         return -1;
     }
     let definition = unsafe { (*descr.cast::<PyMemberDescrObject>()).d_member };

@@ -186,6 +186,15 @@ Exceptions are raised by generated class handles (HF-207). Native object state
 lives in typed layouts with drop and traverse, not global handle maps (HF-208).
 The C-API keeps one error slot and O(1) object views (HF-209).
 
+The [CPython call protocol](https://docs.python.org/3/c-api/call.html) selects
+call APIs to match the argument representation already available. Its vectorcall
+benefit depends on the callee consuming the array form directly. Carry that
+choice through the existing typed callable ABI: materialize argument tuples or
+dictionaries where the public protocol requires them, account for conversions,
+and preserve ownership, recursion and exception behavior. Calling convention and
+keyword admission remain distinct facts under V1-26/HF-211; a transport choice
+cannot redefine the callable contract.
+
 Public Python library semantics belong to the pinned CPython source for the
 selected target version. Native primitives own necessary I/O, codecs, memory and
 ABI operations. Filename entry points share the existing capability and VFS
@@ -258,6 +267,10 @@ that distinction, including separate native host/build dependencies, and bind
 their finite startup inputs to the selected toolchain. Reuse and invalidation
 follow actual dependencies, as in
 [rustc's incremental query graph](https://rustc-dev-guide.rust-lang.org/queries/incremental-compilation-in-detail.html).
+When changed inputs produce unchanged query results, retain qualified downstream
+results whose declared dependencies remain valid. Bind reuse to the actual
+source, tools, target and artifact identities, and bound retained query results,
+backend artifacts, disk reads and peak live memory.
 Group compatible owning checks into an existing build graph, retain their
 input-bound evidence and rerun only invalidated claims. Additional layers,
 parallel builds or duplicate receipts do not establish better qualification.
@@ -338,6 +351,14 @@ Independent complete families can land concurrently; these dependencies do not
 hold one proven repair behind an unrelated open finding. Checks validate the
 exact committed inputs and reuse qualified unchanged evidence. Build each
 necessary compatible graph once, then execute its affected consumer images.
+
+[The Rust rollup procedure](https://forge.rust-lang.org/release/rollups.html)
+qualifies a combined integration candidate before default-branch publication and
+distinguishes small compatible batches from performance- or platform-sensitive
+changes. For Molt, one integration owner publishes each frozen candidate through
+the existing coordination, proof DAG and landing driver. Preserve attribution
+for measured changes and reuse qualified unchanged evidence as the existing
+input and execution authorities permit.
 
 Freeze each complete contract before its owning execution. Direct-codegen
 fixtures preserve authored codegen input; pipeline fixtures exercise
