@@ -34594,8 +34594,15 @@ def test_cli_cold_warm_production_bytes_and_cache_keys_ignore_hashseed(
         encoding="utf-8",
     )
     records = []
+    closure_rows: Path | None = None
     for index, seed in enumerate(("0", "1", "42", "12345", "random", "random")):
         cache = tmp_path / f"cache-{index}"
+        if closure_rows is not None:
+            # The compiler's own source closure is analyzed cold once, under the
+            # first seed: its rows are content-keyed and revalidated on every
+            # read, and test_compiler_source_closure_ignores_hashseed proves the
+            # analysis is seed-independent. Every other cache starts cold.
+            shutil.copytree(closure_rows, cache / "python_source_closure")
         script = f"""
 import json, sys
 from pathlib import Path
@@ -34616,4 +34623,41 @@ print(json.dumps(_capture_hashseed_cli_builds(Path({str(project)!r}), Path({str(
         result = json.loads(completed.stdout)
         assert result["warm_hits"] > 0
         records.append(result["records"])
+        if closure_rows is None:
+            closure_rows = cache / "python_source_closure"
+            assert any(closure_rows.glob("*.json"))
     assert all(record == records[0] for record in records[1:])
+
+
+def test_compiler_source_closure_ignores_hashseed(tmp_path: Path) -> None:
+    """The compiler's own source closure, analyzed cold, is seed-independent."""
+    results = []
+    for seed in ("0", "12345"):
+        cache = tmp_path / f"closure-{seed}"
+        script = f"""
+import json, os, sys
+from pathlib import Path
+sys.path[:0] = [{str(ROOT / "src")!r}, {str(ROOT)!r}]
+os.environ["MOLT_CACHE"] = {str(cache)!r}
+from molt.cli import cache_fingerprints as fingerprints
+with fingerprints._source_tree_fingerprint_transaction():
+    inputs = fingerprints._frontend_semantic_tooling_sources(Path({str(ROOT)!r}))
+rows = [
+    json.loads(path.read_text(encoding="utf-8"))
+    for path in Path({str(cache)!r}, "python_source_closure").glob("*.json")
+]
+print(json.dumps({{"paths": [str(path) for path in inputs.paths], "rows": rows}}))
+"""
+        completed = run_cli_test_process(
+            [sys.executable, "-c", script],
+            cwd=ROOT,
+            env={**os.environ, "PYTHONHASHSEED": seed},
+            capture_output=True,
+            text=True,
+            timeout=120,
+        )
+        assert completed.returncode == 0, completed.stderr
+        result = json.loads(completed.stdout)
+        assert result["rows"], "the cold analysis wrote no closure rows"
+        results.append(result)
+    assert results[0] == results[1]
