@@ -154,9 +154,10 @@ impl Declaration {
             return Err("errno record extent differs from declaration".into());
         }
         let words: Vec<_> = bytes
-            .chunks_exact(4)
-            .map(|chunk| {
-                let word: [u8; 4] = chunk.try_into().expect("fixed word extent");
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .map(|&word| {
                 if little_endian {
                     u32::from_le_bytes(word)
                 } else {
@@ -175,7 +176,12 @@ impl Declaration {
             return Err("errno record magic/version/endian/count mismatch".into());
         }
         let mut values = Vec::with_capacity(self.raw.len() + self.public.len());
-        for (index, row) in words[HEADER_WORDS..].chunks_exact(ROW_WORDS).enumerate() {
+        for (index, row) in words[HEADER_WORDS..]
+            .as_chunks::<ROW_WORDS>()
+            .0
+            .iter()
+            .enumerate()
+        {
             let expected = if index < self.raw.len() {
                 index
             } else {
@@ -197,13 +203,13 @@ impl Declaration {
 /// The maintained object reader owns native object parsing. Symbol addresses
 /// are section-relative only after subtracting the containing section address;
 /// integer reads are byte-based and use the observed target endianness.
-pub fn native_record<'a>(
-    bytes: &'a [u8],
+pub fn native_record(
+    bytes: &[u8],
     size: usize,
     architecture: object::Architecture,
     format: object::BinaryFormat,
     little: bool,
-) -> Result<&'a [u8], String> {
+) -> Result<&[u8], String> {
     let file =
         object::File::parse(bytes).map_err(|error| format!("target errno object: {error}"))?;
     if file.kind() != object::ObjectKind::Relocatable
