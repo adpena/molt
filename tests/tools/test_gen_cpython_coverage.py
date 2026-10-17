@@ -51,32 +51,49 @@ def test_audit_source_roots_reject_overlapping_authority() -> None:
 
 
 @pytest.mark.parametrize(
-    ("source", "expected"),
+    ("source", "expected", "kind"),
     [
-        ('version = "3.15.0"', "3.15"),
-        ('version = "v3.16.0a1"', "3.16"),
-        ('version = "3.100"', "3.100"),
-        ('version = "3.9"', "3.9"),
-        ("API >= 0x030F0000", "0x030F0000"),
-        ("API >= 0x03100000", "0x03100000"),
-        ("API >= 0X03640000", "0X03640000"),
-        ("API >= 0x030a00f0", "0x030a00f0"),
-        ("sys.version_info", "sys.version_info"),
-        ("PY_VERSION_HEX", "PY_VERSION_HEX"),
+        ('version = "3.15.0"', "3.15", "scattered-assumption"),
+        ('version = "v3.16.0a1"', "3.16", "scattered-assumption"),
+        ('version = "3.100"', "3.100", "scattered-assumption"),
+        ('version = "3.9"', "3.9", "scattered-assumption"),
+        ("API >= 0x030F0000", "0x030F0000", "scattered-assumption"),
+        ("API >= 0x03100000", "0x03100000", "scattered-assumption"),
+        ("API >= 0X03640000", "0X03640000", "scattered-assumption"),
+        ("API >= 0x030a00f0", "0x030a00f0", "scattered-assumption"),
+        ("sys.version_info", "sys.version_info", "operational-tooling"),
+        ("_sys.version_info", "_sys.version_info", "operational-tooling"),
+        (
+            "import sys as notsys\nnotsys.version_info",
+            "notsys.version_info",
+            "operational-tooling",
+        ),
+        (
+            "import sys as platform_python\nplatform_python.version_info",
+            "platform_python.version_info",
+            "scattered-assumption",
+        ),
+        (
+            "from sys import version_info as selected_version",
+            "version_info",
+            "scattered-assumption",
+        ),
+        ("PY_VERSION_HEX", "PY_VERSION_HEX", "scattered-assumption"),
         # Ambiguous numbers remain review hits; lexical shape is not provenance.
-        ("ratio = 3.14159", "3.14159"),
-        ("bits = 0x03001234", "0x03001234"),
-        ("ratio = 123.15", None),
-        ("ratio = 13.15", None),
-        ("ratio = 1.3.15", None),
-        ("bits = 0x030F", None),
-        ("bits = 0x030F00000", None),
-        ("bits = 0x1030F0000", None),
-        ("bits = 0x030G0000", None),
-        ("bits = 0x030F0000G", None),
-        ("NOT_PY_VERSION_HEX", None),
-        ("notsys.version_info", None),
-        ("unrelated = 42", None),
+        ("ratio = 3.14159", "3.14159", "scattered-assumption"),
+        ("bits = 0x03001234", "0x03001234", "scattered-assumption"),
+        ("ratio = 123.15", None, None),
+        ("ratio = 13.15", None, None),
+        ("ratio = 1.3.15", None, None),
+        ("bits = 0x030F", None, None),
+        ("bits = 0x030F00000", None, None),
+        ("bits = 0x1030F0000", None, None),
+        ("bits = 0x030G0000", None, None),
+        ("bits = 0x030F0000G", None, None),
+        ("NOT_PY_VERSION_HEX", None, None),
+        ("sys.version_info_suffix", None, None),
+        ("version_information", None, None),
+        ("unrelated = 42", None, None),
     ],
 )
 def test_audit_version_inventory_is_independent_of_supported_minors(
@@ -84,6 +101,7 @@ def test_audit_version_inventory_is_independent_of_supported_minors(
     monkeypatch: pytest.MonkeyPatch,
     source: str,
     expected: str | None,
+    kind: str | None,
 ) -> None:
     scan = tmp_path / "scan"
     scan.mkdir()
@@ -93,11 +111,6 @@ def test_audit_version_inventory_is_independent_of_supported_minors(
         {"version_assumption_audit": {"source_roots": ["scan"]}}
     )
     rows = [line for line in rendered.splitlines() if line.startswith("| `")]
-    kind = (
-        "operational-tooling"
-        if source == "sys.version_info"
-        else "scattered-assumption"
-    )
     assert rows == (
         [] if expected is None else [f"| `scan/probe.py` | 1 | {kind} | `{expected}` |"]
     )
