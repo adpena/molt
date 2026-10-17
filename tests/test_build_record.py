@@ -359,6 +359,27 @@ def test_the_request_key_binds_arguments_environment_cwd_and_host() -> None:
     assert first != key(host={"machine": "arm64", "cpu": "M4"})
     assert key(arguments={"request": object()}) is None, "not plain data"
 
+    # Each guarded build carries a fresh guard token and scratch lease and a
+    # memory budget measured at launch; none of them changes the binary.
+    guarded = {
+        "MOLT_X": "1",
+        "MOLT_MEMORY_GUARD_TOKEN": "a" * 32,
+        "MOLT_GUARD_SCRATCH_ROOT": "/s/pt-aaaaaaaa",
+        "MOLT_BACKEND_MEMORY_AVAILABLE_GB": "32.35",
+        "MOLT_BUILD_TIMEOUT_SEC": "600",
+    }
+    assert first == key(environment=guarded)
+    assert first == key(
+        environment={
+            **guarded,
+            "MOLT_MEMORY_GUARD_TOKEN": "b" * 32,
+            "MOLT_GUARD_SCRATCH_ROOT": "/s/pt-bbbbbbbb",
+            "MOLT_BACKEND_MEMORY_AVAILABLE_GB": "31.07",
+        }
+    )
+    # A name the registry does not mark output-neutral stays keyed.
+    assert first != key(environment={**guarded, "MOLT_BACKEND": "llvm"})
+
 
 def test_only_named_products_are_excluded_and_explicit_inputs_win(
     tmp_path: Path,

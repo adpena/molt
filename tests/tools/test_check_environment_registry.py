@@ -40,6 +40,7 @@ def _variable(
         "values": [],
         "owner": owner,
         "summary": f"{name} for the synthetic tree.",
+        "output_neutral": False,
     }
 
 
@@ -182,6 +183,7 @@ def _full_registry() -> object:
                     "values": [],
                     "owner": "tools/guard.py",
                     "summary": "Timeout.",
+                    "output_neutral": False,
                 }
             ],
             retired=[
@@ -505,6 +507,7 @@ def test_family_and_stem_need_composed_evidence(tree: Path) -> None:
                 "values": [],
                 "owner": "tools/guard.py",
                 "summary": "Never composed.",
+                "output_neutral": False,
             }
         ],
     )
