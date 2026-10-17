@@ -540,23 +540,81 @@ def test_star_exported_receivers_keep_foreign_writes(
     assert (None, name, construct) in _writes(source)
 
 
+# Samples of each standard import-hook object's native container kind.
+_HOOK_SAMPLES = {
+    "sys.modules": {"k": 0},
+    "sys.meta_path": [1, 0],
+    "sys.path_hooks": [1, 0],
+    "sys.path_importer_cache": {"k": 0},
+}
+
+
 @pytest.mark.parametrize(
-    "mutation", ["hooks.append(1)", "hooks[0] = 1", "del hooks[0]", "hooks += [1]"]
+    "mutation",
+    [
+        "hooks.append(1)",
+        "hooks.extend([1])",
+        "hooks.insert(0, 1)",
+        "hooks.remove(0)",
+        "hooks.sort()",
+        "hooks.clear()",
+        "hooks.pop()",
+        "hooks.pop('k')",
+        "hooks.popitem()",
+        "hooks.setdefault('n', 1)",
+        "hooks.update(n=1)",
+        "hooks[0] = 2",
+        "hooks['k'] = 2",
+        "del hooks[0]",
+        "del hooks['k']",
+        "hooks += [1]",
+        "hooks *= 2",
+        "hooks |= {'n': 1}",
+        "hooks -= 1",
+        "hooks.copy()",
+    ],
 )
-def test_star_exported_hook_mutations_invalidate_import_hooks(
+def test_star_exported_hook_mutations_invalidate_the_hooks_they_can_change(
     monkeypatch, mutation
 ) -> None:
+    import copy
     import sys
     from types import ModuleType
 
-    exports = ModuleType("namespace_hook_exports")
-    hooks = [0]
-    exports.__dict__.update(__all__=("hooks",), hooks=hooks)
-    monkeypatch.setitem(sys.modules, exports.__name__, exports)
+    # CPython is the oracle: run the mutation on each standard hook object's
+    # container kind and see whether it changes, or cannot apply at all.
     source = f"from namespace_hook_exports import *\n{mutation}\n"
-    exec(compile(source, "<star-hook-write-oracle>", "exec"), {})
-    assert hooks != [0]
-    assert ("sys", None, "import_hooks") in _writes(source)
+    changed: dict[str, bool] = {}
+    supported: dict[str, bool] = {}
+    for spelling, sample in _HOOK_SAMPLES.items():
+        hooks = copy.copy(sample)
+        exports = ModuleType("namespace_hook_exports")
+        exports.__dict__.update(__all__=("hooks",), hooks=hooks)
+        monkeypatch.setitem(sys.modules, exports.__name__, exports)
+        supported[spelling] = True
+        try:
+            exec(compile(source, "<star-hook-write-oracle>", "exec"), {})
+        except AttributeError:
+            supported[spelling] = False
+        except TypeError as error:
+            supported[spelling] = "unsupported operand" not in str(error)
+        except (IndexError, KeyError, ValueError):
+            pass
+        changed[spelling] = hooks != sample
+
+    writes = _writes(source)
+    for spelling in _HOOK_SAMPLES:
+        module, _, name = spelling.rpartition(".")
+        recorded = (
+            any(m == "sys.modules" for m, _, _ in writes)
+            if spelling == "sys.modules"
+            else (module, name, "import_hooks") in writes
+        )
+        if changed[spelling]:
+            assert recorded, f"{mutation} changes {spelling}"
+        if not supported[spelling]:
+            assert not recorded, f"{mutation} cannot change {spelling}"
+    assert ("sys", None, "import_hooks") not in writes
 
 
 def test_star_may_shadow_an_explicit_receiver_import(monkeypatch) -> None:
@@ -681,8 +739,11 @@ def test_star_hook_values_retain_mutation_custody_through_lexical_bindings(
     assert (namespace["local"] != [0]) is (argument == "local")
     assert (hooks != [0]) is (argument == "hooks")
     # Lexical lookup cannot rule out a carried hook object. Keep the native
-    # receiver mutation conservative until its actual value is proved.
-    assert ("sys", None, "import_hooks") in _writes(source)
+    # receiver mutation conservative until its actual value is proved: every
+    # list hook it could change is written.
+    writes = _writes(source)
+    assert ("sys", "meta_path", "import_hooks") in writes
+    assert ("sys", "path_hooks", "import_hooks") in writes
 
 
 def test_explicit_hook_alias_inplace_mutation_is_a_write() -> None:
