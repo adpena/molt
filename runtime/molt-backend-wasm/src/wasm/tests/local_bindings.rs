@@ -1,5 +1,5 @@
 use super::support::*;
-use crate::wasm::test_execution::{real_execution_tool, run_node_test_script, wasm_test_temp_dir};
+use crate::wasm::test_execution::{run_node_test_script, wasm_test_temp_dir};
 use serde_json::json;
 use std::fs;
 use std::path::PathBuf;
@@ -83,12 +83,7 @@ fn iterator_result_roles_survive_absent_and_discarded_siblings() {
 
 #[test]
 fn direct_wasm_bindings_execute_snapshot_rebind_and_discard_forms() {
-    let node = real_execution_tool(
-        PathBuf::from("node"),
-        "MOLT_REQUIRE_REAL_NODE_TESTS",
-        "local binding transport execution",
-    )
-    .expect("Node is required to prove emitted local binding values");
+    let node = PathBuf::from("node");
     let (temp, _remove_temp) = wasm_test_temp_dir();
     let mut cases = Vec::new();
     let mut memory_pages = 0;

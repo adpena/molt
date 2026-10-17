@@ -1,16 +1,11 @@
 use super::support::*;
-use crate::wasm::test_execution::{real_execution_tool, run_node_test_script, wasm_test_temp_dir};
+use crate::wasm::test_execution::{run_node_test_script, wasm_test_temp_dir};
 use serde_json::json;
 use std::{fs, path::PathBuf};
 
 #[test]
 fn method_receiver_prefix_executes_null_present_and_failed_push_custody() {
-    let node = real_execution_tool(
-        PathBuf::from("node"),
-        "MOLT_REQUIRE_REAL_NODE_TESTS",
-        "method receiver custody",
-    )
-    .expect("Node is required to execute the nullable receiver branch");
+    let node = PathBuf::from("node");
     let (temp, _remove_temp) = wasm_test_temp_dir();
     let mut function = wasm_test_function(
         "molt_main",
@@ -103,12 +98,7 @@ for (const present of [false, true]) for (const fail of [false, true]) {
 
 #[test]
 fn hash_constructor_execution_preserves_owner_and_failure_atomicity() {
-    let node = real_execution_tool(
-        PathBuf::from("node"),
-        "MOLT_REQUIRE_REAL_NODE_TESTS",
-        "hash constructor ownership",
-    )
-    .expect("Node is required to prove emitted constructor ownership");
+    let node = PathBuf::from("node");
     let (temp, _remove_temp) = wasm_test_temp_dir();
     let mut cases = Vec::new();
     for (kind, insert, width) in [
@@ -256,12 +246,7 @@ for (const test of config.cases) {
 
 #[test]
 fn fixed_arity_constructors_transport_borrowed_words_through_private_scratch() {
-    let node = real_execution_tool(
-        PathBuf::from("node"),
-        "MOLT_REQUIRE_REAL_NODE_TESTS",
-        "fixed-arity constructor transport",
-    )
-    .expect("Node is required to prove emitted constructor transport");
+    let node = PathBuf::from("node");
     let (temp, _remove_temp) = wasm_test_temp_dir();
     let params = vec!["p0", "p1", "p2", "p3", "p4"];
     let mut cases = Vec::new();
@@ -560,12 +545,7 @@ fn numeric_runtime_results_follow_generated_ownership_for_every_result_shape() {
         STATIC_FUNC_TYPES, WASM_NUMERIC_RUNTIME_SELECTORS, WasmRuntimeReturn,
     };
 
-    let node = real_execution_tool(
-        PathBuf::from("node"),
-        "MOLT_REQUIRE_REAL_NODE_TESTS",
-        "numeric runtime result ownership",
-    )
-    .expect("Node is required to prove emitted numeric result ownership");
+    let node = PathBuf::from("node");
     let (temp, _remove_temp) = wasm_test_temp_dir();
     let mut cases = Vec::new();
     assert!(!WASM_NUMERIC_RUNTIME_SELECTORS.is_empty());
@@ -1527,12 +1507,7 @@ fn anchor_cleanup_size_is_independent_of_return_site_count() {
 
 #[test]
 fn shared_anchor_epilogue_executes_branches_and_partial_construction_failures() {
-    let node = real_execution_tool(
-        PathBuf::from("node"),
-        "MOLT_REQUIRE_REAL_NODE_TESTS",
-        "shared anchor epilogue",
-    )
-    .expect("Node is required to prove emitted anchor cleanup");
+    let node = PathBuf::from("node");
     let (temp, _remove_temp) = wasm_test_temp_dir();
     let mut ops = Vec::new();
     for index in 0..3 {

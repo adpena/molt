@@ -1,6 +1,6 @@
 use super::support::*;
 use crate::ir::ExecutionContextPolicy;
-use crate::wasm::test_execution::{real_execution_tool, run_node_test_script, wasm_test_temp_dir};
+use crate::wasm::test_execution::{run_node_test_script, wasm_test_temp_dir};
 use serde_json::json;
 use std::fs;
 use std::path::PathBuf;
@@ -364,12 +364,7 @@ fn wasm_compiles_split_local_frame_with_inherited_chunks() {
         ),
         "the LIR lane must not erase Python frame ownership"
     );
-    let node = real_execution_tool(
-        PathBuf::from("node"),
-        "MOLT_REQUIRE_REAL_NODE_TESTS",
-        "split-frame execution proof",
-    )
-    .expect("Node is required: a static dispatch walker cannot prove emitted frame paths");
+    let node = PathBuf::from("node");
     let (stub, chunks) = split_frame_fixture("wasm_framed_large");
     assert!(
         chunks.len() > 1,

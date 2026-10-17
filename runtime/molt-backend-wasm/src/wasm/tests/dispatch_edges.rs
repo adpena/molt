@@ -1,5 +1,5 @@
 use super::support::*;
-use crate::wasm::test_execution::{real_execution_tool, run_node_test_script, wasm_test_temp_dir};
+use crate::wasm::test_execution::{run_node_test_script, wasm_test_temp_dir};
 use serde_json::json;
 use std::{fs, path::PathBuf};
 use wasmparser::Operator;
@@ -96,12 +96,7 @@ fn saved_state_guest(state_id: i64) -> Vec<u8> {
 
 #[test]
 fn dispatch_edges_preserve_paths_without_synthetic_forward_backedges() {
-    let node = real_execution_tool(
-        PathBuf::from("node"),
-        "MOLT_REQUIRE_REAL_NODE_TESTS",
-        "dispatch edges",
-    )
-    .expect("Node is required for dispatch edge execution");
+    let node = PathBuf::from("node");
     let (temp, _cleanup) = wasm_test_temp_dir();
     let mut linear = vec![marked("label", 0)];
     for line in 1..=64 {

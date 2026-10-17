@@ -2,7 +2,7 @@ use super::execution_support::executable_module;
 use super::*;
 use crate::tir::blocks::BlockId;
 use crate::tir::lir::{LirBlock, LirFunction, LirOp, LirRepr, LirTerminator, LirValue};
-use crate::wasm::test_execution::{real_execution_tool, run_node_test_script, wasm_test_temp_dir};
+use crate::wasm::test_execution::{run_node_test_script, wasm_test_temp_dir};
 use serde_json::json;
 use std::{fs, path::PathBuf};
 
@@ -324,12 +324,7 @@ console.log('owned-materialization: success, partial failure, lazy arms, aliases
 
 #[test]
 fn emitted_materialization_scopes_execute_success_failure_and_transfers() {
-    let node = real_execution_tool(
-        PathBuf::from("node"),
-        "MOLT_REQUIRE_REAL_NODE_TESTS",
-        "LIR materialization ownership",
-    )
-    .expect("Node is required to prove emitted allocation-failure branches");
+    let node = PathBuf::from("node");
     let (directory, _cleanup) = wasm_test_temp_dir();
     let mut modules = serde_json::Map::new();
     for (name, opcode, args, operands) in [
