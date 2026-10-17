@@ -301,15 +301,23 @@ def _case_exact_file_under(
 
 
 def _case_exact_file(
-    path: Path, *, import_topology: PythonImportTopology | None = None
+    root: Path, path: Path, *, import_topology: PythonImportTopology | None = None
 ) -> bool:
-    topology = import_topology or PythonImportTopology()
-    if path.is_absolute():
-        return _case_exact_file_under(
-            path.anchor, tuple(path.parts[1:]), import_topology=topology
-        )
+    """Whether ``path`` is a file whose components below ``root`` match case.
+
+    CPython's FileFinder matches case only inside the directory it searches,
+    and uses the search root as given. ``root`` is such a root: its ancestors
+    are never listed, so a change above it, such as a new entry in a shared
+    temporary directory, cannot change or fail the lookup.
+    """
+    try:
+        parts = path.relative_to(root).parts
+    except ValueError:
+        return False
     return _case_exact_file_under(
-        os.curdir, tuple(path.parts), import_topology=topology
+        os.fspath(root),
+        parts,
+        import_topology=import_topology or PythonImportTopology(),
     )
 
 

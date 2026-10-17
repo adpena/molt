@@ -8423,10 +8423,46 @@ def test_case_exact_file_refreshes_stale_directory_cache(
         python_import_topology, "_directory_state", coarse_directory_state
     )
 
-    assert not cli_module_resolution._case_exact_file(staged)
+    assert not cli_module_resolution._case_exact_file(tmp_path, staged)
     staged.write_bytes(b"wasm artifact")
 
-    assert cli_module_resolution._case_exact_file(staged)
+    assert cli_module_resolution._case_exact_file(tmp_path, staged)
+
+
+def test_case_exact_lookup_ignores_changes_above_its_root(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # A shared parent, such as the temporary directory every test uses, gains
+    # entries at any moment. CPython uses a search root as given, so neither
+    # the lookup nor its validation may depend on directories above the root.
+    from molt.cli import python_import_topology
+
+    root = tmp_path / "site"
+    module = root / "Pkg" / "__init__.py"
+    module.parent.mkdir(parents=True)
+    module.write_text("", encoding="utf-8")
+    read_entries = python_import_topology._read_entries
+    churn = iter(range(1_000_000))
+
+    def read_while_parent_changes(path: Path):
+        (tmp_path / f"unrelated-{next(churn)}").mkdir()
+        return read_entries(path)
+
+    monkeypatch.setattr(
+        python_import_topology, "_read_entries", read_while_parent_changes
+    )
+    topology = python_import_topology.PythonImportTopology()
+
+    assert cli_module_resolution._case_exact_file(
+        root, module, import_topology=topology
+    )
+    assert not cli_module_resolution._case_exact_file(
+        root, root / "pkg" / "__init__.py", import_topology=topology
+    )
+    assert not cli_module_resolution._case_exact_file(
+        root / "Pkg", tmp_path / "elsewhere.py", import_topology=topology
+    )
+    topology.validate()
 
 
 def test_reachable_native_artifact_plan_keeps_child_callable_exports(

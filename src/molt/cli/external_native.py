@@ -158,7 +158,7 @@ class _ExternalArtifactManifestSnapshot:
 def _external_package_dir(root: Path, package: str) -> Path | None:
     package_dir = root.joinpath(*package.split("."))
     init_file = package_dir / "__init__.py"
-    if package_dir.is_dir() and _case_exact_file(init_file):
+    if package_dir.is_dir() and _case_exact_file(root, init_file):
         return package_dir.resolve()
     return None
 
@@ -238,9 +238,9 @@ def _manifest_declared_static_link_artifact(
         resolved = candidate.resolve()
         if not (resolved == package_root or resolved.is_relative_to(package_root)):
             continue
-        if _case_exact_file(resolved) and _is_external_package_static_link_artifact(
-            resolved
-        ):
+        if _case_exact_file(
+            package_root, resolved
+        ) and _is_external_package_static_link_artifact(resolved):
             return resolved
     return None
 
@@ -381,7 +381,7 @@ def _find_external_extension_manifest(
     package_root = package_dir.resolve()
     artifact_specific = _external_artifact_manifest_path(artifact_path.resolve())
     if artifact_specific.parent == artifact_path.resolve().parent and _case_exact_file(
-        artifact_specific
+        artifact_specific.parent, artifact_specific
     ):
         return artifact_specific.resolve()
     current = artifact_path.resolve().parent
@@ -389,7 +389,7 @@ def _find_external_extension_manifest(
         if not (current == package_root or current.is_relative_to(package_root)):
             return None
         candidate = current / _EXTERNAL_PACKAGE_EXTENSION_MANIFEST
-        if _case_exact_file(candidate):
+        if _case_exact_file(package_root, candidate):
             return candidate.resolve()
         if current == package_root:
             return None
