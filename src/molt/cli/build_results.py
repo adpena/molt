@@ -1,7 +1,9 @@
 from __future__ import annotations
 
-from collections.abc import Callable, Mapping, MutableMapping, Sequence
+from collections.abc import Callable, Generator, Mapping, MutableMapping, Sequence
+from contextlib import contextmanager
 from pathlib import Path
+import os
 import platform
 import subprocess
 import sys
@@ -31,8 +33,13 @@ from molt.cli.native_binary import (
     _NativeBinaryInvalid,
     _assert_native_binary_valid,
 )
+from molt.cli import atomic_io
 from molt.cli.atomic_io import _staged_copy_file
-from molt.file_publication import canonical_file_leaf
+from molt.file_publication import (
+    canonical_file_leaf,
+    is_owned_staged_file_path,
+    staged_file_path,
+)
 from molt.link_outputs import validate_link_output_paths
 from molt.cli.native_link_plan import (
     native_strip_flags,
@@ -367,6 +374,33 @@ def _post_link_strip(binary: Path, target_triple: str | None) -> str | None:
     return None
 
 
+@contextmanager
+def _native_publication_stage(candidate: Path, output_binary: Path) -> Generator[Path]:
+    """The signed private stage that publication renames into place.
+
+    The linker writes a private stage of the binary beside it; that stage is
+    signed as the published name and published by rename, so the image is
+    never copied (a copy of a 68 MiB dev binary cost 1.9-2.5 s). A candidate
+    under another name in the same directory, such as BOLT's output, moves
+    into a stage first; one elsewhere is copied.
+    """
+    if is_owned_staged_file_path(candidate, output_binary):
+        atomic_io._codesign_atomic_copy_temp(candidate, output_binary)
+        yield candidate
+        return
+    if candidate.parent == output_binary.parent:
+        stage = staged_file_path(output_binary, purpose="native-link")
+        os.rename(candidate, stage)
+        try:
+            atomic_io._codesign_atomic_copy_temp(stage, output_binary)
+            yield stage
+        finally:
+            discard_staged_output(stage)
+        return
+    with _staged_copy_file(candidate, output_binary, codesign=True) as stage:
+        yield stage
+
+
 def _finalize_native_link_candidate(
     *,
     candidate: Path,
@@ -413,7 +447,7 @@ def _finalize_native_link_candidate(
         publish_started = time.perf_counter_ns() if phase_times is not None else 0
         validate_elapsed = 0
         try:
-            with _staged_copy_file(candidate, output_binary, codesign=True) as signed:
+            with _native_publication_stage(candidate, output_binary) as signed:
                 validate_started = (
                     time.perf_counter_ns() if phase_times is not None else 0
                 )

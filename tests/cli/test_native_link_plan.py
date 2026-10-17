@@ -866,6 +866,47 @@ def test_cross_target_strip_uses_llvm_strip_and_target_format_flags(
     assert received == [[str(llvm_strip), "--strip-all", str(binary)]]
 
 
+@pytest.mark.parametrize("placement", ["linker-stage", "sibling", "elsewhere"])
+def test_native_candidate_in_the_output_directory_is_published_without_a_copy(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, placement: str
+) -> None:
+    from molt import file_publication
+
+    output = tmp_path / "out" / "app"
+    output.parent.mkdir()
+    if placement == "linker-stage":
+        candidate = file_publication.staged_file_path(output, purpose="native-link")
+    elif placement == "sibling":
+        # BOLT writes `<binary>.bolt` beside its input.
+        candidate = output.parent / "app.bolt"
+    else:
+        candidate = tmp_path / "elsewhere" / "app"
+        candidate.parent.mkdir()
+    candidate.write_bytes(b"linked")
+    linked_inode = candidate.stat().st_ino
+    signed: list[Path] = []
+    monkeypatch.setattr(
+        atomic_io, "_codesign_atomic_copy_temp", lambda path, _dst: signed.append(path)
+    )
+    monkeypatch.setattr(build_results, "_assert_native_binary_valid", lambda *_: None)
+
+    assert (
+        build_results._finalize_native_link_candidate(
+            candidate=candidate,
+            output_binary=output,
+            target_triple=None,
+            strip=False,
+        )
+        is None
+    )
+    assert output.read_bytes() == b"linked"
+    assert not candidate.exists() or placement == "elsewhere"
+    # A stage in the output's directory is renamed into place: the published
+    # binary is the inode the linker wrote. A candidate elsewhere is copied.
+    assert (output.stat().st_ino == linked_inode) is (placement != "elsewhere")
+    assert len(signed) == 1 and signed[0].parent == output.parent
+
+
 def test_native_candidate_is_finalized_before_atomic_publication(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
