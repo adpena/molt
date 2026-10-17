@@ -449,6 +449,7 @@ def test_cpython_abi_build_requires_and_fingerprints_only_reported_staticlib(
         "_cargo_build_env",
         lambda: {
             "CARGO_TARGET_DIR": str(target_root),
+            "MOLT_BUILD_PYTHON": sys.executable,
             "MOLT_WASI_SYSROOT": str(tmp_path / "sysroot"),
         },
     )
@@ -546,13 +547,17 @@ def test_cpython_abi_failures_publish_consumable_evidence_in_json_mode(
         support, "_build_lock", lambda *_a, **_kw: contextlib.nullcontext()
     )
     monkeypatch.setattr(support, "_build_slot", lambda: contextlib.nullcontext())
+    # The plan's environment selects the runtime build Python (c9b4c0aa2).
     monkeypatch.setattr(
         support,
         "_cargo_build_env",
         lambda: (
-            {}
+            {"MOLT_BUILD_PYTHON": sys.executable}
             if failure == "missing_sdk"
-            else {"MOLT_WASI_SYSROOT": str(tmp_path / "sysroot")}
+            else {
+                "MOLT_BUILD_PYTHON": sys.executable,
+                "MOLT_WASI_SYSROOT": str(tmp_path / "sysroot"),
+            }
         ),
     )
     monkeypatch.setattr(
@@ -901,7 +906,7 @@ def test_runtime_member_hydration_selects_attested_target_and_replays_without_ca
     monkeypatch.setattr(
         RUNTIME_WASM_BUILD_SPEC,
         "_cargo_build_env",
-        lambda: {"CARGO_TARGET_DIR": str(target)},
+        lambda: {"CARGO_TARGET_DIR": str(target), "MOLT_BUILD_PYTHON": sys.executable},
     )
     monkeypatch.setattr(
         RUNTIME_WASM_BUILD_SPEC,
