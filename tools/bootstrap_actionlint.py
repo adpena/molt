@@ -28,6 +28,7 @@ from tools.import_file import bind_repository_imports  # noqa: E402
 bind_repository_imports(__file__)
 
 from tools.command_execution import CommandExecutor  # type: ignore  # noqa: E402
+from molt.file_publication import atomic_write_bytes, durable_replace  # noqa: E402
 
 _COMMANDS = CommandExecutor.for_file(__file__)
 
@@ -206,7 +207,11 @@ def ensure_actionlint(*, install: bool = True) -> Path:
         if _valid(executable, version, expected, expected_executable):
             return executable
         destination.mkdir(parents=True, exist_ok=True)
-        with tempfile.TemporaryDirectory(prefix="actionlint-bootstrap-") as tmp:
+        # Stage beside the install root: a rename is atomic only within one
+        # filesystem, and TMPDIR may live on another volume (EXDEV).
+        with tempfile.TemporaryDirectory(
+            prefix=".actionlint-bootstrap-", dir=destination.parent
+        ) as tmp:
             temp_root = Path(tmp)
             archive = temp_root / asset
             with (
@@ -236,24 +241,23 @@ def ensure_actionlint(*, install: bool = True) -> Path:
                     "actionlint executable digest mismatch: "
                     f"expected {expected_executable}, got {executable_sha}"
                 )
-            os.replace(extracted, executable)
-            receipt = destination / "actionlint-receipt.json"
-            receipt_tmp = destination / "actionlint-receipt.json.tmp"
-            receipt_tmp.write_text(
-                json.dumps(
-                    {
-                        "schema": "molt.actionlint-install.v1",
-                        "version": version,
-                        "archive_sha256": expected,
-                        "executable_sha256": executable_sha,
-                    },
-                    indent=2,
-                    sort_keys=True,
-                )
-                + "\n",
-                encoding="utf-8",
+            durable_replace(extracted, executable)
+            atomic_write_bytes(
+                destination / "actionlint-receipt.json",
+                (
+                    json.dumps(
+                        {
+                            "schema": "molt.actionlint-install.v1",
+                            "version": version,
+                            "archive_sha256": expected,
+                            "executable_sha256": executable_sha,
+                        },
+                        indent=2,
+                        sort_keys=True,
+                    )
+                    + "\n"
+                ).encode("utf-8"),
             )
-            os.replace(receipt_tmp, receipt)
         if not _valid(executable, version, expected, expected_executable):
             raise RuntimeError("provisioned actionlint failed attestation verification")
         return executable
