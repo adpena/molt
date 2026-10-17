@@ -28,20 +28,20 @@ pub const SOCK_CLOEXEC_FLAG: i32 = 0;
 use crate::libc_compat as libc;
 
 #[cfg(target_arch = "wasm32")]
-pub fn collect_errno_constants() -> Vec<(&'static str, i64)> {
-    crate::libc_compat::ERRNO_CONSTANTS.to_vec()
+pub fn errno_constants(_python_version: u16) -> impl Iterator<Item = (&'static str, i64)> + Clone {
+    crate::libc_compat::ERRNO_CONSTANTS.iter().copied()
 }
 
 #[cfg(not(target_arch = "wasm32"))]
 include!(concat!(env!("OUT_DIR"), "/errno_constants.rs"));
 
-pub fn socket_constants() -> Vec<(&'static str, i64)> {
+pub fn socket_constants() -> &'static [(&'static str, i64)] {
     #[cfg(target_arch = "wasm32")]
     {
         // Keep wasm socket constants aligned with wasm/run_wasm.js host values so
         // stdlib consumers (e.g. socketserver/smtplib) do not observe missing
         // module attributes.
-        vec![
+        &[
             ("AF_UNIX", libc::AF_UNIX as i64),
             ("AF_INET", AF_INET as i64),
             ("AF_INET6", AF_INET6 as i64),
@@ -85,7 +85,7 @@ pub fn socket_constants() -> Vec<(&'static str, i64)> {
     {
         #[cfg(target_os = "macos")]
         {
-            let mut out = vec![
+            &[
                 ("AF_APPLETALK", 16_i64),
                 ("AF_DECnet", 12_i64),
                 ("AF_INET", AF_INET as i64),
@@ -278,18 +278,11 @@ pub fn socket_constants() -> Vec<(&'static str, i64)> {
                 ("TCP_MAXSEG", 2_i64),
                 ("TCP_NODELAY", 1_i64),
                 ("TCP_NOTSENT_LOWAT", 513_i64),
-            ];
-            if SOCK_NONBLOCK_FLAG != 0 {
-                out.push(("SOCK_NONBLOCK", SOCK_NONBLOCK_FLAG as i64));
-            }
-            if SOCK_CLOEXEC_FLAG != 0 {
-                out.push(("SOCK_CLOEXEC", SOCK_CLOEXEC_FLAG as i64));
-            }
-            out
+            ]
         }
         #[cfg(windows)]
         {
-            vec![
+            &[
                 // Winsock address families, socket types, option levels, and
                 // getaddrinfo/getnameinfo flags are ABI constants, not CRT
                 // errno values; the Windows libc crate intentionally does not
@@ -332,7 +325,7 @@ pub fn socket_constants() -> Vec<(&'static str, i64)> {
         }
         #[cfg(all(not(target_os = "macos"), not(windows)))]
         {
-            let mut out = vec![
+            &[
                 ("AF_INET", AF_INET as i64),
                 ("AF_INET6", AF_INET6 as i64),
                 ("SOCK_STREAM", libc::SOCK_STREAM as i64),
@@ -361,70 +354,61 @@ pub fn socket_constants() -> Vec<(&'static str, i64)> {
                 ("NI_NUMERICHOST", libc::NI_NUMERICHOST as i64),
                 ("NI_NUMERICSERV", libc::NI_NUMERICSERV as i64),
                 ("MSG_PEEK", libc::MSG_PEEK as i64),
-            ];
-            #[cfg(unix)]
-            {
-                out.push(("AF_UNIX", libc::AF_UNIX as i64));
-            }
-            #[cfg(any(
-                target_os = "linux",
-                target_os = "android",
-                target_os = "macos",
-                target_os = "ios",
-                target_os = "freebsd",
-                target_os = "netbsd",
-                target_os = "openbsd",
-                target_os = "dragonfly"
-            ))]
-            {
-                out.push(("SCM_RIGHTS", libc::SCM_RIGHTS as i64));
-            }
-            #[cfg(unix)]
-            {
-                if SOCK_NONBLOCK_FLAG != 0 {
-                    out.push(("SOCK_NONBLOCK", SOCK_NONBLOCK_FLAG as i64));
-                }
-                if SOCK_CLOEXEC_FLAG != 0 {
-                    out.push(("SOCK_CLOEXEC", SOCK_CLOEXEC_FLAG as i64));
-                }
-            }
-            #[cfg(unix)]
-            {
-                out.push(("MSG_DONTWAIT", libc::MSG_DONTWAIT as i64));
-            }
-            #[cfg(any(
-                target_os = "linux",
-                target_os = "android",
-                target_os = "macos",
-                target_os = "ios",
-                target_os = "freebsd",
-                target_os = "netbsd",
-                target_os = "openbsd",
-                target_os = "dragonfly"
-            ))]
-            {
-                out.push(("SO_REUSEPORT", libc::SO_REUSEPORT as i64));
-            }
-            out.push(("EAI_AGAIN", libc::EAI_AGAIN as i64));
-            out.push(("EAI_FAIL", libc::EAI_FAIL as i64));
-            out.push(("EAI_FAMILY", libc::EAI_FAMILY as i64));
-            out.push(("EAI_NONAME", libc::EAI_NONAME as i64));
-            out.push(("EAI_SERVICE", libc::EAI_SERVICE as i64));
-            out.push(("EAI_SOCKTYPE", libc::EAI_SOCKTYPE as i64));
-            // AF_ALG constants (kernel crypto API, Linux only)
-            #[cfg(target_os = "linux")]
-            {
-                out.push(("AF_ALG", 38_i64));
-                out.push(("SOL_ALG", 279_i64));
-                out.push(("ALG_SET_KEY", 1_i64));
-                out.push(("ALG_SET_IV", 2_i64));
-                out.push(("ALG_SET_OP", 3_i64));
-                out.push(("ALG_SET_AEAD_ASSOCLEN", 4_i64));
-                out.push(("ALG_SET_AEAD_AUTHSIZE", 5_i64));
-                out.push(("ALG_OP_DECRYPT", 0_i64));
-                out.push(("ALG_OP_ENCRYPT", 1_i64));
-            }
-            out
+                #[cfg(unix)]
+                ("AF_UNIX", libc::AF_UNIX as i64),
+                #[cfg(any(
+                    target_os = "linux",
+                    target_os = "android",
+                    target_os = "macos",
+                    target_os = "ios",
+                    target_os = "freebsd",
+                    target_os = "netbsd",
+                    target_os = "openbsd",
+                    target_os = "dragonfly"
+                ))]
+                ("SCM_RIGHTS", libc::SCM_RIGHTS as i64),
+                #[cfg(all(unix, any(target_os = "linux", target_os = "android")))]
+                ("SOCK_NONBLOCK", SOCK_NONBLOCK_FLAG as i64),
+                #[cfg(all(unix, any(target_os = "linux", target_os = "android")))]
+                ("SOCK_CLOEXEC", SOCK_CLOEXEC_FLAG as i64),
+                #[cfg(unix)]
+                ("MSG_DONTWAIT", libc::MSG_DONTWAIT as i64),
+                #[cfg(any(
+                    target_os = "linux",
+                    target_os = "android",
+                    target_os = "macos",
+                    target_os = "ios",
+                    target_os = "freebsd",
+                    target_os = "netbsd",
+                    target_os = "openbsd",
+                    target_os = "dragonfly"
+                ))]
+                ("SO_REUSEPORT", libc::SO_REUSEPORT as i64),
+                ("EAI_AGAIN", libc::EAI_AGAIN as i64),
+                ("EAI_FAIL", libc::EAI_FAIL as i64),
+                ("EAI_FAMILY", libc::EAI_FAMILY as i64),
+                ("EAI_NONAME", libc::EAI_NONAME as i64),
+                ("EAI_SERVICE", libc::EAI_SERVICE as i64),
+                ("EAI_SOCKTYPE", libc::EAI_SOCKTYPE as i64),
+                #[cfg(target_os = "linux")]
+                ("AF_ALG", 38_i64),
+                #[cfg(target_os = "linux")]
+                ("SOL_ALG", 279_i64),
+                #[cfg(target_os = "linux")]
+                ("ALG_SET_KEY", 1_i64),
+                #[cfg(target_os = "linux")]
+                ("ALG_SET_IV", 2_i64),
+                #[cfg(target_os = "linux")]
+                ("ALG_SET_OP", 3_i64),
+                #[cfg(target_os = "linux")]
+                ("ALG_SET_AEAD_ASSOCLEN", 4_i64),
+                #[cfg(target_os = "linux")]
+                ("ALG_SET_AEAD_AUTHSIZE", 5_i64),
+                #[cfg(target_os = "linux")]
+                ("ALG_OP_DECRYPT", 0_i64),
+                #[cfg(target_os = "linux")]
+                ("ALG_OP_ENCRYPT", 1_i64),
+            ]
         }
     }
 }
@@ -441,7 +425,7 @@ mod tests {
 
     #[test]
     fn errno_constants_include_core_os_errors() {
-        let constants = collect_errno_constants();
+        let constants: Vec<_> = errno_constants(312).collect();
         assert!(find(&constants, "EACCES").is_some());
         assert!(find(&constants, "ENOENT").is_some());
         assert!(find(&constants, "EWOULDBLOCK").is_some());
@@ -450,21 +434,21 @@ mod tests {
     #[test]
     fn socket_constants_include_core_address_and_type_values() {
         let constants = socket_constants();
-        assert_eq!(find(&constants, "AF_INET"), Some(AF_INET as i64));
-        assert_eq!(find(&constants, "AF_INET6"), Some(AF_INET6 as i64));
-        assert!(find(&constants, "SOCK_STREAM").is_some());
-        assert!(find(&constants, "EAI_NONAME").is_some());
+        assert_eq!(find(constants, "AF_INET"), Some(AF_INET as i64));
+        assert_eq!(find(constants, "AF_INET6"), Some(AF_INET6 as i64));
+        assert!(find(constants, "SOCK_STREAM").is_some());
+        assert!(find(constants, "EAI_NONAME").is_some());
     }
 
     #[test]
     fn socket_flags_are_present_only_when_supported() {
         let constants = socket_constants();
         assert_eq!(
-            find(&constants, "SOCK_NONBLOCK"),
+            find(constants, "SOCK_NONBLOCK"),
             (SOCK_NONBLOCK_FLAG != 0).then_some(SOCK_NONBLOCK_FLAG as i64)
         );
         assert_eq!(
-            find(&constants, "SOCK_CLOEXEC"),
+            find(constants, "SOCK_CLOEXEC"),
             (SOCK_CLOEXEC_FLAG != 0).then_some(SOCK_CLOEXEC_FLAG as i64)
         );
     }

@@ -366,7 +366,7 @@
     "tests/tools/test_win_job_contract.py",
     "tests/tools/test_windows_process_api.py"
   ],
-  "authority_sha256": "8d76c7f371599bbb8edf727aaf88843ef57aff0e392d354d5dec6c2a1ea8778b",
+  "authority_sha256": "323c2c3f2df93b957e0fb3f5a93080dc91da533f08dda8064e2f77659643b7d7",
   "cargo_environment_policy": {
     "incident_command": "cargo metadata --locked --format-version 1",
     "incident_commit": "20b046b79bd4ca64a8c859f737f6e330377bcc4e",
@@ -6804,6 +6804,8 @@
         "-p",
         "molt-runtime",
         "-p",
+        "molt-runtime-platform",
+        "-p",
         "molt-gpu-runtime",
         "-p",
         "zlib-rs@0.6.8",
@@ -6811,6 +6813,9 @@
         "--features",
         "molt-passes/native-backend,molt-passes/wasm-backend,molt-passes/test-util,molt-backend-wasm/test-util,molt-runtime/stdlib_micro,molt-runtime/builtin_complex,molt-runtime/builtin_set,molt-runtime/molt_gpu_primitives,molt-runtime/molt_gpu_webgpu,zlib-rs/std,zlib-rs/rust-allocator,zlib-rs/ZLIB_DEBUG",
         "--",
+        "errno_build_tests::",
+        "socket_constants::tests::",
+        "libc_compat::tests::synthetic_errno_",
         "counter_wrap",
         "tir::",
         "wasm::",

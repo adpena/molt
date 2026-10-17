@@ -98,7 +98,7 @@ for the crate-extraction and incremental-build routing plan.
   no caller depends on the host executable opting into long paths.
   Its unit tests own the publication/error-state contract independently of
   backend feature selection; backend tests retain their consumer obligations.
-- Runtime and CPython-ABI Unicode generators and the native errno generator use
+- Runtime and CPython-ABI Unicode generators use
   one `runtime/build_support/build_python.rs` interpreter-selection and execution
   authority. Its `-B -I -S` import policy matches the content-attested Python
   probe: project cwd, `PYTHONPATH`, `PYTHONHOME`, and site startup cannot supply
@@ -108,6 +108,13 @@ for the crate-extraction and incremental-build routing plan.
   environment remains subject to toolchain custody; import isolation is not a
   claim of full process hermeticity. Source identity includes `build_support`
   for every consumer; legacy ambient-import identities are rejected.
+- Native errno publication uses the selected target C headers and the ordered
+  CPython declaration, including repeated insertions and version gates. The
+  build reads a fixed integer object without linking or executing target code;
+  the runtime borrows generated static rows through its existing cache. Header
+  evaluation and object validation run only during development/builds. See the
+  [runtime contract](../spec/areas/runtime/0003-runtime.md#native-errno-publication-and-build-authority)
+  and V1-23 for qualification boundaries.
 - Remaining structural work: finish runtime facade composition, finish per-crate
   intrinsic registries, isolate native backend codegen into its own crate, and
   preserve deterministic cache/build-state custody across concurrent agents.

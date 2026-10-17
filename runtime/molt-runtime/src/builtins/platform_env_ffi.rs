@@ -1,6 +1,6 @@
 use super::*;
 use crate::audit::AuditArgs;
-use molt_runtime_platform::socket_constants::{collect_errno_constants, socket_constants};
+use molt_runtime_platform::socket_constants::{errno_constants, socket_constants};
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_uuid_getnode() -> u64 {
@@ -305,10 +305,14 @@ pub extern "C" fn molt_gettext_ngettext(singular_bits: u64, plural_bits: u64, n_
 pub extern "C" fn molt_errno_constants() -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         init_platform_cached_owned_bits(_py, &platform_state(_py).errno_constants_cache, || {
-            let constants = collect_errno_constants();
-            let mut pairs = Vec::with_capacity(constants.len() * 2);
-            let mut reverse_pairs = Vec::with_capacity(constants.len() * 2);
-            let mut owned_bits = Vec::with_capacity(constants.len() * 2);
+            let constants =
+                errno_constants(300 + crate::object::ops_sys::runtime_target_minor(_py) as u16);
+            // Count the static view to preserve exact scratch capacities without
+            // allocating and copying a temporary publication table.
+            let count = constants.clone().count();
+            let mut pairs = Vec::with_capacity(count * 2);
+            let mut reverse_pairs = Vec::with_capacity(count * 2);
+            let mut owned_bits = Vec::with_capacity(count * 2);
             for (name, value) in constants {
                 let name_ptr = alloc_string(_py, name.as_bytes());
                 if name_ptr.is_null() {
@@ -364,7 +368,7 @@ pub extern "C" fn molt_socket_constants() -> u64 {
             let constants = socket_constants();
             let mut pairs = Vec::with_capacity(constants.len() * 2);
             let mut owned_bits = Vec::with_capacity(constants.len() * 2);
-            for (name, value) in constants {
+            for &(name, value) in constants {
                 let name_ptr = alloc_string(_py, name.as_bytes());
                 if name_ptr.is_null() {
                     for bits in owned_bits {

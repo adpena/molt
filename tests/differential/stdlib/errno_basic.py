@@ -24,7 +24,14 @@ for name in (
     "EISCONN",
     "ESHUTDOWN",
 ):
-    value = getattr(errno, name)
-    print(name, isinstance(value, int), getattr(errno, errno.errorcode[value]) == value)
+    if hasattr(errno, name):
+        value = getattr(errno, name)
+        print(name, isinstance(value, int), getattr(errno, errno.errorcode[value]) == value)
+    else:
+        print(name, "absent")
 print("wouldblock-alias", errno.EAGAIN == errno.EWOULDBLOCK)
 print("separate-resolver-domain", hasattr(errno, "EAI_NONAME"))
+
+# CPython publication order selects the reverse alias independently of __all__.
+print("wouldblock-name", errno.errorcode[errno.EWOULDBLOCK])
+print("again-name", errno.errorcode[errno.EAGAIN])

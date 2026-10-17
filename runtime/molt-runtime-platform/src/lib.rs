@@ -15,3 +15,6 @@ pub mod utils;
 pub mod uuid_support;
 #[cfg(windows)]
 pub mod windows_abi;
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod errno_build_tests;
