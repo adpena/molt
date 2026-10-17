@@ -180,7 +180,6 @@ pub fn simple_ir_op_is_provably_nonthrowing_with_facts(
             | "exception_stack_enter"
             | "exception_stack_clear"
             | "exception_stack_depth"
-            | "context_depth"
             | "check_exception"
     ) {
         return true;

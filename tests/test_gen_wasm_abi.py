@@ -2374,16 +2374,16 @@ def test_wasm_abi_manifest_owns_lir_runtime_calls() -> None:
         "variant": "ModuleImportStar",
         "import_name": "module_import_star",
     }
-    assert calls["ContextDepth"] == {
-        "variant": "ContextDepth",
-        "import_name": "context_depth",
+    assert calls["ContextExit"] == {
+        "variant": "ContextExit",
+        "import_name": "context_exit",
     }
     assert calls["IntFromI64"]["import_name"] == "int_from_i64"
     assert calls["IntAsI64"]["import_name"] == "int_as_i64"
     assert op_loop_calls["module_import_star"]["lir_variant"] == "ModuleImportStar"
     assert op_loop_calls["module_import_star"]["lir_operand_count"] == 2
-    assert op_loop_calls["context_depth"]["lir_variant"] == "ContextDepth"
-    assert op_loop_calls["context_depth"]["lir_operand_count"] == 0
+    assert op_loop_calls["context_exit"]["lir_variant"] == "ContextExit"
+    assert op_loop_calls["context_exit"]["lir_operand_count"] == 2
     # The scalar parse kinds lost their last producer (HF-197).
     assert not {"json_parse", "msgpack_parse", "cbor_parse"} & op_loop_calls.keys()
     assert "sink" not in op_loop_calls["asyncgen_new"]
@@ -2425,7 +2425,7 @@ def test_wasm_abi_manifest_owns_lir_runtime_calls() -> None:
     assert "pub(crate) const fn import_name" not in rendered_lir_rs
     assert "self.import().name()" not in rendered_lir_rs
     assert "lir_fixed_runtime_call" in rendered_lir_rs
-    assert '"context_depth" => Some(LirFixedRuntimeCall' in rendered_lir_rs
+    assert '"context_exit" => Some(LirFixedRuntimeCall' in rendered_lir_rs
     assert "pub(crate) fn op_loop_runtime_call(" in rendered_lir_rs
     assert "marked: bool" in rendered_lir_rs
     assert (

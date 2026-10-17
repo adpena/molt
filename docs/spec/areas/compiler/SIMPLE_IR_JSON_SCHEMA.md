@@ -733,13 +733,8 @@ roundtrip, before native, LLVM, WASM, Luau, or Rust admission and emission.
 
 | kind                | Fields used                   | Description              |
 |---------------------|-------------------------------|--------------------------|
-| `context_null`      | `args`, `out`                 | Null context manager     |
 | `context_enter`     | `args` [ctx], `out`           | `__enter__`              |
 | `context_exit`      | `args` [ctx, exc], `out`      | `__exit__`               |
-| `context_unwind`    | `args` [ctx], `out`           | Unwind context           |
-| `context_depth`     | `out`                         | Get context depth        |
-| `context_unwind_to` | `args` [depth, exc], `out`    | Unwind to depth          |
-| `context_closing`   | `args`, `out`                 | contextlib.closing        |
 
 ### Async
 

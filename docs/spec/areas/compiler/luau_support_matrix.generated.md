@@ -13,8 +13,8 @@ Validated structured CFG uses `function_body.rs` and `flow_dispatch.rs` separate
 - `compile-error`: `8`
 - `implemented-exact`: `199`
 - `implemented-target-limited`: `15`
-- `not-admitted`: `194`
-- `total`: `416`
+- `not-admitted`: `189`
+- `total`: `411`
 
 ## Matrix
 
@@ -110,13 +110,8 @@ Validated structured CFG uses `function_body.rs` and `flow_dispatch.rs` separate
 | `const_not_implemented` | `implemented-exact` | Lowered and outside every generated target-contract limitation. |
 | `const_str` | `implemented-exact` | Lowered and outside every generated target-contract limitation. |
 | `contains` | `implemented-exact` | Lowered and outside every generated target-contract limitation. |
-| `context_closing` | `not-admitted` | Operation is unclassified in the generated target-contract authority. |
-| `context_depth` | `not-admitted` | Operation is unclassified in the generated target-contract authority. |
 | `context_enter` | `not-admitted` | Operation is unclassified in the generated target-contract authority. |
 | `context_exit` | `not-admitted` | Operation is unclassified in the generated target-contract authority. |
-| `context_null` | `not-admitted` | Operation is unclassified in the generated target-contract authority. |
-| `context_unwind` | `not-admitted` | Operation is unclassified in the generated target-contract authority. |
-| `context_unwind_to` | `not-admitted` | Operation is unclassified in the generated target-contract authority. |
 | `copy_var` | `implemented-exact` | Lowered and outside every generated target-contract limitation. |
 | `dataclass_get` | `not-admitted` | Operation is unclassified in the generated target-contract authority. |
 | `dataclass_new` | `not-admitted` | Operation is unclassified in the generated target-contract authority. |

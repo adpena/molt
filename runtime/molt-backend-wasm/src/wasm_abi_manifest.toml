@@ -1699,13 +1699,18 @@ type = 2
 name = "not"
 type = 2
 
+# No op kind lowers to context_closing, context_depth, context_unwind or
+# context_unwind_to (HF-197); only the context_enter and context_exit
+# required_imports still demand them, so their boxed ABI is declared here.
 [[import]]
 name = "context_closing"
 type = 2
+boxed_call = true
 
 [[import]]
 name = "context_depth"
 type = 0
+boxed_call = true
 
 [[import]]
 name = "context_enter"
@@ -1722,10 +1727,12 @@ type = 2
 [[import]]
 name = "context_unwind"
 type = 2
+boxed_call = true
 
 [[import]]
 name = "context_unwind_to"
 type = 3
+boxed_call = true
 
 [[import]]
 name = "code_new"
@@ -5929,32 +5936,12 @@ variant = "BridgeUnavailable"
 import_name = "bridge_unavailable"
 
 [[lir_runtime_call]]
-variant = "ContextNull"
-import_name = "context_null"
-
-[[lir_runtime_call]]
 variant = "ContextEnter"
 import_name = "context_enter"
 
 [[lir_runtime_call]]
 variant = "ContextExit"
 import_name = "context_exit"
-
-[[lir_runtime_call]]
-variant = "ContextUnwind"
-import_name = "context_unwind"
-
-[[lir_runtime_call]]
-variant = "ContextDepth"
-import_name = "context_depth"
-
-[[lir_runtime_call]]
-variant = "ContextUnwindTo"
-import_name = "context_unwind_to"
-
-[[lir_runtime_call]]
-variant = "ContextClosing"
-import_name = "context_closing"
 
 [[lir_runtime_call]]
 variant = "ObjectNewBound"
@@ -6259,13 +6246,6 @@ lir_variant = "BridgeUnavailable"
 lir_operand_count = 1
 
 [[op_loop_runtime_call]]
-kind = "context_null"
-import_name = "context_null"
-args = ["local:0"]
-lir_variant = "ContextNull"
-lir_operand_count = 1
-
-[[op_loop_runtime_call]]
 kind = "context_enter"
 import_name = "context_enter"
 args = ["local:0"]
@@ -6292,39 +6272,6 @@ required_imports = [
 ]
 lir_variant = "ContextExit"
 lir_operand_count = 2
-
-[[op_loop_runtime_call]]
-kind = "context_unwind"
-import_name = "context_unwind"
-args = ["local:0"]
-required_imports = [
-  "context_unwind",
-  "context_unwind_to",
-  "context_depth",
-]
-lir_variant = "ContextUnwind"
-lir_operand_count = 1
-
-[[op_loop_runtime_call]]
-kind = "context_depth"
-import_name = "context_depth"
-args = []
-lir_variant = "ContextDepth"
-lir_operand_count = 0
-
-[[op_loop_runtime_call]]
-kind = "context_unwind_to"
-import_name = "context_unwind_to"
-args = ["local:0", "local:1"]
-lir_variant = "ContextUnwindTo"
-lir_operand_count = 2
-
-[[op_loop_runtime_call]]
-kind = "context_closing"
-import_name = "context_closing"
-args = ["local:0"]
-lir_variant = "ContextClosing"
-lir_operand_count = 1
 
 [[op_loop_runtime_call]]
 kind = "abs"

@@ -166,31 +166,8 @@ fn preserved_copy_runtime_service_imports_stay_lir_fast_runtime_calls() {
             true,
             "bridge_unavailable",
         ),
-        ("context_null", "context_null", 1, true, "context_null"),
         ("context_enter", "context_enter", 1, true, "context_enter"),
         ("context_exit", "context_exit", 2, true, "context_exit"),
-        (
-            "context_unwind",
-            "context_unwind",
-            1,
-            true,
-            "context_unwind",
-        ),
-        ("context_depth", "context_depth", 0, true, "context_depth"),
-        (
-            "context_unwind_to",
-            "context_unwind_to",
-            2,
-            true,
-            "context_unwind_to",
-        ),
-        (
-            "context_closing",
-            "context_closing",
-            1,
-            true,
-            "context_closing",
-        ),
     ];
 
     for (name, original_kind, operand_count, has_result, runtime_call) in cases {

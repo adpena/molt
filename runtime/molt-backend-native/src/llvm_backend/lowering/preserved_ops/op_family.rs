@@ -214,7 +214,6 @@ mod tests {
             ("issubclass", 2),
             ("has_attr_name", 2),
             ("is_callable", 1),
-            ("context_unwind_to", 2),
             ("code_new", 9),
             ("callargs_push_pos", 2),
             ("callargs_push_kw", 3),
