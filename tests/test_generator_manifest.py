@@ -45,7 +45,7 @@ ROOT = Path(__file__).resolve().parents[1]
 
 def test_repository_text_checkout_has_one_cross_platform_eol_authority() -> None:
     representative_text_authorities = (
-        "runtime/heap_kinds.generated.json",
+        "runtime/molt-runtime/src/object/heap_kinds_generated.rs",
         "src/molt/compiler_analysis/python_effects_generated.py",
         ".github/proof-plan.generated.json",
         "docs/agent/PROOF_PLAN.generated.md",

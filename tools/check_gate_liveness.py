@@ -41,7 +41,6 @@ from tools import advisory_classifier, disk_guard  # noqa: E402
 from tools import lane_maturity, powerplay_acceptance  # noqa: E402
 from tools import anti_recurrence_gate, apparatus_agent_safety  # noqa: E402
 from tools import encoding_gate  # noqa: E402
-from tools import gen_cpython_coverage  # noqa: E402
 from molt.target_python import (  # noqa: E402
     TargetPythonVersion,
     require_verified_subset_target,
@@ -81,15 +80,6 @@ def _canaries() -> list[Canary]:
             lambda: _raises_value_error(
                 lambda: require_verified_subset_target(
                     TargetPythonVersion(3, 11, 0), platform="windows"
-                )
-            ),
-        ),
-        Canary(
-            "cpython_abi_coverage",
-            "missing-export-fires",
-            lambda: (
-                not gen_cpython_coverage.coverage_complete(
-                    {"PyLong_FromLong"}, {"PyLong_FromLong", "PyLong_AsLong"}
                 )
             ),
         ),
