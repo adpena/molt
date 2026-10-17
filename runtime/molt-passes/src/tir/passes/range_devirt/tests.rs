@@ -171,10 +171,6 @@ fn devirt_range_single_arg() {
         .iter()
         .find(|op| op.opcode == OpCode::Lt)
         .expect("range devirt comparison op");
-    assert!(
-        !cmp_op.attrs.contains_key("_fast_int"),
-        "range comparison must use value_types for scalar proof, not _fast_int attrs"
-    );
     let cmp_result = cmp_op
         .results
         .first()
@@ -213,10 +209,6 @@ fn devirt_range_single_arg() {
         .rev()
         .find(|op| op.opcode == OpCode::Add)
         .expect("range increment op");
-    assert!(
-        !increment_op.attrs.contains_key("_fast_int"),
-        "range increment must use value_types for scalar proof, not _fast_int attrs"
-    );
     let increment_result = increment_op
         .results
         .first()

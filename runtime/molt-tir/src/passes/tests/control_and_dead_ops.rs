@@ -487,8 +487,7 @@ fn dead_op_elim_keeps_unused_untyped_arithmetic() {
 
 #[test]
 fn dead_op_elim_keeps_transport_hinted_unknown_arithmetic() {
-    let mut add = make_arith("add", &["left", "right"], "_unused");
-    add.fast_int = Some(true);
+    let add = make_arith("add", &["left", "right"], "_unused");
     let mut ir = SimpleIR {
         functions: vec![FunctionIR {
             return_abi: molt_ir::FunctionReturnAbi::Void,

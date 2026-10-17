@@ -80,7 +80,6 @@ fn assert_molt_main_has_operator(wasm: &[u8], expected: &str) {
 #[test]
 fn scalar_fast_path_ignores_transport_hints() {
     let mut add = wasm_test_op("add", Some("sum"), vec!["lhs", "rhs"]);
-    add.fast_int = Some(true);
     add.type_hint = Some("int".to_string());
     let func = wasm_test_function("hinted", vec!["lhs", "rhs"], None, vec![add.clone()]);
     let plan = wasm_representation_plan(&func);

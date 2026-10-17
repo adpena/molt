@@ -48,13 +48,7 @@ fn replace_kind(op: &mut TirOp, name: &str, operands: Vec<ValueId>) {
     ]);
     // Old inference/fast-path hints describe the removed operation, not the
     // new primitive. Source, context, custody and origin metadata stay intact.
-    for key in [
-        "type_hint",
-        "_type_hint",
-        "fast_int",
-        "fast_float",
-        "stack_eligible",
-    ] {
+    for key in ["type_hint", "_type_hint", "stack_eligible"] {
         op.attrs.remove(key);
     }
 }

@@ -5,7 +5,7 @@ use std::collections::BTreeMap;
 use wasm_encoder::{Function, Instruction};
 
 /// Trusted unbox: when we *know* the value is a NaN-boxed integer (from IR
-/// type information / `fast_int`), we can skip the `AND INT_MASK` step.
+/// representation facts), we can skip the `AND INT_MASK` step.
 /// The left-shift by `INT_SHIFT` (17) already discards the upper QNAN+tag
 /// bits, so the mask is redundant.  Saves 2 instructions per operand.
 fn emit_unbox_int_local_trusted(
@@ -63,8 +63,8 @@ fn emit_unbox_int_local_trusted_tee(
 // whose raw value is `v`, we can replace the 4-instruction unbox sequence
 // with a single `i64.const v`, and the 4-instruction box sequence with a
 // single `i64.const box_int(v)`.  This eliminates redundant box/unbox
-// round-trips that commonly occur when a `const` op feeds into a `fast_int`
-// arithmetic op.
+// round-trips that commonly occur when a `const` op feeds into an integer
+// fast-path arithmetic op.
 // ---------------------------------------------------------------------------
 
 /// Peephole-optimized unbox: if `src_local` has a known raw int value in

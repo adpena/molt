@@ -82,7 +82,7 @@ impl SimpleBackend {
             dump.push_str(&format!("// param_types: {:?}\n", func_ir.param_types));
             for (idx, op) in func_ir.ops.iter().enumerate() {
                 dump.push_str(&format!(
-                    "{:4}: kind={:30} out={:20} var={:20} args={:40} val={:?} sval={:?} fi={:?} ff={:?} stack={:?} task={:?} container={:?} type={:?}\n",
+                    "{:4}: kind={:30} out={:20} var={:20} args={:40} val={:?} sval={:?} stack={:?} task={:?} container={:?} type={:?}\n",
                     idx,
                     op.kind,
                     op.out.as_deref().unwrap_or(""),
@@ -90,8 +90,6 @@ impl SimpleBackend {
                     op.args.as_ref().map(|a| a.join(",")).unwrap_or_default(),
                     op.value,
                     op.s_value,
-                    op.fast_int,
-                    op.fast_float,
                     op.stack_eligible,
                     op.task_kind,
                     op.container_type,

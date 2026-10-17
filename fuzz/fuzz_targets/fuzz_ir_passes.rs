@@ -104,7 +104,6 @@ impl<'a> Arbitrary<'a> for PassFuzzInput {
                             kind,
                             args: Some(vec![a, b]),
                             out: Some(out_name),
-                            fast_int: Some(u.arbitrary()?),
                             ..OpIR::default()
                         }
                     }

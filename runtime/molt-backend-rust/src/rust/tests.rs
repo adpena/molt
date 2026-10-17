@@ -563,7 +563,6 @@ fn compile_checked_rejects_untyped_integer_capable_arithmetic_before_emission() 
         out: Some("sum".to_string()),
         ..OpIR::default()
     };
-    add.fast_int = Some(true);
     add.type_hint = Some("int".to_string());
     let ir = SimpleIR {
         functions: vec![FunctionIR {

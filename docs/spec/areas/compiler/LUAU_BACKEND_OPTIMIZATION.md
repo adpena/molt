@@ -96,7 +96,7 @@ The Luau backend (`LuauBackend` in `luau.rs`) transpiles Molt's `SimpleIR` to Lu
 | `len(x)` | `molt_len(x)` helper | Correct |
 | `print(...)` | `molt_print(...)` helper (Python-style formatting) | Correct |
 | `str(x)` | `molt_str(x)` helper (Python-style `True`/`False`/`None`) | Correct |
-| String concat (`+`) | Type-guarded `..` or `+` depending on `fast_int` hint | Acceptable |
+| String concat (`+`) | Type-guarded `..` or `+` depending on the typed scalar plan | Acceptable |
 | String methods (`.upper()`, `.split()`, etc.) | Mapped to `string.*` or `molt_string.*` | Partial |
 | `if/elif/else` | Structured `if/else/end` plus checked goto elimination for remaining jump patterns | Partial -- complex branch propagation needs differential coverage |
 | `while` loop | `while true do ... break end` | Correct |
