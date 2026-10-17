@@ -10,6 +10,8 @@ Value kinds: a `bool` the CLI reads accepts `1`/`true`/`yes`/`on` and `0`/`false
 
 Runtime flags: the 128 `bool` variables whose reader is in `runtime/molt-runtime/src/` are on only when set to exactly `1`. The runtime reads all of them once per process, at the first flag it needs, so a program that changes `os.environ` does not change them.
 
+Output-neutral names supervise a build and never change its outputs; the build record's request key leaves them out: `MOLT_BACKEND_MAX_PROCESS_RSS_GB`, `MOLT_BACKEND_MEMORY_AVAILABLE_GB`, `MOLT_GUARD_SCRATCH_ROOT`, `MOLT_MEMORY_GUARD_ACTIVE`, `MOLT_MEMORY_GUARD_MARKER`, `MOLT_MEMORY_GUARD_PID`, `MOLT_MEMORY_GUARD_TOKEN`, `MOLT_<STEM>_CHILD_RLIMIT_GB`, `MOLT_<STEM>_KEEPALIVE_SEC`, `MOLT_<STEM>_MAX_GLOBAL_RSS_GB`, `MOLT_<STEM>_MAX_PROCESS_RSS_GB`, `MOLT_<STEM>_MAX_TOTAL_RSS_GB`, `MOLT_<STEM>_MEMORY_AVAILABLE_GB`, `MOLT_<STEM>_MEMORY_GUARD_POLL_SEC`, `MOLT_<STEM>_MEMORY_RESERVE_GB`, `MOLT_<STEM>_MEMORY_TOTAL_GB`, `MOLT_<STEM>_REPO_SENTINEL_ACTIVE`, `MOLT_<STEM>_TIMEOUT_SEC`.
+
 ## Contents
 
 - [User variables](#user-variables) (480)

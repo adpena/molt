@@ -1199,6 +1199,7 @@ def _rust_target_metadata(
     env: Mapping[str, str],
     wrappers: Mapping[str, Path] = MappingProxyType({}),
 ) -> RustcTargetMetadata:
+    root = Path(os.path.abspath(root))
     with (
         tempfile.TemporaryDirectory(prefix="molt-rust-cfg-") as scratch,
         _rust_probe_command(
@@ -2151,24 +2152,48 @@ def resolve_runtime_cargo_plan(
     target_argument = (
         target if command_target is not None or configured_target is not None else None
     )
-    metadata_cache: dict[
+
+    # rustc's answers describe the compiler, not the Cargo settings this plan
+    # adds below (linkers, C tools, encoded flags); every query sees the
+    # environment as it stands here, so equal queries share one answer.
+    probe_environment = MappingProxyType(dict(environment))
+
+    metadata_answers: dict[
         tuple[str | None, tuple[str, ...], bool], RustcTargetMetadata
     ] = {}
+    metadata_flag_roots: dict[tuple[str, ...], tuple[CargoResourceRoot, ...]] = {}
 
     def metadata_for(
         query_target: str | None, flags: tuple[str, ...], wrapped: bool
     ) -> RustcTargetMetadata:
+        # Role names do not distinguish identical commands without wrappers.
+        wrapped = wrapped and bool(wrappers)
         key = (query_target, flags, wrapped)
-        if key not in metadata_cache:
-            metadata_cache[key] = _rust_target_metadata(
+        if key not in metadata_answers:
+            if flags not in metadata_flag_roots:
+                # Cfg convergence can read provisional resources absent from
+                # the final lane. Reuse its parser; retain all those inputs.
+                separator = (
+                    cargo_command.index("--")
+                    if "--" in cargo_command
+                    else len(cargo_command)
+                )
+                metadata_flag_roots[flags] = _resolve_rust_flag_resources(
+                    flags,
+                    cargo_command[:separator],
+                    root=root,
+                    env=probe_environment,
+                    wasi_plan=wasi_plan,
+                ).roots
+            metadata_answers[key] = _rust_target_metadata(
                 rustc,
                 query_target,
                 flags,
                 root=root,
-                env=environment,
+                env=probe_environment,
                 wrappers=wrappers if wrapped else {},
             )
-        return metadata_cache[key]
+        return metadata_answers[key]
 
     flag_plan: RustFlagResourcePlan | None = None
 
@@ -2331,16 +2356,97 @@ def resolve_runtime_cargo_plan(
         env=environment,
         target=target,
         host=host_target,
-        flag_lanes=flag_plan.flag_lanes,
+        flag_lanes=tuple(
+            dict.fromkeys(
+                (
+                    *flag_plan.flag_lanes,
+                    *(
+                        flags
+                        for query_target, flags, wrapped in metadata_answers
+                        if query_target == target_argument
+                    ),
+                )
+            )
+        ),
         wrappers=wrappers,
         target_argument=target_argument,
         metadata_probe=metadata_for,
     )
+    # rustc searches TARGET.json directly, never whole directory subtrees.
+    # Capture candidates without reimplementing builtin/search precedence.
+    # An implicit host question has no custom-target search input.
+    metadata_target_roots: list[CargoResourceRoot] = []
+    if search := probe_environment.get("RUST_TARGET_PATH"):
+        target_names: dict[str, None] = {}
+        for query_target, flags, _wrapped in metadata_answers:
+            if query_target is not None:
+                target_names[query_target] = None
+            else:
+                for span in rust_flag_spans(flags):
+                    if span.option == "--target" and span.value is not None:
+                        target_names[span.value] = None
+        for index, entry in enumerate(search.split(os.pathsep)):
+            path = Path(entry)
+            directory = path if path.is_absolute() else root / path
+            for target_index, name in enumerate(target_names):
+                metadata_target_roots.append(
+                    CargoResourceRoot(
+                        f"rust/metadata/target-search/{index}/{target_index}",
+                        directory / f"{name}.json",
+                        required=False,
+                    )
+                )
+    metadata_roots = tuple(
+        dict.fromkeys(
+            (
+                *rust_roots,
+                *flag_plan.roots,
+                *environment_resources,
+                *(
+                    replace(
+                        resource, label=f"rust/metadata/flags/{index}/{resource.label}"
+                    )
+                    for index, (flags, roots) in enumerate(metadata_flag_roots.items())
+                    if flags not in flag_plan.flag_lanes
+                    for resource in roots
+                ),
+                *metadata_target_roots,
+            )
+        )
+    )
+    metadata_resources = CargoResourceCustody.capture(metadata_roots)
+    # Discovery reveals resource locations. Replay each distinct question once
+    # after capturing the complete closure, before accepting its cfg selection.
+    # Wrappers are covered by declared executable/resource inputs, not a claim
+    # that arbitrary wrapper filesystem or network reads are hermetic.
+    for (query_target, flags, wrapped), discovered in metadata_answers.items():
+        metadata_resources.verify()
+        rustc_custody.verify()
+        for item in wrapper_custody:
+            item.verify()
+        try:
+            qualified = _rust_target_metadata(
+                rustc,
+                query_target,
+                flags,
+                root=root,
+                env=probe_environment,
+                wrappers=wrappers if wrapped else {},
+            )
+        finally:
+            metadata_resources.verify()
+            rustc_custody.verify()
+            for item in wrapper_custody:
+                item.verify()
+        if qualified != discovered:
+            raise ValueError(
+                "runtime Rust metadata changed between discovery and resource qualification"
+            )
     c_resources = _resolve_c_build_resources(
         environment, target=target, host_target=host_target
     )
     resources = CargoResourceCustody.capture(
-        (*rust_roots, *flag_plan.roots, *environment_resources, *c_resources.roots),
+        (*metadata_resources.roots, *c_resources.roots),
     )
     resource_paths = (
         *flag_plan.logical_paths,

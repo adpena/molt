@@ -7,6 +7,7 @@ import platform
 import re
 import shlex
 import shutil
+import stat
 import sys
 import tempfile
 import tomllib
@@ -41,6 +42,8 @@ GITHUB_ACTIONS_EPHEMERAL_ROOT_ENV = "MOLT_CI_EPHEMERAL_CUSTODY_ROOT"
 # The operator's artifact root. Only this module reads it: every other
 # consumer asks `configured_artifact_root` or `artifact_root`.
 ARTIFACT_ROOT_ENV = "MOLT_EXT_ROOT"
+# Left in an external artifact root that accepted a child directory.
+_ARTIFACT_ROOT_MARKER = ".molt-artifact-root"
 # Run scratch storage: `disk` (the default, `<artifact root>/tmp`), `memory`
 # (Linux `/dev/shm`), or the absolute path of a memory-backed directory the
 # operator mounted (a macOS RAM disk). Molt never creates or mounts one.
@@ -1225,11 +1228,23 @@ def _artifact_root_accepts_child_dirs(path: Path, *, create_dirs: bool) -> bool:
     if not create_dirs:
         parent = _nearest_existing_parent(path)
         return parent is not None and os.access(parent, os.W_OK)
+    # Windows ACLs make `os.access` unreliable for directories, so a root
+    # proves it accepts a child directory by creating one. The proof stays as
+    # a marker: later checks stat it instead of adding and removing a probe
+    # in the root on every build, which changed a directory the build record
+    # reads (docs/design/build_early_cutoff.md).
+    marker = path / _ARTIFACT_ROOT_MARKER
+    try:
+        if stat.S_ISDIR(marker.lstat().st_mode):
+            return True
+    except OSError:
+        pass
     probe = path / f".molt-write-probe-{os.getpid()}-{uuid.uuid4().hex}"
     try:
         path.mkdir(parents=True, exist_ok=True)
         probe.mkdir()
         list(probe.iterdir())
+        marker.mkdir(exist_ok=True)
     except OSError:
         return False
     finally:

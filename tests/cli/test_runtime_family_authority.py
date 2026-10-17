@@ -750,7 +750,7 @@ def test_cargo_string_lists_merge_file_cli_and_environment_before_cfg_selection(
         plan_root, env=env, args=("--config", f'{scope}.rustflags=["--cfg","cli"]')
     )
     assert plan.rustflags == expected
-    assert probes == [(None, expected)]
+    assert probes == [(None, expected)] * 2
     if override is None:
         assert plan.tools["linker"].name == "merged-linker"
     else:
@@ -842,6 +842,7 @@ def test_normalized_cfg_metadata_is_reused_for_dependency_and_final_resources(
         facts = "unix\nnormalized" if flags[:2] == normalized else "unix"
         return _metadata(selected, facts)
 
+    # Fake the rustc query itself: the reuse under test is the memo above it.
     monkeypatch.setattr(plans, "_rust_target_metadata", metadata)
     monkeypatch.setattr(plans, "_rust_resource_roots", _rust_resource_roots)
     plan = _plan(
@@ -853,12 +854,19 @@ def test_normalized_cfg_metadata_is_reused_for_dependency_and_final_resources(
     assert plan.tools["linker"].name == "normalized-linker"
     # Resource discovery reuses the normalized cfg probe, while retaining a
     # distinct final-crate selection and the unwrapped installed driver.
-    assert probes == [
+    questions = [
         (None, original, True),
         (None, normalized, True),
         (None, (), False),
         (None, final_flags, True),
     ]
+    assert probes == questions + questions
+    _plan(
+        plan_root,
+        env={"RUSTFLAGS": "-L native=search", "RUSTC_WRAPPER": "metadata-wrapper"},
+        args=("--", "--cfg", "final_crate"),
+    )
+    assert probes == questions * 4  # each plan owns fresh discovery and qualification
     roots = {entry.label: entry.path for entry in plan.rust_resources.roots}
     assert (
         roots["rust/target-libdir/0"] == dependency / "lib" / "rustlib" / host / "lib"
@@ -2946,3 +2954,180 @@ def test_runtime_metadata_preserves_resource_owned_unstable_backend_and_confines
     backend.write_bytes(b"changed backend")
     with pytest.raises(ValueError, match="changed"):
         plan.verify()
+
+
+def _rewrite_with_restored_mtime(path: Path, value: bytes) -> None:
+    before = path.stat()
+    assert len(value) == before.st_size
+    path.write_bytes(value)
+    os.utime(path, ns=(before.st_atime_ns, before.st_mtime_ns))
+    after = path.stat()
+    assert (before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns) == (
+        after.st_dev,
+        after.st_ino,
+        after.st_size,
+        after.st_mtime_ns,
+    )
+
+
+@pytest.mark.parametrize("changed", ["compiler", "wrapper", "workspace", "backend"])
+def test_metadata_questions_are_fresh_for_each_plan(
+    plan_root: Path, monkeypatch: pytest.MonkeyPatch, changed: str
+) -> None:
+    backend = plan_root / "selected-backend"
+    backend.write_bytes(b"old")
+    wrapper = plan_root / "selected-wrapper"
+    workspace = plan_root / "selected-workspace"
+    write_mock_executable(wrapper, b"MZold")
+    write_mock_executable(workspace, b"MZold")
+    _config(plan_root, "[target.'cfg(changed)']\nlinker=\"changed-linker\"\n")
+    observed = []
+
+    def query(rustc, target, flags, **kwargs):
+        paths = [rustc, backend, *kwargs["wrappers"].values()]
+        altered = any(b"new" in path.read_bytes() for path in paths)
+        observed.append(altered)
+        return _metadata(plan_root, "changed" if altered else "unix")
+
+    monkeypatch.setattr(plans, "_rust_target_metadata", query)
+    environment = {
+        "RUSTFLAGS": "-C codegen-backend=" + str(backend),
+        "RUSTC_WRAPPER": str(wrapper),
+        "RUSTC_WORKSPACE_WRAPPER": str(workspace),
+    }
+    first = _plan(plan_root, env=environment)
+    selected = {
+        "compiler": first.rustc,
+        "wrapper": wrapper,
+        "workspace": workspace,
+        "backend": backend,
+    }[changed]
+    original = selected.read_bytes()
+    replacement = (
+        b"new" if changed == "backend" else original[:2] + b"new" + original[5:]
+    )
+    _rewrite_with_restored_mtime(selected, replacement)
+    second = _plan(plan_root, env=environment)
+    assert first.tools["linker"].name != "changed-linker"
+    assert second.tools["linker"].name == "changed-linker"
+    assert observed == [False, False, True, True]
+
+
+@pytest.mark.parametrize("phase", ["before_capture", "during_qualification"])
+def test_metadata_discovery_must_agree_under_captured_resources(
+    plan_root: Path, monkeypatch: pytest.MonkeyPatch, phase: str
+) -> None:
+    backend = plan_root / "selected-backend"
+    backend.write_bytes(b"old")
+    _config(plan_root, "[target.'cfg(old)']\nrustflags=[]\n")
+    calls = 0
+
+    def query(rustc, target, flags, **kwargs):
+        nonlocal calls
+        calls += 1
+        fact = backend.read_text()
+        if calls == (1 if phase == "before_capture" else 2):
+            _rewrite_with_restored_mtime(backend, b"new")
+        return _metadata(plan_root, fact)
+
+    monkeypatch.setattr(plans, "_rust_target_metadata", query)
+    with pytest.raises(ValueError, match="changed"):
+        _plan(plan_root, env={"RUSTFLAGS": "-C codegen-backend=" + str(backend)})
+    assert calls == 2
+
+
+def test_provisional_backend_remains_in_plan_custody(
+    plan_root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    provisional, final = (plan_root / name for name in ("provisional", "final"))
+    provisional.write_bytes(b"old")
+    final.write_bytes(b"end")
+    _config(
+        plan_root,
+        '[build]\nrustflags=["-C","codegen-backend=' + str(provisional) + '"]\n'
+        '[target.\'cfg(selected)\']\nrustflags=["-C","codegen-backend='
+        + str(final)
+        + '"]\n',
+    )
+    monkeypatch.setattr(
+        plans,
+        "_rust_target_metadata",
+        lambda *args, **kwargs: _metadata(plan_root, "selected"),
+    )
+    selected = _plan(plan_root)
+    assert provisional in {item.identity.path for item in selected.rust_resources.files}
+    assert final in {item.identity.path for item in selected.rust_resources.files}
+    _rewrite_with_restored_mtime(provisional, b"new")
+    with pytest.raises(ValueError, match="changed"):
+        selected.verify()
+
+
+@pytest.mark.parametrize("wrapped", [False, True])
+def test_metadata_memo_uses_actual_wrapper_command(
+    plan_root: Path, monkeypatch: pytest.MonkeyPatch, wrapped: bool
+) -> None:
+    host = "x86_64-unknown-linux-gnu"
+    libdir = plan_root / "lib" / "rustlib" / host / "lib"
+    libdir.mkdir(parents=True)
+    (libdir / "libcore.rlib").write_bytes(b"core")
+    (plan_root / "bin").mkdir()
+    observed = []
+
+    def query(rustc, target, flags, **kwargs):
+        observed.append(bool(kwargs["wrappers"]))
+        return _metadata(plan_root, "unix")
+
+    monkeypatch.setattr(plans, "_rust_target_metadata", query)
+    monkeypatch.setattr(plans, "_rust_resource_roots", _rust_resource_roots)
+    _plan(plan_root, env={"RUSTC_WRAPPER": "wrapper"} if wrapped else {})
+    assert observed == ([False, True, False, True] if wrapped else [False, False])
+
+
+@pytest.mark.parametrize("explicit", [False, True])
+def test_metadata_declared_target_search_is_retained_in_plan(
+    plan_root: Path, monkeypatch: pytest.MonkeyPatch, explicit: bool
+) -> None:
+    for target in ("x86_64-unknown-linux-gnu", "custom"):
+        libdir = plan_root / "lib" / "rustlib" / target / "lib"
+        libdir.mkdir(parents=True)
+        (libdir / "libcore.rlib").write_bytes(b"core")
+    (plan_root / "bin").mkdir()
+    monkeypatch.setattr(plans, "_rust_resource_roots", _rust_resource_roots)
+    search = plan_root / "custom-targets"
+    search.mkdir()
+    spec = search / "custom.json"
+    spec.write_bytes(b'{"value":"old"}')
+    unrelated = search / "unrelated.json"
+    unrelated.write_bytes(b"not a selected target")
+    nested = search / "build-output" / "large-object"
+    nested.parent.mkdir()
+    nested.write_bytes(b"not a target specification")
+    monkeypatch.setattr(
+        plans,
+        "_rust_target_metadata",
+        lambda *args, **kwargs: _metadata(plan_root, "unix"),
+    )
+    environment = {"RUST_TARGET_PATH": str(search)}
+    if explicit:
+        environment.update(
+            {name: "selected-" + name.lower() for name in ("CC", "CXX", "AR", "RANLIB")}
+        )
+        environment["CARGO_TARGET_CUSTOM_LINKER"] = "selected-linker"
+    selected = _plan(
+        plan_root,
+        env=environment,
+        target="custom" if explicit else None,
+        args=("--target", "custom") if explicit else (),
+    )
+    captured = {item.identity.path for item in selected.rust_resources.files}
+    assert (spec in captured) is explicit
+    assert unrelated not in captured and nested not in captured
+    unrelated.write_bytes(b"unrelated target can change")
+    nested.write_bytes(b"build products can change")
+    selected.verify()
+    _rewrite_with_restored_mtime(spec, b'{"value":"new"}')
+    if explicit:
+        with pytest.raises(ValueError, match="changed"):
+            selected.verify()
+    else:
+        selected.verify()

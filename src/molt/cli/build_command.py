@@ -164,18 +164,30 @@ def _excluded_read_roots(arguments: Mapping[str, Any]) -> tuple[Path, ...]:
     checkout, a user directory, the temporary directory and the shared scratch
     root are never excluded: projects live there too. The declared published
     binary is projected separately as one product file."""
-    from molt import dx
+    from molt import dx, memory_guard_paths, temporary_artifacts
     from molt.cli import runtime_paths
     from molt.cli.build_output_layout import _default_build_root
     from molt.cli.project_roots import _find_project_root
+    from molt.source_root import compiler_source_root
 
     entry = arguments["file_path"]
     project_root = _find_project_root(Path(entry) if entry else Path.cwd())
+    # The compiler checkout owns product roots of its own: the runtime builds
+    # into its Cargo target, and module caches live in its build state. A
+    # guarded child (Cargo, the backend, a linker) leaves custody markers in
+    # the guard's state root and a scratch generation that the guard removes
+    # when the child ends; the guard follows the same compiler sources
+    # (`process_guard`). Each of these once refused every record.
+    compiler_root = compiler_source_root()
     roots = [
         _default_molt_cache(),
         dx.backend_daemon_socket_dir(project_root, os.environ),
         runtime_paths._build_state_root(project_root),
         runtime_paths._cargo_target_root(project_root),
+        runtime_paths._build_state_root(compiler_root),
+        runtime_paths._cargo_target_root(compiler_root),
+        memory_guard_paths.memory_guard_state_root(compiler_root, os.environ),
+        temporary_artifacts.scratch_root(compiler_root, os.environ),
     ]
     if os.environ.get("MOLT_CACHE"):
         roots.append(Path(os.environ["MOLT_CACHE"]))
@@ -242,7 +254,9 @@ def _with_early_cutoff(build_function: Callable[..., int]) -> Callable[..., int]
             print(f"Build record: {change}", file=sys.stderr)
         if not first:
             return build_function(*args, **kwargs)
-        with _build_record.recording() as ledger:
+        with _build_record.recording(
+            _build_record.transient_root(_default_molt_cache())
+        ) as ledger:
             result = build_function(*args, **kwargs)
         if result == 0:
             reason = _record_build(record, key, ledger, bound.arguments, output)
