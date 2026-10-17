@@ -9,6 +9,7 @@ from molt.cargo_execution_policy import load_ci_cargo_policy
 from molt.cargo_workspace import workspace_package_names
 from tools import check_changed_clippy as gate, proof_plan
 from tools.proof_plan import ProofCommand, ProofPlan
+from tests.process_guard_common import install_module_view
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -151,8 +152,14 @@ def test_clippy_command_without_a_package_scope_is_refused() -> None:
 
 def test_every_local_proof_plan_clippy_command_names_real_packages(monkeypatch) -> None:
     """The gate reads the live plan; a renamed crate must not drop a cell."""
-    monkeypatch.setattr(proof_plan.platform, "system", lambda: "Linux")
-    monkeypatch.setattr(proof_plan.platform, "machine", lambda: "x86_64")
+    install_module_view(
+        monkeypatch,
+        "platform",
+        proof_plan.platform,
+        proof_plan,
+        system=lambda: "Linux",
+        machine=lambda: "x86_64",
+    )
     commands = gate.local_clippy_commands(ProofPlan.load())
     assert {command.id for command in commands} >= {
         "rust.clippy.workspace-default",
@@ -187,8 +194,14 @@ def test_every_local_proof_plan_clippy_command_names_real_packages(monkeypatch) 
 def test_local_clippy_reuses_only_the_declared_host_execution(
     monkeypatch, system: str, machine: str, workspace_id: str, budget: str
 ) -> None:
-    monkeypatch.setattr(proof_plan.platform, "system", lambda: system)
-    monkeypatch.setattr(proof_plan.platform, "machine", lambda: machine)
+    install_module_view(
+        monkeypatch,
+        "platform",
+        proof_plan.platform,
+        proof_plan,
+        system=lambda: system,
+        machine=lambda: machine,
+    )
     plan = ProofPlan.load()
     by_id = {command.id: command for command in plan.commands}
     defaults = tuple(
@@ -239,8 +252,14 @@ def test_local_clippy_reuses_only_the_declared_host_execution(
 def test_same_argv_host_cell_cannot_change_execution_contract(
     monkeypatch, different
 ) -> None:
-    monkeypatch.setattr(proof_plan.platform, "system", lambda: "Darwin")
-    monkeypatch.setattr(proof_plan.platform, "machine", lambda: "arm64")
+    install_module_view(
+        monkeypatch,
+        "platform",
+        proof_plan.platform,
+        proof_plan,
+        system=lambda: "Darwin",
+        machine=lambda: "arm64",
+    )
     plan = ProofPlan.load()
     default = next(c for c in plan.commands if c.id == "rust.clippy.workspace-default")
     host = next(
@@ -252,8 +271,14 @@ def test_same_argv_host_cell_cannot_change_execution_contract(
 
 
 def test_ambiguous_host_execution_is_rejected(monkeypatch) -> None:
-    monkeypatch.setattr(proof_plan.platform, "system", lambda: "Darwin")
-    monkeypatch.setattr(proof_plan.platform, "machine", lambda: "arm64")
+    install_module_view(
+        monkeypatch,
+        "platform",
+        proof_plan.platform,
+        proof_plan,
+        system=lambda: "Darwin",
+        machine=lambda: "arm64",
+    )
     plan = ProofPlan.load()
     default = next(c for c in plan.commands if c.id == "rust.clippy.workspace-default")
     host = next(
