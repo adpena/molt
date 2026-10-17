@@ -274,10 +274,20 @@ def test_a_started_program_records_its_search(tmp_path: Path, transient: Path) -
     assert not _current(record, output)
 
 
+def _in_fresh_interpreter(function, *args) -> None:
+    with ProcessPoolExecutor(
+        max_workers=1, mp_context=multiprocessing.get_context("spawn")
+    ) as pool:
+        pool.submit(function, *args).result()
+
+
 def test_observations_skip_excluded_roots_and_keep_bytecode_and_source(
     tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    _in_fresh_interpreter(_check_bytecode_observations, tmp_path)
+
+
+def _check_bytecode_observations(tmp_path: Path) -> None:
     kept = tmp_path / "src" / "a.py"
     cached = tmp_path / "cache" / "entry"
     bytecode = tmp_path / "src" / "__pycache__" / "a.cpython-312.pyc"
@@ -285,11 +295,13 @@ def test_observations_skip_excluded_roots_and_keep_bytecode_and_source(
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text("", encoding="utf-8")
     ledger = _future_ledger()
-    monkeypatch.setattr(sys, "pycache_prefix", None)
-    monkeypatch.setattr(input_report, "_SINK", ledger)
-    for path in (cached, bytecode):
-        input_report._audit_hook("open", (os.fspath(path), "r", 0))
-    monkeypatch.setattr(input_report, "_SINK", None)
+    sys.pycache_prefix = None
+    input_report._SINK = ledger
+    try:
+        for path in (cached, bytecode):
+            input_report._audit_hook("open", (os.fspath(path), "r", 0))
+    finally:
+        input_report._SINK = None
     build_record.resolve_observed(ledger, (tmp_path / "cache",))
     assert set(ledger.files) == {os.fspath(kept), os.fspath(bytecode)}
 
@@ -967,13 +979,14 @@ def _worker_execute_cached_fixture(source: Path, prefix: str) -> int:
 
 @pytest.mark.parametrize("prefixed", [False, True])
 @pytest.mark.parametrize("changed", ["bytecode", "source"])
-@pytest.mark.usefixtures("fresh_process")
 def test_actual_cached_code_and_source_both_bind_the_record(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, prefixed: bool, changed: str
+    tmp_path: Path, prefixed: bool, changed: str
 ) -> None:
-    monkeypatch.setattr(
-        sys, "pycache_prefix", str(tmp_path / "product-cache") if prefixed else None
-    )
+    _in_fresh_interpreter(_check_cached_code_and_source, tmp_path, prefixed, changed)
+
+
+def _check_cached_code_and_source(tmp_path: Path, prefixed: bool, changed: str) -> None:
+    sys.pycache_prefix = str(tmp_path / "product-cache") if prefixed else None
     source = tmp_path / "subject.py"
     source.write_text("VALUE = 11\n", encoding="utf-8")
     donor = tmp_path / "donor.py"
@@ -1020,18 +1033,20 @@ def test_actual_cached_code_and_source_both_bind_the_record(
     assert not _current(record, output)
 
 
-@pytest.mark.usefixtures("fresh_process")
 def test_worker_reports_source_using_its_own_cache_prefix(
-    tmp_path: Path, transient: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, transient: Path
 ) -> None:
+    _in_fresh_interpreter(_check_worker_cache_prefix, tmp_path, transient)
+
+
+def _check_worker_cache_prefix(tmp_path: Path, transient: Path) -> None:
     source = tmp_path / "worker_subject.py"
     source.write_text("VALUE = 11\n", encoding="utf-8")
     worker_prefix = str(tmp_path / "worker-cache")
-    with monkeypatch.context() as worker_layout:
-        worker_layout.setattr(sys, "pycache_prefix", worker_prefix)
-        cache = Path(importlib.util.cache_from_source(str(source)))
-        py_compile.compile(str(source), cfile=str(cache), doraise=True)
-    monkeypatch.setattr(sys, "pycache_prefix", str(tmp_path / "parent-cache"))
+    sys.pycache_prefix = worker_prefix
+    cache = Path(importlib.util.cache_from_source(str(source)))
+    py_compile.compile(str(source), cfile=str(cache), doraise=True)
+    sys.pycache_prefix = str(tmp_path / "parent-cache")
     with build_record.recording(transient) as ledger:
         with ProcessPoolExecutor(
             max_workers=1,
@@ -1054,17 +1069,22 @@ def test_worker_reports_source_using_its_own_cache_prefix(
 @pytest.mark.parametrize(
     "filename", ["sourceless.pyc", "malformed.cpython-312.bad-extra.pyc"]
 )
-@pytest.mark.usefixtures("fresh_process")
 def test_unmapped_bytecode_keeps_actual_input_without_guessing_source(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, filename: str
+    tmp_path: Path, filename: str
 ) -> None:
-    monkeypatch.setattr(sys, "pycache_prefix", None)
+    _in_fresh_interpreter(_check_unmapped_bytecode, tmp_path, filename)
+
+
+def _check_unmapped_bytecode(tmp_path: Path, filename: str) -> None:
+    sys.pycache_prefix = None
     path = tmp_path / filename
     path.write_bytes(b"bytecode")
     ledger = _future_ledger()
-    monkeypatch.setattr(input_report, "_SINK", ledger)
-    input_report._audit_hook("open", (str(path), "r", 0))
-    monkeypatch.setattr(input_report, "_SINK", None)
+    input_report._SINK = ledger
+    try:
+        input_report._audit_hook("open", (str(path), "r", 0))
+    finally:
+        input_report._SINK = None
     assert ledger.observed == {("file", str(path))}
     build_record.resolve_observed(ledger, (tmp_path,))
     assert set(ledger.files) == {str(path)}

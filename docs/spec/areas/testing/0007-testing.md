@@ -44,6 +44,11 @@ selects cloning or copying while preserving separate files. Other hosts retain
 the standard copy operation. Returned copy errors propagate. No shared mutable
 template, hardlink or emitted-program check is introduced.
 
+Interpreter-wide import configuration, such as `sys.pycache_prefix`, is set in
+spawned test children. It must not redirect imports or cache writes in the
+pytest process that also runs guard and sentinel threads. Bytecode controls use
+the existing `ProcessPoolExecutor` spawn boundary and ordinary CPython loaders.
+
 ## Test quality and agent-written tests
 
 This is the shared test-authoring contract for human and agent contributions.
