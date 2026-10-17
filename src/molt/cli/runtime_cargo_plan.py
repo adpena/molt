@@ -7,7 +7,6 @@ Configuration bytes are parsed and fingerprinted from the same stable snapshot.
 from __future__ import annotations
 
 import os
-import json
 import re
 import shlex
 import sys
@@ -15,13 +14,14 @@ import tempfile
 import tomllib
 from collections.abc import Generator, Iterator, MutableMapping
 from contextlib import ExitStack, contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, field, replace
 from enum import Enum
 from pathlib import Path
 from types import MappingProxyType
 from typing import Callable, Mapping, Sequence, cast
 
 from molt import process_guard
+from molt.cli import cargo_command as cargo_argv
 from molt.cargo_execution_policy import validate_cargo_native_dependency_environment
 from molt.cli.cargo_target_cfg import (
     RustcTargetMetadata,
@@ -135,6 +135,11 @@ _C_FLAG_CONTROLS = (
     "CRATE_CC_NO_DEFAULTS",
     "CC_ENABLE_DEBUG_OUTPUT",
     "SOURCE_DATE_EPOCH",
+    "MACOSX_DEPLOYMENT_TARGET",
+    "IPHONEOS_DEPLOYMENT_TARGET",
+    "WATCHOS_DEPLOYMENT_TARGET",
+    "TVOS_DEPLOYMENT_TARGET",
+    "XROS_DEPLOYMENT_TARGET",
 )
 _C_SEARCH_ENVIRONMENTS = (
     "CPATH",
@@ -1019,35 +1024,6 @@ def cargo_configuration_document(raw: bytes, path: Path) -> Mapping[str, object]
     return _freeze_json(value)
 
 
-def _command_options(command: Sequence[str]) -> tuple[str | None, tuple[str, ...]]:
-    target = None
-    configs: list[str] = []
-    iterator = iter(command[1:])
-    for token in iterator:
-        if token == "--":
-            break
-        if token in {"--target", "--config"}:
-            value = next(iterator, None)
-            if value is None or not value:
-                raise ValueError(f"runtime Cargo {token} requires a value")
-            key = token
-        elif token.startswith(("--target=", "--config=")):
-            key, value = token.split("=", 1)
-            if not value:
-                raise ValueError(f"runtime Cargo {key} requires a value")
-        else:
-            continue
-        if key == "--target":
-            if target is not None and target != value:
-                raise ValueError(
-                    "runtime Cargo multiple targets require separate artifact families"
-                )
-            target = value
-        else:
-            configs.append(value)
-    return target, tuple(configs)
-
-
 def _tool_path(value: object, *, root: Path, env: Mapping[str, str], role: str) -> Path:
     if not isinstance(value, str) or not value.strip():
         raise ValueError(f"runtime {role} executable is not selected")
@@ -1253,77 +1229,51 @@ def _rust_target_metadata(
     return parse_rustc_target_metadata(result.stdout, result.stderr)
 
 
-def cargo_environment_force_overrides(
-    forced_environment: Sequence[str],
-) -> tuple[str, ...]:
-    """Keep resolved environment values from being replaced again by Cargo."""
-    return tuple(
-        "env." + json.dumps(name) + ".force=false" for name in forced_environment
+def _cargo_build_directory_base(root: Path, environment: Mapping[str, str]) -> Path:
+    raw = (
+        environment.get("MOLT_CARGO_BUILD_DIR_BASE")
+        or environment.get("CARGO_BUILD_BUILD_DIR")
+        or environment.get("CARGO_TARGET_DIR")
+        or "target"
     )
+    path = Path(raw)
+    return Path(os.path.abspath(path if path.is_absolute() else root / path))
 
 
-def _pinned_tool_configurations(
-    tools: Mapping[str, Path],
-    wrappers: Mapping[str, Path],
-    target: str,
-    forced_environment: tuple[str, ...] = (),
-) -> tuple[tuple[str, str], ...]:
-    selectors = [("build.rustc", os.fspath(tools["rustc"]), "tool/rustc")]
-    selectors.extend(
-        (
-            "build." + key,
-            os.fspath(wrappers[name]) if name in wrappers else "",
-            "wrapper/" + name if name in wrappers else "disabled",
+def require_cargo_build_directory_version(version: str) -> None:
+    """Admit the Cargo capability from its captured short or verbose banner."""
+    banner = version.partition("\n")[0].rstrip("\r")
+    match = re.fullmatch(r"cargo (\d+)\.(\d+)\.(\d+)(?:[-+ ][^\r\n]*)?", banner)
+    if match is None or tuple(map(int, match.groups())) < (1, 91, 0):
+        raise ValueError(
+            "runtime Cargo requires Cargo 1.91 or newer for resource-keyed build directories"
         )
-        for name, key in (
-            ("RUSTC_WRAPPER", "rustc-wrapper"),
-            ("RUSTC_WORKSPACE_WRAPPER", "rustc-workspace-wrapper"),
-        )
-    )
-    if "linker" in tools:
-        selectors.append(
-            (
-                "target." + json.dumps(target) + ".linker",
-                os.fspath(tools["linker"]),
-                "tool/linker",
-            )
-        )
-    pinned = tuple(
-        (key + "=" + json.dumps(path), key + "=" + json.dumps(logical))
-        for key, path, logical in selectors
-    )
-    # The resolved environment already contains the selected value. Disable
-    # child-time force overrides so they cannot replace pinned executable paths.
-    env_pins = cargo_environment_force_overrides(forced_environment)
-    return (*pinned, *((value, value) for value in env_pins))
 
 
-def _pin_cargo_command(
-    command: Sequence[str],
-    tools: Mapping[str, Path],
-    wrappers: Mapping[str, Path],
-    target: str,
-    forced_environment: tuple[str, ...] = (),
-) -> tuple[str, ...]:
-    pinned = tuple(
-        token
-        for raw, _logical in _pinned_tool_configurations(
-            tools, wrappers, target, forced_environment
+def _require_cargo_build_directory(
+    cargo: CargoExecutableCustody, *, root: Path, env: Mapping[str, str]
+) -> None:
+    # Older Cargo ignores unknown configuration keys instead of proving that
+    # the selected intermediate graph is used. Admit the capability up front.
+    with stable_executable_probe(
+        cargo.entrypoint, label="runtime Cargo version", identity=cargo.identity
+    ):
+        result = process_guard.run_completed_command(
+            [os.fspath(cargo.entrypoint), "--version"],
+            cwd=root,
+            env=env,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            timeout=15,
+            memory_guard_prefix=None,
+            check=False,
         )
-        for token in ("--config", raw)
-    )
-    separator = command.index("--") if "--" in command else len(command)
-    # The compiler's runtime dependency graph is immutable for every guest
-    # profile and determinism setting. Own this once for native and WASM,
-    # including manifest refreshes, before the rustc passthrough boundary.
-    locked = () if "--locked" in command[1:separator] else ("--locked",)
-    return (
-        os.fspath(tools["cargo"]),
-        *command[1:separator],
-        *locked,
-        *pinned,
-        *command[separator:],
-    )
+    if result.returncode != 0:
+        raise ValueError(
+            "runtime Cargo requires Cargo 1.91 or newer; its version probe failed"
+        )
+    require_cargo_build_directory_version(result.stdout)
 
 
 @dataclass(frozen=True, slots=True)
@@ -1348,6 +1298,110 @@ class RuntimeCargoPlan:
     forced_environment: tuple[str, ...]
     c_environment: Mapping[str, tuple[str, ...]]
     wasi_sdk: WasiSdkInstallation | None
+    build_directory_base: Path
+    _build_directory: Path | None = field(
+        default=None, init=False, repr=False, compare=False
+    )
+
+    @property
+    def target_directory(self) -> Path | None:
+        raw = self.environment.get("CARGO_TARGET_DIR")
+        if raw is None:
+            return None
+        if not raw.strip():
+            raise ValueError("runtime Cargo CARGO_TARGET_DIR must be nonempty")
+        path = Path(raw)
+        return Path(
+            os.path.abspath(path if path.is_absolute() else self.project_root / path)
+        )
+
+    @property
+    def build_directory(self) -> Path:
+        """One host/target intermediate graph for these external input bytes.
+
+        Source edits, Python generators, job controls and output paths do not
+        select a new graph. Cargo owns their normal incremental invalidation.
+        A resource generation also gives nested CMake builds a fresh OUT_DIR;
+        target Rust flags alone cannot invalidate Cargo's compiled host units.
+        """
+        if self._build_directory is not None:
+            return self._build_directory
+        toolchain = self.toolchain_content_identity()
+        digest = canonical_json_sha256(
+            {
+                "schema": "molt.cargo-external-inputs.v1",
+                **toolchain,
+                # Some native C producers deliberately suppress cc-rs Cargo
+                # metadata to own archive linking. Their flags still select
+                # outputs even when no resource file is added or changed.
+                "c_environment": {
+                    name: tokens
+                    for name, tokens in self.c_environment.items()
+                    if name != "CC_ENABLE_DEBUG_OUTPUT"
+                },
+                "link_resources": self.link_resources.content_identity(),
+            }
+        )
+        directory = self.build_directory_base / ".molt-toolchains" / digest
+        object.__setattr__(self, "_build_directory", directory)
+        return directory
+
+    def with_build_directory(self) -> RuntimeCargoPlan:
+        """Pin intermediates before identity capture, leases or execution."""
+        environment = dict(self.environment)
+        environment["CARGO_BUILD_BUILD_DIR"] = os.fspath(self.build_directory)
+        environment["MOLT_CARGO_BUILD_DIR_BASE"] = os.fspath(self.build_directory_base)
+        if self.target_directory is not None:
+            environment["CARGO_TARGET_DIR"] = os.fspath(self.target_directory)
+        return replace(
+            self,
+            command=cargo_argv._pin_cargo_command(
+                self.command,
+                self.tools,
+                self.wrappers,
+                self.target,
+                self.forced_environment,
+                self.build_directory,
+                self.target_directory,
+            ),
+            environment=MappingProxyType(environment),
+        )
+
+    def with_build_resources(self, resources: CargoResourceCustody) -> RuntimeCargoPlan:
+        """Join an already admitted producer SDK to the same Cargo authority."""
+        # Check the tail before replacing it. The joined result below fences
+        # both captures once before the caller computes its final identity.
+        self.configuration_arguments()
+        separator = (
+            self.command.index("--") if "--" in self.command else len(self.command)
+        )
+        pins = cargo_argv._pinned_tool_configurations(
+            self.tools,
+            self.wrappers,
+            self.target,
+            self.forced_environment,
+            self.build_directory,
+            self.target_directory,
+        )
+        # The verified tail consists of the canonical --config/value pairs.
+        unbound = replace(
+            self,
+            command=(
+                *self.command[: separator - 2 * len(pins)],
+                *self.command[separator:],
+            ),
+            # Both captures already own each root's exact walk and file bytes.
+            # Joining them must not enumerate SDKs again (including Windows,
+            # where directory timestamps cannot fence cached listings).
+            rust_resources=CargoResourceCustody(
+                (*self.rust_resources.roots, *resources.roots),
+                (*self.rust_resources.files, *resources.files),
+                (*self.rust_resources.walks, *resources.walks),
+            ),
+        )
+        result = unbound.with_build_directory()
+        result.verify()
+        return result
 
     @property
     def wasi_c_abi(self) -> WasiCAbiProjection | None:
@@ -1464,9 +1518,14 @@ class RuntimeCargoPlan:
 
     def configuration_arguments(self) -> tuple[str, ...]:
         result = []
-        overrides = _command_options(self.command)[1]
-        pinned = _pinned_tool_configurations(
-            self.tools, self.wrappers, self.target, self.forced_environment
+        overrides = cargo_argv._command_options(self.command)[1]
+        pinned = cargo_argv._pinned_tool_configurations(
+            self.tools,
+            self.wrappers,
+            self.target,
+            self.forced_environment,
+            self.build_directory,
+            self.target_directory,
         )
         if overrides[-len(pinned) :] != tuple(raw for raw, _logical in pinned):
             raise ValueError("runtime Cargo pinned executable configuration changed")
@@ -1490,6 +1549,12 @@ class RuntimeCargoPlan:
         return tuple(result)
 
     def verify(self) -> None:
+        if self.environment.get("CARGO_BUILD_BUILD_DIR") != os.fspath(
+            self.build_directory
+        ) or self.environment.get("MOLT_CARGO_BUILD_DIR_BASE") != os.fspath(
+            self.build_directory_base
+        ):
+            raise ValueError("runtime Cargo intermediate generation changed")
         if (
             self.command[0] != os.fspath(self.tools["cargo"])
             or self.rustc != self.tools["rustc"]
@@ -1589,7 +1654,7 @@ class RuntimeCargoPlan:
             "content": self.rust_resources.content_identity(),
         }
 
-    def toolchain_identity(self) -> dict[str, object]:
+    def toolchain_content_identity(self) -> dict[str, object]:
         """Project Cargo's admitted tools/resources, without consumer extras.
 
         A runtime build may additionally execute Python generators. The compiler
@@ -1607,13 +1672,18 @@ class RuntimeCargoPlan:
         return {
             "tools": tools,
             "wrappers": wrappers,
-            "cargo_configuration": self.configuration_identity(),
             "effective_target": self.target,
             "rust_resources": self.rust_resource_identity(),
             "sysroots": {}
             if self.wasi_c_abi is None
             else {"wasi": self.wasi_c_abi.content_identity()},
             "archives": [],
+        }
+
+    def toolchain_identity(self) -> dict[str, object]:
+        return {
+            **self.toolchain_content_identity(),
+            "cargo_configuration": self.configuration_identity(),
         }
 
     def configuration_identity(self) -> dict[str, object]:
@@ -1892,7 +1962,7 @@ def capture_cargo_configuration_inputs(
         inputs.append(profile_input)
         profiles = dict(profile_input.document)
     profiles = _merge(profiles, configuration)
-    command_target, overrides = _command_options(cargo_command)
+    command_target, overrides = cargo_argv._command_options(cargo_command)
     cli: dict[str, object] = {}
     for index, override in enumerate(overrides):
         candidate = Path(override)
@@ -2133,6 +2203,8 @@ def resolve_runtime_cargo_plan(
     assert flag_plan is not None
     cargo = _tool_path(cargo_command[0], root=root, env=environment, role="cargo")
     cargo = resolve_rustup_proxy(cargo, role="cargo", root=root, env=environment)
+    cargo_custody = CargoExecutableCustody.capture("tool/cargo", cargo)
+    _require_cargo_build_directory(cargo_custody, root=root, env=environment)
     tools: dict[str, Path] = {"rustc": rustc, "cargo": cargo}
     defaults = _target_tool_defaults(target)
     for role in ("cc", "cxx", "ar", "ranlib", "linker"):
@@ -2233,15 +2305,14 @@ def resolve_runtime_cargo_plan(
     # Final explicit selectors win over earlier --config operands as well as
     # environment/config defaults. In particular, CLI wrappers cannot silently
     # undo an explicit disabled wrapper, or reintroduce a mutable rustup proxy.
-    command = _pin_cargo_command(
-        flag_plan.command, tools, wrappers, target, forced_environment
-    )
+    command = flag_plan.command
     executable_custody = (
         rustc_custody,
+        cargo_custody,
         *(
             CargoExecutableCustody.capture("tool/" + role, path)
             for role, path in tools.items()
-            if role != "rustc"
+            if role not in {"rustc", "cargo"}
             and not (
                 wasi_sdk is not None
                 and role in {"cc", "cxx", "ar", "ranlib", "linker", "final_linker"}
@@ -2297,6 +2368,7 @@ def resolve_runtime_cargo_plan(
         forced_environment,
         c_resources.environment,
         wasi_sdk,
-    )
+        _cargo_build_directory_base(root, environment),
+    ).with_build_directory()
     plan.verify()
     return plan

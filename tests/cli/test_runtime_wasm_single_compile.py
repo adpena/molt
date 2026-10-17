@@ -19,6 +19,7 @@ from molt.cli.runtime_wasm_validation import (
 )
 
 from functools import partial
+from contextlib import nullcontext
 
 import hashlib
 import json
@@ -65,6 +66,7 @@ from molt.cli.runtime_wasm_generation import (
     publish_runtime_wasm_generation,
     runtime_wasm_generation_path,
 )
+from molt.exact_json import canonical_json_sha256
 from tests.executable_test_support import write_mock_executable
 from tests.process_guard_common import current_thread_only
 from tests.runtime_build_identity_helper import (
@@ -76,6 +78,7 @@ from tests.runtime_build_identity_helper import (
     runtime_build_identity as make_runtime_build_identity,
     runtime_toolchain_content_manifest,
     runtime_cargo_plan,
+    native_runtime_staticlib_identity,
 )
 
 _COMMON = dict(
@@ -1063,6 +1066,99 @@ def _test_pair_context(
         toolchain_manifest_path=tmp_path / "toolchain.json",
         generation_manifest=canonical_shared.with_name("molt_runtime.generation.json"),
         pre_identity=_test_pair_identity(),
+    )
+
+
+@pytest.mark.parametrize("producer", ["pair", "cpython-abi"])
+def test_runtime_wasm_producer_binds_python_signature_before_actual_executor(
+    producer, tmp_path, monkeypatch, runtime_fixture_root
+):
+    class AtExecutor(Exception):
+        pass
+
+    observed = []
+
+    def execute(plan, **_kwargs):
+        observed.append(plan)
+        raise AtExecutor
+
+    monkeypatch.setattr(runtime_wasm_build_support, "_run_resolved_cargo_plan", execute)
+    monkeypatch.setattr(runtime_wasm_build_support, "_build_slot", nullcontext)
+    root = _compiler_root()
+    generator_environment = {
+        **os.environ,
+        "MOLT_BUILD_PYTHON": os.path.relpath(sys.executable, root),
+    }
+    for owner in (runtime_wasm_build_spec, runtime_wasm_build_support):
+        monkeypatch.setattr(owner, "_cargo_build_env", lambda: generator_environment)
+    if producer == "pair":
+        captured = _test_pair_identity()
+        monkeypatch.setattr(
+            runtime_wasm_pair_build,
+            "_resolve_runtime_wasm_pair_identity",
+            lambda *_a, **_k: captured,
+        )
+        monkeypatch.setattr(
+            runtime_wasm_pair_build,
+            "_runtime_wasm_toolchain_manifest_path",
+            lambda _spec: tmp_path / "toolchain.json",
+        )
+        ctx = runtime_wasm_pair_build._prepare_runtime_wasm_pair_build(
+            _RuntimeArtifactState(
+                runtime_wasm=tmp_path / "shared.wasm",
+                runtime_reloc_wasm=tmp_path / "reloc.wasm",
+            ),
+            project_root=root,
+            json_output=True,
+            cargo_timeout=5,
+            **_COMMON,
+        )
+        assert ctx is not None
+        assert ctx.shared_spec.cargo_plan is ctx.reloc_spec.cargo_plan
+        plan = ctx.shared_spec.cargo_plan
+        with pytest.raises(AtExecutor):
+            runtime_wasm_build_support._run_runtime_wasm_cargo_build(
+                cargo_plan=plan,
+                cargo_timeout=5,
+                profile_dir=ctx.shared_spec.profile_dir,
+                json_output=True,
+            )
+        python = captured.shared.toolchain_manifest.to_dict()["payload"]["toolchain"][
+            "tools"
+        ]["build_python"]
+    else:
+        captured = native_runtime_staticlib_identity(target_triple="wasm32-wasip1")
+        monkeypatch.setattr(
+            runtime_wasm_build_support,
+            "resolve_runtime_cargo_plan",
+            partial(runtime_cargo_plan, fixture_root=runtime_fixture_root),
+        )
+        monkeypatch.setattr(
+            runtime_wasm_build_support,
+            "resolve_wasm_cpython_abi_build_identity",
+            lambda *_a, **_k: captured,
+        )
+        monkeypatch.setattr(
+            runtime_wasm_build_support,
+            "_cargo_target_root",
+            lambda _root: tmp_path / "target",
+        )
+        with pytest.raises(AtExecutor):
+            runtime_wasm_build_support._ensure_wasm_cpython_abi_staticlib(
+                project_root=root,
+                json_output=True,
+                cargo_profile="release",
+                cargo_timeout=5,
+            )
+        python = captured.toolchain_manifest.to_dict()["payload"]["toolchain"]["tools"][
+            "build_python"
+        ]
+    assert len(observed) == 1
+    executable = Path(observed[0].environment["MOLT_BUILD_PYTHON"])
+    assert executable.is_absolute()
+    assert executable.samefile(sys.executable)
+    assert observed[0].environment["MOLT_BUILD_PYTHON_SIGNATURE"] == (
+        canonical_json_sha256(python)
     )
 
 

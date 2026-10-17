@@ -15,6 +15,7 @@ import pytest
 from molt import toolchain_identity
 from molt.cli import runtime_build_identity as identity
 from molt.cli import runtime_native_build
+from molt.cli.runtime_build_python import bind_runtime_build_python
 from molt.cli.runtime_artifact_selection import (
     RUNTIME_STATICLIB_ARTIFACTS,
     RUNTIME_WASM_COMBINED_ARTIFACTS,
@@ -24,6 +25,7 @@ from molt.exact_json import canonical_json_bytes, canonical_json_sha256
 from molt.source_root import compiler_source_root
 from molt.wasi_sysroot import resolve_wasi_sysroot_layout
 from tests.process_guard_common import current_thread_only, install_module_view
+from tests.rust.process_guard import run_rust_test_process
 from tests.runtime_build_identity_helper import (
     build_python_identity_fixture,
     RuntimeFixtureRoot,
@@ -228,6 +230,21 @@ def _resolve(
 @pytest.fixture
 def identity_root(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     from molt.cli.cargo_target_cfg import parse_rustc_target_metadata
+
+    original_run = cargo_plans.process_guard.run_completed_command
+
+    def tool_probe(command, **kwargs):
+        if list(command) == [sys.executable, "--version"]:
+            return subprocess.CompletedProcess(command, 0, "cargo 1.99.0\n", "")
+        return original_run(command, **kwargs)
+
+    install_module_view(
+        monkeypatch,
+        "process_guard",
+        cargo_plans.process_guard,
+        cargo_plans,
+        run_completed_command=tool_probe,
+    )
 
     def target_metadata(_rustc, _target, _flags, **_kwargs):
         stdout, stderr = rustc_target_metadata_output(
@@ -620,6 +637,7 @@ def test_runtime_tooling_authority_excludes_orthogonal_cli_files(
         for path in identity.runtime_build_tooling_paths(tmp_path)
     }
     assert "pyproject.toml" in authority_paths
+    assert "src/molt/cli/cargo_command.py" in authority_paths
     assert "src/molt/pyproject.toml" not in authority_paths
     for relative in authority_paths:
         path = tmp_path / relative
@@ -811,6 +829,237 @@ def test_build_script_python_import_policy_never_enumerates_ambient_roots(
     assert result == identity._build_python_script_environment_identity(
         {}, build_python_identity=build_python_identity_fixture()
     )
+
+
+@pytest.mark.parametrize("kind", ["native", "shared", "reloc", "cpython-abi"])
+def test_build_python_signature_is_derived_not_another_identity_input(
+    identity_root: Path, kind: str
+) -> None:
+    before = _resolve(identity_root, kind=kind, publication="signature-proof")
+    python = before.toolchain_manifest.to_dict()["payload"]["toolchain"]["tools"][
+        "build_python"
+    ]
+    signature = canonical_json_sha256(python)
+    after = _resolve(
+        identity_root,
+        kind=kind,
+        publication="signature-proof",
+        extra_env={"MOLT_BUILD_PYTHON_SIGNATURE": signature},
+    )
+    assert after == before
+
+
+@pytest.mark.parametrize("signature", ["", "0" * 64])
+def test_build_python_signature_cannot_attest_other_captured_content(
+    identity_root: Path, signature: str
+) -> None:
+    with pytest.raises(
+        ValueError, match="Python signature differs from captured content"
+    ):
+        _resolve(
+            identity_root,
+            kind="native",
+            publication="signature-proof",
+            extra_env={"MOLT_BUILD_PYTHON_SIGNATURE": signature},
+        )
+
+
+def test_bind_build_python_signature_uses_admitted_identity_without_a_probe(
+    identity_root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    captured = _resolve(identity_root, kind="native", publication="signature-proof")
+    plan = _test_plan(
+        identity_root,
+        {
+            "PATH": os.environ["PATH"],
+            "RUSTC": sys.executable,
+            "CARGO": sys.executable,
+            "CARGO_HOME": str(identity_root / "test-cargo-home"),
+        },
+        target_triple=None,
+    )
+    monkeypatch.setattr(
+        identity,
+        "_python_identity",
+        lambda *_args, **_kwargs: pytest.fail("signature binding launched Python"),
+    )
+    bound = bind_runtime_build_python(plan, captured)
+    python = captured.toolchain_manifest.to_dict()["payload"]["toolchain"]["tools"][
+        "build_python"
+    ]
+    assert bound.environment["MOLT_BUILD_PYTHON_SIGNATURE"] == canonical_json_sha256(
+        python
+    )
+    assert "MOLT_BUILD_PYTHON_SIGNATURE" not in plan.environment
+    assert bind_runtime_build_python(bound, captured) is bound
+    assert bound.command == plan.command and bound.rustflags == plan.rustflags
+    assert bound.toolchain_identity() == plan.toolchain_identity()
+
+
+@pytest.mark.parametrize("producer", ["native", "wasm-cpython-abi"])
+def test_no_plan_provisioning_pins_generator_before_capture(
+    tmp_path, monkeypatch, runtime_fixture_root, producer
+):
+    from functools import partial
+
+    from tests.runtime_build_identity_helper import (
+        runtime_cargo_plan,
+        runtime_toolchain_content_manifest,
+    )
+
+    environment = {
+        "MOLT_BUILD_PYTHON": os.path.relpath(sys.executable, tmp_path),
+    }
+    sdk = provisioned_wasi_sdk_fixture(runtime_fixture_root)
+    environment.update(project_wasm_toolchain_environment(sdk, environ={}))
+    monkeypatch.setattr(
+        identity,
+        "resolve_runtime_cargo_plan",
+        partial(runtime_cargo_plan, fixture_root=runtime_fixture_root),
+    )
+    captured = []
+
+    def capture(plan, **_kwargs):
+        captured.append(plan)
+        executable = Path(plan.environment["MOLT_BUILD_PYTHON"])
+        assert executable.is_absolute()
+        assert executable.samefile(sys.executable)
+        return runtime_toolchain_content_manifest().to_dict()["payload"]["toolchain"]
+
+    monkeypatch.setattr(identity, "_capture_plan_toolchain", capture)
+    if producer == "native":
+        identity.provision_native_runtime_toolchain_content_manifest(
+            project_root=tmp_path,
+            env=environment,
+            target_triple=None,
+            cargo_command=("cargo", "rustc"),
+        )
+    else:
+        identity._wasm_compile_toolchain_content(
+            project_root=tmp_path,
+            env=environment,
+            target_triple="wasm32-wasip1",
+            wasi_sysroot=wasi_c_abi_plan(sdk).sysroot,
+        )
+    assert len(captured) == 1
+    assert environment["MOLT_BUILD_PYTHON"] != sys.executable
+
+
+def test_build_python_signature_reexecutes_cargo_generator_for_same_path(
+    identity_root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Real Cargo freshness, with a finite attested-Python boundary fixture.
+
+    The helper actually reads the changed same-path generator input. This
+    isolates Cargo's invalidation contract; it does not mutate a live Python
+    installation or claim to exercise interpreter content capture again.
+    """
+    cargo = shutil.which("cargo")
+    if cargo is None:
+        pytest.skip("Cargo is required for the generator freshness proof")
+    project = identity_root / "cargo-generator"
+    project.mkdir()
+    (project / "src").mkdir()
+    (project / "Cargo.toml").write_text(
+        '[package]\nname="python-signature-proof"\nversion="0.0.0"\nedition="2024"\n'
+        "[workspace]\n",
+        encoding="utf-8",
+    )
+    payload = project / "generator-input.txt"
+    payload.write_text("first", encoding="utf-8")
+    counter = project / "generator-runs.txt"
+    helper_source = (
+        Path(__file__).resolve().parents[2] / "runtime/build_support/build_python.rs"
+    )
+    # Match the shared helper's real ../build_support watcher. A missing
+    # watched path would make Cargo rerun every time and invalidate the oracle.
+    helper = project.parent / "build_support/build_python.rs"
+    helper.parent.mkdir()
+    shutil.copyfile(helper_source, helper)
+    script = f"from pathlib import Path\nprint(Path({str(payload)!r}).read_text())\n"
+    (project / "build.rs").write_text(
+        f"#[path = {json.dumps(str(helper))}] mod build_python;\n"
+        "use std::{env,fs,io::Write,path::PathBuf};\n"
+        "fn main() {\n"
+        f'let value = build_python::run_script(&build_python::resolve(), {json.dumps(script)}, "freshness proof");\n'
+        'let output = PathBuf::from(env::var("OUT_DIR").unwrap()).join("generated.rs");\n'
+        'fs::write(output, format!("const GENERATED: &str = {:?};", value.trim())).unwrap();\n'
+        f"let mut count = fs::OpenOptions::new().create(true).append(true).open({json.dumps(str(counter))}).unwrap();\n"
+        'writeln!(count, "{}", value.trim()).unwrap();\n}\n',
+        encoding="utf-8",
+    )
+    (project / "src/main.rs").write_text(
+        'include!(concat!(env!("OUT_DIR"), "/generated.rs"));\n'
+        'fn main() { println!("{}", GENERATED); }\n',
+        encoding="utf-8",
+    )
+
+    def signature() -> str:
+        python = build_python_identity_fixture()
+        python["selected_executable"]["sha256"] = hashlib.sha256(
+            payload.read_bytes()
+        ).hexdigest()
+        python["identity_sha256"] = canonical_json_sha256(
+            {key: value for key, value in python.items() if key != "identity_sha256"}
+        )
+        monkeypatch.setattr(identity, "_python_identity", lambda *_a, **_k: python)
+        captured = _resolve(identity_root, kind="native", publication="signature-proof")
+        plan = _test_plan(
+            identity_root,
+            {
+                "PATH": os.environ["PATH"],
+                "RUSTC": sys.executable,
+                "CARGO": sys.executable,
+                "CARGO_HOME": str(identity_root / "test-cargo-home"),
+            },
+            target_triple=None,
+        )
+        return bind_runtime_build_python(plan, captured).environment[
+            "MOLT_BUILD_PYTHON_SIGNATURE"
+        ]
+
+    def generated(selected_signature: str) -> str:
+        environment = dict(os.environ)
+        environment.update(
+            MOLT_BUILD_PYTHON=sys.executable,
+            MOLT_BUILD_PYTHON_SIGNATURE=selected_signature,
+            CARGO_TARGET_DIR=str(project / "target"),
+            CARGO_BUILD_BUILD_DIR=str(project / "intermediates"),
+            RUSTC_WRAPPER="",
+            RUSTC_WORKSPACE_WRAPPER="",
+            CARGO_BUILD_RUSTC_WRAPPER="",
+            CARGO_BUILD_RUSTC_WORKSPACE_WRAPPER="",
+        )
+        result = run_rust_test_process(
+            [
+                cargo,
+                "run",
+                "--quiet",
+                "--offline",
+                "--manifest-path",
+                str(project / "Cargo.toml"),
+            ],
+            cwd=str(project),
+            env=environment,
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+        assert result.returncode == 0, result.stderr
+        return result.stdout.strip()
+
+    before = signature()
+    assert generated(before) == "first"
+    assert generated(before) == "first"
+    assert counter.read_text(encoding="utf-8").splitlines() == ["first"]
+    payload.write_text("second", encoding="utf-8")
+    # This negative control proves the selector/path alone leaves stale output.
+    assert generated(before) == "first"
+    after = signature()
+    assert after != before
+    assert generated(after) == "second"
+    assert generated(after) == "second"
+    assert counter.read_text(encoding="utf-8").splitlines() == ["first", "second"]
 
 
 @pytest.mark.parametrize(

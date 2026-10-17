@@ -437,6 +437,8 @@ def test_registered_python_cargo_driver_places_retained_outputs(tmp_path, comman
     assert set(bound) == {
         "CARGO_BUILD_TARGET",
         "CARGO_TARGET_DIR",
+        "CARGO_BUILD_BUILD_DIR",
+        "MOLT_CARGO_BUILD_DIR_BASE",
         "TEMP",
         "TMP",
         "TMPDIR",
@@ -713,7 +715,7 @@ def test_explicit_role_binding_owns_temps_without_changing_default_check_inputs(
         selected.validate({**bound, "TMPDIR": "escaped"}, target=target)
 
 
-@pytest.mark.parametrize("name", ["CARGO_BUILD_BUILD_DIR", "CARGO_BUILD_TARGET_DIR"])
+@pytest.mark.parametrize("name", ["CARGO_BUILD_TARGET_DIR"])
 def test_secondary_environment_output_escape_is_refused(tmp_path, name):
     outputs = cargo_output_environment.CargoOutputEnvironment(
         False, external_placement=True
@@ -727,23 +729,63 @@ def test_secondary_environment_output_escape_is_refused(tmp_path, name):
         )
 
 
-@pytest.mark.parametrize("field", ["build-dir", "target-dir", "artifact-dir"])
-def test_config_output_escape_is_refused(tmp_path, monkeypatch, field):
+@pytest.mark.parametrize("field", ["build-dir", "target-dir"])
+@pytest.mark.parametrize("form", ["inline", "file"])
+@pytest.mark.parametrize("delegated", [False, True])
+def test_config_output_escape_is_refused(tmp_path, field, form, delegated):
     config = tmp_path / "config.toml"
     config.write_text(f'[build]\n{field} = "elsewhere"\n', encoding="utf-8")
-    monkeypatch.setattr(
-        execution_environment.command_identity,
-        "_tool_configuration_identities",
-        lambda *args, **kwargs: [{"path": str(config)}],
+    command = [
+        "cargo",
+        "check",
+        "--config",
+        str(config) if form == "file" else f'build.{field}="elsewhere"',
+    ]
+    if delegated:
+        command = ["python", "tools/guarded_exec.py", "--", *command]
+    with pytest.raises(ValueError, match="bypasses proof output custody"):
+        execution_environment._require_cargo_build_tool_environment_context(
+            admission.envelope_for_command(command),
+            outputs=cargo_output_environment.CargoOutputEnvironment(False),
+            cwd=tmp_path,
+            env={"CARGO_HOME": str(tmp_path / "cargo-home")},
+        )
+
+
+def test_file_output_defaults_remain_below_leased_environment(tmp_path):
+    target = tmp_path / "leased"
+    target.mkdir()
+    config = tmp_path / ".cargo" / "config.toml"
+    config.parent.mkdir()
+    config.write_text(
+        '[build]\ntarget-dir="outside-final"\nbuild-dir="outside-build"\n',
+        encoding="utf-8",
     )
+    outputs = cargo_output_environment.CargoOutputEnvironment(
+        True, external_placement=True
+    )
+    bound = outputs.bind(
+        {
+            "CARGO_HOME": str(tmp_path / "cargo-home"),
+            "CARGO_BUILD_BUILD_DIR": "inherited-escape",
+        },
+        target=target,
+    )
+    effective = execution_environment._require_cargo_build_tool_environment_context(
+        admission.envelope_for_command(["cargo", "doc"]),
+        outputs=outputs,
+        cwd=tmp_path,
+        env=bound,
+    )
+    outputs.validate(effective, target=target)
+    assert effective["CARGO_BUILD_BUILD_DIR"] == str(target)
+    config.write_text('[build]\nartifact-dir="outside-artifact"\n', encoding="utf-8")
     with pytest.raises(ValueError, match="redirects output"):
         execution_environment._require_cargo_build_tool_environment_context(
-            admission.envelope_for_command(["cargo", "check"]),
-            outputs=cargo_output_environment.CargoOutputEnvironment(
-                False, external_placement=True
-            ),
+            admission.envelope_for_command(["cargo", "doc"]),
+            outputs=outputs,
             cwd=tmp_path,
-            env={},
+            env=bound,
         )
 
 
@@ -857,11 +899,14 @@ def test_supervisor_intermediates_are_external_but_executable_cas_stays_canonica
             "TEMP": str(selected.temporary),
             "TMP": str(selected.temporary),
             "TMPDIR": str(selected.temporary),
+            "MOLT_CARGO_BUILD_DIR_BASE": str(tmp_path / "foreign-payload"),
         },
         target=target,
         external_placement=True,
     )
     assert env["CARGO_TARGET_DIR"] == str(target)
+    assert env["MOLT_CARGO_BUILD_DIR_BASE"] == str(target)
+    assert env["CARGO_BUILD_BUILD_DIR"] == str(target.parent / "build")
     assert all(
         env[name] == str(target.parent / "tmp") for name in ("TEMP", "TMP", "TMPDIR")
     )
@@ -1249,3 +1294,20 @@ def test_independent_guest_root_refuses_before_queue_output_side_effects(
     assert observed["command_started"] is False
     assert "independent differential guest output conflicts" in observed["error"]
     assert not (tmp_path / "independent-output").exists()
+
+
+def test_runtime_cargo_intermediate_base_is_owned_by_the_payload_lease(tmp_path):
+    target = tmp_path / "leased"
+    target.mkdir()
+    outputs = cargo_output_environment.CargoOutputEnvironment(False)
+    inherited = {
+        "MOLT_CARGO_BUILD_DIR_BASE": str(tmp_path / "escaped"),
+        "CARGO_BUILD_BUILD_DIR": str(tmp_path / "escaped-direct"),
+    }
+    assert outputs.caller_environment(inherited) == {}
+    bound = outputs.bind(inherited, target=target)
+    assert bound["MOLT_CARGO_BUILD_DIR_BASE"] == str(target)
+    assert bound["CARGO_BUILD_BUILD_DIR"] == str(target)
+    outputs.validate(bound, target=target)
+    with pytest.raises(ValueError, match="differs"):
+        outputs.validate({**bound, **inherited}, target=target)

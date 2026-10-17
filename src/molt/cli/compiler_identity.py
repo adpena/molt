@@ -174,13 +174,11 @@ def admit_llvm_compiler_inputs(
 @dataclass(frozen=True)
 class BackendBuildAdmission:
     plan: RuntimeCargoPlan
-    resources: CargoResourceCustody
     fingerprint: str
 
     def verify(self) -> None:
         try:
             self.plan.verify()
-            self.resources.verify()
         except (OSError, ValueError) as exc:
             raise CompilerIdentityError(
                 f"Compiler build inputs changed: {exc}"
@@ -205,7 +203,6 @@ def backend_build_admission(
     from molt.cli.runtime_build_identity import (
         _runtime_build_environment_identity,
     )
-    from molt.cli.cargo_resource_custody import CargoResourceCustody
     from molt.cli.runtime_cargo_plan import resolve_runtime_cargo_plan
     from molt.dx import project_cargo_target_dir
     from molt.llvm_toolchain import LlvmToolchainConfigError
@@ -260,11 +257,8 @@ def backend_build_admission(
         )
         # llvm-sys consumes both selectors and prefix contents. Its build script
         # can link archives, query llvm-config and consume headers under this root.
-        resources = (
-            CargoResourceCustody.capture(())
-            if llvm_inputs is None
-            else llvm_inputs.resources
-        )
+        if llvm_inputs is not None:
+            plan = plan.with_build_resources(llvm_inputs.resources)
         environment = _runtime_build_environment_identity(
             plan, cargo_profile=cargo_profile
         )
@@ -308,10 +302,9 @@ def backend_build_admission(
                 "c_environment": dict(plan.c_environment),
                 "toolchain": plan.toolchain_identity(),
                 "link_resources": plan.link_resources.content_identity(),
-                "compiler_resources": resources.content_identity(),
             }
         )
-        result = BackendBuildAdmission(plan, resources, fingerprint)
+        result = BackendBuildAdmission(plan, fingerprint)
         result.verify()
         if transaction is not None:
             transaction.compiler_plans[key] = result

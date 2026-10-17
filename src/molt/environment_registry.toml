@@ -551,6 +551,14 @@ owner = "src/molt/python_runtime_admission.py"
 summary = "Python interpreter for the runtime build identity probe and Cargo's stdlib table generators; unset falls back to PYTHON, then python3 (python on Windows), and molt sets it to its own interpreter for nested Cargo builds."
 
 [[variable]]
+name = "MOLT_BUILD_PYTHON_SIGNATURE"
+audience = "internal"
+kind = "string"
+default = ""
+owner = "src/molt/cli/runtime_build_python.py"
+summary = "Derived content digest from the admitted runtime build Python identity, bound to the runtime Cargo producer after initial identity capture; the shared build-script Python helper watches it so same-path interpreter or library changes regenerate tables. It is validated against fresh Python custody and is not an independent semantic input or an end-user runtime cost."
+
+[[variable]]
 name = "MOLT_BUILD_SMOKE_EXEC"
 audience = "user"
 kind = "bool"
@@ -638,6 +646,14 @@ default = "none"
 values = ["none", "safe", "standard", "full"]
 owner = "src/molt/capability_manifest.py"
 summary = "Built-in capability tier whose grants seed the program's capability set, compared after trim and casefold; an unknown tier grants nothing, full is the tier --trusted selects, default none. Runtime initialization freezes the selected grants and target before Ready; isolates inherit them and public queries cannot reseed them."
+
+[[variable]]
+name = "MOLT_CARGO_BUILD_DIR_BASE"
+audience = "internal"
+kind = "path"
+default = ""
+owner = "src/molt/cli/runtime_cargo_plan.py"
+summary = "Development-only stable base for the external-resource-keyed CARGO_BUILD_BUILD_DIR generation; RuntimeCargoPlan pins it from this value, then CARGO_BUILD_BUILD_DIR, CARGO_TARGET_DIR or project target. It survives plan recapture and is output placement, not a semantic input; final Cargo target artifacts retain their existing paths."
 
 [[variable]]
 name = "MOLT_CARGO_CACHE_KEY"

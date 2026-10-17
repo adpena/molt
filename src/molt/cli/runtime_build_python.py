@@ -3,11 +3,65 @@
 from __future__ import annotations
 
 from contextlib import contextmanager
-from typing import Generator, TYPE_CHECKING
+from dataclasses import replace
+from pathlib import Path
+from types import MappingProxyType
+from typing import Generator, Mapping, TYPE_CHECKING, cast
 
 if TYPE_CHECKING:
     from molt.cli.models import _RuntimeArtifactState
+    from molt.cli.runtime_cargo_plan import RuntimeCargoPlan
+    from molt.cli.runtime_identity_schema import RuntimeBuildIdentity
     from molt.python_runtime_admission import BuildPythonAdmission
+
+
+BUILD_PYTHON_SIGNATURE = "MOLT_BUILD_PYTHON_SIGNATURE"
+
+
+def pin_runtime_build_python_environment(
+    environment: Mapping[str, str], *, cwd: Path
+) -> Mapping[str, str]:
+    """Pin effective generator selection before its first identity capture.
+
+    Cargo launches build scripts from their crate directories. An absolute
+    lexical entrypoint keeps both explicit selectors and relative PATH roots
+    attached to the operation directory, preserving virtualenv aliases.
+    """
+    from molt.python_runtime_admission import resolve_build_python
+
+    entrypoint = resolve_build_python(environment, cwd=cwd)
+    selected = next(
+        (
+            name
+            for name in ("MOLT_BUILD_PYTHON", "PYTHON")
+            if environment.get(name, "").strip()
+        ),
+        "MOLT_BUILD_PYTHON",
+    )
+    return {**environment, selected: str(entrypoint)}
+
+
+def bind_runtime_build_python(
+    plan: RuntimeCargoPlan, identity: RuntimeBuildIdentity
+) -> RuntimeCargoPlan:
+    """Carry already captured generator content into Cargo's rerun key.
+
+    This is a projection of the validated build identity, not another Python
+    admission. Later identity fences still capture and verify the live owner.
+    """
+    family = cast(Mapping[str, object], identity.payload["family"])
+    compilation = cast(Mapping[str, object], family["compile"])
+    configuration = cast(Mapping[str, object], compilation["common_config"])
+    scripts = cast(Mapping[str, object], configuration["build_script_environment"])
+    python = cast(Mapping[str, object], scripts["build_python"])
+    signature = cast(str, python["content_digest"])
+    previous = plan.environment.get(BUILD_PYTHON_SIGNATURE)
+    if previous == signature:
+        return plan
+    if previous is not None:
+        raise ValueError("runtime build Python signature differs from captured content")
+    environment = {**plan.environment, BUILD_PYTHON_SIGNATURE: signature}
+    return replace(plan, environment=MappingProxyType(environment))
 
 
 @contextmanager

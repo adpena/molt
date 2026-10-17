@@ -605,6 +605,42 @@ def test_runtime_proof_transport_preserves_registered_native_build_closure(comma
     assert envelope["cargo_native_units"] == {"target": ["c", "c++"]}
 
 
+@pytest.mark.parametrize("kind", ["command", "named_lane"])
+@pytest.mark.parametrize("value", ["false", 0, None])
+def test_cargo_generator_declaration_rejects_untyped_policy(kind, value):
+    rows = PLAN.commands if kind == "command" else PLAN.named_lanes
+    selected = next(row for row in rows if "cargo" in row.toolchains)
+    changed = tuple(
+        replace(row, data={**row.data, "cargo_build_python": value})
+        if row.id == selected.id
+        else row
+        for row in rows
+    )
+    plan = replace(
+        PLAN, **{"commands" if kind == "command" else "named_lanes": changed}
+    )
+    assert any("cargo_build_python requires" in error for error in plan.validate())
+
+
+def test_cargo_generator_declaration_rejects_noncargo_and_static_roles():
+    with pytest.raises(ValueError, match="Cargo toolchain"):
+        proof_plan.cargo_build_python(
+            {"toolchains": ["python"], "cargo_build_python": False}
+        )
+    with pytest.raises(ValueError, match="contextual"):
+        proof_plan.cargo_build_python(
+            {"toolchains": ["cargo", "build-python"], "cargo_build_python": True}
+        )
+
+
+def test_registered_cargo_generator_policy_is_explicit_for_every_owner():
+    for row in (*PLAN.commands, *PLAN.named_lanes):
+        if "cargo" in row.toolchains:
+            assert type(row.data.get("cargo_build_python")) is bool, row.id
+        else:
+            assert "cargo_build_python" not in row.data, row.id
+
+
 def test_runtime_descendant_authority_is_hashed_and_its_tests_execute() -> None:
     for path in (
         "tools/runtime_descendant_receipts.py",
@@ -3119,7 +3155,14 @@ def test_matrix_toolchains_include_cross_tier_command_and_tool_dependencies() ->
     assert first == proof_plan.family_outputs(plan, selection, tier="pr")
     (entry,) = json.loads(first["platform_portability_matrix"])["include"]
     assert entry["command_ids"] == [selected.id]
-    assert entry["toolchains"] == ["cargo", "rustc", "git", "node", "uv", "python"]
+    assert entry["toolchains"] == [
+        "cargo",
+        "rustc",
+        "git",
+        "node",
+        "uv",
+        "python",
+    ]
 
 
 def test_portability_streams_node_outcomes_before_possible_timeout() -> None:
@@ -6076,7 +6119,7 @@ def test_runtime_boundary_consumers_keep_executable_toolchain_authority():
         assert envelope["proof_plan_command_ids"] == [row.id]
         expected_tools = set(row.toolchains)
         if "cargo" in expected_tools:
-            expected_tools.add("git")
+            expected_tools.update({"git", "build-python"})
         assert set(envelope["toolchains"]) == expected_tools
     assert (
         "tests/cli/test_cli_native_main_stub_authority.py::"

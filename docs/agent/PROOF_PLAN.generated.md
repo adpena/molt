@@ -17,8 +17,8 @@ Landing checks execute the generator and authority inputs captured from the exac
 | Hand-maintained path-to-proof authorities | 4 | 1 |
 | CI selection families | 5 | 12 |
 | Hashed executable authority inputs | 1 | 364 |
-| Local path rules | 35 | 49 |
-| Unique local commands | 73 | 126 |
+| Local path rules | 35 | 50 |
+| Unique local commands | 73 | 127 |
 | Handwritten Python classifier rule tables | 5 | 0 |
 
 ## CI families
@@ -129,6 +129,7 @@ Executable identities bind resolved path, version text, and the repository-relat
 | `browser-acorn` | `executable` | — | `^8\.19\.0$` | `tools/browser_asset_graph` | `8.19.0` | 1 |
 | `rustc` | `executable` | — | `^rustc 1\.99\.0\b` | `.` | `1.99.0` | 3 |
 | `lune` | `executable` | — | `^lune 0\.10\.5$` | `.` | `0.10.5` | 2 |
+| `build-python` | `executable` | `compiler:build-python` | `^Python 3\.[0-9]+\.[0-9]+.*$` | `.` | `effective Cargo build Python` | 1 |
 | `cargo` | `executable` | — | `^cargo 1\.99\.0\b` | `.` | `1.99.0` | 3 |
 | `git` | `executable` | — | `^git version 2\.` | `.` | `2.x` | 1 |
 | `rustfmt` | `executable` | — | `^rustfmt 1\.10\.0-stable\b` | `.` | `1.10.0` | 3 |
@@ -354,6 +355,7 @@ The wrapper conflict was reconfirmed by native CI run `30211145633` job `8981749
 | `tinygrad-upat-static-exec-registry` | 2 | 1 | no |
 | `docs-architecture` | 4 | 2 | no |
 | `dev-tooling` | 12 | 5 | no |
+| `runtime-cargo-input-custody` | 33 | 1 | no |
 | `rust-ffi-blocks` | 6 | 2 | no |
 | `rust-toolchain` | 10 | 2 | no |
 | `table-drift` | 12 | 2 | no |

@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import os
 import shlex
+import shutil
 import time
 from pathlib import Path
 
@@ -14,8 +16,11 @@ from molt.cli.runtime_cargo_plan import (
     _resolve_c_build_resources,
     _c_tool_environment_names,
     runtime_c_flag_environment_names,
+    resolve_runtime_cargo_plan,
 )
+from molt.cli.cargo_execution import _run_resolved_cargo_plan
 from tests.runtime_build_identity_helper import RuntimeFixtureRoot, runtime_cargo_plan
+from tests.rust.process_guard import run_rust_test_process
 
 
 TARGET = "wasm32-wasip1"
@@ -168,6 +173,26 @@ def test_c_search_rejects_unbound_build_script_cwd(value: str) -> None:
 
 
 @pytest.mark.parametrize(
+    "name",
+    [
+        "MACOSX_DEPLOYMENT_TARGET",
+        "IPHONEOS_DEPLOYMENT_TARGET",
+        "WATCHOS_DEPLOYMENT_TARGET",
+        "TVOS_DEPLOYMENT_TARGET",
+        "XROS_DEPLOYMENT_TARGET",
+    ],
+)
+def test_c_deployment_controls_preserve_output_selection(name: str) -> None:
+    before = _resolve_c_build_resources(
+        _CargoEnvironment({name: "12.0"}), target=TARGET
+    )
+    after = _resolve_c_build_resources(_CargoEnvironment({name: "15.0"}), target=TARGET)
+    assert dict(before.environment) == {name: ("12.0",)}
+    assert dict(after.environment) == {name: ("15.0",)}
+    assert not before.roots and not after.roots
+
+
+@pytest.mark.parametrize(
     "option,kind",
     [
         ("-I", "directory"),
@@ -284,6 +309,231 @@ def test_resolved_cargo_plan_consumes_c_resource_custody(
     header.write_bytes(b"mutated resource")
     with pytest.raises(ValueError):
         plan.verify()
+
+
+@pytest.fixture
+def external_header_cargo_project(tmp_path: Path):
+    """One real registry-free graph whose HOST build input lives outside Cargo."""
+    if shutil.which("cargo") is None or shutil.which("rustc") is None:
+        pytest.skip("real Cargo/Rust compiler capability is unavailable")
+    project = tmp_path / "crate"
+    (project / "src").mkdir(parents=True)
+    host = project / "host-input"
+    (host / "src").mkdir(parents=True)
+    include = tmp_path / "external-headers"
+    include.mkdir()
+    header = include / "value.h"
+    header.write_text("#define VALUE 7\n", encoding="utf-8")
+    runs = tmp_path / "build-script-runs.txt"
+    (project / "Cargo.toml").write_text(
+        '[package]\nname = "molt-resource-reuse"\nversion = "0.0.0"\n'
+        'edition = "2024"\n[build-dependencies]\n'
+        'molt-resource-host = { path = "host-input" }\n[workspace]\n',
+        encoding="utf-8",
+    )
+    (host / "Cargo.toml").write_text(
+        '[package]\nname = "molt-resource-host"\nversion = "0.0.0"\nedition = "2024"\n',
+        encoding="utf-8",
+    )
+    (project / "Cargo.lock").write_text(
+        'version = 4\n[[package]]\nname = "molt-resource-reuse"\n'
+        'version = "0.0.0"\ndependencies = ["molt-resource-host"]\n'
+        '[[package]]\nname = "molt-resource-host"\nversion = "0.0.0"\n',
+        encoding="utf-8",
+    )
+    (host / "build.rs").write_text(
+        r"""use std::{env, fs, io::Write, path::PathBuf};
+fn main() {
+    println!("cargo:rerun-if-changed=build.rs");
+    println!("cargo:rerun-if-env-changed=CPATH");
+    let include = env::split_paths(&env::var_os("CPATH").unwrap()).next().unwrap();
+    let header = fs::read_to_string(include.join("value.h")).unwrap();
+    let value: u32 = header.split_whitespace().nth(2).unwrap().parse().unwrap();
+    let flags = env::var("CFLAGS").unwrap_or_default();
+    let deployment = env::var("MACOSX_DEPLOYMENT_TARGET").unwrap_or_default();
+    fs::write(PathBuf::from(env::var_os("OUT_DIR").unwrap()).join("value.rs"),
+        format!("pub const VALUE: u32 = {};\npub const CFLAGS: &str = {:?};\npub const DEPLOYMENT: &str = {:?};\n",
+            value, flags, deployment)).unwrap();
+    let mut runs = fs::OpenOptions::new().create(true).append(true)
+        .open(env::var_os("PROBE_RUN_LOG").unwrap()).unwrap();
+    writeln!(runs, "host={}", value).unwrap();
+}
+""",
+        encoding="utf-8",
+    )
+    (host / "src/lib.rs").write_text(
+        'include!(concat!(env!("OUT_DIR"), "/value.rs"));\n', encoding="utf-8"
+    )
+    (project / "build.rs").write_text(
+        r"""use std::{env, fs, io::Write, path::PathBuf};
+fn main() {
+    println!("cargo:rerun-if-changed=build.rs");
+    let value = molt_resource_host::VALUE;
+    fs::write(PathBuf::from(env::var_os("OUT_DIR").unwrap()).join("value.rs"),
+        format!("const VALUE: u32 = {};\nconst CFLAGS: &str = {:?};\nconst DEPLOYMENT: &str = {:?};\n",
+            value, molt_resource_host::CFLAGS, molt_resource_host::DEPLOYMENT)).unwrap();
+    let mut runs = fs::OpenOptions::new().create(true).append(true)
+        .open(env::var_os("PROBE_RUN_LOG").unwrap()).unwrap();
+    writeln!(runs, "root={}", value).unwrap();
+}
+""",
+        encoding="utf-8",
+    )
+    (project / "src/main.rs").write_text(
+        'include!(concat!(env!("OUT_DIR"), "/value.rs"));\n'
+        'fn main() { println!("{}{}{}", VALUE, CFLAGS, DEPLOYMENT); }\n',
+        encoding="utf-8",
+    )
+    environment = dict(os.environ)
+    environment.pop("MACOSX_DEPLOYMENT_TARGET", None)
+    environment.update(
+        CPATH=str(include),
+        CFLAGS="",
+        CARGO_HOME=str(tmp_path / "cargo-home"),
+        CARGO_TARGET_DIR=str(tmp_path / "target"),
+        CARGO_INCREMENTAL="0",
+        CARGO_BUILD_JOBS="1",
+        RUSTC_WRAPPER="",
+        RUSTC_WORKSPACE_WRAPPER="",
+        PROBE_RUN_LOG=str(runs),
+    )
+    Path(environment["CARGO_HOME"]).mkdir()
+    return project, header, runs, environment
+
+
+@pytest.mark.parametrize(
+    "explicit_target", [False, True], ids=["native", "explicit-host"]
+)
+def test_real_cargo_reuses_only_matching_external_resource_generation(
+    external_header_cargo_project, explicit_target: bool
+) -> None:
+    project, header, runs, environment = external_header_cargo_project
+    command = (
+        "cargo",
+        "build",
+        "--offline",
+        "--message-format=json",
+        "--config",
+        "build.target-dir=" + json.dumps(str(project / "escaped-target")),
+    )
+    first = resolve_runtime_cargo_plan(
+        project, env=environment, cargo_command=command, requested_target=None
+    )
+    requested_target = first.host_target if explicit_target else None
+    if explicit_target:
+        command = (*command, "--target", first.host_target)
+
+    def capture(env=environment):
+        return resolve_runtime_cargo_plan(
+            project,
+            env=env,
+            cargo_command=command,
+            requested_target=requested_target,
+        )
+
+    def execute(plan, expected: str, *, fresh: bool) -> Path:
+        result = _run_resolved_cargo_plan(
+            plan, timeout=90, json_output=True, label="external-resource-reuse-test"
+        )
+        assert result.returncode == 0, result.stderr
+        artifacts = [
+            json.loads(line)
+            for line in result.stdout.splitlines()
+            if line.startswith("{")
+        ]
+        artifact = next(
+            row
+            for row in artifacts
+            if row.get("reason") == "compiler-artifact"
+            and row.get("target", {}).get("name") == "molt-resource-reuse"
+            and row.get("executable")
+        )
+        assert artifact["fresh"] is fresh
+        binary = Path(artifact["executable"])
+        assert binary.is_relative_to(Path(environment["CARGO_TARGET_DIR"]))
+        output = run_rust_test_process(
+            [str(binary)],
+            cwd=str(project),
+            env=plan.environment,
+            timeout=10,
+        )
+        assert output.returncode == 0, output.stderr
+        assert output.stdout.strip() == expected
+        assert plan.environment["CARGO_TARGET_DIR"] == environment["CARGO_TARGET_DIR"]
+        return binary
+
+    if explicit_target:
+        first = capture()
+    generation = first.environment["CARGO_BUILD_BUILD_DIR"]
+    first_binary = execute(first, "7", fresh=False)
+    assert runs.read_text(encoding="utf-8").splitlines() == ["host=7", "root=7"]
+    assert not (project / "escaped-target").exists()
+    unchanged = capture(first.environment)
+    assert unchanged.environment["CARGO_BUILD_BUILD_DIR"] == generation
+    execute(unchanged, "7", fresh=True)
+    assert runs.read_text(encoding="utf-8").splitlines() == ["host=7", "root=7"]
+
+    header.write_text("#define VALUE 9\n", encoding="utf-8")
+    with pytest.raises(ValueError):
+        first.verify()
+    changed = capture()
+    assert changed.environment["CARGO_BUILD_BUILD_DIR"] != generation
+    assert execute(changed, "9", fresh=False) == first_binary
+    expected_runs = ["host=7", "root=7", "host=9", "root=9"]
+    assert runs.read_text(encoding="utf-8").splitlines() == expected_runs
+    generation = changed.environment["CARGO_BUILD_BUILD_DIR"]
+    unchanged = capture()
+    assert unchanged.environment["CARGO_BUILD_BUILD_DIR"] == generation
+    execute(unchanged, "9", fresh=True)
+    assert runs.read_text(encoding="utf-8").splitlines() == expected_runs
+
+    # Native build scripts may suppress cc-rs metadata. This HOST dependency
+    # deliberately does not declare CFLAGS to Cargo: the admitted plan owns it.
+    environment["CFLAGS"] = "-DMOLT_RESOURCE_MARKER=changed"
+    flags_changed = capture()
+    assert flags_changed.environment["CARGO_BUILD_BUILD_DIR"] != generation
+    assert (
+        execute(flags_changed, "9-DMOLT_RESOURCE_MARKER=changed", fresh=False)
+        == first_binary
+    )
+    expected_runs += ["host=9", "root=9"]
+    assert runs.read_text(encoding="utf-8").splitlines() == expected_runs
+    generation = flags_changed.environment["CARGO_BUILD_BUILD_DIR"]
+    unchanged = capture(flags_changed.environment)
+    assert unchanged.environment["CARGO_BUILD_BUILD_DIR"] == generation
+    execute(unchanged, "9-DMOLT_RESOURCE_MARKER=changed", fresh=True)
+    assert runs.read_text(encoding="utf-8").splitlines() == expected_runs
+
+    # cc-rs consumes deployment controls even with cargo_metadata(false).
+    # This input changes no file or search root and must still rebuild HOST.
+    environment["MACOSX_DEPLOYMENT_TARGET"] = "15.0"
+    deployment_changed = capture()
+    assert deployment_changed.environment["CARGO_BUILD_BUILD_DIR"] != generation
+    assert (
+        execute(deployment_changed, "9-DMOLT_RESOURCE_MARKER=changed15.0", fresh=False)
+        == first_binary
+    )
+    expected_runs += ["host=9", "root=9"]
+    assert runs.read_text(encoding="utf-8").splitlines() == expected_runs
+    generation = deployment_changed.environment["CARGO_BUILD_BUILD_DIR"]
+    unchanged = capture(deployment_changed.environment)
+    assert unchanged.environment["CARGO_BUILD_BUILD_DIR"] == generation
+    execute(unchanged, "9-DMOLT_RESOURCE_MARKER=changed15.0", fresh=True)
+    assert runs.read_text(encoding="utf-8").splitlines() == expected_runs
+
+    source = project / "src/main.rs"
+    source.write_text(
+        'include!(concat!(env!("OUT_DIR"), "/value.rs"));\n'
+        'fn main() { println!("{}{}{}", VALUE + 1, CFLAGS, DEPLOYMENT); }\n',
+        encoding="utf-8",
+    )
+    source_edit = capture()
+    assert source_edit.environment["CARGO_BUILD_BUILD_DIR"] == generation
+    assert (
+        execute(source_edit, "10-DMOLT_RESOURCE_MARKER=changed15.0", fresh=False)
+        == first_binary
+    )
+    assert runs.read_text(encoding="utf-8").splitlines() == expected_runs
 
 
 @pytest.mark.parametrize(

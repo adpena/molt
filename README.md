@@ -185,6 +185,12 @@ intermediates belong to one checkout; sibling worktrees share compiler/download
 caches, not mutable Cargo targets. See the [developer build guidance](docs/DEVELOPER_GUIDE.md)
 for explicit target overrides and separate queued release qualification.
 
+Managed compiler/runtime source builds keep Cargo intermediates with the
+captured external toolchain inputs; ordinary source edits retain incremental
+state. Python table generators have a separate interpreter signature. These
+development checks add no work or Python dependency to emitted programs. See
+[build input freshness](docs/design/build_early_cutoff.md#external-inputs-and-cargo-reuse).
+
 - Contributor map: [docs/DEVELOPER_GUIDE.md](docs/DEVELOPER_GUIDE.md)
 - Operations and multi-agent workflow: [docs/OPERATIONS.md](docs/OPERATIONS.md)
 - Build storage, output lifetimes, and proof custody: [docs/agent/PROOF_QUEUE.md](docs/agent/PROOF_QUEUE.md#cargo-output-placement)

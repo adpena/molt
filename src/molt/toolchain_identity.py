@@ -314,6 +314,7 @@ def resolve_executable(
     *,
     environment: Mapping[str, str],
     label: str,
+    cwd: Path | None = None,
 ) -> Path:
     """Resolve an explicit path or one PATH-selected executable exactly once."""
 
@@ -323,10 +324,12 @@ def resolve_executable(
     if not candidate.is_absolute() and not any(
         separator in command for separator in "/\\"
     ):
-        selected = find_executable(command, environment=environment)
+        selected = find_executable(command, environment=environment, cwd=cwd)
         if selected is None:
             raise ValueError(f"{label} is unavailable: {command}")
         candidate = Path(selected)
+    elif not candidate.is_absolute() and cwd is not None:
+        candidate = cwd / candidate
     return _executable_paths(candidate, label=label)[0]
 
 

@@ -41,6 +41,47 @@ _ADMISSION_TIMEOUT = 300.0
 _RESPONSE_LIMIT = 64 * 1024 * 1024
 
 
+def resolve_build_python(
+    environment: Mapping[str, str], *, cwd: Path | None = None
+) -> Path:
+    """Select the generator once for its isolated admission and proof projection."""
+    command = (
+        environment.get("MOLT_BUILD_PYTHON", "").strip()
+        or environment.get("PYTHON", "").strip()
+        or ("python" if os.name == "nt" else "python3")
+    )
+    return resolve_executable(
+        command, environment=environment, label="runtime build Python", cwd=cwd
+    )
+
+
+def build_python_identity(
+    *,
+    entrypoint: Path,
+    content_path: Path,
+    size: int,
+    sha256: str,
+    runtime: Mapping[str, object],
+) -> dict[str, object]:
+    """Project captured Python facts for runtime producers and their proof driver."""
+    material = {
+        "schema": BUILD_PYTHON_IDENTITY_SCHEMA,
+        "logical_name": "build_python",
+        "selected_executable": {
+            "entrypoint": entrypoint.name.casefold()
+            if os.name == "nt"
+            else entrypoint.name,
+            "content_filename": content_path.name.casefold()
+            if os.name == "nt"
+            else content_path.name,
+            "size": size,
+            "sha256": sha256,
+        },
+        "runtime": runtime,
+    }
+    return {**material, "identity_sha256": canonical_json_sha256(material)}
+
+
 def _loader_environment(env: Mapping[str, str]) -> tuple[tuple[str, str], ...]:
     """Isolation ignores Python startup options; native loader policy still applies."""
     return tuple(
@@ -304,14 +345,7 @@ class BuildPythonAdmission:
             if self._closed:
                 raise ValueError("runtime build Python admission is revoked")
             try:
-                command = (
-                    env.get("MOLT_BUILD_PYTHON", "").strip()
-                    or env.get("PYTHON", "").strip()
-                    or ("python" if os.name == "nt" else "python3")
-                )
-                path = resolve_executable(
-                    command, environment=env, label="runtime build Python"
-                )
+                path = resolve_build_python(env)
                 policy = _loader_environment(env)
                 with stable_executable_probe(
                     path, label="runtime build Python", identity=self._executable
@@ -323,25 +357,13 @@ class BuildPythonAdmission:
                         self._entrypoint = entrypoint
                         self._executable = executable
                         self._environment = policy
-                        material = {
-                            "schema": BUILD_PYTHON_IDENTITY_SCHEMA,
-                            "logical_name": "build_python",
-                            "selected_executable": {
-                                "entrypoint": entrypoint.name.casefold()
-                                if os.name == "nt"
-                                else entrypoint.name,
-                                "content_filename": executable.path.name.casefold()
-                                if os.name == "nt"
-                                else executable.path.name,
-                                "size": executable.size,
-                                "sha256": executable.sha256,
-                            },
-                            "runtime": runtime,
-                        }
-                        self._identity = {
-                            **material,
-                            "identity_sha256": canonical_json_sha256(material),
-                        }
+                        self._identity = build_python_identity(
+                            entrypoint=entrypoint,
+                            content_path=executable.path,
+                            size=executable.size,
+                            sha256=executable.sha256,
+                            runtime=runtime,
+                        )
                     else:
                         if (
                             entrypoint != self._entrypoint

@@ -120,11 +120,11 @@ def _supervisor_build_environment(
     """Keep bootstrap outputs external and Unix startup sockets bounded."""
     build_env = dict(execution_env)
     build_env["CARGO_TARGET_DIR"] = str(target.resolve(strict=True))
+    build_env["MOLT_CARGO_BUILD_DIR_BASE"] = build_env["CARGO_TARGET_DIR"]
     # Bootstrap scratch has the same lifetime as its source-bound build store.
     # The payload's per-run nonce and temporary roots never select compiler output.
     build_env[supervisor.PROOF_SCRATCH_ROOT_ENV] = str(target.parent / "scratch")
-    if "CARGO_BUILD_BUILD_DIR" in build_env:
-        build_env["CARGO_BUILD_BUILD_DIR"] = str(target.parent / "build")
+    build_env["CARGO_BUILD_BUILD_DIR"] = str(target.parent / "build")
     if os.name == "nt" or external_placement:
         temporary = target.parent / "tmp"
         custody_cas._canonical_root(temporary, create=True)
@@ -400,6 +400,10 @@ def execute_guarded_request(request_path: Path) -> int:
             inherited_env["CARGO_TARGET_DIR"] = str(
                 selection_target.resolve(strict=True)
             )
+            inherited_env["MOLT_CARGO_BUILD_DIR_BASE"] = inherited_env[
+                "CARGO_TARGET_DIR"
+            ]
+            inherited_env["CARGO_BUILD_BUILD_DIR"] = inherited_env["CARGO_TARGET_DIR"]
         # Output scratch is run-owned and external to source custody.
         run_scratch = output_layout.scratch(execution_nonce)
         run_scratch.mkdir(parents=True, exist_ok=False)
@@ -570,7 +574,9 @@ def execute_guarded_request(request_path: Path) -> int:
         passed_names = cast(list[str], passed_names)
         override_names_contract = cast(list[str], override_names_contract)
         execution_command, python_launcher_environment = (
-            admission._supervised_execution_command(envelope, exact, policy_identities)
+            admission._supervised_execution_command(
+                envelope, exact, policy_identities, environment=execution_env, cwd=cwd
+            )
         )
         execution_env.update(python_launcher_environment)
         for name in sorted(python_launcher_environment):
@@ -757,6 +763,25 @@ def execute_guarded_request(request_path: Path) -> int:
             assert isinstance(identity, Mapping)
             command_identity._validate_toolchain_identity(
                 plan, name, identity, full_capture=True, envelope=envelope
+            )
+        if "build-python" in toolchains_full:
+            policy = next(
+                policy
+                for policy in plan.toolchain_policies
+                if policy.name == "build-python"
+            )
+            invocation = admission.cargo_invocation_for_envelope(envelope)
+            execution_env = toolchain_capture.bind_build_python_environment(
+                toolchains_full["build-python"],
+                policy=policy,
+                env=execution_env,
+                cwd=cwd,
+                cargo_command=(admission._nested_command(exact) or exact)
+                if invocation is not None
+                else ("cargo",),
+            )
+            environment_contract["passed_names"] = sorted(
+                execution_env, key=str.casefold
             )
         toolchains, capture_ref, capture_telemetry = toolchain_capture.publish_capture(
             result_path.parent / "custody-cas", toolchains_full

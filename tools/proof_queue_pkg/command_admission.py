@@ -21,7 +21,7 @@ from tools.proof_queue_pkg.python_payload_authority import is_molt_cli_payload
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _PYTHON_CUSTODY_BOOTSTRAP = Path(__file__).with_name("python_custody_bootstrap.py")
 
-ENVELOPE_SCHEMA = "molt.proof-command-envelope.v7"
+ENVELOPE_SCHEMA = "molt.proof-command-envelope.v8"
 EXECUTION_SCHEMA = "molt.proof-command-execution.v4"
 _COMMANDS = CommandExecutor.for_file(__file__)
 
@@ -502,6 +502,7 @@ def _proof_command_registry() -> dict[str, object]:
             "id": lane.id,
             "toolchains": tuple(lane.toolchains),
             "cargo_native_units": proof_plan.cargo_native_units(lane.data),
+            "cargo_build_python": proof_plan.cargo_build_python(lane.data),
         }
         entrypoint = _command_entrypoint(argv)
         if entrypoint is not None:
@@ -528,11 +529,16 @@ def _proof_command_registry() -> dict[str, object]:
                 "ids": [command.id],
                 "toolchains": declared,
                 "cargo_native_units": proof_plan.cargo_native_units(command.data),
+                "cargo_build_python": proof_plan.cargo_build_python(command.data),
             }
         else:
-            if existing["toolchains"] != declared or existing[
-                "cargo_native_units"
-            ] != proof_plan.cargo_native_units(command.data):
+            if (
+                existing["toolchains"] != declared
+                or existing["cargo_native_units"]
+                != proof_plan.cargo_native_units(command.data)
+                or existing["cargo_build_python"]
+                != proof_plan.cargo_build_python(command.data)
+            ):
                 raise ValueError(
                     "identical proof-plan argv has conflicting toolchain authorities: "
                     f"{existing['ids']!r}, {command.id!r}"
@@ -549,6 +555,10 @@ def _proof_command_registry() -> dict[str, object]:
             for name, toolchains in sorted(console_tools.items())
         },
         "policy_executables": policy_executables,
+        "cargo_build_python": {
+            row.id: proof_plan.cargo_build_python(row.data)
+            for row in (*plan.commands, *plan.named_lanes)
+        },
         "plan": plan,
         "entrypoints": entrypoints,
     }
@@ -1277,6 +1287,55 @@ def cargo_invocation_for_envelope(
     raise ValueError("Cargo policy requires a Cargo payload or declared Python driver")
 
 
+def cargo_build_python_required(envelope: Mapping[str, object]) -> bool:
+    """A build generator is a command-context prerequisite, not a Cargo binary."""
+    requested = envelope.get("toolchains")
+    if not isinstance(requested, list):
+        raise ValueError("Cargo generator selection requires declared toolchains")
+    if "cargo" not in requested:
+        return False
+    owner = envelope.get("delegated")
+    if isinstance(owner, Mapping):
+        return cargo_build_python_required(owner)
+    declarations = []
+    ids = envelope.get("proof_plan_command_ids", [])
+    if not isinstance(ids, list):
+        raise ValueError("Cargo generator selection requires command registration IDs")
+    if ids:
+        owners = _proof_command_registry()["cargo_build_python"]
+        assert isinstance(owners, dict)
+        declarations = [owners[str(name)] for name in ids]
+        if len(set(declarations)) != 1:
+            raise ValueError("registered Cargo commands disagree on build Python")
+    declared = declarations[0] if declarations else None
+    closure = envelope.get("process_closure")
+    if isinstance(closure, Mapping) and closure.get("descendants") == "forbidden":
+        if declared is True:
+            raise ValueError(
+                "noncompiling Cargo command declares a build Python generator"
+            )
+        return False
+    invocation = cargo_invocation_for_envelope(envelope)
+    compiling = invocation is None or (
+        not invocation.is_cargo_query
+        and invocation.subcommand
+        in {
+            "build",
+            "check",
+            "clippy",
+            "test",
+            "bench",
+            "run",
+            "doc",
+            "rustdoc",
+            "rustc",
+        }
+    )
+    if declared is True and not compiling:
+        raise ValueError("noncompiling Cargo command declares a build Python generator")
+    return compiling and declared is not False
+
+
 def runtime_gate_arguments(
     envelope: Mapping[str, object],
 ) -> argparse.Namespace | None:
@@ -1992,6 +2051,9 @@ def _supervised_execution_command(
     envelope: Mapping[str, object],
     exact: Sequence[str],
     located_toolchains: Mapping[str, object],
+    *,
+    environment: Mapping[str, str],
+    cwd: Path,
 ) -> tuple[list[str], dict[str, str]]:
     """Collapse a Windows Python launcher into its captured runtime image.
 
@@ -2002,6 +2064,33 @@ def _supervised_execution_command(
     ``sys.executable`` and ordinary venv discovery while making the kernel root
     the process that actually executes user code.
     """
+    if (
+        cargo_build_python_required(envelope)
+        and cargo_invocation_for_envelope(envelope) is not None
+    ):
+        from molt.cli import cargo_command as cargo_argv
+        from molt.cli.runtime_cargo_plan import capture_cargo_configuration_inputs
+
+        cargo_command = _nested_command(exact) or list(exact)
+        forced = capture_cargo_configuration_inputs(
+            cwd, env=environment, cargo_command=cargo_command
+        )[8]
+        pins = cargo_argv.cargo_environment_force_overrides(
+            [
+                name
+                for name in forced
+                if name in {"MOLT_BUILD_PYTHON", "MOLT_BUILD_PYTHON_SIGNATURE"}
+            ]
+        )
+        separator = (
+            cargo_command.index("--") if "--" in cargo_command else len(cargo_command)
+        )
+        offset = len(exact) - len(cargo_command) + separator
+        exact = [
+            *exact[:offset],
+            *(arg for pin in pins for arg in ("--config", pin)),
+            *exact[offset:],
+        ]
     if os.name != "nt" or not isinstance(envelope.get("python"), Mapping):
         return _python_bootstrap_command(envelope, exact), {}
     python = located_toolchains.get("python")
@@ -2164,7 +2253,7 @@ def _envelope_for_command(
             "descendants": "forbidden",
             "toolchains": list(toolchains),
         }
-    return {
+    envelope = {
         **(
             {"submitted_argv": submitted_argv, "wrapper": wrapper}
             if wrapper is not None
@@ -2188,6 +2277,12 @@ def _envelope_for_command(
         "typed_command": typed_python,
         "process_closure": process_closure,
     }
+    if cargo_build_python_required(envelope):
+        for name in _toolchain_dependency_closure(["build-python"]):
+            if name not in toolchains:
+                toolchains.append(name)
+        process_closure["toolchains"] = list(toolchains)
+    return envelope
 
 
 def parse_cargo_output_lifetime(value: object) -> CargoOutputLifetime:

@@ -627,6 +627,21 @@ version_pattern = '^lune 0\.10\.5$'
 setup_value = "0.10.5"
 setup_evidence = ["config/tool_releases.toml::version = \"0.10.5\"", ".github/workflows/ci.yml::python3 -m molt.tool_releases provision lune"]
 
+# Cargo build scripts select this isolated generator independently of the proof
+# launcher. Queue command admission adds this contextual prerequisite; static
+# partition preflight has no Cargo environment and claims no generator identity.
+[[toolchain_policy]]
+name = "build-python"
+executable = "build-python"
+compiler_tool_selector = "build-python"
+python_identity_role = "runtime"
+selection_only = true
+version_from_content_path = true
+version_args = ["--version"]
+version_pattern = '^Python 3\.[0-9]+\.[0-9]+.*$'
+setup_value = "effective Cargo build Python"
+setup_evidence = ["runtime/build_support/build_python.rs::MOLT_BUILD_PYTHON"]
+
 [[toolchain_policy]]
 name = "cargo"
 executable = "cargo"
@@ -1562,6 +1577,7 @@ dependencies = []
 evidence_outputs = ["proof-results/nightly/prepare"]
 argv = ["uv", "run", "python3", "tools/nightly_prepare.py", "--output-root", "proof-results/nightly/prepare"]
 toolchains = ["python", "uv", "rustc", "cargo"]
+cargo_build_python = true
 
 [[command]]
 id = "nightly.conformance.aggregate"
@@ -1634,6 +1650,7 @@ dependencies = []
 env = { MOLT_BACKEND_DAEMON = "0" }
 argv = ["uv", "run", "python3", "-m", "molt.cli", "build", "--profile", "dev", "--json", "--output", "proof-results/nightly/prewarm/determinism-hello", "examples/hello.py"]
 toolchains = ["python", "uv", "rustc", "cargo", "ld.lld"]
+cargo_build_python = true
 
 [[command]]
 id = "nightly.determinism.runtime"
@@ -1648,6 +1665,7 @@ dependencies = ["nightly.determinism.compiler-prewarm"]
 evidence_outputs = ["proof-results/nightly/deterministic-runtime.json"]
 argv = ["uv", "run", "python3", "-u", "tools/check_deterministic_runtime.py", "--corpus", "full", "--runs", "3", "--build-profile", "dev", "--json-out", "proof-results/nightly/deterministic-runtime.json"]
 toolchains = ["python", "uv", "rustc", "cargo"]
+cargo_build_python = true
 
 # The typed-IR verification and the IR hash-seed suite are CPU-bound Python
 # suites. Run beside each other on the 4-core runner, the verification ran
@@ -1667,6 +1685,7 @@ dependencies = ["nightly.determinism.ir-hashseed", "nightly.determinism.runtime"
 evidence_outputs = ["proof-results/nightly/ir-verification.json"]
 argv = ["uv", "run", "python3", "tools/verify_ir_suite.py", "--dir", "tests/differential/basic", "--examples", "--json-out", "proof-results/nightly/ir-verification.json"]
 toolchains = ["python", "uv", "rustc", "cargo"]
+cargo_build_python = true
 
 # One cold `molt build` warms the backend and runtime through the CLI's own
 # build lane, so the measured builds that follow start warm. A raw
@@ -1687,6 +1706,7 @@ dependencies = []
 env = { MOLT_BACKEND_DAEMON = "0" }
 argv = ["uv", "run", "python3", "-m", "molt.cli", "build", "--profile", "dev", "--json", "--output", "proof-results/nightly/prewarm/verification-t3-hello", "examples/hello.py"]
 toolchains = ["python", "uv", "rustc", "cargo", "ld.lld"]
+cargo_build_python = true
 
 # Fifteen builds (three programs, five runs), each compiling the stdlib into a
 # fresh cache, plus the IR audit, with three other suites on a 4-core runner:
@@ -1706,6 +1726,7 @@ dependencies = ["nightly.verification-t3.compiler-prewarm"]
 evidence_outputs = ["proof-results/reproducibility-tier3.json"]
 argv = ["uv", "run", "python3", "-u", "tools/check_reproducible_build.py", "--corpus", "full", "--runs", "5", "--audit-ir", "--json-out", "proof-results/reproducibility-tier3.json"]
 toolchains = ["python", "uv", "rustc", "cargo", "clang"]
+cargo_build_python = true
 
 # Nightly run 37947710312 built and ran about one program per 55 s beside the
 # other Tier 3 suites; 40 programs fit 2700 s, and the 90-minute job leaves no
@@ -1723,6 +1744,7 @@ dependencies = ["nightly.verification-t3.compiler-prewarm"]
 evidence_outputs = ["proof-results/fuzz-compiler-extended.json"]
 argv = ["uv", "run", "python3", "tools/fuzz_compiler.py", "--count", "40", "--timeout", "300", "--json-out", "proof-results/fuzz-compiler-extended.json"]
 toolchains = ["python", "uv", "rustc", "cargo"]
+cargo_build_python = true
 
 [[command]]
 id = "nightly.verification-t3.mutation"
@@ -1752,6 +1774,7 @@ dependencies = ["nightly.verification-t3.compiler-prewarm"]
 evidence_outputs = ["proof-results/translation-tier3.json"]
 argv = ["uv", "run", "python3", "tools/translation_validate.py", "--json-out", "proof-results/translation-tier3.json", "tests/differential"]
 toolchains = ["python", "uv", "rustc", "cargo"]
+cargo_build_python = true
 
 [[command]]
 id = "nightly.verification-t3.model-based"
@@ -1792,6 +1815,7 @@ cache_domain = "pytest"
 dependencies = []
 argv = ["uv", "run", "--active", "--project", ".", "--no-sync", "python", "-u", "-m", "pytest", "-v", "-n", "auto", "tests/test_dx_run_context.py", "tests/test_molt_queue_cli.py", "tests/tools/test_proof_queue.py", "tests/tools/test_proof_supervisor_environment.py", "tests/tools/test_windows_process_api.py", "tests/test_python_runtime_identity.py", "tests/tools/test_scientific_stack_versions.py", "tests/cli/test_external_native_scipy_package_seal.py", "tests/cli/test_source_extension_set_registry.py", "tests/cli/test_source_extension_manifest_authority.py", "tests/cli/test_source_extension_link_requirements.py", "tests/cli/test_source_extension_producer.py", "tests/cli/test_source_build_environment_probe.py", "tests/cli/test_source_extension_candidate_attestation.py", "tests/cli/test_source_extension_candidate_transaction.py", "tests/cli/test_source_package_seal.py", "tests/test_exact_json.py", "tests/tools/test_fs_delete.py", "tests/test_temporary_artifacts.py", "tests/cli/test_atomic_io_authority.py", "tests/cli/test_python_module_names.py", "tests/cli/test_source_extension_runtime_imports.py", "tests/cli/test_source_extension_input_custody.py", "tests/cli/test_source_extension_target.py", "tests/cli/test_source_extension_language.py", "tests/cli/test_source_extension_compiler_target.py", "tests/cli/test_extension_wheel_retained_inputs.py", "tests/cli/test_cli_extension_commands.py::test_direct_build_audits_and_reseals_extracted_wheel", "tests/tools/test_proof_queue_output_layout.py", "tests/tools/test_setup_project_inputs.py", "tests/tools/test_rust_toolchain_contract.py", "tests/tools/test_cargo_bindgen_toolchain.py", "tests/tools/test_proof_queue_execution_custody_p0.py", "tests/tools/test_proof_supervisor_generation.py"]
 toolchains = ["python", "uv", "rustc", "cargo", "node"]
+cargo_build_python = true
 
 [[command]]
 id = "portability.queue.macos"
@@ -1804,6 +1828,7 @@ cache_domain = "pytest"
 dependencies = []
 argv = ["uv", "run", "--active", "--project", ".", "--no-sync", "python", "-u", "-m", "pytest", "-v", "-n", "auto", "tests/test_dx_run_context.py", "tests/test_molt_queue_cli.py", "tests/tools/test_proof_queue.py", "tests/tools/test_proof_supervisor_environment.py", "tests/tools/test_windows_process_api.py", "tests/test_python_runtime_identity.py", "tests/tools/test_scientific_stack_versions.py", "tests/cli/test_external_native_scipy_package_seal.py", "tests/cli/test_source_extension_set_registry.py", "tests/cli/test_source_extension_manifest_authority.py", "tests/cli/test_source_extension_link_requirements.py", "tests/cli/test_source_extension_producer.py", "tests/cli/test_source_build_environment_probe.py", "tests/cli/test_source_extension_candidate_attestation.py", "tests/cli/test_source_extension_candidate_transaction.py", "tests/cli/test_source_package_seal.py", "tests/test_exact_json.py", "tests/tools/test_fs_delete.py", "tests/test_temporary_artifacts.py", "tests/cli/test_atomic_io_authority.py", "tests/cli/test_python_module_names.py", "tests/cli/test_source_extension_runtime_imports.py", "tests/cli/test_source_extension_input_custody.py", "tests/cli/test_source_extension_target.py", "tests/cli/test_source_extension_language.py", "tests/cli/test_source_extension_compiler_target.py", "tests/cli/test_extension_wheel_retained_inputs.py", "tests/cli/test_cli_extension_commands.py::test_direct_build_audits_and_reseals_extracted_wheel", "tests/tools/test_proof_queue_output_layout.py", "tests/tools/test_setup_project_inputs.py", "tests/tools/test_rust_toolchain_contract.py", "tests/tools/test_cargo_bindgen_toolchain.py", "tests/tools/test_proof_queue_execution_custody_p0.py", "tests/tools/test_proof_supervisor_generation.py"]
 toolchains = ["python", "uv", "rustc", "cargo", "node"]
+cargo_build_python = true
 
 [[command]]
 id = "portability.queue.windows"
@@ -1816,6 +1841,7 @@ cache_domain = "pytest"
 dependencies = []
 argv = ["uv", "run", "--active", "--project", ".", "--no-sync", "python", "-u", "-m", "pytest", "-v", "-n", "auto", "tests/test_dx_run_context.py", "tests/test_molt_queue_cli.py", "tests/tools/test_proof_queue.py", "tests/tools/test_proof_supervisor_environment.py", "tests/tools/test_windows_process_api.py", "tests/test_python_runtime_identity.py", "tests/tools/test_scientific_stack_versions.py", "tests/cli/test_external_native_scipy_package_seal.py", "tests/cli/test_source_extension_set_registry.py", "tests/cli/test_source_extension_manifest_authority.py", "tests/cli/test_source_extension_link_requirements.py", "tests/cli/test_source_extension_producer.py", "tests/cli/test_source_build_environment_probe.py", "tests/cli/test_source_extension_candidate_attestation.py", "tests/cli/test_source_extension_candidate_transaction.py", "tests/cli/test_source_package_seal.py", "tests/test_exact_json.py", "tests/tools/test_fs_delete.py", "tests/test_temporary_artifacts.py", "tests/cli/test_atomic_io_authority.py", "tests/cli/test_python_module_names.py", "tests/cli/test_source_extension_runtime_imports.py", "tests/cli/test_source_extension_input_custody.py", "tests/cli/test_source_extension_target.py", "tests/cli/test_source_extension_language.py", "tests/cli/test_source_extension_compiler_target.py", "tests/cli/test_extension_wheel_retained_inputs.py", "tests/cli/test_cli_extension_commands.py::test_direct_build_audits_and_reseals_extracted_wheel", "tests/tools/test_proof_queue_output_layout.py", "tests/tools/test_setup_project_inputs.py", "tests/tools/test_rust_toolchain_contract.py", "tests/tools/test_cargo_bindgen_toolchain.py", "tests/tools/test_proof_queue_execution_custody_p0.py", "tests/tools/test_proof_supervisor_generation.py"]
 toolchains = ["python", "uv", "rustc", "cargo", "node"]
+cargo_build_python = true
 
 [[command]]
 id = "portability.cargo-link.linux"
@@ -1830,6 +1856,7 @@ cache_domain = "pytest"
 dependencies = []
 argv = ["uv", "run", "--active", "--project", ".", "--no-sync", "python", "-u", "-m", "pytest", "-v", "tests/tools/test_proof_queue.py::test_real_minimal_cargo_link_has_one_selection_per_unit_and_compact_custody", "tests/tools/test_proof_queue.py::test_python_selection_location_join_preserves_coordinate_and_content", "tests/test_wasm_linked_runner_node_flags.py::test_missing_selected_wasm_host_does_not_use_other_builds", "tests/test_wasm_linked_runner_node_flags.py::test_relative_cargo_host_directory_follows_the_cli_target_rule", "tests/test_wasm_linked_runner_node_flags.py::test_proof_wasm_host_runner_preserves_actual_child_arguments_and_exit", "tests/test_bench_wasm_node_resolver.py::test_wasmtime_runner_uses_one_selected_host_build"]
 toolchains = ["python", "uv", "rustc", "cargo"]
+cargo_build_python = true
 
 [[command]]
 id = "portability.cargo-link.macos"
@@ -1844,6 +1871,7 @@ cache_domain = "pytest"
 dependencies = []
 argv = ["uv", "run", "--active", "--project", ".", "--no-sync", "python", "-u", "-m", "pytest", "-v", "tests/tools/test_proof_queue.py::test_real_minimal_cargo_link_has_one_selection_per_unit_and_compact_custody", "tests/tools/test_proof_queue.py::test_python_selection_location_join_preserves_coordinate_and_content", "tests/test_wasm_linked_runner_node_flags.py::test_missing_selected_wasm_host_does_not_use_other_builds", "tests/test_wasm_linked_runner_node_flags.py::test_relative_cargo_host_directory_follows_the_cli_target_rule", "tests/test_wasm_linked_runner_node_flags.py::test_proof_wasm_host_runner_preserves_actual_child_arguments_and_exit", "tests/test_bench_wasm_node_resolver.py::test_wasmtime_runner_uses_one_selected_host_build"]
 toolchains = ["python", "uv", "rustc", "cargo"]
+cargo_build_python = true
 
 [[command]]
 id = "portability.cargo-link.windows"
@@ -1862,6 +1890,7 @@ dependencies = []
 env = { MOLT_GUARD_PROFILE = "all" }
 argv = ["uv", "run", "--active", "--project", ".", "--no-sync", "python", "-u", "-m", "pytest", "-v", "--durations=10", "tests/tools/test_proof_queue.py::test_real_minimal_cargo_link_has_one_selection_per_unit_and_compact_custody", "tests/tools/test_proof_queue.py::test_python_selection_location_join_preserves_coordinate_and_content", "tests/test_wasm_linked_runner_node_flags.py::test_missing_selected_wasm_host_does_not_use_other_builds", "tests/test_wasm_linked_runner_node_flags.py::test_relative_cargo_host_directory_follows_the_cli_target_rule", "tests/test_wasm_linked_runner_node_flags.py::test_proof_wasm_host_runner_preserves_actual_child_arguments_and_exit", "tests/test_bench_wasm_node_resolver.py::test_wasmtime_runner_uses_one_selected_host_build"]
 toolchains = ["python", "uv", "rustc", "cargo"]
+cargo_build_python = true
 
 [[command]]
 id = "portability.ir.macos"
@@ -1906,6 +1935,7 @@ cache_domain = "cargo-workspace"
 dependencies = []
 argv = ["cargo", "clippy", "--locked", "--workspace", "--all-targets", "--keep-going", "--", "-D", "warnings"]
 toolchains = ["rustc", "cargo"]
+cargo_build_python = true
 
 [[command]]
 id = "portability.rust.linux-aarch64.clippy-workspace"
@@ -1925,6 +1955,7 @@ cache_domain = "cargo-workspace"
 dependencies = []
 argv = ["cargo", "clippy", "--locked", "--workspace", "--all-targets", "--keep-going", "--", "-D", "warnings"]
 toolchains = ["rustc", "cargo"]
+cargo_build_python = true
 
 [[command]]
 id = "portability.rust.macos.runtime-gate"
@@ -1943,6 +1974,7 @@ cache_domain = "cargo-workspace"
 dependencies = []
 argv = ["uv", "run", "--active", "--project", ".", "--python", "3.12", "--no-sync", "--no-config", "python", "tools/run_runtime_test_gate.py", "--profile", "dev-fast", "--build-timeout-seconds", "6300", "--child-timeout-seconds", "120"]
 toolchains = ["python", "uv", "rustc", "cargo"]
+cargo_build_python = true
 
 [[command]]
 id = "repository.github-actions.static"
@@ -2451,6 +2483,7 @@ cache_domain = "pytest"
 dependencies = []
 argv = ["uv", "run", "python3", "-m", "pytest", "-q", "-n", "auto", "-m", "not slow", "tests/test_dead_code_allow_ratchet.py", "tests/tools/test_advisory_classifier.py", "tests/tools/test_check_ir_structure.py", "tests/tools/test_profile_python_import_consumer.py", "tests/tools/test_bootstrap_actionlint.py", "tests/tools/test_build_graph_audit.py", "tests/tools/test_build_health_gate.py", "tests/tools/test_canonicalization_contract.py", "tests/tools/test_cargo_bindgen_toolchain.py", "tests/tools/test_check_cargo_locks.py", "tests/tools/test_check_codegen_quality_memory_guard.py", "tests/tools/test_check_compile_throughput.py", "tests/tools/test_check_luau_static.py", "tests/tools/test_check_memory_guard_wiring.py", "tests/tools/test_check_runtime_serial_bridge_imports.py", "tests/tools/test_check_runtime_symbol_owners.py", "tests/tools/test_check_rust_ffi_blocks.py", "tests/tools/test_check_rustfmt.py", "tests/tools/test_check_satellite_parity.py", "tests/tools/test_check_stdlib_intrinsic_surface.py", "tests/tools/test_check_tk_import_authority.py", "tests/tools/test_check_type_coverage_todos.py", "tests/tools/test_ci_triage.py", "tests/tools/test_command_execution.py", "tests/tools/test_conformance_guard_scopes.py", "tests/tools/test_core_lane_source_admission.py", "tests/tools/test_cpython_regrtest_sharding.py", "tests/tools/test_cross_run_memory_guard.py", "tests/tools/test_determinism_perf_gate.py", "tests/tools/test_deterministic_runtime_truth.py", "tests/tools/test_dev_py.py", "tests/tools/test_dev_test_runner.py", "tests/tools/test_direct_run_process_custody.py", "tests/tools/test_disk_guard.py", "tests/tools/test_drift_harvest.py", "tests/tools/test_encoding_gate.py", "tests/tools/test_fact_graph_dump.py", "tests/tools/test_findings_registry.py", "tests/tools/test_formal_correspondence_truth.py", "tests/tools/test_fs_delete.py", "tests/tools/test_fuzz_compiler_cli.py", "tests/tools/test_gen_stdlib_module_union_memory_guard.py", "tests/tools/test_generator_io.py", "tests/tools/test_guard_sampling_pacing.py", "tests/tools/test_guarded_exec.py", "tests/tools/test_import_file.py", "tests/tools/test_lane_maturity.py", "tests/tools/test_memory_graph.py", "tests/tools/test_memory_guard_custody.py", "tests/tools/test_memory_guard_spawn_callback.py", "tests/tools/test_memory_guard_stream.py", "tests/tools/test_molt_cache_prune.py", "tests/tools/test_pact_kernel_scaffold.py", "tests/tools/test_pact_parity_engine.py", "tests/tools/test_pact_witness_acceptance.py", "tests/tools/test_pact_witness_receipt.py", "tests/tools/test_parity_gate.py", "tests/tools/test_parity_microscope.py", "tests/tools/test_pass_delta_dashboard.py", "tests/tools/test_perf_board.py", "tests/tools/test_perf_history.py", "tests/tools/test_perf_causality.py", "tests/tools/test_pin_freshness.py", "tests/tools/test_powerplay_acceptance.py", "tests/tools/test_profile_hotspots.py", "tests/tools/test_proof_queue_execution_custody_p0.py", "tests/tools/test_proof_queue_node_custody.py", "tests/tools/test_provision_binaryen.py", "tests/tools/test_pytest_random_order_plugin.py", "tests/tools/test_pytest_truth_plugin.py", "tests/tools/test_python_custody_bootstrap.py", "tests/tools/test_quint_trace_to_tests_memory_guard.py", "tests/tools/test_release_binary_compatibility.py", "tests/tools/test_release_criterion_receipt.py", "tests/tools/test_release_installed_distribution.py", "tests/tools/test_release_native_build.py", "tests/tools/test_representation_report.py", "tests/tools/test_reproducible_build_truth.py", "tests/tools/test_subprocess_guard_coverage.py", "tests/tools/test_throughput_env.py", "tests/tools/test_throughput_matrix.py", "tests/tools/test_throughput_measurement.py", "tests/tools/test_tinygrad_upat_static_exec_registry.py", "tests/tools/test_tool_identity_reuse.py", "tests/tools/test_tree_drift_check.py", "tests/tools/test_uv_project_env.py", "tests/tools/test_venv_exec.py", "tests/tools/test_verified_subset.py", "tests/tools/test_wasm_strip_unused_parsing.py", "tests/tools/test_win_job.py", "tests/tools/test_win_job_contract.py", "tests/tools/test_z3_pass_verify.py", "tests/tools/test_nightly_profile_feedback.py", "tests/tools/test_nightly_shard_profile.py", "tests/tools/test_nightly_sharding.py", "tests/tools/test_diff_results.py", "tests/tools/test_build_phase_report.py", "tests/tools/test_regrtest_results.py", "tests/test_audit_op_kinds.py", "tests/test_gen_codecs.py", "tests/test_gen_host_capabilities.py", "tests/test_gen_native_callable_abi.py", "tests/test_gen_runtime_profile_schema.py", "tests/test_gen_stringprep_tables.py", "tests/test_proof_plan.py", "tests/tools/test_named_lanes.py", "tests/test_browser_asset_closure.py", "tests/test_l7_numeric_attestation_runner.py", "tests/test_perf_regression.py", "tests/test_profile_tool.py", "tests/test_regrtest_adapter.py", "tests/test_version_compat.py", "tests/tools/test_hosted_ci_env.py", "tests/tools/test_toolchain_env.py", "tests/tools/test_cargo_lock_audit.py", "tests/test_linear_hygiene_tool.py", "tests/tools/test_benchmark_cext_trampoline.py", "tests/tools/test_cold_start_decompose.py", "tests/tools/test_dx_build_timer.py", "tests/tools/test_frontend_hot_pass_profile.py", "tests/tools/test_guard_marker_consumers.py", "tests/tools/test_output_startup_size_audit.py", "tests/tools/test_process_sentinel.py", "tests/tools/test_orphan_reaper.py", "tests/tools/test_artifact_cleanup.py", "tests/tools/test_proof_command_semantics.py", "tests/tools/test_proof_queue_cargo_reclamation.py", "tests/tools/test_proof_queue_lane_maturity.py", "tests/tools/test_proof_queue_live_transcripts.py", "tests/tools/test_proof_queue_output_lifetime.py", "tests/tools/test_proof_queue_run_retention.py", "tests/tools/test_proof_wrapper_transparency.py", "tests/tools/test_release_exit_gate.py", "tests/tools/test_runtime_wasm_final_preflight.py", "tests/tools/test_source_extension_proof_family.py", "tests/tools/test_startup_bench.py", "tests/tools/test_legacy_default_cleanup.py", "tests/tools/test_wasm_link_fact_provider.py", "tests/tools/test_cargo_test_binary_discovery.py", "tests/test_wasm_profile_tool.py", "tests/tools/test_fuzz_compiler_reporting.py", "tests/tools/test_new_agent_task.py", "tests/tools/test_proof_queue_disk_capacity.py", "tests/test_artifact_poison_gate.py", "tests/tools/test_signed_ratio.py"]
 toolchains = ["python", "uv", "rustc", "cargo"]
+cargo_build_python = true
 
 # Agent coordination: the claims ledger, landing and commit guards, session
 # hooks, and the context tool every agent session starts from.
@@ -2479,6 +2512,7 @@ dependencies = []
 env = { MOLT_BACKEND_DAEMON = "0" }
 argv = ["python3", "tools/venv_exec.py", "python3", "-m", "molt.cli", "internal-backend-build", "--target", "wasm", "--json"]
 toolchains = ["python", "uv", "rustc", "cargo", "ld.lld", "wasm-ld"]
+cargo_build_python = false
 
 # The finally-pending native leg and the import/codec differential also compile
 # native programs, and the native backend is a separate release build of
@@ -2499,6 +2533,7 @@ dependencies = []
 env = { MOLT_BACKEND_DAEMON = "0" }
 argv = ["python3", "tools/venv_exec.py", "python3", "-m", "molt.cli", "internal-backend-build", "--target", "native", "--json"]
 toolchains = ["python", "uv", "rustc", "cargo", "ld.lld"]
+cargo_build_python = false
 
 # The Node runner, browser host and loader bridge: table bases, callable
 # tables and split-runtime import conversion against synthetic WAT modules,
@@ -2518,6 +2553,7 @@ cache_domain = "pytest"
 dependencies = ["wasm.build.backend"]
 argv = ["python3", "tools/venv_exec.py", "python3", "-m", "pytest", "-q", "-n", "auto", "tests/test_wasm_runner_table_base.py", "tests/cli/test_cli_import_collection.py::test_backend_compile_stages_one_shot_output_into_cache[False-False-0]", "tests/cli/test_cli_import_collection.py::test_backend_compile_stages_one_shot_output_into_cache[False-True-0]", "tests/cli/test_cli_import_collection.py::test_backend_compile_stages_one_shot_output_into_cache[True-False-0]", "tests/cli/test_cli_import_collection.py::test_backend_compile_stages_one_shot_output_into_cache[True-True-0]", "tests/cli/test_cli_import_collection.py::test_cached_backend_artifact_validity_guard"]
 toolchains = ["python", "uv", "node", "wasm-tools", "rustc", "cargo"]
+cargo_build_python = true
 
 [[command]]
 id = "wasm.build.host"
@@ -2532,6 +2568,7 @@ cache_domain = "cargo-workspace"
 dependencies = []
 argv = ["cargo", "build", "--locked", "--profile", "dev-fast", "-p", "molt-wasm-host"]
 toolchains = ["rustc", "cargo"]
+cargo_build_python = true
 
 [[command]]
 id = "wasm.build.shared-runtime"
@@ -2545,6 +2582,7 @@ cache_domain = "cargo-workspace"
 dependencies = []
 argv = ["python3", "tools/venv_exec.py", "python3", "-m", "molt.cli", "internal-runtime-wasm-build", "--build-profile", "dev", "--kind", "shared", "--json"]
 toolchains = ["python", "uv", "rustc", "cargo", "wasm-ld", "wasm-tools", "wasi-clang"]
+cargo_build_python = true
 
 [[command]]
 id = "wasm.build.split-runtime-release"
@@ -2558,6 +2596,7 @@ cache_domain = "cargo-workspace"
 dependencies = []
 argv = ["python3", "tools/venv_exec.py", "python3", "-m", "molt.cli", "internal-runtime-wasm-build", "--build-profile", "release", "--kind", "both", "--json"]
 toolchains = ["python", "uv", "rustc", "cargo", "wasm-ld", "wasm-tools", "wasi-clang"]
+cargo_build_python = true
 
 [[command]]
 id = "wasm.compile.hello"
@@ -2572,6 +2611,7 @@ dependencies = ["wasm.build.backend", "wasm.build.shared-runtime"]
 env = { MOLT_BACKEND_DAEMON = "0" }
 argv = ["python3", "tools/venv_exec.py", "python3", "-m", "molt.cli", "build", "examples/hello.py", "--build-profile", "dev", "--target", "wasm", "--output", "/tmp/molt-wasm-ci/hello/hello.wasm"]
 toolchains = ["python", "uv", "rustc", "cargo", "ld.lld", "wasm-ld", "wasm-tools", "wasi-clang", "wasm-opt"]
+cargo_build_python = true
 
 [[command]]
 id = "wasm.run.hello"
@@ -2600,6 +2640,7 @@ dependencies = ["wasm.build.backend", "wasm.build.shared-runtime"]
 env = { MOLT_BACKEND_DAEMON = "0" }
 argv = ["python3", "tools/venv_exec.py", "python3", "-m", "molt.cli", "build", "examples/comprehension_fail.py", "--build-profile", "dev", "--target", "wasm", "--output", "/tmp/molt-wasm-ci/comprehension/comprehension.wasm"]
 toolchains = ["python", "uv", "rustc", "cargo", "ld.lld", "wasm-ld", "wasm-tools", "wasi-clang", "wasm-opt"]
+cargo_build_python = true
 
 [[command]]
 id = "wasm.run.comprehension"
@@ -2627,6 +2668,7 @@ dependencies = ["wasm.build.backend"]
 env = { MOLT_BACKEND_DAEMON = "0" }
 argv = ["python3", "tools/venv_exec.py", "python3", "-m", "molt.cli", "build", "examples/hello.py", "--build-profile", "dev", "--target", "luau", "--output", "/tmp/test_hello.luau"]
 toolchains = ["python", "uv", "rustc", "cargo"]
+cargo_build_python = true
 
 [[command]]
 id = "luau.compile.comprehension"
@@ -2641,6 +2683,7 @@ dependencies = ["wasm.build.backend"]
 env = { MOLT_BACKEND_DAEMON = "0" }
 argv = ["python3", "tools/venv_exec.py", "python3", "-m", "molt.cli", "build", "examples/string_comprehension.py", "--build-profile", "dev", "--target", "luau", "--output", "/tmp/test_string_comprehension.luau"]
 toolchains = ["python", "uv", "rustc", "cargo"]
+cargo_build_python = true
 
 [[command]]
 id = "wasm.compile.sieve"
@@ -2655,6 +2698,7 @@ dependencies = ["wasm.build.backend", "wasm.build.shared-runtime"]
 env = { MOLT_BACKEND_DAEMON = "0" }
 argv = ["python3", "tools/venv_exec.py", "python3", "-m", "molt.cli", "build", "examples/sieve_bench.py", "--build-profile", "dev", "--target", "wasm", "--output", "/tmp/molt-wasm-ci/sieve/sieve.wasm"]
 toolchains = ["python", "uv", "rustc", "cargo", "ld.lld", "wasm-ld", "wasm-tools", "wasi-clang", "wasm-opt"]
+cargo_build_python = true
 
 [[command]]
 id = "wasm.run.sieve"
@@ -2711,6 +2755,7 @@ cache_domain = "pytest"
 dependencies = ["wasm.build.backend", "wasm.build.host", "wasm.build.shared-runtime"]
 argv = ["python3", "tools/venv_exec.py", "python3", "-m", "pytest", "tests/test_wasm_control_flow.py", "tests/test_wasm_longdouble_printf_link.py", "tests/cli/test_native_symbol_authority.py::test_member_symbols_real_wasm_archive", "-q"]
 toolchains = ["python", "uv", "rustc", "cargo", "clang", "llvm-ar", "llvm-nm", "ld.lld", "wasm-ld", "wasm-tools", "wasi-clang", "ninja", "wasm-opt"]
+cargo_build_python = true
 
 [[command]]
 id = "wasm.integration.split-runtime"
@@ -2725,6 +2770,7 @@ cache_domain = "cargo-workspace"
 dependencies = ["wasm.build.backend", "wasm.build.split-runtime-release"]
 argv = ["python3", "tools/venv_exec.py", "python3", "-m", "pytest", "-q", "tests/test_wasm_split_runtime.py::TestSplitRuntimeArtifacts", "tests/test_wasm_split_runtime.py::TestWorkerJsContent", "tests/test_wasm_split_runtime.py::TestManifestJson", "tests/test_wasm_split_runtime.py::TestRuntimeCacheability", "tests/test_browser_vfs.py"]
 toolchains = ["python", "uv", "node", "rustc", "cargo", "ld.lld", "wasm-ld", "wasm-tools", "wasi-clang", "wasm-opt"]
+cargo_build_python = true
 
 # Each isolated application may start cold. Keep its own existing cold bound
 # and receipt; a sibling timeout must not consume its execution window.
@@ -2744,6 +2790,7 @@ cache_domain = "cargo-workspace"
 dependencies = ["wasm.build.backend"]
 argv = ["python3", "tools/venv_exec.py", "python3", "-m", "pytest", "-q", "tests/test_wasm_split_runtime.py::test_split_runtime_compiled_gpu_kernel_vector_add_matches_expected_output"]
 toolchains = ["python", "uv", "node", "rustc", "cargo", "ld.lld", "wasm-ld", "wasm-tools", "wasi-clang", "wasm-opt"]
+cargo_build_python = true
 
 [[command]]
 id = "wasm.integration.host-boundaries"
@@ -2757,6 +2804,7 @@ cache_domain = "cargo-workspace"
 dependencies = ["wasm.build.backend", "wasm.build.shared-runtime"]
 argv = ["python3", "tools/venv_exec.py", "python3", "-m", "pytest", "-q", "tests/test_wasm_split_runtime.py::test_linked_host_export_attribute_error_does_not_return_none", "tests/test_wasm_runtime_heavy_regressions.py::test_wasm_open_reports_all_missing_grants_before_mutation"]
 toolchains = ["python", "uv", "node", "rustc", "cargo", "ld.lld", "wasm-ld", "wasm-tools", "wasi-clang", "wasm-opt"]
+cargo_build_python = true
 
 [[command]]
 id = "wasm.integration.host-exports.tinygrad-dtype"
@@ -2770,6 +2818,7 @@ cache_domain = "cargo-workspace"
 dependencies = ["wasm.build.backend"]
 argv = ["python3", "tools/venv_exec.py", "python3", "-m", "pytest", "-q", "tests/test_wasm_split_runtime.py::test_linked_host_export_imports_tinygrad_dtype_class"]
 toolchains = ["python", "uv", "node", "rustc", "cargo", "ld.lld", "wasm-ld", "wasm-tools", "wasi-clang", "wasm-opt"]
+cargo_build_python = true
 
 [[command]]
 id = "wasm.integration.host-exports.tinygrad-tensor"
@@ -2783,6 +2832,7 @@ cache_domain = "cargo-workspace"
 dependencies = ["wasm.build.backend"]
 argv = ["python3", "tools/venv_exec.py", "python3", "-m", "pytest", "-q", "tests/test_wasm_split_runtime.py::test_linked_host_export_imports_tinygrad_tensor_module"]
 toolchains = ["python", "uv", "node", "rustc", "cargo", "ld.lld", "wasm-ld", "wasm-tools", "wasi-clang", "wasm-opt"]
+cargo_build_python = true
 
 [[command]]
 id = "wasm.integration.host-exports.tensor-row-ops"
@@ -2796,6 +2846,7 @@ cache_domain = "cargo-workspace"
 dependencies = ["wasm.build.backend"]
 argv = ["python3", "tools/venv_exec.py", "python3", "-m", "pytest", "-q", "tests/test_wasm_split_runtime.py::test_linked_host_export_tensor_row_ops_accept_equivalent_float_dtype"]
 toolchains = ["python", "uv", "node", "rustc", "cargo", "ld.lld", "wasm-ld", "wasm-tools", "wasi-clang", "wasm-opt"]
+cargo_build_python = true
 
 [[command]]
 id = "wasm.test.freestanding-e2e"
@@ -2809,6 +2860,7 @@ cache_domain = "pytest"
 dependencies = ["wasm.build.backend", "wasm.build.host", "wasm.build.shared-runtime"]
 argv = ["python3", "tools/venv_exec.py", "python3", "-m", "pytest", "-q", "tests/test_wasm_freestanding.py"]
 toolchains = ["python", "uv", "rustc", "cargo", "ld.lld", "wasm-ld", "wasm-tools", "wasi-clang", "wasm-opt"]
+cargo_build_python = true
 
 # The finally-pending observer proof checks each target against one CPython
 # oracle. Each target is a separate row with its own budget: in CI run
@@ -2833,6 +2885,7 @@ cache_domain = "pytest"
 dependencies = ["wasm.build.native-backend"]
 argv = ["python3", "tools/venv_exec.py", "python3", "-m", "pytest", "-q", "tests/test_finally_pending_observer_parity.py", "-k", "native"]
 toolchains = ["python", "uv", "rustc", "cargo", "clang", "llvm-config", "ld.lld", "lld-link"]
+cargo_build_python = true
 
 [[command]]
 id = "wasm.test.finally-pending-observer-parity.wasm"
@@ -2846,6 +2899,7 @@ cache_domain = "pytest"
 dependencies = ["wasm.build.backend", "wasm.build.host", "wasm.build.shared-runtime"]
 argv = ["python3", "tools/venv_exec.py", "python3", "-m", "pytest", "-q", "tests/test_finally_pending_observer_parity.py", "-k", "wasm"]
 toolchains = ["python", "uv", "rustc", "cargo", "clang", "llvm-config", "ld.lld", "lld-link", "wasm-ld", "wasm-tools", "wasi-clang", "wasm-opt"]
+cargo_build_python = true
 
 # Import, reconstructed-function and JSON callback receivers share the existing
 # differential adapters. Admit each exact backend/runtime family on its first
@@ -2864,6 +2918,7 @@ dependencies = []
 env = { MOLT_BACKEND_DAEMON = "0", MOLT_BACKEND_PROFILE = "dev", MOLT_DIFF_TIMEOUT = "60", MOLT_COMPAT_WASM_RUN_TIMEOUT_SEC = "60", MOLT_DIFF_MEASURE_RSS = "0" }
 argv = ["python3", "tools/venv_exec.py", "python3", "tests/molt_diff.py", "--python-version", "3.12", "--molt-target-python", "3.12", "--build-profile", "dev", "--stdlib-profile", "full", "--target", "native,wasm", "--jobs", "1", "--no-retry-oom", "--files-from", "tests/fixtures/reconstructed_functions/TESTS.txt", "--evidence-dir", "runtime-import", "--json", "tests/differential/stdlib/json_encoder_hooks.py", "tests/differential/basic/from_import_missing_name.py", "tests/differential/stdlib/cpython312plus_api_gap_submodule_encodings_oem_87baaa74.py", "tests/differential/stdlib/cpython312plus_api_gap_submodule_encodings_mbcs_35072d4b.py"]
 toolchains = ["python", "uv", "node", "rustc", "cargo", "ld.lld", "wasm-ld", "wasm-tools", "wasi-clang", "wasm-opt"]
+cargo_build_python = true
 
 [[command]]
 id = "python.static.ty"
@@ -2951,6 +3006,7 @@ cache_domain = "pytest"
 dependencies = []
 argv = ["uv","run","--python","3.12","python","-m","pytest","-q","-n","2","-m","not slow","tests/test_python_binding_flow.py","tests/test_gen_python_identity_catalog.py","tests/test_python_namespace_writes.py","tests/test_python_namespace_graph.py","tests/test_python_binding_completion_flow.py","tests/test_frontend_condition_flow.py","tests/cli/test_cli_python_source_closure.py","tests/cli/test_runtime_import_scan_custody.py","tests/cli/test_frontend_source_snapshot_authority.py","tests/cli/test_source_scan_authority_closure.py","tests/test_frontend_ir_alias_ops.py","tests/test_frontend_package_composition.py","tests/cli/test_cli_python_import_authority.py","tests/tools/test_gen_protocol.py","tests/test_python_execution_frame.py","tests/test_class_function_lifecycle.py","tests/test_class_method_receiver_authority.py","tests/test_profile_python_binding_flow.py","tests/test_debug_ir.py"]
 toolchains = ["python", "uv", "rustc", "cargo"]
+cargo_build_python = true
 
 [[command]]
 id = "python.unit.binding-authority.macos"
@@ -2963,6 +3019,7 @@ cache_domain = "pytest"
 dependencies = []
 argv = ["uv","run","--python","3.12","python","-m","pytest","-q","-n","2","-m","not slow","tests/test_python_binding_flow.py","tests/test_gen_python_identity_catalog.py","tests/test_python_namespace_writes.py","tests/test_python_namespace_graph.py","tests/test_python_binding_completion_flow.py","tests/test_frontend_condition_flow.py","tests/cli/test_cli_python_source_closure.py","tests/cli/test_runtime_import_scan_custody.py","tests/cli/test_frontend_source_snapshot_authority.py","tests/cli/test_source_scan_authority_closure.py","tests/test_frontend_ir_alias_ops.py","tests/test_frontend_package_composition.py","tests/cli/test_cli_python_import_authority.py","tests/tools/test_gen_protocol.py","tests/test_python_execution_frame.py","tests/test_class_function_lifecycle.py","tests/test_class_method_receiver_authority.py","tests/test_profile_python_binding_flow.py","tests/test_debug_ir.py"]
 toolchains = ["python", "uv", "rustc", "cargo"]
+cargo_build_python = true
 
 
 # Frontend lowering: AST to structured IR, diagnostics and the semantic
@@ -3042,6 +3099,7 @@ cache_domain = "pytest"
 dependencies = []
 argv = ["uv", "run", "--python", "3.12", "python", "-m", "pytest", "-q", "-n", "2", "-m", "not slow", "tests/cli/test_cli_import_collection.py", "--deselect", "tests/cli/test_cli_import_collection.py::test_backend_compile_stages_one_shot_output_into_cache[False-False-0]", "--deselect", "tests/cli/test_cli_import_collection.py::test_backend_compile_stages_one_shot_output_into_cache[False-True-0]", "--deselect", "tests/cli/test_cli_import_collection.py::test_backend_compile_stages_one_shot_output_into_cache[True-False-0]", "--deselect", "tests/cli/test_cli_import_collection.py::test_backend_compile_stages_one_shot_output_into_cache[True-True-0]", "--deselect", "tests/cli/test_cli_import_collection.py::test_cached_backend_artifact_validity_guard"]
 toolchains = ["python", "uv", "rustc", "cargo"]
+cargo_build_python = true
 
 # Library and surface contracts that need only Python: public API and stub
 # surfaces, stdlib and codec behavior, WASM host tooling, generators. Same
@@ -3081,6 +3139,7 @@ cache_domain = "pytest"
 dependencies = []
 argv = ["uv", "run", "--python", "3.12", "python", "-m", "pytest", "-q", "-n", "2", "-m", "not slow", "tests/cli/test_backend_manifest_contract.py", "tests/test_cargo_workspace.py", "tests/test_cli_build_profile_policy.py", "tests/cli/test_runtime_build_identity.py", "tests/cli/test_runtime_family_authority.py", "tests/cli/test_runtime_artifact_selection.py", "tests/cli/test_cli_backend_binary_materialization.py", "tests/cli/test_cli_artifact_format_validation.py", "tests/cli/test_cli_shared_stdlib_cache.py", "tests/test_ustar.py", "tests/test_native_artifact_header.py", "tests/cli/test_cli_native_binary_authority.py", "tests/cli/test_native_artifact_contract.py", "tests/cli/test_native_symbol_authority.py", "tests/test_native_symbol_table.py", "tests/cli/test_native_symbol_build_errors.py", "tests/cli/test_backend_artifact_contract.py", "tests/cli/test_artifact_sync.py", "tests/cli/test_native_link_custody.py", "tests/cli/test_native_link_manifest.py", "tests/cli/test_cargo_execution_failure_authority.py", "tests/cli/test_runtime_wasm_generation.py", "tests/cli/test_runtime_wasm_single_compile.py", "tests/cli/test_cli_runtime_wasm_shared_cache.py", "tests/cli/test_cli_wasm_artifact_validation.py", "tests/cli/test_cli_toolchain_artifact_hydration.py", "tests/test_wasm_link_runtime_generation.py", "tests/test_wasm_longdouble_durable_provisioning.py", "tests/tools/test_nightly_runtime_bundle.py", "tests/tools/test_nightly_prepare.py", "tests/cli/test_native_toolchain_transfer.py", "tests/cli/test_runtime_native_generation.py", "tests/tools/test_native_link_benchmark.py", "tests/cli/test_runtime_c_resource_custody.py", "tests/cli/test_runtime_native_failure_custody.py", "tests/cli/test_static_archive_identity.py", "tests/cli/test_link_fingerprints.py", "tests/cli/test_runtime_wasm_build_timings.py", "tests/test_wasm_link_validation.py", "tests/test_wasm_section_spans.py", "tests/tools/test_artifact_publish.py", "tests/test_wasm_bundle.py", "tests/cli/test_link_member_selection.py", "tests/cli/test_link_selection_admission.py", "tests/test_artifact_release_sibling.py", "tests/test_llvm_toolchain.py", "tests/test_bootstrap_llvm.py", "tests/cli/test_compiler_identity.py", "tests/cli/test_installed_compiler.py", "tests/cli/test_installed_runtime.py", "tests/cli/test_installed_toolchain_rules.py", "tests/cli/test_cli_backend_output_pipeline_authority.py", "tests/cli/test_cli_runtime_callable_symbols_authority.py::test_native_object_output_rejects_runtime_generation_drift", "tests/cli/test_native_object_publication.py::test_native_object_publication_is_one_admitted_transaction"]
 toolchains = ["python", "uv", "rustc", "cargo"]
+cargo_build_python = true
 
 [[command]]
 id = "python.unit.runtime-artifacts.macos"
@@ -3093,6 +3152,7 @@ cache_domain = "pytest"
 dependencies = []
 argv = ["uv", "run", "--python", "3.12", "python", "-m", "pytest", "-q", "-n", "2", "-m", "not slow", "tests/cli/test_backend_manifest_contract.py", "tests/test_cargo_workspace.py", "tests/test_cli_build_profile_policy.py", "tests/cli/test_runtime_build_identity.py", "tests/cli/test_runtime_family_authority.py", "tests/cli/test_runtime_artifact_selection.py", "tests/cli/test_cli_backend_binary_materialization.py", "tests/cli/test_cli_artifact_format_validation.py", "tests/cli/test_cli_shared_stdlib_cache.py", "tests/test_ustar.py", "tests/test_native_artifact_header.py", "tests/cli/test_cli_native_binary_authority.py", "tests/cli/test_native_artifact_contract.py", "tests/cli/test_native_symbol_authority.py", "tests/test_native_symbol_table.py", "tests/cli/test_native_symbol_build_errors.py", "tests/cli/test_backend_artifact_contract.py", "tests/cli/test_artifact_sync.py", "tests/cli/test_native_link_custody.py", "tests/cli/test_native_link_manifest.py", "tests/cli/test_cargo_execution_failure_authority.py", "tests/cli/test_runtime_wasm_generation.py", "tests/cli/test_runtime_wasm_single_compile.py", "tests/cli/test_cli_runtime_wasm_shared_cache.py", "tests/cli/test_cli_wasm_artifact_validation.py", "tests/cli/test_cli_toolchain_artifact_hydration.py", "tests/test_wasm_link_runtime_generation.py", "tests/test_wasm_longdouble_durable_provisioning.py", "tests/tools/test_nightly_runtime_bundle.py", "tests/tools/test_nightly_prepare.py", "tests/cli/test_native_toolchain_transfer.py", "tests/cli/test_runtime_native_generation.py", "tests/tools/test_native_link_benchmark.py", "tests/cli/test_runtime_c_resource_custody.py", "tests/cli/test_runtime_native_failure_custody.py", "tests/cli/test_static_archive_identity.py", "tests/cli/test_link_fingerprints.py", "tests/cli/test_runtime_wasm_build_timings.py", "tests/test_wasm_link_validation.py", "tests/test_wasm_section_spans.py", "tests/tools/test_artifact_publish.py", "tests/test_wasm_bundle.py", "tests/cli/test_link_member_selection.py", "tests/cli/test_link_selection_admission.py", "tests/test_artifact_release_sibling.py", "tests/test_llvm_toolchain.py", "tests/test_bootstrap_llvm.py", "tests/cli/test_compiler_identity.py", "tests/cli/test_installed_compiler.py", "tests/cli/test_installed_runtime.py", "tests/cli/test_installed_toolchain_rules.py", "tests/cli/test_cli_backend_output_pipeline_authority.py", "tests/cli/test_cli_runtime_callable_symbols_authority.py::test_native_object_output_rejects_runtime_generation_drift", "tests/cli/test_native_object_publication.py::test_native_object_publication_is_one_admitted_transaction"]
 toolchains = ["python", "uv", "rustc", "cargo"]
+cargo_build_python = true
 
 [[command]]
 id = "python.unit.runtime-library-boundary"
@@ -3143,6 +3203,7 @@ cache_domain = "cargo-workspace"
 dependencies = []
 argv = ["uv", "run", "python3", "-m", "pytest", "-q", "tests/test_bench_tool.py::test_bench_cli_native_smoke_contract_batch_reuses_compiler"]
 toolchains = ["python", "uv", "rustc", "cargo", "ld.lld"]
+cargo_build_python = true
 
 # On the PR tier this is the first compiler build (bench-cli runs on main only),
 # so it must carry the cold budget. The backend daemon tests follow the dev
@@ -3162,6 +3223,7 @@ dependencies = []
 # Current-test/output and guard profiles retain progress under the cold budget.
 argv = ["uv", "run", "--python", "3.12", "pytest", "-vv", "-s", "--durations=0", "tests/test_manifest_pipeline_e2e.py", "tests/tools/test_proof_queue_native_receipts.py", "tests/cli/test_backend_daemon_sequential.py"]
 toolchains = ["python", "uv", "rustc", "cargo", "ld.lld"]
+cargo_build_python = true
 
 # The whole CLI smoke file: package and verify capability policy, run, build,
 # compare and completion. It runs after the capability-manifest build, so its
@@ -3178,6 +3240,7 @@ cache_domain = "cargo-workspace"
 dependencies = ["native.integration.capability-manifest"]
 argv = ["uv", "run", "--python", "3.12", "pytest", "-q", "--durations=20", "tests/cli/test_cli_smoke.py", "tests/cli/test_traceback_carets.py"]
 toolchains = ["python", "uv", "rustc", "cargo", "ld.lld", "llvm-strip"]
+cargo_build_python = true
 
 [[command]]
 id = "rust.clippy.wasi32"
@@ -3195,6 +3258,7 @@ cache_domain = "cargo-workspace"
 dependencies = []
 argv = ["cargo", "clippy", "--locked", "--target", "wasm32-wasip1", "--lib", "-p", "molt-runtime", "-p", "molt-tir", "--", "-D", "warnings"]
 toolchains = ["rustc", "cargo", "wasm-ld"]
+cargo_build_python = true
 
 # Lockfiles outside the main workspace (MLIR backend, fuzz targets) are not
 # exercised by any build here; resolve each so none silently outgrows its
@@ -3210,6 +3274,7 @@ cache_domain = "cargo-workspace"
 dependencies = []
 argv = ["uv", "run", "--frozen", "python3", "tools/check_cargo_locks.py"]
 toolchains = ["python", "uv", "rustc", "cargo"]
+cargo_build_python = false
 
 # The browser SIMD crate ships deploy/browser/simd-ops.wasm but sits outside
 # the workspace; lint it so it cannot silently stop compiling. Cargo reads the
@@ -3226,6 +3291,7 @@ dependencies = []
 cwd = "deploy/browser/simd-ops-rs"
 argv = ["cargo", "clippy", "--locked", "--target", "wasm32-unknown-unknown", "--", "-D", "warnings"]
 toolchains = ["rustc", "cargo"]
+cargo_build_python = false
 
 [[command]]
 id = "rust.check.math-aarch64"
@@ -3238,6 +3304,7 @@ cache_domain = "cargo-workspace"
 dependencies = []
 argv = ["cargo", "check", "--locked", "--target", "aarch64-unknown-linux-gnu", "-p", "molt-runtime-math"]
 toolchains = ["rustc", "cargo"]
+cargo_build_python = false
 
 [[command]]
 id = "rust.test.default-truth"
@@ -3254,6 +3321,7 @@ cache_domain = "cargo-workspace"
 dependencies = []
 argv = ["uv", "run", "--frozen", "python3", "tools/run_cargo_test_truth.py"]
 toolchains = ["python", "uv", "rustc", "cargo", "wasm-ld"]
+cargo_build_python = true
 
 [[command]]
 id = "rust.test.compiler-authorities"
@@ -3275,6 +3343,7 @@ dependencies = []
 # Its Criterion dev dependency builds alloca target C even for libtests.
 argv = ["cargo", "test", "--locked", "--timings", "--profile", "dev-fast", "--config", "profile.dev-fast.package.cranelift-codegen.opt-level=0", "--no-fail-fast", "--lib", "--bins", "--test", "generated_artifact_custody", "--test", "ir_contract_validation", "--test", "generated_object_abi_link", "--test", "native_artifact_facts", "--test", "native_batch_worker_spawn", "--test", "daemon_server", "--test", "integration", "--test", "basic", "--test", "native_extern_linkage", "-p", "object@0.39.1", "-p", "cranelift-object@0.133.3", "-p", "molt-artifact-publish", "-p", "molt-codegen-abi", "-p", "molt-lang-obj-model", "-p", "molt-lang-cpython-abi", "-p", "molt-ir", "-p", "molt-tir", "-p", "molt-backend", "-p", "molt-backend-native", "-p", "molt-backend-luau", "-p", "molt-backend-rust", "--no-default-features", "--features", "molt-backend/native-backend,molt-backend/wasm-backend,molt-backend/luau-backend,molt-backend/rust-backend", "--", "--include-ignored", "--skip", "arith_codegen_golden_capture", "--nocapture", "--test-threads=1", "--skip", "read::coff::coff_extended_relocations", "--skip", "read::elf::get_buildid_bad_elf", "--skip", "read::elf::get_buildid_less_bad_elf", "--skip", "read::elf::zero_sized_section_works", "--skip", "read::macho::test_macho_entry_point", "--skip", "read::macho::test_go_macho"]
 toolchains = ["rustc", "cargo", "lune", "node", "wasm-ld"]
+cargo_build_python = true
 
 [[command]]
 id = "rust.test.ir-wasm-runtime-authorities"
@@ -3302,6 +3371,7 @@ dependencies = []
 # erase the earlier mismatch diagnostics held by libtest's output capture.
 argv = ["cargo", "test", "--locked", "--timings", "--profile", "dev-fast", "--config", "profile.dev-fast.package.molt-runtime.opt-level=0", "--no-fail-fast", "--lib", "--test", "ownership_memory_contracts", "--test", "test_builtins", "-p", "molt-passes", "-p", "molt-backend-wasm", "-p", "molt-runtime", "-p", "molt-gpu-runtime", "-p", "zlib-rs@0.6.8", "--no-default-features", "--features", "molt-passes/native-backend,molt-passes/wasm-backend,molt-passes/test-util,molt-backend-wasm/test-util,molt-runtime/stdlib_micro,molt-runtime/builtin_complex,molt-runtime/builtin_set,molt-runtime/molt_gpu_primitives,molt-runtime/molt_gpu_webgpu,zlib-rs/std,zlib-rs/rust-allocator,zlib-rs/ZLIB_DEBUG", "--", "counter_wrap", "tir::", "wasm::", "wasm_abi::", "async_rt::channels::", "async_rt::net_stubs::", "intrinsics::registry::", "call::", "object::", "arena::", "seq_snapshot_bridge::", "builtins::attr::", "builtins::classes::", "builtins::frames::", "builtins::types::", "builtins::modules::", "builtins::functions::function_abi::", "builtins::attributes::", "builtin_bootstrap_lookup", "test_raw_compression_c_exports_are_linkable", "gpu_runtime_tests::", "kernel_storage::", "--nocapture", "--test-threads=1"]
 toolchains = ["rustc", "cargo", "node", "wasm-ld"]
+cargo_build_python = true
 
 [[command]]
 id = "rust.test.runtime-cold-lifecycle"
@@ -3322,6 +3392,7 @@ dependencies = []
 # unrun entries; no missing child or incomplete result accounting can pass.
 argv = ["uv", "run", "--active", "--project", ".", "--python", "3.12", "--no-sync", "--no-config", "python", "tools/run_runtime_test_gate.py", "--profile", "release-output", "--build-timeout-seconds", "6300", "--child-timeout-seconds", "120", "--parallel-threads", "8"]
 toolchains = ["python", "uv", "rustc", "cargo"]
+cargo_build_python = true
 
 # Small pure-Rust provider libtest, executed at the repaired 32-bit width.
 [[command]]
@@ -3335,6 +3406,7 @@ cache_domain = "cargo-workspace"
 dependencies = []
 argv = ["uv", "run", "--active", "--project", ".", "--python", "3.12", "--no-sync", "--no-config", "python", "tools/run_runtime_test_gate.py", "--policy", "zlib-wasi", "--profile", "dev-fast", "--build-timeout-seconds", "300", "--child-timeout-seconds", "120"]
 toolchains = ["python", "uv", "rustc", "cargo", "node"]
+cargo_build_python = false
 
 [[command]]
 id = "rust.test.wasi-runtime-lifecycle"
@@ -3353,6 +3425,7 @@ dependencies = []
 # the gate binds the guest artifact, native driver and production host images.
 argv = ["uv", "run", "--active", "--project", ".", "--python", "3.12", "--no-sync", "--no-config", "python", "tools/run_runtime_test_gate.py", "--policy", "wasi-lifecycle", "--profile", "dev-fast", "--build-timeout-seconds", "1200", "--child-timeout-seconds", "600"]
 toolchains = ["python", "uv", "rustc", "cargo", "wasi-clang", "wasm-ld"]
+cargo_build_python = true
 
 [[command]]
 id = "rust.test.runtime-extension-admission"
@@ -3372,6 +3445,7 @@ dependencies = []
 # the existing binary runner owns accounting, bounded execution and receipts.
 argv = ["cargo", "test", "--locked", "--timings", "--profile", "dev-fast", "--target", "x86_64-unknown-linux-gnu", "--config", "profile.dev-fast.package.molt-runtime.opt-level=0", "--config", "target.x86_64-unknown-linux-gnu.runner=[\"uv\",\"run\",\"--frozen\",\"python3\",\"../../tools/cargo_test_binary_runner.py\",\"--timeout-seconds\",\"300\",\"--receipt-dir\",\"../../proof-receipts/evidence/runtime-extension-admission\",\"--require-passed-test\",\"builtins::platform::tests::resolver_admission_tests::public_import_resolver_miss_and_error_do_not_load_extension_candidates\",\"--\"]", "-p", "molt-runtime", "--lib", "--features", "cext_loader", "--", "builtins::platform::tests::", "--nocapture", "--test-threads=1"]
 toolchains = ["python", "uv", "rustc", "cargo"]
+cargo_build_python = true
 
 [[command]]
 id = "rust.clippy.workspace-default"
@@ -3385,6 +3459,7 @@ cache_domain = "cargo-workspace"
 dependencies = []
 argv = ["cargo", "clippy", "--locked", "--workspace", "--all-targets", "--keep-going", "--", "-D", "warnings"]
 toolchains = ["rustc", "cargo"]
+cargo_build_python = true
 
 [[command]]
 id = "rust.clippy.feature-surfaces"
@@ -3397,6 +3472,7 @@ cache_domain = "cargo-workspace"
 dependencies = []
 argv = ["cargo", "clippy", "--locked", "-p", "molt-ir", "-p", "molt-passes", "-p", "molt-tir", "-p", "molt-gpu", "-p", "molt-gpu-runtime", "--all-targets", "--all-features", "--", "-D", "warnings"]
 toolchains = ["rustc", "cargo"]
+cargo_build_python = false
 
 # The stdlib_micro runtime tier compiles every satellite (http, itertools, path) through `src/bridge`.
 [[command]]
@@ -3410,6 +3486,7 @@ cache_domain = "cargo-workspace"
 dependencies = []
 argv = ["cargo", "clippy", "--locked", "-p", "molt-runtime", "--no-default-features", "--features", "stdlib_micro", "--lib", "--tests", "--", "-D", "warnings"]
 toolchains = ["rustc", "cargo"]
+cargo_build_python = true
 
 # The stdlib_edge runtime tier compiles the http and path satellites through `src/bridge`.
 [[command]]
@@ -3423,6 +3500,7 @@ cache_domain = "cargo-workspace"
 dependencies = []
 argv = ["cargo", "clippy", "--locked", "-p", "molt-runtime", "--no-default-features", "--features", "stdlib_edge", "--lib", "--tests", "--", "-D", "warnings"]
 toolchains = ["rustc", "cargo"]
+cargo_build_python = true
 
 # The stdlib_standard runtime tier compiles the http satellite through `src/bridge`.
 [[command]]
@@ -3436,6 +3514,7 @@ cache_domain = "cargo-workspace"
 dependencies = []
 argv = ["cargo", "clippy", "--locked", "-p", "molt-runtime", "--no-default-features", "--features", "stdlib_standard", "--lib", "--tests", "--", "-D", "warnings"]
 toolchains = ["rustc", "cargo"]
+cargo_build_python = true
 
 # The backend binary the CLI builds for --target wasm (backend_features_for_target).
 [[command]]
@@ -3449,6 +3528,7 @@ cache_domain = "cargo-workspace"
 dependencies = []
 argv = ["cargo", "clippy", "--locked", "-p", "molt-backend", "--no-default-features", "--features", "wasm-backend", "--all-targets", "--", "-D", "warnings"]
 toolchains = ["rustc", "cargo"]
+cargo_build_python = false
 
 # The backend binary the CLI builds for --target luau (backend_features_for_target).
 [[command]]
@@ -3462,6 +3542,7 @@ cache_domain = "cargo-workspace"
 dependencies = []
 argv = ["cargo", "clippy", "--locked", "-p", "molt-backend", "--no-default-features", "--features", "luau-backend", "--all-targets", "--", "-D", "warnings"]
 toolchains = ["rustc", "cargo"]
+cargo_build_python = false
 
 # The backend binary the CLI builds for --target rust (backend_features_for_target).
 [[command]]
@@ -3475,6 +3556,7 @@ cache_domain = "cargo-workspace"
 dependencies = []
 argv = ["cargo", "clippy", "--locked", "-p", "molt-backend", "--no-default-features", "--features", "rust-backend", "--all-targets", "--", "-D", "warnings"]
 toolchains = ["rustc", "cargo"]
+cargo_build_python = false
 
 [[command]]
 id = "llvm.build.backend"
@@ -3488,6 +3570,7 @@ cache_domain = "llvm-cargo"
 dependencies = []
 argv = ["cargo", "build", "--locked", "--profile", "release-fast", "-p", "molt-backend", "--features", "native-backend llvm"]
 toolchains = ["rustc", "cargo", "clang", "llvm-config"]
+cargo_build_python = false
 
 [[command]]
 id = "llvm.test.lowering"
@@ -3505,6 +3588,7 @@ dependencies = ["llvm.build.backend"]
 # oracles and compiled separate profiles. All LLVM consumers share this profile.
 argv = ["cargo", "test", "--locked", "--profile", "release-fast", "-p", "molt-backend-native", "-p", "molt-backend", "--features", "molt-backend/native-backend,molt-backend/llvm", "--lib", "--test", "ir_contract_validation", "--no-fail-fast"]
 toolchains = ["rustc", "cargo", "clang", "llvm-config"]
+cargo_build_python = false
 
 [[command]]
 id = "linker.test.generated-object-admission"
@@ -3518,6 +3602,7 @@ cache_domain = "llvm-cargo"
 dependencies = ["llvm.build.backend"]
 argv = ["cargo", "test", "--locked", "--profile", "release-fast", "-p", "molt-backend", "--features", "native-backend llvm", "--test", "llvm_generated_object_linkage", "--no-fail-fast"]
 toolchains = ["rustc", "cargo", "clang", "llvm-config", "ld.lld"]
+cargo_build_python = false
 
 [[command]]
 id = "llvm.clippy.backend"
@@ -3531,6 +3616,7 @@ cache_domain = "llvm-cargo"
 dependencies = ["llvm.build.backend"]
 argv = ["cargo", "clippy", "--locked", "--profile", "release-fast", "-p", "molt-backend", "-p", "molt-backend-native", "--features", "molt-backend/native-backend,molt-backend/llvm", "--lib", "--", "-D", "warnings"]
 toolchains = ["rustc", "cargo", "clang", "llvm-config"]
+cargo_build_python = false
 
 [[command]]
 id = "mlir.test.backend"
@@ -3545,6 +3631,7 @@ dependencies = ["llvm.build.backend"]
 cwd = "runtime/molt-backend-mlir"
 argv = ["cargo", "test", "--locked", "--all-targets", "--no-fail-fast"]
 toolchains = ["rustc", "cargo", "clang", "llvm-config", "mlir-opt"]
+cargo_build_python = false
 
 [[command]]
 id = "linker.test.plan-authority"
@@ -3571,6 +3658,7 @@ dependencies = ["llvm.test.lowering"]
 env = { MOLT_PYTEST_TRUTH_RECEIPT = "proof-receipts/evidence/llvm-differential-truth.json", MOLT_PYTEST_TRUTH_MINIMUM_EXECUTED = "2" }
 argv = ["uv", "run", "python3", "-m", "pytest", "-p", "tools.pytest_truth_plugin", "-q", "tests/test_native_lir_loop_join_semantics.py", "-k", "integer_carrier_matrix"]
 toolchains = ["python", "uv", "rustc", "cargo", "clang", "llvm-sdk", "llvm-strip"]
+cargo_build_python = true
 
 [[command]]
 id = "security.python.audit"
@@ -3611,6 +3699,7 @@ dependencies = []
 # Every tracked Cargo workspace (tools/dependency_manifests.py), one shared deny.toml.
 argv = ["python3", "tools/cargo_lock_audit.py", "deny"]
 toolchains = ["python", "rustc", "cargo", "cargo-deny"]
+cargo_build_python = false
 
 [[command]]
 id = "security.rust.audit"
@@ -3623,6 +3712,7 @@ cache_domain = "cargo-security"
 dependencies = ["security.rust.deny"]
 argv = ["python3", "tools/cargo_lock_audit.py", "audit", "--db", "tmp/security/cargo-audit-advisory-db"]
 toolchains = ["python", "rustc", "cargo", "cargo-audit"]
+cargo_build_python = false
 
 [[command]]
 id = "formal.lean.build"
@@ -4115,6 +4205,50 @@ gates = [
   "python -m pytest -q tests/tools/test_check_rust_ffi_blocks.py",
   "python -m pytest -q tests/tools/test_rust_toolchain_contract.py",
   "python -m pytest -q tests/tools/test_check_rustfmt.py",
+]
+
+# --- Runtime Cargo input custody ----------------------------------------
+[[rule]]
+name = "runtime-cargo-input-custody"
+toolchains = ["python", "cargo"]
+description = "Runtime/compiler Cargo inputs: external resource freshness, Python generator signatures, producer transport, and execution failure custody."
+globs = [
+  "src/molt/cli/cargo_command.py",
+  "src/molt/cli/cargo_execution.py",
+  "src/molt/cli/cargo_resource_custody.py",
+  "src/molt/cli/compiler_identity.py",
+  "src/molt/cli/runtime_build_identity.py",
+  "src/molt/cli/runtime_build_python.py",
+  "src/molt/cli/runtime_cargo_plan.py",
+  "src/molt/cli/runtime_fingerprints.py",
+  "src/molt/cli/runtime_identity_schema.py",
+  "src/molt/cli/runtime_native_build.py",
+  "src/molt/cli/runtime_native_generation.py",
+  "src/molt/cli/runtime_wasm_build_spec.py",
+  "src/molt/cli/runtime_wasm_build_support.py",
+  "src/molt/cli/runtime_wasm_pair_build.py",
+  "src/molt/cli/runtime_wasm_generation.py",
+  "src/molt/cargo_execution_policy.py",
+  "src/molt/python_runtime_admission.py",
+  "src/molt/python_environment_identity.py",
+  "src/molt/toolchain_identity.py",
+  "src/molt/rust_toolchain.py",
+  "runtime/build_support/*.rs",
+  "runtime/*/build.rs",
+  "tests/runtime_build_identity_helper.py",
+  "tests/compiler_identity_helper.py",
+  "tests/test_toolchain_identity.py",
+  "tests/test_runtime_build_python.py",
+  "tests/cli/test_runtime_c_resource_custody.py",
+  "tests/cli/test_runtime_build_identity.py",
+  "tests/cli/test_runtime_native_generation.py",
+  "tests/cli/test_runtime_wasm_single_compile.py",
+  "tests/cli/test_compiler_identity.py",
+  "tests/cli/test_runtime_family_authority.py",
+  "tests/cli/test_cargo_execution_failure_authority.py",
+]
+gates = [
+  "python -m pytest -q -m 'not slow' tests/cli/test_runtime_c_resource_custody.py tests/cli/test_runtime_build_identity.py tests/cli/test_runtime_native_generation.py tests/cli/test_runtime_wasm_single_compile.py tests/cli/test_compiler_identity.py tests/cli/test_runtime_family_authority.py tests/cli/test_cargo_execution_failure_authority.py tests/test_toolchain_identity.py tests/test_runtime_build_python.py",
 ]
 
 # --- Rust 2024 FFI declaration authority ---------------------------------
@@ -4765,6 +4899,7 @@ id = "native.capability-cache-policy"
 description = "Exercise native shared-code reuse across embedded capability policies and different application code-slot layouts, with actual compiled output and constituent-cache observations."
 argv = ["uv", "run", "--active", "--project", ".", "--python", "3.12", "--no-sync", "--no-config", "python", "-m", "pytest", "-vv", "-s", "tests/test_manifest_pipeline_e2e.py::test_native_warm_code_cache_keeps_current_capability_policy", "tests/test_manifest_pipeline_e2e.py::test_native_stdlib_objects_reuse_across_code_slot_layouts"]
 toolchains = ["python", "uv", "rustc", "cargo", "ld.lld"]
+cargo_build_python = true
 cargo_native_units = { target = ["c", "c++"] }
 resource_family = "native-build"
 contention_key = "cargo-native-runtime"
@@ -4776,6 +4911,7 @@ id = "runtime.lifecycle-cost-image"
 description = "Build the full default-feature runtime libtest image for independent lifecycle measurements; no semantic or performance acceptance is implied."
 argv = ["cargo", "test", "--locked", "--profile", "release-output", "-p", "molt-runtime", "--lib", "--no-run", "--message-format=json"]
 toolchains = ["cargo", "rustc", "python"]
+cargo_build_python = true
 cargo_native_units = { target = ["c", "c++"] }
 resource_family = "rust"
 contention_key = "cargo-native-runtime"
@@ -4787,6 +4923,7 @@ id = "runtime.allocation-observer"
 description = "Build the development-only runtime and public ABI observer images once, discover required allocation/refusal controls and execute each in a fresh process with source/image-bound receipts; no timed performance acceptance is implied."
 argv = ["uv", "run", "--active", "--project", ".", "--python", "3.12", "--no-sync", "--no-config", "python", "tools/run_runtime_test_gate.py", "--policy", "allocation-observer"]
 toolchains = ["cargo", "rustc", "python", "uv"]
+cargo_build_python = true
 cargo_native_units = { target = ["c", "c++"] }
 resource_family = "rust"
 contention_key = "cargo-native-runtime"
@@ -4799,6 +4936,7 @@ description = "Compile and execute the runtime ownership, mapping, numeric, path
 argv = ["uv", "run", "--active", "--project", ".", "--python", "3.12", "--no-sync", "--no-config", "python", "tests/molt_diff.py", "--python-version", "3.12", "--molt-target-python", "3.12", "--build-profile", "release", "--stdlib-profile", "full", "--target", "native", "--jobs", "1", "--no-retry-oom", "--json"]
 differential_cases = ["tests/differential/stdlib/asyncio_task_basic.py", "tests/differential/stdlib/codecs_error_handlers_basic.py", "tests/differential/stdlib/stream_writer_protocol.py", "tests/differential/stdlib/io_textio_errors.py", "tests/differential/stdlib/threading_shared_call_identity.py", "tests/differential/basic/attribute_lookup_transactions.py", "tests/differential/basic/exceptiongroup_notes_propagation.py", "tests/differential/stdlib/collections_chainmap_protocol.py", "tests/differential/stdlib/dictionary_callback_failure_propagation.py", "tests/differential/stdlib/logging_config_dict.py", "tests/differential/stdlib/math_numeric_protocol.py", "tests/differential/stdlib/statistics_median_grouped.py", "tests/differential/stdlib/math_floor_ceil_basic.py", "tests/differential/stdlib/colorsys_basic.py", "tests/differential/stdlib/pathlib_joinpath_fspath.py", "tests/differential/stdlib/asyncio_subprocess_fspath_failure.py", "tests/differential/stdlib/fractions_basic.py", "tests/differential/stdlib/pickle_protocol1_basic.py", "tests/differential/stdlib/sys_runtime_state.py", "tests/differential/basic/builtin_method_error_parity.py"]
 toolchains = ["python", "uv", "rustc", "cargo", "ld.lld", "llvm-strip"]
+cargo_build_python = true
 cargo_native_units = { target = ["c", "c++"] }
 resource_family = "native-build"
 contention_key = "cargo-native-runtime"
@@ -4811,6 +4949,7 @@ description = "Compile and execute the shared mapping, numeric, serialization an
 argv = ["uv", "run", "--active", "--project", ".", "--python", "3.12", "--no-sync", "--no-config", "python", "tests/molt_diff.py", "--python-version", "3.12", "--molt-target-python", "3.12", "--build-profile", "release", "--stdlib-profile", "full", "--target", "wasm", "--jobs", "1", "--no-retry-oom", "--json"]
 differential_cases = ["tests/differential/basic/attribute_lookup_transactions.py", "tests/differential/basic/exceptiongroup_notes_propagation.py", "tests/differential/stdlib/collections_chainmap_protocol.py", "tests/differential/stdlib/dictionary_callback_failure_propagation.py", "tests/differential/stdlib/logging_config_dict.py", "tests/differential/stdlib/math_numeric_protocol.py", "tests/differential/stdlib/statistics_median_grouped.py", "tests/differential/stdlib/math_floor_ceil_basic.py", "tests/differential/stdlib/colorsys_basic.py", "tests/differential/stdlib/fractions_basic.py", "tests/differential/stdlib/pickle_protocol1_basic.py", "tests/differential/stdlib/sys_runtime_state.py", "tests/differential/basic/builtin_method_error_parity.py"]
 toolchains = ["python", "uv", "node", "rustc", "cargo", "ld.lld", "wasm-ld", "wasm-tools", "wasi-clang", "wasm-opt"]
+cargo_build_python = true
 cargo_native_units = { target = ["c", "c++"] }
 resource_family = "wasm-browser"
 contention_key = "cargo-native-runtime"
@@ -4822,6 +4961,7 @@ id = "runtime.function-module-contract"
 description = "Exercise versioned FunctionType class/direct construction, captured namespace publication and Luau frame consumers in one native development Cargo graph; release and other target cells remain separate."
 argv = ["cargo", "test", "--locked", "--no-fail-fast", "--timings", "--profile", "dev-fast", "-p", "molt-runtime", "-p", "molt-backend-luau", "--lib", "--features", "molt-runtime/molt_tk_native,molt-runtime/stdlib_full", "--", "function_type_", "module_entry_", "keyword_default_lookup_returns_an_owner_independent_of_metadata_dictionary", "builtin_bootstrap_lookup_is_exact_namespace_and_execution_owned", "locals_identity_and_snapshot_contents_follow_runtime_target_version", "lune_oracle_", "callable_and_frame_runtime_fragments_pass_shared_source_validation", "--include-ignored", "--nocapture", "--test-threads=1"]
 toolchains = ["python", "rustc", "cargo", "lune"]
+cargo_build_python = true
 cargo_native_units = { target = ["c", "c++"] }
 resource_family = "rust"
 contention_key = "cargo-native-runtime"
@@ -4833,6 +4973,7 @@ id = "runtime.compression-streams"
 description = "Exercise persistent compression decoder policy and its shared native integer conversion contracts without rebuilding the root runtime."
 argv = ["cargo", "test", "--locked", "--profile", "dev-fast", "--no-fail-fast", "-p", "molt-runtime-compression", "-p", "molt-lang-cpython-abi", "--lib", "--test", "test_numbers", "--", "--test-threads=4"]
 toolchains = ["cargo", "rustc", "python"]
+cargo_build_python = true
 cargo_native_units = { target = ["c"] }
 resource_family = "rust"
 contention_key = "cargo-native-runtime"
@@ -4844,6 +4985,7 @@ id = "runtime.abi-fixture-authorities"
 description = "Compile and execute the complete CPython ABI integration-test family, including native C shims and fixture lifetime controls."
 argv = ["cargo", "test", "--locked", "--no-fail-fast", "--profile", "dev-fast", "-p", "molt-lang-cpython-abi", "--tests", "--", "--test-threads=4"]
 toolchains = ["cargo", "rustc", "python"]
+cargo_build_python = true
 cargo_native_units = { target = ["c"] }
 resource_family = "rust"
 contention_key = "cargo:molt-lang-cpython-abi"
@@ -4856,6 +4998,7 @@ cargo_native_units = { target = ["c", "c++"] }
 description = "Pact Kernel A native acceptance: build and execute field_solve.py, compare the oracle, publish a portable acceptance receipt."
 argv = ["uv", "run", "--active", "--project", ".", "--python", "3.12", "--no-sync", "--no-config", "python", "tools/pact_witness_acceptance.py", "--target", "native"]
 toolchains = ["python", "uv", "rustc", "cargo", "clang", "llvm-strip"]
+cargo_build_python = true
 resource_family = "native-build"
 contention_key = "pact:witness"
 timeout_seconds = 1800
@@ -4866,6 +5009,7 @@ id = "pact.witness.acceptance.wasm"
 description = "Pact Kernel A WASM acceptance: build and execute field_solve.py, compare the oracle, publish a portable acceptance receipt."
 argv = ["uv", "run", "--active", "--project", ".", "--python", "3.12", "--no-sync", "--no-config", "python", "tools/pact_witness_acceptance.py", "--target", "wasm"]
 toolchains = ["python", "uv", "rustc", "cargo", "clang", "wasm-ld", "wasm-tools", "node", "wasi-clang", "wasm-opt"]
+cargo_build_python = true
 resource_family = "wasm-browser"
 contention_key = "pact:witness"
 timeout_seconds = 1800
@@ -4892,6 +5036,7 @@ description = "R6 target-version parity for CPython 3.12: sys metadata, stat, qu
 argv = ["uv", "run", "--active", "--project", ".", "--python", "3.12", "--no-sync", "--no-config", "python", "tests/molt_diff.py", "--jobs", "1", "--python-version", "3.12", "--build-profile", "dev", "--fail-fast"]
 differential_cases = ["tests/differential/stdlib/sys_metadata_intrinsics.py", "tests/differential/stdlib/sys_stat_version_gate.py", "tests/differential/stdlib/stat_api_surface_versioned.py", "tests/differential/stdlib/queue_shutdown_version_gate.py", "tests/differential/stdlib/removed_stdlib_modules_version_gate.py"]
 toolchains = ["python", "uv", "rustc", "cargo", "ld.lld"]
+cargo_build_python = true
 resource_family = "python"
 contention_key = "python:r6-target-version-py312"
 timeout_seconds = 900
@@ -4904,6 +5049,7 @@ description = "R6 target-version parity for CPython 3.13: sys metadata, stat, qu
 argv = ["uv", "run", "--active", "--project", ".", "--python", "3.12", "--no-sync", "--no-config", "python", "tests/molt_diff.py", "--jobs", "1", "--python-version", "3.13", "--build-profile", "dev", "--fail-fast"]
 differential_cases = ["tests/differential/stdlib/sys_metadata_intrinsics.py", "tests/differential/stdlib/sys_stat_version_gate.py", "tests/differential/stdlib/stat_api_surface_versioned.py", "tests/differential/stdlib/queue_shutdown_version_gate.py", "tests/differential/stdlib/removed_stdlib_modules_version_gate.py"]
 toolchains = ["python", "uv", "rustc", "cargo", "ld.lld"]
+cargo_build_python = true
 resource_family = "python"
 contention_key = "python:r6-target-version-py313"
 timeout_seconds = 900
@@ -4916,6 +5062,7 @@ description = "R6 target-version parity for CPython 3.14: sys metadata, stat, qu
 argv = ["uv", "run", "--active", "--project", ".", "--python", "3.12", "--no-sync", "--no-config", "python", "tests/molt_diff.py", "--jobs", "1", "--python-version", "3.14", "--build-profile", "dev", "--fail-fast"]
 differential_cases = ["tests/differential/stdlib/sys_metadata_intrinsics.py", "tests/differential/stdlib/sys_stat_version_gate.py", "tests/differential/stdlib/stat_api_surface_versioned.py", "tests/differential/stdlib/queue_shutdown_version_gate.py", "tests/differential/stdlib/removed_stdlib_modules_version_gate.py"]
 toolchains = ["python", "uv", "rustc", "cargo", "ld.lld"]
+cargo_build_python = true
 resource_family = "python"
 contention_key = "python:r6-target-version-py314"
 timeout_seconds = 900
@@ -5070,6 +5217,7 @@ cache_domain = "pytest"
 dependencies = []
 argv = ["uv", "run", "--active", "--project", ".", "--no-sync", "python", "-u", "-m", "pytest", "-q", "tests/test_cargo_quarantine_custody.py", "tests/test_child_clock_custody.py", "tests/test_perf_calibration.py", "tests/test_exception_diagnostics.py", "tests/tools/test_memory_guard_windows_sampling.py", "tests/tools/test_proof_supervisor_inventory.py", "tests/tools/test_target_derived_toolchains.py", "tests/tools/test_tool_identity_reuse.py"]
 toolchains = ["python", "uv", "rustc", "cargo"]
+cargo_build_python = true
 
 [[command]]
 id = "portability.cargo-custody.macos"
@@ -5083,6 +5231,7 @@ cache_domain = "pytest"
 dependencies = []
 argv = ["uv", "run", "--active", "--project", ".", "--no-sync", "python", "-u", "-m", "pytest", "-q", "tests/test_cargo_quarantine_custody.py", "tests/test_child_clock_custody.py", "tests/test_perf_calibration.py", "tests/test_exception_diagnostics.py", "tests/tools/test_memory_guard_windows_sampling.py", "tests/tools/test_proof_supervisor_inventory.py", "tests/tools/test_target_derived_toolchains.py", "tests/tools/test_tool_identity_reuse.py"]
 toolchains = ["python", "uv", "rustc", "cargo"]
+cargo_build_python = true
 
 [[command]]
 id = "portability.cargo-custody.windows"
@@ -5096,6 +5245,7 @@ cache_domain = "pytest"
 dependencies = []
 argv = ["uv", "run", "--active", "--project", ".", "--no-sync", "python", "-u", "-m", "pytest", "-q", "tests/test_cargo_quarantine_custody.py", "tests/test_child_clock_custody.py", "tests/test_perf_calibration.py", "tests/test_exception_diagnostics.py", "tests/tools/test_memory_guard_windows_sampling.py", "tests/tools/test_proof_supervisor_inventory.py", "tests/tools/test_target_derived_toolchains.py", "tests/tools/test_tool_identity_reuse.py", "tests/tools/test_toolchain_capture.py"]
 toolchains = ["python", "uv", "rustc", "cargo"]
+cargo_build_python = true
 
 [[command]]
 id = "portability.headers.windows"
@@ -5108,6 +5258,7 @@ cache_domain = "pytest"
 dependencies = []
 argv = ["uv", "run", "--active", "--project", ".", "--no-sync", "python", "-u", "-m", "pytest", "-q", "tests/cli/test_c_api_headers.py::test_optimize_flag_headers_share_data_across_translation_units"]
 toolchains = ["python", "uv", "rustc", "cargo", "hosted-clang-cl"]
+cargo_build_python = true
 
 [[command]]
 id = "portability.guard.windows"
@@ -5160,6 +5311,7 @@ dependencies = []
 evidence_outputs = ["proof-receipts/evidence/candidate-runtime-costs"]
 argv = ["uv", "run", "--frozen", "python", "tools/run_candidate_runtime_costs.py"]
 toolchains = ["python", "uv", "rustc", "cargo", "clang", "ld.lld"]
+cargo_build_python = true
 
 # Standalone C-API ownership and its C shims are a distinct link consumer.
 [[rule]]

@@ -93,7 +93,11 @@ class CargoOutputEnvironment:
 
     @property
     def build_names(self) -> tuple[str, ...]:
-        names = ("CARGO_TARGET_DIR",)
+        names = (
+            "CARGO_TARGET_DIR",
+            "CARGO_BUILD_BUILD_DIR",
+            "MOLT_CARGO_BUILD_DIR_BASE",
+        )
         if self.documentation or self.external_placement:
             names += TEMPORARY_VARIABLE_NAMES
         if self.external_placement:
@@ -116,7 +120,7 @@ class CargoOutputEnvironment:
 
     def identity(self) -> dict[str, object]:
         return {
-            "schema": "molt.proof-cargo-output-environment.v3",
+            "schema": "molt.proof-cargo-output-environment.v4",
             "cache_domain": self.cache_domain,
             "bindings": {
                 **{name: {"role": "build-output"} for name in self.build_names},
@@ -133,6 +137,19 @@ class CargoOutputEnvironment:
             raise ValueError(
                 "independent differential guest output conflicts with queued Cargo "
                 "ownership; select the queue --cargo-output-root instead"
+            )
+
+    def validate_command_configuration(
+        self, configuration: Mapping[str, object]
+    ) -> None:
+        """CLI output configuration outranks the leased output environment."""
+        build = configuration.get("build")
+        if isinstance(build, Mapping) and any(
+            name in build for name in ("target-dir", "build-dir")
+        ):
+            raise ValueError(
+                "Cargo --config build.target-dir/build.build-dir bypasses proof output custody; "
+                "select queue output placement or CARGO_TARGET_DIR instead"
             )
 
     def _bindings(self, env: Mapping[str, str], *, target: Path) -> dict[str, str]:

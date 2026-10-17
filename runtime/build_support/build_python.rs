@@ -6,7 +6,7 @@ use std::process::{Command, Stdio};
 
 pub(crate) fn resolve() -> String {
     println!("cargo:rerun-if-changed=../build_support/build_python.rs");
-    for key in ["MOLT_BUILD_PYTHON", "PYTHON"] {
+    for key in ["MOLT_BUILD_PYTHON", "PYTHON", "MOLT_BUILD_PYTHON_SIGNATURE"] {
         println!("cargo:rerun-if-env-changed={key}");
     }
     for key in ["MOLT_BUILD_PYTHON", "PYTHON"] {

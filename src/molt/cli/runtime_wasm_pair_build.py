@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from molt.cli import progress as _progress
 from molt.cli.build_locks import BuildLockAcquisitionError, _build_lock
-from molt.cli.runtime_build_python import build_python_scope
+from molt.cli.runtime_build_python import bind_runtime_build_python, build_python_scope
 
 import contextlib
 import json
@@ -663,6 +663,12 @@ def _prepare_runtime_wasm_pair_build(
             reloc_spec,
             mode="pre_build",
         )
+        assert shared_spec.cargo_plan is not None
+        bound_plan = bind_runtime_build_python(
+            shared_spec.cargo_plan, ctx.pre_identity.shared
+        )
+        ctx.shared_spec = shared_spec.with_cargo_plan(bound_plan)
+        ctx.reloc_spec = reloc_spec.with_cargo_plan(bound_plan)
         _bind_exact_family_fingerprints(ctx, ctx.pre_identity)
         ctx.pre_identity.toolchain.write(ctx.toolchain_manifest_path)
     except (OSError, ValueError, subprocess.SubprocessError) as exc:

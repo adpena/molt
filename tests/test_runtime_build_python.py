@@ -16,6 +16,50 @@ from tests.rust.process_guard import run_rust_test_process
 ROOT = Path(__file__).resolve().parents[1]
 
 
+@pytest.mark.parametrize(
+    ("channel", "selector"),
+    [
+        ("MOLT_BUILD_PYTHON", "explicit"),
+        ("MOLT_BUILD_PYTHON", "path"),
+        ("PYTHON", "explicit"),
+        ("PYTHON", "path"),
+        ("default", "path"),
+    ],
+)
+def test_generator_selection_is_pinned_before_cargo_changes_cwd(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, channel: str, selector: str
+) -> None:
+    from molt.cli.runtime_build_python import pin_runtime_build_python_environment
+    from molt.python_runtime_admission import resolve_build_python
+
+    name = "python.exe" if os.name == "nt" else "python3"
+    operation = tmp_path / "operation"
+    crate = tmp_path / "crate"
+    for directory, content in ((operation, b"selected"), (crate, b"poison")):
+        executable = directory / "bin" / name
+        executable.parent.mkdir(parents=True)
+        executable.write_bytes(content)
+        executable.chmod(0o755)
+    environment = {"PATH": "bin", "PATHEXT": ".EXE", "MOLT_BUILD_PYTHON": " "}
+    if channel != "default":
+        environment[channel] = f"bin/{name}" if selector == "explicit" else name
+    if channel == "MOLT_BUILD_PYTHON":
+        environment["PYTHON"] = "shadowed-unavailable-python"
+    original = dict(environment)
+    monkeypatch.chdir(crate)
+    pinned = pin_runtime_build_python_environment(environment, cwd=operation)
+    key = "MOLT_BUILD_PYTHON" if channel == "default" else channel
+    assert pinned[key] == str(operation / "bin" / name)
+    assert resolve_build_python(pinned) == operation / "bin" / name
+    assert resolve_build_python(pinned).read_bytes() == b"selected"
+    assert environment == original
+    assert Path.cwd() == crate
+    if channel == "PYTHON":
+        assert pinned["MOLT_BUILD_PYTHON"] == " "
+    if channel == "MOLT_BUILD_PYTHON":
+        assert pinned["PYTHON"] == "shadowed-unavailable-python"
+
+
 def test_unicode_width_projection_matches_running_cpython() -> None:
     source = (
         ROOT / "runtime/molt-runtime/src/object/unicode_width_generated.rs"
@@ -198,3 +242,39 @@ def test_real_build_python_selection_and_failure_diagnostics(
     assert result.returncode != 0
     assert "failure probe failed" in result.stderr
     assert "build-script-sentinel" in result.stderr
+
+
+def test_pinned_generator_runs_shared_rust_helper_from_another_crate_cwd(
+    tmp_path: Path, generators: dict[str, Path]
+) -> None:
+    from molt.cli.runtime_build_python import pin_runtime_build_python_environment
+
+    operation, crate = tmp_path / "operation", tmp_path / "crate"
+    operation.mkdir()
+    crate.mkdir()
+    name = "selected-python.exe" if os.name == "nt" else "selected-python"
+    try:
+        (operation / name).symlink_to(sys.executable)
+        (crate / name).symlink_to(generators["errno"])
+    except OSError:
+        pytest.skip("host cannot create executable symlinks")
+    environment = {**os.environ, "MOLT_BUILD_PYTHON": f"./{name}"}
+    pinned = pin_runtime_build_python_environment(environment, cwd=operation)
+    assert pinned["MOLT_BUILD_PYTHON"] == str(operation / name)
+    result = run_rust_test_process(
+        [str(generators["unicode"]), "probe"],
+        cwd=str(crate),
+        env=pinned,
+        timeout=30,
+    )
+    assert result.returncode == 0, result.stderr
+    assert "flags 1 1 1" in result.stdout
+    # The same original relative selector invokes the poison crate entrypoint.
+    poisoned = run_rust_test_process(
+        [str(generators["unicode"]), "probe"],
+        cwd=str(crate),
+        env=environment,
+        timeout=30,
+    )
+    assert poisoned.returncode != 0
+    assert "flags 1 1 1" not in poisoned.stdout

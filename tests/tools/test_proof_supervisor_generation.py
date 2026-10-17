@@ -455,6 +455,7 @@ def test_cargo_content_inputs_exclude_transport_but_bind_compile_environment(tmp
             "CARGO_TARGET_DIR": "another-output",
             "CARGO_BUILD_JOBS": "1",
             "CARGO_BUILD_BUILD_DIR": "another-build",
+            "MOLT_CARGO_BUILD_DIR_BASE": "another-base",
             "TMP": "new-temp",
         }
     )
