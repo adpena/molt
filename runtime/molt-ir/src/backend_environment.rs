@@ -14,11 +14,14 @@
 
 use std::cell::RefCell;
 use std::collections::BTreeMap;
+use std::convert::Infallible;
 use std::ffi::OsString;
 use std::io;
 use std::process::Command;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, OnceLock};
+
+use crate::content_digest::CompilationCacheKey;
 
 include!(concat!(env!("OUT_DIR"), "/backend_environment_keys.rs"));
 
@@ -40,46 +43,39 @@ impl BackendSemanticTarget {
     }
 }
 
-/// An identity value preserves raw empty strings or intentionally only presence.
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub enum SemanticEnvironmentValue {
-    Raw(Box<str>),
-    Present,
-}
+/// Fixed-width identity computed from the actual selected backend settings.
+/// Raw settings remain owned by the active request, never by resident entries.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct SemanticBackendIdentity([u8; 32]);
 
-impl BackendIdentityProjection {
-    fn project(self, value: impl FnOnce() -> String) -> SemanticEnvironmentValue {
-        match self {
-            Self::Raw => SemanticEnvironmentValue::Raw(value().into_boxed_str()),
-            Self::Presence => SemanticEnvironmentValue::Present,
-        }
-    }
-}
-
-/// Immutable actual request inputs, shared by every cache tier and job.
-#[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct SemanticBackendEnvironment {
-    // Canonical enum order from BackendEnvironment's ordered map. Immutable
-    // projections need no tree nodes or spare capacity.
-    values: Box<[(BackendEnv, SemanticEnvironmentValue)]>,
-}
-
-impl SemanticBackendEnvironment {
-    /// Ownership charge when retained through an Arc by a compiler cache.
-    /// Shared projections are conservatively charged to each resident key.
-    pub fn retained_bytes(&self) -> usize {
-        let Self { values } = self;
-        values.iter().fold(
-            std::mem::size_of::<Self>()
-                .saturating_add(2 * std::mem::size_of::<usize>())
-                .saturating_add(std::mem::size_of_val(&**values)),
-            |bytes, (_, value)| {
-                bytes.saturating_add(match value {
-                    SemanticEnvironmentValue::Raw(value) => value.len(),
-                    SemanticEnvironmentValue::Present => 0,
-                })
+impl SemanticBackendIdentity {
+    fn from_lookup<S: AsRef<str>, E>(
+        target: BackendCodegenTarget,
+        keys: impl IntoIterator<Item = BackendEnv>,
+        mut lookup: impl FnMut(BackendEnv) -> Result<Option<S>, E>,
+    ) -> Result<Self, E> {
+        let mut digest = CompilationCacheKey::new(b"molt-backend-semantic-environment-v1");
+        digest.field(
+            b"target",
+            match target {
+                BackendCodegenTarget::Native => b"native",
+                BackendCodegenTarget::Wasm => b"wasm",
             },
-        )
+        );
+        for key in keys.into_iter().filter(|key| {
+            key.group().request_scoped() && key.group().semantic_target().includes(target)
+        }) {
+            if let Some(value) = lookup(key)? {
+                digest.field(b"name", key.name().as_bytes());
+                match key.group().projection() {
+                    BackendIdentityProjection::Raw => {
+                        digest.field(b"raw", value.as_ref().as_bytes())
+                    }
+                    BackendIdentityProjection::Presence => digest.field(b"present", b""),
+                }
+            }
+        }
+        Ok(Self(digest.finish_bytes()))
     }
 }
 
@@ -96,8 +92,8 @@ pub fn daemon_request_env_keys() -> impl Iterator<Item = BackendEnv> {
 #[derive(Clone, Debug, Default)]
 pub struct BackendEnvironment {
     values: BTreeMap<BackendEnv, Box<str>>,
-    native_semantics: OnceLock<Arc<SemanticBackendEnvironment>>,
-    wasm_semantics: OnceLock<Arc<SemanticBackendEnvironment>>,
+    native_semantics: OnceLock<SemanticBackendIdentity>,
+    wasm_semantics: OnceLock<SemanticBackendIdentity>,
 }
 
 impl PartialEq for BackendEnvironment {
@@ -148,32 +144,19 @@ impl BackendEnvironment {
         self.values.get(&key).map(|value| &**value)
     }
 
-    /// Each target projects once, only when an eligible keyed job requests it.
-    /// Presence-only paths allocate no copied path string. Other semantic bytes
-    /// are copied once per request/target, never per job or warm lookup.
-    pub fn semantic_identity(
-        &self,
-        target: BackendCodegenTarget,
-    ) -> Arc<SemanticBackendEnvironment> {
+    /// Hash each target once, only when an eligible keyed job requests it.
+    /// Borrow the admitted settings; warm jobs copy only the fixed identity.
+    pub fn semantic_identity(&self, target: BackendCodegenTarget) -> SemanticBackendIdentity {
         let slot = match target {
             BackendCodegenTarget::Native => &self.native_semantics,
             BackendCodegenTarget::Wasm => &self.wasm_semantics,
         };
-        Arc::clone(slot.get_or_init(|| {
-            Arc::new(SemanticBackendEnvironment {
-                values: self
-                    .values
-                    .iter()
-                    .filter(|(key, _)| {
-                        key.group().request_scoped()
-                            && key.group().semantic_target().includes(target)
-                    })
-                    .map(|(key, value)| {
-                        (*key, key.group().projection().project(|| value.to_string()))
-                    })
-                    .collect(),
+        *slot.get_or_init(|| {
+            SemanticBackendIdentity::from_lookup(target, self.values.keys().copied(), |key| {
+                Ok::<_, Infallible>(self.get(key))
             })
-        }))
+            .unwrap_or_else(|never| match never {})
+        })
     }
 }
 
@@ -301,7 +284,7 @@ fn try_var(key: BackendEnv) -> io::Result<Option<String>> {
 /// Unicode. Build identity is fixed for a daemon process and is not request data.
 pub fn current_semantic_environment(
     target: BackendCodegenTarget,
-) -> io::Result<Arc<SemanticBackendEnvironment>> {
+) -> io::Result<SemanticBackendIdentity> {
     if let Some(identity) = SCOPE.with(|scope| {
         scope
             .borrow()
@@ -310,17 +293,7 @@ pub fn current_semantic_environment(
     }) {
         return Ok(identity);
     }
-    let mut values = BTreeMap::new();
-    for key in
-        daemon_request_env_keys().filter(|key| key.group().semantic_target().includes(target))
-    {
-        if let Some(value) = try_var(key)? {
-            values.insert(key, key.group().projection().project(|| value));
-        }
-    }
-    Ok(Arc::new(SemanticBackendEnvironment {
-        values: values.into_iter().collect(),
-    }))
+    SemanticBackendIdentity::from_lookup(target, daemon_request_env_keys(), try_var)
 }
 
 /// Gives a child backend process exactly the current request's settings. In

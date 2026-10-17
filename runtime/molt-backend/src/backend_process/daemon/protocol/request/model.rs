@@ -48,8 +48,7 @@ pub(crate) struct DaemonRequest {
 pub(super) struct DaemonCacheContext {
     pub(super) config_namespace: Option<String>,
     pub(super) target: DaemonJobTarget,
-    pub(super) environment:
-        std::sync::Arc<molt_backend::backend_environment::SemanticBackendEnvironment>,
+    pub(super) environment: molt_backend::backend_environment::SemanticBackendIdentity,
 }
 
 /// A cache/flight identity, not a serialized wire key or consumed-IR receipt.
@@ -68,7 +67,7 @@ impl DaemonCacheKey {
         let DaemonCacheContext {
             config_namespace,
             target,
-            environment,
+            environment: _, // fixed digest is included in the inline context
         } = context.as_ref();
         let target_bytes = match target {
             #[cfg(feature = "native-backend")]
@@ -90,7 +89,6 @@ impl DaemonCacheKey {
             .saturating_add(std::mem::size_of::<DaemonCacheContext>())
             .saturating_add(config_namespace.as_ref().map_or(0, String::capacity))
             .saturating_add(target_bytes)
-            .saturating_add(environment.retained_bytes())
     }
 }
 

@@ -145,6 +145,12 @@ debug = 0
 opt-level = 1
 debug = 0
 
+# Cache/input identities hash semantic bytes on every cold compiler request.
+# O1 preserves accelerated hashing in development (64 KiB: 234 -> 30 us)
+# without changing release optimization or the digest protocol.
+[profile.dev.package.sha2]
+opt-level = 1
+
 [profile.dev.package.cranelift-codegen]
 opt-level = 1
 

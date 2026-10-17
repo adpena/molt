@@ -544,15 +544,9 @@ fn daemon_hit_only_cache_bounds_order_memory_and_preserves_eviction() {
 #[test]
 fn daemon_tiny_outputs_cannot_hide_large_request_metadata() {
     use molt_ir::backend_environment::{BackendEnvironment, enter};
-    for dimension in ["source", "source-capacity", "namespace", "environment"] {
+    for dimension in ["source", "source-capacity", "namespace"] {
         let large = "x".repeat(16 * 1024);
-        let object = if dimension == "environment" {
-            serde_json::json!({"MOLT_MAX_FUNCTION_OPS": large})
-        } else {
-            serde_json::json!({})
-        };
-        let environment = BackendEnvironment::from_request(object.as_object().unwrap()).unwrap();
-        let _scope = enter(Arc::new(environment));
+        let _scope = enter(Arc::new(BackendEnvironment::default()));
         let mut job = cache_fixture_job(served_target(), "small");
         match dimension {
             "source" => job.cache_key = large,
@@ -572,6 +566,44 @@ fn daemon_tiny_outputs_cannot_hide_large_request_metadata() {
             weak.upgrade().is_none(),
             "rejected {dimension} key cannot linger in order storage"
         );
+    }
+}
+
+#[test]
+fn daemon_semantic_metadata_has_fixed_charge_and_retains_no_request() {
+    use molt_ir::backend_environment::{BackendEnvironment, enter};
+    let mut keys = Vec::new();
+    for value in ["1".to_owned(), "1".repeat(16 * 1024)] {
+        let object = serde_json::json!({"MOLT_MAX_FUNCTION_OPS": value});
+        let environment =
+            Arc::new(BackendEnvironment::from_request(object.as_object().unwrap()).unwrap());
+        let weak = Arc::downgrade(&environment);
+        let key = {
+            let _scope = enter(Arc::clone(&environment));
+            cache_fixture_job(served_target(), "small")
+                .take_artifact_cache_keys()
+                .unwrap()
+                .module
+                .unwrap()
+        };
+        drop(environment);
+        assert!(
+            weak.upgrade().is_none(),
+            "resident identity cannot retain raw request settings"
+        );
+        keys.push(key);
+    }
+    assert_ne!(keys[0], keys[1], "actual setting bytes remain semantic");
+    let mut probe = DaemonLru::new(None);
+    probe.insert(Arc::clone(&keys[0]), Arc::from([1].as_slice()));
+    let charge = probe.usage().1;
+    let mut cache = DaemonLru::new(Some(2 * charge));
+    for (index, key) in keys.iter().enumerate() {
+        cache.insert(Arc::clone(key), Arc::from([1].as_slice()));
+        assert_eq!(cache.usage(), (index + 1, (index + 1) * charge));
+    }
+    for key in keys {
+        assert_eq!(cache.get_bytes(&key).unwrap().as_ref(), &[1]);
     }
 }
 
