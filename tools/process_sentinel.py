@@ -43,33 +43,45 @@ DEFAULT_MAX_RUNTIME_SEC = 120.0
 DEFAULT_STALE_ORPHAN_SEC = 60.0 * 60.0
 DEFAULT_STALE_PYTEST_SEC = 15.0 * 60.0
 
-GUARDED_ENTRYPOINT_TOKENS = guarded_entrypoints.guarded_entrypoint_tokens(_REPO_ROOT)
 
-MOLT_PROCESS_TOKENS = tuple(
-    dict.fromkeys(
-        (
-            "/tools/memory_guard.py",
-            "/tests/molt_diff.py",
-            *GUARDED_ENTRYPOINT_TOKENS,
-            "python -m molt",
-            "molt.cli",
-            "molt-backend",
-            "molt_diff.py",
-            "bench_individual.py",
-            "bench_wasm.py",
-            "bench_exception_heavy",
-            "exception-repro",
-            "cpython_regrtest",
-            "adapt_monty_tests.py",
-            "run_molt_conformance.py",
-            "run_monty_conformance.py",
-            "cargo build --package molt-backend",
-            "cargo build -p molt-backend",
-            "cargo test -p molt-backend",
-            "runtime/molt-backend/src/",
+@functools.cache
+def guarded_entrypoint_tokens() -> tuple[str, ...]:
+    """Repository scripts that run under the guard.
+
+    The scan reads about 1,100 sources, so it runs when a sentinel first
+    classifies a process, not when a build imports the guard to launch one.
+    """
+    return guarded_entrypoints.guarded_entrypoint_tokens(_REPO_ROOT)
+
+
+@functools.cache
+def molt_process_tokens() -> tuple[str, ...]:
+    return tuple(
+        dict.fromkeys(
+            (
+                "/tools/memory_guard.py",
+                "/tests/molt_diff.py",
+                *guarded_entrypoint_tokens(),
+                "python -m molt",
+                "molt.cli",
+                "molt-backend",
+                "molt_diff.py",
+                "bench_individual.py",
+                "bench_wasm.py",
+                "bench_exception_heavy",
+                "exception-repro",
+                "cpython_regrtest",
+                "adapt_monty_tests.py",
+                "run_molt_conformance.py",
+                "run_monty_conformance.py",
+                "cargo build --package molt-backend",
+                "cargo build -p molt-backend",
+                "cargo test -p molt-backend",
+                "runtime/molt-backend/src/",
+            )
         )
     )
-)
+
 
 REPO_SCOPED_MOLT_ARTIFACT_ROOT_TOKENS = tuple(
     dict.fromkeys(
@@ -87,14 +99,11 @@ REPO_SCOPED_MOLT_ARTIFACT_ROOT_TOKENS = tuple(
     )
 )
 
-REPO_SCOPED_MOLT_ENTRYPOINT_TOKENS = tuple(
-    dict.fromkeys(
-        (
-            "/tests/molt_diff.py",
-            *GUARDED_ENTRYPOINT_TOKENS,
-        )
-    )
-)
+
+@functools.cache
+def repo_scoped_molt_entrypoint_tokens() -> tuple[str, ...]:
+    return tuple(dict.fromkeys(("/tests/molt_diff.py", *guarded_entrypoint_tokens())))
+
 
 REPO_SCOPED_MOLT_ARTIFACT_IDENTITY_TOKENS = (
     "_molt",
@@ -316,7 +325,7 @@ def _repo_scoped_command_match(command: str, root: Path) -> bool:
         normalized_command.casefold(),
         root,
         windows_model=_is_windows_process_model(),
-        entrypoint_tokens=_normalized_token_tuple(REPO_SCOPED_MOLT_ENTRYPOINT_TOKENS),
+        entrypoint_tokens=_normalized_token_tuple(repo_scoped_molt_entrypoint_tokens()),
         artifact_root_tokens=_normalized_token_tuple(
             REPO_SCOPED_MOLT_ARTIFACT_ROOT_TOKENS
         ),
@@ -604,10 +613,10 @@ def is_molt_process(
         root,
         _is_windows_process_model(),
         INSPECTION_COMMAND_TOKENS,
-        REPO_SCOPED_MOLT_ENTRYPOINT_TOKENS,
+        repo_scoped_molt_entrypoint_tokens(),
         REPO_SCOPED_MOLT_ARTIFACT_ROOT_TOKENS,
         REPO_SCOPED_MOLT_ARTIFACT_IDENTITY_TOKENS,
-        MOLT_PROCESS_TOKENS,
+        molt_process_tokens(),
     )
 
 
