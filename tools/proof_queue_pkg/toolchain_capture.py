@@ -2558,7 +2558,75 @@ def _require_stable_cargo_version(version: object) -> None:
         )
 
 
-RUNTIME_GATE_RUST_SELECTION_SCHEMA = "molt.proof-runtime-gate-rust-selection.v1"
+RUNTIME_GATE_RUST_SELECTION_SCHEMA = "molt.proof-runtime-gate-rust-selection.v2"
+
+
+def toolchain_capture_environment(
+    policy,
+    *,
+    environment: Mapping[str, str],
+    cwd: Path,
+    cargo_command: Sequence[str] = ("cargo",),
+) -> Mapping[str, str]:
+    """Build generators observe Cargo's effective environment, including force."""
+    if policy.data.get("compiler_tool_selector") != "build-python":
+        return environment
+    from molt.cli.runtime_cargo_plan import capture_cargo_configuration_inputs
+
+    return capture_cargo_configuration_inputs(
+        cwd, env=environment, cargo_command=cargo_command
+    )[1]
+
+
+def bind_build_python_environment(identity, *, policy, env, cwd, cargo_command):
+    """Project the isolated generator already held by queue file/image custody."""
+    from molt.python_runtime_admission import (
+        build_python_identity,
+        resolve_build_python,
+    )
+    from tools import proof_plan
+
+    selected = identity["python_runtime"]
+    proof_plan.validate_selected_python_runtime(policy, selected)
+    entrypoint = Path(selected["launch_argv"][0])
+    images = [
+        image
+        for image in identity["process_images"]
+        if image["role"] == policy.name + "-selected-interpreter"
+    ]
+    if len(images) != 1 or images[0]["path"] != str(entrypoint):
+        raise ValueError("build Python signature lacks its admitted executable image")
+    image = images[0]
+    material = build_python_identity(
+        entrypoint=entrypoint,
+        content_path=Path(
+            selected["startup_selection"]["selected_executable"]["resolved"]
+        ),
+        size=image["size_bytes"],
+        sha256=image["sha256"],
+        runtime=selected["runtime"],
+    )
+    signature = canonical_json_sha256(material)
+    previous = env.get("MOLT_BUILD_PYTHON_SIGNATURE")
+    if previous is not None and previous != signature:
+        raise ValueError("build Python signature differs from its isolated capture")
+    bound = {
+        **env,
+        "MOLT_BUILD_PYTHON": str(entrypoint),
+        "MOLT_BUILD_PYTHON_SIGNATURE": signature,
+    }
+    effective = toolchain_capture_environment(
+        policy,
+        environment=bound,
+        cwd=cwd,
+        cargo_command=cargo_command,
+    )
+    if (
+        resolve_build_python(effective, cwd=cwd) != entrypoint
+        or effective.get("MOLT_BUILD_PYTHON_SIGNATURE") != signature
+    ):
+        raise ValueError("Cargo configuration overrides the admitted build Python")
+    return bound
 
 
 def resolve_runtime_gate_cargo_operation(operation, *, cwd, env, compiler_host):
@@ -2613,6 +2681,11 @@ def _runtime_gate_projection(plan, *, cwd, env):
         "tools": {key: str(value) for key, value in plan.tools.items()},
         "wrappers": {key: str(value) for key, value in plan.wrappers.items()},
         "forced_environment": list(plan.forced_environment),
+        "build_directory_base": str(plan.build_directory_base),
+        "build_directory": str(plan.build_directory),
+        "target_directory": (
+            None if plan.target_directory is None else str(plan.target_directory)
+        ),
     }
 
 
@@ -3384,11 +3457,11 @@ def _capture_rust_link_unit(
             command.extend(
                 ("--config", "build.build-dir=" + json.dumps(str(root / "build")))
             )
-            from molt.cli.runtime_cargo_plan import cargo_environment_force_overrides
+            from molt.cli import cargo_command as cargo_argv
 
             command.extend(
                 token
-                for override in cargo_environment_force_overrides(
+                for override in cargo_argv.cargo_environment_force_overrides(
                     () if flag_context is None else flag_context["forced_environment"]
                 )
                 for token in ("--config", override)
@@ -3707,7 +3780,7 @@ def _validate_runtime_gate_projection(operation, projection, *, host, cargo, rus
         if projection is not None:
             raise ValueError("ordinary Cargo operation has a managed C projection")
         return list(operation.command)
-    from molt.cli.runtime_cargo_plan import _pin_cargo_command
+    from molt.cli import cargo_command as cargo_argv
     from molt.wasi_sdk_identity import WasiCAbiProjection
     from molt.rust_toolchain import rust_flag_spans
     from tools.runtime_test_gate_plan import WASI_TARGET
@@ -3720,6 +3793,9 @@ def _validate_runtime_gate_projection(operation, projection, *, host, cargo, rus
         "tools",
         "wrappers",
         "forced_environment",
+        "build_directory_base",
+        "build_directory",
+        "target_directory",
     }:
         raise ValueError("runtime WASI operation lacks its complete C projection")
     sdk = validate_wasi_sdk_selection(projection["sdk"])
@@ -3774,13 +3850,31 @@ def _validate_runtime_gate_projection(operation, projection, *, host, cargo, rus
         not isinstance(name, str) for name in forced
     ):
         raise ValueError("runtime Cargo forced environment is malformed")
+    base_raw = projection["build_directory_base"]
+    directory_raw = projection["build_directory"]
+    if not isinstance(base_raw, str) or not isinstance(directory_raw, str):
+        raise ValueError("runtime Cargo output projection is malformed")
+    base, directory = Path(base_raw), Path(directory_raw)
+    target_raw = projection["target_directory"]
+    if target_raw is not None and (
+        not isinstance(target_raw, str) or not Path(target_raw).is_absolute()
+    ):
+        raise ValueError("runtime Cargo final output projection is malformed")
+    if (
+        not base.is_absolute()
+        or directory.parent != base / ".molt-toolchains"
+        or re.fullmatch(r"[0-9a-f]{64}", directory.name) is None
+    ):
+        raise ValueError("runtime Cargo intermediate output escaped its captured base")
     return list(
-        _pin_cargo_command(
+        cargo_argv._pin_cargo_command(
             operation.command,
             {name: Path(value) for name, value in tools.items()},
             {name: Path(value) for name, value in wrappers.items()},
             WASI_TARGET,
             tuple(forced),
+            build_directory=directory,
+            target_directory=None if target_raw is None else Path(target_raw),
         )
     )
 
@@ -3889,6 +3983,14 @@ def _validate_runtime_gate_rust_selection(
             rustc=identity.get("content_path"),
         )
         selection = row["selection"]
+        if operation.environment == "runtime-wasi" and isinstance(selection, Mapping):
+            from molt.cli.runtime_cargo_plan import (
+                require_cargo_build_directory_version,
+            )
+
+            require_cargo_build_directory_version(
+                str(selection.get("cargo_version", ""))
+            )
         if (
             not isinstance(selection, Mapping)
             or selection.get("producer_command") != expected_command

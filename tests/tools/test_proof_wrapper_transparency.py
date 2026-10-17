@@ -125,10 +125,15 @@ def test_declared_python_cargo_driver_keeps_complete_output_policy(monkeypatch):
         envelope
     ).documentation
     seen = []
+
+    def capture_context(admitted, **kwargs):
+        seen.append(admitted)
+        return kwargs["env"]
+
     monkeypatch.setattr(
         execution_environment,
         "_require_cargo_build_tool_environment_context",
-        lambda admitted, **kwargs: seen.append(admitted),
+        capture_context,
     )
     monkeypatch.setattr(
         execution_environment.toolchain_capture,
@@ -193,6 +198,8 @@ def _run_under_real_child_audit(envelope, exact, environment, tmp_path):
         envelope,
         exact,
         {"python": {"executable": exact[0], "base_executable": sys._base_executable}},
+        environment=environment,
+        cwd=tmp_path,
     )
     env = {
         **environment,

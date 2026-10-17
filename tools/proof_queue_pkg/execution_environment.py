@@ -282,23 +282,16 @@ def _bind_cargo_build_tool_environment(
         # not merely to the build script's formatter selection.
         selected["RUSTUP_TOOLCHAIN"] = invocation.toolchain_selector
     outputs = cargo_output_environment.CargoOutputEnvironment.for_envelope(envelope)
-    _require_cargo_build_tool_environment_context(
+    configured = _require_cargo_build_tool_environment_context(
         envelope,
         outputs=outputs,
         cwd=cwd,
         env=selected,
         native_required=bool(envelope.get("cargo_native_units")),
     )
-    from molt.cli.runtime_cargo_plan import capture_cargo_configuration_inputs
-
     # Publish effective dependency inputs before identity/reuse capture. This
     # is the same Cargo [env] resolver the staged runtime build uses; binding
     # a default only after capture would attest a different compilation input.
-    configured = capture_cargo_configuration_inputs(
-        cwd,
-        env=selected,
-        cargo_command=command if invocation is not None else ["cargo"],
-    )[1]
     selected = {
         name: value
         for name, value in selected.items()
@@ -371,17 +364,16 @@ def _require_cargo_build_tool_environment_context(
     cwd: Path,
     env: Mapping[str, str],
     native_required: bool = False,
-) -> None:
-    """Reject unresolved Cargo-owned tool selection, not model its precedence.
+) -> Mapping[str, str]:
+    """Capture effective Cargo inputs and reject unowned tool/output selection.
 
     Config custody already owns the file set. This check only detects a
-    supported driver hook whose effective Cargo value we cannot obtain yet;
-    it is not a second Cargo configuration resolver. Other [env] entries do
-    not affect this process-selection boundary.
+    supported driver hook whose effective Cargo value we cannot obtain yet.
+    The runtime resolver owns configuration precedence; its result also feeds
+    the caller's native-dependency binding without a second configuration read.
     """
     if outputs.external_placement and any(
-        name.upper() in {"CARGO_BUILD_BUILD_DIR", "CARGO_BUILD_TARGET_DIR"}
-        for name in env
+        name.upper() == "CARGO_BUILD_TARGET_DIR" for name in env
     ):
         raise ValueError(
             "Cargo secondary build-dir/target-dir environment bypasses declared output placement"
@@ -394,6 +386,10 @@ def _require_cargo_build_tool_environment_context(
     command = (
         [str(value) for value in owner["argv"]] if invocation is not None else ["cargo"]
     )
+    from molt.cli.runtime_cargo_plan import capture_cargo_configuration_inputs
+
+    captured = capture_cargo_configuration_inputs(cwd, env=env, cargo_command=command)
+    outputs.validate_command_configuration(captured[7])
     arguments = cargo_config_arguments(command, cwd=cwd)[1::2]
     definitions: list[tuple[str, object]] = []
     for row in command_identity._tool_configuration_identities(
@@ -439,9 +435,7 @@ def _require_cargo_build_tool_environment_context(
         if (
             outputs.external_placement
             and isinstance(build, Mapping)
-            and any(
-                name in build for name in ("build-dir", "target-dir", "artifact-dir")
-            )
+            and "artifact-dir" in build
         ):
             raise ValueError(
                 f"Cargo {origin} redirects output outside declared placement"
@@ -502,6 +496,7 @@ def _require_cargo_build_tool_environment_context(
                 "the effective driver requires Cargo-owned build-script environment selection "
                 "before capture, and must not be replaced by an inherited toolchain choice"
             )
+    return captured[1]
 
 
 def _canonical_environment_sha256(env: Mapping[str, str]) -> str:
@@ -627,6 +622,24 @@ def _capture_toolchains(
             proof_plan.validate_selected_python_runtime(
                 policies[name], selected_runtime
             )
+            runtime_env = toolchain_capture.toolchain_capture_environment(
+                policies[name],
+                environment=env,
+                cwd=cwd,
+                cargo_command=(admission._nested_command(exact) or exact)
+                if policies[name].data.get("compiler_tool_selector") == "build-python"
+                and admission.cargo_invocation_for_envelope(envelope) is not None
+                else ("cargo",),
+            )
+            if policies[name].data.get("compiler_tool_selector") == "build-python" and (
+                proof_plan.compiler_tool_path(
+                    policies[name], environment=runtime_env, cwd=cwd
+                )
+                != Path(selected_runtime["launch_argv"][0])
+            ):
+                raise ValueError(
+                    "build Python selector changed while live custody armed"
+                )
             fresh = command_identity._parse_json_output(
                 command_identity._run_captured(
                     [
@@ -636,7 +649,7 @@ def _capture_toolchains(
                         ),
                     ],
                     cwd=cwd,
-                    env=env,
+                    env=runtime_env,
                 ),
                 purpose=f"{name} fresh isolated startup selection",
             )

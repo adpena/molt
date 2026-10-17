@@ -397,10 +397,11 @@ def test_lock_projection_is_mandatory_without_raw_lock_in_source_paths(tmp_path)
 
 @pytest.mark.parametrize("mutate_during_admission", [False, True])
 def test_llvm_prefix_bytes_belong_to_selected_compiler_identity(
-    tmp_path, monkeypatch, mutate_during_admission
+    tmp_path, monkeypatch, mutate_during_admission, runtime_fixture_root
 ):
     from molt import llvm_toolchain
     from molt.cli import cargo_execution, runtime_cargo_plan
+    from tests.runtime_build_identity_helper import runtime_cargo_plan as fixture_plan
 
     prefix = tmp_path / "llvm"
     library = prefix / "lib" / "libLLVM.a"
@@ -445,44 +446,41 @@ def test_llvm_prefix_bytes_belong_to_selected_compiler_identity(
         lambda root, verification, **kw: dict(kw["environ"]),
     )
     monkeypatch.setattr(cargo_execution, "_cargo_build_env", lambda env: dict(env))
-    # The fake Cargo plan has no mutable resource inputs of its own. LLVM
-    # resources below are captured and verified by the real admission owner.
-    cargo_custody = cargo_resource_custody.CargoResourceCustody.capture(())
+    original_projection = runtime_cargo_plan.RuntimeCargoPlan.toolchain_identity
 
-    def project_tools():
+    def project_tools(plan):
         if mutate_during_admission:
             header.write_bytes(b"/* changed after resource capture */")
-        return {}
+        return original_projection(plan)
+
+    monkeypatch.setattr(
+        runtime_cargo_plan.RuntimeCargoPlan, "toolchain_identity", project_tools
+    )
+
+    def resolve(root, **kwargs):
+        environment = kwargs.pop("environment_transform")(kwargs.pop("env"))
+        return fixture_plan(
+            root, fixture_root=runtime_fixture_root, env=environment, **kwargs
+        )
 
     monkeypatch.setattr(
         runtime_cargo_plan,
         "resolve_runtime_cargo_plan",
-        lambda root, **kw: SimpleNamespace(
-            environment=kw["environment_transform"](kw["env"]),
-            configuration=(),
-            cli_configuration={},
-            profile_environment=lambda profile: {},
-            rustflags=(),
-            c_environment={},
-            toolchain_identity=project_tools,
-            verify=cargo_custody.verify,
-            partition_command=lambda: (kw["cargo_command"], ()),
-            link_resources=SimpleNamespace(content_identity=lambda: {}),
-        ),
+        resolve,
     )
     env = {
         "CARGO_TARGET_DIR": str(tmp_path / "target"),
         "LLVM_SYS_221_PREFIX": str(prefix),
     }
 
-    def fingerprint():
+    def admission():
         return compiler_identity.backend_build_admission(
             tmp_path,
             ("llvm", "native-backend"),
             "release",
             env,
             rust_cpu=RustCpuPolicy.BASELINE,
-        ).fingerprint
+        )
 
     def rewrite(path, content):
         metadata = path.stat()
@@ -494,22 +492,26 @@ def test_llvm_prefix_bytes_belong_to_selected_compiler_identity(
             with pytest.raises(
                 compiler_identity.CompilerIdentityError, match="inputs changed"
             ):
-                fingerprint()
+                admission()
             transaction = cache_fingerprints._SOURCE_TREE_FINGERPRINT_TRANSACTION.get()
             assert transaction is not None and transaction.compiler_plans == {}
         return
 
-    before = fingerprint()
+    before = admission()
     rewrite(library, b"LLVM-two")
-    after_library = fingerprint()
-    assert after_library != before
+    after_library = admission()
+    assert after_library.fingerprint != before.fingerprint
+    assert after_library.plan.build_directory != before.plan.build_directory
     rewrite(header, b"/* core, revised */")
-    after_header = fingerprint()
-    assert after_header != after_library
+    after_header = admission()
+    assert after_header.fingerprint != after_library.fingerprint
+    assert after_header.plan.build_directory != after_library.plan.build_directory
     # Only the consumed content set (headers plus attested link-closure
     # libraries) is a build input; the rest of the install is not.
     rewrite(unrelated, b"# lldb, revised")
-    assert fingerprint() == after_header
+    after_unrelated = admission()
+    assert after_unrelated.fingerprint == after_header.fingerprint
+    assert after_unrelated.plan.build_directory == after_header.plan.build_directory
 
 
 def test_compiler_cargo_projection_never_admits_runtime_build_python(

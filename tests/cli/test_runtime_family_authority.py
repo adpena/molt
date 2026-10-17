@@ -11,6 +11,7 @@ from types import MappingProxyType
 
 import pytest
 
+from molt.cli import cargo_command as cargo_argv
 from molt.cli import cargo_resource_custody as resource_custody
 from molt.cli import runtime_cargo_plan as plans
 from molt.cli import runtime_fingerprints as fingerprints
@@ -442,6 +443,10 @@ def plan_root(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     )
 
     def metadata_command(command, **kwargs):
+        if tuple(command[1:]) == ("--version",):
+            return subprocess.CompletedProcess(
+                command, 0, "cargo 1.99.0 (fixture)\n", ""
+            )
         if tuple(command[1:]) == ("-vV",):
             # The real resolver queries its admitted physical Rust compiler
             # before selecting target metadata. Match this fixture's host.
@@ -1513,6 +1518,39 @@ def test_unknown_inherited_profile_control_is_diagnosed(
         _plan(plan_root, env={control: "1"}).profile_environment("custom")
 
 
+@pytest.mark.parametrize(
+    ("version", "returncode", "supported"),
+    [
+        ("cargo 1.90.0 (old)\n", 0, False),
+        ("cargo 1.91.0 (supported)\n", 0, True),
+        ("cargo 1.99.0 (failed probe)\n", 1, False),
+        ("not a Cargo version\n", 0, False),
+    ],
+)
+def test_resource_generation_requires_cargo_build_directory_capability(
+    plan_root: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    version: str,
+    returncode: int,
+    supported: bool,
+) -> None:
+    original = plans.process_guard.run_completed_command
+
+    def probe(command, **kwargs):
+        if tuple(command[1:]) == ("--version",):
+            return subprocess.CompletedProcess(command, returncode, version, "")
+        return original(command, **kwargs)
+
+    monkeypatch.setattr(plans.process_guard, "run_completed_command", probe)
+    if supported:
+        plan = _plan(plan_root)
+        plan.verify()
+        assert plan.environment["CARGO_BUILD_BUILD_DIR"] == str(plan.build_directory)
+    else:
+        with pytest.raises(ValueError, match="Cargo 1.91 or newer"):
+            _plan(plan_root)
+
+
 def test_cli_tool_selectors_are_pinned_after_original_overrides(
     plan_root: Path,
 ) -> None:
@@ -1528,8 +1566,15 @@ def test_cli_tool_selectors_are_pinned_after_original_overrides(
             "panic=abort",
         ),
     )
-    selected = plans._command_options(plan.command)[1]
-    pinned = plans._pinned_tool_configurations(plan.tools, plan.wrappers, plan.target)
+    selected = cargo_argv._command_options(plan.command)[1]
+    pinned = cargo_argv._pinned_tool_configurations(
+        plan.tools,
+        plan.wrappers,
+        plan.target,
+        plan.forced_environment,
+        plan.build_directory,
+        plan.target_directory,
+    )
     assert selected[-len(pinned) :] == tuple(raw for raw, _ in pinned)
     assert plan.command[-3:] == ("--", "-C", "panic=abort")
     # Host absolute paths are live execution inputs, not portable receipt data.

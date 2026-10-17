@@ -1363,6 +1363,15 @@ _REGISTRY_JSON = r"""{
       "values": []
     },
     {
+      "audience": "internal",
+      "default": "",
+      "kind": "string",
+      "name": "MOLT_BUILD_PYTHON_SIGNATURE",
+      "owner": "src/molt/cli/runtime_build_python.py",
+      "summary": "Derived content digest from the admitted runtime build Python identity, bound to the runtime Cargo producer after initial identity capture; the shared build-script Python helper watches it so same-path interpreter or library changes regenerate tables. It is validated against fresh Python custody and is not an independent semantic input or an end-user runtime cost.",
+      "values": []
+    },
+    {
       "audience": "user",
       "default": "0",
       "kind": "bool",
@@ -1465,6 +1474,15 @@ _REGISTRY_JSON = r"""{
         "standard",
         "full"
       ]
+    },
+    {
+      "audience": "internal",
+      "default": "",
+      "kind": "path",
+      "name": "MOLT_CARGO_BUILD_DIR_BASE",
+      "owner": "src/molt/cli/runtime_cargo_plan.py",
+      "summary": "Development-only stable base for the external-resource-keyed CARGO_BUILD_BUILD_DIR generation; RuntimeCargoPlan pins it from this value, then CARGO_BUILD_BUILD_DIR, CARGO_TARGET_DIR or project target. It survives plan recapture and is output placement, not a semantic input; final Cargo target artifacts retain their existing paths.",
+      "values": []
     },
     {
       "audience": "ci",

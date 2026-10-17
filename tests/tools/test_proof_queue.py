@@ -848,7 +848,14 @@ def test_canonical_cargo_envelope_declares_actual_python_and_rust_toolchains() -
     command = policy._canonical_cargo_proof_command(["test", "-p", "molt-ir"])
     envelope = command_admission.envelope_for_command(command)
     assert envelope["kind"] == "python"
-    assert envelope["toolchains"] == ["python", "uv", "cargo", "rustc", "git"]
+    assert envelope["toolchains"] == [
+        "python",
+        "uv",
+        "cargo",
+        "rustc",
+        "git",
+        "build-python",
+    ]
     assert envelope["python"]["prefix"] == command[: command.index("python")]
     assert envelope["delegated"]["argv"][:2] == ["cargo", "test"]
 
@@ -1939,7 +1946,14 @@ def test_proof_command_envelope_detects_nested_guarded_cargo() -> None:
             "test",
         ]
     )
-    assert envelope["toolchains"] == ["python", "uv", "cargo", "rustc", "git"]
+    assert envelope["toolchains"] == [
+        "python",
+        "uv",
+        "cargo",
+        "rustc",
+        "git",
+        "build-python",
+    ]
 
 
 def _python_policy_with_version(pattern: str) -> proof_plan.ToolchainPolicy:
@@ -10230,7 +10244,14 @@ def test_proof_queue_cargo_lane_records_guarded_uv_envelope(
     )
     conn.close()
 
-    assert requested_toolchains == ("python", "uv", "cargo", "rustc", "git")
+    assert requested_toolchains == (
+        "python",
+        "uv",
+        "cargo",
+        "rustc",
+        "git",
+        "build-python",
+    )
     assert terminal_payload["proof_receipt"]["status"] == "success"
     assert terminal_payload["proof_receipt"]["environment"]["python"] == "3.12"
     assert (

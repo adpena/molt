@@ -49,6 +49,7 @@ from molt.cli.runtime_build_identity import (
     _tree_hash_worker_count,
     resolve_wasm_runtime_build_family_identities,
 )
+from molt.cli.runtime_build_python import pin_runtime_build_python_environment
 from molt.cli.runtime_identity_schema import (
     RuntimeBuildIdentity,
     RuntimeBuildMemberPlan,
@@ -179,6 +180,9 @@ def _resolve_runtime_wasm_cargo_specs(
         env=env,
         cargo_command=_cargo_cmd_with_json_artifact_messages(command),
         requested_target="wasm32-wasip1",
+        environment_transform=lambda env: pin_runtime_build_python_environment(
+            env, cwd=root
+        ),
         rustflags_transform=lambda flags: _wasm_runtime_codegen_flags(
             flags,
             simd_enabled=simd_enabled,

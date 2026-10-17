@@ -366,7 +366,7 @@
     "tests/tools/test_win_job_contract.py",
     "tests/tools/test_windows_process_api.py"
   ],
-  "authority_sha256": "ebc19b1c993f999b14ea19852db8bd3d4fc42b0f363bf9a8e6515c025723d2bf",
+  "authority_sha256": "bdf02d908e72cf2227957a8667768dbdfa57801287445a316454f7e1a9af05e1",
   "cargo_environment_policy": {
     "incident_command": "cargo metadata --locked --format-version 1",
     "incident_commit": "20b046b79bd4ca64a8c859f737f6e330377bcc4e",
@@ -1005,6 +1005,7 @@
         "proof-results/nightly/prepare"
       ],
       "cache_domain": "cargo-workspace",
+      "cargo_build_python": true,
       "cargo_native_units": {
         "target": [
           "c",
@@ -1187,6 +1188,7 @@
         "examples/hello.py"
       ],
       "cache_domain": "cargo-workspace",
+      "cargo_build_python": true,
       "cargo_native_units": {
         "target": [
           "c",
@@ -1231,6 +1233,7 @@
         "proof-results/nightly/deterministic-runtime.json"
       ],
       "cache_domain": "cargo-workspace",
+      "cargo_build_python": true,
       "cargo_native_units": {
         "target": [
           "c",
@@ -1271,6 +1274,7 @@
         "proof-results/nightly/ir-verification.json"
       ],
       "cache_domain": "cargo-workspace",
+      "cargo_build_python": true,
       "cell": "linux-x86_64-py312-native-dev",
       "dependencies": [
         "nightly.determinism.ir-hashseed",
@@ -1309,6 +1313,7 @@
         "examples/hello.py"
       ],
       "cache_domain": "cargo-workspace",
+      "cargo_build_python": true,
       "cargo_native_units": {
         "target": [
           "c",
@@ -1352,6 +1357,7 @@
         "proof-results/reproducibility-tier3.json"
       ],
       "cache_domain": "cargo-workspace",
+      "cargo_build_python": true,
       "cargo_native_units": {
         "target": [
           "c",
@@ -1394,6 +1400,7 @@
         "proof-results/fuzz-compiler-extended.json"
       ],
       "cache_domain": "cargo-workspace",
+      "cargo_build_python": true,
       "cargo_native_units": {
         "target": [
           "c",
@@ -1465,6 +1472,7 @@
         "tests/differential"
       ],
       "cache_domain": "cargo-workspace",
+      "cargo_build_python": true,
       "cargo_native_units": {
         "target": [
           "c",
@@ -1605,6 +1613,7 @@
         "tests/tools/test_proof_supervisor_generation.py"
       ],
       "cache_domain": "pytest",
+      "cargo_build_python": true,
       "cell": "linux-x86_64-py312-queue-portability",
       "dependencies": [],
       "family": "platform_portability",
@@ -1673,6 +1682,7 @@
         "tests/tools/test_proof_supervisor_generation.py"
       ],
       "cache_domain": "pytest",
+      "cargo_build_python": true,
       "cell": "macos-arm64-py312-queue-portability",
       "dependencies": [],
       "family": "platform_portability",
@@ -1741,6 +1751,7 @@
         "tests/tools/test_proof_supervisor_generation.py"
       ],
       "cache_domain": "pytest",
+      "cargo_build_python": true,
       "cell": "windows-x86_64-py312-queue-portability",
       "dependencies": [],
       "family": "platform_portability",
@@ -1779,6 +1790,7 @@
         "tests/test_bench_wasm_node_resolver.py::test_wasmtime_runner_uses_one_selected_host_build"
       ],
       "cache_domain": "pytest",
+      "cargo_build_python": true,
       "cell": "linux-x86_64-py312-queue-portability",
       "dependencies": [],
       "family": "platform_portability",
@@ -1816,6 +1828,7 @@
         "tests/test_bench_wasm_node_resolver.py::test_wasmtime_runner_uses_one_selected_host_build"
       ],
       "cache_domain": "pytest",
+      "cargo_build_python": true,
       "cell": "macos-arm64-py312-queue-portability",
       "dependencies": [],
       "family": "platform_portability",
@@ -1854,6 +1867,7 @@
         "tests/test_bench_wasm_node_resolver.py::test_wasmtime_runner_uses_one_selected_host_build"
       ],
       "cache_domain": "pytest",
+      "cargo_build_python": true,
       "cell": "windows-x86_64-py312-queue-portability",
       "dependencies": [],
       "env": {
@@ -1952,6 +1966,7 @@
         "warnings"
       ],
       "cache_domain": "cargo-workspace",
+      "cargo_build_python": true,
       "cargo_native_units": {
         "target": [
           "c",
@@ -1987,6 +2002,7 @@
         "warnings"
       ],
       "cache_domain": "cargo-workspace",
+      "cargo_build_python": true,
       "cargo_native_units": {
         "target": [
           "c",
@@ -2030,6 +2046,7 @@
         "120"
       ],
       "cache_domain": "cargo-workspace",
+      "cargo_build_python": true,
       "cargo_native_units": {
         "target": [
           "c",
@@ -3239,6 +3256,7 @@
         "tests/tools/test_signed_ratio.py"
       ],
       "cache_domain": "pytest",
+      "cargo_build_python": true,
       "cell": "linux-x86_64-py312-repository-policy",
       "dependencies": [],
       "family": "repository_policy",
@@ -3322,6 +3340,7 @@
         "--json"
       ],
       "cache_domain": "cargo-workspace",
+      "cargo_build_python": false,
       "cell": "linux-x86_64-py312-wasm-dev",
       "dependencies": [],
       "env": {
@@ -3362,6 +3381,7 @@
         "--json"
       ],
       "cache_domain": "cargo-workspace",
+      "cargo_build_python": false,
       "cell": "linux-x86_64-py312-wasm-dev",
       "dependencies": [],
       "env": {
@@ -3406,6 +3426,7 @@
         "tests/cli/test_cli_import_collection.py::test_cached_backend_artifact_validity_guard"
       ],
       "cache_domain": "pytest",
+      "cargo_build_python": true,
       "cell": "linux-x86_64-py312-wasm-dev",
       "dependencies": [
         "wasm.build.backend"
@@ -3441,6 +3462,7 @@
         "molt-wasm-host"
       ],
       "cache_domain": "cargo-workspace",
+      "cargo_build_python": true,
       "cargo_native_units": {
         "target": [
           "c"
@@ -3481,6 +3503,7 @@
         "--json"
       ],
       "cache_domain": "cargo-workspace",
+      "cargo_build_python": true,
       "cell": "linux-x86_64-py312-wasm-dev",
       "dependencies": [],
       "family": "wasm",
@@ -3521,6 +3544,7 @@
         "--json"
       ],
       "cache_domain": "cargo-workspace",
+      "cargo_build_python": true,
       "cell": "linux-x86_64-py312-wasm-dev",
       "dependencies": [],
       "family": "wasm",
@@ -3563,6 +3587,7 @@
         "/tmp/molt-wasm-ci/hello/hello.wasm"
       ],
       "cache_domain": "cargo-workspace",
+      "cargo_build_python": true,
       "cell": "linux-x86_64-py312-wasm-dev",
       "dependencies": [
         "wasm.build.backend",
@@ -3648,6 +3673,7 @@
         "/tmp/molt-wasm-ci/comprehension/comprehension.wasm"
       ],
       "cache_domain": "cargo-workspace",
+      "cargo_build_python": true,
       "cell": "linux-x86_64-py312-wasm-dev",
       "dependencies": [
         "wasm.build.backend",
@@ -3730,6 +3756,7 @@
         "/tmp/test_hello.luau"
       ],
       "cache_domain": "cargo-workspace",
+      "cargo_build_python": true,
       "cell": "linux-x86_64-py312-wasm-dev",
       "dependencies": [
         "wasm.build.backend"
@@ -3774,6 +3801,7 @@
         "/tmp/test_string_comprehension.luau"
       ],
       "cache_domain": "cargo-workspace",
+      "cargo_build_python": true,
       "cell": "linux-x86_64-py312-wasm-dev",
       "dependencies": [
         "wasm.build.backend"
@@ -3818,6 +3846,7 @@
         "/tmp/molt-wasm-ci/sieve/sieve.wasm"
       ],
       "cache_domain": "cargo-workspace",
+      "cargo_build_python": true,
       "cell": "linux-x86_64-py312-wasm-dev",
       "dependencies": [
         "wasm.build.backend",
@@ -3964,6 +3993,7 @@
         "-q"
       ],
       "cache_domain": "pytest",
+      "cargo_build_python": true,
       "cell": "linux-x86_64-py312-wasm-dev",
       "dependencies": [
         "wasm.build.backend",
@@ -4013,6 +4043,7 @@
         "tests/test_browser_vfs.py"
       ],
       "cache_domain": "cargo-workspace",
+      "cargo_build_python": true,
       "cell": "linux-x86_64-py312-wasm-dev",
       "dependencies": [
         "wasm.build.backend",
@@ -4058,6 +4089,7 @@
         "tests/test_wasm_split_runtime.py::test_split_runtime_compiled_gpu_kernel_vector_add_matches_expected_output"
       ],
       "cache_domain": "cargo-workspace",
+      "cargo_build_python": true,
       "cell": "linux-x86_64-py312-wasm-dev",
       "dependencies": [
         "wasm.build.backend"
@@ -4100,6 +4132,7 @@
         "tests/test_wasm_runtime_heavy_regressions.py::test_wasm_open_reports_all_missing_grants_before_mutation"
       ],
       "cache_domain": "cargo-workspace",
+      "cargo_build_python": true,
       "cell": "linux-x86_64-py312-wasm-dev",
       "dependencies": [
         "wasm.build.backend",
@@ -4142,6 +4175,7 @@
         "tests/test_wasm_split_runtime.py::test_linked_host_export_imports_tinygrad_dtype_class"
       ],
       "cache_domain": "cargo-workspace",
+      "cargo_build_python": true,
       "cell": "linux-x86_64-py312-wasm-dev",
       "dependencies": [
         "wasm.build.backend"
@@ -4183,6 +4217,7 @@
         "tests/test_wasm_split_runtime.py::test_linked_host_export_imports_tinygrad_tensor_module"
       ],
       "cache_domain": "cargo-workspace",
+      "cargo_build_python": true,
       "cell": "linux-x86_64-py312-wasm-dev",
       "dependencies": [
         "wasm.build.backend"
@@ -4224,6 +4259,7 @@
         "tests/test_wasm_split_runtime.py::test_linked_host_export_tensor_row_ops_accept_equivalent_float_dtype"
       ],
       "cache_domain": "cargo-workspace",
+      "cargo_build_python": true,
       "cell": "linux-x86_64-py312-wasm-dev",
       "dependencies": [
         "wasm.build.backend"
@@ -4265,6 +4301,7 @@
         "tests/test_wasm_freestanding.py"
       ],
       "cache_domain": "pytest",
+      "cargo_build_python": true,
       "cell": "linux-x86_64-py312-wasm-dev",
       "dependencies": [
         "wasm.build.backend",
@@ -4309,6 +4346,7 @@
         "native"
       ],
       "cache_domain": "pytest",
+      "cargo_build_python": true,
       "cargo_native_units": {
         "target": [
           "c",
@@ -4356,6 +4394,7 @@
         "wasm"
       ],
       "cache_domain": "pytest",
+      "cargo_build_python": true,
       "cell": "linux-x86_64-py312-wasm-dev",
       "dependencies": [
         "wasm.build.backend",
@@ -4420,6 +4459,7 @@
         "tests/differential/stdlib/cpython312plus_api_gap_submodule_encodings_mbcs_35072d4b.py"
       ],
       "cache_domain": "cargo-workspace",
+      "cargo_build_python": true,
       "cargo_native_units": {
         "target": [
           "c",
@@ -4761,6 +4801,7 @@
         "tests/test_debug_ir.py"
       ],
       "cache_domain": "pytest",
+      "cargo_build_python": true,
       "cell": "linux-x86_64-py312-unit",
       "dependencies": [],
       "family": "python_unit",
@@ -4814,6 +4855,7 @@
         "tests/test_debug_ir.py"
       ],
       "cache_domain": "pytest",
+      "cargo_build_python": true,
       "cell": "macos-arm64-py312-unit",
       "dependencies": [],
       "family": "python_unit",
@@ -5285,6 +5327,7 @@
         "tests/cli/test_cli_import_collection.py::test_cached_backend_artifact_validity_guard"
       ],
       "cache_domain": "pytest",
+      "cargo_build_python": true,
       "cell": "linux-x86_64-py312-unit-collection",
       "dependencies": [],
       "family": "python_unit_collection",
@@ -6106,6 +6149,7 @@
         "tests/cli/test_native_object_publication.py::test_native_object_publication_is_one_admitted_transaction"
       ],
       "cache_domain": "pytest",
+      "cargo_build_python": true,
       "cell": "linux-x86_64-py312-unit",
       "dependencies": [],
       "family": "python_unit",
@@ -6194,6 +6238,7 @@
         "tests/cli/test_native_object_publication.py::test_native_object_publication_is_one_admitted_transaction"
       ],
       "cache_domain": "pytest",
+      "cargo_build_python": true,
       "cell": "macos-arm64-py312-unit",
       "dependencies": [],
       "family": "python_unit",
@@ -6363,6 +6408,7 @@
         "tests/test_bench_tool.py::test_bench_cli_native_smoke_contract_batch_reuses_compiler"
       ],
       "cache_domain": "cargo-workspace",
+      "cargo_build_python": true,
       "cargo_native_units": {
         "target": [
           "c",
@@ -6402,6 +6448,7 @@
         "tests/cli/test_backend_daemon_sequential.py"
       ],
       "cache_domain": "cargo-workspace",
+      "cargo_build_python": true,
       "cargo_native_units": {
         "target": [
           "c",
@@ -6440,6 +6487,7 @@
         "tests/cli/test_traceback_carets.py"
       ],
       "cache_domain": "cargo-workspace",
+      "cargo_build_python": true,
       "cargo_native_units": {
         "target": [
           "c",
@@ -6485,6 +6533,7 @@
         "warnings"
       ],
       "cache_domain": "cargo-workspace",
+      "cargo_build_python": true,
       "cell": "linux-x86_64-rust-wasi-dev",
       "dependencies": [],
       "family": "rust",
@@ -6512,6 +6561,7 @@
         "tools/check_cargo_locks.py"
       ],
       "cache_domain": "cargo-workspace",
+      "cargo_build_python": false,
       "cell": "linux-x86_64-rust-native-dev",
       "dependencies": [],
       "family": "rust",
@@ -6543,6 +6593,7 @@
         "warnings"
       ],
       "cache_domain": "cargo-workspace",
+      "cargo_build_python": false,
       "cell": "linux-x86_64-rust-wasi-dev",
       "cwd": "deploy/browser/simd-ops-rs",
       "dependencies": [],
@@ -6572,6 +6623,7 @@
         "molt-runtime-math"
       ],
       "cache_domain": "cargo-workspace",
+      "cargo_build_python": false,
       "cell": "linux-x86_64-rust-aarch64-dev",
       "dependencies": [],
       "family": "rust",
@@ -6598,6 +6650,7 @@
         "tools/run_cargo_test_truth.py"
       ],
       "cache_domain": "cargo-workspace",
+      "cargo_build_python": true,
       "cargo_native_units": {
         "target": [
           "c",
@@ -6702,6 +6755,7 @@
         "read::macho::test_go_macho"
       ],
       "cache_domain": "cargo-workspace",
+      "cargo_build_python": true,
       "cargo_native_units": {
         "target": [
           "c"
@@ -6783,6 +6837,7 @@
         "--test-threads=1"
       ],
       "cache_domain": "cargo-workspace",
+      "cargo_build_python": true,
       "cargo_native_units": {
         "target": [
           "c"
@@ -6830,6 +6885,7 @@
         "8"
       ],
       "cache_domain": "cargo-workspace",
+      "cargo_build_python": true,
       "cargo_native_units": {
         "target": [
           "c",
@@ -6878,6 +6934,7 @@
         "120"
       ],
       "cache_domain": "cargo-workspace",
+      "cargo_build_python": false,
       "cell": "linux-x86_64-rust-wasi-dev",
       "dependencies": [],
       "family": "rust",
@@ -6921,6 +6978,7 @@
         "600"
       ],
       "cache_domain": "cargo-workspace",
+      "cargo_build_python": true,
       "cargo_native_units": {
         "target": [
           "c"
@@ -6972,6 +7030,7 @@
         "--test-threads=1"
       ],
       "cache_domain": "cargo-workspace",
+      "cargo_build_python": true,
       "cargo_native_units": {
         "target": [
           "c",
@@ -7013,6 +7072,7 @@
         "warnings"
       ],
       "cache_domain": "cargo-workspace",
+      "cargo_build_python": true,
       "cargo_native_units": {
         "target": [
           "c",
@@ -7058,6 +7118,7 @@
         "warnings"
       ],
       "cache_domain": "cargo-workspace",
+      "cargo_build_python": false,
       "cell": "linux-x86_64-rust-native-dev",
       "dependencies": [],
       "family": "rust",
@@ -7092,6 +7153,7 @@
         "warnings"
       ],
       "cache_domain": "cargo-workspace",
+      "cargo_build_python": true,
       "cell": "linux-x86_64-rust-native-dev",
       "dependencies": [],
       "family": "rust",
@@ -7126,6 +7188,7 @@
         "warnings"
       ],
       "cache_domain": "cargo-workspace",
+      "cargo_build_python": true,
       "cell": "linux-x86_64-rust-native-dev",
       "dependencies": [],
       "family": "rust",
@@ -7160,6 +7223,7 @@
         "warnings"
       ],
       "cache_domain": "cargo-workspace",
+      "cargo_build_python": true,
       "cell": "linux-x86_64-rust-native-dev",
       "dependencies": [],
       "family": "rust",
@@ -7193,6 +7257,7 @@
         "warnings"
       ],
       "cache_domain": "cargo-workspace",
+      "cargo_build_python": false,
       "cell": "linux-x86_64-rust-native-dev",
       "dependencies": [],
       "family": "rust",
@@ -7226,6 +7291,7 @@
         "warnings"
       ],
       "cache_domain": "cargo-workspace",
+      "cargo_build_python": false,
       "cell": "linux-x86_64-rust-native-dev",
       "dependencies": [],
       "family": "rust",
@@ -7259,6 +7325,7 @@
         "warnings"
       ],
       "cache_domain": "cargo-workspace",
+      "cargo_build_python": false,
       "cell": "linux-x86_64-rust-native-dev",
       "dependencies": [],
       "family": "rust",
@@ -7289,6 +7356,7 @@
         "native-backend llvm"
       ],
       "cache_domain": "llvm-cargo",
+      "cargo_build_python": false,
       "cargo_native_units": {
         "target": [
           "c"
@@ -7333,6 +7401,7 @@
         "--no-fail-fast"
       ],
       "cache_domain": "llvm-cargo",
+      "cargo_build_python": false,
       "cargo_native_units": {
         "target": [
           "c"
@@ -7376,6 +7445,7 @@
         "--no-fail-fast"
       ],
       "cache_domain": "llvm-cargo",
+      "cargo_build_python": false,
       "cargo_native_units": {
         "target": [
           "c"
@@ -7423,6 +7493,7 @@
         "warnings"
       ],
       "cache_domain": "llvm-cargo",
+      "cargo_build_python": false,
       "cargo_native_units": {
         "target": [
           "c"
@@ -7459,6 +7530,7 @@
         "--no-fail-fast"
       ],
       "cache_domain": "mlir-cargo",
+      "cargo_build_python": false,
       "cargo_native_units": {
         "host": [
           "c++"
@@ -7538,6 +7610,7 @@
         "integer_carrier_matrix"
       ],
       "cache_domain": "llvm-cargo",
+      "cargo_build_python": true,
       "cargo_native_units": {
         "target": [
           "c",
@@ -7624,6 +7697,7 @@
         "deny"
       ],
       "cache_domain": "cargo-security",
+      "cargo_build_python": false,
       "cell": "linux-x86_64-rust-audit",
       "dependencies": [],
       "family": "rust_security",
@@ -7651,6 +7725,7 @@
         "tmp/security/cargo-audit-advisory-db"
       ],
       "cache_domain": "cargo-security",
+      "cargo_build_python": false,
       "cell": "linux-x86_64-rust-audit",
       "dependencies": [
         "security.rust.deny"
@@ -7788,6 +7863,7 @@
         "tests/tools/test_tool_identity_reuse.py"
       ],
       "cache_domain": "pytest",
+      "cargo_build_python": true,
       "cell": "linux-x86_64-py312-queue-portability",
       "dependencies": [],
       "family": "platform_portability",
@@ -7828,6 +7904,7 @@
         "tests/tools/test_tool_identity_reuse.py"
       ],
       "cache_domain": "pytest",
+      "cargo_build_python": true,
       "cell": "macos-arm64-py312-queue-portability",
       "dependencies": [],
       "family": "platform_portability",
@@ -7869,6 +7946,7 @@
         "tests/tools/test_toolchain_capture.py"
       ],
       "cache_domain": "pytest",
+      "cargo_build_python": true,
       "cell": "windows-x86_64-py312-queue-portability",
       "dependencies": [],
       "family": "platform_portability",
@@ -7902,6 +7980,7 @@
         "tests/cli/test_c_api_headers.py::test_optimize_flag_headers_share_data_across_translation_units"
       ],
       "cache_domain": "pytest",
+      "cargo_build_python": true,
       "cell": "windows-x86_64-py312-queue-portability",
       "dependencies": [],
       "family": "platform_portability",
@@ -7961,6 +8040,7 @@
         "tools/run_candidate_runtime_costs.py"
       ],
       "cache_domain": "cargo-workspace",
+      "cargo_build_python": true,
       "cargo_native_units": {
         "target": [
           "c",
@@ -8468,6 +8548,7 @@
       "local.python-effect-capability-authority.2": "cargo test --locked -p molt-ir --lib python_effects_generated",
       "local.python-identity-catalog-authority.0": "python tools/gen_python_identity_catalog.py --check",
       "local.python-identity-catalog-authority.1": "python -m pytest -q tests/test_gen_python_identity_catalog.py tests/test_python_binding_flow.py tests/test_python_builtin_shape_facts.py",
+      "local.runtime-cargo-input-custody.0": "python -m pytest -q -m 'not slow' tests/cli/test_runtime_c_resource_custody.py tests/cli/test_runtime_build_identity.py tests/cli/test_runtime_native_generation.py tests/cli/test_runtime_wasm_single_compile.py tests/cli/test_compiler_identity.py tests/cli/test_runtime_family_authority.py tests/cli/test_cargo_execution_failure_authority.py tests/test_toolchain_identity.py tests/test_runtime_build_python.py",
       "local.runtime-lib.0": "python tools/run_runtime_test_gate.py --profile release-output --build-timeout-seconds 6300 --child-timeout-seconds 120 --parallel-threads 8",
       "local.runtime-lib.1": "cargo clippy --locked -p molt-backend --features native-backend -- -D warnings",
       "local.runtime-profile-schema-authority.0": "python tools/gen_runtime_profile_schema.py --check",
@@ -9020,6 +9101,55 @@
         "toolchains": [
           "python",
           "uv"
+        ]
+      },
+      {
+        "command_ids": [
+          "local.runtime-cargo-input-custody.0"
+        ],
+        "description": "Runtime/compiler Cargo inputs: external resource freshness, Python generator signatures, producer transport, and execution failure custody.",
+        "gates": [
+          "python -m pytest -q -m 'not slow' tests/cli/test_runtime_c_resource_custody.py tests/cli/test_runtime_build_identity.py tests/cli/test_runtime_native_generation.py tests/cli/test_runtime_wasm_single_compile.py tests/cli/test_compiler_identity.py tests/cli/test_runtime_family_authority.py tests/cli/test_cargo_execution_failure_authority.py tests/test_toolchain_identity.py tests/test_runtime_build_python.py"
+        ],
+        "globs": [
+          "src/molt/cli/cargo_command.py",
+          "src/molt/cli/cargo_execution.py",
+          "src/molt/cli/cargo_resource_custody.py",
+          "src/molt/cli/compiler_identity.py",
+          "src/molt/cli/runtime_build_identity.py",
+          "src/molt/cli/runtime_build_python.py",
+          "src/molt/cli/runtime_cargo_plan.py",
+          "src/molt/cli/runtime_fingerprints.py",
+          "src/molt/cli/runtime_identity_schema.py",
+          "src/molt/cli/runtime_native_build.py",
+          "src/molt/cli/runtime_native_generation.py",
+          "src/molt/cli/runtime_wasm_build_spec.py",
+          "src/molt/cli/runtime_wasm_build_support.py",
+          "src/molt/cli/runtime_wasm_pair_build.py",
+          "src/molt/cli/runtime_wasm_generation.py",
+          "src/molt/cargo_execution_policy.py",
+          "src/molt/python_runtime_admission.py",
+          "src/molt/python_environment_identity.py",
+          "src/molt/toolchain_identity.py",
+          "src/molt/rust_toolchain.py",
+          "runtime/build_support/*.rs",
+          "runtime/*/build.rs",
+          "tests/runtime_build_identity_helper.py",
+          "tests/compiler_identity_helper.py",
+          "tests/test_toolchain_identity.py",
+          "tests/test_runtime_build_python.py",
+          "tests/cli/test_runtime_c_resource_custody.py",
+          "tests/cli/test_runtime_build_identity.py",
+          "tests/cli/test_runtime_native_generation.py",
+          "tests/cli/test_runtime_wasm_single_compile.py",
+          "tests/cli/test_compiler_identity.py",
+          "tests/cli/test_runtime_family_authority.py",
+          "tests/cli/test_cargo_execution_failure_authority.py"
+        ],
+        "name": "runtime-cargo-input-custody",
+        "toolchains": [
+          "python",
+          "cargo"
         ]
       },
       {
@@ -10477,6 +10607,12 @@
       "local.python-identity-catalog-authority.1": [
         "python"
       ],
+      "local.runtime-cargo-input-custody.0": [
+        "python",
+        "cargo",
+        "rustc",
+        "git"
+      ],
       "local.runtime-lib.0": [
         "python",
         "rustc",
@@ -11318,6 +11454,22 @@
         "--version"
       ],
       "version_pattern": "^lune 0\\.10\\.5$"
+    },
+    {
+      "compiler_tool_selector": "build-python",
+      "executable": "build-python",
+      "name": "build-python",
+      "python_identity_role": "runtime",
+      "selection_only": true,
+      "setup_evidence": [
+        "runtime/build_support/build_python.rs::MOLT_BUILD_PYTHON"
+      ],
+      "setup_value": "effective Cargo build Python",
+      "version_args": [
+        "--version"
+      ],
+      "version_from_content_path": true,
+      "version_pattern": "^Python 3\\.[0-9]+\\.[0-9]+.*$"
     },
     {
       "content_path_command": [

@@ -256,7 +256,12 @@ def test_output_environment_roundtrips_acquisition_and_parent_policy(
     inputs = _inputs(tmp_path)
     inputs["command"] = ["cargo", "+fixture", subcommand, "--offline"]
     inputs["outputs"] = _outputs(inputs["command"])
-    inputs["env"].update(TEMP="caller-temp", TMP="caller-tmp", TMPDIR="caller-tmpdir")
+    inputs["env"].update(
+        TEMP="caller-temp",
+        TMP="caller-tmp",
+        TMPDIR="caller-tmpdir",
+        MOLT_CARGO_BUILD_DIR_BASE=str(tmp_path / "unleased-intermediates"),
+    )
     original = dict(inputs["env"])
     lease = cache.acquire(**inputs)
     try:
@@ -293,7 +298,17 @@ def test_output_environment_roundtrips_acquisition_and_parent_policy(
         lease.close()
 
 
-@pytest.mark.parametrize("name", ["CARGO_TARGET_DIR", "TEMP", "TMP", "TMPDIR"])
+@pytest.mark.parametrize(
+    "name",
+    [
+        "CARGO_TARGET_DIR",
+        "CARGO_BUILD_BUILD_DIR",
+        "MOLT_CARGO_BUILD_DIR_BASE",
+        "TEMP",
+        "TMP",
+        "TMPDIR",
+    ],
+)
 @pytest.mark.parametrize("mutation", ["redirect", "remove"])
 def test_symbolic_output_identity_never_admits_forged_actual_binding(
     tmp_path, name, mutation
@@ -354,7 +369,11 @@ def test_output_variable_case_follows_host_environment_semantics(tmp_path):
 
 def test_output_policy_uses_parsed_operation_not_argument_spellings():
     outputs = _outputs(["cargo", "--config", "test", "build", "--package", "rustdoc"])
-    assert outputs.names == ("CARGO_TARGET_DIR",)
+    assert outputs.names == (
+        "CARGO_TARGET_DIR",
+        "CARGO_BUILD_BUILD_DIR",
+        "MOLT_CARGO_BUILD_DIR_BASE",
+    )
     assert _outputs(
         ["cargo", "test", "--", "--target-dir=opaque-harness-argument"]
     ).documentation
@@ -603,6 +622,9 @@ def test_historical_target_lifecycle_preserves_receipts_and_new_acquisition_is_c
     pointer["target"] = str(historical)
     cache._atomic_json(lease.pointer, pointer)
     (historical / "artifact").write_bytes(b"historical output")
+    intermediate = historical / ".molt-toolchains" / ("a" * 64) / "build" / "out"
+    intermediate.mkdir(parents=True)
+    (intermediate / "generated.rs").write_bytes(b"captured resource output")
     publication = lease.publish(_completed(lease) if sealed else {"phase": "failed"})
     lease.close()
     projection = cache.record_terminal_receipt(

@@ -33,7 +33,7 @@ from molt.cli.cargo_resource_custody import (
 from molt.cli.runtime_cargo_plan import (
     RuntimeCargoPlan,
     _CargoEnvironment,
-    _pin_cargo_command,
+    _cargo_build_directory_base,
     _resolve_rust_flag_resources,
     _resolve_c_build_resources,
     _select_host_c_tools,
@@ -557,6 +557,7 @@ def runtime_cargo_plan(
     env: Mapping[str, str],
     cargo_command: Sequence[str],
     requested_target: str | None = None,
+    environment_transform=None,
     rustflags_transform=None,
     **_kwargs: object,
 ) -> RuntimeCargoPlan:
@@ -565,6 +566,10 @@ def runtime_cargo_plan(
     fixtures = _fixture_path(fixture_root)
     environment = _CargoEnvironment(env)
     environment["CARGO_HOME"] = str(fixtures / "test-cargo-home")
+    if environment_transform is not None:
+        environment = _CargoEnvironment(
+            environment_transform(MappingProxyType(environment))
+        )
     host = "x86_64-unknown-linux-gnu"
     executable = Path(sys.executable)
     profiles = {
@@ -663,9 +668,7 @@ def runtime_cargo_plan(
         ),
     )
     tools = MappingProxyType(tool_paths)
-    command = _pin_cargo_command(
-        flag_plan.command, tools, wrappers, requested_target or host
-    )
+    command = flag_plan.command
     target_libdir = fixtures / "test-rustlib" / (requested_target or host) / "lib"
     target_libdir.mkdir(parents=True, exist_ok=True)
     builtins = target_libdir / "libcompiler_builtins-fixture.rlib"
@@ -702,4 +705,5 @@ def runtime_cargo_plan(
         (),
         c_resources.environment,
         installation,
-    )
+        _cargo_build_directory_base(root, environment),
+    ).with_build_directory()

@@ -161,6 +161,21 @@ class MatrixCell:
     data: dict[str, str]
 
 
+def cargo_build_python(data: Mapping[str, Any]) -> bool | None:
+    """Declared Cargo generator role; absent ad hoc policy stays conservative."""
+    if "cargo_build_python" not in data:
+        return None
+    value = data["cargo_build_python"]
+    tools = data.get("toolchains", [])
+    if type(value) is not bool or not isinstance(tools, list) or "cargo" not in tools:
+        raise ValueError("cargo_build_python requires a boolean and Cargo toolchain")
+    if "build-python" in tools:
+        raise ValueError(
+            "build-python is contextual, not a static toolchain prerequisite"
+        )
+    return value
+
+
 def cargo_native_units(data: Mapping[str, Any]) -> dict[str, list[str]]:
     """The command alone grants native build roles and source languages."""
     raw = data.get("cargo_native_units", {})
@@ -798,6 +813,7 @@ class ProofPlan:
                     "id",
                     "cargo_output_lifetime",
                     "cargo_native_units",
+                    "cargo_build_python",
                     "differential_cases",
                 }
             )
@@ -805,6 +821,7 @@ class ProofPlan:
                 errors.append(f"{lane.id}: unknown named lane fields {sorted(extra)!r}")
             try:
                 cargo_native_units(lane.data)
+                cargo_build_python(lane.data)
             except ValueError as exc:
                 errors.append(f"{lane.id}: {exc}")
             if lane.data.get("cache_domain") not in {"none", "cargo-workspace"}:
@@ -996,6 +1013,7 @@ class ProofPlan:
                     "native-strip": "llvm-strip",
                     "wasm-opt": "wasm-opt",
                     "llvm-sdk": "llvm-config",
+                    "build-python": "build-python",
                 }.get(selector)
                 != policy.data.get("executable")
                 or policy.data.get("wasi_sdk_tool") is not None
@@ -1055,9 +1073,15 @@ class ProofPlan:
             if python_role == "runtime" and (
                 not policy.data.get("selection_only")
                 or not policy.data.get("version_from_content_path")
-                or not isinstance(policy.data.get("content_path_command"), list)
-                or not isinstance(policy.data.get("python_version"), str)
-                or re.fullmatch(r"3\.[0-9]+", policy.data["python_version"]) is None
+                or (
+                    policy.data.get("compiler_tool_selector") != "build-python"
+                    and (
+                        not isinstance(policy.data.get("content_path_command"), list)
+                        or not isinstance(policy.data.get("python_version"), str)
+                        or re.fullmatch(r"3\.[0-9]+", policy.data["python_version"])
+                        is None
+                    )
+                )
             ):
                 errors.append(
                     f"{policy.name}: Python runtime role requires an explicit typed isolated selection"
@@ -1065,7 +1089,9 @@ class ProofPlan:
             content_path_command = policy.data.get("content_path_command")
             selected_version = policy.data.get("version_from_content_path", False)
             if type(selected_version) is not bool or (
-                selected_version and content_path_command is None
+                selected_version
+                and content_path_command is None
+                and selector != "build-python"
             ):
                 errors.append(
                     f"{policy.name}: selected version requires a typed content resolver"
@@ -1073,7 +1099,9 @@ class ProofPlan:
             package = policy.data.get("node_package")
             explicit_selection = policy.data.get("selection_only", False)
             if type(explicit_selection) is not bool or (
-                explicit_selection and content_path_command is None
+                explicit_selection
+                and content_path_command is None
+                and selector != "build-python"
             ):
                 errors.append(
                     f"{policy.name}: explicit prerequisite requires a typed content resolver"
@@ -1728,6 +1756,7 @@ class ProofPlan:
                         )
             try:
                 cargo_native_units(command.data)
+                cargo_build_python(command.data)
             except ValueError as exc:
                 errors.append(f"{command.id}: {exc}")
             toolchains = command.data.get("toolchains")
@@ -2666,6 +2695,10 @@ def compiler_tool_path(
 
         candidates = llvm_tool_candidates("strip", environment=environment)
         selected = candidates[0] if candidates else None
+    elif selector == "build-python":
+        from molt.python_runtime_admission import resolve_build_python
+
+        selected = resolve_build_python(environment, cwd=cwd)
     elif selector == "llvm-sdk":
         from molt.llvm_toolchain import discover_llvm_toolchain
 
@@ -2911,7 +2944,9 @@ def _version_fingerprint(
         launcher_sha256 = str(launcher["sha256"])
     else:
         launcher_sha256 = content_hash(launcher_path)
-    content_path = launcher_path
+    content_path = (
+        command_path if policy.python_identity_role == "runtime" else launcher_path
+    )
     content_path_command = policy.data.get("content_path_command")
     if policy.name in {"rustc", "cargo"}:
         from molt.rust_toolchain import resolve_rustup_proxy

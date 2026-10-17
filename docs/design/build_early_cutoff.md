@@ -23,6 +23,17 @@ programs constantly.
   enumerated afterwards.
 - git: the racy-git rule; a file changed within one timestamp tick of the
   index cannot be trusted by stat alone.
+- [Cargo build directories](https://doc.rust-lang.org/cargo/reference/config.html#buildbuild-dir)
+  separate intermediate graphs from final target outputs. Target rustflags
+  alone cannot invalidate compiled host dependencies when `--target` is used.
+- [PyO3 environment signatures](https://pyo3.rs/v0.29.3/building-and-distribution)
+  connect interpreter environment changes to Cargo build-script invalidation.
+- [rustc dependency tracking](https://rustc-dev-guide.rust-lang.org/queries/incremental-compilation-in-detail.html)
+  distinguishes changed inputs from changed results. Reuse is justified by the
+  inputs of the consuming unit, rather than a successful upstream check alone.
+- [cc-rs metadata controls](https://docs.rs/cc/1.6.0/cc/struct.Build.html#method.cargo_metadata)
+  can suppress environment dependency reporting as well as archive link output.
+  Consumers that own archive linking must still invalidate C output inputs.
 
 ## Design
 
@@ -120,6 +131,71 @@ unused for a week are deleted, at most once an hour.
 
 ## Limits
 
+### External inputs and Cargo reuse
+
+An input-record miss and a changed runtime identity do not themselves make
+Cargo rebuild. A real dependency-free Cargo reproduction changed an external
+header from 7 to 9: the recaptured toolchain identity changed, but Cargo reused
+its build-script output and the binary still returned 7. The plan's before/after
+resource checks both passed. Publication must not attach the new identity to
+those old output bytes.
+
+`RuntimeCargoPlan` therefore pins `CARGO_BUILD_BUILD_DIR` and the matching final
+`--config build.build-dir` to a content-addressed intermediate directory. Its
+key contains the existing captured executable/wrapper identities, Rust host
+and target resources, C resources and output-bearing C environment, final-link
+resources, and selected WASI SDK. LLVM's already admitted compiler SDK joins the
+same resource custody before compiler identity capture. This covers compiled
+host dependencies, target build scripts and nested CMake output through one
+authority. The managed final `CARGO_TARGET_DIR` is also pinned through a final
+`build.target-dir` override: earlier inline Cargo configuration cannot redirect
+published outputs outside their admitted root.
+The resolver requires Cargo 1.91 or newer, the version that stabilized
+`build.build-dir`, using a guarded probe tied to the captured executable.
+Older Cargo can ignore the configuration key, so successful execution alone
+would not establish this capability.
+
+The base is `CARGO_BUILD_BUILD_DIR` when explicitly supplied in the incoming
+environment, otherwise the managed `CARGO_TARGET_DIR`. The plan retains that
+base as `MOLT_CARGO_BUILD_DIR_BASE` when its environment is resolved again.
+Molt owns and pins the intermediate layout; Cargo configuration cannot replace
+the admitted generation in the child. Resource captures and their cached
+content projections are reused: no second SDK enumeration or executable probe
+is introduced to compute this key.
+
+Rust source, build-Python content, job counts, output paths and unrelated Cargo
+configuration bytes are excluded from this graph key. Ordinary source edits
+retain Cargo's incremental graph; actual toolchain/resource changes pay for a
+fresh graph and its disk storage. Old generations remain ordinary development
+artifacts under the selected build root, subject to its cleanup and custody.
+Python-generated tables use the captured interpreter digest as a separate
+build-script environment signature, so interpreter drift invalidates their
+generators without selecting a fresh graph for every Rust dependency.
+Apple deployment controls belong to the same C input authority: with metadata
+suppressed, a real explicit-host Cargo control otherwise reused a stale
+build-script result after changing `MACOSX_DEPLOYMENT_TARGET`. The macOS, iOS,
+watchOS, tvOS and visionOS controls are scalar inputs, not SDK search paths.
+Effective generator selection is pinned to an absolute lexical entrypoint after
+Cargo configuration merging and before identity capture. Relative selectors and
+PATH entries retain their operation-directory meaning when build scripts run
+from a crate directory; virtualenv aliases and directory-symlink traversal keep
+their executable semantics.
+
+Queued Cargo compilation captures this generator as a contextual prerequisite,
+independently of the proof launcher's site-enabled interpreter. Command and
+lane declarations identify runtime-generation work; reviewed
+compiler-only operations avoid the generator inventory and its probes. An
+undeclared compiling Cargo operation retains conservative generator custody.
+The lease owns both final outputs and the intermediate base. Its runtime-WASI receipt
+validates transport and canonical argv; the executing runtime driver resolves
+and verifies the actual resource generation through `RuntimeCargoPlan`. Receipt
+shape alone does not prove external resource freshness.
+
+This is development/build-time work. It adds no checks, interpreter dependency,
+storage or startup work to emitted programs. It establishes freshness of
+captured inputs, not target-version Unicode semantics or native errno policy;
+those remain V1-22/V1-23. Bare Cargo retains its documented dependency model.
+
 - Inputs on a network filesystem whose clock is behind this host's can pass
   the racy rule; git, ninja, make and Cargo share this limit.
 - A process that writes the output while the build that publishes it runs
@@ -154,8 +230,9 @@ which removed the artifact store.
 2. A compact record.
 3. Stage-level cutoff: the runtime and backend identity checks (13 s of a warm
    build) reuse the ledger to prove by stat that nothing changed.
-4. The runtime build stops running Python: checked-in Unicode tables per
-   Unicode version and errno constants per target.
+4. Runtime tables use pinned Unicode data selected by the target Python version;
+   native errno uses target headers with CPython's conditional publication
+   policy. Retire build Python after all generated consumers migrate.
 5. A directory the build lists records the projection it used (its module
    candidates), not its token, so a new log or editor file beside the entry
    does not invalidate the record; Bazel's `GlobValue` cuts off the same way.

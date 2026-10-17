@@ -426,6 +426,49 @@ def test_tool_command_relative_search_roots_use_captured_not_ambient_cwd(
     assert command == (str(tool), "-c")
 
 
+@pytest.mark.parametrize("selector", ["explicit", "path"])
+def test_executable_selection_uses_operation_cwd(tmp_path, monkeypatch, selector):
+    name = "compiler.exe" if os.name == "nt" else "compiler"
+    operation = tmp_path / "operation"
+    ambient = tmp_path / "ambient"
+    for directory, content in ((operation, b"selected"), (ambient, b"poison")):
+        tool = directory / "bin" / name
+        tool.parent.mkdir(parents=True)
+        tool.write_bytes(content)
+        tool.chmod(0o755)
+    monkeypatch.chdir(ambient)
+    selected = identity.resolve_executable(
+        f"bin/{name}" if selector == "explicit" else name,
+        environment={"PATH": "bin", "PATHEXT": ".EXE"},
+        cwd=operation,
+        label="compiler",
+    )
+    assert selected == operation / "bin" / name
+    assert selected.read_bytes() == b"selected"
+    assert Path.cwd() == ambient
+
+
+def test_executable_operation_cwd_preserves_symlink_parent_traversal(tmp_path):
+    operation = tmp_path / "operation"
+    actual = tmp_path / "actual"
+    (actual / "nested").mkdir(parents=True)
+    for directory, content in ((operation, b"poison"), (actual, b"selected")):
+        executable = directory / "bin" / "compiler.exe"
+        executable.parent.mkdir(parents=True)
+        executable.write_bytes(content)
+        executable.chmod(0o755)
+    try:
+        (operation / "walk").symlink_to(actual / "nested", target_is_directory=True)
+    except OSError:
+        pytest.skip("host cannot create directory symlinks")
+    selected = identity.resolve_executable(
+        "walk/../bin/compiler.exe", environment={}, cwd=operation, label="compiler"
+    )
+    assert selected.is_absolute()
+    assert selected.read_bytes() == b"selected"
+    assert selected.samefile(actual / "bin" / "compiler.exe")
+
+
 @pytest.mark.skipif(os.name != "nt", reason="Windows executable name contract")
 @pytest.mark.parametrize("consumer", ["search", "explicit", "identity"])
 def test_executable_entrypoint_spelling_is_canonical_across_selectors(

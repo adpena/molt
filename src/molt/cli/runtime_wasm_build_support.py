@@ -1,6 +1,10 @@
 from __future__ import annotations
 
-from molt.cli.runtime_build_python import build_python_scope
+from molt.cli.runtime_build_python import (
+    bind_runtime_build_python,
+    build_python_scope,
+    pin_runtime_build_python_environment,
+)
 
 import contextlib
 import json
@@ -208,6 +212,9 @@ def _ensure_wasm_cpython_abi_staticlib(
                 env=env,
                 cargo_command=command,
                 requested_target="wasm32-wasip1",
+                environment_transform=lambda env: pin_runtime_build_python_environment(
+                    env, cwd=root
+                ),
                 rustflags_transform=lambda flags: _wasm_runtime_codegen_flags(
                     flags,
                     simd_enabled=True,
@@ -246,6 +253,7 @@ def _ensure_wasm_cpython_abi_staticlib(
             ):
                 stage = "pre-build-identity"
                 pre_identity = resolve_identity()
+                plan = bind_runtime_build_python(plan, pre_identity)
                 fingerprint = runtime_build_fingerprint(pre_identity)
                 stage = "metadata-admission"
                 stored_fingerprint = _read_runtime_fingerprint(fingerprint_path)

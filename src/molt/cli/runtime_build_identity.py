@@ -18,6 +18,10 @@ from molt.python_runtime_admission import BuildPythonAdmission
 from molt.cli.cargo_source_closure import _cargo_crate_source_closure
 from molt.cli.runtime_artifact_selection import RuntimeArtifactSelection
 from molt.cli.runtime_source_closure import runtime_source_paths
+from molt.cli.runtime_build_python import (
+    BUILD_PYTHON_SIGNATURE,
+    pin_runtime_build_python_environment,
+)
 from molt.cli.runtime_cargo_plan import RuntimeCargoPlan, resolve_runtime_cargo_plan
 from molt.cli.runtime_identity_schema import (
     RuntimeBuildIdentity,
@@ -59,6 +63,7 @@ _RUNTIME_BUILD_TOOLING_RELPATHS = (
     "src/molt/_wasm_runtime_exports.py",
     "src/molt/cargo_execution_policy.py",
     "src/molt/capability_policy.py",
+    "src/molt/cli/cargo_command.py",
     "src/molt/cli/cargo_execution.py",
     "src/molt/cli/cargo_profiles.py",
     "src/molt/cli/cargo_source_closure.py",
@@ -893,6 +898,9 @@ def _capture_plan_toolchain(
     build_python = _python_identity(
         cargo_plan.environment, admission=build_python_admission
     )
+    signature = cargo_plan.environment.get(BUILD_PYTHON_SIGNATURE)
+    if signature is not None and signature != _digest(build_python):
+        raise ValueError("runtime build Python signature differs from captured content")
     cargo_plan.verify()
     result = cargo_plan.toolchain_identity()
     cast(dict[str, object], result["tools"])["build_python"] = build_python
@@ -944,6 +952,9 @@ def _plan_for_capture(
             env=env,
             cargo_command=cargo_command,
             requested_target=target_triple,
+            environment_transform=lambda env: pin_runtime_build_python_environment(
+                env, cwd=project_root
+            ),
         )
     if cargo_plan.project_root != project_root.resolve(strict=False):
         raise ValueError("runtime Cargo plan belongs to another source root")
@@ -975,6 +986,9 @@ def _wasm_compile_toolchain_content(
         env=env,
         cargo_command=(env.get("CARGO", "cargo"), "rustc", "--target", target_triple),
         requested_target=target_triple,
+        environment_transform=lambda env: pin_runtime_build_python_environment(
+            env, cwd=project_root
+        ),
     )
     if plan.target != target_triple:
         raise ValueError("runtime WASM toolchain plan target is invalid")

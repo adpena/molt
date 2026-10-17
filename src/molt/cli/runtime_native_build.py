@@ -2,7 +2,11 @@ from __future__ import annotations
 
 from molt.cli import progress as _progress
 from molt.python_runtime_admission import BuildPythonAdmission
-from molt.cli.runtime_build_python import build_python_scope
+from molt.cli.runtime_build_python import (
+    bind_runtime_build_python,
+    build_python_scope,
+    pin_runtime_build_python_environment,
+)
 
 import json
 import os
@@ -865,6 +869,9 @@ def _prepare_native_runtime_build(
             env=build_env,
             cargo_command=cmd,
             requested_target=target_triple,
+            environment_transform=lambda env: pin_runtime_build_python_environment(
+                env, cwd=project_root
+            ),
             rustflags_transform=rust_cpu.rustflags,
         )
         cmd = list(cargo_plan.command)
@@ -908,6 +915,7 @@ def _prepare_native_runtime_build(
             cargo_plan=cargo_plan,
             build_python_admission=build_python_admission,
         )
+        cargo_plan = bind_runtime_build_python(cargo_plan, build_identity)
     except (OSError, ValueError) as exc:
         summary = f"Failed to compute exact runtime native build identity: {exc}"
         if not json_output:
