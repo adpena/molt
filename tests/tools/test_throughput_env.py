@@ -66,6 +66,9 @@ def test_run_context_env_prefers_external_artifact_root(
         "UV_CACHE_DIR",
         "TMPDIR",
         "MOLT_SESSION_ID",
+        # conftest marks its own per-worker session as generated; the marker
+        # would demote the pinned session below to a generated one.
+        "MOLT_SESSION_ID_GENERATED",
         # Hosted CI custody owns every root; this case is the developer host.
         GITHUB_ACTIONS_EPHEMERAL_ROOT_ENV,
     ):
