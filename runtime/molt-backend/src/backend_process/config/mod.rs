@@ -11,7 +11,10 @@ pub(crate) use constants::{
     DEFAULT_BACKEND_BATCH_OP_BUDGET, DEFAULT_BACKEND_BATCH_SIZE, DEFAULT_STDLIB_BATCH_SIZE,
 };
 #[cfg(molt_backend_daemon)]
-pub(crate) use constants::{DEFAULT_DAEMON_MAX_JOBS, DEFAULT_DAEMON_REQUEST_LIMIT_BYTES, MIB};
+pub(crate) use constants::{
+    DEFAULT_DAEMON_IDLE_TIMEOUT_SECS, DEFAULT_DAEMON_MAX_JOBS, DEFAULT_DAEMON_REQUEST_LIMIT_BYTES,
+    MIB,
+};
 #[cfg(molt_backend_daemon)]
 pub(crate) use daemon_env::BACKEND_DAEMON_PROTOCOL_VERSION;
 pub(crate) use memory::default_backend_max_rss_gb;

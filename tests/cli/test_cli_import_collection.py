@@ -32994,6 +32994,50 @@ def test_backend_daemon_ping_health_backcompat_without_health(
     assert health is None
 
 
+def test_retire_project_backend_daemons_retires_only_that_checkouts_live_daemons(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    project = tmp_path / "checkout"
+    other = tmp_path / "other"
+    daemon_root = tmp_path / "state" / "backend_daemon"
+    daemon_root.mkdir(parents=True)
+
+    def record(pid: int, root: Path, *, socket: bool) -> None:
+        socket_path = tmp_path / f"{pid}.sock"
+        if socket:
+            socket_path.write_text("", encoding="utf-8")
+        BACKEND_EXECUTION._write_backend_daemon_identity(
+            daemon_root / f"molt-backend.dev-fast.{pid}.identity.json",
+            _test_backend_daemon_identity(
+                pid, socket_path=socket_path, project_root=root
+            ),
+        )
+
+    record(1, project, socket=True)  # live: retired
+    record(2, other, socket=True)  # another checkout's daemon
+    record(3, project, socket=False)  # already retiring: its socket is gone
+    record(4, project, socket=True)  # its pid now names another process
+    retired: list[Path] = []
+    monkeypatch.setattr(
+        BACKEND_EXECUTION,
+        "_backend_daemon_identity_is_verified",
+        lambda identity, **kwargs: identity.pid != 4,
+    )
+
+    def retire(socket_path: Path, *, timeout: float | None) -> bool:
+        retired.append(socket_path)
+        return True
+
+    monkeypatch.setattr(BACKEND_EXECUTION, "retire_backend_daemon", retire)
+
+    pids = BACKEND_EXECUTION.retire_project_backend_daemons(
+        project, {"MOLT_BUILD_STATE_DIR": str(tmp_path / "state")}
+    )
+
+    assert pids == (1,)
+    assert retired == [tmp_path / "1.sock"]
+
+
 @pytest.mark.parametrize(
     ("response", "retired"),
     [

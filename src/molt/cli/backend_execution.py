@@ -1192,6 +1192,34 @@ def retire_backend_daemon(socket_path: Path, *, timeout: float | None) -> bool:
     return health is not None and health.get("retiring") is True
 
 
+def retire_project_backend_daemons(
+    project_root: Path, env: Mapping[str, str], *, timeout: float = 2.0
+) -> tuple[int, ...]:
+    """Ask each live daemon that serves ``project_root`` to retire.
+
+    A retired checkout's daemons would otherwise hold their memory until their
+    idle timeout. Retirement drains, so a build still connected completes.
+    Returns the pids that acknowledged.
+    """
+    root = project_root.resolve()
+    daemon_root = _daemon_custody.backend_daemon_root_from_env(env, project_root=root)
+    retired: list[int] = []
+    for record in _daemon_custody.iter_backend_daemon_identity_records(daemon_root):
+        identity = record.identity
+        if (
+            identity.project_root.resolve() != root
+            # A daemon without its socket is already retiring.
+            or not identity.socket_path.exists()
+            or not _backend_daemon_identity_is_verified(
+                identity, allow_health_probe=False
+            )
+        ):
+            continue
+        if retire_backend_daemon(identity.socket_path, timeout=timeout):
+            retired.append(identity.pid)
+    return tuple(retired)
+
+
 def _backend_daemon_wait_until_ready(
     socket_path: Path,
     *,
