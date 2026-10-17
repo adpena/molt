@@ -437,8 +437,8 @@ fn does_not_unroll_when_polarity_disagrees_with_step_sign() {
 }
 
 /// L4 gate semantics: a function carrying the `has_exception_handling`
-/// flag *and* a bare `CheckException` observation op in the loop body —
-/// but NO real handler region — is still unrolled. Every cloned
+/// flag and a `CheckException` function-exit guard in the loop body,
+/// but no local try-handler region, is still unrolled. Every cloned
 /// `CheckException` retains the same handler label (the function-exit
 /// handler, outside the loop), so the unrolled code has identical exception
 /// semantics to the rolled loop.
@@ -451,7 +451,7 @@ fn unrolls_with_check_exception_observation_in_body() {
         exit,
         ..
     } = build_test_loop(0, 4, 1, 1);
-    // Add a bare CheckException observation op to the body and set the
+    // Add a CheckException function-exit guard to the body and set the
     // coarse flag, exactly as the production frontend does.
     func.blocks.get_mut(&body).unwrap().ops.insert(
         0,
@@ -816,6 +816,7 @@ fn build_multiarg_counted_loop(start: i64, stop: i64, step: i64) -> MultiArgLoop
 /// transfer boundary, as target preparation + SimpleIR CFG construction do.
 fn split_with_observation(func: &mut TirFunction, block: BlockId, at: usize) -> BlockId {
     let tail = func.fresh_block();
+    let pending = func.fresh_value();
     let source = func.blocks.get_mut(&block).unwrap();
     let ops = source.ops.split_off(at);
     let terminator = std::mem::replace(
@@ -827,9 +828,9 @@ fn split_with_observation(func: &mut TirFunction, block: BlockId, at: usize) -> 
     );
     source.ops.push(TirOp {
         dialect: Dialect::Molt,
-        opcode: OpCode::CheckException,
+        opcode: OpCode::ExceptionPending,
         operands: vec![],
-        results: vec![],
+        results: vec![pending],
         attrs: AttrDict::new(),
         source_span: None,
     });
@@ -861,6 +862,7 @@ fn counted_paths_preserve_split_comparison_body_latch_and_final_guard() {
     }
     let update = split_with_observation(&mut func, body, 1);
     let latch = split_with_observation(&mut func, update, 1);
+    crate::tir::verify::verify_function(&func).expect("valid typed observation boundaries");
     let info = counted_loop::recognize_counted_loop(&func, header).unwrap();
     assert_eq!(info.cond_block, guard);
     assert_eq!(info.guard_path.len(), 12);
@@ -890,7 +892,7 @@ fn counted_paths_preserve_split_comparison_body_latch_and_final_guard() {
         .blocks
         .values()
         .flat_map(|block| &block.ops)
-        .filter(|op| op.opcode == OpCode::CheckException)
+        .filter(|op| op.opcode == OpCode::ExceptionPending)
         .count();
     assert_eq!(
         polls,
@@ -952,14 +954,11 @@ fn counted_side_exit_ranges_do_not_authorize_final_carried_state_rewrite() {
         },
     );
     func.label_id_map.insert(handler.0, 991);
-    func.blocks
-        .get_mut(&body)
-        .unwrap()
-        .ops
-        .last_mut()
-        .unwrap()
-        .attrs
-        .insert("value".into(), AttrValue::Int(991));
+    let check = func.blocks.get_mut(&body).unwrap().ops.last_mut().unwrap();
+    check.opcode = OpCode::CheckException;
+    check.results.clear();
+    check.attrs.insert("value".into(), AttrValue::Int(991));
+    crate::tir::verify::verify_function(&func).expect("valid explicit exceptional side exit");
     let info = counted_loop::recognize_counted_loop(&func, header).unwrap();
     assert!(info.has_side_exits);
     let scev = super::super::scev::compute_scev(&func);
@@ -993,6 +992,8 @@ fn counted_paths_reject_side_entry_and_unmodeled_argument_transport() {
         if side_entry {
             func.label_id_map.insert(body.0, 992);
             let mut observation = func.blocks[&cond].ops.last().unwrap().clone();
+            observation.opcode = OpCode::CheckException;
+            observation.results.clear();
             observation
                 .attrs
                 .insert("value".into(), AttrValue::Int(992));

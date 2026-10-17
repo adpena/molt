@@ -392,54 +392,69 @@ fn synthesized_name_consumers_gate_calls_and_release_only_admitted_names() {
     ] {
         let ctx = Context::create();
         let backend = make_backend(&ctx);
-        let func = TirFunction::new(
+        let mut func = TirFunction::new(
             "checked_name".into(),
             vec![],
             TirType::DynBox,
             molt_ir::FunctionReturnAbi::Value,
         );
-        let llvm_fn =
-            backend
-                .module
-                .add_function("checked_name", ctx.i64_type().fn_type(&[], false), None);
-        let entry = ctx.append_basic_block(llvm_fn, "entry");
-        backend.builder.position_at_end(entry);
-        let mut lowering = make_dummy_lowering(&backend, &func, llvm_fn);
-        for operand in [ValueId(0), ValueId(1)] {
-            lowering.lower_op(func.entry_block, &const_none_def(operand));
-        }
-        let result_id = ValueId(2);
-        lowering.lower_op(
-            func.entry_block,
-            &TirOp {
-                dialect: Dialect::Molt,
-                opcode,
-                operands: (0..operands).map(ValueId).collect(),
-                results: if has_result { vec![result_id] } else { vec![] },
-                attrs: AttrDict::from([(key.into(), AttrValue::Str("same_name".into()))]),
-                source_span: None,
-            },
-        );
+        let first = func.fresh_value();
+        let second = func.fresh_value();
+        let result_id = func.fresh_value();
+        let handler_result = func.fresh_value();
+        let handler_id = func.fresh_block();
+        func.has_exception_handling = true;
+        func.label_id_map.insert(handler_id.0, 17);
+        let entry = func.blocks.get_mut(&func.entry_block).unwrap();
+        entry
+            .ops
+            .extend([const_none_def(first), const_none_def(second)]);
+        entry.ops.push(TirOp {
+            dialect: Dialect::Molt,
+            opcode,
+            operands: [first, second].into_iter().take(operands).collect(),
+            results: if has_result { vec![result_id] } else { vec![] },
+            attrs: AttrDict::from([(key.into(), AttrValue::Str("same_name".into()))]),
+            source_span: None,
+        });
         // The enclosing operation, not a private return, owns exception routing.
-        lowering.lower_op(
-            func.entry_block,
-            &TirOp {
-                dialect: Dialect::Molt,
-                opcode: OpCode::CheckException,
-                operands: vec![],
-                results: vec![],
-                attrs: AttrDict::new(),
-                source_span: None,
+        entry.ops.push(TirOp {
+            dialect: Dialect::Molt,
+            opcode: OpCode::CheckException,
+            operands: vec![],
+            results: vec![],
+            attrs: AttrDict::from([("value".into(), AttrValue::Int(17))]),
+            source_span: None,
+        });
+        entry.terminator = Terminator::Return {
+            values: vec![if has_result { result_id } else { first }],
+        };
+        func.blocks.insert(
+            handler_id,
+            TirBlock {
+                id: handler_id,
+                args: vec![],
+                ops: vec![const_none_def(handler_result)],
+                terminator: Terminator::Return {
+                    values: vec![handler_result],
+                },
             },
         );
-        let result = lowering.values[&if has_result { result_id } else { ValueId(0) }];
-        backend.builder.build_return(Some(&result)).unwrap();
+        let llvm_fn = try_lower_tir_to_llvm(&func, &backend)
+            .expect("checked-name consumer must lower with its explicit exception successor");
         backend
             .module
             .verify()
             .expect("checked name CFG must verify");
         let ir = llvm_fn.print_to_string().to_string();
-        let source = block_text(entry);
+        let entry_name = format!("bb{}", func.entry_block.0);
+        let source = block_text(
+            llvm_fn
+                .get_basic_blocks()
+                .into_iter()
+                .find(|block| block.get_name().to_bytes() == entry_name.as_bytes())
+                .unwrap(),
+        );
         let success = block_text(
             llvm_fn
                 .get_basic_blocks()
@@ -476,10 +491,39 @@ fn synthesized_name_consumers_gate_calls_and_release_only_admitted_names() {
         );
         assert!(!success.contains("ret "), "{ir}");
         assert!(
-            merge.contains(&format!("[ {}, %entry ]", nanbox::QNAN | nanbox::TAG_NONE)),
+            merge.contains(&format!(
+                "[ {}, %{entry_name} ]",
+                nanbox::QNAN | nanbox::TAG_NONE
+            )),
             "{ir}"
         );
         assert!(merge.contains("@molt_exception_pending()"), "{ir}");
+        assert!(merge.contains("icmp ne i64 %check_exc, 0"), "{ir}");
+        assert!(
+            merge.contains(&format!(
+                "br i1 %check_exc_pending, label %bb{}, label %check_exc_cont",
+                handler_id.0
+            )),
+            "{ir}"
+        );
+        assert!(!merge.contains("ret "), "{ir}");
+        for block_name in [format!("bb{}", handler_id.0), "check_exc_cont".into()] {
+            let destination = block_text(
+                llvm_fn
+                    .get_basic_blocks()
+                    .into_iter()
+                    .find(|block| {
+                        block
+                            .get_name()
+                            .to_bytes()
+                            .starts_with(block_name.as_bytes())
+                    })
+                    .unwrap(),
+            );
+            assert!(destination.contains("ret i64"), "{ir}");
+            assert!(!destination.contains(&format!("@{runtime}(")), "{ir}");
+            assert!(!destination.contains("@molt_dec_ref_obj("), "{ir}");
+        }
         assert!(
             !merge.contains("@molt_dec_ref_obj(") && !merge.contains("ptr_unbox"),
             "{ir}"

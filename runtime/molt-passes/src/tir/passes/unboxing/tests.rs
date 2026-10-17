@@ -60,9 +60,13 @@ fn full_width_box_keeps_its_cross_block_exception_observer() {
         molt_ir::FunctionReturnAbi::Value,
     );
     let next = func.fresh_block();
+    let handler = func.fresh_block();
     let raw = func.fresh_value();
     let boxed = func.fresh_value();
     let unboxed = func.fresh_value();
+    let failed = func.fresh_value();
+    func.label_id_map.insert(handler.0, 17);
+    func.has_exception_handling = true;
     let entry = func.blocks.get_mut(&func.entry_block).unwrap();
     entry
         .ops
@@ -81,6 +85,7 @@ fn full_width_box_keeps_its_cross_block_exception_observer() {
                     opcode: OpCode::CheckException,
                     operands: vec![],
                     results: vec![],
+                    attrs: AttrDict::from([("value".into(), AttrValue::Int(17))]),
                     ..box_op(raw, boxed)
                 },
                 unbox_op(boxed, unboxed),
@@ -90,8 +95,22 @@ fn full_width_box_keeps_its_cross_block_exception_observer() {
             },
         },
     );
+    func.blocks.insert(
+        handler,
+        TirBlock {
+            id: handler,
+            args: vec![],
+            ops: vec![const_int_op(failed, 0)],
+            terminator: Terminator::Return {
+                values: vec![failed],
+            },
+        },
+    );
+    verify_function(&func).expect("valid cross-block allocation exception successor");
     assert_eq!(run(&mut func).ops_removed, 0);
     assert_eq!(func.blocks[&next].ops[0].opcode, OpCode::CheckException);
+    assert_eq!(func.blocks[&next].ops[0].attrs["value"], AttrValue::Int(17));
+    assert_eq!(func.label_id_map[&handler.0], 17);
     assert!(verify_function(&func).is_ok());
 }
 

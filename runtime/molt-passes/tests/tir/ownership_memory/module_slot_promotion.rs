@@ -278,8 +278,11 @@ fn unknown_loop_writer_refuses_transaction_without_mutation() {
 fn preheader_async_work_poll_refuses_transaction_without_mutation() {
     let mut f = module_loop_func();
     let mut poll = op(OpCode::CheckException, vec![], vec![]);
+    poll.attrs.insert("value".into(), AttrValue::Int(7));
     assert!(poll.mark_async_work_poll());
     f.blocks.get_mut(&f.entry_block).unwrap().ops.push(poll);
+    molt_passes::tir::verify::verify_function(&f)
+        .expect("valid preheader callback-control fixture");
     let before = format!("{f:?}");
     let mut module = TirModule {
         name: "m".into(),
@@ -520,6 +523,7 @@ fn field_initialization_does_not_hide_allocation_or_old_value_callbacks() {
             }
             "poll" => {
                 let mut poll = op(OpCode::CheckException, vec![], vec![]);
+                poll.attrs.insert("value".into(), AttrValue::Int(7));
                 assert!(poll.mark_async_work_poll());
                 body.ops.insert(3, poll);
             }
