@@ -1612,13 +1612,21 @@ pub extern "C" fn molt_struct_unpack_iterator_type() -> u64 {
                 pfunc: std::ptr::null_mut(),
             },
         ];
+        // Py_TPFLAGS_* are C `unsigned long` and PyType_Spec.flags is C
+        // `unsigned int`; the cast narrows on LP64 and is the identity on
+        // LLP64 and wasm32.
+        #[allow(
+            clippy::unnecessary_cast,
+            reason = "c_ulong is u64 on LP64 but u32 on LLP64 and wasm32"
+        )]
+        let flags = (abi::abi_types::Py_TPFLAGS_HAVE_GC
+            | abi::abi_types::Py_TPFLAGS_IMMUTABLETYPE
+            | abi::abi_types::Py_TPFLAGS_DISALLOW_INSTANTIATION) as u32;
         let mut spec = abi::abi_types::PyType_Spec {
             name: c"_struct.unpack_iterator".as_ptr(),
             basicsize: size_of::<UnpackIterator>() as c_int,
             itemsize: 0,
-            flags: (abi::abi_types::Py_TPFLAGS_HAVE_GC
-                | abi::abi_types::Py_TPFLAGS_IMMUTABLETYPE
-                | abi::abi_types::Py_TPFLAGS_DISALLOW_INSTANTIATION) as u32,
+            flags,
             slots: slots.as_mut_ptr(),
         };
         unsafe {
@@ -1709,7 +1717,7 @@ pub extern "C" fn molt_struct_iter_unpack(error: u64, class: u64, format: u64, b
                 Ok(lease) => lease,
                 Err(_) => return MoltObject::none().bits(),
             };
-            if (*lease.descriptor()).len as usize % plan.size != 0 {
+            if !((*lease.descriptor()).len as usize).is_multiple_of(plan.size) {
                 return struct_error(
                     py,
                     error,

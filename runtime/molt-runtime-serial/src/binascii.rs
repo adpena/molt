@@ -879,7 +879,7 @@ pub extern "C" fn molt_binascii_a2b_base64(data_bits: u64) -> u64 {
             || unsafe { input_export.as_ref().unwrap().bytes(_py) },
             |text| text.as_bytes(),
         );
-        let decoded = match base64_decode(&raw) {
+        let decoded = match base64_decode(raw) {
             Ok(v) => v,
             Err(msg) => return raise_exception::<_>(_py, "ValueError", msg),
         };
@@ -894,7 +894,7 @@ pub extern "C" fn molt_binascii_b2a_base64(data_bits: u64) -> u64 {
             Ok(export) => export,
             Err(_) => return MoltObject::none().bits(),
         };
-        let encoded = base64_encode(&(unsafe { input_export.bytes(_py) }));
+        let encoded = base64_encode(unsafe { input_export.bytes(_py) });
         alloc_bytes_or_oom(_py, &encoded, "b2a_base64")
     })
 }
@@ -919,7 +919,7 @@ pub extern "C" fn molt_binascii_a2b_hex(data_bits: u64) -> u64 {
             return raise_exception::<_>(_py, "ValueError", "Odd-length string");
         }
         // Use SIMD-accelerated hex decode (NEON/SSE2)
-        let out = match simd_hex_decode(&raw) {
+        let out = match simd_hex_decode(raw) {
             Some(v) => v,
             None => {
                 return raise_exception::<_>(_py, "ValueError", "Non-hexadecimal digit found");
@@ -937,7 +937,7 @@ pub extern "C" fn molt_binascii_b2a_hex(data_bits: u64) -> u64 {
             Err(_) => return MoltObject::none().bits(),
         };
         // Use SIMD-accelerated hex encode (NEON/SSE2)
-        let out = simd_hex_encode(&(unsafe { input_export.bytes(_py) }));
+        let out = simd_hex_encode(unsafe { input_export.bytes(_py) });
         alloc_bytes_or_oom(_py, &out, "b2a_hex")
     })
 }
@@ -958,7 +958,7 @@ pub extern "C" fn molt_binascii_a2b_qp(data_bits: u64) -> u64 {
             || unsafe { input_export.as_ref().unwrap().bytes(_py) },
             |text| text.as_bytes(),
         );
-        let out = qp_decode(&raw);
+        let out = qp_decode(raw);
         alloc_bytes_or_oom(_py, &out, "a2b_qp")
     })
 }
@@ -970,7 +970,7 @@ pub extern "C" fn molt_binascii_b2a_qp(data_bits: u64) -> u64 {
             Ok(export) => export,
             Err(_) => return MoltObject::none().bits(),
         };
-        let out = qp_encode(&(unsafe { input_export.bytes(_py) }));
+        let out = qp_encode(unsafe { input_export.bytes(_py) });
         alloc_bytes_or_oom(_py, &out, "b2a_qp")
     })
 }
@@ -991,7 +991,7 @@ pub extern "C" fn molt_binascii_a2b_uu(data_bits: u64) -> u64 {
             || unsafe { input_export.as_ref().unwrap().bytes(_py) },
             |text| text.as_bytes(),
         );
-        let out = match uu_decode(&raw) {
+        let out = match uu_decode(raw) {
             Ok(v) => v,
             Err(msg) => return raise_exception::<_>(_py, "ValueError", msg),
         };
@@ -1006,7 +1006,7 @@ pub extern "C" fn molt_binascii_b2a_uu(data_bits: u64) -> u64 {
             Ok(export) => export,
             Err(_) => return MoltObject::none().bits(),
         };
-        let out = match uu_encode(&(unsafe { input_export.bytes(_py) })) {
+        let out = match uu_encode(unsafe { input_export.bytes(_py) }) {
             Ok(v) => v,
             Err(msg) => return raise_exception::<_>(_py, "ValueError", msg),
         };
@@ -1030,8 +1030,7 @@ pub extern "C" fn molt_binascii_crc32(data_bits: u64, value_bits: u64) -> u64 {
             return MoltObject::none().bits();
         }
         // CPython takes the running value bitwise as an unsigned 32-bit int.
-        let crc =
-            molt_runtime_core::crc32::crc32(&(unsafe { input_export.bytes(_py) }), value as u32);
+        let crc = molt_runtime_core::crc32::crc32(unsafe { input_export.bytes(_py) }, value as u32);
         MoltObject::from_int(i64::from(crc)).bits()
     })
 }
@@ -1048,7 +1047,7 @@ pub extern "C" fn molt_binascii_crc_hqx(data_bits: u64, value_bits: u64) -> u64 
             return MoltObject::none().bits();
         }
         let mut crc = (value as u32) & 0xFFFF;
-        for &byte in (unsafe { input_export.bytes(_py) }) {
+        for &byte in unsafe { input_export.bytes(_py) } {
             crc ^= (u32::from(byte)) << 8;
             for _ in 0..8 {
                 if (crc & 0x8000) != 0 {
