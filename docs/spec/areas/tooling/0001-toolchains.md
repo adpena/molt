@@ -241,6 +241,29 @@ replacement directories are not cleanup authority. Linker staging, optimizer
 transactions, facts-scanner snapshots, and WASM profiling/pipeline helpers use
 this owner rather than independent host-default temporary-directory lanes.
 
+The shared sccache daemon uses the durable temporary directory selected by
+`molt.cargo_execution_policy`; it outlives individual build scratch. Selecting
+an installed compiler wrapper configures its environment without an eager
+readiness subprocess. First actual compiler work starts or contacts the daemon
+and establishes whether that operation succeeds. Selection itself does not
+attest server readiness, compiler compatibility or endpoint identity.
+`--show-stats` remains reporting only: pinned sccache 0.18 can synthesize zero
+statistics when disconnected
+([upstream command semantics](https://github.com/mozilla/sccache/blob/v0.18.0/src/commands.rs#L724-L868)).
+`tools/throughput_env.sh --apply` prepares the environment and artifact directories;
+it does not stop or restart a shared daemon. This removes an eager client process
+from CLI wrapper selection and two lifecycle requests from shell activation;
+it adds no emitted-binary work or new retry behavior.
+
+The upstream pathname-socket unlink/bind race remains open as HF-291
+([upstream report](https://github.com/mozilla/sccache/issues/2906)). Runtime
+metadata-query failures remain explicit failures; the existing Cargo
+wrapper-error retry is a separate execution policy. Selection and activation
+have independent no-process controls; the remaining daemon ownership contract
+still requires upstream repair and cold concurrent-client qualification.
+Statistics, a hashed TCP port, or a private operational server do not close
+the general race.
+
 ## macOS
 - Install Xcode CLT: `xcode-select --install`
 - Homebrew recommended: `brew install llvm mlir cmake ninja pkg-config`

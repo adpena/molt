@@ -1650,8 +1650,8 @@ def _install_dx_defaults(repo_root: Path, env: dict[str, str]) -> None:
     env.setdefault("MOLT_DIFF_ALLOW_RUSTC_WRAPPER", "1")
     env.setdefault("SCCACHE_DIR", str((ext_root / ".sccache").resolve()))
     env.setdefault("SCCACHE_CACHE_SIZE", DEFAULT_SCCACHE_CACHE_SIZE)
-    # Shells that start or stop the server (tools/throughput_env.sh) must reach
-    # the same private endpoint as the CLI's clients.
+    # Shell clients and statistics requests use the same selected endpoint
+    # as the CLI's compiler clients.
     endpoint = sccache_server_endpoint(env)
     if endpoint is not None:
         env.setdefault(*endpoint)

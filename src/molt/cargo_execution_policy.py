@@ -357,9 +357,9 @@ def normalize_cargo_environment(
     must inspect the complete family: checking only ``RUSTC_WRAPPER`` leaves
     probes and workspace wrappers able to inherit the invalid
     sccache-plus-incremental combination, or a caller's scratch ``TMPDIR`` that
-    a server it starts would keep (see ``sccache_server_temp_dir``). This
-    function only computes the environment; ``cargo_subprocess_environment``
-    also creates the server temp dir at the launch boundary.
+    a server it starts would keep (see ``sccache_server_temp_dir``). When
+    sccache is selected, normalization also prepares its durable temporary
+    directory through ``sccache_client_environment``; it starts no process.
     """
 
     child = dict(os.environ) if environ is None else dict(environ)
