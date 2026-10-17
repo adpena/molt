@@ -329,14 +329,14 @@ def test_malformed_path_request_misses_without_crashing(
 ):
     source = write(tmp_path / "entry.py")
     load(source)
-    original = records._read_cached_json_object
+    original = records._read_import_scan_payload
 
-    def corrupt(path, *, max_bytes=None):
-        payload = original(path, max_bytes=max_bytes)
+    def corrupt(project_root, key):
+        payload = original(project_root, key)
         assert payload is not None
         return dict(payload, source_executions=[{"module": "bad", "path": bad_path}])
 
-    monkeypatch.setattr(records, "_read_cached_json_object", corrupt)
+    monkeypatch.setattr(records, "_read_import_scan_payload", corrupt)
     assert (
         records._read_persisted_import_scan_record(
             tmp_path,
@@ -395,10 +395,10 @@ def test_malformed_source_fact_containers_force_cold_regeneration(
     cold = load(source)
     assert cold.scan.source_sites
     assert load(source).cache_hit
-    original = records._read_cached_json_object
+    original = records._read_import_scan_payload
 
-    def corrupt(path, *, max_bytes=None):
-        payload = copy.deepcopy(original(path, max_bytes=max_bytes))
+    def corrupt(project_root, key):
+        payload = copy.deepcopy(original(project_root, key))
         assert payload is not None
         values = payload["source_values"]
         if container == "sites":
@@ -452,7 +452,7 @@ def test_malformed_source_fact_containers_force_cold_regeneration(
         return payload
 
     with monkeypatch.context() as local:
-        local.setattr(records, "_read_cached_json_object", corrupt)
+        local.setattr(records, "_read_import_scan_payload", corrupt)
         restored = records._read_persisted_import_scan_record(
             tmp_path,
             source,
@@ -1204,10 +1204,10 @@ def test_source_cache_rejects_retired_or_incoherent_protocol(
     )
     cold = load(source)
     assert load(source).cache_hit
-    original = records._read_cached_json_object
+    original = records._read_import_scan_payload
 
-    def corrupt(path, *, max_bytes=None):
-        payload = copy.deepcopy(original(path, max_bytes=max_bytes))
+    def corrupt(project_root, key):
+        payload = copy.deepcopy(original(project_root, key))
         assert payload is not None
         if defect == "old-schema":
             payload["version"] -= 1
@@ -1224,7 +1224,7 @@ def test_source_cache_rejects_retired_or_incoherent_protocol(
         return payload
 
     with monkeypatch.context() as patch:
-        patch.setattr(records, "_read_cached_json_object", corrupt)
+        patch.setattr(records, "_read_import_scan_payload", corrupt)
         decoded = records._read_persisted_import_scan_record(
             tmp_path,
             source,
@@ -1361,11 +1361,11 @@ def test_persisted_source_requests_bind_complete_namespace_premise(
             snapshot=snapshot,
         )
         requests.append(request)
-        cache_path = records._import_scan_cache_path(
-            tmp_path, path, **options, namespace_premise=premise
+        cache_key = records._import_scan_cache_key(
+            path, **options, namespace_premise=premise
         )
-        paths.append(cache_path)
-        payloads.append(records._read_cached_json_object(cache_path))
+        paths.append(cache_key)
+        payloads.append(records._read_import_scan_payload(tmp_path, cache_key))
     assert len(set(paths)) == len(premises)
     for premise, request in zip(premises, requests):
         assert (
@@ -1380,8 +1380,8 @@ def test_persisted_source_requests_bind_complete_namespace_premise(
         with monkeypatch.context() as local:
             local.setattr(
                 records,
-                "_read_cached_json_object",
-                lambda _path, payload=payloads[(index + 1) % len(premises)], *, max_bytes=None: (
+                "_read_import_scan_payload",
+                lambda _root, _key, payload=payloads[(index + 1) % len(premises)]: (
                     payload
                 ),
             )
@@ -1398,7 +1398,7 @@ def test_persisted_source_requests_bind_complete_namespace_premise(
     missing = dict(payloads[0])
     del missing["namespace_premise"]
     monkeypatch.setattr(
-        records, "_read_cached_json_object", lambda _path, *, max_bytes=None: missing
+        records, "_read_import_scan_payload", lambda _root, _key: missing
     )
     assert (
         records._read_persisted_import_scan_record(
@@ -1445,13 +1445,13 @@ def test_malformed_persisted_namespace_premise_is_not_an_empty_graph(
         )
         == request
     )
-    cache_path = records._import_scan_cache_path(
-        tmp_path, path, **options, namespace_premise=premise
+    cache_key = records._import_scan_cache_key(
+        path, **options, namespace_premise=premise
     )
-    payload = copy.deepcopy(records._read_cached_json_object(cache_path))
+    payload = copy.deepcopy(records._read_import_scan_payload(tmp_path, cache_key))
     payload["namespace_premise"] = invalid
     monkeypatch.setattr(
-        records, "_read_cached_json_object", lambda _path, *, max_bytes=None: payload
+        records, "_read_import_scan_payload", lambda _root, _key: payload
     )
     assert (
         records._read_persisted_import_scan_record(
@@ -1476,10 +1476,10 @@ def test_source_base_cache_rejects_incoherent_provenance(tmp_path, monkeypatch, 
     cold = load(source)
     assert cold.scan.source_values.bases
     assert load(source).cache_hit
-    read = records._read_cached_json_object
+    read = records._read_import_scan_payload
 
-    def corrupt(path, *, max_bytes=None):
-        payload = copy.deepcopy(read(path, max_bytes=max_bytes))
+    def corrupt(project_root, key):
+        payload = copy.deepcopy(read(project_root, key))
         values = payload["source_values"]
         if defect == "missing-bases":
             del values["bases"]
@@ -1494,7 +1494,7 @@ def test_source_base_cache_rejects_incoherent_provenance(tmp_path, monkeypatch, 
         return payload
 
     with monkeypatch.context() as patch:
-        patch.setattr(records, "_read_cached_json_object", corrupt)
+        patch.setattr(records, "_read_import_scan_payload", corrupt)
         recovered = load(source)
         assert not recovered.cache_hit
         assert recovered.scan.source_values.bases == cold.scan.source_values.bases
@@ -1776,10 +1776,10 @@ def test_function_completion_cache_rejects_retired_or_incoherent_records(
         "YieldFrom",
     }
     assert load(source).cache_hit
-    read = records._read_cached_json_object
+    read = records._read_import_scan_payload
 
-    def corrupt(path, *, max_bytes=None):
-        payload = copy.deepcopy(read(path, max_bytes=max_bytes))
+    def corrupt(project_root, key):
+        payload = copy.deepcopy(read(project_root, key))
         values = payload["source_values"]
         if defect == "short-function":
             values["functions"][0] = values["functions"][0][:4]
@@ -1798,7 +1798,7 @@ def test_function_completion_cache_rejects_retired_or_incoherent_records(
         return payload
 
     with monkeypatch.context() as patch:
-        patch.setattr(records, "_read_cached_json_object", corrupt)
+        patch.setattr(records, "_read_import_scan_payload", corrupt)
         recovered = load(source)
         assert not recovered.cache_hit
         assert recovered.scan.source_values == cold.scan.source_values
@@ -1910,10 +1910,10 @@ def test_element_cache_rejects_untyped_or_incoherent_operation(
     cold = load(source)
     assert cold.scan.source_values.elements
     assert load(source).cache_hit
-    read = records._read_cached_json_object
+    read = records._read_import_scan_payload
 
-    def corrupt(path, *, max_bytes=None):
-        payload = copy.deepcopy(read(path, max_bytes=max_bytes))
+    def corrupt(project_root, key):
+        payload = copy.deepcopy(read(project_root, key))
         elements = payload["source_values"]["elements"]
         if defect == "old-width":
             elements[0] = [elements[0][0], elements[0][2]]
@@ -1926,7 +1926,7 @@ def test_element_cache_rejects_untyped_or_incoherent_operation(
         return payload
 
     with monkeypatch.context() as patch:
-        patch.setattr(records, "_read_cached_json_object", corrupt)
+        patch.setattr(records, "_read_import_scan_payload", corrupt)
         recovered = load(source)
         assert not recovered.cache_hit
         assert recovered.scan.source_values == cold.scan.source_values

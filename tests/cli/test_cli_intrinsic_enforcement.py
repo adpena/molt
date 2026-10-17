@@ -2,7 +2,6 @@ from pathlib import Path
 import re
 import sys
 import functools
-import json
 import os
 
 import pytest
@@ -10,11 +9,17 @@ import pytest
 from molt import stdlib_intrinsic_policy
 from molt.cli import module_graph_cache
 from molt.cli.cache_fingerprints import _source_tree_fingerprint_transaction
+from molt.cli.source_record_store import SourceRecordStore
 from molt.compiler_analysis.python_imports import UnresolvedStaticImportError
 from molt.target_python import (
     SUPPORTED_TARGET_PYTHON_SHORT_VERSIONS,
     _DEFAULT_TARGET_PYTHON_VERSION,
     _parse_target_python_version,
+)
+from tests.source_record_test_support import (
+    delete_source_record,
+    replace_source_record,
+    source_records,
 )
 
 
@@ -176,15 +181,15 @@ def test_intrinsic_source_cache_recomputes_malformed_payload(
     provider, _identity = intrinsic_source_cache
     path = _write_module(tmp_path, "owner.py", "VALUE = 1\n")
     first = provider("owner", path)
-    [cache] = list((tmp_path / "cache").rglob("*.intrinsic.json"))
-    payload = json.loads(cache.read_text(encoding="utf-8"))
+    [(key, payload)] = source_records(tmp_path, "intrinsic-facts").items()
+    kind = "intrinsic-facts"
     if corruption == "sites":
-        cache = cache.with_name(cache.name.replace(".intrinsic.json", ".json"))
-        payload = json.loads(cache.read_text(encoding="utf-8"))
+        kind = "import-scan"
+        payload = source_records(tmp_path, kind)[key]
         payload["source_sites"] = {"poison": True}
     else:
         payload["facts"][corruption] = {"poison": True}
-    cache.write_text(json.dumps(payload), encoding="utf-8")
+    replace_source_record(tmp_path, kind, key, payload)
     assert provider("owner", path) == first
 
 
@@ -241,9 +246,9 @@ def test_intrinsic_source_cache_publication_failure_is_visible_and_nonfatal(
     path = _write_module(tmp_path, "owner.py", "raise ImportError\n")
 
     def cannot_publish(*_args, **_kwargs):
-        raise OSError("read-only cache")
+        return False
 
-    monkeypatch.setattr(module_graph_cache, "_write_cached_json_object", cannot_publish)
+    monkeypatch.setattr(SourceRecordStore, "put", cannot_publish)
     counts = {}
     assert (
         provider("owner", path, operation_counts=counts).status
@@ -255,7 +260,7 @@ def test_intrinsic_source_cache_publication_failure_is_visible_and_nonfatal(
         "intrinsic_source_publication_failures": 1,
     }
     assert "cannot cache intrinsic source facts" in capsys.readouterr().err
-    assert list((tmp_path / "cache").rglob("*.intrinsic.json")) == []
+    assert source_records(tmp_path, "intrinsic-facts") == {}
 
 
 def test_intrinsic_source_cache_reports_hit_and_rejected_payload(
@@ -266,10 +271,9 @@ def test_intrinsic_source_cache_reports_hit_and_rejected_payload(
     counts = {}
     provider("owner", path, operation_counts=counts)
     provider("owner", path, operation_counts=counts)
-    [cache] = list((tmp_path / "cache").rglob("*.intrinsic.json"))
-    payload = json.loads(cache.read_text(encoding="utf-8"))
+    [(key, payload)] = source_records(tmp_path, "intrinsic-facts").items()
     payload["facts"]["status"] = stdlib_intrinsic_policy.STATUS_INTRINSIC_SUPPORT
-    cache.write_text(json.dumps(payload), encoding="utf-8")
+    replace_source_record(tmp_path, "intrinsic-facts", key, payload)
     assert (
         provider("owner", path, operation_counts=counts).status
         == stdlib_intrinsic_policy.STATUS_POLICY_GATE
@@ -775,8 +779,7 @@ def test_intrinsic_source_cache_roundtrips_owner_plans(
     assert statement.plan.modules == ("pkg", "pkg.Value")
     assert opaque.request is None and opaque.unresolved
     assert opaque.line == 4
-    [cache] = list((tmp_path / "cache").rglob("*.intrinsic.json"))
-    payload = json.loads(cache.read_text(encoding="utf-8"))
+    [payload] = source_records(tmp_path, "intrinsic-facts").values()
     assert payload["identity"]["schema"] == "molt.stdlib-intrinsic-source.v8"
     assert "modules" not in payload["facts"] and "unresolved" not in payload["facts"]
     assert "blockers" not in payload["facts"]
@@ -806,9 +809,8 @@ def test_intrinsic_source_cache_rejects_malformed_site_facts(
         "__import__(unknown_name)\n",
     )
     first = provider("consumer", path)
-    [cache] = list((tmp_path / "cache").rglob("*.intrinsic.json"))
-    cache = cache.with_name(cache.name.replace(".intrinsic.json", ".json"))
-    payload = json.loads(cache.read_text(encoding="utf-8"))
+    [key] = source_records(tmp_path, "intrinsic-facts")
+    payload = source_records(tmp_path, "import-scan")[key]
     site = payload["source_sites"][0]
     if corruption == "missing-owner-plan":
         del site["owner_plan"]
@@ -827,7 +829,7 @@ def test_intrinsic_source_cache_rejects_malformed_site_facts(
     elif corruption == "opaque-no-obligation":
         site = payload["source_sites"][1]
         site["plan"]["runtime"] = False
-    cache.write_text(json.dumps(payload), encoding="utf-8")
+    replace_source_record(tmp_path, "import-scan", key, payload)
     assert provider("consumer", path) == first
 
 
@@ -900,10 +902,9 @@ def test_shared_source_cache_rejects_malformed_execution_and_export_facts(
         "__all__ = ['value']\ndef f():\n    _MOLT_OP()\ntry:\n    f()\nexcept Exception:\n    pass\n",
     )
     first = provider("consumer", path)
-    [metadata] = list((tmp_path / "cache").rglob("*.intrinsic.json"))
-    assert "sites" not in json.loads(metadata.read_text(encoding="utf-8"))["facts"]
-    cache = metadata.with_name(metadata.name.replace(".intrinsic.json", ".json"))
-    payload = json.loads(cache.read_text(encoding="utf-8"))
+    [(key, metadata)] = source_records(tmp_path, "intrinsic-facts").items()
+    assert "sites" not in metadata["facts"]
+    payload = source_records(tmp_path, "import-scan")[key]
     if corruption == "retired-effects":
         payload["source_effects"] = []
     elif corruption == "demand-phase":
@@ -924,7 +925,7 @@ def test_shared_source_cache_rejects_malformed_execution_and_export_facts(
     elif corruption == "source-span":
         payload["source_demands"][0][0][0] = -1
     if corruption == "missing-source-record":
-        cache.unlink()
+        delete_source_record(tmp_path, "import-scan", key)
     else:
-        cache.write_text(json.dumps(payload), encoding="utf-8")
+        replace_source_record(tmp_path, "import-scan", key, payload)
     assert provider("consumer", path) == first

@@ -8,7 +8,7 @@ from molt.cli import module_graph_cache
 
 _MODULE_GRAPH_CACHE_NAMES = (
     "_IMPORT_SCAN_CACHE_SCHEMA_VERSION",
-    "_import_scan_cache_path",
+    "_import_scan_cache_key",
     "_read_persisted_import_scan_record",
     "_resolved_module_cache_key",
     "_write_persisted_import_scan",
@@ -16,7 +16,7 @@ _MODULE_GRAPH_CACHE_NAMES = (
 
 _MODULE_GRAPH_CACHE_DEFINITIONS = (
     "_IMPORT_SCAN_CACHE_SCHEMA_VERSION =",
-    "def _import_scan_cache_path(",
+    "def _import_scan_cache_key(",
     "def _read_persisted_import_scan_record(",
     "def _resolved_module_cache_key(",
     "def _write_persisted_import_scan(",
