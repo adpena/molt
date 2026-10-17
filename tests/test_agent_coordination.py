@@ -1301,3 +1301,53 @@ def test_agent_context_reports_a_claims_row_outside_the_vocabulary(
         ("claims.records", "invalid_status")
     ]
     assert "'BLOCKED'" in str(errors[0]["message"])
+
+
+@pytest.mark.parametrize("initialized", [False, True])
+def test_agent_context_uses_actual_read_only_queue_audit(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, initialized: bool
+) -> None:
+    from contextlib import redirect_stdout
+    from io import StringIO
+    from tools.proof_queue_pkg import cli, state
+
+    db = tmp_path / "queue-state" / "queue.sqlite3"
+    if initialized:
+        writer = state._connect(db)
+        writer.close()
+
+    def queue_files():
+        # SQLite's live-WAL coordination files are not queue data/schema or
+        # generated proof output; mode=ro may maintain these documented files.
+        return {
+            path.relative_to(tmp_path): path.read_bytes() if path.is_file() else None
+            for path in tmp_path.rglob("*")
+            if path.name not in {db.name + "-wal", db.name + "-shm"}
+        }
+
+    before = queue_files()
+
+    def actual_audit(source, command, *, cwd, timeout=30.0):
+        assert source == "proof.audit"
+        output = StringIO()
+        with redirect_stdout(output):
+            rc = cli.main(["--db", str(db), "audit", "--json", "--max-issues", "0"])
+        return agent_coordination.ContextCommandResult(
+            source=source,
+            command=tuple(command),
+            return_code=rc,
+            stdout=output.getvalue(),
+        )
+
+    monkeypatch.setattr(agent_coordination, "_run_context_command", actual_audit)
+    errors = []
+    payload = agent_coordination._proof_audit_context(tmp_path, errors)
+    assert payload["available"] is initialized
+    if initialized:
+        assert errors == []
+        assert payload["active_runs"] == 0
+    else:
+        assert errors[0]["kind"] == "unavailable"
+        assert errors[0]["return_code"] == 2
+        assert "active_runs" not in payload
+    assert queue_files() == before

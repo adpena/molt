@@ -20,6 +20,7 @@ import sys
 import time
 import tomllib
 from collections.abc import Callable, Mapping
+from contextlib import closing
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, replace
 from pathlib import Path
@@ -5252,6 +5253,15 @@ def test_proof_queue_migrates_legacy_interpreter_authority_without_fabricating_r
     legacy.commit()
     legacy.close()
 
+    original_bytes = db.read_bytes()
+    with pytest.raises(state.QueueInspectionError, match="supported schema"):
+        state._connect(db, access="read")
+    assert db.read_bytes() == original_bytes
+    with closing(sqlite3.connect(db.as_uri() + "?mode=ro", uri=True)) as unchanged:
+        columns = {row[1] for row in unchanged.execute("PRAGMA table_info(proof_runs)")}
+    assert "python_interpreter_json" in columns
+    assert "command_envelope_json" not in columns
+
     conn = state._connect(db)
     conn.row_factory = sqlite3.Row
     row = conn.execute(
@@ -5433,6 +5443,10 @@ def test_status_keeps_pact_authority_out_of_the_hot_import_path(tmp_path: Path) 
     db = tmp_path / "proof_queue.sqlite3"
     logs = tmp_path / "runs"
     notebooks = tmp_path / "notebooks"
+    # Inspection requires initialized state; preserve the independent fresh
+    # process oracle that status itself never imports the Pact authority.
+    with closing(state._connect(db)):
+        pass
     script = f"""
 import sys
 from tools.proof_queue_pkg import cli
@@ -10868,40 +10882,81 @@ def test_proof_queue_blocked_dependency_writes_evidence_without_missing_log_debt
     assert "run=blocked-child" not in output
 
 
-def test_proof_queue_status_reconciles_blocked_queued_dependency(
-    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+@pytest.mark.parametrize("inspection", ["status", "evidence", "audit", "diagnose"])
+def test_proof_queue_inspection_preserves_blocked_queued_dependency_and_live_wal(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], inspection: str
 ) -> None:
     db = tmp_path / "proof_queue.sqlite3"
     logs = tmp_path / "runs"
     notebooks = tmp_path / "notebooks"
     _insert_blocked_dependency_fixture(db, logs)
-
-    assert (
-        cli.main(
-            [
-                "--db",
-                str(db),
-                "--logs-root",
-                str(logs),
-                "--notebooks-root",
-                str(notebooks),
-                "--repo-root",
-                str(state.ROOT),
-                "status",
-                "--recent",
-                "5",
-            ]
+    common = [
+        "--db",
+        str(db),
+        "--logs-root",
+        str(logs),
+        "--notebooks-root",
+        str(notebooks),
+        "--repo-root",
+        str(state.ROOT),
+    ]
+    selections = {
+        "status": ["status", "--recent", "5"],
+        "evidence": ["evidence", "--run-id", "blocked-child"],
+        "audit": ["audit", "--all", "--json", "--no-notebook-check"],
+        "diagnose": ["diagnose", "blocked-child", "--json"],
+    }
+    # Keep a writer open and commit a value that remains in the live WAL.
+    # A read must see it without a checkpoint, writer open or schema repair.
+    with closing(sqlite3.connect(db)) as writer:
+        writer.execute("PRAGMA wal_autocheckpoint=0")
+        writer.execute(
+            "UPDATE proof_runs SET reason=? WHERE run_id='blocked-child'",
+            ("visible through the live WAL",),
         )
-        == 0
-    )
+        writer.commit()
+        wal = Path(str(db) + "-wal")
+        assert wal.is_file()
+        before_rows = tuple(writer.iterdump())
+        before_db, before_wal = db.read_bytes(), wal.read_bytes()
+        before_paths = {path.relative_to(tmp_path) for path in tmp_path.rglob("*")}
+        rc = cli.main([*common, *selections[inspection]])
+        output = capsys.readouterr().out
+        assert rc == (1 if inspection == "audit" else 0)
+        assert "blocked-child" in output
+        # This value was committed only after the writer opened its live WAL.
+        # Run IDs predate that commit and cannot prove WAL visibility.
+        assert "visible through the live WAL" in output
+        if inspection == "audit":
+            issues = json.loads(output)["issues"]
+            assert any(
+                issue["run_id"] == "blocked-child"
+                and issue["signal_id"] == "audit-missing-proof-note"
+                and issue["evidence"] == "reason=visible through the live WAL"
+                for issue in issues
+            )
+        with state._inspection(db) as reader:
+            assert reader.execute(
+                "SELECT reason FROM proof_runs WHERE run_id='blocked-child'"
+            ).fetchone() == ("visible through the live WAL",)
+        assert tuple(writer.iterdump()) == before_rows
+        assert db.read_bytes() == before_db and wal.read_bytes() == before_wal
+        assert {
+            path.relative_to(tmp_path) for path in tmp_path.rglob("*")
+        } == before_paths
+        child = writer.execute(
+            "SELECT status, reason FROM proof_runs WHERE run_id='blocked-child'"
+        ).fetchone()
+        assert child == ("queued", "visible through the live WAL")
+        assert not logs.exists() and not notebooks.exists()
 
-    rows = _rows(db)
-    child = next(row for row in rows if row["run_id"] == "blocked-child")
-    out = capsys.readouterr().out
-    assert child["status"] == "blocked"
-    assert "active:\n- none" in out
-    assert "blocked-child" in out
-    assert "proof-dependency-blocked" in out
+    # The existing writer transition still owns reconciliation and evidence.
+    assert cli.main([*common, "run"]) == 0
+    capsys.readouterr()
+    with closing(sqlite3.connect(db.as_uri() + "?mode=ro", uri=True)) as reader:
+        assert reader.execute(
+            "SELECT status FROM proof_runs WHERE run_id='blocked-child'"
+        ).fetchone() == ("blocked",)
     assert "proof queue blocked by dependency" in (
         logs / "blocked-child.log"
     ).read_text(encoding="utf-8")
@@ -18751,3 +18806,519 @@ def test_live_queue_status_projects_actual_xdist_workers_not_controller(
     assert (
         diagnostic_evidence._pytest_missing_current_test_file_evidence(summary) is None
     )
+
+
+@pytest.mark.parametrize(
+    "statement",
+    [
+        "UPDATE proof_note_kinds SET description='forbidden'",
+        "DELETE FROM proof_note_kinds",
+        "CREATE TABLE forbidden(value TEXT)",
+    ],
+)
+def test_proof_queue_reader_is_a_read_only_sqlite_handle(
+    tmp_path: Path, statement: str
+) -> None:
+    db = tmp_path / "queue # state.sqlite3"
+    writer = state._connect(db)
+    try:
+        before = tuple(writer.iterdump())
+        reader = state._connect(db, access="read")
+        try:
+            assert reader.execute("PRAGMA query_only").fetchone() == (1,)
+            with pytest.raises(sqlite3.OperationalError, match="readonly"):
+                reader.execute(statement)
+            # The URI access mode remains the authority even if a consumer
+            # disables the connection-local query-only guard.
+            reader.execute("PRAGMA query_only=OFF")
+            with pytest.raises(sqlite3.OperationalError, match="readonly"):
+                reader.execute(statement)
+        finally:
+            reader.close()
+        assert tuple(writer.iterdump()) == before
+    finally:
+        writer.close()
+
+
+@pytest.mark.parametrize(
+    "inspection", ["status", "evidence", "audit", "diagnose", "retention"]
+)
+@pytest.mark.parametrize("condition", ["missing", "uninitialized"])
+def test_proof_queue_inspection_never_initializes_missing_or_empty_state(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], inspection: str, condition: str
+) -> None:
+    db = tmp_path / "not-created" / "queue.sqlite3"
+    if condition == "uninitialized":
+        db.parent.mkdir()
+        db.touch()
+    before = {
+        path.relative_to(tmp_path): path.read_bytes() if path.is_file() else None
+        for path in tmp_path.rglob("*")
+    }
+    args = ["--db", str(db), "--logs-root", str(tmp_path / "runs"), inspection]
+    if inspection == "evidence":
+        args += ["--run-id", "absent"]
+    elif inspection == "diagnose":
+        args += ["absent", "--json"]
+    elif inspection in {"audit", "retention"}:
+        args += ["--json"]
+    assert cli.main(args) == 2
+    output = capsys.readouterr()
+    if inspection == "status":
+        assert "cannot inspect proof queue" in output.err
+    else:
+        payload = json.loads(output.out)
+        assert payload["available"] is False
+        assert "supported schema" in payload["error"]
+    assert {
+        path.relative_to(tmp_path): path.read_bytes() if path.is_file() else None
+        for path in tmp_path.rglob("*")
+    } == before
+
+
+def test_proof_queue_reader_accepts_an_initialized_empty_queue(tmp_path, capsys):
+    db = tmp_path / "queue.sqlite3"
+    writer = state._connect(db)
+    writer.close()
+    assert cli.main(["--db", str(db), "audit", "--json"]) == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["scanned_runs"] == payload["active_runs"] == 0
+    assert payload["issues"] == []
+
+
+@pytest.mark.parametrize(
+    ("table", "column"),
+    [
+        ("proof_runs", "reason"),
+        ("proof_runs", "logical_id"),
+        ("proof_runs", "started_at"),
+        ("proof_notes", "body"),
+        ("proof_notes", "author"),
+        ("proof_run_edges", "note"),
+        ("proof_run_edges", "created_at"),
+    ],
+)
+def test_proof_queue_reader_refuses_incomplete_consumer_schema(
+    tmp_path, capsys, table, column
+):
+    db = tmp_path / "queue.sqlite3"
+    # Start from the authoritative producer, then remove a fact consumed by
+    # real readers. Empty history must not hide a missing column from audit.
+    with closing(state._connect(db)) as writer:
+        writer.execute(f"ALTER TABLE {table} DROP COLUMN {column}")
+        writer.commit()
+        before = tuple(writer.iterdump())
+        with pytest.raises(state.QueueInspectionError, match="supported schema"):
+            with state._inspection(db):
+                pytest.fail("incomplete reader schema was admitted")
+        assert cli.main(["--db", str(db), "audit", "--json"]) == 2
+        payload = json.loads(capsys.readouterr().out)
+        assert payload["available"] is False
+        assert column in payload["error"]
+        assert tuple(writer.iterdump()) == before
+
+
+@pytest.mark.parametrize(
+    "inspection", ["status", "evidence", "audit", "diagnose", "retention"]
+)
+@pytest.mark.parametrize("failure", ["schema-change", "read-denied", "io-failure"])
+def test_proof_queue_inspection_reports_late_sqlite_failure_and_closes(
+    tmp_path, capsys, monkeypatch, inspection, failure
+):
+    db = tmp_path / "queue.sqlite3"
+    with closing(state._connect(db)):
+        pass
+    original_connect = state._connect
+    opened = []
+    if failure == "io-failure":
+        real_sqlite_connect = sqlite3.connect
+
+        class LateIoFailure(sqlite3.Connection):
+            fail_reads = False
+
+            def execute(self, *args, **kwargs):
+                if self.fail_reads:
+                    raise sqlite3.OperationalError("injected disk I/O error")
+                return super().execute(*args, **kwargs)
+
+        def connect_with_io_fault(*args, **kwargs):
+            if kwargs.get("uri"):
+                kwargs["factory"] = LateIoFailure
+            return real_sqlite_connect(*args, **kwargs)
+
+        monkeypatch.setattr(sqlite3, "connect", connect_with_io_fault)
+
+    def connect_then_revoke(db, *, access="write"):
+        conn = original_connect(db, access=access)
+        if access == "read":
+            opened.append(conn)
+            if failure == "schema-change":
+                # Commit DDL through an independent real SQLite writer only
+                # after the opener has validated the supported projection.
+                with closing(sqlite3.connect(db)) as writer:
+                    writer.execute("ALTER TABLE proof_runs RENAME TO moved_proof_runs")
+                    writer.commit()
+            elif failure == "io-failure":
+                # Inject the OS fault only after the real read-only connection
+                # has passed its complete schema preparation.
+                conn.fail_reads = True
+            else:
+                # SQLite itself rejects the later SELECT, after successful
+                # schema preparation. No fabricated cursor/result is used.
+                conn.set_authorizer(
+                    lambda action, *_: (
+                        sqlite3.SQLITE_DENY
+                        if action == sqlite3.SQLITE_READ
+                        else sqlite3.SQLITE_OK
+                    )
+                )
+        return conn
+
+    monkeypatch.setattr(state, "_connect", connect_then_revoke)
+    args = ["--db", str(db), "--logs-root", str(tmp_path / "runs"), inspection]
+    if inspection == "evidence":
+        args += ["--run-id", "absent"]
+    elif inspection == "diagnose":
+        args += ["absent", "--json"]
+    elif inspection in {"audit", "retention"}:
+        args += ["--json"]
+    assert cli.main(args) == 2
+    output = capsys.readouterr()
+    if inspection == "status":
+        message = output.err
+    else:
+        payload = json.loads(output.out)
+        assert payload["available"] is False
+        message = payload["error"]
+    assert "cannot inspect proof queue" in message
+    if failure == "schema-change":
+        assert "no such table" in message
+    elif failure == "io-failure":
+        assert "injected disk I/O error" in message
+    else:
+        assert "prohibited" in message or "not authorized" in message
+    assert len(opened) == 1
+    with pytest.raises(sqlite3.ProgrammingError, match="closed"):
+        opened[0].cursor()
+    with closing(sqlite3.connect(db)) as independent:
+        tables = {
+            row[0]
+            for row in independent.execute(
+                "SELECT name FROM sqlite_master WHERE type='table'"
+            )
+        }
+    if failure == "schema-change":
+        assert "moved_proof_runs" in tables and "proof_runs" not in tables
+    else:
+        assert "proof_runs" in tables
+    assert not (tmp_path / "runs").exists()
+
+
+def test_proof_queue_append_note_keeps_writer_sqlite_failure_semantics(
+    tmp_path, monkeypatch
+):
+    def failed_writer(db, *, access="write"):
+        assert access == "write"
+        raise sqlite3.OperationalError("independent writer failure")
+
+    monkeypatch.setattr(state, "_connect", failed_writer)
+    with pytest.raises(
+        sqlite3.OperationalError, match="independent writer failure"
+    ) as error:
+        cli.main(
+            [
+                "--db",
+                str(tmp_path / "queue.sqlite3"),
+                "diagnose",
+                "absent",
+                "--append-note",
+            ]
+        )
+    assert not isinstance(error.value, state.QueueInspectionError)
+
+
+@pytest.mark.parametrize("condition", ["missing", "uninitialized", "unsupported"])
+def test_apparatus_ledger_inspection_refuses_unavailable_state_without_repair(
+    tmp_path, capsys, condition
+):
+    from tools import apparatus_ledger
+
+    db = tmp_path / "queue.sqlite3"
+    if condition == "uninitialized":
+        db.touch()
+    elif condition == "unsupported":
+        with closing(state._connect(db)) as writer:
+            writer.execute("ALTER TABLE proof_notes DROP COLUMN body")
+            writer.commit()
+    before = db.read_bytes() if db.exists() else None
+    assert apparatus_ledger.main(["--db", str(db)]) == 2
+    output = capsys.readouterr()
+    assert "cannot inspect proof queue" in output.err
+    assert "rows scanned" not in output.out
+    assert (db.read_bytes() if db.exists() else None) == before
+
+
+def test_apparatus_ledger_observes_live_wal_without_mutation_and_closes(
+    tmp_path, monkeypatch
+):
+    from tools import apparatus_ledger
+
+    db = tmp_path / "queue.sqlite3"
+    logs = tmp_path / "runs"
+    _insert_blocked_dependency_fixture(db, logs)
+    logs.mkdir()
+    (logs / "failed-parent.log").write_text("ValueError: independent ledger proof\n")
+    opened = []
+    original_connect = state._connect
+
+    def record_connection(db, *, access="write"):
+        conn = original_connect(db, access=access)
+        if access == "read":
+            opened.append(conn)
+        return conn
+
+    monkeypatch.setattr(state, "_connect", record_connection)
+    with closing(sqlite3.connect(db)) as writer:
+        writer.execute("PRAGMA wal_autocheckpoint=0")
+        writer.execute(
+            "UPDATE proof_runs SET elapsed_s=37.25 WHERE run_id='failed-parent'"
+        )
+        writer.commit()
+        wal = Path(str(db) + "-wal")
+        assert wal.exists()
+        before = (db.read_bytes(), wal.read_bytes(), tuple(writer.iterdump()))
+        ranked, counts = apparatus_ledger.build_ledger(db)
+        assert counts == {"failed_rows": 1, "no_signature": 0, "distinct_signatures": 1}
+        assert len(ranked) == 1
+        assert ranked[0].signature == "ValueError: independent ledger proof"
+        assert ranked[0].cost_s == 37.25
+        assert ranked[0].examples == ["failed-parent"]
+        assert (db.read_bytes(), wal.read_bytes(), tuple(writer.iterdump())) == before
+    assert len(opened) == 1
+    with pytest.raises(sqlite3.ProgrammingError, match="closed"):
+        opened[0].cursor()
+
+
+def test_apparatus_ledger_default_uses_canonical_checkout_custody(
+    tmp_path, monkeypatch, capsys
+):
+    from tools import apparatus_ledger
+
+    custody_root = tmp_path / "external-custody"
+    db = custody_root / "logs/proof_queue/proof_queue.sqlite3"
+    with closing(state._connect(db)):
+        pass
+    monkeypatch.setattr(
+        state, "checkout_custody", lambda *_: SimpleNamespace(custody_root=custody_root)
+    )
+    assert apparatus_ledger.main([]) == 0
+    output = capsys.readouterr()
+    assert "failed/stale rows scanned : 0" in output.out
+    assert not output.err
+
+
+@pytest.mark.parametrize("consumer", ["status", "audit", "evidence"])
+def test_proof_queue_inspection_keeps_one_snapshot_across_wal_transition(
+    tmp_path, monkeypatch, capsys, consumer
+):
+    from tools.proof_queue_pkg import diagnostic_audit
+
+    db = tmp_path / "queue.sqlite3"
+    logs = tmp_path / "runs"
+    with closing(state._connect(db)) as producer:
+        for run_id in ("moving-run", "linked-child"):
+            scheduling._insert_run(
+                producer,
+                run_id=run_id,
+                logical_id=run_id,
+                reason="prove coherent inspection during a real WAL transition",
+                command=[sys.executable, "-c", "pass"],
+                cwd=state.ROOT,
+                resource_family="python",
+                contention_key=f"python:{run_id}",
+                scopes=["tools/proof_queue.py"],
+                git_snapshot={
+                    "available": True,
+                    "head": "abc123",
+                    "dirty": False,
+                    "status": [],
+                },
+                log_path=logs / f"{run_id}.log",
+                summary_json=logs / f"{run_id}.summary.json",
+            )
+        state._update_run(
+            producer, "moving-run", status="running", started_at=state._utc_now()
+        )
+        state._insert_edge(
+            producer,
+            parent_run_id="moving-run",
+            child_run_id="linked-child",
+            kind="derives_from",
+            note="lineage does not gate the queued child",
+        )
+
+    original_connect = state._connect
+    transitioned = []
+    callback_errors = []
+    with closing(sqlite3.connect(db)) as writer:
+        writer.execute("PRAGMA wal_autocheckpoint=0")
+
+        def commit_between_selects(statement):
+            sql = " ".join(statement.upper().split())
+            selected = (
+                "FROM PROOF_NOTES" in sql
+                if consumer == "evidence"
+                else "FROM PROOF_RUNS WHERE STATUS NOT IN" in sql
+            )
+            if transitioned or callback_errors or not selected:
+                return
+            # A real independent WAL connection commits before the next
+            # actual SELECT. No cursor, row or query result is fabricated.
+            try:
+                writer.execute(
+                    "UPDATE proof_runs SET status='passed', returncode=0, finished_at=? WHERE run_id='moving-run'",
+                    (state._utc_now(),),
+                )
+                writer.execute(
+                    "INSERT INTO proof_notes (run_id, created_at, author, kind, body) VALUES (?, ?, ?, ?, ?)",
+                    (
+                        "moving-run",
+                        state._utc_now(),
+                        "independent-writer",
+                        "observation",
+                        "committed between SELECTs",
+                    ),
+                )
+                writer.commit()
+                transitioned.append(True)
+            except sqlite3.Error as exc:
+                # CPython reports trace-callback exceptions separately, so
+                # preserve failures for a mandatory assertion below.
+                callback_errors.append(str(exc))
+
+        def connect_with_interleaving(db, *, access="write"):
+            conn = original_connect(db, access=access)
+            if access == "read":
+                conn.set_trace_callback(commit_between_selects)
+            return conn
+
+        monkeypatch.setattr(state, "_connect", connect_with_interleaving)
+        if consumer == "status":
+            assert cli.main(["--db", str(db), "status", "--recent", "5"]) == 0
+            output = capsys.readouterr().out
+            moving = [
+                line
+                for line in output.splitlines()
+                if line.startswith("- ") and "moving-run" in line
+            ]
+            # Before the commit the row is running; after it the row is
+            # passed. No valid snapshot contains both primary-key versions.
+            assert len(moving) == 1 and moving[0].startswith("- running ")
+        elif consumer == "audit":
+            with state._inspection(db) as reader:
+                rows = diagnostic_audit._audit_rows(reader, SimpleNamespace(all=True))
+                moving = next(row for row in rows if row["run_id"] == "moving-run")
+                current = reader.execute(
+                    "SELECT status FROM proof_runs WHERE run_id='moving-run'"
+                ).fetchone()
+                assert moving["status"] == current["status"] == "running"
+                assert (
+                    reader.execute(
+                        "SELECT body FROM proof_notes WHERE run_id='moving-run'"
+                    ).fetchall()
+                    == []
+                )
+        else:
+            assert cli.main(["--db", str(db), "evidence", "--limit", "5"]) == 0
+            by_id = {
+                item["run_id"]: item for item in json.loads(capsys.readouterr().out)
+            }
+            assert by_id["moving-run"]["status"] == "running"
+            assert by_id["moving-run"]["notes"] == []
+            assert (
+                by_id["linked-child"]["dag"]["parents"][0]["parent_status"] == "running"
+            )
+        assert callback_errors == []
+        assert transitioned == [True]
+        assert writer.execute(
+            "SELECT status FROM proof_runs WHERE run_id='moving-run'"
+        ).fetchone() == ("passed",)
+        # Ending the snapshot must expose the committed status and note to a
+        # later real inspection, ruling out a permanently stale reader.
+        with state._inspection(db) as fresh:
+            assert fresh.execute(
+                "SELECT status FROM proof_runs WHERE run_id='moving-run'"
+            ).fetchone() == ("passed",)
+            assert fresh.execute(
+                "SELECT body FROM proof_notes WHERE run_id='moving-run'"
+            ).fetchone() == ("committed between SELECTs",)
+
+
+@pytest.mark.parametrize("consumer", ["diagnose", "evidence"])
+def test_proof_queue_external_evidence_work_starts_after_read_scope_closes(
+    tmp_path, monkeypatch, capsys, consumer
+):
+    from tools.proof_queue_pkg import diagnostic_engine, evidence
+
+    db = tmp_path / "queue.sqlite3"
+    _insert_blocked_dependency_fixture(db, tmp_path / "runs")
+    opened = []
+    observed = []
+    original_connect = state._connect
+    original_diagnostics = diagnostic_engine._run_diagnostics
+    original_payload = evidence._row_to_payload
+
+    def record_connection(db, *, access="write"):
+        conn = original_connect(db, access=access)
+        if access == "read":
+            opened.append(conn)
+        return conn
+
+    def assert_scope_released(kind):
+        assert len(opened) == 1
+        with pytest.raises(sqlite3.ProgrammingError, match="closed"):
+            opened[0].cursor()
+        observed.append(kind)
+
+    def observe_diagnostics(row):
+        assert_scope_released("diagnostics")
+        return original_diagnostics(row)
+
+    def observe_payload(row):
+        assert_scope_released("receipt-payload")
+        return original_payload(row)
+
+    monkeypatch.setattr(state, "_connect", record_connection)
+    monkeypatch.setattr(diagnostic_engine, "_run_diagnostics", observe_diagnostics)
+    monkeypatch.setattr(evidence, "_row_to_payload", observe_payload)
+    selected = (
+        ["diagnose", "blocked-child", "--json"]
+        if consumer == "diagnose"
+        else ["evidence", "--run-id", "blocked-child"]
+    )
+    assert cli.main(["--db", str(db), *selected]) == 0
+    payload = json.loads(capsys.readouterr().out)
+    item = payload if consumer == "diagnose" else payload[0]
+    assert item["run_id"] == "blocked-child" and item["status"] == "queued"
+    assert "diagnostics" in item
+    assert set(observed) == {"diagnostics", "receipt-payload"}
+
+
+def test_proof_queue_notebook_retains_explicit_diagnostics_after_payload_split(
+    tmp_path,
+):
+    from tools.proof_queue_pkg import evidence
+
+    db = tmp_path / "queue.sqlite3"
+    logs = tmp_path / "runs"
+    notebooks = tmp_path / "notebooks"
+    _insert_blocked_dependency_fixture(db, logs)
+    with closing(state._connect(db)) as writer:
+        state._update_run(writer, "blocked-child", status="blocked")
+        path = evidence._write_marimo_notebook(
+            SimpleNamespace(notebooks_root=str(notebooks)), writer, "blocked-child"
+        )
+    assert path == notebooks / "blocked-child.py"
+    text = path.read_text(encoding="utf-8")
+    assert '"diagnostics": [' in text
+    assert '"signal_id": "proof-dependency-blocked"' in text

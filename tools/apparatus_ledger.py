@@ -23,12 +23,22 @@ from __future__ import annotations
 import argparse
 import re
 import sqlite3
+import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 
 
+_REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
+
+from tools.import_file import bind_repository_imports  # noqa: E402
+
+bind_repository_imports(__file__)
+
+from tools.proof_queue_pkg import state  # noqa: E402
+
 ROOT = Path(__file__).resolve().parents[1]
-DEFAULT_DB = ROOT / "logs" / "proof_queue" / "proof_queue.sqlite3"
 
 # Normalization rules: strip the volatile tokens so two runs of the SAME failure
 # collapse to one signature. Order matters (longest/most-specific first).
@@ -113,12 +123,12 @@ class SigStat:
 
 
 def build_ledger(db: Path) -> tuple[list[SigStat], dict[str, int]]:
-    conn = sqlite3.connect(str(db))
-    conn.row_factory = sqlite3.Row
-    rows = conn.execute(
-        "SELECT run_id, status, elapsed_s, log_path FROM proof_runs "
-        "WHERE status IN ('failed','stale')"
-    ).fetchall()
+    with state._inspection(db) as conn:
+        conn.row_factory = sqlite3.Row
+        rows = conn.execute(
+            "SELECT run_id, status, elapsed_s, log_path FROM proof_runs "
+            "WHERE status IN ('failed','stale')"
+        ).fetchall()
     by_sig: dict[str, SigStat] = {}
     counts = {"failed_rows": 0, "no_signature": 0, "distinct_signatures": 0}
     for r in rows:
@@ -141,7 +151,7 @@ def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
     )
-    ap.add_argument("--db", type=Path, default=DEFAULT_DB)
+    ap.add_argument("--db", type=Path)
     ap.add_argument(
         "--recurring-threshold",
         type=int,
@@ -151,11 +161,11 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--top", type=int, default=15, help="curiosity-queue length")
     args = ap.parse_args(argv)
 
-    if not args.db.exists():
-        print(f"apparatus_ledger: no proof-queue DB at {args.db}")
-        return 0
-
-    ranked, counts = build_ledger(args.db)
+    try:
+        ranked, counts = build_ledger(state._db_path(args))
+    except state.QueueInspectionError as exc:
+        print(f"apparatus_ledger: {exc}", file=sys.stderr)
+        return 2
     total_fail_mass = sum(s.count for s in ranked)
     recurring = [s for s in ranked if s.count >= args.recurring_threshold]
     recurring_mass = sum(s.count for s in recurring)

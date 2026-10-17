@@ -58,6 +58,7 @@ from molt.path_custody import (  # noqa: E402
 from tools.memory_guard_core.active_custody import read_marker_records  # noqa: E402
 
 from tools.command_execution import CommandExecutor  # noqa: E402
+from tools.proof_queue_pkg import state as proof_queue_state  # noqa: E402
 
 
 SCHEMA = "molt.runtime-wasm-final-preflight.v3"
@@ -335,11 +336,8 @@ def _active_build_guards(
 
 
 def _proof_queue_claim(db: Path, run_id: str) -> RuntimeWasmBuildClaim:
-    if not db.is_file():
-        raise RuntimeWasmPreflightError(f"proof queue database is missing: {db}")
-    uri = db.resolve().as_uri() + "?mode=ro"
     try:
-        with sqlite3.connect(uri, uri=True) as conn:
+        with proof_queue_state._inspection(db) as conn:
             conn.row_factory = sqlite3.Row
             row = conn.execute(
                 """
@@ -350,7 +348,7 @@ def _proof_queue_claim(db: Path, run_id: str) -> RuntimeWasmBuildClaim:
                 """,
                 (run_id,),
             ).fetchone()
-    except sqlite3.Error as exc:
+    except proof_queue_state.QueueInspectionError as exc:
         raise RuntimeWasmPreflightError(
             f"proof queue claim query failed: {exc}"
         ) from exc
@@ -372,28 +370,33 @@ def _proof_queue_claim(db: Path, run_id: str) -> RuntimeWasmBuildClaim:
 
 
 def _proof_queue_conflicts(db: Path, *, exclude_run_id: str) -> list[dict[str, object]]:
-    uri = db.resolve().as_uri() + "?mode=ro"
-    with sqlite3.connect(uri, uri=True) as conn:
-        conn.row_factory = sqlite3.Row
-        rows = conn.execute(
-            """
-            SELECT run_id, resource_family, contention_key, resource_mutex_key,
-                   status, guard_pid, started_at, command_json
-            FROM proof_runs
-            WHERE status IN ('dispatched', 'running')
-              AND run_id != ?
-              AND (
-                resource_mutex_key = 'compiler-build-resource'
-                OR resource_family IN (
-                    'wasm', 'wasm-browser', 'native-build',
-                    'queue-native-rust', 'rust'
-                )
-              )
-            ORDER BY started_at, run_id
-            """,
-            (exclude_run_id,),
-        )
-    return [{key: row[key] for key in row.keys()} for row in rows]
+    try:
+        with proof_queue_state._inspection(db) as conn:
+            conn.row_factory = sqlite3.Row
+            rows = conn.execute(
+                """
+                SELECT run_id, resource_family, contention_key, resource_mutex_key,
+                       status, guard_pid, started_at, command_json
+                FROM proof_runs
+                WHERE status IN ('dispatched', 'running')
+                  AND run_id != ?
+                  AND (
+                    resource_mutex_key = 'compiler-build-resource'
+                    OR resource_family IN (
+                        'wasm', 'wasm-browser', 'native-build',
+                        'queue-native-rust', 'rust'
+                    )
+                  )
+                ORDER BY started_at, run_id
+                """,
+                (exclude_run_id,),
+            ).fetchall()
+            return [{key: row[key] for key in row.keys()} for row in rows]
+
+    except proof_queue_state.QueueInspectionError as exc:
+        raise RuntimeWasmPreflightError(
+            f"proof queue conflicts query failed: {exc}"
+        ) from exc
 
 
 def _claim_binds_current_process(
