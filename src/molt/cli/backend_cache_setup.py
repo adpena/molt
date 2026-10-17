@@ -34,6 +34,7 @@ from molt.cli.backend_execution import (
 from molt.cli.build_output_layout import _resolve_cache_root
 from molt.cli.backend_artifact_contract import BackendArtifactContract
 from molt.cli.cache_keys import (
+    FunctionDigests,
     _BACKEND_IR_PAYLOAD_TOOLING_FINGERPRINT,
     _cache_ir_payload_ir,
     _cache_key,
@@ -132,6 +133,7 @@ def _cached_stdlib_cache_key_material(
     stdlib_compiler_fingerprint: str,
     cache_compiler_fingerprint: str,
     cache_tooling_fingerprint: str,
+    function_digests: FunctionDigests,
 ) -> _StdlibCacheKeyMaterial:
     authority_hash = _stdlib_cache_key_material_authority_hash(
         module_cache_payload_digest=module_cache_payload_digest,
@@ -166,6 +168,7 @@ def _cached_stdlib_cache_key_material(
             compiler_fingerprint=stdlib_compiler_fingerprint,
             cache_compiler_fingerprint=cache_compiler_fingerprint,
             cache_tooling_fingerprint=cache_tooling_fingerprint,
+            function_digests=function_digests,
         )
         try:
             _write_cached_json_object(
@@ -423,13 +426,18 @@ def _prepare_backend_cache_setup(
     )
     module_cache_payload_ir: dict[str, Any] | None = None
     module_cache_payload_digest: str | None = None
+    # Every payload digest of this setup shares one encoding per function. The
+    # IR is not rewritten while the setup runs.
+    function_digests = FunctionDigests()
 
     def module_cache_payload_inputs() -> tuple[dict[str, Any], str]:
         nonlocal module_cache_payload_ir, module_cache_payload_digest
         if module_cache_payload_ir is None or module_cache_payload_digest is None:
             payload_start = time.perf_counter()
             module_cache_payload_ir = _cache_ir_payload_ir(ir)
-            module_cache_payload_digest = _cache_payload_digest(module_cache_payload_ir)
+            module_cache_payload_digest = _cache_payload_digest(
+                module_cache_payload_ir, function_digests
+            )
             _record_backend_cache_stage_ms(
                 stage_timings_ms,
                 "backend_cache_payload_digest",
@@ -466,6 +474,7 @@ def _prepare_backend_cache_setup(
                 stdlib_compiler_fingerprint=stdlib_compiler_fingerprint,
                 cache_compiler_fingerprint=compiler_fingerprint,
                 cache_tooling_fingerprint=tooling_fingerprint,
+                function_digests=function_digests,
             )
             _nocache_stdlib_key = stdlib_key_material.cache_key
             _nocache_stdlib_manifest = stdlib_key_material.manifest
@@ -584,6 +593,7 @@ def _prepare_backend_cache_setup(
             stdlib_compiler_fingerprint=stdlib_compiler_fingerprint,
             cache_compiler_fingerprint=compiler_fingerprint,
             cache_tooling_fingerprint=tooling_fingerprint,
+            function_digests=function_digests,
         )
         stdlib_object_cache_key = stdlib_key_material.cache_key
         stdlib_object_manifest = stdlib_key_material.manifest

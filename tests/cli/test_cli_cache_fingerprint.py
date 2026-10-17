@@ -8,7 +8,6 @@ from tests.compiler_identity_helper import (
 )
 
 import importlib
-import hashlib
 import json
 import os
 from pathlib import Path
@@ -38,26 +37,46 @@ def _tiny_ir() -> dict[str, Any]:
     }
 
 
-def test_cache_payload_digest_matches_canonical_json_bytes() -> None:
-    payload = {
-        "zeta": [{"kind": "tuple", "value": (1, 2)}],
-        "alpha": {"bytes": b"abc", "set": {"b", "a"}},
-    }
+def test_cache_payload_digest_identifies_exactly_the_canonical_payload() -> None:
+    """Equal digests exactly when the canonical JSON payloads are equal."""
 
-    canonical_bytes = json.dumps(
-        CACHE_KEYS._cache_json_value(payload),
-        sort_keys=True,
-        separators=(",", ":"),
-        default=CACHE_KEYS._json_ir_default,
-    ).encode("utf-8")
+    def canonical(payload: dict[str, object]) -> bytes:
+        return json.dumps(
+            CACHE_KEYS._cache_json_value(payload),
+            sort_keys=True,
+            separators=(",", ":"),
+            default=CACHE_KEYS._json_ir_default,
+        ).encode("utf-8")
 
-    assert b"".join(CACHE_KEYS._iter_cache_json_payload_bytes(payload)) == (
-        canonical_bytes
-    )
-    assert (
-        CACHE_KEYS._cache_payload_digest(payload)
-        == hashlib.sha256(canonical_bytes).hexdigest()
-    )
+    first = {"name": "first", "ops": [{"kind": "const", "value": (1, 2)}]}
+    second = {"name": "second", "ops": [{"kind": "ret", "args": {"b", "a"}}]}
+    payloads = [
+        {"functions": [first, second], "profile": "dev"},
+        {"functions": [second, first], "profile": "dev"},
+        {"functions": [first], "profile": "dev"},
+        {"functions": [first, second], "profile": "release"},
+        # A field moved between the header and a function.
+        {"functions": [dict(first, profile="dev"), second]},
+        # One function split into two, and two merged into one.
+        {
+            "functions": [{"name": "first"}, {"ops": first["ops"]}, second],
+            "profile": "dev",
+        },
+        {"functions": [], "profile": "dev"},
+        {"functions": "not a list", "profile": "dev"},
+        {"profile": "dev"},
+        {"alpha": {"bytes": b"abc", "set": {"b", "a"}}, "functions": [first]},
+        # Equal content held by distinct objects.
+        {"functions": [dict(first), dict(second)], "profile": "dev"},
+    ]
+    shared = CACHE_KEYS.FunctionDigests()
+    for left in payloads:
+        for right in payloads:
+            same = canonical(left) == canonical(right)
+            assert (
+                CACHE_KEYS._cache_payload_digest(left, shared)
+                == CACHE_KEYS._cache_payload_digest(right)
+            ) is same
 
 
 @pytest.mark.parametrize(

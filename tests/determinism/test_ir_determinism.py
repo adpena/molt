@@ -9,6 +9,7 @@ Ensures that:
 from __future__ import annotations
 
 import base64
+import copy
 import hashlib
 import io
 import json
@@ -48,7 +49,8 @@ def _production_ir_record(ir: dict) -> dict:
     payload = cache_keys._cache_backend_payload_ir(ir)
     payload_bytes = cache_keys._cache_json_payload_bytes(payload)
     digest = cache_keys._cache_payload_digest(payload)
-    assert hashlib.sha256(payload_bytes).hexdigest() == digest
+    # The digest is a function of the payload's value, never of its objects.
+    assert cache_keys._cache_payload_digest(copy.deepcopy(payload)) == digest
     return {
         "kind": "ir",
         "json": base64.b64encode(json_bytes).decode("ascii"),

@@ -373,14 +373,24 @@ def _payload_digest_cache_key(
     variant: str,
     schema_version: str,
 ) -> str:
-    payload_digest = hashlib.sha256(
-        json.dumps(
-            payload_ir,
+    def canonical(value: object) -> bytes:
+        return json.dumps(
+            value,
             sort_keys=True,
             separators=(",", ":"),
             default=CACHE_KEYS._json_ir_default,
         ).encode("utf-8")
-    ).hexdigest()
+
+    # Merkle node: tag, header digest, function count, function digests.
+    functions = payload_ir["functions"]
+    assert isinstance(functions, list)
+    header = {key: value for key, value in payload_ir.items() if key != "functions"}
+    node = hashlib.sha256(b"molt.cache-payload.merkle.v1\0\1")
+    node.update(hashlib.sha256(canonical(header)).digest())
+    node.update(len(functions).to_bytes(8, "big"))
+    for function in functions:
+        node.update(hashlib.sha256(canonical(function)).digest())
+    payload_digest = node.hexdigest()
     suffix = target_triple or target
     if variant:
         suffix = f"{suffix}:{variant}"
@@ -751,10 +761,13 @@ def test_prepare_backend_cache_setup_reuses_cache_fingerprints_for_backend_keys(
     original_payload_digest = cli_backend_cache_setup._cache_payload_digest
     original_function_cache_key = cli_backend_cache_setup._function_cache_key
 
-    def counting_payload_digest(payload_ir: dict[str, object]) -> str:
+    def counting_payload_digest(
+        payload_ir: dict[str, object],
+        function_digests: CACHE_KEYS.FunctionDigests | None = None,
+    ) -> str:
         nonlocal payload_digest_calls
         payload_digest_calls += 1
-        return original_payload_digest(payload_ir)
+        return original_payload_digest(payload_ir, function_digests)
 
     def recording_function_cache_key(*args: object, **kwargs: object) -> str:
         payload_digest = kwargs.get("payload_digest")
@@ -1096,6 +1109,84 @@ def test_prepare_backend_cache_setup_caches_stdlib_key_material(
     assert key_calls == 1
     assert manifest_calls == 3
     assert "backend_cache_stdlib_key_manifest" in second_timings
+
+
+def test_prepare_backend_cache_setup_encodes_each_function_once(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Every payload digest of one setup shares a single encoding per function."""
+    ir = _ir_with_stdlib(
+        user_ops=[{"kind": "call_internal", "s_value": "molt_init_sys"}],
+        stdlib_ops=[
+            {
+                "kind": "code_slot_set",
+                "s_value": "molt_init_sys",
+                "args": ["code", "globals"],
+            }
+        ],
+    )
+    module_graph_metadata = cli_models._ModuleGraphMetadata(
+        logical_source_path_by_module={},
+        entry_override_by_module={},
+        module_is_namespace_by_module={},
+        module_is_package_by_module={},
+        module_execution_kind_by_module={},
+        frontend_module_costs=None,
+        stdlib_like_by_module={"sys": True},
+    )
+    common = dict(
+        codegen=CodegenSelection(),
+        rust_cpu=RustCpuPolicy.BASELINE,
+        cache_enabled=True,
+        ir=ir,
+        target="native",
+        artifact_contract=resolve_backend_artifact_contract(
+            target="native", emit_mode="bin", target_triple=None
+        ),
+        profile="dev",
+        runtime_cargo_profile="dev-fast",
+        backend_cargo_profile="dev-fast",
+        emit_mode="bin",
+        is_wasm=False,
+        linked=False,
+        project_root=ROOT,
+        cache_dir=str(tmp_path / "cache"),
+        output_artifact=tmp_path / "out.o",
+        warnings=[],
+        entry_module="app",
+        module_graph_metadata=module_graph_metadata,
+        target_python=molt_target_python._DEFAULT_TARGET_PYTHON_VERSION,
+        stdlib_profile="micro",
+    )
+
+    encoded: list[int] = []
+    original_bytes = CACHE_KEYS._cache_json_payload_bytes
+
+    def counting_bytes(value: object) -> bytes:
+        encoded.append(id(value))
+        return original_bytes(value)
+
+    monkeypatch.setattr(CACHE_KEYS, "_cache_json_payload_bytes", counting_bytes)
+    timings: dict[str, float] = {}
+    setup = cli_backend_cache_setup._prepare_backend_cache_setup(
+        backend_bin=tmp_path / "molt-backend",
+        stage_timings_ms=timings,
+        **common,
+    )
+    functions = {id(function) for function in ir["functions"]}
+    function_encodings = [identity for identity in encoded if identity in functions]
+    # The module payload and the shared stdlib key both hold the stdlib
+    # functions; each is encoded once.
+    assert sorted(function_encodings) == sorted(functions)
+    assert "backend_cache_stdlib_key_manifest" in timings
+    # The shared digests leave the stdlib key unchanged.
+    monkeypatch.setattr(CACHE_KEYS, "_cache_json_payload_bytes", original_bytes)
+    fresh = cli_backend_cache_setup._prepare_backend_cache_setup(
+        backend_bin=tmp_path / "molt-backend", **common
+    )
+    assert fresh.stdlib_object_cache_key == setup.stdlib_object_cache_key
+    assert fresh.stdlib_object_manifest == setup.stdlib_object_manifest
 
 
 def test_prepare_backend_cache_setup_uses_verified_backend_compiler_fingerprint(

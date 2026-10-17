@@ -43,7 +43,7 @@ from molt.cli.backend_artifact_contract import (
 )
 from molt.cli.cache_fingerprints import _cache_fingerprint, _cache_tooling_fingerprint
 from molt.cli.rust_cpu_policy import RustCpuPolicy
-from molt.cli.cache_keys import _cache_key, _sorted_ir_functions
+from molt.cli.cache_keys import FunctionDigests, _cache_key, _sorted_ir_functions
 from molt.cli.models import (
     _ModuleGraphMetadata,
     _SharedStdlibCacheValidationToken,
@@ -1857,6 +1857,7 @@ def _shared_stdlib_cache_key(
     compiler_fingerprint: str | None = None,
     cache_compiler_fingerprint: str | None = None,
     cache_tooling_fingerprint: str | None = None,
+    function_digests: FunctionDigests | None = None,
 ) -> str:
     if compiler_fingerprint is None:
         compiler_fingerprint = _shared_stdlib_compiler_fingerprint(
@@ -1877,6 +1878,7 @@ def _shared_stdlib_cache_key(
         payload_ir=payload_ir,
         compiler_fingerprint=cache_compiler_fingerprint,
         tooling_fingerprint=cache_tooling_fingerprint,
+        function_digests=function_digests,
     )
 
 
