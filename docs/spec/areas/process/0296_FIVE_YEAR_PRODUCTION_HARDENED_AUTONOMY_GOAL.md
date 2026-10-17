@@ -86,7 +86,7 @@ Five-year production target:
 
 Year 1, foundations:
 
-- Complete the typed IR redesign and eliminate fast_int/raw_int/type_hint transport hints.
+- Complete the typed IR redesign and eliminate the remaining `type_hint` transport hint (`fast_int`, `fast_float` and `raw_int` are retired).
 - Move sieve from roughly 13 ms toward 4 ms while ratcheting regressions such as class_hierarchy, struct, and bytes_find toward >= 1x CPython.
 - Ratchet the 875 stdlib parity modules from intrinsic-partial to intrinsic-backed.
 - Reach sanitizer-clean status across ASan, Miri, TSan, and UBSan.

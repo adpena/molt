@@ -17,8 +17,8 @@ Landing checks execute the generator and authority inputs captured from the exac
 | Hand-maintained path-to-proof authorities | 4 | 1 |
 | CI selection families | 5 | 12 |
 | Hashed executable authority inputs | 1 | 367 |
-| Local path rules | 35 | 56 |
-| Unique local commands | 73 | 133 |
+| Local path rules | 35 | 55 |
+| Unique local commands | 73 | 130 |
 | Handwritten Python classifier rule tables | 5 | 0 |
 
 ## CI families
@@ -224,7 +224,6 @@ The wrapper conflict was reconfirmed by native CI run `30211145633` job `8981749
 | `repository.build-graph` | `repository_policy` | `linux-x86_64-py312-repository-policy` | `explicit` | 120 s | `repository-policy` | 0 |
 | `repository.runtime-symbol-owners` | `repository_policy` | `linux-x86_64-py312-repository-policy` | `explicit` | 120 s | `repository-policy` | 0 |
 | `repository.runtime-serial-bridge-imports` | `repository_policy` | `linux-x86_64-py312-repository-policy` | `explicit` | 120 s | `repository-policy` | 0 |
-| `repository.tk-import-authority` | `repository_policy` | `linux-x86_64-py312-repository-policy` | `explicit` | 120 s | `repository-policy` | 0 |
 | `repository.perf-gate-wiring` | `repository_policy` | `linux-x86_64-py312-repository-policy` | `explicit` | 120 s | `repository-policy` | 0 |
 | `repository.ratio-direction` | `repository_policy` | `linux-x86_64-py312-repository-policy` | `explicit` | 120 s | `repository-policy` | 0 |
 | `repository.subagent-contract` | `repository_policy` | `linux-x86_64-py312-repository-policy` | `explicit` | 120 s | `repository-policy` | 0 |
@@ -356,10 +355,9 @@ The wrapper conflict was reconfirmed by native CI run `30211145633` job `8981749
 | `ecosystem-compat` | 2 | 1 |
 | `tinygrad-upat-static-exec-registry` | 2 | 1 |
 | `docs-architecture` | 4 | 2 |
-| `dev-tooling` | 12 | 5 |
+| `dev-tooling` | 10 | 4 |
 | `encoding-diagnostics` | 2 | 1 |
 | `runtime-cargo-input-custody` | 37 | 1 |
-| `rust-ffi-blocks` | 6 | 2 |
 | `rust-toolchain` | 10 | 2 |
 | `table-drift` | 12 | 2 |
 | `findings-registry` | 4 | 1 |

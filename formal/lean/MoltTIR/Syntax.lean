@@ -61,18 +61,12 @@ inductive Expr where
   deriving DecidableEq, Repr
 
 /-- SSA instruction: assign `dst` := `rhs`. dst is fresh in SSA.
-    Corresponds to a MoltOp with out=dst and evaluated rhs.
-
-    fast_int_hint / fast_float_hint: optional type specialization flags propagated
-    from type inference. When true, the backend may emit specialized integer or
-    float arithmetic without a type-tag check. Added to match implementation:
-      2e1cab40 perf: propagate type facts to IR fast_int/fast_float flags
-      14ad1fe3 perf: automatic int type inference from range/len/literals -/
+    Corresponds to a MoltOp with out=dst and evaluated rhs. Scalar
+    specialization reads typed facts on SSA values (see
+    `TypeSystem/TypeInference.lean`), not flags on the instruction. -/
 structure Instr where
   dst : Var
   rhs : Expr
-  fast_int_hint   : Bool := false
-  fast_float_hint : Bool := false
   deriving Repr
 
 /-- Block terminators with explicit argument passing (block params).

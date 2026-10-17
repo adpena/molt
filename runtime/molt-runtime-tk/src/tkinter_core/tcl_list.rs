@@ -1,4 +1,4 @@
-use molt_runtime_core::prelude::*;
+use molt_runtime_core::prelude::{obj_from_bits, rt_dec_ref, rt_raise_str};
 
 use super::common::{
     alloc_list_bits, alloc_str_bits, bits_as_i64, bits_is_none, bits_to_string, cleanup_list,

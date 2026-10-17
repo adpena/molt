@@ -2,9 +2,9 @@
 """Fail-closed, down-only SUITE-HONESTY ratchet (task #46).
 
 The conformance-manifest seed for the 5-year parity axis. Modeled exactly on
-tools/check_ecosystem_compat.py and tools/check_satellite_parity.py: a CONTRACT
-(not a runner/sync script); a committed source-of-truth manifest; a one-way
-ratchet; fail-closed on regression; deterministic sorted output.
+tools/check_ecosystem_compat.py: a CONTRACT (not a runner/sync script); a
+committed source-of-truth manifest; a one-way ratchet; fail-closed on
+regression; deterministic sorted output.
 
 The problem this guard exists to kill
 -------------------------------------

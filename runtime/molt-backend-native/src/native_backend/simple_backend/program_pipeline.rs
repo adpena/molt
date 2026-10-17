@@ -235,16 +235,16 @@ fn dump_raw_ir_if_requested(functions: &[FunctionIR]) {
         dump.push_str(&format!("// params: {:?}\n", func_ir.params));
         dump.push_str(&format!("// param_types: {:?}\n", func_ir.param_types));
         for (idx, op) in func_ir.ops.iter().enumerate() {
-            dump.push_str(&format!("{:4}: kind={:30} out={:20} var={:20} args={:40} val={:?} sval={:?} fi={:?} ff={:?}\n",
+            dump.push_str(&format!(
+                "{:4}: kind={:30} out={:20} var={:20} args={:40} val={:?} sval={:?}\n",
                 idx,
                 op.kind,
                 op.out.as_deref().unwrap_or(""),
                 op.var.as_deref().unwrap_or(""),
                 op.args.as_ref().map(|a| a.join(",")).unwrap_or_default(),
                 op.value,
-                op.s_value,
-                op.fast_int,
-                op.fast_float));
+                op.s_value
+            ));
         }
         let _ = crate::debug_artifacts::write_debug_artifact(format!("ir/{sanitized}.txt"), dump);
     }

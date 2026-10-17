@@ -8,9 +8,9 @@ use crate::audit::AuditArgs;
 use crate::builtins::classes::class_name_for_error as _class_name_for_error;
 use crate::builtins::containers::list_len as _list_len;
 use crate::builtins::numbers::{
-    bigint_bits as _bigint_bits, bigint_from_f64_trunc as _bigint_from_f64_trunc,
-    bigint_to_inline as _bigint_to_inline, index_bigint_from_obj as _index_bigint_from_obj,
-    index_i64_from_obj as _index_i64_from_obj, to_bigint as _to_bigint, to_f64 as _to_f64,
+    bigint_from_f64_trunc as _bigint_from_f64_trunc,
+    index_bigint_from_obj as _index_bigint_from_obj, index_i64_from_obj as _index_i64_from_obj,
+    to_bigint as _to_bigint, to_f64 as _to_f64,
 };
 use crate::builtins::type_ops::type_of_bits as _type_of_bits;
 use crate::object::ops::{string_obj_to_owned as _string_obj_to_owned, type_name as _type_name};
@@ -486,39 +486,6 @@ pub extern "C" fn __molt_math_bigint_from_f64_trunc(
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn __molt_math_bigint_bits(sign: i32, data_ptr: *const u8, data_len: usize) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
-        let bytes = unsafe { std::slice::from_raw_parts(data_ptr, data_len) };
-        let sign = match sign {
-            -1 => Sign::Minus,
-            0 => Sign::NoSign,
-            _ => Sign::Plus,
-        };
-        let value = BigInt::from_bytes_be(sign, bytes);
-        _bigint_bits(_py, value)
-    })
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn __molt_math_bigint_to_inline(
-    sign: i32,
-    data_ptr: *const u8,
-    data_len: usize,
-) -> u64 {
-    let bytes = unsafe { std::slice::from_raw_parts(data_ptr, data_len) };
-    let sign = match sign {
-        -1 => Sign::Minus,
-        0 => Sign::NoSign,
-        _ => Sign::Plus,
-    };
-    let value = BigInt::from_bytes_be(sign, bytes);
-    match _bigint_to_inline(&value) {
-        Some(v) => MoltObject::from_int(v).bits(),
-        None => 0, // signal: doesn't fit inline
-    }
-}
-
-#[unsafe(no_mangle)]
 pub extern "C" fn __molt_math_index_i64_from_obj(
     obj_bits: u64,
     err_ptr: *const u8,
@@ -780,33 +747,6 @@ pub extern "C" fn __molt_math_list_swap(list_bits: u64, left: usize, right: usiz
 pub extern "C" fn __molt_math_molt_iter(bits: u64) -> u64 {
     // molt_iter is a pub extern "C" fn(u64) -> u64 that does its own GIL entry.
     crate::object::ops_iter::molt_iter(bits)
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn __molt_math_molt_iter_next(iter_bits: u64, out: *mut u64) -> i32 {
-    // molt_iter_next returns the next element or a sentinel for StopIteration.
-    let result = crate::object::ops_iter::molt_iter_next(iter_bits);
-    // Convention: None bits (0x7FF8_0000_0000_0000) signals exhaustion.
-    let none_bits = MoltObject::none().bits();
-    if result == none_bits {
-        // Could be actual None or exhaustion — check exception pending.
-        crate::with_gil_entry_nopanic!(_py, {
-            if exception_pending(_py) {
-                0 // StopIteration or error
-            } else {
-                // Actual None value — return it.
-                unsafe {
-                    *out = result;
-                }
-                1
-            }
-        })
-    } else {
-        unsafe {
-            *out = result;
-        }
-        1
-    }
 }
 
 #[unsafe(no_mangle)]

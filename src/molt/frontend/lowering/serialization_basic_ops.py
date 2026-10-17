@@ -139,7 +139,7 @@ class SerializationBasicOpsMixin(GeneratorMixinBase):
             # This prevents Cranelift 0.130 from miscompiling the overflow
             # check during its constant-folding pass.
             _arith_folded = False
-            if len(op.args) == 2 and self._should_fast_int(op):
+            if len(op.args) == 2:
                 lhs_arg, rhs_arg = op.args
                 if isinstance(lhs_arg, MoltValue) and isinstance(rhs_arg, MoltValue):
                     lhs_c = self.const_ints.get(lhs_arg.name)
@@ -167,10 +167,6 @@ class SerializationBasicOpsMixin(GeneratorMixinBase):
                     "args": [arg.name for arg in op.args],
                     "out": op.result.name,
                 }
-                if self._should_fast_int(op):
-                    entry["fast_int"] = True
-                elif self._should_fast_float(op):
-                    entry["fast_float"] = True
                 ctx.json_ops.append(entry)
         elif op.kind in ("INPLACE_ADD", "INPLACE_SUB", "INPLACE_MUL"):
             kind_lower = op.kind.lower()
@@ -179,10 +175,6 @@ class SerializationBasicOpsMixin(GeneratorMixinBase):
                 "args": [arg.name for arg in op.args],
                 "out": op.result.name,
             }
-            if self._should_fast_int(op):
-                entry["fast_int"] = True
-            elif self._should_fast_float(op):
-                entry["fast_float"] = True
             ctx.json_ops.append(entry)
         elif op.kind in ("DIV", "INPLACE_DIV"):
             # `/` and `/=`. The inplace variant carries the same fast
@@ -194,10 +186,6 @@ class SerializationBasicOpsMixin(GeneratorMixinBase):
                 "args": [arg.name for arg in op.args],
                 "out": op.result.name,
             }
-            if self._should_fast_int(op):
-                div_entry["fast_int"] = True
-            elif self._should_fast_float(op):
-                div_entry["fast_float"] = True
             ctx.json_ops.append(div_entry)
         elif op.kind in ("FLOORDIV", "INPLACE_FLOORDIV"):
             floordiv_entry: dict[str, Any] = {
@@ -205,10 +193,6 @@ class SerializationBasicOpsMixin(GeneratorMixinBase):
                 "args": [arg.name for arg in op.args],
                 "out": op.result.name,
             }
-            if self._should_fast_int(op):
-                floordiv_entry["fast_int"] = True
-            elif self._should_fast_float(op):
-                floordiv_entry["fast_float"] = True
             ctx.json_ops.append(floordiv_entry)
         elif op.kind in ("MOD", "INPLACE_MOD"):
             mod_entry: dict[str, Any] = {
@@ -216,10 +200,6 @@ class SerializationBasicOpsMixin(GeneratorMixinBase):
                 "args": [arg.name for arg in op.args],
                 "out": op.result.name,
             }
-            if self._should_fast_int(op):
-                mod_entry["fast_int"] = True
-            elif self._should_fast_float(op):
-                mod_entry["fast_float"] = True
             ctx.json_ops.append(mod_entry)
         elif op.kind in ("POW", "INPLACE_POW"):
             ctx.json_ops.append(
@@ -235,8 +215,6 @@ class SerializationBasicOpsMixin(GeneratorMixinBase):
                 "args": [arg.name for arg in op.args],
                 "out": op.result.name,
             }
-            if self._should_fast_int(op):
-                bit_or_entry["fast_int"] = True
             ctx.json_ops.append(bit_or_entry)
         elif op.kind == "INPLACE_BIT_OR":
             bit_or_entry: dict[str, Any] = {
@@ -244,8 +222,6 @@ class SerializationBasicOpsMixin(GeneratorMixinBase):
                 "args": [arg.name for arg in op.args],
                 "out": op.result.name,
             }
-            if self._should_fast_int(op):
-                bit_or_entry["fast_int"] = True
             ctx.json_ops.append(bit_or_entry)
         elif op.kind == "BIT_AND":
             bit_and_entry: dict[str, Any] = {
@@ -253,8 +229,6 @@ class SerializationBasicOpsMixin(GeneratorMixinBase):
                 "args": [arg.name for arg in op.args],
                 "out": op.result.name,
             }
-            if self._should_fast_int(op):
-                bit_and_entry["fast_int"] = True
             ctx.json_ops.append(bit_and_entry)
         elif op.kind == "INPLACE_BIT_AND":
             bit_and_entry: dict[str, Any] = {
@@ -262,8 +236,6 @@ class SerializationBasicOpsMixin(GeneratorMixinBase):
                 "args": [arg.name for arg in op.args],
                 "out": op.result.name,
             }
-            if self._should_fast_int(op):
-                bit_and_entry["fast_int"] = True
             ctx.json_ops.append(bit_and_entry)
         elif op.kind == "BIT_XOR":
             bit_xor_entry: dict[str, Any] = {
@@ -271,8 +243,6 @@ class SerializationBasicOpsMixin(GeneratorMixinBase):
                 "args": [arg.name for arg in op.args],
                 "out": op.result.name,
             }
-            if self._should_fast_int(op):
-                bit_xor_entry["fast_int"] = True
             ctx.json_ops.append(bit_xor_entry)
         elif op.kind == "INPLACE_BIT_XOR":
             bit_xor_entry: dict[str, Any] = {
@@ -280,8 +250,6 @@ class SerializationBasicOpsMixin(GeneratorMixinBase):
                 "args": [arg.name for arg in op.args],
                 "out": op.result.name,
             }
-            if self._should_fast_int(op):
-                bit_xor_entry["fast_int"] = True
             ctx.json_ops.append(bit_xor_entry)
         elif op.kind in ("LSHIFT", "INPLACE_LSHIFT"):
             lshift_entry: dict[str, Any] = {
@@ -289,8 +257,6 @@ class SerializationBasicOpsMixin(GeneratorMixinBase):
                 "args": [arg.name for arg in op.args],
                 "out": op.result.name,
             }
-            if self._should_fast_int(op):
-                lshift_entry["fast_int"] = True
             ctx.json_ops.append(lshift_entry)
         elif op.kind in ("RSHIFT", "INPLACE_RSHIFT"):
             rshift_entry: dict[str, Any] = {
@@ -298,8 +264,6 @@ class SerializationBasicOpsMixin(GeneratorMixinBase):
                 "args": [arg.name for arg in op.args],
                 "out": op.result.name,
             }
-            if self._should_fast_int(op):
-                rshift_entry["fast_int"] = True
             ctx.json_ops.append(rshift_entry)
         elif op.kind in ("MATMUL", "INPLACE_MATMUL"):
             ctx.json_ops.append(
@@ -315,10 +279,6 @@ class SerializationBasicOpsMixin(GeneratorMixinBase):
                 "args": [arg.name for arg in op.args],
                 "out": op.result.name,
             }
-            if self._should_fast_int(op):
-                lt_entry["fast_int"] = True
-            elif self._should_fast_float(op):
-                lt_entry["fast_float"] = True
             ctx.json_ops.append(lt_entry)
         elif op.kind == "LE":
             le_entry: dict[str, Any] = {
@@ -326,10 +286,6 @@ class SerializationBasicOpsMixin(GeneratorMixinBase):
                 "args": [arg.name for arg in op.args],
                 "out": op.result.name,
             }
-            if self._should_fast_int(op):
-                le_entry["fast_int"] = True
-            elif self._should_fast_float(op):
-                le_entry["fast_float"] = True
             ctx.json_ops.append(le_entry)
         elif op.kind == "GT":
             gt_entry: dict[str, Any] = {
@@ -337,10 +293,6 @@ class SerializationBasicOpsMixin(GeneratorMixinBase):
                 "args": [arg.name for arg in op.args],
                 "out": op.result.name,
             }
-            if self._should_fast_int(op):
-                gt_entry["fast_int"] = True
-            elif self._should_fast_float(op):
-                gt_entry["fast_float"] = True
             ctx.json_ops.append(gt_entry)
         elif op.kind == "GE":
             ge_entry: dict[str, Any] = {
@@ -348,10 +300,6 @@ class SerializationBasicOpsMixin(GeneratorMixinBase):
                 "args": [arg.name for arg in op.args],
                 "out": op.result.name,
             }
-            if self._should_fast_int(op):
-                ge_entry["fast_int"] = True
-            elif self._should_fast_float(op):
-                ge_entry["fast_float"] = True
             ctx.json_ops.append(ge_entry)
         elif op.kind == "EQ":
             eq_entry: dict[str, Any] = {
@@ -359,10 +307,6 @@ class SerializationBasicOpsMixin(GeneratorMixinBase):
                 "args": [arg.name for arg in op.args],
                 "out": op.result.name,
             }
-            if self._should_fast_int(op):
-                eq_entry["fast_int"] = True
-            elif self._should_fast_float(op):
-                eq_entry["fast_float"] = True
             ctx.json_ops.append(eq_entry)
         elif op.kind == "NE":
             ne_entry: dict[str, Any] = {
@@ -370,10 +314,6 @@ class SerializationBasicOpsMixin(GeneratorMixinBase):
                 "args": [arg.name for arg in op.args],
                 "out": op.result.name,
             }
-            if self._should_fast_int(op):
-                ne_entry["fast_int"] = True
-            elif self._should_fast_float(op):
-                ne_entry["fast_float"] = True
             ctx.json_ops.append(ne_entry)
         elif op.kind == "IS":
             ctx.json_ops.append(
@@ -397,10 +337,6 @@ class SerializationBasicOpsMixin(GeneratorMixinBase):
                 "args": [op.args[0].name],
                 "out": op.result.name,
             }
-            if self._should_fast_int(op):
-                entry["fast_int"] = True
-            elif self._should_fast_float(op):
-                entry["fast_float"] = True
             ctx.json_ops.append(entry)
         elif op.kind == "POS":
             entry: dict[str, Any] = {
@@ -408,10 +344,6 @@ class SerializationBasicOpsMixin(GeneratorMixinBase):
                 "args": [op.args[0].name],
                 "out": op.result.name,
             }
-            if self._should_fast_int(op):
-                entry["fast_int"] = True
-            elif self._should_fast_float(op):
-                entry["fast_float"] = True
             ctx.json_ops.append(entry)
         elif op.kind == "NOT":
             ctx.json_ops.append(

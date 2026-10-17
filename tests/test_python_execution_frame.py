@@ -938,7 +938,7 @@ def test_evaluator_format_validation_uses_generic_comparison_and_exact_false(sou
         if op["kind"] == "gt" and op.get("out") == comparison.result.name
     ]
     assert len(guards) == 1
-    assert not guards[0].get("fast_int") and not guards[0].get("fast_float")
+    assert "type_hint" not in guards[0]
 
 
 @pytest.mark.parametrize("target", [(3, 12), (3, 13), (3, 14)])

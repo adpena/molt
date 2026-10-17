@@ -12,73 +12,19 @@ use num_integer::Integer;
 use num_traits::{One, Signed, ToPrimitive, Zero};
 use sha2::Sha512;
 
-// ---------------------------------------------------------------------------
-// Compatibility wrappers: match monolith-style API over bridge functions
-// ---------------------------------------------------------------------------
-
-/// Wraps bridge::molt_iter — monolith version has no _py parameter.
-#[inline]
-fn compat_molt_iter(_py: &PyToken, bits: u64) -> u64 {
-    molt_iter(_py, bits)
-}
-
-/// Wraps bridge::molt_iter_next — monolith returns u64 (None check via exception_pending).
-#[inline]
-fn compat_molt_iter_next(_py: &PyToken, iter_bits: u64) -> u64 {
-    match molt_iter_next(_py, iter_bits) {
-        Some(bits) => bits,
-        None => MoltObject::none().bits(),
+/// Start iteration over `iter_bits` and own the iterator. `molt_iter` returns
+/// None without raising for a non-iterable receiver, so this raises the
+/// CPython `'T' object is not iterable` TypeError in that case.
+fn owned_iterator<'py>(_py: &'py PyToken, iter_bits: u64) -> Option<OwnedRuntimeValue<'py>> {
+    let iterator = unsafe { OwnedRuntimeValue::from_owned_bits(_py, molt_iter(_py, iter_bits)) };
+    if exception_pending(_py) {
+        return None;
     }
-}
-
-/// Wraps bridge::raise_not_iterable — monolith is generic, bridge is not.
-#[inline]
-fn compat_raise_not_iterable<T: ExceptionSentinel>(_py: &PyToken, bits: u64) -> T {
-    let _ = raise_not_iterable(_py, bits);
-    T::from_bits(0)
-}
-
-/// Wraps bridge::molt_sorted_builtin — monolith takes 3 args, bridge takes 2 + _py.
-#[inline]
-fn compat_molt_sorted_builtin(
-    _py: &PyToken,
-    data_bits: u64,
-    _key_bits: u64,
-    _reverse_bits: u64,
-) -> u64 {
-    molt_sorted_builtin(_py, data_bits)
-}
-
-/// Wraps bridge::molt_mul — monolith has no _py.
-#[inline]
-fn compat_molt_mul(_py: &PyToken, a: u64, b: u64) -> u64 {
-    molt_mul(_py, a, b)
-}
-
-/// Wraps bridge::bigint_to_inline — monolith returns Option<i64>, bridge returns u64.
-#[inline]
-fn compat_bigint_to_inline(_py: &PyToken, value: &BigInt) -> Option<i64> {
-    let bits = bigint_to_inline(_py, value);
-    if bits != 0 {
-        // The bridge returns MoltObject int bits; extract the i64
-        let obj = obj_from_bits(bits);
-        obj.as_int()
-    } else {
-        None
+    if obj_from_bits(iterator.bits()).is_none() {
+        raise_not_iterable(_py, iter_bits);
+        return None;
     }
-}
-
-/// Wraps bridge::bigint_bits — monolith takes BigInt by value, bridge takes by ref.
-#[inline]
-fn compat_bigint_bits(_py: &PyToken, value: BigInt) -> u64 {
-    bigint_bits(_py, &value)
-}
-
-/// Wraps bridge::string_bytes — bridge returns &[u8], but we just need the raw data
-/// in the same way the monolith's unsafe fn works.
-#[inline]
-pub(crate) fn compat_string_bytes(ptr: *mut u8) -> &'static [u8] {
-    unsafe { string_bytes(ptr) }
+    Some(iterator)
 }
 
 #[cfg(target_arch = "wasm32")]
@@ -439,12 +385,7 @@ fn int_bits_from_f64_trunc(_py: &PyToken, value: f64) -> u64 {
     if value >= i64::MIN as f64 && value < -(i64::MIN as f64) {
         return int_bits_from_i64(_py, value as i64);
     }
-    let big = bigint_from_f64_trunc(value);
-    if let Some(i) = compat_bigint_to_inline(_py, &big) {
-        MoltObject::from_int(i).bits()
-    } else {
-        compat_bigint_bits(_py, big)
-    }
+    int_bits_from_bigint(_py, bigint_from_f64_trunc(value))
 }
 
 enum RoundMode {
@@ -541,10 +482,7 @@ fn isqrt_biguint(value: &BigUint) -> BigUint {
 }
 
 fn collect_real_vec(_py: &PyToken, iter_bits: u64) -> Option<Vec<f64>> {
-    let iterator = unsafe { OwnedRuntimeValue::from_owned_bits(_py, molt_iter(_py, iter_bits)) };
-    if exception_pending(_py) {
-        return None;
-    }
+    let iterator = owned_iterator(_py, iter_bits)?;
     let mut out = Vec::new();
     loop {
         let value = match molt_runtime_core::iter_next_owned(_py, &iterator) {
@@ -1532,47 +1470,24 @@ pub extern "C" fn molt_math_isclose(a_bits: u64, b_bits: u64, rel_bits: u64, abs
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_math_prod(iter_bits: u64, start_bits: u64) -> u64 {
     molt_runtime_core::with_gil_entry!(_py, {
-        let iter_obj = compat_molt_iter(_py, iter_bits);
-        if obj_from_bits(iter_obj).is_none() {
-            return compat_raise_not_iterable::<u64>(_py, iter_bits);
-        }
-        let mut total_bits = start_bits;
-        let mut total_owned = false;
+        let Some(iterator) = owned_iterator(_py, iter_bits) else {
+            return MoltObject::none().bits();
+        };
+        let mut total = OwnedRuntimeValue::retain(_py, start_bits);
         loop {
-            let pair_bits = compat_molt_iter_next(_py, iter_obj);
-            if exception_pending(_py) {
-                return MoltObject::none().bits();
-            }
-            let pair_obj = obj_from_bits(pair_bits);
-            let Some(pair_ptr) = pair_obj.as_ptr() else {
-                return raise_exception::<_>(_py, "TypeError", "object is not an iterator");
+            let value = match molt_runtime_core::iter_next_owned(_py, &iterator) {
+                Ok(Some(value)) => value,
+                Ok(None) => return total.into_bits(),
+                Err(_) => return MoltObject::none().bits(),
             };
-            unsafe {
-                if object_type_id(pair_ptr) != TYPE_ID_TUPLE {
-                    return raise_exception::<_>(_py, "TypeError", "object is not an iterator");
+            let next_bits = molt_mul(_py, total.bits(), value.bits());
+            if obj_from_bits(next_bits).is_none() {
+                if exception_pending(_py) {
+                    return MoltObject::none().bits();
                 }
-                let elems = seq_snapshot(pair_ptr);
-                if elems.len() < 2 {
-                    return raise_exception::<_>(_py, "TypeError", "object is not an iterator");
-                }
-                let val_bits = elems[0];
-                let done_bits = elems[1];
-                if is_truthy(_py, obj_from_bits(done_bits)) {
-                    if !total_owned {
-                        inc_ref_bits(_py, total_bits);
-                    }
-                    return total_bits;
-                }
-                let next_bits = compat_molt_mul(_py, total_bits, val_bits);
-                if obj_from_bits(next_bits).is_none() {
-                    if exception_pending(_py) {
-                        return MoltObject::none().bits();
-                    }
-                    return binary_type_error(_py, total_bits, val_bits, "*");
-                }
-                total_bits = next_bits;
-                total_owned = true;
+                return binary_type_error(_py, total.bits(), value.bits(), "*");
             }
+            total = unsafe { OwnedRuntimeValue::from_owned_bits(_py, next_bits) };
         }
     })
 }
@@ -1580,11 +1495,9 @@ pub extern "C" fn molt_math_prod(iter_bits: u64, start_bits: u64) -> u64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_math_fsum(iter_bits: u64) -> u64 {
     molt_runtime_core::with_gil_entry!(_py, {
-        let iterator =
-            unsafe { OwnedRuntimeValue::from_owned_bits(_py, molt_iter(_py, iter_bits)) };
-        if exception_pending(_py) {
+        let Some(iterator) = owned_iterator(_py, iter_bits) else {
             return MoltObject::none().bits();
-        }
+        };
         let mut partials: Vec<f64> = Vec::new();
         loop {
             let value = match molt_runtime_core::iter_next_owned(_py, &iterator) {
@@ -2199,57 +2112,23 @@ fn statistics_variance_value(
     Some(variance)
 }
 
-fn collect_values_vec(_py: &PyToken, iter_bits: u64) -> Option<Vec<u64>> {
-    let iter_obj = compat_molt_iter(_py, iter_bits);
-    if obj_from_bits(iter_obj).is_none() {
-        compat_raise_not_iterable::<Option<Vec<u64>>>(_py, iter_bits);
-        return None;
-    }
+fn collect_values_vec<'py>(
+    _py: &'py PyToken,
+    iter_bits: u64,
+) -> Option<Vec<OwnedRuntimeValue<'py>>> {
+    let iterator = owned_iterator(_py, iter_bits)?;
     let mut out = Vec::new();
     loop {
-        let pair_bits = compat_molt_iter_next(_py, iter_obj);
-        if exception_pending(_py) {
-            return None;
-        }
-        let pair_obj = obj_from_bits(pair_bits);
-        let Some(pair_ptr) = pair_obj.as_ptr() else {
-            return raise_exception::<Option<Vec<u64>>>(
-                _py,
-                "TypeError",
-                "object is not an iterator",
-            );
-        };
-        unsafe {
-            if object_type_id(pair_ptr) != TYPE_ID_TUPLE {
-                return raise_exception::<Option<Vec<u64>>>(
-                    _py,
-                    "TypeError",
-                    "object is not an iterator",
-                );
-            }
-            let elems = seq_snapshot(pair_ptr);
-            if elems.len() < 2 {
-                return raise_exception::<Option<Vec<u64>>>(
-                    _py,
-                    "TypeError",
-                    "object is not an iterator",
-                );
-            }
-            let val_bits = elems[0];
-            let done_bits = elems[1];
-            if is_truthy(_py, obj_from_bits(done_bits)) {
-                break;
-            }
-            out.push(val_bits);
+        match molt_runtime_core::iter_next_owned(_py, &iterator) {
+            Ok(Some(value)) => out.push(value),
+            Ok(None) => return Some(out),
+            Err(_) => return None,
         }
     }
-    Some(out)
 }
 
 fn statistics_sorted_values(_py: &PyToken, data_bits: u64) -> Option<u64> {
-    let none_bits = MoltObject::none().bits();
-    let false_bits = MoltObject::from_bool(false).bits();
-    let sorted_bits = compat_molt_sorted_builtin(_py, data_bits, none_bits, false_bits);
+    let sorted_bits = molt_sorted_builtin(_py, data_bits);
     if exception_pending(_py) || obj_from_bits(sorted_bits).is_none() {
         return None;
     }
@@ -2268,7 +2147,8 @@ fn statistics_collect_sorted_real(_py: &PyToken, data_bits: u64, opname: &str) -
 }
 
 fn statistics_mode_value(_py: &PyToken, data_bits: u64) -> Option<u64> {
-    let values = collect_values_vec(_py, data_bits)?;
+    let owned_values = collect_values_vec(_py, data_bits)?;
+    let values = OwnedRuntimeValue::as_bits_slice(&owned_values);
     if values.is_empty() {
         raise_exception::<()>(_py, "ValueError", "no mode for empty data");
         return None;
@@ -2278,7 +2158,7 @@ fn statistics_mode_value(_py: &PyToken, data_bits: u64) -> Option<u64> {
     let mut best_bits = values[0];
     let mut best_count: i64 = 0;
     unsafe {
-        for &value_bits in &values {
+        for &value_bits in values {
             let current = match dict_get_in_place(_py, counts_ptr, value_bits) {
                 Ok(Some(bits)) => to_i64(obj_from_bits(bits)).unwrap_or(0),
                 Ok(None) => 0,
@@ -2320,7 +2200,8 @@ fn statistics_mode_value(_py: &PyToken, data_bits: u64) -> Option<u64> {
 }
 
 fn statistics_multimode_value(_py: &PyToken, data_bits: u64) -> Option<u64> {
-    let values = collect_values_vec(_py, data_bits)?;
+    let owned_values = collect_values_vec(_py, data_bits)?;
+    let values = OwnedRuntimeValue::as_bits_slice(&owned_values);
     if values.is_empty() {
         let list_ptr = alloc_list(_py, &[]);
         if list_ptr.is_null() {
@@ -2333,7 +2214,7 @@ fn statistics_multimode_value(_py: &PyToken, data_bits: u64) -> Option<u64> {
     let mut first_seen: Vec<u64> = Vec::new();
     let mut max_count: i64 = 0;
     unsafe {
-        for &value_bits in &values {
+        for &value_bits in values {
             let current_opt = dict_get_in_place(_py, counts_ptr, value_bits);
             let current = match current_opt {
                 Ok(Some(bits)) => to_i64(obj_from_bits(bits)).unwrap_or(0),

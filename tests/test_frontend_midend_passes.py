@@ -1005,7 +1005,7 @@ def test_all_generated_future_feature_returns_own_local_frame_exit() -> None:
         )
 
 
-def test_list_store_serialization_has_no_scalar_fast_hint() -> None:
+def test_list_store_serialization_container_metadata() -> None:
     generic_store = SimpleTIRGenerator(type_hint_policy="trust").map_ops_to_json(
         [
             MoltOp(
@@ -1021,7 +1021,6 @@ def test_list_store_serialization_has_no_scalar_fast_hint() -> None:
     )[0]
     assert generic_store["kind"] == "dict_set"
     assert generic_store["container_type"] == "list"
-    assert "fast_int" not in generic_store
 
     compact_ops = SimpleTIRGenerator(type_hint_policy="trust").map_ops_to_json(
         [
@@ -1054,9 +1053,7 @@ def test_list_store_serialization_has_no_scalar_fast_hint() -> None:
     )
     compact_store = compact_ops[1]
     compact_read = compact_ops[2]
-    assert "fast_int" not in compact_store
     assert "container_type" not in compact_store
-    assert compact_read["fast_int"] is True
     assert "container_type" not in compact_read
 
 

@@ -191,13 +191,12 @@ fn try_except_elision_preserves_raising_bodies_and_removes_only_safe_checks() {
 
 #[test]
 fn try_except_elision_keeps_transport_hinted_unknown_add() {
-    let mut add = OpIR {
+    let add = OpIR {
         kind: "add".to_string(),
         args: Some(vec!["left".to_string(), "right".to_string()]),
         out: Some("sum".to_string()),
         ..OpIR::default()
     };
-    add.fast_int = Some(true);
     let mut func = FunctionIR {
         return_abi: molt_ir::FunctionReturnAbi::Void,
         name: "transport_hint_try_body".to_string(),

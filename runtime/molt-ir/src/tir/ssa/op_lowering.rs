@@ -255,9 +255,8 @@ impl<'a> SsaContext<'a> {
             });
         }
         // Preserve only the structural class-id hint needed by object
-        // allocation round-trips. Scalar `fast_int` / `fast_float` flags are
-        // SimpleIR transport metadata and must not become TIR attributes; TIR
-        // scalar authority lives in `value_types` and the refined LIR facts.
+        // allocation round-trips. TIR scalar authority lives in `value_types`
+        // and the refined LIR facts.
         if let Some(ref th) = op.type_hint {
             attrs.insert("_type_hint".into(), AttrValue::Str(th.clone()));
             // Type-refine result values from the frontend's hint.

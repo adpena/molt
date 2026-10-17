@@ -14,9 +14,7 @@ import ast
 import hashlib
 import json
 import os
-import subprocess
 import sys
-import tempfile
 from pathlib import Path
 from types import MappingProxyType
 
@@ -28,7 +26,13 @@ from tools.import_file import bind_repository_imports  # noqa: E402
 
 bind_repository_imports(__file__)
 
-from tools.generator_io import display_path, generator_main, rustfmt_source  # noqa: E402
+from tools.generator_io import (  # noqa: E402
+    display_path,
+    generator_main,
+    rustfmt_source,
+    rustfmt_sources,
+    rustfmt_version,
+)
 
 from tools.wasm_abi_gen import render_python as _render_python  # noqa: E402
 from tools.wasm_abi_gen.manifest import (  # noqa: E402
@@ -80,7 +84,6 @@ NATIVE_RUNTIME_CALLABLE_KEY_BASE = 0xFFFF_FF00_0000_0000
 NATIVE_RUNTIME_POLL_KEY_OFFSET = 0x100
 
 GENERATOR_CACHE_VERSION = "wasm-abi-render-v6"
-RUSTFMT_CACHE_VERSION = "wasm-abi-rustfmt-v1"
 # Every path this generator renders; the render cache holds exactly these.
 OUTPUT_PATHS: tuple[Path, ...] = (
     *OUT_RS_FILES.values(),
@@ -127,126 +130,6 @@ def _rust_val_slice(vals: list[str]) -> str:
     if not vals:
         return "&[]"
     return "&[" + ", ".join(_rust_val_type(val) for val in vals) + "]"
-
-
-def _rustfmt_many(modules: dict[str, str]) -> dict[str, str]:
-    if not modules:
-        return {}
-    rustfmt_version = _rustfmt_version()
-    formatted: dict[str, str] = {}
-    misses: dict[str, str] = {}
-    for name, source in modules.items():
-        cached = _load_rustfmt_cache(name, source, rustfmt_version)
-        if cached is None:
-            misses[name] = source
-        else:
-            formatted[name] = cached
-    if not misses:
-        return {name: formatted[name] for name in modules}
-    with tempfile.TemporaryDirectory(prefix="molt-wasm-abi-rustfmt-") as raw_tmp:
-        tmp = Path(raw_tmp)
-        materialized_paths = _materialize_rustfmt_modules(tmp, modules)
-        paths = [materialized_paths[name] for name in misses]
-        try:
-            proc = subprocess.run(
-                [
-                    "rustfmt",
-                    "--edition",
-                    "2024",
-                    "--emit",
-                    "files",
-                    *(str(path) for path in paths),
-                ],
-                text=True,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                check=False,
-                encoding="utf-8",
-            )
-        except FileNotFoundError as exc:
-            raise RuntimeError(
-                "rustfmt is required to generate canonical WASM ABI Rust modules"
-            ) from exc
-        if proc.returncode != 0:
-            raise RuntimeError(
-                f"rustfmt failed for generated WASM ABI modules:\n{proc.stderr.strip()}"
-            )
-        for name, source in misses.items():
-            rustfmt_output = (tmp / name).read_text(encoding="utf-8").rstrip() + "\n"
-            formatted[name] = rustfmt_output
-            _store_rustfmt_cache(name, source, rustfmt_version, rustfmt_output)
-    return {name: formatted[name] for name in modules}
-
-
-def _materialize_rustfmt_modules(
-    root: Path, modules: dict[str, str]
-) -> dict[str, Path]:
-    paths: dict[str, Path] = {}
-    for name, source in modules.items():
-        path = root / name
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(source, encoding="utf-8", newline="\n")
-        paths[name] = path
-    return paths
-
-
-def _rustfmt_version() -> str:
-    try:
-        proc = subprocess.run(
-            ["rustfmt", "--version"],
-            text=True,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            check=False,
-            encoding="utf-8",
-        )
-    except FileNotFoundError as exc:
-        raise RuntimeError(
-            "rustfmt is required to generate canonical WASM ABI Rust modules"
-        ) from exc
-    if proc.returncode != 0:
-        raise RuntimeError(
-            "rustfmt --version failed while preparing the WASM ABI generator cache:\n"
-            f"{proc.stderr.strip()}"
-        )
-    return proc.stdout.strip()
-
-
-def _rustfmt_cache_key(module_name: str, source: str, rustfmt_version: str) -> str:
-    digest = hashlib.sha256()
-    digest.update(f"{RUSTFMT_CACHE_VERSION}\n".encode())
-    digest.update(f"module={module_name}\n".encode())
-    digest.update(f"rustfmt={rustfmt_version}\n".encode())
-    encoded_source = source.encode()
-    digest.update(f"len={len(encoded_source)}\n".encode())
-    digest.update(encoded_source)
-    return digest.hexdigest()
-
-
-def _rustfmt_cache_path(module_name: str, source: str, rustfmt_version: str) -> Path:
-    stem = Path(module_name).stem
-    cache_key = _rustfmt_cache_key(module_name, source, rustfmt_version)
-    return WASM_ABI_GEN_CACHE / "rustfmt" / f"{stem}-{cache_key}.rs"
-
-
-def _load_rustfmt_cache(
-    module_name: str, source: str, rustfmt_version: str
-) -> str | None:
-    path = _rustfmt_cache_path(module_name, source, rustfmt_version)
-    try:
-        return path.read_text(encoding="utf-8")
-    except OSError:
-        return None
-
-
-def _store_rustfmt_cache(
-    module_name: str, source: str, rustfmt_version: str, formatted: str
-) -> None:
-    path = _rustfmt_cache_path(module_name, source, rustfmt_version)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp_path = path.with_name(f".{path.name}.{os.getpid()}.tmp")
-    tmp_path.write_text(formatted, encoding="utf-8")
-    tmp_path.replace(path)
 
 
 def _cache_input_files() -> tuple[Path, ...]:
@@ -2302,7 +2185,7 @@ def render_rs_modules(data: dict) -> dict[str, str]:
         "runtime_callables.rs": _render_rs_runtime_callables(data, import_variants),
         "pure_profile.rs": _render_rs_pure_profile(data),
     }
-    return _rustfmt_many(modules)
+    return rustfmt_sources(modules, label="WASM ABI modules")
 
 
 def render_py(data: dict) -> str:
@@ -2499,7 +2382,7 @@ def generated_outputs() -> dict[Path, str]:
             "delete generated files that tools/gen_wasm_abi.py no longer "
             "renders: " + ", ".join(display_path(path) for path in stale)
         )
-    cache_key = _render_cache_key(_rustfmt_version())
+    cache_key = _render_cache_key(rustfmt_version())
     outputs = _load_render_cache(cache_key)
     if outputs is None:
         outputs = render_outputs(load_manifest())

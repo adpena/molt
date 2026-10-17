@@ -10,14 +10,25 @@ mapping compared or published, so no generator re-implements either, and
 from __future__ import annotations
 
 import argparse
+import functools
+import hashlib
+import os
 import sys
-from collections.abc import Callable, Mapping, Sequence
+import tempfile
+from collections.abc import Callable, Hashable, Mapping, Sequence
 from pathlib import Path
+from typing import TypeVar
 
 ROOT = Path(__file__).resolve().parents[1]
 
 GeneratedOutputs = Mapping[Path, str]
 Render = Callable[[], GeneratedOutputs]
+_Key = TypeVar("_Key", bound=Hashable)
+
+# One rustfmt run takes this many argument characters at most; Windows limits
+# a command line to 32,767.
+_RUSTFMT_ARGV_CHAR_BUDGET = 16_000
+_RUSTFMT_CACHE_SCHEMA = "molt.generator-rustfmt.v1"
 
 
 def canonical_generated_bytes(payload: bytes) -> bytes:
@@ -88,31 +99,177 @@ def write_outputs(outputs: GeneratedOutputs) -> list[Path]:
     return changed
 
 
-def rustfmt_source(source: str, *, label: str) -> str:
-    """Format generated Rust the one way every generator does.
+def rustfmt_command() -> tuple[str, ...]:
+    """The one rustfmt invocation for generated Rust.
 
-    The repository rustfmt reads the source on stdin with edition 2024, under
-    the generator memory guard; inside ``tools/generators.py`` that guard
-    shares the run's repository sentinel. ``label`` names the output in errors.
+    It formats with the workspace's edition and style, and only the file it
+    names: a generated file's ``mod`` declarations name siblings the generator
+    writes separately.
     """
+    from molt.cargo_workspace import workspace_edition
+
+    return (
+        "rustfmt",
+        "--edition",
+        workspace_edition(ROOT),
+        "--config",
+        "skip_children=true",
+    )
+
+
+@functools.cache
+def rustfmt_version() -> str:
+    """The selected rustfmt's version, which keys every formatted output."""
+    result = _guarded_rustfmt(["rustfmt", "--version"], label="the generator cache")
+    return result.strip()
+
+
+def rustfmt_source(source: str, *, label: str) -> str:
+    """Format one generated Rust source; ``label`` names it in errors."""
+    return rustfmt_sources({label: source}, label=label)[label]
+
+
+def rustfmt_sources(sources: Mapping[_Key, str], *, label: str) -> dict[_Key, str]:
+    """Format generated Rust sources the one way every generator does.
+
+    A source rustfmt already formatted, under the same version and command,
+    comes from a content-addressed cache outside the checkout. The others
+    format alone, each in its own scratch directory outside the checkout, in
+    as few rustfmt runs as the command-line budget allows, under the
+    generator memory guard.
+    """
+    if not sources:
+        return {}
+    command = rustfmt_command()
+    version = rustfmt_version()
+    formatted: dict[_Key, str] = {}
+    misses: dict[_Key, str] = {}
+    for key, source in sources.items():
+        cached = _rustfmt_cache_read(command, version, source)
+        if cached is None:
+            misses[key] = source
+        else:
+            formatted[key] = cached
+    if misses:
+        with tempfile.TemporaryDirectory(prefix="molt-generator-rustfmt-") as raw:
+            scratch: dict[_Key, Path] = {}
+            for index, (key, source) in enumerate(misses.items()):
+                path = Path(raw) / str(index) / "generated.rs"
+                path.parent.mkdir()
+                path.write_text(source, encoding="utf-8", newline="\n")
+                scratch[key] = path
+            for batch in _argv_batches(list(scratch.values())):
+                _guarded_rustfmt([*command, *map(str, batch)], label=label)
+            for key, path in scratch.items():
+                text = path.read_text(encoding="utf-8")
+                formatted[key] = text
+                _rustfmt_cache_write(command, version, misses[key], text)
+    return {key: formatted[key] for key in sources}
+
+
+def _guarded_rustfmt(command: Sequence[str], *, label: str) -> str:
     from tools import harness_memory_guard  # type: ignore[no-redef]
 
     try:
         result = harness_memory_guard.guarded_completed_process(
-            ["rustfmt", "--edition", "2024", "--emit", "stdout"],
+            list(command),
             prefix="MOLT_GENERATOR",
             cwd=ROOT,
-            input=source,
             capture_output=True,
             text=True,
-            timeout=60.0,
+            timeout=120.0,
+            errors="strict",
         )
     except FileNotFoundError as exc:
         raise RuntimeError(f"rustfmt is required to generate {label}") from exc
     if result.returncode != 0:
-        raise RuntimeError(f"rustfmt failed for {label}:\n{result.stderr}")
+        detail = (result.stderr or result.stdout or "").strip()
+        raise RuntimeError(f"rustfmt failed for {label}:\n{detail}")
     if not isinstance(result.stdout, str):
         raise TypeError("rustfmt stdout must be text when text=True")
+    return result.stdout
+
+
+def _argv_batches(paths: Sequence[Path]) -> list[list[Path]]:
+    batches: list[list[Path]] = []
+    batch: list[Path] = []
+    used = 0
+    for path in paths:
+        cost = len(str(path)) + 3
+        if batch and used + cost > _RUSTFMT_ARGV_CHAR_BUDGET:
+            batches.append(batch)
+            batch, used = [], 0
+        batch.append(path)
+        used += cost
+    if batch:
+        batches.append(batch)
+    return batches
+
+
+def _rustfmt_cache_path(command: Sequence[str], version: str, source: str) -> Path:
+    from molt.dx import scratch_dir
+
+    digest = hashlib.sha256()
+    for part in (_RUSTFMT_CACHE_SCHEMA, version, *command):
+        digest.update(part.encode() + b"\0")
+    digest.update(source.encode())
+    return scratch_dir(ROOT, "generator_rustfmt") / f"{digest.hexdigest()}.rs"
+
+
+def _rustfmt_cache_read(
+    command: Sequence[str], version: str, source: str
+) -> str | None:
+    try:
+        return _rustfmt_cache_path(command, version, source).read_text(encoding="utf-8")
+    except OSError:
+        return None
+
+
+def _rustfmt_cache_write(
+    command: Sequence[str], version: str, source: str, formatted: str
+) -> None:
+    path = _rustfmt_cache_path(command, version, source)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+    temporary.write_text(formatted, encoding="utf-8", newline="\n")
+    temporary.replace(path)
+
+
+def ruff_format_source(source: str, *, path: Path) -> str:
+    """Format generated Python the one way every generator does.
+
+    The repository ruff formats the source on stdin as if it were ``path``,
+    so the project configuration and its per-path rules apply, under the
+    generator memory guard. It keeps no cache, so it never writes into the
+    checkout.
+    """
+    from tools import harness_memory_guard  # type: ignore[no-redef]
+
+    result = harness_memory_guard.guarded_completed_process(
+        [
+            sys.executable,
+            "-m",
+            "ruff",
+            "format",
+            "--no-cache",
+            "--no-force-exclude",
+            "--stdin-filename",
+            str(path),
+            "-",
+        ],
+        prefix="MOLT_GENERATOR",
+        cwd=ROOT,
+        input=source,
+        capture_output=True,
+        text=True,
+        timeout=60.0,
+        errors="strict",
+    )
+    if result.returncode != 0:
+        detail = (result.stderr or result.stdout or "").strip()
+        raise RuntimeError(f"ruff format failed for {display_path(path)}:\n{detail}")
+    if not isinstance(result.stdout, str):
+        raise TypeError("ruff stdout must be text when text=True")
     return result.stdout
 
 

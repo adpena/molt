@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import importlib
 from pathlib import Path
-from types import SimpleNamespace
 
 import pytest
 
@@ -630,120 +629,6 @@ def test_crypto_resolver_is_leaf_owned_with_per_symbol_paths() -> None:
             assert f"molt_runtime_crypto::{rust_module}::{symbol}" in leaf
 
 
-def test_rustfmt_uses_shared_memory_guard(monkeypatch, tmp_path: Path) -> None:
-    module = gen_intrinsics
-    calls: list[dict[str, object]] = []
-    first = tmp_path / "a" / "generated.rs"
-    second = tmp_path / "b" / "mod.rs"
-
-    def fake_guarded_completed_process(cmd, **kwargs):
-        calls.append({"cmd": list(cmd), **kwargs})
-        return SimpleNamespace(
-            returncode=0,
-            stdout="",
-            stderr="",
-            check_returncode=lambda: None,
-        )
-
-    monkeypatch.setattr(
-        module,
-        "_HARNESS_MEMORY_GUARD",
-        SimpleNamespace(guarded_completed_process=fake_guarded_completed_process),
-    )
-
-    module._rustfmt([first, second])
-
-    assert calls == [
-        {
-            "cmd": [
-                "rustfmt",
-                "--config",
-                "skip_children=true",
-                str(first),
-                str(second),
-            ],
-            "prefix": "MOLT_GENERATOR",
-            "cwd": ROOT,
-            "capture_output": True,
-            "text": True,
-            "timeout": 60.0,
-        }
-    ]
-
-
-def test_rustfmt_failure_reports_guarded_output(monkeypatch, tmp_path: Path) -> None:
-    module = gen_intrinsics
-    target = tmp_path / "generated.rs"
-    target.write_text("fn main( {\n", encoding="utf-8")
-
-    def fake_guarded_completed_process(_cmd, **_kwargs):
-        return SimpleNamespace(
-            returncode=1,
-            stdout="format stdout",
-            stderr="format stderr",
-        )
-
-    monkeypatch.setattr(
-        module,
-        "_HARNESS_MEMORY_GUARD",
-        SimpleNamespace(guarded_completed_process=fake_guarded_completed_process),
-    )
-
-    with pytest.raises(RuntimeError) as raised:
-        module._rustfmt([target])
-
-    message = str(raised.value)
-    assert f"rustfmt failed for {target}" in message
-    assert "stdout:\nformat stdout" in message
-    assert "stderr:\nformat stderr" in message
-
-
-def test_rustfmt_batches_stay_inside_the_command_line_budget(monkeypatch) -> None:
-    module = gen_intrinsics
-    # Each path costs len("scratch/N/resolver.rs") + 3 == 24 characters, so a
-    # 50-character budget holds exactly two paths per rustfmt invocation.
-    monkeypatch.setattr(module, "_RUSTFMT_ARGV_CHAR_BUDGET", 50)
-    paths = [Path(f"scratch/{index}/resolver.rs") for index in range(5)]
-
-    batches = list(module._rustfmt_batches(paths))
-
-    assert batches == [paths[0:2], paths[2:4], paths[4:5]]
-
-
-def test_format_rust_sources_isolates_each_file_outside_the_output_tree(
-    monkeypatch, tmp_path: Path
-) -> None:
-    module = gen_intrinsics
-    output_root = tmp_path / "tracked-output"
-    output_root.mkdir()
-    sources = {
-        output_root / "mod.rs": "mod child;\n",
-        output_root / "child.rs": "fn child(){}\n",
-        output_root / "nested" / "mod.rs": "pub mod other;\n",
-    }
-    observed: list[list[Path]] = []
-
-    def fake_rustfmt(paths: list[Path]) -> None:
-        observed.append(list(paths))
-        for path in paths:
-            path.write_text(f"// formatted {path.name}\n", encoding="utf-8")
-
-    monkeypatch.setattr(module, "_rustfmt", fake_rustfmt)
-
-    formatted = module._format_rust_sources(sources)
-
-    assert len(observed) == 1, "every source formats in one guarded rustfmt call"
-    scratch = observed[0]
-    assert len(scratch) == len(sources)
-    # One scratch directory per source: a `mod` declaration can never resolve
-    # to a sibling output, so each file formats exactly as it would alone.
-    assert len({path.parent for path in scratch}) == len(sources)
-    assert all(output_root not in path.parents for path in scratch)
-    assert not any(path.exists() for path in scratch)
-    assert sorted(output_root.iterdir()) == []
-    assert formatted == {output: f"// formatted {output.name}\n" for output in sources}
-
-
 def test_orphaned_resolvers_are_reported_not_deleted(tmp_path: Path) -> None:
     module = gen_intrinsics
     resolver_root = tmp_path / "generated_resolvers"
@@ -772,10 +657,10 @@ def test_generated_outputs_fail_closed_on_orphaned_resolver(
     stale_resolver.write_text("stale", encoding="utf-8")
     monkeypatch.setattr(module, "OUT_RS_RESOLVERS_DIR", resolver_root)
 
-    def unreachable_rustfmt(_paths: list[Path]) -> None:
+    def unreachable_rustfmt(_sources, *, label) -> None:
         raise AssertionError("orphaned outputs must fail before formatting")
 
-    monkeypatch.setattr(module, "_rustfmt", unreachable_rustfmt)
+    monkeypatch.setattr(module, "rustfmt_sources", unreachable_rustfmt)
 
     with pytest.raises(RuntimeError, match="no longer renders") as raised:
         module.generated_outputs()

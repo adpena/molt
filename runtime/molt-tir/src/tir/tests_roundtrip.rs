@@ -381,8 +381,7 @@ mod tests {
 
     #[test]
     fn roundtrip_integer_compat_hint() {
-        let mut add_op = op_out_args("add", "z", &["x", "y"]);
-        add_op.fast_int = Some(true);
+        let add_op = op_out_args("add", "z", &["x", "y"]);
         let ops = vec![
             int_literal("x", 7),
             int_literal("y", 11),
@@ -937,40 +936,6 @@ mod tests {
             bop.unwrap().bytes.as_deref(),
             Some(&[1u8, 2, 3][..]),
             "bytes field must be preserved"
-        );
-    }
-
-    // ---------------------------------------------------------------------------
-    // Test 24: scalar transport hints are not re-emitted after TIR lift
-    // ---------------------------------------------------------------------------
-
-    #[test]
-    fn roundtrip_drops_scalar_transport_hints() {
-        let ops = vec![
-            OpIR {
-                kind: "const".to_string(),
-                out: Some("x".into()),
-                value: Some(10),
-                fast_int: Some(true),
-                ..OpIR::default()
-            },
-            OpIR {
-                kind: "const_float".to_string(),
-                out: Some("y".into()),
-                f_value: Some(1.5),
-                fast_float: Some(true),
-                ..OpIR::default()
-            },
-            op_args("ret", &["x"]),
-        ];
-        let result = roundtrip_no_opt(ops);
-        assert!(
-            result.iter().all(|op| op.fast_int.is_none()),
-            "TIR round-trip must not re-emit fast_int transport hints: {result:?}"
-        );
-        assert!(
-            result.iter().all(|op| op.fast_float.is_none()),
-            "TIR round-trip must not re-emit fast_float transport hints: {result:?}"
         );
     }
 

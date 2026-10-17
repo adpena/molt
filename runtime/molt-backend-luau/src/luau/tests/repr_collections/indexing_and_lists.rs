@@ -23,7 +23,6 @@ fn test_list_and_string_get_item_emit_index_error_guards() {
                     args: Some(vec!["xs".to_string(), "i".to_string()]),
                     out: Some("v0".to_string()),
                     type_hint: Some("list".to_string()),
-                    fast_int: Some(true),
                     ..OpIR::default()
                 },
                 OpIR {
@@ -31,7 +30,6 @@ fn test_list_and_string_get_item_emit_index_error_guards() {
                     args: Some(vec!["s".to_string(), "i".to_string()]),
                     out: Some("v1".to_string()),
                     type_hint: Some("str".to_string()),
-                    fast_int: Some(true),
                     ..OpIR::default()
                 },
                 OpIR {
@@ -73,7 +71,6 @@ fn test_string_get_item_uses_utf8_codepoint_offsets() {
                     args: Some(vec!["s".to_string(), "i".to_string()]),
                     out: Some("v0".to_string()),
                     type_hint: Some("str".to_string()),
-                    fast_int: Some(true),
                     ..OpIR::default()
                 },
                 OpIR {
@@ -117,7 +114,6 @@ fn test_ord_at_emits_utf8_codepoint_helper() {
                     args: Some(vec!["s".to_string(), "i".to_string()]),
                     out: Some("v0".to_string()),
                     type_hint: Some("int".to_string()),
-                    fast_int: Some(true),
                     ..OpIR::default()
                 },
                 OpIR {
@@ -162,14 +158,12 @@ fn test_list_set_and_delete_emit_index_error_guards() {
                     kind: "set_item".to_string(),
                     args: Some(vec!["xs".to_string(), "i".to_string(), "v".to_string()]),
                     type_hint: Some("list".to_string()),
-                    fast_int: Some(true),
                     ..OpIR::default()
                 },
                 OpIR {
                     kind: "del_item".to_string(),
                     args: Some(vec!["xs".to_string(), "i".to_string()]),
                     type_hint: Some("list".to_string()),
-                    fast_int: Some(true),
                     ..OpIR::default()
                 },
                 OpIR {
@@ -217,7 +211,6 @@ fn test_list_pop_and_index_emit_python_error_guards() {
                     kind: "list_pop".to_string(),
                     args: Some(vec!["xs".to_string(), "i".to_string()]),
                     out: Some("v1".to_string()),
-                    fast_int: Some(true),
                     ..OpIR::default()
                 },
                 OpIR {
@@ -270,7 +263,6 @@ fn test_call_method_list_pop_uses_python_error_guards() {
                     s_value: Some("pop".to_string()),
                     args: Some(vec!["xs".to_string(), "i".to_string()]),
                     out: Some("v1".to_string()),
-                    fast_int: Some(true),
                     ..OpIR::default()
                 },
                 OpIR {
@@ -525,7 +517,6 @@ fn test_list_insert_clamps_python_index_bounds() {
                 OpIR {
                     kind: "list_insert".to_string(),
                     args: Some(vec!["xs".to_string(), "i".to_string(), "v".to_string()]),
-                    fast_int: Some(true),
                     ..OpIR::default()
                 },
                 OpIR {

@@ -110,17 +110,6 @@ impl<'a> Arbitrary<'a> for ValidationInput {
                         } else {
                             None
                         },
-                        // Test conflicting flags — validator should catch these.
-                        fast_int: if u.arbitrary()? {
-                            Some(u.arbitrary()?)
-                        } else {
-                            None
-                        },
-                        fast_float: if u.arbitrary()? {
-                            Some(u.arbitrary()?)
-                        } else {
-                            None
-                        },
                         stack_eligible: if u.arbitrary()? {
                             Some(u.arbitrary()?)
                         } else {

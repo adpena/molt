@@ -938,6 +938,27 @@ pub fn path_glob_matches<E>(
     Ok(matches)
 }
 
+/// Shared native access predicate. No Python objects or conversion callbacks;
+/// each caller owns admission, argument conversion and exception ordering.
+pub fn path_access(path: &std::path::Path, mode: i32) -> bool {
+    #[cfg(unix)]
+    {
+        let Ok(path) = std::ffi::CString::new(path.as_os_str().as_encoded_bytes()) else {
+            return false;
+        };
+        unsafe { libc::access(path.as_ptr(), mode) == 0 }
+    }
+    #[cfg(not(unix))]
+    {
+        let Ok(metadata) = std::fs::metadata(path) else {
+            return false;
+        };
+        // CPython Windows uses attributes: READONLY directories satisfy W_OK.
+        // R_OK/X_OK add no attribute restriction. WASI execution is unqualified.
+        mode & 2 == 0 || !metadata.permissions().readonly() || metadata.is_dir()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1231,26 +1252,5 @@ mod tests {
             vec![std::path::PathBuf::from("..").join("a.py")]
         );
         std::fs::remove_dir_all(&root).unwrap();
-    }
-}
-
-/// Shared native access predicate. No Python objects or conversion callbacks;
-/// each caller owns admission, argument conversion and exception ordering.
-pub fn path_access(path: &std::path::Path, mode: i32) -> bool {
-    #[cfg(unix)]
-    {
-        let Ok(path) = std::ffi::CString::new(path.as_os_str().as_encoded_bytes()) else {
-            return false;
-        };
-        unsafe { libc::access(path.as_ptr(), mode) == 0 }
-    }
-    #[cfg(not(unix))]
-    {
-        let Ok(metadata) = std::fs::metadata(path) else {
-            return false;
-        };
-        // CPython Windows uses attributes: READONLY directories satisfy W_OK.
-        // R_OK/X_OK add no attribute restriction. WASI execution is unqualified.
-        mode & 2 == 0 || !metadata.permissions().readonly() || metadata.is_dir()
     }
 }

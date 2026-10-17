@@ -4,7 +4,7 @@
 The report compiles source to SimpleIR, delegates representation accounting to
 the `molt-backend` `typed_repr_report` binary, and fails if backend lowering or
 LIR representation verification fails. It does not count legacy frontend
-transport hints such as `fast_int`, `raw_int`, or `type_hint` as optimization
+transport hints such as `raw_int` or `type_hint` as optimization
 evidence.
 
 Example:

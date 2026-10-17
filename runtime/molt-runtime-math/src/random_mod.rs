@@ -476,7 +476,7 @@ fn seed_bigint_from_bits(_py: &PyToken, seed_bits: u64) -> Option<BigInt> {
 
     let seed_bytes: Vec<u8> = unsafe {
         match object_type_id(seed_ptr) {
-            TYPE_ID_STRING => crate::math::compat_string_bytes(seed_ptr).to_vec(),
+            TYPE_ID_STRING => string_bytes(seed_ptr).to_vec(),
             TYPE_ID_BYTES | TYPE_ID_BYTEARRAY => {
                 let Some(slice) = bytes_like_slice(seed_ptr) else {
                     let _ = raise_exception::<u64>(
@@ -499,7 +499,7 @@ fn seed_bigint_from_bits(_py: &PyToken, seed_bits: u64) -> Option<BigInt> {
         }
     };
 
-    // str is UTF-8 encoded above via compat_string_bytes; bytes/bytearray taken
+    // str is UTF-8 encoded above via string_bytes; bytes/bytearray taken
     // as-is. The version=2 SHA-512 hashing is done in the pure helper below.
     Some(seed_bytes_to_bigint(&seed_bytes))
 }

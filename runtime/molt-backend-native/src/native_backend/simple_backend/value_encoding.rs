@@ -33,8 +33,8 @@ pub(crate) fn unbox_int(builder: &mut FunctionBuilder, val: Value, nbc: &NanBoxC
 /// Unbox a NaN-boxed value that is either TAG_INT or TAG_BOOL to an i64.
 ///
 /// Booleans are coerced to 0/1 (matching Python's `bool` subclass of `int`).
-/// This is needed in `fast_int` arithmetic paths where the TIR optimizer may
-/// mark an op as `fast_int` even when one or both operands are booleans.
+/// Integer-lane arithmetic needs this because the typed integer family admits
+/// booleans as operands.
 #[cfg(feature = "native-backend")]
 pub(crate) fn unbox_int_or_bool(
     builder: &mut FunctionBuilder,

@@ -4,13 +4,11 @@ from __future__ import annotations
 
 import copy
 import json
-import sys
 from pathlib import Path
 
 import pytest
 
 from molt import target_features as TF
-from tests.process_guard_common import run_guarded_test_process
 from tools import gen_target_feature_manifest
 
 
@@ -266,24 +264,9 @@ def test_generator_rejects_missing_webgpu_browser_probe() -> None:
         gen.build_model(data)
 
 
-def test_generated_python_is_formatter_stable(tmp_path: Path) -> None:
+def test_generated_python_is_formatter_stable() -> None:
+    from tools.generator_io import ruff_format_source
+
     gen = gen_target_feature_manifest
-    generated = tmp_path / "target_feature_manifest.py"
-    generated.write_text(gen.render_python(gen.build_model()), encoding="utf-8")
-    result = run_guarded_test_process(
-        [
-            sys.executable,
-            "-m",
-            "ruff",
-            "format",
-            "--check",
-            "--config",
-            str(ROOT / "pyproject.toml"),
-            str(generated),
-        ],
-        capture_output=True,
-        text=True,
-        timeout=30,
-        check=False,
-    )
-    assert result.returncode == 0, result.stdout + result.stderr
+    rendered = gen.render_python(gen.build_model())
+    assert ruff_format_source(rendered, path=gen.OUT_PY) == rendered

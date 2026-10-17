@@ -173,10 +173,9 @@ pub(super) fn tcl_obj_alloc_typed_from_bits(
             let Some(slice) = (unsafe { rt_bytes_as_slice(bits) }) else {
                 return Err("failed to read bytes argument".to_string());
             };
-            let o = unsafe { api.new_byte_array_obj(slice.as_ptr(), slice.len()) }.map_err(
+            let o = unsafe { api.new_byte_array_obj(slice.as_ptr(), slice.len()) }.inspect_err(
                 |error| {
-                    let _ = raise_exception_u64(py, "OverflowError", &error);
-                    error
+                    let _ = raise_exception_u64(py, "OverflowError", error);
                 },
             )?;
             return non_null_obj(o, "Tcl_NewByteArrayObj returned null");

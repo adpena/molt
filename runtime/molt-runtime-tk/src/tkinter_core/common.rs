@@ -1,4 +1,4 @@
-use molt_runtime_core::prelude::*;
+use molt_runtime_core::prelude::{obj_from_bits, rt_dec_ref};
 
 use crate::bridge::{
     alloc_list_result as bridge_alloc_list_result,

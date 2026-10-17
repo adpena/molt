@@ -710,7 +710,6 @@ fn ord_at_result_is_integer_family_from_tir_not_transport_hints() {
     let mut ord_at = op("ord_at", Some("code"), None, &["text", "idx"]);
     ord_at.type_hint = Some("list".to_string());
     ord_at.container_type = Some("list".to_string());
-    ord_at.fast_int = Some(true);
     let add = op("add", Some("shifted"), None, &["code", "bias"]);
     let func = function(
         "ord_at_representation",
@@ -892,15 +891,11 @@ fn pending_alias_source_blocks_store_target_reinsert_loop() {
 }
 
 #[test]
-fn iter_next_done_flag_uses_fused_bool_fact_not_index_fast_int_hint() {
-    let mut done_index = const_int("done_index", 1);
-    done_index.fast_int = Some(true);
-    let mut done = op("index", Some("done_flag"), None, &["pair", "done_index"]);
-    done.fast_int = Some(true);
-    let mut value_index = const_int("value_index", 0);
-    value_index.fast_int = Some(true);
-    let mut value = op("index", Some("next_value"), None, &["pair", "value_index"]);
-    value.fast_int = Some(true);
+fn iter_next_done_flag_uses_fused_bool_fact() {
+    let done_index = const_int("done_index", 1);
+    let done = op("index", Some("done_flag"), None, &["pair", "done_index"]);
+    let value_index = const_int("value_index", 0);
+    let value = op("index", Some("next_value"), None, &["pair", "value_index"]);
     let func = function(
         "iter_next_done_flag",
         &["items"],
@@ -930,7 +925,7 @@ fn iter_next_done_flag_uses_fused_bool_fact_not_index_fast_int_hint() {
     );
     assert!(
         !int_like.contains("done_flag"),
-        "index fast_int metadata cannot override the fused done flag's bool type"
+        "the index result cannot override the fused done flag's bool type"
     );
     assert_eq!(plan.op_scalar_lane(&done), Some(ScalarKind::Bool));
     assert!(
@@ -1389,8 +1384,6 @@ fn scalar_lane_does_not_classify_unbounded_int_pow_as_inline_int() {
 #[test]
 fn transport_hints_do_not_prove_scalar_representation() {
     let mut add = op("add", Some("sum"), None, &["lhs", "rhs"]);
-    add.fast_int = Some(true);
-    add.fast_float = Some(true);
     add.type_hint = Some("int".to_string());
     let func = function("hinted_add", &["lhs", "rhs"], None, vec![add.clone()]);
 

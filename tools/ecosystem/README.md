@@ -1,8 +1,7 @@
 # Ecosystem Compatibility Ratchet
 
 Arc 1 of [`docs/design/foundation/24_ecosystem_compat_gap_audit.md`](../../docs/design/foundation/24_ecosystem_compat_gap_audit.md).
-Modeled on the satellite-parity guard (`tools/check_satellite_parity.py`):
-a fail-closed, down-only ratchet so library-compatibility claims are **derived,
+A fail-closed, down-only ratchet so library-compatibility claims are **derived,
 never asserted**.
 
 ## What lives here

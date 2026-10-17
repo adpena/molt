@@ -1,10 +1,9 @@
 #!/usr/bin/env python3
 """Fail-closed, down-only ECOSYSTEM-COMPATIBILITY ratchet.
 
-Arc 1 of docs/design/foundation/24_ecosystem_compat_gap_audit.md. Modeled
-exactly on tools/check_satellite_parity.py (CONTRACT, not a sync/build script;
-committed baseline; one-way ratchet; fail-closed on regression; deterministic
-sorted output).
+Arc 1 of docs/design/foundation/24_ecosystem_compat_gap_audit.md. A CONTRACT,
+not a sync/build script: committed baseline; one-way ratchet; fail-closed on
+regression; deterministic sorted output.
 
 The problem this guard exists to kill
 -------------------------------------

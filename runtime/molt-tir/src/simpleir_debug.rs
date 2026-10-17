@@ -99,9 +99,6 @@ pub fn dump_ir_ops(func_ir: &FunctionIR, mode: &str) {
         if let Some(bytes) = &op.bytes {
             detail.push(format!("bytes_len={}", bytes.len()));
         }
-        if let Some(fast_int) = op.fast_int {
-            detail.push(format!("fast_int={fast_int}"));
-        }
         let _ = writeln!(out, "{idx:04}: {:<20} {}", op.kind, detail.join(" "));
         last_written = idx;
     }
