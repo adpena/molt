@@ -8,7 +8,7 @@ The inventory includes older and future Python 3 minor spellings, full eight-dig
 
 - `authority-routed` files: 62
 - `operational-tooling` files: 56
-- `scattered-assumption` files: 353
+- `scattered-assumption` files: 338
 
 ## Files
 
@@ -259,7 +259,7 @@ The inventory includes older and future Python 3 minor spellings, full eight-dig
 | `runtime/molt-runtime/src/builtins/abc.rs` | 1 | scattered-assumption | `3.14` |
 | `runtime/molt-runtime/src/builtins/attr/descriptor_tests.rs` | 1 | scattered-assumption | `3.25` |
 | `runtime/molt-runtime/src/builtins/attr.rs` | 8 | scattered-assumption | `3.12` |
-| `runtime/molt-runtime/src/builtins/attributes/mutation.rs` | 6 | scattered-assumption | `3.12` |
+| `runtime/molt-runtime/src/builtins/attributes/mutation.rs` | 7 | scattered-assumption | `3.12` |
 | `runtime/molt-runtime/src/builtins/attributes/scalar_attrs.rs` | 3 | scattered-assumption | `3.12` |
 | `runtime/molt-runtime/src/builtins/attributes/type_metadata.rs` | 1 | scattered-assumption | `3.14` |
 | `runtime/molt-runtime/src/builtins/attributes/wrapper_attrs.rs` | 2 | authority-routed | `sys.version_info` |
@@ -286,6 +286,7 @@ The inventory includes older and future Python 3 minor spellings, full eight-dig
 | `runtime/molt-runtime/src/builtins/io_path_utils.rs` | 2 | scattered-assumption | `3.13` |
 | `runtime/molt-runtime/src/builtins/json.rs` | 1 | scattered-assumption | `3.12` |
 | `runtime/molt-runtime/src/builtins/module_table.rs` | 1 | scattered-assumption | `version_info` |
+| `runtime/molt-runtime/src/builtins/modules/type_attributes.rs` | 2 | scattered-assumption | `3.13` |
 | `runtime/molt-runtime/src/builtins/modules.rs` | 7 | authority-routed | `version_info` |
 | `runtime/molt-runtime/src/builtins/numbers.rs` | 18 | authority-routed | `3.14` |
 | `runtime/molt-runtime/src/builtins/platform_tests.rs` | 3 | scattered-assumption | `3.12` |
@@ -344,22 +345,6 @@ The inventory includes older and future Python 3 minor spellings, full eight-dig
 | `runtime/molt-runtime/src/object/ops_sys.rs` | 6 | authority-routed | `3.13` |
 | `runtime/molt-runtime/src/object/ops_sys_traceback.rs` | 6 | scattered-assumption | `3.12` |
 | `runtime/molt-runtime/src/object/string_intern.rs` | 1 | scattered-assumption | `3.14` |
-| `runtime/molt-runtime/target-oswalk-impl/tests/trybuild/aarch64-apple-darwin/debug/build/aws-lc-sys-647cfacc511c6154/out/include/openssl/asm_base.h` | 1 | scattered-assumption | `3.2` |
-| `runtime/molt-runtime/target-oswalk-impl/tests/trybuild/aarch64-apple-darwin/debug/build/aws-lc-sys-647cfacc511c6154/out/include/openssl/des.h` | 1 | scattered-assumption | `3.3` |
-| `runtime/molt-runtime/target-oswalk-impl/tests/trybuild/aarch64-apple-darwin/debug/build/aws-lc-sys-647cfacc511c6154/out/include/openssl/ec.h` | 2 | scattered-assumption | `3.1` |
-| `runtime/molt-runtime/target-oswalk-impl/tests/trybuild/aarch64-apple-darwin/debug/build/aws-lc-sys-647cfacc511c6154/out/include/openssl/pkcs8.h` | 1 | scattered-assumption | `3.0` |
-| `runtime/molt-runtime/target-oswalk-impl/tests/trybuild/aarch64-apple-darwin/debug/build/aws-lc-sys-647cfacc511c6154/out/include/openssl/ssl.h` | 6 | scattered-assumption | `3.3` |
-| `runtime/molt-runtime/target-oswalk-impl/tests/trybuild/aarch64-apple-darwin/debug/build/aws-lc-sys-647cfacc511c6154/out/include/openssl/ssl3.h` | 29 | scattered-assumption | `0x030000FF` |
-| `runtime/molt-runtime/target-oswalk-impl/tests/trybuild/aarch64-apple-darwin/debug/build/aws-lc-sys-647cfacc511c6154/out/include/openssl/tls1.h` | 125 | scattered-assumption | `0x0300008A` |
-| `runtime/molt-runtime/target-oswalk-impl/tests/trybuild/aarch64-apple-darwin/debug/build/aws-lc-sys-6f49c361e9750802/out/include/openssl/asm_base.h` | 1 | scattered-assumption | `3.2` |
-| `runtime/molt-runtime/target-oswalk-impl/tests/trybuild/aarch64-apple-darwin/debug/build/aws-lc-sys-6f49c361e9750802/out/include/openssl/des.h` | 1 | scattered-assumption | `3.3` |
-| `runtime/molt-runtime/target-oswalk-impl/tests/trybuild/aarch64-apple-darwin/debug/build/aws-lc-sys-6f49c361e9750802/out/include/openssl/ec.h` | 2 | scattered-assumption | `3.1` |
-| `runtime/molt-runtime/target-oswalk-impl/tests/trybuild/aarch64-apple-darwin/debug/build/aws-lc-sys-6f49c361e9750802/out/include/openssl/pkcs8.h` | 1 | scattered-assumption | `3.0` |
-| `runtime/molt-runtime/target-oswalk-impl/tests/trybuild/aarch64-apple-darwin/debug/build/aws-lc-sys-6f49c361e9750802/out/include/openssl/ssl.h` | 6 | scattered-assumption | `3.3` |
-| `runtime/molt-runtime/target-oswalk-impl/tests/trybuild/aarch64-apple-darwin/debug/build/aws-lc-sys-6f49c361e9750802/out/include/openssl/ssl3.h` | 29 | scattered-assumption | `0x030000FF` |
-| `runtime/molt-runtime/target-oswalk-impl/tests/trybuild/aarch64-apple-darwin/debug/build/aws-lc-sys-6f49c361e9750802/out/include/openssl/tls1.h` | 125 | scattered-assumption | `0x0300008A` |
-| `runtime/molt-runtime/target-oswalk-impl/tests/trybuild/aarch64-apple-darwin/debug/build/libsqlite3-sys-851693a57057eb30/out/bindgen.rs` | 3 | scattered-assumption | `3.51` |
-| `runtime/molt-runtime/target-oswalk-impl/tests/trybuild/aarch64-apple-darwin/debug/build/libsqlite3-sys-a108ee862205a9b9/out/bindgen.rs` | 3 | scattered-assumption | `3.51` |
 | `runtime/molt-runtime/tests/test_comparisons.rs` | 1 | scattered-assumption | `3.0` |
 | `runtime/molt-runtime/tests/test_float.rs` | 5 | scattered-assumption | `3.5` |
 | `runtime/molt-runtime/tests/test_int.rs` | 1 | scattered-assumption | `3.5` |
