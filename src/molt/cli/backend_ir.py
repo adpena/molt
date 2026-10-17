@@ -24,10 +24,8 @@ from molt.native_callable_abi import (
 from molt.native_callable_exports import NativeCallableExport
 
 from molt import file_publication
-from molt.cli.backend_cache import (
-    _emitted_name_matches_module_symbol,
-    _module_symbol_name,
-)
+from molt.cli.backend_cache import _module_symbol_name
+from molt.cli.function_references import emitted_name_matches_module_symbol
 from molt.cli.cache_keys import _json_ir_default
 from molt.cli.config_resolution import DEFAULT_STDLIB_PROFILE
 from molt.cli.frontend_integration import (
@@ -1855,7 +1853,7 @@ def _module_owned_symbol_name(
     module_by_symbol: Mapping[str, str],
 ) -> str | None:
     for module_symbol, module_name in module_by_symbol.items():
-        if _emitted_name_matches_module_symbol(symbol_name, module_symbol):
+        if emitted_name_matches_module_symbol(symbol_name, module_symbol):
             return module_name
     return None
 

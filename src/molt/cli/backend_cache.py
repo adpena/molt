@@ -62,8 +62,8 @@ from molt.toolchain_identity import (
     verify_stable_regular_file_identity,
 )
 
-_emitted_name_matches_module_symbol = (
-    _function_references.emitted_name_matches_module_symbol
+_emitted_name_matches_any_module_symbol = (
+    _function_references.emitted_name_matches_any_module_symbol
 )
 _is_protected_runtime_entrypoint = _function_references.is_protected_runtime_entrypoint
 _module_symbol_name = _function_references.module_symbol_name
@@ -215,13 +215,11 @@ def _unresolved_stdlib_module_symbols(
     if not module_symbols:
         return ()
     unresolved: list[str] = []
+    owners = frozenset(module_symbols)
     for symbol in sorted(set(undefined_symbols)):
         if symbol.startswith("molt_"):
             continue
-        if any(
-            _emitted_name_matches_module_symbol(symbol, module_symbol)
-            for module_symbol in module_symbols
-        ):
+        if _emitted_name_matches_any_module_symbol(symbol, owners):
             unresolved.append(symbol)
     return tuple(unresolved)
 
@@ -1730,9 +1728,8 @@ def _is_user_owned_symbol(
     ):
         return True
     if stdlib_module_symbols is not None:
-        return not any(
-            _emitted_name_matches_module_symbol(name, module_symbol)
-            for module_symbol in stdlib_module_symbols
+        return not _emitted_name_matches_any_module_symbol(
+            name, _module_symbol_set(stdlib_module_symbols)
         )
     return False
 
@@ -1750,9 +1747,16 @@ def _is_stdlib_owned_symbol(
         "molt_isolate_bootstrap",
     }:
         return False
-    return any(
-        _emitted_name_matches_module_symbol(name, module_symbol)
-        for module_symbol in stdlib_module_symbols
+    return _emitted_name_matches_any_module_symbol(
+        name, _module_symbol_set(stdlib_module_symbols)
+    )
+
+
+def _module_symbol_set(module_symbols: Collection[str]) -> frozenset[str]:
+    return (
+        module_symbols
+        if isinstance(module_symbols, frozenset)
+        else frozenset(module_symbols)
     )
 
 
@@ -1810,6 +1814,7 @@ def _shared_stdlib_cache_payload_ir(
     """
     functions = ir.get("functions")
     stdlib_functions: list[dict[str, Any]] = []
+    stdlib_module_symbols = _module_symbol_set(stdlib_module_symbols)
     reachable = _reachable_function_names_for_stdlib_cache(
         ir,
         stdlib_module_symbols=stdlib_module_symbols,

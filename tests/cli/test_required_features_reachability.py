@@ -565,3 +565,56 @@ def test_real_re_module_intrinsics_are_link_affecting_regex() -> None:
         "molt_re_match_group",
     ):
         assert link_affecting_feature_gate_for_symbol(symbol) == "stdlib_regex"
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        "asyncio__run",
+        "asyncio___debug__flag",
+        "asyncio__debug__flag",
+        "molt_init_asyncio",
+        "molt_init_asyncio__debug",
+        "molt_init_",
+        "json__decoder__scan",
+        "jsonx__dump",
+        "__private",
+        "plain",
+        "a___b",
+    ],
+)
+def test_any_module_symbol_match_equals_one_test_per_symbol(name: str) -> None:
+    # The per-symbol prefix test is the oracle for the O(len(name)) form.
+    for symbols in (
+        frozenset({"asyncio", "asyncio__debug"}),
+        frozenset({"json", "json__decoder"}),
+        frozenset({"a_", "a"}),
+        frozenset({""}),
+        frozenset(),
+    ):
+        expected = any(
+            FR.emitted_name_matches_module_symbol(name, symbol) for symbol in symbols
+        )
+        assert FR.emitted_name_matches_any_module_symbol(name, symbols) is expected
+
+
+def test_a_published_gpu_descriptor_body_is_a_reference() -> None:
+    import json
+
+    body = {"name": "kernel_body", "ops": [{"kind": "ret_void"}]}
+    descriptor = json.dumps({"python_bodies": {"kernel": {"symbol": "kernel_body"}}})
+    constant = {"kind": "const_str", "out": "descriptor", "s_value": descriptor}
+    publication = {
+        "kind": "call",
+        "s_value": "molt_gpu_kernel_descriptor_set",
+        "args": ["kernel", "descriptor"],
+    }
+    defined = frozenset({"kernel_body"})
+    assert FR.function_references(
+        {"name": "kernel", "ops": [constant, publication]}, defined
+    ) == {"kernel_body"}
+    # The same constant without its publication call names no body.
+    assert FR.function_references({"name": "kernel", "ops": [constant]}, defined) == (
+        frozenset()
+    )
+    assert body["name"] in defined

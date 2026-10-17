@@ -24,6 +24,9 @@ from molt.frontend._types import (
     MoltValue,
 )
 from molt.frontend.diagnostics import FrontendDiagnostic as Diagnostic
+from molt.frontend.lowering.gpu_kernel_descriptor import (
+    DESCRIPTOR_PUBLICATION_SYMBOL,
+)
 from molt.frontend.diagnostics import FrontendRejection
 from molt.frontend.sema import signature_contains_yield, stateful_function_frame_plan
 from molt.compiler_analysis.python_function_kind import FunctionKind
@@ -563,7 +566,7 @@ class FunctionVisitorMixin(GeneratorMixinBase):
                 )
             )
             self._emit_runtime_call(
-                "molt_gpu_kernel_descriptor_set",
+                DESCRIPTOR_PUBLICATION_SYMBOL,
                 [func_val, descriptor_val],
                 type_hint="None",
             )

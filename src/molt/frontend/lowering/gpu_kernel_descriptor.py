@@ -109,8 +109,22 @@ def rebind_pruned_body_origins(
     return rebound
 
 
+# The runtime call that publishes a function's GPU kernel descriptor.
+DESCRIPTOR_PUBLICATION_SYMBOL = "molt_gpu_kernel_descriptor_set"
+
+
+def publishes_descriptor(op: object) -> bool:
+    return (
+        isinstance(op, dict)
+        and op.get("kind") == "call"
+        and op.get("s_value") == DESCRIPTOR_PUBLICATION_SYMBOL
+    )
+
+
 def descriptor_publications(ops: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """The existing internal metadata call's constant descriptor producers."""
+    if not any(publishes_descriptor(op) for op in ops):
+        return []
     constants = {
         op["out"]: op
         for op in ops
@@ -120,11 +134,7 @@ def descriptor_publications(ops: list[dict[str, Any]]) -> list[dict[str, Any]]:
     }
     publications = []
     for op in ops:
-        if (
-            not isinstance(op, dict)
-            or op.get("kind") != "call"
-            or op.get("s_value") != "molt_gpu_kernel_descriptor_set"
-        ):
+        if not publishes_descriptor(op):
             continue
         args = op.get("args", ())
         if len(args) != 2 or args[1] not in constants:
