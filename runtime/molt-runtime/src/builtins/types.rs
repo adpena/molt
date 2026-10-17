@@ -207,6 +207,9 @@ pub(crate) use crate::object::class_storage::ClassSemanticPolicy;
 /// policy failures cannot cache a partially initialized class.
 pub(crate) struct RuntimeClassLayout {
     pub semantics: ClassSemanticPolicy,
+    /// Native C-spec creation module, independent of later heap metadata edits.
+    /// Python-defined runtime helpers leave this absent.
+    pub native_module: Option<&'static str>,
     pub layout_size: i64,
     pub instance_shape: Option<crate::object::ObjectShapeId>,
     pub native_slots: Option<crate::object::class_storage::ClassSlotPolicy>,
@@ -221,6 +224,7 @@ pub(crate) fn init_cached_runtime_class_configured(
 ) -> u64 {
     let RuntimeClassLayout {
         semantics,
+        native_module,
         layout_size,
         instance_shape,
         native_slots,
@@ -287,6 +291,30 @@ pub(crate) fn init_cached_runtime_class_configured(
             || !configure(class_bits, dict_ptr)
         {
             return runtime_class_init_failed(_py, class_bits, name);
+        }
+        if let Some(module) = native_module {
+            let key = crate::attr_name_bits_from_bytes(_py, b"__module__");
+            let value = crate::attr_name_bits_from_bytes(_py, module.as_bytes());
+            let (Some(key), Some(value)) = (key, value) else {
+                for bits in key.into_iter().chain(value) {
+                    dec_ref_bits(_py, bits);
+                }
+                return runtime_class_init_failed(_py, class_bits, name);
+            };
+            let configured = unsafe { dict_set_in_place(_py, dict_ptr, key, value) };
+            dec_ref_bits(_py, key);
+            dec_ref_bits(_py, value);
+            if !configured {
+                return runtime_class_init_failed(_py, class_bits, name);
+            }
+            if semantics.origin() == crate::object::class_storage::ClassOrigin::Heap
+                && unsafe {
+                    crate::object::class_storage::class_capture_native_module(_py, class_ptr, false)
+                }
+                .is_err()
+            {
+                return runtime_class_init_failed(_py, class_bits, name);
+            }
         }
         if unsafe { crate::object::class_finish_definition(_py, class_ptr) }.is_err()
             || !unsafe { semantics.apply(_py, class_ptr) }
@@ -972,6 +1000,7 @@ mod tests {
                 "FailureAtomicClass",
                 crate::builtins::types::RuntimeClassLayout {
                     semantics: ClassSemanticPolicy::heap(true, true),
+                    native_module: None,
                     layout_size: 0,
                     instance_shape: None,
                     native_slots: None,

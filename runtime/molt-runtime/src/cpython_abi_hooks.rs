@@ -3266,6 +3266,12 @@ unsafe extern "C" fn hook_type_metadata(
         };
         let value = match field {
             TypeMetadataField::Name => crate::class_name_bits(class),
+            TypeMetadataField::CName => {
+                return match crate::object::class_storage::class_c_name_bits(&py, class) {
+                    Ok(name) => OwnedHandleResult::ok(name),
+                    Err(()) => OwnedHandleResult::error(),
+                };
+            }
             TypeMetadataField::QualName => {
                 let name = crate::class_qualname_bits(class);
                 if name == 0 {

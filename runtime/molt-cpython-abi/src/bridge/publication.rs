@@ -456,7 +456,7 @@ impl ObjectBridge {
         use crate::hooks::{DecodedHandleResult, TypeMetadataField};
         let hooks = crate::hooks::hooks_or_stubs();
         let name_bits =
-            match unsafe { (hooks.type_metadata)(bits, TypeMetadataField::Name) }.decode() {
+            match unsafe { (hooks.type_metadata)(bits, TypeMetadataField::CName) }.decode() {
                 DecodedHandleResult::Ok(name) => name,
                 DecodedHandleResult::Missing | DecodedHandleResult::Error => {
                     unsafe { ensure_result_error(c"managed type name unavailable") };
@@ -468,8 +468,8 @@ impl ObjectBridge {
         let name = if bytes.is_null() {
             None
         } else {
-            // Heap tp_name is the current __name__, not module/qualname. Keep
-            // WTF-8 intact; constructing this projection must not run Python.
+            // Runtime creation identity owns native tp_name; ordinary Python
+            // heap types use their live name. Projection never runs Python.
             std::ffi::CString::new(unsafe { std::slice::from_raw_parts(bytes, length) }).ok()
         };
         unsafe { (hooks.dec_ref)(name_bits) };

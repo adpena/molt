@@ -133,6 +133,8 @@ pub enum TypeMetadataField {
     /// Inherited methods retain the resolved declaring type's physical slots.
     /// Missing means ordinary Python class policy, not an inherited native mask.
     NativeProtocolSlots = 8,
+    /// Physical native tp_name, distinct from public name and qualified name.
+    CName = 9,
 }
 
 /// Native protocol presence is independent of Python method spelling. In
@@ -1468,7 +1470,8 @@ pub const RUNTIME_HOOKS_ABI_MAGIC: u64 = 0x4d4f_4c54_484f_4f4b;
 // Version 62 moves Unicode percent formatting to the sole runtime engine.
 // Version 65 exposes sealed managed scalar fields as borrowed payloads.
 // Version 67 removes physical buffer eligibility; semantic slots own the protocol.
-pub const RUNTIME_HOOKS_ABI_VERSION: u32 = 67;
+// Version 68 adds the native CName type-metadata domain, distinct from Name.
+pub const RUNTIME_HOOKS_ABI_VERSION: u32 = 68;
 
 #[inline]
 fn runtime_hooks_layout_matches(abi_magic: u64, abi_version: u32, struct_size: u32) -> bool {

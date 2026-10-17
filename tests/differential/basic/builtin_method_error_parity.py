@@ -11,6 +11,8 @@ float.fromhex non-str argument.
 """
 
 import io
+import contextvars
+import types
 
 
 def show(label, fn):
@@ -183,6 +185,30 @@ noargs_errors("io_getvalue", stream.getvalue, io.BytesIO.getvalue, stream)
 noargs_errors("io_readable", stream.readable, io.BytesIO.readable, stream)
 show("io_getvalue_success", lambda: stream.getvalue())
 show("io_readable_success", lambda: stream.readable())
+
+# Receiver admission uses native tp_name on both sides; method arity still
+# uses __qualname__. Python heap subtypes retain a short tp_name even when
+# their module and qualified name differ, then follow an actual name change.
+show("cname_actual_io", lambda: int.bit_length(stream))
+show("cname_actual_namespace", lambda: list.reverse(types.SimpleNamespace()))
+show("cname_owner_context", lambda: contextvars.Context.copy(1))
+
+
+class CNameStream(io.BytesIO):
+    pass
+
+
+cname_stream = CNameStream(b"name")
+CNameStream.__module__ = "changed_module"
+CNameStream.__qualname__ = "Outer.Stream"
+show("cname_heap_received", lambda: int.bit_length(cname_stream))
+cname_bound = cname_stream.getvalue
+show("cname_heap_bound_arity", lambda: cname_bound(1))
+CNameStream.__name__ = "RenamedStream"
+show("cname_heap_renamed", lambda: int.bit_length(cname_stream))
+show("cname_heap_bound_after_name", lambda: cname_bound(1))
+show("cname_heap_success", lambda: cname_bound())
+cname_stream.close()
 stream.close()
 
 

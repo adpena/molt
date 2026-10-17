@@ -2,6 +2,98 @@ use super::*;
 use crate::object::class_storage::ClassSlotPolicy;
 use crate::test_support::RuntimeTestTransaction;
 
+#[test]
+fn native_c_names_share_creation_identity_and_heap_rename_publication() {
+    let _transaction = RuntimeTestTransaction::new();
+    crate::with_gil_entry_nopanic!(py, {
+        unsafe {
+            let assert_name = |class: u64, expected: &[u8]| {
+                let pointer = obj_from_bits(class).as_ptr().unwrap();
+                let name = crate::object::class_storage::class_c_name_bits(py, pointer).unwrap();
+                assert_eq!(
+                    crate::object::ops_format::string_obj_bytes(obj_from_bits(name)).unwrap(),
+                    expected
+                );
+                dec_ref_bits(py, name);
+                let view = crate::object::class_layout::real_class_view(class)
+                    .unwrap()
+                    .unwrap();
+                assert_eq!(
+                    std::ffi::CStr::from_ptr((*view).tp_name).to_bytes(),
+                    expected
+                );
+                let public = molt_cpython_abi::api::typeobj::PyType_GetName(view);
+                assert!(!public.is_null());
+                assert_eq!(
+                    molt_cpython_abi::bridge::GLOBAL_BRIDGE
+                        .observed_handle_for_pyobj(public)
+                        .unwrap()
+                        .bits(),
+                    crate::class_name_bits(pointer),
+                );
+                molt_cpython_abi::api::refcount::Py_DECREF(public);
+            };
+            let bank = builtin_classes(py);
+            for (class, expected) in [
+                (bank.bytes_io, b"_io.BytesIO".as_slice()),
+                (bank.int, b"int".as_slice()),
+                (
+                    simplenamespace_class(py),
+                    b"types.SimpleNamespace".as_slice(),
+                ),
+                (
+                    crate::builtins::contextvars::context_class(py),
+                    b"_contextvars.Context".as_slice(),
+                ),
+            ] {
+                assert_name(class, expected);
+            }
+            let slot = AtomicU64::new(0);
+            let class = init_cached_runtime_class_configured(
+                py,
+                &slot,
+                "MutableSpec",
+                RuntimeClassLayout {
+                    semantics: ClassSemanticPolicy::heap(false, true),
+                    native_module: Some("native_fixture"),
+                    layout_size: 8,
+                    instance_shape: None,
+                    native_slots: None,
+                },
+                |_, _| true,
+            );
+            assert_name(class, b"native_fixture.MutableSpec");
+            for (key, value, expected) in [
+                (
+                    b"__module__".as_slice(),
+                    b"changed_module".as_slice(),
+                    b"native_fixture.MutableSpec".as_slice(),
+                ),
+                (
+                    b"__qualname__".as_slice(),
+                    b"Outer.Changed".as_slice(),
+                    b"native_fixture.MutableSpec".as_slice(),
+                ),
+                (
+                    b"__name__".as_slice(),
+                    b"ShortName".as_slice(),
+                    b"ShortName".as_slice(),
+                ),
+            ] {
+                let key = attr_name_bits_from_bytes(py, key).unwrap();
+                let value = attr_name_bits_from_bytes(py, value).unwrap();
+                let result = crate::molt_set_attr_name(class, key, value);
+                dec_ref_bits(py, result);
+                dec_ref_bits(py, key);
+                dec_ref_bits(py, value);
+                assert!(!exception_pending(py));
+                assert_name(class, expected);
+            }
+            dec_ref_bits(py, slot.swap(0, std::sync::atomic::Ordering::AcqRel));
+        }
+    });
+}
+
 fn assert_namespace_mutability(py: &PyToken<'_>, class: u64, immutable: bool) {
     assert_ne!(class, 0);
     assert!(!exception_pending(py));
@@ -68,6 +160,7 @@ fn cached_class_mutability_is_independent_of_identical_native_slots() {
                 "ExplicitClassPolicy",
                 crate::builtins::types::RuntimeClassLayout {
                     semantics: policy,
+                    native_module: None,
                     layout_size: 8,
                     instance_shape: None,
                     native_slots: Some(ClassSlotPolicy::default()),
@@ -297,6 +390,7 @@ fn annotations_admit_immutable_heap_types_but_reject_static_types() {
             "ImmutableHeapAnnotations",
             crate::builtins::types::RuntimeClassLayout {
                 semantics: ClassSemanticPolicy::heap(true, true),
+                native_module: None,
                 layout_size: 0,
                 instance_shape: None,
                 native_slots: None,
@@ -377,6 +471,7 @@ fn immutable_heap_evaluator_and_cache_follow_target_annotation_semantics() {
                 "ImmutableHeapEvaluator",
                 crate::builtins::types::RuntimeClassLayout {
                     semantics: ClassSemanticPolicy::heap(true, true),
+                    native_module: None,
                     layout_size: 0,
                     instance_shape: None,
                     native_slots: None,

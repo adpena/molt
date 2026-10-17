@@ -76,6 +76,7 @@ fn descriptor(py: &PyToken<'_>, class: u64, dict: *mut u8, name: &str, operation
 fn layout<T>(shape: ObjectShapeId, weakref: bool) -> RuntimeClassLayout {
     RuntimeClassLayout {
         semantics: ClassSemanticPolicy::static_type(false),
+        native_module: None,
         // The shared class lifecycle owns the trailing dictionary word even
         // when Python attributes are forbidden. It must not alias T's fields.
         layout_size: (std::mem::size_of::<T>() + std::mem::size_of::<u64>()) as i64,

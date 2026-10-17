@@ -337,6 +337,12 @@ binders retain their own contracts. This follows pinned CPython's
 [method calls](https://raw.githubusercontent.com/python/cpython/3bb231a6a5dc02b95658877318bf61501a7209e9/Objects/methodobject.c)
 and [descriptor calls](https://raw.githubusercontent.com/python/cpython/3bb231a6a5dc02b95658877318bf61501a7209e9/Objects/descrobject.c).
 
+Descriptor receiver errors and C type projections share the physical native
+type name, independently of public `__name__` and `__qualname__`. Native
+declarations retain their creation module in existing class storage; later
+module or qualified-name edits do not change that identity. A successful mutable
+heap name replacement switches to the new short C name, as CPython does.
+
 Suspending argument assembly keeps each pending value in one scratch owner until
 its scheduled push and reuses one builder slot. Parking visits only newly live
 values, so compiler work and frame storage grow linearly with argument count.

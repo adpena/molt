@@ -2324,7 +2324,19 @@ pub(crate) unsafe fn class_set_name_bits(py: &PyToken<'_>, ptr: *mut u8, bits: u
         ) {
             return false;
         }
-        ClassReferenceSlot::Name.replace_borrowed(py, ptr, bits);
+        inc_ref_bits(py, bits);
+        let old_name = ClassReferenceSlot::Name.exchange_owned(ptr, bits);
+        let old_module = if super::class_storage::class_is_heap_type(ptr) {
+            // CPython heap-name mutation replaces the creation tp_name with
+            // the new short name. Module/qualname mutation does not do this.
+            ClassReferenceSlot::NativeModule.exchange_owned(ptr, 0)
+        } else {
+            0
+        };
+        dec_ref_bits(py, old_name);
+        if old_module != 0 {
+            dec_ref_bits(py, old_module);
+        }
     }
     true
 }
@@ -2387,7 +2399,7 @@ pub(crate) const CLASS_DECLARATIONS_WORD: usize = 10;
 /// The compiled class statement that created this class, appended after the
 /// reference slots so no existing word moves. It is a plain scalar: the class
 /// owns no reference through it, and teardown leaves it alone.
-pub(crate) const CLASS_DEFINITION_WORD: usize = ClassReferenceSlot::StaticModule as usize + 1;
+pub(crate) const CLASS_DEFINITION_WORD: usize = ClassReferenceSlot::NativeModule as usize + 1;
 pub(crate) const CLASS_PAYLOAD_WORDS: usize = CLASS_DEFINITION_WORD + 1;
 
 /// The identity of one compiled class statement (HF-220): its program slot

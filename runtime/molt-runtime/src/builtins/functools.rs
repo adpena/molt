@@ -246,6 +246,7 @@ fn partial_class(_py: &PyToken<'_>) -> u64 {
         "partial",
         crate::builtins::types::RuntimeClassLayout {
             semantics: ClassSemanticPolicy::heap(true, true),
+            native_module: Some("functools"),
             layout_size: 32,
             instance_shape: Some(crate::object::ObjectShapeId::FunctoolsPartial),
             native_slots: Some(crate::object::class_storage::ClassSlotPolicy {
@@ -304,6 +305,7 @@ fn cmpkey_class(_py: &PyToken<'_>) -> u64 {
         "_CmpKey",
         crate::builtins::types::RuntimeClassLayout {
             semantics: ClassSemanticPolicy::heap(true, false),
+            native_module: Some("functools"),
             layout_size: 24,
             instance_shape: Some(crate::object::ObjectShapeId::FunctoolsCmpKey),
             native_slots: Some(crate::object::class_storage::ClassSlotPolicy::default()),
@@ -347,6 +349,7 @@ fn lru_wrapper_class(_py: &PyToken<'_>) -> u64 {
         "_lru_cache_wrapper",
         crate::builtins::types::RuntimeClassLayout {
             semantics: ClassSemanticPolicy::heap(true, false),
+            native_module: Some("functools"),
             // Eight native words, followed by the canonical instance-dict tail.
             // CacheInfo's owned constructor occupies native word seven.
             layout_size: 9 * std::mem::size_of::<u64>() as i64,
