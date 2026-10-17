@@ -54,11 +54,8 @@ fn bytes_like_arg(_py: &PyToken, bits: u64, _func: &str) -> Result<Vec<u8>, u64>
         if object_type_id(ptr) == TYPE_ID_BYTES || object_type_id(ptr) == TYPE_ID_BYTEARRAY {
             return Ok(bytes_like_slice_raw(ptr).unwrap().to_vec());
         }
-        return snapshot_decode_buffer(_py, bits);
     }
-    let type_label = type_name(_py, obj);
-    let msg = format!("argument should be a bytes-like object or ASCII string, not '{type_label}'");
-    Err(raise_exception::<_>(_py, "TypeError", &msg))
+    snapshot_decode_buffer(_py, bits)
 }
 
 // Python base64 takes a memoryview snapshot for its non-bytes decode and
