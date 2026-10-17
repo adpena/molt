@@ -62,6 +62,22 @@ Known absence of a Molt provider permits spec/backport resolution, including
 children of removed providers. A declared execution dependency failure and an
 actual initializer/loader exception remain failures. Public cache presence
 takes precedence over provider policy.
+
+Public argument validation and `importlib.util.resolve_name` precede finder
+discovery and require no host filesystem authority. Following
+[CPython's pinned import_module](https://github.com/python/cpython/blob/v3.12.13/Lib/importlib/__init__.py)
+and [finder protocol](https://peps.python.org/pep-0451/), a relative empty suffix
+with package `pkg` resolves to a valid request for `pkg`. Compiled-provider
+absence then permits the existing spec/finder lane; it does not prove overall
+absence. A host path search requires `fs.read` under the
+[capability contract](../../../../CAPABILITIES.md). Authorization denial
+propagates as `PermissionError`, distinct from a finder returning no spec.
+Cached, compiled and in-memory finder hits do not gain filesystem requirements
+from a different branch. Source discovery does not authorize interpreting an
+arbitrary source file: the source/sourceless loaders execute admitted compiled
+bodies, and dynamic native extensions retain their separate target, ABI and
+execution admission. No host or fallback Python interpreter is introduced.
+
 Gates: `tests/test_module_registry_gates.py` (G1/G3/G7, single-owner and
 chain-is-gone structural gates) and the runtime G4 state machine unit
 (`g4_ensure_state_machine_transitions`).

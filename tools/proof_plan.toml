@@ -3221,7 +3221,7 @@ timeout_budget = "cold"
 cache_domain = "cargo-workspace"
 dependencies = []
 # Current-test/output and guard profiles retain progress under the cold budget.
-argv = ["uv", "run", "--python", "3.12", "pytest", "-vv", "-s", "--durations=0", "tests/test_manifest_pipeline_e2e.py", "tests/tools/test_proof_queue_native_receipts.py", "tests/cli/test_backend_daemon_sequential.py"]
+argv = ["uv", "run", "--python", "3.12", "pytest", "-vv", "-s", "--durations=0", "tests/test_manifest_pipeline_e2e.py", "tests/test_native_importlib_public_api_regressions.py", "tests/tools/test_proof_queue_native_receipts.py", "tests/cli/test_backend_daemon_sequential.py"]
 toolchains = ["python", "uv", "rustc", "cargo", "ld.lld"]
 cargo_build_python = true
 

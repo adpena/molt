@@ -84,7 +84,6 @@
   "tests/test_native_import_star_all_regressions.py",
   "tests/test_native_importlib_load_module_transaction.py",
   "tests/test_native_importlib_loader_exec_module_transaction.py",
-  "tests/test_native_importlib_public_api_regressions.py",
   "tests/test_native_shift_lowering_regression.py",
   "tests/test_native_string_split_scalarization.py",
   "tests/test_ord_at_native.py",
