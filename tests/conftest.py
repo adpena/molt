@@ -13,6 +13,7 @@ import pytest
 from tools.import_file import require_repository_identity
 
 if TYPE_CHECKING:
+    from molt.llvm_toolchain import WasiSdkInstallation
     from tests.runtime_build_identity_helper import RuntimeFixtureRoot
 
 
@@ -229,6 +230,50 @@ def runtime_fixture_root(tmp_path: Path) -> RuntimeFixtureRoot:
     from tests.runtime_build_identity_helper import RuntimeFixtureRoot
 
     return RuntimeFixtureRoot(tmp_path)
+
+
+@pytest.fixture(scope="module")
+def readonly_wasi_sdk(
+    tmp_path_factory: pytest.TempPathFactory,
+) -> Iterator[Callable[[], WasiSdkInstallation]]:
+    """Lazily own one immutable SDK generation for this module's readers.
+
+    Mutable SDK and relocation controls must provision a private generation.
+    Runtime sources, resources, plans and outputs remain function-owned.
+    """
+    from tests.runtime_build_identity_helper import (
+        RuntimeFixtureRoot,
+        provisioned_wasi_sdk_fixture,
+    )
+
+    from molt.cli.compiler_metadata import _compiler_root
+    from molt.llvm_toolchain import load_wasi_sdk_installation
+
+    prefix = None
+    modes = []
+
+    def provision():
+        nonlocal prefix
+        if prefix is None:
+            owner = RuntimeFixtureRoot(tmp_path_factory.mktemp("readonly-wasi-sdk"))
+            created = provisioned_wasi_sdk_fixture(owner)
+            paths = sorted(
+                (created.prefix, *created.prefix.rglob("*")),
+                key=lambda path: len(path.parts),
+            )
+            modes.extend((path, path.stat().st_mode) for path in paths)
+            for path, mode in reversed(modes):
+                path.chmod(mode & ~0o222)
+            prefix = created.prefix
+        # Share the immutable files, never a caller-mutable decoded fact map.
+        return load_wasi_sdk_installation(_compiler_root(), prefix, verify_tree=False)
+
+    try:
+        yield provision
+    finally:
+        # Restore only this fixture's owned modes so pytest can remove it.
+        for path, mode in modes:
+            path.chmod(mode)
 
 
 @pytest.fixture

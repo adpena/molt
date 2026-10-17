@@ -37,8 +37,6 @@ from tests.rustc_test_support import (
 )
 from tests.runtime_build_identity_helper import (
     build_python_identity_fixture,
-    RuntimeFixtureRoot,
-    provisioned_wasi_sdk_fixture,
     native_runtime_staticlib_identity,
     runtime_build_identity,
 )
@@ -429,7 +427,24 @@ def test_fingerprint_reader_rejects_duplicate_keys_and_restored_mtime(
 
 
 @pytest.fixture
-def plan_root(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+def plan_root(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, readonly_wasi_sdk
+) -> Path:
+    original_plan = _plan
+
+    def plan_with_sdk(root, *, target=None, env=None, **kwargs):
+        environment = dict(env or {})
+        uses_c_sdk = target == "wasm32-wasip1" or (
+            target == "wasm32-unknown-unknown" and "MOLT_WASI_C_ABI_PLAN" in environment
+        )
+        if uses_c_sdk and not any(
+            key in environment for key in ("WASI_SDK_PATH", "WASI_SDK_PREFIX")
+        ):
+            environment["WASI_SDK_PATH"] = str(readonly_wasi_sdk().sdk)
+        return original_plan(root, target=target, env=environment, **kwargs)
+
+    monkeypatch.setattr(sys.modules[__name__], "_plan", plan_with_sdk)
+
     def executable(value: str, **_kwargs: object) -> Path:
         if Path(value).is_absolute() and Path(value).is_file():
             return Path(value)
@@ -493,9 +508,6 @@ def _plan(
     **kwargs: object,
 ) -> plans.RuntimeCargoPlan:
     environment = {"CARGO_HOME": str(root / "cargo-home"), **(env or {})}
-    if target in {"wasm32-wasip1", "wasm32-unknown-unknown"}:
-        installation = provisioned_wasi_sdk_fixture(RuntimeFixtureRoot(root))
-        environment["WASI_SDK_PATH"] = str(installation.sdk)
     return plans.resolve_runtime_cargo_plan(
         root,
         env=environment,
@@ -2478,10 +2490,12 @@ def test_sdk_members_use_receipt_without_mutable_resource_capture(
     "override",
     [None, "foreign-linker", "driver-flavor", "unstable-flavor", "self-contained"],
 )
-def test_explicit_freestanding_c_provider_uses_selected_raw_linker(plan_root, override):
+def test_explicit_freestanding_c_provider_uses_selected_raw_linker(
+    plan_root, override, readonly_wasi_sdk
+):
     from molt import llvm_toolchain
 
-    installation = provisioned_wasi_sdk_fixture(RuntimeFixtureRoot(plan_root))
+    installation = readonly_wasi_sdk()
     c_abi = llvm_toolchain.wasi_c_abi_plan(installation)
     environment = {"MOLT_WASI_C_ABI_PLAN": c_abi.encode()}
     if override == "foreign-linker":
@@ -2529,7 +2543,7 @@ def test_explicit_freestanding_c_provider_uses_selected_raw_linker(plan_root, ov
 
 @pytest.mark.parametrize("source", ["target", "RUSTFLAGS", "CARGO_ENCODED_RUSTFLAGS"])
 def test_selected_sdk_search_context_precedes_user_roots_without_recapture(
-    plan_root, monkeypatch, source
+    plan_root, monkeypatch, source, readonly_wasi_sdk
 ):
     foreign = plan_root / "foreign-libraries"
     foreign.mkdir()
@@ -2541,7 +2555,7 @@ def test_selected_sdk_search_context_precedes_user_roots_without_recapture(
         if source == "CARGO_ENCODED_RUSTFLAGS"
         else __import__("shlex").join(flags)
     )
-    installation = provisioned_wasi_sdk_fixture(RuntimeFixtureRoot(plan_root))
+    installation = readonly_wasi_sdk()
     captured = []
     original = resource_custody.CargoResourceRoot.walk
 
@@ -2605,7 +2619,7 @@ def test_sdk_search_context_cannot_be_removed_from_retained_plan(plan_root):
     "flag_origin", ["target", "RUSTFLAGS", "CARGO_ENCODED_RUSTFLAGS"]
 )
 def test_combined_runtime_plan_applies_target_policy_after_cargo_features(
-    plan_root, simd, freestanding, flag_origin
+    plan_root, simd, freestanding, flag_origin, readonly_wasi_sdk
 ):
     from molt.cli import runtime_wasm_build_spec as specs
 
@@ -2613,7 +2627,7 @@ def test_combined_runtime_plan_applies_target_policy_after_cargo_features(
         plan_root,
         '[target.wasm32-wasip1]\nrustflags=["-C","target-feature=-reference-types"]\n',
     )
-    sdk = provisioned_wasi_sdk_fixture(RuntimeFixtureRoot(plan_root))
+    sdk = readonly_wasi_sdk()
     environment = {
         "CARGO_HOME": str(plan_root / "cargo-home"),
         "WASI_SDK_PATH": str(sdk.sdk),
@@ -2698,7 +2712,7 @@ def test_combined_runtime_plan_applies_target_policy_after_cargo_features(
     "flag_origin", ["target", "RUSTFLAGS", "CARGO_ENCODED_RUSTFLAGS"]
 )
 def test_standalone_cpython_abi_plan_applies_simd_after_cargo_features(
-    plan_root, monkeypatch, flag_origin
+    plan_root, monkeypatch, flag_origin, readonly_wasi_sdk
 ):
     from contextlib import nullcontext
     from molt.cli import runtime_wasm_build_support as support
@@ -2707,7 +2721,7 @@ def test_standalone_cpython_abi_plan_applies_simd_after_cargo_features(
         plan_root,
         '[target.wasm32-wasip1]\nrustflags=["-C","target-feature=-reference-types"]\n',
     )
-    sdk = provisioned_wasi_sdk_fixture(RuntimeFixtureRoot(plan_root))
+    sdk = readonly_wasi_sdk()
     environment = {
         "CARGO_HOME": str(plan_root / "cargo-home"),
         "WASI_SDK_PATH": str(sdk.sdk),

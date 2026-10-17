@@ -44,6 +44,14 @@ selects cloning or copying while preserving separate files. Other hosts retain
 the standard copy operation. Returned copy errors propagate. No shared mutable
 template, hardlink or emitted-program check is introduced.
 
+Read-only WASI SDK consumers share one lazily provisioned, sealed generation
+per test module and worker through `readonly_wasi_sdk` in `tests/conftest.py`.
+Each request decodes a fresh receipt-backed installation; plans, source roots,
+resources and outputs stay private to the test. Mutation and relocation controls
+provision their own generation. This removes repeated image publication and
+hashing without changing production receipt admission. It establishes no
+wall-clock improvement; broader runtime qualification remains required.
+
 Interpreter-wide import configuration, such as `sys.pycache_prefix`, is set in
 spawned test children. It must not redirect imports or cache writes in the
 pytest process that also runs guard and sentinel threads. Bytecode controls use

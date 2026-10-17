@@ -18,7 +18,6 @@ from molt.cli.runtime_wasm_validation import (
     RuntimeWasmAdmissionReport,
 )
 
-from functools import partial
 from contextlib import nullcontext
 
 import hashlib
@@ -71,6 +70,7 @@ from tests.executable_test_support import write_mock_executable
 from tests.process_guard_common import current_thread_only
 from tests.runtime_build_identity_helper import (
     RuntimeFixtureRoot,
+    clear_wasm_toolchain_selection,
     mock_wasm_optimizer_cache_fact,
     mock_wasm_optimizer_publications,
     provisioned_wasi_sdk_fixture,
@@ -196,14 +196,28 @@ def _synthetic_cargo_plan(
     runtime_fixture_root: RuntimeFixtureRoot,
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
-) -> None:
+    readonly_wasi_sdk,
+):
     monkeypatch.setenv("CARGO_TARGET_DIR", str(tmp_path / "target"))
     monkeypatch.setenv("MOLT_BUILD_STATE_DIR", str(tmp_path / "state"))
-    monkeypatch.setattr(
-        runtime_wasm_build_spec,
-        "resolve_runtime_cargo_plan",
-        partial(runtime_cargo_plan, fixture_root=runtime_fixture_root),
-    )
+    clear_wasm_toolchain_selection(monkeypatch)
+
+    def resolve(project_root, *, env, requested_target=None, **kwargs):
+        environment = dict(env)
+        if requested_target in {"wasm32-wasip1", "wasm32-unknown-unknown"} and not any(
+            key in environment for key in ("WASI_SDK_PATH", "WASI_SDK_PREFIX")
+        ):
+            environment["WASI_SDK_PATH"] = str(readonly_wasi_sdk().sdk)
+        return runtime_cargo_plan(
+            project_root,
+            fixture_root=runtime_fixture_root,
+            env=environment,
+            requested_target=requested_target,
+            **kwargs,
+        )
+
+    monkeypatch.setattr(runtime_wasm_build_spec, "resolve_runtime_cargo_plan", resolve)
+    return resolve
 
 
 def _specs(root: Path):
@@ -687,10 +701,15 @@ def test_reloc_and_shared_specs_share_compile_but_differ_in_fingerprint() -> Non
         assert flag in shared.link_flags
 
 
-def test_explicit_sdk_verify_rejects_changed_linker(runtime_fixture_root):
+def test_explicit_sdk_verify_rejects_changed_linker(
+    runtime_fixture_root, readonly_wasi_sdk
+):
     from molt import llvm_toolchain
 
+    shared = readonly_wasi_sdk()
+    shared_receipt = (shared.prefix / ".molt-wasi-sdk.json").read_bytes()
     sdk = provisioned_wasi_sdk_fixture(runtime_fixture_root)
+    assert sdk.prefix != shared.prefix
     before = sdk.tool_fact("wasm-ld")["sha256"]
     sdk.wasm_ld.write_bytes(sdk.wasm_ld.read_bytes() + b"fixture-change")
     assert (
@@ -703,6 +722,8 @@ def test_explicit_sdk_verify_rejects_changed_linker(runtime_fixture_root):
         llvm_toolchain.load_wasi_sdk_installation(
             _compiler_root(), sdk.prefix, verify_tree=True
         )
+    assert hashlib.sha256(shared.wasm_ld.read_bytes()).hexdigest() == before
+    assert (shared.prefix / ".molt-wasi-sdk.json").read_bytes() == shared_receipt
 
 
 @pytest.mark.parametrize("freestanding", [False, True])
@@ -1071,7 +1092,7 @@ def _test_pair_context(
 
 @pytest.mark.parametrize("producer", ["pair", "cpython-abi"])
 def test_runtime_wasm_producer_binds_python_signature_before_actual_executor(
-    producer, tmp_path, monkeypatch, runtime_fixture_root
+    producer, tmp_path, monkeypatch, _synthetic_cargo_plan
 ):
     class AtExecutor(Exception):
         pass
@@ -1131,7 +1152,7 @@ def test_runtime_wasm_producer_binds_python_signature_before_actual_executor(
         monkeypatch.setattr(
             runtime_wasm_build_support,
             "resolve_runtime_cargo_plan",
-            partial(runtime_cargo_plan, fixture_root=runtime_fixture_root),
+            _synthetic_cargo_plan,
         )
         monkeypatch.setattr(
             runtime_wasm_build_support,
