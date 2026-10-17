@@ -54,6 +54,10 @@ Task creation retains its exact table-addressable target. `alloc_task` and
 when its exact name is referenced or it is an explicit root. Retired creation
 pseudo-operations must not survive as a separate Python retention policy.
 
+A build computes the reached intrinsic symbols once, in `_prepare_backend_ir`;
+the profile and target refusal and the required link features both read that
+symbol set.
+
 The Python requirement pass and backend resolver manifest operate at different
 pipeline stages. Their intended agreement must be proved; naming both
 "reachability" does not make them identical algorithms or prove binary contents.

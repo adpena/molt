@@ -69,7 +69,7 @@ def _refusal_for_reached_symbols(
         )
     )
     return RF.reachability_profile_feature_refusal(
-        _functions_reaching(*symbols),
+        RF.reached_intrinsic_symbols(_functions_reaching(*symbols)),
         profile_name=profile,
         profile_features=profile_features,
         target_triple=target_triple,
@@ -349,7 +349,9 @@ def test_unreached_windows_locale_provider_needs_no_target_os_resolution(
     )
     assert (
         RF.reachability_profile_feature_refusal(
-            functions, profile_name="full", profile_features=_full_features()
+            RF.reached_intrinsic_symbols(functions),
+            profile_name="full",
+            profile_features=_full_features(),
         )
         is None
     )
@@ -380,11 +382,11 @@ def test_backend_refusal_combines_missing_target_and_profile_requirements(
     target: str,
 ) -> None:
     message = BACKEND_IR._reachability_feature_refusal(
-        {
-            "functions": _functions_reaching(
+        RF.reached_intrinsic_symbols(
+            _functions_reaching(
                 "molt_sqlite3_connect", "molt_hash_new", "molt_ast_parse"
             )
-        },
+        ),
         stdlib_profile="micro",
         target=target,
     )
@@ -627,15 +629,14 @@ def test_backend_reachability_uses_resolved_cross_native_target_triple(
         return ()
 
     def refusal(
-        _functions: object,
+        reached_symbols: frozenset[str],
         *,
         profile_name: str,
         profile_features: frozenset[str],
         target_triple: str | None,
-        extra_roots: object,
     ) -> None:
         del profile_name, profile_features
-        assert extra_roots == ()
+        assert reached_symbols == frozenset()
         observed.append(("refusal", target_triple))
 
     monkeypatch.setattr(
@@ -651,7 +652,7 @@ def test_backend_reachability_uses_resolved_cross_native_target_triple(
 
     assert (
         BACKEND_IR._reachability_feature_refusal(
-            {"functions": []},
+            frozenset(),
             stdlib_profile="full",
             target="native",
             target_triple=target_triple,

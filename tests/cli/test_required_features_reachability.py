@@ -80,7 +80,9 @@ def test_func_new_edge_keeps_defined_function_reachable() -> None:
         },
     ]
     assert "method" in RF.reachable_function_names(functions)
-    assert RF.required_link_features(functions) == frozenset({"stdlib_regex"})
+    assert RF.required_link_features(
+        RF.reached_intrinsic_symbols(functions)
+    ) == frozenset({"stdlib_regex"})
 
 
 def test_unreferenced_function_is_unreachable_and_contributes_no_requirement() -> None:
@@ -95,7 +97,10 @@ def test_unreferenced_function_is_unreachable_and_contributes_no_requirement() -
         },
     ]
     assert "dead_regex_user" not in RF.reachable_function_names(functions)
-    assert RF.required_link_features(functions) == frozenset()
+    assert (
+        RF.required_link_features(RF.reached_intrinsic_symbols(functions))
+        == frozenset()
+    )
 
 
 def test_relocation_table_root_contributes_its_runtime_feature() -> None:
@@ -107,9 +112,12 @@ def test_relocation_table_root_contributes_its_runtime_feature() -> None:
             "ops": [_builtin_func("v1", "molt_re_compile")],
         },
     ]
-    assert RF.required_link_features(functions) == frozenset()
+    assert (
+        RF.required_link_features(RF.reached_intrinsic_symbols(functions))
+        == frozenset()
+    )
     assert RF.required_link_features(
-        functions, extra_roots={"molt_init_re"}
+        RF.reached_intrinsic_symbols(functions, extra_roots={"molt_init_re"})
     ) == frozenset({"stdlib_regex"})
 
 
@@ -132,7 +140,9 @@ def test_protected_isolate_entrypoint_is_a_root() -> None:
     ]
     reachable = RF.reachable_function_names(functions)
     assert "molt_init_re" in reachable
-    assert RF.required_link_features(functions) == frozenset({"stdlib_regex"})
+    assert RF.required_link_features(
+        RF.reached_intrinsic_symbols(functions)
+    ) == frozenset({"stdlib_regex"})
 
 
 @pytest.mark.parametrize("kind", ["alloc_task", "call_async"])
@@ -152,7 +162,10 @@ def test_task_creation_does_not_invent_poll_companion(kind: str) -> None:
     ]
     reachable = RF.reachable_function_names(functions)
     assert reachable == frozenset({"molt_main", "worker"})
-    assert RF.required_link_features(functions) == frozenset()
+    assert (
+        RF.required_link_features(RF.reached_intrinsic_symbols(functions))
+        == frozenset()
+    )
 
 
 @pytest.mark.parametrize("kind", ["alloc_task", "call_async"])
@@ -172,7 +185,9 @@ def test_explicit_poll_target_retains_its_feature(kind: str) -> None:
     assert RF.reachable_function_names(functions) == frozenset(
         {"molt_main", "worker_poll"}
     )
-    assert RF.required_link_features(functions) == frozenset({"stdlib_regex"})
+    assert RF.required_link_features(
+        RF.reached_intrinsic_symbols(functions)
+    ) == frozenset({"stdlib_regex"})
 
 
 @pytest.mark.parametrize(
@@ -231,7 +246,9 @@ def test_builtin_func_direct_symbol_is_a_requirement() -> None:
             "ops": [_builtin_func("v1", "molt_re_compile")],
         }
     ]
-    by_feature = RF.reached_intrinsic_symbols_by_feature(functions)
+    by_feature = RF.reached_intrinsic_symbols_by_feature(
+        RF.reached_intrinsic_symbols(functions)
+    )
     assert by_feature == {"stdlib_regex": {"molt_re_compile"}}
 
 
@@ -244,7 +261,9 @@ def test_const_str_resolver_name_is_a_requirement() -> None:
             "ops": [_const_str("v1", "molt_ast_parse")],
         }
     ]
-    assert RF.required_link_features(functions) == frozenset({"stdlib_ast"})
+    assert RF.required_link_features(
+        RF.reached_intrinsic_symbols(functions)
+    ) == frozenset({"stdlib_ast"})
 
 
 def test_core_and_resolver_only_symbols_are_not_requirements() -> None:
@@ -262,7 +281,10 @@ def test_core_and_resolver_only_symbols_are_not_requirements() -> None:
             ],
         }
     ]
-    assert RF.required_link_features(functions) == frozenset()
+    assert (
+        RF.required_link_features(RF.reached_intrinsic_symbols(functions))
+        == frozenset()
+    )
 
 
 def test_reached_intrinsic_symbols_include_core_and_gated_manifest_symbols() -> None:
@@ -300,7 +322,9 @@ def test_multiple_features_grouped_by_reached_symbols() -> None:
             ],
         }
     ]
-    by_feature = RF.reached_intrinsic_symbols_by_feature(functions)
+    by_feature = RF.reached_intrinsic_symbols_by_feature(
+        RF.reached_intrinsic_symbols(functions)
+    )
     assert by_feature == {
         "stdlib_regex": {"molt_re_compile", "molt_re_escape"},
         "stdlib_crypto": {"molt_hash_new"},
@@ -321,7 +345,7 @@ def test_refusal_fires_when_reached_feature_excluded() -> None:
         }
     ]
     message = RF.reachability_profile_feature_refusal(
-        functions,
+        RF.reached_intrinsic_symbols(functions),
         profile_name="micro",
         profile_features=frozenset({"stdlib_asyncio"}),
     )
@@ -344,7 +368,7 @@ def test_refusal_silent_when_feature_within_ceiling() -> None:
         }
     ]
     message = RF.reachability_profile_feature_refusal(
-        functions,
+        RF.reached_intrinsic_symbols(functions),
         profile_name="full",
         profile_features=frozenset({"stdlib_regex"}),
     )
@@ -361,7 +385,9 @@ def test_refusal_silent_when_reaching_only_core_intrinsics() -> None:
     ]
     assert (
         RF.reachability_profile_feature_refusal(
-            functions, profile_name="micro", profile_features=frozenset()
+            RF.reached_intrinsic_symbols(functions),
+            profile_name="micro",
+            profile_features=frozenset(),
         )
         is None
     )
@@ -380,7 +406,9 @@ def test_refusal_ignores_unreached_intrinsic_user() -> None:
     ]
     assert (
         RF.reachability_profile_feature_refusal(
-            functions, profile_name="micro", profile_features=frozenset()
+            RF.reached_intrinsic_symbols(functions),
+            profile_name="micro",
+            profile_features=frozenset(),
         )
         is None
     )
@@ -438,11 +466,12 @@ def test_refusal_reports_complete_independent_target_and_profile_requirements(
 
     def refusal(ordered_functions: Sequence[Mapping[str, object]]) -> str | None:
         return RF.reachability_profile_feature_refusal(
-            ordered_functions,
+            RF.reached_intrinsic_symbols(
+                ordered_functions, extra_roots=iter(("registry_root",))
+            ),
             profile_name="selected",
             profile_features=profile_features,
             target_triple=target_triple,
-            extra_roots=iter(("registry_root",)),
         )
 
     message = refusal(functions)
