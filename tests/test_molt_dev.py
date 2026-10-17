@@ -52,7 +52,10 @@ import sysconfig
 import subprocess
 import venv
 from pathlib import Path
-from tests.process_guard_common import install_module_os_view
+from tests.process_guard_common import (
+    install_module_os_view,
+    run_guarded_test_process,
+)
 
 import pytest
 
@@ -1442,6 +1445,221 @@ def test_integrate_nothing_to_do_is_green(drv, origin_and_clone):
     origin, work = origin_and_clone
     ns = _integrate_ns(drv, repo=str(work), no_push=True)
     assert drv.cmd_integrate(ns) == drv.EXIT_OK
+
+
+@pytest.mark.parametrize(
+    "primary_name",
+    [
+        "primary with spaces",
+        pytest.param(
+            "primary\rwith control character",
+            marks=pytest.mark.skipif(os.name == "nt", reason="invalid Windows path"),
+        ),
+    ],
+)
+def test_integration_lock_path_is_shared_by_real_sibling_worktrees(
+    drv, origin_and_clone, tmp_path, primary_name
+):
+    _, work = origin_and_clone
+    moved = tmp_path / primary_name
+    work.rename(moved)
+    work = moved
+    sibling = tmp_path / "sibling worktree"
+    _git(work, "worktree", "add", "-q", "--detach", str(sibling))
+    assert (work / ".git").is_dir()
+    assert (sibling / ".git").is_file()
+    # The primary checkout's actual Git directory is an independent oracle;
+    # deriving this expected path through the helper would hide per-worktree locks.
+    expected = work / ".git" / "molt-integrate.lock"
+    assert drv._integration_lock_path(work) == expected.resolve()
+    assert drv._integration_lock_path(sibling) == expected.resolve()
+    assert not expected.exists(), "resolving a lock path must not create its file"
+
+
+def test_integrate_cross_process_sibling_contention_and_release(
+    drv, origin_and_clone, tmp_path, monkeypatch
+):
+    _, work = origin_and_clone
+    sibling = tmp_path / "competing worktree"
+    _git(work, "worktree", "add", "-q", "--detach", str(sibling))
+    entered = tmp_path / "contender-entered.txt"
+    child_source = """
+import argparse
+import json
+import sys
+from pathlib import Path
+from tools import molt_dev
+
+assert Path(molt_dev.__file__).resolve() == Path(sys.argv[3]).resolve()
+def exclusive(args):
+    Path(sys.argv[2]).write_text("entered", encoding="utf-8")
+    return 73
+molt_dev._integrate_exclusive = exclusive
+try:
+    code = molt_dev.cmd_integrate(argparse.Namespace(repo=sys.argv[1], dry_run=False))
+except molt_dev.DriverError as error:
+    result = {"busy": True, "message": str(error)}
+else:
+    result = {"busy": False, "code": code}
+print(json.dumps(result))
+"""
+    env = dict(os.environ)
+    env["PYTHONPATH"] = os.pathsep.join(
+        (str(REPO_ROOT / "src"), str(REPO_ROOT), env.get("PYTHONPATH", ""))
+    )
+
+    def contend():
+        result = run_guarded_test_process(
+            [
+                sys.executable,
+                "-c",
+                child_source,
+                str(sibling),
+                str(entered),
+                str(SCRIPT_PATH),
+            ],
+            cwd=REPO_ROOT,
+            env=env,
+            timeout=30,
+        )
+        assert result.returncode == 0, result.stdout + result.stderr
+        return json.loads(result.stdout)
+
+    def exclusive(args):
+        assert Path(args.repo) == work
+        observed = contend()
+        assert observed["busy"] is True
+        assert observed["message"] == (
+            "another integration owns this Git repository; no fetch or gates ran. "
+            "Retry after it finishes; do not remove the integration lock file."
+        )
+        # Any admitted exclusive body would be able to fetch and run gates.
+        assert not entered.exists()
+        return drv.EXIT_OK
+
+    monkeypatch.setattr(drv, "_integrate_exclusive", exclusive)
+    assert drv.cmd_integrate(_integrate_ns(drv, repo=str(work))) == drv.EXIT_OK
+    lock_path = work / ".git" / "molt-integrate.lock"
+    identity = lock_path.stat()
+    assert contend() == {"busy": False, "code": 73}
+    assert entered.read_text(encoding="utf-8") == "entered"
+    after = lock_path.stat()
+    assert (after.st_dev, after.st_ino) == (identity.st_dev, identity.st_ino)
+
+
+@pytest.mark.parametrize("outcome", ["success", "driver-error", "interrupt"])
+def test_integrate_lock_released_on_every_exclusive_exit(
+    drv, origin_and_clone, monkeypatch, outcome
+):
+    from molt import file_locks
+
+    _, work = origin_and_clone
+    lock_path = work / ".git" / "molt-integrate.lock"
+    held_identity = None
+
+    def exclusive(args):
+        nonlocal held_identity
+        assert Path(args.repo) == work
+        stat = lock_path.stat()
+        held_identity = (stat.st_dev, stat.st_ino)
+        unexpected = file_locks._try_acquire_file_lock(lock_path, create=False)
+        if unexpected is not None:
+            file_locks._release_file_lock(unexpected)
+            pytest.fail("exclusive body entered without its integration lock")
+        if outcome == "driver-error":
+            raise drv.DriverError("independent integration failure")
+        if outcome == "interrupt":
+            raise KeyboardInterrupt("independent integration interruption")
+        return 73
+
+    monkeypatch.setattr(drv, "_integrate_exclusive", exclusive)
+    args = _integrate_ns(drv, repo=str(work))
+    if outcome == "success":
+        assert drv.cmd_integrate(args) == 73
+    elif outcome == "driver-error":
+        with pytest.raises(drv.DriverError, match="independent integration failure"):
+            drv.cmd_integrate(args)
+    else:
+        with pytest.raises(
+            KeyboardInterrupt, match="independent integration interruption"
+        ):
+            drv.cmd_integrate(args)
+    # A stable file remains; only the OS handle's lifetime governs ownership.
+    stat = lock_path.stat()
+    assert (stat.st_dev, stat.st_ino) == held_identity
+    handle = file_locks._try_acquire_file_lock(lock_path, create=False)
+    assert handle is not None, "terminal integration leaked its lock"
+    file_locks._release_file_lock(handle)
+
+
+def test_integrate_lock_covers_fetch_gates_push_confirmation_and_cleanup(
+    drv, origin_and_clone, monkeypatch
+):
+    from molt import file_locks
+
+    _, work = origin_and_clone
+    _commit_file(work, "new-source.txt", "source\n", "source for complete integration")
+    lock_path = work / ".git" / "molt-integrate.lock"
+    observed = []
+
+    def require_held(phase):
+        handle = file_locks._try_acquire_file_lock(lock_path, create=False)
+        if handle is not None:
+            file_locks._release_file_lock(handle)
+            pytest.fail(f"integration lock released before {phase}")
+        observed.append(phase)
+
+    original_git = drv.Git._run
+    original_gate = drv.run_gate
+
+    def git_run(self, args, **kwargs):
+        if args[0] in {"fetch", "push"}:
+            require_held(args[0])
+        return original_git(self, args, **kwargs)
+
+    def gate(command, repo, env):
+        require_held("gate")
+        return original_gate(command, repo, env)
+
+    def cleanup(*args, **kwargs):
+        require_held("cleanup")
+        return drv.EXIT_OK
+
+    monkeypatch.setattr(drv.Git, "_run", git_run)
+    monkeypatch.setattr(drv, "run_gate", gate)
+    # Cleanup's own destructive/dirty-tree contract has separate real-worktree
+    # tests above; this seam asserts the integration lock remains held at entry.
+    monkeypatch.setattr(drv, "_cleanup_worktree", cleanup)
+    assert (
+        drv.cmd_integrate(_integrate_ns(drv, repo=str(work), cleanup_worktree=True))
+        == drv.EXIT_OK
+    )
+    assert observed == ["fetch", "gate", "push", "fetch", "cleanup"]
+    handle = file_locks._try_acquire_file_lock(lock_path, create=False)
+    assert handle is not None
+    file_locks._release_file_lock(handle)
+
+
+def test_integrate_dry_run_never_resolves_or_acquires_integration_lock(
+    drv, origin_and_clone, monkeypatch
+):
+    _, work = origin_and_clone
+    _commit_file(work, "dry-source.txt", "source\n", "dry-run source")
+    lock_path = work / ".git" / "molt-integrate.lock"
+    assert not lock_path.exists()
+
+    def forbidden(*args, **kwargs):
+        pytest.fail("dry-run entered the live integration lock policy")
+
+    monkeypatch.setattr(drv, "_integration_lock_path", forbidden)
+    monkeypatch.setattr(drv, "_try_acquire_file_lock", forbidden)
+    commands = _record_driver_git_commands(drv, monkeypatch)
+    assert (
+        drv.cmd_integrate(_integrate_ns(drv, repo=str(work), dry_run=True))
+        == drv.EXIT_OK
+    )
+    assert not lock_path.exists()
+    assert not any(args[0] in {"fetch", "push", "rebase"} for args in commands)
 
 
 # --------------------------------------------------------------------------
