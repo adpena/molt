@@ -14,6 +14,7 @@ import subprocess
 import sys
 import threading
 import time
+import tomllib
 from typing import Any
 from types import SimpleNamespace
 
@@ -33,6 +34,7 @@ from tools import (
     proof_receipts,
     toolchain_probe,
 )
+from tools.dependency_manifests import cargo_workspace_dirs
 from tools.proof_queue_pkg import command_admission, supervisor_custody
 from tools.proof_queue_pkg import custody as proof_queue_custody
 from tools.proof_queue_pkg import evidence as proof_queue_evidence
@@ -388,6 +390,33 @@ def test_local_rule_schema_rejects_unconsumed_fields(field, value) -> None:
         molt_dev.DriverError, match="unknown local rule fields.*" + field
     ):
         molt_dev.GateConfig.parse(source, "unconsumed policy fixture")
+
+
+def test_every_cargo_fuzz_workspace_has_a_build_check() -> None:
+    """No other command compiles a fuzz workspace, so its targets broke unseen (HF-319)."""
+    fuzz_workspaces = set()
+    for directory in cargo_workspace_dirs(proof_plan.ROOT):
+        manifest = tomllib.loads(
+            (proof_plan.ROOT / directory / "Cargo.toml").read_text(encoding="utf-8")
+        )
+        if manifest.get("package", {}).get("metadata", {}).get("cargo-fuzz") is True:
+            fuzz_workspaces.add(directory.as_posix())
+    assert {"fuzz", "runtime/molt-backend/fuzz", "runtime/molt-runtime/fuzz"} <= (
+        fuzz_workspaces
+    )
+    checks = {
+        command.argv[5].removesuffix("/Cargo.toml"): command
+        for command in PLAN.commands
+        if command.argv[:5]
+        == ("cargo", "check", "--locked", "--bins", "--manifest-path")
+    }
+    assert set(checks) == fuzz_workspaces
+    for workspace, command in checks.items():
+        assert command.family == "rust"
+        assert "pre-push" in command.data["tiers"]
+        assert "c++" in proof_plan.cargo_native_units(command.data)["target"]
+        changed = PLAN.select([f"{workspace}/fuzz_targets/new_target.rs"])
+        assert "rust" in {family.name for family in changed.selected}, workspace
 
 
 def test_compiler_runtime_partition_preserves_disjoint_test_and_tool_ownership() -> (
@@ -6264,6 +6293,10 @@ def test_native_c_obligation_is_declared_only_for_confirmed_c_builders():
         }
     )
     expected["mlir.test.backend"] = {"host": ["c++"]}  # TableGen
+    # libFuzzer is C++; the runtime fuzz workspace also builds the runtime's C.
+    expected["rust.check.fuzz"] = {"target": ["c++"]}
+    expected["rust.check.fuzz-backend"] = {"target": ["c++"]}
+    expected["rust.check.fuzz-runtime"] = {"target": ["c", "c++"]}
     assert declared == set(expected)
     from tools.proof_queue_pkg.policy import _canonical_cargo_proof_command
 
