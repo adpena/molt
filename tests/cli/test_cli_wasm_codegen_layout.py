@@ -5,10 +5,6 @@ from pathlib import Path
 import pytest
 
 from molt.backend_environment import CodegenSelection
-from molt._wasm_abi_generated import (
-    WASM_RESERVED_RUNTIME_CALLABLE_BASE,
-    WASM_RESERVED_RUNTIME_CALLABLES,
-)
 from molt.cli import backend_compile
 from molt.cli.backend_artifact_contract import (
     BackendArtifactContract,
@@ -22,61 +18,10 @@ from molt.cli.models import (
 from molt.cli.runtime_wasm_generation import (
     RuntimeWasmCodegenBinding,
     bind_runtime_wasm_codegen,
-    publish_runtime_wasm_generation,
 )
 from molt.cli.wasm_codegen_layout import WasmCodegenLayout, prepare_wasm_codegen_layout
 from molt.cli.rust_cpu_policy import RustCpuPolicy
-from tests.runtime_build_identity_helper import runtime_build_identity
-from tests.wasm_callable_table_fixtures import _wasm_string, _wasm_u32
-
-
-def _runtime_module(table_min: int, pages: int) -> bytes:
-    """An actual module with an imported table/memory and a complete ABI prefix."""
-    prefix = WASM_RESERVED_RUNTIME_CALLABLE_BASE + 2 * len(
-        WASM_RESERVED_RUNTIME_CALLABLES
-    )
-    imports = (
-        b"\x02"
-        + _wasm_string("env")
-        + _wasm_string("__indirect_function_table")
-        + b"\x01\x70\x00"
-        + _wasm_u32(table_min)
-        + _wasm_string("env")
-        + _wasm_string("memory")
-        + b"\x02\x00"
-        + _wasm_u32(pages)
-    )
-    sections = (
-        (1, b"\x01\x60\x00\x00"),
-        (2, imports),
-        (3, b"\x01\x00"),
-        (9, b"\x01\x00\x41\x01\x0b" + _wasm_u32(prefix) + bytes(prefix)),
-        (10, b"\x01\x02\x00\x0b"),
-    )
-    return b"\x00asm\x01\x00\x00\x00" + b"".join(
-        bytes([section]) + _wasm_u32(len(payload)) + payload
-        for section, payload in sections
-    )
-
-
-def _bind_pair(
-    root: Path, *, seed: str = "pair", pages: int = 2
-) -> RuntimeWasmCodegenBinding:
-    source = root / seed
-    source.mkdir()
-    shared = source / "shared.wasm"
-    reloc = source / "reloc.wasm"
-    shared.write_bytes(_runtime_module(256, pages))
-    reloc.write_bytes(_runtime_module(128, pages + 1))
-    pair = publish_runtime_wasm_generation(
-        root / "molt_runtime.wasm",
-        root / "molt_runtime_reloc.wasm",
-        shared_identity=runtime_build_identity("shared", seed),
-        reloc_identity=runtime_build_identity("reloc", seed),
-        source_shared=shared,
-        source_reloc=reloc,
-    )
-    return bind_runtime_wasm_codegen(pair, None)
+from tests.runtime_build_identity_helper import runtime_wasm_codegen_binding_fixture
 
 
 @pytest.mark.parametrize(
@@ -95,9 +40,9 @@ def test_layout_uses_bound_pair_not_mutable_selection_or_ambient_overrides(
     pages: int,
     table_base: int,
 ) -> None:
-    binding = _bind_pair(tmp_path)
+    binding = runtime_wasm_codegen_binding_fixture(tmp_path)
     # Another caller may replace the shared selection, never this codegen pair.
-    _bind_pair(tmp_path, seed="replacement", pages=7)
+    runtime_wasm_codegen_binding_fixture(tmp_path, seed="replacement", pages=7)
     for name in (
         "MOLT_WASM_DATA_BASE",
         "MOLT_WASM_TABLE_BASE",
@@ -190,7 +135,7 @@ def test_codegen_and_all_cache_hits_preserve_runtime_layout(
     monkeypatch: pytest.MonkeyPatch,
     cache_tier: str,
 ) -> None:
-    binding = _bind_pair(tmp_path)
+    binding = runtime_wasm_codegen_binding_fixture(tmp_path)
     emitted = []
     monkeypatch.setattr(backend_compile, "_backend_daemon_enabled", lambda: False)
     monkeypatch.setattr(
@@ -235,7 +180,7 @@ def test_warm_cache_rejects_corrupt_bound_generation(
     capsys: pytest.CaptureFixture[str],
     member: str,
 ) -> None:
-    binding = _bind_pair(tmp_path)
+    binding = runtime_wasm_codegen_binding_fixture(tmp_path)
     layout = prepare_wasm_codegen_layout(binding, linked=True, split_runtime=True)
     getattr(binding.generation, member).write_bytes(b"corrupt")
     monkeypatch.setattr(
@@ -260,7 +205,7 @@ def test_layout_retains_compact_facts_and_reads_admitted_bytes_once(
 ) -> None:
     from molt import toolchain_identity
 
-    binding = _bind_pair(tmp_path)
+    binding = runtime_wasm_codegen_binding_fixture(tmp_path)
     original = toolchain_identity.read_stable_regular_file
     reads = []
 

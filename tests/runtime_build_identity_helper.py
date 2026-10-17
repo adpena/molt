@@ -810,3 +810,62 @@ def runtime_cargo_unit_stdout(project_root: Path, scratch: Path) -> str:
         "fresh": False,
     }
     return json.dumps(artifact) + "\n"
+
+
+def runtime_wasm_codegen_binding_fixture(
+    root: Path, *, seed: str = "pair", pages: int = 2
+):
+    """An admitted pair with real memory/table facts for compiler consumers."""
+    from molt._wasm_abi_generated import (
+        WASM_RESERVED_RUNTIME_CALLABLE_BASE,
+        WASM_RESERVED_RUNTIME_CALLABLES,
+    )
+    from molt.cli.runtime_wasm_generation import (
+        bind_runtime_wasm_codegen,
+        publish_runtime_wasm_generation,
+    )
+    from tests.wasm_callable_table_fixtures import _wasm_string, _wasm_u32
+
+    def _runtime_module(table_min: int, pages: int) -> bytes:
+        """An actual module with an imported table/memory and a complete ABI prefix."""
+        prefix = WASM_RESERVED_RUNTIME_CALLABLE_BASE + 2 * len(
+            WASM_RESERVED_RUNTIME_CALLABLES
+        )
+        imports = (
+            b"\x02"
+            + _wasm_string("env")
+            + _wasm_string("__indirect_function_table")
+            + b"\x01\x70\x00"
+            + _wasm_u32(table_min)
+            + _wasm_string("env")
+            + _wasm_string("memory")
+            + b"\x02\x00"
+            + _wasm_u32(pages)
+        )
+        sections = (
+            (1, b"\x01\x60\x00\x00"),
+            (2, imports),
+            (3, b"\x01\x00"),
+            (9, b"\x01\x00\x41\x01\x0b" + _wasm_u32(prefix) + bytes(prefix)),
+            (10, b"\x01\x02\x00\x0b"),
+        )
+        return b"\x00asm\x01\x00\x00\x00" + b"".join(
+            bytes([section]) + _wasm_u32(len(payload)) + payload
+            for section, payload in sections
+        )
+
+    source = root / seed
+    source.mkdir()
+    shared = source / "shared.wasm"
+    reloc = source / "reloc.wasm"
+    shared.write_bytes(_runtime_module(256, pages))
+    reloc.write_bytes(_runtime_module(128, pages + 1))
+    pair = publish_runtime_wasm_generation(
+        root / "molt_runtime.wasm",
+        root / "molt_runtime_reloc.wasm",
+        shared_identity=runtime_build_identity("shared", seed),
+        reloc_identity=runtime_build_identity("reloc", seed),
+        source_shared=shared,
+        source_reloc=reloc,
+    )
+    return bind_runtime_wasm_codegen(pair, None)
