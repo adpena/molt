@@ -12042,7 +12042,7 @@ def test_collect_imports_avoids_module_tree_walk_for_invalidated_nested_scan(
     # Populate immutable lexical facts once before repeated projections.
     _source_import_scan._collect_imports(tree, ast_digest_admission=admission)
     module_tree_walks = 0
-    original_walk = cli_module_import_scanner.ast.walk
+    original_walk = ast.walk
 
     def wrapped_walk(node: ast.AST):
         nonlocal module_tree_walks
@@ -12050,17 +12050,13 @@ def test_collect_imports_avoids_module_tree_walk_for_invalidated_nested_scan(
             module_tree_walks += 1
         return original_walk(node)
 
-    monkeypatch.setattr(cli_module_import_scanner.ast, "walk", wrapped_walk)
+    monkeypatch.setattr(ast, "walk", wrapped_walk)
 
-    imports = _source_import_scan._collect_imports(tree, ast_digest_admission=admission)
-    uses_runtime_import_protocol = (
-        cli_module_import_scanner._tree_uses_runtime_import_protocol(
-            tree,
-            module_name=None,
-            is_package=False,
-            ast_digest_admission=admission,
-        )
+    protocol: list[bool] = []
+    imports = _source_import_scan._collect_imports(
+        tree, ast_digest_admission=admission, _runtime_import_protocol=protocol
     )
+    (uses_runtime_import_protocol,) = protocol
 
     assert module_tree_walks == 0
     assert "os" in imports

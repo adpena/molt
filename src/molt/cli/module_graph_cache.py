@@ -721,7 +721,7 @@ def _resolved_module_cache_key(path_str: str, *parts: str) -> str:
 
 
 # Completed projections from older schemas are never admitted as source requests.
-_IMPORT_SCAN_CACHE_SCHEMA_VERSION = 34
+_IMPORT_SCAN_CACHE_SCHEMA_VERSION = 35
 
 
 def _source_records(project_root: Path) -> SourceRecordStore:
@@ -878,6 +878,7 @@ def _read_persisted_import_scan_record(
         "source_executions",
         "dynamic_relative_import_candidates",
         "requires_runtime_package_anchor",
+        "uses_runtime_import_protocol",
         "namespace_summary",
         "runtime_catalog",
     }:
@@ -947,8 +948,13 @@ def _read_persisted_import_scan_record(
         ):
             return None
     requires_anchor = payload.get("requires_runtime_package_anchor")
+    uses_protocol = payload.get("uses_runtime_import_protocol")
     raw_executions = payload.get("source_executions")
-    if not isinstance(requires_anchor, bool) or not isinstance(raw_executions, list):
+    if (
+        not isinstance(requires_anchor, bool)
+        or not isinstance(uses_protocol, bool)
+        or not isinstance(raw_executions, list)
+    ):
         return None
     executions: list[_StaticSourceExecutionRequest] = []
     for item in raw_executions:
@@ -1142,6 +1148,7 @@ def _read_persisted_import_scan_record(
         exports,
         namespace_summary,
         runtime_catalog,
+        uses_runtime_import_protocol=uses_protocol,
     )
 
 
@@ -1286,6 +1293,7 @@ def _write_persisted_import_scan(
             scan.dynamic_relative_import_candidates
         ),
         "requires_runtime_package_anchor": scan.requires_runtime_package_anchor,
+        "uses_runtime_import_protocol": scan.uses_runtime_import_protocol,
         "runtime_catalog": _encode_runtime_catalog_deferral(scan.runtime_catalog),
     }
     record_key = _import_scan_cache_key(

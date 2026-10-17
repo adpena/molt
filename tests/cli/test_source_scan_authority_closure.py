@@ -105,12 +105,7 @@ def test_role_receipt_survives_cache_hits_and_protocol_detection(
         policy = scanner._module_graph_needs_runtime_import_support(
             module_graph=graph,
             scan_authority=authority,
-            module_resolution_cache=_ModuleResolutionCache(),
             explicit_imports=result.explicit_imports,
-            entry_module="entry",
-            entry_path=entry,
-            entry_tree=ast.parse("pass"),
-            target_python=PYTHON,
         )
         assert policy.needs_runtime_import_support is full
 
@@ -306,42 +301,21 @@ def test_persisted_import_scan_roundtrip_preserves_dynamic_discovery_fact(
     )
 
 
-def test_runtime_policy_memo_covers_statements_and_binds_source_and_mode(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    path = _source(tmp_path / "entry.py", "def invoke():\n    import leaf\n")
-    cache = _ModuleResolutionCache()
-    reads = []
-    read = cache.read_module_source
-
-    def counted(path, **kwargs):
-        reads.append(path)
-        return read(path, **kwargs)
-
-    monkeypatch.setattr(cache, "read_module_source", counted)
-
-    def detect(mode):
-        return scanner._module_uses_runtime_import_protocol(
-            module_name="entry",
-            module_path=path,
-            module_resolution_cache=cache,
-            target_python=PYTHON,
+def test_runtime_protocol_bit_counts_statements_the_scan_reaches() -> None:
+    # A deferred body's import counts only when the scan reaches the body.
+    def detect(source: str, mode: str) -> bool:
+        return _source_import_scan._collect_imports_for_graph(
+            ast.parse(source),
+            "entry",
+            False,
             import_scan_mode=mode,
-        )
+            target_python=PYTHON,
+        ).uses_runtime_import_protocol
 
-    assert not detect("module_init")
-    assert detect("full")
-    assert detect("full")
-    assert len(reads) == 2
-    path.write_text("pass\n", encoding="utf-8")
-    assert not detect("full")
-    assert len(reads) == 3
-    assert len(cache.ast_cache) == 1
-    assert (
-        next(iter(cache.ast_cache.values())).admission.tree
-        is next(iter(cache.ast_cache.values())).tree
-    )
+    deferred = "def invoke():\n    import leaf\n"
+    assert not detect(deferred, "module_init")
+    assert detect(deferred, "full")
+    assert not detect("pass\n", "full")
 
 
 @pytest.mark.parametrize("target", ["native", "wasm", "rust", "luau", "mlir"])
@@ -444,7 +418,6 @@ def test_runtime_owner_catalog_refresh_rescans_only_under_new_custody(
         roots=[tmp_path, owner.parent],
         stdlib_root=owner.parent,
         stdlib_allowlist={"runtime_owner"},
-        entry_module="entry",
         target_python=PYTHON,
         import_admission_policy=None,
     )
@@ -534,7 +507,6 @@ def test_runtime_owner_catalog_refresh_rescans_only_under_new_custody(
             roots=[tmp_path, owner.parent],
             stdlib_root=owner.parent,
             stdlib_allowlist={"runtime_owner"},
-            entry_module="entry",
             target_python=PYTHON,
             import_admission_policy=None,
             explicit_imports={"leaf", "late"},
@@ -600,7 +572,6 @@ def test_dynamic_owner_fixed_point_uses_custody_names_and_admitted_roots(
         roots=[tmp_path / "app", tmp_path / "vendor", stdlib],
         stdlib_root=stdlib,
         stdlib_allowlist={"support.owner"},
-        entry_module="app.entry",
         target_python=PYTHON,
         import_admission_policy=None,
     )
@@ -663,7 +634,6 @@ def test_ordinary_nested_package_owner_rescans_under_original_project_root(
         roots=[project, stdlib],
         stdlib_root=stdlib,
         stdlib_allowlist={"runtime_owner"},
-        entry_module="entry",
         target_python=PYTHON,
         import_admission_policy=None,
     )

@@ -427,21 +427,6 @@ class _ModuleResolutionCache:
     ast_error_cache: dict[tuple[Path, str, str, str], SyntaxError] = field(
         default_factory=dict
     )
-    runtime_import_protocol_cache: dict[
-        tuple[
-            Path,
-            str | None,
-            bool,
-            ImportScanMode,
-            PythonSourceKey | None,
-            tuple[str, ...],
-            str,
-            str,
-            PythonNamespacePremise | None,
-            tuple[str, ...],
-        ],
-        bool,
-    ] = field(default_factory=dict)
     module_name_cache: dict[
         tuple[Path, tuple[Path, ...], Path, Path | None, _ModuleRootAliases], str
     ] = field(default_factory=dict)
@@ -889,47 +874,6 @@ class _ModuleResolutionCache:
             **owner_kwargs,
         )
         self.graph_import_scan_cache[cache_key] = result
-        return result
-
-    def uses_runtime_import_protocol(
-        self,
-        path: Path,
-        *,
-        producer: Callable[[], bool],
-        module_name: str | None,
-        is_package: bool,
-        import_scan_mode: ImportScanMode,
-        source_owner: PythonSourceKey | None = None,
-        source_arguments: tuple[str, ...] = (),
-        target_python_tag: str,
-        namespace_premise: PythonNamespacePremise | None = None,
-        native_support_function_roots: tuple[str, ...] = (),
-    ) -> bool:
-        # Cache the complete protocol decision, not just its call-expression
-        # projection. Keys bind generated-source replacement and scan promotion.
-        try:
-            digest = _module_source._source_content_sha256(path, path.stat())
-        except OSError:
-            digest = None
-        if digest is None:
-            return producer()
-        key = (
-            self.resolved_path(path),
-            module_name,
-            is_package,
-            import_scan_mode,
-            source_owner,
-            source_arguments,
-            target_python_tag,
-            digest,
-            namespace_premise,
-            native_support_function_roots,
-        )
-        cached = self.runtime_import_protocol_cache.get(key)
-        if cached is not None:
-            return cached
-        result = producer()
-        self.runtime_import_protocol_cache[key] = result
         return result
 
 

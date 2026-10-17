@@ -98,7 +98,7 @@ What is missing for five-year planning (the real gaps):
 | Resolution cache | `src/molt/cli.py:3778` `_ModuleResolutionCache` | PRESENT | roots/resolve/namespace/source/AST caches; rebuild-safe |
 | Module graph discovery | `src/molt/cli.py:861` `_discover_module_graph` | PRESENT | AST-parse → resolve → expand dotted chains |
 | Namespace packages (PEP 420) | `src/molt/cli.py:3858` `has_namespace_dir`, `:4939` stub emit | PRESENT | auto-generated `namespace_*.py` stubs at build time |
-| Runtime-import-support detection | `src/molt/cli.py:5487` `_module_graph_needs_runtime_import_support` | PRESENT | decides static vs. runtime import boundary per module |
+| Runtime-import-support detection | `src/molt/compiler_analysis/python_import_scan.py` `_uses_runtime_import_protocol` (per scan), `src/molt/cli/module_import_scanner.py` `_module_graph_needs_runtime_import_support` (per graph) | PRESENT | each import scan records whether reached code imports; the graph decision ORs the scans' bits |
 | Wheel resolution + tag/checksum | `src/molt/cli.py:2730`–`2776` | PRESENT | `_wheel_filename_tags`, `molt_abi*` matching, `wheel_sha256` |
 | Vendor dirs | `src/molt/cli.py:1280` `_vendor_roots` | PRESENT | `{root}/vendor/packages`, `{root}/vendor/local` |
 | sdist build/extraction | — | **ABSENT** | no sdist handling found; pre-built wheels or source trees only |

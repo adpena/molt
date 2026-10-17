@@ -8,7 +8,6 @@ import ast
 
 import pytest
 
-from molt.cli import module_import_scanner
 from molt.compiler_analysis.python_binding_flow import analyze_python_bindings
 from molt.compiler_analysis.python_source_keys import python_ast_digest
 from molt.compiler_analysis.python_imports import (
@@ -165,12 +164,10 @@ def test_import_consumers_share_loop_metadata_facts() -> None:
     assert _source_import_scan._collect_import_star_modules(
         star, module_name="pkg.entry", is_package=False
     ) == ("pkg.child",)
-    assert not module_import_scanner._tree_uses_runtime_import_protocol(
-        tree, module_name="pkg.entry", is_package=False
-    )
-    assert module_import_scanner._tree_uses_runtime_import_protocol(
-        tree, module_name="pkg.entry", is_package=False, include_statements=True
-    )
+    # The reached `from .child import value` needs the runtime import protocol.
+    assert _source_import_scan._collect_imports_for_graph(
+        tree, "pkg.entry", False
+    ).uses_runtime_import_protocol
 
 
 def test_fresh_container_provenance_does_not_follow_walrus_publication() -> None:

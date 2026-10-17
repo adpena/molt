@@ -1257,9 +1257,7 @@ def test_exception_paths_retain_import_requests_across_source_cache(tmp_path):
 
 
 @pytest.mark.parametrize("member", [False, True])
-def test_operation_local_source_and_runtime_memos_bind_namespace_premise(
-    tmp_path, member
-):
+def test_operation_local_source_memo_binds_namespace_premise(tmp_path, member):
     from molt.compiler_analysis.python_identity_catalog_generated import PythonMember
     from molt.compiler_analysis.python_namespace_graph import PythonNamespacePremise
 
@@ -1277,7 +1275,6 @@ def test_operation_local_source_and_runtime_memos_bind_namespace_premise(
         int(PythonMember.TYPING_TYPE_CHECKING) if member else 0,
     )
     source_calls = []
-    protocol_calls = []
 
     def collect(*args, **kwargs):
         source_calls.append(kwargs["namespace_premise"])
@@ -1292,35 +1289,30 @@ def test_operation_local_source_and_runtime_memos_bind_namespace_premise(
             namespace_premise=premise,
         )
 
-    def protocol(premise):
-        def produce():
-            protocol_calls.append(premise)
-            return scanner._tree_uses_runtime_import_protocol(
-                tree,
-                module_name="entry",
-                is_package=False,
-                namespace_premise=premise,
-            )
-
-        return resolver.uses_runtime_import_protocol(
-            source,
-            producer=produce,
-            module_name="entry",
-            is_package=False,
-            import_scan_mode="full",
-            target_python_tag=TargetPythonVersion(3, 12, 0).tag,
-            namespace_premise=premise,
-        )
-
     for premise, expected in ((None, True), (stable, False), (rewritten, True)):
         for _ in range(2):
             assert ("leaf" in graph(premise).imports) is expected
-            assert protocol(premise) is expected
     # An equal immutable premise reuses the earlier precise result after a
-    # different graph premise has been consulted; neither memo may cross them.
+    # different graph premise has been consulted; the memo may not cross them.
     assert "leaf" not in graph(PythonNamespacePremise((), 0)).imports
-    assert not protocol(PythonNamespacePremise((), 0))
-    assert source_calls == protocol_calls == [None, stable, rewritten]
+    assert source_calls == [None, stable, rewritten]
+
+
+def test_runtime_import_protocol_follows_the_namespace_premise() -> None:
+    from molt.compiler_analysis.python_namespace_graph import PythonNamespacePremise
+
+    # No import statement: only the guarded call can need the protocol, and the
+    # premise decides whether the callback can rebind its guard.
+    tree = ast.parse("flag = 0\ncallback()\nif flag:\n    __import__('leaf')\n")
+
+    def uses(premise):
+        return _source_import_scan._collect_imports_for_graph(
+            tree, "entry", False, namespace_premise=premise
+        ).uses_runtime_import_protocol
+
+    assert uses(None)
+    assert not uses(PythonNamespacePremise((), 0))
+    assert uses(PythonNamespacePremise(("flag",), 0))
 
 
 def test_persisted_source_requests_bind_complete_namespace_premise(
