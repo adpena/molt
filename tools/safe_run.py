@@ -1,38 +1,205 @@
 #!/usr/bin/env python3
-"""Compatibility CLI for direct binary runs under shared Molt custody.
+"""Measure an owned child through the shared guard; CLI output is diagnostic.
 
-Historically this script owned its own process group, RSS sampler, and signal
-teardown. That made it a parallel process-custody authority.
-It now preserves the old command-line shape while delegating all execution,
-sampling, timeout, and termination to tools/memory_guard.py.
+Python consumers use the typed result directly. Guest stdout/stderr never carry
+measurement authority, and child launch-to-exit time excludes guard cleanup.
 """
 
 from __future__ import annotations
 
 import argparse
+from contextlib import nullcontext
+from dataclasses import dataclass, replace
 import json
+import math
 import os
 from pathlib import Path
-import subprocess
+import stat
 import sys
-import time
+from typing import BinaryIO
 
 _REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
-
 from tools.import_file import bind_repository_imports  # noqa: E402
 
 bind_repository_imports(__file__)
 
-from tools import memory_guard  # noqa: E402
+from molt.file_publication import metadata_is_link_like  # noqa: E402
+from tools import harness_memory_guard  # noqa: E402
 
 EXIT_TIMEOUT = 124
 EXIT_OOM = 137
 EXIT_SPAWN = 125
+ROOT = _REPO_ROOT
 
-ROOT = Path(__file__).resolve().parents[1]
-MEMORY_GUARD = ROOT / "tools" / "memory_guard.py"
+
+@dataclass
+class RunOutcome:
+    ok: bool
+    elapsed_s: float | None
+    peak_rss_mib: float | None
+    status: str
+    exit_code: int | None
+    stdout: str | None = None
+    stderr: str | None = None
+    stdout_tail: str | None = None
+    stderr_tail: str | None = None
+    host_stderr: str | None = None
+    guard_result: harness_memory_guard.GuardedCompletedProcess[str] | None = None
+
+
+def _tail_text(text: str | None, *, max_chars: int = 4096) -> str | None:
+    return text[-max_chars:] if text else None
+
+
+def _finite_nonnegative(value: object) -> bool:
+    return (
+        isinstance(value, (int, float))
+        and not isinstance(value, bool)
+        and math.isfinite(value)
+        and value >= 0
+    )
+
+
+def _require_capture_file(
+    path: Path, stream: BinaryIO, initial: os.stat_result
+) -> None:
+    observed = path.lstat()
+    opened = os.fstat(stream.fileno())
+    if (
+        metadata_is_link_like(observed)
+        or not stat.S_ISREG(observed.st_mode)
+        or not stat.S_ISREG(opened.st_mode)
+        or (initial.st_dev, initial.st_ino) != (opened.st_dev, opened.st_ino)
+        or (observed.st_dev, observed.st_ino) != (opened.st_dev, opened.st_ino)
+    ):
+        raise ValueError("guest stderr capture is not its original regular file")
+
+
+def _run_measured_command(
+    cmd: list[str],
+    *,
+    env: dict[str, str],
+    rss_mb: int,
+    timeout_s: float,
+    label: str,
+    capture_output: bool = False,
+    cwd: Path = ROOT,
+    prefix: str = "MOLT_BENCH",
+    poll_s: float = 0.01,
+    guest_stderr_path: Path | None = None,
+) -> RunOutcome:
+    """One child launch and typed guard result, without a receipt subprocess.
+
+    The optional guest capture is precreated inside the subject's owned output
+    directory. Its original inode stays open through launch and closure; only
+    the host's stderr is separated, never normalized or discarded.
+    """
+    if (
+        isinstance(rss_mb, bool)
+        or not isinstance(rss_mb, int)
+        or rss_mb <= 0
+        or not _finite_nonnegative(timeout_s)
+        or timeout_s <= 0
+        or not _finite_nonnegative(poll_s)
+        or poll_s <= 0
+    ):
+        raise ValueError("measurement limits must be positive finite values")
+    base = harness_memory_guard.limits_from_env(prefix, env)
+    cap = rss_mb / 1024.0
+    limits = replace(
+        base,
+        max_process_rss_gb=min(base.max_process_rss_gb, cap),
+        max_total_rss_gb=min(base.max_total_rss_gb, cap),
+        poll_interval=poll_s,
+        dynamic_process_rss=False,
+        dynamic_total_rss=False,
+    )
+    capture = nullcontext(None)
+    if guest_stderr_path is not None:
+        initial = guest_stderr_path.lstat()
+        if metadata_is_link_like(initial) or not stat.S_ISREG(initial.st_mode):
+            raise ValueError("guest stderr capture requires a direct regular file")
+        flags = (
+            os.O_RDWR
+            | getattr(os, "O_NOFOLLOW", 0)
+            | getattr(os, "O_NONBLOCK", 0)
+            | getattr(os, "O_BINARY", 0)
+        )
+        capture = os.fdopen(os.open(guest_stderr_path, flags), "r+b")
+    with capture as stream:
+        if stream is not None:
+            assert guest_stderr_path is not None
+            _require_capture_file(guest_stderr_path, stream, initial)
+            stream.truncate(0)
+        proc = harness_memory_guard.guarded_completed_process(
+            cmd,
+            prefix=prefix,
+            env=env,
+            cwd=cwd,
+            capture_output=True,
+            text=True,
+            timeout=timeout_s,
+            limits=limits,
+            operation_role=label,
+            encoding="utf-8",
+            errors="surrogateescape",
+        )
+        if not isinstance(proc, harness_memory_guard.GuardedCompletedProcess):
+            raise TypeError("measurement requires the shared guard's typed result")
+        closed = proc.descendants_closed is True
+        child_stderr = proc.child_stderr
+        host_stderr = None
+        if stream is not None:
+            assert guest_stderr_path is not None
+            _require_capture_file(guest_stderr_path, stream, initial)
+            host_stderr = child_stderr
+            child_stderr = None
+            if closed:
+                stream.seek(0)
+                child_stderr = stream.read().decode("utf-8", "surrogateescape")
+    complete = (
+        closed
+        and proc.infrastructure_failure is None
+        and not proc.cancelled
+        and proc.guard_signal is None
+        and not proc.orphaned_process_groups
+    )
+    elapsed = proc.child_elapsed_s
+    if not _finite_nonnegative(elapsed) or elapsed == 0:
+        elapsed = None
+    peaks = [
+        v.rss_kb / 1024.0
+        for v in (proc.peak, proc.peak_total)
+        if v is not None and _finite_nonnegative(v.rss_kb)
+    ]
+    peak = max(peaks) if peaks else None
+    if proc.infrastructure_failure is not None or not complete:
+        status = "infrastructure_error"
+    elif proc.timed_out:
+        status = "timeout"
+    elif proc.violation is not None:
+        status = "oom"
+    elif elapsed is None or peak is None:
+        status = "error"
+    elif proc.returncode != 0 or proc.child_returncode != 0:
+        status = "nonzero"
+    else:
+        status = "ok"
+    return RunOutcome(
+        ok=status == "ok",
+        elapsed_s=elapsed,
+        peak_rss_mib=peak,
+        status=status,
+        exit_code=proc.returncode,
+        stdout=proc.stdout if capture_output else None,
+        stderr=child_stderr if capture_output else None,
+        stdout_tail=_tail_text(proc.stdout),
+        stderr_tail=_tail_text(proc.stderr),
+        host_stderr=host_stderr,
+        guard_result=proc,
+    )
 
 
 def _parse_args(argv: list[str]) -> tuple[argparse.Namespace, list[str]]:
@@ -78,150 +245,65 @@ def _parse_args(argv: list[str]) -> tuple[argparse.Namespace, list[str]]:
     return ns, cmd
 
 
-def _summary_path(label: str) -> Path:
-    safe = "".join(ch if ch.isalnum() or ch in "._-" else "_" for ch in label)
-    from molt.dx import scratch_dir
-
-    summary_root = scratch_dir(ROOT, "safe_run")
-    summary_root.mkdir(parents=True, exist_ok=True)
-    return summary_root / f"{os.getpid()}-{safe}.summary.json"
-
-
-def _load_summary(path: Path) -> dict[str, object]:
-    try:
-        return json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return {}
-
-
-def _rss_mib(record: object) -> float:
-    if not isinstance(record, dict):
-        return 0.0
-    rss_kb = record.get("rss_kb")
-    if isinstance(rss_kb, int | float):
-        return float(rss_kb) / 1024.0
-    rss_gb = record.get("rss_gb")
-    if isinstance(rss_gb, int | float):
-        return float(rss_gb) * 1024.0
-    return 0.0
-
-
-def _status(returncode: int, summary: dict[str, object]) -> str:
-    if summary.get("infrastructure_failure") is not None:
-        return "infrastructure_error"
-    if summary.get("timed_out"):
-        return "timeout"
-    if summary.get("violation") is not None:
-        return "oom"
-    if "returncode" in summary:
-        return "ok"
-    # Without a terminal guard summary, numeric exit values alone cannot prove
-    # timeout or RSS enforcement; 124/137 may be intentional child exits.
-    return "ok" if returncode == 0 else "failed"
-
-
-def _infrastructure_diagnostics(
-    summary: dict[str, object],
-) -> tuple[dict[str, object] | object | None, str | None]:
-    payload = summary.get("infrastructure_failure")
-    if payload is None:
-        return None, None
-    try:
-        failure = memory_guard.GuardInfrastructureFailure.from_payload(payload)
-    except ValueError as exc:
-        # A malformed terminal receipt is itself an infrastructure failure. Keep
-        # the original value for diagnosis instead of silently treating the run
-        # as product evidence.
-        return payload, str(exc)
-    assert failure is not None
-    return failure.json_payload(), None
-
-
-def _guard_command(
-    ns: argparse.Namespace, cmd: list[str], summary_path: Path
-) -> list[str]:
-    rss_gb = ns.rss_mb / 1024.0
-    return [
-        sys.executable,
-        str(MEMORY_GUARD),
-        "--max-rss-gb",
-        f"{rss_gb:.6f}",
-        "--max-total-rss-gb",
-        f"{rss_gb:.6f}",
-        "--poll-interval",
-        str(ns.poll),
-        "--timeout",
-        str(ns.timeout),
-        "--summary-json",
-        str(summary_path),
-        "--",
-        *cmd,
-    ]
-
-
 def main(argv: list[str]) -> int:
     ns, cmd = _parse_args(argv)
     if not cmd:
         print("safe_run.py: no command given (use `-- CMD ARGS`)", file=sys.stderr)
         return EXIT_SPAWN
-
     label = ns.label or os.path.basename(cmd[0])
-    summary_path = _summary_path(label)
-    start = time.monotonic()
     try:
-        completed = subprocess.run(_guard_command(ns, cmd, summary_path), check=False)
-    except FileNotFoundError:
-        print(f"safe_run.py: command not found: {cmd[0]}", file=sys.stderr)
-        return EXIT_SPAWN
-    except Exception as exc:  # noqa: BLE001 - report any spawn failure cleanly
-        print(
-            f"safe_run.py: failed to start memory guard for {cmd[0]}: {exc}",
-            file=sys.stderr,
+        outcome = _run_measured_command(
+            cmd,
+            env=dict(os.environ),
+            rss_mb=ns.rss_mb,
+            timeout_s=ns.timeout,
+            poll_s=ns.poll,
+            label=label,
+            capture_output=True,
+            cwd=Path.cwd(),
         )
+    except (OSError, ValueError) as exc:
+        print(f"safe_run.py: failed to measure {cmd[0]}: {exc}", file=sys.stderr)
         return EXIT_SPAWN
-
-    summary = _load_summary(summary_path)
-    try:
-        summary_path.unlink(missing_ok=True)
-    except OSError:
-        pass
-
-    rc = completed.returncode
-    elapsed = float(summary.get("elapsed_s") or (time.monotonic() - start))
-    peak_mib = max(_rss_mib(summary.get("peak")), _rss_mib(summary.get("peak_total")))
-    status = _status(rc, summary)
-    infrastructure_failure, infrastructure_failure_decode_error = (
-        _infrastructure_diagnostics(summary)
-    )
+    if outcome.stdout:
+        sys.stdout.write(outcome.stdout)
+    proc = outcome.guard_result
+    assert proc is not None
+    if proc.stderr:
+        sys.stderr.write(proc.stderr)
     if ns.json:
         print(
             "SAFE_RUN "
             + json.dumps(
                 {
                     "label": label,
-                    "status": status,
-                    "exit": rc,
-                    "child_returncode": summary.get("child_returncode"),
-                    "infrastructure_failure": infrastructure_failure,
-                    "infrastructure_failure_decode_error": (
-                        infrastructure_failure_decode_error
+                    "status": outcome.status,
+                    "exit": outcome.exit_code,
+                    "child_returncode": proc.child_returncode,
+                    "infrastructure_failure": (
+                        None
+                        if proc.infrastructure_failure is None
+                        else proc.infrastructure_failure.json_payload()
                     ),
-                    "peak_rss_mib": round(peak_mib),
-                    "elapsed_s": round(elapsed, 3),
+                    "peak_rss_mib": outcome.peak_rss_mib,
+                    "elapsed_s": outcome.elapsed_s,
+                    "guard_elapsed_s": proc.elapsed_s,
+                    "cleanup_elapsed_s": proc.cleanup_elapsed_s,
+                    "timing_scope": "child-launch-to-exit",
                     "rss_limit_mib": ns.rss_mb,
                     "timeout_s": ns.timeout,
                 }
             ),
             file=sys.stderr,
         )
-    elif not (ns.quiet and status == "ok"):
+    elif not (ns.quiet and outcome.ok):
         print(
-            f"SAFE_RUN [{label}] status={status} exit={rc} "
-            f"peak_rss={peak_mib:.0f}MiB elapsed={elapsed:.2f}s "
+            f"SAFE_RUN [{label}] status={outcome.status} exit={outcome.exit_code} "
+            f"peak_rss={outcome.peak_rss_mib}MiB elapsed={outcome.elapsed_s}s "
             f"limit_rss={ns.rss_mb}MiB limit_t={ns.timeout:g}s",
             file=sys.stderr,
         )
-    return rc
+    return proc.returncode if outcome.ok or proc.returncode != 0 else EXIT_SPAWN
 
 
 if __name__ == "__main__":

@@ -25,7 +25,10 @@ DEFAULT_WASM_APP_TABLE_BASE = 256
 TEST_SHARED_WASM_TABLE_BASE = 4096
 
 
-def test_direct_node_runner_passes_manifest_tail_to_wasi_guest(tmp_path: Path) -> None:
+@pytest.mark.parametrize("capture", [False, True])
+def test_direct_node_runner_passes_manifest_tail_to_wasi_guest(
+    tmp_path: Path, capture: bool
+) -> None:
     wasm_tools = shutil.which("wasm-tools")
     if wasm_tools is None:
         pytest.skip("wasm-tools is required for the WASI argv fixture")
@@ -107,6 +110,29 @@ def test_direct_node_runner_passes_manifest_tail_to_wasi_guest(tmp_path: Path) -
         timeout=30,
     )
     assert parsed.returncode == 0, parsed.stderr
+    _attest_empty_callable_table(wasm_path)
+    manifest = _linked_manifest(wasm_path)
+    command = ["node", "wasm/run_wasm.js"]
+    if capture:
+        capture_path = tmp_path / "guest.stderr"
+        capture_path.touch()
+        command.extend(["--guest-stderr", str(capture_path), "--"])
+    command.append(str(manifest))
+    env = dict(os.environ)
+    env.pop("NODE_NO_WARNINGS", None)
+
+    omitted = _run_wasm_test_process(command, cwd=ROOT, env=env, timeout=30)
+    passed = _run_wasm_test_process(
+        [*command, "--sample", "value"], cwd=ROOT, env=env, timeout=30
+    )
+
+    assert omitted.returncode != 0
+    assert passed.returncode == 0, passed.stderr
+    if capture:
+        assert capture_path.read_bytes() == b""
+
+
+def _attest_empty_callable_table(wasm_path: Path) -> None:
     # This fixture has no callable-table entries. Publish the generated ABI's
     # empty attestation, without invoking the Rust publishing build lane.
     name = WASM_CALLABLE_TABLE_SECTION_NAME.encode("utf-8")
@@ -123,17 +149,6 @@ def test_direct_node_runner_passes_manifest_tail_to_wasi_guest(tmp_path: Path) -
     wasm_path.write_bytes(
         wasm_path.read_bytes() + b"\x00" + _write_varuint(len(payload)) + payload
     )
-    manifest = _linked_manifest(wasm_path)
-    command = ["node", "wasm/run_wasm.js", str(manifest)]
-    env = {**os.environ, "NODE_NO_WARNINGS": "1"}
-
-    omitted = _run_wasm_test_process(command, cwd=ROOT, env=env, timeout=30)
-    passed = _run_wasm_test_process(
-        [*command, "--sample", "value"], cwd=ROOT, env=env, timeout=30
-    )
-
-    assert omitted.returncode != 0
-    assert passed.returncode == 0, passed.stderr
 
 
 def _linked_manifest(wasm_path: Path) -> Path:
@@ -150,9 +165,10 @@ def _split_manifest(app_path: Path, runtime_path: Path) -> Path:
 def _wasm_backend() -> Path:
     """The backend `molt build --target wasm` selects; CI builds it first.
 
-    Every fixture publishes its link facts with that one binary. A `cargo run`
-    per fixture built a second, dev-profile backend, and parallel workers
-    queued behind its cold build until they timed out.
+    Fixtures with callable entries publish their link facts with that binary;
+    known-empty synthetic tables use the generated ABI's empty attestation.
+    A `cargo run` per fixture built a second, dev-profile backend, and parallel
+    workers queued behind its cold build until they timed out.
     """
     result = _run_wasm_test_process(
         [
@@ -179,6 +195,7 @@ def _wasm_from_wat(
     wat: str,
     *,
     callable_layout: tuple[int, int, int, int] | None = None,
+    empty_callable_table: bool = False,
 ) -> Path:
     wasm_tools = shutil.which("wasm-tools")
     if wasm_tools is None:
@@ -193,6 +210,10 @@ def _wasm_from_wat(
         timeout=30,
     )
     assert result.returncode == 0, result.stderr
+    if empty_callable_table:
+        assert callable_layout is None
+        _attest_empty_callable_table(wasm_path)
+        return wasm_path
     published = wasm_path.with_suffix(".published.wasm")
     publish_command = [
         str(_wasm_backend()),
@@ -237,6 +258,362 @@ def _execution_wasm_from_wat(tmp_path: Path, name: str, wat: str) -> Path:
         name,
         source[:-1] + execution_boundary + ")",
     )
+
+
+def _stderr_guest_manifest(
+    tmp_path: Path, layout: str, *, trap: bool, close_app_stderr: bool = False
+) -> Path:
+    guest_bytes = b"ExperimentalWarning: guest\r\n(node:7) guest\n\xfftail"
+    escaped = "".join(f"\\{value:02x}" for value in guest_bytes)
+    wasi_import = """
+      (import "wasi_snapshot_preview1" "fd_write"
+        (func $write (param i32 i32 i32 i32) (result i32)))
+    """
+    if close_app_stderr:
+        wasi_import += '(import "wasi_snapshot_preview1" "fd_close" (func $close (param i32) (result i32)))'
+    writer = """
+      (func $emit (param $fd i32) (param $ptr i32) (param $len i32)
+        i32.const 0 local.get $ptr i32.store
+        i32.const 4 local.get $len i32.store
+        local.get $fd i32.const 0 i32.const 1 i32.const 8 call $write
+        if unreachable end)
+    """
+    lifecycle = """
+      (func (export "molt_runtime_execution_enter") (result i64) i64.const 1)
+      (func (export "molt_runtime_execution_leave") (param i64))
+      (func (export "molt_exception_pending") (result i64) i64.const 0)
+      (func (export "molt_runtime_shutdown") (result i64)
+        i32.const 2 i32.const 256 i32.const 9 call $emit i64.const 1)
+      (data (i32.const 256) "|shutdown")
+    """
+    main = f"""
+      (data (i32.const 128) "{escaped}")
+      (data (i32.const 224) "stdout")
+      (func (export "molt_main")
+        {"call $init drop" if layout == "split" else ""}
+        i32.const 1 i32.const 224 i32.const 6 call $emit
+        i32.const 2 i32.const 128 i32.const {len(guest_bytes)} call $emit
+        {"i32.const 2 call $close if unreachable end" if close_app_stderr else ""}
+        {"unreachable" if trap else ""})
+    """
+    if layout == "linked":
+        linked = _wasm_from_wat(
+            tmp_path,
+            "stderr_linked",
+            f"""(module {wasi_import}
+              (memory (export "memory") 1)
+              (table (export "molt_table") 1 funcref)
+              {writer} {lifecycle} {main})""",
+            empty_callable_table=True,
+        )
+        return _linked_manifest(linked)
+    runtime = _wasm_from_wat(
+        tmp_path,
+        "stderr_runtime",
+        f"""(module
+          (import "env" "memory" (memory 1))
+          (import "env" "__indirect_function_table" (table 1 funcref))
+          {wasi_import}
+          (export "memory" (memory 0))
+          (func (export "molt_set_wasm_table_base") (param i64))
+          {writer} {lifecycle}
+          (data (i32.const 320) "runtime|")
+          (func (export "molt_runtime_init") (result i64)
+            i32.const 2 i32.const 320 i32.const 8 call $emit i64.const 1))""",
+        empty_callable_table=True,
+    )
+    app = _wasm_from_wat(
+        tmp_path,
+        "stderr_app",
+        f"""(module
+          (import "env" "__indirect_function_table" (table 1 funcref))
+          (import "molt_runtime" "runtime_init" (func $init (result i64)))
+          {wasi_import}
+          (memory (export "memory") 1)
+          {writer} {main})""",
+        empty_callable_table=True,
+    )
+    return _split_manifest(app, runtime)
+
+
+@pytest.mark.parametrize("layout", ["linked", "split"])
+@pytest.mark.parametrize("trap", [False, True])
+def test_direct_node_runner_keeps_exact_guest_stderr_separate_from_host(
+    tmp_path: Path, layout: str, trap: bool
+) -> None:
+    manifest = _stderr_guest_manifest(tmp_path, layout, trap=trap)
+    capture = tmp_path / "guest.stderr"
+    capture.touch()
+    env = {**os.environ, "MOLT_WASM_TRACE_RUN": "1"}
+    env.pop("NODE_NO_WARNINGS", None)
+    result = _run_wasm_test_process(
+        [
+            "node",
+            "wasm/run_wasm.js",
+            "--guest-stderr",
+            str(capture),
+            "--",
+            str(manifest),
+        ],
+        cwd=ROOT,
+        env=env,
+        timeout=30,
+        text=False,
+    )
+    assert result.returncode == (1 if trap else 0), result.stderr
+    assert result.stdout == b"stdout"
+    prefix = b"runtime|" if layout == "split" else b""
+    guest_bytes = b"ExperimentalWarning: guest\r\n(node:7) guest\n\xfftail"
+    assert capture.read_bytes() == prefix + guest_bytes + b"|shutdown"
+    assert b"[molt wasm] runner=" in result.stderr
+    assert guest_bytes not in result.stderr
+    assert (
+        b"unreachable" in result.stderr if trap else b"unreachable" not in result.stderr
+    )
+
+
+def test_direct_split_runner_app_stderr_close_cannot_retarget_runtime_shutdown(
+    tmp_path: Path,
+) -> None:
+    manifest = _stderr_guest_manifest(
+        tmp_path, "split", trap=False, close_app_stderr=True
+    )
+    capture = tmp_path / "guest.stderr"
+    capture.touch()
+    sentinel = tmp_path / "unrelated-sentinel"
+    sentinel.write_bytes(b"UNCHANGED_SENTINEL")
+    reuse_record = tmp_path / "reuse.json"
+    injector = tmp_path / "reuse_closed_fd.cjs"
+    injector.write_text(
+        "const fs = require('fs');\n"
+        "const wasi = require('node:wasi');\n"
+        "const Base = wasi.WASI;\n"
+        "let sentinelFd = null;\n"
+        "wasi.WASI = class extends Base {\n"
+        "  constructor(options) {\n"
+        "    super(options);\n"
+        "    const close = this.wasiImport.fd_close;\n"
+        "    this.wasiImport.fd_close = (fd) => {\n"
+        "      const result = close(fd);\n"
+        "      if (fd === 2 && result === 0) {\n"
+        f"        sentinelFd = fs.openSync({json.dumps(str(sentinel))}, 'r+');\n"
+        "        if (sentinelFd !== options.stderr) throw new Error('closed host FD was not reused');\n"
+        f"        fs.writeFileSync({json.dumps(str(reuse_record))}, JSON.stringify({{ closed: options.stderr, reused: sentinelFd }}));\n"
+        "      }\n"
+        "      return result;\n"
+        "    };\n"
+        "  }\n"
+        "};\n"
+        "process.on('exit', () => {\n"
+        "  if (sentinelFd !== null) fs.closeSync(sentinelFd);\n"
+        "});\n",
+        encoding="utf-8",
+    )
+    result = _run_wasm_test_process(
+        [
+            "node",
+            "--require",
+            str(injector),
+            "wasm/run_wasm.js",
+            "--guest-stderr",
+            str(capture),
+            "--",
+            str(manifest),
+        ],
+        cwd=ROOT,
+        env=os.environ,
+        timeout=30,
+        text=False,
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == b"stdout"
+    record = json.loads(reuse_record.read_text(encoding="utf-8"))
+    assert record["closed"] == record["reused"]
+    assert capture.read_bytes() == (
+        b"runtime|ExperimentalWarning: guest\r\n(node:7) guest\n\xfftail|shutdown"
+    )
+    assert sentinel.read_bytes() == b"UNCHANGED_SENTINEL"
+
+
+@pytest.mark.parametrize("mutation", ["close", "move", "replace"])
+def test_direct_node_runner_retires_capture_after_guest_fd_ownership_changes(
+    tmp_path: Path, mutation: str
+) -> None:
+    operation = {
+        "close": "i32.const 2 call $close if unreachable end",
+        "move": "i32.const 2 i32.const 1 call $renumber if unreachable end",
+        "replace": "i32.const 1 i32.const 2 call $renumber if unreachable end",
+    }[mutation]
+    after = {
+        "close": "",
+        "move": "i32.const 1 call $write_tail",
+        "replace": "i32.const 2 call $write_tail",
+    }[mutation]
+    module = _execution_wasm_from_wat(
+        tmp_path,
+        "capture_fd_ownership",
+        f"""(module
+          (import "wasi_snapshot_preview1" "fd_write"
+            (func $write (param i32 i32 i32 i32) (result i32)))
+          (import "wasi_snapshot_preview1" "fd_close"
+            (func $close (param i32) (result i32)))
+          (import "wasi_snapshot_preview1" "fd_renumber"
+            (func $renumber (param i32 i32) (result i32)))
+          (memory (export "memory") 1)
+          (table (export "molt_table") 1 funcref)
+          (data (i32.const 64) "tail")
+          (func $write_tail (param $fd i32)
+            i32.const 0 i32.const 64 i32.store
+            i32.const 4 i32.const 4 i32.store
+            local.get $fd i32.const 0 i32.const 1 i32.const 8 call $write
+            if unreachable end)
+          (func (export "molt_main")
+            i32.const 2 call $write_tail
+            {operation}
+            {after}))""",
+    )
+    capture = tmp_path / "guest.stderr"
+    capture.touch()
+    result = _run_wasm_test_process(
+        [
+            "node",
+            "wasm/run_wasm.js",
+            "--guest-stderr",
+            str(capture),
+            "--",
+            str(_linked_manifest(module)),
+        ],
+        cwd=ROOT,
+        env={**os.environ, "MOLT_WASM_TRACE_RUN": "1"},
+        timeout=30,
+        text=False,
+    )
+    assert result.returncode == 0, result.stderr
+    assert capture.read_bytes() == (b"tailtail" if mutation == "move" else b"tail")
+    assert result.stdout == (b"tail" if mutation == "replace" else b"")
+    assert b"[molt wasm] runner completed" in result.stderr
+
+
+def test_direct_node_runner_capture_admission_preserves_existing_bytes(
+    tmp_path: Path,
+) -> None:
+    capture = tmp_path / "guest.stderr"
+    capture.write_bytes(b"preserve")
+    result = _run_wasm_test_process(
+        [
+            "node",
+            "wasm/run_wasm.js",
+            "--guest-stderr",
+            str(capture),
+            "--",
+            "absent.json",
+        ],
+        cwd=ROOT,
+        env=os.environ,
+        timeout=30,
+    )
+    assert result.returncode == 1
+    assert "existing empty regular file" in result.stderr
+    assert capture.read_bytes() == b"preserve"
+
+
+@pytest.mark.parametrize("kind", ["symlink", "directory", "fifo"])
+def test_direct_node_runner_rejects_nonregular_capture_before_open(
+    tmp_path: Path, kind: str
+) -> None:
+    capture = tmp_path / "guest.stderr"
+    original = tmp_path / "original"
+    original.touch()
+    if kind == "symlink":
+        try:
+            capture.symlink_to(original)
+        except OSError as exc:
+            pytest.skip(f"symlink creation is unavailable: {exc}")
+    elif kind == "directory":
+        capture.mkdir()
+    else:
+        if not hasattr(os, "mkfifo"):
+            pytest.skip("FIFO paths are unavailable on this host")
+        os.mkfifo(capture)
+    result = _run_wasm_test_process(
+        [
+            "node",
+            "wasm/run_wasm.js",
+            "--guest-stderr",
+            str(capture),
+            "--",
+            "absent.json",
+        ],
+        cwd=ROOT,
+        env=os.environ,
+        timeout=10,
+    )
+    assert result.returncode == 1
+    assert "existing empty regular file" in result.stderr
+    assert original.read_bytes() == b""
+    if kind == "symlink":
+        assert capture.is_symlink()
+
+
+@pytest.mark.parametrize("replace_at", ["before_open", "after_open"])
+def test_direct_node_runner_rejects_capture_inode_substitution(
+    tmp_path: Path, replace_at: str
+) -> None:
+    capture = tmp_path / "guest.stderr"
+    capture.touch()
+    held_original = tmp_path / "held-original"
+    replacement = tmp_path / "replacement"
+    replacement.touch()
+    injector = tmp_path / "replace_capture.cjs"
+    injector.write_text(
+        "const fs = require('fs');\n"
+        "const originalOpen = fs.openSync;\n"
+        f"const capture = {json.dumps(str(capture))};\n"
+        "fs.openSync = function(candidate, ...args) {\n"
+        "  if (candidate !== capture) return originalOpen.call(this, candidate, ...args);\n"
+        "  const substitute = () => {\n"
+        f"    fs.renameSync(capture, {json.dumps(str(held_original))});\n"
+        f"    fs.renameSync({json.dumps(str(replacement))}, capture);\n"
+        "  };\n"
+        + (
+            "  substitute();\n  return originalOpen.call(this, candidate, ...args);\n"
+            if replace_at == "before_open"
+            else "  const fd = originalOpen.call(this, candidate, ...args);\n  substitute();\n  return fd;\n"
+        )
+        + "};\n",
+        encoding="utf-8",
+    )
+    result = _run_wasm_test_process(
+        [
+            "node",
+            "--require",
+            str(injector),
+            "wasm/run_wasm.js",
+            "--guest-stderr",
+            str(capture),
+            "--",
+            "absent.json",
+        ],
+        cwd=ROOT,
+        env=os.environ,
+        timeout=10,
+    )
+    assert result.returncode == 1
+    assert "capture path identity changed during admission" in result.stderr
+    assert held_original.read_bytes() == b""
+    assert capture.read_bytes() == b""
+
+
+@pytest.mark.parametrize("tail", [[], ["capture"], ["capture", "manifest.json"]])
+def test_direct_node_runner_rejects_ambiguous_capture_prefix(tail: list[str]) -> None:
+    result = _run_wasm_test_process(
+        ["node", "wasm/run_wasm.js", "--guest-stderr", *tail],
+        cwd=ROOT,
+        env=os.environ,
+        timeout=30,
+    )
+    assert result.returncode == 1
+    assert "usage: run_wasm.js --guest-stderr PATH -- MANIFEST" in result.stderr
 
 
 def _extract_table_base(wasm_path: Path) -> int | None:

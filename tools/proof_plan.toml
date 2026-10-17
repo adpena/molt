@@ -144,6 +144,7 @@ authority_inputs = [
   "tools/shard_partition.py",
   "tools/release_matrix_acceptance.py",
   "tools/safe_run.py",
+  "wasm/run_wasm.js",
   "tests/tools/test_cargo_test_binary_discovery.py",
   "tests/tools/test_runtime_test_gate.py",
   "tests/tools/test_runtime_descendant_receipts.py",
@@ -2956,7 +2957,7 @@ resource_class = "python-tests"
 timeout_seconds = 900
 cache_domain = "pytest"
 dependencies = []
-argv = ["uv", "run", "python3", "-m", "pytest", "-q", "-m", "not slow", "tests/test_bench_harness.py", "tests/test_finally_pending_observer_harness.py", "tests/test_bench_tool.py", "tests/test_ci_workflow_topology.py", "tests/test_ci_cargo_cache.py", "tests/test_harness_conformance.py", "tests/test_harness_layers.py", "tests/test_harness_report.py", "tests/test_manifest_env.py", "tests/test_monty_conformance_runner.py", "tests/tools/test_proof_queue_execution_receipt_details.py", "tests/tools/test_proof_queue_cargo_cache_custody.py", "tests/test_build_state_layout.py", "tests/test_bench_individual_tool.py", "tests/test_compile_governor.py", "tests/test_bench_wasm_runtime_build_flags.py", "tests/test_harness_memory_guard.py", "tests/test_molt_diff_expected_failures.py", "tests/test_compat_multibackend_oracle.py", "tests/test_child_clock_custody.py", "tests/test_perf_calibration.py", "tests/test_exception_diagnostics.py", "tests/tools/test_proof_queue_output_layout.py", "tests/tools/test_memory_guard_windows_sampling.py", "tests/test_memory_guard_tool.py", "tests/test_memory_guard_wiring.py", "tests/test_molt_diff_memory_guard.py", "tests/test_demo_bench_memory_guard.py", "tests/test_standalone_benchmark_memory_guard.py", "tests/test_backend_daemon_argv.py", "tests/test_backend_daemon_suite_custody.py", "tests/test_backend_daemon_custody.py", "tests/test_bench_friends.py", "tests/test_bench_dashboard.py", "tests/test_bench_generator_memory_guard.py", "tests/test_bench_suites.py", "tests/test_bench_wasm_node_resolver.py", "tests/test_wasm_linked_runner_node_flags.py", "tests/test_l7_numeric_attestation_runner.py"]
+argv = ["uv", "run", "python3", "-m", "pytest", "-q", "-m", "not slow", "tests/test_bench_harness.py", "tests/test_finally_pending_observer_harness.py", "tests/test_bench_tool.py", "tests/test_bench_audit.py", "tests/test_ci_workflow_topology.py", "tests/test_ci_cargo_cache.py", "tests/test_harness_conformance.py", "tests/test_harness_layers.py", "tests/test_harness_report.py", "tests/test_manifest_env.py", "tests/test_monty_conformance_runner.py", "tests/tools/test_proof_queue_execution_receipt_details.py", "tests/tools/test_proof_queue_cargo_cache_custody.py", "tests/test_build_state_layout.py", "tests/test_bench_individual_tool.py", "tests/test_compile_governor.py", "tests/test_bench_wasm_runtime_build_flags.py", "tests/test_harness_memory_guard.py", "tests/test_molt_diff_expected_failures.py", "tests/test_compat_multibackend_oracle.py", "tests/test_child_clock_custody.py", "tests/test_perf_calibration.py", "tests/test_exception_diagnostics.py", "tests/tools/test_proof_queue_output_layout.py", "tests/tools/test_memory_guard_windows_sampling.py", "tests/test_memory_guard_tool.py", "tests/test_memory_guard_wiring.py", "tests/test_molt_diff_memory_guard.py", "tests/test_demo_bench_memory_guard.py", "tests/test_standalone_benchmark_memory_guard.py", "tests/test_backend_daemon_argv.py", "tests/test_backend_daemon_suite_custody.py", "tests/test_backend_daemon_custody.py", "tests/test_bench_friends.py", "tests/test_bench_dashboard.py", "tests/test_bench_generator_memory_guard.py", "tests/test_bench_suites.py", "tests/test_bench_wasm_node_resolver.py", "tests/test_wasm_linked_runner_node_flags.py", "tests/test_l7_numeric_attestation_runner.py"]
 toolchains = ["python", "uv"]
 
 [[command]]
@@ -2968,7 +2969,7 @@ resource_class = "python-tests"
 timeout_seconds = 900
 cache_domain = "pytest"
 dependencies = []
-argv = ["uv", "run", "python3", "-m", "pytest", "-q", "-m", "not slow", "tests/test_bench_harness.py", "tests/test_finally_pending_observer_harness.py", "tests/test_bench_tool.py", "tests/test_ci_workflow_topology.py", "tests/test_ci_cargo_cache.py", "tests/test_harness_conformance.py", "tests/test_harness_layers.py", "tests/test_harness_report.py", "tests/test_manifest_env.py", "tests/test_monty_conformance_runner.py", "tests/tools/test_proof_queue_execution_receipt_details.py", "tests/tools/test_proof_queue_cargo_cache_custody.py", "tests/test_build_state_layout.py", "tests/test_bench_individual_tool.py", "tests/test_compile_governor.py", "tests/test_bench_wasm_runtime_build_flags.py", "tests/test_harness_memory_guard.py", "tests/test_molt_diff_expected_failures.py", "tests/test_compat_multibackend_oracle.py", "tests/test_child_clock_custody.py", "tests/test_perf_calibration.py", "tests/test_exception_diagnostics.py", "tests/tools/test_proof_queue_output_layout.py", "tests/tools/test_memory_guard_windows_sampling.py", "tests/test_memory_guard_tool.py", "tests/test_memory_guard_wiring.py", "tests/test_molt_diff_memory_guard.py", "tests/test_demo_bench_memory_guard.py", "tests/test_standalone_benchmark_memory_guard.py", "tests/test_backend_daemon_argv.py", "tests/test_backend_daemon_suite_custody.py", "tests/test_backend_daemon_custody.py", "tests/test_bench_friends.py", "tests/test_bench_dashboard.py", "tests/test_bench_generator_memory_guard.py", "tests/test_bench_suites.py", "tests/test_bench_wasm_node_resolver.py", "tests/test_wasm_linked_runner_node_flags.py", "tests/test_l7_numeric_attestation_runner.py"]
+argv = ["uv", "run", "python3", "-m", "pytest", "-q", "-m", "not slow", "tests/test_bench_harness.py", "tests/test_finally_pending_observer_harness.py", "tests/test_bench_tool.py", "tests/test_bench_audit.py", "tests/test_ci_workflow_topology.py", "tests/test_ci_cargo_cache.py", "tests/test_harness_conformance.py", "tests/test_harness_layers.py", "tests/test_harness_report.py", "tests/test_manifest_env.py", "tests/test_monty_conformance_runner.py", "tests/tools/test_proof_queue_execution_receipt_details.py", "tests/tools/test_proof_queue_cargo_cache_custody.py", "tests/test_build_state_layout.py", "tests/test_bench_individual_tool.py", "tests/test_compile_governor.py", "tests/test_bench_wasm_runtime_build_flags.py", "tests/test_harness_memory_guard.py", "tests/test_molt_diff_expected_failures.py", "tests/test_compat_multibackend_oracle.py", "tests/test_child_clock_custody.py", "tests/test_perf_calibration.py", "tests/test_exception_diagnostics.py", "tests/tools/test_proof_queue_output_layout.py", "tests/tools/test_memory_guard_windows_sampling.py", "tests/test_memory_guard_tool.py", "tests/test_memory_guard_wiring.py", "tests/test_molt_diff_memory_guard.py", "tests/test_demo_bench_memory_guard.py", "tests/test_standalone_benchmark_memory_guard.py", "tests/test_backend_daemon_argv.py", "tests/test_backend_daemon_suite_custody.py", "tests/test_backend_daemon_custody.py", "tests/test_bench_friends.py", "tests/test_bench_dashboard.py", "tests/test_bench_generator_memory_guard.py", "tests/test_bench_suites.py", "tests/test_bench_wasm_node_resolver.py", "tests/test_wasm_linked_runner_node_flags.py", "tests/test_l7_numeric_attestation_runner.py"]
 toolchains = ["python", "uv"]
 
 [[command]]
@@ -4541,6 +4542,23 @@ gates = [
   "python -m pytest -q tests/tools/test_apparatus_agent_safety.py tests/tools/test_anti_recurrence_gate.py tests/tools/test_hooks_session_learning.py tests/tools/test_check_gate_liveness.py tests/tools/test_memory_graph.py",
   "python tools/apparatus_agent_safety.py --check",
   "python tools/anti_recurrence_gate.py --check",
+]
+
+# Measurement producers and their receivers migrate as one boundary.
+[[rule]]
+name = "performance-measurement"
+toolchains = ["python", "uv"]
+description = "Typed sample transport, deployment selection and complete benchmark artifact lifetimes."
+globs = [
+  "tools/bench.py", "tools/bench_audit.py", "tools/bench_reporting.py",
+  "tools/safe_run.py", "tools/cold_start_decompose.py", "tools/perf_scoreboard*.py",
+  "config/perf_methodology.toml", "tests/test_bench_tool.py", "tests/test_bench_audit.py",
+  "tests/tools/test_direct_run_process_custody.py", "tests/tools/test_cold_start_decompose.py",
+  "tests/tools/test_perf_profile_selection.py", "tests/tools/test_perf_release_integrity.py",
+  "tests/tools/test_perf_scoreboard.py", "tests/tools/test_perf_methodology.py",
+]
+gates = [
+  "python -m pytest -q -m 'not slow' tests/test_bench_tool.py tests/test_bench_audit.py tests/test_bench_report.py tests/test_temporary_artifacts.py tests/tools/test_direct_run_process_custody.py tests/tools/test_cold_start_decompose.py tests/tools/test_perf_profile_selection.py tests/tools/test_perf_release_integrity.py tests/tools/test_perf_scoreboard.py tests/tools/test_perf_methodology.py",
 ]
 
 # --- APPARATUS Wave 4 A11 claims custody + preflight + commit serializer ---

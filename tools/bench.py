@@ -11,7 +11,7 @@ import shutil
 import statistics
 import subprocess
 import sys
-from typing import Any
+from typing import Any, Literal
 import time
 import uuid
 from dataclasses import dataclass, field
@@ -39,39 +39,6 @@ def _platform_label() -> str:
     return f"{sys.platform}-{machine}"
 
 
-def _chmod_tree_readable(root: Path) -> None:
-    try:
-        root.chmod(0o755)
-    except OSError:
-        pass
-    for current, dirs, files in os.walk(root):
-        current_path = Path(current)
-        try:
-            current_path.chmod(0o755)
-        except OSError:
-            pass
-        for name in (*dirs, *files):
-            try:
-                (current_path / name).chmod(0o755)
-            except OSError:
-                pass
-
-
-def _rmtree_bench_temp(path: Path) -> None:
-    try:
-        shutil.rmtree(path)
-        return
-    except OSError:
-        _chmod_tree_readable(path)
-    try:
-        shutil.rmtree(path)
-    except OSError as exc:
-        print(
-            f"warning: failed to remove benchmark temp dir {path}: {exc}",
-            file=sys.stderr,
-        )
-
-
 def _append_event_jsonl(path: Path, payload: dict[str, object]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("a", encoding="utf-8") as handle:
@@ -92,9 +59,20 @@ MAX_FAILURE_DETAIL_RECORDS = bench_reporting.MAX_FAILURE_DETAIL_RECORDS
 from tools import perf_authority  # noqa: E402
 from molt import backend_daemon_custody as daemon_custody  # noqa: E402
 from molt.dx import (  # noqa: E402
+    artifact_root as dx_artifact_root,
     CANONICAL_RUN_ENV_KEYS,
+    DxConfigError,
+    checkout_custody,
     RunContext,
     scratch_dir,
+)
+
+from molt.path_custody import host_path_is_within  # noqa: E402
+from molt.temporary_artifacts import OwnedTemporaryDirectory  # noqa: E402
+from molt.node_runtime import resolve_node_runtime  # noqa: E402
+from molt.wasm_artifact import (  # noqa: E402
+    wasm_runtime_manifest_entry_path,
+    wasm_runtime_manifest_path,
 )
 
 from molt.harness_conformance import (  # noqa: E402
@@ -131,47 +109,119 @@ class BenchRunner:
     cmd: list[str]
     script: str | None
     env: dict[str, str]
+    temp_dir: OwnedTemporaryDirectory | None
     build_s: float = 0.0
     size_kb: float | None = None
 
 
-class _BenchTempDir:
-    def __init__(self, path: Path) -> None:
-        self.path = path
+def _new_bench_temp(root: Path, env: dict[str, str]) -> OwnedTemporaryDirectory:
+    root = _admit_bench_output(root, env, option="temporary directory")
+    root.mkdir(parents=True, exist_ok=True)
+    return OwnedTemporaryDirectory(prefix="molt-bench-", dir=root)
 
-    @property
-    def name(self) -> str:
-        return str(self.path)
 
-    @classmethod
-    def create(cls, root: Path) -> "_BenchTempDir":
-        root.mkdir(
-            mode=0o755 if os.name == "nt" else 0o777,
-            parents=True,
-            exist_ok=True,
-        )
-        for _attempt in range(100):
-            path = root / f"molt-bench-{uuid.uuid4().hex[:8]}"
-            try:
-                path.mkdir(mode=0o755 if os.name == "nt" else 0o700)
-            except FileExistsError:
-                continue
-            return cls(path)
-        raise FileExistsError(f"could not create unique benchmark temp dir in {root}")
-
-    def cleanup(self) -> None:
-        if not self.path.exists():
-            return
-        _rmtree_bench_temp(self.path)
+def _cleanup_bench_temp(
+    owner: OwnedTemporaryDirectory, primary: BaseException | None = None
+) -> None:
+    try:
+        owner.cleanup()
+    except BaseException as cleanup_error:
+        retained_error = cleanup_error if primary is None else primary
+        owners = getattr(retained_error, "benchmark_temporary_directories", ())
+        if not any(existing is owner for existing in owners):
+            retained_error.benchmark_temporary_directories = (*owners, owner)
+        if primary is not None:
+            primary.add_note(
+                f"benchmark scratch cleanup failed for {owner.name}: {cleanup_error!r}"
+            )
+            raise primary
+        raise
 
 
 @dataclass(frozen=True)
 class MoltBinary:
     path: Path
-    temp_dir: object
+    temp_dir: OwnedTemporaryDirectory
     build_s: float
     size_kb: float
     build_observation: dict[str, Any] | None = None
+    manifest_path: Path | None = None
+    guest_stderr_path: Path | None = None
+
+
+@dataclass(frozen=True)
+class MoltInvocation:
+    command: tuple[str, ...]
+    environment: dict[str, str]
+    guest_stderr_path: Path | None = None
+
+
+def molt_binary_invocation(
+    binary: MoltBinary, environment: dict[str, str]
+) -> MoltInvocation:
+    """Resolve the execution image once per artifact, outside the sample loop."""
+    env = environment.copy()
+    if binary.manifest_path is None:
+        return MoltInvocation((str(binary.path),), env)
+    # A WASM guest has no host-Python dependency. Node policy must be the public
+    # runner's policy, not inherited engine flags or warning suppression.
+    for key in (
+        "PYTHONPATH",
+        "PYTHONHOME",
+        "PYTHONHASHSEED",
+        "PYTHONUNBUFFERED",
+        "NODE_OPTIONS",
+        "NODE_NO_WARNINGS",
+        "MOLT_RUNTIME_WASM",
+        "MOLT_WASM_LINKED",
+        "MOLT_WASM_MANIFEST_PATH",
+    ):
+        env.pop(key, None)
+    node = resolve_node_runtime(
+        source_root=REPO_ROOT, environment=env, guard_prefix="MOLT_BENCH"
+    )
+    if binary.guest_stderr_path is None:
+        raise ValueError("WASM benchmark artifact lacks its owned guest stderr capture")
+    return MoltInvocation(
+        (
+            str(node.path),
+            str(REPO_ROOT / "wasm/run_wasm.js"),
+            "--guest-stderr",
+            str(binary.guest_stderr_path),
+            "--",
+            str(binary.manifest_path),
+        ),
+        env,
+        binary.guest_stderr_path,
+    )
+
+
+def _resolve_wasm_benchmark_output(payload: dict) -> tuple[Path, Path]:
+    """Consume the compiler's linked deployment result, never scan scratch."""
+    data = payload.get("data")
+    artifacts = data.get("artifacts") if isinstance(data, dict) else None
+    if not isinstance(artifacts, dict):
+        raise ValueError("WASM build result is missing deployment artifacts")
+    linked = artifacts.get("linked_wasm")
+    manifest = artifacts.get("manifest")
+    if not isinstance(linked, str) or not isinstance(manifest, str):
+        raise ValueError("WASM build requires linked_wasm and manifest artifacts")
+    linked_path, manifest_path = Path(linked), Path(manifest)
+    if not linked_path.is_absolute() or not manifest_path.is_absolute():
+        raise ValueError("WASM deployment artifact paths must be absolute")
+    manifest_data = json.loads(manifest_path.read_text(encoding="utf-8"))
+    if not isinstance(manifest_data, dict) or manifest_data.get("mode") != "linked":
+        raise ValueError("WASM benchmark requires a linked execution manifest")
+    if (
+        wasm_runtime_manifest_path(linked_path).resolve() != manifest_path.resolve()
+        or wasm_runtime_manifest_entry_path(manifest_path).resolve()
+        != linked_path.resolve()
+        or not linked_path.is_file()
+    ):
+        raise ValueError("WASM execution manifest does not select the linked artifact")
+    # --linked --require-linked selects one deployed module, including runtime.
+    # The runner checks its declared size and digest before executing the bytes.
+    return linked_path, manifest_path
 
 
 @dataclass(frozen=True)
@@ -325,7 +375,11 @@ def _backend_daemon_cleanup_log_path(env: dict[str, str]) -> Path | None:
     if not raw_path:
         return None
     path = Path(raw_path).expanduser()
-    return path if path.is_absolute() else REPO_ROOT / path
+    return _admit_bench_output(
+        path if path.is_absolute() else REPO_ROOT / path,
+        env,
+        option="MOLT_BENCH_DAEMON_CLEANUP_LOG",
+    )
 
 
 def _record_backend_daemon_cleanup_event(
@@ -396,11 +450,12 @@ def _default_codon_taq_file() -> Path:
     )
     if repo_sample.exists():
         return repo_sample.resolve()
-    bench_tmp_root = _bench_tmp_root(_canonical_bench_env())
-    bench_tmp_root.mkdir(parents=True, exist_ok=True)
+    env = _canonical_bench_env()
+    bench_tmp_root = _bench_tmp_root(env)
     generated = bench_tmp_root / "molt_codon_taq_sample.txt"
     if generated.exists():
         return generated.resolve()
+    generated = _admit_bench_output(generated, env, option="Codon generated sample")
     lines = ["timestamp|source|symbol|price|volume\n"]
     symbols = ("AAPL", "MSFT", "GOOG")
     for i in range(6000):
@@ -519,8 +574,11 @@ def _bench_tmp_root(env: dict[str, str]) -> Path:
     return scratch_dir(REPO_ROOT, "bench", env)
 
 
-def _canonical_bench_env(base_env: dict[str, str] | None = None) -> dict[str, str]:
+def _canonical_bench_env(
+    base_env: dict[str, str] | None = None, *, create_dirs: bool = True
+) -> dict[str, str]:
     env = (os.environ.copy() if base_env is None else base_env).copy()
+    _admit_bench_env_outputs(env)
     explicit_canonical_keys = {key for key in CANONICAL_RUN_ENV_KEYS if env.get(key)}
     for key, value in build_molt_conformance_env(
         REPO_ROOT,
@@ -541,14 +599,69 @@ def _canonical_bench_env(base_env: dict[str, str] | None = None) -> dict[str, st
         prefer_external_artifacts=True,
     ).canonical_env(
         env,
-        create_dirs=True,
+        create_dirs=create_dirs,
         force_default_keys=force_default_keys,
     )
-    env.setdefault("MOLT_BENCH_TMP_ROOT", str(_bench_tmp_root(env)))
-    ensure_molt_conformance_dirs(env)
-    BENCH_RESULTS_DIR.mkdir(parents=True, exist_ok=True)
-    _bench_tmp_root(env).mkdir(parents=True, exist_ok=True)
+    env["MOLT_BENCH_TMP_ROOT"] = str(
+        _admit_bench_output(_bench_tmp_root(env), env, option="MOLT_BENCH_TMP_ROOT")
+    )
+    if create_dirs:
+        ensure_molt_conformance_dirs(env)
+        _bench_tmp_root(env).mkdir(parents=True, exist_ok=True)
     return env
+
+
+def _admit_bench_output(path: Path, env: dict[str, str], *, option: str) -> Path:
+    """Validate a write destination using the same checkout custody as the run."""
+    destination = path.expanduser().resolve()
+    custody = checkout_custody(REPO_ROOT, env)
+    if custody.source_only and host_path_is_within(destination, custody.source_root):
+        raise DxConfigError(
+            f"source-only checkout cannot own benchmark {option}: {destination}; "
+            "select a destination outside the checkout under the admitted artifact root"
+        )
+    return destination
+
+
+def _admit_bench_env_outputs(env: dict[str, str]) -> None:
+    # Validate inherited non-DX output selections before canonical_env creates
+    # directories. Diagnostic paths use the harness's repository-relative rule;
+    # the explicit scratch path keeps its existing working-directory rule.
+    for key in (
+        "MOLT_BENCH_TMP_ROOT",
+        "MOLT_GUARD_PROFILE_LOG",
+        "MOLT_BENCH_DAEMON_CLEANUP_LOG",
+    ):
+        raw = env.get(key, "").strip()
+        if raw:
+            path = Path(raw).expanduser()
+            if key != "MOLT_BENCH_TMP_ROOT" and not path.is_absolute():
+                path = REPO_ROOT / path
+            env[key] = str(_admit_bench_output(path, env, option=key))
+
+
+def _admit_bench_guard_artifacts(
+    artifact_root: Path, env: dict[str, str]
+) -> dict[str, str]:
+    root = _admit_bench_output(artifact_root, env, option="artifact_root")
+    artifacts = bench_reporting.bench_guard_artifacts(root)
+    if env.get("MOLT_GUARD_PROFILE_LOG", "").strip():
+        artifacts["harness_command_profile_jsonl"] = str(
+            harness_memory_guard.command_profile_log_path(env, repo_root=REPO_ROOT)
+        )
+    cleanup_path = _backend_daemon_cleanup_log_path(env)
+    if cleanup_path is not None:
+        artifacts["backend_daemon_cleanup_jsonl"] = str(cleanup_path)
+    # Each file is admitted separately: an existing file symlink can escape an
+    # otherwise admitted parent directory. The formatter remains the sole path
+    # layout authority, shared with the report projection.
+    artifacts = {
+        key: str(_admit_bench_output(Path(value), env, option=key))
+        for key, value in artifacts.items()
+    }
+    env["MOLT_GUARD_PROFILE_LOG"] = artifacts["harness_command_profile_jsonl"]
+    env["MOLT_BENCH_DAEMON_CLEANUP_LOG"] = artifacts["backend_daemon_cleanup_jsonl"]
+    return artifacts
 
 
 def _molt_build_cmd(build_profile: str) -> list[str]:
@@ -623,18 +736,21 @@ def _molt_build_params(
     extra_args: list[str] | None,
     env: dict[str, str],
     use_molt_build_cache: bool = True,
+    build_target: Literal["native", "wasm"] = "native",
 ) -> dict[str, object]:
     params: dict[str, object] = {
         "file_path": script,
         "profile": build_profile,
-        "target": "native",
-        "trusted": True,
+        "target": build_target,
+        "trusted": build_target == "native",
         "json_output": True,
         "out_dir": str(out_dir),
         "cache": use_molt_build_cache,
         "env_overrides": env,
         "codec": env.get("MOLT_CODEC", "msgpack"),
     }
+    if build_target == "wasm":
+        params.update(linked=True, require_linked=True)
     remaining = list(extra_args or [])
     while remaining:
         arg = remaining.pop(0)
@@ -1121,136 +1237,192 @@ def prepare_molt_binary(
     build_timeout_s: float = DEFAULT_BATCH_BUILD_TIMEOUT_S,
     limits: harness_memory_guard.HarnessMemoryLimits | None = None,
     use_molt_build_cache: bool = True,
+    build_target: Literal["native", "wasm"] = "native",
 ) -> MoltBinary | MoltFailure:
+    if build_target not in {"native", "wasm"}:
+        raise ValueError(f"unsupported benchmark build target: {build_target}")
     env = _canonical_bench_env(env)
     _prune_backend_daemons(env)
     resolved_limits = limits or harness_memory_guard.limits_from_env("MOLT_BENCH", env)
     bench_tmp_root = _bench_tmp_root(env)
 
     def _attempt_build() -> MoltBinary | MoltFailure:
-        temp_dir = _BenchTempDir.create(bench_tmp_root)
-        out_dir = Path(temp_dir.name)
-        args = [
-            *_molt_build_cmd(build_profile),
-            "--trusted",
-            "--json",
-            "--cache" if use_molt_build_cache else "--rebuild",
-            "--out-dir",
-            str(out_dir),
-        ]
-        args.extend(extra_args or [])
-        args.append(script)
-        start = time.perf_counter()
+        temp_dir = _new_bench_temp(bench_tmp_root, env)
+        transferred = False
+        primary: BaseException | None = None
+        failure: MoltFailure | None = None
         try:
-            if batch_server is None:
-                res = harness_memory_guard.guarded_completed_process(
-                    args,
-                    prefix="MOLT_BENCH",
-                    env=env,
-                    capture_output=True,
-                    text=True,
-                    timeout=build_timeout_s,
-                    limits=resolved_limits,
-                )
-            else:
-                params = _molt_build_params(
-                    script=script,
-                    out_dir=out_dir,
-                    build_profile=build_profile,
-                    extra_args=extra_args,
-                    env=env,
-                    use_molt_build_cache=use_molt_build_cache,
-                )
-                response = batch_server.request_build(params, timeout_s=build_timeout_s)
-                res = _batch_response_completed_process(args, response)
-        except (
-            RuntimeError,
-            TimeoutError,
-            ValueError,
-            subprocess.TimeoutExpired,
-        ) as exc:
-            if batch_server is not None and _batch_server_stream_failure(exc):
-                try:
-                    batch_server.restart()
-                except Exception as restart_exc:
-                    print(
-                        "warning: failed to restart batch compile server after "
-                        f"protocol failure: {restart_exc}",
-                        file=sys.stderr,
+            out_dir = Path(temp_dir.name)
+            params = _molt_build_params(
+                script=script,
+                out_dir=out_dir,
+                build_profile=build_profile,
+                extra_args=extra_args,
+                env=env,
+                use_molt_build_cache=use_molt_build_cache,
+                build_target=build_target,
+            )
+            args = [
+                *_molt_build_cmd(build_profile),
+                *(["--trusted"] if params["trusted"] else []),
+                "--json",
+                "--cache" if use_molt_build_cache else "--rebuild",
+                "--out-dir",
+                str(out_dir),
+            ]
+            if build_target == "wasm":
+                args.extend(["--target", "wasm", "--linked", "--require-linked"])
+            args.extend(extra_args or [])
+            args.append(script)
+            start = time.perf_counter()
+            try:
+                if batch_server is None:
+                    res = harness_memory_guard.guarded_completed_process(
+                        args,
+                        prefix="MOLT_BENCH",
+                        env=env,
+                        capture_output=True,
+                        text=True,
+                        timeout=build_timeout_s,
+                        limits=resolved_limits,
                     )
-            failure = _classified_molt_exception(
-                phase="build",
-                exc=exc,
-                elapsed_s=time.perf_counter() - start,
-                default_status="build_failed",
-            )
-            _emit_molt_failure_summary(script, failure)
-            temp_dir.cleanup()
-            return failure
-        build_s = time.perf_counter() - start
+                else:
+                    response = batch_server.request_build(
+                        params, timeout_s=build_timeout_s
+                    )
+                    res = _batch_response_completed_process(args, response)
+            except (
+                RuntimeError,
+                TimeoutError,
+                ValueError,
+                subprocess.TimeoutExpired,
+            ) as exc:
+                primary = exc
+                if batch_server is not None and _batch_server_stream_failure(exc):
+                    try:
+                        batch_server.restart()
+                    except Exception as restart_exc:
+                        print(
+                            "warning: failed to restart batch compile server after "
+                            f"protocol failure: {restart_exc}",
+                            file=sys.stderr,
+                        )
+                failure = _classified_molt_exception(
+                    phase="build",
+                    exc=exc,
+                    elapsed_s=time.perf_counter() - start,
+                    default_status="build_failed",
+                )
+                _emit_molt_failure_summary(script, failure)
+                return failure
+            build_s = time.perf_counter() - start
 
-        if res.returncode != 0:
-            _emit_molt_build_failure(script, res)
-            failure = _classified_molt_failure(
-                phase="build",
-                returncode=res.returncode,
-                stdout=res.stdout,
-                stderr=res.stderr,
-                elapsed_s=build_s,
-                timed_out=bool(getattr(res, "timed_out", False)),
-                violation=getattr(res, "violation", None),
-                child_returncode=getattr(res, "child_returncode", None),
-                infrastructure_failure=getattr(res, "infrastructure_failure", None),
-                orphaned_process_groups=tuple(
-                    int(pgid)
-                    for pgid in getattr(res, "orphaned_process_groups", ()) or ()
-                ),
-                default_status="build_failed",
-            )
-            _emit_molt_failure_summary(script, failure)
-            temp_dir.cleanup()
-            return failure
+            if res.returncode != 0:
+                _emit_molt_build_failure(script, res)
+                failure = _classified_molt_failure(
+                    phase="build",
+                    returncode=res.returncode,
+                    stdout=res.stdout,
+                    stderr=res.stderr,
+                    elapsed_s=build_s,
+                    timed_out=bool(getattr(res, "timed_out", False)),
+                    violation=getattr(res, "violation", None),
+                    child_returncode=getattr(res, "child_returncode", None),
+                    infrastructure_failure=getattr(res, "infrastructure_failure", None),
+                    orphaned_process_groups=tuple(
+                        int(pgid)
+                        for pgid in getattr(res, "orphaned_process_groups", ()) or ()
+                    ),
+                    default_status="build_failed",
+                )
+                _emit_molt_failure_summary(script, failure)
+                return failure
 
-        try:
-            payload = json.loads(res.stdout.strip() or "{}")
-        except json.JSONDecodeError:
-            _emit_molt_build_failure(script, res)
-            failure = _classified_molt_failure(
-                phase="build",
-                returncode=res.returncode,
-                stdout=res.stdout,
-                stderr=res.stderr,
-                elapsed_s=build_s,
-                default_status="build_output_invalid",
-                detail="build_json_invalid",
-            )
-            _emit_molt_failure_summary(script, failure)
-            temp_dir.cleanup()
-            return failure
+            try:
+                payload = json.loads(res.stdout.strip() or "{}")
+                if not isinstance(payload, dict) or not isinstance(
+                    payload.get("data", {}), dict
+                ):
+                    raise ValueError("build JSON must contain an object result")
+            except (json.JSONDecodeError, ValueError) as exc:
+                primary = exc
+                _emit_molt_build_failure(script, res)
+                failure = _classified_molt_failure(
+                    phase="build",
+                    returncode=res.returncode,
+                    stdout=res.stdout,
+                    stderr=res.stderr,
+                    elapsed_s=build_s,
+                    default_status="build_output_invalid",
+                    detail="build_json_invalid",
+                )
+                _emit_molt_failure_summary(script, failure)
+                return failure
 
-        output_path = _resolve_molt_output(payload)
-        if output_path is None:
-            failure = _classified_molt_failure(
-                phase="build",
-                returncode=res.returncode,
-                stdout=res.stdout,
-                stderr=res.stderr,
-                elapsed_s=build_s,
-                default_status="build_artifact_missing",
-                detail="build_output_missing",
-            )
-            _emit_molt_failure_summary(script, failure)
-            temp_dir.cleanup()
-            return failure
+            manifest_path = None
+            if build_target == "wasm":
+                try:
+                    output_path, manifest_path = _resolve_wasm_benchmark_output(payload)
+                except (OSError, ValueError, TypeError) as exc:
+                    primary = exc
+                    failure = _classified_molt_failure(
+                        phase="build",
+                        returncode=res.returncode,
+                        stdout=res.stdout,
+                        stderr=str(exc),
+                        elapsed_s=build_s,
+                        default_status="build_artifact_missing",
+                        detail="wasm_linked_manifest_invalid",
+                    )
+                    _emit_molt_failure_summary(script, failure)
+                    return failure
+            else:
+                output_path = _resolve_molt_output(payload)
+            if output_path is None:
+                failure = _classified_molt_failure(
+                    phase="build",
+                    returncode=res.returncode,
+                    stdout=res.stdout,
+                    stderr=res.stderr,
+                    elapsed_s=build_s,
+                    default_status="build_artifact_missing",
+                    detail="build_output_missing",
+                )
+                _emit_molt_failure_summary(script, failure)
+                return failure
 
-        binary_size = output_path.stat().st_size / 1024
-        return MoltBinary(
-            output_path,
-            temp_dir,
-            build_s,
-            binary_size,
-            payload.get("data", {}).get("observed_toolchain"),
-        )
+            binary_size = output_path.stat().st_size / 1024
+            guest_stderr_path = None
+            if manifest_path is not None:
+                guest_stderr_path = out_dir / "guest-stderr.bin"
+                with guest_stderr_path.open("xb"):
+                    pass
+            binary = MoltBinary(
+                output_path,
+                temp_dir,
+                build_s,
+                binary_size,
+                payload.get("data", {}).get("observed_toolchain"),
+                manifest_path,
+                guest_stderr_path,
+            )
+
+            transferred = True
+            return binary
+        except BaseException as exc:
+            primary = exc
+            raise
+        finally:
+            if not transferred:
+                try:
+                    _cleanup_bench_temp(temp_dir, primary)
+                except BaseException as exc:
+                    if failure is not None:
+                        exc.benchmark_build_failure = failure
+                        exc.add_note(
+                            f"benchmark build failed before cleanup: {failure.status}"
+                        )
+                    raise
 
     result = _attempt_build()
     if isinstance(result, MoltBinary):
@@ -1586,34 +1758,55 @@ def _prepare_nuitka_runner(
 ) -> BenchRunner | None:
     if nuitka_cmd is None:
         return None
-    module_name = f"bench_nuitka_{script_path.stem}"
-    module_dir = build_root / module_name
-    module_dir.mkdir(parents=True, exist_ok=True)
-    build_start = time.perf_counter()
-    build = _run_cmd(
-        [
-            *nuitka_cmd,
-            "--onefile",
-            "--output-dir",
-            str(module_dir),
-            "--remove-output",
-            str(script_path),
-        ],
-        env=base_env,
-        capture=not tty,
-        tty=tty,
-        limits=limits,
+    build_root = _admit_bench_output(
+        build_root, base_env, option="Nuitka build directory"
     )
-    build_s = time.perf_counter() - build_start
-    if build.returncode != 0:
-        return None
-    binary_path = _find_compiled_binary(module_dir, script_path.stem)
-    if binary_path is None:
-        return None
-    size_kb = binary_path.stat().st_size / 1024
-    return BenchRunner(
-        [str(binary_path)], None, base_env, build_s=build_s, size_kb=size_kb
-    )
+    # Nuitka derives build/dist/onefile paths itself. An exclusively created
+    # scratch directory prevents reuse of pre-existing nested output symlinks.
+    temp_dir = _new_bench_temp(build_root, base_env)
+    transferred = False
+    primary: BaseException | None = None
+    try:
+        module_dir = Path(temp_dir.name)
+        build_start = time.perf_counter()
+        build = _run_cmd(
+            [
+                *nuitka_cmd,
+                "--onefile",
+                "--output-dir",
+                str(module_dir),
+                "--remove-output",
+                str(script_path),
+            ],
+            env=base_env,
+            capture=not tty,
+            tty=tty,
+            limits=limits,
+        )
+        build_s = time.perf_counter() - build_start
+        if build.returncode != 0:
+            return None
+        binary_path = _find_compiled_binary(module_dir, script_path.stem)
+        if binary_path is None:
+            return None
+        size_kb = binary_path.stat().st_size / 1024
+        runner = BenchRunner(
+            [str(binary_path)],
+            None,
+            base_env,
+            temp_dir,
+            build_s=build_s,
+            size_kb=size_kb,
+        )
+
+        transferred = True
+        return runner
+    except BaseException as exc:
+        primary = exc
+        raise
+    finally:
+        if not transferred:
+            _cleanup_bench_temp(temp_dir, primary)
 
 
 def _pyodide_command(explicit_cmd: str | None) -> list[str] | None:
@@ -1635,7 +1828,7 @@ def _prepare_pyodide_runner(
 ) -> BenchRunner | None:
     if pyodide_cmd is None:
         return None
-    return BenchRunner(pyodide_cmd, str(script_path), base_env)
+    return BenchRunner(pyodide_cmd, str(script_path), base_env, None)
 
 
 def _prepare_codon_runner(
@@ -1653,40 +1846,65 @@ def _prepare_codon_runner(
     if platform.system() == "Darwin" and platform.machine() == "x86_64":
         arch_prefix = ["/usr/bin/arch", "-arm64"]
     module_name = f"bench_codon_{script_path.stem}"
-    module_dir = build_root / module_name
-    module_dir.mkdir(parents=True, exist_ok=True)
-    binary_path = module_dir / module_name
-    env = base_env.copy()
-    codon_home: str | None = None
-    if "CODON_HOME" not in env:
-        codon_path = Path(codon).resolve()
-        candidate = codon_path.parent.parent
-        if (candidate / "lib" / "codon").exists():
-            codon_home = str(candidate)
-            env["CODON_HOME"] = codon_home
-    else:
-        codon_home = env.get("CODON_HOME")
-    build_start = time.perf_counter()
-    build = _run_cmd(
-        arch_prefix
-        + [codon, "build", "-release", str(script_path), "-o", str(binary_path)],
-        env=env,
-        capture=not tty,
-        tty=tty,
-        limits=limits,
+    build_root = _admit_bench_output(
+        build_root, base_env, option="Codon build directory"
     )
-    build_s = time.perf_counter() - build_start
-    if build.returncode != 0:
-        return None
-    if codon_home:
-        libomp = Path(codon_home) / "lib" / "codon" / "libomp.dylib"
-        target = module_dir / "libomp.dylib"
-        if libomp.exists() and not target.exists():
-            shutil.copy2(libomp, target)
-    size_kb = binary_path.stat().st_size / 1024 if binary_path.exists() else None
-    return BenchRunner(
-        arch_prefix + [str(binary_path)], None, env, build_s=build_s, size_kb=size_kb
-    )
+    temp_dir = _new_bench_temp(build_root, base_env)
+    transferred = False
+    primary: BaseException | None = None
+    try:
+        module_dir = Path(temp_dir.name)
+        binary_path = module_dir / module_name
+        env = base_env.copy()
+        codon_home: str | None = None
+        if "CODON_HOME" not in env:
+            codon_path = Path(codon).resolve()
+            candidate = codon_path.parent.parent
+            if (candidate / "lib" / "codon").exists():
+                codon_home = str(candidate)
+                env["CODON_HOME"] = codon_home
+        else:
+            codon_home = env.get("CODON_HOME")
+        build_start = time.perf_counter()
+        build = _run_cmd(
+            arch_prefix
+            + [codon, "build", "-release", str(script_path), "-o", str(binary_path)],
+            env=env,
+            capture=not tty,
+            tty=tty,
+            limits=limits,
+        )
+        build_s = time.perf_counter() - build_start
+        if build.returncode != 0:
+            return None
+        if codon_home:
+            libomp = Path(codon_home) / "lib" / "codon" / "libomp.dylib"
+            target = module_dir / "libomp.dylib"
+            if libomp.exists() and not target.exists():
+                target = _admit_bench_output(
+                    target, base_env, option="Codon library copy"
+                )
+                shutil.copy2(libomp, target)
+        if not binary_path.is_file():
+            return None
+        size_kb = binary_path.stat().st_size / 1024
+        runner = BenchRunner(
+            arch_prefix + [str(binary_path)],
+            None,
+            env,
+            temp_dir,
+            build_s=build_s,
+            size_kb=size_kb,
+        )
+
+        transferred = True
+        return runner
+    except BaseException as exc:
+        primary = exc
+        raise
+    finally:
+        if not transferred:
+            _cleanup_bench_temp(temp_dir, primary)
 
 
 def _pypy_command(
@@ -1739,17 +1957,17 @@ def bench_results(
     use_molt_build_cache: bool = True,
     artifact_root: Path | None = None,
 ):
-    base_env = _canonical_bench_env(_base_python_env())
-    sentinel_artifact_root = artifact_root.resolve() if artifact_root else None
-    if sentinel_artifact_root is not None:
-        (sentinel_artifact_root / "memory_guard").mkdir(parents=True, exist_ok=True)
-        base_env.setdefault(
-            "MOLT_GUARD_PROFILE_LOG",
-            str(sentinel_artifact_root / "memory_guard" / "commands.jsonl"),
-        )
-        base_env["MOLT_BENCH_DAEMON_CLEANUP_LOG"] = str(
-            sentinel_artifact_root / "memory_guard" / "backend_daemon_cleanup.jsonl"
-        )
+    base_env = _base_python_env()
+    if artifact_root is not None:
+        _admit_bench_guard_artifacts(artifact_root, base_env)
+    base_env = _canonical_bench_env(base_env)
+    bench_tmp_root = _bench_tmp_root(base_env)
+    sentinel_artifact_root = _admit_bench_output(
+        artifact_root if artifact_root is not None else bench_tmp_root,
+        base_env,
+        option="artifact_root",
+    )
+    _admit_bench_guard_artifacts(sentinel_artifact_root, base_env)
     limits = harness_memory_guard.limits_from_env("MOLT_BENCH", base_env)
     runtimes = {}
     if use_cpython:
@@ -1776,8 +1994,6 @@ def bench_results(
             file=sys.stderr,
         )
         use_pyodide = False
-    bench_tmp_root = _bench_tmp_root(base_env)
-    sentinel_artifact_root = sentinel_artifact_root or bench_tmp_root
 
     header = (
         f"{'Benchmark':<30} | {'CPython(s)':<10} | {'PyPy(s)':<10} | "
@@ -1789,8 +2005,8 @@ def bench_results(
     print(header)
     print("-" * len(header))
 
-    codon_root = REPO_ROOT / "bench" / "codon"
-    nuitka_root = REPO_ROOT / "bench" / "nuitka"
+    codon_root = bench_tmp_root / "codon"
+    nuitka_root = bench_tmp_root / "nuitka"
 
     data = {}
     with harness_memory_guard.repo_process_sentinel(
@@ -1901,29 +2117,37 @@ def _bench_one(
             limits=limits,
         )
         if runner is not None:
-            codon_build = runner.build_s
-            codon_size = runner.size_kb
-            codon_batch = collect_samples(
-                lambda: measure_runtime(
-                    runner.cmd,
-                    runner.script,
-                    env=runner.env,
-                    run_args=run_args,
-                    timeout_s=runtime_timeout_s,
-                    label=f"{name} [codon]",
-                    limits=limits,
-                ),
-                samples,
-                warmup=warmup,
-            )
-            codon_ok = codon_batch.ok
-            if codon_ok:
-                codon_samples = codon_batch.times_s
-                codon_time = statistics.mean(codon_samples)
-                # min + σ recorded unconditionally (hyperfine norm), matching
-                # the primary-runtime lane so best-case regressions are visible
-                # without --super-run.
-                stats["codon"] = summarize_samples(codon_samples)
+            primary = None
+            try:
+                codon_build = runner.build_s
+                codon_size = runner.size_kb
+                codon_batch = collect_samples(
+                    lambda: measure_runtime(
+                        runner.cmd,
+                        runner.script,
+                        env=runner.env,
+                        run_args=run_args,
+                        timeout_s=runtime_timeout_s,
+                        label=f"{name} [codon]",
+                        limits=limits,
+                    ),
+                    samples,
+                    warmup=warmup,
+                )
+                codon_ok = codon_batch.ok
+                if codon_ok:
+                    codon_samples = codon_batch.times_s
+                    codon_time = statistics.mean(codon_samples)
+                    # min + σ recorded unconditionally (hyperfine norm), matching
+                    # the primary-runtime lane so best-case regressions are visible
+                    # without --super-run.
+                    stats["codon"] = summarize_samples(codon_samples)
+            except BaseException as exc:
+                primary = exc
+                raise
+            finally:
+                assert runner.temp_dir is not None
+                _cleanup_bench_temp(runner.temp_dir, primary)
         else:
             print(f"Skipping Codon for {name}.", file=sys.stderr)
 
@@ -1942,26 +2166,34 @@ def _bench_one(
             limits=limits,
         )
         if runner is not None:
-            nuitka_build = runner.build_s
-            nuitka_size = runner.size_kb
-            nuitka_batch = collect_samples(
-                lambda: measure_runtime(
-                    runner.cmd,
-                    runner.script,
-                    env=runner.env,
-                    run_args=run_args,
-                    timeout_s=runtime_timeout_s,
-                    label=f"{name} [nuitka]",
-                    limits=limits,
-                ),
-                samples,
-                warmup=warmup,
-            )
-            nuitka_ok = nuitka_batch.ok
-            if nuitka_ok:
-                nuitka_samples = nuitka_batch.times_s
-                nuitka_time = statistics.mean(nuitka_samples)
-                stats["nuitka"] = summarize_samples(nuitka_samples)
+            primary = None
+            try:
+                nuitka_build = runner.build_s
+                nuitka_size = runner.size_kb
+                nuitka_batch = collect_samples(
+                    lambda: measure_runtime(
+                        runner.cmd,
+                        runner.script,
+                        env=runner.env,
+                        run_args=run_args,
+                        timeout_s=runtime_timeout_s,
+                        label=f"{name} [nuitka]",
+                        limits=limits,
+                    ),
+                    samples,
+                    warmup=warmup,
+                )
+                nuitka_ok = nuitka_batch.ok
+                if nuitka_ok:
+                    nuitka_samples = nuitka_batch.times_s
+                    nuitka_time = statistics.mean(nuitka_samples)
+                    stats["nuitka"] = summarize_samples(nuitka_samples)
+            except BaseException as exc:
+                primary = exc
+                raise
+            finally:
+                assert runner.temp_dir is not None
+                _cleanup_bench_temp(runner.temp_dir, primary)
         else:
             print(f"Skipping Nuitka for {name}.", file=sys.stderr)
 
@@ -2014,6 +2246,7 @@ def _bench_one(
     )
     if isinstance(molt_runner_result, MoltBinary):
         molt_runner = molt_runner_result
+        primary = None
         try:
             molt_batch = collect_samples(
                 lambda: measure_molt_run(
@@ -2035,8 +2268,11 @@ def _bench_one(
                 stats["molt"] = summarize_samples(molt_samples)
             molt_build = molt_runner.build_s
             molt_size = molt_runner.size_kb
+        except BaseException as exc:
+            primary = exc
+            raise
         finally:
-            molt_runner.temp_dir.cleanup()
+            _cleanup_bench_temp(molt_runner.temp_dir, primary)
     else:
         molt_failure = molt_runner_result
         print(f"Molt build/run failed for {name}.", file=sys.stderr)
@@ -2238,7 +2474,12 @@ def _molt_failure_detail_records(
 def main():
     _enable_line_buffering()
     parser = argparse.ArgumentParser(description="Run Molt benchmark suite.")
-    parser.add_argument("--json-out", type=Path, default=None)
+    parser.add_argument(
+        "--json-out",
+        type=Path,
+        default=None,
+        help="Report JSON (default: unique run under DX artifact root/bench/results)",
+    )
     parser.add_argument("--summary-out", type=Path, default=None)
     parser.add_argument("--baseline", type=Path, default=None)
     parser.add_argument("--update-baseline", action="store_true")
@@ -2366,15 +2607,37 @@ def main():
     use_pyodide = not args.no_pyodide
     use_tty = args.tty or os.environ.get("MOLT_TTY") == "1"
 
+    initial_cleanup_env = _canonical_bench_env(_base_python_env(), create_dirs=False)
     json_out = args.json_out
     if json_out is None:
         timestamp = dt.datetime.now(dt.timezone.utc).strftime("%Y%m%d_%H%M%S")
-        json_out = BENCH_RESULTS_DIR / f"bench_{timestamp}.json"
-    json_out = json_out.resolve()
+        # Reports are execution artifacts. Keep the checked baseline's source
+        # location separate, and give sidecars a unique directory for this run.
+        run_dir = (
+            dx_artifact_root(REPO_ROOT, initial_cleanup_env)
+            / "bench"
+            / "results"
+            / f"{timestamp}-{uuid.uuid4().hex}"
+        )
+        json_out = run_dir / "bench.json"
+    json_out = _admit_bench_output(json_out, initial_cleanup_env, option="--json-out")
     summary_out = _summary_path_for_json(json_out, args.summary_out)
-    summary_out = summary_out.resolve()
+    summary_out = _admit_bench_output(
+        summary_out, initial_cleanup_env, option="--summary-out"
+    )
+    baseline_path = args.baseline
+    if args.update_baseline:
+        baseline_path = _admit_bench_output(
+            baseline_path if baseline_path is not None else DEFAULT_BASELINE_PATH,
+            initial_cleanup_env,
+            option="--update-baseline",
+        )
     artifact_root = json_out.parent
-    failure_details_path = _failure_details_path_for_json(json_out).resolve()
+    failure_details_path = _admit_bench_output(
+        _failure_details_path_for_json(json_out),
+        initial_cleanup_env,
+        option="molt_failure_details_jsonl",
+    )
     custody_artifacts = _bench_custody_artifacts(
         json_out=json_out,
         summary_out=summary_out,
@@ -2382,14 +2645,9 @@ def main():
         failure_details_path=failure_details_path,
     )
 
-    initial_cleanup_env = _canonical_bench_env(_base_python_env())
-    initial_cleanup_env.setdefault(
-        "MOLT_GUARD_PROFILE_LOG",
-        custody_artifacts["harness_command_profile_jsonl"],
+    custody_artifacts.update(
+        _admit_bench_guard_artifacts(artifact_root, initial_cleanup_env)
     )
-    initial_cleanup_env["MOLT_BENCH_DAEMON_CLEANUP_LOG"] = custody_artifacts[
-        "backend_daemon_cleanup_jsonl"
-    ]
     initial_cleanup_env["MOLT_BENCH_DAEMON_CLEANUP_REASON"] = "bench_start"
     _prune_backend_daemons(initial_cleanup_env)
 
@@ -2468,10 +2726,8 @@ def main():
         )
         raise SystemExit(1)
 
-    baseline_path = args.baseline
     if args.update_baseline:
-        if baseline_path is None:
-            baseline_path = DEFAULT_BASELINE_PATH
+        assert baseline_path is not None
         write_json(baseline_path, payload)
         print(f"Baseline updated: {baseline_path}")
         return

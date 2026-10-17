@@ -4,8 +4,8 @@
 # files; when they change, run `python3 tools/perf_methodology.py --bump` if the
 # change can move a number or a verdict, else `--relock`.
 schema = "molt-perf-methodology-v1"
-version = 1
-content_sha256 = "983d3e6fd27a9b39361a8abc5d2c7743088245b785df1c52b91026d5bb4bae30"
+version = 2
+content_sha256 = "b08cc9be2c2afcaf713500c6b0744f9caa5ed6de9a066cb5ec5842d12d7fdd09"
 
 [[methodology]]
 path = "tools/safe_run.py"
@@ -17,7 +17,7 @@ role = "runs the cold and warm samples for one cell"
 
 [[methodology]]
 path = "tools/perf_scoreboard_model.py"
-role = "parses timings and finalizes each cell's verdict"
+role = "finalizes typed measurements into each cell verdict"
 
 [[methodology]]
 path = "tools/perf_scoreboard.py"
@@ -54,9 +54,13 @@ role = "cold-start budgets per benchmark"
 # Modules the methodology imports that cannot move a measured number or a
 # verdict. tests/tools/test_perf_methodology.py requires every repo-local import
 # of a methodology module to be listed above or here.
-[[mechanics]]
+[[methodology]]
 path = "tools/bench.py"
-reason = "builds the subject; each measured build records its compiler, runtime and selected profiles"
+role = "selects the measured deployment, runner and invocation environment"
+
+[[methodology]]
+path = "wasm/run_wasm.js"
+role = "executes the declared WASM deployment and routes exact guest stderr"
 
 [[mechanics]]
 path = "tools/bench_suites.py"
@@ -129,3 +133,47 @@ reason = "provenance identity of the oracle interpreter"
 [[mechanics]]
 path = "src/molt/target_python.py"
 reason = "selects the CPython oracle, recorded as host.cpython_baseline (host_class)"
+
+[[mechanics]]
+path = "src/molt/__init__.py"
+reason = "package import surface; benchmark invocation does not use its exported compile helpers"
+
+[[mechanics]]
+path = "src/molt/backend_daemon_custody.py"
+reason = "retires build workers before sampling; it does not produce sample metrics"
+
+[[mechanics]]
+path = "src/molt/harness_conformance.py"
+reason = "build and oracle environment custody; selected source and oracle have separate recorded identities"
+
+[[mechanics]]
+path = "src/molt/node_runtime.py"
+reason = "admits the runner executable; it does not execute or time benchmark samples"
+
+[[mechanics]]
+path = "src/molt/path_custody.py"
+reason = "rejects escaped scratch paths before build or sampling"
+
+[[mechanics]]
+path = "src/molt/temporary_artifacts.py"
+reason = "owns temporary artifact lifetime; cleanup is outside the timed child interval"
+
+[[mechanics]]
+path = "src/molt/wasm_artifact.py"
+reason = "reads declared deployment paths; it never selects by directory scan or times execution"
+
+[[mechanics]]
+path = "src/molt/file_publication.py"
+reason = "classifies capture symlink and reparse metadata; substitution refuses before accepting a sample"
+
+[[mechanics]]
+path = "tools/batch_compile_client.py"
+reason = "build transport outside sample timing; selected compiler and runtime identities are recorded"
+
+[[mechanics]]
+path = "tools/bench_metadata.py"
+reason = "classifies external benchmark reference requirements outside sample timing"
+
+[[mechanics]]
+path = "tools/bench_reporting.py"
+reason = "formats build diagnostics and artifact destinations; never supplies sample metrics"

@@ -11,8 +11,120 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "tools"))
 from tools import perf_scoreboard as scoreboard
 from tools import perf_scoreboard_measure as measure
 from tools.perf_scoreboard_build_profiles import profile_selection
-from tools.perf_scoreboard_model import NATIVE_CRANELIFT, NATIVE_LLVM, BACKENDS_BY_NAME
+from tools.perf_scoreboard_model import (
+    NATIVE_CRANELIFT,
+    NATIVE_LLVM,
+    BACKENDS_BY_NAME,
+    WASM,
+)
 from tests.release_lane_fixtures import EXPECTED_LANES
+
+
+@pytest.fixture
+def source_only_perf_checkout(monkeypatch, tmp_path):
+    from molt import dx
+    from tests.test_dx_run_context import (
+        _clear_run_context_env,
+        _github_actions_custody_env,
+    )
+
+    source = tmp_path / "runner-work" / "molt" / "molt"
+    source.mkdir(parents=True)
+    runner_temp = tmp_path / "runner-temp"
+    sha = "b" * 40
+    facts = _github_actions_custody_env(source, runner_temp, sha=sha)
+    _clear_run_context_env(monkeypatch)
+    monkeypatch.delenv("MOLT_BENCH_TMP_ROOT", raising=False)
+    for key, value in facts.items():
+        monkeypatch.setenv(key, value)
+    monkeypatch.setattr(dx, "git_checkout_head", lambda _root: sha)
+    monkeypatch.setattr(measure, "REPO_ROOT", source)
+    monkeypatch.setattr(measure.bench, "REPO_ROOT", source)
+    # Preserve the production default's relationship to its source checkout.
+    # Moving this to artifacts in the fixture would hide constructor writes.
+    monkeypatch.setattr(measure.bench, "BENCH_RESULTS_DIR", source / "bench/results")
+    return source, runner_temp / "molt-custody"
+
+
+@pytest.mark.parametrize("spec", [NATIVE_CRANELIFT, NATIVE_LLVM, WASM])
+@pytest.mark.parametrize("explicit_artifacts", [False, True])
+def test_perfscore_uses_admitted_artifacts_for_explicit_lane(
+    monkeypatch, source_only_perf_checkout, spec, explicit_artifacts
+):
+    from molt import dx
+
+    source, custody = source_only_perf_checkout
+    artifact_root = custody / "selected-artifacts" if explicit_artifacts else custody
+    if explicit_artifacts:
+        monkeypatch.setenv("MOLT_EXT_ROOT", str(artifact_root))
+    # The outer guard's generated session and shared targets are not this lane.
+    monkeypatch.setenv("MOLT_SESSION_ID", "guard-123")
+    monkeypatch.setenv("MOLT_SESSION_ID_GENERATED", "1")
+    old_target = custody / "outer-target"
+    old_diff_target = custody / "outer-diff-target"
+    monkeypatch.setenv("CARGO_TARGET_DIR", str(old_target))
+    monkeypatch.setenv("MOLT_DIFF_CARGO_TARGET_DIR", str(old_diff_target))
+
+    env = measure._perfscore_build_env(spec, "release-output")
+
+    expected_target = (
+        artifact_root
+        / "target/checkouts"
+        / dx.checkout_component(source)
+        / "sessions/perfscore"
+    )
+    assert env["MOLT_EXT_ROOT"] == str(artifact_root)
+    assert env["CARGO_TARGET_DIR"] == str(expected_target)
+    assert env["MOLT_DIFF_CARGO_TARGET_DIR"] == str(expected_target)
+    assert expected_target.is_dir()
+    assert not old_target.exists() and not old_diff_target.exists()
+    assert env["MOLT_SESSION_ID"] == "perfscore"
+    assert "MOLT_SESSION_ID_GENERATED" not in env
+    assert env["MOLT_RELEASE_CARGO_PROFILE"] == "release-output"
+    assert env["MOLT_WASM_CARGO_PROFILE"] == "release-output"
+    assert env["MOLT_RELEASE_BACKEND_CARGO_PROFILE"] == "release"
+    for key in dx.CANONICAL_ROOT_ENV_KEYS:
+        if value := env.get(key):
+            assert not Path(value).is_relative_to(source), key
+    assert not (source / "target").exists()
+    assert not (source / "bench/results").exists()
+    # Constructing the lane must not replace the parent process's environment.
+    assert os.environ["MOLT_SESSION_ID"] == "guard-123"
+    assert os.environ["MOLT_SESSION_ID_GENERATED"] == "1"
+    assert os.environ["CARGO_TARGET_DIR"] == str(old_target)
+
+
+def test_perfscore_preserves_real_source_only_custody_refusal(
+    monkeypatch, source_only_perf_checkout
+):
+    from molt.dx import DxConfigError
+
+    source, _custody = source_only_perf_checkout
+    monkeypatch.setenv("MOLT_EXT_ROOT", str(source / "forbidden-artifacts"))
+    with pytest.raises(DxConfigError, match="checkout cannot own MOLT_EXT_ROOT"):
+        measure._perfscore_build_env(NATIVE_CRANELIFT, "release-fast")
+    assert not (source / "forbidden-artifacts").exists()
+
+
+@pytest.mark.parametrize("generated", [False, True])
+def test_cpython_perfscore_session_is_explicit_without_build_reselection(
+    monkeypatch, tmp_path, generated
+):
+    target = str(tmp_path / "outer-target")
+    monkeypatch.setenv("MOLT_SESSION_ID", "guard-123")
+    monkeypatch.setenv("CARGO_TARGET_DIR", target)
+    if generated:
+        monkeypatch.setenv("MOLT_SESSION_ID_GENERATED", "1")
+    else:
+        monkeypatch.delenv("MOLT_SESSION_ID_GENERATED", raising=False)
+
+    env = measure._cpython_run_env()
+
+    assert env["MOLT_SESSION_ID"] == "perfscore"
+    assert "MOLT_SESSION_ID_GENERATED" not in env
+    assert env["CARGO_TARGET_DIR"] == target
+    assert not Path(target).exists()
+    assert os.environ["MOLT_SESSION_ID"] == "guard-123"
 
 
 @pytest.mark.parametrize(
@@ -465,7 +577,7 @@ def test_profiling_rebuild_preserves_minor_and_profile_over_conflicting_defaults
             default_status="build_failed",
         )
 
-    monkeypatch.setattr(profiling, "_profiling_tmp_root", lambda: tmp_path)
+    monkeypatch.setattr(profiling, "_profiling_tmp_root", lambda env: tmp_path)
     monkeypatch.setattr(bench, "prepare_molt_binary", prepare)
     monkeypatch.setenv("MOLT_RELEASE_CARGO_PROFILE", "ambient-wrong-profile")
     script = Path(__file__).resolve().parents[2] / "tests/benchmarks/bench_fib.py"
@@ -579,3 +691,926 @@ def test_lane_backend_is_a_build_flag_for_batch_and_cli_builds(
 
     assert "MOLT_BACKEND" not in env
     assert params.get("backend") == expected
+
+
+@pytest.mark.parametrize(
+    "outcome",
+    [
+        "success",
+        "build-failure",
+        "invalid-json",
+        "missing-artifact",
+        "io-error",
+        "cancel",
+    ],
+)
+def test_wasm_build_uses_admitted_scratch_and_closes_failed_owners(
+    monkeypatch, source_only_perf_checkout, outcome
+):
+    import json
+    import subprocess
+
+    source, custody = source_only_perf_checkout
+    env = measure._perfscore_build_env(WASM, "wasm-release")
+    outputs = []
+    original = (
+        KeyboardInterrupt("independent cancellation")
+        if outcome == "cancel"
+        else OSError("independent compiler I/O")
+    )
+
+    def compiler(command, **kwargs):
+        directory = Path(command[command.index("--out-dir") + 1])
+        outputs.append(directory)
+        assert directory.parent == Path(env["MOLT_BENCH_TMP_ROOT"])
+        assert directory.is_relative_to(custody)
+        assert not directory.is_relative_to(source)
+        assert directory.is_dir()
+        assert command[command.index("--python-version") + 1] == "3.13"
+        assert command[command.index("--target") + 1] == "wasm"
+        if outcome in {"io-error", "cancel"}:
+            raise original
+        assert "--linked" in command and "--require-linked" in command
+        assert "--trusted" not in command
+        wasm = directory / "linked.wasm"
+        manifest = directory / "manifest.json"
+        if outcome == "success":
+            wasm.write_bytes(b"independent artifact")
+            manifest.write_text(
+                json.dumps(
+                    {"mode": "linked", "modules": {"linked": {"path": wasm.name}}}
+                ),
+                encoding="utf-8",
+            )
+        stdout = (
+            "not json"
+            if outcome == "invalid-json"
+            else json.dumps(
+                {
+                    "data": {
+                        "artifacts": {
+                            "linked_wasm": str(wasm),
+                            "manifest": str(manifest),
+                        }
+                    }
+                }
+            )
+        )
+        return subprocess.CompletedProcess(
+            command, 1 if outcome == "build-failure" else 0, stdout, "fixture failure"
+        )
+
+    monkeypatch.setattr(
+        measure.bench.harness_memory_guard, "guarded_completed_process", compiler
+    )
+    monkeypatch.setattr(measure.bench, "_prune_backend_daemons", lambda env: None)
+    if outcome in {"cancel", "io-error"}:
+        with pytest.raises(type(original)) as caught:
+            measure.bench.prepare_molt_binary(
+                str(source / "ordinary.py"),
+                env=env,
+                build_profile="release",
+                build_target="wasm",
+                extra_args=["--python-version", "3.13"],
+            )
+        assert caught.value is original
+    else:
+        result = measure.bench.prepare_molt_binary(
+            str(source / "ordinary.py"),
+            env=env,
+            build_profile="release",
+            build_target="wasm",
+            extra_args=["--python-version", "3.13"],
+        )
+        if outcome == "success":
+            assert isinstance(result, measure.bench.MoltBinary)
+            assert Path(result.temp_dir.name) == outputs[0]
+            assert result.path.is_file()
+            measure._release_binary(result, None)
+        else:
+            assert isinstance(result, measure.bench.MoltFailure)
+    assert len(outputs) == 1 and not outputs[0].exists()
+    assert not (source / "tmp").exists()
+
+
+def test_wasm_build_refuses_source_scratch_before_guard(
+    monkeypatch, source_only_perf_checkout
+):
+    from molt.dx import DxConfigError
+
+    source, _custody = source_only_perf_checkout
+    env = measure._perfscore_build_env(WASM, "wasm-release")
+    env["MOLT_BENCH_TMP_ROOT"] = str(source / "forbidden-wasm")
+    monkeypatch.setattr(
+        measure.bench.harness_memory_guard,
+        "guarded_completed_process",
+        lambda *a, **kw: pytest.fail("forbidden scratch reached compiler"),
+    )
+    with pytest.raises(DxConfigError, match="MOLT_BENCH_TMP_ROOT"):
+        measure.bench.prepare_molt_binary(
+            str(source / "ordinary.py"),
+            env=env,
+            build_profile="release",
+            build_target="wasm",
+            extra_args=["--python-version", "3.13"],
+        )
+    assert not (source / "forbidden-wasm").exists()
+
+
+@pytest.mark.parametrize(
+    "outcome",
+    [
+        "success",
+        "build-failure",
+        "timeout",
+        "missing-binary",
+        "io-error",
+        "cancel",
+        "sample-failure",
+        "sample-exception",
+    ],
+)
+def test_scoreboard_codon_owns_scratch_for_one_measurement(
+    monkeypatch, source_only_perf_checkout, tmp_path, outcome
+):
+    from types import SimpleNamespace
+
+    source, custody = source_only_perf_checkout
+    selected = []
+    original = (
+        KeyboardInterrupt("independent build cancellation")
+        if outcome == "cancel"
+        else RuntimeError("independent sampling error")
+    )
+
+    def build(command, **kwargs):
+        output = Path(command[command.index("-o") + 1])
+        selected.append(output.parent)
+        assert output.is_relative_to(custody)
+        assert output.parent.is_dir()
+        if outcome == "io-error":
+            raise OSError("independent build I/O")
+        if outcome == "cancel":
+            raise original
+        if outcome != "missing-binary":
+            output.write_bytes(b"independent Codon artifact")
+        return SimpleNamespace(
+            returncode=1 if outcome == "build-failure" else 0,
+            timed_out=outcome == "timeout",
+            stdout="",
+            stderr="fixture failed",
+        )
+
+    def sample(binary, *args, **kwargs):
+        assert Path(binary).parent == selected[-1]
+        assert Path(binary).is_file()
+        if outcome == "sample-exception":
+            raise original
+        return None if outcome == "sample-failure" else 0.5
+
+    monkeypatch.setattr(
+        scoreboard.harness_memory_guard, "guarded_completed_process", build
+    )
+    monkeypatch.setattr(scoreboard, "_measure_codon_warm", sample)
+    runner = scoreboard.CodonRunner(str(tmp_path / "bin/codon"))
+    cell = scoreboard.Cell(
+        benchmark="tests/benchmarks/bench_fib.py",
+        target="native",
+        backend="native",
+        profile="release-fast",
+    )
+
+    def measure_once():
+        runner.measure_into(
+            cell,
+            script_path=scoreboard.REPO_ROOT / "tests/benchmarks/bench_fib.py",
+            run_args=[],
+            samples=1,
+            warmup=0,
+            rss_mb=64,
+            timeout_s=1.0,
+            log_lines=[],
+        )
+
+    if outcome in {"cancel", "sample-exception"}:
+        with pytest.raises(type(original)) as caught:
+            measure_once()
+        assert caught.value is original
+    else:
+        measure_once()
+    assert len(selected) == 1 and not selected[0].exists()
+    assert runner._tmp_dir is None
+    runner.close()
+    assert not (source / "tmp").exists()
+
+
+@pytest.mark.parametrize("caller", ["measure", "profile"])
+@pytest.mark.parametrize("original_kind", ["classified", "unexpected", "cleanup-only"])
+def test_actual_build_cleanup_failure_escapes_measurement_and_profile_callers(
+    monkeypatch, source_only_perf_checkout, tmp_path, caller, original_kind
+):
+    import subprocess
+    from tools import perf_scoreboard_profile as profiling
+    from molt import temporary_artifacts
+
+    source, _custody = source_only_perf_checkout
+    script = source / "ordinary.py"
+    script.write_text(
+        'def main():\n    print(1)\n\nif __name__ == "__main__":\n    main()\n',
+        encoding="utf-8",
+    )
+    original = (
+        RuntimeError("independent classified build error")
+        if original_kind == "classified"
+        else OSError("independent compiler I/O")
+    )
+    outputs = []
+
+    def compiler(command, **kwargs):
+        outputs.append(Path(command[command.index("--out-dir") + 1]))
+        assert outputs[0].is_dir()
+        if original_kind != "cleanup-only":
+            raise original
+        return subprocess.CompletedProcess(command, 1, "", "ordinary failed build")
+
+    monkeypatch.setattr(measure.bench, "_prune_backend_daemons", lambda env: None)
+    monkeypatch.setattr(
+        measure.bench.harness_memory_guard, "guarded_completed_process", compiler
+    )
+    monkeypatch.setattr(profiling, "_profiling_tmp_root", lambda env: tmp_path)
+    with monkeypatch.context() as scoped:
+        scoped.setattr(
+            temporary_artifacts,
+            "delete_path",
+            lambda path: (False, "independent deletion refusal"),
+        )
+        with pytest.raises(
+            OSError if original_kind == "cleanup-only" else type(original)
+        ) as caught:
+            if caller == "profile":
+                profiling.build_profiling_binary(
+                    script,
+                    spec=NATIVE_CRANELIFT,
+                    profile="release-fast",
+                    target_python_version="3.12",
+                    inner_loops=2,
+                    log_lines=[],
+                )
+            else:
+                measure.measure_cell(
+                    script_path=script,
+                    spec=NATIVE_CRANELIFT,
+                    profile="release-fast",
+                    samples=1,
+                    warmup=0,
+                    rss_mb=64,
+                    timeout_s=1.0,
+                    batch_server=None,
+                    cpython_cmd=("fixture-cpython",),
+                    target_python_version="3.12",
+                    log_dir=source / "logs",
+                )
+        if original_kind != "cleanup-only":
+            assert caught.value is original
+        owners = caught.value.benchmark_temporary_directories
+        assert len(owners) == (2 if caller == "profile" else 1)
+        assert all(
+            type(owner) is temporary_artifacts.OwnedTemporaryDirectory
+            for owner in owners
+        )
+        assert Path(owners[0].name) == outputs[0]
+        assert outputs[0].is_dir()
+        assert not (source / "logs").exists()
+    for owner in owners:
+        owner.cleanup()
+    assert not outputs[0].exists()
+
+
+def test_codon_handled_build_io_survives_cleanup_failure(
+    monkeypatch, source_only_perf_checkout, tmp_path
+):
+    from molt import temporary_artifacts
+
+    original = OSError("independent Codon build I/O")
+    runner = scoreboard.CodonRunner(str(tmp_path / "bin/codon"))
+    output = []
+
+    def compiler(command, **kwargs):
+        output.append(Path(command[command.index("-o") + 1]))
+        raise original
+
+    monkeypatch.setattr(
+        scoreboard.harness_memory_guard, "guarded_completed_process", compiler
+    )
+    cell = scoreboard.Cell(
+        benchmark="tests/benchmarks/bench_fib.py",
+        target="native",
+        backend="native",
+        profile="release-fast",
+    )
+    with monkeypatch.context() as scoped:
+        scoped.setattr(
+            temporary_artifacts,
+            "delete_path",
+            lambda path: (False, "independent deletion refusal"),
+        )
+        with pytest.raises(OSError) as caught:
+            runner.measure_into(
+                cell,
+                script_path=scoreboard.REPO_ROOT / "tests/benchmarks/bench_fib.py",
+                run_args=[],
+                samples=1,
+                warmup=0,
+                rss_mb=64,
+                timeout_s=1.0,
+                log_lines=[],
+            )
+        assert caught.value is original
+        assert original.benchmark_temporary_directories == (runner._tmp_dir,)
+        assert type(runner._tmp_dir) is temporary_artifacts.OwnedTemporaryDirectory
+        assert Path(runner._tmp_dir.name) == output[0].parent
+        assert any(
+            "independent deletion refusal" in note for note in original.__notes__
+        )
+    runner.close()
+    assert runner._tmp_dir is None
+    assert not output[0].parent.exists()
+
+
+def test_nested_codon_and_native_cleanup_retain_both_exact_owners(
+    monkeypatch, source_only_perf_checkout, tmp_path
+):
+    import json
+    import subprocess
+    from molt import temporary_artifacts
+
+    source, custody = source_only_perf_checkout
+    original = OSError("independent nested Codon build I/O")
+    codon = scoreboard.CodonRunner(str(tmp_path / "bin/codon"))
+    outputs = {}
+
+    def compiler(command, **kwargs):
+        if "--out-dir" in command:
+            directory = Path(command[command.index("--out-dir") + 1])
+            outputs["native"] = directory
+            artifact = directory / "ordinary"
+            artifact.write_bytes(b"independent native artifact")
+            return subprocess.CompletedProcess(
+                command,
+                0,
+                json.dumps(
+                    {
+                        "data": {
+                            "output": str(artifact),
+                            "observed_toolchain": {
+                                "selected_profiles": {
+                                    "backend": "native",
+                                    "guest_profile": "release",
+                                    "compiler_profile": "release",
+                                    "runtime_profile": "release-fast",
+                                    "target": "native",
+                                }
+                            },
+                        },
+                    }
+                ),
+                "",
+            )
+        outputs["codon"] = Path(command[command.index("-o") + 1]).parent
+        raise original
+
+    monkeypatch.setattr(measure.bench, "_prune_backend_daemons", lambda env: None)
+    monkeypatch.setattr(
+        measure.bench.harness_memory_guard, "guarded_completed_process", compiler
+    )
+    monkeypatch.setattr(
+        measure,
+        "_run_measured_command",
+        lambda *a, **kw: measure.RunOutcome(
+            True, 0.1, 1.0, "ok", 0, stdout="same\n", stderr=""
+        ),
+    )
+    with monkeypatch.context() as scoped:
+        scoped.setattr(
+            temporary_artifacts,
+            "delete_path",
+            lambda path: (False, "independent nested deletion refusal"),
+        )
+        with pytest.raises(OSError) as caught:
+            measure.measure_cell(
+                script_path=scoreboard.REPO_ROOT / "tests/benchmarks/bench_fib.py",
+                spec=NATIVE_CRANELIFT,
+                profile="release-fast",
+                samples=1,
+                warmup=0,
+                rss_mb=64,
+                timeout_s=1.0,
+                batch_server=None,
+                cpython_cmd=("fixture-cpython",),
+                target_python_version="3.12",
+                log_dir=source / "logs",
+                codon_runner=codon,
+            )
+        assert caught.value is original
+        owners = original.benchmark_temporary_directories
+        assert type(owners) is tuple and len(owners) == 2
+        assert owners[0] is codon._tmp_dir
+        assert owners[0] is not owners[1]
+        assert [Path(owner.name) for owner in owners] == [
+            outputs["codon"],
+            outputs["native"],
+        ]
+        assert all(
+            type(owner) is temporary_artifacts.OwnedTemporaryDirectory
+            for owner in owners
+        )
+        assert all(
+            Path(owner.name).is_dir() and Path(owner.name).is_relative_to(custody)
+            for owner in owners
+        )
+        assert (
+            len(
+                [
+                    note
+                    for note in original.__notes__
+                    if "nested deletion refusal" in note
+                ]
+            )
+            == 2
+        )
+        # A repeated failed retirement preserves the same exact pair; no owner
+        # may be duplicated or replace the other allocation in diagnostics.
+        with pytest.raises(OSError) as repeated:
+            measure.bench._cleanup_bench_temp(owners[0], original)
+        assert repeated.value is original
+        assert original.benchmark_temporary_directories is owners
+    codon.close()
+    owners[1].cleanup()
+    assert all(not Path(owner.name).exists() for owner in owners)
+    assert not (source / "logs").exists()
+
+
+@pytest.mark.parametrize("cleanup_failure", [False, True])
+def test_profiling_build_log_failure_closes_or_retains_untransferred_binary(
+    monkeypatch, source_only_perf_checkout, tmp_path, cleanup_failure
+):
+    from tools import perf_scoreboard_profile as profiling
+    from molt import temporary_artifacts
+
+    owner = temporary_artifacts.OwnedTemporaryDirectory(dir=tmp_path)
+    artifact = Path(owner.name) / "program"
+    artifact.write_bytes(b"independent profiling artifact")
+    binary = measure.bench.MoltBinary(artifact, owner, 0.1, 1.0)
+    original = OSError("independent profiling build log failure")
+
+    class FailingLog(list):
+        def append(self, line):
+            assert "profiling binary built" in line
+            raise original
+
+    monkeypatch.setattr(profiling, "_profiling_tmp_root", lambda env: tmp_path)
+    monkeypatch.setattr(measure.bench, "prepare_molt_binary", lambda *a, **kw: binary)
+    with monkeypatch.context() as scoped:
+        if cleanup_failure:
+            scoped.setattr(
+                temporary_artifacts,
+                "delete_path",
+                lambda path: (False, "independent profiling deletion refusal"),
+            )
+        with pytest.raises(OSError) as caught:
+            profiling.build_profiling_binary(
+                scoreboard.REPO_ROOT / "tests/benchmarks/bench_fib.py",
+                spec=NATIVE_CRANELIFT,
+                profile="release-fast",
+                target_python_version="3.12",
+                inner_loops=2,
+                log_lines=FailingLog(),
+            )
+        assert caught.value is original
+        if cleanup_failure:
+            assert original.benchmark_temporary_directories[-1] is owner
+            assert len(original.benchmark_temporary_directories) == 2
+            assert artifact.is_file()
+    if cleanup_failure:
+        for retained in original.benchmark_temporary_directories:
+            retained.cleanup()
+    assert not Path(owner.name).exists()
+
+
+@pytest.mark.parametrize(
+    ("capture_outcome", "cleanup_outcome", "nested_owner"),
+    [
+        ("success", "removed", False),
+        ("io", "removed", False),
+        ("cancel", "removed", False),
+        ("io", "replaced", False),
+        ("cancel", "replaced", False),
+        ("success", "replaced", False),
+        ("io", "refused", False),
+        ("io", "refused", True),
+    ],
+)
+def test_hot_controller_owns_successful_binary_through_capture_and_cleanup(
+    monkeypatch,
+    source_only_perf_checkout,
+    tmp_path,
+    capture_outcome,
+    cleanup_outcome,
+    nested_owner,
+):
+    from tools import perf_scoreboard_profile as profiling
+    from molt import temporary_artifacts
+
+    source, custody = source_only_perf_checkout
+    owner = temporary_artifacts.OwnedTemporaryDirectory(dir=tmp_path)
+    allocation = Path(owner.name)
+    artifact = allocation / "program"
+    artifact.write_bytes(b"independent successful profiling build")
+    binary = measure.bench.MoltBinary(artifact, owner, 0.1, 1.0)
+    original = (
+        KeyboardInterrupt("independent capture cancellation")
+        if capture_outcome == "cancel"
+        else OSError("independent capture I/O failure")
+    )
+    unrelated = RuntimeError("unrelated active caller exception")
+    saved_allocation = tmp_path / "saved-original-allocation"
+    prior_owner = (
+        temporary_artifacts.OwnedTemporaryDirectory(dir=tmp_path)
+        if nested_owner
+        else None
+    )
+    captures = []
+    profile_result = {"refused": True, "refused_reason": "ordinary finite capture"}
+
+    def build(script, **kwargs):
+        assert artifact.read_bytes() == b"independent successful profiling build"
+        return binary, {"available": True}
+
+    def capture(path, **kwargs):
+        captures.append(path)
+        assert path == artifact
+        assert Path(kwargs["env"]["MOLT_EXT_ROOT"]) == custody
+        if cleanup_outcome == "replaced":
+            allocation.rename(saved_allocation)
+            allocation.mkdir()
+            (allocation / "foreign-sentinel").write_bytes(b"must survive")
+        if capture_outcome != "success":
+            raise original
+        return profile_result
+
+    monkeypatch.setattr(profiling, "build_profiling_binary", build)
+    monkeypatch.setattr(profiling, "capture_hot_only_profile", capture)
+    script = scoreboard.REPO_ROOT / "tests/benchmarks/bench_fib.py"
+
+    def run():
+        return profiling.run_hot_only_profiles(
+            scripts=[script],
+            spec=NATIVE_CRANELIFT,
+            profile="release-fast",
+            target_python_version="3.12",
+            inner_loops=2,
+            rss_mb=64,
+        )
+
+    try:
+        with monkeypatch.context() as scoped:
+            if cleanup_outcome == "refused":
+                scoped.setattr(
+                    temporary_artifacts,
+                    "delete_path",
+                    lambda path: (False, "independent deletion refusal"),
+                )
+            if prior_owner is not None:
+                with pytest.raises(OSError) as prior_failure:
+                    measure.bench._cleanup_bench_temp(prior_owner, original)
+                assert prior_failure.value is original
+                assert original.benchmark_temporary_directories == (prior_owner,)
+            # A successful controller must not mistake an exception in its
+            # caller's active except block for its own operation failure.
+            try:
+                raise unrelated
+            except RuntimeError:
+                if capture_outcome == "success" and cleanup_outcome == "removed":
+                    cells = run()
+                    assert cells[0]["profile_result"] is profile_result
+                else:
+                    expected_error = (
+                        ValueError if capture_outcome == "success" else type(original)
+                    )
+                    with pytest.raises(expected_error) as caught:
+                        run()
+                    assert caught.value is not unrelated
+                    if capture_outcome != "success":
+                        assert caught.value is original
+                    if cleanup_outcome != "removed":
+                        expected_owners = (
+                            (prior_owner, owner)
+                            if prior_owner is not None
+                            else (owner,)
+                        )
+                        retained = caught.value.benchmark_temporary_directories
+                        assert type(retained) is tuple
+                        assert len(retained) == len(expected_owners)
+                        assert all(a is b for a, b in zip(retained, expected_owners))
+                    else:
+                        assert not hasattr(
+                            caught.value, "benchmark_temporary_directories"
+                        )
+            assert captures == [artifact]
+            assert not hasattr(unrelated, "benchmark_temporary_directories")
+            if cleanup_outcome == "removed":
+                assert not allocation.exists()
+            elif cleanup_outcome == "replaced":
+                assert (allocation / "foreign-sentinel").read_bytes() == b"must survive"
+                assert (saved_allocation / "program").is_file()
+            else:
+                assert artifact.is_file()
+            assert not (source / "bench/results").exists()
+    finally:
+        if saved_allocation.exists():
+            (allocation / "foreign-sentinel").unlink()
+            allocation.rmdir()
+            saved_allocation.rename(allocation)
+        owner.cleanup()
+        if prior_owner is not None:
+            prior_owner.cleanup()
+
+
+@pytest.mark.parametrize("profile", ["dev-fast", "release-output", "wasm-release"])
+@pytest.mark.parametrize("guest_mismatch", [False, True])
+def test_wasm_controller_measures_manifest_deployment_and_exact_guest_output(
+    monkeypatch, source_only_perf_checkout, profile, guest_mismatch
+):
+    """Actual builder/measurement/lifetime, independent compiler and sampler seams."""
+    import json
+    import subprocess
+    from types import SimpleNamespace
+
+    source, _custody = source_only_perf_checkout
+    builds = []
+    resolutions = []
+    calls = []
+    guest_bytes = b"\0asm\1\0\0\0" + b"linked-runtime-and-app" * 100
+    facts = next(
+        row for row in EXPECTED_LANES if row[0] == "wasm" and row[3] == profile
+    )
+    selected = dict(
+        zip(
+            (
+                "backend",
+                "target",
+                "guest_profile",
+                "runtime_profile",
+                "compiler_profile",
+            ),
+            facts,
+        )
+    )
+    script = source / "bench_probe.py"
+    script.write_text('print("guest output")\n', encoding="utf-8")
+    for key in ("NODE_OPTIONS", "NODE_NO_WARNINGS", "PYTHONHOME"):
+        monkeypatch.setenv(key, "independent-ambient-policy")
+    monkeypatch.setattr(measure.bench, "_prune_backend_daemons", lambda env: None)
+
+    def compiler(command, **kwargs):
+        root = Path(command[command.index("--out-dir") + 1])
+        builds.append(root)
+        assert command[command.index("--target") + 1] == "wasm"
+        assert "--linked" in command and "--require-linked" in command
+        assert command[command.index("--python-version") + 1] == "3.13"
+        assert kwargs["env"]["MOLT_WASM_CARGO_PROFILE"] == profile
+        linked = root / "selected-linked.wasm"
+        linked.write_bytes(guest_bytes)
+        # A raw intermediate and a decoy are never execution/size authorities.
+        intermediate = root / "output.wasm"
+        intermediate.write_bytes(b"raw")
+        (root / "decoy.wasm").write_bytes(b"wrong" * 2000)
+        manifest = root / "manifest.json"
+        manifest.write_text(
+            json.dumps(
+                {"mode": "linked", "modules": {"linked": {"path": linked.name}}}
+            ),
+            encoding="utf-8",
+        )
+        return subprocess.CompletedProcess(
+            command,
+            0,
+            json.dumps(
+                {
+                    "data": {
+                        "output": str(intermediate),
+                        "artifacts": {
+                            "linked_wasm": str(linked),
+                            "manifest": str(manifest),
+                        },
+                        "observed_toolchain": {"selected_profiles": selected},
+                    }
+                }
+            ),
+            "",
+        )
+
+    def node(**kwargs):
+        resolutions.append(kwargs)
+        assert kwargs["environment"].get("NODE_OPTIONS") is None
+        assert kwargs["environment"].get("NODE_NO_WARNINGS") is None
+        assert kwargs["environment"].get("PYTHONHOME") is None
+        assert kwargs["environment"].get("PYTHONPATH") is None
+        return SimpleNamespace(path=Path("/fixture/node"))
+
+    def sample(command, **kwargs):
+        calls.append((command, kwargs))
+        is_molt = command[0] == "/fixture/node"
+        stderr = "guest stderr\n"
+        if is_molt:
+            capture = kwargs["guest_stderr_path"]
+            assert capture == builds[0] / "guest-stderr.bin"
+            assert capture.is_file()
+            assert command == [
+                "/fixture/node",
+                str(source / "wasm/run_wasm.js"),
+                "--guest-stderr",
+                str(capture),
+                "--",
+                str(builds[0] / "manifest.json"),
+            ]
+            assert (builds[0] / "selected-linked.wasm").read_bytes() == guest_bytes
+            if guest_mismatch and "warmup" in kwargs["label"]:
+                stderr = "different warmup guest stderr\n"
+        else:
+            assert kwargs.get("guest_stderr_path") is None
+        return measure.RunOutcome(
+            True,
+            0.1 if is_molt else 0.2,
+            1.0,
+            "ok",
+            0,
+            stdout="guest output\n",
+            stderr=stderr,
+            host_stderr="host warning retained\n" if is_molt else "",
+        )
+
+    monkeypatch.setattr(
+        measure.bench.harness_memory_guard, "guarded_completed_process", compiler
+    )
+    monkeypatch.setattr(measure.bench, "resolve_node_runtime", node)
+    monkeypatch.setattr(measure.bench, "resolve_benchmark_run_args", lambda path: [])
+    monkeypatch.setattr(measure, "_run_measured_command", sample)
+    cell = measure.measure_cell(
+        script_path=script,
+        spec=WASM,
+        profile=profile,
+        samples=2,
+        warmup=1,
+        repeat=2,
+        rss_mb=64,
+        timeout_s=1.0,
+        batch_server=None,
+        cpython_cmd=("fixture-python",),
+        target_python_version="3.13",
+        log_dir=source / "logs",
+    )
+    assert len(builds) == 1 and len(resolutions) == 1
+    assert len(calls) == 14  # each runtime: cold + two (warmup + two timed)
+    assert cell.build_ok and cell.molt_ok and cell.cpython_ok
+    assert cell.run_blocked is False
+    assert cell.output_parity["ok"] is not guest_mismatch
+    assert cell.binary_size_kib == round(len(guest_bytes) / 1024, 1)
+    assert cell.repeat_passes == 2
+    log = (source / cell.log_artifact).read_text(encoding="utf-8")
+    assert log.count("host warning retained") == 7
+    assert not builds[0].exists()
+
+
+def test_wasm_hot_only_refuses_before_source_read_or_build(monkeypatch):
+    from tools import perf_scoreboard_profile as profiling
+
+    monkeypatch.setattr(
+        measure.bench,
+        "prepare_molt_binary",
+        lambda *a, **kw: pytest.fail("WASM reached native profiler build"),
+    )
+    binary, metadata = profiling.build_profiling_binary(
+        Path("never-read.py"),
+        spec=WASM,
+        profile="wasm-release",
+        target_python_version="3.12",
+        inner_loops=2,
+        log_lines=[],
+    )
+    assert binary is None and metadata["refused"]
+    assert "native sampler" in metadata["reason"]
+
+
+@pytest.mark.parametrize("sampler_kind", ["cycle", "hot"])
+@pytest.mark.parametrize(
+    "outcome",
+    ["success", "sampler-failure", "workload-failure", "read-error", "cancel"],
+)
+@pytest.mark.parametrize("cleanup_failure", [False, True])
+def test_sampler_output_owns_exact_directory_through_every_exit(
+    monkeypatch, tmp_path, sampler_kind, outcome, cleanup_failure
+):
+    from types import SimpleNamespace
+    from tools import perf_scoreboard_profile as profiling
+    from molt import temporary_artifacts
+
+    module = scoreboard if sampler_kind == "cycle" else profiling
+    allocations = []
+    children = []
+    original = (
+        KeyboardInterrupt("independent cancellation")
+        if outcome == "cancel"
+        else OSError("independent sampler failure")
+    )
+    allocate = measure.bench._new_bench_temp
+
+    def owned(root, env):
+        owner = allocate(root, env)
+        allocations.append(owner)
+        return owner
+
+    class Child:
+        returncode = 0
+        closed = False
+
+        def wait(self, **kwargs):
+            self.closed = True
+            return 0
+
+    def start(command, **kwargs):
+        sampler = command[0] == "/fixture/sample"
+        if (sampler and outcome == "sampler-failure") or (
+            not sampler and outcome == "workload-failure"
+        ):
+            raise original
+        if sampler:
+            output = Path(command[command.index("-f") + 1])
+            assert output.parent == Path(allocations[0].name)
+            output.write_text("independent sampler output", encoding="utf-8")
+        child = Child()
+        children.append(child)
+        return child
+
+    def read(path, **kwargs):
+        assert Path(path).is_file()
+        assert all(child.closed for child in children)
+        if outcome in {"read-error", "cancel"}:
+            raise original
+        return [{"symbol": "molt_work", "lib": "program", "self_samples": 100}]
+
+    monkeypatch.setattr(measure.bench, "_new_bench_temp", owned)
+    monkeypatch.setattr(module, "_resolve_sampler", lambda: "/fixture/sample")
+    monkeypatch.setattr(module, "_profiling_popen", start)
+    monkeypatch.setattr(
+        module, "_terminate", lambda child: setattr(child, "closed", True)
+    )
+    monkeypatch.setattr(module, "read_self_time", read)
+    monkeypatch.setattr(
+        profiling,
+        "_time_one_run",
+        lambda *a, **kw: SimpleNamespace(ok=True, elapsed_s=4.0),
+    )
+    env = {"MOLT_BENCH_TMP_ROOT": str(tmp_path)}
+
+    def run():
+        if sampler_kind == "cycle":
+            return scoreboard.capture_cycle_profile(
+                ["program"], env=env, rss_mb=64, timeout_s=1.0, sample_seconds=1
+            )
+        return profiling.capture_hot_only_profile(
+            tmp_path / "program",
+            run_args=[],
+            env=env,
+            rss_mb=64,
+            inner_loops=2,
+            warmup_s=0.0,
+            window_s=1.0,
+        )
+
+    with monkeypatch.context() as scoped:
+        if cleanup_failure:
+            scoped.setattr(
+                temporary_artifacts,
+                "delete_path",
+                lambda path: (False, "independent cleanup refusal"),
+            )
+        if outcome in {"read-error", "cancel"} or cleanup_failure:
+            with pytest.raises(
+                type(original) if outcome in {"read-error", "cancel"} else OSError
+            ) as caught:
+                run()
+            if outcome in {"read-error", "cancel"}:
+                assert caught.value is original
+            if cleanup_failure:
+                assert caught.value.benchmark_temporary_directories == tuple(
+                    allocations
+                )
+        else:
+            result = run()
+            assert result["available"] is (outcome == "success")
+    assert len(allocations) == 1
+    assert all(child.closed for child in children)
+    if cleanup_failure:
+        allocations[0].cleanup()
+    assert not Path(allocations[0].name).exists()

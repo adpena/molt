@@ -8,44 +8,29 @@ from tests.process_guard_common import install_module_view
 from tools import cold_start_decompose
 
 
-def test_safe_run_elapsed_uses_shared_guard(monkeypatch, tmp_path: Path) -> None:
-    module = cold_start_decompose
-    calls: list[dict[str, object]] = []
+def test_safe_run_elapsed_uses_typed_shared_measurement(monkeypatch):
+    from tools.safe_run import RunOutcome
 
-    def fake_guarded_completed_process(cmd, **kwargs):
-        calls.append({"cmd": list(cmd), **kwargs})
-        return SimpleNamespace(
-            returncode=0,
-            stdout="ignored\n",
-            stderr='SAFE_RUN {"status":"ok","elapsed_s":0.042}\n',
-            elapsed_s=0.05,
-        )
+    calls = []
 
-    monkeypatch.setattr(
-        module.harness_memory_guard,
-        "guarded_completed_process",
-        fake_guarded_completed_process,
-    )
+    def measure(cmd, **kwargs):
+        calls.append((cmd, kwargs))
+        return RunOutcome(True, 0.042, 3, "ok", 0, stderr="guest stderr")
 
-    elapsed, stderr = module._safe_run_elapsed(
-        ["/bin/echo", "ok"],
-        env={"MOLT_SESSION_ID": "test"},
+    monkeypatch.setattr(cold_start_decompose, "_run_measured_command", measure)
+    elapsed, stderr = cold_start_decompose._safe_run_elapsed(
+        ["subject"],
+        env={"BASE": "1"},
         rss_mb=64,
-        timeout_s=2.0,
+        timeout_s=2,
         label="probe",
-        extra_env={"EXTRA": "1"},
+        extra_env={"EXTRA": "2"},
     )
-
-    assert elapsed == 0.042
-    assert "SAFE_RUN" in stderr
-    call = calls[0]
-    assert call["cmd"][:2] == [module.sys.executable, str(module.SAFE_RUN)]
-    assert call["cmd"][-2:] == ["/bin/echo", "ok"]
-    assert call["prefix"] == "MOLT_COLD_START"
-    assert call["capture_output"] is True
-    assert call["text"] is True
-    assert call["timeout"] == 32.0
-    assert call["env"] == {"MOLT_SESSION_ID": "test", "EXTRA": "1"}
+    assert elapsed == 0.042 and stderr == "guest stderr"
+    cmd, kwargs = calls[0]
+    assert cmd == ["subject"] and kwargs["timeout_s"] == 2
+    assert kwargs["env"] == {"BASE": "1", "EXTRA": "2"}
+    assert kwargs["prefix"] == "MOLT_COLD_START"
 
 
 def test_build_noop_c_uses_shared_guard(monkeypatch, tmp_path: Path) -> None:
@@ -81,6 +66,18 @@ def test_build_noop_c_uses_shared_guard(monkeypatch, tmp_path: Path) -> None:
     assert calls[0]["cmd"][0] == "/usr/bin/cc"
     assert calls[0]["prefix"] == "MOLT_COLD_START"
     assert calls[0]["timeout"] == 60
+
+
+def test_runtime_init_phases_reject_trace_from_failed_sample(monkeypatch):
+    phase = cold_start_decompose.RUNTIME_INIT_PHASES[0]
+    trace = f"[molt runtime_init] +9000us (d9000us) {phase}\n"
+    results = iter([(None, trace), (0.01, trace.replace("9000", "1000"))])
+    monkeypatch.setattr(
+        cold_start_decompose, "_safe_run_elapsed", lambda *a, **kw: next(results)
+    )
+    assert cold_start_decompose._measure_runtime_init_phases(
+        Path("subject"), env={}, samples=2, rss_mb=64, timeout_s=2
+    ) == {phase: 1.0}
 
 
 def test_measure_dyld_ms_uses_shared_guard(monkeypatch, tmp_path: Path) -> None:

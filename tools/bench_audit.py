@@ -174,10 +174,11 @@ def _molt_median(
     if _bench is None or not isinstance(binary_info, _bench.MoltBinary):
         return None, None
 
-    build_s = binary_info.build_s
-    times: list[float] = []
-    label = f"molt:{Path(script).name}"
+    primary: BaseException | None = None
     try:
+        build_s = binary_info.build_s
+        times: list[float] = []
+        label = f"molt:{Path(script).name}"
         for _ in range(samples):
             sample = measure_molt_run(
                 binary_info.path, label=label, timeout_s=timeout_s
@@ -185,13 +186,12 @@ def _molt_median(
             if not isinstance(sample, _bench.RunSample):
                 return None, build_s
             times.append(sample.elapsed_s)
+        return statistics.median(times), build_s
+    except BaseException as exc:
+        primary = exc
+        raise
     finally:
-        try:
-            binary_info.temp_dir.cleanup()
-        except Exception:
-            pass
-
-    return statistics.median(times), build_s
+        _bench._cleanup_bench_temp(binary_info.temp_dir, primary)
 
 
 # ---------------------------------------------------------------------------
@@ -331,11 +331,14 @@ def audit_benchmarks(
             if prepare_molt_binary is not None:
                 bin_info = prepare_molt_binary(script, extra_args=extra_args)
                 if _bench is not None and isinstance(bin_info, _bench.MoltBinary):
-                    perf_data = _collect_perf_data(bin_info.path)
+                    primary = None
                     try:
-                        bin_info.temp_dir.cleanup()
-                    except Exception:
-                        pass
+                        perf_data = _collect_perf_data(bin_info.path)
+                    except BaseException as exc:
+                        primary = exc
+                        raise
+                    finally:
+                        _bench._cleanup_bench_temp(bin_info.temp_dir, primary)
         elif platform.system() == "Darwin":
             if verbose:
                 print(

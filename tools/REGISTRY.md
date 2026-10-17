@@ -104,8 +104,10 @@ self-commits or invents an external scheduling authority.
   heavy Kernel A native/WASM aperture with required `--target native|wasm`
   and portable acceptance receipts, and `pact-witness-oracle` owns the
   regenerated fixture/reference parity sanity check.
-- `tools/safe_run.py --rss-mb N --timeout S -- <binary>` — the ONLY safe way to run a
-  raw molt binary (hard RSS+walltime caps; raw `./binary` can OOM the host).
+- `tools/safe_run.py --rss-mb N --timeout S -- <binary>` — CLI adapter for the
+  shared RSS/walltime guard. Python measurement consumers use its typed
+  `_run_measured_command` result directly, avoiding wrapper processes and stderr
+  metadata parsing. Both paths require complete descendant closure.
 - `tests/molt_diff.py <files> --jobs 1` — the CPython differential (serial until the
   collective-budget-pool lands; parallel gives false FAILs). `--target native,wasm,llvm,luau`
   (or `all`) runs the MULTI-BACKEND oracle (doc 66): every backend is compared vs CPython AND
