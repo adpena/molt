@@ -1,22 +1,21 @@
 //! Fuzz target: exercise IR optimization passes on arbitrary IR.
 //!
-//! Invariants tested:
-//! - Passes must not panic on any structurally valid IR
-//! - Passes must not produce IR that fails validation if the input passes
-//! - Function count must be non-negative after dead function elimination
+//! Invariant tested: no pass panics on any structurally valid IR.
 //!
-//! This target runs the current SimpleIR optimization surface: constant folding,
-//! cross-block folding, dead struct elision, escape analysis, loop rewrites,
-//! RC coalescing, dead-op cleanup, and dead function elimination.
+//! The target runs the module stage (`apply_profile_order`), then every pass in
+//! `SIMPLE_IR_FUNCTION_PASSES` in pipeline order, then dead-op cleanup and dead
+//! function elimination. It reads the pass list from the pipeline's own table,
+//! so a pass added to or removed from the pipeline is fuzzed without an edit
+//! here. It runs every registered pass on every function, not only the passes
+//! one target admits: each pass must be robust on any input.
 
 #![no_main]
 use arbitrary::{Arbitrary, Unstructured};
 use libfuzzer_sys::fuzz_target;
-use molt_backend::{
-    FunctionIR, OpIR, SimpleIR, apply_profile_order, elide_dead_struct_allocs,
-    eliminate_dead_functions, eliminate_dead_ops, escape_analysis, fold_constants,
-    fold_constants_cross_block, rc_coalescing, rewrite_stateful_loops,
-};
+use molt_backend::ir_schema::validate_simple_ir_op_shapes;
+use molt_backend::passes::{SIMPLE_IR_FUNCTION_PASSES, apply_profile_order};
+use molt_backend::tir::target_info::TargetInfo;
+use molt_backend::{FunctionIR, OpIR, SimpleIR, eliminate_dead_functions, eliminate_dead_ops};
 
 /// Generate a structurally valid IR with ops that exercise the passes.
 #[derive(Debug)]
@@ -24,6 +23,8 @@ struct PassFuzzInput {
     ir: SimpleIR,
 }
 
+/// Registered SimpleIR kinds that exercise the passes. A kind or shape that
+/// admission rejects fails the target on its first input, not silently.
 const PASS_OP_KINDS: &[&str] = &[
     "const",
     "const_bool",
@@ -32,19 +33,19 @@ const PASS_OP_KINDS: &[&str] = &[
     "add",
     "sub",
     "mul",
-    "negate",
-    "compare",
-    "return",
+    "neg",
+    "lt",
+    "ret",
     "call",
     "nop",
     "label",
     "jump",
-    "jump_if_false",
+    "br_if",
     "alloc_class",
     "store",
     "load",
-    "incref",
-    "decref",
+    "inc_ref",
+    "dec_ref",
     "loop_start",
     "loop_end",
 ];
@@ -97,7 +98,7 @@ impl<'a> Arbitrary<'a> for PassFuzzInput {
                         out: Some(out_name),
                         ..OpIR::default()
                     },
-                    "add" | "sub" | "mul" | "compare" => {
+                    "add" | "sub" | "mul" | "lt" => {
                         let a = format!("v{}", u.int_in_range(0..=next_var.max(1) - 1)?);
                         let b = format!("v{}", u.int_in_range(0..=next_var.max(1) - 1)?);
                         OpIR {
@@ -107,7 +108,7 @@ impl<'a> Arbitrary<'a> for PassFuzzInput {
                             ..OpIR::default()
                         }
                     }
-                    "negate" => {
+                    "neg" => {
                         let a = format!("v{}", u.int_in_range(0..=next_var.max(1) - 1)?);
                         OpIR {
                             kind,
@@ -137,7 +138,7 @@ impl<'a> Arbitrary<'a> for PassFuzzInput {
                         out: Some(out_name),
                         ..OpIR::default()
                     },
-                    "store" | "store_init" => {
+                    "store" => {
                         let obj = format!("v{}", u.int_in_range(0..=next_var.max(1) - 1)?);
                         let val = format!("v{}", u.int_in_range(0..=next_var.max(1) - 1)?);
                         OpIR {
@@ -157,7 +158,7 @@ impl<'a> Arbitrary<'a> for PassFuzzInput {
                             ..OpIR::default()
                         }
                     }
-                    "incref" | "decref" => {
+                    "inc_ref" | "dec_ref" => {
                         let var = format!("v{}", u.int_in_range(0..=next_var.max(1) - 1)?);
                         OpIR {
                             kind,
@@ -165,21 +166,16 @@ impl<'a> Arbitrary<'a> for PassFuzzInput {
                             ..OpIR::default()
                         }
                     }
-                    "label" => OpIR {
+                    "label" | "jump" => OpIR {
                         kind,
-                        s_value: Some(format!("L{}", u.int_in_range(0..=10)?)),
+                        value: Some(u.int_in_range(0..=10)?),
                         ..OpIR::default()
                     },
-                    "jump" => OpIR {
-                        kind,
-                        s_value: Some(format!("L{}", u.int_in_range(0..=10)?)),
-                        ..OpIR::default()
-                    },
-                    "jump_if_false" => {
+                    "br_if" => {
                         let cond = format!("v{}", u.int_in_range(0..=next_var.max(1) - 1)?);
                         OpIR {
                             kind,
-                            s_value: Some(format!("L{}", u.int_in_range(0..=10)?)),
+                            value: Some(u.int_in_range(0..=10)?),
                             args: Some(vec![cond]),
                             ..OpIR::default()
                         }
@@ -189,7 +185,7 @@ impl<'a> Arbitrary<'a> for PassFuzzInput {
                         s_value: Some(format!("loop_{}", u.int_in_range(0..=3)?)),
                         ..OpIR::default()
                     },
-                    "return" => OpIR {
+                    "ret" => OpIR {
                         kind,
                         args: Some(vec![format!(
                             "v{}",
@@ -207,7 +203,7 @@ impl<'a> Arbitrary<'a> for PassFuzzInput {
 
             // Always end with a return.
             ops.push(OpIR {
-                kind: "return".to_string(),
+                kind: "ret".to_string(),
                 args: Some(vec!["__ret".to_string()]),
                 ..OpIR::default()
             });
@@ -233,33 +229,18 @@ impl<'a> Arbitrary<'a> for PassFuzzInput {
 
 fuzz_target!(|input: PassFuzzInput| {
     let mut ir = input.ir;
+    // The passes' precondition is the backends' admission check. The generator
+    // emits only admitted shapes, so a rejection is a stale generator.
+    if let Err(error) = validate_simple_ir_op_shapes(&ir) {
+        panic!("the generator emitted IR that admission rejects: {error}");
+    }
 
-    // Run each pass independently — none should panic.
-    for func in &mut ir.functions {
-        fold_constants(&mut func.ops);
-    }
-    for func in &mut ir.functions {
-        fold_constants_cross_block(&mut func.ops);
-    }
-    for func in &mut ir.functions {
-        elide_dead_struct_allocs(func);
-    }
-    for func in &mut ir.functions {
-        escape_analysis(func);
-    }
-    for func in &mut ir.functions {
-        rewrite_stateful_loops(func);
-    }
-    for func in &mut ir.functions {
-        rc_coalescing(func);
-    }
-    eliminate_dead_ops(&mut ir);
-    eliminate_dead_functions(&mut ir);
     apply_profile_order(&mut ir);
-
-    // After all passes, the IR must still have a non-negative function count.
-    assert!(
-        !ir.functions.is_empty() || true,
-        "passes reduced IR to invalid state"
-    );
+    for function in &mut ir.functions {
+        for pass in SIMPLE_IR_FUNCTION_PASSES {
+            (pass.run)(function);
+        }
+    }
+    eliminate_dead_ops(&mut ir, &TargetInfo::native_release_fast());
+    eliminate_dead_functions(&mut ir);
 });
