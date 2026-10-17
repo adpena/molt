@@ -431,6 +431,9 @@ receipt_schema = "molt.proof-receipt.v4"
 # bounds process fanout; each resource policy additionally serializes or limits
 # commands that share mutable toolchain/build state.
 executor_max_workers = 4
+# Every selected landing rule's pytest targets run in one invocation on this
+# many workers (tools/molt_dev.py integrate).
+local_pytest_workers = 4
 
 # Installed Python custody hashes a deterministic, locality-sorted file
 # worklist in coarse batches. This bounds the I/O fanout independently from
@@ -3881,8 +3884,15 @@ globs = [
   "tests/runtime_build_identity_helper.py",
 ]
 gates = [
-  "python -m pytest -q tests/cli/test_backend_environment_contract.py tests/cli/test_cli_wasm_codegen_layout.py tests/cli/test_cli_shared_stdlib_cache.py tests/cli/test_cli_runtime_callable_symbols_authority.py tests/cli/test_native_codegen_identity.py tests/cli/test_cli_backend_prewarm.py",
   "python -m pytest -q tests/cli/test_cli_import_collection.py -k 'backend_codegen or backend_daemon or backend_cache_setup or backend_setup or backend_compile or backend_pipeline or backend_dispatch or codegen_selection or fingerprint_env'",
+]
+pytest = [
+  "tests/cli/test_backend_environment_contract.py",
+  "tests/cli/test_cli_wasm_codegen_layout.py",
+  "tests/cli/test_cli_shared_stdlib_cache.py",
+  "tests/cli/test_cli_runtime_callable_symbols_authority.py",
+  "tests/cli/test_native_codegen_identity.py",
+  "tests/cli/test_cli_backend_prewarm.py",
 ]
 
 # --- Bootstrap-critical stdlib modules (extra intrinsic audits) ----------
@@ -3915,7 +3925,9 @@ globs = [
 ]
 gates = [
   "python tools/gen_heap_kinds.py --check",
-  "python -m pytest -q tests/test_gen_heap_kinds.py",
+]
+pytest = [
+  "tests/test_gen_heap_kinds.py",
 ]
 
 [[rule]]
@@ -3933,7 +3945,10 @@ globs = [
 ]
 gates = [
   "python tools/gen_host_capabilities.py --check",
-  "python -m pytest -q tests/test_gen_host_capabilities.py tests/test_capability_policy.py",
+]
+pytest = [
+  "tests/test_gen_host_capabilities.py",
+  "tests/test_capability_policy.py",
 ]
 
 [[rule]]
@@ -3950,7 +3965,10 @@ globs = [
 ]
 gates = [
   "python tools/gen_runtime_profile_schema.py --check",
-  "python -m pytest -q tests/test_gen_runtime_profile_schema.py tests/test_runtime_profile_schema.py",
+]
+pytest = [
+  "tests/test_gen_runtime_profile_schema.py",
+  "tests/test_runtime_profile_schema.py",
 ]
 
 # --- Op-kind registry (generated files + emitter/registry drift) ---------
@@ -3981,7 +3999,10 @@ globs = [
 gates = [
   "python tools/gen_op_kinds.py --check",
   "python tools/audit_op_kinds.py --check",
-  "python -m pytest -q tests/test_frontend_op_kind_registry.py tests/test_gen_op_kinds.py",
+]
+pytest = [
+  "tests/test_frontend_op_kind_registry.py",
+  "tests/test_gen_op_kinds.py",
 ]
 
 # --- Frontend diagnostic authority --------------------------------------
@@ -3999,7 +4020,9 @@ globs = [
 ]
 gates = [
   "python tools/gen_frontend_diagnostics.py --check",
-  "python -m pytest -q tests/test_frontend_diagnostics.py",
+]
+pytest = [
+  "tests/test_frontend_diagnostics.py",
 ]
 
 # --- WASM ABI registry (generated import/export surface authority) -------
@@ -4024,7 +4047,9 @@ globs = [
 ]
 gates = [
   "python tools/gen_wasm_abi.py --check",
-  "python -m pytest -q tests/test_gen_wasm_abi.py",
+]
+pytest = [
+  "tests/test_gen_wasm_abi.py",
 ]
 
 # --- tinygrad GPU op-contract fact (pin + generated op_contract.toml) -----
@@ -4048,7 +4073,9 @@ globs = [
 gates = [
   "python tools/check_tinygrad_pin.py --check",
   "python tools/gen_gpu_op_contract.py --check",
-  "python -m pytest -q tests/test_gen_gpu_op_contract.py",
+]
+pytest = [
+  "tests/test_gen_gpu_op_contract.py",
 ]
 
 # --- Intrinsic registry (manifest/category/generated resolver sync) -------
@@ -4069,7 +4096,9 @@ globs = [
 ]
 gates = [
   "python tools/gen_intrinsics.py --check",
-  "python -m pytest -q tests/test_gen_intrinsics.py",
+]
+pytest = [
+  "tests/test_gen_intrinsics.py",
 ]
 
 # --- Codec generated tables ----------------------------------------------
@@ -4088,7 +4117,9 @@ globs = [
 ]
 gates = [
   "python tools/gen_codecs.py --check",
-  "python -m pytest -q tests/test_gen_codecs.py",
+]
+pytest = [
+  "tests/test_gen_codecs.py",
 ]
 
 # --- StringPrep generated tables -----------------------------------------
@@ -4103,7 +4134,9 @@ globs = [
 ]
 gates = [
   "python tools/gen_stringprep_tables.py --check",
-  "python -m pytest -q tests/test_gen_stringprep_tables.py",
+]
+pytest = [
+  "tests/test_gen_stringprep_tables.py",
 ]
 
 # --- LLVM runtime ABI authority ------------------------------------------
@@ -4123,7 +4156,9 @@ globs = [
 ]
 gates = [
   "python tools/llvm_runtime_abi_audit.py --check",
-  "python -m pytest -q tests/test_llvm_runtime_abi_audit.py",
+]
+pytest = [
+  "tests/test_llvm_runtime_abi_audit.py",
 ]
 
 # --- Source-extension production and proof-policy boundaries ------------
@@ -4177,8 +4212,30 @@ globs = [
   "src/molt/cli/source_build_environment*.py",
   "tests/cli/test_source_build_environment_probe.py",
 ]
-gates = [
-  "python -m pytest -q tests/cli/test_source_extension_set_registry.py tests/cli/test_source_extension_manifest_authority.py tests/cli/test_source_extension_link_requirements.py tests/cli/test_source_extension_producer.py tests/cli/test_source_build_environment_probe.py tests/cli/test_source_extension_candidate_attestation.py tests/cli/test_source_extension_candidate_transaction.py tests/cli/test_source_package_seal.py tests/test_exact_json.py tests/cli/test_external_native_scipy_package_seal.py tests/cli/test_atomic_io_authority.py tests/cli/test_python_module_names.py tests/cli/test_source_extension_runtime_imports.py tests/cli/test_source_extension_input_custody.py tests/cli/test_source_extension_target.py tests/cli/test_source_extension_language.py tests/cli/test_source_extension_compiler_target.py tests/cli/test_extension_wheel_retained_inputs.py tests/tools/test_native_link_benchmark.py tests/cli/test_cli_extension_commands.py::test_direct_build_audits_and_reseals_extracted_wheel tests/cli/test_source_extension_invocation.py tests/cli/test_source_extension_compiler_inputs.py",
+gates = []
+pytest = [
+  "tests/cli/test_source_extension_set_registry.py",
+  "tests/cli/test_source_extension_manifest_authority.py",
+  "tests/cli/test_source_extension_link_requirements.py",
+  "tests/cli/test_source_extension_producer.py",
+  "tests/cli/test_source_build_environment_probe.py",
+  "tests/cli/test_source_extension_candidate_attestation.py",
+  "tests/cli/test_source_extension_candidate_transaction.py",
+  "tests/cli/test_source_package_seal.py",
+  "tests/test_exact_json.py",
+  "tests/cli/test_external_native_scipy_package_seal.py",
+  "tests/cli/test_atomic_io_authority.py",
+  "tests/cli/test_python_module_names.py",
+  "tests/cli/test_source_extension_runtime_imports.py",
+  "tests/cli/test_source_extension_input_custody.py",
+  "tests/cli/test_source_extension_target.py",
+  "tests/cli/test_source_extension_language.py",
+  "tests/cli/test_source_extension_compiler_target.py",
+  "tests/cli/test_extension_wheel_retained_inputs.py",
+  "tests/tools/test_native_link_benchmark.py",
+  "tests/cli/test_cli_extension_commands.py::test_direct_build_audits_and_reseals_extracted_wheel",
+  "tests/cli/test_source_extension_invocation.py",
+  "tests/cli/test_source_extension_compiler_inputs.py",
 ]
 
 # Every production input also selects the proof bridge; policy-only inputs
@@ -4250,8 +4307,14 @@ globs = [
   "tools/proof_queue_pkg/cli.py",
 ]
 gates = [
-  "python -m pytest -q tests/cli/test_source_extension_link_inputs.py tests/tools/test_source_extension_proof_family.py tests/tools/test_target_derived_toolchains.py tests/tools/test_python_custody_bootstrap.py tests/tools/test_scientific_stack_versions.py",
   "python -m pytest -q tests/tools/test_proof_queue.py -k 'proof_queue_pact_witness or proof_queue_rejects_scipy or proof_queue_requires_explicit_scipy or rejects_expected_extension_identity_drift'",
+]
+pytest = [
+  "tests/cli/test_source_extension_link_inputs.py",
+  "tests/tools/test_source_extension_proof_family.py",
+  "tests/tools/test_target_derived_toolchains.py",
+  "tests/tools/test_python_custody_bootstrap.py",
+  "tests/tools/test_scientific_stack_versions.py",
 ]
 
 # --- Differential / suite-honesty surface --------------------------------
@@ -4294,8 +4357,9 @@ globs = [
   "tools/tinygrad_upat_static_exec_registry.py",
   "tests/tools/test_tinygrad_upat_static_exec_registry.py",
 ]
-gates = [
-  "python -m pytest -q tests/tools/test_tinygrad_upat_static_exec_registry.py",
+gates = []
+pytest = [
+  "tests/tools/test_tinygrad_upat_static_exec_registry.py",
 ]
 
 # --- Docs architecture / generated status blocks -------------------------
@@ -4335,12 +4399,14 @@ globs = [
   "tests/test_cargo_workspace.py",
   "tests/test_molt_dev.py",
 ]
-gates = [
-  "python -m pytest -q tests/tools/test_setup_project_inputs.py",
-  "python -m pytest -q tests/test_molt_dev.py",
-  "python -m pytest -q tests/tools/test_rust_toolchain_contract.py",
-  "python -m pytest -q tests/tools/test_check_rustfmt.py",
-  "python -m pytest -q tests/tools/test_check_changed_clippy.py tests/test_cargo_workspace.py",
+gates = []
+pytest = [
+  "tests/tools/test_setup_project_inputs.py",
+  "tests/test_molt_dev.py",
+  "tests/tools/test_rust_toolchain_contract.py",
+  "tests/tools/test_check_rustfmt.py",
+  "tests/tools/test_check_changed_clippy.py",
+  "tests/test_cargo_workspace.py",
 ]
 
 # --- Encoding gate diagnostics -----------------------------------------
@@ -4349,7 +4415,10 @@ name = "encoding-diagnostics"
 toolchains = ["python"]
 description = "Encoding regression diagnostics preserve counts and every affected location."
 globs = ["tools/encoding_gate.py", "tests/tools/test_encoding_gate.py"]
-gates = ["python -m pytest -q tests/tools/test_encoding_gate.py"]
+gates = []
+pytest = [
+  "tests/tools/test_encoding_gate.py",
+]
 
 # --- Runtime Cargo input custody ----------------------------------------
 [[rule]]
@@ -4418,7 +4487,9 @@ globs = [
 ]
 gates = [
   "python tools/check_rust_toolchain.py",
-  "python -m pytest -q tests/tools/test_rust_toolchain_contract.py",
+]
+pytest = [
+  "tests/tools/test_rust_toolchain_contract.py",
 ]
 
 # --- Cross-language duplicate-authority tables ---------------------------
@@ -4446,7 +4517,9 @@ globs = [
 ]
 gates = [
   "python tools/check_table_drift.py --check",
-  "python -m pytest -q tests/test_table_drift_gate.py",
+]
+pytest = [
+  "tests/test_table_drift_gate.py",
 ]
 
 # --- APPARATUS A4 findings registry + memo lint --------------------------
@@ -4460,8 +4533,9 @@ globs = [
   "tests/tools/test_findings_registry.py",
   ".molt/state/findings_registry.jsonl",
 ]
-gates = [
-  "python -m pytest -q tests/tools/test_findings_registry.py",
+gates = []
+pytest = [
+  "tests/tools/test_findings_registry.py",
 ]
 
 # --- APPARATUS A10 memory graph + integrity + recall consumers -----------
@@ -4477,8 +4551,10 @@ globs = [
   "tests/tools/test_memory_graph.py",
 ]
 gates = [
-  "python -m pytest -q tests/tools/test_memory_graph.py",
   "python tools/check_memory_graph.py --check",
+]
+pytest = [
+  "tests/tools/test_memory_graph.py",
 ]
 
 # --- CI workflow / pyproject lint wiring ---------------------------------
@@ -4548,7 +4624,24 @@ globs = [
 ]
 gates = [
   "python tools/gen_proof_plan.py --check",
-  "python -m pytest -q tests/test_proof_plan.py tests/test_ci_workflow_topology.py tests/test_dependabot_config.py tests/test_ci_cargo_cache.py tests/test_generator_manifest.py tests/test_resource_pressure.py tests/test_translation_validate_roots.py tests/tools/test_ci_resource_env.py tests/tools/test_fuzz_compiler_cli.py tests/tools/test_formal_correspondence_truth.py tests/tools/test_nightly_prepare.py tests/tools/test_nightly_profile_feedback.py tests/tools/test_nightly_runtime_bundle.py tests/tools/test_nightly_shard_profile.py tests/tools/test_nightly_sharding.py tests/tools/test_reproducible_build_truth.py",
+]
+pytest = [
+  "tests/test_proof_plan.py",
+  "tests/test_ci_workflow_topology.py",
+  "tests/test_dependabot_config.py",
+  "tests/test_ci_cargo_cache.py",
+  "tests/test_generator_manifest.py",
+  "tests/test_resource_pressure.py",
+  "tests/test_translation_validate_roots.py",
+  "tests/tools/test_ci_resource_env.py",
+  "tests/tools/test_fuzz_compiler_cli.py",
+  "tests/tools/test_formal_correspondence_truth.py",
+  "tests/tools/test_nightly_prepare.py",
+  "tests/tools/test_nightly_profile_feedback.py",
+  "tests/tools/test_nightly_runtime_bundle.py",
+  "tests/tools/test_nightly_shard_profile.py",
+  "tests/tools/test_nightly_sharding.py",
+  "tests/tools/test_reproducible_build_truth.py",
 ]
 
 # --- APPARATUS Wave 1 hook spine (A1/A2/A9) ------------------------------
@@ -4570,9 +4663,17 @@ globs = [
   "tests/tools/test_check_gate_liveness.py",
 ]
 gates = [
-  "python -m pytest -q tests/tools/test_hooks_bash_guard.py tests/tools/test_hooks_landing_gate.py tests/tools/test_hooks_session_digest.py tests/tools/test_hooks_fail_open.py tests/tools/test_hooks_waivers.py tests/tools/test_check_gate_flips.py tests/tools/test_check_gate_liveness.py",
   "python tools/check_gate_liveness.py --check",
   "python tools/check_gate_flips.py --check",
+]
+pytest = [
+  "tests/tools/test_hooks_bash_guard.py",
+  "tests/tools/test_hooks_landing_gate.py",
+  "tests/tools/test_hooks_session_digest.py",
+  "tests/tools/test_hooks_fail_open.py",
+  "tests/tools/test_hooks_waivers.py",
+  "tests/tools/test_check_gate_flips.py",
+  "tests/tools/test_check_gate_liveness.py",
 ]
 
 [[rule]]
@@ -4594,9 +4695,15 @@ globs = [
   "tests/tools/test_memory_graph.py",
 ]
 gates = [
-  "python -m pytest -q tests/tools/test_apparatus_agent_safety.py tests/tools/test_anti_recurrence_gate.py tests/tools/test_hooks_session_learning.py tests/tools/test_check_gate_liveness.py tests/tools/test_memory_graph.py",
   "python tools/apparatus_agent_safety.py --check",
   "python tools/anti_recurrence_gate.py --check",
+]
+pytest = [
+  "tests/tools/test_apparatus_agent_safety.py",
+  "tests/tools/test_anti_recurrence_gate.py",
+  "tests/tools/test_hooks_session_learning.py",
+  "tests/tools/test_check_gate_liveness.py",
+  "tests/tools/test_memory_graph.py",
 ]
 
 # Measurement producers and their receivers migrate as one boundary.
@@ -4638,11 +4745,15 @@ globs = [
   "tests/tools/test_commit_serializer.py",
 ]
 gates = [
-  "python -m pytest -q tests/tools/test_claims_status.py tests/tools/test_check_sister_landed.py tests/tools/test_commit_serializer.py",
   "python tools/claims_status.py --check",
   "python tools/check_sister_landed.py --check",
   "python tools/commit_serializer.py --check",
   "python tools/check_gate_liveness.py --check",
+]
+pytest = [
+  "tests/tools/test_claims_status.py",
+  "tests/tools/test_check_sister_landed.py",
+  "tests/tools/test_commit_serializer.py",
 ]
 
 # --- APPARATUS A8/A12 + event-driven disk reclaim -----------------------
@@ -4664,9 +4775,15 @@ globs = [
   "tests/tools/test_disk_guard.py",
 ]
 gates = [
-  "python -m pytest -q tests/tools/test_lane_maturity.py tests/tools/test_powerplay_acceptance.py tests/tools/test_proof_queue_lane_maturity.py tests/tools/test_disk_guard.py tests/tools/test_check_gate_liveness.py",
   "python tools/check_gate_liveness.py --check",
   "python tools/apparatus_agent_safety.py --check",
+]
+pytest = [
+  "tests/tools/test_lane_maturity.py",
+  "tests/tools/test_powerplay_acceptance.py",
+  "tests/tools/test_proof_queue_lane_maturity.py",
+  "tests/tools/test_disk_guard.py",
+  "tests/tools/test_check_gate_liveness.py",
 ]
 
 # --- Static first-party from-import symbol resolution ---------------------
@@ -4680,7 +4797,9 @@ globs = [
 ]
 gates = [
   "python tools/import_symbol_gate.py",
-  "python -m pytest -q tests/tools/test_import_symbol_gate.py",
+]
+pytest = [
+  "tests/tools/test_import_symbol_gate.py",
 ]
 
 # --- Century-plan phase exits + legacy inventory ---------------------------
@@ -4698,8 +4817,11 @@ globs = [
   "tests/tools/test_legacy_inventory.py",
 ]
 gates = [
-  "python -m pytest -q tests/tools/test_phase_exit_manifest.py tests/tools/test_legacy_inventory.py",
   "python tools/legacy_inventory.py --check",
+]
+pytest = [
+  "tests/tools/test_phase_exit_manifest.py",
+  "tests/tools/test_legacy_inventory.py",
 ]
 
 # --- v1 public stable contract ------------------------------------------------
@@ -4730,7 +4852,9 @@ globs = [
 ]
 gates = [
   "python tools/public_contract_gate.py --check",
-  "python -m pytest -q tests/tools/test_public_contract_gate.py",
+]
+pytest = [
+  "tests/tools/test_public_contract_gate.py",
 ]
 
 # --- Clippy for every Cargo package a change reaches ---------------------
@@ -4851,9 +4975,11 @@ globs = [
   "tests/cli/test_runtime_source_closure.py",
 ]
 gates = [
-  "python -m pytest -q tests/cli/test_runtime_source_closure.py",
   "cargo test --locked --profile dev-fast -p zlib-rs@0.6.8 --lib --no-default-features --features rust-allocator,std,ZLIB_DEBUG -- counter_wrap --nocapture --test-threads=1",
   "python tools/run_runtime_test_gate.py --policy zlib-wasi --profile dev-fast --build-timeout-seconds 300 --child-timeout-seconds 120",
+]
+pytest = [
+  "tests/cli/test_runtime_source_closure.py",
 ]
 
 # --- LLVM backend Rust (adds the +llvm lib test lane) --------------------
@@ -4939,7 +5065,9 @@ globs = [
 gates = [
   "cargo clippy --locked -p molt-runtime-vfs --all-targets --all-features -- -D warnings",
   "cargo test --locked -p molt-runtime-vfs --all-features --no-fail-fast",
-  "python -m pytest tests/test_browser_vfs.py -q",
+]
+pytest = [
+  "tests/test_browser_vfs.py",
 ]
 
 [[rule]]
@@ -4969,8 +5097,10 @@ globs = [
 ]
 gates = [
   "python tools/gen_python_effects.py --check",
-  "python -m pytest -q tests/test_gen_python_effects.py",
   "cargo test --locked -p molt-ir --lib python_effects_generated",
+]
+pytest = [
+  "tests/test_gen_python_effects.py",
 ]
 
 [[rule]]
@@ -4988,7 +5118,11 @@ globs = [
 ]
 gates = [
   "python tools/gen_python_identity_catalog.py --check",
-  "python -m pytest -q tests/test_gen_python_identity_catalog.py tests/test_python_binding_flow.py tests/test_python_builtin_shape_facts.py",
+]
+pytest = [
+  "tests/test_gen_python_identity_catalog.py",
+  "tests/test_python_binding_flow.py",
+  "tests/test_python_builtin_shape_facts.py",
 ]
 
 [[rule]]
@@ -5008,8 +5142,11 @@ globs = [
 ]
 gates = [
   "python tools/gen_builtin_binding_guards.py --check",
-  "python -m pytest -q tests/test_gen_builtin_binding_guards.py tests/test_frontend_builtin_binding_guards.py",
   "cargo test --locked -p molt-runtime --lib binding_guards",
+]
+pytest = [
+  "tests/test_gen_builtin_binding_guards.py",
+  "tests/test_frontend_builtin_binding_guards.py",
 ]
 
 # --- Native-callable ABI authority --------------------------------------
@@ -5040,10 +5177,12 @@ globs = [
 ]
 gates = [
   "python tools/gen_native_callable_abi.py --check",
-  "python -m pytest -q tests/test_gen_native_callable_abi.py",
   "cargo test --locked -p molt-ir --lib native_callable_abi",
   "cargo test --locked -p molt-backend-native --lib native_callable",
   "cargo test --locked -p molt-backend-wasm --features test-util --lib native_callable",
+]
+pytest = [
+  "tests/test_gen_native_callable_abi.py",
 ]
 
 # --- StringPrep runtime leaf crate ---------------------------------------
