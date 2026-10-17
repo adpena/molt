@@ -102,10 +102,16 @@ startup budget has null ceilings, and the cold-start table leaves the shipped
 baseline ceilings still apply; the missing numeric product budgets must be
 declared and measured through this authority.
 
-WASM development benchmark commands disable V8 tier-up and suppress host
-warnings. Their engine settings and stderr treatment differ from public runs
-and must be explicit in each claim; results cannot be relabelled as default
-installed-user behavior.
+The scoreboard executes linked WASM through its compiler-declared deployment
+manifest and the public Node runner, without ambient engine flags or warning
+suppression. Its optional guest-stderr capture retains exact guest bytes and
+keeps Node diagnostics separately in the cell log. Each WASI instance owns its
+capture descriptor until guest close/renumber or host teardown; ordinary runs
+allocate no capture. Child launch-to-exit timing excludes guard cleanup, but
+includes fresh-engine startup, compilation and instantiation. Warm samples are
+filesystem/host-warmed process invocations. Historical measurements with forced
+engine settings or combined stderr retain their original scope. The methodology
+version separates the new measurement boundary from those earlier boards.
 
 Component diagnostics must retain their pipeline scope. Shared exceptional
 cleanup factoring reduced a preserved module-metadata entry from 52,161 to

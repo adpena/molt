@@ -1,9 +1,7 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 
-import json
 import os
-import time
 from dataclasses import asdict
 from pathlib import Path
 from typing import Any
@@ -13,12 +11,10 @@ _SRC_ROOT = Path(__file__).resolve().parents[1] / "src"
 
 from tools import bench  # noqa: E402
 from tools import bench_suites  # noqa: E402
-from tools import harness_memory_guard  # noqa: E402
 from tools.perf_schema import RED_THRESHOLD, output_parity_evidence  # noqa: E402
 from tools.perf_scoreboard_model import (  # noqa: E402
     PERFSCORE_SESSION_ID,
     REPO_ROOT,
-    RUN_BLOCKED_BACKENDS,
     BackendSpec,
     Cell,
     PhaseStats,
@@ -28,7 +24,7 @@ from tools.perf_scoreboard_model import (  # noqa: E402
     _repeat_stability,
     _robust_cell_stable,
     _safe_ratio,
-    _safe_run_json,
+    _run_measured_command,
     _warm_speedup_ci,
 )
 
@@ -54,6 +50,8 @@ def _perfscore_build_env(spec: BackendSpec, profile: str) -> dict[str, str]:
     base["MOLT_SESSION_ID"] = PERFSCORE_SESSION_ID
     # The canonical bench env derives this session's target dir under the
     # custody-selected artifact root; an ambient one would share build state.
+    base.pop("MOLT_SESSION_ID_GENERATED", None)
+    base.pop("MOLT_DIFF_CARGO_TARGET_DIR", None)
     base.pop("CARGO_TARGET_DIR", None)
     if spec.backend == "llvm":
         prefix = _llvm_sys_prefix()
@@ -68,6 +66,7 @@ def _cpython_run_env() -> dict[str, str]:
     """Env for the CPython baseline — src on PYTHONPATH, deterministic hashing."""
     env = bench._base_python_env()
     env["MOLT_SESSION_ID"] = PERFSCORE_SESSION_ID
+    env.pop("MOLT_SESSION_ID_GENERATED", None)
     return env
 
 
@@ -120,32 +119,16 @@ def measure_cell(
     ]
     build_flag = selection.guest_profile
 
-    # --- Build the molt binary via the canonical daemon batch build ---------
-    binary = None
-    if spec.build_target == "native":
-        try:
-            binary = bench.prepare_molt_binary(
-                str(script_path),
-                extra_args=extra_args,
-                env=build_env,
-                build_profile=build_flag,
-                batch_server=batch_server,
-                build_timeout_s=600.0,
-            )
-        except Exception as exc:  # noqa: BLE001 - record, never crash the sweep
-            log_lines.append(f"BUILD EXCEPTION: {exc!r}")
-            binary = bench.classify_molt_process_failure(
-                phase="build",
-                returncode=None,
-                stderr=repr(exc),
-                elapsed_s=None,
-                default_status="build_exception",
-            )
-    else:
-        # WASM build/link only — produced via the CLI, not run here.
-        binary = _build_wasm_only(
-            script_path, build_env, build_flag, log_lines, target_python_version
-        )
+    # One build/result owner for native and manifest-bound WASM deployments.
+    binary = bench.prepare_molt_binary(
+        str(script_path),
+        extra_args=extra_args,
+        env=build_env,
+        build_profile=build_flag,
+        build_target=spec.build_target,
+        batch_server=batch_server,
+        build_timeout_s=600.0,
+    )
 
     if not isinstance(binary, bench.MoltBinary):
         cell.build_ok = False
@@ -171,316 +154,385 @@ def measure_cell(
         _write_log(log_path, log_lines)
         return cell
 
-    cell.build_ok = True
-    cell.build_observation = binary.build_observation
-    from tools.perf_scoreboard_build_profiles import profile_binding_problems
+    primary: BaseException | None = None
+    try:
+        cell.build_ok = True
+        cell.build_observation = binary.build_observation
+        from tools.perf_scoreboard_build_profiles import profile_binding_problems
 
-    binding_problems = profile_binding_problems(
-        binary.build_observation, backend=spec.backend, profile=profile
-    )
-    if binding_problems:
-        cell.note = "Unbound build profile: " + "; ".join(binding_problems)
-        log_lines.append(cell.note)
-        cell.finalize(budget_ms=budget_ms, authoritative=False)
-        _write_log(log_path, log_lines)
-        _release_binary(binary)
-        return cell
-    cell.binary_size_kib = round(binary.size_kb, 1)
-    cell.compile_time_s = round(binary.build_s, 3)
-    log_lines.append(
-        f"build_ok size_kib={cell.binary_size_kib} compile_s={cell.compile_time_s}"
-    )
-
-    if spec.backend in RUN_BLOCKED_BACKENDS:
-        cell.run_blocked = True
-        cell.run_blocked_reason = (
-            "wasm run-path blocked: socket-import instantiation gap (build/link only)"
+        binding_problems = profile_binding_problems(
+            binary.build_observation, backend=spec.backend, profile=profile
         )
-        log_lines.append(f"RUN-BLOCKED: {cell.run_blocked_reason}")
-        cell.finalize(budget_ms=budget_ms, authoritative=authoritative)
-        _write_log(log_path, log_lines)
-        _release_binary(binary)
-        return cell
-
-    run_args = bench.resolve_benchmark_run_args(str(script_path))
-    molt_run_env = build_env
-
-    # --- COLD samples (fresh cache; capture stdout once for parity) ---------
-    cold_molt = _safe_run_json(
-        [str(binary.path), *run_args],
-        env=molt_run_env,
-        rss_mb=rss_mb,
-        timeout_s=timeout_s,
-        label=f"molt-cold:{benchmark}",
-        capture_output=True,
-    )
-    cold_cpy = _safe_run_json(
-        [*cpython_cmd, str(script_path), *run_args],
-        env=_cpython_run_env(),
-        rss_mb=rss_mb,
-        timeout_s=timeout_s,
-        label=f"cpython-cold:{benchmark}",
-        capture_output=True,
-    )
-    molt_output_observations = [
-        ("molt:cold", cold_molt.stdout, cold_molt.stderr, cold_molt.exit_code)
-    ]
-    cpy_output_observations = [
-        ("cpython:cold", cold_cpy.stdout, cold_cpy.stderr, cold_cpy.exit_code)
-    ]
-
-    # --- WARM samples — N independent PASSES (council --repeat N) -----------
-    # Each pass is a full warmup+samples block for molt AND CPython, yielding one
-    # warm_speedup point estimate. The CANONICAL cell stats come from the pass
-    # with the most molt samples (pass 1 in the common case); ALL passes feed the
-    # confidence interval. Warmup subprocesses already execute the benchmark, so
-    # their exact outputs also feed parity; otherwise a nondeterministic warmup
-    # result could disappear from affirmative evidence. A verdict is STABLE only
-    # if the CI clears 1.00.
-    n_passes = max(1, repeat)
-    per_pass_speedups: list[float] = []
-    pass_results: list[tuple[PhaseStats, PhaseStats]] = []
-    for pass_idx in range(n_passes):
-        molt_warmups = [
-            _safe_run_json(
-                [str(binary.path), *run_args],
-                env=molt_run_env,
-                rss_mb=rss_mb,
-                timeout_s=timeout_s,
-                label=f"molt-warmup:{benchmark}:p{pass_idx}:s{sample_idx}",
-                capture_output=True,
-            )
-            for sample_idx in range(warmup)
-        ]
-        molt_output_observations.extend(
-            (
-                f"molt:warmup:p{pass_idx}:s{sample_idx}",
-                run.stdout,
-                run.stderr,
-                run.exit_code,
-            )
-            for sample_idx, run in enumerate(molt_warmups)
+        if binding_problems:
+            cell.note = "Unbound build profile: " + "; ".join(binding_problems)
+            log_lines.append(cell.note)
+            cell.finalize(budget_ms=budget_ms, authoritative=False)
+            _write_log(log_path, log_lines)
+            return cell
+        cell.binary_size_kib = round(binary.size_kb, 1)
+        cell.compile_time_s = round(binary.build_s, 3)
+        log_lines.append(
+            f"build_ok size_kib={cell.binary_size_kib} compile_s={cell.compile_time_s}"
         )
-        molt_runs = [
-            _safe_run_json(
-                [str(binary.path), *run_args],
-                env=molt_run_env,
-                rss_mb=rss_mb,
-                timeout_s=timeout_s,
-                label=f"molt-warm:{benchmark}:p{pass_idx}:s{sample_idx}",
-                capture_output=True,
-            )
-            for sample_idx in range(samples)
-        ]
-        molt_output_observations.extend(
-            (
-                f"molt:warm:p{pass_idx}:s{sample_idx}",
-                run.stdout,
-                run.stderr,
-                run.exit_code,
-            )
-            for sample_idx, run in enumerate(molt_runs)
-        )
-        cpy_warmups = [
-            _safe_run_json(
-                [*cpython_cmd, str(script_path), *run_args],
-                env=_cpython_run_env(),
-                rss_mb=rss_mb,
-                timeout_s=timeout_s,
-                label=f"cpython-warmup:{benchmark}:p{pass_idx}:s{sample_idx}",
-                capture_output=True,
-            )
-            for sample_idx in range(warmup)
-        ]
-        cpy_output_observations.extend(
-            (
-                f"cpython:warmup:p{pass_idx}:s{sample_idx}",
-                run.stdout,
-                run.stderr,
-                run.exit_code,
-            )
-            for sample_idx, run in enumerate(cpy_warmups)
-        )
-        cpy_runs = [
-            _safe_run_json(
-                [*cpython_cmd, str(script_path), *run_args],
-                env=_cpython_run_env(),
-                rss_mb=rss_mb,
-                timeout_s=timeout_s,
-                label=f"cpython-warm:{benchmark}:p{pass_idx}:s{sample_idx}",
-                capture_output=True,
-            )
-            for sample_idx in range(samples)
-        ]
-        cpy_output_observations.extend(
-            (
-                f"cpython:warm:p{pass_idx}:s{sample_idx}",
-                run.stdout,
-                run.stderr,
-                run.exit_code,
-            )
-            for sample_idx, run in enumerate(cpy_runs)
-        )
-        m_stats = PhaseStats.from_runs(molt_runs)
-        c_stats = PhaseStats.from_runs(cpy_runs)
-        pass_results.append((m_stats, c_stats))
-        sp = _safe_ratio(c_stats.median_s, m_stats.median_s)
-        if sp is not None:
-            per_pass_speedups.append(sp)
 
-    # Canonical stats = the pass with the most molt samples (ties -> first).
-    molt_stats, cpy_stats = max(
-        pass_results, key=lambda pr: (pr[0].n, -pass_results.index(pr))
-    )
+        run_args = bench.resolve_benchmark_run_args(str(script_path))
+        from molt.node_runtime import NodeRuntimeError
 
-    # --- CYCLE attribution for warm reds (Rule 1 — cycles, NOT alloc-count) --
-    # Capture WHILE the binary still exists. A warm red is warm_speedup <= 1.00
-    # i.e. cpython_warm <= molt_warm (the FAIL_ENGINE condition). We profile the
-    # running molt binary so the next optimization is steered by CPU self-time,
-    # never by an alloc count.
-    warm_sp_now = _safe_ratio(cpy_stats.median_s, molt_stats.median_s)
-    is_warm_red_now = (
-        warm_sp_now is not None
-        and warm_sp_now <= RED_THRESHOLD
-        and molt_stats.n > 0
-        and cpy_stats.n > 0
-    )
-    if emit_cycle_profile and is_warm_red_now:
-        from tools.perf_scoreboard import capture_cycle_profile
+        try:
+            invocation = bench.molt_binary_invocation(binary, build_env)
+        except NodeRuntimeError as exc:
+            primary = exc
+            _record_molt_failure(
+                cell,
+                bench.classify_molt_process_failure(
+                    phase="run",
+                    returncode=None,
+                    stderr=str(exc),
+                    elapsed_s=None,
+                    default_status="run_host_unavailable",
+                ),
+            )
+            cell.note = str(exc)
+            log_lines.append(f"RUN HOST UNAVAILABLE: {exc}")
+            cell.finalize(budget_ms=budget_ms, authoritative=authoritative)
+            _write_log(log_path, log_lines)
+            return cell
+        molt_cmd, molt_run_env = invocation.command, invocation.environment
 
-        log_lines.append("capturing CYCLE profile (warm red — Rule 1 attribution)")
-        cell.cycle_profile = capture_cycle_profile(
-            [str(binary.path), *run_args],
+        # --- COLD samples (first process; retain exact streams for parity) ------
+        cold_molt = _run_measured_command(
+            [*molt_cmd, *run_args],
             env=molt_run_env,
             rss_mb=rss_mb,
             timeout_s=timeout_s,
+            label=f"molt-cold:{benchmark}",
+            capture_output=True,
+            guest_stderr_path=invocation.guest_stderr_path,
         )
-        avail = cell.cycle_profile.get("available")
-        top = cell.cycle_profile.get("top_symbols") or []
-        log_lines.append(
-            f"cycle_profile available={avail} top={top[0]['symbol'] if top else '-'} "
-            f"note={cell.cycle_profile.get('note')}"
-        )
-
-    _release_binary(binary)
-
-    cell.molt_stats = asdict(molt_stats)
-    cell.cpython_stats = asdict(cpy_stats)
-    cell.molt_ok = molt_stats.n > 0 and cold_molt.ok
-    cell.cpython_ok = cpy_stats.n > 0 and cold_cpy.ok
-
-    # --- Repeat-pass CI (STABLE only if the CI does not straddle 1.00) -------
-    if n_passes > 1 or per_pass_speedups:
-        median_sp, var_sp, ci_lo, ci_hi = _warm_speedup_ci(per_pass_speedups)
-        cell.repeat_passes = n_passes
-        cell.repeat_warm_speedups = [round(s, 4) for s in per_pass_speedups]
-        cell.repeat_median_warm = median_sp
-        cell.repeat_variance = var_sp
-        cell.repeat_ci_lo = ci_lo
-        cell.repeat_ci_hi = ci_hi
-        cell.repeat_stability = _repeat_stability(ci_lo, ci_hi)
-
-    cell.cold_molt_s = round(cold_molt.elapsed_s, 6) if cold_molt.elapsed_s else None
-    cell.cold_cpython_s = round(cold_cpy.elapsed_s, 6) if cold_cpy.elapsed_s else None
-    cell.warm_molt_s = molt_stats.median_s
-    cell.warm_cpython_s = cpy_stats.median_s
-
-    cell.molt_peak_rss_mib = _max_opt(molt_stats.peak_rss_mib, cold_molt.peak_rss_mib)
-    cell.cpython_peak_rss_mib = _max_opt(cpy_stats.peak_rss_mib, cold_cpy.peak_rss_mib)
-
-    # Stability: molt is the ARTIFACT UNDER TEST and MUST be stable. CPython is
-    # the reference floor; a single CPython GC/scheduler outlier (common on
-    # multi-100ms benchmarks) must NOT invalidate a cell where molt wins
-    # decisively and is itself stable — otherwise a won class (e.g.
-    # class_hierarchy 8x, molt cv 0.03) gets masked UNSTABLE by one CPython
-    # spike. So the cell is trustworthy iff molt is stable AND either CPython is
-    # stable OR the warm verdict is ROBUST to CPython's full sample spread (the
-    # warm_speedup stays on the same side of the 1.00 floor using BOTH CPython's
-    # fastest and slowest sample). This is median-based + outlier-robust per
-    # pyperf discipline, never a per-test special case.
-    cell.stable = _robust_cell_stable(molt_stats, cpy_stats)
-
-    # Exact comparison plus per-runtime stability across the cold observation,
-    # every existing warmup, and every timed warm sample. No extra benchmark
-    # process is added.
-    cell.output_parity = output_parity_evidence(
-        reference_observations=cpy_output_observations,
-        molt_observations=molt_output_observations,
-    )
-
-    if not cell.molt_ok:
-        _record_molt_run_failure(cell, cold_molt, fallback_status="runtime_failed")
-        cell.note = f"molt run unmeasurable (status={cold_molt.status})"
-    elif not cell.cpython_ok:
-        cell.note = f"cpython run unmeasurable (status={cold_cpy.status})"
-    elif cell.output_parity.get("ok") is not True:
-        reason = str(cell.output_parity.get("reason") or "comparison_unavailable")
-        detail = str(cell.output_parity.get("detail") or reason)
-        _record_molt_failure(
-            cell,
-            bench.MoltFailure(
-                phase="run",
-                status="output_mismatch",
-                returncode=cold_molt.exit_code,
-                timed_out=False,
-                elapsed_s=cold_molt.elapsed_s,
-                detail=reason,
-                message=detail,
-            ),
-        )
-        log_lines.append(f"OUTPUT PARITY FAILED: {reason}: {detail}")
-    elif cell.stable and not cpy_stats.stable and molt_stats.stable:
-        # Transparency: the cell is trusted despite CPython-side jitter because
-        # molt is stable AND the verdict is robust to CPython's spread.
-        cell.note = (
-            f"cpython unstable (cv={cpy_stats.cv}) but verdict robust to its "
-            f"spread; molt stable (cv={molt_stats.cv})"
-        )
-
-    # --- PyPy comparator lane (informational; never a hard gate) ------------
-    # Only measured once per benchmark (lane-independent: PyPy runs the same
-    # .py). We attach it to every backend cell for the same benchmark so the
-    # column is populated, but it is a CPython-style interpreter comparator,
-    # not a molt-backend fact.
-    if pypy_bin is not None and cell.warm_molt_s:
-        pypy_warm = _measure_interpreter_warm(
-            pypy_bin,
-            str(script_path),
-            run_args,
-            samples=samples,
-            warmup=warmup,
+        cold_cpy = _run_measured_command(
+            [*cpython_cmd, str(script_path), *run_args],
+            env=_cpython_run_env(),
             rss_mb=rss_mb,
             timeout_s=timeout_s,
-            label=f"pypy:{benchmark}",
+            label=f"cpython-cold:{benchmark}",
+            capture_output=True,
         )
-        if pypy_warm is not None:
-            cell.pypy_warm_s = round(pypy_warm, 6)
-            cell.pypy_ratio = _safe_ratio(pypy_warm, cell.warm_molt_s)
+        failed_molt = None if cold_molt.ok else cold_molt
+        failed_cpy = None if cold_cpy.ok else cold_cpy
+        if cold_molt.host_stderr:
+            log_lines.append(f"HOST STDERR molt:cold:\n{cold_molt.host_stderr}")
+        molt_output_observations = [
+            ("molt:cold", cold_molt.stdout, cold_molt.stderr, cold_molt.exit_code)
+        ]
+        cpy_output_observations = [
+            ("cpython:cold", cold_cpy.stdout, cold_cpy.stderr, cold_cpy.exit_code)
+        ]
+
+        # --- WARM samples — N independent PASSES (council --repeat N) -----------
+        # Each pass is a full warmup+samples block for molt AND CPython, yielding one
+        # warm_speedup point estimate. The CANONICAL cell stats come from the pass
+        # with the most molt samples (pass 1 in the common case); ALL passes feed the
+        # confidence interval. Warmup subprocesses already execute the benchmark, so
+        # their exact outputs also feed parity; otherwise a nondeterministic warmup
+        # result could disappear from affirmative evidence. A verdict is STABLE only
+        # if the CI clears 1.00.
+        n_passes = max(1, repeat)
+        per_pass_speedups: list[float] = []
+        pass_results: list[tuple[PhaseStats, PhaseStats]] = []
+        for pass_idx in range(n_passes):
+            molt_warmups = [
+                _run_measured_command(
+                    [*molt_cmd, *run_args],
+                    env=molt_run_env,
+                    rss_mb=rss_mb,
+                    timeout_s=timeout_s,
+                    label=f"molt-warmup:{benchmark}:p{pass_idx}:s{sample_idx}",
+                    capture_output=True,
+                    guest_stderr_path=invocation.guest_stderr_path,
+                )
+                for sample_idx in range(warmup)
+            ]
+            log_lines.extend(
+                f"HOST STDERR molt:warmup:p{pass_idx}:s{sample_idx}:\n{run.host_stderr}"
+                for sample_idx, run in enumerate(molt_warmups)
+                if run.host_stderr
+            )
+            molt_output_observations.extend(
+                (
+                    f"molt:warmup:p{pass_idx}:s{sample_idx}",
+                    run.stdout,
+                    run.stderr,
+                    run.exit_code,
+                )
+                for sample_idx, run in enumerate(molt_warmups)
+            )
+            molt_runs = [
+                _run_measured_command(
+                    [*molt_cmd, *run_args],
+                    env=molt_run_env,
+                    rss_mb=rss_mb,
+                    timeout_s=timeout_s,
+                    label=f"molt-warm:{benchmark}:p{pass_idx}:s{sample_idx}",
+                    capture_output=True,
+                    guest_stderr_path=invocation.guest_stderr_path,
+                )
+                for sample_idx in range(samples)
+            ]
+            log_lines.extend(
+                f"HOST STDERR molt:warm:p{pass_idx}:s{sample_idx}:\n{run.host_stderr}"
+                for sample_idx, run in enumerate(molt_runs)
+                if run.host_stderr
+            )
+            molt_output_observations.extend(
+                (
+                    f"molt:warm:p{pass_idx}:s{sample_idx}",
+                    run.stdout,
+                    run.stderr,
+                    run.exit_code,
+                )
+                for sample_idx, run in enumerate(molt_runs)
+            )
+            cpy_warmups = [
+                _run_measured_command(
+                    [*cpython_cmd, str(script_path), *run_args],
+                    env=_cpython_run_env(),
+                    rss_mb=rss_mb,
+                    timeout_s=timeout_s,
+                    label=f"cpython-warmup:{benchmark}:p{pass_idx}:s{sample_idx}",
+                    capture_output=True,
+                )
+                for sample_idx in range(warmup)
+            ]
+            cpy_output_observations.extend(
+                (
+                    f"cpython:warmup:p{pass_idx}:s{sample_idx}",
+                    run.stdout,
+                    run.stderr,
+                    run.exit_code,
+                )
+                for sample_idx, run in enumerate(cpy_warmups)
+            )
+            cpy_runs = [
+                _run_measured_command(
+                    [*cpython_cmd, str(script_path), *run_args],
+                    env=_cpython_run_env(),
+                    rss_mb=rss_mb,
+                    timeout_s=timeout_s,
+                    label=f"cpython-warm:{benchmark}:p{pass_idx}:s{sample_idx}",
+                    capture_output=True,
+                )
+                for sample_idx in range(samples)
+            ]
+            cpy_output_observations.extend(
+                (
+                    f"cpython:warm:p{pass_idx}:s{sample_idx}",
+                    run.stdout,
+                    run.stderr,
+                    run.exit_code,
+                )
+                for sample_idx, run in enumerate(cpy_runs)
+            )
+            if failed_molt is None:
+                failed_molt = next(
+                    (
+                        run
+                        for group in (molt_warmups, molt_runs)
+                        for run in group
+                        if not run.ok
+                    ),
+                    None,
+                )
+            if failed_cpy is None:
+                failed_cpy = next(
+                    (
+                        run
+                        for group in (cpy_warmups, cpy_runs)
+                        for run in group
+                        if not run.ok
+                    ),
+                    None,
+                )
+            m_stats = PhaseStats.from_runs(molt_runs)
+            c_stats = PhaseStats.from_runs(cpy_runs)
+            pass_results.append((m_stats, c_stats))
+            sp = _safe_ratio(c_stats.median_s, m_stats.median_s)
+            if sp is not None:
+                per_pass_speedups.append(sp)
+
+        # Canonical stats = the pass with the most molt samples (ties -> first).
+        molt_stats, cpy_stats = max(
+            pass_results, key=lambda pr: (pr[0].n, -pass_results.index(pr))
+        )
+
+        # --- CYCLE attribution for warm reds (Rule 1 — cycles, NOT alloc-count) --
+        # Capture WHILE the binary still exists. A warm red is warm_speedup <= 1.00
+        # i.e. cpython_warm <= molt_warm (the FAIL_ENGINE condition). We profile the
+        # running molt binary so the next optimization is steered by CPU self-time,
+        # never by an alloc count.
+        warm_sp_now = _safe_ratio(cpy_stats.median_s, molt_stats.median_s)
+        is_warm_red_now = (
+            failed_molt is None
+            and failed_cpy is None
+            and warm_sp_now is not None
+            and warm_sp_now <= RED_THRESHOLD
+            and molt_stats.n > 0
+            and cpy_stats.n > 0
+        )
+        if emit_cycle_profile and is_warm_red_now and spec.build_target != "native":
+            cell.cycle_profile = {
+                "available": False,
+                "top_symbols": [],
+                "note": "native cycle sampler cannot attribute WASM guest frames",
+            }
+        if emit_cycle_profile and is_warm_red_now and spec.build_target == "native":
+            from tools.perf_scoreboard import capture_cycle_profile
+
+            log_lines.append("capturing CYCLE profile (warm red — Rule 1 attribution)")
+            cell.cycle_profile = capture_cycle_profile(
+                [*molt_cmd, *run_args],
+                env=molt_run_env,
+                rss_mb=rss_mb,
+                timeout_s=timeout_s,
+            )
+            avail = cell.cycle_profile.get("available")
+            top = cell.cycle_profile.get("top_symbols") or []
             log_lines.append(
-                f"pypy warm_median={cell.pypy_warm_s} ratio={cell.pypy_ratio}"
+                f"cycle_profile available={avail} top={top[0]['symbol'] if top else '-'} "
+                f"note={cell.cycle_profile.get('note')}"
             )
 
-    # --- Codon comparator lane (AOT north star; equivalence-gated) ----------
-    if codon_runner is not None and cell.warm_molt_s:
-        codon_runner.measure_into(
-            cell,
-            script_path=script_path,
-            run_args=run_args,
-            samples=samples,
-            warmup=warmup,
-            rss_mb=rss_mb,
-            timeout_s=timeout_s,
-            log_lines=log_lines,
+        cell.molt_stats = asdict(molt_stats)
+        cell.cpython_stats = asdict(cpy_stats)
+        cell.molt_ok = molt_stats.n > 0 and failed_molt is None
+        cell.cpython_ok = cpy_stats.n > 0 and failed_cpy is None
+
+        # --- Repeat-pass CI (STABLE only if the CI does not straddle 1.00) -------
+        if n_passes > 1 or per_pass_speedups:
+            median_sp, var_sp, ci_lo, ci_hi = _warm_speedup_ci(per_pass_speedups)
+            cell.repeat_passes = n_passes
+            cell.repeat_warm_speedups = [round(s, 4) for s in per_pass_speedups]
+            cell.repeat_median_warm = median_sp
+            cell.repeat_variance = var_sp
+            cell.repeat_ci_lo = ci_lo
+            cell.repeat_ci_hi = ci_hi
+            cell.repeat_stability = _repeat_stability(ci_lo, ci_hi)
+
+        cell.cold_molt_s = (
+            round(cold_molt.elapsed_s, 6) if cold_molt.elapsed_s else None
+        )
+        cell.cold_cpython_s = (
+            round(cold_cpy.elapsed_s, 6) if cold_cpy.elapsed_s else None
+        )
+        cell.warm_molt_s = molt_stats.median_s
+        cell.warm_cpython_s = cpy_stats.median_s
+
+        cell.molt_peak_rss_mib = _max_opt(
+            molt_stats.peak_rss_mib, cold_molt.peak_rss_mib
+        )
+        cell.cpython_peak_rss_mib = _max_opt(
+            cpy_stats.peak_rss_mib, cold_cpy.peak_rss_mib
         )
 
-    cell.finalize(budget_ms=budget_ms, authoritative=authoritative)
-    log_lines.append(
-        f"molt warm_median={cell.warm_molt_s} cpython warm_median={cell.warm_cpython_s} "
-        f"warm_speedup={cell.warm_speedup} cold_speedup={cell.cold_speedup} "
-        f"startup_tax_ms={cell.startup_tax_ms} verdict={cell.verdict}"
-    )
-    _write_log(log_path, log_lines)
-    return cell
+        # Stability: molt is the ARTIFACT UNDER TEST and MUST be stable. CPython is
+        # the reference floor; a single CPython GC/scheduler outlier (common on
+        # multi-100ms benchmarks) must NOT invalidate a cell where molt wins
+        # decisively and is itself stable — otherwise a won class (e.g.
+        # class_hierarchy 8x, molt cv 0.03) gets masked UNSTABLE by one CPython
+        # spike. So the cell is trustworthy iff molt is stable AND either CPython is
+        # stable OR the warm verdict is ROBUST to CPython's full sample spread (the
+        # warm_speedup stays on the same side of the 1.00 floor using BOTH CPython's
+        # fastest and slowest sample). This is median-based + outlier-robust per
+        # pyperf discipline, never a per-test special case.
+        cell.stable = _robust_cell_stable(molt_stats, cpy_stats)
+
+        # Exact comparison plus per-runtime stability across the cold observation,
+        # every existing warmup, and every timed warm sample. No extra benchmark
+        # process is added.
+        cell.output_parity = output_parity_evidence(
+            reference_observations=cpy_output_observations,
+            molt_observations=molt_output_observations,
+        )
+
+        if not cell.molt_ok:
+            failure = failed_molt or cold_molt
+            _record_molt_run_failure(cell, failure, fallback_status="runtime_failed")
+            cell.note = f"molt run unmeasurable (status={failure.status})"
+        elif not cell.cpython_ok:
+            failure = failed_cpy or cold_cpy
+            cell.note = f"cpython run unmeasurable (status={failure.status})"
+        elif cell.output_parity.get("ok") is not True:
+            reason = str(cell.output_parity.get("reason") or "comparison_unavailable")
+            detail = str(cell.output_parity.get("detail") or reason)
+            _record_molt_failure(
+                cell,
+                bench.MoltFailure(
+                    phase="run",
+                    status="output_mismatch",
+                    returncode=cold_molt.exit_code,
+                    timed_out=False,
+                    elapsed_s=cold_molt.elapsed_s,
+                    detail=reason,
+                    message=detail,
+                ),
+            )
+            log_lines.append(f"OUTPUT PARITY FAILED: {reason}: {detail}")
+        elif cell.stable and not cpy_stats.stable and molt_stats.stable:
+            # Transparency: the cell is trusted despite CPython-side jitter because
+            # molt is stable AND the verdict is robust to CPython's spread.
+            cell.note = (
+                f"cpython unstable (cv={cpy_stats.cv}) but verdict robust to its "
+                f"spread; molt stable (cv={molt_stats.cv})"
+            )
+
+        # --- PyPy comparator lane (informational; never a hard gate) ------------
+        # Only measured once per benchmark (lane-independent: PyPy runs the same
+        # .py). We attach it to every backend cell for the same benchmark so the
+        # column is populated, but it is a CPython-style interpreter comparator,
+        # not a molt-backend fact.
+        if pypy_bin is not None and cell.warm_molt_s:
+            pypy_warm = _measure_interpreter_warm(
+                pypy_bin,
+                str(script_path),
+                run_args,
+                samples=samples,
+                warmup=warmup,
+                rss_mb=rss_mb,
+                timeout_s=timeout_s,
+                label=f"pypy:{benchmark}",
+            )
+            if pypy_warm is not None:
+                cell.pypy_warm_s = round(pypy_warm, 6)
+                cell.pypy_ratio = _safe_ratio(pypy_warm, cell.warm_molt_s)
+                log_lines.append(
+                    f"pypy warm_median={cell.pypy_warm_s} ratio={cell.pypy_ratio}"
+                )
+
+        # --- Codon comparator lane (AOT north star; equivalence-gated) ----------
+        if codon_runner is not None and cell.warm_molt_s:
+            codon_runner.measure_into(
+                cell,
+                script_path=script_path,
+                run_args=run_args,
+                samples=samples,
+                warmup=warmup,
+                rss_mb=rss_mb,
+                timeout_s=timeout_s,
+                log_lines=log_lines,
+            )
+
+        cell.finalize(budget_ms=budget_ms, authoritative=authoritative)
+        log_lines.append(
+            f"molt warm_median={cell.warm_molt_s} cpython warm_median={cell.warm_cpython_s} "
+            f"warm_speedup={cell.warm_speedup} cold_speedup={cell.cold_speedup} "
+            f"startup_tax_ms={cell.startup_tax_ms} verdict={cell.verdict}"
+        )
+        _write_log(log_path, log_lines)
+        return cell
+    except BaseException as exc:
+        primary = exc
+        raise
+    finally:
+        _release_binary(binary, primary)
 
 
 def _record_molt_failure(cell: Cell, failure: bench.MoltFailure) -> None:
@@ -524,6 +576,7 @@ def _record_molt_run_failure(
     *,
     fallback_status: str,
 ) -> None:
+    guard = outcome.guard_result
     failure = bench.classify_molt_process_failure(
         phase="run",
         returncode=outcome.exit_code,
@@ -531,140 +584,21 @@ def _record_molt_run_failure(
         stderr=outcome.stderr_tail,
         elapsed_s=outcome.elapsed_s,
         timed_out=outcome.status == "timeout",
+        violation=guard.violation if guard is not None else None,
+        orphaned_process_groups=guard.orphaned_process_groups
+        if guard is not None
+        else (),
+        child_returncode=guard.child_returncode if guard is not None else None,
+        infrastructure_failure=guard.infrastructure_failure
+        if guard is not None
+        else None,
         default_status=fallback_status,
     )
     _record_molt_failure(cell, failure)
 
 
-def _build_wasm_only(
-    script_path: Path,
-    build_env: dict[str, str],
-    build_flag: str,
-    log_lines: list[str],
-    target_python_version: str,
-) -> bench.MoltBinary | bench.MoltFailure:
-    """Build+link a WASM artifact (run-path is blocked; we only verify it links).
-
-    Uses the molt CLI directly with ``--target wasm``. Returns a MoltBinary-like
-    handle whose ``path`` is the .wasm and whose size/compile-time are captured,
-    so the scoreboard records build-facts for the WASM lane.
-    """
-    import tempfile
-
-    out_dir = Path(
-        tempfile.mkdtemp(prefix="perfscore-wasm-", dir=str(bench.BENCH_TMP_ROOT))
-    )
-    cmd = [
-        *bench._molt_build_cmd(build_flag),
-        "--python-version",
-        target_python_version,
-        "--target",
-        "wasm",
-        "--trusted",
-        "--json",
-        "--rebuild",
-        "--out-dir",
-        str(out_dir),
-        str(script_path),
-    ]
-    start = time.perf_counter()
-    try:
-        res = harness_memory_guard.guarded_completed_process(
-            cmd,
-            prefix="MOLT_BENCH",
-            env=build_env,
-            capture_output=True,
-            text=True,
-            timeout=600.0,
-        )
-    except Exception as exc:  # noqa: BLE001
-        log_lines.append(f"WASM BUILD EXCEPTION: {exc!r}")
-        return bench.classify_molt_process_failure(
-            phase="build",
-            returncode=None,
-            stderr=repr(exc),
-            elapsed_s=None,
-            default_status="wasm_build_exception",
-        )
-    build_s = time.perf_counter() - start
-    if res.returncode != 0:
-        tail = (res.stderr or res.stdout or "").strip()[-2000:]
-        log_lines.append(f"WASM BUILD FAILED rc={res.returncode}\n{tail}")
-        return bench.classify_molt_process_failure(
-            phase="build",
-            returncode=res.returncode,
-            stdout=res.stdout,
-            stderr=res.stderr,
-            elapsed_s=build_s,
-            timed_out=bool(getattr(res, "timed_out", False)),
-            default_status="wasm_build_failed",
-        )
-    try:
-        payload = json.loads((res.stdout or "{}").strip() or "{}")
-    except json.JSONDecodeError:
-        log_lines.append("WASM BUILD: non-JSON stdout")
-        return bench.classify_molt_process_failure(
-            phase="build",
-            returncode=res.returncode,
-            stdout=res.stdout,
-            stderr=res.stderr,
-            elapsed_s=build_s,
-            default_status="wasm_build_output_invalid",
-        )
-    out_str = payload.get("data", {}).get("output") or payload.get("output")
-    if not out_str:
-        # Fall back to scanning the out dir for a .wasm artifact.
-        wasms = list(out_dir.rglob("*.wasm"))
-        if not wasms:
-            log_lines.append("WASM BUILD: no .wasm artifact")
-            return bench.classify_molt_process_failure(
-                phase="build",
-                returncode=res.returncode,
-                stdout=res.stdout,
-                stderr="WASM BUILD: no .wasm artifact",
-                elapsed_s=build_s,
-                default_status="wasm_artifact_missing",
-            )
-        out_path = wasms[0]
-    else:
-        out_path = Path(out_str)
-        if not out_path.exists():
-            wasms = list(out_dir.rglob("*.wasm"))
-            out_path = wasms[0] if wasms else out_path
-    if not out_path.exists():
-        log_lines.append(f"WASM BUILD: artifact missing {out_path}")
-        return bench.classify_molt_process_failure(
-            phase="build",
-            returncode=res.returncode,
-            stdout=res.stdout,
-            stderr=f"WASM BUILD: artifact missing {out_path}",
-            elapsed_s=build_s,
-            default_status="wasm_artifact_missing",
-        )
-    size_kb = out_path.stat().st_size / 1024
-
-    class _TmpHolder:
-        def cleanup(self) -> None:
-            import shutil
-
-            shutil.rmtree(out_dir, ignore_errors=True)
-
-    return bench.MoltBinary(
-        out_path,
-        _TmpHolder(),
-        build_s,
-        size_kb,
-        payload.get("data", {}).get("observed_toolchain"),
-    )
-
-
-def _release_binary(binary: bench.MoltBinary) -> None:
-    holder = getattr(binary, "temp_dir", None)
-    if holder is not None:
-        try:
-            holder.cleanup()
-        except Exception:  # noqa: BLE001
-            pass
+def _release_binary(binary: bench.MoltBinary, primary: BaseException | None) -> None:
+    bench._cleanup_bench_temp(binary.temp_dir, primary)
 
 
 def _max_opt(a: float | None, b: float | None) -> float | None:
@@ -696,15 +630,17 @@ def _measure_interpreter_warm(
     """
     env = _cpython_run_env()
     for _ in range(warmup):
-        _safe_run_json(
+        run = _run_measured_command(
             [interp_bin, script, *run_args],
             env=env,
             rss_mb=rss_mb,
             timeout_s=timeout_s,
             label=f"{label}-warmup",
         )
+        if not run.ok:
+            return None
     runs = [
-        _safe_run_json(
+        _run_measured_command(
             [interp_bin, script, *run_args],
             env=env,
             rss_mb=rss_mb,
@@ -713,6 +649,8 @@ def _measure_interpreter_warm(
         )
         for _ in range(samples)
     ]
+    if not all(run.ok for run in runs):
+        return None
     stats = PhaseStats.from_runs(runs)
     return stats.median_s if stats.n > 0 else None
 
@@ -732,15 +670,17 @@ def _measure_codon_warm(
     if env is None:
         env = _cpython_run_env()
     for _ in range(warmup):
-        _safe_run_json(
+        run = _run_measured_command(
             [codon_bin_path, *run_args],
             env=env,
             rss_mb=rss_mb,
             timeout_s=timeout_s,
             label=f"{label}-warmup",
         )
+        if not run.ok:
+            return None
     runs = [
-        _safe_run_json(
+        _run_measured_command(
             [codon_bin_path, *run_args],
             env=env,
             rss_mb=rss_mb,
@@ -749,5 +689,7 @@ def _measure_codon_warm(
         )
         for _ in range(samples)
     ]
+    if not all(run.ok for run in runs):
+        return None
     stats = PhaseStats.from_runs(runs)
     return stats.median_s if stats.n > 0 else None

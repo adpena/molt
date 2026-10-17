@@ -89,6 +89,8 @@ let wasiImport = null;
 let wasiExitCode = null;
 let detectedWasmTableBase = null;
 let implicitBundlePreopen = null;
+let runnerGuestArgs = [];
+let guestStderrCapture = null;
 const callIndirectDebug = process.env.MOLT_WASM_CALL_INDIRECT_DEBUG === '1';
 // MOLT_TRACE_DEALLOC=1: on each molt_Py_DECREF crossing the split boundary with
 // refcount about to reach zero, print the object's type name and its type's
@@ -200,8 +202,58 @@ const resolveWasmPaths = ({
   };
 };
 
-const initWasmAssets = () => {
-  const resolved = resolveWasmPaths();
+const resolveRunnerArguments = (argv) => {
+  if (argv[0] !== '--guest-stderr') {
+    return { manifestPath: argv[0], guestArgs: argv.slice(1), guestStderrPath: null };
+  }
+  if (!argv[1] || argv[2] !== '--' || !argv[3]) {
+    throw new Error(
+      'usage: run_wasm.js --guest-stderr PATH -- MANIFEST [guest arguments]',
+    );
+  }
+  return {
+    manifestPath: argv[3],
+    guestArgs: argv.slice(4),
+    guestStderrPath: argv[1],
+  };
+};
+
+const openGuestStderr = (capturePath, identity = null) => {
+  // The measurement owner creates and holds this inode, truncates it before
+  // each serial invocation, and reads it only after process-tree closure.
+  // Reject special files before open; no-follow/nonblocking flags also bound
+  // replacement races on hosts that expose them. Never create or truncate.
+  const before = fs.lstatSync(capturePath, { bigint: true });
+  if (!before.isFile() || before.isSymbolicLink() || (identity === null && before.size !== 0n)) {
+    throw new Error('guest stderr capture must be an existing empty regular file');
+  }
+  const flags = fs.constants.O_RDWR | fs.constants.O_APPEND |
+    (fs.constants.O_NOFOLLOW ?? 0) | (fs.constants.O_NONBLOCK ?? 0);
+  const fd = fs.openSync(capturePath, flags);
+  try {
+    const stat = fs.fstatSync(fd, { bigint: true });
+    const current = fs.lstatSync(capturePath, { bigint: true });
+    if (!stat.isFile() || !current.isFile() || current.isSymbolicLink() ||
+        (identity === null && (stat.size !== 0n || current.size !== 0n))) {
+      throw new Error('guest stderr capture must be an existing empty regular file');
+    }
+    const expected = identity ?? before;
+    if (expected.dev !== before.dev || expected.ino !== before.ino ||
+        expected.dev !== stat.dev || expected.ino !== stat.ino ||
+        expected.dev !== current.dev || expected.ino !== current.ino) {
+      throw new Error('guest stderr capture path identity changed during admission');
+    }
+    return { fd, identity: { dev: stat.dev, ino: stat.ino } };
+  } catch (error) {
+    try { fs.closeSync(fd); } catch (closeError) {
+      throw combinedError([error, closeError]);
+    }
+    throw error;
+  }
+};
+
+const initWasmAssets = (manifestPath) => {
+  const resolved = resolveWasmPaths({ argv2: manifestPath });
   runtimeManifest = resolved.manifest;
   runtimeManifestPath = resolved.manifestPath;
   wasmPath = resolved.wasmPath;
@@ -265,13 +317,53 @@ const createWasiContext = () => {
       ? { [implicitBundlePreopen.guest]: implicitBundlePreopen.host }
       : {}),
   };
+  const capture = guestStderrCapture;
+  let contextStderrFd = 2;
+  if (capture !== null) {
+    if (capture.pendingFd !== null) {
+      contextStderrFd = capture.pendingFd;
+      capture.pendingFd = null;
+    } else {
+      const opened = openGuestStderr(capture.path, capture.identity);
+      contextStderrFd = opened.fd;
+      capture.fds.add(contextStderrFd);
+    }
+  }
   const contextWasi = new WASI({
     version: 'preview1',
-    args: ['molt', ...process.argv.slice(3)],
+    args: ['molt', ...runnerGuestArgs],
     env: wasmEnv,
     preopens,
+    stderr: contextStderrFd,
   });
   const contextImport = { ...contextWasi.wasiImport };
+  if (capture !== null) {
+    const captureHostFd = contextStderrFd;
+    let captureGuestFd = 2;
+    // WASI borrows this context's independent descriptor. A close in the app
+    // cannot leave the runtime borrowing a recycled host FD. O_APPEND keeps
+    // both independent offsets from overwriting earlier guest output.
+    const retireCaptureFd = () => {
+      capture.fds.delete(captureHostFd);
+      if (capture.primaryFd === captureHostFd) capture.primaryFd = null;
+      captureGuestFd = null;
+    };
+    const close = contextImport.fd_close;
+    contextImport.fd_close = (fd) => {
+      const result = close(fd);
+      if (result === 0 && Number(fd) === captureGuestFd) retireCaptureFd();
+      return result;
+    };
+    const renumber = contextImport.fd_renumber;
+    contextImport.fd_renumber = (from, to) => {
+      const result = renumber(from, to);
+      if (result === 0 && captureGuestFd !== null && Number(from) !== Number(to)) {
+        if (Number(from) === captureGuestFd) captureGuestFd = Number(to);
+        else if (Number(to) === captureGuestFd) retireCaptureFd();
+      }
+      return result;
+    };
+  }
   const originalProcExit = contextImport.proc_exit;
   if (typeof originalProcExit === 'function') {
     contextImport.proc_exit = (code) => {
@@ -3930,6 +4022,14 @@ const disposeRuntimeAndHost = () => {
       hostLifecycleState = 'host-closed';
     }
     try { await shutdownHostWorkers(); } catch (error) { errors.push(error); }
+    if (guestStderrCapture !== null) {
+      const capture = guestStderrCapture;
+      guestStderrCapture = null;
+      for (const fd of capture.fds) {
+        try { fs.closeSync(fd); } catch (error) { errors.push(error); }
+      }
+      capture.fds.clear();
+    }
     return errors;
   })();
   return finiteDisposalPromise;
@@ -4668,7 +4768,9 @@ const processHostSpawn = (
   const stdio = [
     processStdioMode(stdinMode),
     processStdioMode(stdoutMode),
-    processStdioMode(stderrMode),
+    stderrMode === PROCESS_STDIO_INHERIT && guestStderrCapture?.primaryFd != null
+      ? guestStderrCapture.primaryFd
+      : processStdioMode(stderrMode),
   ];
   let child;
   try {
@@ -5686,58 +5788,67 @@ const runLinked = async () => {
 };
 
 const runMain = async () => {
-  appInstanceForHostCalls = null;
-  initWasmAssets();
-  traceMark('runMain:init');
-  const outputMetadata = parseWasmMetadata(wasmBuffer, {
-    exportFunctionSignatures: false,
-  });
-  outputImports = outputMetadata.imports;
-  inputHasRuntimeImports = outputImports.funcImports.some(
-    (entry) => entry.module === 'molt_runtime'
-  );
-  if (traceRun) {
-    console.error(
-      `[molt wasm] runMain wasm=${wasmPath} linked=${linkedPath || 'none'} imports_runtime=${inputHasRuntimeImports}`
-    );
-  }
-  const useLinked = runtimeManifest.mode === 'linked';
-  if (useLinked !== Boolean(linkedBuffer)) {
-    throw new Error('runtime manifest mode and linked module custody disagree');
-  }
-  if (!useLinked && (!inputHasRuntimeImports || !runtimeBuffer)) {
-    throw new Error('split-runtime manifest requires app runtime imports and a runtime module');
-  }
-  runtimeImportsDesc = null;
-  runtimeCallIndirectNames = [];
-  canDirectLink = false;
-  if (!useLinked) {
-    loadRuntimeAssets();
-    if (!runtimeBuffer) {
-      throw new Error('split-runtime manifest did not resolve a runtime module');
-    }
-    const runtimeMetadata = parseWasmMetadata(runtimeBuffer);
-    runtimeImportsDesc = runtimeMetadata.imports;
-    runtimeExportSignatures = runtimeMetadata.exportFunctionSignatures;
-    runtimeCallIndirectNames = runtimeImportsDesc.funcImports
-      .filter((entry) => entry.module === 'env' && entry.name.startsWith('molt_call_indirect'))
-      .map((entry) => entry.name);
-    canDirectLink = outputImports.table && runtimeImportsDesc.table && runtimeImportsDesc.memory;
-    if (!canDirectLink) {
-      throw new Error(
-        'Direct-link mode is unavailable for this wasm artifact. Use linked output or rebuild with split-runtime env.__indirect_function_table plus runtime env.memory imports.'
-      );
-    }
-  }
-  // Safety-first policy: default to linked execution. Direct-linking is opt-in
-  // and only allowed when the artifact advertises the shared memory/table ABI.
-  const runner = useLinked ? runLinked : runDirectLink;
-  traceMark(`runMain:runner:${useLinked ? 'linked' : 'direct'}`);
-  if (traceRun) {
-    console.error(`[molt wasm] runner=${useLinked ? 'linked' : 'direct'}`);
-  }
   const errors = [];
   try {
+    appInstanceForHostCalls = null;
+    const invocation = resolveRunnerArguments(process.argv.slice(2));
+    runnerGuestArgs = invocation.guestArgs;
+    if (invocation.guestStderrPath !== null) {
+      const { fd, identity } = openGuestStderr(invocation.guestStderrPath);
+      guestStderrCapture = {
+        path: invocation.guestStderrPath, identity, pendingFd: fd,
+        primaryFd: fd, fds: new Set([fd]),
+      };
+    }
+    initWasmAssets(invocation.manifestPath);
+    traceMark('runMain:init');
+    const outputMetadata = parseWasmMetadata(wasmBuffer, {
+      exportFunctionSignatures: false,
+    });
+    outputImports = outputMetadata.imports;
+    inputHasRuntimeImports = outputImports.funcImports.some(
+      (entry) => entry.module === 'molt_runtime'
+    );
+    if (traceRun) {
+      console.error(
+        `[molt wasm] runMain wasm=${wasmPath} linked=${linkedPath || 'none'} imports_runtime=${inputHasRuntimeImports}`
+      );
+    }
+    const useLinked = runtimeManifest.mode === 'linked';
+    if (useLinked !== Boolean(linkedBuffer)) {
+      throw new Error('runtime manifest mode and linked module custody disagree');
+    }
+    if (!useLinked && (!inputHasRuntimeImports || !runtimeBuffer)) {
+      throw new Error('split-runtime manifest requires app runtime imports and a runtime module');
+    }
+    runtimeImportsDesc = null;
+    runtimeCallIndirectNames = [];
+    canDirectLink = false;
+    if (!useLinked) {
+      loadRuntimeAssets();
+      if (!runtimeBuffer) {
+        throw new Error('split-runtime manifest did not resolve a runtime module');
+      }
+      const runtimeMetadata = parseWasmMetadata(runtimeBuffer);
+      runtimeImportsDesc = runtimeMetadata.imports;
+      runtimeExportSignatures = runtimeMetadata.exportFunctionSignatures;
+      runtimeCallIndirectNames = runtimeImportsDesc.funcImports
+        .filter((entry) => entry.module === 'env' && entry.name.startsWith('molt_call_indirect'))
+        .map((entry) => entry.name);
+      canDirectLink = outputImports.table && runtimeImportsDesc.table && runtimeImportsDesc.memory;
+      if (!canDirectLink) {
+        throw new Error(
+          'Direct-link mode is unavailable for this wasm artifact. Use linked output or rebuild with split-runtime env.__indirect_function_table plus runtime env.memory imports.'
+        );
+      }
+    }
+    // Safety-first policy: default to linked execution. Direct-linking is opt-in
+    // and only allowed when the artifact advertises the shared memory/table ABI.
+    const runner = useLinked ? runLinked : runDirectLink;
+    traceMark(`runMain:runner:${useLinked ? 'linked' : 'direct'}`);
+    if (traceRun) {
+      console.error(`[molt wasm] runner=${useLinked ? 'linked' : 'direct'}`);
+    }
     await runner();
     traceMark('runMain:runner_completed');
     if (traceRun) {

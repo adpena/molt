@@ -63,6 +63,17 @@ def failure_details_path_for_json(json_out: Path) -> Path:
     return json_out.with_name(f"{json_out.stem}_molt_failure_details.jsonl")
 
 
+def bench_guard_artifacts(artifact_root: Path) -> dict[str, str]:
+    memory_guard_root = artifact_root / "memory_guard"
+    return {
+        "harness_command_profile_jsonl": str(memory_guard_root / "commands.jsonl"),
+        "repo_process_sentinel_jsonl": str(memory_guard_root / "bench_sentinel.jsonl"),
+        "backend_daemon_cleanup_jsonl": str(
+            memory_guard_root / "backend_daemon_cleanup.jsonl"
+        ),
+    }
+
+
 def bench_custody_artifacts(
     *,
     json_out: Path,
@@ -70,16 +81,11 @@ def bench_custody_artifacts(
     artifact_root: Path,
     failure_details_path: Path,
 ) -> dict[str, str]:
-    memory_guard_root = artifact_root / "memory_guard"
     return {
         "results_json": str(json_out),
         "summary_md": str(summary_out),
         "molt_failure_details_jsonl": str(failure_details_path),
-        "harness_command_profile_jsonl": str(memory_guard_root / "commands.jsonl"),
-        "repo_process_sentinel_jsonl": str(memory_guard_root / "bench_sentinel.jsonl"),
-        "backend_daemon_cleanup_jsonl": str(
-            memory_guard_root / "backend_daemon_cleanup.jsonl"
-        ),
+        **bench_guard_artifacts(artifact_root),
     }
 
 

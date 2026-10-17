@@ -860,7 +860,23 @@ def validate_cell(cell: Mapping[str, Any]) -> list[str]:
         f"cell {cell.get('benchmark')} output_parity {problem}"
         for problem in parity_problems
     )
-    if verdict in _MOLT_FAILURE_VERDICTS:
+    # Reference-only measurement failures have no Molt failure to fabricate.
+    # They remain RUN_ERROR and fail the gate; subject failures still require
+    # their complete existing payload, as do any supplied subject diagnostics.
+    reference_only_failure = (
+        verdict == VERDICT_RUN_ERROR
+        and cell.get("molt_ok") is True
+        and cell.get("cpython_ok") is False
+        and cell.get("molt_failure") is None
+        and cell.get("molt_failure_timed_out") is False
+        and cell.get("molt_failure_orphaned_process_groups") == []
+        and all(
+            cell.get(flat) is None
+            for flat, nested in _MOLT_FAILURE_MIRROR_FIELDS.items()
+            if nested not in {"timed_out", "orphaned_process_groups"}
+        )
+    )
+    if verdict in _MOLT_FAILURE_VERDICTS and not reference_only_failure:
         problems.extend(_validate_molt_failure_cell(cell, verdict))
     if (
         verdict == VERDICT_RUN_ERROR

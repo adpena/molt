@@ -708,12 +708,6 @@ ALLOWLIST: tuple[AllowedRawSubprocessUse, ...] = (
         "bounded git ancestry probe for performance-authority freshness",
     ),
     AllowedRawSubprocessUse(
-        "tools/safe_run.py",
-        "main",
-        "run",
-        "compatibility facade launches tools/memory_guard.py as the custody owner",
-    ),
-    AllowedRawSubprocessUse(
         "tests/cli/test_backend_daemon_sequential.py",
         "daemon_socket",
         "Popen",

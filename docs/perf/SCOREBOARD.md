@@ -342,10 +342,11 @@ impossible (launch dominated). The attributions this unblocks are recorded in
 - **Suite**: `tools/bench_suites.py` — `BENCHMARKS` (the curated 56-benchmark
   "core" verified subset), `SMOKE_BENCHMARKS`, and the per-benchmark molt build
   args (`MOLT_ARGS_BY_BENCH`, e.g. `--type-hints trust`).
-- **Run / time**: `tools/safe_run.py --json` — wraps **every** molt binary AND
-  the CPython baseline run with an RSS cap + timeout (the project's mandatory
-  guard for raw-binary execution) and returns `peak_rss_mib` + `elapsed_s` for
-  both runtimes, satisfying the constitution's peak-RSS column for free.
+- **Run / time**: `tools/safe_run.py` — the scoreboard calls its shared typed guard API
+  directly for Molt and CPython. `elapsed_s` is direct-child launch-to-exit
+  time; guard cleanup has its own interval. Peak process-tree RSS and complete
+  descendant closure come from the same guard result. Guest text is never
+  parsed as measurement metadata. The CLI remains a diagnostic adapter.
 
 The scoreboard is the *new* artifact: none of the existing tools emitted the
 constitution's absolute-vs-CPython-floor board. `tools/perf_regression.py`
@@ -410,8 +411,9 @@ retained — additive, never changes a normal build or any speedup number.
 Exit is **nonzero iff any cell is `FAIL_ENGINE`, `FAIL_COLD_BUDGET`,
 `BUILD_FAILED`, `RUN_ERROR`, or `UNSTABLE`**. `WARN_COLD_FLOOR` does NOT fail
 the gate (fixed tax within budget) unless `--strict-cold`. `FAIL_STALE` fails
-unless `--allow-nonauthoritative`. `RUN_BLOCKED` (WASM) and `CPY_INCOMPATIBLE`
-are not gated. `--no-gate` always exits 0.
+unless `--allow-nonauthoritative`. Historical `RUN_BLOCKED` and `CPY_INCOMPATIBLE`
+remain readable report vocabulary. A failed CPython sample is `RUN_ERROR`,
+including missing guard metrics, and cannot create a compatibility exclusion. `--no-gate` always exits 0.
 
 ```bash
 # Add the PyPy + Codon comparator lanes (auto-detect, or pass an explicit path).
@@ -444,7 +446,7 @@ partial is a valid scoreboard document.
   WARM = steady-state median after warmups. The constitution forbids warm-only
   wins, so a cell is RED if **either** the warm OR the cold speedup is `< 1.00×`.
 - Per-run RSS-cap (`--rss-mb`, default 4096) + wall-clock timeout (`--timeout`,
-  default 120s) via `safe_run.py`. Tight RSS poll (0.01s) so short benchmarks
+  default 120s) via the shared typed guard API. Tight RSS poll (0.01s) so short benchmarks
   still capture a representative peak.
 
 ## The scoreboard JSON schema
@@ -1014,10 +1016,12 @@ never scored.
   `molt_chan_*`). These are **molt-internal** benchmarks the system CPython 3.14
   oracle cannot run, so there is no valid floor to compare against — they are
   excluded from the gate, NOT scored RED.
-- **WASM run-path** — build/link only, recorded `run-blocked`
-  (`run_blocked_reason` = socket-import instantiation gap). Re-enable the run
-  column once the WASM instantiation gap is closed; the build-facts (size,
-  compile-time, links-ok) are still captured.
+- **WASM run-path** — linked deployments execute through the compiler-declared
+  manifest and the public Node runner for each declared WASM profile. Cold,
+  warmup and repeated warm samples all participate in exact guest-output parity.
+  Host diagnostics are retained separately. Fresh Node process timings include
+  engine startup, compilation and instantiation; they do not measure persistent
+  JIT state. Source support does not establish release-matrix acceptance.
 - **Luau** — has its own harness (`tools/benchmark_luau_vs_cpython.py`); fold
   into the board as a 4th backend lane in a follow-up.
 - **release-output / dev-fast profiles** — release-fast first per the
@@ -1054,7 +1058,7 @@ recorded in `host.pypy` / `host.codon` and the provenance.
   (+ `CODON_LIBRARY`) to `~/.codon/lib/codon` so they run under `safe_run`.
 
 Both lanes use the identical ≥5-sample cold+warm discipline through
-`safe_run.py --json` as the CPython path.
+the shared typed measurement API as the CPython path.
 
 ### First deltas (native / release-fast, this host)
 

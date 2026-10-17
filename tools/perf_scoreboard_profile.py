@@ -5,7 +5,6 @@ import datetime as dt
 import json
 import sys
 import subprocess
-import tempfile
 from pathlib import Path
 
 from tools import harness_memory_guard
@@ -41,16 +40,16 @@ def _perfscore_build_env(spec, profile):
     return _facade()._perfscore_build_env(spec, profile)
 
 
-def _release_binary(binary):
-    return _facade()._release_binary(binary)
+def _release_binary(binary, primary):
+    return _facade()._release_binary(binary, primary)
 
 
 def _git_rev():
     return _facade()._git_rev()
 
 
-def _safe_run_json(*args, **kwargs):
-    return _facade()._safe_run_json(*args, **kwargs)
+def _run_measured_command(*args, **kwargs):
+    return _facade()._run_measured_command(*args, **kwargs)
 
 
 def _shquote(arg: str) -> str:
@@ -148,11 +147,9 @@ def top_in_binary_frames(
     return out
 
 
-def _profiling_tmp_root() -> Path:
-    """Temp root for looped profiling sources/binaries (created on demand)."""
-    root = Path(tempfile.gettempdir()) / "perfscore_profiling"
-    root.mkdir(parents=True, exist_ok=True)
-    return root
+def _profiling_tmp_root(env: dict[str, str]) -> Path:
+    """Profiling scratch follows the build's admitted artifact root."""
+    return bench._bench_tmp_root(env)
 
 
 MOLT_KEEP_SYMBOLS_ENV = "MOLT_KEEP_SYMBOLS"
@@ -210,6 +207,12 @@ def build_profiling_binary(
         meta["refused"] = True
         meta["reason"] = "profiling requires an explicit supported target Python minor"
         return None, meta
+    if spec.build_target != "native":
+        meta["refused"] = True
+        meta["reason"] = (
+            "hot-only cycle attribution requires the native sampler backend"
+        )
+        return None, meta
     try:
         source = script_path.read_text(encoding="utf-8")
     except OSError as exc:
@@ -225,58 +228,68 @@ def build_profiling_binary(
         return None, meta
     meta["looped"] = True
 
-    # Write the looped variant next to a temp dir; the build reads it as a normal
-    # script. The name carries the benchmark stem so the in-binary lib name (the
-    # sample 'in <lib>') is recognizable.
-    looped_dir = Path(
-        tempfile.mkdtemp(prefix="perfscore-loop-", dir=str(_profiling_tmp_root()))
-    )
-    looped_path = looped_dir / script_path.name
-    looped_path.write_text(plan.source, encoding="utf-8")
-    meta["looped_source_path"] = str(looped_path)
-
     build_env = _perfscore_build_env(spec, profile)
-    build_env[MOLT_KEEP_SYMBOLS_ENV] = "1"  # the symbolication hatch
+    build_env[MOLT_KEEP_SYMBOLS_ENV] = "1"
     from tools.perf_scoreboard_build_profiles import profile_selection
 
     selection = profile_selection(spec, profile)
-    extra_args = [
-        "--python-version",
-        target_python_version,
-        "--backend",
-        selection.codegen_backend,
-        *bench_suites.molt_args_for_benchmark(script_path),
-    ]
-    build_flag = selection.guest_profile
+    source_owner = bench._new_bench_temp(_profiling_tmp_root(build_env), build_env)
+    binary = None
+    primary: BaseException | None = None
     try:
+        looped_path = Path(source_owner.name) / script_path.name
+        looped_path.write_text(plan.source, encoding="utf-8")
+        meta["looped_source_path"] = str(looped_path)
+        extra_args = [
+            "--python-version",
+            target_python_version,
+            "--backend",
+            selection.codegen_backend,
+            *bench_suites.molt_args_for_benchmark(script_path),
+        ]
         binary = bench.prepare_molt_binary(
             str(looped_path),
             extra_args=extra_args,
             env=build_env,
-            build_profile=build_flag,
+            build_profile=selection.guest_profile,
             batch_server=None,  # symbolicated env differs from the cell server's
             build_timeout_s=600.0,
         )
-    except Exception as exc:  # noqa: BLE001 - record, never crash the sweep
-        meta["refused"] = True
-        meta["reason"] = f"profiling build raised: {exc!r}"
-        log_lines.append(f"PROFILING-BUILD EXCEPTION: {exc!r}")
-        return None, meta
-    if not isinstance(binary, bench.MoltBinary):
-        meta["refused"] = True
-        if isinstance(binary, bench.MoltFailure):
-            meta["reason"] = f"profiling build failed: {binary.status}"
-            detail = f" detail={binary.detail}" if binary.detail else ""
-            log_lines.append(f"PROFILING-BUILD FAILED status={binary.status}{detail}")
+        if not isinstance(binary, bench.MoltBinary):
+            meta["refused"] = True
+            if isinstance(binary, bench.MoltFailure):
+                meta["reason"] = f"profiling build failed: {binary.status}"
+                detail = f" detail={binary.detail}" if binary.detail else ""
+                log_lines.append(
+                    f"PROFILING-BUILD FAILED status={binary.status}{detail}"
+                )
+            else:
+                meta["reason"] = "profiling build produced no binary"
+                log_lines.append("PROFILING-BUILD FAILED")
+            return None, meta
+        log_lines.append(
+            f"profiling binary built: looped(inner_loops={inner_loops}) + symbolicated "
+            f"size_kib={round(binary.size_kb, 1)}"
+        )
+        return binary, meta
+    except BaseException as exc:
+        primary = exc
+        raise
+    finally:
+        # The compiler has consumed the variant. A failed source retirement
+        # prevents transferring a successful binary without its ownership context.
+        try:
+            bench._cleanup_bench_temp(source_owner, primary)
+        except BaseException as exc:
+            if isinstance(binary, bench.MoltBinary):
+                _release_binary(binary, exc)
+            elif isinstance(binary, bench.MoltFailure):
+                exc.benchmark_build_failure = binary
+                exc.add_note(f"profiling build failed before cleanup: {binary.status}")
+            raise
         else:
-            meta["reason"] = "profiling build produced no binary"
-            log_lines.append("PROFILING-BUILD FAILED")
-        return None, meta
-    log_lines.append(
-        f"profiling binary built: looped(inner_loops={inner_loops}) + symbolicated "
-        f"size_kib={round(binary.size_kb, 1)}"
-    )
-    return binary, meta
+            if primary is not None and isinstance(binary, bench.MoltBinary):
+                _release_binary(binary, primary)
 
 
 def _time_one_run(
@@ -288,7 +301,7 @@ def _time_one_run(
     inner-repeat that amplifies a per-iteration leak past the RSS cap — a real
     finding) from a generic run failure.
     """
-    return _safe_run_json(
+    return _run_measured_command(
         cmd,
         env=env,
         rss_mb=rss_mb,
@@ -406,129 +419,146 @@ def capture_hot_only_profile(
         }
     eff_window_s = max(min_window_s, min(window_s, avail_window_s))
 
-    out_file = Path(tempfile.mktemp(prefix="perfscore-hot-", suffix=".txt", dir="/tmp"))
-    quoted = " ".join(_shquote(a) for a in cmd)
-    run_one = f"{quoted} >/dev/null 2>&1 || true"
-    safe_cmd = [
-        sys.executable,
-        str(SAFE_RUN),
-        "--rss-mb",
-        str(rss_mb),
-        "--timeout",
-        str(int(warmup_s + eff_window_s + 60)),
-        "--",
-        "/bin/sh",
-        "-c",
-        run_one,
-    ]
-    # --- (2) WARMUP: launch the workload, sleep warmup_s, THEN attach ---------
+    output_owner = bench._new_bench_temp(bench._bench_tmp_root(env), env)
+    primary: BaseException | None = None
+    sampler_proc = None
+    proc = None
     try:
-        proc = _profiling_popen(safe_cmd, env=env)
-    except OSError as exc:
+        out_file = Path(output_owner.name) / "sample.txt"
+        quoted = " ".join(_shquote(a) for a in cmd)
+        run_one = f"{quoted} >/dev/null 2>&1 || true"
+        safe_cmd = [
+            sys.executable,
+            str(SAFE_RUN),
+            "--rss-mb",
+            str(rss_mb),
+            "--timeout",
+            str(int(warmup_s + eff_window_s + 60)),
+            "--",
+            "/bin/sh",
+            "-c",
+            run_one,
+        ]
+        # --- (2) WARMUP: launch the workload, sleep warmup_s, THEN attach ---------
         try:
-            out_file.unlink()
-        except OSError:
-            pass
-        return {
-            "available": False,
-            "mode": "hot-only",
-            "top_symbols": [],
-            "in_binary_top": [],
-            "launch_breakdown": None,
-            "refused": True,
-            "refused_reason": f"could not launch profiling target: {exc!r}",
-            "note": "target launch failed",
-        }
-    _time.sleep(warmup_s)  # let the first iterations warm up (excluded from window)
-    # --- (3) SAMPLE: attach to the now-running steady-state process -----------
-    try:
-        sampler_proc = _profiling_popen(
-            [
-                sampler,
-                target_name,
-                str(max(1, int(round(eff_window_s)))),
-                "-mayDie",
-                "-f",
-                str(out_file),
-            ]
-        )
-    except OSError as exc:
+            proc = _profiling_popen(safe_cmd, env=env)
+        except OSError as exc:
+            primary = exc
+            return {
+                "available": False,
+                "mode": "hot-only",
+                "top_symbols": [],
+                "in_binary_top": [],
+                "launch_breakdown": None,
+                "refused": True,
+                "refused_reason": f"could not launch profiling target: {exc!r}",
+                "note": "target launch failed",
+            }
+        _time.sleep(warmup_s)  # let the first iterations warm up (excluded from window)
+        # --- (3) SAMPLE: attach to the now-running steady-state process -----------
+        try:
+            sampler_proc = _profiling_popen(
+                [
+                    sampler,
+                    target_name,
+                    str(max(1, int(round(eff_window_s)))),
+                    "-mayDie",
+                    "-f",
+                    str(out_file),
+                ]
+            )
+        except OSError as exc:
+            primary = exc
+            return {
+                "available": False,
+                "mode": "hot-only",
+                "top_symbols": [],
+                "in_binary_top": [],
+                "launch_breakdown": None,
+                "refused": True,
+                "refused_reason": f"could not start sampler: {exc!r}",
+                "note": "sampler start failed",
+            }
+        try:
+            sampler_proc.wait(timeout=eff_window_s + 40)
+        except subprocess.TimeoutExpired:
+            _terminate(sampler_proc)
+        sampler_proc = None
         _terminate(proc)
-        try:
-            out_file.unlink()
-        except OSError:
-            pass
+        proc = None
+        symbols = read_self_time(out_file, top_n=max(top_n, 60))
+        if not symbols:
+            return {
+                "available": False,
+                "mode": "hot-only",
+                "top_symbols": [],
+                "in_binary_top": [],
+                "launch_breakdown": None,
+                "refused": True,
+                "refused_reason": (
+                    "sampler produced no parseable symbols even after fitting the "
+                    "window to the looped runtime — raise --inner-repeat so the "
+                    "steady-state window is longer"
+                ),
+                "note": "no samples",
+            }
+        breakdown = classify_launch_dominance(symbols)
+        note = (
+            f"/usr/bin/sample {eff_window_s:.1f}s steady-state (after {warmup_s:.1f}s "
+            f"warmup) of ONE looped(inner_loops={inner_loops}) + symbolicated process; "
+            f"looped runtime {looped_runtime_s:.2f}s — CYCLES"
+        )
+        if breakdown["launch_dominates"]:
+            lf = breakdown["launch_fraction"]
+            lf_pct = f"{100 * lf:.1f}%" if lf is not None else "n/a"
+            return {
+                "available": False,
+                "mode": "hot-only",
+                "top_symbols": symbols[:top_n],
+                "in_binary_top": [],
+                "launch_breakdown": breakdown,
+                "refused": True,
+                "refused_reason": (
+                    f"CYCLE-ATTRIBUTION INVALID: launch/page-in dominates leaf "
+                    f"self-time ({lf_pct} >= "
+                    f"{int(100 * LAUNCH_DOMINANCE_REFUSAL_FRACTION)}%) even after "
+                    f"inner-repeat — increase --inner-repeat"
+                ),
+                "note": note,
+            }
+        in_binary_top = top_in_binary_frames(
+            symbols, binary_lib=target_name, top_n=top_n
+        )
         return {
-            "available": False,
+            "available": True,
             "mode": "hot-only",
-            "top_symbols": [],
-            "in_binary_top": [],
-            "launch_breakdown": None,
-            "refused": True,
-            "refused_reason": f"could not start sampler: {exc!r}",
-            "note": "sampler start failed",
-        }
-    try:
-        sampler_proc.wait(timeout=eff_window_s + 40)
-    except subprocess.TimeoutExpired:
-        _terminate(sampler_proc)
-    _terminate(proc)
-    symbols = read_self_time(out_file, top_n=max(top_n, 60))
-    try:
-        out_file.unlink()
-    except OSError:
-        pass
-    if not symbols:
-        return {
-            "available": False,
-            "mode": "hot-only",
-            "top_symbols": [],
-            "in_binary_top": [],
-            "launch_breakdown": None,
-            "refused": True,
-            "refused_reason": (
-                "sampler produced no parseable symbols even after fitting the "
-                "window to the looped runtime — raise --inner-repeat so the "
-                "steady-state window is longer"
-            ),
-            "note": "no samples",
-        }
-    breakdown = classify_launch_dominance(symbols)
-    note = (
-        f"/usr/bin/sample {eff_window_s:.1f}s steady-state (after {warmup_s:.1f}s "
-        f"warmup) of ONE looped(inner_loops={inner_loops}) + symbolicated process; "
-        f"looped runtime {looped_runtime_s:.2f}s — CYCLES"
-    )
-    if breakdown["launch_dominates"]:
-        lf = breakdown["launch_fraction"]
-        lf_pct = f"{100 * lf:.1f}%" if lf is not None else "n/a"
-        return {
-            "available": False,
-            "mode": "hot-only",
+            "inner_loops": inner_loops,
             "top_symbols": symbols[:top_n],
-            "in_binary_top": [],
+            "in_binary_top": in_binary_top,
             "launch_breakdown": breakdown,
-            "refused": True,
-            "refused_reason": (
-                f"CYCLE-ATTRIBUTION INVALID: launch/page-in dominates leaf "
-                f"self-time ({lf_pct} >= "
-                f"{int(100 * LAUNCH_DOMINANCE_REFUSAL_FRACTION)}%) even after "
-                f"inner-repeat — increase --inner-repeat"
-            ),
+            "refused": False,
+            "refused_reason": None,
             "note": note,
         }
-    in_binary_top = top_in_binary_frames(symbols, binary_lib=target_name, top_n=top_n)
-    return {
-        "available": True,
-        "mode": "hot-only",
-        "inner_loops": inner_loops,
-        "top_symbols": symbols[:top_n],
-        "in_binary_top": in_binary_top,
-        "launch_breakdown": breakdown,
-        "refused": False,
-        "refused_reason": None,
-        "note": note,
-    }
+    except BaseException as exc:
+        primary = exc
+        raise
+    finally:
+        try:
+            try:
+                if sampler_proc is not None:
+                    _terminate(sampler_proc)
+            finally:
+                if proc is not None:
+                    _terminate(proc)
+        except BaseException as exc:
+            if primary is not None:
+                primary.add_note(f"profiling process cleanup failed: {exc!r}")
+                raise primary
+            primary = exc
+            raise
+        finally:
+            bench._cleanup_bench_temp(output_owner, primary)
 
 
 def run_hot_only_profiles(
@@ -589,6 +619,7 @@ def run_hot_only_profiles(
                 flush=True,
             )
             continue
+        primary: BaseException | None = None
         try:
             run_args = bench.resolve_benchmark_run_args(str(script))
             prof = capture_hot_only_profile(
@@ -601,8 +632,11 @@ def run_hot_only_profiles(
                 window_s=window_s,
                 top_n=top_n,
             )
+        except BaseException as exc:
+            primary = exc
+            raise
         finally:
-            _release_binary(binary)
+            _release_binary(binary, primary)
         cell["profile_result"] = prof
         results.append(cell)
         if prof.get("refused"):

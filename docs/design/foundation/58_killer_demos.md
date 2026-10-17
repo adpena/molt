@@ -141,9 +141,10 @@ Anchored to live files (code beats docs — doc 52 RECON rule). This is what the
 - `tools/perf_scoreboard.py` — the CPython-floor scoreboard, exactly the Performance-Constitution
   operationalization (header verified): `speedup = cpython_time / molt_time`, any cell < 1.00 RED,
   cold+warm, ≥5 samples, median+stdev+CoV instability flag, keyed `benchmark × target × backend ×
-  profile`, runs every binary through `tools/safe_run.py --json` (RSS+timeout), `native + llvm`
-  today (WASM `run-blocked`, Luau in `tools/benchmark_luau_vs_cpython.py`). **PyPy/Codon columns
-  are present-but-nullable; neither installed on host** (header §"PyPy / Codon columns").
+  profile`, uses the shared typed measurement API in `tools/safe_run.py` (RSS+timeout),
+  and executes native, LLVM and manifest-bound WASM. Missing WASM budgets and release
+  qualification remain explicit in `tools/PERF_AUTHORITY.md`; Luau uses
+  `tools/benchmark_luau_vs_cpython.py`. PyPy/Codon are optional nullable comparators.
 - `tools/bench.py`, `tools/bench_suites.py` (curated suite), `tools/bench_dashboard.py`,
   `tools/bench_friends.py`, `tools/bench_reference.py` (reference-lane planner, reads
   `bench/results/reference_manifest.json`), `tools/cold_start_decompose.py`,
@@ -264,7 +265,7 @@ until reproducible).
 ```
 
 **Reuse, never duplicate:** `run_demo.py` builds via `tools/bench.py`'s daemon-batch path,
-times every run via `tools/safe_run.py --json` (RSS+timeout, mandated), and for Demo 3 *is a thin
+times every run via the shared typed measurement API (RSS+timeout), and for Demo 3 *is a thin
 caller of `tools/perf_scoreboard.py`* — the capsule's perf block is filled from the scoreboard's
 own output. No second perf authority is created (doc 49 single-authority rule; doc 51 §1 "no
 second authority for any fact").

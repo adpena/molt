@@ -2,15 +2,12 @@
 from __future__ import annotations
 
 import json
-import math
 import os
 import statistics
-import sys
 from typing import Any
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from tools import harness_memory_guard
 from tools import perf_causality
 from tools.perf_schema import (
     CLASS_DIMENSIONAL_WIN,
@@ -122,13 +119,9 @@ DEFAULT_RUN_RSS_MB = 4096
 
 DEFAULT_RUN_TIMEOUT_S = 120.0
 
-SAFE_RUN_POLL_S = 0.01
-
 DEFAULT_SAMPLES = 5
 
 DEFAULT_WARMUP = 2
-
-RUN_BLOCKED_BACKENDS = {"wasm"}
 
 
 @dataclass(frozen=True)
@@ -183,190 +176,10 @@ def _llvm_sys_prefix() -> str | None:
     return None
 
 
-@dataclass
-class RunOutcome:
-    ok: bool
-    elapsed_s: float | None
-    peak_rss_mib: float | None
-    status: str  # "ok" | "timeout" | "oom" | "error" | "nonzero"
-    exit_code: int | None
-    stdout: str | None = None
-    stderr: str | None = None
-    stdout_tail: str | None = None
-    stderr_tail: str | None = None
-
-
-def _tail_text(text: str | None, *, max_chars: int = 4096) -> str | None:
-    if not text:
-        return None
-    if len(text) <= max_chars:
-        return text
-    return text[-max_chars:]
-
-
-def _safe_run_json(
-    cmd: list[str],
-    *,
-    env: dict[str, str],
-    rss_mb: int,
-    timeout_s: float,
-    label: str,
-    capture_output: bool = False,
-) -> RunOutcome:
-    """Time one process through safe_run.py --json (RSS cap + timeout).
-
-    safe_run forwards the child's streams through its own streams and appends a
-    single ``SAFE_RUN {json}`` line on stderr. The outer guard already captures
-    those streams for every run; ``capture_output`` only retains exact child
-    stdout/stderr on the returned object after removing the wrapper receipt.
-    """
-    full = [
-        sys.executable,
-        str(SAFE_RUN),
-        "--json",
-        "--rss-mb",
-        str(rss_mb),
-        "--timeout",
-        str(timeout_s),
-        "--poll",
-        str(SAFE_RUN_POLL_S),
-        "--label",
-        label,
-        "--",
-        *cmd,
-    ]
-    proc = harness_memory_guard.guarded_completed_process(
-        full,
-        prefix="MOLT_BENCH",
-        env=env,
-        cwd=REPO_ROOT,
-        capture_output=True,
-        text=True,
-        timeout=timeout_s + 30.0,
-    )
-    if proc.timed_out:
-        return RunOutcome(
-            False,
-            None,
-            None,
-            "timeout",
-            None,
-            stdout=proc.stdout if capture_output else None,
-            stderr=proc.stderr if capture_output else None,
-            stdout_tail=_tail_text(proc.stdout),
-            stderr_tail=_tail_text(proc.stderr),
-        )
-
-    payload, child_stderr = _parse_safe_run_stderr(proc.stderr or "")
-    if payload is None or not _safe_run_receipt_matches_invocation(
-        payload,
-        label=label,
-        returncode=proc.returncode,
-        rss_mb=rss_mb,
-        timeout_s=timeout_s,
-    ):
-        return RunOutcome(
-            False,
-            None,
-            None,
-            "error",
-            proc.returncode,
-            stdout=proc.stdout if capture_output else None,
-            stderr=proc.stderr if capture_output else None,
-            stdout_tail=_tail_text(proc.stdout),
-            stderr_tail=_tail_text(proc.stderr),
-        )
-    status = payload.get("status", "error")
-    elapsed = payload.get("elapsed_s")
-    peak = payload.get("peak_rss_mib")
-    exit_code = payload.get("exit")
-    ok = status == "ok" and isinstance(exit_code, int) and exit_code == 0
-    if not ok and status == "ok":
-        status = "nonzero"
-    return RunOutcome(
-        ok=bool(ok),
-        elapsed_s=float(elapsed) if isinstance(elapsed, (int, float)) else None,
-        peak_rss_mib=float(peak) if isinstance(peak, (int, float)) else None,
-        status=status,
-        exit_code=exit_code if isinstance(exit_code, int) else None,
-        stdout=proc.stdout if capture_output else None,
-        stderr=child_stderr if capture_output else None,
-        stdout_tail=_tail_text(proc.stdout),
-        stderr_tail=_tail_text(proc.stderr),
-    )
-
-
-def _parse_safe_run_stderr(stderr_text: str) -> tuple[dict | None, str]:
-    """Split safe_run's terminal receipt from the child's exact stderr.
-
-    The wrapper inherits the child's streams and appends one ``SAFE_RUN`` JSON
-    record after the guarded child exits. Only that final newline-terminated
-    suffix is eligible: a malformed terminal receipt must not fall back to an
-    earlier child-emitted marker. Exact whitespace and missing-final-newline
-    differences remain observable to the shared parity law.
-
-    The receipt shares stderr with the child, so a hostile child can still spoof
-    the complete final envelope if the wrapper never emits one. Invocation
-    binding narrows that ambiguity, but cryptographic separation would require a
-    dedicated receipt channel.
-    """
-
-    marker = "SAFE_RUN "
-    start = stderr_text.rfind(marker)
-    if start < 0:
-        return None, stderr_text
-    line_end = stderr_text.find("\n", start)
-    if line_end < 0 or line_end + 1 != len(stderr_text):
-        return None, stderr_text
-    encoded = stderr_text[start + len(marker) : line_end].strip()
-    try:
-        payload = json.loads(encoded)
-    except json.JSONDecodeError:
-        return None, stderr_text
-    if not isinstance(payload, dict):
-        return None, stderr_text
-    return payload, stderr_text[:start]
-
-
-def _safe_run_receipt_matches_invocation(
-    payload: dict,
-    *,
-    label: str,
-    returncode: int,
-    rss_mb: int,
-    timeout_s: float,
-) -> bool:
-    """Validate the safe_run emitter envelope without redefining its status law."""
-
-    def finite_number(value: object) -> bool:
-        if isinstance(value, bool) or not isinstance(value, (int, float)):
-            return False
-        return not isinstance(value, float) or math.isfinite(value)
-
-    receipt_exit = payload.get("exit")
-    receipt_status = payload.get("status")
-    if (
-        payload.get("label") != label
-        or not isinstance(receipt_status, str)
-        or receipt_status not in {"ok", "timeout", "oom"}
-        or not isinstance(receipt_exit, int)
-        or isinstance(receipt_exit, bool)
-        or receipt_exit != returncode
-    ):
-        return False
-    for metric in ("elapsed_s", "peak_rss_mib", "rss_limit_mib", "timeout_s"):
-        if not finite_number(payload.get(metric)):
-            return False
-    if payload["elapsed_s"] < 0 or payload["peak_rss_mib"] < 0:
-        return False
-    receipt_rss_mb = payload["rss_limit_mib"]
-    receipt_timeout_s = payload["timeout_s"]
-    return (
-        receipt_rss_mb > 0
-        and receipt_timeout_s > 0
-        and receipt_rss_mb == rss_mb
-        and receipt_timeout_s == timeout_s
-    )
+from tools.safe_run import (  # noqa: E402
+    RunOutcome as RunOutcome,
+    _run_measured_command as _run_measured_command,
+)
 
 
 @dataclass
@@ -571,11 +384,8 @@ class Cell:
     codon_equivalent: bool | None = None
     codon_note: str | None = None
 
-    # When the CPython BASELINE itself cannot run the script (e.g. a
-    # molt-internal benchmark that imports molt-only modules, or needs args the
-    # bare CPython invocation lacks), there is no valid floor to compare
-    # against. Such a cell is NOT red — it is excluded from the gate as
-    # cpython-incompatible (a benchmark-harness fact, not a molt slowness fact).
+    # Historical report vocabulary. Live reference failures are RUN_ERROR;
+    # resource or measurement failure cannot infer semantic incompatibility.
     cpython_incompatible: bool = False
 
     # Provenance.
@@ -658,12 +468,12 @@ class Cell:
         if not self.build_ok:
             self.verdict = VERDICT_BUILD_FAILED
             return
-        # CPython baseline can't run -> no valid floor; not gated.
+        # A missing baseline is missing measurement evidence. It does not prove
+        # semantic incompatibility and must never waive a failed sample.
         if not self.cpython_ok:
-            self.cpython_incompatible = True
-            self.verdict = VERDICT_CPY_INCOMPAT
+            self.verdict = VERDICT_RUN_ERROR
             if self.note is None:
-                self.note = "CPython baseline could not run this script standalone"
+                self.note = "CPython baseline failed or was unmeasurable"
             return
         # CPython runs but molt does not -> a real molt run failure.
         if not self.molt_ok:

@@ -77,7 +77,8 @@ SRC_ROOT = REPO_ROOT / "src"
 from tools import bench  # noqa: E402
 from tools import harness_memory_guard  # noqa: E402
 
-SAFE_RUN = TOOLS_ROOT / "safe_run.py"
+from tools.safe_run import _run_measured_command  # noqa: E402
+
 DOCS_COLD_START = REPO_ROOT / "docs" / "perf" / "COLD_START.md"
 
 PERFSCORE_SESSION_ID = "perfscore"
@@ -156,48 +157,23 @@ def _safe_run_elapsed(
     label: str,
     extra_env: dict[str, str] | None = None,
 ) -> tuple[float | None, str]:
-    """Run one process through safe_run; return (elapsed_s, captured_stderr)."""
-    full = [
-        sys.executable,
-        str(SAFE_RUN),
-        "--json",
-        "--rss-mb",
-        str(rss_mb),
-        "--timeout",
-        str(timeout_s),
-        "--poll",
-        "0.01",
-        "--label",
-        label,
-        "--",
-        *cmd,
-    ]
+    """Return the shared guard's child interval and exact child stderr."""
     run_env = dict(env)
     if extra_env:
         run_env.update(extra_env)
     try:
-        proc = _guarded_text_process(
-            full,
+        outcome = _run_measured_command(
+            cmd,
             env=run_env,
-            timeout_s=timeout_s + 30.0,
+            rss_mb=rss_mb,
+            timeout_s=timeout_s,
+            label=label,
+            capture_output=True,
+            prefix=COLD_START_GUARD_PREFIX,
         )
     except OSError:
         return None, ""
-    elapsed = None
-    for line in reversed((proc.stderr or "").splitlines()):
-        s = line.strip()
-        if s.startswith("SAFE_RUN ") and s[9:].lstrip().startswith("{"):
-            try:
-                payload = json.loads(s[9:].lstrip())
-                if payload.get("status") == "ok":
-                    elapsed = payload.get("elapsed_s")
-            except json.JSONDecodeError:
-                pass
-            break
-    return (
-        float(elapsed) if isinstance(elapsed, (int, float)) else None,
-        proc.stderr or "",
-    )
+    return outcome.elapsed_s if outcome.ok else None, outcome.stderr or ""
 
 
 def _measure_binary(
@@ -286,10 +262,8 @@ def _measure_runtime_init_phases(
     per stage; the sum is the total molt_runtime_init cost.
     """
     per_phase: dict[str, list[int]] = {p: [] for p in RUNTIME_INIT_PHASES}
-    trace_env = dict(env)
-    trace_env["MOLT_TRACE_RUNTIME_INIT"] = "1"
     for _ in range(samples):
-        _elapsed, stderr = _safe_run_elapsed(
+        elapsed, stderr = _safe_run_elapsed(
             [str(binary)],
             env=env,
             rss_mb=rss_mb,
@@ -297,6 +271,8 @@ def _measure_runtime_init_phases(
             label="runtime-init-trace",
             extra_env={"MOLT_TRACE_RUNTIME_INIT": "1"},
         )
+        if elapsed is None:
+            continue
         for m in _TRACE_RE.finditer(stderr):
             delta = int(m.group(2))
             stage = m.group(3)

@@ -241,16 +241,45 @@ def test_wasm_measurement_build_uses_same_oracle_minor(monkeypatch, tmp_path):
     from tools import perf_scoreboard_measure as measure
 
     captured = []
-    monkeypatch.setattr(measure.bench, "BENCH_TMP_ROOT", tmp_path)
+    from molt import dx
+    from tests.test_dx_run_context import (
+        _clear_run_context_env,
+        _github_actions_custody_env,
+    )
+
+    source = tmp_path / "runner-work/molt/molt"
+    source.mkdir(parents=True)
+    sha = "b" * 40
+    facts = _github_actions_custody_env(source, tmp_path / "runner-temp", sha=sha)
+    _clear_run_context_env(monkeypatch)
+    monkeypatch.delenv("MOLT_BENCH_TMP_ROOT", raising=False)
+    for key, value in facts.items():
+        monkeypatch.setenv(key, value)
+    monkeypatch.setattr(dx, "git_checkout_head", lambda _root: sha)
+    monkeypatch.setattr(measure.bench, "REPO_ROOT", source)
+    build_env = measure._perfscore_build_env(
+        measure.BackendSpec("wasm", "wasm", "wasm"), "wasm-release"
+    )
 
     def guard(cmd, **kwargs):
         captured.extend(cmd)
         return subprocess.CompletedProcess(cmd, 1, "", "fixture build failure")
 
     monkeypatch.setattr(
-        measure.harness_memory_guard, "guarded_completed_process", guard
+        measure.bench.harness_memory_guard, "guarded_completed_process", guard
     )
-    measure._build_wasm_only(tmp_path / "probe.py", {}, "release", [], "3.13")
+    monkeypatch.setattr(measure.bench, "_prune_backend_daemons", lambda env: None)
+    measure.bench.prepare_molt_binary(
+        str(source / "probe.py"),
+        env=build_env,
+        build_profile="release",
+        build_target="wasm",
+        extra_args=["--python-version", "3.13"],
+    )
+    output = Path(captured[captured.index("--out-dir") + 1])
+    assert output.is_relative_to(tmp_path / "runner-temp/molt-custody")
+    assert not output.exists()
+    assert not (source / "tmp").exists()
     assert captured[captured.index("--python-version") + 1] == "3.13"
     assert captured[captured.index("--target") + 1] == "wasm"
 
@@ -470,3 +499,172 @@ def test_shards_measured_while_main_moved_on_still_merge(tmp_path):
     rc, out = _merge(tmp_path, [a, b])
     assert rc == 0
     assert out is not None and out["git_rev"] == "a" * 40
+
+
+@pytest.mark.parametrize(
+    "phase",
+    [
+        "success",
+        "unbound",
+        "binding-error",
+        "sample-error",
+        "cancel",
+        "cycle-error",
+        "log-error",
+        "unbound-log-error",
+    ],
+)
+@pytest.mark.parametrize("cleanup_failure", [False, True])
+def test_measure_cell_closes_actual_binary_owner_on_every_exit(
+    monkeypatch, tmp_path, phase, cleanup_failure
+):
+    from tools import perf_scoreboard as scoreboard
+    from tools import perf_scoreboard_measure as measure
+    from tools import perf_scoreboard_build_profiles as profiles
+    from molt import temporary_artifacts
+
+    owner = temporary_artifacts.OwnedTemporaryDirectory(dir=tmp_path)
+    artifact = Path(owner.name) / "program"
+    artifact.write_bytes(b"independent artifact")
+    unbound = phase.startswith("unbound")
+    target = "native"
+    original = (
+        KeyboardInterrupt("independent measurement cancellation")
+        if phase == "cancel"
+        else OSError("independent " + phase)
+    )
+    binary = measure.bench.MoltBinary(
+        artifact,
+        owner,
+        0.1,
+        1.0,
+        None
+        if unbound
+        else {
+            "selected_profiles": {
+                "backend": "native",
+                "guest_profile": "release",
+                "compiler_profile": "release",
+                "runtime_profile": "release-fast",
+                "target": target,
+            }
+        },
+    )
+    monkeypatch.setattr(measure, "REPO_ROOT", tmp_path)
+    monkeypatch.setattr(measure, "_perfscore_build_env", lambda spec, profile: {})
+    monkeypatch.setattr(measure, "_cpython_run_env", lambda: {})
+    monkeypatch.setattr(measure.bench, "prepare_molt_binary", lambda *a, **kw: binary)
+    monkeypatch.setattr(measure.bench, "resolve_benchmark_run_args", lambda path: [])
+
+    def fail(*args, **kwargs):
+        assert artifact.is_file()
+        raise original
+
+    if phase == "binding-error":
+        monkeypatch.setattr(profiles, "profile_binding_problems", fail)
+    if phase.endswith("log-error"):
+        monkeypatch.setattr(measure, "_write_log", fail)
+    monkeypatch.setattr(scoreboard, "capture_cycle_profile", fail)
+
+    def sample(*args, **kwargs):
+        assert artifact.is_file()
+        if phase in {"sample-error", "cancel"}:
+            raise original
+        return measure.RunOutcome(True, 0.1, 1.0, "ok", 0, stdout="same\n", stderr="")
+
+    monkeypatch.setattr(measure, "_run_measured_command", sample)
+
+    unrelated = RuntimeError("unrelated caller exception")
+
+    def run():
+        try:
+            raise unrelated
+        except RuntimeError:
+            return measure.measure_cell(
+                script_path=tmp_path / "bench_probe.py",
+                spec=measure.BackendSpec(target, target, target),
+                profile="release-fast",
+                samples=1,
+                warmup=0,
+                rss_mb=64,
+                timeout_s=1.0,
+                batch_server=None,
+                cpython_cmd=("fixture-cpython",),
+                target_python_version="3.12",
+                log_dir=tmp_path / "logs",
+                emit_cycle_profile=phase == "cycle-error",
+            )
+
+    failed = phase not in {"success", "unbound"}
+    with monkeypatch.context() as scoped:
+        if cleanup_failure:
+            scoped.setattr(
+                temporary_artifacts,
+                "delete_path",
+                lambda path: (False, "independent deletion refusal"),
+            )
+        if failed or cleanup_failure:
+            with pytest.raises(type(original) if failed else OSError) as caught:
+                run()
+            if failed:
+                assert caught.value is original
+            if cleanup_failure:
+                assert caught.value.benchmark_temporary_directories == (owner,)
+                assert artifact.is_file()
+        else:
+            cell = run()
+            assert cell.build_ok
+            assert cell.run_blocked is False
+            assert (tmp_path / "logs").is_dir()
+    if cleanup_failure:
+        owner.cleanup()
+    assert not hasattr(unrelated, "benchmark_temporary_directories")
+    assert not Path(owner.name).exists()
+
+
+def test_measure_cell_preserves_replaced_allocation_and_original_error(
+    monkeypatch, tmp_path
+):
+    from tools import perf_scoreboard_measure as measure
+    from molt.temporary_artifacts import OwnedTemporaryDirectory
+
+    owner = OwnedTemporaryDirectory(dir=tmp_path)
+    allocated = Path(owner.name)
+    artifact = allocated / "program"
+    artifact.write_bytes(b"owned bytes")
+    moved = tmp_path / "retained-original"
+    original = OSError("independent binding failure")
+    binary = measure.bench.MoltBinary(artifact, owner, 0.1, 1.0, None)
+    monkeypatch.setattr(measure, "REPO_ROOT", tmp_path)
+    monkeypatch.setattr(measure, "_perfscore_build_env", lambda spec, profile: {})
+    monkeypatch.setattr(measure.bench, "prepare_molt_binary", lambda *a, **kw: binary)
+
+    def log(*args):
+        allocated.rename(moved)
+        allocated.mkdir()
+        (allocated / "foreign").write_bytes(b"not this allocation")
+        raise original
+
+    monkeypatch.setattr(measure, "_write_log", log)
+    with pytest.raises(OSError) as caught:
+        measure.measure_cell(
+            script_path=tmp_path / "bench_probe.py",
+            spec=measure.BackendSpec("native", "native", "native"),
+            profile="release-fast",
+            samples=1,
+            warmup=0,
+            rss_mb=64,
+            timeout_s=1.0,
+            batch_server=None,
+            cpython_cmd=("fixture-cpython",),
+            target_python_version="3.12",
+            log_dir=tmp_path / "logs",
+        )
+    assert caught.value is original
+    assert original.benchmark_temporary_directories == (owner,)
+    assert (allocated / "foreign").read_bytes() == b"not this allocation"
+    assert (moved / "program").read_bytes() == b"owned bytes"
+    (allocated / "foreign").unlink()
+    allocated.rmdir()
+    moved.rename(allocated)
+    owner.cleanup()

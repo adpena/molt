@@ -22,24 +22,23 @@ The canonical molt-vs-CPython wall-time machinery already lives in
 ``tools/bench.py`` (daemon batch build with the harness memory guard,
 binary-size + compile-time capture, the curated suite in
 ``tools/bench_suites.py``). We REUSE it for building. Every benchmark *run*
-(molt binary AND the CPython baseline) is timed through ``tools/safe_run.py
---json``, which enforces the RSS cap + wall-clock timeout the project mandates
-for raw-binary execution and reports ``peak_rss_mib`` + ``elapsed_s`` for both
-runtimes — satisfying the constitution's peak-RSS column for free.
+(Molt artifact and CPython baseline) is timed by the shared measured-command
+owner in ``tools/safe_run.py``, using typed process-guard results for direct-child
+latency, observed peak RSS, timeout and descendant closure.
 
 Methodology (pyperf discipline)
 -------------------------------
   * >= 5 measured samples per (benchmark, runtime) phase (configurable).
   * median + stdev + coefficient-of-variation outlier/instability detection.
-  * COLD (first cold-cache run) AND WARM (steady-state) both captured — the
+  * COLD (first process run) AND WARM (after warmup) both captured — the
     constitution forbids warm-only wins.
   * MOLT_SESSION_ID=perfscore; its CARGO_TARGET_DIR is <checkout target>/sessions/perfscore.
 
 Backends / profiles (baseline run)
 ----------------------------------
-  * native + llvm. WASM is build/link-only today (a known socket-import
-    instantiation gap blocks its run-path) -> recorded as ``run-blocked``.
-    Luau lives in ``tools/benchmark_luau_vs_cpython.py`` -> follow-up.
+  * Native, LLVM and linked WASM use the same cold/warm/output-parity controller.
+    WASM executes the compiler's manifest through the canonical Node runner.
+    Luau lives in ``tools/benchmark_luau_vs_cpython.py``.
   * release-fast is the daily-contract profile (``--build-profile release`` in
     the CLI maps to the ``release-fast`` cargo profile for the backend).
     release-output is the incremental next fill.
@@ -58,7 +57,6 @@ import re
 import shlex
 import subprocess
 import sys
-import tempfile
 import time
 from collections.abc import Mapping
 from dataclasses import asdict
@@ -87,9 +85,7 @@ from tools.perf_scoreboard_model import (  # noqa: E402
     PERFSCORE_SESSION_ID as PERFSCORE_SESSION_ID,
     profile_build_flags as profile_build_flags,
     REPO_ROOT as REPO_ROOT,
-    RUN_BLOCKED_BACKENDS as RUN_BLOCKED_BACKENDS,
     SAFE_RUN as SAFE_RUN,
-    SAFE_RUN_POLL_S as SAFE_RUN_POLL_S,
     SCOREBOARD_DIR as SCOREBOARD_DIR,
     SRC_ROOT as SRC_ROOT,
     TOOLS_ROOT as TOOLS_ROOT,
@@ -106,13 +102,11 @@ from tools.perf_scoreboard_model import (  # noqa: E402
     _dimensional_improvement as _dimensional_improvement,
     _llvm_sys_prefix as _llvm_sys_prefix,
     _load_cold_start_budgets as _load_cold_start_budgets,
-    _parse_safe_run_stderr as _parse_safe_run_stderr,
     _repeat_stability as _repeat_stability,
     _robust_cell_stable as _robust_cell_stable,
     _safe_ratio as _safe_ratio,
-    _safe_run_json as _safe_run_json,
+    _run_measured_command as _run_measured_command,
     _suspect_startup_component as _suspect_startup_component,
-    _tail_text as _tail_text,
     _warm_speedup_ci as _warm_speedup_ci,
     classify_cell as classify_cell,
 )
@@ -155,7 +149,6 @@ from tools.perf_schema import (  # noqa: E402
 )
 
 from tools.perf_scoreboard_measure import (  # noqa: E402
-    _build_wasm_only as _build_wasm_only,
     _cpython_run_env as _cpython_run_env,
     _max_opt as _max_opt,
     _measure_codon_warm as _measure_codon_warm,
@@ -322,9 +315,6 @@ _CODEX_EXCLUDE = "codex"  # never counted/killed (project policy)
 # safe_run RSS cap + wall-clock timeout per run. Generous enough for the heavy
 # benchmarks (class_hierarchy, bytes_find @ 2s CPython) without letting a
 # runaway reach OOM territory.
-
-# WASM cannot be run on this host today (socket-import instantiation gap); we
-# build+link only and mark the run-path blocked. Luau has its own harness.
 
 
 # ---------------------------------------------------------------------------
@@ -860,91 +850,111 @@ def capture_cycle_profile(
             "note": "cycle profiler unavailable (/usr/bin/sample not found)",
         }
 
-    out_file = Path(
-        tempfile.mktemp(prefix="perfscore-sample-", suffix=".txt", dir="/tmp")
-    )
-    target_name = Path(cmd[0]).name
-    # Run the binary repeat_runs times back-to-back inside ONE safe_run-guarded
-    # process group so the sampler has a multi-second window. A non-zero exit on
-    # any iteration stops the loop (set -e) — we still sample whatever ran.
-    quoted = " ".join(_shquote(a) for a in cmd)
-    loop_cmd = (
-        f"for i in $(seq 1 {repeat_runs}); do {quoted} >/dev/null 2>&1 || break; done"
-    )
-    safe_cmd = [
-        sys.executable,
-        str(SAFE_RUN),
-        "--rss-mb",
-        str(rss_mb),
-        "--timeout",
-        str(max(timeout_s, sample_seconds + 10)),
-        "--",
-        "/bin/sh",
-        "-c",
-        loop_cmd,
-    ]
-    # Start the sampler FIRST in -wait mode (race-free): it blocks until a process
-    # named target_name appears, then samples it. We launch it as a background
-    # Popen, then start the workload; sample catches the workload at launch.
+    output_owner = bench._new_bench_temp(bench._bench_tmp_root(env), env)
+    primary: BaseException | None = None
+    sampler_proc = None
+    proc = None
     try:
-        sampler_proc = _profiling_popen(
-            [
-                sampler,
-                target_name,
-                str(sample_seconds),
-                "-wait",
-                "-mayDie",
-                "-f",
-                str(out_file),
-            ]
-        )
-    except OSError as exc:
-        return {
-            "available": False,
-            "top_symbols": [],
-            "note": f"could not start sampler in -wait mode: {exc!r}",
-        }
-    try:
-        proc = _profiling_popen(safe_cmd, env=env)
-    except OSError as exc:
+        out_file = Path(output_owner.name) / "sample.txt"
+        target_name = Path(cmd[0]).name
+        # Run the binary repeat_runs times back-to-back inside ONE safe_run-guarded
+        # process group so the sampler has a multi-second window. A non-zero exit on
+        # any iteration stops the loop (set -e) — we still sample whatever ran.
+        quoted = " ".join(_shquote(a) for a in cmd)
+        loop_cmd = f"for i in $(seq 1 {repeat_runs}); do {quoted} >/dev/null 2>&1 || break; done"
+        safe_cmd = [
+            sys.executable,
+            str(SAFE_RUN),
+            "--rss-mb",
+            str(rss_mb),
+            "--timeout",
+            str(max(timeout_s, sample_seconds + 10)),
+            "--",
+            "/bin/sh",
+            "-c",
+            loop_cmd,
+        ]
+        # Start the sampler FIRST in -wait mode (race-free): it blocks until a process
+        # named target_name appears, then samples it. We launch it as a background
+        # Popen, then start the workload; sample catches the workload at launch.
+        try:
+            sampler_proc = _profiling_popen(
+                [
+                    sampler,
+                    target_name,
+                    str(sample_seconds),
+                    "-wait",
+                    "-mayDie",
+                    "-f",
+                    str(out_file),
+                ]
+            )
+        except OSError as exc:
+            primary = exc
+            return {
+                "available": False,
+                "top_symbols": [],
+                "note": f"could not start sampler in -wait mode: {exc!r}",
+            }
+        try:
+            proc = _profiling_popen(safe_cmd, env=env)
+        except OSError as exc:
+            primary = exc
+            return {
+                "available": False,
+                "top_symbols": [],
+                "note": f"could not launch target for profiling: {exc!r}",
+            }
+        # Let the sampler run its window, then reap both. The sampler exits on its own
+        # after sample_seconds (or when the target dies under -mayDie); the workload
+        # loop exits when its runs complete or safe_run caps it.
+        try:
+            sampler_proc.wait(timeout=sample_seconds + 30)
+        except subprocess.TimeoutExpired:
+            pass
+        srv_rc = sampler_proc.returncode
         _terminate(sampler_proc)
+        sampler_proc = None
+        _terminate(proc)
+        proc = None
+        symbols = read_self_time(out_file, top_n=top_n)
+        if not symbols:
+            return {
+                "available": False,
+                "top_symbols": [],
+                "note": (
+                    f"sampler produced no parseable symbols (rc={srv_rc}); benchmark "
+                    "may present too little CPU even across "
+                    f"{repeat_runs} back-to-back runs — cycle attribution unavailable"
+                ),
+            }
         return {
-            "available": False,
-            "top_symbols": [],
-            "note": f"could not launch target for profiling: {exc!r}",
-        }
-    # Let the sampler run its window, then reap both. The sampler exits on its own
-    # after sample_seconds (or when the target dies under -mayDie); the workload
-    # loop exits when its runs complete or safe_run caps it.
-    try:
-        sampler_proc.wait(timeout=sample_seconds + 30)
-    except subprocess.TimeoutExpired:
-        _terminate(sampler_proc)
-    srv_rc = sampler_proc.returncode
-    _terminate(proc)
-    symbols = read_self_time(out_file, top_n=top_n)
-    try:
-        out_file.unlink()
-    except OSError:
-        pass
-    if not symbols:
-        return {
-            "available": False,
-            "top_symbols": [],
+            "available": True,
+            "top_symbols": symbols,
             "note": (
-                f"sampler produced no parseable symbols (rc={srv_rc}); benchmark "
-                "may present too little CPU even across "
-                f"{repeat_runs} back-to-back runs — cycle attribution unavailable"
+                f"/usr/bin/sample {sample_seconds}s self-time over {repeat_runs} "
+                "back-to-back runs (CYCLES, not alloc-count)"
             ),
         }
-    return {
-        "available": True,
-        "top_symbols": symbols,
-        "note": (
-            f"/usr/bin/sample {sample_seconds}s self-time over {repeat_runs} "
-            "back-to-back runs (CYCLES, not alloc-count)"
-        ),
-    }
+    except BaseException as exc:
+        primary = exc
+        raise
+    finally:
+        try:
+            try:
+                if sampler_proc is not None:
+                    _terminate(sampler_proc)
+            finally:
+                if proc is not None:
+                    _terminate(proc)
+        except BaseException as exc:
+            if primary is not None:
+                primary.add_note(f"profiling process cleanup failed: {exc!r}")
+                raise primary
+            primary = exc
+            raise
+        finally:
+            bench._cleanup_bench_temp(output_owner, primary)
 
 
 # ---------------------------------------------------------------------------
@@ -1049,7 +1059,7 @@ class CodonRunner:
 
     def __init__(self, codon_bin: str) -> None:
         self.codon_bin = codon_bin
-        self._tmp_root: Path | None = None
+        self._tmp_dir: bench.OwnedTemporaryDirectory | None = None
         # Codon-compiled binaries link libomp/libcodonrt via @loader_path and
         # need the codon lib dir on DYLD_LIBRARY_PATH to run. Resolve it from
         # the binary location (.../bin/codon -> .../lib/codon).
@@ -1073,16 +1083,10 @@ class CodonRunner:
             env.setdefault("CODON_LIBRARY", str(self.lib_dir))
         return env
 
-    def _ensure_tmp(self) -> Path:
-        if self._tmp_root is None:
-            import tempfile
-
-            self._tmp_root = Path(
-                tempfile.mkdtemp(
-                    prefix="perfscore-codon-", dir=str(bench.BENCH_TMP_ROOT)
-                )
-            )
-        return self._tmp_root
+    def _ensure_tmp(self, env: dict[str, str]) -> Path:
+        if self._tmp_dir is None:
+            self._tmp_dir = bench._new_bench_temp(bench._bench_tmp_root(env), env)
+        return Path(self._tmp_dir.name)
 
     def measure_into(
         self,
@@ -1103,73 +1107,80 @@ class CodonRunner:
             log_lines.append("codon: non-equivalent (not allowlisted) — not scored")
             return
         cell.codon_equivalent = True
-        out_bin = self._ensure_tmp() / f"{Path(key).stem}.codon"
-        # Codon does not accept arbitrary argv the way CPython does; allowlisted
-        # kernels are self-contained (no required run_args). If a benchmark
-        # needs args, it should not be on the allowlist.
-        build_cmd = [
-            self.codon_bin,
-            "build",
-            "-release",
-            "-o",
-            str(out_bin),
-            str(script_path),
-        ]
+        env = bench._canonical_bench_env(self._run_env())
+        primary: BaseException | None = None
         try:
-            res = harness_memory_guard.guarded_completed_process(
-                build_cmd,
-                prefix="MOLT_BENCH",
-                cwd=REPO_ROOT,
-                env=self._run_env(),
-                capture_output=True,
-                text=True,
-                timeout=300,
+            out_bin = self._ensure_tmp(env) / f"{Path(key).stem}.codon"
+            # Codon does not accept arbitrary argv the way CPython does; allowlisted
+            # kernels are self-contained (no required run_args). If a benchmark
+            # needs args, it should not be on the allowlist.
+            build_cmd = [
+                self.codon_bin,
+                "build",
+                "-release",
+                "-o",
+                str(out_bin),
+                str(script_path),
+            ]
+            try:
+                res = harness_memory_guard.guarded_completed_process(
+                    build_cmd,
+                    prefix="MOLT_BENCH",
+                    cwd=REPO_ROOT,
+                    env=env,
+                    capture_output=True,
+                    text=True,
+                    timeout=300,
+                )
+            except OSError as exc:
+                primary = exc
+                cell.codon_equivalent = False
+                cell.codon_note = f"codon build error: {exc!r}"
+                log_lines.append(f"codon build EXCEPTION: {exc!r} — not scored")
+                return
+            if res.timed_out:
+                cell.codon_equivalent = False
+                cell.codon_note = "codon build timed out after 300s"
+                log_lines.append("codon build TIMEOUT — not scored")
+                return
+            if res.returncode != 0 or not out_bin.exists():
+                tail = (res.stderr or res.stdout or "").strip()[-400:]
+                # A compile failure does NOT mean molt wins — it means the
+                # comparison is unavailable. Record, do not score.
+                cell.codon_equivalent = False
+                cell.codon_note = f"codon build failed rc={res.returncode}: {tail}"
+                log_lines.append(f"codon build FAILED rc={res.returncode} — not scored")
+                return
+            warm = _measure_codon_warm(
+                str(out_bin),
+                run_args,
+                samples=samples,
+                warmup=warmup,
+                rss_mb=rss_mb,
+                timeout_s=timeout_s,
+                label=f"codon:{key}",
+                env=env,
             )
-        except OSError as exc:
-            cell.codon_equivalent = False
-            cell.codon_note = f"codon build error: {exc!r}"
-            log_lines.append(f"codon build EXCEPTION: {exc!r} — not scored")
-            return
-        if res.timed_out:
-            cell.codon_equivalent = False
-            cell.codon_note = "codon build timed out after 300s"
-            log_lines.append("codon build TIMEOUT — not scored")
-            return
-        if res.returncode != 0 or not out_bin.exists():
-            tail = (res.stderr or res.stdout or "").strip()[-400:]
-            # A compile failure does NOT mean molt wins — it means the
-            # comparison is unavailable. Record, do not score.
-            cell.codon_equivalent = False
-            cell.codon_note = f"codon build failed rc={res.returncode}: {tail}"
-            log_lines.append(f"codon build FAILED rc={res.returncode} — not scored")
-            return
-        warm = _measure_codon_warm(
-            str(out_bin),
-            run_args,
-            samples=samples,
-            warmup=warmup,
-            rss_mb=rss_mb,
-            timeout_s=timeout_s,
-            label=f"codon:{key}",
-            env=self._run_env(),
-        )
-        if warm is None:
-            cell.codon_note = "codon run unmeasurable"
-            log_lines.append("codon run unmeasurable — not scored")
-            return
-        cell.codon_warm_s = round(warm, 6)
-        cell.codon_ratio = _safe_ratio(warm, cell.warm_molt_s)
-        cell.codon_note = "equivalent (codon -release AOT)"
-        log_lines.append(
-            f"codon warm_median={cell.codon_warm_s} ratio={cell.codon_ratio}"
-        )
+            if warm is None:
+                cell.codon_note = "codon run unmeasurable"
+                log_lines.append("codon run unmeasurable — not scored")
+                return
+            cell.codon_warm_s = round(warm, 6)
+            cell.codon_ratio = _safe_ratio(warm, cell.warm_molt_s)
+            cell.codon_note = "equivalent (codon -release AOT)"
+            log_lines.append(
+                f"codon warm_median={cell.codon_warm_s} ratio={cell.codon_ratio}"
+            )
+        except BaseException as exc:
+            primary = exc
+            raise
+        finally:
+            self.close(primary)
 
-    def close(self) -> None:
-        if self._tmp_root is not None:
-            import shutil
-
-            shutil.rmtree(self._tmp_root, ignore_errors=True)
-            self._tmp_root = None
+    def close(self, primary: BaseException | None = None) -> None:
+        if self._tmp_dir is not None:
+            bench._cleanup_bench_temp(self._tmp_dir, primary)
+            self._tmp_dir = None
 
 
 # ---------------------------------------------------------------------------
@@ -1430,7 +1441,7 @@ def build_scoreboard_doc(
             "UNSTABLE": "CV above threshold — untrustworthy in either direction",
             "BUILD_FAILED": "molt build failed",
             "RUN_ERROR": "CPython ran but molt did not",
-            "RUN_BLOCKED": "wasm run-path gap (build/link only)",
+            "RUN_BLOCKED": "historical execution-unavailable result",
             "CPY_INCOMPATIBLE": "no CPython floor — excluded from gate",
         },
         "classify_legend": {
@@ -1445,7 +1456,7 @@ def build_scoreboard_doc(
             "samples_per_phase": samples,
             "warmup_runs": warmup,
             "cold_and_warm": True,
-            "run_guard": "tools/safe_run.py --json (rss cap + timeout + peak rss)",
+            "run_guard": "tools.safe_run._run_measured_command (typed guard result; child latency, observed RSS, descendant closure)",
             "build": "tools/bench.py daemon batch build (memory-guarded)",
             "warm_speedup": "cpython_warm / molt_warm",
             "cold_speedup": "cpython_cold / molt_cold",

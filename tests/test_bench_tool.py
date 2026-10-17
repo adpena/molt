@@ -1828,6 +1828,8 @@ def test_main_writes_json_then_exits_nonzero_on_output_parity_failure(
             "--json-out",
             str(out_json),
             "--update-baseline",
+            "--baseline",
+            str(tmp_path / "baseline.json"),
             "--script",
             str(script),
         ],
@@ -1923,3 +1925,796 @@ def test_bench_env_shares_the_warm_target_unless_a_session_is_pinned(
         {"MOLT_EXT_ROOT": str(ext_root), "MOLT_SESSION_ID": "lane-a"}
     )
     assert Path(pinned["CARGO_TARGET_DIR"]) == checkout_target / "sessions" / "lane-a"
+
+
+@pytest.fixture
+def source_only_bench_checkout(monkeypatch, tmp_path):
+    from tests.test_dx_run_context import (
+        _clear_run_context_env,
+        _github_actions_custody_env,
+    )
+
+    source = tmp_path / "runner-work/molt/molt"
+    source.mkdir(parents=True)
+    sha = "c" * 40
+    facts = _github_actions_custody_env(source, tmp_path / "runner-temp", sha=sha)
+    _clear_run_context_env(monkeypatch)
+    for key in (
+        "MOLT_BENCH_TMP_ROOT",
+        "MOLT_GUARD_PROFILE_LOG",
+        "MOLT_BENCH_DAEMON_CLEANUP_LOG",
+    ):
+        monkeypatch.delenv(key, raising=False)
+    for key, value in facts.items():
+        monkeypatch.setenv(key, value)
+    monkeypatch.setattr(molt_dx, "git_checkout_head", lambda _root: sha)
+    monkeypatch.setattr(bench_tool, "REPO_ROOT", source)
+    monkeypatch.setattr(bench_tool, "BENCH_RESULTS_DIR", source / "bench/results")
+    monkeypatch.setattr(
+        bench_tool, "DEFAULT_BASELINE_PATH", source / "bench/results/baseline.json"
+    )
+    return source, tmp_path / "runner-temp/molt-custody"
+
+
+def test_bench_environment_does_not_create_reports(source_only_bench_checkout):
+    source, custody = source_only_bench_checkout
+    env = bench_tool._canonical_bench_env()
+    assert Path(env["MOLT_EXT_ROOT"]) == custody
+    assert not (source / "bench").exists()
+    assert not (custody / "bench/results").exists()
+
+
+def test_default_reports_use_admitted_unique_run_directories(
+    monkeypatch, source_only_bench_checkout
+):
+    source, custody = source_only_bench_checkout
+    script = source / "ordinary.py"
+    script.write_text("print(1)\n", encoding="utf-8")
+    baseline = source / "bench/results/baseline.json"
+    baseline.parent.mkdir(parents=True)
+    baseline_bytes = b'{"benchmarks": {}}\n'
+    baseline.write_bytes(baseline_bytes)
+    artifact_dirs = []
+    comparisons = []
+    monkeypatch.setattr(bench_tool, "_enable_line_buffering", lambda: None)
+    monkeypatch.setattr(bench_tool, "_git_rev", lambda: "fixture")
+    monkeypatch.setattr(bench_tool, "_prune_backend_daemons", lambda env: None)
+
+    def measured(*args, **kwargs):
+        artifact_dirs.append(kwargs["artifact_root"])
+        return {}
+
+    def compare(payload, prior, threshold):
+        comparisons.append(prior)
+        return []
+
+    monkeypatch.setattr(bench_tool, "bench_results", measured)
+    monkeypatch.setattr(bench_tool, "compare_baseline", compare)
+    monkeypatch.setattr(
+        sys, "argv", ["bench.py", "--script", str(script), "--baseline", str(baseline)]
+    )
+    bench_tool.main()
+    bench_tool.main()
+    assert len(set(artifact_dirs)) == 2
+    for directory in artifact_dirs:
+        assert directory.parent == custody / "bench/results"
+        payload = json.loads((directory / "bench.json").read_text(encoding="utf-8"))
+        artifacts = payload["custody_artifacts"]
+        assert Path(artifacts["summary_md"]).parent == directory
+        assert (
+            Path(artifacts["backend_daemon_cleanup_jsonl"]).parent.parent == directory
+        )
+    assert comparisons == [{"benchmarks": {}}, {"benchmarks": {}}]
+    assert baseline.read_bytes() == baseline_bytes
+    assert sorted(path.name for path in baseline.parent.iterdir()) == ["baseline.json"]
+
+
+@pytest.mark.parametrize(
+    "destination", ["json", "summary", "baseline", "default-baseline"]
+)
+def test_source_only_report_writes_refuse_before_payload(
+    monkeypatch, source_only_bench_checkout, destination
+):
+    source, custody = source_only_bench_checkout
+    script = source / "ordinary.py"
+    script.write_text("print(1)\n", encoding="utf-8")
+    forbidden = source / "forbidden/output.json"
+    args = ["bench.py", "--script", str(script)]
+    if destination == "json":
+        args += ["--json-out", str(forbidden)]
+    elif destination == "summary":
+        args += ["--summary-out", str(forbidden)]
+    else:
+        args += ["--update-baseline"]
+        if destination == "baseline":
+            args += ["--baseline", str(forbidden)]
+
+    def no_payload(*args, **kwargs):
+        pytest.fail("source-only destination must refuse before cleanup or measurement")
+
+    monkeypatch.setattr(bench_tool, "_prune_backend_daemons", no_payload)
+    monkeypatch.setattr(bench_tool, "bench_results", no_payload)
+    monkeypatch.setattr(sys, "argv", args)
+    with pytest.raises(
+        molt_dx.DxConfigError, match="source-only checkout cannot own benchmark"
+    ):
+        bench_tool.main()
+    assert not forbidden.parent.exists()
+    assert not (source / "bench").exists()
+    assert not (custody / "bench/results").exists()
+
+
+def test_explicit_report_and_baseline_outputs_remain_supported(
+    monkeypatch, source_only_bench_checkout
+):
+    source, custody = source_only_bench_checkout
+    script = source / "ordinary.py"
+    script.write_text("print(1)\n", encoding="utf-8")
+    report = custody / "custom/report.json"
+    summary = custody / "summaries/selected.md"
+    baseline = custody / "baselines/selected.json"
+    monkeypatch.setattr(bench_tool, "_enable_line_buffering", lambda: None)
+    monkeypatch.setattr(bench_tool, "_git_rev", lambda: "fixture")
+    monkeypatch.setattr(bench_tool, "_prune_backend_daemons", lambda env: None)
+    monkeypatch.setattr(bench_tool, "bench_results", lambda *args, **kwargs: {})
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "bench.py",
+            "--script",
+            str(script),
+            "--json-out",
+            str(report),
+            "--summary-out",
+            str(summary),
+            "--update-baseline",
+            "--baseline",
+            str(baseline),
+        ],
+    )
+    bench_tool.main()
+    assert report.is_file() and summary.is_file()
+    assert json.loads(baseline.read_text(encoding="utf-8")) == json.loads(
+        report.read_text(encoding="utf-8")
+    )
+    assert not (source / "bench").exists()
+
+
+def _symlink_bench_destination(link: Path, target: Path, *, directory=False):
+    link.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        link.symlink_to(target, target_is_directory=directory)
+    except (OSError, NotImplementedError) as exc:
+        pytest.skip(f"real symlink creation is unavailable: {exc}")
+
+
+def _direct_bench_results(artifact_root):
+    return bench_tool.bench_results(
+        [],
+        1,
+        0,
+        False,
+        True,
+        False,
+        False,
+        False,
+        False,
+        None,
+        "release",
+        tty=False,
+        nuitka_cmd=None,
+        pyodide_cmd=None,
+        artifact_root=artifact_root,
+    )
+
+
+@pytest.mark.parametrize(
+    "key",
+    [
+        "MOLT_BENCH_TMP_ROOT",
+        "MOLT_GUARD_PROFILE_LOG",
+        "MOLT_BENCH_DAEMON_CLEANUP_LOG",
+    ],
+)
+@pytest.mark.parametrize("symlink", [False, True])
+def test_inherited_bench_writes_refuse_before_directory_creation(
+    monkeypatch, source_only_bench_checkout, tmp_path, key, symlink
+):
+    source, custody = source_only_bench_checkout
+    target = (
+        source
+        / "forbidden"
+        / ("scratch" if key == "MOLT_BENCH_TMP_ROOT" else "log.jsonl")
+    )
+    selected = target
+    if symlink:
+        selected = tmp_path / "selected-output"
+        _symlink_bench_destination(
+            selected, target, directory=key == "MOLT_BENCH_TMP_ROOT"
+        )
+    monkeypatch.setenv(key, str(selected))
+    with pytest.raises(molt_dx.DxConfigError, match=key):
+        bench_tool._canonical_bench_env()
+    assert not target.parent.exists()
+    assert not custody.exists()
+
+
+def test_explicit_external_bench_scratch_is_admitted(
+    monkeypatch, source_only_bench_checkout, tmp_path
+):
+    source, _custody = source_only_bench_checkout
+    scratch = tmp_path / "explicit-scratch"
+    monkeypatch.setenv("MOLT_BENCH_TMP_ROOT", str(scratch))
+    env = bench_tool._canonical_bench_env()
+    assert env["MOLT_BENCH_TMP_ROOT"] == str(scratch)
+    assert scratch.is_dir()
+    assert not (source / "bench").exists()
+
+
+@pytest.mark.parametrize(
+    "relative",
+    [
+        "report_molt_failure_details.jsonl",
+        "report_summary.md",
+        "memory_guard",
+        "memory_guard/commands.jsonl",
+        "memory_guard/bench_sentinel.jsonl",
+        "memory_guard/backend_daemon_cleanup.jsonl",
+    ],
+)
+def test_report_sidecar_symlinks_refuse_before_payload(
+    monkeypatch, source_only_bench_checkout, tmp_path, relative
+):
+    source, _custody = source_only_bench_checkout
+    script = source / "ordinary.py"
+    script.write_text("print(1)\n", encoding="utf-8")
+    reports = tmp_path / "external-reports"
+    destination = source / "forbidden" / "destination"
+    _symlink_bench_destination(
+        reports / relative, destination, directory=relative == "memory_guard"
+    )
+
+    def no_payload(*args, **kwargs):
+        pytest.fail("a derived source-only destination reached cleanup or measurement")
+
+    monkeypatch.setattr(bench_tool, "_prune_backend_daemons", no_payload)
+    monkeypatch.setattr(bench_tool, "bench_results", no_payload)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "bench.py",
+            "--script",
+            str(script),
+            "--json-out",
+            str(reports / "report.json"),
+        ],
+    )
+    with pytest.raises(
+        molt_dx.DxConfigError, match="source-only checkout cannot own benchmark"
+    ):
+        bench_tool.main()
+    assert not destination.parent.exists()
+    assert not (reports / "report.json").exists()
+
+
+@pytest.mark.parametrize(
+    "relative",
+    [
+        None,
+        "memory_guard",
+        "memory_guard/commands.jsonl",
+        "memory_guard/bench_sentinel.jsonl",
+        "memory_guard/backend_daemon_cleanup.jsonl",
+    ],
+)
+def test_direct_bench_artifact_destinations_refuse_before_probe(
+    monkeypatch, source_only_bench_checkout, tmp_path, relative
+):
+    source, custody = source_only_bench_checkout
+    forbidden = source / "forbidden"
+    artifact_root = forbidden
+    if relative is not None:
+        artifact_root = tmp_path / "external-direct"
+        _symlink_bench_destination(
+            artifact_root / relative, forbidden, directory=relative == "memory_guard"
+        )
+
+    def no_probe(*args, **kwargs):
+        pytest.fail("direct API performed discovery or launch before path admission")
+
+    monkeypatch.setattr(bench_tool, "_pypy_command", no_probe)
+    monkeypatch.setattr(bench_tool, "_BenchBatchBuildServer", no_probe)
+    monkeypatch.setattr(
+        bench_tool.harness_memory_guard, "repo_process_sentinel", no_probe
+    )
+    with pytest.raises(
+        molt_dx.DxConfigError, match="source-only checkout cannot own benchmark"
+    ):
+        _direct_bench_results(artifact_root)
+    assert not forbidden.exists()
+    assert not custody.exists()
+
+
+def test_actual_external_diagnostic_paths_are_reported_and_reused(
+    monkeypatch, source_only_bench_checkout, tmp_path
+):
+    source, _custody = source_only_bench_checkout
+    script = source / "ordinary.py"
+    script.write_text("print(1)\n", encoding="utf-8")
+    reports = tmp_path / "reports"
+    profile = tmp_path / "diagnostics" / "actual-profile.jsonl"
+    cleanup = tmp_path / "diagnostics" / "actual-cleanup.jsonl"
+    monkeypatch.setenv("MOLT_GUARD_PROFILE_LOG", str(profile))
+    monkeypatch.setenv("MOLT_BENCH_DAEMON_CLEANUP_LOG", str(cleanup))
+    seen = []
+    monkeypatch.setattr(bench_tool, "_enable_line_buffering", lambda: None)
+    monkeypatch.setattr(bench_tool, "_git_rev", lambda: "fixture")
+    monkeypatch.setattr(
+        bench_tool, "_prune_backend_daemons", lambda env: seen.append(dict(env))
+    )
+    monkeypatch.setattr(bench_tool, "bench_results", lambda *args, **kwargs: {})
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "bench.py",
+            "--script",
+            str(script),
+            "--json-out",
+            str(reports / "report.json"),
+        ],
+    )
+    bench_tool.main()
+    artifacts = json.loads((reports / "report.json").read_text(encoding="utf-8"))[
+        "custody_artifacts"
+    ]
+    assert artifacts["harness_command_profile_jsonl"] == str(profile)
+    assert artifacts["backend_daemon_cleanup_jsonl"] == str(cleanup)
+    assert seen[0]["MOLT_GUARD_PROFILE_LOG"] == str(profile)
+    assert seen[0]["MOLT_BENCH_DAEMON_CLEANUP_LOG"] == str(cleanup)
+    assert not (reports / "memory_guard/commands.jsonl").exists()
+    assert not (source / "bench").exists()
+
+
+@pytest.mark.parametrize("backend", ["codon", "nuitka"])
+def test_external_backend_build_directory_refuses_source_symlink(
+    monkeypatch, source_only_bench_checkout, tmp_path, backend
+):
+    source, _custody = source_only_bench_checkout
+    env = bench_tool._canonical_bench_env()
+    build_root = tmp_path / "external-build"
+    target = source / "forbidden-build"
+    _symlink_bench_destination(build_root, target, directory=True)
+    install_module_view(
+        monkeypatch,
+        "shutil",
+        bench_tool.shutil,
+        bench_tool,
+        which=lambda _name: "/admitted/codon",
+    )
+    monkeypatch.setattr(
+        bench_tool,
+        "_run_cmd",
+        lambda *a, **kw: pytest.fail("build started before destination admission"),
+    )
+    with pytest.raises(molt_dx.DxConfigError, match="build directory"):
+        if backend == "codon":
+            bench_tool._prepare_codon_runner(
+                source / "ordinary.py", build_root, env, tty=False, limits=None
+            )
+        else:
+            bench_tool._prepare_nuitka_runner(
+                source / "ordinary.py",
+                build_root,
+                env,
+                tty=False,
+                nuitka_cmd=["nuitka"],
+                limits=None,
+            )
+    assert not target.exists()
+
+
+def test_direct_bench_reuses_external_diagnostics_and_scratch_for_backends(
+    monkeypatch, source_only_bench_checkout, tmp_path
+):
+    import contextlib
+
+    source, _custody = source_only_bench_checkout
+    scratch = tmp_path / "scratch"
+    artifact_root = tmp_path / "direct-artifacts"
+    profile = tmp_path / "profile.jsonl"
+    monkeypatch.setenv("MOLT_BENCH_TMP_ROOT", str(scratch))
+    monkeypatch.setenv("MOLT_GUARD_PROFILE_LOG", str(profile))
+    events = []
+
+    @contextlib.contextmanager
+    def sentinel(**kwargs):
+        events.append(("sentinel", kwargs["artifact_root"]))
+        yield
+
+    class Batch:
+        def __init__(self, env):
+            events.append(("batch", dict(env)))
+
+        def close(self):
+            events.append(("closed",))
+
+    def measured(*args, **kwargs):
+        events.append(("roots", kwargs["codon_root"], kwargs["nuitka_root"]))
+        return {}
+
+    monkeypatch.setattr(
+        bench_tool.harness_memory_guard, "repo_process_sentinel", sentinel
+    )
+    monkeypatch.setattr(bench_tool, "_BenchBatchBuildServer", Batch)
+    monkeypatch.setattr(bench_tool, "_bench_one", measured)
+    assert (
+        bench_tool.bench_results(
+            ["ordinary.py"],
+            1,
+            0,
+            False,
+            False,
+            False,
+            False,
+            False,
+            False,
+            None,
+            "release",
+            tty=False,
+            nuitka_cmd=None,
+            pyodide_cmd=None,
+            artifact_root=artifact_root,
+        )
+        == {}
+    )
+    assert events[0] == ("sentinel", artifact_root)
+    assert events[1][1]["MOLT_GUARD_PROFILE_LOG"] == str(profile)
+    assert events[1][1]["MOLT_BENCH_DAEMON_CLEANUP_LOG"] == str(
+        artifact_root / "memory_guard/backend_daemon_cleanup.jsonl"
+    )
+    assert events[2] == ("roots", scratch / "codon", scratch / "nuitka")
+    assert events[3] == ("closed",)
+    assert not (source / "bench").exists()
+
+
+@pytest.mark.parametrize("backend", ["codon", "nuitka"])
+def test_external_backend_outputs_do_not_reuse_nested_symlinks(
+    monkeypatch, source_only_bench_checkout, tmp_path, backend
+):
+    source, _custody = source_only_bench_checkout
+    env = bench_tool._canonical_bench_env()
+    build_root = tmp_path / "external-build"
+    old_module = build_root / f"bench_{backend}_ordinary"
+    protected = source / "protected-source"
+    protected.mkdir()
+    sentinel = protected / "untouched.txt"
+    sentinel.write_bytes(b"original source")
+    for name in ("ordinary.build", "ordinary.dist", "ordinary.onefile-build"):
+        _symlink_bench_destination(old_module / name, protected, directory=True)
+    _symlink_bench_destination(old_module / f"bench_{backend}_ordinary", sentinel)
+    selected = []
+    install_module_view(
+        monkeypatch,
+        "shutil",
+        bench_tool.shutil,
+        bench_tool,
+        which=lambda _name: "/admitted/codon",
+    )
+
+    def compile_at_selected_output(command, **kwargs):
+        if backend == "codon":
+            output = Path(command[command.index("-o") + 1])
+            directory = output.parent
+        else:
+            directory = Path(command[command.index("--output-dir") + 1])
+            output = directory / "ordinary.exe"
+        assert directory.parent == build_root
+        assert directory != old_module
+        assert list(directory.iterdir()) == []
+        selected.append(directory)
+        output.write_bytes(b"independent compiler artifact")
+        output.chmod(0o755)
+        return subprocess.CompletedProcess(command, 0, "", "")
+
+    monkeypatch.setattr(bench_tool, "_run_cmd", compile_at_selected_output)
+    for _ in range(2):
+        if backend == "codon":
+            runner = bench_tool._prepare_codon_runner(
+                source / "ordinary.py", build_root, env, tty=False, limits=None
+            )
+        else:
+            runner = bench_tool._prepare_nuitka_runner(
+                source / "ordinary.py",
+                build_root,
+                env,
+                tty=False,
+                nuitka_cmd=["nuitka"],
+                limits=None,
+            )
+        assert runner is not None
+        assert Path(runner.cmd[-1]).parent == selected[-1]
+        assert runner.temp_dir is not None
+        runner.temp_dir.cleanup()
+        assert not selected[-1].exists()
+    assert len(set(selected)) == 2
+    assert sentinel.read_bytes() == b"original source"
+    assert sorted(path.name for path in protected.iterdir()) == ["untouched.txt"]
+
+
+@pytest.mark.parametrize("backend", ["codon", "nuitka"])
+@pytest.mark.parametrize("failure", ["returncode", "missing-binary", "exception"])
+def test_external_backend_failed_build_releases_actual_scratch(
+    monkeypatch, source_only_bench_checkout, tmp_path, backend, failure
+):
+    source, _custody = source_only_bench_checkout
+    env = bench_tool._canonical_bench_env()
+    root = tmp_path / "builds"
+    original = RuntimeError("independent compiler I/O failure")
+    selected = []
+    install_module_view(
+        monkeypatch,
+        "shutil",
+        bench_tool.shutil,
+        bench_tool,
+        which=lambda _name: "/admitted/codon",
+    )
+
+    def fail_build(command, **kwargs):
+        directory = (
+            Path(command[command.index("-o") + 1]).parent
+            if backend == "codon"
+            else Path(command[command.index("--output-dir") + 1])
+        )
+        selected.append(directory)
+        assert directory.is_dir()
+        (directory / "partial-build").write_bytes(b"partial")
+        if failure == "exception":
+            raise original
+        return subprocess.CompletedProcess(
+            command, 1 if failure == "returncode" else 0, "", ""
+        )
+
+    monkeypatch.setattr(bench_tool, "_run_cmd", fail_build)
+
+    def prepare():
+        if backend == "codon":
+            return bench_tool._prepare_codon_runner(
+                source / "ordinary.py", root, env, tty=False, limits=None
+            )
+        return bench_tool._prepare_nuitka_runner(
+            source / "ordinary.py",
+            root,
+            env,
+            tty=False,
+            nuitka_cmd=["nuitka"],
+            limits=None,
+        )
+
+    if failure == "exception":
+        with pytest.raises(RuntimeError) as caught:
+            prepare()
+        assert caught.value is original
+    else:
+        assert prepare() is None
+    assert len(selected) == 1 and not selected[0].exists()
+    assert list(root.iterdir()) == []
+
+
+@pytest.mark.parametrize("backend", ["codon", "nuitka"])
+@pytest.mark.parametrize("outcome", ["success", "sample-failure", "exception"])
+def test_actual_backend_sampler_releases_scratch_on_every_exit(
+    monkeypatch, source_only_bench_checkout, tmp_path, backend, outcome
+):
+    import contextlib
+
+    source, _custody = source_only_bench_checkout
+    scratch = tmp_path / "scratch"
+    monkeypatch.setenv("MOLT_BENCH_TMP_ROOT", str(scratch))
+    install_module_view(
+        monkeypatch,
+        "shutil",
+        bench_tool.shutil,
+        bench_tool,
+        which=lambda _name: "/admitted/codon",
+    )
+    monkeypatch.setattr(
+        bench_tool.harness_memory_guard,
+        "repo_process_sentinel",
+        lambda **kw: contextlib.nullcontext(),
+    )
+    monkeypatch.setattr(bench_tool, "_BenchBatchBuildServer", _BatchServerStub)
+    monkeypatch.setattr(
+        bench_tool,
+        "prepare_molt_binary",
+        lambda *a, **kw: bench_tool.MoltFailure("build", "not-built", 1, False, None),
+    )
+    selected = []
+    original = RuntimeError("independent sampler failure")
+
+    def build(command, **kwargs):
+        if backend == "codon":
+            output = Path(command[command.index("-o") + 1])
+        else:
+            output = Path(command[command.index("--output-dir") + 1]) / "ordinary.exe"
+        output.write_bytes(b"independent binary")
+        output.chmod(0o755)
+        selected.append(output.parent)
+        return subprocess.CompletedProcess(command, 0, "", "")
+
+    def sample(command, *args, **kwargs):
+        assert Path(command[-1]).parent == selected[-1]
+        assert selected[-1].is_dir()
+        if outcome == "exception":
+            raise original
+        return (
+            None if outcome == "sample-failure" else bench_tool.RunSample(1.0, "", "")
+        )
+
+    monkeypatch.setattr(bench_tool, "_run_cmd", build)
+    monkeypatch.setattr(bench_tool, "measure_runtime", sample)
+
+    def run():
+        return bench_tool.bench_results(
+            [str(source / "ordinary.py")],
+            1,
+            0,
+            False,
+            False,
+            backend == "codon",
+            backend == "nuitka",
+            False,
+            False,
+            None,
+            "release",
+            tty=False,
+            nuitka_cmd="nuitka",
+            pyodide_cmd=None,
+            artifact_root=tmp_path / "reports",
+        )
+
+    if outcome == "exception":
+        with pytest.raises(RuntimeError) as caught:
+            run()
+        assert caught.value is original
+    else:
+        run()
+    assert len(selected) == 1 and not selected[0].exists()
+
+
+def test_scratch_cleanup_retains_original_failure_and_exact_owner(
+    monkeypatch, tmp_path
+):
+    from molt import temporary_artifacts
+
+    owner = bench_tool._new_bench_temp(tmp_path, {})
+    original = RuntimeError("original build failure")
+
+    def refuse_cleanup(path):
+        assert path == Path(owner.name)
+        return False, "independent cleanup failure"
+
+    with monkeypatch.context() as scoped:
+        scoped.setattr(temporary_artifacts, "delete_path", refuse_cleanup)
+        with pytest.raises(RuntimeError) as caught:
+            bench_tool._cleanup_bench_temp(owner, original)
+        assert caught.value is original
+        assert original.benchmark_temporary_directories == (owner,)
+        assert any("independent cleanup failure" in note for note in original.__notes__)
+        with pytest.raises(OSError) as cleanup_caught:
+            bench_tool._cleanup_bench_temp(owner)
+        assert cleanup_caught.value.benchmark_temporary_directories == (owner,)
+    owner.cleanup()
+    assert not Path(owner.name).exists()
+
+
+def test_benchmark_temp_owner_refuses_replaced_allocation(tmp_path):
+    from molt.temporary_artifacts import OwnedTemporaryDirectory
+
+    owner = bench_tool._new_bench_temp(tmp_path, {})
+    assert type(owner) is OwnedTemporaryDirectory
+    original = Path(owner.name)
+    moved = tmp_path / "retained-original"
+    original.rename(moved)
+    original.mkdir()
+    marker = original / "foreign.txt"
+    marker.write_bytes(b"other owner")
+    with pytest.raises(ValueError, match="allocation changed") as caught:
+        bench_tool._cleanup_bench_temp(owner)
+    assert caught.value.benchmark_temporary_directories == (owner,)
+    assert marker.read_bytes() == b"other owner"
+    assert moved.is_dir()
+
+
+@pytest.mark.parametrize("cleanup_failure", [False, True])
+def test_native_build_cancellation_retains_or_closes_canonical_owner(
+    monkeypatch, source_only_bench_checkout, cleanup_failure
+):
+    from molt import temporary_artifacts
+
+    source, _custody = source_only_bench_checkout
+    original = KeyboardInterrupt("independent native build cancellation")
+    output = []
+    monkeypatch.setattr(bench_tool, "_prune_backend_daemons", lambda env: None)
+
+    def cancel(command, **kwargs):
+        output.append(Path(command[command.index("--out-dir") + 1]))
+        assert output[0].is_dir()
+        raise original
+
+    monkeypatch.setattr(
+        bench_tool.harness_memory_guard, "guarded_completed_process", cancel
+    )
+    with monkeypatch.context() as scoped:
+        if cleanup_failure:
+            scoped.setattr(
+                temporary_artifacts,
+                "delete_path",
+                lambda path: (False, "independent deletion failure"),
+            )
+        with pytest.raises(KeyboardInterrupt) as caught:
+            bench_tool.prepare_molt_binary(str(source / "ordinary.py"))
+        assert caught.value is original
+        if cleanup_failure:
+            (owner,) = original.benchmark_temporary_directories
+            assert type(owner) is temporary_artifacts.OwnedTemporaryDirectory
+            assert Path(owner.name) == output[0]
+            assert output[0].is_dir()
+        else:
+            assert not output[0].exists()
+    if cleanup_failure:
+        owner.cleanup()
+        assert not output[0].exists()
+
+
+@pytest.mark.parametrize(
+    "defect", ["missing-result", "missing-manifest", "wrong-entry", "split-mode"]
+)
+def test_wasm_artifact_selection_refuses_decoys_without_scanning(tmp_path, defect):
+    """Only the compiler-declared linked manifest can bind the measured bytes."""
+    linked = tmp_path / "selected.wasm"
+    linked.write_bytes(b"\0asm\1\0\0\0")
+    decoy = tmp_path / "decoy.wasm"
+    decoy.write_bytes(b"\0asm\1\0\0\0")
+    manifest = tmp_path / "manifest.json"
+    if defect != "missing-manifest":
+        manifest.write_text(
+            json.dumps(
+                {
+                    "mode": "split-runtime" if defect == "split-mode" else "linked",
+                    "modules": {
+                        "linked": {
+                            "path": decoy.name
+                            if defect == "wrong-entry"
+                            else linked.name
+                        }
+                    },
+                }
+            ),
+            encoding="utf-8",
+        )
+    payload = {
+        "data": {"artifacts": {"linked_wasm": str(linked), "manifest": str(manifest)}}
+    }
+    if defect == "missing-result":
+        payload = {"data": {"output": str(decoy)}}
+    with pytest.raises((OSError, ValueError)):
+        bench_tool._resolve_wasm_benchmark_output(payload)
+    assert linked.is_file() and decoy.is_file()
+
+
+def test_wasm_batch_build_uses_same_explicit_deployment_contract(tmp_path):
+    params = bench_tool._molt_build_params(
+        script="program.py",
+        out_dir=tmp_path,
+        build_profile="release",
+        build_target="wasm",
+        extra_args=["--backend", "cranelift", "--python-version", "3.13"],
+        env={},
+    )
+    assert params["target"] == "wasm"
+    assert params["trusted"] is False
+    assert params["linked"] is True and params["require_linked"] is True
+    assert params["profile"] == "release" and params["python_version"] == "3.13"

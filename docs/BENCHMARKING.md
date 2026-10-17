@@ -98,10 +98,12 @@ stability axes, and the first mismatch sample identity. Missing or failed
 evidence is `RUN_ERROR`; a
 faster wrong or unstable output can never be GREEN. Historical schema-v3 boards
 remain historical and cannot be rebuilt/merged into schema v4 without remeasurement.
-The `safe_run` receipt is accepted only as the final invocation-bound stderr
-suffix. Since child output and the receipt share one stream, this binding cannot
-cryptographically exclude a hostile child spoof when the wrapper emits nothing;
-that stronger guarantee would require a dedicated receipt channel.
+Scoreboard measurements consume the shared guard's typed process result directly.
+Guest output cannot supply elapsed time, RSS, exit classification or closure
+metadata. The optional WASM capture binds the original regular file before
+truncation and after descendant closure, preserving exact guest bytes separately
+from retained Node diagnostics. The CLI diagnostic receipt is not measurement
+authority.
 To exercise single-module linking, add `--linked` (requires `wasm-ld` and
 `wasm-tools`).
 Use `tools/bench_individual.py` for focused native micro-benchmark slices. It
@@ -225,6 +227,29 @@ uv run --python 3.14 python3 tools/bench.py --warmup 2
 # Comparison vs CPython
 uv run --python 3.14 python3 tools/bench.py --compare cpython
 ```
+
+Without `--json-out`, `tools/bench.py` writes each run under a unique directory
+in the DX-admitted `MOLT_EXT_ROOT/bench/results/`. The JSON, default Markdown
+summary, failure details and default guard sidecars share that run directory.
+Explicit inherited command-profile and daemon-cleanup paths remain supported;
+`custody_artifacts` records the actual admitted paths. Output admission resolves
+existing symlinks and rejects source-checkout destinations under source-only
+custody, including explicit `MOLT_BENCH_TMP_ROOT`. Codon and Nuitka build in fresh
+exclusive directories under admitted benchmark scratch, using the shared temporary
+directory owner and its allocation-identity check before cleanup. Constructing a benchmark
+or perfscore environment does not create a report directory.
+
+`--json-out` and `--summary-out` select explicit destinations. A verified hosted
+CI source-only checkout rejects report destinations inside the checkout before
+benchmark execution; choose its admitted artifact storage instead. The local
+explicit-output examples above apply to writable development checkouts.
+
+Comparisons read the file selected by `--baseline`; the tracked benchmark baseline
+is `bench/baseline.json`. The existing default destination for `--update-baseline`
+is `bench/results/baseline.json`, and `--baseline` can select a different update
+destination. Reading a baseline from the source checkout is supported.
+Updating one in a source-only checkout requires an explicit `--baseline` outside
+the checkout; the tool refuses the source write before benchmark execution.
 
 ### C-extension trampoline attestation
 
@@ -1089,3 +1114,59 @@ performance claims.
 ## Optimization Plan
 
 Long-term or complex optimizations that require research are tracked in `OPTIMIZATIONS_PLAN.md`. If your change is a major architectural shift, please update that plan first.
+
+### Scoreboard WASM execution and artifact lifetime
+
+The scoreboard uses `bench.prepare_molt_binary` for native, LLVM, and WASM
+builds. Release-lane selection binds the guest, compiler, and runtime profiles
+for direct and batch requests. WASM explicitly requests `--linked
+--require-linked`; its execution image is `artifacts.linked_wasm` selected by
+`artifacts.manifest`. The intermediate `output.wasm` and unrelated scratch files
+never select a runnable image. The binary-size column counts the raw linked
+module, including its linked runtime, in KiB; it is not a compressed deployment
+bundle size or an amortized shared-runtime size.
+
+One Node resolution per built artifact creates the canonical `wasm/run_wasm.js`
+invocation. The same invocation is used for the first process, all warmups,
+measured samples, and repeat passes. Each run starts a fresh Node process; “warm”
+means warmed host/filesystem conditions, not a persistent V8 instance or retained
+JIT module. Host Python import settings and ambient Node flags do not select guest
+execution. Node warnings remain visible as host diagnostics. The runner directs
+guest fd 2 to one owned capture file, reused serially by the measured-command
+guard; exact guest stderr, stdout, and exit status participate in CPython parity.
+Host stderr is retained in the cell log and does not become guest output.
+Each WASI context owns an independent append descriptor to that admitted inode.
+Guest close/renumber retires only that context's descriptor; host teardown retires
+the remaining descriptors after shutdown. Split runtime/app instances cannot
+retain a recycled descriptor from one another. This follows
+[Node WASI's descriptor options](https://nodejs.org/api/wasi.html#new-wasioptions)
+and [UVWASI's descriptor ownership](https://github.com/nodejs/node/blob/v22.21.1/deps/uvwasi/src/fd_table.c).
+Linked capture retains one descriptor; split capture retains two and adds one
+validated open. Ordinary public runs allocate neither capture descriptors nor
+close/renumber wrappers. General subprocess redirection remains a separate
+descriptor-ABI conformance obligation.
+
+
+`OwnedTemporaryDirectory` owns benchmark outputs, generated profiling sources,
+and native sampler output through their final consumers. Cleanup failures retain
+the actual owners and original operation error; classified build failures remain
+attached when cleanup itself fails. No successful timing or build transfers a
+forgotten temporary directory. WASM cycle attribution is explicitly unavailable
+through the native sampler; this does not block ordinary WASM timing/parity.
+
+Costs are bounded by one manifest selection and Node probe per build, one empty
+capture-file allocation per WASM artifact, and one capture truncation/read per
+sample. The existing guard owns sampling and resource accounting. No guest
+instruction, host-Python subprocess, recursive artifact scan, extra measurement
+process, or warning filter is added. Runtime measurements and host/platform
+qualification must still be established by the owning proof run; source checks
+alone do not establish performance or release acceptance.
+
+The mechanism comparison is explicit: [pyperf's architecture](https://pyperf.readthedocs.io/en/latest/run_benchmark.html#pyperf-architecture)
+distinguishes worker processes from within-worker warmups and measured values.
+This scoreboard measures fresh public process invocations and does not claim that
+its warm phase reproduces pyperf's retained-worker semantics. [Wasmtime's fast
+instantiation guidance](https://docs.wasmtime.dev/examples-fast-instantiation.html)
+separates compilation, import resolution, and instance allocation. Those mechanisms
+help explain engine startup costs, but do not authorize subtracting them from a
+Node process measurement or introducing engine-specific tuning into this lane.

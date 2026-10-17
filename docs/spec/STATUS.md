@@ -660,8 +660,8 @@ the separate [packaging acceptance contract](../../packaging/PACKAGING.md).
   `MOLT_GENERATOR` custody. `tools/perf_inner_repeat.py` self-tests and
   perf-scoreboard inner-repeat proof children now run through `MOLT_BENCH` /
   `MOLT_TEST` custody instead of local raw `subprocess.run` launchers.
-  `tools/perf_scoreboard.py` now routes `safe_run.py --json` workload timing
-  children and Codon build children through `MOLT_BENCH` custody, and collapses
+  `tools/perf_scoreboard.py` consumes typed shared-guard workload timing
+  and routes Codon build children through `MOLT_BENCH` custody, and collapses
   pgrep/sysctl/ps/pmset/git/version checks onto one bounded `_metadata_probe`
   raw metadata authority. Interactive `/usr/bin/sample` profiling children now
   enter one `_profiling_popen` helper with `MOLT_BENCH` process-group custody
