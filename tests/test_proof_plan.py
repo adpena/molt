@@ -375,6 +375,7 @@ def test_compiler_runtime_partition_preserves_disjoint_test_and_tool_ownership()
         "molt-passes",
         "molt-backend-wasm",
         "molt-runtime",
+        "molt-runtime-platform",
         "molt-gpu-runtime",
         "zlib-rs@0.6.8",
     }
@@ -411,6 +412,9 @@ def test_compiler_runtime_partition_preserves_disjoint_test_and_tool_ownership()
     assert "profile.dev-fast.package.molt-runtime.opt-level=0" in core.argv
     filters = core.argv[core.argv.index("--") + 1 :]
     assert {
+        "errno_build_tests::",
+        "socket_constants::tests::",
+        "libc_compat::tests::synthetic_errno_",
         "wasm_abi::",
         "async_rt::channels::",
         "async_rt::net_stubs::",
