@@ -2395,11 +2395,10 @@ pub extern "C" fn molt_os_readlink_at(path_bits: u64, dir_fd_bits: u64) -> u64 {
                 None => return raise_exception::<u64>(_py, "TypeError", "an integer is required"),
             }
         };
-        let mut default_directory = dir_fd.is_none();
         #[cfg(unix)]
-        {
-            default_directory |= dir_fd == Some(libc::AT_FDCWD);
-        }
+        let default_directory = dir_fd.is_none() || dir_fd == Some(libc::AT_FDCWD);
+        #[cfg(not(unix))]
+        let default_directory = dir_fd.is_none();
         // POSIX absolute paths ignore a valid descriptor. Default-CWD paths
         // share the canonical mount selection and aggregate capability gate.
         if path.is_absolute() || default_directory {

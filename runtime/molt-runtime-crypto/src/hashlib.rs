@@ -805,10 +805,10 @@ pub extern "C" fn molt_hash_new(
                 Ok(values) => values,
                 Err(bits) => return bits,
             };
-            if let Some(value) = &values[0] {
-                if let Err(bits) = truth_from_bits(_py, value.bits()) {
-                    return bits;
-                }
+            if let Some(value) = &values[0]
+                && let Err(bits) = truth_from_bits(_py, value.bits())
+            {
+                return bits;
             }
             Some(values)
         } else {
@@ -855,10 +855,10 @@ pub extern "C" fn molt_hash_new(
         let mut option_inputs = [None, None, None];
         let mut data = None;
         if provider_role {
-            if let Some(value) = option_values[0].as_ref().filter(|_| !legacy_provider) {
-                if let Err(bits) = truth_from_bits(_py, value.bits()) {
-                    return bits;
-                }
+            if let Some(value) = option_values[0].as_ref().filter(|_| !legacy_provider)
+                && let Err(bits) = truth_from_bits(_py, value.bits())
+            {
+                return bits;
             }
             data = Some(match hash_input(_py, data_bits) {
                 Ok(input) => input,

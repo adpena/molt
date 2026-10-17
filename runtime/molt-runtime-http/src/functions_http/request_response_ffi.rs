@@ -116,11 +116,10 @@ pub extern "C" fn molt_urllib_request_open(
             }
             _ => None,
         };
-        if let Some(operation) = operation {
-            if let Err(error) = crate::bridge::require_route_operation(_py, operation, environment)
-            {
-                return error;
-            }
+        if let Some(operation) = operation
+            && let Err(error) = crate::bridge::require_route_operation(_py, operation, environment)
+        {
+            return error;
         }
         let selected_proxy = if environment {
             let Some(proxy) = string_obj_to_owned(obj_from_bits(selected_proxy_bits)) else {
@@ -657,15 +656,15 @@ pub extern "C" fn molt_urllib_request_open(
                             }),
                             Err(error) => return error,
                         };
-                        if let Some(timeout) = timeout.as_ref() {
-                            if !urllib_request_set_attr(
+                        if let Some(timeout) = timeout.as_ref()
+                            && !urllib_request_set_attr(
                                 _py,
                                 next.bits(),
                                 b"timeout",
                                 timeout.bits(),
-                            ) {
-                                return MoltObject::none().bits();
-                            }
+                            )
+                        {
+                            return MoltObject::none().bits();
                         }
                         if exception_pending(_py) {
                             return MoltObject::none().bits();
