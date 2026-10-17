@@ -34647,10 +34647,25 @@ def _capture_hashseed_cli_builds(
     }
 
 
-@pytest.mark.parametrize("parse_codec", ["json", "msgpack"])
-@pytest.mark.parametrize("workers", [0, 2], ids=["serial", "parallel"])
+# Every IR codec and frontend worker mode, each under one fixed and one random
+# hash seed. Production bytes and cache keys must not depend on any of them, so
+# all eight builds are compared with each other: a seed-, codec- or
+# worker-dependent difference in any one build fails. Random seeds keep adding
+# coverage across runs.
+_HASHSEED_BUILDS = (
+    ("json", 0, "0"),
+    ("msgpack", 0, "1"),
+    ("json", 2, "42"),
+    ("msgpack", 2, "12345"),
+    ("json", 0, "random"),
+    ("msgpack", 0, "random"),
+    ("json", 2, "random"),
+    ("msgpack", 2, "random"),
+)
+
+
 def test_cli_cold_warm_production_bytes_and_cache_keys_ignore_hashseed(
-    tmp_path: Path, parse_codec: str, workers: int
+    tmp_path: Path,
 ) -> None:
     project = tmp_path / "project"
     project.mkdir()
@@ -34671,7 +34686,7 @@ def test_cli_cold_warm_production_bytes_and_cache_keys_ignore_hashseed(
     )
     records = []
     closure_rows: Path | None = None
-    for index, seed in enumerate(("0", "1", "42", "12345", "random", "random")):
+    for index, (parse_codec, workers, seed) in enumerate(_HASHSEED_BUILDS):
         cache = tmp_path / f"cache-{index}"
         if closure_rows is not None:
             # The compiler's own source closure is analyzed cold once, under the
@@ -34698,11 +34713,12 @@ print(json.dumps(_capture_hashseed_cli_builds(Path({str(project)!r}), Path({str(
         assert completed.stdout.strip()
         result = json.loads(completed.stdout)
         assert result["warm_hits"] > 0
-        records.append(result["records"])
+        records.append((parse_codec, workers, seed, result["records"]))
         if closure_rows is None:
             closure_rows = cache / "python_source_closure"
             assert any(closure_rows.glob("*.json"))
-    assert all(record == records[0] for record in records[1:])
+    differing = [build[:3] for build in records[1:] if build[3] != records[0][3]]
+    assert not differing, f"builds differ from {records[0][:3]}: {differing}"
 
 
 def test_compiler_source_closure_ignores_hashseed(tmp_path: Path) -> None:
