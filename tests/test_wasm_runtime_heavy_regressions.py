@@ -99,7 +99,11 @@ def test_wasm_compiled_finder_describes_module_before_initialization(
         "      spec.loader is importlib.machinery._MOLT_LOADER)\n"
         "print('unpublished', name not in sys.modules)\n"
         "import _molt_wasm_catalog_subject\n"
-        "print('ready', _molt_wasm_catalog_subject.value == 297)\n",
+        "print('ready', _molt_wasm_catalog_subject.value == 297)\n"
+        + (
+            root
+            / "tests/differential/stdlib/importlib_find_spec_invalidate_caches_intrinsic.py"
+        ).read_text(encoding="utf-8"),
         encoding="utf-8",
     )
     if layout == "linked":
@@ -148,6 +152,15 @@ def test_wasm_compiled_finder_describes_module_before_initialization(
         "unpublished True",
         "subject-exec",
         "ready True",
+        "invalidate://before",
+        "invalidate://before",
+        "invalidate://after",
+        "1",
+        "2",
+        "True",
+        "pathfinder-cache-invalidation True True True True",
+        "invalidation-errors True",
+        "import-root-cases 4",
     ]
 
 

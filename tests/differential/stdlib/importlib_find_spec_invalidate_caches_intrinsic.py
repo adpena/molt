@@ -3,7 +3,6 @@
 import importlib
 import importlib.machinery
 import importlib.util
-import os.path
 import sys
 
 
@@ -62,6 +61,9 @@ calls_after_invalidate = 0
 invalidate_result = "not-called"
 
 try:
+    sys.path_importer_cache.clear()
+    assert importlib.invalidate_caches() is None
+
     sys.meta_path[:] = orig_meta_path
     sys.path_hooks[:] = [_path_hook, *orig_path_hooks]
     sys.path[:] = [ENTRY, *(path for path in orig_path if path != ENTRY)]
@@ -78,7 +80,11 @@ try:
 
     # Construction at an absolute path needs no existing directory or scan.
     # Invalidation preserves a real cached finder instead of replacing it.
-    absolute_entry = os.path.abspath("molt_hf297_unread_directory")
+    absolute_entry = (
+        "C:\\molt_hf297_unread_directory"
+        if sys.platform == "win32"
+        else "/molt_hf297_unread_directory"
+    )
     absolute_none_entry = absolute_entry + "_none"
     relative_entry = "molt_hf297_relative_directory"
     file_finder = importlib.machinery.FileFinder(absolute_entry)
@@ -94,6 +100,59 @@ try:
     assert none_entry_removed
     assert relative_entry_removed
     assert pathfinder_invalidate_result is None
+
+    events = []
+
+    class Invalidator:
+        def __init__(self, name, fail=False):
+            self.name = name
+            self.fail = fail
+
+        def invalidate_caches(self):
+            events.append(self.name)
+            if self.fail:
+                raise LookupError("cache-stop")
+
+    sys.path_importer_cache.clear()
+    sys.path_importer_cache[None] = None
+    sys.path_importer_cache[relative_entry] = Invalidator("relative")
+    sys.path_importer_cache[absolute_entry] = Invalidator("first")
+    sys.path_importer_cache[absolute_entry + "_stop"] = Invalidator("stop", True)
+    sys.path_importer_cache[absolute_entry + "_later"] = Invalidator("later")
+    sys.meta_path[:] = [importlib.machinery.PathFinder]
+    try:
+        importlib.invalidate_caches()
+    except LookupError as exc:
+        assert str(exc) == "cache-stop"
+    else:
+        raise AssertionError("invalidator exception did not propagate")
+    assert events == ["first", "stop"]
+    assert None not in sys.path_importer_cache
+    assert relative_entry not in sys.path_importer_cache
+    assert absolute_entry + "_stop" in sys.path_importer_cache
+    assert absolute_entry + "_later" in sys.path_importer_cache
+
+    # These are importlib roots, not public os.path.isabs semantics. In
+    # particular a single Windows separator is current-drive-relative.
+    root_cases = (
+        (
+            ("C:\\root", True),
+            ("C:/root", True),
+            ("\\\\server\\share\\root", True),
+            ("//server/share/root", True),
+            ("\\root", False),
+            ("/root", False),
+            ("C:root", False),
+            ("", False),
+        )
+        if sys.platform == "win32"
+        else (("/root", True), ("//root", True), ("root", False), ("", False))
+    )
+    for entry, retained in root_cases:
+        sys.path_importer_cache.clear()
+        sys.path_importer_cache[entry] = object()
+        importlib.machinery.PathFinder.invalidate_caches()
+        assert (entry in sys.path_importer_cache) is retained
 finally:
     sys.meta_path[:] = orig_meta_path
     sys.path_hooks[:] = orig_path_hooks
@@ -114,3 +173,5 @@ print(
     relative_entry_removed,
     pathfinder_invalidate_result is None,
 )
+print("invalidation-errors", events == ["first", "stop"])
+print("import-root-cases", len(root_cases))

@@ -120,6 +120,22 @@ resolution owner. Invalidating a stateless `FileFinder` preserves its identity;
 `PathFinder` retires negative and relative entries and calls retained finders'
 invalidators.
 
+Cache disposition is lexical bookkeeping and does not import the filesystem
+facade or require filesystem authority. It follows the import-specific root
+predicate in [CPython 3.12.13](https://github.com/python/cpython/blob/v3.12.13/Lib/importlib/_bootstrap_external.py)
+and [3.15.0](https://github.com/python/cpython/blob/v3.15.0/Lib/importlib/_bootstrap_external.py):
+POSIX requires a leading slash; Windows uses the existing native root parser,
+and a single leading separator is current-drive-relative. Generic
+`os.path.isabs` is not this contract. A callback exception terminates traversal
+and preserves prior effects. Native Windows malformed, device, byte-path and
+Unicode root/error qualification remains part of the open target matrix.
+
+Invalidation takes one linear snapshot to tolerate callback mutation. Apart
+from callbacks it performs no I/O; the Windows projection additionally creates
+the native parser's root components and tuple per inspected nonempty path.
+These are cold invalidation costs, with no new persistent state or work added
+to ordinary discovery. Development conformance controls do not enter guests.
+
 Protocol traversal is linear in the finders and path entries actually visited;
 each selected callback runs once. It performs no whole-cache identity scan,
 result serialization or speculative retry. The immutable compiled catalog reuses
