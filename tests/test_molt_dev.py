@@ -46,6 +46,7 @@ from __future__ import annotations
 
 import json
 import shlex
+import shutil
 import os
 import sys
 import sysconfig
@@ -133,16 +134,11 @@ def _commit_file(repo: Path, rel: str, content: str, msg: str) -> str:
     return _git(repo, "rev-parse", "HEAD").stdout.strip()
 
 
-@pytest.fixture
-def origin_and_clone(tmp_path):
-    """A bare `origin` plus a working clone tracking origin/main with one commit.
-
-    Returns (origin_bare, work). The work clone is the "agent worktree" the
-    driver acts on; origin is the upstream the push lands in.
-    """
-    origin = tmp_path / "origin.git"
-
-    seed = tmp_path / "seed"
+@pytest.fixture(scope="module")
+def _origin_seed(tmp_path_factory):
+    """Provision immutable starting history once; every test gets its own copy."""
+    root = tmp_path_factory.mktemp("integration-seed")
+    seed = root / "seed"
     _init_repo(seed)
     (seed / "tools").mkdir()
     (seed / "tools/proof_plan.toml").write_text(
@@ -150,24 +146,80 @@ def origin_and_clone(tmp_path):
     )
     _git(seed, "add", "tools/proof_plan.toml")
     _commit_file(seed, "README.md", "seed\n", "seed: initial commit")
-    _git(tmp_path, "clone", "--bare", "-q", str(seed), str(origin))
+    origin = root / "origin.git"
+    _git(root, "clone", "--bare", "-q", str(seed), str(origin))
+    return origin
 
+
+@pytest.fixture
+def origin_and_clone(tmp_path, _origin_seed, monkeypatch):
+    """Independent real bare origin and working clone for each integration.
+
+    Copy files, never hardlink them: tests mutate refs, hooks, config and objects.
+    Subject fetch/rebase/push operations and clone creation still use real Git.
+    """
+    # These repositories exercise generic shell gates, not the caller's venv.
+    # Interpreter-selection tests construct and select their own environments.
+    for key in ("MOLT_VENV", "UV_PROJECT_ENVIRONMENT", "VIRTUAL_ENV"):
+        monkeypatch.delenv(key, raising=False)
+    origin = tmp_path / "origin.git"
+    shutil.copytree(_origin_seed, origin)
     work = tmp_path / "work"
-    _git(tmp_path, "clone", "-q", str(origin), str(work))
-    _git(work, "config", "user.email", "dev@molt.test")
-    _git(work, "config", "user.name", "Molt Dev")
+    _git(
+        tmp_path,
+        "clone",
+        "-q",
+        "-c",
+        "user.email=dev@molt.test",
+        "-c",
+        "user.name=Molt Dev",
+        str(origin),
+        str(work),
+    )
     return origin, work
+
+
+def test_origin_fixture_copies_history_without_mutable_aliases(
+    drv, tmp_path, _origin_seed, monkeypatch
+):
+    for key in ("MOLT_VENV", "UV_PROJECT_ENVIRONMENT", "VIRTUAL_ENV"):
+        monkeypatch.setenv(key, str(tmp_path / "missing-caller-environment"))
+    origin, work = origin_and_clone.__wrapped__(tmp_path, _origin_seed, monkeypatch)
+    initial = _git(_origin_seed, "rev-parse", "HEAD").stdout.strip()
+    original_config = (_origin_seed / "config").read_bytes()
+    (origin / "config").write_bytes(original_config + b"\n# private test mutation\n")
+    assert (_origin_seed / "config").read_bytes() == original_config
+    # A hardlink copy can appear isolated for Git's atomic ref replacement;
+    # exercise direct object-byte mutation as well, after the real push.
+    new_tip = _commit_file(work, "private.txt", "private\n", "private mutation")
+    assert drv.cmd_integrate(_integrate_ns(drv, repo=str(work))) == drv.EXIT_OK
+    assert _git(origin, "rev-parse", "HEAD").stdout.strip() == new_tip
+    assert _git(_origin_seed, "rev-parse", "HEAD").stdout.strip() == initial
+    relative = Path("objects") / initial[:2] / initial[2:]
+    original_object = (_origin_seed / relative).read_bytes()
+    (origin / relative).chmod(0o600)
+    (origin / relative).write_bytes(b"deliberately corrupt private copy")
+    assert (_origin_seed / relative).read_bytes() == original_object
+    assert _git(_origin_seed, "show", "HEAD:README.md").stdout == "seed\n"
 
 
 def _make_gate_venv(path: Path, token: str | None) -> Path:
     venv.EnvBuilder(with_pip=False).create(path)
-    python = path / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
-    result = _run_fast_captured_command(
-        [str(python), "-c", "import sysconfig; print(sysconfig.get_path('purelib'))"],
-        cwd=path.parent,
+    # EnvBuilder uses this interpreter's venv scheme. Actual selected-Python
+    # execution below proves prefix, imports, encoding and shell activation;
+    # fixture setup needs no guarded interpreter just to repeat this path query.
+    site = Path(
+        sysconfig.get_path(
+            "purelib",
+            scheme="venv",
+            vars={
+                "base": str(path),
+                "platbase": str(path),
+                "installed_base": str(path),
+                "installed_platbase": str(path),
+            },
+        )
     )
-    assert result.returncode == 0, result.stderr
-    site = Path(result.stdout.strip())
     if token is not None:
         (site / "molt_gate_selection_marker.py").write_text(
             f"TOKEN = {token!r}\n", encoding="utf-8"
