@@ -262,6 +262,11 @@
       "waiver": "shared test-support source runtime/test_support/cargo_test_artifacts.rs, included into several crates; each uses a subset"
     },
     {
+      "id": "runtime/molt-runtime/tests/resource_enforcement.rs::allow_dead_code::mod:cargo_test_artifacts",
+      "owner": "runtime-authority-closure",
+      "waiver": "shared test-support source runtime/test_support/cargo_test_artifacts.rs, included into several crates; each uses a subset"
+    },
+    {
       "id": "runtime/molt-runtime-compression/src/lib.rs::allow_dead_code::mod:lzma_wasm",
       "owner": "runtime-authority-closure",
       "waiver": "legacy dead-code mask; owner must wire or delete"
@@ -273,11 +278,6 @@
     },
     {
       "id": "runtime/molt-runtime-core/src/bridge_test_stubs.rs::allow_dead_code::inner",
-      "owner": "runtime-authority-closure",
-      "waiver": "legacy dead-code mask; owner must wire or delete"
-    },
-    {
-      "id": "runtime/molt-runtime-crypto/src/hashlib.rs::allow_dead_code::field:name",
       "owner": "runtime-authority-closure",
       "waiver": "legacy dead-code mask; owner must wire or delete"
     },
