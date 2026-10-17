@@ -117,10 +117,10 @@ pub unsafe fn acquire_buffer_from_object(
 /// The caller must retain uninterrupted execution custody and must not retire
 /// its real owner or invoke a callback while using the slice. The token bounds
 /// the borrow; it does not itself retain the operand.
-pub unsafe fn exact_bytes<'py>(
-    _py: &'py molt_runtime_core::PyToken,
+pub unsafe fn exact_bytes(
+    _py: &molt_runtime_core::PyToken,
     bits: u64,
-) -> Result<Option<&'py [u8]>, BufferAcquireError> {
+) -> Result<Option<&[u8]>, BufferAcquireError> {
     unsafe {
         let class = crate::bridge::GLOBAL_BRIDGE.runtime_class_view(bits);
         if class.is_null() {
