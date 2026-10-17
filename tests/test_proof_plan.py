@@ -20,7 +20,11 @@ from types import SimpleNamespace
 import pytest
 
 from molt import tool_releases
-from molt.cargo_execution_policy import PROOF_COMMAND_TIMEOUT_ENV
+from molt.cargo_execution_policy import (
+    CARGO_WRAPPER_ENV_NAMES,
+    PROOF_COMMAND_TIMEOUT_ENV,
+    SCCACHE_SERVER_ENDPOINT_ENV_NAMES,
+)
 from molt.python_environment_identity import python_capture_authority_paths
 from tools import (
     check_subprocess_guard_coverage,
@@ -2162,6 +2166,8 @@ def test_sccache_environment_policy_covers_every_rust_proof_family(
     tmp_path: Path,
     wrapper_env: str,
 ) -> None:
+    for name in (*CARGO_WRAPPER_ENV_NAMES, *SCCACHE_SERVER_ENDPOINT_ENV_NAMES):
+        monkeypatch.delenv(name, raising=False)
     monkeypatch.setenv(wrapper_env, "/opt/cache/sccache")
     monkeypatch.setenv("CARGO_INCREMENTAL", "1")
     # A run's scratch TMPDIR must not reach the shared sccache server (HF-105).
@@ -2285,22 +2291,26 @@ def test_command_cannot_override_owning_proof_timeout_environment() -> None:
     assert f"wasm.build.host: env cannot override {PROOF_COMMAND_TIMEOUT_ENV}" in errors
 
 
+@pytest.mark.parametrize("wrapper_env", CARGO_WRAPPER_ENV_NAMES)
 def test_command_direct_rustc_override_does_not_apply_sccache_policy(
     monkeypatch,
+    wrapper_env: str,
 ) -> None:
-    monkeypatch.setenv("RUSTC_WRAPPER", "/opt/cache/sccache")
+    for name in CARGO_WRAPPER_ENV_NAMES:
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv(wrapper_env, "/opt/cache/sccache")
     monkeypatch.setenv("CARGO_INCREMENTAL", "1")
     template = next(
         command for command in PLAN.commands if command.id == "wasm.build.host"
     )
     command = replace(
         template,
-        data={**template.data, "env": {"RUSTC_WRAPPER": ""}},
+        data={**template.data, "env": {wrapper_env: ""}},
     )
 
     environment, applied = proof_plan._command_environment(PLAN, command, 30)
 
-    assert environment["RUSTC_WRAPPER"] == ""
+    assert environment[wrapper_env] == ""
     assert environment["CARGO_INCREMENTAL"] == "1"
     assert applied == ()
 
@@ -4830,7 +4840,11 @@ def test_executor_real_cargo_test_timeout_retains_completed_incremental_cache(
     )
     started = project / "test-started"
     target = project / "target"
-    cargo_env = {"CARGO_TARGET_DIR": str(target), "CARGO_INCREMENTAL": "1"}
+    cargo_env = {
+        **dict.fromkeys(CARGO_WRAPPER_ENV_NAMES, ""),
+        "CARGO_TARGET_DIR": str(target),
+        "CARGO_INCREMENTAL": "1",
+    }
     manifest = ["--manifest-path", str(project / "Cargo.toml"), "--test", "hang"]
     # Compile outside the timed partition: the 12-second budget then covers only
     # the hanging test, on any host speed (a cold compile under Rosetta alone

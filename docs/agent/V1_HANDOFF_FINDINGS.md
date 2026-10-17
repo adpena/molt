@@ -716,6 +716,11 @@ sites now execute their actual guarded Node program directly, removing a
 duplicate version-probe process and an ineffective optional-tool selector at
 each site. Their 41 affected Rust controls pass; genuinely optional tool cells
 keep their existing admission policy.
+Related proof/cache fixtures now isolate the complete wrapper and endpoint
+selector families and explicitly select direct incremental compilation where
+the oracle requires it. Ten affected controls pass, including real completed
+cache retention after timeout and live Cargo profile-lock exclusion. The
+Windows Job fixture is synchronized but its native execution is unverified here.
 
 The ten-consumer Linux aarch64 WASM batch retains 885.3 build seconds:
 375.1 seconds (42.4%) in final WASM linking/optimization and 184.5 seconds

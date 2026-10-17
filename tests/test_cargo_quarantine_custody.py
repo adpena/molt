@@ -21,6 +21,7 @@ import platform
 import pytest
 
 from molt.file_locks import _try_acquire_file_lock, _release_file_lock
+from molt.cargo_execution_policy import CARGO_WRAPPER_ENV_NAMES
 from molt.rust_toolchain import rust_channel
 from tools.memory_guard_core import cargo_quarantine as cargo
 from tools.memory_guard_core.process_model import process_identity
@@ -974,6 +975,7 @@ def test_actual_cargo_held_profile_locks_defer_recovery(tmp_path):
     env = dict(
         os.environ, CARGO_INCREMENTAL="1", RUSTFLAGS="", CARGO_ENCODED_RUSTFLAGS=""
     )
+    env.update(dict.fromkeys(CARGO_WRAPPER_ENV_NAMES, ""))
 
     def run():
         try:
@@ -1488,12 +1490,11 @@ def test_actual_windows_job_cargo_observer_preserves_completed_cache_on_late_tim
     target = tmp_path / "target with spaces"
     env = dict(os.environ)
     for key in (
-        "RUSTC_WRAPPER",
-        "RUSTC_WORKSPACE_WRAPPER",
         "CARGO_BUILD_BUILD_DIR",
         "CARGO_BUILD_TARGET",
     ):
         env.pop(key, None)
+    env.update(dict.fromkeys(CARGO_WRAPPER_ENV_NAMES, ""))
     env.update(
         CARGO_TARGET_DIR=str(target),
         CARGO_INCREMENTAL="1",
