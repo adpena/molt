@@ -155,11 +155,31 @@ def _worker_log(entry: list[Any]) -> None:
 
 
 def _observe(entry: tuple[str, str]) -> None:
+    # The observing interpreter owns cache layout, including pycache_prefix.
+    # Keep the actual read as well as its source dependency: CPython validates
+    # timestamp/size or source hash, not equality of cached code with source.
+    kind, name = entry
+    names = (name,)
+    if kind == "file" and name.endswith((".pyc", ".pyo")):
+        import importlib.util
+
+        try:
+            source = importlib.util.source_from_cache(name)
+        except (ValueError, NotImplementedError):
+            pass  # Unmapped/sourceless bytecode remains an actual file input.
+        else:
+            names += (source,)
+            # Explicit potential-input facts survive product-root filtering.
+            # A readable-open audit is pre-syscall: absence is a probe, never
+            # proof that the process created or successfully read this file.
+            report_data_file(name)
+            report_data_file(source)
     sink = _SINK
-    if sink is not None:
-        sink.observe(entry)
-    else:
-        _worker_log(["observed", *entry])
+    for observed in names:
+        if sink is not None:
+            sink.observe((kind, observed))
+        else:
+            _worker_log(["observed", kind, observed])
 
 
 def _audit_hook(event: str, args: tuple[Any, ...]) -> None:

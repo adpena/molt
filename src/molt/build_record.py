@@ -14,7 +14,6 @@ a full build.
 from __future__ import annotations
 
 import hashlib
-import importlib.util
 import json
 import os
 import stat
@@ -30,7 +29,7 @@ from molt import file_publication, input_report
 from molt.file_hashing import DIGEST_RACY_WINDOW_NS
 from molt.input_report import ProbeOutcome, StatToken, resolved_probe, stat_token
 
-_SCHEMA = "molt-build-record-v4"
+_SCHEMA = "molt-build-record-v5"
 # Keys that name the terminal or login session. No build step reads them for
 # its artifact (`TERM` only styles progress output); they change between
 # shells and would defeat every hit. Everything else is keyed, `PWD` included:
@@ -115,11 +114,17 @@ class InputLedger:
             if token is None:
                 self.refusals.append(f"unreportable directory {name}")
                 return
+            prior = self.directories.get(name)
+            if prior is not None and prior != token:
+                self.refusals.append(f"directory changed during the build: {name}")
             self.directories[name] = token
 
     def probe(self, path: Path | str, outcome: ProbeOutcome) -> None:
+        name = os.fspath(path)
         with self._lock:
-            self.probes[os.fspath(path)] = outcome
+            if name in self.probes and self.probes[name] != outcome:
+                self.refusals.append(f"lookup changed during the build: {name}")
+            self.probes[name] = outcome
 
     def refuse(self, reason: str) -> None:
         with self._lock:
@@ -256,16 +261,6 @@ def record_path(state_root: Path, key: str) -> Path:
     return state_root / "build_records" / key[:2] / f"{key}.json"
 
 
-def _executed_source(name: str) -> str:
-    """The source a bytecode read stands for; a bytecode file is derived."""
-    if name.endswith((".pyc", ".pyo")) and "__pycache__" in Path(name).parts:
-        try:
-            return importlib.util.source_from_cache(name)
-        except ValueError:
-            return name
-    return name
-
-
 def resolve_observed(
     ledger: InputLedger,
     excluded_roots: tuple[Path, ...],
@@ -289,8 +284,42 @@ def resolve_observed(
         None if published_output is None else Path(os.path.realpath(published_output))
     )
     roots = tuple({os.path.realpath(root) + os.sep for root in excluded_roots})
-    for kind, observed in sorted(ledger.observed):
-        name = _executed_source(observed)
+    # Only this resolution's completed chains prove that a failed lookup has
+    # a generation boundary. Explicit probes may not have recorded one.
+    completed_lookups: set[str] = set()
+
+    def failed_lookup(name: str) -> None:
+        chain: list[str] = []
+        while name not in completed_lookups:
+            outcome = resolved_probe(name)
+            ledger.probe(name, outcome)
+            chain.append(name)
+            if outcome is not None and outcome[0]:
+                # The path exists but its content-change token is unavailable.
+                # A parent cannot substitute for that missing generation.
+                ledger.refuse(f"unreportable lookup generation {name}")
+                break
+            parent = os.path.dirname(name)
+            if parent == name:
+                ledger.refuse(f"unreportable lookup boundary {name}")
+                break
+            if parent in completed_lookups:
+                break
+            token = stat_token(parent)
+            if token is not None:
+                if stat.S_ISDIR(token[2]):
+                    if parent not in ledger.directories:
+                        ledger.directory(parent, token)
+                elif parent not in ledger.files:
+                    # ENOTDIR can terminate at a file. Keep its typed token;
+                    # it is not a directory listing dependency.
+                    ledger.file(parent, token, None)
+                chain.append(parent)
+                break
+            name = parent
+        completed_lookups.update(chain)
+
+    for kind, name in sorted(ledger.observed):
         real = os.path.realpath(name)
         if output is not None and (
             (kind == "file" and is_publication_family_member(Path(real), output))
@@ -303,13 +332,14 @@ def resolve_observed(
             continue
         token = stat_token(name)
         if token is None:
-            # A failed lookup, or a file the build removed. Record the outcome
-            # and the parent: a removal during the build changes the parent
-            # after the recording process started, which the racy rule refuses.
-            ledger.probe(name, resolved_probe(name))
-            parent = os.path.dirname(name)
-            if name not in ledger.files and parent not in ledger.directories:
-                ledger.directory(parent, stat_token(parent))
+            if name in ledger.files:
+                # A reported file keeps its original generation; validation
+                # already refuses its removal or an unreadable replacement.
+                ledger.probe(name, resolved_probe(name))
+            else:
+                # Missing intermediate components are probes too. The nearest
+                # stat-able ancestor supplies the racy-removal boundary.
+                failed_lookup(name)
             continue
         if kind == "directory":
             if name not in ledger.directories:

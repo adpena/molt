@@ -38,6 +38,12 @@ programs constantly.
 - [cc-rs metadata controls](https://docs.rs/cc/1.6.0/cc/struct.Build.html#method.cargo_metadata)
   can suppress environment dependency reporting as well as archive link output.
   Consumers that own archive linking must still invalidate C output inputs.
+- [CPython bytecode validation](https://peps.python.org/pep-0552/)
+  checks source metadata or its hash; it does not establish equality between
+  cached code and current source. Both are build inputs.
+  [`source_from_cache`](https://docs.python.org/3/library/importlib.html#importlib.util.source_from_cache)
+  owns the cache layout in the interpreter that observed the read, including
+  its `sys.pycache_prefix`.
 
 ## Design
 
@@ -63,7 +69,10 @@ imports it.
 **Ledger.** One build records into one ledger. Only the first build of a
 process records: process-global caches can serve a later build without a read
 to report, whether or not the earlier build was eligible. Inputs reach the
-ledger two ways:
+ledger two ways. Repeated equal file, directory and lookup facts are accepted;
+conflicting generations or outcomes refuse the record, including an absence
+that becomes present and absent again. Later observations never erase a prior
+conflict:
 
 - Authorities report when they read: source snapshots (token from `fstat`
   before and after the read, plus the digest), the import topology (listed
@@ -83,7 +92,11 @@ ledger two ways:
   prior read or exclude the directory's children. Process-pool
   workers log their facts to a directory the recording process merges; a
   forked child drops the copied ledger and resets its reporting lock before
-  logging its own facts. A bytecode read stands for its source.
+  logging its own facts. Recognized bytecode reads report both the actual
+  cache file and its source in the observing interpreter, including workers
+  with a different cache prefix. They use the existing explicit file/probe
+  reports so a consumed cache under a product root remains an input. Unmapped
+  bytecode retains its actual file observation without guessing a source.
   Reads under named product roots (the Molt
   cache, Cargo target and build state roots, the backend daemon's socket
   directory, the artifact root under the output directory, the memory guard's
@@ -93,8 +106,14 @@ ledger two ways:
   lease targets. The successfully
   published binary is excluded as one file with the receipt, journals, lock
   and stages its publication keeps beside it, preserving explicit input
-  reports and every read under its parent directory. A path that no
-  longer exists becomes an absence probe plus its parent directory.
+  reports and every read under its parent directory. A failed lookup keeps
+  its exact absence or error outcome. Missing intermediate components become
+  probes through the nearest stat-able ancestor: its directory token (or file
+  token for `ENOTDIR`) protects against an input subtree removed during the
+  build. An existing path without a content-change token refuses the record.
+  Only chains completed by this resolution are reused, so sibling lookups do
+  not repeatedly traverse shared missing ancestors, and explicit probes never
+  substitute for the generation boundary.
 - A recorded build keeps its own transient files in a product root:
   `tempfile` points at a per-build directory under
   `<Molt cache>/build_records/.transient`, beside its workers' read logs, as
@@ -156,8 +175,9 @@ record. An `rsync -a` keeps an old mtime but cannot keep ctime.
 A changed token on a file with a recorded digest falls back to a digest
 compare. A hit when the output still holds the binary the build published
 does nothing else: there is no artifact store and no copy. Malformed JSON,
-including valid JSON scalars and arrays, is a cache miss. The v4 record key
-retires records produced under inferred write ownership.
+including valid JSON scalars and arrays, is a cache miss. The v5 record key
+retires source-only bytecode records as well as records produced under inferred
+write ownership. There is no compatibility reader for the retired contracts.
 
 **Trimming.** A hit refreshes its record's mtime at most once an hour; records
 unused for a week are deleted, at most once an hour.
