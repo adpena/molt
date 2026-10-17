@@ -97,8 +97,8 @@ def workspace_member_manifests(project_root: Path) -> tuple[Path, ...]:
     return tuple(result)
 
 
-def workspace_package_names(project_root: Path) -> tuple[str, ...]:
-    """Return package identities, never directory aliases or partial results."""
+def workspace_member_packages(project_root: Path) -> dict[str, Path]:
+    """Map each member's package name to its manifest, in manifest order."""
     names: dict[str, Path] = {}
     for manifest in workspace_member_manifests(project_root):
         package = _read_manifest(manifest).get("package")
@@ -110,7 +110,12 @@ def workspace_package_names(project_root: Path) -> tuple[str, ...]:
                 f"{manifest}: duplicate package.name {name!r}; also in {names[name]}"
             )
         names[name] = manifest
-    return tuple(names)
+    return names
+
+
+def workspace_package_names(project_root: Path) -> tuple[str, ...]:
+    """Return package identities, never directory aliases or partial results."""
+    return tuple(workspace_member_packages(project_root))
 
 
 @dataclass(frozen=True)
