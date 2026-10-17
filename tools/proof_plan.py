@@ -529,14 +529,19 @@ _LOCAL_RULE_FIELDS = frozenset(
 _LOCAL_PYTEST_PREFIX = ("python", "-m", "pytest", "-q")
 
 
-def local_pytest_command(targets: Iterable[str], workers: int) -> str:
+def local_pytest_argv(targets: Iterable[str], workers: int) -> tuple[str, ...]:
     """The one pytest invocation for local gate test targets.
 
     Integration merges every selected rule's targets into one run, so the
     interpreter, guard and collection costs are paid once and the tests run
     on ``workers`` processes.
     """
-    return shlex.join([*_LOCAL_PYTEST_PREFIX, "-n", str(workers), *targets])
+    return (*_LOCAL_PYTEST_PREFIX, "-n", str(workers), *targets)
+
+
+def local_pytest_command(targets: Iterable[str], workers: int) -> str:
+    """Display/projection of the argv executed directly by the local driver."""
+    return shlex.join(local_pytest_argv(targets, workers))
 
 
 def local_rule_field_error(rule: Mapping[str, Any]) -> str | None:
@@ -577,7 +582,9 @@ def local_gate_commands(
     return commands
 
 
-def _local_pytest_target_errors(name: str, targets: object) -> list[str]:
+def local_pytest_target_errors(
+    name: str, targets: object, *, root: Path = ROOT
+) -> list[str]:
     """A gate's pytest targets are existing test paths or node IDs, never options.
 
     Options belong to the merged invocation; a target-specific option would
@@ -588,11 +595,13 @@ def _local_pytest_target_errors(name: str, targets: object) -> list[str]:
     ):
         return [f"{name}: pytest must be a list of test paths"]
     errors = []
+    tests_root = (root / "tests").resolve()
     for target in targets:
         path = target.split("::", 1)[0]
-        if target.startswith("-") or not path.startswith("tests/"):
+        candidate = (root / path).resolve()
+        if not path.startswith("tests/") or not candidate.is_relative_to(tests_root):
             errors.append(f"{name}: pytest target {target!r} must be a tests/ path")
-        elif not (ROOT / path).is_file():
+        elif not candidate.is_file():
             errors.append(f"{name}: pytest target {target!r} does not exist")
     return errors
 
@@ -2227,7 +2236,7 @@ class ProofPlan:
                     isinstance(item, str) for item in value
                 ):
                     errors.append(f"{name}: {field} must be a list of strings")
-            errors.extend(_local_pytest_target_errors(name, rule.get("pytest", [])))
+            errors.extend(local_pytest_target_errors(name, rule.get("pytest", [])))
         return errors
 
     def all_selected(self, *, reason: str, fail_closed: bool = True) -> Selection:
