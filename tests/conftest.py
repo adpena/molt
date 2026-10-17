@@ -224,8 +224,27 @@ def generous_host_memory(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(memory_guard, "adaptive_memory_budget", budget)
 
 
+@pytest.fixture(scope="session", autouse=True)
+def _native_fixture_donor(tmp_path_factory: pytest.TempPathFactory) -> None:
+    """Give synthetic tool images a small donor in this session's temp tree."""
+    from tests.runtime_build_identity_helper import bind_native_donor_factory
+
+    bind_native_donor_factory(tmp_path_factory)
+
+
+@pytest.fixture(scope="session")
+def native_fixture_donor(_native_fixture_donor: None) -> Path:
+    """Build the donor before any test body runs: a test may forbid launching
+    processes, and building the donor launches rustc."""
+    from tests.runtime_build_identity_helper import _host_executable_donor
+
+    return _host_executable_donor()
+
+
 @pytest.fixture
-def runtime_fixture_root(tmp_path: Path) -> RuntimeFixtureRoot:
+def runtime_fixture_root(
+    tmp_path: Path, native_fixture_donor: Path
+) -> RuntimeFixtureRoot:
     """Separate writable synthetic runtime tools from compiler source custody."""
     from tests.runtime_build_identity_helper import RuntimeFixtureRoot
 

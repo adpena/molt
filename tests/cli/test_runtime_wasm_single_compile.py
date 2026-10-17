@@ -71,6 +71,7 @@ from tests.process_guard_common import current_thread_only
 from tests.runtime_build_identity_helper import (
     RuntimeFixtureRoot,
     clear_wasm_toolchain_selection,
+    _host_executable_donor,
     mock_wasm_optimizer_cache_fact,
     mock_wasm_optimizer_publications,
     provisioned_wasi_sdk_fixture,
@@ -592,13 +593,11 @@ def test_synthetic_tools_do_not_mutate_read_only_source_root(
         cargo_command=("cargo", "rustc"),
     )
     sdk = provisioned_wasi_sdk_fixture(runtime_fixture_root)
-    executable_digest = hashlib.sha256(Path(sys.executable).read_bytes()).hexdigest()
+    donor = _host_executable_donor()
+    executable_digest = hashlib.sha256(donor.read_bytes()).hexdigest()
     assert sdk.tool_fact("wasm-ld")["sha256"] == executable_digest
     if os.name == "posix":
-        assert (
-            sdk.wasm_ld.stat().st_mode & 0o7777
-            == Path(sys.executable).stat().st_mode & 0o7777
-        )
+        assert sdk.wasm_ld.stat().st_mode & 0o7777 == donor.stat().st_mode & 0o7777
     assert len(plan.wrappers) == 2
     assert all(
         item.identity.sha256 == executable_digest
