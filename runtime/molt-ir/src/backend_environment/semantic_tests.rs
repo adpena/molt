@@ -218,6 +218,7 @@ fn semantic_identity_has_independent_domain_and_projection_vectors() {
 )]
 fn semantic_identity_process_probe() {
     const MARKER: &str = "MOLT_TEST_SEMANTIC_IDENTITY_PROCESS";
+    const SUCCESS: &str = "molt-semantic-process-and-scope-identity-verified";
     if std::env::var_os(MARKER).is_none() {
         let mut child = Command::new(std::env::current_exe().unwrap());
         child.args([
@@ -235,10 +236,11 @@ fn semantic_identity_process_probe() {
             .env("MOLT_STDLIB_OBJ", "")
             .output()
             .unwrap();
+        let stdout = String::from_utf8_lossy(&result.stdout);
+        let stderr = String::from_utf8_lossy(&result.stderr);
         assert!(
-            result.status.success(),
-            "{}",
-            String::from_utf8_lossy(&result.stderr)
+            result.status.success() && stdout.lines().any(|line| line == SUCCESS),
+            "stdout: {stdout}\nstderr: {stderr}"
         );
         return;
     }
@@ -253,4 +255,5 @@ fn semantic_identity_process_probe() {
     );
     let _scope = enter(Arc::new(request));
     assert_eq!(process, current_semantic_environment(target).unwrap());
+    println!("{SUCCESS}");
 }
