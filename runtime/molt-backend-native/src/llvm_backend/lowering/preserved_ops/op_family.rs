@@ -195,8 +195,6 @@ mod tests {
             ("exception_new", 2),
             ("exception_stack_set_depth", 1),
             ("exception_stack_exit", 1),
-            ("exception_enter_handler", 1),
-            ("exception_resolve_captured", 1),
             ("exception_set_last", 1),
             ("exception_context_set", 1),
             ("class_apply_set_name", 1),

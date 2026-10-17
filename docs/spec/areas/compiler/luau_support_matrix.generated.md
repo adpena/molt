@@ -11,10 +11,10 @@ Validated structured CFG uses `function_body.rs` and `flow_dispatch.rs` separate
 ## Summary
 
 - `compile-error`: `8`
-- `implemented-exact`: `199`
+- `implemented-exact`: `196`
 - `implemented-target-limited`: `15`
 - `not-admitted`: `189`
-- `total`: `411`
+- `total`: `408`
 
 ## Matrix
 
@@ -156,11 +156,9 @@ Validated structured CFG uses `function_body.rs` and `flow_dispatch.rs` separate
 | `exception_context_set` | `implemented-exact` | Lowered and outside every generated target-contract limitation. |
 | `exception_current` | `not-admitted` | Operation is unclassified in the generated target-contract authority. |
 | `exception_finally_pending_observer` | `implemented-target-limited` | Unmarked observer is lowered; the generated target contract rejects the pending-call/eval-breaker-marked variant. |
-| `exception_kind` | `implemented-exact` | Lowered and outside every generated target-contract limitation. |
 | `exception_last` | `implemented-exact` | Lowered and outside every generated target-contract limitation. |
 | `exception_last_pending` | `implemented-exact` | Lowered and outside every generated target-contract limitation. |
 | `exception_match_builtin` | `implemented-exact` | Lowered and outside every generated target-contract limitation. |
-| `exception_message` | `implemented-exact` | Lowered and outside every generated target-contract limitation. |
 | `exception_new` | `implemented-exact` | Lowered and outside every generated target-contract limitation. |
 | `exception_new_builtin` | `implemented-exact` | Lowered and outside every generated target-contract limitation. |
 | `exception_new_builtin_empty` | `implemented-exact` | Lowered and outside every generated target-contract limitation. |
@@ -171,7 +169,6 @@ Validated structured CFG uses `function_body.rs` and `flow_dispatch.rs` separate
 | `exception_push` | `implemented-exact` | Lowered and outside every generated target-contract limitation. |
 | `exception_region_drops_inserted` | `implemented-exact` | Lowered and outside every generated target-contract limitation. |
 | `exception_set_last` | `implemented-exact` | Lowered and outside every generated target-contract limitation. |
-| `exception_set_value` | `implemented-exact` | Lowered and outside every generated target-contract limitation. |
 | `exception_stack_clear` | `implemented-exact` | Lowered and outside every generated target-contract limitation. |
 | `exception_stack_depth` | `implemented-exact` | Lowered and outside every generated target-contract limitation. |
 | `exception_stack_enter` | `implemented-exact` | Lowered and outside every generated target-contract limitation. |

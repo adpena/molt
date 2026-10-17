@@ -496,9 +496,7 @@ user call site that invokes that wrapper as a normal Python callable.
 | `exception_clear`           | `out`                 | Clear current exception              |
 | `exception_set_last`        | `args` [exc], `out`   | Set current exception                |
 | `exception_context_set`     | `args` [exc], `out`   | Set `__context__`                    |
-| `exception_kind`            | `args` [exc], `out`   | Get exception type tag               |
 | `exception_class`           | `args` [exc], `out`   | Get exception class                  |
-| `exception_message`         | `args` [exc], `out`   | Get exception message                |
 | `exception_stack_enter`     | `out`                 | Enter exception stack frame          |
 | `exception_stack_exit`      | `args`, `out`         | Exit exception stack frame           |
 | `exception_stack_clear`     | `out`                 | Clear exception stack                |

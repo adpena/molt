@@ -269,10 +269,8 @@ pub(super) const FIXED_RUNTIME_IMPORTS: &[FixedRuntimeImportSpec] = &[
     i64_ret("molt_exception_stack_enter", 0, ATTR_WILLRETURN),
     i64_ret("molt_exception_stack_depth", 0, ATTR_WILLRETURN),
     i64_ret("molt_exception_stack_clear", 0, ATTR_WILLRETURN),
-    i64_ret("molt_exception_enter_handler", 1, ATTR_WILLRETURN),
     i64_ret("molt_exception_stack_exit", 1, ATTR_WILLRETURN),
     i64_ret("molt_exception_stack_set_depth", 1, ATTR_WILLRETURN),
-    i64_ret("molt_exception_resolve_captured", 1, ATTR_WILLRETURN),
     custom(
         "molt_sleep_register",
         PTR_PTR,

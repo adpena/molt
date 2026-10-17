@@ -393,7 +393,6 @@ def _classify(op: str, body: str) -> Row:
     if any(marker in body for marker in semantic_markers):
         allowed = (
             "-- [exception_last]",
-            "-- [exception_message]",
             "-- [missing]",
             "-- [vectorized:",
         )

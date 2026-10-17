@@ -411,11 +411,11 @@ simpleir_exception_semantics_kinds = [
     "exception_push", "exception_pop", "exception_clear", "exception_active",
     "exception_stack_clear", "exception_stack_enter", "exception_stack_exit",
     "exception_stack_set_depth", "exception_stack_depth",
-    "exception_set_last", "exception_set_value", "exception_context_set",
+    "exception_set_last", "exception_context_set",
     "exception_last", "exception_last_pending", "exception_finally_pending_observer",
     "exception_new", "exception_new_builtin", "exception_new_from_class",
     "exception_new_builtin_empty", "exception_new_builtin_one",
-    "exception_match_builtin", "exception_kind", "exception_class", "exception_message",
+    "exception_match_builtin", "exception_class",
     "exceptiongroup_match", "exceptiongroup_combine",
     "exception_pending",
 ]
@@ -927,13 +927,10 @@ classifier_owned_value = [
     "exception_clear",
     "exception_context_set",
     "exception_current",
-    "exception_enter_handler",
     "exception_finally_pending_observer",
-    "exception_kind",
     "exception_last",
     "exception_last_pending",
     "exception_match_builtin",
-    "exception_message",
     "exception_new",
     "exception_new_builtin",
     "exception_new_builtin_empty",
@@ -941,9 +938,7 @@ classifier_owned_value = [
     "exception_new_from_class",
     "exception_pop",
     "exception_push",
-    "exception_resolve_captured",
     "exception_set_last",
-    "exception_set_value",
     "exception_stack_clear",
     "exception_stack_depth",
     "exception_stack_enter",
@@ -1092,10 +1087,10 @@ exception_check_kinds = ["check_exception", "async_work_poll"]
 # Pending-exception effects for the SimpleIR verifier's dataflow. `raise`
 # always leaves an exception pending, and execution continues to the next
 # exception check. Only these kinds drop a pending exception (the runtime's
-# molt_exception_clear and molt_exception_enter_handler); every other kind may
-# raise but leaves a pending exception in place.
+# molt_exception_clear); every other kind may raise but leaves a pending
+# exception in place.
 simpleir_pending_exception_raise_kinds = ["raise"]
-simpleir_pending_exception_clear_kinds = ["exception_clear", "exception_enter_handler"]
+simpleir_pending_exception_clear_kinds = ["exception_clear"]
 async_work_poll_kinds = ["async_work_poll"]
 async_work_poll_marker_kinds = [
     "exception_finally_pending_observer",

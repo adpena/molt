@@ -18,8 +18,7 @@ impl LuauBackend {
             | "exception_last_pending"
             | "exception_active"
             | "exception_current"
-            | "exception_pending"
-            | "exception_set_value" => {
+            | "exception_pending" => {
                 let args = op
                     .args
                     .as_deref()
@@ -107,34 +106,12 @@ impl LuauBackend {
                     self.emit_unsupported_op(op);
                 }
             }
-            "exception_kind" => {
-                let out = self.out_var(op);
-                let args = op.args.as_deref().unwrap_or(&[]);
-                if let Some(exc_var) = args.first() {
-                    let exc = sanitize_ident(exc_var);
-                    self.emit_line(&format!("local {out} = molt_exception_kind({exc})"));
-                } else {
-                    self.emit_unsupported_op(op);
-                }
-            }
             "exception_class" => {
                 let out = self.out_var(op);
                 let args = op.args.as_deref().unwrap_or(&[]);
                 if let Some(class_var) = args.first() {
                     let cls = sanitize_ident(class_var);
                     self.emit_line(&format!("local {out} = {cls}"));
-                } else {
-                    self.emit_unsupported_op(op);
-                }
-            }
-            "exception_message" => {
-                let out = self.out_var(op);
-                let args = op.args.as_deref().unwrap_or(&[]);
-                if let Some(exc_var) = args.first() {
-                    let exc = sanitize_ident(exc_var);
-                    self.emit_line(&format!(
-                        "local {out} = (type({exc}) == \"table\" and {exc}.__msg or tostring({exc}))"
-                    ));
                 } else {
                     self.emit_unsupported_op(op);
                 }
