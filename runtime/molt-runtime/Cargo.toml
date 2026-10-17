@@ -13,7 +13,7 @@ build = "build.rs"
 crate-type = ["rlib"]
 
 [lints.rust]
-unexpected_cfgs = { level = "warn", check-cfg = ['cfg(kani)', 'cfg(fuzzing)', 'cfg(miri)', 'cfg(feature, values("audit", "refcount_verify", "free-threaded"))'] }
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(kani)', 'cfg(fuzzing)', 'cfg(miri)', 'cfg(feature, values("free-threaded"))'] }
 
 [[test]]
 name = "l7_numeric_runtime_perf_attestation"
@@ -157,7 +157,6 @@ builtin_complex = []
 builtin_memoryview = []
 builtin_fcntl = []
 
-molt_debug_gil = []
 molt_tk_native = ["stdlib_tk", "molt-runtime-tk/native-tcl"]
 # Enable dlopen-based C extension loading via the CPython ABI shim.
 # The ABI bridge itself is always available so source-recompiled static
@@ -172,10 +171,6 @@ wasm_freestanding = ["molt-runtime-platform/wasm_freestanding"]
 vfs_bundle_tar = ["molt-runtime-vfs/vfs_bundle_tar"]
 wasi_host = ["stdlib_fs_extra"]
 
-# Structured audit logging: enables audit event emission in capability checks.
-audit = []
-# Debug feature: tracks inc_ref/dec_ref and panics on leaks or double-free.
-refcount_verify = ["molt-runtime-audit/refcount_verify"]
 molt_gpu_metal = ["molt-gpu-runtime?/metal-backend"]
 molt_gpu_webgpu = ["molt-gpu-runtime?/webgpu-backend"]
 molt_gpu_cuda = ["molt-gpu-runtime?/cuda-backend"]

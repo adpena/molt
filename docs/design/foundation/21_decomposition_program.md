@@ -356,7 +356,6 @@ llvm          = ["molt-backend-native/llvm"]   # llvm lives inside -native
 wasm-backend  = ["dep:molt-backend-wasm"]
 luau-backend  = ["dep:molt-backend-luau"]
 rust-backend  = ["dep:molt-backend-rust"]
-egraphs       = ["molt-tir/egraphs"]
 ```
 
 Each backend crate depends only on `molt-tir`. **Build-cache effect:** editing `wasm.rs` rebuilds

@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import importlib
-import json
 import re
 from pathlib import Path
 
@@ -145,7 +144,6 @@ def test_retired_heap_ids_cannot_be_reused_or_silently_removed(
         gen.load_table(table)
     rendered = gen.render_all(gen.load_table())
     assert rendered[gen.OUT_RUNTIME].count("None, // Retired ABI slot") == 3
-    assert json.loads(rendered[gen.OUT_AUDIT])["retired_ids"] == [205, 220, 231]
     for output in rendered.values():
         assert "DICT_BUILDER" not in output and "SET_BUILDER" not in output
         assert "DictBuilder" not in output and "SetBuilder" not in output
@@ -316,14 +314,6 @@ def test_dynamic_tracking_requires_explicit_projection(
     table.write_text(source, encoding="utf-8")
     with pytest.raises(ValueError, match=f"dynamic heap kind {kind}"):
         gen.load_table(table)
-
-
-def test_audit_json_preserves_every_schema_row() -> None:
-    gen = _gen()
-    audit = json.loads(gen.OUT_AUDIT.read_text(encoding="utf-8"))
-    assert audit["source"] == "runtime/heap_kinds.toml"
-    assert audit["kinds"] == gen.load_table()
-    assert audit["object_shapes"] == gen.load_object_shapes()
 
 
 def test_object_shape_abi_is_generated_from_same_authority() -> None:

@@ -329,6 +329,12 @@ passed the same parent fan-in proof in 53.5s. Treat the stale invalid row and th
 repeated nested memory-guard cleanup warning as proof-queue/Cargo-lock DX defects
 to drive down separately, not as refcount authority failures.
 
+2026-10-17 (HF-281): `refcount_verify` and the empty `audit` feature are deleted.
+No runtime path ever called `track_inc_ref`/`track_dec_ref`, so the tracker
+checked nothing, and no proof cell enabled either feature. A real refcount
+verifier must hook the refcount transition authority in `molt-codegen-abi` and
+name the proof cell that builds it.
+
 2026-07-08 C1 follow-up: pure RFC 3492 `encodings.punycode` encode/decode
 behavior now lives in `molt-stdlib-text::punycode`. `molt-runtime` keeps only
 the ABI/object bridge in `builtins/punycode.rs`, importing the shared

@@ -555,7 +555,7 @@ fn required_env(name: &str) -> String {
 }
 
 #[test]
-#[ignore = "release runtime profiler; use tools/bench/run_l7_numeric_attestation.py"]
+#[ignore = "release runtime profiler; use tools/numeric_attestation/run_l7_numeric_attestation.py"]
 fn l7_numeric_runtime_performance_attestation() {
     assert!(
         !cfg!(debug_assertions),
@@ -624,7 +624,7 @@ fn l7_numeric_runtime_performance_attestation() {
             "bytes": "real RuntimeHooks int_from_bytes/int_to_bytes/int_num_bits",
             "numeric_hook_calls_per_op": "selected numeric hooks only; unicode_format and other crossings are not counted; observed in the separate untimed probe pass",
             "semantic_witness": "every batch must complete every operation, preserve representative value bits, and leave no pending exception",
-            "process_peak_rss": "component harness only; added by tools/bench/run_l7_numeric_attestation.py",
+            "process_peak_rss": "component harness only; added by tools/numeric_attestation/run_l7_numeric_attestation.py",
         },
         "cases": cases,
     });

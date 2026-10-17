@@ -18,8 +18,7 @@ guard propagation (type_refine.rs); a single-source-of-truth `Repr` lattice acro
 (representation_plan.rs, Phase 0/1 landed); 6-strategy
 refcount elimination incl. Deutsch-Bobrow + unique-ownership (refcount_elim.rs); SBBV block
 versioning (block_versioning.rs); the prior dead deoptimization skeleton has been deleted rather
-than left as unsafe dormant ABI; an egg-based
-e-graph PoC (egraph_simplify.rs, feature-gated); a Lean 4 formalization of ~15 passes (formal/lean/,
+than left as unsafe dormant ABI; a Lean 4 formalization of ~15 passes (formal/lean/,
 ~73 open sorries); an MLIR backend with a real pass manager; a 26-primitive GPU stack; SCCP/GVN/LICM/
 DCE/canonicalize/strength-reduction/BCE/check_exception_elim. This is advanced for an early compiler.
 

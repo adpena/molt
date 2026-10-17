@@ -12,10 +12,6 @@ compile_error!(
     "molt-backend needs a backend: enable native-backend, wasm-backend, luau-backend or rust-backend"
 );
 
-#[cfg(feature = "jemalloc")]
-#[global_allocator]
-static GLOBAL: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
-
 #[cfg(feature = "wasm-backend")]
 use molt_artifact_publish::AtomicFilePublication;
 use std::env;
