@@ -282,8 +282,6 @@ unsafe extern "C" {
         out_ptr: *mut *const u8,
         out_len: *mut usize,
     ) -> i32;
-    fn __molt_math_bigint_bits(sign: i32, data_ptr: *const u8, data_len: usize) -> u64;
-    fn __molt_math_bigint_to_inline(sign: i32, data_ptr: *const u8, data_len: usize) -> u64;
     fn __molt_math_index_i64_from_obj(obj_bits: u64, err_ptr: *const u8, err_len: usize) -> i64;
     fn __molt_math_index_bigint_from_obj(
         obj_bits: u64,
@@ -489,28 +487,6 @@ pub fn bigint_from_f64_trunc(val: f64) -> num_bigint::BigInt {
     };
     let bytes = unsafe { bridge_owned_u8_buffer(out_ptr, out_len) };
     BigInt::from_bytes_be(sign, &bytes)
-}
-
-pub fn bigint_bits(_py: &PyToken, value: &num_bigint::BigInt) -> u64 {
-    use num_bigint::Sign;
-    let (sign, bytes) = value.to_bytes_be();
-    let sign_i32 = match sign {
-        Sign::Minus => -1i32,
-        Sign::NoSign => 0i32,
-        Sign::Plus => 1i32,
-    };
-    unsafe { __molt_math_bigint_bits(sign_i32, bytes.as_ptr(), bytes.len()) }
-}
-
-pub fn bigint_to_inline(_py: &PyToken, value: &num_bigint::BigInt) -> u64 {
-    use num_bigint::Sign;
-    let (sign, bytes) = value.to_bytes_be();
-    let sign_i32 = match sign {
-        Sign::Minus => -1i32,
-        Sign::NoSign => 0i32,
-        Sign::Plus => 1i32,
-    };
-    unsafe { __molt_math_bigint_to_inline(sign_i32, bytes.as_ptr(), bytes.len()) }
 }
 
 pub fn index_i64_from_obj(_py: &PyToken, obj_bits: u64, err: &str) -> i64 {
@@ -737,7 +713,6 @@ pub fn list_swap(list_bits: u64, left: usize, right: usize) -> bool {
 
 unsafe extern "C" {
     fn __molt_math_molt_iter(bits: u64) -> u64;
-    fn __molt_math_molt_iter_next(iter_bits: u64, out: *mut u64) -> i32;
     fn __molt_math_raise_not_iterable(bits: u64) -> u64;
     fn __molt_math_molt_sorted_builtin(bits: u64) -> u64;
     fn __molt_math_molt_mul(a: u64, b: u64) -> u64;
@@ -745,12 +720,6 @@ unsafe extern "C" {
 
 pub fn molt_iter(_py: &PyToken, bits: u64) -> u64 {
     unsafe { __molt_math_molt_iter(bits) }
-}
-
-pub fn molt_iter_next(_py: &PyToken, iter_bits: u64) -> Option<u64> {
-    let mut out: u64 = 0;
-    let ok = unsafe { __molt_math_molt_iter_next(iter_bits, &mut out) };
-    if ok != 0 { Some(out) } else { None }
 }
 
 pub fn raise_not_iterable(_py: &PyToken, bits: u64) -> u64 {

@@ -167,7 +167,7 @@ fn statistics_seed_bigint(_py: &PyToken, seed_bits: u64) -> Option<BigInt> {
     };
     let seed_bytes: Vec<u8> = unsafe {
         match object_type_id(seed_ptr) {
-            TYPE_ID_STRING => compat_string_bytes(seed_ptr).to_vec(),
+            TYPE_ID_STRING => string_bytes(seed_ptr).to_vec(),
             TYPE_ID_BYTES | TYPE_ID_BYTEARRAY => {
                 let Some(slice) = bytes_like_slice(seed_ptr) else {
                     return statistics_seed_type_error(_py);
@@ -246,7 +246,7 @@ fn statistics_normal_dist_samples_mode(
         if object_type_id(marker_ptr) != TYPE_ID_STRING {
             false
         } else {
-            let marker_bytes = compat_string_bytes(marker_ptr);
+            let marker_bytes = string_bytes(marker_ptr);
             marker_bytes == STATISTICS_NORMAL_DIST_INV_CDF_MODE_MARKER
         }
     };
