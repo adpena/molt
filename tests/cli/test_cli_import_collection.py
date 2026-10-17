@@ -16399,6 +16399,16 @@ def test_load_module_analysis_misses_after_body_only_edit(
     assert path_stat is not None
 
 
+@pytest.fixture
+def isolated_frontend_state(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    # A session-local lowering record is named by module, not path, and the
+    # default state root and shared tier are common to every test on one
+    # Cargo target; parallel tests that lower `pkg` would read each other's.
+    monkeypatch.setenv("MOLT_BUILD_STATE_DIR", str(tmp_path / "build-state"))
+    monkeypatch.setenv("MOLT_CACHE", str(tmp_path / "molt-cache"))
+
+
+@pytest.mark.usefixtures("isolated_frontend_state")
 def test_persisted_module_lowering_roundtrip_respects_context_digest(
     tmp_path: Path,
 ) -> None:
@@ -16479,6 +16489,7 @@ def test_module_lowering_cache_key_ignores_generated_output_path(
     assert second_slot == first_slot
 
 
+@pytest.mark.usefixtures("isolated_frontend_state")
 def test_persisted_module_lowering_rejects_missing_local_function_reference(
     tmp_path: Path,
 ) -> None:
@@ -16634,6 +16645,7 @@ def test_module_lowering_allows_submodule_cross_module_references() -> None:
     )
 
 
+@pytest.mark.usefixtures("isolated_frontend_state")
 def test_persisted_module_lowering_tracks_source_content(
     tmp_path: Path,
 ) -> None:
@@ -16677,6 +16689,7 @@ def test_persisted_module_lowering_tracks_source_content(
     )
 
 
+@pytest.mark.usefixtures("isolated_frontend_state")
 def test_persisted_module_lowering_reuses_process_cache(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -16730,6 +16743,7 @@ def test_persisted_module_lowering_reuses_process_cache(
     assert first is not second
 
 
+@pytest.mark.usefixtures("isolated_frontend_state")
 def test_persisted_module_lowering_returns_isolated_mutable_results(
     tmp_path: Path,
 ) -> None:
@@ -16814,6 +16828,7 @@ def test_finalize_backend_ir_pads_truncated_param_types() -> None:
     assert fn["param_types"] == ["Any", "i64", "i64"]
 
 
+@pytest.mark.usefixtures("isolated_frontend_state")
 def test_persisted_module_lowering_repairs_truncated_param_types(
     tmp_path: Path,
 ) -> None:
