@@ -31,6 +31,25 @@ def emitted_name_matches_module_symbol(name: str, module_symbol: str) -> bool:
     return name.startswith(f"{module_symbol}__")
 
 
+def emitted_name_matches_any_module_symbol(
+    name: str, module_symbols: frozenset[str]
+) -> bool:
+    """`emitted_name_matches_module_symbol` for any of ``module_symbols``.
+
+    A symbol matches a name exactly when the name continues it with ``__``, so
+    checking each ``__`` position of the name costs O(len(name)), not one
+    prefix test per module.
+    """
+    if name.startswith("molt_init_"):
+        return name[len("molt_init_") :] in module_symbols
+    index = name.find("__")
+    while index != -1:
+        if name[:index] in module_symbols:
+            return True
+        index = name.find("__", index + 1)
+    return False
+
+
 def name_owned_by_other_module_symbol(
     name: str,
     module_symbol: str,
@@ -73,26 +92,32 @@ def function_references(
     func: Mapping[str, object],
     defined: frozenset[str],
 ) -> frozenset[str]:
+    from molt.frontend.lowering.gpu_kernel_descriptor import (
+        DESCRIPTOR_PUBLICATION_SYMBOL,
+        descriptor_body_symbols,
+    )
+
     refs: set[str] = set()
     ops = func.get("ops")
     if not isinstance(ops, list):
         return frozenset()
+    publishes_descriptor = False
     for op in ops:
         if not isinstance(op, Mapping):
             continue
         kind = op.get("kind")
         if not isinstance(kind, str):
             continue
+        name = op.get("s_value")
+        if kind == "call" and name == DESCRIPTOR_PUBLICATION_SYMBOL:
+            publishes_descriptor = True
         if kind not in SIMPLEIR_DEFINED_FUNCTION_REFERENCE_S_VALUE_KINDS:
             continue
-        name = op.get("s_value")
-        if not isinstance(name, str):
-            continue
-        if name in defined:
+        if isinstance(name, str) and name in defined:
             refs.add(name)
-    from molt.frontend.lowering.gpu_kernel_descriptor import descriptor_body_symbols
-
-    refs.update(descriptor_body_symbols(ops) & defined)
+    # A descriptor's body symbols are references too; most functions publish none.
+    if publishes_descriptor:
+        refs.update(descriptor_body_symbols(ops) & defined)
     return frozenset(refs)
 
 
