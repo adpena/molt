@@ -3025,7 +3025,7 @@ def test_metadata_discovery_must_agree_under_captured_resources(
     def query(rustc, target, flags, **kwargs):
         nonlocal calls
         calls += 1
-        fact = backend.read_text()
+        fact = backend.read_text(encoding="utf-8")
         if calls == (1 if phase == "before_capture" else 2):
             _rewrite_with_restored_mtime(backend, b"new")
         return _metadata(plan_root, fact)
