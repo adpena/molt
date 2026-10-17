@@ -281,47 +281,43 @@ fn direct_and_dynamic_calls_release_only_discarded_owned_results() {
                         // CALL after a method load is a source call: it adopts
                         // every operand, so the final IR is drop-inserted and
                         // retains the borrowed parameter per adopting position.
-                        ops: (kind == "call_loaded_method")
-                            .then(|| {
-                                std::iter::once(OpIR {
-                                    kind: "drop_inserted".into(),
-                                    ..OpIR::default()
-                                })
-                                .chain((0..argc).map(|_| OpIR {
-                                    kind: "inc_ref".into(),
-                                    args: Some(vec!["value".into()]),
-                                    ..OpIR::default()
-                                }))
-                                .collect::<Vec<_>>()
+                        ops: if kind == "call_loaded_method" {
+                            std::iter::once(OpIR {
+                                kind: "drop_inserted".into(),
+                                ..OpIR::default()
                             })
-                            .unwrap_or_default()
-                            .into_iter()
-                            .chain([
-                                OpIR {
-                                    kind: kind.into(),
-                                    args: Some(vec!["value".into(); argc]),
-                                    // CALL after a method load always adopts.
-                                    argument_custody: (kind == "call_loaded_method").then(|| {
-                                        vec![molt_ir::ParameterCustody::Transferred; argc]
-                                    }),
-                                    out: bound.then(|| "result".into()),
-                                    s_value: target.map(str::to_string),
-                                    native_callable_export: native_abi
-                                        .map(|_| "native.probe".into()),
-                                    native_callable_binding: native_abi
-                                        .map(|_| "direct_symbol".into()),
-                                    native_callable_symbol: native_abi
-                                        .map(|_| "native_probe".into()),
-                                    native_callable_abi: native_abi.map(str::to_string),
-                                    ..OpIR::default()
-                                },
-                                OpIR {
-                                    kind: "ret".into(),
-                                    args: Some(vec![if bound { "result" } else { "value" }.into()]),
-                                    ..OpIR::default()
-                                },
-                            ])
-                            .collect(),
+                            .chain((0..argc).map(|_| OpIR {
+                                kind: "inc_ref".into(),
+                                args: Some(vec!["value".into()]),
+                                ..OpIR::default()
+                            }))
+                            .collect::<Vec<_>>()
+                        } else {
+                            Vec::new()
+                        }
+                        .into_iter()
+                        .chain([
+                            OpIR {
+                                kind: kind.into(),
+                                args: Some(vec!["value".into(); argc]),
+                                // CALL after a method load always adopts.
+                                argument_custody: (kind == "call_loaded_method")
+                                    .then(|| vec![molt_ir::ParameterCustody::Transferred; argc]),
+                                out: bound.then(|| "result".into()),
+                                s_value: target.map(str::to_string),
+                                native_callable_export: native_abi.map(|_| "native.probe".into()),
+                                native_callable_binding: native_abi.map(|_| "direct_symbol".into()),
+                                native_callable_symbol: native_abi.map(|_| "native_probe".into()),
+                                native_callable_abi: native_abi.map(str::to_string),
+                                ..OpIR::default()
+                            },
+                            OpIR {
+                                kind: "ret".into(),
+                                args: Some(vec![if bound { "result" } else { "value" }.into()]),
+                                ..OpIR::default()
+                            },
+                        ])
+                        .collect(),
                         ..FunctionIR::default()
                     },
                     FunctionIR {
