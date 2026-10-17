@@ -254,6 +254,71 @@ def test_run_gate_activates_selected_project_python(drv, tmp_path, selection):
     assert drv.run_gate('python -c "raise SystemExit(23)"', repo, env) == 23
 
 
+@pytest.mark.parametrize(
+    "wrapper",
+    [
+        "RUSTC_WRAPPER",
+        "RUSTC_WORKSPACE_WRAPPER",
+        "CARGO_BUILD_RUSTC_WRAPPER",
+        "CARGO_BUILD_RUSTC_WORKSPACE_WRAPPER",
+    ],
+)
+def test_run_gate_compound_shell_preserves_durable_cargo_environment(
+    drv, tmp_path, wrapper
+):
+    repo = tmp_path / "source"
+    repo.mkdir()
+    _make_gate_venv(repo / ".venv", None)
+    env = _gate_caller_env(tmp_path / "hostile")
+    for key in (
+        "RUSTC_WRAPPER",
+        "RUSTC_WORKSPACE_WRAPPER",
+        "CARGO_BUILD_RUSTC_WRAPPER",
+        "CARGO_BUILD_RUSTC_WORKSPACE_WRAPPER",
+        "SCCACHE_SERVER_UDS",
+    ):
+        env.pop(key, None)
+    scratch = tmp_path / "one-command-scratch"
+    scratch.mkdir()
+    env.update(
+        SCCACHE_DIR=str(tmp_path / "persistent-cache"),
+        SCCACHE_SERVER_PORT="49971",
+        CARGO_INCREMENTAL="1",
+        TMPDIR=str(scratch),
+        TMP=str(scratch),
+        TEMP=str(scratch),
+    )
+    env[wrapper] = str(tmp_path / "sccache")
+    script = tmp_path / "observe.py"
+    script.write_text(
+        "import json, os, sys\n"
+        "from pathlib import Path\n"
+        "keys = ('TMPDIR', 'TMP', 'TEMP', 'CARGO_INCREMENTAL', "
+        "'SCCACHE_SERVER_PORT', sys.argv[2])\n"
+        "Path(sys.argv[1]).write_text(json.dumps({key: os.environ[key] "
+        "for key in keys}), encoding='utf-8')\n",
+        encoding="utf-8",
+    )
+    outputs = [tmp_path / "first.json", tmp_path / "second.json"]
+    command = " && ".join(
+        _gate_shell_command("python", str(script), str(output), wrapper)
+        for output in outputs
+    )
+    before = dict(env)
+    assert drv.run_gate(command, repo, env) == 0
+    assert env == before
+    first, second = [json.loads(path.read_text(encoding="utf-8")) for path in outputs]
+    assert first == second
+    assert first[wrapper] == env[wrapper]
+    assert first["SCCACHE_SERVER_PORT"] == "49971"
+    assert first["CARGO_INCREMENTAL"] == "0"
+    temporary = Path(first["TMPDIR"])
+    assert temporary.is_dir() and temporary != scratch
+    assert first["TMP"] == first["TEMP"] == str(temporary)
+    scratch.rmdir()
+    assert temporary.is_dir()
+
+
 @pytest.mark.parametrize("selector", ["MOLT_VENV", "UV_PROJECT_ENVIRONMENT"])
 def test_run_gate_invalid_selected_venv_never_launches_shell(drv, tmp_path, selector):
     repo = tmp_path / "repo"

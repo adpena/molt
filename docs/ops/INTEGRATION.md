@@ -138,6 +138,13 @@ Gate command strings mirror the canonical invocations in
 `pyproject.toml [tool.molt.dx.commands]`. Edit the manifest to add a
 change-class; the driver's own tests assert the committed manifest stays valid.
 
+Shell gates project the shared Cargo environment policy before launch, including
+compound commands. Selected sccache wrappers disable incremental compilation and
+use a durable server temporary directory and private cache endpoint; an explicit
+endpoint is preserved. Direct-Cargo detection cannot see through opaque shell
+arguments, so this projection belongs at the shell boundary. It adds no work to
+emitted programs.
+
 CI proof families execute through the same manifest-owned DAG. Commands become
 eligible only after their declared parents succeed; eligible commands are
 admitted in canonical manifest order under both the global worker ceiling and

@@ -9,6 +9,7 @@ import sys
 from pathlib import Path
 
 from tools import harness_memory_guard
+from molt.cargo_execution_policy import normalize_cargo_environment
 
 from tools.command_execution import CommandExecutor  # type: ignore
 
@@ -129,6 +130,10 @@ def _run_fast_captured_command(
 
 def _run_live_gate(cmd: str, *, repo: Path, env: dict[str, str]) -> int:
     """Run a manifest gate live through memory custody while preserving shell syntax."""
+    # A compound shell gate can launch Cargo in any arm. Its opaque shell argv
+    # cannot trigger direct-Cargo admission, so normalize the inherited wrapper
+    # environment before launching it, without parsing shell syntax.
+    env, _policies = normalize_cargo_environment(env)
     if os.name == "nt":
         shell = os.environ.get("COMSPEC") or "cmd.exe"
         argv = [shell, "/d", "/c", cmd]
