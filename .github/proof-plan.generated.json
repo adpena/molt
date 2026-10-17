@@ -369,7 +369,7 @@
     "tests/tools/test_win_job_contract.py",
     "tests/tools/test_windows_process_api.py"
   ],
-  "authority_sha256": "46a8cb70e938a0605511b1d834323fc516a15ba0b7396507fb2966cd4a351a96",
+  "authority_sha256": "7ecaa899d9af8da93d62af4002e28b50b379aa2ea720db951c28bfe462fb11d5",
   "cargo_environment_policy": {
     "incident_command": "cargo metadata --locked --format-version 1",
     "incident_commit": "20b046b79bd4ca64a8c859f737f6e330377bcc4e",
@@ -8503,6 +8503,8 @@
       "local.apparatus-learning-protection.1": "python tools/apparatus_agent_safety.py --check",
       "local.apparatus-learning-protection.2": "python tools/anti_recurrence_gate.py --check",
       "local.backend-daemon-cache.0": "cargo test --locked --profile dev-fast --config profile.dev-fast.package.cranelift-codegen.opt-level=0 -p molt-backend --no-default-features --features molt-backend/native-backend,molt-backend/wasm-backend,molt-backend/luau-backend,molt-backend/rust-backend,molt-backend/cbor --bin molt-backend daemon -- --test-threads=1",
+      "local.backend-environment-contract.0": "python -m pytest -q tests/cli/test_backend_environment_contract.py tests/cli/test_cli_wasm_codegen_layout.py tests/cli/test_cli_shared_stdlib_cache.py tests/cli/test_cli_runtime_callable_symbols_authority.py tests/cli/test_native_codegen_identity.py tests/cli/test_cli_backend_prewarm.py",
+      "local.backend-environment-contract.1": "python -m pytest -q tests/cli/test_cli_import_collection.py -k 'backend_codegen or backend_daemon or backend_cache_setup or backend_setup or backend_compile or backend_pipeline or backend_dispatch or codegen_selection or fingerprint_env'",
       "local.backend-ir-framing.0": "cargo test --locked --profile release-fast -p molt-backend --features native-backend,cbor --bin molt-backend backend_process::input::tests",
       "local.backend-llvm.0": "cargo test --locked --profile release-fast -p molt-backend-native -p molt-backend --features molt-backend/native-backend,molt-backend/llvm --lib --test ir_contract_validation --no-fail-fast",
       "local.backend-native.0": "cargo clippy --locked -p molt-backend -p molt-backend-native -p molt-artifact-publish --features molt-backend/native-backend -- -D warnings",
@@ -8622,6 +8624,39 @@
         "toolchains": [
           "python",
           "uv"
+        ]
+      },
+      {
+        "command_ids": [
+          "local.backend-environment-contract.0",
+          "local.backend-environment-contract.1"
+        ],
+        "description": "Prove selected operation settings, cache publication policy, runtime bindings and daemon/one-shot consumers.",
+        "gates": [
+          "python -m pytest -q tests/cli/test_backend_environment_contract.py tests/cli/test_cli_wasm_codegen_layout.py tests/cli/test_cli_shared_stdlib_cache.py tests/cli/test_cli_runtime_callable_symbols_authority.py tests/cli/test_native_codegen_identity.py tests/cli/test_cli_backend_prewarm.py",
+          "python -m pytest -q tests/cli/test_cli_import_collection.py -k 'backend_codegen or backend_daemon or backend_cache_setup or backend_setup or backend_compile or backend_pipeline or backend_dispatch or codegen_selection or fingerprint_env'"
+        ],
+        "globs": [
+          "src/molt/backend_environment.py",
+          "src/molt/backend_environment.json",
+          "src/molt/cli/backend_cache_setup.py",
+          "src/molt/cli/backend_compile.py",
+          "src/molt/cli/backend_execution.py",
+          "src/molt/cli/backend_pipeline.py",
+          "src/molt/cli/models.py",
+          "src/molt/cli/wasm_codegen_layout.py",
+          "tests/cli/test_backend_environment_contract.py",
+          "tests/cli/test_cli_wasm_codegen_layout.py",
+          "tests/cli/test_cli_shared_stdlib_cache.py",
+          "tests/cli/test_cli_runtime_callable_symbols_authority.py",
+          "tests/cli/test_native_codegen_identity.py",
+          "tests/cli/test_cli_backend_prewarm.py",
+          "tests/cli/test_cli_import_collection.py",
+          "tests/runtime_build_identity_helper.py"
+        ],
+        "name": "backend-environment-contract",
+        "toolchains": [
+          "python"
         ]
       },
       {
@@ -10497,6 +10532,12 @@
         "rustc",
         "cargo",
         "git"
+      ],
+      "local.backend-environment-contract.0": [
+        "python"
+      ],
+      "local.backend-environment-contract.1": [
+        "python"
       ],
       "local.backend-ir-framing.0": [
         "python",

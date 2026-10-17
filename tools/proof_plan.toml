@@ -3819,6 +3819,35 @@ gates = [
   "python tools/check_dynamic_policy.py",
 ]
 
+# Backend environment identity is one Python/Rust contract. These bounded
+# consumers catch selected-input and fixture migrations before expensive Cargo.
+[[rule]]
+name = "backend-environment-contract"
+toolchains = ["python"]
+description = "Prove selected operation settings, cache publication policy, runtime bindings and daemon/one-shot consumers."
+globs = [
+  "src/molt/backend_environment.py",
+  "src/molt/backend_environment.json",
+  "src/molt/cli/backend_cache_setup.py",
+  "src/molt/cli/backend_compile.py",
+  "src/molt/cli/backend_execution.py",
+  "src/molt/cli/backend_pipeline.py",
+  "src/molt/cli/models.py",
+  "src/molt/cli/wasm_codegen_layout.py",
+  "tests/cli/test_backend_environment_contract.py",
+  "tests/cli/test_cli_wasm_codegen_layout.py",
+  "tests/cli/test_cli_shared_stdlib_cache.py",
+  "tests/cli/test_cli_runtime_callable_symbols_authority.py",
+  "tests/cli/test_native_codegen_identity.py",
+  "tests/cli/test_cli_backend_prewarm.py",
+  "tests/cli/test_cli_import_collection.py",
+  "tests/runtime_build_identity_helper.py",
+]
+gates = [
+  "python -m pytest -q tests/cli/test_backend_environment_contract.py tests/cli/test_cli_wasm_codegen_layout.py tests/cli/test_cli_shared_stdlib_cache.py tests/cli/test_cli_runtime_callable_symbols_authority.py tests/cli/test_native_codegen_identity.py tests/cli/test_cli_backend_prewarm.py",
+  "python -m pytest -q tests/cli/test_cli_import_collection.py -k 'backend_codegen or backend_daemon or backend_cache_setup or backend_setup or backend_compile or backend_pipeline or backend_dispatch or codegen_selection or fingerprint_env'",
+]
+
 # --- Bootstrap-critical stdlib modules (extra intrinsic audits) ----------
 [[rule]]
 name = "bootstrap-stdlib"

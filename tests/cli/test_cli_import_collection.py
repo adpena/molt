@@ -70,7 +70,10 @@ from molt.cli import source_extension_runtime_imports as cli_runtime_imports
 from molt.cli import source_extensions as cli_source_extensions
 from molt.cli import wrapper_build as cli_wrapper_build
 from molt.cli.app_export_contract import build_app_export_contract
-from molt.cli.backend_artifact_contract import resolve_backend_artifact_contract
+from molt.cli.backend_artifact_contract import (
+    BackendArtifactContract,
+    resolve_backend_artifact_contract,
+)
 from molt.cli.cache_fingerprints import _source_tree_fingerprint_transaction
 from molt.cli.extension_manifest import _default_molt_c_api_version
 from molt.cli.models import (
@@ -143,6 +146,7 @@ from tests.native_artifact_fixtures import (
 )
 from tests.runtime_build_identity_helper import (
     RuntimeFixtureRoot,
+    runtime_wasm_codegen_binding_fixture,
     mock_wasm_optimizer_cache_fact,
     mock_wasm_optimizer_publications,
 )
@@ -21931,19 +21935,16 @@ def test_prepare_backend_setup_materializes_backend_before_cache_key(
     is_wasm: bool,
 ) -> None:
     runtime_state = cli_models._RuntimeArtifactState(runtime_lib=tmp_path / "runtime.a")
-    output_artifact = tmp_path / "output.o"
+    output_artifact = tmp_path / ("output.wasm" if is_wasm else "output.a")
     call_order: list[str] = []
     backend_bin = _stub_backend_binary_ensure(monkeypatch, tmp_path, order=call_order)
+
+    binding = runtime_wasm_codegen_binding_fixture(tmp_path) if is_wasm else None
 
     def bind_runtime(state, **kwargs):
         assert kwargs["bind_for_codegen"] is True
         call_order.append("runtime_binding")
-        state.runtime_wasm_codegen_binding = types.SimpleNamespace(
-            semantic_digest="admitted-pair-content",
-            generation=types.SimpleNamespace(
-                manifest=tmp_path / "exact-pair.generation.json"
-            ),
-        )
+        state.runtime_wasm_codegen_binding = binding
         return True
 
     monkeypatch.setattr(cli_backend_compile, "_ensure_runtime_wasm_both", bind_runtime)
@@ -21977,16 +21978,25 @@ def test_prepare_backend_setup_materializes_backend_before_cache_key(
         **kwargs: object,
     ) -> cli_models._BackendCacheSetup:
         assert kwargs["runtime_wasm_codegen_digest"] == (
-            "admitted-pair-content" if is_wasm else ""
+            binding.semantic_digest if binding is not None else ""
         )
+        contract = kwargs["artifact_contract"]
+        assert isinstance(contract, BackendArtifactContract)
+        assert contract.is_wasm is is_wasm
+        layout = kwargs["wasm_layout"]
+        if is_wasm:
+            assert layout.data_base == 64 * 1024 * 1024 + 2 * 65536
+            assert layout.table_base == 256
+            assert layout.split_app_table_base is None
+            assert not layout.relocatable
+        else:
+            assert layout is None
         call_order.append("cache_setup")
         assert backend_bin.exists()
         assert not identify_backend_binary(backend_bin).startswith("missing:")
         return cli_models._BackendCacheSetup(
             backend_environment={},
-            artifact_contract=resolve_backend_artifact_contract(
-                target="native", emit_mode="obj", target_triple=None
-            ),
+            artifact_contract=contract,
             cache_enabled=True,
             cache_key="module-cache",
             function_cache_key=None,
@@ -22010,13 +22020,13 @@ def test_prepare_backend_setup_materializes_backend_before_cache_key(
             split_runtime=False,
             is_rust_transpile=False,
             is_wasm=is_wasm,
-            emit_mode="bin",
+            emit_mode="wasm" if is_wasm else "bin",
             molt_root=tmp_path,
             runtime_cargo_profile="dev",
             target_triple=None,
             json_output=True,
             cargo_timeout=1.0,
-            target="native",
+            target="wasm" if is_wasm else "native",
             profile="dev",
             backend_cargo_profile="dev-fast",
             linked=False,
