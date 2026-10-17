@@ -45,6 +45,7 @@ Hazard -> proving test(s):
 from __future__ import annotations
 
 import json
+import re
 import shlex
 import os
 import sys
@@ -460,6 +461,42 @@ def test_committed_gate_manifest_is_valid(drv):
     assert "wasm-host" in names
 
 
+def test_selected_rules_run_their_pytest_targets_in_one_invocation(drv):
+    source = """
+local_pytest_workers = 3
+always = ["python tools/check_a.py"]
+[[rule]]
+name = "first"
+globs = ["src/a/**"]
+gates = ["python tools/check_first.py"]
+pytest = ["tests/test_a.py", "tests/test_shared.py"]
+toolchains = ["python"]
+[[rule]]
+name = "second"
+globs = ["src/b/**"]
+gates = ["cargo test -p b"]
+pytest = ["tests/test_shared.py", "tests/test_b.py::test_one"]
+toolchains = ["python"]
+[[rule]]
+name = "unmatched"
+globs = ["src/c/**"]
+gates = []
+pytest = ["tests/test_c.py"]
+toolchains = ["python"]
+"""
+    cfg = drv.GateConfig.parse(source, "merged pytest fixture")
+    gates, matched = cfg.select(["src/a/x.py", "src/b/y.py"])
+    assert [rule.name for rule in matched] == ["first", "second"]
+    # One pytest run at the first contributing rule's place, each target once.
+    assert gates == [
+        "python tools/check_a.py",
+        "python tools/check_first.py",
+        "python -m pytest -q -n 3 tests/test_a.py tests/test_shared.py "
+        "tests/test_b.py::test_one",
+        "cargo test -p b",
+    ]
+
+
 @pytest.mark.parametrize(
     "path",
     [
@@ -698,7 +735,8 @@ def test_committed_gate_manifest_selects_codec_table_registry(drv):
         "rust-clippy-changed",
     ]
     assert "python tools/gen_codecs.py --check" in gates
-    assert "python -m pytest -q tests/test_gen_codecs.py" in gates
+    merged = next(gate for gate in gates if gate.startswith("python -m pytest"))
+    assert "tests/test_gen_codecs.py" in shlex.split(merged)
 
     gates, matched = cfg.select(["src/molt/stdlib/encodings/cp1252.py"])
     assert "codec-tables" in {r.name for r in matched}
@@ -725,7 +763,8 @@ def test_committed_gate_manifest_selects_codec_table_registry(drv):
     gates, matched = cfg.select(["runtime/molt-runtime/src/object/ops_encoding.rs"])
     assert "codec-tables" in {r.name for r in matched}
     assert "python tools/gen_codecs.py --check" in gates
-    assert "python -m pytest -q tests/test_gen_codecs.py" in gates
+    merged = next(gate for gate in gates if gate.startswith("python -m pytest"))
+    assert "tests/test_gen_codecs.py" in shlex.split(merged)
 
 
 def test_committed_gate_manifest_selects_wasm_host_ratchet(drv):
@@ -1376,7 +1415,7 @@ gates = ["echo build-started > build-started.txt"]
     # A failing gate halts integrate LOUDLY (DriverError) BEFORE push.
     with pytest.raises(drv.DriverError) as exc:
         drv.cmd_integrate(ns)
-    assert "gate failed (exit 3): exit 3" in str(exc.value)
+    assert re.search(r"gate failed \(exit 3\) after \d+\.\d s: exit 3", str(exc.value))
     assert not (work / "build-started.txt").exists()
     # Nothing was pushed (origin unchanged).
     origin_main = _git(work, "rev-parse", "origin/main").stdout.strip()
@@ -1713,6 +1752,18 @@ def test_integrate_gates_build_into_the_checkouts_cargo_target(
         }
         assert target == str(project_cargo_target_dir(work.resolve(), without))
         assert not Path(target).is_relative_to(work.resolve())
+
+
+def test_gate_time_summary_names_the_total_and_the_slowest_gates(drv):
+    summary = drv.gate_time_summary(
+        [(1.0, "ruff"), (612.25, "pytest serial"), (3.5, "clippy"), (40.0, "cargo")],
+        top=2,
+    )
+    assert summary.splitlines() == [
+        "    gates: 4 in 656.8 s; slowest:",
+        "        612.2 s  pytest serial",
+        "         40.0 s  cargo",
+    ]
 
 
 def test_integrate_dry_run_never_resolves_or_acquires_integration_lock(

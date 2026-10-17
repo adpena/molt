@@ -132,6 +132,7 @@ import shlex
 import subprocess
 import sys
 import tempfile
+import time
 import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -396,6 +397,7 @@ class GateRule:
     globs: list[str]
     gates: list[str]
     description: str = ""
+    pytest: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -405,6 +407,7 @@ class GateConfig:
     prerequisites: dict[str, tuple[str, tuple[str, ...]]] = field(default_factory=dict)
     prerequisite_policy: dict = field(default_factory=dict)
     root: Path = field(default_factory=lambda: Path(__file__).resolve().parents[1])
+    pytest_workers: int = 1
 
     @staticmethod
     def load(path: Path) -> "GateConfig":
@@ -443,12 +446,18 @@ class GateConfig:
                 isinstance(g, str) for g in gates
             ):
                 raise DriverError(f"gate rule {name!r} `gates` must be a list of str")
+            pytest_targets = entry.get("pytest", [])
+            if not isinstance(pytest_targets, list) or not all(
+                isinstance(t, str) for t in pytest_targets
+            ):
+                raise DriverError(f"gate rule {name!r} `pytest` must be a list of str")
             rules.append(
                 GateRule(
                     name=name,
                     globs=globs,
                     gates=gates,
                     description=str(entry.get("description", "")),
+                    pytest=pytest_targets,
                 )
             )
         always = data.get("always", [])
@@ -461,6 +470,7 @@ class GateConfig:
             prerequisites=commands,
             prerequisite_policy={"toolchain_policy": data.get("toolchain_policy", [])},
             root=root or Path(__file__).resolve().parents[1],
+            pytest_workers=int(data.get("local_pytest_workers", 1)),
         )
 
     def admit(
@@ -512,9 +522,15 @@ class GateConfig:
         `always` gates run for every non-empty change. Order: `always` first,
         then rules in manifest order; duplicates are de-duplicated preserving
         first occurrence (so a determinism gate listed by two rules runs once).
+        Every matched rule's pytest targets run in one pytest invocation, at
+        the place of the first rule that has any.
         """
+        from tools.proof_plan import local_pytest_command
+
         selected: list[str] = []
         matched_rules: list[GateRule] = []
+        pytest_targets: list[str] = []
+        pytest_index: int | None = None
 
         def _add(cmds: list[str]) -> None:
             for cmd in cmds:
@@ -527,6 +543,13 @@ class GateConfig:
             if any(_is_ignored(path, tuple(rule.globs)) for path in touched):
                 matched_rules.append(rule)
                 _add(rule.gates)
+                if rule.pytest and pytest_index is None:
+                    pytest_index = len(selected)
+                pytest_targets.extend(t for t in rule.pytest if t not in pytest_targets)
+        if pytest_index is not None:
+            selected.insert(
+                pytest_index, local_pytest_command(pytest_targets, self.pytest_workers)
+            )
         return selected, matched_rules
 
 
@@ -785,6 +808,17 @@ def _assert_integration_source(git: Git, commit: str) -> None:
         )
 
 
+def gate_time_summary(gate_seconds: list[tuple[float, str]], *, top: int = 8) -> str:
+    """The gates' total time and the slowest ones, so the costliest gates
+    are visible on every landing."""
+    total = sum(seconds for seconds, _ in gate_seconds)
+    lines = [f"    gates: {len(gate_seconds)} in {total:.1f} s; slowest:"]
+    ranked = sorted(gate_seconds, key=lambda item: item[0], reverse=True)[:top]
+    for seconds, cmd in ranked:
+        lines.append(f"      {seconds:7.1f} s  {cmd}")
+    return "\n".join(lines)
+
+
 def cmd_integrate(args: argparse.Namespace) -> int:
     if args.dry_run:
         return _integrate_exclusive(args)
@@ -971,19 +1005,25 @@ def _integrate_exclusive(args: argparse.Namespace) -> int:
         _assert_integration_source(git, selected_commit)
         config.admit(touched, matched_rules, list(args.extra_gate or []))
         _assert_integration_source(git, selected_commit)
+    gate_seconds: list[tuple[float, str]] = []
     for cmd in gate_cmds:
         _assert_integration_source(git, selected_commit)
         if dry:
             _say(f"    would-run gate: {cmd}")
             continue
+        started = time.monotonic()
         rc = run_gate(cmd, repo, env)
+        elapsed = time.monotonic() - started
         _assert_integration_source(git, selected_commit)
         if rc != 0:
             raise DriverError(
-                f"gate failed (exit {rc}): {cmd}\n    Integration halts "
-                "before push; fix the gate and re-run."
+                f"gate failed (exit {rc}) after {elapsed:.1f} s: {cmd}\n    "
+                "Integration halts before push; fix the gate and re-run."
             )
-        _ok(f"gate passed: {cmd}")
+        gate_seconds.append((elapsed, cmd))
+        _ok(f"gate passed in {elapsed:.1f} s: {cmd}")
+    if gate_seconds:
+        _say(gate_time_summary(gate_seconds))
 
     # --- step 6: push (only after every gate is green) ----------------------
     _step(f"push to {upstream_ref}")

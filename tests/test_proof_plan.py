@@ -359,7 +359,41 @@ def test_generated_local_dx_projection_has_stable_command_ids() -> None:
     projected = next(rule for rule in local["rules"] if rule["name"] == first["name"])
     assert projected["command_ids"] == [
         f"local.{first['name']}.{index}" for index, _ in enumerate(first["gates"])
+    ] + ([f"local.{first['name']}.pytest"] if first.get("pytest") else [])
+    assert local["pytest_workers"] == PLAN.local_pytest_workers > 0
+
+
+@pytest.mark.parametrize(
+    "target,message",
+    [
+        ("-k fast", "must be a tests/ path"),
+        ("src/molt/dx.py", "must be a tests/ path"),
+        ("tests/no_such_test_file.py", "does not exist"),
+    ],
+)
+def test_local_pytest_targets_are_existing_test_paths(target, message) -> None:
+    first, *rest = PLAN.local_rules
+    invalid = {**first, "pytest": [target]}
+    errors = replace(PLAN, local_rules=(invalid, *rest)).validate()
+    assert any(message in error and target in error for error in errors), errors
+
+
+def test_local_pytest_targets_project_one_command_per_rule() -> None:
+    rule = next(rule for rule in PLAN.local_rules if rule.get("pytest"))
+    commands = proof_plan.local_gate_commands(
+        {"rule": [rule], "local_pytest_workers": PLAN.local_pytest_workers}
+    )
+    command, tools = commands[f"local.{rule['name']}.pytest"]
+    assert shlex.split(command) == [
+        "python",
+        "-m",
+        "pytest",
+        "-q",
+        "-n",
+        str(PLAN.local_pytest_workers),
+        *rule["pytest"],
     ]
+    assert tools == tuple(rule["toolchains"])
 
 
 @pytest.mark.parametrize(
@@ -976,8 +1010,10 @@ def test_maintained_zlib_changes_prove_real_provider_and_consumer_custody(
     rule = next(rule for rule in matched if rule.name == "maintained-zlib-counters")
     assert _classes(path)["rust"] is True
     assert set(rule.gates) <= set(gates)
-    assert "python -m pytest -q tests/cli/test_runtime_source_closure.py" in rule.gates
-    local = tuple(rule.gates[1].split())
+    assert "tests/cli/test_runtime_source_closure.py" in rule.pytest
+    merged = next(gate for gate in gates if gate.startswith("python -m pytest"))
+    assert "tests/cli/test_runtime_source_closure.py" in shlex.split(merged)
+    local = tuple(next(g for g in rule.gates if g.startswith("cargo test")).split())
     ci = next(
         command.argv
         for command in PLAN.commands
@@ -1010,7 +1046,8 @@ def test_maintained_zlib_changes_prove_real_provider_and_consumer_custody(
     assert wasi.family == "rust" and wasi.data["cell"] == "linux-x86_64-rust-wasi-dev"
     assert {"node", "rustc", "cargo"} <= set(wasi.toolchains)
     assert not proof_plan.cargo_native_units(wasi.data)
-    for argv in (wasi.argv, tuple(rule.gates[2].split())):
+    local_wasi = next(g for g in rule.gates if "run_runtime_test_gate.py" in g)
+    for argv in (wasi.argv, tuple(local_wasi.split())):
         assert "tools/run_runtime_test_gate.py" in argv
         assert argv[argv.index("--policy") + 1] == "zlib-wasi"
         assert argv[argv.index("--profile") + 1] == "dev-fast"
