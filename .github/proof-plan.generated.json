@@ -369,7 +369,7 @@
     "tests/tools/test_win_job_contract.py",
     "tests/tools/test_windows_process_api.py"
   ],
-  "authority_sha256": "eef30ddfefed77ec55a386a3a296be9f76eb24cac8df0a2fe29a132236b4bb21",
+  "authority_sha256": "1dec6d05bbff18e7fee6d03ac8f7a0363fc4a2be4bc9b0ce4171113806ccef90",
   "cargo_environment_policy": {
     "incident_command": "cargo metadata --locked --format-version 1",
     "incident_commit": "20b046b79bd4ca64a8c859f737f6e330377bcc4e",
@@ -3105,6 +3105,7 @@
         "tests/tools/test_check_runtime_serial_bridge_imports.py",
         "tests/tools/test_check_runtime_symbol_owners.py",
         "tests/tools/test_check_rustfmt.py",
+        "tests/tools/test_check_changed_clippy.py",
         "tests/tools/test_check_stdlib_intrinsic_surface.py",
         "tests/tools/test_check_type_coverage_todos.py",
         "tests/tools/test_ci_triage.py",
@@ -8477,8 +8478,7 @@
       "local.backend-environment-contract.1": "python -m pytest -q tests/cli/test_cli_import_collection.py -k 'backend_codegen or backend_daemon or backend_cache_setup or backend_setup or backend_compile or backend_pipeline or backend_dispatch or codegen_selection or fingerprint_env'",
       "local.backend-ir-framing.0": "cargo test --locked --profile release-fast -p molt-backend --features native-backend,cbor --bin molt-backend backend_process::input::tests",
       "local.backend-llvm.0": "cargo test --locked --profile release-fast -p molt-backend-native -p molt-backend --features molt-backend/native-backend,molt-backend/llvm --lib --test ir_contract_validation --no-fail-fast",
-      "local.backend-native.0": "cargo clippy --locked -p molt-backend -p molt-backend-native -p molt-artifact-publish --features molt-backend/native-backend -- -D warnings",
-      "local.backend-native.1": "cargo test --locked --profile release-fast -p molt-backend -p molt-backend-native -p molt-artifact-publish --features molt-backend/native-backend --lib --bins --no-fail-fast",
+      "local.backend-native.0": "cargo test --locked --profile release-fast -p molt-backend -p molt-backend-native -p molt-artifact-publish --features molt-backend/native-backend --lib --bins --no-fail-fast",
       "local.bootstrap-stdlib.0": "python tools/check_stdlib_intrinsics.py --critical-allowlist",
       "local.builtin-binding-guard-authority.0": "python tools/gen_builtin_binding_guards.py --check",
       "local.builtin-binding-guard-authority.1": "python -m pytest -q tests/test_gen_builtin_binding_guards.py tests/test_frontend_builtin_binding_guards.py",
@@ -8493,6 +8493,7 @@
       "local.dev-tooling.1": "python -m pytest -q tests/test_molt_dev.py",
       "local.dev-tooling.2": "python -m pytest -q tests/tools/test_rust_toolchain_contract.py",
       "local.dev-tooling.3": "python -m pytest -q tests/tools/test_check_rustfmt.py",
+      "local.dev-tooling.4": "python -m pytest -q tests/tools/test_check_changed_clippy.py tests/test_cargo_workspace.py",
       "local.docs-architecture.0": "python tools/update_status_blocks.py --check",
       "local.docs-architecture.1": "python tools/check_docs_architecture.py",
       "local.ecosystem-compat.0": "python tools/check_ecosystem_compat.py",
@@ -8503,9 +8504,7 @@
       "local.frontend-python.0": "python -m ty check src",
       "local.frontend-python.1": "python tools/verified_subset.py check",
       "local.frontend-python.2": "python tools/check_dynamic_policy.py",
-      "local.gpu-core.0": "cargo clippy --locked -p molt-gpu --all-targets --all-features -- -D warnings",
-      "local.gpu-runtime.0": "cargo clippy --locked -p molt-gpu-runtime --all-targets --all-features -- -D warnings",
-      "local.gpu-runtime.1": "cargo test --locked -p molt-gpu-runtime --all-features --no-fail-fast",
+      "local.gpu-runtime.0": "cargo test --locked -p molt-gpu-runtime --all-features --no-fail-fast",
       "local.heap-kind-lifetime-authority.0": "python tools/gen_heap_kinds.py --check",
       "local.heap-kind-lifetime-authority.1": "python -m pytest -q tests/test_gen_heap_kinds.py",
       "local.host-capability-authority.0": "python tools/gen_host_capabilities.py --check",
@@ -8542,12 +8541,12 @@
       "local.python-identity-catalog-authority.1": "python -m pytest -q tests/test_gen_python_identity_catalog.py tests/test_python_binding_flow.py tests/test_python_builtin_shape_facts.py",
       "local.runtime-cargo-input-custody.0": "python -m pytest -q -m 'not slow' tests/cli/test_cargo_build_reads.py tests/cli/test_runtime_source_identity.py tests/cli/test_runtime_c_resource_custody.py tests/cli/test_runtime_build_identity.py tests/cli/test_runtime_native_generation.py tests/cli/test_runtime_wasm_single_compile.py tests/cli/test_compiler_identity.py tests/cli/test_runtime_family_authority.py tests/cli/test_cargo_execution_failure_authority.py tests/test_toolchain_identity.py tests/test_runtime_build_python.py",
       "local.runtime-lib.0": "python tools/run_runtime_test_gate.py --profile release-output --build-timeout-seconds 6300 --child-timeout-seconds 120 --parallel-threads 8",
-      "local.runtime-lib.1": "cargo clippy --locked -p molt-backend --features native-backend -- -D warnings",
       "local.runtime-profile-schema-authority.0": "python tools/gen_runtime_profile_schema.py --check",
       "local.runtime-profile-schema-authority.1": "python -m pytest -q tests/test_gen_runtime_profile_schema.py tests/test_runtime_profile_schema.py",
       "local.runtime-vfs.0": "cargo clippy --locked -p molt-runtime-vfs --all-targets --all-features -- -D warnings",
       "local.runtime-vfs.1": "cargo test --locked -p molt-runtime-vfs --all-features --no-fail-fast",
       "local.runtime-vfs.2": "python -m pytest tests/test_browser_vfs.py -q",
+      "local.rust-clippy-changed.0": "python tools/check_changed_clippy.py --base origin/main",
       "local.rust-toolchain.0": "python tools/check_rust_toolchain.py",
       "local.rust-toolchain.1": "python -m pytest -q tests/tools/test_rust_toolchain_contract.py",
       "local.source-extension-package-sets.0": "python -m pytest -q tests/cli/test_source_extension_set_registry.py tests/cli/test_source_extension_manifest_authority.py tests/cli/test_source_extension_link_requirements.py tests/cli/test_source_extension_producer.py tests/cli/test_source_build_environment_probe.py tests/cli/test_source_extension_candidate_attestation.py tests/cli/test_source_extension_candidate_transaction.py tests/cli/test_source_package_seal.py tests/test_exact_json.py tests/cli/test_external_native_scipy_package_seal.py tests/cli/test_atomic_io_authority.py tests/cli/test_python_module_names.py tests/cli/test_source_extension_runtime_imports.py tests/cli/test_source_extension_input_custody.py tests/cli/test_source_extension_target.py tests/cli/test_source_extension_language.py tests/cli/test_source_extension_compiler_target.py tests/cli/test_extension_wheel_retained_inputs.py tests/tools/test_native_link_benchmark.py tests/cli/test_cli_extension_commands.py::test_direct_build_audits_and_reseals_extracted_wheel tests/cli/test_source_extension_invocation.py tests/cli/test_source_extension_compiler_inputs.py",
@@ -8568,8 +8567,7 @@
       "local.tir-midend.1": "cargo test --locked --profile dev-fast -p molt-ir -p molt-passes -p molt-tir -p molt-backend-wasm --all-features --no-fail-fast",
       "local.wasm-abi-registry.0": "python tools/gen_wasm_abi.py --check",
       "local.wasm-abi-registry.1": "python -m pytest -q tests/test_gen_wasm_abi.py",
-      "local.wasm-host.0": "cargo clippy --locked -p molt-wasm-host -- -D warnings",
-      "local.wasm-host.1": "cargo build --locked --profile release-fast -p molt-wasm-host"
+      "local.wasm-host.0": "cargo build --locked --profile release-fast -p molt-wasm-host"
     },
     "rules": [
       {
@@ -9158,14 +9156,16 @@
           "local.dev-tooling.0",
           "local.dev-tooling.1",
           "local.dev-tooling.2",
-          "local.dev-tooling.3"
+          "local.dev-tooling.3",
+          "local.dev-tooling.4"
         ],
         "description": "dev drivers, Rust toolchain/formatting custody, or their config/tests: run the failure-mode tests.",
         "gates": [
           "python -m pytest -q tests/tools/test_setup_project_inputs.py",
           "python -m pytest -q tests/test_molt_dev.py",
           "python -m pytest -q tests/tools/test_rust_toolchain_contract.py",
-          "python -m pytest -q tests/tools/test_check_rustfmt.py"
+          "python -m pytest -q tests/tools/test_check_rustfmt.py",
+          "python -m pytest -q tests/tools/test_check_changed_clippy.py tests/test_cargo_workspace.py"
         ],
         "globs": [
           ".github/actions/setup-project/**",
@@ -9173,10 +9173,14 @@
           "tools/dev.py",
           "tools/check_rust_toolchain.py",
           "tools/check_rustfmt.py",
+          "tools/check_changed_clippy.py",
+          "src/molt/cargo_workspace.py",
           "tools/molt_dev.py",
           "tools/proof_plan.toml",
           "tests/tools/test_rust_toolchain_contract.py",
           "tests/tools/test_check_rustfmt.py",
+          "tests/tools/test_check_changed_clippy.py",
+          "tests/test_cargo_workspace.py",
           "tests/test_molt_dev.py"
         ],
         "name": "dev-tooling",
@@ -9673,12 +9677,35 @@
       },
       {
         "command_ids": [
-          "local.backend-native.0",
-          "local.backend-native.1"
+          "local.rust-clippy-changed.0"
         ],
-        "description": "Cranelift/native backend and driver Rust: clippy + owning release-fast library and binary tests.",
+        "description": "Clippy -D warnings with the proof plan's feature, target and profile cells for every Cargo package a change reaches.",
         "gates": [
-          "cargo clippy --locked -p molt-backend -p molt-backend-native -p molt-artifact-publish --features molt-backend/native-backend -- -D warnings",
+          "python tools/check_changed_clippy.py --base origin/main"
+        ],
+        "globs": [
+          "runtime/**",
+          "vendor/rust/**",
+          "deploy/browser/simd-ops-rs/**",
+          "Cargo.toml",
+          "Cargo.lock",
+          "rust-toolchain.toml",
+          "clippy.toml",
+          ".cargo/**"
+        ],
+        "name": "rust-clippy-changed",
+        "toolchains": [
+          "python",
+          "rustc",
+          "cargo"
+        ]
+      },
+      {
+        "command_ids": [
+          "local.backend-native.0"
+        ],
+        "description": "Cranelift/native backend and driver Rust: owning release-fast library and binary tests.",
+        "gates": [
           "cargo test --locked --profile release-fast -p molt-backend -p molt-backend-native -p molt-artifact-publish --features molt-backend/native-backend --lib --bins --no-fail-fast"
         ],
         "globs": [
@@ -9852,12 +9879,10 @@
       },
       {
         "command_ids": [
-          "local.wasm-host.0",
-          "local.wasm-host.1"
+          "local.wasm-host.0"
         ],
-        "description": "Wasmtime host Rust: warning-free clippy + release-fast link build.",
+        "description": "Wasmtime host Rust: release-fast link build.",
         "gates": [
-          "cargo clippy --locked -p molt-wasm-host -- -D warnings",
           "cargo build --locked --profile release-fast -p molt-wasm-host"
         ],
         "globs": [
@@ -9876,32 +9901,10 @@
       },
       {
         "command_ids": [
-          "local.gpu-core.0"
+          "local.gpu-runtime.0"
         ],
-        "description": "GPU compute/render primitive: all-target/all-feature clippy without Python runtime coupling.",
+        "description": "GPU Python-object runtime integration: all-feature runtime contract tests.",
         "gates": [
-          "cargo clippy --locked -p molt-gpu --all-targets --all-features -- -D warnings"
-        ],
-        "globs": [
-          "runtime/molt-gpu/**/*.rs",
-          "runtime/molt-gpu/**/*.toml",
-          "runtime/molt-gpu/Cargo.toml"
-        ],
-        "name": "gpu-core",
-        "toolchains": [
-          "python",
-          "rustc",
-          "cargo"
-        ]
-      },
-      {
-        "command_ids": [
-          "local.gpu-runtime.0",
-          "local.gpu-runtime.1"
-        ],
-        "description": "GPU Python-object runtime integration: all-target/all-feature clippy and runtime contract tests.",
-        "gates": [
-          "cargo clippy --locked -p molt-gpu-runtime --all-targets --all-features -- -D warnings",
           "cargo test --locked -p molt-gpu-runtime --all-features --no-fail-fast"
         ],
         "globs": [
@@ -9943,13 +9946,11 @@
       },
       {
         "command_ids": [
-          "local.runtime-lib.0",
-          "local.runtime-lib.1"
+          "local.runtime-lib.0"
         ],
-        "description": "Runtime/object-model Rust: one default-feature image, ordinary and isolated lifecycle semantics, then backend clippy; performance probes remain unrun.",
+        "description": "Runtime/object-model Rust: one default-feature image with ordinary and isolated lifecycle semantics; performance probes remain unrun. Clippy belongs to rust-clippy-changed.",
         "gates": [
-          "python tools/run_runtime_test_gate.py --profile release-output --build-timeout-seconds 6300 --child-timeout-seconds 120 --parallel-threads 8",
-          "cargo clippy --locked -p molt-backend --features native-backend -- -D warnings"
+          "python tools/run_runtime_test_gate.py --profile release-output --build-timeout-seconds 6300 --child-timeout-seconds 120 --parallel-threads 8"
         ],
         "globs": [
           "runtime/molt-runtime/**/*.rs",
@@ -10486,12 +10487,6 @@
         "cargo",
         "git"
       ],
-      "local.backend-native.1": [
-        "python",
-        "rustc",
-        "cargo",
-        "git"
-      ],
       "local.bootstrap-stdlib.0": [
         "python"
       ],
@@ -10560,6 +10555,10 @@
         "python",
         "uv"
       ],
+      "local.dev-tooling.4": [
+        "python",
+        "uv"
+      ],
       "local.docs-architecture.0": [
         "python"
       ],
@@ -10593,19 +10592,7 @@
         "python",
         "uv"
       ],
-      "local.gpu-core.0": [
-        "python",
-        "rustc",
-        "cargo",
-        "git"
-      ],
       "local.gpu-runtime.0": [
-        "python",
-        "rustc",
-        "cargo",
-        "git"
-      ],
-      "local.gpu-runtime.1": [
         "python",
         "rustc",
         "cargo",
@@ -10787,12 +10774,6 @@
         "cargo",
         "git"
       ],
-      "local.runtime-lib.1": [
-        "python",
-        "rustc",
-        "cargo",
-        "git"
-      ],
       "local.runtime-profile-schema-authority.0": [
         "python",
         "rustfmt"
@@ -10814,6 +10795,12 @@
         "git"
       ],
       "local.runtime-vfs.2": [
+        "python",
+        "rustc",
+        "cargo",
+        "git"
+      ],
+      "local.rust-clippy-changed.0": [
         "python",
         "rustc",
         "cargo",
@@ -10897,12 +10884,6 @@
         "rustfmt"
       ],
       "local.wasm-host.0": [
-        "python",
-        "rustc",
-        "cargo",
-        "git"
-      ],
-      "local.wasm-host.1": [
         "python",
         "rustc",
         "cargo",

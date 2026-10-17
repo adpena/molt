@@ -8,6 +8,7 @@ from molt.cargo_workspace import (
     LocalCargoDependency,
     workspace_manifest_facts,
     workspace_member_manifests,
+    workspace_member_packages,
     workspace_package_names,
 )
 
@@ -32,6 +33,7 @@ def test_membership_uses_root_names_order_globs_and_exclusions(tmp_path: Path) -
 
     assert workspace_member_manifests(tmp_path) == (z, a)
     assert workspace_package_names(tmp_path) == ("package-z", "package-a")
+    assert workspace_member_packages(tmp_path) == {"package-z": z, "package-a": a}
 
 
 @pytest.mark.parametrize(

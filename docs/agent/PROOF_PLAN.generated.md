@@ -18,7 +18,7 @@ Landing checks execute the generator and authority inputs captured from the exac
 | CI selection families | 5 | 12 |
 | Hashed executable authority inputs | 1 | 367 |
 | Local path rules | 35 | 55 |
-| Unique local commands | 73 | 130 |
+| Unique local commands | 73 | 127 |
 | Handwritten Python classifier rule tables | 5 | 0 |
 
 ## CI families
@@ -355,7 +355,7 @@ The wrapper conflict was reconfirmed by native CI run `30211145633` job `8981749
 | `ecosystem-compat` | 2 | 1 |
 | `tinygrad-upat-static-exec-registry` | 2 | 1 |
 | `docs-architecture` | 4 | 2 |
-| `dev-tooling` | 10 | 4 |
+| `dev-tooling` | 14 | 5 |
 | `encoding-diagnostics` | 2 | 1 |
 | `runtime-cargo-input-custody` | 37 | 1 |
 | `rust-toolchain` | 10 | 2 |
@@ -371,18 +371,18 @@ The wrapper conflict was reconfirmed by native CI run `30211145633` job `8981749
 | `import-symbol-gate` | 2 | 2 |
 | `phase-exit-manifest` | 7 | 2 |
 | `public-contract` | 19 | 2 |
-| `backend-native` | 8 | 2 |
+| `rust-clippy-changed` | 8 | 1 |
+| `backend-native` | 8 | 1 |
 | `backend-daemon-cache` | 5 | 1 |
 | `backend-ir-framing` | 4 | 1 |
 | `native-object-emission` | 5 | 1 |
 | `maintained-zlib-counters` | 14 | 3 |
 | `backend-llvm` | 2 | 1 |
 | `tir-midend` | 11 | 2 |
-| `wasm-host` | 5 | 2 |
-| `gpu-core` | 3 | 1 |
-| `gpu-runtime` | 3 | 2 |
+| `wasm-host` | 5 | 1 |
+| `gpu-runtime` | 3 | 1 |
 | `runtime-vfs` | 4 | 3 |
-| `runtime-lib` | 3 | 2 |
+| `runtime-lib` | 3 | 1 |
 | `python-effect-capability-authority` | 6 | 3 |
 | `python-identity-catalog-authority` | 7 | 2 |
 | `builtin-binding-guard-authority` | 9 | 3 |
