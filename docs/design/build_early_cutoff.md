@@ -96,7 +96,8 @@ conflict:
   cache file and its source in the observing interpreter, including workers
   with a different cache prefix. They use the existing explicit file/probe
   reports so a consumed cache under a product root remains an input. Unmapped
-  bytecode retains its actual file observation without guessing a source.
+  bytecode explicitly retains its actual file dependency across product roots
+  without guessing a source.
   Reads under named product roots (the Molt
   cache, Cargo target and build state roots, the backend daemon's socket
   directory, the artifact root under the output directory, the memory guard's

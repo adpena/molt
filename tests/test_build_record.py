@@ -1066,7 +1066,7 @@ def test_unmapped_bytecode_keeps_actual_input_without_guessing_source(
     input_report._audit_hook("open", (str(path), "r", 0))
     monkeypatch.setattr(input_report, "_SINK", None)
     assert ledger.observed == {("file", str(path))}
-    build_record.resolve_observed(ledger, ())
+    build_record.resolve_observed(ledger, (tmp_path,))
     assert set(ledger.files) == {str(path)}
 
 
