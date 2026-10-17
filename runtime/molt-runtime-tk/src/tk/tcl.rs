@@ -383,7 +383,12 @@ impl TclApi {
         with_tcl_size_api!(self, api, {
             let mut native_length = 0;
             let result = unsafe { (api.get_string_from_obj)(obj, &mut native_length) };
-            *length = native_length as isize;
+            #[allow(
+                clippy::unnecessary_cast,
+                reason = "Tcl 8 sizes are c_int; the same body expands for Tcl 9, whose sizes are isize"
+            )]
+            let native_length = native_length as isize;
+            *length = native_length;
             result
         })
     }
@@ -423,7 +428,12 @@ impl TclApi {
             let mut native_length = 0;
             let result =
                 unsafe { (api.list_obj_get_elements)(interp, obj, &mut native_length, objects) };
-            *length = native_length as isize;
+            #[allow(
+                clippy::unnecessary_cast,
+                reason = "Tcl 8 sizes are c_int; the same body expands for Tcl 9, whose sizes are isize"
+            )]
+            let native_length = native_length as isize;
+            *length = native_length;
             result
         })
     }
@@ -438,7 +448,12 @@ impl TclApi {
         with_tcl_size_api!(self, api, {
             let mut native_length = 0;
             let result = unsafe { (api.split_list)(interp, text, &mut native_length, strings) };
-            *length = native_length as isize;
+            #[allow(
+                clippy::unnecessary_cast,
+                reason = "Tcl 8 sizes are c_int; the same body expands for Tcl 9, whose sizes are isize"
+            )]
+            let native_length = native_length as isize;
+            *length = native_length;
             result
         })
     }

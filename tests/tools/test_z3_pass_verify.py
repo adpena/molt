@@ -10,7 +10,7 @@ TOOLS_DIR = Path(__file__).resolve().parents[2] / "tools"
 from tools import z3_pass_verify  # noqa: E402
 
 
-def test_parse_op_ignores_removed_raw_int_transport_field() -> None:
+def test_parse_op_ignores_removed_scalar_transport_fields() -> None:
     op = z3_pass_verify._parse_op(
         {
             "kind": "add",
@@ -24,7 +24,7 @@ def test_parse_op_ignores_removed_raw_int_transport_field() -> None:
     assert op.kind == "add"
     assert op.args == ["lhs", "rhs"]
     assert op.out == "sum"
-    assert op.fast_int is True
+    assert not hasattr(op, "fast_int")
     assert not hasattr(op, "raw_int")
 
 

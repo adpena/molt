@@ -151,7 +151,7 @@ the upstream libraries remain the package source authority.
    Preserve subclass overrides for source operations and direct builtin-slot
    semantics for explicit descriptors. Eliminate benchmark-specific semantic paths and
    string/name guesses in place of canonical identities. Continue retiring
-   `fast_int`, `fast_float`, string `type_hint`, raw-scalar shadow, and
+   string `type_hint`, raw-scalar shadow, and
    backend-reconstructed container authorities. The portfolio route is
    [the semantic fact plane](docs/design/foundation/59_semantic_fact_plane.md).
 4. Deliver measured improvements to compilation and generated programs. Separate

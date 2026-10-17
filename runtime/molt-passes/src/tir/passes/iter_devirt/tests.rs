@@ -305,10 +305,6 @@ fn devirt_list_from_function_value_type() {
         .iter()
         .find(|op| op.opcode == OpCode::Lt)
         .expect("typed-list devirt should synthesize Lt compare");
-    assert!(
-        !cmp_op.attrs.contains_key("_fast_int"),
-        "list compare must use value_types for scalar proof, not _fast_int attrs"
-    );
     let cmp_result = cmp_op
         .results
         .first()
@@ -320,14 +316,12 @@ fn devirt_list_from_function_value_type() {
         "list compare result must carry a bool type fact"
     );
     let entry = &func.blocks[&func.entry_block];
-    let len_op = entry
-        .ops
-        .iter()
-        .find(|op| op.opcode == OpCode::Copy && op.length_argument().is_some())
-        .expect("typed-list devirt should synthesize the len primitive");
     assert!(
-        !len_op.attrs.contains_key("_fast_int"),
-        "synthesized len must use value_types for scalar proof, not _fast_int attrs"
+        entry
+            .ops
+            .iter()
+            .any(|op| op.opcode == OpCode::Copy && op.length_argument().is_some()),
+        "typed-list devirt should synthesize the len primitive"
     );
     let body = &func.blocks[&BlockId(2)];
     let index_op = body
@@ -346,10 +340,6 @@ fn devirt_list_from_function_value_type() {
         .rev()
         .find(|op| op.opcode == OpCode::Add)
         .expect("typed-list devirt should synthesize index increment");
-    assert!(
-        !increment_op.attrs.contains_key("_fast_int"),
-        "list increment must use value_types for scalar proof, not _fast_int attrs"
-    );
     let increment_result = increment_op
         .results
         .first()

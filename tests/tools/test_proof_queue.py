@@ -1072,6 +1072,21 @@ def test_non_python_command_requires_a_closed_toolchain_registration() -> None:
         )
 
 
+def _admitted_plan_toolchains(
+    plan: proof_plan.ProofPlan, command: proof_plan.ProofCommand
+) -> list[str]:
+    """Static closure plus the contextual Cargo build generator a row declares.
+
+    Static preflight has no Cargo context, so ``required_toolchains`` never
+    names ``build-python``. A row that declares ``cargo_build_python = true``
+    admits that runtime role in its envelope (docs/agent/PROOF_QUEUE.md).
+    """
+    static = list(plan.required_toolchains(command))
+    if command.data.get("cargo_build_python") is not True:
+        return static
+    return list(dict.fromkeys([*static, *plan.toolchain_closure(["build-python"])]))
+
+
 def test_every_proof_plan_command_uses_its_exact_nonempty_toolchain_authority() -> None:
     plan = proof_plan.ProofPlan.load()
     assert plan.commands
@@ -1092,7 +1107,9 @@ def test_every_proof_plan_command_uses_its_exact_nonempty_toolchain_authority() 
         envelope = command_admission.envelope_for_command(command.argv)
         assert envelope["kind"] == "proof-plan", command.id
         assert command.id in envelope["proof_plan_command_ids"]
-        assert envelope["toolchains"] == list(plan.required_toolchains(command))
+        assert envelope["toolchains"] == _admitted_plan_toolchains(plan, command), (
+            command.id
+        )
         assert envelope["toolchains"], command.id
 
 
@@ -1137,7 +1154,7 @@ def test_exact_wasm_e2e_commands_own_declared_child_toolchains(
     assert envelope["process_closure"] == {
         "kind": "proof-plan",
         "descendants": "declared-toolchains",
-        "toolchains": list(plan.required_toolchains(command)),
+        "toolchains": _admitted_plan_toolchains(plan, command),
     }
 
     with pytest.raises(
@@ -1298,7 +1315,7 @@ def test_native_toolchain_inference_and_declared_sdk_policy_coexist() -> None:
     assert selected["kind"] == "proof-plan"
     assert selected["proof_plan_command_ids"] == [command.id]
     assert "wasi-clang" in selected["toolchains"]
-    assert selected["toolchains"] == list(plan.toolchain_closure(command.toolchains))
+    assert selected["toolchains"] == _admitted_plan_toolchains(plan, command)
     verifier = next(
         item for item in plan.commands if item.id == "native.integration.python-custody"
     )
@@ -2246,11 +2263,21 @@ def test_uv_unicode_full_capture_uses_existing_producer_digest_authority(
     executable = root / ("uv.exe" if os.name == "nt" else "uv")
     executable.write_bytes(b"independent uv image fixture, never executed")
     executable.chmod(0o755)
+    # uv's declared platform probe can observe a second image (on Linux, the
+    # system loader); this fixture stands in for that observed image.
+    loader_bytes = b"independent loader image fixture, never executed"
+    loader = root / "loader-é"
+    loader.write_bytes(loader_bytes)
     environment = {"PATH": str(root)}
     envelope = {"python": None, "toolchains": ["uv"]}
     # The tool owner inspects the actual outer command grammar even though this
     # unit captures only uv's identity and never executes the payload.
     exact = [str(executable), "run", "--no-sync", "python", "-c", "pass"]
+    plan = proof_plan.ProofPlan.load()
+    declared_probes = next(
+        policy for policy in plan.toolchain_policies if policy.name == "uv"
+    ).data["process_image_probes"]
+    assert declared_probes
 
     def version(command, **kwargs):
         # The owner runs the admitted custody coordinate (Windows: the actual
@@ -2261,22 +2288,84 @@ def test_uv_unicode_full_capture_uses_existing_producer_digest_authority(
         ]
         return subprocess.CompletedProcess(command, 0, f"uv {_UV_PIN} (fixture)\n", "")
 
+    probed: list[list[str]] = []
+
+    def inventory(*, binary, role, executable, probe_args, cwd, env):
+        # A real inventory needs a qualified native supervisor. This fixture
+        # returns one sealed observation in the receipt shape that owner seals.
+        probed.append(list(probe_args))
+        images = [
+            process_image_capture.capture_image(f"{role}-launcher", executable),
+            process_image_capture.capture_image(f"{role}-runtime", loader),
+        ]
+        return images, {
+            "schema": "molt.proof-process-image-inventory.v1",
+            "probe_argv_sha256": hashlib.sha256(
+                json.dumps([str(executable), *probe_args]).encode()
+            ).hexdigest(),
+            "stdout_sha256": hashlib.sha256(b"").hexdigest(),
+            "stderr_sha256": hashlib.sha256(b"").hexdigest(),
+            "observed_image_count": len(images),
+            "receipt_identity_sha256": "d" * 64,
+        }
+
+    def digest(material: Mapping[str, object], *, ensure_ascii: bool) -> str:
+        return hashlib.sha256(
+            json.dumps(
+                material,
+                sort_keys=True,
+                separators=(",", ":"),
+                ensure_ascii=ensure_ascii,
+            ).encode()
+        ).hexdigest()
+
     monkeypatch.setattr(command_identity, "_run_captured", version)
-    located = command_identity._tool_identity(
-        proof_plan.ProofPlan.load(), "uv", envelope, exact, cwd=root, env=environment
+    monkeypatch.setattr(
+        supervisor_custody, "capture_process_image_inventory", inventory
     )
-    material = {
-        key: value for key, value in located.items() if key != "identity_sha256"
+    selected = command_identity._tool_identity(
+        plan, "uv", envelope, exact, cwd=root, env=environment
+    )
+    selected_material = {
+        key: value for key, value in selected.items() if key != "identity_sha256"
     }
-    selection_digest = hashlib.sha256(
-        json.dumps(material, sort_keys=True, separators=(",", ":")).encode()
-    ).hexdigest()
-    full_digest = hashlib.sha256(
-        json.dumps(
-            material, sort_keys=True, separators=(",", ":"), ensure_ascii=False
-        ).encode()
-    ).hexdigest()
-    assert located["identity_sha256"] == selection_digest
+    # Selection keeps its ASCII-escaped serializer; the path is not ASCII.
+    assert selected["identity_sha256"] == digest(selected_material, ensure_ascii=True)
+    assert selected["identity_sha256"] != digest(selected_material, ensure_ascii=False)
+    # The locator is the real producer of the probe inventory that full capture
+    # requires. It adds only that inventory to the selected identity.
+    _roots, located, _telemetry, _updates = (
+        execution_environment._locate_toolchain_watch_roots(
+            envelope,
+            exact,
+            cwd=root,
+            env=environment,
+            supervisor_binary=root / "unused-supervisor",
+        )
+    )
+    assert probed == declared_probes
+    inventoried = located["uv"]
+    assert len(inventoried["process_image_inventories"]) == len(declared_probes)
+    assert ("uv-runtime", hashlib.sha256(loader_bytes).hexdigest()) in {
+        (row["role"], row["sha256"]) for row in inventoried["process_images"]
+    }
+    inventory_fields = {
+        "identity_sha256",
+        "process_images",
+        "process_image_inventories",
+    }
+    assert {
+        key: value for key, value in inventoried.items() if key not in inventory_fields
+    } == {
+        key: value
+        for key, value in selected_material.items()
+        if key not in inventory_fields
+    }
+    material = {
+        key: value for key, value in inventoried.items() if key != "identity_sha256"
+    }
+    selection_digest = digest(material, ensure_ascii=True)
+    full_digest = digest(material, ensure_ascii=False)
     assert selection_digest != full_digest
     python, full = execution_environment._capture_toolchains(
         envelope,
@@ -2285,7 +2374,7 @@ def test_uv_unicode_full_capture_uses_existing_producer_digest_authority(
         env=environment,
         source_root=root,
         hash_workers=1,
-        located_toolchains={"uv": located},
+        located_toolchains=located,
     )
     assert python is None
     assert full["uv"]["identity_sha256"] == full_digest
@@ -18278,19 +18367,24 @@ def test_multiple_registered_variants_never_turn_transport_changes_into_leaves(
             "--macos",
         ),
     ]
+    ids = ["fixture.full", "fixture.macos"]
     entrypoint = command_admission._command_entrypoint(commands[0])
-    registry["entrypoints"][entrypoint] = ["fixture.full", "fixture.macos"]
-    for index, command in enumerate(commands):
+    registry["entrypoints"][entrypoint] = list(ids)
+    # Each fixture row projects every registered field the real registry does,
+    # including its Cargo build-generator declaration (a compiling driver).
+    for command_id, command in zip(ids, commands, strict=True):
         registry["exact"][command] = {
-            "ids": [f"fixture.{index}"],
+            "ids": [command_id],
             "toolchains": ("python", "uv", "cargo", "rustc"),
             "cargo_native_units": {},
+            "cargo_build_python": True,
         }
+        registry["cargo_build_python"][command_id] = True
     monkeypatch.setattr(command_admission, "_proof_command_registry", lambda: registry)
     for command in commands:
         envelope = command_admission.envelope_for_command(command)
         assert envelope["kind"] == "proof-plan"
-        assert {"cargo", "rustc"} <= set(envelope["toolchains"])
+        assert {"cargo", "rustc", "build-python"} <= set(envelope["toolchains"])
     for command in (
         (*commands[0], "--verbose"),
         (

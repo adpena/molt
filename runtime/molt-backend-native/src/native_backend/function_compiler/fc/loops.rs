@@ -789,7 +789,7 @@ pub(in crate::native_backend::function_compiler) fn handle_loop_op(
                     None,
                 );
                 // Fast path: extract bool payload directly for NaN-boxed
-                // booleans from fast_int comparisons or type hints.
+                // booleans from typed integer comparisons.
                 let cond_name = &args[0];
                 let cond_is_bool_typed = var_is_bool(cond_name);
                 let cond_is_int_typed = !cond_is_bool_typed && var_is_int(cond_name);
@@ -946,7 +946,7 @@ pub(in crate::native_backend::function_compiler) fn handle_loop_op(
                     None,
                 );
                 // Fast path: when the condition is a NaN-boxed bool from a
-                // fast_int comparison (lt/le/gt/ge/eq/ne), extract the bool
+                // typed integer comparison (lt/le/gt/ge/eq/ne), extract the bool
                 // payload directly instead of calling molt_is_truthy.  This
                 // eliminates a runtime call per loop iteration AND avoids
                 // inserting extra Cranelift blocks between the loop header

@@ -85,7 +85,7 @@ def test_analyze_file_delegates_to_backend_lir_reporter(
         captured["source"] = source_text
         captured["type_hint_policy"] = type_hint_policy
         return {
-            "functions": [{"name": "f", "ops": [{"kind": "add", "fast_int": True}]}]
+            "functions": [{"name": "f", "ops": [{"kind": "add", "type_hint": "int"}]}]
         }
 
     def fake_run_backend_report(ir: dict[str, Any]) -> dict[str, Any]:
@@ -99,7 +99,7 @@ def test_analyze_file_delegates_to_backend_lir_reporter(
 
     assert report.path == source
     assert captured["type_hint_policy"] == "check"
-    assert captured["ir"]["functions"][0]["ops"][0]["fast_int"] is True
+    assert captured["ir"]["functions"][0]["ops"][0]["type_hint"] == "int"
     assert report.report["aggregate"]["values_by_repr"]["i64"] == 3
 
 

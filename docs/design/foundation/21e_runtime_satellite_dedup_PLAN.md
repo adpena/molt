@@ -15,12 +15,12 @@ dual-path pairs with a zero residual ceiling. -->
 # 21e — molt-runtime Satellite Dedup Arc (R.2 + R.3), zero-pair status
 
 ## PREFACE — live status after completion
-1. **Zero tracked dual-path pairs.** `tools/check_satellite_parity.py` has an empty `PAIRS` table and `tools/satellite_parity_baseline.json` has residual ceiling 0.
-2. **The parity guard is green at zero.** `python tools/check_satellite_parity.py --verbose` reports 0 pairs and total residual 0. Any future in-tree/satellite pair is new authority debt and must be declared explicitly.
+1. **Zero dual-path pairs.** Every in-tree/satellite pair was deleted or single-sourced by 2026-06-27.
+2. **The parity guard is deleted.** With zero pairs, `tools/check_satellite_parity.py` had an empty `PAIRS` table and checked nothing, so HF-280 (2026-10-17) deleted it with `tools/satellite_parity_baseline.json` and `runtime/molt-runtime/tests/satellite_parity.rs`. Any future in-tree/satellite pair is new authority debt and must be declared explicitly.
 3. **Reduced-tier fallbacks are single-source.** The remaining fallback paths that still need reduced-tier source (`functions_logging`, `itertools`, `os_ext`, and `pathlib`) compile leaf-owned Rust source by direct `#[path]` include rather than keeping a second in-tree implementation.
 4. **The R.2 access-unification abstraction still matters for future satellites.** `molt-runtime-core` provides `CoreGilToken (= PyToken)`, `with_core_gil!`, `with_gil_entry_body!`, `RuntimeVtable`, and `prelude`; `molt-runtime-serial` remains the RuntimeVtable pilot.
 5. **The recovery baton `memory/recovery/baton_move_R_satellite_drift.md` does not exist** (only genthrow_51/, takeover_20260609/). Every cross-ref to it dangles. 21e supersedes it.
-6. **The historical sections below are an archive, not a live work queue.** Use the live guard, checked-in source, and current generated artifacts before deriving new work from old residual counts.
+6. **The historical sections below are an archive, not a live work queue.** Use the checked-in source and current generated artifacts before deriving new work from old residual counts.
 
 ## 1. CURRENT-STATE MAP (verified)
 ### 1.1 Live remaining pairs after R.3 deletions

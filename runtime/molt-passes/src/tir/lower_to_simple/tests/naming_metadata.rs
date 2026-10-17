@@ -827,9 +827,10 @@ fn empty_returns_do_not_allocate_transport_values() {
     assert!(out[0].args.is_none());
 }
 
-/// Verify that typed TIR does not re-emit integer transport hints.
+/// Verify that type refinement types integer constant arithmetic as I64 and
+/// that the add survives lowering.
 #[test]
-fn type_propagation_does_not_emit_fast_int_on_arithmetic() {
+fn type_propagation_types_integer_arithmetic_as_i64() {
     use crate::tir::type_refine::{extract_type_map, refine_types};
 
     // Build: func @add_ints() -> I64
@@ -897,21 +898,17 @@ fn type_propagation_does_not_emit_fast_int_on_arithmetic() {
     );
 
     let ops = lower_to_simple_ir(&func);
-    let add_ops: Vec<&OpIR> = ops.iter().filter(|o| o.kind == "add").collect();
-    assert!(!add_ops.is_empty(), "expected an 'add' op in output");
-    for add_op in &add_ops {
-        assert!(
-            add_op.fast_int.is_none(),
-            "typed TIR must not emit fast_int transport hints: {:?}",
-            add_op
-        );
-    }
+    assert!(
+        ops.iter().any(|o| o.kind == "add"),
+        "expected an 'add' op in output"
+    );
 }
 
-/// Verify that typed TIR does not re-emit float transport hints.
+/// Verify that type refinement types float constant arithmetic as F64 and
+/// that the add survives lowering.
 #[test]
-fn type_propagation_does_not_emit_fast_float_on_float_arithmetic() {
-    use crate::tir::type_refine::refine_types;
+fn type_propagation_types_float_arithmetic_as_f64() {
+    use crate::tir::type_refine::{extract_type_map, refine_types};
 
     let mut func = TirFunction::new(
         "add_floats".into(),
@@ -960,17 +957,15 @@ fn type_propagation_does_not_emit_fast_float_on_float_arithmetic() {
     entry.terminator = Terminator::Return { values: vec![v2] };
 
     refine_types(&mut func);
-    let ops = lower_to_simple_ir(&func);
+    let type_map = extract_type_map(&func);
+    assert_eq!(
+        type_map.get(&v2),
+        Some(&TirType::F64),
+        "v2 should be F64 (add of two F64s)"
+    );
 
-    let add_ops: Vec<&OpIR> = ops.iter().filter(|o| o.kind == "add").collect();
-    assert!(!add_ops.is_empty());
-    for add_op in &add_ops {
-        assert!(
-            add_op.fast_float.is_none(),
-            "typed TIR must not emit fast_float transport hints: {:?}",
-            add_op
-        );
-    }
+    let ops = lower_to_simple_ir(&func);
+    assert!(ops.iter().any(|o| o.kind == "add"));
 }
 
 /// Verify that typed TIR does not re-emit bool type hints.
@@ -1034,14 +1029,6 @@ fn type_propagation_does_not_emit_type_hint_for_bool() {
             eq_op.type_hint.is_none(),
             "typed TIR must not emit bool type_hint metadata: {:?}",
             eq_op
-        );
-        assert!(
-            eq_op.fast_float.is_none(),
-            "bool op should not have fast_float"
-        );
-        assert!(
-            eq_op.fast_int.is_none(),
-            "comparison op should not carry fast_int metadata"
         );
     }
 }
@@ -1191,22 +1178,14 @@ fn tir_round_trip_preserves_method_loads_as_first_class_ops() {
     }
 }
 
-/// Verify that no type map (empty) means no flags are set.
+/// Verify that no type map (empty) means no type hint is set.
 #[test]
-fn empty_type_map_sets_no_flags() {
+fn empty_type_map_sets_no_type_hint() {
     let func = add_function();
     let ops = lower_to_simple_ir(&func);
     let add_ops: Vec<&OpIR> = ops.iter().filter(|o| o.kind == "add").collect();
     assert!(!add_ops.is_empty());
     for add_op in &add_ops {
-        assert!(
-            add_op.fast_int.is_none(),
-            "empty type map should not set fast_int"
-        );
-        assert!(
-            add_op.fast_float.is_none(),
-            "empty type map should not set fast_float"
-        );
         assert!(
             add_op.type_hint.is_none(),
             "empty type map should not set type_hint"
@@ -1367,7 +1346,6 @@ fn tir_round_trip_preserves_fused_iter_next_output_names() {
                 kind: "index".into(),
                 args: Some(vec!["pair".into(), "done_index".into()]),
                 out: Some("done_flag".into()),
-                fast_int: Some(true),
                 ..OpIR::default()
             },
             OpIR {
@@ -1386,7 +1364,6 @@ fn tir_round_trip_preserves_fused_iter_next_output_names() {
                 kind: "index".into(),
                 args: Some(vec!["pair".into(), "value_index".into()]),
                 out: Some("next_value".into()),
-                fast_int: Some(true),
                 ..OpIR::default()
             },
             OpIR {

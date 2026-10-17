@@ -41,8 +41,8 @@ abbrev ProvenGuards := List GuardExpr
     In the simplified model, a guard instruction has an RHS of the form
     `un (guardOp) (var x)` where guardOp maps to a GuardExpr.
     We model this abstractly: if the instruction is a guard, return Some.
-    Guard identity depends only on the RHS; the `..` leaves the type-hint
-    fields (`fast_int_hint`, `fast_float_hint`) unconstrained. -/
+    Guard identity depends only on the RHS; the `..` leaves `dst`
+    unconstrained. -/
 def instrGuardExpr : Instr → Option GuardExpr
   | { rhs := .un .not (.var x), .. } =>
       -- Model: `not (var x)` represents a type guard on x

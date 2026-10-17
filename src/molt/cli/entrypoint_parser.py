@@ -18,6 +18,7 @@ from molt.cli.build_output_layout import (
 from molt.cli.config_resolution import STDLIB_PROFILE_CHOICES
 from molt.cli.dx_cli import add_dx_parser
 from molt.cli.source_extension_invocation import (
+    SOURCE_EXTENSION_ABI_TIERS,
     add_source_extension_set_build_arguments,
 )
 from molt.wasm_optimization import WASM_OPT_LEVELS
@@ -470,7 +471,7 @@ def _build_entrypoint_parser() -> argparse.ArgumentParser:
     )
     extension_build_parser.add_argument(
         "--abi-tier",
-        choices=["source-compat", "cpython-abi"],
+        choices=SOURCE_EXTENSION_ABI_TIERS,
         help=(
             "Extension ABI tier: source-compat uses include/molt/Python.h; "
             "cpython-abi uses runtime/molt-cpython-abi/include/Python.h."
@@ -608,7 +609,7 @@ def _build_entrypoint_parser() -> argparse.ArgumentParser:
     )
     extension_metadata_parser.add_argument(
         "--abi-tier",
-        choices=["source-compat", "cpython-abi"],
+        choices=SOURCE_EXTENSION_ABI_TIERS,
         help=(
             "Python C-API header tier for generated package metadata "
             "(default: source-compat)."

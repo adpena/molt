@@ -1,15 +1,45 @@
-"""Canonical source-extension set invocation parsing and re-exec argv shaping."""
+"""Canonical source-extension invocation parsing and re-exec argv shaping.
+
+This module is also the one authority for source-extension ABI tier identity.
+A source extension compiles against exactly one of two C-API header tiers:
+
+* ``source-compat`` uses ``include/molt/Python.h`` (the Molt source tier).
+* ``cpython-abi`` uses ``runtime/molt-cpython-abi/include/Python.h`` (the
+  linked CPython-layout tier).
+
+Every reader parses through ``parse_source_extension_abi_tier``. It accepts
+only the two canonical spellings, so a stale or misspelled tier fails early
+instead of folding into a tier the author did not name.
+"""
 
 from __future__ import annotations
 
 import argparse
 import re
 from dataclasses import dataclass
-from typing import Literal, Sequence
+from typing import Final, Literal, Sequence, get_args
+
+
+SourceExtensionAbiTier = Literal["source-compat", "cpython-abi"]
+SOURCE_EXTENSION_ABI_TIERS: Final[tuple[SourceExtensionAbiTier, ...]] = get_args(
+    SourceExtensionAbiTier
+)
+DEFAULT_SOURCE_EXTENSION_ABI_TIER: Final[SourceExtensionAbiTier] = "source-compat"
+
+
+def parse_source_extension_abi_tier(abi_tier: str | None) -> SourceExtensionAbiTier:
+    """Return the canonical tier; ``None`` selects the default tier."""
+    if abi_tier is None:
+        return DEFAULT_SOURCE_EXTENSION_ABI_TIER
+    for tier in SOURCE_EXTENSION_ABI_TIERS:
+        if abi_tier == tier:
+            return tier
+    raise ValueError("source-extension ABI tier must be source-compat or cpython-abi")
 
 
 SourceExtensionSetCommand = Literal["produce-set", "attest-set-candidate"]
-SOURCE_EXTENSION_SET_ABI_TIERS = ("cpython-abi",)
+# Extension sets link only against the CPython-layout tier.
+SOURCE_EXTENSION_SET_ABI_TIERS: tuple[SourceExtensionAbiTier, ...] = ("cpython-abi",)
 _COMMON_OPTIONS = (
     ("--package", "package", "Registered package name (for example: scipy)."),
     (

@@ -1,4 +1,4 @@
-use molt_runtime_core::prelude::*;
+use molt_runtime_core::prelude::MoltObject;
 
 use super::common::{alloc_tuple_result, bits_to_string};
 

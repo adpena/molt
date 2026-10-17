@@ -1,4 +1,6 @@
-"""Molt Capability Manifest v2.0 -- TOML-based unified manifest parser.
+"""Molt Capability Manifest v2.0 -- the unified manifest parser.
+
+One schema (version 2.0) in three syntaxes: TOML, JSON, and YAML.
 
 Parses and validates capability manifests that unify:
   - Capability grants (allow/deny/effects, per-package scoping)
@@ -525,10 +527,10 @@ def validate_manifest(manifest: CapabilityManifest) -> list[str]:
     warnings: list[str] = []
 
     # Version check
-    if manifest.version not in ("1.0", "2.0"):
+    if manifest.version != "2.0":
         raise ManifestError(
             f"unrecognized manifest version {manifest.version!r}; "
-            f"this parser supports versions 1.0 and 2.0"
+            "capability manifests require version '2.0'"
         )
 
     resolution = resolve_capability_policy(manifest)
@@ -785,7 +787,7 @@ def _parse_capabilities(
 
 
 def _parse_v2_dict(data: dict[str, Any]) -> CapabilityManifest:
-    """Parse a v2.0 manifest from an already-loaded dict (TOML or YAML)."""
+    """Parse a v2.0 manifest from an already-loaded dict (TOML, JSON, or YAML)."""
     _require_exact_keys(
         data,
         frozenset(
@@ -805,7 +807,8 @@ def _parse_v2_dict(data: dict[str, Any]) -> CapabilityManifest:
     description = manifest_meta.get("description", "")
     if version != "2.0":
         raise ManifestError(
-            f"TOML/YAML capability manifests require version '2.0', got {version!r}"
+            f"unrecognized manifest version {version!r}; "
+            "capability manifests require version '2.0'"
         )
     if not isinstance(description, str):
         raise ManifestError("manifest.description must be a string")
@@ -851,32 +854,6 @@ def _parse_v2_dict(data: dict[str, Any]) -> CapabilityManifest:
         resources=resources,
         audit=audit,
         io=io,
-        signature=signature,
-    )
-
-
-def _parse_json_manifest(data: dict[str, Any]) -> CapabilityManifest:
-    """Parse the v1 JSON envelope from an already-decoded snapshot."""
-    version = data.get("version", "1.0")
-    if version != "1.0":
-        raise ManifestError(
-            f"unrecognized manifest version {version!r}; JSON capability manifests require version '1.0'"
-        )
-    policy, errors = parse_capability_policy(data)
-    if policy is None or errors:
-        raise ManifestError("; ".join(errors or ["JSON manifest must be an object"]))
-
-    signature_raw = data.get("signature")
-    signature: Optional[str] = None
-    if isinstance(signature_raw, str):
-        signature = signature_raw
-
-    return CapabilityManifest(
-        version=version,
-        allow=policy.allow,
-        deny=list(policy.deny),
-        effects=policy.effects,
-        packages=policy.packages,
         signature=signature,
     )
 
@@ -1085,8 +1062,12 @@ def load_manifest(
 
     The file format is determined by extension:
       - ``.toml`` -- v2.0 TOML manifest
-      - ``.json`` -- v1.0 JSON manifest (backward compatibility)
+      - ``.json`` -- v2.0 JSON manifest
       - ``.yaml`` / ``.yml`` -- v2.0 YAML manifest
+
+    Every syntax carries the same v2.0 schema. A bare capability policy
+    (``allow``/``deny``/``effects``/``packages`` at the root) is the
+    ``--capabilities`` input, not a manifest.
 
     After loading, the manifest is validated. Warnings are attached but do not
     raise; structural errors raise :class:`ManifestError`.
@@ -1118,10 +1099,8 @@ def load_manifest(
 
     suffix = p.suffix.casefold()
     data = _read_manifest_snapshot(p)
-    if suffix == ".toml" or suffix in (".yaml", ".yml"):
+    if suffix in (".toml", ".json", ".yaml", ".yml"):
         manifest = _parse_v2_dict(data)
-    elif suffix == ".json":
-        manifest = _parse_json_manifest(data)
     else:
         raise ManifestError(
             f"unsupported manifest format {suffix!r}; expected .toml, .json, .yaml, or .yml"
@@ -1270,15 +1249,17 @@ output = "logs/molt.jsonl"
     finally:
         os.unlink(toml_path)
 
-    # -- JSON loading (backward compat) --
+    # -- JSON loading (the same v2.0 schema) --
     print("Testing JSON manifest loading...")
     json_content = json.dumps(
         {
-            "allow": ["net", "time"],
-            "deny": ["fs.write"],
-            "effects": ["nondet"],
-            "fs": {"read": ["/tmp/data"], "write": []},
-            "packages": {"mypkg": {"allow": ["net"], "effects": ["nondet"]}},
+            "manifest": {"version": "2.0"},
+            "capabilities": {
+                "allow": ["net", "time", "fs.read"],
+                "deny": ["fs.write"],
+                "effects": ["nondet"],
+                "packages": {"mypkg": {"allow": ["net"], "effects": ["nondet"]}},
+            },
         }
     )
     with tempfile.NamedTemporaryFile(
@@ -1289,13 +1270,28 @@ output = "logs/molt.jsonl"
 
     try:
         m = load_manifest(json_path)
-        _assert(m.version == "1.0", "json version")
+        _assert(m.version == "2.0", "json version")
         assert m.allow is not None
         _assert("net" in m.allow, "json allow net")
-        _assert("fs.read" in m.allow, "json fs.read inferred from fs section")
+        _assert("fs.read" in m.allow, "json allow fs.read")
         _assert("mypkg" in m.packages, "json package")
     finally:
         os.unlink(json_path)
+
+    print("Testing that a bare JSON policy is not a manifest...")
+    with tempfile.NamedTemporaryFile(
+        suffix=".json", delete=False, mode="w", encoding="utf-8"
+    ) as f:
+        f.write(json.dumps({"allow": ["net"]}))
+        bare_policy_path = f.name
+    try:
+        _assert_raises(
+            ManifestError,
+            lambda: load_manifest(bare_policy_path),
+            "bare JSON policy rejected as a manifest",
+        )
+    finally:
+        os.unlink(bare_policy_path)
 
     # -- expanded_allow / effective_capabilities --
     print("Testing capability expansion...")
@@ -1362,7 +1358,7 @@ output = "logs/molt.jsonl"
     try:
         m = load_manifest(minimal_path)
         _assert(m.version == "2.0", "default version")
-        _assert(m.allow == [], "default allow empty")
+        _assert(m.allow is None, "absent allow stays unconstrained")
         _assert(m.resources.max_memory is None, "default resources unset")
         _assert(m.io.mode == "real", "default io mode")
         _assert(m.audit.enabled is False, "default audit disabled")

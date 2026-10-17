@@ -31,7 +31,7 @@
 //!
 //! This runs early in the pipeline and records the scalar facts it synthesizes
 //! directly in `TirFunction.value_types`; downstream passes and backends must
-//! read those facts rather than legacy SimpleIR `fast_int` transport hints.
+//! read those facts rather than SimpleIR transport hints.
 //!
 //! Admission. `range_new`'s operands are `range()`'s converted bounds, exact
 //! ints by construction (the frontend converts every bound it cannot prove an

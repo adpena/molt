@@ -6,6 +6,12 @@ concurrency/ownership model). EVERY factual claim below is verified against the 
 base 9e8428e2e; verification commands are inlined. This doc is a PLAN ONLY — no code was
 refactored in the session that produced it. -->
 
+> **Note (2026-10-17, HF-280):** `tools/check_satellite_parity.py`, its baseline and the
+> `runtime/molt-runtime/tests/satellite_parity.rs` test are deleted. Every in-tree/satellite
+> pair was deleted or single-sourced by 2026-06-27, so the guard's `PAIRS` table was empty
+> and it checked nothing. Mentions of the guard below are history.
+
+
 # 21 — Codebase Decomposition Program
 
 **God-file inventory · crate graph · phased move-only extraction plan**

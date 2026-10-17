@@ -63,7 +63,6 @@ class Op:
     value: int | None = None
     f_value: float | None = None
     s_value: str | None = None
-    fast_int: bool | None = None
 
 
 @dataclass
@@ -105,7 +104,6 @@ def _parse_op(raw: dict[str, Any]) -> Op:
         value=raw.get("value"),
         f_value=raw.get("f_value"),
         s_value=raw.get("s_value"),
-        fast_int=raw.get("fast_int"),
     )
 
 

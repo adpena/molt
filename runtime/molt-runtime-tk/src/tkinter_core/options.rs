@@ -1,4 +1,7 @@
-use molt_runtime_core::prelude::*;
+use molt_runtime_core::prelude::{
+    MoltObject, OwnedBridgeHandleSnapshot, TYPE_ID_DICT, obj_from_bits, rt_dec_ref,
+    rt_exception_pending, rt_inc_ref,
+};
 
 use crate::bridge::{decode_value_list_bits, dict_snapshot, object_type_id};
 

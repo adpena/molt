@@ -84,10 +84,13 @@ from molt.cli.source_extension_compiler_inputs import (
     compiler_sysroot_arg_value,
     source_extension_compiler_environment,
 )
+from molt.cli.source_extension_invocation import (
+    DEFAULT_SOURCE_EXTENSION_ABI_TIER,
+    parse_source_extension_abi_tier,
+)
 from molt.cli.source_extension_toolchain import (
     _admit_wasi_source_compiler,
     _materialize_source_extension_target_metadata,
-    _normalize_source_extension_abi_tier,
     _normalize_source_extension_python_version,
     _resolve_source_extension_toolchain,
     _source_extension_include_dirs_for_abi_tier,
@@ -141,7 +144,7 @@ def extension_metadata(
             host_platform=sys.platform,
             host_arch=platform.machine(),
         )
-        normalized_abi_tier = _normalize_source_extension_abi_tier(abi_tier)
+        normalized_abi_tier = parse_source_extension_abi_tier(abi_tier)
         normalized_python_version = _normalize_source_extension_python_version(
             python_version
         )
@@ -581,12 +584,12 @@ def extension_build(
         )
     )
     try:
-        normalized_abi_tier = _normalize_source_extension_abi_tier(
+        normalized_abi_tier = parse_source_extension_abi_tier(
             abi_tier or extension_meta.get("abi_tier") or extension_meta.get("abi-tier")
         )
     except ValueError as exc:
         errors.append(str(exc))
-        normalized_abi_tier = "source-compat"
+        normalized_abi_tier = DEFAULT_SOURCE_EXTENSION_ABI_TIER
 
     effects = _normalize_effects(extension_meta.get("effects"))
     determinism_mode = "deterministic" if deterministic else "nondet"

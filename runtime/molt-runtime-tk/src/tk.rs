@@ -28,8 +28,11 @@ mod widgets;
 mod winfo_commands;
 mod wm_commands;
 
-pub use callback_intrinsics::*;
-pub use intrinsics::*;
+#[allow(
+    clippy::wildcard_imports,
+    reason = "re-exports the C-ABI intrinsics into crate::intrinsics"
+)]
+pub use {callback_intrinsics::*, intrinsics::*};
 
 #[cfg(test)]
 mod tests;

@@ -178,8 +178,8 @@ pub fn elide_useless_try_blocks(ops: &mut Vec<OpIR>) {
 }
 
 /// Elide try/except wrappers using the same typed representation authority as
-/// the backend lowering path. Transport flags such as `fast_int` and
-/// `fast_float` are not proof that Python dispatch cannot raise.
+/// the backend lowering path. A transport hint such as `type_hint` is not
+/// proof that Python dispatch cannot raise.
 pub fn elide_useless_try_blocks_for_function(
     func: &mut FunctionIR,
     target_info: &crate::tir::target_info::TargetInfo,

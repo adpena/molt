@@ -47,8 +47,6 @@ class OpIR:
     var: str | None = None
     args: list[str] | None = None
     out: str | None = None
-    fast_int: bool | None = None
-    fast_float: bool | None = None
     type_hint: str | None = None
     bytes: list[int] | None = None
     task_kind: str | None = None
@@ -64,8 +62,6 @@ class OpIR:
             "var",
             "args",
             "out",
-            "fast_int",
-            "fast_float",
             "type_hint",
             "bytes",
             "task_kind",
@@ -548,7 +544,7 @@ class LuauPhysicsParser:
             right = self._parse_mul_div(ops)
             out = self._temp()
             kind = "add" if op_tok.type == "PLUS" else "sub"
-            ops.append(OpIR(kind=kind, args=[left, right], out=out, fast_float=True))
+            ops.append(OpIR(kind=kind, args=[left, right], out=out))
             left = out
         return left
 
@@ -564,7 +560,6 @@ class LuauPhysicsParser:
                     kind=kind_map[op_tok.type],
                     args=[left, right],
                     out=out,
-                    fast_float=True,
                 )
             )
             left = out
@@ -576,7 +571,7 @@ class LuauPhysicsParser:
             self.advance()
             exp = self._parse_unary(ops)
             out = self._temp()
-            ops.append(OpIR(kind="pow", args=[base, exp], out=out, fast_float=True))
+            ops.append(OpIR(kind="pow", args=[base, exp], out=out))
             base = out
         return base
 
@@ -586,7 +581,7 @@ class LuauPhysicsParser:
             self.advance()
             operand = self._parse_primary(ops)
             out = self._temp()
-            ops.append(OpIR(kind="neg", args=[operand], out=out, fast_float=True))
+            ops.append(OpIR(kind="neg", args=[operand], out=out))
             return out
         if tok and tok.type == "KW_NOT":
             self.advance()
@@ -697,7 +692,6 @@ class LuauPhysicsParser:
                             s_value=intrinsic,
                             args=call_args,
                             out=out,
-                            fast_float=True,
                         )
                     )
                 else:
@@ -835,17 +829,11 @@ class LuauPhysicsParser:
 
         # Increment
         if step_var:
-            ops.append(
-                OpIR(
-                    kind="add", args=[var_name, step_var], out=var_name, fast_float=True
-                )
-            )
+            ops.append(OpIR(kind="add", args=[var_name, step_var], out=var_name))
         else:
             one = self._temp()
             ops.append(OpIR(kind="const", out=one, value=1))
-            ops.append(
-                OpIR(kind="add", args=[var_name, one], out=var_name, fast_float=True)
-            )
+            ops.append(OpIR(kind="add", args=[var_name, one], out=var_name))
 
         ops.append(OpIR(kind="jump", s_value=loop_label))
         ops.append(OpIR(kind="label", s_value=end_label))
@@ -893,9 +881,7 @@ class LuauPhysicsParser:
             self.advance()  # +
             self.advance()  # =
             val_var = self._parse_expression(ops)
-            ops.append(
-                OpIR(kind="add", args=[name, val_var], out=name, fast_float=True)
-            )
+            ops.append(OpIR(kind="add", args=[name, val_var], out=name))
             return
 
         # Bare function call

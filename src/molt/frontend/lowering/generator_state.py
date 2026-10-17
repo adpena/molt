@@ -384,7 +384,7 @@ class GeneratorStateMixin(GeneratorMixinBase):
         self.module_globals_dict_escaped = False
         # Track the last-known type hint for module-scope attributes.
         # Populated by _emit_module_attr_set_on and read by _emit_module_attr_get.
-        # Enables fast_int/fast_float paths for module-scope loop variables.
+        # Module-scope loop variables keep their scalar hints this way.
         self._module_attr_type_hints: dict[str, TypeHint] = {}
         self.mutated_classes: set[ClassId] = set()
         self.instance_attr_mutations: dict[ClassId, set[str]] = {}

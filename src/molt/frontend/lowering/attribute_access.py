@@ -170,7 +170,7 @@ class AttributeAccessMixin(GeneratorMixinBase):
             )
         )
         # Track the value's type hint so _emit_module_attr_get can propagate
-        # it to downstream consumers (enabling fast_int/fast_float paths).
+        # it to downstream consumers.
         if (
             isinstance(value, MoltValue)
             and value.type_hint
@@ -193,7 +193,7 @@ class AttributeAccessMixin(GeneratorMixinBase):
         # Propagate the last-known type hint for this module attribute.
         # When a module-scope variable was assigned from a typed expression
         # (e.g., count = 0 → int), the MODULE_GET_ATTR result inherits
-        # that type so downstream _should_fast_int checks can fire.
+        # that type for downstream lowering.
         attr_hint: TypeHint = self._module_attr_type_hints.get(name, "Any")
         res = MoltValue(self.next_var(), type_hint=attr_hint)
         self.emit(

@@ -104,14 +104,14 @@ resources:
         os.unlink(path)
 
 
-def test_json_manifest_backward_compat():
-    """Old JSON format still works."""
+def test_json_manifest_carries_the_v2_schema():
+    """JSON is a syntax for the one v2.0 schema, not a separate format."""
     from molt.capability_manifest import load_manifest
 
     manifest = {
-        "allow": ["net", "fs.read"],
-        "deny": [],
-        "effects": ["nondet"],
+        "manifest": {"version": "2.0"},
+        "capabilities": {"allow": ["net", "fs.read"], "effects": ["nondet"]},
+        "resources": {"max_memory": "16MB"},
     }
 
     with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
@@ -120,9 +120,29 @@ def test_json_manifest_backward_compat():
 
     try:
         m = load_manifest(path)
+        assert m.version == "2.0"
+        assert m.allow is not None
         assert "net" in m.allow
         assert "fs.read" in m.allow
-        assert m.version == "1.0"  # JSON is v1.0
+        assert m.resources.max_memory == 16 * 1024 * 1024
+    finally:
+        os.unlink(path)
+
+
+def test_bare_json_capability_policy_is_not_a_manifest():
+    """The retired v1 JSON form (a bare policy at the root) fails closed."""
+    from molt.capability_manifest import ManifestError, load_manifest
+
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
+        json.dump({"allow": ["net", "fs.read"], "deny": [], "effects": ["nondet"]}, f)
+        path = f.name
+
+    try:
+        try:
+            load_manifest(path)
+            assert False, "a bare JSON policy must not load as a manifest"
+        except ManifestError as exc:
+            assert "manifest root contains unsupported field(s): allow" in str(exc)
     finally:
         os.unlink(path)
 
@@ -150,7 +170,7 @@ def test_unknown_json_manifest_version_fails_closed():
     from molt.capability_manifest import ManifestError, load_manifest
 
     with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
-        f.write('{"version":"99.0","capabilities":[]}')
+        f.write('{"manifest":{"version":"99.0"},"capabilities":{}}')
         path = f.name
 
     try:

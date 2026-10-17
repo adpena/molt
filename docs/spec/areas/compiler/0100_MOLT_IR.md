@@ -69,9 +69,10 @@ rules apply to native, WASM, LLVM, and Luau drivers regardless of build profile.
   required.
 - `Box`, `Unbox`, `Cast`, and `Widen` are first-class boundary operations. They
   are the canonical way to cross representation boundaries.
-- The current `SimpleIR` transport still accepts scalar hint metadata such as
-  `fast_int`, `fast_float`, and `type_hint` for legacy consumers. These fields
-  are transitional compatibility details, not the long-term semantic contract.
+- The current `SimpleIR` transport still accepts `type_hint` metadata for
+  legacy consumers. It is a transitional compatibility detail, not the
+  long-term semantic contract. The scalar `fast_int` / `fast_float` hints are
+  retired: no backend read them, and the transport now rejects them.
 - SimpleIR local-name identity for `copy_var`/`load_var`/`store_var`/
   `delete_var` is carried through TIR as `_var` transport metadata when a
   re-lift must be lossless. SSA operands remain the value authority; `_var`

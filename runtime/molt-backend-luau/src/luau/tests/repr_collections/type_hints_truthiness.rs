@@ -219,8 +219,6 @@ fn test_transport_hints_do_not_force_luau_numeric_add() {
                     kind: "add".to_string(),
                     args: Some(vec!["a".to_string(), "b".to_string()]),
                     out: Some("v0".to_string()),
-                    fast_int: Some(true),
-                    fast_float: Some(true),
                     type_hint: Some("int".to_string()),
                     ..OpIR::default()
                 },
@@ -264,7 +262,6 @@ fn test_type_hint_int_does_not_force_luau_integer_index() {
                     args: Some(vec!["xs".to_string(), "key".to_string()]),
                     out: Some("v0".to_string()),
                     type_hint: Some("int".to_string()),
-                    fast_int: Some(true),
                     ..OpIR::default()
                 },
                 OpIR {

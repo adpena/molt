@@ -42,6 +42,20 @@ def _patterns(value: object, *, field: str, manifest: Path) -> tuple[str, ...]:
     return tuple(patterns)
 
 
+def workspace_edition(project_root: Path) -> str:
+    """The Rust edition the workspace declares (``[workspace.package]``).
+
+    Tools that format or check Rust read it here, so the next edition needs
+    one manifest change.
+    """
+    manifest = project_root / "Cargo.toml"
+    package = _read_manifest(manifest).get("workspace", {}).get("package", {})
+    edition = package.get("edition") if isinstance(package, dict) else None
+    if not isinstance(edition, str) or not edition:
+        raise ValueError(f"{manifest}: workspace.package.edition must be declared")
+    return edition
+
+
 def workspace_member_manifests(project_root: Path) -> tuple[Path, ...]:
     """Return unique declared member manifests in deterministic manifest order."""
     root = project_root.resolve()

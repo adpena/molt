@@ -100,28 +100,6 @@ fn op_args(kind: &str, args: &[&str]) -> OpIR {
     }
 }
 
-/// Helper: create an op with integer compatibility hint.
-fn op_fast_int(kind: &str, args: &[&str], out: &str) -> OpIR {
-    OpIR {
-        kind: kind.to_string(),
-        args: Some(args.iter().map(|s| s.to_string()).collect()),
-        out: Some(out.to_string()),
-        fast_int: Some(true),
-        ..OpIR::default()
-    }
-}
-
-/// Helper: create an op with float compatibility hint.
-fn op_fast_float(kind: &str, args: &[&str], out: &str) -> OpIR {
-    OpIR {
-        kind: kind.to_string(),
-        args: Some(args.iter().map(|s| s.to_string()).collect()),
-        out: Some(out.to_string()),
-        fast_float: Some(true),
-        ..OpIR::default()
-    }
-}
-
 #[test]
 fn cell_rewrite_skips_cells_escaped_into_closure_tuple() {
     let mut ops = vec![
@@ -394,47 +372,6 @@ fn gpu_thread_id_lowers_to_runtime_backed_call_in_tir() {
             "gpu_thread_id".to_string()
         ))
     );
-}
-
-// =======================================================================
-// Test 3: transport hints do not seed canonical SSA types
-// =======================================================================
-#[test]
-fn transport_hints_do_not_seed_canonical_types() {
-    let func_ir = FunctionIR {
-        return_abi: molt_ir::FunctionReturnAbi::Value,
-        name: "hint_only_add".into(),
-        params: vec!["a".into(), "b".into(), "fa".into(), "fb".into()],
-        ops: vec![
-            op_fast_int("add", &["a", "b"], "c"),
-            op_fast_float("mul", &["fa", "fb"], "fc"),
-            op_args("ret", &["c"]),
-        ],
-        param_types: None,
-        source_file: None,
-        is_extern: false,
-        codegen_partition: false,
-        parameter_custody: Vec::new(),
-        execution_context: Default::default(),
-    };
-
-    let tir = lower_to_tir(&func_ir);
-
-    assert_eq!(
-        tir.return_type,
-        TirType::DynBox,
-        "transport-only hints must not seed canonical TIR types"
-    );
-    for op in tir.blocks.values().flat_map(|block| &block.ops) {
-        assert!(
-            !op.attrs.contains_key("_fast_int"),
-            "SimpleIR fast_int metadata must not enter TIR attrs: {op:?}"
-        );
-        assert!(
-            !op.attrs.contains_key("_fast_float"),
-            "SimpleIR fast_float metadata must not enter TIR attrs: {op:?}"
-        );
-    }
 }
 
 #[test]

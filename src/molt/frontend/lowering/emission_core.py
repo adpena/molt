@@ -16,7 +16,6 @@ from molt.compiler_analysis.python_effects_generated import (
     NO_PYTHON_CALLBACKS_FORBIDDEN_EFFECTS,
 )
 from molt.frontend._types import (
-    _FAST_ARITH_OPS,
     CompatibilityError,
     MoltOp,
     MoltValue,
@@ -218,39 +217,8 @@ class EmissionCoreMixin(GeneratorMixinBase):
             )
         )
 
-    def _fast_int_enabled(self) -> bool:
-        return self._hints_enabled()
-
     def _hints_enabled(self) -> bool:
         return self.type_hint_policy in {"trust", "check"} or self.stdlib_hint_trust
-
-    def _should_fast_int(self, op: MoltOp) -> bool:
-        if op.kind not in _FAST_ARITH_OPS:
-            return False
-        if op.kind in {"NEG", "POS"}:
-            return all(
-                isinstance(arg, MoltValue) and arg.type_hint == "int" for arg in op.args
-            )
-        # Bitwise ops on bools must NOT use the fast_int path because the
-        # backend's inline band/bor/bxor + box_int_value always returns an
-        # int, losing the bool type.  CPython preserves bool: True & False
-        # returns False (bool), not 0 (int).  The slow path (runtime call)
-        # handles bool operands correctly via from_bool.
-        if op.kind in {"BIT_AND", "BIT_OR", "BIT_XOR"} and any(
-            isinstance(arg, MoltValue) and arg.type_hint == "bool" for arg in op.args
-        ):
-            return False
-        return all(
-            isinstance(arg, MoltValue) and arg.type_hint in {"int", "bool"}
-            for arg in op.args
-        )
-
-    def _should_fast_float(self, op: MoltOp) -> bool:
-        if op.kind not in _FAST_ARITH_OPS:
-            return False
-        return all(
-            isinstance(arg, MoltValue) and arg.type_hint == "float" for arg in op.args
-        )
 
     def _emit_bridge_unavailable(self, message: str) -> MoltValue:
         msg_val = MoltValue(self.next_var(), type_hint="str")

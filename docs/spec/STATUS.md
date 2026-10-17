@@ -1158,8 +1158,9 @@ regression coverage, not an installed release receipt or other-platform proof.
   runpy dynamic execution remains documented rather than tracked through an
   active expected-failure entry.
 - The current backend entry path still carries a stringly `SimpleIR` transport
-  for legacy consumers, but scalar `fast_int` / `fast_float` / `type_hint`
-  metadata is not backend-authoritative. The TIR-to-SimpleIR lowerer no longer
+  for legacy consumers, but scalar `type_hint` metadata is not
+  backend-authoritative; the retired `fast_int` / `fast_float` hints no longer
+  parse. The TIR-to-SimpleIR lowerer no longer
   accepts an external type-map channel, and opaque call returns refine only
   through structural TIR `return_type` metadata. TIR functions now own a
   persistent `value_types` map, and type refinement writes op-result facts back
@@ -1168,8 +1169,8 @@ regression coverage, not an installed release receipt or other-platform proof.
   structural attrs each round, widens known-dynamic results to `DynBox`, and
   fails closed on nonconvergence instead of freezing oscillating values through a
   stderr fallback. Range/list devirtualization records the I64 and Bool facts it
-  synthesizes for generated loop carriers and comparisons instead of leaving
-  those facts solely in `_fast_int` attrs. TIR-to-SimpleIR value
+  synthesizes for generated loop carriers and comparisons in `value_types`.
+  TIR-to-SimpleIR value
   naming is now centralized in `SimpleValueNames`, keeping parameter identity
   and block-argument storage names on one reusable contract. TIR lift also
   records explicit single-output SimpleIR provenance so backends can map final
@@ -1181,8 +1182,7 @@ regression coverage, not an installed release receipt or other-platform proof.
   preference; raw-primary sets remain stricter carrier-safety subsets. Legacy
   WASM and Luau scalar fast paths now consume the same plan for
   integer-family arithmetic, comparison, truthiness, and index-key scalar
-  decisions instead of trusting `fast_int`, `fast_float`, or scalar
-  `type_hint` transport metadata.
+  decisions instead of trusting scalar `type_hint` transport metadata.
   Generic container annotations now enter TIR as structured `TirType` facts
   (`list[T]`, `dict[K, V]`, `set[T]`, and fixed-arity `tuple[...]`) instead of
   remaining opaque string hints; malformed, dynamic, or unsupported compound

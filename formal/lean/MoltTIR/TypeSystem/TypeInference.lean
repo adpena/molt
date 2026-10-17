@@ -204,12 +204,12 @@ theorem inferType_complete_notBool (Γ : Var → Option Ty) (a : Expr)
     inferType Γ (.un .not a) = some .bool := by
   simp [inferType, ha, inferUnOpTy]
 
-/-! ## Bool → Int type promotion for fast_int inference -/
+/-! ## Bool → Int type promotion for the integer lane -/
 
 /-- Python subtyping: bool is a subtype of int.
     This models `issubclass(bool, int) == True` in CPython and justifies
-    treating bool-typed operands as int-compatible for fast_int specialization.
-    Ref: 2e1cab40 perf: propagate type facts to IR fast_int/fast_float flags -/
+    treating bool-typed operands as members of the integer family when a
+    backend selects its integer lane from typed SSA facts. -/
 def isIntCompatible : Ty → Bool
   | .int  => true
   | .bool => true   -- bool promotes to int in arithmetic contexts
@@ -221,28 +221,21 @@ theorem bool_is_int_compatible : isIntCompatible .bool = true := rfl
 /-- Int values are trivially int-compatible. -/
 theorem int_is_int_compatible : isIntCompatible .int = true := rfl
 
-/-- A TypeHint permits fast_int when the known type is int-compatible. -/
-def hintPermitsFastInt : TypeHint → Bool
+/-- A TypeHint admits the integer lane when the known type is int-compatible. -/
+def hintAdmitsIntLane : TypeHint → Bool
   | .known t  => isIntCompatible t
   | .unknown  => false
 
-/-- Unknown types do not permit fast_int (conservative). -/
-theorem unknown_blocks_fast_int : hintPermitsFastInt .unknown = false := rfl
+/-- Unknown types do not admit the integer lane (conservative). -/
+theorem unknown_blocks_int_lane : hintAdmitsIntLane .unknown = false := rfl
 
 /-- If both operands of a binary expression infer to int, the expression
-    permits fast_int. Together with bool_is_int_compatible, this covers
-    the case where one operand is bool (promoted to int).
-    Ref: 2e1cab40 perf: propagate type facts to IR fast_int/fast_float flags -/
+    stays in the integer lane. Together with bool_is_int_compatible, this
+    covers the case where one operand is bool (promoted to int). -/
 theorem inferBinOpTy_int_int_is_int (op : BinOp) (τ : Ty)
     (h : inferBinOpTy op .int .int = some τ) :
     isIntCompatible τ = true := by
   cases op <;> simp [inferBinOpTy] at h <;> subst h <;> rfl
-
-/-- An instruction's fast_int_hint is sound if inferType yields an
-    int-compatible type for its RHS. -/
-def instrFastIntSound (Γ : Var → Option Ty) (i : Instr) : Prop :=
-  i.fast_int_hint = true →
-    ∃ τ, inferType Γ i.rhs = some τ ∧ isIntCompatible τ = true
 
 /-! ## Container element type propagation -/
 
@@ -262,12 +255,12 @@ def intBuiltinReturnTy : IntReturningBuiltin → Ty
   | _ => .int
 
 /-- range() yields int elements, so `for x in range(...)` gives x : int.
-    This allows setting fast_int_hint on all arithmetic involving x.
+    Arithmetic involving x therefore stays in the integer lane.
     Ref: 14ad1fe3 perf: automatic int type inference from range/len/literals -/
 theorem range_yields_int :
     intBuiltinReturnTy .range_element = .int := rfl
 
-/-- len() returns int, enabling fast_int on `i < len(xs)`. -/
+/-- len() returns int, so `i < len(xs)` compares in the integer lane. -/
 theorem len_returns_int :
     intBuiltinReturnTy .len = .int := rfl
 
@@ -278,13 +271,13 @@ theorem hash_returns_int :
 /-- Container element type propagation soundness: if the typing environment
     records a loop induction variable as int (because the iterator is range()),
     type inference correctly infers int for expressions using that variable. -/
-theorem range_induction_var_permits_fast_int (Γ : Var → Option Ty) (x : Var)
+theorem range_induction_var_admits_int_lane (Γ : Var → Option Ty) (x : Var)
     (hx : Γ x = some .int) :
     inferType Γ (.var x) = some .int := by
   simp [inferType, hx]
 
 /-- Composition: range induction variable in an addition yields int. -/
-theorem range_var_add_permits_fast_int (Γ : Var → Option Ty) (x y : Var)
+theorem range_var_add_admits_int_lane (Γ : Var → Option Ty) (x y : Var)
     (hx : Γ x = some .int) (hy : Γ y = some .int) :
     inferType Γ (.bin .add (.var x) (.var y)) = some .int := by
   simp [inferType, hx, hy, inferBinOpTy]

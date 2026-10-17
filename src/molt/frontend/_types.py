@@ -383,42 +383,6 @@ class LoopBoundFact:
 _INLINE_INT_MIN = -(1 << 46)
 _INLINE_INT_MAX = (1 << 46) - 1
 
-_FAST_ARITH_OPS = frozenset(
-    {
-        "ADD",
-        "SUB",
-        "MUL",
-        "NEG",
-        "POS",
-        "INPLACE_ADD",
-        "INPLACE_SUB",
-        "INPLACE_MUL",
-        "BIT_OR",
-        "BIT_AND",
-        "BIT_XOR",
-        "INPLACE_BIT_OR",
-        "INPLACE_BIT_AND",
-        "INPLACE_BIT_XOR",
-        # Comparison ops: when both operands are int/bool, the backend
-        # emits inline Cranelift icmp instead of calling molt_le/lt/etc.
-        "LT",
-        "LE",
-        "GT",
-        "GE",
-        "EQ",
-        "NE",
-        "DIV",
-        "FLOORDIV",
-        "MOD",
-        "LT",
-        "LE",
-        "GT",
-        "GE",
-        "EQ",
-        "NE",
-    }
-)
-
 _SCCP_OVERDEFINED = object()
 _SCCP_UNKNOWN = object()
 _SCCP_MISSING = object()  # Sentinel for MISSING values — must never propagate or fold
@@ -1379,7 +1343,6 @@ __all__ = [
     "LoopBoundFact",
     "_INLINE_INT_MIN",
     "_INLINE_INT_MAX",
-    "_FAST_ARITH_OPS",
     "_SCCP_OVERDEFINED",
     "_SCCP_UNKNOWN",
     "_SCCP_MISSING",

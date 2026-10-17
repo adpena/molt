@@ -11,90 +11,6 @@ use crate::tir::op_kinds_generated::{
 };
 use crate::{OpIR, ParameterCustody};
 
-const SCALAR_FAST_INT_KINDS: &[&str] = &[
-    "abs",
-    "add",
-    "bit_and",
-    "bit_or",
-    "bit_xor",
-    "bool",
-    "builtin_abs",
-    "builtin_bool",
-    "const",
-    "copy",
-    "copy_var",
-    "binding_alias",
-    "div",
-    "eq",
-    "floordiv",
-    "ge",
-    "gpu_block_dim",
-    "gpu_block_id",
-    "gpu_grid_dim",
-    "gpu_thread_id",
-    "gt",
-    "identity_alias",
-    "index",
-    "inplace_add",
-    "inplace_bit_and",
-    "inplace_bit_or",
-    "inplace_bit_xor",
-    "inplace_floordiv",
-    "inplace_mod",
-    "inplace_mul",
-    "inplace_sub",
-    "invert",
-    "le",
-    "len",
-    "load_var",
-    "loop_index_next",
-    "loop_index_start",
-    "lshift",
-    "lt",
-    "mod",
-    "mul",
-    "ne",
-    "neg",
-    "not",
-    "pos",
-    "rshift",
-    "shl",
-    "shr",
-    "sub",
-];
-
-const SCALAR_FAST_FLOAT_KINDS: &[&str] = &[
-    "abs",
-    "add",
-    "builtin_abs",
-    "const_float",
-    "copy",
-    "copy_var",
-    "div",
-    "eq",
-    "float_from_obj",
-    "floordiv",
-    "ge",
-    "gt",
-    "identity_alias",
-    "binding_alias",
-    "inplace_add",
-    "inplace_div",
-    "inplace_floordiv",
-    "inplace_mod",
-    "inplace_mul",
-    "inplace_sub",
-    "le",
-    "load_var",
-    "lt",
-    "mod",
-    "mul",
-    "ne",
-    "neg",
-    "pos",
-    "sub",
-];
-
 const CONTAINER_TYPES: &[&str] = &[
     "bytearray",
     "bytes",
@@ -647,24 +563,6 @@ fn validate_representation_fields(op: &OpIR) -> Result<(), String> {
             ));
         }
         _ => {}
-    }
-    if op.fast_int == Some(true) && op.fast_float == Some(true) {
-        return Err(format!(
-            "op `{}` cannot set both fast_int and fast_float",
-            op.kind
-        ));
-    }
-    if op.fast_int == Some(true) && !SCALAR_FAST_INT_KINDS.contains(&op.kind.as_str()) {
-        return Err(format!(
-            "op `{}` does not own fast_int scalar specialization",
-            op.kind
-        ));
-    }
-    if op.fast_float == Some(true) && !SCALAR_FAST_FLOAT_KINDS.contains(&op.kind.as_str()) {
-        return Err(format!(
-            "op `{}` does not own fast_float scalar specialization",
-            op.kind
-        ));
     }
     if let Some(container_type) = op.container_type.as_deref() {
         validate_clean_symbol(container_type, &format!("op `{}` container_type", op.kind))?;

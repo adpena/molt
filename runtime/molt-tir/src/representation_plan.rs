@@ -106,8 +106,8 @@ impl ScalarRepresentationFact {
 ///
 /// Native finalization projects these facts with its exact emitted body from
 /// final TIR. Genuine fresh-source clients use the separate source constructor.
-/// Both share fact extraction and reject transport hints (`fast_int`,
-/// `fast_float`, or `type_hint`) as representation authority.
+/// Both share fact extraction and reject the `type_hint` transport hint as
+/// representation authority.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct ScalarRepresentationPlan {
     facts_by_name: HashMap<String, ScalarRepresentationFact>,

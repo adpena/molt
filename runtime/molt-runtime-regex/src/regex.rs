@@ -1,11 +1,3 @@
-// `while_let_loop`: the satellite consumes the bridge's `Option`-returning
-// `molt_iter_next` in `loop { let Some(..) = next() else { break }; .. }` form to
-// stay control-flow-identical to the in-tree copy (builtins/regex.rs), which
-// consumes a raw-bits `molt_iter_next` and breaks via `as_ptr()`. Rewriting to
-// `while let` would diverge the two copies under the satellite-parity guard; the
-// shapes unify at the Move R.2 access-layer collapse. Suppress crate-module-wide
-// since this Option-bridge iteration idiom recurs across the regex intrinsics.
-#![allow(clippy::while_let_loop)]
 //! Regex intrinsics for Molt stdlib.
 //!
 //! The `re` package compiles a pattern with `molt_re_compile`, runs it with
