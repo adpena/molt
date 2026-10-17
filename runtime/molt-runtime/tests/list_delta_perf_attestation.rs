@@ -695,7 +695,7 @@ fn required_env(name: &str) -> String {
 }
 
 #[test]
-#[ignore = "release profiler; use tools/bench/run_list_delta_attestation.py"]
+#[ignore = "release profiler; use tools/numeric_attestation/run_list_delta_attestation.py"]
 fn sequence_container_performance_attestation() {
     assert!(
         !cfg!(debug_assertions),
@@ -781,7 +781,7 @@ fn sequence_container_performance_attestation() {
             "indexed_removal": "sparse tail scaling and dense removal in ordinary and ABI-projected lists; includes restoration cost",
             "semantic_witness": "every operation verifies runtime and physical views and leaves no pending exception",
             "allocation_gate": "delta publication and tuple steady-state samples require zero allocations, bytes, and peak live bytes; construction and indexed-removal families are positive controls",
-            "process_tree_memory": "peak RSS and Windows Job peak commit are added by tools/bench/run_list_delta_attestation.py",
+            "process_tree_memory": "peak RSS and Windows Job peak commit are added by tools/numeric_attestation/run_list_delta_attestation.py",
         },
         "cases": cases,
     });
