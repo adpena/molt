@@ -45,9 +45,7 @@ pub(crate) use driver::lower_lir_to_wasm;
 pub(crate) use driver::{lower_tir_to_wasm, lower_tir_to_wasm_boxed_i64_abi};
 pub(in crate::wasm) use function_emit::try_emit_planned_lir_fast_body;
 pub(crate) use plan::{
-    WasmFunctionLoweringPlan, WasmFunctionLoweringPlans,
-    compute_lir_wasm_lowering_plans_from_final_ir_with_escaped,
-    is_production_lir_wasm_fast_path_name,
+    WasmFunctionLoweringPlan, is_production_lir_wasm_fast_path_name, prepare_lir_wasm_fast_plan,
 };
 pub(crate) use runtime_calls::LirRuntimeCall;
 

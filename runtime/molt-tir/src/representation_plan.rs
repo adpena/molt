@@ -313,6 +313,7 @@ impl ScalarRepresentationPlan {
             optimized_tir_func.as_ref(),
             optimized_names.as_ref(),
             false,
+            None,
         )
     }
 
@@ -320,6 +321,28 @@ impl ScalarRepresentationPlan {
     /// replace authored names only for this output stream; fresh-input callers
     /// still reject ambiguous authored bindings. No SSA or optimizer is replayed.
     pub fn project_final_tir(func_ir: &mut FunctionIR, tir_func: &TirFunction) -> Self {
+        Self::project_final_tir_with_repr(func_ir, tir_func, None)
+    }
+
+    /// A target lowering may consume the same final SSA representation proof
+    /// as the generic projection. The callback cannot mutate the analyzed body;
+    /// the value facts are scoped to this exact projection and retired together.
+    pub fn project_final_tir_with_value_consumer<R>(
+        func_ir: &mut FunctionIR,
+        tir_func: &TirFunction,
+        consume: impl FnOnce(&TirFunction, &HashMap<ValueId, Repr>, &crate::tir::ValueRangeResult) -> R,
+    ) -> (Self, R) {
+        let ranges = value_range_for(tir_func);
+        let repr = repr_by_value_for(tir_func, Some(&ranges));
+        let representation = Self::project_final_tir_with_repr(func_ir, tir_func, Some(&repr));
+        (representation, consume(tir_func, &repr, &ranges))
+    }
+
+    fn project_final_tir_with_repr(
+        func_ir: &mut FunctionIR,
+        tir_func: &TirFunction,
+        repr: Option<&HashMap<ValueId, Repr>>,
+    ) -> Self {
         assert_eq!(
             func_ir.name, tir_func.name,
             "final projection function identity mismatch"
@@ -334,9 +357,14 @@ impl ScalarRepresentationPlan {
         );
         drop(std::mem::take(&mut func_ir.ops));
         let (ops, names) = crate::tir::lower_to_simple::lower_to_simple_ir_with_names(tir_func);
+        debug_assert!(
+            crate::tir::lower_to_simple::validate_labels(&ops),
+            "final typed projection emitted invalid labels for '{}'",
+            tir_func.name,
+        );
         func_ir.ops = ops;
         let emitted_names = names.into_emission_facts();
-        Self::extract_typed_facts(func_ir, tir_func, &emitted_names, None, None, true)
+        Self::extract_typed_facts(func_ir, tir_func, &emitted_names, None, None, true, repr)
     }
 
     fn extract_typed_facts(
@@ -346,6 +374,7 @@ impl ScalarRepresentationPlan {
         optimized_tir_func: Option<&TirFunction>,
         optimized_names: Option<&SimpleValueNames>,
         final_emission: bool,
+        final_repr: Option<&HashMap<ValueId, Repr>>,
     ) -> Self {
         let trace = backend_env::var(BackendEnv::MOLT_TIR_TRACE_FUNC)
             .ok()
@@ -382,14 +411,20 @@ impl ScalarRepresentationPlan {
 
         trace_stage("before_value_facts");
         let needs_carriers = needs_primary || needs_direct_numeric;
-        let repr = if needs_carriers || tir_container_storage_needs_repr(tir_func) {
-            let ranges = value_range_for(tir_func);
-            repr_by_value_for(tir_func, Some(&ranges))
+        let derived_repr;
+        let repr = if let Some(repr) = final_repr {
+            repr
         } else {
-            HashMap::new()
+            derived_repr = if needs_carriers || tir_container_storage_needs_repr(tir_func) {
+                let ranges = value_range_for(tir_func);
+                repr_by_value_for(tir_func, Some(&ranges))
+            } else {
+                HashMap::new()
+            };
+            &derived_repr
         };
         let carriers = if needs_carriers {
-            native_projectable_scalar_reprs_for(tir_func, &repr)
+            native_projectable_scalar_reprs_for(tir_func, repr)
         } else {
             Default::default()
         };
@@ -424,7 +459,7 @@ impl ScalarRepresentationPlan {
             .extend(names.ambiguous_source_names().map(str::to_string));
         plan.typed_slot_store_modes = Self::project_typed_slot_store_modes(func_ir, tir_func);
         trace_stage("before_storage_and_floor_projection");
-        plan.seed_container_storage_from_tir(tir_func, names, &repr);
+        plan.seed_container_storage_from_tir(tir_func, names, repr);
         plan.seed_exact_builtin_lists(tir_func, names);
         let mut block_ids: Vec<_> = lir_func.blocks.keys().copied().collect();
         block_ids.sort_by_key(|block_id| block_id.0);

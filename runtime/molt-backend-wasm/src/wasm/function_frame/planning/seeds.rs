@@ -182,7 +182,7 @@ mod tests {
 
     #[test]
     fn equal_literal_payloads_share_anchor_and_preserve_each_scratch_alias() {
-        let plan = WasmFunctionFramePlan::for_function(&function(vec![
+        let plan = WasmFunctionFramePlan::for_codegen_fixture(&function(vec![
             literal("const_str", "first", "same"),
             literal("const_str", "second", "same"),
         ]));
@@ -201,7 +201,7 @@ mod tests {
         let mut wide = literal("const", "wide", "");
         wide.s_value = None;
         wide.value = Some(i64::MAX);
-        let plan = WasmFunctionFramePlan::for_function(&function(vec![inline, wide]));
+        let plan = WasmFunctionFramePlan::for_codegen_fixture(&function(vec![inline, wide]));
         let (_, frame) = plan.into_function_and_frame();
 
         assert_eq!(frame.const_anchors.len(), 1);
@@ -223,8 +223,8 @@ mod tests {
             ..OpIR::default()
         };
         for ops in [vec![wide.clone(), bigint.clone()], vec![bigint, wide]] {
-            let (_, frame) =
-                WasmFunctionFramePlan::for_function(&function(ops)).into_function_and_frame();
+            let (_, frame) = WasmFunctionFramePlan::for_codegen_fixture(&function(ops))
+                .into_function_and_frame();
             assert_eq!(frame.const_anchors.len(), 1);
             assert_eq!(frame.const_anchor_for_op(0), frame.const_anchor_for_op(1));
         }

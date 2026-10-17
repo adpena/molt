@@ -1,7 +1,4 @@
-use super::{
-    WasmFunctionLoweringPlan, compute_lir_wasm_lowering_plans_from_final_ir_with_escaped,
-    prepare_lir_wasm_fast_plan,
-};
+use super::WasmFunctionLoweringPlan;
 use crate::tir::blocks::Terminator;
 use crate::tir::function::TirFunction;
 use crate::tir::ops::{AttrDict, AttrValue, Dialect, OpCode, TirOp};
@@ -129,7 +126,7 @@ fn checked_mul_i64_consts_func() -> TirFunction {
 #[test]
 fn wasm_lir_fast_plan_respects_proven_value_and_authored_void_returns() {
     let proven = const_i64_return_func(42);
-    let plan = prepare_lir_wasm_fast_plan(&proven);
+    let plan = plan_refined_fixture(&proven);
     let body = plan
         .lir_fast_body()
         .expect("proven i64 const return must keep the LIR fast plan");
@@ -142,7 +139,7 @@ fn wasm_lir_fast_plan_respects_proven_value_and_authored_void_returns() {
     void.return_type = TirType::None;
     void.blocks.get_mut(&void.entry_block).unwrap().terminator =
         Terminator::Return { values: vec![] };
-    let plan = prepare_lir_wasm_fast_plan(&void);
+    let plan = plan_refined_fixture(&void);
     assert!(plan.lir_fast_body().is_none());
     assert_eq!(
         plan.generic_reason(),
@@ -192,12 +189,8 @@ fn wasm_lir_fast_plan_accepts_materialized_literal_consts() {
     ];
 
     for (name, opcode, return_type, attrs, import_name) in cases {
-        let plan = prepare_lir_wasm_fast_plan(&literal_const_return_func(
-            name,
-            opcode,
-            return_type,
-            attrs,
-        ));
+        let plan =
+            plan_refined_fixture(&literal_const_return_func(name, opcode, return_type, attrs));
         let body = plan
             .lir_fast_body()
             .unwrap_or_else(|| panic!("{name} must stay on the LIR fast plan"));
@@ -234,12 +227,8 @@ fn wasm_lir_fast_plan_accepts_boxed_single_return_carriers() {
     ];
 
     for (name, opcode, return_type, attrs) in cases {
-        let plan = prepare_lir_wasm_fast_plan(&literal_const_return_func(
-            name,
-            opcode,
-            return_type,
-            attrs,
-        ));
+        let plan =
+            plan_refined_fixture(&literal_const_return_func(name, opcode, return_type, attrs));
         let body = plan
             .lir_fast_body()
             .unwrap_or_else(|| panic!("{name} must stay on the boxed-i64 fast plan"));
@@ -252,7 +241,7 @@ fn wasm_lir_fast_plan_accepts_boxed_single_return_carriers() {
 
 #[test]
 fn wasm_lir_fast_plan_records_boxed_i64_abi_rejection() {
-    let plan = prepare_lir_wasm_fast_plan(&add_two_i64_params_func());
+    let plan = plan_refined_fixture(&add_two_i64_params_func());
 
     assert_eq!(
         plan.generic_reason(),
@@ -262,7 +251,7 @@ fn wasm_lir_fast_plan_records_boxed_i64_abi_rejection() {
 
 #[test]
 fn wasm_lir_fast_plan_accepts_raw_checked_mul_body() {
-    let plan = prepare_lir_wasm_fast_plan(&checked_mul_i64_consts_func());
+    let plan = plan_refined_fixture(&checked_mul_i64_consts_func());
     let body = plan.lir_fast_body().unwrap_or_else(|| {
         panic!(
             "raw checked_mul const body must keep the LIR fast plan; reason={:?}",
@@ -306,7 +295,9 @@ fn wasm_lir_fast_plan_records_escaped_callable_reason() {
         profile: None,
     };
     let escaped = BTreeSet::from([name.clone()]);
-    let plans = compute_lir_wasm_lowering_plans_from_final_ir_with_escaped(&ir, &escaped);
+    let plans = crate::wasm::final_functions::WasmFinalFunctions::lowering_plans_for_fixtures(
+        &ir, &escaped,
+    );
 
     assert_eq!(
         plans
@@ -314,4 +305,255 @@ fn wasm_lir_fast_plan_records_escaped_callable_reason() {
             .and_then(WasmFunctionLoweringPlan::generic_reason),
         Some(WasmLirFallbackReason::EscapedCallableTarget)
     );
+}
+
+fn plan_refined_fixture(function: &TirFunction) -> WasmFunctionLoweringPlan {
+    let mut function = function.clone();
+    crate::tir::type_refine::refine_types(&mut function);
+    let ranges = crate::representation_plan::value_range_for(&function);
+    let repr = crate::representation_plan::repr_by_value_for(&function, Some(&ranges));
+    super::prepare_lir_wasm_fast_plan(&function, &repr, &ranges)
+}
+
+#[test]
+fn wasm_final_body_and_facts_follow_typed_custody_through_retention_and_escape() {
+    use crate::wasm::final_functions::WasmFinalFunctions;
+    // Source is intentionally stale: the final SSA owner has replaced its
+    // floating result with an exact integer. Re-lifting this source would
+    // silently recover the wrong value and the wrong physical carrier.
+    let root = "pkg____molt_globals_builtin__root";
+    let source = |name: &str| FunctionIR {
+        name: name.into(),
+        return_abi: molt_ir::FunctionReturnAbi::Value,
+        ops: vec![
+            crate::OpIR {
+                kind: "const_float".into(),
+                out: Some("stale_value".into()),
+                f_value: Some(1.25),
+                ..Default::default()
+            },
+            crate::OpIR {
+                kind: "ret".into(),
+                args: Some(vec!["stale_value".into()]),
+                ..Default::default()
+            },
+        ],
+        ..Default::default()
+    };
+    let external = FunctionIR {
+        name: "external".into(),
+        is_extern: true,
+        ..source("external")
+    };
+    let ir = SimpleIR {
+        functions: vec![source(root), external.clone(), source("dead")],
+        profile: None,
+    };
+    let typed = |name: &str, value: i64| {
+        let mut function = const_i64_return_func(value);
+        function.name = name.into();
+        crate::tir::type_refine::refine_types(&mut function);
+        function
+    };
+    // Owned module assembly groups externs before locals; the final owner must
+    // preserve authored declaration order and retire whole unreachable rows.
+    let mut final_functions = WasmFinalFunctions::from_final_tir(
+        ir,
+        vec![
+            (true, crate::tir::lower_from_simple::lower_to_tir(&external)),
+            (false, typed(root, 42)),
+            (false, typed("dead", 99)),
+        ],
+    );
+    final_functions.retain_reachable(&BTreeSet::from([root.into(), "external".into()]));
+    final_functions.exclude_escaped_callables(&BTreeSet::from([root.into()]));
+    let rows: Vec<_> = final_functions.into_functions().collect();
+    assert_eq!(
+        rows.iter()
+            .map(|(body, _)| body.name.as_str())
+            .collect::<Vec<_>>(),
+        vec![root, "external"]
+    );
+    assert!(
+        rows[1].1.is_none(),
+        "extern declarations must not own executable facts"
+    );
+    let (body, facts) = &rows[0];
+    let facts = facts.as_ref().unwrap();
+    assert!(!body.ops.iter().any(|op| op.kind == "const_float"));
+    let literal = body
+        .ops
+        .iter()
+        .find(|op| op.kind == "const" && op.value == Some(42))
+        .expect("final typed value");
+    assert!(
+        facts
+            .representation
+            .is_inline_safe_int_name(literal.out.as_deref().unwrap())
+    );
+    assert!(!facts.representation.is_inline_safe_int_name("stale_value"));
+    assert_eq!(
+        facts
+            .lowering
+            .as_ref()
+            .and_then(WasmFunctionLoweringPlan::generic_reason),
+        Some(WasmLirFallbackReason::EscapedCallableTarget)
+    );
+}
+
+#[test]
+fn wasm_terminal_reachability_preserves_unused_import_effects_and_balances_ownership() {
+    let mut function = const_i64_return_func(7);
+    let dead = function.fresh_value();
+    let imported = function.fresh_value();
+    let entry = function.blocks.get_mut(&function.entry_block).unwrap();
+    entry.ops.push(TirOp {
+        dialect: Dialect::Molt,
+        opcode: OpCode::ConstInt,
+        operands: vec![],
+        results: vec![dead],
+        attrs: AttrDict::from([("value".into(), AttrValue::Int(123))]),
+        source_span: None,
+    });
+    entry.ops.push(TirOp {
+        dialect: Dialect::Molt,
+        opcode: OpCode::Import,
+        operands: vec![],
+        results: vec![imported],
+        attrs: AttrDict::from([("module".into(), AttrValue::Str("side_effect_module".into()))]),
+        source_span: None,
+    });
+    crate::tir::drop_phase::finalize_function_drops(
+        &mut function,
+        &crate::tir::TargetInfo::wasm_release_fast(),
+    );
+    let ops: Vec<_> = function
+        .blocks
+        .values()
+        .flat_map(|block| &block.ops)
+        .collect();
+    assert!(
+        !ops.iter().any(|op| op.results.contains(&dead)),
+        "dead pure definition must disappear before ownership insertion"
+    );
+    assert_eq!(
+        ops.iter().filter(|op| op.opcode == OpCode::Import).count(),
+        1,
+        "unused import still executes initialization and may raise"
+    );
+    assert_eq!(
+        ops.iter()
+            .filter(|op| op.opcode == OpCode::DecRef && op.operands.contains(&imported))
+            .count(),
+        1,
+        "the surviving owned import result needs exactly one release"
+    );
+    let projected = crate::tir::lower_to_simple::lower_to_simple_ir(&function);
+    assert!(projected.iter().any(|op| op.kind == "import"
+        && op.s_value.as_deref() == Some("side_effect_module")
+        && op.out.is_some()
+        && op.var.is_none()));
+}
+
+#[test]
+fn wasm_final_owner_consumes_module_and_terminal_cached_pipeline_modes() {
+    use crate::tir::pipeline_cache::{
+        TirOwnedModulePipelineMode, TirOwnedModulePipelineOptions, TirPipelineCacheFlavor,
+        TirPipelineInput, TirPipelineRunOptions, run_cached_tir_pipeline,
+        run_owned_module_pipeline_from_cached_tir, tir_optimization_resource_plan,
+    };
+    use crate::wasm::final_functions::WasmFinalFunctions;
+    let target = crate::tir::TargetInfo::wasm_release_fast();
+    let non_inlinable = std::collections::HashSet::new();
+    for mode in [
+        TirOwnedModulePipelineMode::ModulePhase,
+        TirOwnedModulePipelineMode::TerminalDropsOnly,
+    ] {
+        let mut ir = SimpleIR {
+            functions: vec![FunctionIR {
+                name: "molt_main".into(),
+                return_abi: molt_ir::FunctionReturnAbi::Value,
+                ops: vec![
+                    crate::OpIR {
+                        kind: "const".into(),
+                        value: Some(7),
+                        out: Some("answer".into()),
+                        ..Default::default()
+                    },
+                    crate::OpIR {
+                        kind: "ret".into(),
+                        args: Some(vec!["answer".into()]),
+                        ..Default::default()
+                    },
+                ],
+                ..Default::default()
+            }],
+            profile: None,
+        };
+        let mut run = run_cached_tir_pipeline(
+            TirPipelineInput::SimpleIr(&mut ir.functions),
+            TirPipelineRunOptions {
+                target_info: target.clone(),
+                cache_flavor: TirPipelineCacheFlavor::Wasm,
+                cache_dir: None,
+                process_externs: false,
+                verify_lir: true,
+                tir_dump: false,
+                tir_stats: false,
+                progress_prefix: None,
+                resource_plan: tir_optimization_resource_plan(),
+            },
+            |_| {},
+        );
+        // Custody is already transferred. A consumer that re-lifts this source
+        // would emit 900 instead of 7 despite a successful optimization run.
+        ir.functions[0].ops = vec![
+            crate::OpIR {
+                kind: "const".into(),
+                value: Some(900),
+                out: Some("poison".into()),
+                ..Default::default()
+            },
+            crate::OpIR {
+                kind: "ret".into(),
+                args: Some(vec!["poison".into()]),
+                ..Default::default()
+            },
+        ];
+        let typed = run_owned_module_pipeline_from_cached_tir(
+            &ir.functions,
+            &mut run.cached_tir,
+            TirOwnedModulePipelineOptions {
+                target_info: &target,
+                module_name: "wasm_final_modes",
+                non_inlinable: &non_inlinable,
+                missing_tir_context: "WASM final owner test",
+                mode,
+            },
+        );
+        let (body, facts) = WasmFinalFunctions::from_final_tir(ir, typed)
+            .into_functions()
+            .next()
+            .unwrap();
+        let literal = body
+            .ops
+            .iter()
+            .find(|op| op.kind == "const" && op.value == Some(7))
+            .expect("retained optimized SSA result");
+        assert!(!body.ops.iter().any(|op| op.value == Some(900)));
+        assert!(
+            facts
+                .unwrap()
+                .representation
+                .is_inline_safe_int_name(literal.out.as_deref().unwrap())
+        );
+        assert_eq!(
+            body.ops
+                .iter()
+                .filter(|op| op.kind == "drop_inserted")
+                .count(),
+            1,
+            "{mode:?} must project one terminal ownership cut"
+        );
+    }
 }

@@ -56,8 +56,7 @@ fn dispatch_keeps_handler_checks_and_runtime_frames_for_every_eh_request() {
             ..WasmCompileOptions::default()
         })
         .emit_wasm_module(
-            ir,
-            BTreeMap::new(),
+            crate::wasm::final_functions::WasmFinalFunctions::from_codegen_fixtures(ir),
             analysis,
             crate::wasm_plan::WasmStageAudit::from_environment(),
         )

@@ -375,7 +375,7 @@ The wrapper conflict was reconfirmed by native CI run `30211145633` job `8981749
 | `native-object-emission` | 5 | 1 |
 | `maintained-zlib-counters` | 14 | 3 |
 | `backend-llvm` | 2 | 1 |
-| `tir-midend` | 9 | 2 |
+| `tir-midend` | 11 | 2 |
 | `wasm-host` | 5 | 2 |
 | `gpu-core` | 3 | 1 |
 | `gpu-runtime` | 3 | 2 |

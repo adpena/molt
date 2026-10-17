@@ -1,6 +1,6 @@
 use crate::SimpleIR;
 use crate::wasm_plan::{
-    WasmStageAudit, emit_wasm_stage_audit, simple_ir_stage_shape, tir_module_stage_shape,
+    WasmStageAudit, emit_wasm_stage_audit, simple_ir_stage_shape, tir_functions_stage_shape,
 };
 use molt_ir::backend_environment::BackendEnv;
 
@@ -8,7 +8,7 @@ pub(super) fn run_tir_pipeline(
     ir: &mut SimpleIR,
     target_info: &crate::tir::target_info::TargetInfo,
     stage_audit: WasmStageAudit,
-) {
+) -> Vec<(bool, crate::tir::TirFunction)> {
     emit_wasm_stage_audit(
         stage_audit,
         "compile-start",
@@ -59,84 +59,44 @@ pub(super) fn run_tir_pipeline(
         super::compile_pipeline::split_wasm_megafunctions,
     );
 
-    // WASM links the whole program into one module: there is no shared-stdlib
-    // external partition, so every body is locally owned and the inliner is
-    // unconstrained. Cache custody, module assembly, module-phase execution,
-    // selective back-conversion, and label validation all live in the shared
-    // TIR pipeline authority.
+    // Consume the same retained owner as native/LLVM. Only the final owner
+    // may project operations and facts after module transforms and drops.
     let non_inlinable = std::collections::HashSet::new();
-    let mut stage_observer = |stage: crate::tir::pipeline_cache::TirSimpleIrModulePipelineStage<
-        '_,
-    >| emit_wasm_tir_pipeline_stage(stage_audit, stage);
-    crate::tir::pipeline_cache::run_simple_ir_module_pipeline_from_cached_tir(
-        &mut ir.functions,
+    emit_wasm_stage_audit(
+        stage_audit,
+        "before-module-pipeline",
+        || simple_ir_stage_shape(&ir.functions),
+        None,
+        None,
+        None,
+        || None,
+    );
+    let module_start = stage_audit.start();
+    let typed = crate::tir::pipeline_cache::run_owned_module_pipeline_from_cached_tir(
+        &ir.functions,
         &mut cached_tir,
-        crate::tir::pipeline_cache::TirSimpleIrModulePipelineOptions {
+        crate::tir::pipeline_cache::TirOwnedModulePipelineOptions {
             target_info,
             module_name: "wasm_module",
             non_inlinable: &non_inlinable,
             missing_tir_context: "WASM TIR cache runner",
-            backconvert_context: "WASM TIR module pipeline",
-            stage_observer: if stage_audit.enabled() {
-                Some(&mut stage_observer)
-            } else {
-                None
-            },
+            mode: crate::tir::pipeline_cache::TirOwnedModulePipelineMode::ModulePhase,
         },
     );
-}
-
-fn emit_wasm_tir_pipeline_stage(
-    stage_audit: WasmStageAudit,
-    stage: crate::tir::pipeline_cache::TirSimpleIrModulePipelineStage<'_>,
-) {
-    match stage {
-        crate::tir::pipeline_cache::TirSimpleIrModulePipelineStage::BeforeModuleLower {
-            functions,
-        } => emit_wasm_stage_audit(
-            stage_audit,
-            "before-module-lower",
-            || simple_ir_stage_shape(functions),
-            None,
-            None,
-            None,
-            || None,
-        ),
-        crate::tir::pipeline_cache::TirSimpleIrModulePipelineStage::AfterModuleLower { module } => {
-            emit_wasm_stage_audit(
-                stage_audit,
-                "after-module-lower",
-                || tir_module_stage_shape(module),
-                None,
-                None,
-                None,
-                || None,
+    emit_wasm_stage_audit(
+        stage_audit,
+        "after-module-pipeline",
+        || {
+            tir_functions_stage_shape(
+                typed
+                    .iter()
+                    .filter_map(|(external, function)| (!*external).then_some(function)),
             )
-        }
-        crate::tir::pipeline_cache::TirSimpleIrModulePipelineStage::AfterModulePipeline {
-            module,
-            changed_functions,
-            elapsed_ms,
-        } => emit_wasm_stage_audit(
-            stage_audit,
-            "after-module-pipeline",
-            || tir_module_stage_shape(module),
-            None,
-            None,
-            Some(changed_functions),
-            || Some(elapsed_ms),
-        ),
-        crate::tir::pipeline_cache::TirSimpleIrModulePipelineStage::AfterModuleBackconvert {
-            functions,
-            changed_functions,
-        } => emit_wasm_stage_audit(
-            stage_audit,
-            "after-module-backconvert",
-            || simple_ir_stage_shape(functions),
-            None,
-            None,
-            Some(changed_functions),
-            || None,
-        ),
-    }
+        },
+        None,
+        None,
+        None,
+        || module_start.map(|start| start.elapsed().as_millis()),
+    );
+    typed
 }

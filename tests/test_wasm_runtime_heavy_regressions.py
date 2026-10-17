@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import subprocess
 import textwrap
 from pathlib import Path
 
@@ -75,37 +76,10 @@ def test_wasm_asyncio_task_basic_has_no_table_ref_trap(
     _assert_no_recursive_mutex_panic(run.stderr)
 
 
-@pytest.mark.parametrize("layout", ["linked", "split"])
-def test_wasm_compiled_finder_describes_module_before_initialization(
-    tmp_path: Path,
-    layout: str,
-) -> None:
-    root = Path(__file__).resolve().parents[1]
+def _run_wasm_layout(
+    root: Path, src: Path, tmp_path: Path, layout: str
+) -> subprocess.CompletedProcess[str]:
     node = resolve_node_runtime(source_root=root, guard_prefix="MOLT_WASM_TEST")
-    (tmp_path / "_molt_wasm_catalog_subject.py").write_text(
-        "print('subject-exec')\nvalue = 297\n", encoding="utf-8"
-    )
-    src = tmp_path / "catalog_probe.py"
-    src.write_text(
-        "import importlib.machinery\n"
-        "import importlib.util\n"
-        "import sys\n"
-        "print('package-metadata', importlib.__path__ is\n"
-        "      importlib.__spec__.submodule_search_locations)\n"
-        "name = '_molt_wasm_catalog_subject'\n"
-        "print('absent', name not in sys.modules)\n"
-        "spec = importlib.util.find_spec(name)\n"
-        "print('spec', spec.name == name,\n"
-        "      spec.loader is importlib.machinery._MOLT_LOADER)\n"
-        "print('unpublished', name not in sys.modules)\n"
-        "import _molt_wasm_catalog_subject\n"
-        "print('ready', _molt_wasm_catalog_subject.value == 297)\n"
-        + (
-            root
-            / "tests/differential/stdlib/importlib_find_spec_invalidate_caches_intrinsic.py"
-        ).read_text(encoding="utf-8"),
-        encoding="utf-8",
-    )
     if layout == "linked":
         output = build_wasm_linked(root, src, tmp_path, extra_args=["--no-trusted"])
         manifest = wasm_runtime_manifest_path(output)
@@ -135,15 +109,44 @@ def test_wasm_compiled_finder_describes_module_before_initialization(
         MOLT_CAPABILITY_TIER="none",
         MOLT_CAPABILITIES="",
     )
-    run = _run_wasm_test_process(
-        [
-            str(node.path),
-            str(root / "wasm" / "run_wasm.js"),
-            str(manifest),
-        ],
+    return _run_wasm_test_process(
+        [str(node.path), str(root / "wasm" / "run_wasm.js"), str(manifest)],
         cwd=tmp_path,
         env=env,
     )
+
+
+@pytest.mark.parametrize("layout", ["linked", "split"])
+def test_wasm_compiled_finder_describes_module_before_initialization(
+    tmp_path: Path,
+    layout: str,
+) -> None:
+    root = Path(__file__).resolve().parents[1]
+    (tmp_path / "_molt_wasm_catalog_subject.py").write_text(
+        "print('subject-exec')\nvalue = 297\n", encoding="utf-8"
+    )
+    src = tmp_path / "catalog_probe.py"
+    src.write_text(
+        "import importlib.machinery\n"
+        "import importlib.util\n"
+        "import sys\n"
+        "print('package-metadata', importlib.__path__ is\n"
+        "      importlib.__spec__.submodule_search_locations)\n"
+        "name = '_molt_wasm_catalog_subject'\n"
+        "print('absent', name not in sys.modules)\n"
+        "spec = importlib.util.find_spec(name)\n"
+        "print('spec', spec.name == name,\n"
+        "      spec.loader is importlib.machinery._MOLT_LOADER)\n"
+        "print('unpublished', name not in sys.modules)\n"
+        "import _molt_wasm_catalog_subject\n"
+        "print('ready', _molt_wasm_catalog_subject.value == 297)\n"
+        + (
+            root
+            / "tests/differential/stdlib/importlib_find_spec_invalidate_caches_intrinsic.py"
+        ).read_text(encoding="utf-8"),
+        encoding="utf-8",
+    )
+    run = _run_wasm_layout(root, src, tmp_path, layout)
     assert run.returncode == 0, run.stdout + run.stderr
     assert run.stdout.splitlines() == [
         "package-metadata True",
@@ -161,6 +164,56 @@ def test_wasm_compiled_finder_describes_module_before_initialization(
         "pathfinder-cache-invalidation True True True True",
         "invalidation-errors True",
         "import-root-cases 4",
+    ]
+
+
+@pytest.mark.parametrize("layout", ["linked", "split"])
+def test_wasm_final_tir_preserves_effects_scalar_proofs_and_escaped_calls(
+    tmp_path: Path, layout: str
+) -> None:
+    root = Path(__file__).resolve().parents[1]
+    (tmp_path / "_molt_facts_unused.py").write_text(
+        "print('unused-init')\n", encoding="utf-8"
+    )
+    (tmp_path / "_molt_facts_from.py").write_text(
+        "print('from-init')\ntoken = 47\n", encoding="utf-8"
+    )
+    (tmp_path / "_molt_facts_subject.py").write_text(
+        "def scalar(flag, value):\n"
+        "    if flag:\n"
+        "        result = value + 2\n"
+        "    else:\n"
+        "        result = value - 3\n"
+        "    return result * 3\n"
+        "def checked(value):\n"
+        "    return value + 1\n"
+        "def make_escaped(base):\n"
+        "    def escaped(value):\n"
+        "        return base + value\n"
+        "    return escaped\n",
+        encoding="utf-8",
+    )
+    src = tmp_path / "facts_probe.py"
+    src.write_text(
+        "from _molt_facts_subject import scalar, checked, make_escaped\n"
+        "def load_unused():\n"
+        "    import _molt_facts_unused as unused\n"
+        "    from _molt_facts_from import token as unused_token\n"
+        "load_unused()\n"
+        "print('branch', scalar(True, 7), scalar(False, 7))\n"
+        "print('checked', checked((1 << 46) - 1), checked((1 << 63) - 1))\n"
+        "escaped = make_escaped(11)\n"
+        "print('escaped', escaped(2), callable(escaped))\n",
+        encoding="utf-8",
+    )
+    run = _run_wasm_layout(root, src, tmp_path, layout)
+    assert run.returncode == 0, run.stdout + run.stderr
+    assert run.stdout.splitlines() == [
+        "unused-init",
+        "from-init",
+        "branch 27 12",
+        "checked 70368744177664 9223372036854775808",
+        "escaped 13 True",
     ]
 
 

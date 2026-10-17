@@ -63,7 +63,7 @@ mod tests {
                 ..FunctionIR::default()
             };
             let (_, frame) =
-                WasmFunctionFramePlan::for_function(&function).into_function_and_frame();
+                WasmFunctionFramePlan::for_codegen_fixture(&function).into_function_and_frame();
             assert!(
                 frame.control_mode()
                     == if stateful {

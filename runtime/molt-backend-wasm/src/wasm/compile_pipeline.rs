@@ -1,75 +1,9 @@
 use super::WasmBackend;
 use super::control_flow::has_non_linear_control_flow;
+use super::final_functions::WasmFinalFunctions;
 use crate::SimpleIR;
 use crate::wasm::WasmCompileOutput;
-use crate::wasm::lir_fast::compute_lir_wasm_lowering_plans_from_final_ir_with_escaped;
 use crate::wasm_plan::{WasmStageAudit, emit_wasm_stage_audit, simple_ir_stage_shape};
-
-/// Run a body-only operation against defined functions while preserving the
-/// original declaration/body ordering in the module IR.
-///
-/// Extern declarations carry function metadata and no executable body.
-/// Temporarily moving declarations out makes that boundary structural even for
-/// shared passes whose API accepts an entire `Vec<FunctionIR>`. The operation may
-/// analyze, mutate, or reorder defined bodies but must preserve their count.
-pub(super) fn with_defined_function_bodies<R>(
-    functions: &mut Vec<crate::FunctionIR>,
-    operation: impl FnOnce(&mut Vec<crate::FunctionIR>) -> R,
-) -> R {
-    let original = std::mem::take(functions);
-    let declaration_shape = original
-        .iter()
-        .map(|function| function.is_extern)
-        .collect::<Vec<_>>();
-    let mut defined = Vec::with_capacity(original.len());
-    let mut declarations = Vec::new();
-    for function in original {
-        if function.is_extern {
-            declarations.push(function);
-        } else {
-            defined.push(function);
-        }
-    }
-
-    let result = operation(&mut defined);
-
-    let mut defined = defined.into_iter();
-    let mut declarations = declarations.into_iter();
-    *functions = declaration_shape
-        .into_iter()
-        .map(|is_extern| {
-            if is_extern {
-                declarations
-                    .next()
-                    .expect("WASM extern declaration shape changed during body analysis")
-            } else {
-                defined
-                    .next()
-                    .expect("WASM defined-function shape changed during body analysis")
-            }
-        })
-        .collect();
-    assert!(
-        defined.next().is_none(),
-        "WASM body-only analysis added defined functions"
-    );
-    assert!(
-        declarations.next().is_none(),
-        "WASM extern declaration restoration left declarations unplaced"
-    );
-    result
-}
-
-fn apply_defined_function_ir_pass(ir: &mut SimpleIR, pass: impl FnOnce(&mut SimpleIR)) {
-    with_defined_function_bodies(&mut ir.functions, |defined_functions| {
-        let mut defined_ir = SimpleIR {
-            functions: std::mem::take(defined_functions),
-            profile: None,
-        };
-        pass(&mut defined_ir);
-        *defined_functions = defined_ir.functions;
-    });
-}
 
 impl WasmBackend {
     pub fn compile(self, ir: SimpleIR) -> Vec<u8> {
@@ -100,7 +34,27 @@ impl WasmBackend {
             molt_tir::trampolines::CallableMetadata::from_functions(&ir.functions);
         molt_tir::passes::run_simple_ir_pipeline(&mut ir, &target_info);
         split_wasm_megafunctions(&mut ir);
-        super::tir_pipeline::run_tir_pipeline(&mut ir, &target_info, stage_audit);
+        let typed = super::tir_pipeline::run_tir_pipeline(&mut ir, &target_info, stage_audit);
+        let projection_start = stage_audit.start();
+        emit_wasm_stage_audit(
+            stage_audit,
+            "before-final-projection",
+            || simple_ir_stage_shape(&ir.functions),
+            None,
+            None,
+            None,
+            || Some(0),
+        );
+        let mut final_functions = WasmFinalFunctions::from_final_tir(ir, typed);
+        emit_wasm_stage_audit(
+            stage_audit,
+            "after-final-projection",
+            || simple_ir_stage_shape(&final_functions.ir().functions),
+            None,
+            None,
+            None,
+            || projection_start.map(|start| start.elapsed().as_millis()),
+        );
 
         // Existing stage audits bracket the terminal pipeline as well as TIR.
         // A before marker preserves the active boundary on interruption. Normal
@@ -126,17 +80,13 @@ impl WasmBackend {
             .as_ref()
             .map(|registry| registry.init_symbols.iter().cloned().collect())
             .unwrap_or_default();
-        audit("before-function-reachability", &ir.functions);
-        crate::eliminate_dead_functions_with_roots(&mut ir, &module_registry_roots);
+        audit(
+            "before-function-reachability",
+            &final_functions.ir().functions,
+        );
+        final_functions.retain_reachable(&module_registry_roots);
+        let ir = final_functions.ir();
         audit("after-function-reachability", &ir.functions);
-        audit("before-import-reachability", &ir.functions);
-        apply_defined_function_ir_pass(&mut ir, crate::eliminate_dead_imports);
-        audit("after-import-reachability", &ir.functions);
-        audit("before-operation-reachability", &ir.functions);
-        apply_defined_function_ir_pass(&mut ir, |defined_ir| {
-            crate::eliminate_dead_ops(defined_ir, &target_info);
-        });
-        audit("after-operation-reachability", &ir.functions);
 
         if let Some(config) = crate::should_dump_ir() {
             for func_ir in &ir.functions {
@@ -148,18 +98,12 @@ impl WasmBackend {
 
         audit("before-trampoline-analysis", &ir.functions);
         let trampoline_analysis =
-            super::trampoline_analysis::analyze_wasm_trampolines_with_source(&ir, source_callables);
+            super::trampoline_analysis::analyze_wasm_trampolines_with_source(ir, source_callables);
         audit("after-trampoline-analysis", &ir.functions);
-        audit("before-lir-planning", &ir.functions);
-        let lir_lowering_plans = compute_lir_wasm_lowering_plans_from_final_ir_with_escaped(
-            &ir,
-            &trampoline_analysis.escaped_callable_targets,
-        );
-        audit("after-lir-planning", &ir.functions);
-        audit("before-module-emission", &ir.functions);
         let stage_shape = stage_audit.capture_simple_ir_shape(&ir.functions);
-        let output =
-            self.emit_wasm_module(ir, lir_lowering_plans, trampoline_analysis, stage_audit);
+        final_functions.exclude_escaped_callables(&trampoline_analysis.escaped_callable_targets);
+        audit("before-module-emission", &final_functions.ir().functions);
+        let output = self.emit_wasm_module(final_functions, trampoline_analysis, stage_audit);
         emit_wasm_stage_audit(
             stage_audit,
             "after-module-emission",

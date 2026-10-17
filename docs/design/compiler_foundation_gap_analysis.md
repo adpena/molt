@@ -69,8 +69,11 @@ and precision gaps instead of building parallel substrates.
 Final-fact custody remains a convergence obligation. Native now retains
 optimized TIR through final transformations and projects emitted operations
 and representation/lifetime facts together; LLVM consumes owned final TIR
-directly. WASM still reconstructs backend facts from its final SimpleIR. The
-next native migration carries typed control flow, ownership, roots and
+directly. WASM now uses the same owned module pipeline, eliminates dead typed
+operations before release insertion and projects each final body with its
+scalar facts and demanded LIR plan. Reachability retires whole pairs; escaped
+callables change admission without rewriting the body. The next native and
+WASM migration carries typed control flow, ownership, roots and
 callable/linkage metadata through machine lowering and retires its string/name
 projection. Qualify every normal, skipped-pass and batch consumer separately.
 This extends [Century section 4.4](CENTURY_SYSTEMS_PLAN.md#44-compiler-runtime-abi-and-backends);

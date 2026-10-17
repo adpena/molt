@@ -557,18 +557,23 @@ def test_every_producer_trigger_also_selects_its_proof_boundary(drv):
         "runtime/molt-passes/src/tir/passes/effects.rs",
         "runtime/molt-passes/src/tir/lower_to_simple.rs",
         "runtime/molt-tir/src/representation_plan.rs",
+        "runtime/molt-backend-wasm/src/wasm/final_functions.rs",
+        "runtime/molt-backend-wasm/Cargo.toml",
     ],
 )
 def test_committed_gate_manifest_selects_tir_midend_ratchet(drv, path):
     cfg = drv.GateConfig.load(COMMITTED_GATES)
     gates, matched = cfg.select([path])
-    assert [r.name for r in matched] == ["rust-ffi-blocks", "tir-midend"]
-    cargo = [shlex.split(gate) for gate in gates if gate.startswith("cargo ")]
+    if not path.startswith("runtime/molt-backend-wasm/"):
+        assert [r.name for r in matched] == ["rust-ffi-blocks", "tir-midend"]
+    rule = next(rule for rule in matched if rule.name == "tir-midend")
+    assert set(rule.gates) <= set(gates)
+    cargo = [shlex.split(gate) for gate in rule.gates]
     assert len(cargo) == 2
     assert [command[1] for command in cargo] == ["clippy", "test"]
     for command in cargo:
         packages = {command[i + 1] for i, token in enumerate(command) if token == "-p"}
-        assert packages == {"molt-ir", "molt-passes", "molt-tir"}
+        assert packages == {"molt-ir", "molt-passes", "molt-tir", "molt-backend-wasm"}
         assert "--locked" in command and "--all-features" in command
         assert command[command.index("--profile") + 1] == "dev-fast"
     assert "--all-targets" in cargo[0] and cargo[0][-3:] == ["--", "-D", "warnings"]

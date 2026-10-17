@@ -5,6 +5,7 @@ use imports::WasmRuntimeImportEmission;
 use native_callables::WasmNativeCallableImportEmission;
 use runtime_surface::WasmRuntimeSurfacePlan;
 
+#[cfg(test)]
 use crate::SimpleIR;
 use crate::wasm_abi::emit_static_type_section;
 use crate::wasm_plan::{WasmStageAudit, emit_wasm_stage_audit, simple_ir_stage_shape};
@@ -27,11 +28,11 @@ use type_layout::WasmModuleTypeLayout;
 impl WasmBackend {
     pub(super) fn emit_wasm_module(
         mut self,
-        ir: SimpleIR,
-        lir_lowering_plans: crate::wasm::lir_fast::WasmFunctionLoweringPlans,
+        final_functions: super::final_functions::WasmFinalFunctions,
         analysis: WasmTrampolineAnalysis,
         stage_audit: WasmStageAudit,
     ) -> WasmCompileOutput {
+        let ir = final_functions.ir();
         let WasmTrampolineAnalysis {
             escaped_callable_targets,
             task_kinds,
@@ -48,11 +49,11 @@ impl WasmBackend {
         let WasmRuntimeImportEmission {
             runtime_surface,
             next_type_idx: next_type_idx_after_runtime,
-        } = self.emit_runtime_import_surface(&ir);
+        } = self.emit_runtime_import_surface(ir);
         let WasmNativeCallableImportEmission {
             imports: native_callable_imports,
             next_type_idx,
-        } = self.emit_native_callable_import_surface(&ir, next_type_idx_after_runtime);
+        } = self.emit_native_callable_import_surface(ir, next_type_idx_after_runtime);
         let WasmRuntimeSurfacePlan {
             max_func_arity,
             max_call_arity,
@@ -72,12 +73,12 @@ impl WasmBackend {
 
         let type_layout = WasmModuleTypeLayout::build(
             &mut self,
-            &ir,
+            ir,
             next_type_idx,
             max_func_arity,
             max_call_arity,
         );
-        let user_function_imports = self.emit_user_function_import_surface(&ir, &type_layout);
+        let user_function_imports = self.emit_user_function_import_surface(ir, &type_layout);
         self.func_import_count = self.func_count;
         let sentinel_func_idx =
             type_layout.emit_call_indirect_exports_and_sentinel(&mut self, reloc_enabled);
@@ -85,7 +86,7 @@ impl WasmBackend {
         // Callable table ABI: function indices, table slots, trampolines,
         // and relocatable element payloads share one layout authority.
         let callable_table = self.build_table_abi(
-            &ir,
+            ir,
             &builtin_trampoline_specs,
             &direct_import_call_specs,
             &default_trampoline_spec,
@@ -99,7 +100,7 @@ impl WasmBackend {
             sentinel_func_idx,
             &host_surface.intrinsic_manifest_names,
         );
-        callable_table.validate_ir_call_target_closure(&ir);
+        callable_table.validate_ir_call_target_closure(ir);
 
         // The tables above own all cross-function metadata. Audits retain only
         // the original module shape, so emitted bodies can be retired at once.
@@ -117,9 +118,8 @@ impl WasmBackend {
             reloc_enabled,
             class_def_spill_offset: host_surface.class_def_spill_offset,
             const_str_scratch_segment: host_surface.const_str_scratch_segment,
-            lir_lowering_plans: &lir_lowering_plans,
         };
-        for func_ir in ir.functions {
+        for (func_ir, facts) in final_functions.into_functions() {
             if func_ir.is_extern {
                 continue;
             }
@@ -134,7 +134,12 @@ impl WasmBackend {
                 || Some(0),
             );
             let type_idx = type_layout.type_idx_for_function(&func_ir);
-            self.compile_func(&func_ir, type_idx, &compile_ctx);
+            self.compile_func(
+                &func_ir,
+                facts.expect("defined WASM body must own final facts"),
+                type_idx,
+                &compile_ctx,
+            );
             emit_wasm_stage_audit(
                 stage_audit,
                 "after-function-emission",
@@ -190,7 +195,6 @@ impl WasmBackend {
 mod audit_tests {
     use super::*;
     use crate::{FunctionIR, OpIR};
-    use std::collections::BTreeMap;
 
     #[test]
     fn stage_audit_request_selection_preserves_valid_emitted_bytes() {
@@ -218,8 +222,7 @@ mod audit_tests {
             };
             let analysis = super::super::trampoline_analysis::analyze_wasm_trampolines(&ir);
             WasmBackend::new().emit_wasm_module(
-                ir,
-                BTreeMap::new(),
+                crate::wasm::final_functions::WasmFinalFunctions::from_codegen_fixtures(ir),
                 analysis,
                 WasmStageAudit::for_test(enabled),
             )
