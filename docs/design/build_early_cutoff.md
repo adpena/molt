@@ -80,12 +80,24 @@ ledger two ways:
   logging its own facts. A bytecode read stands for its source.
   Reads under named product roots (the Molt
   cache, Cargo target and build state roots, the backend daemon's socket
-  directory, the artifact root under the output directory) are not inputs. A
+  directory, the artifact root under the output directory, the memory guard's
+  state root and its scratch generations) are not inputs. A
   source checkout, a user directory, the temporary directory and the shared
-  scratch root are never excluded: projects live there too. The successfully
-  published binary is excluded as one file, preserving explicit input reports
-  and every dependency on its parent directory. A path that no
+  scratch root are never excluded: projects live there too, and so do guard
+  lease targets. The successfully
+  published binary is excluded as one file with the receipt, journals, lock
+  and stages its publication keeps beside it, preserving explicit input
+  reports and every read under its parent directory. A path that no
   longer exists becomes an absence probe plus its parent directory.
+- A recorded build keeps its own transient files in a product root:
+  `tempfile` points at a per-build directory under
+  `<Molt cache>/build_records/.transient`, beside its workers' read logs, as
+  Bazel gives each action a temporary directory in its output base. A file
+  created and removed in an input directory changes that directory during the
+  build, which the racy rule refuses. For the same reason an external artifact
+  root proves it accepts child directories once and keeps the proof as a
+  `.molt-artifact-root` marker, and a process asks rustc each target-metadata
+  question once.
 
 **Refusals.** No record for non-native targets, directory outputs, requests
 that publish more than one binary (JSON results, diagnostics, IR, linked or
@@ -200,6 +212,12 @@ those remain V1-22/V1-23. Bare Cargo retains its documented dependency model.
   the racy rule; git, ninja, make and Cargo share this limit.
 - A process that writes the output while the build that publishes it runs
   can leave a record of the wrong bytes, as with make and ninja.
+- Process-pool workers keep the system temporary directory; no worker code
+  creates temporary files today, and one that does refuses the record.
+- The publication lists the output's directory for its own journals, so the
+  audit hook's listing of that directory is custody. A reader that depends on
+  the entries of the output's directory must report the listing explicitly, as
+  the import topology does; explicit reports are never excluded.
 - Read-back of a fresh product outside the named product roots and the declared
   output remains an input and may conservatively refuse the record. Such a
   producer must use existing product custody; audit events cannot prove it.
