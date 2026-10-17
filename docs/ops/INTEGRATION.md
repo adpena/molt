@@ -146,9 +146,29 @@ self-gate that runs `tests/test_molt_dev.py`), and CI/pyproject wiring. Local
 rules have one closed field set; unknown or retired policy fields fail
 admission rather than becoming unused promises.
 
-Gate command strings mirror the canonical invocations in
-`pyproject.toml [tool.molt.dx.commands]`. Edit the manifest to add a
-change-class; the driver's own tests assert the committed manifest stays valid.
+Source-extension production and proof policy have separate dependency edges.
+Producer, registry and source-build environment changes select production tests
+and their proof bridge and receipt consumers. Proof-plan, queue admission and
+toolchain-custody changes select the bridge and receipts; they do not require
+unrelated package-production tests. Mixed consumers, including source-extension
+link inputs and scientific-stack Pact oracles, stay on the proof side. The three
+cohorts retain the same complete test/node union when production inputs change.
+Selection checks enforce the shared producer edges and reject both excessive
+production selection and missing proof receivers.
+
+This applies the declared-dependency principle from
+[Bazel Skyframe](https://bazel.build/reference/skyframe) and
+[Ninja's build dependencies](https://ninja-build.org/manual.html#ref_dependencies)
+within the existing local rule model. Shared patterns declare edges to both
+consumers; they do not add an executor, cache or inheritance scheme. Parsing
+still reads one manifest, and selection uses the existing path/pattern scan.
+The additional rule costs a small amount of selection work to avoid running
+unrelated cohorts. CI family selection and release acceptance retain their
+existing authorities. All of this work runs during development.
+
+`tools/proof_plan.toml` owns gate commands and their prerequisites. Update the
+owning dependency rule there; the driver's tests assert that the committed
+manifest remains valid and selects the required consumers.
 
 Compiler identity uses the existing owners: `backend_binary.admitted_backend_binary`
 for a developer checkout, `compiler_identity.backend_build_admission` for the

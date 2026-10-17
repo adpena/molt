@@ -17,7 +17,7 @@ Landing checks execute the generator and authority inputs captured from the exac
 | Hand-maintained path-to-proof authorities | 4 | 1 |
 | CI selection families | 5 | 12 |
 | Hashed executable authority inputs | 1 | 364 |
-| Local path rules | 35 | 51 |
+| Local path rules | 35 | 52 |
 | Unique local commands | 73 | 128 |
 | Handwritten Python classifier rule tables | 5 | 0 |
 
@@ -349,7 +349,8 @@ The wrapper conflict was reconfirmed by native CI run `30211145633` job `8981749
 | `codec-tables` | 7 | 2 |
 | `stringprep-tables` | 3 | 2 |
 | `llvm-runtime-abi` | 8 | 2 |
-| `source-extension-package-sets` | 54 | 3 |
+| `source-extension-package-sets` | 44 | 1 |
+| `source-extension-proof-policy` | 60 | 2 |
 | `suite-honesty` | 4 | 2 |
 | `ecosystem-compat` | 2 | 1 |
 | `tinygrad-upat-static-exec-registry` | 2 | 1 |
