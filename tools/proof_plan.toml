@@ -2802,7 +2802,7 @@ timeout_budget = "cold"
 timeout_env = ["MOLT_CARGO_TIMEOUT", "MOLT_WASM_TEST_TIMEOUT_SEC"]
 cache_domain = "cargo-workspace"
 dependencies = ["wasm.build.backend", "wasm.build.shared-runtime"]
-argv = ["python3", "tools/venv_exec.py", "python3", "-m", "pytest", "-q", "tests/test_wasm_split_runtime.py::test_linked_host_export_attribute_error_does_not_return_none", "tests/test_wasm_runtime_heavy_regressions.py::test_wasm_open_reports_all_missing_grants_before_mutation", "tests/test_wasm_runtime_heavy_regressions.py::test_wasm_compiled_finder_describes_module_before_initialization"]
+argv = ["python3", "tools/venv_exec.py", "python3", "-m", "pytest", "-q", "tests/test_wasm_split_runtime.py::test_linked_host_export_attribute_error_does_not_return_none", "tests/test_wasm_runtime_heavy_regressions.py::test_wasm_open_reports_all_missing_grants_before_mutation", "tests/test_wasm_runtime_heavy_regressions.py::test_wasm_compiled_finder_describes_module_before_initialization", "tests/test_wasm_runtime_heavy_regressions.py::test_wasm_final_tir_preserves_effects_scalar_proofs_and_escaped_calls"]
 toolchains = ["python", "uv", "node", "rustc", "cargo", "ld.lld", "wasm-ld", "wasm-tools", "wasi-clang", "wasm-opt"]
 cargo_build_python = true
 
@@ -4742,7 +4742,7 @@ gates = [
 [[rule]]
 name = "tir-midend"
 toolchains = ["python", "rustc", "cargo"]
-description = "TIR midend Rust: all-target clippy + feature-complete tests."
+description = "TIR and WASM Rust: one feature-complete graph for final-body/fact custody."
 globs = [
   "runtime/molt-ir/**/*.rs",
   "runtime/molt-ir/**/*.toml",
@@ -4753,12 +4753,14 @@ globs = [
   "runtime/molt-tir/**/*.rs",
   "runtime/molt-tir/**/*.toml",
   "runtime/molt-tir/Cargo.toml",
+  "runtime/molt-backend-wasm/**/*.rs",
+  "runtime/molt-backend-wasm/Cargo.toml",
 ]
-# One feature-complete development graph, including the owning IR tests.
+# One feature-complete development graph, including the owning IR/WASM tests.
 # Shipped-profile acceptance remains in its target/profile proof authorities.
 gates = [
-  "cargo clippy --locked --profile dev-fast -p molt-ir -p molt-passes -p molt-tir --all-targets --all-features -- -D warnings",
-  "cargo test --locked --profile dev-fast -p molt-ir -p molt-passes -p molt-tir --all-features --no-fail-fast",
+  "cargo clippy --locked --profile dev-fast -p molt-ir -p molt-passes -p molt-tir -p molt-backend-wasm --all-targets --all-features -- -D warnings",
+  "cargo test --locked --profile dev-fast -p molt-ir -p molt-passes -p molt-tir -p molt-backend-wasm --all-features --no-fail-fast",
 ]
 
 # --- WASM host Rust -------------------------------------------------------

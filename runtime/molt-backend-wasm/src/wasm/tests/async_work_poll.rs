@@ -40,8 +40,7 @@ fn compile_ir(ir: SimpleIR, native_eh_enabled: bool) -> Vec<u8> {
         ..WasmCompileOptions::default()
     })
     .emit_wasm_module(
-        ir,
-        BTreeMap::new(),
+        crate::wasm::final_functions::WasmFinalFunctions::from_codegen_fixtures(ir),
         trampoline_analysis,
         crate::wasm_plan::WasmStageAudit::from_environment(),
     )

@@ -263,8 +263,7 @@ fn extern_declarations_survive_relocatable_symbol_and_table_emission() {
         ..WasmCompileOptions::default()
     })
     .emit_wasm_module(
-        ir,
-        BTreeMap::new(),
+        crate::wasm::final_functions::WasmFinalFunctions::from_codegen_fixtures(ir),
         analysis,
         crate::wasm_plan::WasmStageAudit::from_environment(),
     )

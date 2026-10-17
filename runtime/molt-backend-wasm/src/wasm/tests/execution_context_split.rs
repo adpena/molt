@@ -350,7 +350,7 @@ fn wasm_compiles_split_local_frame_with_inherited_chunks() {
     );
     local_fast_candidate.execution_context = ExecutionContextPolicy::Local;
     let candidate_name = local_fast_candidate.name.clone();
-    let plans = crate::wasm::lir_fast::compute_lir_wasm_lowering_plans_from_final_ir_with_escaped(
+    let plans = crate::wasm::final_functions::WasmFinalFunctions::lowering_plans_for_fixtures(
         &SimpleIR {
             functions: vec![local_fast_candidate],
             profile: None,
@@ -771,8 +771,7 @@ fn wasm_compiles_split_local_frame_with_inherited_chunks() {
         .unwrap(),
     )
     .emit_wasm_module(
-        unwind_ir,
-        BTreeMap::new(),
+        crate::wasm::final_functions::WasmFinalFunctions::from_codegen_fixtures(unwind_ir),
         trampolines,
         crate::wasm_plan::WasmStageAudit::from_environment(),
     );
@@ -937,11 +936,10 @@ fn symbolic_module_slots_bind_in_generic_and_lir_final_emission() {
             error.shape.violation,
             molt_ir::ir_schema::OpShapeViolation::UnboundModuleSlot
         );
-        let plans =
-            crate::wasm::lir_fast::compute_lir_wasm_lowering_plans_from_final_ir_with_escaped(
-                &ir,
-                &Default::default(),
-            );
+        let plans = crate::wasm::final_functions::WasmFinalFunctions::lowering_plans_for_fixtures(
+            &ir,
+            &Default::default(),
+        );
         let lir = name.contains("____molt_globals_builtin__");
         if lir {
             assert!(

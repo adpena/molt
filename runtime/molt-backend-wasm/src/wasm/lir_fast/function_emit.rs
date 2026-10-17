@@ -10,17 +10,13 @@ pub(in crate::wasm) fn try_emit_planned_lir_fast_body(
     func_ir: &FunctionIR,
     func_index: u32,
     reloc_enabled: bool,
+    plan: Option<&WasmFunctionLoweringPlan>,
     ctx: &CompileFuncContext<'_>,
 ) -> bool {
     if func_ir.is_extern || !is_production_lir_wasm_fast_path_name(&func_ir.name) {
         return false;
     }
-    let Some(plan) = ctx.lir_lowering_plans.get(&func_ir.name) else {
-        panic!(
-            "missing WASM LIR lowering plan for production fast-path function {}",
-            func_ir.name
-        );
-    };
+    let plan = plan.unwrap_or_else(|| panic!("missing final WASM LIR plan for {}", func_ir.name));
     match plan {
         WasmFunctionLoweringPlan::LirFast(lir_output) => {
             if backend_env::var(BackendEnv::MOLT_DEBUG_WASM_SIG_FUNC)

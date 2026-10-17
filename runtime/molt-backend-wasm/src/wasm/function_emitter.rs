@@ -11,14 +11,22 @@ impl WasmBackend {
     pub(super) fn compile_func(
         &mut self,
         func_ir: &FunctionIR,
+        facts: super::final_functions::WasmFunctionFacts,
         type_idx: u32,
         ctx: &CompileFuncContext<'_>,
     ) {
         let reloc_enabled = ctx.reloc_enabled;
         let func_index = registration::register_function(self, func_ir, type_idx, reloc_enabled);
-        if try_emit_planned_lir_fast_body(self, func_ir, func_index, reloc_enabled, ctx) {
+        if try_emit_planned_lir_fast_body(
+            self,
+            func_ir,
+            func_index,
+            reloc_enabled,
+            facts.lowering.as_ref(),
+            ctx,
+        ) {
             return;
         }
-        fallback::emit_fallback_function_body(self, func_ir, func_index, ctx);
+        fallback::emit_fallback_function_body(self, func_ir, facts.representation, func_index, ctx);
     }
 }

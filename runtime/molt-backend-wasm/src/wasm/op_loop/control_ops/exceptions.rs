@@ -117,8 +117,9 @@ mod tests {
             name: "plain_poll".into(),
             ..Default::default()
         };
-        let (_, frame) = crate::wasm::function_frame::WasmFunctionFramePlan::for_function(&func_ir)
-            .into_function_and_frame();
+        let (_, frame) =
+            crate::wasm::function_frame::WasmFunctionFramePlan::for_codegen_fixture(&func_ir)
+                .into_function_and_frame();
         let locals = WasmFrameLocals::default();
         let const_cache = ConstantCache::default();
         let scalar_plan = ScalarRepresentationPlan::default();

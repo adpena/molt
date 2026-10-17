@@ -19,11 +19,19 @@ use seeds::FrameConstSeedPlan;
 use wasm_encoder::{Function, ValType};
 
 impl WasmFunctionFramePlan {
-    pub(in crate::wasm) fn for_function(func_ir: &FunctionIR) -> Self {
+    #[cfg(test)]
+    pub(in crate::wasm) fn for_codegen_fixture(func_ir: &FunctionIR) -> Self {
         let scalar_plan = ScalarRepresentationPlan::for_function_ir_for_target(
             func_ir,
-            &crate::tir::target_info::TargetInfo::wasm_release_fast(),
+            &crate::tir::TargetInfo::wasm_release_fast(),
         );
+        Self::for_function(func_ir, scalar_plan)
+    }
+
+    pub(in crate::wasm) fn for_function(
+        func_ir: &FunctionIR,
+        scalar_plan: ScalarRepresentationPlan,
+    ) -> Self {
         let guard_facts = molt_tir::passes::RuntimeGuardFacts::for_function(func_ir);
         let mut requirements = FrameRuntimeRequirements::default();
         for op in &func_ir.ops {
@@ -295,7 +303,7 @@ mod tests {
             ],
             ..FunctionIR::default()
         };
-        let plan = WasmFunctionFramePlan::for_function(&function);
+        let plan = WasmFunctionFramePlan::for_codegen_fixture(&function);
         let locals = &plan.frame.locals;
         for name in [
             "dead_value",
@@ -350,7 +358,7 @@ mod tests {
             ops,
             ..FunctionIR::default()
         };
-        let plan = WasmFunctionFramePlan::for_function(&function);
+        let plan = WasmFunctionFramePlan::for_codegen_fixture(&function);
         let physical: BTreeSet<u32> = names
             .iter()
             .map(|name| plan.frame.locals[name.as_str()])
@@ -405,7 +413,7 @@ mod tests {
             ],
             ..FunctionIR::default()
         };
-        let plan = WasmFunctionFramePlan::for_function(&function);
+        let plan = WasmFunctionFramePlan::for_codegen_fixture(&function);
         let locals = &plan.frame.locals;
         let seeded: Vec<u32> = plan
             .frame

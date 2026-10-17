@@ -12,13 +12,14 @@ use std::cell::Cell;
 pub(super) fn emit_fallback_function_body(
     backend: &mut WasmBackend,
     func_ir: &FunctionIR,
+    scalar_plan: crate::representation_plan::ScalarRepresentationPlan,
     func_index: u32,
     ctx: &CompileFuncContext<'_>,
 ) {
     let reloc_enabled = ctx.reloc_enabled;
     let call_site_abi = &ctx.call_site_abi;
     let import_ids = ctx.import_ids;
-    let frame_plan = WasmFunctionFramePlan::for_function(func_ir);
+    let frame_plan = WasmFunctionFramePlan::for_function(func_ir, scalar_plan);
     let (mut func, mut frame) = frame_plan.into_function_and_frame();
     frame.emit_debug_local_map(func_ir, func_index);
 

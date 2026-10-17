@@ -5,8 +5,8 @@ Molt IR is typed SSA with explicit control flow, ownership, and effects. It exis
 ## Module transformations and demanded analyses
 
 The shared cached TIR runner optimizes functions before the module phase.
-WASM and Luau request SimpleIR projections within bounded optimization waves.
-Native retains final owned TIR through module optimization or the explicit
+Luau requests SimpleIR projections within bounded optimization waves.
+Native and WASM retain final owned TIR through module optimization or the explicit
 terminal-drops-only route. LLVM and FactGraph borrow preparation input and retain only optimized TIR;
 neither cache hits nor misses build an unused SimpleIR projection. Owned module
 assembly accepts moved LLVM source bodies or borrowed diagnostic inputs, retaining
@@ -30,8 +30,17 @@ each source body and its facts as one pair. Every normal, skip and batch native
 codegen entry consumes that pair; codegen does not lift the projection or rerun
 the optimizer to reconstruct facts. Extern declarations carry no local plan.
 This preserves the existing source transport without treating it as a second
-semantic authority. WASM's later operation-reachability transformations still
-require their own complete final-fact migration.
+semantic authority. WASM uses the same retained module owner and runs typed
+dead-operation elimination before release insertion. Existing full or
+exception-only release markers prevent that mutation. Its final projection
+produces each body, scalar facts and demanded LIR plan together, sharing the
+same value-range/representation derivation. Function retention retires whole
+pairs, while escaped-callable admission selects generic lowering without
+changing operations. Public compile/diagnostic/checked entry points all consume
+this owner; generic frame planning never lifts or optimizes the projection.
+Each body and its facts retire at emission. Native and WASM still project
+source control flow/names; carrying typed control flow through machine lowering
+remains a separate convergence obligation.
 
 `MOLT_DUMP_REWRITTEN_FUNC` explicitly requests the final native/LLVM source
 projection after module and ownership finalization. Ordinary LLVM compilation

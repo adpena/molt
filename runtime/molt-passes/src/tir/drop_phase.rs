@@ -112,6 +112,30 @@ fn emit_drop_function_audit(
     );
 }
 
+/// Run the existing typed reachability pass only while ownership is mutable.
+/// Full and exception-only release insertion are both phase cuts: deleting a
+/// definition afterward cannot rely on an idempotent drop pass to repair it.
+fn prepare_final_operation_reachability(func: &mut TirFunction, tti: &TargetInfo) -> bool {
+    if tti.target != super::target_info::TargetKind::Wasm
+        || backend_env::var(BackendEnv::MOLT_DISABLE_DEAD_OP_ELIM).is_ok()
+        || [
+            DROP_INSERTED_ATTR,
+            super::passes::drop_insertion::EXCEPTION_REGION_DROPS_INSERTED_ATTR,
+        ]
+        .iter()
+        .any(|marker| matches!(func.attrs.get(*marker), Some(AttrValue::Bool(true))))
+    {
+        return false;
+    }
+    // Canonical SSA effects preserve import initialization and exceptions even
+    // when the imported value is unused. No source projection is re-analyzed.
+    super::passes::dce::run(func).total_changes() > 0
+}
+
+#[cfg(test)]
+#[path = "drop_phase/wasm_reachability_tests.rs"]
+mod wasm_reachability_tests;
+
 /// Complete the native driver's lowering transformations while SSA and
 /// ownership are still mutable. Cranelift and LLVM previously performed this
 /// family on source projections; both now use the same typed owner before
@@ -504,7 +528,7 @@ pub fn finalize_function_drops(func: &mut TirFunction, tti: &TargetInfo) -> bool
          — drops were placed mid-transform or the finalizer ran twice",
         func.name,
     );
-    let lowering_changed = prepare_final_backend_lowering(func, tti);
+    let mut lowering_changed = prepare_final_backend_lowering(func, tti);
     let audit_start = Instant::now();
     let had_drop_inserted = matches!(
         func.attrs.get(DROP_INSERTED_ATTR),
@@ -543,6 +567,7 @@ pub fn finalize_function_drops(func: &mut TirFunction, tti: &TargetInfo) -> bool
         None,
         Some(audit_start.elapsed().as_millis()),
     );
+    lowering_changed |= prepare_final_operation_reachability(func, tti);
     emit_drop_function_audit(
         "before-drop-pass",
         func,

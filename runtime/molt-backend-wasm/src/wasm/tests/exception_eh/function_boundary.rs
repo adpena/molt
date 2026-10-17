@@ -103,8 +103,7 @@ fn python_eh_returns_preserve_guarded_calls_and_dispatch_handlers() {
                 .unwrap(),
             )
             .emit_wasm_module(
-                ir,
-                BTreeMap::new(),
+                crate::wasm::final_functions::WasmFinalFunctions::from_codegen_fixtures(ir),
                 trampolines,
                 crate::wasm_plan::WasmStageAudit::from_environment(),
             )

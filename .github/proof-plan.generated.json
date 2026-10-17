@@ -366,7 +366,7 @@
     "tests/tools/test_win_job_contract.py",
     "tests/tools/test_windows_process_api.py"
   ],
-  "authority_sha256": "380dd43feae6fe595255499205e0e48a09f137ceb24b0562b9dd5847e67ea02e",
+  "authority_sha256": "66db949369a5afd9ab4b2e08df87ca15af583611b08816e9a95743a902e0a200",
   "cargo_environment_policy": {
     "incident_command": "cargo metadata --locked --format-version 1",
     "incident_commit": "20b046b79bd4ca64a8c859f737f6e330377bcc4e",
@@ -4130,7 +4130,8 @@
         "-q",
         "tests/test_wasm_split_runtime.py::test_linked_host_export_attribute_error_does_not_return_none",
         "tests/test_wasm_runtime_heavy_regressions.py::test_wasm_open_reports_all_missing_grants_before_mutation",
-        "tests/test_wasm_runtime_heavy_regressions.py::test_wasm_compiled_finder_describes_module_before_initialization"
+        "tests/test_wasm_runtime_heavy_regressions.py::test_wasm_compiled_finder_describes_module_before_initialization",
+        "tests/test_wasm_runtime_heavy_regressions.py::test_wasm_final_tir_preserves_effects_scalar_proofs_and_escaped_calls"
       ],
       "cache_domain": "cargo-workspace",
       "cargo_build_python": true,
@@ -8584,8 +8585,8 @@
       "local.tinygrad-op-contract.1": "python tools/gen_gpu_op_contract.py --check",
       "local.tinygrad-op-contract.2": "python -m pytest -q tests/test_gen_gpu_op_contract.py",
       "local.tinygrad-upat-static-exec-registry.0": "python -m pytest -q tests/tools/test_tinygrad_upat_static_exec_registry.py",
-      "local.tir-midend.0": "cargo clippy --locked --profile dev-fast -p molt-ir -p molt-passes -p molt-tir --all-targets --all-features -- -D warnings",
-      "local.tir-midend.1": "cargo test --locked --profile dev-fast -p molt-ir -p molt-passes -p molt-tir --all-features --no-fail-fast",
+      "local.tir-midend.0": "cargo clippy --locked --profile dev-fast -p molt-ir -p molt-passes -p molt-tir -p molt-backend-wasm --all-targets --all-features -- -D warnings",
+      "local.tir-midend.1": "cargo test --locked --profile dev-fast -p molt-ir -p molt-passes -p molt-tir -p molt-backend-wasm --all-features --no-fail-fast",
       "local.wasm-abi-registry.0": "python tools/gen_wasm_abi.py --check",
       "local.wasm-abi-registry.1": "python -m pytest -q tests/test_gen_wasm_abi.py",
       "local.wasm-host.0": "cargo clippy --locked -p molt-wasm-host -- -D warnings",
@@ -9752,10 +9753,10 @@
           "local.tir-midend.0",
           "local.tir-midend.1"
         ],
-        "description": "TIR midend Rust: all-target clippy + feature-complete tests.",
+        "description": "TIR and WASM Rust: one feature-complete graph for final-body/fact custody.",
         "gates": [
-          "cargo clippy --locked --profile dev-fast -p molt-ir -p molt-passes -p molt-tir --all-targets --all-features -- -D warnings",
-          "cargo test --locked --profile dev-fast -p molt-ir -p molt-passes -p molt-tir --all-features --no-fail-fast"
+          "cargo clippy --locked --profile dev-fast -p molt-ir -p molt-passes -p molt-tir -p molt-backend-wasm --all-targets --all-features -- -D warnings",
+          "cargo test --locked --profile dev-fast -p molt-ir -p molt-passes -p molt-tir -p molt-backend-wasm --all-features --no-fail-fast"
         ],
         "globs": [
           "runtime/molt-ir/**/*.rs",
@@ -9766,7 +9767,9 @@
           "runtime/molt-passes/Cargo.toml",
           "runtime/molt-tir/**/*.rs",
           "runtime/molt-tir/**/*.toml",
-          "runtime/molt-tir/Cargo.toml"
+          "runtime/molt-tir/Cargo.toml",
+          "runtime/molt-backend-wasm/**/*.rs",
+          "runtime/molt-backend-wasm/Cargo.toml"
         ],
         "name": "tir-midend",
         "toolchains": [

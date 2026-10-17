@@ -70,14 +70,16 @@ pub(crate) fn simple_ir_stage_shape(functions: &[FunctionIR]) -> WasmStageAuditS
     }
 }
 
-pub(crate) fn tir_module_stage_shape(
-    module: &crate::tir::function::TirModule,
+pub(crate) fn tir_functions_stage_shape<'a>(
+    functions: impl Iterator<Item = &'a crate::tir::function::TirFunction>,
 ) -> WasmStageAuditShape {
     let mut tir_blocks = 0usize;
     let mut tir_ops = 0usize;
     let mut largest_function = "<none>".to_string();
     let mut largest_ops = 0usize;
-    for func in &module.functions {
+    let mut function_count = 0;
+    for func in functions {
+        function_count += 1;
         let blocks = func.blocks.len();
         let ops = func
             .blocks
@@ -91,7 +93,7 @@ pub(crate) fn tir_module_stage_shape(
         }
     }
     WasmStageAuditShape {
-        functions: module.functions.len(),
+        functions: function_count,
         simple_ops: 0,
         tir_blocks,
         tir_ops,

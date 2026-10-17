@@ -8,5 +8,5 @@ pub(crate) use op_classifiers::{
 };
 pub(crate) use stage_audit::{
     WasmStageAudit, WasmStageAuditShape, emit_wasm_numeric_lane_audit, emit_wasm_stage_audit,
-    simple_ir_stage_shape, tir_module_stage_shape,
+    simple_ir_stage_shape, tir_functions_stage_shape,
 };

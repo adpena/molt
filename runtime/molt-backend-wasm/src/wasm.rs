@@ -9,6 +9,7 @@ mod container_runtime_select;
 mod context;
 mod control_flow;
 mod data_segments;
+mod final_functions;
 mod frame_locals;
 mod function_emitter;
 mod function_frame;

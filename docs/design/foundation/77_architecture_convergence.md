@@ -24,9 +24,11 @@ The native migration retains owned final TIR, performs copy-alias, split-field
 and direct-raise transformations before final refinement and ownership, and
 projects emitted operations and facts together. Every normal/skip/batch consumer
 requires that pair; dead-function removal and partitions preserve it. Native
-codegen reconstruction is retired. WASM's later operation-reachability boundary
-still reconstructs facts and must migrate independently through its actual
-transformations. Qualification remains owned by the findings ledger. Facts stay on SSA values; transient source names
+codegen reconstruction is retired. WASM shares the retained module owner and
+performs typed operation reachability before release insertion. Its final
+projection pairs each emitted body with scalar facts and a demanded LIR plan;
+function retention and escaped-callable admission preserve that pair.
+Qualification remains owned by the findings ledger. Facts stay on SSA values; transient source names
 are a projection with explicit ambiguity rules, not a new semantic authority.
 Overlap between Python, SimpleIR and TIR passes requires semantic retirement
 proof through actual callers, not deletion because pass names match.
@@ -95,6 +97,20 @@ for explicit SSA/block arguments; and
 for owner-backed views and balanced release. These are design references,
 not evidence that Molt's migration or a target cell is complete.
 
+Phase transitions carry ownership as well as validity. [rustc's MIR queries](https://rustc-dev-guide.rust-lang.org/mir/passes.html)
+group transformations into explicit intermediate states and move intermediate
+bodies to avoid cloning; [MLIR's analysis manager](https://mlir.llvm.org/docs/PassManagement/#analysis-management)
+binds demanded analyses to an operation and invalidates them when preservation
+does not hold. Molt's final backend transition follows those mechanisms:
+mutable typed transformations precede ownership finalization, then an immutable
+body/fact pair reaches emission. Full and exception-only release insertion both
+close dead-operation mutation. Existing phase owners enforce this boundary;
+there is no second scheduler, optimizer or runtime state-machine interpreter.
+WASM generic and LIR planning share one value-range/representation derivation.
+Facts remain live until their body is emitted, so peak compiler memory and
+latency must be measured alongside eliminated reconstruction. This is compiler
+work, with no new guest execution, allocation or validation step.
+
 ### Current comparison
 
 Source inspection on 2026-10-16 distinguishes incomplete adoption from absent
@@ -107,7 +123,7 @@ parallel roadmap or release gate.
 | Practice in the referenced projects | Current Molt difference and owning obligation |
 | --- | --- |
 | [MLIR ODS](https://mlir.llvm.org/docs/DefiningDialects/Operations/) generates operation interfaces, verification and builders from declarations. | Generated op facts exist, but generic string-keyed operands/properties and ABI signature scraping remain. Complete their typed producer/consumer migration under HF-197/HF-202/HF-211. |
-| [MLIR analysis management](https://mlir.llvm.org/docs/PassManagement/) and [rustc queries](https://rustc-dev-guide.rust-lang.org/query.html) cache demanded facts and track invalidation or dependencies. | The shared analysis owner exists. Native retains final TIR, but still projects names for codegen; WASM reconstructs facts after projection. Complete the existing HF-201 migration rather than add another optimizer. HF-250 owns unchanged-input frontend work. |
+| [MLIR analysis management](https://mlir.llvm.org/docs/PassManagement/) and [rustc queries](https://rustc-dev-guide.rust-lang.org/query.html) cache demanded facts and track invalidation or dependencies. | The shared analysis owner exists. Native and WASM retain final TIR and project body/fact pairs, but still project names/control flow for codegen. Complete the existing HF-201 migration rather than add another optimizer. HF-250 owns unchanged-input frontend work. |
 | [Cranelift](https://cranelift.dev/) explicitly avoids pathological compiler complexity and uses fuzzing, custom oracles and validation. [MLIR filetests](https://mlir.llvm.org/getting_started/TestingGuide/) exercise individual transformations without full application builds. | Reuse existing fuzz/shrink and pass-test authorities. Qualify affected semantic and compiler-resource properties, and retain minimized failures; an inventory or test count does not prove their execution. HF-212 owns coverage, while V1-07 owns resource/performance acceptance. |
 | [Wasmtime minimal builds](https://docs.wasmtime.dev/examples-minimal.html) select runtime features separately from compilation. | Molt's feature/reachability owners must close actual linked binary size and startup costs, including remaining stubs, under HF-189/HF-195. Development custody and verification belong outside emitted programs. |
 | [Wasmtime's VMContext](https://docs.wasmtime.dev/contributing-architecture.html) gives compiled code access to runtime state through an explicit context. | Preserve Molt's existing attachment and object-lifetime owners while carrying context through actual callers under HF-198/HF-205. A core GIL token alone does not prove either lifetime. |
