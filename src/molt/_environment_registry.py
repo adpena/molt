@@ -12,6 +12,7 @@ _REGISTRY_JSON = r"""{
       "audience": "developer",
       "default": "",
       "kind": "float",
+      "output_neutral": true,
       "owner": "tools/harness_memory_guard.py",
       "root_fallback": "MOLT_CHILD_RLIMIT_GB",
       "suffix": "_CHILD_RLIMIT_GB",
@@ -22,6 +23,7 @@ _REGISTRY_JSON = r"""{
       "audience": "developer",
       "default": "20",
       "kind": "float",
+      "output_neutral": true,
       "owner": "tools/harness_memory_guard.py",
       "root_fallback": "MOLT_SUBPROCESS_KEEPALIVE_SEC",
       "suffix": "_KEEPALIVE_SEC",
@@ -32,6 +34,7 @@ _REGISTRY_JSON = r"""{
       "audience": "developer",
       "default": "",
       "kind": "float",
+      "output_neutral": true,
       "owner": "tools/harness_memory_guard.py",
       "root_fallback": "MOLT_MAX_GLOBAL_RSS_GB",
       "suffix": "_MAX_GLOBAL_RSS_GB",
@@ -42,6 +45,7 @@ _REGISTRY_JSON = r"""{
       "audience": "developer",
       "default": "",
       "kind": "float",
+      "output_neutral": true,
       "owner": "tools/harness_memory_guard.py",
       "root_fallback": "MOLT_MAX_PROCESS_RSS_GB",
       "suffix": "_MAX_PROCESS_RSS_GB",
@@ -52,6 +56,7 @@ _REGISTRY_JSON = r"""{
       "audience": "developer",
       "default": "",
       "kind": "float",
+      "output_neutral": true,
       "owner": "tools/harness_memory_guard.py",
       "root_fallback": "MOLT_MAX_TOTAL_RSS_GB",
       "suffix": "_MAX_TOTAL_RSS_GB",
@@ -62,6 +67,7 @@ _REGISTRY_JSON = r"""{
       "audience": "developer",
       "default": "",
       "kind": "float",
+      "output_neutral": true,
       "owner": "tools/memory_guard_core/memory_limits.py",
       "root_fallback": "MOLT_MEMORY_AVAILABLE_GB",
       "suffix": "_MEMORY_AVAILABLE_GB",
@@ -72,6 +78,7 @@ _REGISTRY_JSON = r"""{
       "audience": "developer",
       "default": "0.1",
       "kind": "float",
+      "output_neutral": true,
       "owner": "tools/harness_memory_guard.py",
       "root_fallback": "MOLT_MEMORY_GUARD_POLL_SEC",
       "suffix": "_MEMORY_GUARD_POLL_SEC",
@@ -82,6 +89,7 @@ _REGISTRY_JSON = r"""{
       "audience": "developer",
       "default": "",
       "kind": "float",
+      "output_neutral": true,
       "owner": "tools/memory_guard_core/memory_limits.py",
       "root_fallback": "MOLT_MEMORY_RESERVE_GB",
       "suffix": "_MEMORY_RESERVE_GB",
@@ -92,6 +100,7 @@ _REGISTRY_JSON = r"""{
       "audience": "developer",
       "default": "",
       "kind": "float",
+      "output_neutral": true,
       "owner": "tools/memory_guard_core/memory_limits.py",
       "root_fallback": "MOLT_MEMORY_TOTAL_GB",
       "suffix": "_MEMORY_TOTAL_GB",
@@ -102,6 +111,7 @@ _REGISTRY_JSON = r"""{
       "audience": "internal",
       "default": "0",
       "kind": "bool",
+      "output_neutral": true,
       "owner": "tools/harness_memory_guard.py",
       "root_fallback": "MOLT_REPO_SENTINEL_ACTIVE",
       "suffix": "_REPO_SENTINEL_ACTIVE",
@@ -112,6 +122,7 @@ _REGISTRY_JSON = r"""{
       "audience": "developer",
       "default": "",
       "kind": "float",
+      "output_neutral": true,
       "owner": "tools/harness_memory_guard.py",
       "root_fallback": "MOLT_TEST_PROCESS_TIMEOUT_SEC",
       "suffix": "_TIMEOUT_SEC",
@@ -752,6 +763,7 @@ _REGISTRY_JSON = r"""{
       "default": "shared",
       "kind": "enum",
       "name": "MOLT_ACCEL_CLIENT_MODE",
+      "output_neutral": false,
       "owner": "src/molt_accel/decorator.py",
       "summary": "Selects how the molt_accel decorator obtains its worker client when no client_mode argument is given: shared reuses one process-wide client pool, per_request opens a client per call; compared lowercase, and any other value falls back to shared.",
       "values": [
@@ -764,6 +776,7 @@ _REGISTRY_JSON = r"""{
       "default": "1",
       "kind": "int",
       "name": "MOLT_ACCEL_POOL_SIZE",
+      "output_neutral": false,
       "owner": "src/molt_accel/decorator.py",
       "summary": "Number of worker connections in the shared molt_accel client pool; values below 1, empty, or non-numeric become 1.",
       "values": []
@@ -773,6 +786,7 @@ _REGISTRY_JSON = r"""{
       "default": "",
       "kind": "int",
       "name": "MOLT_ACCEL_RETRY_BACKOFF_MAX_MS",
+      "output_neutral": false,
       "owner": "src/molt_accel/decorator.py",
       "summary": "Upper bound in milliseconds for the molt_accel retry backoff when the decorator gets no retry_backoff_max_ms argument; negative values clamp to 0, and unset, empty, or non-numeric values use the resolved MOLT_ACCEL_RETRY_BACKOFF_MS value.",
       "values": []
@@ -782,6 +796,7 @@ _REGISTRY_JSON = r"""{
       "default": "0",
       "kind": "int",
       "name": "MOLT_ACCEL_RETRY_BACKOFF_MS",
+      "output_neutral": false,
       "owner": "src/molt_accel/decorator.py",
       "summary": "Initial retry backoff in milliseconds for molt_accel offload calls when the decorator gets no retry_backoff_ms argument; negative values clamp to 0 and empty or non-numeric values use 0.",
       "values": []
@@ -791,6 +806,7 @@ _REGISTRY_JSON = r"""{
       "default": "0",
       "kind": "bool",
       "name": "MOLT_ACCEL_RETRY_ON_BUSY",
+      "output_neutral": false,
       "owner": "src/molt_accel/decorator.py",
       "summary": "Retries a molt_accel offload call after the worker reports busy when the decorator gets no retry_on_busy argument; 1/true/yes/on enable, 0/false/no/off disable, and other values keep the default of off.",
       "values": []
@@ -800,6 +816,7 @@ _REGISTRY_JSON = r"""{
       "default": "0",
       "kind": "bool",
       "name": "MOLT_ACCEL_RETRY_ON_TIMEOUT",
+      "output_neutral": false,
       "owner": "src/molt_accel/decorator.py",
       "summary": "Retries a molt_accel offload call after a worker timeout when the decorator gets no retry_on_timeout argument; 1/true/yes/on enable, 0/false/no/off disable, and other values keep the default of off.",
       "values": []
@@ -809,6 +826,7 @@ _REGISTRY_JSON = r"""{
       "default": "",
       "kind": "string",
       "name": "MOLT_AGENT_ID",
+      "output_neutral": false,
       "owner": "tools/agent_coordination.py",
       "summary": "Agent identity written into a coordination task record when no --agent argument is given; unset falls back to MOLT_SESSION_ID, then to agent-<task>-<pid>.",
       "values": []
@@ -818,6 +836,7 @@ _REGISTRY_JSON = r"""{
       "default": "",
       "kind": "string",
       "name": "MOLT_ARCH",
+      "output_neutral": false,
       "owner": "src/molt/cli/native_link_command.py",
       "summary": "Architecture name (arm64 or x86_64) that molt passes as -arch to the macOS host linker; unset detects it from the output object file, then from the host.",
       "values": []
@@ -827,6 +846,7 @@ _REGISTRY_JSON = r"""{
       "default": "0",
       "kind": "bool",
       "name": "MOLT_ASSERT_CHILD",
+      "output_neutral": false,
       "owner": "runtime/molt-runtime/src/call/function.rs",
       "summary": "The molt-runtime pending-exception trap test sets it to 1 for the child test process it spawns; the child test body runs only when it reads exactly 1, and nothing outside that test reads it.",
       "values": []
@@ -836,6 +856,7 @@ _REGISTRY_JSON = r"""{
       "default": "0",
       "kind": "bool",
       "name": "MOLT_ASSERT_NO_LEAK",
+      "output_neutral": false,
       "owner": "runtime/molt-runtime/src/state/metrics.rs",
       "summary": "Enables the runtime leak assertion: exactly 1 force-enables the alloc/dealloc counters and exits with status 137 when live objects exceed EXPECTED_LIVE_OBJECTS before teardown or exceed the post-teardown floor plus MOLT_LEAK_TOLERANCE; tools/perf_scoreboard_measure.py sets it to 0 for timing runs.",
       "values": []
@@ -845,6 +866,7 @@ _REGISTRY_JSON = r"""{
       "default": "0",
       "kind": "bool",
       "name": "MOLT_ASSERT_NO_PENDING_ON_SUCCESS",
+      "output_neutral": false,
       "owner": "runtime/molt-runtime/src/call/function.rs",
       "summary": "Set exactly to 1 to make the runtime call core trap when a function returns successfully while an exception is still pending; molt debug --assert-no-pending-on-success sets it to 1 for the traced program and 0 otherwise.",
       "values": []
@@ -854,6 +876,7 @@ _REGISTRY_JSON = r"""{
       "default": "",
       "kind": "int",
       "name": "MOLT_ASYNC_HANG_PROBE",
+      "output_neutral": false,
       "owner": "runtime/molt-runtime/src/async_rt/scheduler/diagnostics.rs",
       "summary": "Pending-poll count per task at which the async scheduler reports a probable hang; unset, empty, or 0 disables the probe, a positive integer sets the threshold, and non-numeric text uses 100000.",
       "values": []
@@ -863,6 +886,7 @@ _REGISTRY_JSON = r"""{
       "default": "0",
       "kind": "int",
       "name": "MOLT_ASYNC_THREADS",
+      "output_neutral": false,
       "owner": "runtime/molt-runtime/src/state/runtime_state.rs",
       "summary": "Number of async scheduler worker threads on native targets, capped at the CPU count; unset, 0, or non-numeric spawns no worker threads. Captured by RuntimePolicy before Ready and inherited by isolates; later environment changes cannot select new policy or destinations.",
       "values": []
@@ -872,6 +896,7 @@ _REGISTRY_JSON = r"""{
       "default": "0",
       "kind": "bool",
       "name": "MOLT_ASYNC_TRACE",
+      "output_neutral": false,
       "owner": "runtime/molt-runtime/src/async_rt/scheduler/diagnostics.rs",
       "summary": "Prints async scheduler trace lines (worker start, task events) to stderr when set to exactly 1; read once per process, default off.",
       "values": []
@@ -881,6 +906,7 @@ _REGISTRY_JSON = r"""{
       "default": "0",
       "kind": "bool",
       "name": "MOLT_AUDIT_ENABLED",
+      "output_neutral": false,
       "owner": "src/molt/capability_manifest.py",
       "summary": "Turns on the capability audit sink in a compiled program; 1/true/yes/on enable, empty/0/false/no/off disable, any other value is an error in both the manifest parser and the runtime, and molt sets it to 1 when a manifest or --audit-log enables auditing.",
       "values": []
@@ -890,6 +916,7 @@ _REGISTRY_JSON = r"""{
       "default": "stderr",
       "kind": "string",
       "name": "MOLT_AUDIT_OUTPUT",
+      "output_neutral": false,
       "owner": "src/molt/capability_manifest.py",
       "summary": "Destination of the audit sink: stderr, stdout, or a file path that the jsonl sink appends to; the stderr sink requires stderr, the jsonl sink rejects null, and molt sets it from the manifest or --audit-log.",
       "values": []
@@ -899,6 +926,7 @@ _REGISTRY_JSON = r"""{
       "default": "stderr",
       "kind": "enum",
       "name": "MOLT_AUDIT_SINK",
+      "output_neutral": false,
       "owner": "src/molt/capability_manifest.py",
       "summary": "Audit sink type the runtime installs when MOLT_AUDIT_ENABLED is on: null discards events, stderr writes text, jsonl writes JSON lines to MOLT_AUDIT_OUTPUT; the runtime defaults to stderr while the manifest parser in capability_manifest.py defaults to null, and molt sets it from the manifest or --audit-log.",
       "values": [
@@ -912,6 +940,7 @@ _REGISTRY_JSON = r"""{
       "default": "cranelift",
       "kind": "enum",
       "name": "MOLT_BACKEND",
+      "output_neutral": false,
       "owner": "runtime/molt-backend-native/src/native_backend/simple_backend/compile_driver.rs",
       "summary": "Selects the native code generator in molt-backend: llvm routes through the LLVM backend and panics when the binary was built without the llvm feature, any other value or unset uses Cranelift; molt build sets it from --backend (auto becomes cranelift) in the backend process environment and its daemon requests, never in its own environment, and appends the llvm feature to the backend executable name; the value in molt's own environment selects nothing.",
       "values": [
@@ -924,6 +953,7 @@ _REGISTRY_JSON = r"""{
       "default": "8000",
       "kind": "int",
       "name": "MOLT_BACKEND_BATCH_OP_BUDGET",
+      "output_neutral": false,
       "owner": "runtime/molt-backend/src/backend_process/native_batch/batching/limits.rs",
       "summary": "Maximum IR op count per native compile batch for application and stdlib batching; 0 removes the limit and non-numeric values use 8000.",
       "values": []
@@ -933,6 +963,7 @@ _REGISTRY_JSON = r"""{
       "default": "64",
       "kind": "int",
       "name": "MOLT_BACKEND_BATCH_SIZE",
+      "output_neutral": false,
       "owner": "runtime/molt-backend/src/backend_process/native_batch/batching/limits.rs",
       "summary": "Maximum functions per native compile batch; 0 removes the limit, and unset or non-numeric values use 64 for application batches and 128 for stdlib batches.",
       "values": []
@@ -942,6 +973,7 @@ _REGISTRY_JSON = r"""{
       "default": "",
       "kind": "string",
       "name": "MOLT_BACKEND_COMPILER_FINGERPRINT",
+      "output_neutral": false,
       "owner": "runtime/molt-passes/src/tir/cache.rs",
       "summary": "molt build sets it to the admitted compiler fingerprint for the molt-backend child; the backend keys its TIR cache namespace on it instead of hashing its own executable, and the CLI folds it into the daemon config digest.",
       "values": []
@@ -951,6 +983,7 @@ _REGISTRY_JSON = r"""{
       "default": "1",
       "kind": "bool",
       "name": "MOLT_BACKEND_DAEMON",
+      "output_neutral": false,
       "owner": "src/molt/cli/backend_daemon_config.py",
       "summary": "Enables the persistent molt-backend compile daemon on POSIX hosts; 0/false/no/off (case-insensitive) disable it, any other value enables it, it is always off on Windows, and molt dx sets the default from the backend_daemon dx config.",
       "values": []
@@ -960,6 +993,7 @@ _REGISTRY_JSON = r"""{
       "default": "",
       "kind": "int",
       "name": "MOLT_BACKEND_DAEMON_CACHE_MB",
+      "output_neutral": false,
       "owner": "runtime/molt-backend/src/backend_process/daemon/cache/health.rs",
       "summary": "In-daemon object cache limit in MiB; a positive integer sets it, otherwise the daemon uses physical memory divided by 64 clamped to 128..2048 MiB (512 MiB when memory is unknown), and CI pins it to 128.",
       "values": []
@@ -969,6 +1003,7 @@ _REGISTRY_JSON = r"""{
       "default": "",
       "kind": "string",
       "name": "MOLT_BACKEND_DAEMON_CONFIG_DIGEST",
+      "output_neutral": false,
       "owner": "runtime/molt-backend/src/backend_process/daemon/server/mod.rs",
       "summary": "molt sets it to the admitted config digest when it spawns the backend daemon; the daemon trims it, reports it as spawn_config_digest in health responses, and compares it with request digests.",
       "values": []
@@ -978,6 +1013,7 @@ _REGISTRY_JSON = r"""{
       "default": "5242880",
       "kind": "int",
       "name": "MOLT_BACKEND_DAEMON_LOG_MAX_BYTES",
+      "output_neutral": false,
       "owner": "src/molt/cli/backend_daemon_logs.py",
       "summary": "Size in bytes above which molt rotates the backend daemon log to <log>.old; empty, non-numeric, or non-positive values use 5242880 (5 MiB).",
       "values": []
@@ -987,6 +1023,7 @@ _REGISTRY_JSON = r"""{
       "default": "512",
       "kind": "int",
       "name": "MOLT_BACKEND_DAEMON_MAX_JOBS",
+      "output_neutral": false,
       "owner": "runtime/molt-backend/src/backend_process/io_limits/limits.rs",
       "summary": "Maximum jobs the backend daemon accepts in one request; values below 1 or non-numeric use 512.",
       "values": []
@@ -996,6 +1033,7 @@ _REGISTRY_JSON = r"""{
       "default": "536870912",
       "kind": "int",
       "name": "MOLT_BACKEND_DAEMON_REQUEST_LIMIT_BYTES",
+      "output_neutral": false,
       "owner": "runtime/molt-backend/src/backend_process/io_limits/limits.rs",
       "summary": "Maximum request payload bytes the backend daemon reads from one connection; values below 1024 or non-numeric use 536870912 (512 MiB).",
       "values": []
@@ -1005,6 +1043,7 @@ _REGISTRY_JSON = r"""{
       "default": "",
       "kind": "path",
       "name": "MOLT_BACKEND_DAEMON_SOCKET",
+      "output_neutral": false,
       "owner": "src/molt/cli/backend_execution.py",
       "summary": "Explicit Unix socket path for the backend daemon; a relative path resolves against the project root, and unset derives moltbd.<16 hex>.sock inside the socket directory from the project root, build-state root, cargo profile, config digest, and session id.",
       "values": []
@@ -1014,6 +1053,7 @@ _REGISTRY_JSON = r"""{
       "default": "",
       "kind": "path",
       "name": "MOLT_BACKEND_DAEMON_SOCKET_DIR",
+      "output_neutral": false,
       "owner": "src/molt/cli/backend_execution.py",
       "summary": "Directory that holds backend daemon sockets; a relative path resolves against the current directory, unset uses <tempdir>/molt-backend-daemon shortened to /tmp/molt-backend-daemon or /private/tmp/molt-backend-daemon when the Unix socket path would reach 104 bytes, and molt dx sets it to <socket root>/molt-backend-<repo hash>.",
       "values": []
@@ -1023,6 +1063,7 @@ _REGISTRY_JSON = r"""{
       "default": "",
       "kind": "path",
       "name": "MOLT_BACKEND_DAEMON_SOCKET_ROOT",
+      "output_neutral": false,
       "owner": "src/molt/dx.py",
       "summary": "Root directory under which molt dx places the per-checkout backend daemon socket directory molt-backend-<repo hash>; unset falls back to TMPDIR, TMP, TEMP, then /tmp (the system temp directory on Windows).",
       "values": []
@@ -1032,6 +1073,7 @@ _REGISTRY_JSON = r"""{
       "default": "120",
       "kind": "float",
       "name": "MOLT_BACKEND_DAEMON_START_TIMEOUT",
+      "output_neutral": false,
       "owner": "src/molt/cli/backend_daemon_startup.py",
       "summary": "Seconds molt waits for a freshly spawned backend daemon to become ready; empty or non-numeric values use 120, and 0 or less waits without limit.",
       "values": []
@@ -1041,6 +1083,7 @@ _REGISTRY_JSON = r"""{
       "default": "",
       "kind": "path",
       "name": "MOLT_BACKEND_DAEMON_SUITE_LEASE",
+      "output_neutral": false,
       "owner": "src/molt/backend_daemon_suite_custody.py",
       "summary": "tools/harness_memory_guard.py sets it to the suite daemon lease file; custody binds daemon identity and config digest, transfers daemon process groups on POSIX, and selects lease-owned native scratch through TMPDIR/TMP/TEMP at spawn. The EOF guardian reclaims scratch only after verified daemon closure; failed or unknown closure preserves it.",
       "values": []
@@ -1050,6 +1093,7 @@ _REGISTRY_JSON = r"""{
       "default": "0",
       "kind": "bool",
       "name": "MOLT_BACKEND_ENABLE_VERIFIER",
+      "output_neutral": false,
       "owner": "runtime/molt-backend-native/src/native_backend/simple_backend/config.rs",
       "summary": "Runs the Cranelift IR verifier during native codegen; 1/true/yes/on enable and any other value disables, while unset enables it only in debug builds of molt-backend.",
       "values": []
@@ -1059,6 +1103,7 @@ _REGISTRY_JSON = r"""{
       "default": "0",
       "kind": "bool",
       "name": "MOLT_BACKEND_INLINE_EXC_DISABLED",
+      "output_neutral": false,
       "owner": "runtime/molt-backend-native/src/native_backend/function_compiler.rs",
       "summary": "Disables the inline exception-pending flag pointer in native function codegen so exception checks call into the runtime instead; 1/true/yes/on enable, and molt forwards it to the backend daemon as a codegen input.",
       "values": []
@@ -1068,6 +1113,7 @@ _REGISTRY_JSON = r"""{
       "default": "",
       "kind": "string",
       "name": "MOLT_BACKEND_LIBCALL_CALL_CONV",
+      "output_neutral": false,
       "owner": "runtime/molt-backend-native/src/native_backend/simple_backend/config.rs",
       "summary": "Cranelift libcall_call_conv setting applied to runtime library calls; unset keeps Cranelift's isa_default, and a value Cranelift rejects panics the backend.",
       "values": []
@@ -1077,6 +1123,7 @@ _REGISTRY_JSON = r"""{
       "default": "",
       "kind": "int",
       "name": "MOLT_BACKEND_MAX_PROCESS_RSS_GB",
+      "output_neutral": true,
       "owner": "runtime/molt-backend/src/backend_process/memory_guard.rs",
       "summary": "Gigabyte cap on the backend compiler process's committed memory; tools/memory_guard_core/process_custody.py sets it in the child environment from the guard RSS budget and the CLI forwards it in backend daemon requests, the backend parses it as fractional GB and installs it as the soft RLIMIT_DATA on Linux (keeping the inherited hard limit; the daemon widens it to its compile slots times this budget) or a job-object memory limit on Windows, the TIR resource plan reads it per request as a memory budget, and when unset the backend computes 16, 12, 8 or 4 from physical RAM of at least 64, 32, 16 or fewer GiB.",
       "values": []
@@ -1086,6 +1133,7 @@ _REGISTRY_JSON = r"""{
       "default": "",
       "kind": "float",
       "name": "MOLT_BACKEND_MEMORY_AVAILABLE_GB",
+      "output_neutral": true,
       "owner": "runtime/molt-passes/src/memory_budget.rs",
       "summary": "The memory guard sets it to the child's memory ceiling in GB (non-negative finite float); molt-backend and the TIR pipeline subtract MOLT_BACKEND_MEMORY_RESERVE_GB from it to size the in-memory TIR cache and the optimisation resource plan, reading MOLT_CLI_MEMORY_AVAILABLE_GB, MOLT_CLI_MEM_AVAILABLE_GB, MOLT_MEMORY_AVAILABLE_GB, and MOLT_MEM_AVAILABLE_GB as fallbacks when it is unset.",
       "values": []
@@ -1095,6 +1143,7 @@ _REGISTRY_JSON = r"""{
       "default": "0",
       "kind": "float",
       "name": "MOLT_BACKEND_MEMORY_RESERVE_GB",
+      "output_neutral": false,
       "owner": "runtime/molt-passes/src/memory_budget.rs",
       "summary": "Memory in GB (non-negative finite float) the backend keeps out of its usable budget when sizing the TIR cache and optimisation plan; unset reads MOLT_CLI_MEMORY_RESERVE_GB, MOLT_CLI_MEM_RESERVE_GB, MOLT_MEMORY_RESERVE_GB, MOLT_MEM_RESERVE_GB, then 0.",
       "values": []
@@ -1104,6 +1153,7 @@ _REGISTRY_JSON = r"""{
       "default": "4",
       "kind": "int",
       "name": "MOLT_BACKEND_MIN_FUNCTION_ALIGNMENT_LOG2",
+      "output_neutral": false,
       "owner": "runtime/molt-backend-native/src/native_backend/simple_backend/config.rs",
       "summary": "log2 of the minimum function alignment Cranelift emits; unset uses 4 (16 bytes) in release builds of molt-backend and 0 in debug builds, and a value Cranelift rejects panics the backend.",
       "values": []
@@ -1113,6 +1163,7 @@ _REGISTRY_JSON = r"""{
       "default": "speed",
       "kind": "enum",
       "name": "MOLT_BACKEND_OPT_LEVEL",
+      "output_neutral": false,
       "owner": "runtime/molt-backend-native/src/native_backend/simple_backend/config.rs",
       "summary": "Cranelift optimisation level for native codegen: none compiles fastest, speed is the default, speed_and_size trades speed for smaller code; an invalid value panics the backend, and molt build sets speed_and_size for the release-size and wasm-release profiles.",
       "values": [
@@ -1126,6 +1177,7 @@ _REGISTRY_JSON = r"""{
       "default": "release",
       "kind": "enum",
       "name": "MOLT_BACKEND_PROFILE",
+      "output_neutral": false,
       "owner": "src/molt/cli/cargo_profiles.py",
       "summary": "Build profile family of the host molt-backend compiler, independent of the guest build profile; compared lowercase, unset means release, and any other value fails the command.",
       "values": [
@@ -1138,6 +1190,7 @@ _REGISTRY_JSON = r"""{
       "default": "backtracking",
       "kind": "enum",
       "name": "MOLT_BACKEND_REGALLOC_ALGORITHM",
+      "output_neutral": false,
       "owner": "runtime/molt-backend-native/src/native_backend/simple_backend/config.rs",
       "summary": "Cranelift register allocator for native codegen; unset uses backtracking, or single_pass when MOLT_BACKEND_OPT_LEVEL is none, and an invalid value panics the backend.",
       "values": [
@@ -1150,6 +1203,7 @@ _REGISTRY_JSON = r"""{
       "default": "536870912",
       "kind": "int",
       "name": "MOLT_BACKEND_STDIN_REQUEST_LIMIT_BYTES",
+      "output_neutral": false,
       "owner": "runtime/molt-backend/src/backend_process/io_limits/limits.rs",
       "summary": "Maximum one-shot backend stdin request bytes; also bounds native artifact inspection input and complete JSON response separately. Oversized inspection fails without truncation. Values below 1024 or non-numeric use 536870912 (512 MiB).",
       "values": []
@@ -1159,6 +1213,7 @@ _REGISTRY_JSON = r"""{
       "default": "",
       "kind": "float",
       "name": "MOLT_BACKEND_TIMEOUT",
+      "output_neutral": false,
       "owner": "src/molt/cli/build_inputs.py",
       "summary": "Seconds molt build allows the backend compile step; unset means no limit, and a non-numeric value or a value of 0 or less fails the build.",
       "values": []
@@ -1168,6 +1223,7 @@ _REGISTRY_JSON = r"""{
       "default": "0",
       "kind": "bool",
       "name": "MOLT_BACKEND_TIMING",
+      "output_neutral": false,
       "owner": "runtime/molt-backend-native/src/native_backend/simple_backend/compile_driver.rs",
       "summary": "Prints per-phase native backend compile timings to stderr; 1/true/yes/on enable, molt forwards it to the backend as a diagnostic knob, and molt debug trace backend_timing sets it.",
       "values": []
@@ -1177,6 +1233,7 @@ _REGISTRY_JSON = r"""{
       "default": "4096",
       "kind": "int",
       "name": "MOLT_BACKEND_TIR_CACHE_DISK_MB",
+      "output_neutral": false,
       "owner": "runtime/molt-passes/src/tir/cache.rs",
       "summary": "MiB limit of one persistent TIR cache namespace on disk, enforced by its hourly trim; unset or non-numeric means 4096.",
       "values": []
@@ -1186,6 +1243,7 @@ _REGISTRY_JSON = r"""{
       "default": "65536",
       "kind": "int",
       "name": "MOLT_BACKEND_TIR_CACHE_MAX_ENTRIES",
+      "output_neutral": false,
       "owner": "runtime/molt-passes/src/tir/cache.rs",
       "summary": "Maximum file count (artifacts and quarantine sidecars) of one persistent TIR cache namespace, enforced by its hourly trim; unset or non-numeric means 65536.",
       "values": []
@@ -1195,6 +1253,7 @@ _REGISTRY_JSON = r"""{
       "default": "",
       "kind": "int",
       "name": "MOLT_BACKEND_TIR_CACHE_MEMORY_MB",
+      "output_neutral": false,
       "owner": "runtime/molt-passes/src/tir/cache.rs",
       "summary": "MiB limit of the in-memory TIR cache; unset falls through to the memory-derived default.",
       "values": []
@@ -1204,6 +1263,7 @@ _REGISTRY_JSON = r"""{
       "default": "",
       "kind": "path",
       "name": "MOLT_BENCH_CODON_TAQ_FILE",
+      "output_neutral": false,
       "owner": "tools/bench.py",
       "summary": "Input TAQ data file for the Codon benchmarks in tools/bench.py; unset uses bench/friends/repos/codon_benchmarks/bench/data/taq.txt when present, else a generated sample under the bench temp root.",
       "values": []
@@ -1213,6 +1273,7 @@ _REGISTRY_JSON = r"""{
       "default": "",
       "kind": "path",
       "name": "MOLT_BENCH_CODON_WORD_FILE",
+      "output_neutral": false,
       "owner": "tools/bench.py",
       "summary": "Word-count input file for the Codon benchmarks in tools/bench.py; unset uses the resolved Codon TAQ file.",
       "values": []
@@ -1222,6 +1283,7 @@ _REGISTRY_JSON = r"""{
       "default": "",
       "kind": "path",
       "name": "MOLT_BENCH_DAEMON_CLEANUP_LOG",
+      "output_neutral": false,
       "owner": "tools/bench.py",
       "summary": "tools/bench.py sets it to <artifact root>/memory_guard/backend_daemon_cleanup.jsonl in the bench environment and appends one JSON event there per backend daemon prune; a relative path resolves against the repo root, and unset skips the log.",
       "values": []
@@ -1231,6 +1293,7 @@ _REGISTRY_JSON = r"""{
       "default": "bench_prune",
       "kind": "string",
       "name": "MOLT_BENCH_DAEMON_CLEANUP_REASON",
+      "output_neutral": false,
       "owner": "tools/bench.py",
       "summary": "tools/bench.py sets it to bench_start for the initial backend daemon prune and records the value as the reason field of the cleanup event; unset records bench_prune.",
       "values": []
@@ -1240,6 +1303,7 @@ _REGISTRY_JSON = r"""{
       "default": "",
       "kind": "string",
       "name": "MOLT_BENCH_PYODIDE_CMD",
+      "output_neutral": false,
       "owner": "tools/bench.py",
       "summary": "Shell command prefix, split with shlex, that runs a script under Pyodide for tools/bench.py --pyodide; --pyodide-cmd overrides it, and unset skips the Pyodide lane.",
       "values": []
@@ -1249,6 +1313,7 @@ _REGISTRY_JSON = r"""{
       "default": "",
       "kind": "path",
       "name": "MOLT_BENCH_TMP_ROOT",
+      "output_neutral": false,
       "owner": "tools/bench.py",
       "summary": "Scratch directory for bench temporaries; unset uses <MOLT_DIFF_TMPDIR or TMPDIR>/bench, else <bench artifact root>/tmp/bench, and tools/bench.py records the resolved value in its canonical environment.",
       "values": []
@@ -1258,6 +1323,7 @@ _REGISTRY_JSON = r"""{
       "default": "0",
       "kind": "bool",
       "name": "MOLT_BENCH_WS",
+      "output_neutral": false,
       "owner": "tools/bench.py",
       "summary": "Set exactly to 1 to include the websocket wait benchmark in tools/bench.py, the same as --ws.",
       "values": []
@@ -1267,6 +1333,7 @@ _REGISTRY_JSON = r"""{
       "default": "",
       "kind": "path",
       "name": "MOLT_BIN",
+      "output_neutral": false,
       "owner": "src/molt/default_paths.py",
       "summary": "Directory for Molt-installed binaries; a relative path resolves against the current directory and unset means <MOLT_HOME>/bin.",
       "values": []
@@ -1276,6 +1343,7 @@ _REGISTRY_JSON = r"""{
       "default": "",
       "kind": "path",
       "name": "MOLT_BINDING_PROFILE_SOURCE_ROOT",
+      "output_neutral": false,
       "owner": "tools/profile_python_binding_flow.py",
       "summary": "Implementation checkout whose src/ tools/profile_python_binding_flow.py imports and profiles; unset uses the repo root, and the tool passes the resolved root to the child run it launches.",
       "values": []
@@ -1285,6 +1353,7 @@ _REGISTRY_JSON = r"""{
       "default": "",
       "kind": "path",
       "name": "MOLT_BIN_PATH",
+      "output_neutral": false,
       "owner": "tools/parity_gate.py",
       "summary": "Path of the molt executable tools/parity_gate.py runs; unset tries molt on PATH, then python -m molt.cli from the repo root.",
       "values": []
@@ -1294,6 +1363,7 @@ _REGISTRY_JSON = r"""{
       "default": "",
       "kind": "path",
       "name": "MOLT_BOLT_TELEMETRY_JSON",
+      "output_neutral": false,
       "owner": "tools/bolt_optimize.sh",
       "summary": "File where tools/bolt_optimize.sh writes its BOLT timing telemetry as JSON; unset writes none, and tools/native_link_benchmark.py sets it to a hidden file beside the output binary.",
       "values": []
@@ -1303,6 +1373,7 @@ _REGISTRY_JSON = r"""{
       "default": "0",
       "kind": "bool",
       "name": "MOLT_BUILD_ALLOCATIONS",
+      "output_neutral": false,
       "owner": "src/molt/cli/build_diagnostics.py",
       "summary": "Starts tracemalloc in molt build so the build diagnostics include Python allocation data; 1/true/yes/on enable.",
       "values": []
@@ -1312,6 +1383,7 @@ _REGISTRY_JSON = r"""{
       "default": "0",
       "kind": "bool",
       "name": "MOLT_BUILD_DIAGNOSTICS",
+      "output_neutral": false,
       "owner": "src/molt/cli/build_diagnostics.py",
       "summary": "Enables build diagnostics in molt build and the runtime-wasm build (phase timings and a JSON summary line on stderr); 1/true/yes/on enable, and --diagnostics overrides it.",
       "values": []
@@ -1321,6 +1393,7 @@ _REGISTRY_JSON = r"""{
       "default": "",
       "kind": "path",
       "name": "MOLT_BUILD_DIAGNOSTICS_FILE",
+      "output_neutral": false,
       "owner": "src/molt/cli/build_inputs.py",
       "summary": "File that receives the build diagnostics JSON when diagnostics are enabled; a value ending in a path separator names a directory that receives one <pid>-<n>.json per build (summarize with tools/build_phase_report.py); unset writes diagnostics only to stderr, and --diagnostics-file overrides it.",
       "values": []
@@ -1330,6 +1403,7 @@ _REGISTRY_JSON = r"""{
       "default": "default",
       "kind": "enum",
       "name": "MOLT_BUILD_DIAGNOSTICS_VERBOSITY",
+      "output_neutral": false,
       "owner": "src/molt/cli/build_inputs.py",
       "summary": "Detail level of build diagnostics: default/normal/standard, summary/compact/brief, or full/verbose/detailed, compared lowercase; unknown values use default, and the --diagnostics-verbosity flag overrides it.",
       "values": [
@@ -1349,6 +1423,7 @@ _REGISTRY_JSON = r"""{
       "default": "300",
       "kind": "float",
       "name": "MOLT_BUILD_LOCK_TIMEOUT",
+      "output_neutral": false,
       "owner": "src/molt/cli/build_locks.py",
       "summary": "Seconds molt waits for a build lock or shared cache lock; 0 or less waits without limit, and empty or non-numeric values use 300.",
       "values": []
@@ -1358,6 +1433,7 @@ _REGISTRY_JSON = r"""{
       "default": "",
       "kind": "path",
       "name": "MOLT_BUILD_PYTHON",
+      "output_neutral": false,
       "owner": "src/molt/python_runtime_admission.py",
       "summary": "Python interpreter for the runtime build identity probe and Cargo's stdlib table generators; unset falls back to PYTHON, then python3 (python on Windows), and molt sets it to its own interpreter for nested Cargo builds.",
       "values": []
@@ -1367,6 +1443,7 @@ _REGISTRY_JSON = r"""{
       "default": "",
       "kind": "string",
       "name": "MOLT_BUILD_PYTHON_SIGNATURE",
+      "output_neutral": false,
       "owner": "src/molt/cli/runtime_build_python.py",
       "summary": "Derived content digest from the admitted runtime build Python identity, bound to the runtime Cargo producer after initial identity capture; the shared build-script Python helper watches it so same-path interpreter or library changes regenerate tables. It is validated against fresh Python custody and is not an independent semantic input or an end-user runtime cost.",
       "values": []
@@ -1376,6 +1453,7 @@ _REGISTRY_JSON = r"""{
       "default": "0",
       "kind": "bool",
       "name": "MOLT_BUILD_SMOKE_EXEC",
+      "output_neutral": false,
       "owner": "src/molt/cli/native_binary.py",
       "summary": "Set exactly to 1 to run the freshly linked native binary once after molt build as a loader smoke probe on non-Windows hosts; only a loader-level kill or exec error fails the build.",
       "values": []
@@ -1385,6 +1463,7 @@ _REGISTRY_JSON = r"""{
       "default": "",
       "kind": "path",
       "name": "MOLT_BUILD_STATE_DIR",
+      "output_neutral": false,
       "owner": "src/molt/build_state_layout.py",
       "summary": "Root for molt build control state such as locks, daemon sidecars, and receipts; a relative path resolves against the project root, unset uses <cargo target>/.molt_state or, with MOLT_EXT_ROOT, <artifact root>/tmp/build-control/<digest>, and the packaging bootstrap sets <home>/build-state.",
       "values": []
@@ -1394,6 +1473,7 @@ _REGISTRY_JSON = r"""{
       "default": "",
       "kind": "bool",
       "name": "MOLT_BUILD_VALIDITY_PROBE",
+      "output_neutral": false,
       "owner": "src/molt/cli/native_binary.py",
       "summary": "molt build sets it to 1 in the environment of the freshly linked native binary during the opt-in smoke-exec probe so a program may exit early; no runtime code reads it.",
       "values": []
@@ -1403,6 +1483,7 @@ _REGISTRY_JSON = r"""{
       "default": "",
       "kind": "path",
       "name": "MOLT_BUNDLE_ROOT",
+      "output_neutral": false,
       "owner": "src/molt/source_root.py",
       "summary": "packaging/bootstrap.py sets it to the installed bundle root for the molt process it launches; molt reads it to recognise <bundle>/source as an installed compiler root that must carry a manifest.",
       "values": []
@@ -1412,6 +1493,7 @@ _REGISTRY_JSON = r"""{
       "default": "",
       "kind": "path",
       "name": "MOLT_CACHE",
+      "output_neutral": false,
       "owner": "src/molt/default_paths.py",
       "summary": "Molt cache directory for build outputs, installed tool roots, and the backend TIR cache; a relative path resolves against the current directory, unset uses <MOLT_EXT_ROOT>/.molt_cache when that directory exists, else LOCALAPPDATA/Molt on Windows or XDG_CACHE_HOME/molt (default ~/.cache/molt), while molt-backend alone falls back to ./.molt_cache, and molt dx sets <artifact root>/.molt_cache.",
       "values": []
@@ -1421,6 +1503,7 @@ _REGISTRY_JSON = r"""{
       "default": "30",
       "kind": "int",
       "name": "MOLT_CACHE_MAX_AGE_DAYS",
+      "output_neutral": false,
       "owner": "src/molt/cache_eviction.py",
       "summary": "Age in days after which cache retention evicts inactive entries; automatic development proof-queue maintenance and tools/molt_cache_prune.py share this budget, default 30.",
       "values": []
@@ -1430,6 +1513,7 @@ _REGISTRY_JSON = r"""{
       "default": "30",
       "kind": "float",
       "name": "MOLT_CACHE_MAX_GB",
+      "output_neutral": false,
       "owner": "src/molt/cache_eviction.py",
       "summary": "Logical cache-entry size budget in GiB for automatic development proof-queue maintenance and tools/molt_cache_prune.py, default 30; active entries, durable state and protected legacy native generations are retained.",
       "values": []
@@ -1439,6 +1523,7 @@ _REGISTRY_JSON = r"""{
       "default": "1",
       "kind": "bool",
       "name": "MOLT_CACHE_PRUNE",
+      "output_neutral": false,
       "owner": "tools/proof_queue_pkg/cache_retention.py",
       "summary": "Enable automatic cache maintenance after closed source-development proof payloads and throughput environment setup; only exact 0 disables automatic retention. The existing guarded controller prunes in process under its remaining time and memory budget; the canonical prune lock throttles attempts to five minutes per cache root, and explicit molt.cache_eviction remains operator-directed.",
       "values": []
@@ -1448,6 +1533,7 @@ _REGISTRY_JSON = r"""{
       "default": "",
       "kind": "list",
       "name": "MOLT_CAPABILITIES",
+      "output_neutral": false,
       "owner": "src/molt/capability_manifest.py",
       "summary": "Comma-separated capability names granted to the program in addition to the MOLT_CAPABILITY_TIER grants; blank entries are ignored and an unset value adds nothing. Runtime initialization freezes the selected grants and target before Ready; isolates inherit them and public queries cannot reseed them.",
       "values": []
@@ -1457,6 +1543,7 @@ _REGISTRY_JSON = r"""{
       "default": "",
       "kind": "string",
       "name": "MOLT_CAPABILITY_POLICY_DIGEST",
+      "output_neutral": false,
       "owner": "runtime/molt-runtime/src/object/ops_sys.rs",
       "summary": "CapabilityManifest.to_env_vars in src/molt/capability_manifest.py sets it to the sha256:<64 lowercase hex> digest of the resolved capability policy for the program it launches, and molt_runtime_init_audit reads it to stamp audit records; a malformed value panics and an unset value records no digest.",
       "values": []
@@ -1466,6 +1553,7 @@ _REGISTRY_JSON = r"""{
       "default": "none",
       "kind": "enum",
       "name": "MOLT_CAPABILITY_TIER",
+      "output_neutral": false,
       "owner": "src/molt/capability_manifest.py",
       "summary": "Built-in capability tier whose grants seed the program's capability set, compared after trim and casefold; an unknown tier grants nothing, full is the tier --trusted selects, default none. Runtime initialization freezes the selected grants and target before Ready; isolates inherit them and public queries cannot reseed them.",
       "values": [
@@ -1480,6 +1568,7 @@ _REGISTRY_JSON = r"""{
       "default": "",
       "kind": "path",
       "name": "MOLT_CARGO_BUILD_DIR_BASE",
+      "output_neutral": false,
       "owner": "src/molt/cli/runtime_cargo_plan.py",
       "summary": "Development-only stable base for the external-resource-keyed CARGO_BUILD_BUILD_DIR generation; RuntimeCargoPlan pins it from this value, then CARGO_BUILD_BUILD_DIR, CARGO_TARGET_DIR or project target. It survives plan recapture and is output placement, not a semantic input; final Cargo target artifacts retain their existing paths.",
       "values": []
@@ -1489,6 +1578,7 @@ _REGISTRY_JSON = r"""{
       "default": "",
       "kind": "string",
       "name": "MOLT_CARGO_CACHE_KEY",
+      "output_neutral": false,
       "owner": ".github/actions/save-cargo-cache/action.yml",
       "summary": "The setup-project action writes the restored Cargo cache primary key here through GITHUB_ENV, and the save-cargo-cache action prunes and saves the Cargo dependency cache under that key only when the value is non-empty and the job runs on main.",
       "values": []
@@ -1498,6 +1588,7 @@ _REGISTRY_JSON = r"""{
       "default": "",
       "kind": "path",
       "name": "MOLT_CARGO_CACHE_TARGET",
+      "output_neutral": false,
       "owner": "tools/ci_cargo_cache.py",
       "summary": "Absolute Cargo target directory that `ci_cargo_cache.py configure` records in GITHUB_ENV (CARGO_TARGET_DIR, else RUNNER_TEMP/molt-cargo-target); the cache actions save and restore that path and `ci_cargo_cache.py prune` removes workspace crate artifacts beneath it before the save.",
       "values": []
@@ -1507,6 +1598,7 @@ _REGISTRY_JSON = r"""{
       "default": "",
       "kind": "string",
       "name": "MOLT_CARGO_TEST_TRUTH_RUN_ID",
+      "output_neutral": false,
       "owner": "tools/run_cargo_test_truth.py",
       "summary": "Identity of the Cargo test truth run, which names the evidence directory under the runs root; it must match ^[A-Za-z0-9_.-]+$ or the run fails, and unset means <UTC timestamp>-<pid>.",
       "values": []
@@ -1516,6 +1608,7 @@ _REGISTRY_JSON = r"""{
       "default": "",
       "kind": "float",
       "name": "MOLT_CARGO_TIMEOUT",
+      "output_neutral": false,
       "owner": "src/molt/cli/backend_build.py",
       "summary": "Wall-clock limit in seconds for the cargo build that `molt build` and backend prewarm run, and for the feature probe that is a newly built backend's first run; it must parse as a float greater than zero or the command fails before building, and unset means no limit unless --cargo-timeout is given.",
       "values": []
@@ -1525,6 +1618,7 @@ _REGISTRY_JSON = r"""{
       "default": "admitted",
       "kind": "enum",
       "name": "MOLT_CEXT_BENCH_CANDIDATE",
+      "output_neutral": false,
       "owner": "runtime/molt-runtime/src/cpython_abi_hooks.rs",
       "summary": "tools/benchmark_cext_trampoline.py sets it for each timed child, and the ignored cext trampoline benchmark test in cpython_abi_hooks.rs reads it to pick the candidate call path to time against the baseline; default admitted, any other spelling panics.",
       "values": [
@@ -1537,6 +1631,7 @@ _REGISTRY_JSON = r"""{
       "default": "",
       "kind": "int",
       "name": "MOLT_CEXT_BENCH_EXPECTED_PRIORITY",
+      "output_neutral": false,
       "owner": "runtime/molt-runtime/src/cpython_abi_hooks.rs",
       "summary": "tools/benchmark_cext_trampoline.py sets it to the scheduling priority the timed child must hold (a u32 priority class on Windows, an i32 nice value on Linux), and configure_cext_benchmark_process in cpython_abi_hooks.rs reads it and panics when it is unset, non-numeric, or the child's actual priority differs.",
       "values": []
@@ -1546,6 +1641,7 @@ _REGISTRY_JSON = r"""{
       "default": "1000000",
       "kind": "int",
       "name": "MOLT_CEXT_BENCH_ITERATIONS",
+      "output_neutral": false,
       "owner": "runtime/molt-runtime/src/cpython_abi_hooks.rs",
       "summary": "tools/benchmark_cext_trampoline.py sets it to the timed call count for each benchmark child, and the cext trampoline benchmark test reads it as a usize; values below 100000 or non-numeric fall back to 1000000, and warmup uses one twentieth of it with a floor of 10000.",
       "values": []
@@ -1555,6 +1651,7 @@ _REGISTRY_JSON = r"""{
       "default": "baseline-first",
       "kind": "enum",
       "name": "MOLT_CEXT_BENCH_ORDER",
+      "output_neutral": false,
       "owner": "runtime/molt-runtime/src/cpython_abi_hooks.rs",
       "summary": "tools/benchmark_cext_trampoline.py alternates it per sample, and the cext trampoline benchmark test reads it to choose whether the baseline or the candidate call path is timed first; default baseline-first, any other spelling panics.",
       "values": [
@@ -1567,6 +1664,7 @@ _REGISTRY_JSON = r"""{
       "default": "",
       "kind": "int",
       "name": "MOLT_CEXT_BENCH_TARGET_CPU",
+      "output_neutral": false,
       "owner": "runtime/molt-runtime/src/cpython_abi_hooks.rs",
       "summary": "tools/benchmark_cext_trampoline.py sets it to the logical CPU index reserved for the timed child, and configure_cext_benchmark_process in cpython_abi_hooks.rs pins the child to that CPU (affinity mask on Windows, sched_setaffinity on Linux) and panics when it is unset, non-numeric, or the pin fails.",
       "values": []
@@ -1576,6 +1674,7 @@ _REGISTRY_JSON = r"""{
       "default": "",
       "kind": "int",
       "name": "MOLT_CEXT_BENCH_TARGET_MASK",
+      "output_neutral": false,
       "owner": "runtime/molt-runtime/src/cpython_abi_hooks.rs",
       "summary": "tools/benchmark_cext_trampoline.py sets it on Windows to the single-bit process affinity mask for the timed child, and configure_cext_benchmark_process in cpython_abi_hooks.rs applies that mask as a usize and panics when it is unset, non-numeric, holds more than one bit, or disagrees with MOLT_CEXT_BENCH_TARGET_CPU.",
       "values": []
@@ -1585,6 +1684,7 @@ _REGISTRY_JSON = r"""{
       "default": "0",
       "kind": "bool",
       "name": "MOLT_CHECK_TIR_TRANSLATION",
+      "output_neutral": false,
       "owner": "runtime/molt-passes/src/tir/translation_validator.rs",
       "summary": "Turns on the TIR translation validator in the pass pipeline so a representation-lattice regression between passes fails the molt-check run; only the exact value 1 enables it, default off.",
       "values": []
@@ -1594,6 +1694,7 @@ _REGISTRY_JSON = r"""{
       "default": "",
       "kind": "float",
       "name": "MOLT_CI_CARGO_BUILD_GB_PER_JOB",
+      "output_neutral": false,
       "owner": "tools/ci_resource_env.py",
       "summary": "Memory in gigabytes the CI resource planner budgets per parallel cargo build job; it must be a positive finite number or planning raises ValueError, and unset uses the receipt-calibrated value from config/ci_resource_policy.toml.",
       "values": []
@@ -1603,6 +1704,7 @@ _REGISTRY_JSON = r"""{
       "default": "",
       "kind": "path",
       "name": "MOLT_CI_EPHEMERAL_CUSTODY_ROOT",
+      "output_neutral": false,
       "owner": "src/molt/dx.py",
       "summary": "Per-run custody directory under RUNNER_TEMP that the setup-project action's first step writes to GITHUB_ENV; src/molt/dx.py treats a non-empty value as the hosted-checkout contract and fails closed unless GITHUB_ACTIONS, CI, the GitHub URLs, workspace and commit facts all agree, and unset means no hosted custody.",
       "values": []
@@ -1612,6 +1714,7 @@ _REGISTRY_JSON = r"""{
       "default": "",
       "kind": "int",
       "name": "MOLT_CI_MAX_CARGO_BUILD_JOBS",
+      "output_neutral": false,
       "owner": "tools/ci_resource_env.py",
       "summary": "Upper bound on parallel cargo build jobs the CI resource planner may schedule; it must be a positive integer or planning raises ValueError, and unset uses max_jobs from config/ci_resource_policy.toml.",
       "values": []
@@ -1621,6 +1724,7 @@ _REGISTRY_JSON = r"""{
       "default": "",
       "kind": "int",
       "name": "MOLT_CI_RESOURCE_CPU_COUNT",
+      "output_neutral": false,
       "owner": "tools/ci_resource_env.py",
       "summary": "Exported to GITHUB_ENV by tools/ci_resource_env.py: the CPU count the CI resource plan was computed from, for inspection in later workflow steps.",
       "values": []
@@ -1630,6 +1734,7 @@ _REGISTRY_JSON = r"""{
       "default": "",
       "kind": "string",
       "name": "MOLT_CI_RESOURCE_PLAN_JSON",
+      "output_neutral": false,
       "owner": "tools/ci_resource_env.py",
       "summary": "Exported to GITHUB_ENV by tools/ci_resource_env.py: the full CI resource plan as compact JSON, for inspection in later workflow steps.",
       "values": []
@@ -1639,6 +1744,7 @@ _REGISTRY_JSON = r"""{
       "default": "",
       "kind": "string",
       "name": "MOLT_CI_RESOURCE_REASON",
+      "output_neutral": false,
       "owner": "tools/ci_resource_env.py",
       "summary": "Exported to GITHUB_ENV by tools/ci_resource_env.py: the one-line reason behind the CI resource plan, for inspection in later workflow steps.",
       "values": []
@@ -1648,6 +1754,7 @@ _REGISTRY_JSON = r"""{
       "default": "",
       "kind": "path",
       "name": "MOLT_CLI_PROFILE",
+      "output_neutral": false,
       "owner": "src/molt/cli/entrypoint.py",
       "summary": "cProfile stats file for one molt CLI command; {pid} expands to the process id, so parallel builds write separate files. Read it with python -m pstats.",
       "values": []
@@ -1657,6 +1764,7 @@ _REGISTRY_JSON = r"""{
       "default": "msgpack",
       "kind": "enum",
       "name": "MOLT_CODEC",
+      "output_neutral": false,
       "owner": "tools/bench.py",
       "summary": "Structured codec the bench, molt_diff and conformance harnesses pass to the build server and to `molt build --codec`; default msgpack when unset.",
       "values": [
@@ -1670,6 +1778,7 @@ _REGISTRY_JSON = r"""{
       "default": "",
       "kind": "string",
       "name": "MOLT_CODESIGN_IDENTITY",
+      "output_neutral": false,
       "owner": "src/molt/cli/signing.py",
       "summary": "macOS codesign identity `molt package --sign codesign` uses when --signing-identity is absent; the command raises RuntimeError when both are unset.",
       "values": []
@@ -1679,6 +1788,7 @@ _REGISTRY_JSON = r"""{
       "default": "",
       "kind": "list",
       "name": "MOLT_COMPAT_FAULT_INJECT",
+      "output_neutral": false,
       "owner": "tools/compat/backends.py",
       "summary": "Comma-separated backend names (compared lowercase) whose stdout the compat diff harness perturbs with a <MOLT_COMPAT_FAULT_INJECT::backend> marker line so the cross-backend divergence proof sees a synthetic wrong answer; empty or unset injects nothing.",
       "values": []
@@ -1688,6 +1798,7 @@ _REGISTRY_JSON = r"""{
       "default": "",
       "kind": "path",
       "name": "MOLT_COMPAT_SCRATCH_ROOT",
+      "output_neutral": false,
       "owner": "tools/compat/backends.py",
       "summary": "Scratch directory for cross-backend compat builds, consulted only when no differential output root is selected (the layout then sets it to <root>/compat-scratch for children); ~ expands, and unset means <MOLT_EXT_ROOT or repo>/tmp/compat_backends. Admitted Python Cargo proofs bind it to their canonical proof scratch root.",
       "values": []
@@ -1697,6 +1808,7 @@ _REGISTRY_JSON = r"""{
       "default": "1",
       "kind": "bool",
       "name": "MOLT_COMPAT_WARNINGS",
+      "output_neutral": false,
       "owner": "src/molt/compat.py",
       "summary": "Controls whether the frontend prints compatibility warnings to stderr; 0, false, no, or off (case-insensitive) silences them, default on.",
       "values": []
@@ -1706,6 +1818,7 @@ _REGISTRY_JSON = r"""{
       "default": "",
       "kind": "path",
       "name": "MOLT_COMPILE_GUARD_DIR",
+      "output_neutral": false,
       "owner": "tools/compile_governor.py",
       "summary": "Directory holding the compile governor's slot lock files; ~ expands, and unset means <build state root for the Cargo target dir>/compile_guard.",
       "values": []
@@ -1715,6 +1828,7 @@ _REGISTRY_JSON = r"""{
       "default": "1",
       "kind": "bool",
       "name": "MOLT_COMPILE_GUARD_ENABLED",
+      "output_neutral": false,
       "owner": "tools/compile_governor.py",
       "summary": "Enables the compile governor that limits concurrent builds by slot locks, load and active compiler processes; 1/true/yes/on or 0/false/no/off (case-insensitive), other spellings keep the default on.",
       "values": []
@@ -1724,6 +1838,7 @@ _REGISTRY_JSON = r"""{
       "default": "",
       "kind": "int",
       "name": "MOLT_COMPILE_GUARD_MAX_ACTIVE_PROCS",
+      "output_neutral": false,
       "owner": "tools/compile_governor.py",
       "summary": "Maximum number of active compiler processes the compile governor tolerates before it waits for a slot; non-integer values fall back and values below 1 clamp to 1, and unset uses the resource-pressure plan or max slots times 3.",
       "values": []
@@ -1733,6 +1848,7 @@ _REGISTRY_JSON = r"""{
       "default": "",
       "kind": "float",
       "name": "MOLT_COMPILE_GUARD_MAX_LOAD",
+      "output_neutral": false,
       "owner": "tools/compile_governor.py",
       "summary": "One-minute load average above which the compile governor waits before granting a slot; negative values clamp to 0, non-numeric values fall back, and unset means the larger of max slots and cpu_count times 1.25.",
       "values": []
@@ -1742,6 +1858,7 @@ _REGISTRY_JSON = r"""{
       "default": "",
       "kind": "int",
       "name": "MOLT_COMPILE_GUARD_MAX_SLOTS",
+      "output_neutral": false,
       "owner": "tools/compile_governor.py",
       "summary": "Number of concurrent compile slots the compile governor hands out; non-integer values fall back and values below 1 clamp to 1, and unset uses the resource-pressure plan (baseline 2).",
       "values": []
@@ -1751,6 +1868,7 @@ _REGISTRY_JSON = r"""{
       "default": "0.5",
       "kind": "float",
       "name": "MOLT_COMPILE_GUARD_POLL_SEC",
+      "output_neutral": false,
       "owner": "tools/compile_governor.py",
       "summary": "Seconds the compile governor sleeps between slot acquisition attempts; values below 0.05 clamp to 0.05 and non-numeric values fall back to 0.5.",
       "values": []
@@ -1760,6 +1878,7 @@ _REGISTRY_JSON = r"""{
       "default": "180",
       "kind": "float",
       "name": "MOLT_COMPILE_GUARD_WAIT_SEC",
+      "output_neutral": false,
       "owner": "tools/compile_governor.py",
       "summary": "Seconds the compile governor waits for a free slot before it gives up; negative values clamp to 0 and non-numeric values fall back to 180.",
       "values": []
@@ -1769,6 +1888,7 @@ _REGISTRY_JSON = r"""{
       "default": "",
       "kind": "string",
       "name": "MOLT_CONFORMANCE_MOLT_CMD",
+      "output_neutral": false,
       "owner": "src/molt/harness_layers.py",
       "summary": "Shell-like command tests/harness/run_molt_conformance.py uses to invoke the Molt CLI; the conformance layer of src/molt/harness_layers.py sets it from its configured CLI command; unset means the checkout's `python -m molt.cli`, else a molt on PATH.",
       "values": []
@@ -1778,6 +1898,7 @@ _REGISTRY_JSON = r"""{
       "default": "0",
       "kind": "bool",
       "name": "MOLT_COSIGN_TLOG",
+      "output_neutral": false,
       "owner": "src/molt/cli/package_distribution.py",
       "summary": "Uploads the cosign signature `molt package --sign` produces to the public transparency log when set to 1, true, or yes (case-insensitive); default no upload.",
       "values": []
@@ -1787,6 +1908,7 @@ _REGISTRY_JSON = r"""{
       "default": "",
       "kind": "string",
       "name": "MOLT_CROSS_CC",
+      "output_neutral": false,
       "owner": "src/molt/cli/native_link_command.py",
       "summary": "C compiler command, with optional arguments, Molt uses as the cross linker and source-extension compiler for a non-host target triple; unset means the cross link uses zig cc from the LLVM toolchain candidates and fails when zig is absent, while extension compiles fall back to the toolchain's own compiler.",
       "values": []
@@ -1796,6 +1918,7 @@ _REGISTRY_JSON = r"""{
       "default": "",
       "kind": "string",
       "name": "MOLT_CROSS_CXX",
+      "output_neutral": false,
       "owner": "src/molt/cli/source_extension_toolchain.py",
       "summary": "C++ compiler command, with optional arguments, for building source extensions against a non-host target triple (CXX fills the host role); unset means Molt derives the C++ command from the resolved C compiler (clang-cl or zig c++) or the LLVM toolchain.",
       "values": []
@@ -1805,6 +1928,7 @@ _REGISTRY_JSON = r"""{
       "default": "3",
       "kind": "int",
       "name": "MOLT_CSE_FP_MAX_ITERS",
+      "output_neutral": false,
       "owner": "src/molt/frontend/lowering/midend_policy.py",
       "summary": "Maximum CSE-plus-DCE fixpoint iterations per midend round; non-integer values and values below 1 fall back to 3.",
       "values": []
@@ -1814,6 +1938,7 @@ _REGISTRY_JSON = r"""{
       "default": "",
       "kind": "int",
       "name": "MOLT_CSE_MAX_ITERS",
+      "output_neutral": false,
       "owner": "src/molt/frontend/lowering/midend_policy.py",
       "summary": "Caps the CSE iteration count per midend round and the block-local CSE loop; non-integer values and values below 1 fall back to 1, and unset means the policy's cse_iter_cap (20 for the block-local loop).",
       "values": []
@@ -1823,6 +1948,7 @@ _REGISTRY_JSON = r"""{
       "default": "1000",
       "kind": "int",
       "name": "MOLT_DB_MAX_ROWS",
+      "output_neutral": false,
       "owner": "runtime/molt-worker/src/main.rs",
       "summary": "Default row cap molt-worker applies to a DB query when the request omits max_rows; must be a positive u32, otherwise 1000.",
       "values": []
@@ -1832,6 +1958,7 @@ _REGISTRY_JSON = r"""{
       "default": "",
       "kind": "int",
       "name": "MOLT_DB_POOL",
+      "output_neutral": false,
       "owner": "runtime/molt-worker/src/main.rs",
       "summary": "Number of DB connections in the molt-worker pool; non-numeric values fall back, and unset means the worker thread count.",
       "values": []
@@ -1841,6 +1968,7 @@ _REGISTRY_JSON = r"""{
       "default": "5000",
       "kind": "int",
       "name": "MOLT_DB_POSTGRES_CONNECT_TIMEOUT_MS",
+      "output_neutral": false,
       "owner": "runtime/molt-worker/src/main.rs",
       "summary": "Milliseconds molt-worker waits for a new Postgres connection to open; non-numeric values keep the default 5000.",
       "values": []
@@ -1850,6 +1978,7 @@ _REGISTRY_JSON = r"""{
       "default": "",
       "kind": "string",
       "name": "MOLT_DB_POSTGRES_DSN",
+      "output_neutral": false,
       "owner": "runtime/molt-worker/src/main.rs",
       "summary": "Postgres connection string molt-worker opens its pool against; empty or unset disables the Postgres backend.",
       "values": []
@@ -1859,6 +1988,7 @@ _REGISTRY_JSON = r"""{
       "default": "",
       "kind": "int",
       "name": "MOLT_DB_POSTGRES_HEALTH_CHECK_MS",
+      "output_neutral": false,
       "owner": "runtime/molt-worker/src/main.rs",
       "summary": "Interval in milliseconds between molt-worker health checks on pooled Postgres connections; unset or non-numeric means no periodic health check.",
       "values": []
@@ -1868,6 +1998,7 @@ _REGISTRY_JSON = r"""{
       "default": "16",
       "kind": "int",
       "name": "MOLT_DB_POSTGRES_MAX_CONNS",
+      "output_neutral": false,
       "owner": "runtime/molt-worker/src/main.rs",
       "summary": "Upper bound on pooled Postgres connections in molt-worker; values below 1 clamp to 1 and non-numeric values keep the default 16.",
       "values": []
@@ -1877,6 +2008,7 @@ _REGISTRY_JSON = r"""{
       "default": "",
       "kind": "int",
       "name": "MOLT_DB_POSTGRES_MAX_IDLE_MS",
+      "output_neutral": false,
       "owner": "runtime/molt-worker/src/main.rs",
       "summary": "Milliseconds a pooled Postgres connection may sit idle before molt-worker closes it; unset or non-numeric means idle connections never expire.",
       "values": []
@@ -1886,6 +2018,7 @@ _REGISTRY_JSON = r"""{
       "default": "250",
       "kind": "int",
       "name": "MOLT_DB_POSTGRES_MAX_WAIT_MS",
+      "output_neutral": false,
       "owner": "runtime/molt-worker/src/main.rs",
       "summary": "Milliseconds a molt-worker request waits for a free Postgres connection from the pool; non-numeric values keep the default 250.",
       "values": []
@@ -1895,6 +2028,7 @@ _REGISTRY_JSON = r"""{
       "default": "0",
       "kind": "int",
       "name": "MOLT_DB_POSTGRES_MIN_CONNS",
+      "output_neutral": false,
       "owner": "runtime/molt-worker/src/main.rs",
       "summary": "Minimum number of Postgres connections molt-worker keeps open in the pool; non-numeric values keep the default 0.",
       "values": []
@@ -1904,6 +2038,7 @@ _REGISTRY_JSON = r"""{
       "default": "2000",
       "kind": "int",
       "name": "MOLT_DB_POSTGRES_QUERY_TIMEOUT_MS",
+      "output_neutral": false,
       "owner": "runtime/molt-worker/src/main.rs",
       "summary": "Milliseconds molt-worker allows a Postgres query before it cancels it; non-numeric values keep the default 2000.",
       "values": []
@@ -1913,6 +2048,7 @@ _REGISTRY_JSON = r"""{
       "default": "",
       "kind": "path",
       "name": "MOLT_DB_POSTGRES_SSL_ROOT_CERT",
+      "output_neutral": false,
       "owner": "runtime/molt-worker/src/main.rs",
       "summary": "Path of the root CA certificate molt-worker trusts for TLS to Postgres; empty or unset means no custom root certificate.",
       "values": []
@@ -1922,6 +2058,7 @@ _REGISTRY_JSON = r"""{
       "default": "128",
       "kind": "int",
       "name": "MOLT_DB_POSTGRES_STATEMENT_CACHE_SIZE",
+      "output_neutral": false,
       "owner": "runtime/molt-worker/src/main.rs",
       "summary": "Number of prepared statements each molt-worker Postgres connection caches; non-numeric values keep the default 128.",
       "values": []
@@ -1931,6 +2068,7 @@ _REGISTRY_JSON = r"""{
       "default": "",
       "kind": "path",
       "name": "MOLT_DB_SQLITE_PATH",
+      "output_neutral": false,
       "owner": "runtime/molt-worker/src/main.rs",
       "summary": "Path of the SQLite database molt-worker opens for its DB backend (the demo stack sets it from MOLT_DEMO_DB_PATH); molt-worker exits when the file cannot be opened, and empty or unset disables SQLite.",
       "values": []
@@ -1940,6 +2078,7 @@ _REGISTRY_JSON = r"""{
       "default": "0",
       "kind": "bool",
       "name": "MOLT_DB_SQLITE_READWRITE",
+      "output_neutral": false,
       "owner": "runtime/molt-worker/src/main.rs",
       "summary": "Opens the molt-worker SQLite database read-write when set to exactly 1, true, or yes; otherwise the database opens read-only.",
       "values": []
@@ -1949,6 +2088,7 @@ _REGISTRY_JSON = r"""{
       "default": "0",
       "kind": "bool",
       "name": "MOLT_DEAD_MODULE_ELIMINATION",
+      "output_neutral": false,
       "owner": "src/molt/cli/frontend_pipeline.py",
       "summary": "Set to exactly 1 to make `molt build` drop modules unreachable from the entry module, runtime import roots and support modules before compilation; otherwise only tree-shaken pure-wasm builds eliminate modules.",
       "values": []
@@ -1958,6 +2098,7 @@ _REGISTRY_JSON = r"""{
       "default": "0",
       "kind": "bool",
       "name": "MOLT_DEBUG_ALLOC_LIST_BUILDER",
+      "output_neutral": false,
       "owner": "runtime/molt-runtime/src/object/mod.rs",
       "summary": "Prints the requested and expected size of every list-builder object allocation to stderr when set to exactly 1; read once per process, default off.",
       "values": []
@@ -1967,6 +2108,7 @@ _REGISTRY_JSON = r"""{
       "default": "0",
       "kind": "bool",
       "name": "MOLT_DEBUG_ALLOC_OBJECT",
+      "output_neutral": false,
       "owner": "runtime/molt-runtime/src/object/mod.rs",
       "summary": "Prints type id, size and GIL state for every object allocation to stderr when set to exactly 1, filtered by MOLT_DEBUG_ALLOC_OBJECT_TYPE when that is set; read once per process, default off.",
       "values": []
@@ -1976,6 +2118,7 @@ _REGISTRY_JSON = r"""{
       "default": "",
       "kind": "int",
       "name": "MOLT_DEBUG_ALLOC_OBJECT_TYPE",
+      "output_neutral": false,
       "owner": "runtime/molt-runtime/src/object/mod.rs",
       "summary": "Numeric type id that narrows MOLT_DEBUG_ALLOC_OBJECT output to allocations of one type; non-numeric values and unset apply no filter.",
       "values": []
@@ -1985,6 +2128,7 @@ _REGISTRY_JSON = r"""{
       "default": "",
       "kind": "path",
       "name": "MOLT_DEBUG_ARTIFACT_DIR",
+      "output_neutral": false,
       "owner": "runtime/molt-ir/src/debug_artifacts.rs",
       "summary": "Directory where the compiler backends write debug artifacts and scratch objects such as native/compiled_funcs.txt, LLVM object files and native batch failure replays. It is the backend's only placement input. The molt CLI always passes it as an absolute path: the set value, else the compiler's run scratch folder molt-backend from molt.dx.scratch_dir. A backend started without it uses <platform temp directory>/molt-backend.",
       "values": []
@@ -1994,6 +2138,7 @@ _REGISTRY_JSON = r"""{
       "default": "0",
       "kind": "bool",
       "name": "MOLT_DEBUG_AWAITABLE",
+      "output_neutral": false,
       "owner": "runtime/molt-runtime/src/async_rt/generators_async_future.rs",
       "summary": "Prints the bits, type and class of objects that fail the awaitable check, plus every new future, to stderr when set to exactly 1; read once per process, default off.",
       "values": []
@@ -2003,6 +2148,7 @@ _REGISTRY_JSON = r"""{
       "default": "0",
       "kind": "bool",
       "name": "MOLT_DEBUG_BIGINT_RC",
+      "output_neutral": false,
       "owner": "runtime/molt-runtime/src/object/mod.rs",
       "summary": "Traces every BigInt refcount increment and decrement to stderr when set to exactly 1, which also switches on the slow refcount tracing path; read once per process, default off.",
       "values": []
@@ -2012,6 +2158,7 @@ _REGISTRY_JSON = r"""{
       "default": "0",
       "kind": "bool",
       "name": "MOLT_DEBUG_BIND",
+      "output_neutral": false,
       "owner": "runtime/molt-runtime/src/call/bind/builtin_args.rs",
       "summary": "Prints the function name, positional count and missing parameters to stderr when argument binding fails, when set to exactly 1, read once per process; the CLI also streams backend stderr when it is truthy, default off.",
       "values": []
@@ -2021,6 +2168,7 @@ _REGISTRY_JSON = r"""{
       "default": "",
       "kind": "string",
       "name": "MOLT_DEBUG_BLOCK_ORIGINS",
+      "output_neutral": false,
       "owner": "runtime/molt-backend-native/src/native_backend/function_compiler.rs",
       "summary": "Prints BLOCK_ORIGIN lines for branch and loop cleanup blocks the native backend creates; the value 1 covers every function, any other value selects functions whose name equals or contains it, and unset prints nothing.",
       "values": []
@@ -2030,6 +2178,7 @@ _REGISTRY_JSON = r"""{
       "default": "0",
       "kind": "bool",
       "name": "MOLT_DEBUG_BOUND_METHOD",
+      "output_neutral": false,
       "owner": "runtime/molt-runtime/src/builtins/attributes/state.rs",
       "summary": "Prints the function bits, self type and last attribute name to stderr when bound-method creation receives a non-function object, when set to exactly 1; read once per process, default off.",
       "values": []
@@ -2039,6 +2188,7 @@ _REGISTRY_JSON = r"""{
       "default": "0",
       "kind": "bool",
       "name": "MOLT_DEBUG_CHECK_EXC",
+      "output_neutral": false,
       "owner": "runtime/molt-backend-native/src/native_backend/function_compiler.rs",
       "summary": "Prints the exception-check count per compiled function and each check_exception target lookup to stderr in the native backend while the variable is present with any value; the CLI also streams backend stderr when it is truthy, default off.",
       "values": []
@@ -2048,6 +2198,7 @@ _REGISTRY_JSON = r"""{
       "default": "0",
       "kind": "bool",
       "name": "MOLT_DEBUG_CHECK_EXCEPTION",
+      "output_neutral": false,
       "owner": "runtime/molt-backend-native/src/native_backend/function_compiler/fc/exception_control.rs",
       "summary": "Prints one line per check_exception op the native backend lowers when set to exactly 1, narrowed to functions whose name contains MOLT_DEBUG_FUNC_FILTER when that is set; default off.",
       "values": []
@@ -2057,6 +2208,7 @@ _REGISTRY_JSON = r"""{
       "default": "0",
       "kind": "bool",
       "name": "MOLT_DEBUG_CLASS_DEF",
+      "output_neutral": false,
       "owner": "runtime/molt-runtime/src/object/ops.rs",
       "summary": "Prints the class name, base and attribute counts and each __set_name__ and __init_subclass__ stage during class creation to stderr when set to exactly 1; default off.",
       "values": []
@@ -2066,6 +2218,7 @@ _REGISTRY_JSON = r"""{
       "default": "0",
       "kind": "bool",
       "name": "MOLT_DEBUG_COLLECTIONS_ABC_TYPES",
+      "output_neutral": false,
       "owner": "runtime/molt-runtime/src/builtins/abc.rs",
       "summary": "Prints each stage of collections.abc runtime type construction to stderr when set to exactly 1; default off.",
       "values": []
@@ -2075,6 +2228,7 @@ _REGISTRY_JSON = r"""{
       "default": "0",
       "kind": "bool",
       "name": "MOLT_DEBUG_COMPILED_FUNCS",
+      "output_neutral": false,
       "owner": "runtime/molt-backend-native/src/native_backend/function_compiler.rs",
       "summary": "Appends the name of every function the native backend compiles to native/compiled_funcs.txt under the debug artifact root when set to exactly 1; default off.",
       "values": []
@@ -2084,6 +2238,7 @@ _REGISTRY_JSON = r"""{
       "default": "0",
       "kind": "bool",
       "name": "MOLT_DEBUG_CONTEXT_STACK",
+      "output_neutral": false,
       "owner": "runtime/molt-runtime/src/builtins/context.rs",
       "summary": "Logs generator context-stack operations to stderr when set to exactly 1; read once per process, default off.",
       "values": []
@@ -2093,6 +2248,7 @@ _REGISTRY_JSON = r"""{
       "default": "0",
       "kind": "bool",
       "name": "MOLT_DEBUG_COUNTED_LOOP",
+      "output_neutral": false,
       "owner": "runtime/molt-passes/src/tir/passes/counted_loop/recognize.rs",
       "summary": "Appends a trace of counted-loop recognition decisions per loop header to counted_loop_trace.txt under the debug artifact root while the variable is present with any value; default off.",
       "values": []
@@ -2102,6 +2258,7 @@ _REGISTRY_JSON = r"""{
       "default": "0",
       "kind": "bool",
       "name": "MOLT_DEBUG_CURRENT_TASK",
+      "output_neutral": false,
       "owner": "runtime/molt-runtime/src/async_rt/generators.rs",
       "summary": "Prints task-pointer transitions to stderr when the scheduler enters or restores a task from a null previous task, when set to exactly 1; default off.",
       "values": []
@@ -2111,6 +2268,7 @@ _REGISTRY_JSON = r"""{
       "default": "0",
       "kind": "bool",
       "name": "MOLT_DEBUG_DEAD_FUNC_ELIM",
+      "output_neutral": false,
       "owner": "runtime/molt-tir/src/passes/dead_functions.rs",
       "summary": "Prints how many unreachable functions the TIR dead-function pass removed and retained to stderr while the variable is present with any value; default off.",
       "values": []
@@ -2120,6 +2278,7 @@ _REGISTRY_JSON = r"""{
       "default": "0",
       "kind": "bool",
       "name": "MOLT_DEBUG_DEAD_IMPORT_ELIM",
+      "output_neutral": false,
       "owner": "runtime/molt-tir/src/passes/dead_imports.rs",
       "summary": "Traces the imports the TIR dead-import pass removes to stderr while the variable is present with any value; default off.",
       "values": []
@@ -2129,6 +2288,7 @@ _REGISTRY_JSON = r"""{
       "default": "0",
       "kind": "bool",
       "name": "MOLT_DEBUG_DEAD_OP_ELIM",
+      "output_neutral": false,
       "owner": "runtime/molt-tir/src/passes/dead_ops.rs",
       "summary": "Traces the pure operations the TIR dead-op pass removes to stderr while the variable is present with any value; default off.",
       "values": []
@@ -2138,6 +2298,7 @@ _REGISTRY_JSON = r"""{
       "default": "0",
       "kind": "bool",
       "name": "MOLT_DEBUG_DECREF_ZERO",
+      "output_neutral": false,
       "owner": "runtime/molt-runtime/src/object/mod.rs",
       "summary": "Prints the pointer and type id of every object whose refcount reaches zero, plus code-object names, to stderr when set to exactly 1; read once per process, default off.",
       "values": []
@@ -2147,6 +2308,7 @@ _REGISTRY_JSON = r"""{
       "default": "",
       "kind": "string",
       "name": "MOLT_DEBUG_DROP",
+      "output_neutral": false,
       "owner": "runtime/molt-passes/src/tir/passes/drop_insertion/runner.rs",
       "summary": "Function-name substring (or ALL) that selects the functions whose post-drop-insertion block and op shape the TIR drop pass writes to drop/<func>.txt under the backend debug artifact root; unset writes nothing.",
       "values": []
@@ -2156,6 +2318,7 @@ _REGISTRY_JSON = r"""{
       "default": "",
       "kind": "string",
       "name": "MOLT_DEBUG_EVAL_CANDIDATE_JSON",
+      "output_neutral": false,
       "owner": "src/molt/cli/debug_helpers.py",
       "summary": "Set by molt debug bisect in config mode for each --eval-command child to the candidate config as sorted JSON; the evaluator script reads it and nothing in Molt does.",
       "values": []
@@ -2165,6 +2328,7 @@ _REGISTRY_JSON = r"""{
       "default": "",
       "kind": "path",
       "name": "MOLT_DEBUG_EVAL_INPUT",
+      "output_neutral": false,
       "owner": "src/molt/cli/debug_helpers.py",
       "summary": "Set by molt debug reduce and bisect for each --eval-command child to the path of the candidate source file to evaluate (the scratch reduction copy, or the original source); the evaluator script reads it and nothing in Molt does.",
       "values": []
@@ -2174,6 +2338,7 @@ _REGISTRY_JSON = r"""{
       "default": "",
       "kind": "enum",
       "name": "MOLT_DEBUG_EVAL_MODE",
+      "output_neutral": false,
       "owner": "src/molt/cli/debug_helpers.py",
       "summary": "Set by molt debug reduce and bisect for each --eval-command child to the evaluation mode, one of reduce, bisect-pass, or bisect-config; the evaluator script reads it and nothing in Molt does.",
       "values": [
@@ -2187,6 +2352,7 @@ _REGISTRY_JSON = r"""{
       "default": "",
       "kind": "string",
       "name": "MOLT_DEBUG_EVAL_ORACLE_JSON",
+      "output_neutral": false,
       "owner": "src/molt/cli/debug_helpers.py",
       "summary": "Set by molt debug reduce and bisect for each --eval-command child to the failure oracle as sorted JSON; the evaluator script reads it and nothing in Molt does.",
       "values": []
@@ -2196,6 +2362,7 @@ _REGISTRY_JSON = r"""{
       "default": "",
       "kind": "list",
       "name": "MOLT_DEBUG_EVAL_PASSES_CSV",
+      "output_neutral": false,
       "owner": "src/molt/cli/debug_helpers.py",
       "summary": "Set by molt debug bisect in pass mode for each --eval-command child to the comma-separated prefix of pass names to run; the evaluator script reads it and nothing in Molt does.",
       "values": []
@@ -2205,6 +2372,7 @@ _REGISTRY_JSON = r"""{
       "default": "",
       "kind": "string",
       "name": "MOLT_DEBUG_EVAL_PASSES_JSON",
+      "output_neutral": false,
       "owner": "src/molt/cli/debug_helpers.py",
       "summary": "Set by molt debug bisect in pass mode for each --eval-command child to the same pass-name prefix as a JSON list; the evaluator script reads it and nothing in Molt does.",
       "values": []
@@ -2214,6 +2382,7 @@ _REGISTRY_JSON = r"""{
       "default": "",
       "kind": "path",
       "name": "MOLT_DEBUG_EVAL_SOURCE_PATH",
+      "output_neutral": false,
       "owner": "src/molt/cli/debug_helpers.py",
       "summary": "Set by molt debug reduce and bisect for each --eval-command child to the path of the original failing source file; the evaluator script reads it and nothing in Molt does.",
       "values": []
@@ -2223,6 +2392,7 @@ _REGISTRY_JSON = r"""{
       "default": "0",
       "kind": "bool",
       "name": "MOLT_DEBUG_EXCEPTIONS",
+      "output_neutral": false,
       "owner": "runtime/molt-runtime/src/builtins/exceptions/state.rs",
       "summary": "Set to 1 to print a 'molt exc record' line on stderr with task, kind, and pointer each time the runtime records a raised exception; read once per process, default off.",
       "values": []
@@ -2232,6 +2402,7 @@ _REGISTRY_JSON = r"""{
       "default": "0",
       "kind": "bool",
       "name": "MOLT_DEBUG_EXCEPTION_CLEAR",
+      "output_neutral": false,
       "owner": "runtime/molt-runtime/src/builtins/exceptions/state.rs",
       "summary": "Set to 1 to print on stderr which pending exception molt_exception_clear discards, with its kind, task, and clear reason; read once per process, default off.",
       "values": []
@@ -2241,6 +2412,7 @@ _REGISTRY_JSON = r"""{
       "default": "0",
       "kind": "bool",
       "name": "MOLT_DEBUG_EXCEPTION_FLOW",
+      "output_neutral": false,
       "owner": "runtime/molt-runtime/src/builtins/exceptions/state.rs",
       "summary": "Set to 1 to trace exception flow on stderr: TypeError raise sites with caller location, exception context_set, record, and raise events; read once per process, default off.",
       "values": []
@@ -2250,6 +2422,7 @@ _REGISTRY_JSON = r"""{
       "default": "0",
       "kind": "bool",
       "name": "MOLT_DEBUG_EXCEPTION_PENDING",
+      "output_neutral": false,
       "owner": "runtime/molt-runtime/src/builtins/exceptions/state.rs",
       "summary": "Set to 1 to print a 'molt exc pending' line on stderr with task and kind each time the runtime finds a pending exception during its pending check; read once per process, default off.",
       "values": []
@@ -2259,6 +2432,7 @@ _REGISTRY_JSON = r"""{
       "default": "0",
       "kind": "bool",
       "name": "MOLT_DEBUG_EXCEPTION_RAISE",
+      "output_neutral": false,
       "owner": "runtime/molt-runtime/src/builtins/exceptions/state.rs",
       "summary": "Set to 1 to print a 'molt exc raise' line on stderr with task, kind, handler state, and stack depth each time the runtime raises an exception through the ABI; read once per process, default off.",
       "values": []
@@ -2268,6 +2442,7 @@ _REGISTRY_JSON = r"""{
       "default": "0",
       "kind": "bool",
       "name": "MOLT_DEBUG_EXCEPTION_RC",
+      "output_neutral": false,
       "owner": "runtime/molt-runtime/src/builtins/exceptions/state.rs",
       "summary": "Set to 1 to print a 'molt exc record' line on stderr each time the runtime records an exception, the same line MOLT_DEBUG_EXCEPTIONS prints; read once per process, default off.",
       "values": []
@@ -2277,6 +2452,7 @@ _REGISTRY_JSON = r"""{
       "default": "0",
       "kind": "bool",
       "name": "MOLT_DEBUG_FIELD",
+      "output_neutral": false,
       "owner": "runtime/molt-runtime/src/object/field_storage_debug.rs",
       "summary": "Set to exactly 1 to enable instance field and dictionary storage observations ([field_lookup], [field_dictionary], and [field_dictionary_entry] lines on stderr); read once per process, and unset or any other value disables the whole family.",
       "values": []
@@ -2286,6 +2462,7 @@ _REGISTRY_JSON = r"""{
       "default": "0",
       "kind": "bool",
       "name": "MOLT_DEBUG_FIELD_BOUNDS",
+      "output_neutral": false,
       "owner": "runtime/molt-runtime/src/object/accessors.rs",
       "summary": "Set to 1 to check every object field offset against the instance payload size, not only on objects with declared fields, and raise RuntimeError on an out-of-range offset; read once per process, default off.",
       "values": []
@@ -2295,6 +2472,7 @@ _REGISTRY_JSON = r"""{
       "default": "",
       "kind": "string",
       "name": "MOLT_DEBUG_FIELD_NAME",
+      "output_neutral": false,
       "owner": "runtime/molt-runtime/src/object/field_storage_debug.rs",
       "summary": "Exact attribute name that narrows the MOLT_DEBUG_FIELD observations to one field name; unset observes every name.",
       "values": []
@@ -2304,6 +2482,7 @@ _REGISTRY_JSON = r"""{
       "default": "0",
       "kind": "bool",
       "name": "MOLT_DEBUG_FILE_CLOSE",
+      "output_neutral": false,
       "owner": "runtime/molt-runtime/src/builtins/io/handle.rs",
       "summary": "Set to 1 to print a 'molt file_handle_close' line on stderr with pointer, closefd, owns_fd, and backend state each time a file handle closes; default off.",
       "values": []
@@ -2313,6 +2492,7 @@ _REGISTRY_JSON = r"""{
       "default": "0",
       "kind": "bool",
       "name": "MOLT_DEBUG_FILE_RC",
+      "output_neutral": false,
       "owner": "runtime/molt-runtime/src/object/mod.rs",
       "summary": "Set to 1 to print 'molt file rc inc' and 'molt file rc dec' lines on stderr with pointer and count for every refcount change of a file handle object; read once per process, default off.",
       "values": []
@@ -2322,6 +2502,7 @@ _REGISTRY_JSON = r"""{
       "default": "",
       "kind": "string",
       "name": "MOLT_DEBUG_FUNC_FILTER",
+      "output_neutral": false,
       "owner": "runtime/molt-backend-native/src/native_backend/function_compiler.rs",
       "summary": "Function-name substring that narrows MOLT_DEBUG_TRACKED_CLEANUP and MOLT_DEBUG_CHECK_EXCEPTION output in the native backend to matching functions; unset covers every function.",
       "values": []
@@ -2331,6 +2512,7 @@ _REGISTRY_JSON = r"""{
       "default": "0",
       "kind": "bool",
       "name": "MOLT_DEBUG_GUARD",
+      "output_neutral": false,
       "owner": "runtime/molt-runtime/src/object/accessors.rs",
       "summary": "Set to exactly 1 to print a '[guard]' line on stderr with pointer, type id, and class bits for each class layout guard check; read once per process, and unset or any other value disables it.",
       "values": []
@@ -2340,6 +2522,7 @@ _REGISTRY_JSON = r"""{
       "default": "",
       "kind": "string",
       "name": "MOLT_DEBUG_IF_MERGE_SLOTS",
+      "output_neutral": false,
       "owner": "runtime/molt-backend-native/src/native_backend/function_compiler/fc/control_flow.rs",
       "summary": "Exact function name for which the native backend prints IF_MERGE_SLOTS and IF_MERGE_INIT lines on stderr while it builds if/else merge slots; unset prints nothing.",
       "values": []
@@ -2349,6 +2532,7 @@ _REGISTRY_JSON = r"""{
       "default": "0",
       "kind": "bool",
       "name": "MOLT_DEBUG_INDEX",
+      "output_neutral": false,
       "owner": "runtime/molt-runtime/src/object/ops.rs",
       "summary": "Set to 1 to print a 'molt index oob' line on stderr with task, length, and index before the runtime raises IndexError for a list index; read once per process, default off.",
       "values": []
@@ -2358,6 +2542,7 @@ _REGISTRY_JSON = r"""{
       "default": "0",
       "kind": "bool",
       "name": "MOLT_DEBUG_INDEX_LIST",
+      "output_neutral": false,
       "owner": "runtime/molt-runtime/src/object/ops.rs",
       "summary": "Set to 1 to print a 'molt_index list' line on stderr with object, index, value type, and value bits for every list index read; read once per process, default off.",
       "values": []
@@ -2367,6 +2552,7 @@ _REGISTRY_JSON = r"""{
       "default": "0",
       "kind": "bool",
       "name": "MOLT_DEBUG_ITER",
+      "output_neutral": false,
       "owner": "runtime/molt-runtime/src/object/ops_iter.rs",
       "summary": "Set to 1 to print the non-iterable type name and bits on stderr before molt_iter_checked raises TypeError; default off.",
       "values": []
@@ -2376,6 +2562,7 @@ _REGISTRY_JSON = r"""{
       "default": "",
       "kind": "string",
       "name": "MOLT_DEBUG_LABEL_BINDINGS",
+      "output_neutral": false,
       "owner": "runtime/molt-backend-native/src/native_backend/function_compiler/fc/ret_jump.rs",
       "summary": "Exact function name for which the native backend prints LABEL_BIND lines on stderr with label id, block, and block params as it materializes label blocks; unset prints nothing.",
       "values": []
@@ -2385,6 +2572,7 @@ _REGISTRY_JSON = r"""{
       "default": "0",
       "kind": "bool",
       "name": "MOLT_DEBUG_LIST_BUILDER",
+      "output_neutral": false,
       "owner": "runtime/molt-runtime/src/object/builders.rs",
       "summary": "Set to 1 to print a 'molt debug list_builder_new' line on stderr with the capacity bits for every list builder allocation; read once per process, default off.",
       "values": []
@@ -2394,6 +2582,7 @@ _REGISTRY_JSON = r"""{
       "default": "0",
       "kind": "bool",
       "name": "MOLT_DEBUG_LOCALS",
+      "output_neutral": false,
       "owner": "runtime/molt-runtime/src/builtins/frames.rs",
       "summary": "Set to 1 to print a 'molt debug locals frame_locals_set' line on stderr with frame depth, previous locals, code, and new dict bits each time a frame's locals dict is replaced; default off.",
       "values": []
@@ -2403,6 +2592,7 @@ _REGISTRY_JSON = r"""{
       "default": "",
       "kind": "string",
       "name": "MOLT_DEBUG_LOOP_CFG",
+      "output_neutral": false,
       "owner": "runtime/molt-backend-native/src/native_backend/function_compiler.rs",
       "summary": "Set to 1 for every function, or to a function-name substring, to print LOOP_CFG lines on stderr that describe loop lowering decisions (block filled, depth, linearized, backedge, phi) in the native backend; unset prints nothing.",
       "values": []
@@ -2412,6 +2602,7 @@ _REGISTRY_JSON = r"""{
       "default": "",
       "kind": "string",
       "name": "MOLT_DEBUG_LOWER_FUNC",
+      "output_neutral": false,
       "owner": "runtime/molt-passes/src/tir/lower_to_simple/runner.rs",
       "summary": "Exact function name for which TIR-to-SimpleIR lowering prints the reverse-postorder block visit order (LOWER_DEBUG_RPO) on stderr; unset prints nothing.",
       "values": []
@@ -2421,6 +2612,7 @@ _REGISTRY_JSON = r"""{
       "default": "0",
       "kind": "bool",
       "name": "MOLT_DEBUG_MODULE_GET_ATTR",
+      "output_neutral": false,
       "owner": "runtime/molt-backend-native/src/native_backend/function_compiler/fc/modules.rs",
       "summary": "Set to 1 to record every module_get_attr op the native backend lowers in native/module_get_attr_diag.txt under the backend debug artifact root and to print non-module receiver diagnostics from the runtime on stderr; default off.",
       "values": []
@@ -2430,6 +2622,7 @@ _REGISTRY_JSON = r"""{
       "default": "0",
       "kind": "bool",
       "name": "MOLT_DEBUG_OBJECT_RC",
+      "output_neutral": false,
       "owner": "runtime/molt-runtime/src/object/mod.rs",
       "summary": "Set to exactly 1 to print '[OBJECT DEC]' lines on stderr for every dec_ref of a plain object instance, including the final free; read once per process, and unset or any other value disables it.",
       "values": []
@@ -2439,6 +2632,7 @@ _REGISTRY_JSON = r"""{
       "default": "0",
       "kind": "bool",
       "name": "MOLT_DEBUG_OOM",
+      "output_neutral": false,
       "owner": "runtime/molt-runtime/src/builtins/exceptions/state.rs",
       "summary": "Set to 1 to print on stderr the caller location of each MemoryError raise and each failed object allocation with its type id and size; read once per process, default off.",
       "values": []
@@ -2448,6 +2642,7 @@ _REGISTRY_JSON = r"""{
       "default": "0",
       "kind": "bool",
       "name": "MOLT_DEBUG_OPEN_FD",
+      "output_neutral": false,
       "owner": "runtime/molt-runtime/src/builtins/io/open.rs",
       "summary": "Set to 1 to print the buffer and file handle pointers on stderr when open() wraps file descriptor 0; default off.",
       "values": []
@@ -2457,6 +2652,7 @@ _REGISTRY_JSON = r"""{
       "default": "",
       "kind": "int",
       "name": "MOLT_DEBUG_OP_INDEX",
+      "output_neutral": false,
       "owner": "runtime/molt-backend-native/src/native_backend/function_compiler.rs",
       "summary": "IR op index that narrows MOLT_DEBUG_TRACKED_CLEANUP records in the native backend to one op; unset or a non-integer value records every op.",
       "values": []
@@ -2466,6 +2662,7 @@ _REGISTRY_JSON = r"""{
       "default": "",
       "kind": "string",
       "name": "MOLT_DEBUG_PHI_ARGS",
+      "output_neutral": false,
       "owner": "runtime/molt-backend-native/src/native_backend/function_compiler/fc/control_flow.rs",
       "summary": "Exact function name for which the native backend appends MERGE_INIT and MERGE_REBIND lines to native/ifmerge_debug.txt under the backend debug artifact root, and echoes rebind lines on stderr, while it lowers if/else merges; unset records nothing.",
       "values": []
@@ -2475,6 +2672,7 @@ _REGISTRY_JSON = r"""{
       "default": "0",
       "kind": "bool",
       "name": "MOLT_DEBUG_RC_OBJECT",
+      "output_neutral": false,
       "owner": "runtime/molt-runtime/src/object/mod.rs",
       "summary": "Set to 1 to print 'molt rc inc' and 'molt rc inc_n' lines on stderr for refcount changes of object instances whose class edge is borrowed; read once per process, default off.",
       "values": []
@@ -2484,6 +2682,7 @@ _REGISTRY_JSON = r"""{
       "default": "0",
       "kind": "bool",
       "name": "MOLT_DEBUG_RLIMIT",
+      "output_neutral": false,
       "owner": "runtime/molt-backend/src/backend_process/memory_guard.rs",
       "summary": "Set to 1 to print a warning on stderr when the backend process cannot install its committed-memory rlimit (sized by MOLT_BACKEND_MAX_RSS_GB) on Unix; default off.",
       "values": []
@@ -2493,6 +2692,7 @@ _REGISTRY_JSON = r"""{
       "default": "",
       "kind": "string",
       "name": "MOLT_DEBUG_SEAL",
+      "output_neutral": false,
       "owner": "runtime/molt-backend-native/src/native_backend/function_compiler.rs",
       "summary": "Exact function name for which the native backend prints SEAL_TRACE lines on stderr (tag, op index, block) as it seals Cranelift blocks; unset prints nothing.",
       "values": []
@@ -2502,6 +2702,7 @@ _REGISTRY_JSON = r"""{
       "default": "",
       "kind": "path",
       "name": "MOLT_DEBUG_SEAL_FILE",
+      "output_neutral": false,
       "owner": "runtime/molt-backend-native/src/native_backend/function_compiler.rs",
       "summary": "File to which the native backend also appends the SEAL_TRACE lines that MOLT_DEBUG_SEAL enables; unset writes them to stderr only.",
       "values": []
@@ -2511,6 +2712,7 @@ _REGISTRY_JSON = r"""{
       "default": "0",
       "kind": "bool",
       "name": "MOLT_DEBUG_SIGTRAP_BACKTRACE",
+      "output_neutral": false,
       "owner": "runtime/molt-runtime/src/state/runtime_state.rs",
       "summary": "Set to 1 to install a SIGTRAP handler on Unix that writes a native backtrace to stderr and exits with status 133; read once per process, default off.",
       "values": []
@@ -2520,6 +2722,7 @@ _REGISTRY_JSON = r"""{
       "default": "0",
       "kind": "bool",
       "name": "MOLT_DEBUG_STORE_INDEX",
+      "output_neutral": false,
       "owner": "runtime/molt-runtime/src/object/ops.rs",
       "summary": "Set to 1 to print a 'molt_store_index list' line on stderr with object, index, value type, and value bits for every list index store; read once per process, default off.",
       "values": []
@@ -2529,6 +2732,7 @@ _REGISTRY_JSON = r"""{
       "default": "0",
       "kind": "bool",
       "name": "MOLT_DEBUG_SUBSCRIPT",
+      "output_neutral": false,
       "owner": "runtime/molt-runtime/src/object/ops.rs",
       "summary": "Set to 1 to print '[MOLT-DEBUG] subscript fail' diagnostics on stderr with type name, type id, and object and key bits before the runtime raises TypeError for an unsubscriptable object; read once per process, default off.",
       "values": []
@@ -2538,6 +2742,7 @@ _REGISTRY_JSON = r"""{
       "default": "0",
       "kind": "bool",
       "name": "MOLT_DEBUG_TRACKED_CLEANUP",
+      "output_neutral": false,
       "owner": "runtime/molt-backend-native/src/native_backend/function_compiler.rs",
       "summary": "Set to 1 to append per-op tracked-cleanup records (function, op index, kind, block, tracked and released names) to native/tracked_cleanup_debug.txt under the backend debug artifact root; default off.",
       "values": []
@@ -2547,6 +2752,7 @@ _REGISTRY_JSON = r"""{
       "default": "0",
       "kind": "bool",
       "name": "MOLT_DEBUG_TYPES_BOOTSTRAP",
+      "output_neutral": false,
       "owner": "runtime/molt-runtime/src/builtins/types.rs",
       "summary": "Set to 1 to print a 'molt types bootstrap stage=' line on stderr for each stage of building the types module dictionary; default off.",
       "values": []
@@ -2556,6 +2762,7 @@ _REGISTRY_JSON = r"""{
       "default": "",
       "kind": "bool",
       "name": "MOLT_DEBUG_WARN",
+      "output_neutral": false,
       "owner": "src/molt/frontend/lowering/serialization_exception_ops.py",
       "summary": "Any non-empty value prints a [WARN_SERIALIZE] line on stderr for each warn_stderr op the frontend serializes to IR JSON; unset or empty prints nothing.",
       "values": []
@@ -2565,6 +2772,7 @@ _REGISTRY_JSON = r"""{
       "default": "",
       "kind": "bool",
       "name": "MOLT_DEBUG_WARN_BACKEND",
+      "output_neutral": false,
       "owner": "runtime/molt-backend-native/src/native_backend/function_compiler/fc/runtime_ops.rs",
       "summary": "Any set value prints a [WARN_BACKEND] line on stderr with function, args, and block state for each warn_stderr op the native backend lowers; unset prints nothing.",
       "values": []
@@ -2574,6 +2782,7 @@ _REGISTRY_JSON = r"""{
       "default": "",
       "kind": "string",
       "name": "MOLT_DEBUG_WASM_LOCALS_FUNC",
+      "output_neutral": false,
       "owner": "runtime/molt-backend-wasm/src/wasm/function_frame/emission.rs",
       "summary": "Set to 1 for every function, or to a function-name substring, to dump each op's local slot mapping on stderr and to wasm/locals/<func>.log under the backend debug artifact root; unset dumps nothing.",
       "values": []
@@ -2583,6 +2792,7 @@ _REGISTRY_JSON = r"""{
       "default": "",
       "kind": "string",
       "name": "MOLT_DEBUG_WASM_SEEDS_FUNC",
+      "output_neutral": false,
       "owner": "runtime/molt-backend-wasm/src/wasm/function_frame/planning/debug.rs",
       "summary": "Exact function name for which the WASM backend prints WASM_SEEDS_FUNC, WASM_SEEDS_PARAM, and slot lines on stderr that describe its constant seed locals; unset prints nothing.",
       "values": []
@@ -2592,6 +2802,7 @@ _REGISTRY_JSON = r"""{
       "default": "",
       "kind": "string",
       "name": "MOLT_DEBUG_WASM_SIG_FUNC",
+      "output_neutral": false,
       "owner": "runtime/molt-backend-wasm/src/wasm/function_emitter/registration.rs",
       "summary": "Exact function name for which the WASM backend prints WASM_SIG_FUNC lines on stderr with type index, params, and LIR param and result types, plus the generic-lowering reason when the fast path is not taken; unset prints nothing.",
       "values": []
@@ -2601,6 +2812,7 @@ _REGISTRY_JSON = r"""{
       "default": "",
       "kind": "int",
       "name": "MOLT_DEBUG_WASM_TABLE_SLOT",
+      "output_neutral": false,
       "owner": "runtime/molt-backend-wasm/src/wasm/module_abi/callable_table/layout.rs",
       "summary": "Callable table slot index (raw or base-relative) for which the WASM backend prints the function or trampoline names bound to that slot on stderr; unset or a non-integer value prints nothing.",
       "values": []
@@ -2610,6 +2822,7 @@ _REGISTRY_JSON = r"""{
       "default": "",
       "kind": "path",
       "name": "MOLT_DEMO_DB_PATH",
+      "output_neutral": false,
       "owner": "bench/scripts/run_stack.sh",
       "summary": "SQLite database file for the Django demo stack; when set, run_stack.sh seeds it and derives MOLT_DB_SQLITE_PATH from it, the demo views read it for /baseline and /offload, and the bench records it, while unset means no SQLite-backed demo reads.",
       "values": []
@@ -2619,6 +2832,7 @@ _REGISTRY_JSON = r"""{
       "default": "",
       "kind": "path",
       "name": "MOLT_DEMO_METRICS_PATH",
+      "output_neutral": false,
       "owner": "bench/scripts/run_stack.sh",
       "summary": "JSONL file that the demo Django server appends per-request worker metrics to and the demo bench summarizes; default <MOLT_DEMO_RUN_DIR>/molt_demo_metrics.jsonl, and run_stack.sh refuses a file that already exists.",
       "values": []
@@ -2628,6 +2842,7 @@ _REGISTRY_JSON = r"""{
       "default": "",
       "kind": "path",
       "name": "MOLT_DEMO_RUN_DIR",
+      "output_neutral": false,
       "owner": "bench/scripts/run_demo_bench.py",
       "summary": "Exclusive demo run directory, which must be a new bench/results/demo-runs/<run-id> path with a lowercase [a-z0-9-] id of 8-128 characters; run_stack.sh binds it before startup, CI sets one per job attempt, and unset creates a fresh UUID directory.",
       "values": []
@@ -2637,6 +2852,7 @@ _REGISTRY_JSON = r"""{
       "default": "",
       "kind": "int",
       "name": "MOLT_DEMO_SERVER_PID",
+      "output_neutral": false,
       "owner": "bench/scripts/run_demo_bench.py",
       "summary": "Set by run_stack.sh to the demo HTTP server's PID and read by run_demo_bench.py as the root of the server process tree for CPU and RSS sampling; unset or non-numeric falls back to listen PIDs on MOLT_SERVER_PORT and command-name matching.",
       "values": []
@@ -2646,6 +2862,7 @@ _REGISTRY_JSON = r"""{
       "default": "",
       "kind": "float",
       "name": "MOLT_DEMO_STACK_TIMEOUT_SEC",
+      "output_neutral": false,
       "owner": "bench/scripts/run_stack.sh",
       "summary": "Wall-clock limit in seconds for the guarded demo stack run, which run_stack.sh passes to guarded_exec as --timeout-env; MOLT_BENCH_TIMEOUT_SEC and MOLT_TEST_PROCESS_TIMEOUT_SEC take precedence, and unset, non-numeric, or non-positive means no limit.",
       "values": []
@@ -2655,6 +2872,7 @@ _REGISTRY_JSON = r"""{
       "default": "",
       "kind": "path",
       "name": "MOLT_DEMO_WORKER_BIN",
+      "output_neutral": false,
       "owner": "bench/scripts/run_demo_bench.py",
       "summary": "Set by run_stack.sh to the molt-worker binary it built or found and read by run_demo_bench.py to record that binary's path, size, and SHA-256 in the run's composite artifact; unset records no worker identity.",
       "values": []
@@ -2664,6 +2882,7 @@ _REGISTRY_JSON = r"""{
       "default": "",
       "kind": "int",
       "name": "MOLT_DEMO_WORKER_PID",
+      "output_neutral": false,
       "owner": "bench/scripts/run_demo_bench.py",
       "summary": "Set by run_stack.sh to the molt-worker PID and read by run_demo_bench.py as the root of the worker process tree for CPU and RSS sampling; unset or non-numeric falls back to command-name matching.",
       "values": []
@@ -2673,6 +2892,7 @@ _REGISTRY_JSON = r"""{
       "default": "0",
       "kind": "bool",
       "name": "MOLT_DETERMINISTIC",
+      "output_neutral": false,
       "owner": "runtime/molt-wasm-host/src/engine.rs",
       "summary": "Set to 1 to make molt-wasm-host canonicalize NaNs and use deterministic relaxed SIMD in its Wasmtime config; the value must be 0 or 1 (anything else is an error), the WASM deployment fingerprint records it, and the differential and fuzz tools set it to 1 for their children.",
       "values": []
@@ -2682,6 +2902,7 @@ _REGISTRY_JSON = r"""{
       "default": "dev-fast",
       "kind": "string",
       "name": "MOLT_DEV_BACKEND_CARGO_PROFILE",
+      "output_neutral": false,
       "owner": "src/molt/cli/cargo_profiles.py",
       "summary": "Cargo profile for building the backend compiler when MOLT_BACKEND_PROFILE is dev; it must match [A-Za-z0-9][A-Za-z0-9_-]* or the CLI reports an invalid value, default dev-fast.",
       "values": []
@@ -2691,6 +2912,7 @@ _REGISTRY_JSON = r"""{
       "default": "dev-fast",
       "kind": "string",
       "name": "MOLT_DEV_CARGO_PROFILE",
+      "output_neutral": false,
       "owner": "src/molt/cli/cargo_profiles.py",
       "summary": "Cargo profile for the runtime build when the build profile is dev; it must match [A-Za-z0-9][A-Za-z0-9_-]* or the CLI reports an invalid value, default dev-fast, and release verification refuses it.",
       "values": []
@@ -2700,6 +2922,7 @@ _REGISTRY_JSON = r"""{
       "default": "auto",
       "kind": "enum",
       "name": "MOLT_DEV_LINKER",
+      "output_neutral": false,
       "owner": "src/molt/cli/native_link_command.py",
       "summary": "Fast linker for dev-profile native links; auto picks an available mold or lld on Linux and Windows hosts, mold or lld selects that linker when present, and 0, false, no, off, none, disable, or any other spelling uses the toolchain default linker.",
       "values": [
@@ -2719,6 +2942,7 @@ _REGISTRY_JSON = r"""{
       "default": "",
       "kind": "path",
       "name": "MOLT_DIAGNOSTICS_FILE",
+      "output_neutral": false,
       "owner": "runtime/molt-runtime-diagnostics/src/lib.rs",
       "summary": "File that receives out-of-band runtime diagnostics (profile JSON, leak reports) by append instead of stderr; resolved once per process, unset, empty, or an unopenable path keeps stderr, and the differential harness sets a per-run file. Runtime initialization forces this process-lifetime selection before Ready.",
       "values": []
@@ -2728,6 +2952,7 @@ _REGISTRY_JSON = r"""{
       "default": "0",
       "kind": "bool",
       "name": "MOLT_DIFF_ALLOW_RUSTC_WRAPPER",
+      "output_neutral": false,
       "owner": "tests/molt_diff.py",
       "summary": "Set to 1, true, yes, or on to let differential runs keep RUSTC_WRAPPER and sccache; the harness strips them otherwise, and the dx run-context sets it to 1 by default.",
       "values": []
@@ -2737,6 +2962,7 @@ _REGISTRY_JSON = r"""{
       "default": "",
       "kind": "bool",
       "name": "MOLT_DIFF_BACKEND_DAEMON",
+      "output_neutral": false,
       "owner": "tests/molt_diff.py",
       "summary": "Forces backend daemon mode on (1, true, yes, on) or off (0, false, no, off) for differential runs; unset falls back to MOLT_BACKEND_DAEMON, then to off on macOS and on elsewhere.",
       "values": []
@@ -2746,6 +2972,7 @@ _REGISTRY_JSON = r"""{
       "default": "0",
       "kind": "bool",
       "name": "MOLT_DIFF_BATCH_COMPILE_SERVER",
+      "output_neutral": false,
       "owner": "tests/molt_diff.py",
       "summary": "Routes differential test builds through one long-lived molt internal-batch-build-server child instead of a fresh build subprocess per test; 1/true/yes/on enables it, 0/false/no/off disables it, default off.",
       "values": []
@@ -2755,6 +2982,7 @@ _REGISTRY_JSON = r"""{
       "default": "2",
       "kind": "int",
       "name": "MOLT_DIFF_BATCH_COMPILE_SERVER_DISABLE_AFTER_FAILURES",
+      "output_neutral": false,
       "owner": "tests/molt_diff.py",
       "summary": "Number of consecutive batch compile server failures before a differential worker puts the server in cooldown; values below 1 clamp to 1 and non-integer values use 2.",
       "values": []
@@ -2764,6 +2992,7 @@ _REGISTRY_JSON = r"""{
       "default": "30",
       "kind": "float",
       "name": "MOLT_DIFF_BATCH_COMPILE_SERVER_DISABLE_COOLDOWN_SEC",
+      "output_neutral": false,
       "owner": "tests/molt_diff.py",
       "summary": "Seconds a differential worker keeps the batch compile server disabled after the failure threshold; negative values clamp to 0 (no cooldown) and non-numeric values use 30.",
       "values": []
@@ -2773,6 +3002,7 @@ _REGISTRY_JSON = r"""{
       "default": "0",
       "kind": "bool",
       "name": "MOLT_DIFF_BATCH_COMPILE_SERVER_STRICT",
+      "output_neutral": false,
       "owner": "tests/molt_diff.py",
       "summary": "Makes a batch compile server failure a build failure (status build_batch_server_error, return code 127) instead of a warning plus subprocess fallback; 1/true/yes/on enables it, 0/false/no/off disables it, default off.",
       "values": []
@@ -2782,6 +3012,7 @@ _REGISTRY_JSON = r"""{
       "default": "",
       "kind": "float",
       "name": "MOLT_DIFF_BATCH_COMPILE_SERVER_TIMEOUT_SEC",
+      "output_neutral": false,
       "owner": "tests/molt_diff.py",
       "summary": "Seconds tests/molt_diff.py waits for one batch compile server build request or for server shutdown; a positive number is used as given, otherwise the resolved build timeout applies, and 60 when no build timeout is set.",
       "values": []
@@ -2791,6 +3022,7 @@ _REGISTRY_JSON = r"""{
       "default": "43200",
       "kind": "int",
       "name": "MOLT_DIFF_BUILD_LOCK_MAX_AGE_SEC",
+      "output_neutral": false,
       "owner": "tests/molt_diff.py",
       "summary": "Age in seconds after which tests/molt_diff.py deletes an empty build-lock sentinel under <state root>/build_locks at run start; 0 or a negative value disables age pruning, non-numeric values fall back to 43200 (12 hours).",
       "values": []
@@ -2800,6 +3032,7 @@ _REGISTRY_JSON = r"""{
       "default": "4096",
       "kind": "int",
       "name": "MOLT_DIFF_BUILD_LOCK_MAX_FILES",
+      "output_neutral": false,
       "owner": "tests/molt_diff.py",
       "summary": "Maximum number of build-lock sentinels tests/molt_diff.py keeps under <state root>/build_locks, deleting the oldest beyond that count at run start; 0 or a negative value disables count pruning, non-numeric values fall back to 4096.",
       "values": []
@@ -2809,6 +3042,7 @@ _REGISTRY_JSON = r"""{
       "default": "dev",
       "kind": "enum",
       "name": "MOLT_DIFF_BUILD_PROFILE",
+      "output_neutral": false,
       "owner": "tests/molt_diff.py",
       "summary": "Build profile the differential harness forwards to molt build when --build-profile is not given; dev or release, default dev, and any other spelling raises ValueError.",
       "values": [
@@ -2821,6 +3055,7 @@ _REGISTRY_JSON = r"""{
       "default": "",
       "kind": "float",
       "name": "MOLT_DIFF_BUILD_TIMEOUT",
+      "output_neutral": false,
       "owner": "tools/compat/backends.py",
       "summary": "Seconds allowed for one differential test's Molt build; a positive number is used as given, otherwise the limit is twice MOLT_DIFF_TIMEOUT with a 300-second floor, and there is no build limit when MOLT_DIFF_TIMEOUT is also unset.",
       "values": []
@@ -2830,6 +3065,7 @@ _REGISTRY_JSON = r"""{
       "default": "fs,env,time,random",
       "kind": "list",
       "name": "MOLT_DIFF_CAPABILITIES",
+      "output_neutral": false,
       "owner": "tests/molt_diff.py",
       "summary": "Comma-separated capability names the differential harness and parity gate pass to compiled programs as MOLT_CAPABILITIES; the harness falls back to MOLT_CAPABILITIES before the default fs,env,time,random, and the verified subset removes it.",
       "values": []
@@ -2839,6 +3075,7 @@ _REGISTRY_JSON = r"""{
       "default": "",
       "kind": "path",
       "name": "MOLT_DIFF_CARGO_TARGET_DIR",
+      "output_neutral": false,
       "owner": "tests/molt_diff.py",
       "summary": "Shared Cargo target directory for differential builds; unset falls back to CARGO_TARGET_DIR and then a target derived from the artifact root, the dx run-context sets it to CARGO_TARGET_DIR, and molt setup warns when a source checkout leaves it unset. Admitted Python Cargo proofs bind it to the leased Cargo generation.",
       "values": []
@@ -2848,6 +3085,7 @@ _REGISTRY_JSON = r"""{
       "default": "0",
       "kind": "bool",
       "name": "MOLT_DIFF_CLEAR_DYLD_GUARD",
+      "output_neutral": false,
       "owner": "tests/molt_diff.py",
       "summary": "Truthy 1/true/yes/on makes tests/molt_diff.py delete the global dyld guard marker at run start and skip the preemptive dyld quarantine; an explicit MOLT_DIFF_DYLD_PREEMPTIVE takes precedence, default off.",
       "values": []
@@ -2857,6 +3095,7 @@ _REGISTRY_JSON = r"""{
       "default": "2500000",
       "kind": "int",
       "name": "MOLT_DIFF_DAEMON_MAX_RSS_KB",
+      "output_neutral": false,
       "owner": "tests/molt_diff.py",
       "summary": "RSS threshold in kilobytes above which tests/molt_diff.py retires a verified backend daemon it owns during its pruning passes on POSIX hosts, once the daemon reports no admitted jobs; retirement unlinks the socket and lets accepted work finish, and a busy daemon keeps running. 0 or a negative value disables RSS-based retirement, non-numeric values fall back to 2500000.",
       "values": []
@@ -2866,6 +3105,7 @@ _REGISTRY_JSON = r"""{
       "default": "600",
       "kind": "int",
       "name": "MOLT_DIFF_DAEMON_STALE_SEC",
+      "output_neutral": false,
       "owner": "tests/molt_diff.py",
       "summary": "Minimum process age in seconds before tests/molt_diff.py terminates a backend daemon that no longer answers a socket ping; values below 60 are raised to 60, non-numeric values fall back to 600.",
       "values": []
@@ -2875,6 +3115,7 @@ _REGISTRY_JSON = r"""{
       "default": "1",
       "kind": "bool",
       "name": "MOLT_DIFF_DISABLE_DAEMON_ON_DYLD",
+      "output_neutral": false,
       "owner": "tests/molt_diff.py",
       "summary": "Controls whether tests/molt_diff.py sets MOLT_BACKEND_DAEMON=0 and MOLT_DIFF_FORCE_NO_CACHE=1 for the rest of the run after a dyld unknown-imports incident or a preemptive dyld quarantine; 1/true/yes/on enables it, any other non-empty value disables it, default on.",
       "values": []
@@ -2884,6 +3125,7 @@ _REGISTRY_JSON = r"""{
       "default": "1",
       "kind": "int",
       "name": "MOLT_DIFF_DYLD_GUARD_RUNS",
+      "output_neutral": false,
       "owner": "tests/molt_diff.py",
       "summary": "Number of later diff runs that stay in dyld quarantine after an incident writes the global dyld guard marker; values below 1 are raised to 1, non-numeric values fall back to 1.",
       "values": []
@@ -2893,6 +3135,7 @@ _REGISTRY_JSON = r"""{
       "default": "21600",
       "kind": "int",
       "name": "MOLT_DIFF_DYLD_GUARD_TTL_SEC",
+      "output_neutral": false,
       "owner": "tests/molt_diff.py",
       "summary": "Age in seconds after which tests/molt_diff.py treats the global dyld guard marker as expired and clears it instead of quarantining the run; values below 60 are raised to 60, non-numeric values fall back to 21600 (6 hours).",
       "values": []
@@ -2902,6 +3145,7 @@ _REGISTRY_JSON = r"""{
       "default": "",
       "kind": "bool",
       "name": "MOLT_DIFF_DYLD_LOCAL_FALLBACK",
+      "output_neutral": false,
       "owner": "tests/molt_diff.py",
       "summary": "Enables (1, true, yes, on) or disables (0, false, no, off) the local temp-directory retry and quarantine lanes after a dyld import-format incident in differential runs; unset means on for macOS and off elsewhere.",
       "values": []
@@ -2911,6 +3155,7 @@ _REGISTRY_JSON = r"""{
       "default": "",
       "kind": "path",
       "name": "MOLT_DIFF_DYLD_LOCAL_ROOT",
+      "output_neutral": false,
       "owner": "tests/molt_diff.py",
       "summary": "Root directory for the local dyld quarantine lanes of differential runs; unset uses <system temp dir>/molt_diff_dyld.",
       "values": []
@@ -2920,6 +3165,7 @@ _REGISTRY_JSON = r"""{
       "default": "",
       "kind": "bool",
       "name": "MOLT_DIFF_DYLD_PREEMPTIVE",
+      "output_neutral": false,
       "owner": "tests/molt_diff.py",
       "summary": "Forces the preemptive dyld quarantine decision at run start: 1/true/yes/on quarantines, 0/false/no/off skips, and when unset tests/molt_diff.py consults MOLT_DIFF_CLEAR_DYLD_GUARD and then the dyld guard marker's age and remaining runs.",
       "values": []
@@ -2929,6 +3175,7 @@ _REGISTRY_JSON = r"""{
       "default": "",
       "kind": "bool",
       "name": "MOLT_DIFF_DYLD_PREFLIGHT",
+      "output_neutral": false,
       "owner": "tests/molt_diff.py",
       "summary": "Enables the otool -l preflight that checks a freshly built test binary for dyld unknown imports format or malformed load command corruption before it runs; 1/true/yes/on enables it, 0/false/no/off disables it, and when unset the check runs on macOS only.",
       "values": []
@@ -2938,6 +3185,7 @@ _REGISTRY_JSON = r"""{
       "default": "",
       "kind": "path",
       "name": "MOLT_DIFF_FAILURES",
+      "output_neutral": false,
       "owner": "tests/molt_diff.py",
       "summary": "Failure queue file the differential harness writes when --failures-output is not given and the debug verify checks read for probe linkage; unset uses <MOLT_DIFF_ROOT>/failures.txt.",
       "values": []
@@ -2947,6 +3195,7 @@ _REGISTRY_JSON = r"""{
       "default": "0",
       "kind": "bool",
       "name": "MOLT_DIFF_FORCE_NO_CACHE",
+      "output_neutral": false,
       "owner": "tests/molt_diff.py",
       "summary": "Forces (1, true, yes, on) or disables (0, false, no, off) --no-cache for differential runs; default off (cache enabled), and the harness and mutation_test set it to 1 for dyld-incident retries and mutant runs.",
       "values": []
@@ -2956,6 +3205,7 @@ _REGISTRY_JSON = r"""{
       "default": "0",
       "kind": "bool",
       "name": "MOLT_DIFF_FORCE_REBUILD",
+      "output_neutral": false,
       "owner": "tests/molt_diff.py",
       "summary": "Truthy 1/true/yes/on forces a Molt rebuild for every differential test build; tests/molt_diff.py also sets it to 1 itself after a dyld incident when MOLT_DIFF_FORCE_REBUILD_ON_DYLD is on, default off.",
       "values": []
@@ -2965,6 +3215,7 @@ _REGISTRY_JSON = r"""{
       "default": "1",
       "kind": "bool",
       "name": "MOLT_DIFF_FORCE_REBUILD_ON_DYLD",
+      "output_neutral": false,
       "owner": "tests/molt_diff.py",
       "summary": "Controls whether a dyld unknown-imports incident or a preemptive dyld quarantine also sets MOLT_DIFF_FORCE_REBUILD=1 for the rest of the run; 1/true/yes/on enables it, 0/false/no/off disables it, default on.",
       "values": []
@@ -2974,6 +3225,7 @@ _REGISTRY_JSON = r"""{
       "default": "*.py",
       "kind": "string",
       "name": "MOLT_DIFF_GLOB",
+      "output_neutral": false,
       "owner": "tests/molt_diff.py",
       "summary": "Glob pattern tests/molt_diff.py passes to test_policy.collect_test_files when it expands a directory target into test files; default *.py, so **/*.py selects a recursive sweep.",
       "values": []
@@ -2983,6 +3235,7 @@ _REGISTRY_JSON = r"""{
       "default": "",
       "kind": "string",
       "name": "MOLT_DIFF_GUEST_OUTPUT_IDENTITY",
+      "output_neutral": false,
       "owner": "tools/compat/diff_output_layout.py",
       "summary": "Set by the differential output layout when it admits MOLT_DIFF_GUEST_OUTPUT_ROOT, holding that root's canonical JSON declaration for child processes; re-admission reads it to refuse a changed or malformed selection, and it is an error without the root.",
       "values": []
@@ -2992,6 +3245,7 @@ _REGISTRY_JSON = r"""{
       "default": "",
       "kind": "path",
       "name": "MOLT_DIFF_GUEST_OUTPUT_ROOT",
+      "output_neutral": false,
       "owner": "tools/compat/diff_output_layout.py",
       "summary": "Existing absolute directory (not a volume root) that holds differential guest temporary output, Cargo target, and adapter scratch; it requires canonical MOLT_EXT_ROOT and the build-capacity check, and unset keeps guest output under the canonical artifact root.",
       "values": []
@@ -3001,6 +3255,7 @@ _REGISTRY_JSON = r"""{
       "default": "1200",
       "kind": "int",
       "name": "MOLT_DIFF_HELPER_STALE_SEC",
+      "output_neutral": false,
       "owner": "tests/molt_diff.py",
       "summary": "Elapsed seconds after which tests/molt_diff.py prunes a diff build helper process that has no live diff harness ancestor; values below 60 are raised to 60, non-numeric values fall back to 1200.",
       "values": []
@@ -3010,6 +3265,7 @@ _REGISTRY_JSON = r"""{
       "default": "0",
       "kind": "bool",
       "name": "MOLT_DIFF_KEEP",
+      "output_neutral": false,
       "owner": "tools/compat/diff_output_layout.py",
       "summary": "Set to 1, true, yes, or on to keep per-test differential artifacts and fresh adapter leaves after each run; default removes them.",
       "values": []
@@ -3019,6 +3275,7 @@ _REGISTRY_JSON = r"""{
       "default": "0",
       "kind": "bool",
       "name": "MOLT_DIFF_KEEP_ISOLATED_RETRY",
+      "output_neutral": false,
       "owner": "tests/molt_diff.py",
       "summary": "Truthy 1/true/yes/on keeps the isolated target and build-state directories after an isolated retry of a differential test instead of retiring them; default off.",
       "values": []
@@ -3028,6 +3285,7 @@ _REGISTRY_JSON = r"""{
       "default": "0",
       "kind": "bool",
       "name": "MOLT_DIFF_LOG_PASSES",
+      "output_neutral": false,
       "owner": "tests/molt_diff.py",
       "summary": "Set to 1, true, yes, or on to keep per-test and aggregate logs for passing differential tests when --log-dir is used; default prunes pass logs.",
       "values": []
@@ -3037,6 +3295,7 @@ _REGISTRY_JSON = r"""{
       "default": "",
       "kind": "int",
       "name": "MOLT_DIFF_MAX_JOBS",
+      "output_neutral": false,
       "owner": "tests/molt_diff.py",
       "summary": "Hard cap on the job count tests/molt_diff.py auto-selects when --jobs is not passed; only a string of digits is honoured, 0 counts as 1, and when unset the count is the CPU count bounded by the memory-guard scheduler budget.",
       "values": []
@@ -3046,6 +3305,7 @@ _REGISTRY_JSON = r"""{
       "default": "",
       "kind": "int",
       "name": "MOLT_DIFF_MAX_RSS_KB",
+      "output_neutral": false,
       "owner": "tests/molt_diff.py",
       "summary": "Positive native differential time-metric RSS threshold in kilobytes that fails the build or run phase above the threshold. A positive value also requests RSS profiling when MOLT_DIFF_MEASURE_RSS is unset or empty; explicit profiling-off conflicts and raises a configuration error. Unset, non-numeric or non-positive values disable this threshold, independently of the mandatory sampled memory guard.",
       "values": []
@@ -3055,6 +3315,7 @@ _REGISTRY_JSON = r"""{
       "default": "0",
       "kind": "int",
       "name": "MOLT_DIFF_MAX_TASKS_PER_CHILD",
+      "output_neutral": false,
       "owner": "tests/molt_diff.py",
       "summary": "Number of differential tests one ProcessPoolExecutor worker runs before tests/molt_diff.py replaces it (max_tasks_per_child); 0, a negative value or non-numeric text keeps each worker for the whole run.",
       "values": []
@@ -3064,6 +3325,7 @@ _REGISTRY_JSON = r"""{
       "default": "0",
       "kind": "bool",
       "name": "MOLT_DIFF_MEASURE_RSS",
+      "output_neutral": false,
       "owner": "tests/molt_diff.py",
       "summary": "Opts into /usr/bin/time RSS metrics for native differential build/run phases under <output root>/metrics. Unset or empty enables profiling only for a positive MOLT_DIFF_MAX_RSS_KB threshold; 0, false, no, or off disables profiling and rejects an active threshold. Nightly CI and throughput_matrix explicitly set it to 1. The mandatory sampled process-tree memory guard remains active for every target.",
       "values": []
@@ -3073,6 +3335,7 @@ _REGISTRY_JSON = r"""{
       "default": "",
       "kind": "path",
       "name": "MOLT_DIFF_MEMORY_GUARD_EVENTS_JSONL",
+      "output_neutral": false,
       "owner": "tests/molt_diff.py",
       "summary": "Path of the JSONL file that receives memory-guard events such as run_started, tripped and subprocess_guard_tripped; run_diff in tests/molt_diff.py sets it to <diff root>/memory_guard/events.jsonl at run start for its worker processes, so a hand-set value reaches only diff_test calls that bypass run_diff, and when unset that same default path is used.",
       "values": []
@@ -3082,6 +3345,7 @@ _REGISTRY_JSON = r"""{
       "default": "",
       "kind": "path",
       "name": "MOLT_DIFF_MEMORY_GUARD_GLOBAL_SAMPLES_JSONL",
+      "output_neutral": false,
       "owner": "tests/molt_diff.py",
       "summary": "Path of the JSONL file that receives memory-guard RSS sample records when MOLT_DIFF_MEMORY_GUARD_WRITE_SAMPLES is on; run_diff in tests/molt_diff.py sets it to <diff root>/memory_guard/global_samples.jsonl at run start for its worker processes, and when unset that same default path is used.",
       "values": []
@@ -3091,6 +3355,7 @@ _REGISTRY_JSON = r"""{
       "default": "1",
       "kind": "float",
       "name": "MOLT_DIFF_MEMORY_GUARD_MAX_EVENT_MB",
+      "output_neutral": false,
       "owner": "tests/molt_diff.py",
       "summary": "Size cap in MiB for each memory-guard event JSONL file under MOLT_DIFF_ROOT/memory_guard before the harness rotates it once; non-numeric values use 1, and 0 or a negative value disables rotation.",
       "values": []
@@ -3100,6 +3365,7 @@ _REGISTRY_JSON = r"""{
       "default": "2",
       "kind": "float",
       "name": "MOLT_DIFF_MEMORY_GUARD_MAX_SAMPLE_MB",
+      "output_neutral": false,
       "owner": "tests/molt_diff.py",
       "summary": "Size cap in MiB for the memory-guard global_samples.jsonl file under MOLT_DIFF_ROOT/memory_guard before the harness rotates it once; non-numeric values use 2, and 0 or a negative value disables rotation.",
       "values": []
@@ -3109,6 +3375,7 @@ _REGISTRY_JSON = r"""{
       "default": "1",
       "kind": "float",
       "name": "MOLT_DIFF_MEMORY_GUARD_SAMPLE_INTERVAL_SEC",
+      "output_neutral": false,
       "owner": "tests/molt_diff.py",
       "summary": "Minimum seconds between memory-guard RSS sample records written by tests/molt_diff.py; values are clamped to the range 0.001 to 60, and unset, non-numeric or non-positive values fall back to 1.",
       "values": []
@@ -3118,6 +3385,7 @@ _REGISTRY_JSON = r"""{
       "default": "",
       "kind": "enum",
       "name": "MOLT_DIFF_MEMORY_GUARD_STREAM",
+      "output_neutral": false,
       "owner": "tests/molt_diff.py",
       "summary": "Live NDJSON stream target for the differential memory guard; stderr (also 1, true, yes, on), stdout, json, json-stdout, json-stderr or stderr-json turn it on, and unset, 0, false, no, off, none or any unknown value keep it off.",
       "values": [
@@ -3143,6 +3411,7 @@ _REGISTRY_JSON = r"""{
       "default": "",
       "kind": "path",
       "name": "MOLT_DIFF_MEMORY_GUARD_TRIP_FILE",
+      "output_neutral": false,
       "owner": "tools/memory_guard_core/harness_outcomes.py",
       "summary": "Path of the suite memory-guard trip marker; tests/molt_diff.py sets it to MOLT_DIFF_ROOT/memory_guard/tripped.json for the run, and tools/memory_guard_core/harness_outcomes.py reads it to attribute RSS trips to completed commands, treating a malformed file as an infrastructure failure.",
       "values": []
@@ -3152,6 +3421,7 @@ _REGISTRY_JSON = r"""{
       "default": "1",
       "kind": "bool",
       "name": "MOLT_DIFF_MEMORY_GUARD_WRITE_SAMPLES",
+      "output_neutral": false,
       "owner": "tests/molt_diff.py",
       "summary": "Whether the differential memory guard writes sample telemetry under MOLT_DIFF_ROOT/memory_guard; 1, true, yes, on or unset writes samples, and 0, false, no or off keeps only trip and event evidence plus the live stream.",
       "values": []
@@ -3161,6 +3431,7 @@ _REGISTRY_JSON = r"""{
       "default": "",
       "kind": "float",
       "name": "MOLT_DIFF_MEM_PER_JOB_GB",
+      "output_neutral": false,
       "owner": "tests/molt_diff.py",
       "summary": "Gigabytes of memory the differential scheduler budgets per parallel job when it auto-selects the job count; a positive value is capped at the process-tree RSS limit, non-positive values are ignored, and when unset the budget is the global RSS limit divided by the CPU count, clamped between 1 and 8 and never above the tree limit.",
       "values": []
@@ -3170,6 +3441,7 @@ _REGISTRY_JSON = r"""{
       "default": "5",
       "kind": "float",
       "name": "MOLT_DIFF_METADATA_PROBE_TIMEOUT_SEC",
+      "output_neutral": false,
       "owner": "tests/molt_diff.py",
       "summary": "Seconds tests/molt_diff.py allows each interpreter metadata probe; non-numeric or non-positive values fall back to 5. CLI interpreter selection reuses the selected interpreter without a dependency probe.",
       "values": []
@@ -3179,6 +3451,7 @@ _REGISTRY_JSON = r"""{
       "default": "",
       "kind": "path",
       "name": "MOLT_DIFF_MOLT_PYTHON",
+      "output_neutral": false,
       "owner": "tests/molt_diff.py",
       "summary": "Executable path of the Python interpreter tests/molt_diff.py uses to run the molt CLI and batch compile server; it must name exactly one executable or the harness raises PythonInterpreterError. When unset or empty, the already-selected sys.executable is reused directly without repository-venv discovery or dependency subprocess probes.",
       "values": []
@@ -3188,6 +3461,7 @@ _REGISTRY_JSON = r"""{
       "default": "auto",
       "kind": "enum",
       "name": "MOLT_DIFF_ORDER",
+      "output_neutral": false,
       "owner": "tests/molt_diff.py",
       "summary": "Order in which tests/molt_diff.py schedules the collected test files; name keeps collection order, size-asc and size-desc sort by file size, auto picks size-desc when jobs is above 1 and name otherwise, and unknown spellings fall back to auto.",
       "values": [
@@ -3202,6 +3476,7 @@ _REGISTRY_JSON = r"""{
       "default": "32",
       "kind": "int",
       "name": "MOLT_DIFF_PRUNE_EVERY",
+      "output_neutral": false,
       "owner": "tests/molt_diff.py",
       "summary": "Number of completed differential tests between pruning passes that remove orphan diff workers, orphan build helpers and oversized or unresponsive backend daemons during a parallel run; 0 or a negative value disables the periodic passes, non-numeric values fall back to 32.",
       "values": []
@@ -3211,6 +3486,7 @@ _REGISTRY_JSON = r"""{
       "default": "",
       "kind": "path",
       "name": "MOLT_DIFF_PYTHON",
+      "output_neutral": false,
       "owner": "tests/molt_diff.py",
       "summary": "Explicit CPython interpreter the differential harness uses as the reference side when a --python-version target is given, and the first candidate baseline interpreter for the Rust correctness tests; tools/verified_subset.py sets it to its own interpreter, and when unset the harness resolves the target version itself.",
       "values": []
@@ -3220,6 +3496,7 @@ _REGISTRY_JSON = r"""{
       "default": "0",
       "kind": "bool",
       "name": "MOLT_DIFF_QUARANTINE_ON_DYLD",
+      "output_neutral": false,
       "owner": "tests/molt_diff.py",
       "summary": "Whether a dyld import-format incident moves the differential run to a cold quarantine Cargo target and build-state directory; 1, true, yes or on enables it, and unset, 0, false, no or off keeps the shared target to avoid cold rebuilds.",
       "values": []
@@ -3229,6 +3506,7 @@ _REGISTRY_JSON = r"""{
       "default": "",
       "kind": "path",
       "name": "MOLT_DIFF_RESULTS_JSONL",
+      "output_neutral": false,
       "owner": "tests/molt_diff.py",
       "summary": "Append-only JSONL sink where tests/molt_diff.py records one line per test with its raw status before the xfail overlay plus the resolved status and per-backend rows; tools/check_suite_honesty.py and tools/verified_subset.py set it for the harness they launch, and unset records nothing.",
       "values": []
@@ -3238,6 +3516,7 @@ _REGISTRY_JSON = r"""{
       "default": "1",
       "kind": "bool",
       "name": "MOLT_DIFF_RETRY_DYLD",
+      "output_neutral": false,
       "owner": "tests/molt_diff.py",
       "summary": "Controls whether a differential test whose stderr shows dyld unknown imports format is retried with the backend daemon disabled; 1/true/yes/on enables it, any other non-empty value disables it, default on.",
       "values": []
@@ -3247,6 +3526,7 @@ _REGISTRY_JSON = r"""{
       "default": "1",
       "kind": "bool",
       "name": "MOLT_DIFF_RETRY_ISOLATED",
+      "output_neutral": false,
       "owner": "tests/molt_diff.py",
       "summary": "Controls whether a differential test with a persistent dyld failure or backend daemon/cache failure is retried in an isolated target and build-state directory with --no-cache; 1/true/yes/on enables it, any other non-empty value disables it, default on.",
       "values": []
@@ -3256,6 +3536,7 @@ _REGISTRY_JSON = r"""{
       "default": "1",
       "kind": "bool",
       "name": "MOLT_DIFF_RETRY_OOM",
+      "output_neutral": false,
       "owner": "tests/molt_diff.py",
       "summary": "Whether the differential harness retries OOM-killed tests once with --jobs 1; 1, true, yes, on or unset retries, and 0, false, no or off disables the retry.",
       "values": []
@@ -3265,6 +3546,7 @@ _REGISTRY_JSON = r"""{
       "default": "",
       "kind": "path",
       "name": "MOLT_DIFF_ROOT",
+      "output_neutral": false,
       "owner": "src/molt/debug/verify.py",
       "summary": "Root directory for differential-harness artifacts such as summary.json, failures.txt, memory_guard/ and dyld quarantine lanes; tests/molt_diff.py defaults it to <MOLT_EXT_ROOT or repo>/tmp/diff, src/molt/dx.py installs <scratch root>/diff, and src/molt/debug/verify.py falls back to the repository root when unset.",
       "values": []
@@ -3274,6 +3556,7 @@ _REGISTRY_JSON = r"""{
       "default": "5",
       "kind": "int",
       "name": "MOLT_DIFF_RSS_TOP",
+      "output_neutral": false,
       "owner": "tests/molt_diff.py",
       "summary": "Number of top RSS offenders tests/molt_diff.py lists for the build and run phases in its end-of-run summary when MOLT_DIFF_MEASURE_RSS is on; non-numeric values fall back to 5.",
       "values": []
@@ -3283,6 +3566,7 @@ _REGISTRY_JSON = r"""{
       "default": "",
       "kind": "string",
       "name": "MOLT_DIFF_RUN_ID",
+      "output_neutral": false,
       "owner": "tests/molt_diff.py",
       "summary": "Identifier for one differential run, used in scratch-lease names, dyld-quarantine directories, RSS records and cleanup receipts; tests/molt_diff.py generates <UTC timestamp>_<pid> when unset and exports the value to its workers, and tools/compat uses adhoc when it is empty.",
       "values": []
@@ -3292,6 +3576,7 @@ _REGISTRY_JSON = r"""{
       "default": "0.5",
       "kind": "float",
       "name": "MOLT_DIFF_RUN_LOCK_POLL_SEC",
+      "output_neutral": false,
       "owner": "tests/molt_diff.py",
       "summary": "Seconds between attempts to acquire the shared differential run lock at <state root>/diff_run.lock; values below 0.05 are raised to 0.05, non-numeric values fall back to 0.5.",
       "values": []
@@ -3301,6 +3586,7 @@ _REGISTRY_JSON = r"""{
       "default": "900",
       "kind": "float",
       "name": "MOLT_DIFF_RUN_LOCK_WAIT_SEC",
+      "output_neutral": false,
       "owner": "tests/molt_diff.py",
       "summary": "Seconds tests/molt_diff.py waits for the shared differential run lock at <state root>/diff_run.lock before it fails with a lock timeout; negative values count as 0, non-numeric values fall back to 900.",
       "values": []
@@ -3310,6 +3596,7 @@ _REGISTRY_JSON = r"""{
       "default": "",
       "kind": "enum",
       "name": "MOLT_DIFF_STDLIB_PROFILE",
+      "output_neutral": false,
       "owner": "tools/compat/backends.py",
       "summary": "Stdlib profile forwarded to molt build for the Molt side of a differential run; micro or full, any other value is an error, unset leaves the build default, and a test whose metadata names a profile must match the selected one.",
       "values": [
@@ -3322,6 +3609,7 @@ _REGISTRY_JSON = r"""{
       "default": "",
       "kind": "path",
       "name": "MOLT_DIFF_SUMMARY",
+      "output_neutral": false,
       "owner": "tests/molt_diff.py",
       "summary": "File path for the JSON summary of a differential run; when unset tests/molt_diff.py writes MOLT_DIFF_ROOT/summary.json.",
       "values": []
@@ -3331,6 +3619,7 @@ _REGISTRY_JSON = r"""{
       "default": "",
       "kind": "enum",
       "name": "MOLT_DIFF_TARGET_MODE",
+      "output_neutral": false,
       "owner": "tools/compat/diff_output_layout.py",
       "summary": "Names the isolation lane that owns a differential Cargo target inside the guest output root; tests/molt_diff.py sets dyld or isolated-retry when it activates a quarantine or an isolated retry, and tools/compat/diff_output_layout.py reads it to admit that target, otherwise only the shared cargo-target directory is allowed.",
       "values": [
@@ -3343,6 +3632,7 @@ _REGISTRY_JSON = r"""{
       "default": "",
       "kind": "float",
       "name": "MOLT_DIFF_TIMEOUT",
+      "output_neutral": false,
       "owner": "tools/compat/backends.py",
       "summary": "Seconds allowed for one differential test's CPython and Molt run phases; a positive number is enforced and also seeds the build timeout default, while unset, non-numeric, non-finite or non-positive values mean no run timeout.",
       "values": []
@@ -3352,6 +3642,7 @@ _REGISTRY_JSON = r"""{
       "default": "",
       "kind": "path",
       "name": "MOLT_DIFF_TMPDIR",
+      "output_neutral": false,
       "owner": "src/molt/frontend/tv_hooks.py",
       "summary": "Temporary-file root for harness runs; src/molt/frontend/tv_hooks.py uses it for TV snapshots (then TMPDIR, then MOLT_EXT_ROOT/tmp, then <repo>/tmp), tests/molt_diff.py uses it as the diff tmp root with default <MOLT_EXT_ROOT or repo>/tmp, and src/molt/dx.py installs the scratch root as its default. Admitted Python Cargo proofs bind it to their canonical proof scratch root; receipt custody remains separate.",
       "values": []
@@ -3361,6 +3652,7 @@ _REGISTRY_JSON = r"""{
       "default": "0",
       "kind": "bool",
       "name": "MOLT_DIFF_WARM_CACHE",
+      "output_neutral": false,
       "owner": "tests/molt_diff.py",
       "summary": "Truthy 1/true/yes/on makes tests/molt_diff.py build every selected test once to seed the shared MOLT_CACHE before the diff run, the same as --warm-cache; default off.",
       "values": []
@@ -3370,6 +3662,7 @@ _REGISTRY_JSON = r"""{
       "default": "0",
       "kind": "bool",
       "name": "MOLT_DISABLE_CALL_BIND_IC",
+      "output_neutral": false,
       "owner": "runtime/molt-runtime/src/call/bind/inline_cache.rs",
       "summary": "Disables the runtime call-bind inline cache when set to exactly 1; read once per process, default on.",
       "values": []
@@ -3379,6 +3672,7 @@ _REGISTRY_JSON = r"""{
       "default": "",
       "kind": "bool",
       "name": "MOLT_DISABLE_DEAD_FUNC_ELIM",
+      "output_neutral": false,
       "owner": "runtime/molt-tir/src/passes/dead_functions.rs",
       "summary": "Skips dead-function elimination in the TIR pipeline when the variable is present with any value, even empty or 0; unset runs the pass.",
       "values": []
@@ -3388,6 +3682,7 @@ _REGISTRY_JSON = r"""{
       "default": "",
       "kind": "bool",
       "name": "MOLT_DISABLE_DEAD_IMPORT_ELIM",
+      "output_neutral": false,
       "owner": "runtime/molt-tir/src/passes/dead_imports.rs",
       "summary": "Skips dead-import elimination in the TIR pipeline when the variable is present with any value, even empty or 0; unset runs the pass.",
       "values": []
@@ -3397,6 +3692,7 @@ _REGISTRY_JSON = r"""{
       "default": "",
       "kind": "bool",
       "name": "MOLT_DISABLE_DEAD_OP_ELIM",
+      "output_neutral": false,
       "owner": "runtime/molt-tir/src/passes/dead_ops.rs",
       "summary": "Skips dead-op elimination in the TIR pipeline when the variable is present with any value, even empty or 0; unset runs the pass.",
       "values": []
@@ -3406,6 +3702,7 @@ _REGISTRY_JSON = r"""{
       "default": "0",
       "kind": "bool",
       "name": "MOLT_DISABLE_DISK_GUARD",
+      "output_neutral": false,
       "owner": "src/molt/dx.py",
       "summary": "Turns off the artifact-root disk guard; 1, true, yes or on stops tools/disk_guard.py reclaiming space and stops src/molt/dx.py registering per-lane Cargo target directories for TTL garbage collection, default off.",
       "values": []
@@ -3415,6 +3712,7 @@ _REGISTRY_JSON = r"""{
       "default": "",
       "kind": "bool",
       "name": "MOLT_DISABLE_ESCAPE_ANALYSIS",
+      "output_neutral": false,
       "owner": "runtime/molt-tir/src/passes/escape.rs",
       "summary": "Skips escape analysis (stack promotion of tuple, list and dict allocations) in the TIR pipeline when the variable is present with any value, even empty or 0; unset runs the pass.",
       "values": []
@@ -3424,6 +3722,7 @@ _REGISTRY_JSON = r"""{
       "default": "",
       "kind": "bool",
       "name": "MOLT_DISABLE_EXC_ELIDE",
+      "output_neutral": false,
       "owner": "runtime/molt-tir/src/passes/exception_check_elision.rs",
       "summary": "Skips safe exception-check elision in the TIR pipeline when the variable is present with any value, even empty or 0; unset runs the pass, and the value is part of the backend codegen environment digest.",
       "values": []
@@ -3433,6 +3732,7 @@ _REGISTRY_JSON = r"""{
       "default": "0",
       "kind": "bool",
       "name": "MOLT_DISABLE_FRONTEND_LOWERING_CACHE",
+      "output_neutral": false,
       "owner": "src/molt/cli/module_frontend_cache.py",
       "summary": "Disables the persistent frontend analysis and lowering cache so every module is re-analysed and re-lowered from source; 1, true, yes or on disables both the shared content-addressed tier and session-local reads, default off.",
       "values": []
@@ -3442,6 +3742,7 @@ _REGISTRY_JSON = r"""{
       "default": "",
       "kind": "bool",
       "name": "MOLT_DISABLE_GUARD_ELIM",
+      "output_neutral": false,
       "owner": "runtime/molt-tir/src/passes/guard_elision.rs",
       "summary": "Skips elimination of statically satisfied guard tags in the TIR pipeline when the variable is present with any value, even empty or 0; unset runs the pass.",
       "values": []
@@ -3451,6 +3752,7 @@ _REGISTRY_JSON = r"""{
       "default": "",
       "kind": "bool",
       "name": "MOLT_DISABLE_RC_COALESCE",
+      "output_neutral": false,
       "owner": "runtime/molt-tir/src/passes/rc_coalescing.rs",
       "summary": "Skips reference-count coalescing in the TIR pipeline when the variable is present with any value, even empty or 0; unset runs the pass, and presence is forwarded to the backend daemon and the codegen environment digest.",
       "values": []
@@ -3460,6 +3762,7 @@ _REGISTRY_JSON = r"""{
       "default": "",
       "kind": "bool",
       "name": "MOLT_DISABLE_SPLIT_FIELD_DEFOREST",
+      "output_neutral": false,
       "owner": "runtime/molt-passes/src/tir/passes/deforestation/split_field.rs",
       "summary": "Skips shared typed split-field read deforestation for native and LLVM when the variable is present with any value, even empty or 0; unset runs the pass.",
       "values": []
@@ -3469,6 +3772,7 @@ _REGISTRY_JSON = r"""{
       "default": "",
       "kind": "bool",
       "name": "MOLT_DISABLE_STRUCT_ELIDE",
+      "output_neutral": false,
       "owner": "runtime/molt-tir/src/passes/struct_alloc_elision.rs",
       "summary": "Skips dead struct-allocation elision in the TIR pipeline when the variable is present with any value, even empty or 0; unset runs the pass.",
       "values": []
@@ -3478,6 +3782,7 @@ _REGISTRY_JSON = r"""{
       "default": "",
       "kind": "bool",
       "name": "MOLT_DISABLE_UNBOUND_ELIM",
+      "output_neutral": false,
       "owner": "runtime/molt-tir/src/passes/unbound_checks.rs",
       "summary": "Skips elimination of redundant unbound-local checks in the TIR pipeline when the variable is present with any value, even empty or 0; unset runs the pass.",
       "values": []
@@ -3487,6 +3792,7 @@ _REGISTRY_JSON = r"""{
       "default": "0",
       "kind": "bool",
       "name": "MOLT_DISCOVERY_LLDB",
+      "output_neutral": false,
       "owner": "tools/native_numpy_discovery.sh",
       "summary": "Runs the native extension discovery driver under lldb --batch on macOS or gdb --batch elsewhere to capture a backtrace on a hard crash, when set to exactly 1; default 0 runs the driver directly.",
       "values": []
@@ -3496,6 +3802,7 @@ _REGISTRY_JSON = r"""{
       "default": "dev",
       "kind": "string",
       "name": "MOLT_DISCOVERY_PROFILE",
+      "output_neutral": false,
       "owner": "tools/witness_iter.py",
       "summary": "Cargo profile for the molt-cext-discovery harness; tools/native_numpy_discovery.sh and tools/native_witness_symbol_sweep.sh default it to dev, and tools/witness_iter.py reads it as the default for --profile and forwards the chosen value to those scripts.",
       "values": []
@@ -3505,6 +3812,7 @@ _REGISTRY_JSON = r"""{
       "default": "25",
       "kind": "float",
       "name": "MOLT_DISK_GUARD_HIGH_WATER_GB",
+      "output_neutral": false,
       "owner": "src/molt/disk_capacity.py",
       "summary": "Minimum free space in GiB the disk-capacity admission check requires on the artifact root; a positive finite decimal, any invalid value rejects admission with an error instead of falling back, default 25.",
       "values": []
@@ -3514,6 +3822,7 @@ _REGISTRY_JSON = r"""{
       "default": "codex-*,lane-*,sess-*",
       "kind": "list",
       "name": "MOLT_DISK_GUARD_LANE_GLOBS",
+      "output_neutral": false,
       "owner": "tools/disk_guard.py",
       "summary": "Comma-separated directory-name globs that identify per-lane artifact directories the disk guard may garbage-collect; default codex-*,lane-*,sess-*.",
       "values": []
@@ -3523,6 +3832,7 @@ _REGISTRY_JSON = r"""{
       "default": "15",
       "kind": "float",
       "name": "MOLT_DISK_GUARD_MIN_IDLE_MIN",
+      "output_neutral": false,
       "owner": "tools/disk_guard.py",
       "summary": "Minutes a directory must be unmodified before the disk guard may reclaim it; non-numeric or non-positive values use 15.",
       "values": []
@@ -3532,6 +3842,7 @@ _REGISTRY_JSON = r"""{
       "default": "40",
       "kind": "float",
       "name": "MOLT_DISK_GUARD_TARGET_GB",
+      "output_neutral": false,
       "owner": "tools/disk_guard.py",
       "summary": "Free-space target in GB the disk guard reclaims toward, raised to the high-water threshold when lower; non-numeric or non-positive values use 40.",
       "values": []
@@ -3541,6 +3852,7 @@ _REGISTRY_JSON = r"""{
       "default": "6",
       "kind": "float",
       "name": "MOLT_DISK_GUARD_TTL_HOURS",
+      "output_neutral": false,
       "owner": "tools/disk_guard.py",
       "summary": "Age in hours after which a registered lane directory becomes eligible for disk-guard garbage collection; non-numeric or non-positive values use 6.",
       "values": []
@@ -3550,6 +3862,7 @@ _REGISTRY_JSON = r"""{
       "default": "",
       "kind": "string",
       "name": "MOLT_DROP_STAGE_AUDIT_FUNC",
+      "output_neutral": false,
       "owner": "runtime/molt-passes/src/tir/drop_phase.rs",
       "summary": "Substring filter on function names for the drop-stage audit; only functions whose name contains it are reported, and empty or unset reports every function.",
       "values": []
@@ -3559,6 +3872,7 @@ _REGISTRY_JSON = r"""{
       "default": "0",
       "kind": "bool",
       "name": "MOLT_DUMP_APP_CALLABLE_MANIFEST",
+      "output_neutral": false,
       "owner": "runtime/molt-backend-native/src/app_resolver_abi.rs",
       "summary": "Prints the native application callable manifest (count and each name) to stderr when set to exactly 1; default off.",
       "values": []
@@ -3568,6 +3882,7 @@ _REGISTRY_JSON = r"""{
       "default": "",
       "kind": "string",
       "name": "MOLT_DUMP_CLIF",
+      "output_neutral": false,
       "owner": "runtime/molt-backend-native/src/native_backend/function_compiler.rs",
       "summary": "Prints the finished Cranelift IR of compiled functions to stderr; 1 dumps every function, any other value dumps functions whose name equals or contains it, unset dumps nothing, and a truthy value also makes the CLI stream backend stderr.",
       "values": []
@@ -3577,6 +3892,7 @@ _REGISTRY_JSON = r"""{
       "default": "",
       "kind": "path",
       "name": "MOLT_DUMP_CLIF_FILE",
+      "output_neutral": false,
       "owner": "runtime/molt-backend-native/src/native_backend/function_compiler.rs",
       "summary": "File that receives the Cranelift IR of each compiled function whose name contains MOLT_DUMP_CLIF_FILE_FILTER; both variables must be set, each match overwrites the file, and unset writes nothing.",
       "values": []
@@ -3586,6 +3902,7 @@ _REGISTRY_JSON = r"""{
       "default": "",
       "kind": "string",
       "name": "MOLT_DUMP_CLIF_FILE_FILTER",
+      "output_neutral": false,
       "owner": "runtime/molt-backend-native/src/native_backend/function_compiler.rs",
       "summary": "Substring of a function name that selects whose Cranelift IR is written to MOLT_DUMP_CLIF_FILE; required together with that path, and unset writes nothing.",
       "values": []
@@ -3595,6 +3912,7 @@ _REGISTRY_JSON = r"""{
       "default": "",
       "kind": "string",
       "name": "MOLT_DUMP_CLIF_FUNC",
+      "output_neutral": false,
       "owner": "runtime/molt-backend-native/src/native_backend/function_compiler.rs",
       "summary": "Function-name filter (exact name or substring) that prints the Cranelift IR of each matching function to stderr before block sealing; unset prints nothing.",
       "values": []
@@ -3604,6 +3922,7 @@ _REGISTRY_JSON = r"""{
       "default": "",
       "kind": "bool",
       "name": "MOLT_DUMP_CLIF_ON_CFG_ERROR",
+      "output_neutral": false,
       "owner": "runtime/molt-backend-native/src/native_backend/function_compiler.rs",
       "summary": "Logs zero-predecessor blocks and the full Cranelift IR of the affected function to stderr when the variable is present with any value; unset stays silent.",
       "values": []
@@ -3613,6 +3932,7 @@ _REGISTRY_JSON = r"""{
       "default": "",
       "kind": "string",
       "name": "MOLT_DUMP_FINAL_FUNC_IR",
+      "output_neutral": false,
       "owner": "runtime/molt-backend-native/src/native_backend/function_compiler.rs",
       "summary": "Substring filter on function names; the native backend writes the final lowered IR of each matching function to a debug artifact before Cranelift compilation, and empty or unset writes nothing.",
       "values": []
@@ -3622,6 +3942,7 @@ _REGISTRY_JSON = r"""{
       "default": "",
       "kind": "string",
       "name": "MOLT_DUMP_FUNC_IR",
+      "output_neutral": false,
       "owner": "runtime/molt-backend-native/src/native_backend/simple_backend/program_pipeline.rs",
       "summary": "Substring filter on function names; the native backend dumps the raw pre-rewrite IR of each non-extern matching function, an empty value matches every function, and unset dumps nothing.",
       "values": []
@@ -3631,6 +3952,7 @@ _REGISTRY_JSON = r"""{
       "default": "",
       "kind": "string",
       "name": "MOLT_DUMP_INT_STORE_TARGETS",
+      "output_neutral": false,
       "owner": "runtime/molt-backend-native/src/native_backend/function_compiler.rs",
       "summary": "Exact function name; when it matches, the native backend prints that function's scalar int store targets to stderr, and unset prints nothing.",
       "values": []
@@ -3640,6 +3962,7 @@ _REGISTRY_JSON = r"""{
       "default": "",
       "kind": "string",
       "name": "MOLT_DUMP_IR",
+      "output_neutral": false,
       "owner": "runtime/molt-tir/src/simpleir_debug.rs",
       "summary": "Selects IR op dumps to stderr: 1, all or control dump every function in control mode, full dumps every function in full mode, and full:<name>, control:<name> or a bare <name> filter by exact or substring match; presence of any value also enables TIR pre-pass dumps and exception-custody diagnostics, and unset dumps nothing.",
       "values": []
@@ -3649,6 +3972,7 @@ _REGISTRY_JSON = r"""{
       "default": "0",
       "kind": "bool",
       "name": "MOLT_DUMP_IR_FILE",
+      "output_neutral": false,
       "owner": "runtime/molt-tir/src/simpleir_debug.rs",
       "summary": "When set to exactly 1 together with MOLT_DUMP_IR, also writes each dumped function's IR to a debug artifact named after the function; default off.",
       "values": []
@@ -3658,6 +3982,7 @@ _REGISTRY_JSON = r"""{
       "default": "",
       "kind": "string",
       "name": "MOLT_DUMP_REWRITTEN_FUNC",
+      "output_neutral": false,
       "owner": "runtime/molt-backend-native/src/native_backend/simple_backend/program_pipeline.rs",
       "summary": "Exact function name; after module and ownership finalization native or LLVM writes that function's final projected op list to tmp/rewritten_func_ir.txt, and unset writes nothing.",
       "values": []
@@ -3667,6 +3992,7 @@ _REGISTRY_JSON = r"""{
       "default": "0",
       "kind": "bool",
       "name": "MOLT_DX_BUILD_TIMER_REUSE_OUTER_GUARD",
+      "output_neutral": false,
       "owner": "tools/dx_build_timer.py",
       "summary": "Lets tools/dx_build_timer.py run its build inside an already active outer memory guard instead of starting its own; 1, true, yes or on enables it, otherwise a truthy MOLT_PROOF_QUEUE enables it, default off.",
       "values": []
@@ -3676,6 +4002,7 @@ _REGISTRY_JSON = r"""{
       "default": "0",
       "kind": "bool",
       "name": "MOLT_EMIT_PASS_DELTA",
+      "output_neutral": false,
       "owner": "runtime/molt-passes/src/tir/pass_delta.rs",
       "summary": "Emits per-pass fact-profile deltas from the TIR pass manager as debug artifacts when set to exactly 1; default off.",
       "values": []
@@ -3685,6 +4012,7 @@ _REGISTRY_JSON = r"""{
       "default": "__main__",
       "kind": "string",
       "name": "MOLT_ENTRY_MODULE",
+      "output_neutral": false,
       "owner": "src/molt/cli/config_resolution.py",
       "summary": "Entry module name of the program being compiled; src/molt/cli sets it for the backend process, which defaults to __main__ and uses it to classify user-owned symbols for the shared-stdlib partition, the runtime captures the compiled program's multiprocessing-spawn selector at startup, and multiprocessing sets it to multiprocessing.spawn for the children it launches.",
       "values": []
@@ -3694,6 +4022,7 @@ _REGISTRY_JSON = r"""{
       "default": "0",
       "kind": "bool",
       "name": "MOLT_ENV_OVERLAY",
+      "output_neutral": false,
       "owner": "runtime/molt-runtime/src/async_rt/process.rs",
       "summary": "Set to 1 inside the env mapping a program passes to a spawn call to overlay those entries on the inherited environment instead of replacing it; the runtime strips the key before the child starts.",
       "values": []
@@ -3703,6 +4032,7 @@ _REGISTRY_JSON = r"""{
       "default": "",
       "kind": "path",
       "name": "MOLT_EXCEPTION_LOG_PATH",
+      "output_neutral": false,
       "owner": "runtime/molt-runtime/src/state/runtime_state.rs",
       "summary": "File that receives the formatted traceback when the runtime exits on an unhandled exception; the file is overwritten each time, write errors are ignored, and unset writes only to stderr. Captured by RuntimePolicy before Ready and inherited by isolates; later environment changes cannot select new policy or destinations.",
       "values": []
@@ -3712,6 +4042,7 @@ _REGISTRY_JSON = r"""{
       "default": "wasi",
       "kind": "enum",
       "name": "MOLT_EXECUTION_TARGET",
+      "output_neutral": false,
       "owner": "runtime/molt-runtime/src/async_rt/channels/capabilities.rs",
       "summary": "Execution target the wasm32 runtime uses to decide which host operations are supported; the Molt hosts set it (wasm/run_wasm.js wasi, wasm/browser_host.js browser, the Cloudflare worker shim cloudflare, the native main stub native), the runtime lowercases it and assumes wasi when unset, and native builds ignore it. Runtime initialization freezes the selected grants and target before Ready; isolates inherit them and public queries cannot reseed them.",
       "values": [
@@ -3726,6 +4057,7 @@ _REGISTRY_JSON = r"""{
       "default": "",
       "kind": "path-list",
       "name": "MOLT_EXTENSION_PATH",
+      "output_neutral": false,
       "owner": "runtime/molt-cpython-abi/src/loader.rs",
       "summary": "OS path-separator list of directories the CPython-ABI bridge loader searches for an extension module's shared object; it never searches host Python or site-packages, and when unset no extension can be found.",
       "values": []
@@ -3735,6 +4067,7 @@ _REGISTRY_JSON = r"""{
       "default": "",
       "kind": "path-list",
       "name": "MOLT_EXTERNAL_ARTIFACT_ROOTS",
+      "output_neutral": false,
       "owner": "src/molt/dx.py",
       "summary": "OS path-separator list of candidate artifact roots that src/molt/dx.py checks in order for an external MOLT_EXT_ROOT when MOLT_PREFER_EXTERNAL_ARTIFACTS or MOLT_REQUIRE_EXTERNAL_ARTIFACTS asks for one; the first with enough free space wins, and when unset the checkout family's custody root is the only candidate.",
       "values": []
@@ -3744,6 +4077,7 @@ _REGISTRY_JSON = r"""{
       "default": "20",
       "kind": "float",
       "name": "MOLT_EXTERNAL_MIN_FREE_GB",
+      "output_neutral": false,
       "owner": "src/molt/dx.py",
       "summary": "Minimum free space in GB a candidate external artifact root must have before src/molt/dx.py selects it; non-numeric or negative values use 20.",
       "values": []
@@ -3753,6 +4087,7 @@ _REGISTRY_JSON = r"""{
       "default": "",
       "kind": "list",
       "name": "MOLT_EXTERNAL_STATIC_PACKAGES",
+      "output_neutral": false,
       "owner": "src/molt/cli/external_native.py",
       "summary": "Comma- or space-separated Python package names admitted as external static packages from external module roots during molt build; an entry that is not a dotted identifier fails the build, the value is part of the wrapper-build cache key, and unset admits none.",
       "values": []
@@ -3762,6 +4097,7 @@ _REGISTRY_JSON = r"""{
       "default": "",
       "kind": "path",
       "name": "MOLT_EXT_ROOT",
+      "output_neutral": false,
       "owner": "src/molt/dx.py",
       "summary": "Artifact root for build state, caches, Cargo targets and scratch directories. src/molt/dx.py is its only reader: configured_artifact_root returns the set value, artifact_root falls back to an external candidate root or the checkout custody root (never a worktree), and RunContext exports the choice to child processes.",
       "values": []
@@ -3771,6 +4107,7 @@ _REGISTRY_JSON = r"""{
       "default": "0",
       "kind": "int",
       "name": "MOLT_FAKE_DB_CPU_ITERS",
+      "output_neutral": false,
       "owner": "runtime/molt-worker/src/main.rs",
       "summary": "Number of synthetic CPU-burn iterations the molt-worker fake database performs per returned row; parsed as an unsigned 32-bit integer, invalid values use 0, and bench/scripts/run_demo_bench.py records the value in its artifact.",
       "values": []
@@ -3780,6 +4117,7 @@ _REGISTRY_JSON = r"""{
       "default": "0",
       "kind": "int",
       "name": "MOLT_FAKE_DB_DECODE_US_PER_ROW",
+      "output_neutral": false,
       "owner": "runtime/molt-worker/src/main.rs",
       "summary": "Simulated decode cost in microseconds per row that the molt-worker fake database sleeps for; parsed as an unsigned integer, invalid values use 0, and bench/scripts/run_demo_bench.py records the value in its artifact.",
       "values": []
@@ -3789,6 +4127,7 @@ _REGISTRY_JSON = r"""{
       "default": "0",
       "kind": "int",
       "name": "MOLT_FAKE_DB_DELAY_MS",
+      "output_neutral": false,
       "owner": "runtime/molt-worker/src/main.rs",
       "summary": "Simulated database latency in milliseconds the molt-worker fake database waits per request; parsed as an unsigned integer, invalid values use 0, and bench/scripts/run_demo_bench.py records the value in its artifact.",
       "values": []
@@ -3798,6 +4137,7 @@ _REGISTRY_JSON = r"""{
       "default": "",
       "kind": "path",
       "name": "MOLT_FALCON_OCR_ARTIFACT_ROOT",
+      "output_neutral": false,
       "owner": "tests/helpers/falcon_ocr_paths.py",
       "summary": "Falcon OCR experiment checkout that holds the weights (weights/model.safetensors, weights/config.json, weights/tokenizer.json) and the helper modules the OCR tests load; these are external artifacts with no default location, so a test that needs one skips while this is unset.",
       "values": []
@@ -3807,6 +4147,7 @@ _REGISTRY_JSON = r"""{
       "default": "",
       "kind": "string",
       "name": "MOLT_FM_CMD",
+      "output_neutral": false,
       "owner": "tools/advisory_classifier.py",
       "summary": "Shell command tools/advisory_classifier.py runs to obtain a verdict from an external model; blank or unset disables the classifier and returns no verdict.",
       "values": []
@@ -3816,6 +4157,7 @@ _REGISTRY_JSON = r"""{
       "default": "2",
       "kind": "int",
       "name": "MOLT_FRONTEND_PARALLEL_MIN_MODULES",
+      "output_neutral": false,
       "owner": "src/molt/cli/frontend_parallel.py",
       "summary": "Minimum number of modules a build layer needs before the frontend lowers it with parallel workers; non-numeric values use 2 and values below 2 are raised to 2.",
       "values": []
@@ -3825,6 +4167,7 @@ _REGISTRY_JSON = r"""{
       "default": "32768",
       "kind": "float",
       "name": "MOLT_FRONTEND_PARALLEL_MIN_PREDICTED_COST",
+      "output_neutral": false,
       "owner": "src/molt/cli/frontend_parallel.py",
       "summary": "Minimum total predicted lowering cost a layer needs before the frontend uses parallel module workers; non-numeric values use 32768 and negatives clamp to 0.",
       "values": []
@@ -3834,6 +4177,7 @@ _REGISTRY_JSON = r"""{
       "default": "auto",
       "kind": "string",
       "name": "MOLT_FRONTEND_PARALLEL_MODULES",
+      "output_neutral": false,
       "owner": "src/molt/cli/frontend_parallel.py",
       "summary": "Number of parallel frontend module workers; auto, 1, true, yes or on pick a count bounded by CPU count and available memory, 0, false, no or off disable parallelism, an integer of 2 or more requests that many (still memory-capped), and any other value raises an error, default auto.",
       "values": []
@@ -3843,6 +4187,7 @@ _REGISTRY_JSON = r"""{
       "default": "0.5",
       "kind": "float",
       "name": "MOLT_FRONTEND_PARALLEL_STDLIB_MIN_COST_SCALE",
+      "output_neutral": false,
       "owner": "src/molt/cli/frontend_parallel.py",
       "summary": "Factor applied to MOLT_FRONTEND_PARALLEL_MIN_PREDICTED_COST when a layer contains stdlib-like modules; non-numeric values use 0.5 and negatives clamp to 0.",
       "values": []
@@ -3852,6 +4197,7 @@ _REGISTRY_JSON = r"""{
       "default": "65536",
       "kind": "float",
       "name": "MOLT_FRONTEND_PARALLEL_TARGET_COST_PER_WORKER",
+      "output_neutral": false,
       "owner": "src/molt/cli/frontend_parallel.py",
       "summary": "Predicted lowering cost the frontend aims to give each parallel worker when sizing a layer's worker count; non-numeric values use 65536 and values below 1 are raised to 1.",
       "values": []
@@ -3861,6 +4207,7 @@ _REGISTRY_JSON = r"""{
       "default": "",
       "kind": "float",
       "name": "MOLT_FRONTEND_PHASE_TIMEOUT",
+      "output_neutral": false,
       "owner": "src/molt/cli/build_inputs.py",
       "summary": "Timeout in seconds for each frontend phase of molt build; a non-numeric or non-positive value fails the build, unset applies no phase timeout, and tools/bench_wasm.py defaults it to 60 for its runs.",
       "values": []
@@ -3870,6 +4217,7 @@ _REGISTRY_JSON = r"""{
       "default": "",
       "kind": "string",
       "name": "MOLT_FRONTEND_TIMINGS",
+      "output_neutral": false,
       "owner": "src/molt/cli/build_inputs.py",
       "summary": "Enables frontend phase timing output in molt build when non-empty; 1, true, yes or all report every phase, a number reports only phases slower than that many seconds, and other values report every phase.",
       "values": []
@@ -3879,6 +4227,7 @@ _REGISTRY_JSON = r"""{
       "default": "0",
       "kind": "bool",
       "name": "MOLT_GIT_GUARD_OVERRIDE",
+      "output_neutral": false,
       "owner": "tools/git_guard.py",
       "summary": "Lets tools/git_guard.py run a destructive working-tree git command it would otherwise block, when set to exactly 1; a recovery snapshot is still taken first, and the default blocks.",
       "values": []
@@ -3888,6 +4237,7 @@ _REGISTRY_JSON = r"""{
       "default": "",
       "kind": "enum",
       "name": "MOLT_GPU_BACKEND",
+      "output_neutral": false,
       "owner": "src/molt/gpu/backend_config.py",
       "summary": "Requested GPU backend for molt.gpu tensors and the Rust GPU runtime; the Rust reader accepts metal, webgpu, cuda, or hip after trim and lowercase, the Python reader treats any non-empty spelling as a backend request and only metal or webgpu as DFlash-capable device backends, and unset requests no GPU backend.",
       "values": [
@@ -3902,6 +4252,7 @@ _REGISTRY_JSON = r"""{
       "default": "0",
       "kind": "bool",
       "name": "MOLT_GPU_DEBUG",
+      "output_neutral": false,
       "owner": "runtime/molt-gpu/src/primitives_ffi.rs",
       "summary": "Presence of any value makes the GPU runtime print a stderr notice when Metal execution is unavailable and the fused kernel pipeline falls back to the CPU interpreter; unset keeps that fallback silent.",
       "values": []
@@ -3911,6 +4262,7 @@ _REGISTRY_JSON = r"""{
       "default": "15000",
       "kind": "int",
       "name": "MOLT_GPU_KERNEL_TIMEOUT_MS",
+      "output_neutral": false,
       "owner": "wasm/browser_gpu_dispatch.js",
       "summary": "Milliseconds the browser GPU dispatcher waits on a WebGPU worker kernel before it fails the request when the caller passes no gpuKernelTimeoutMs option; values below 1 clamp to 1 and non-numeric values fall back to 15000.",
       "values": []
@@ -3920,6 +4272,7 @@ _REGISTRY_JSON = r"""{
       "default": "0",
       "kind": "bool",
       "name": "MOLT_GUARDED_STACK_INNER",
+      "output_neutral": false,
       "owner": "bench/scripts/run_stack.sh",
       "summary": "bench/scripts/run_stack.sh sets it to 1 before it re-executes itself under tools/guarded_exec.py; the inner run reads it to skip the demo-run directory binding and the guard wrap, and tools/check_memory_guard_wiring.py requires the token in that script.",
       "values": []
@@ -3929,6 +4282,7 @@ _REGISTRY_JSON = r"""{
       "default": "0",
       "kind": "bool",
       "name": "MOLT_GUARD_OK",
+      "output_neutral": false,
       "owner": "tools/hooks/bash_guard.py",
       "summary": "Override token for the PreToolUse bash guard; exactly 1, as an inline assignment on the command segment or in the environment, lets the guard allow a destructive-git, add-sweep, queue-bypass, or https-push command it would otherwise refuse, and any other value keeps the block.",
       "values": []
@@ -3938,6 +4292,7 @@ _REGISTRY_JSON = r"""{
       "default": "incident",
       "kind": "enum",
       "name": "MOLT_GUARD_PROFILE",
+      "output_neutral": false,
       "owner": "tools/harness_memory_guard.py",
       "summary": "Command-profile mode of the shared harness memory guard: 0, false, no, or off disable profiles, 1, all, always, true, yes, or on log every guarded command, and incident, incidents, failure, or failures log only failures, which is also the default for unset or unknown values; a set MOLT_GUARD_PROFILE_LOG forces all unless the mode is off.",
       "values": [
@@ -3962,6 +4317,7 @@ _REGISTRY_JSON = r"""{
       "default": "",
       "kind": "path",
       "name": "MOLT_GUARD_PROFILE_LOG",
+      "output_neutral": false,
       "owner": "tools/harness_memory_guard.py",
       "summary": "Path of the JSONL command-profile log the harness memory guard appends to; a relative path resolves under the repo root, setting it switches the profile mode to all, and unset writes commands.jsonl in the harness_memory_guard directory beside the memory-guard state root.",
       "values": []
@@ -3971,6 +4327,7 @@ _REGISTRY_JSON = r"""{
       "default": "16",
       "kind": "float",
       "name": "MOLT_GUARD_PROFILE_MAX_MB",
+      "output_neutral": false,
       "owner": "tools/harness_memory_guard.py",
       "summary": "Size in megabytes at which the harness memory guard rotates the command-profile JSONL log once before it appends; zero or a negative value disables rotation, and an empty or non-numeric value falls back to 16.",
       "values": []
@@ -3980,6 +4337,7 @@ _REGISTRY_JSON = r"""{
       "default": "",
       "kind": "path",
       "name": "MOLT_GUARD_SCRATCH_ROOT",
+      "output_neutral": true,
       "owner": "src/molt/temporary_artifacts.py",
       "summary": "tools/memory_guard.py sets it to one guarded child's leased scratch directory; backend environment preparation validates the existing allocation and the Rust native batch helper requires an absolute existing directory. Suite daemons strip this requester selector and use their lease-owned platform temp root instead; guard closure owns one-shot abrupt-exit cleanup.",
       "values": []
@@ -3989,6 +4347,7 @@ _REGISTRY_JSON = r"""{
       "default": "0",
       "kind": "bool",
       "name": "MOLT_HERMETIC_MODULE_ROOTS",
+      "output_neutral": false,
       "owner": "src/molt/cli/build_inputs.py",
       "summary": "Truthy values (1, true, yes, on) stop molt build from auto-adding .venv and .molt-venv site-packages to the module roots, so only the project, MOLT_MODULE_ROOTS, PYTHONPATH, and explicit lib paths are searched; the value also keys the molt-run wrapper build cache.",
       "values": []
@@ -3998,6 +4357,7 @@ _REGISTRY_JSON = r"""{
       "default": "",
       "kind": "path",
       "name": "MOLT_HOME",
+      "output_neutral": false,
       "owner": "src/molt/default_paths.py",
       "summary": "Root of Molt's provisioned home for the compiler toolchain, the bin directory, and the default build root; a relative path resolves against the current directory, unset derives home under the Molt cache (MOLT_CACHE, else MOLT_EXT_ROOT/.molt_cache, else the platform cache directory), molt-embed also looks for MOLT_HOME/bin/molt, and CI workflows and the packaging bootstrap set it to a private root.",
       "values": []
@@ -4007,6 +4367,7 @@ _REGISTRY_JSON = r"""{
       "default": "",
       "kind": "path",
       "name": "MOLT_HOST_ROOT",
+      "output_neutral": false,
       "owner": "tools/throughput_env.sh",
       "summary": "tools/molt_shell_env.sh exports it from molt_init_shell_context as the repo root in the selected Python's path form (cygpath or wslpath host form when that Python uses Windows paths); tools/throughput_env.sh and tools/witness_cycle.sh read it as their ROOT.",
       "values": []
@@ -4016,6 +4377,7 @@ _REGISTRY_JSON = r"""{
       "default": "0",
       "kind": "bool",
       "name": "MOLT_INLINE_STATS",
+      "output_neutral": false,
       "owner": "runtime/molt-passes/src/tir/module_phase.rs",
       "summary": "Exactly 1 makes the TIR module phase print per-module inliner, generator-fusion, and slot-promotion statistics plus inliner candidate details to stderr, and the molt CLI then streams that backend stderr instead of swallowing it in JSON mode.",
       "values": []
@@ -4025,6 +4387,7 @@ _REGISTRY_JSON = r"""{
       "default": "real",
       "kind": "enum",
       "name": "MOLT_IO_MODE",
+      "output_neutral": false,
       "owner": "runtime/molt-runtime/src/object/ops_sys.rs",
       "summary": "Runtime I/O mode installed at program startup: real (default), virtual, or callback; the capability manifest rejects other spellings, the runtime treats unknown spellings as real, and molt build --io-mode and the REPL set it for the compiled program when the mode is not real.",
       "values": [
@@ -4038,6 +4401,7 @@ _REGISTRY_JSON = r"""{
       "default": "60",
       "kind": "float",
       "name": "MOLT_IR_VERIFIER_REQUEST_TIMEOUT_SEC",
+      "output_neutral": false,
       "owner": "tools/rust_ir_verifier.py",
       "summary": "Seconds one request to the molt-ir-verify binary may take; the value must be a finite positive number or the verifier raises ValueError, and unset or empty means 60.",
       "values": []
@@ -4047,6 +4411,7 @@ _REGISTRY_JSON = r"""{
       "default": "",
       "kind": "list",
       "name": "MOLT_JIT_ARGS",
+      "output_neutral": false,
       "owner": "runtime/molt-backend-mlir/src/bin/main.rs",
       "summary": "Comma-separated i64 arguments passed to the function that molt-backend-mlir --jit executes; a value that does not parse fails the run, and unset or empty passes no arguments.",
       "values": []
@@ -4056,6 +4421,7 @@ _REGISTRY_JSON = r"""{
       "default": "",
       "kind": "path",
       "name": "MOLT_JOURNAL_TEST_DIRECTORY",
+      "output_neutral": false,
       "owner": "tools/proof_supervisor/src/lib.rs",
       "summary": "Owned rendezvous directory passed to native supervisor journal-failure test children; read only in the development test binary.",
       "values": []
@@ -4065,6 +4431,7 @@ _REGISTRY_JSON = r"""{
       "default": "",
       "kind": "enum",
       "name": "MOLT_JOURNAL_TEST_WORKER",
+      "output_neutral": false,
       "owner": "tools/proof_supervisor/src/lib.rs",
       "summary": "Selects one of the two native supervisor journal-failure test workers; unset selects the test root, and no shipped runtime reads it.",
       "values": [
@@ -4077,6 +4444,7 @@ _REGISTRY_JSON = r"""{
       "default": "0",
       "kind": "bool",
       "name": "MOLT_KEEP_SYMBOLS",
+      "output_neutral": false,
       "owner": "src/molt/cli/native_link_command.py",
       "summary": "Exactly 1 keeps symbols in the native link policy and skips the strip after BOLT finalization so profilers can symbolicate the binary; any other value strips, and the perf scoreboard profiler sets it to 1 for its own builds.",
       "values": []
@@ -4086,6 +4454,7 @@ _REGISTRY_JSON = r"""{
       "default": "",
       "kind": "string",
       "name": "MOLT_L7_AFFINITY_MASK",
+      "output_neutral": false,
       "owner": "runtime/molt-cpython-abi/tests/l7_numeric_perf_attestation.rs",
       "summary": "tools/numeric_attestation/run_l7_numeric_attestation.py and run_list_delta_attestation.py set it for the release attestation test binaries; the tests read it as a hexadecimal CPU mask (optional 0x prefix) that must select exactly one logical CPU, pin the benchmark thread to it, and panic when it is missing or empty.",
       "values": []
@@ -4095,6 +4464,7 @@ _REGISTRY_JSON = r"""{
       "default": "",
       "kind": "string",
       "name": "MOLT_L7_BUILD_FINGERPRINT",
+      "output_neutral": false,
       "owner": "runtime/molt-cpython-abi/tests/l7_numeric_perf_attestation.rs",
       "summary": "tools/numeric_attestation/run_l7_numeric_attestation.py and run_list_delta_attestation.py set it to the built test artifact's fingerprint; the release attestation tests copy it into the attestation JSON source block and panic when it is missing or empty.",
       "values": []
@@ -4104,6 +4474,7 @@ _REGISTRY_JSON = r"""{
       "default": "",
       "kind": "string",
       "name": "MOLT_L7_GIT_COMMIT",
+      "output_neutral": false,
       "owner": "runtime/molt-cpython-abi/tests/l7_numeric_perf_attestation.rs",
       "summary": "tools/numeric_attestation/run_l7_numeric_attestation.py and run_list_delta_attestation.py set it to the source git commit; the release attestation tests copy it into the attestation JSON source block and panic when it is missing or empty.",
       "values": []
@@ -4113,6 +4484,7 @@ _REGISTRY_JSON = r"""{
       "default": "",
       "kind": "bool",
       "name": "MOLT_L7_GIT_DIRTY",
+      "output_neutral": false,
       "owner": "runtime/molt-cpython-abi/tests/l7_numeric_perf_attestation.rs",
       "summary": "tools/numeric_attestation/run_l7_numeric_attestation.py and run_list_delta_attestation.py set it to true or false from the git worktree state; the release attestation tests record true as a dirty source tree, treat any other value as clean, and panic when it is missing or empty.",
       "values": []
@@ -4122,6 +4494,7 @@ _REGISTRY_JSON = r"""{
       "default": "",
       "kind": "string",
       "name": "MOLT_L7_RUN_NONCE",
+      "output_neutral": false,
       "owner": "runtime/molt-cpython-abi/tests/l7_numeric_perf_attestation.rs",
       "summary": "tools/numeric_attestation/run_l7_numeric_attestation.py and run_list_delta_attestation.py set it to the run nonce that names the run's capsules; the release attestation tests copy it into the attestation JSON source block and panic when it is missing or empty.",
       "values": []
@@ -4131,6 +4504,7 @@ _REGISTRY_JSON = r"""{
       "default": "",
       "kind": "string",
       "name": "MOLT_L7_RUSTC",
+      "output_neutral": false,
       "owner": "runtime/molt-cpython-abi/tests/l7_numeric_perf_attestation.rs",
       "summary": "tools/numeric_attestation/run_l7_numeric_attestation.py and run_list_delta_attestation.py set it to the rustc version string of the build; the release attestation tests copy it into the attestation JSON source block and panic when it is missing or empty.",
       "values": []
@@ -4140,6 +4514,7 @@ _REGISTRY_JSON = r"""{
       "default": "",
       "kind": "int",
       "name": "MOLT_LEAK_TOLERANCE",
+      "output_neutral": false,
       "owner": "runtime/molt-runtime/src/state/metrics.rs",
       "summary": "Unsigned integer slack for the exact-survivor leak gauge (live objects must stay at or below the floor plus this value) that the memory-safety differentials use; unset or non-numeric keeps the default 200000 live-object ceiling instead.",
       "values": []
@@ -4149,6 +4524,7 @@ _REGISTRY_JSON = r"""{
       "default": "",
       "kind": "string",
       "name": "MOLT_LINEAR_HYGIENE_DSPY_API_KEY",
+      "output_neutral": false,
       "owner": "tools/linear_hygiene.py",
       "summary": "Inline API key for the Linear hygiene tool's DSPy routing; a set value wins, and unset makes the tool read the key from the environment variable named by MOLT_LINEAR_HYGIENE_DSPY_API_KEY_ENV (default OPENAI_API_KEY).",
       "values": []
@@ -4158,6 +4534,7 @@ _REGISTRY_JSON = r"""{
       "default": "OPENAI_API_KEY",
       "kind": "string",
       "name": "MOLT_LINEAR_HYGIENE_DSPY_API_KEY_ENV",
+      "output_neutral": false,
       "owner": "tools/linear_hygiene.py",
       "summary": "Name of the environment variable that holds the DSPy API key for the Linear hygiene tool when MOLT_LINEAR_HYGIENE_DSPY_API_KEY is unset; unset or empty means OPENAI_API_KEY.",
       "values": []
@@ -4167,6 +4544,7 @@ _REGISTRY_JSON = r"""{
       "default": "0",
       "kind": "bool",
       "name": "MOLT_LINEAR_HYGIENE_DSPY_ENABLE",
+      "output_neutral": false,
       "owner": "tools/linear_hygiene.py",
       "summary": "Enables DSPy-assisted routing in the Linear hygiene tool; 1, true, yes, or on enable it, 0, false, no, or off disable it, and any other value keeps the default off.",
       "values": []
@@ -4176,6 +4554,7 @@ _REGISTRY_JSON = r"""{
       "default": "",
       "kind": "string",
       "name": "MOLT_LINEAR_HYGIENE_DSPY_MODEL",
+      "output_neutral": false,
       "owner": "tools/linear_hygiene.py",
       "summary": "Model name the Linear hygiene tool configures for DSPy routing; unset or empty leaves the model unconfigured, so DSPy routing reports not ready even when enabled.",
       "values": []
@@ -4185,6 +4564,7 @@ _REGISTRY_JSON = r"""{
       "default": "",
       "kind": "float",
       "name": "MOLT_LINK_TIMEOUT",
+      "output_neutral": false,
       "owner": "src/molt/cli/build_inputs.py",
       "summary": "Seconds molt build allows the native link command before it raises TimeoutExpired; the value must be a number greater than zero or the build fails, and unset applies no build-level link timeout beyond the shared memory guard.",
       "values": []
@@ -4194,6 +4574,7 @@ _REGISTRY_JSON = r"""{
       "default": "0",
       "kind": "bool",
       "name": "MOLT_LLVM_DUMP_IR",
+      "output_neutral": false,
       "owner": "runtime/molt-backend-native/src/native_backend/simple_backend/compile_driver.rs",
       "summary": "Exactly 1 (after trim) makes the LLVM backend write the module's pre-optimization IR to llvm/before_opt.ll under the debug artifact root, and the molt CLI then streams backend stderr; any other value writes nothing.",
       "values": []
@@ -4203,6 +4584,7 @@ _REGISTRY_JSON = r"""{
       "default": "",
       "kind": "path",
       "name": "MOLT_LLVM_NM",
+      "output_neutral": false,
       "owner": "src/molt/llvm_toolchain.py",
       "summary": "Explicit llvm-nm executable for WebAssembly symbol inspection; the file name must be llvm-nm (optionally versioned) and the path must pass the poison checks, the projected WASI toolchain environment fills it from the provisioned wasi-sdk when unset, and the release workflow verifies it with --version.",
       "values": []
@@ -4212,6 +4594,7 @@ _REGISTRY_JSON = r"""{
       "default": "",
       "kind": "path",
       "name": "MOLT_LLVM_PREFIX",
+      "output_neutral": false,
       "owner": "src/molt/llvm_toolchain.py",
       "summary": "Explicit LLVM/MLIR SDK prefix for the pinned LLVM backend; it must agree with the MLIR_SYS and TABLEGEN prefix variables when those are set, the projected toolchain environment writes it from a verified llvm-config, and unset lets the toolchain search its llvm-config candidates.",
       "values": []
@@ -4221,6 +4604,7 @@ _REGISTRY_JSON = r"""{
       "default": "",
       "kind": "string",
       "name": "MOLT_MACOSX_DEPLOYMENT_TARGET",
+      "output_neutral": false,
       "owner": "src/molt/platform_toolchain.py",
       "summary": "macOS deployment target for native compilation and linking; it takes precedence over MACOSX_DEPLOYMENT_TARGET, and when both are unset x86_64 uses 10.13 and other architectures use the selected SDK version. Release builds select their SDK floor explicitly.",
       "values": []
@@ -4230,6 +4614,7 @@ _REGISTRY_JSON = r"""{
       "default": "2",
       "kind": "int",
       "name": "MOLT_MAX_CONCURRENT_BUILDS",
+      "output_neutral": false,
       "owner": "src/molt/cli/cargo_execution.py",
       "summary": "Number of build-slot lock files under tmp/molt-build-slots that concurrent molt Cargo builds may hold at once; values below 1 clamp to 1, and empty or non-integer values fall back to 2.",
       "values": []
@@ -4239,6 +4624,7 @@ _REGISTRY_JSON = r"""{
       "default": "2000",
       "kind": "int",
       "name": "MOLT_MAX_FUNCTION_OPS",
+      "output_neutral": false,
       "owner": "runtime/molt-tir/src/passes/megafunction_split.rs",
       "summary": "Op count above which the TIR megafunction-split pass breaks a function into private chunk functions at top-level statement boundaries; a value that does not parse as an unsigned integer falls back to 2000.",
       "values": []
@@ -4248,6 +4634,7 @@ _REGISTRY_JSON = r"""{
       "default": "0",
       "kind": "bool",
       "name": "MOLT_MEMGVN_DIAG",
+      "output_neutral": false,
       "owner": "runtime/molt-passes/src/tir/passes/mem_gvn.rs",
       "summary": "Exactly 1 makes the MemGVN pass print per-function LoadAttr and StoreAttr counts and memory-use statistics to stderr and enables MOLT_MEMGVN_DUMP; the molt CLI then streams backend stderr.",
       "values": []
@@ -4257,6 +4644,7 @@ _REGISTRY_JSON = r"""{
       "default": "",
       "kind": "string",
       "name": "MOLT_MEMGVN_DUMP",
+      "output_neutral": false,
       "owner": "runtime/molt-passes/src/tir/passes/mem_gvn.rs",
       "summary": "Function-name substring; when MOLT_MEMGVN_DIAG is 1, every function whose name contains it gets a per-op memory-SSA def and use dump on stderr, and unset dumps nothing.",
       "values": []
@@ -4266,6 +4654,7 @@ _REGISTRY_JSON = r"""{
       "default": "0",
       "kind": "bool",
       "name": "MOLT_MEMGVN_REPORT",
+      "output_neutral": false,
       "owner": "runtime/molt-passes/src/tir/module_phase.rs",
       "summary": "Exactly 1 makes the TIR module phase report on stderr, per module, how many functions hold a MemGVN-forwardable typed-slot load pair; unset skips the analysis so production builds pay nothing.",
       "values": []
@@ -4275,6 +4664,7 @@ _REGISTRY_JSON = r"""{
       "default": "",
       "kind": "path",
       "name": "MOLT_MEMORY_DIR",
+      "output_neutral": false,
       "owner": "tools/memory_graph.py",
       "summary": "Explicit memory-corpus directory for tools/memory_graph.py; a directory that holds MEMORY.md or any existing directory is used, and unset falls back to the repo memory directory and then the Claude auto-memory directory for the project.",
       "values": []
@@ -4284,6 +4674,7 @@ _REGISTRY_JSON = r"""{
       "default": "0",
       "kind": "bool",
       "name": "MOLT_MEMORY_GUARD_ACTIVE",
+      "output_neutral": true,
       "owner": "src/molt/pytest_memory_guard_bootstrap.py",
       "summary": "tools/memory_guard.py sets it to 1 in every guarded child's environment; the pytest guard bootstrap reads it with MOLT_MEMORY_GUARD_PID to detect an enclosing guard, tools/dx_build_timer.py reads any truthy value for the same purpose, and the proof queue treats it as queue custody.",
       "values": []
@@ -4293,6 +4684,7 @@ _REGISTRY_JSON = r"""{
       "default": "",
       "kind": "string",
       "name": "MOLT_MEMORY_GUARD_COMMAND_JSON",
+      "output_neutral": false,
       "owner": "tools/memory_guard.py",
       "summary": "tools/memory_guard.py sets it to the JSON string list of the guarded command when it launches its hidden worker process; the worker reads it only when MOLT_MEMORY_GUARD_INTERNAL is 1, fails on a missing, invalid, non-list, or empty payload, and the child environment drops it.",
       "values": []
@@ -4302,6 +4694,7 @@ _REGISTRY_JSON = r"""{
       "default": "0",
       "kind": "bool",
       "name": "MOLT_MEMORY_GUARD_INTERNAL",
+      "output_neutral": false,
       "owner": "tools/memory_guard.py",
       "summary": "tools/memory_guard.py sets it to 1 for the hidden worker process that owns the guarded child; the worker reads it to take the command from MOLT_MEMORY_GUARD_COMMAND_JSON instead of argv, and the child environment drops it.",
       "values": []
@@ -4311,6 +4704,7 @@ _REGISTRY_JSON = r"""{
       "default": "",
       "kind": "string",
       "name": "MOLT_MEMORY_GUARD_LAUNCH_ID",
+      "output_neutral": false,
       "owner": "tools/memory_guard_core/cli_contract.py",
       "summary": "tools/command_execution.py sets it to a 32-character lowercase hex launch id when it starts a memory_guard worker with a startup report; the worker's reporting reads it with MOLT_MEMORY_GUARD_STARTUP_JSON to bind the startup and terminal reports to one launch and rejects a malformed value.",
       "values": []
@@ -4320,6 +4714,7 @@ _REGISTRY_JSON = r"""{
       "default": "",
       "kind": "path",
       "name": "MOLT_MEMORY_GUARD_MARKER",
+      "output_neutral": true,
       "owner": "src/molt/pytest_memory_guard_bootstrap.py",
       "summary": "tools/memory_guard.py sets it to the guard-<pid>-<token>.json marker it writes in the active directory of the memory-guard state root; the pytest bootstrap validates it against that directory, molt.temporary_artifacts matches it against the scratch owner record, and persistent daemons never inherit it.",
       "values": []
@@ -4329,6 +4724,7 @@ _REGISTRY_JSON = r"""{
       "default": "",
       "kind": "int",
       "name": "MOLT_MEMORY_GUARD_PID",
+      "output_neutral": true,
       "owner": "src/molt/pytest_memory_guard_bootstrap.py",
       "summary": "tools/memory_guard.py sets it to its own process id for every guarded child; the pytest guard bootstrap reads it when MOLT_MEMORY_GUARD_ACTIVE is 1 and ignores a non-positive or non-integer value.",
       "values": []
@@ -4338,6 +4734,7 @@ _REGISTRY_JSON = r"""{
       "default": "",
       "kind": "path",
       "name": "MOLT_MEMORY_GUARD_STARTUP_JSON",
+      "output_neutral": false,
       "owner": "tools/memory_guard_core/cli_contract.py",
       "summary": "tools/command_execution.py sets it to the absolute path where the memory_guard worker must write its startup report (launch id, guard pid, command, child process); the worker reads it with MOLT_MEMORY_GUARD_LAUNCH_ID and rejects a relative path.",
       "values": []
@@ -4347,6 +4744,7 @@ _REGISTRY_JSON = r"""{
       "default": "",
       "kind": "path",
       "name": "MOLT_MEMORY_GUARD_STATE_ROOT",
+      "output_neutral": false,
       "owner": "src/molt/memory_guard_paths.py",
       "summary": "Sole control-state root for one guarded process tree (active markers, scratch generations, with pytest custody and harness logs beside it); a relative path resolves under the repo root, proof-queue runs supply an external root, and unset derives tmp/memory_guard under MOLT_EXT_ROOT, else the first MOLT_EXTERNAL_ARTIFACT_ROOTS entry, else the unconfigured checkout-family root.",
       "values": []
@@ -4356,6 +4754,7 @@ _REGISTRY_JSON = r"""{
       "default": "2",
       "kind": "float",
       "name": "MOLT_MEMORY_GUARD_TERMINATION_WAIT_SEC",
+      "output_neutral": false,
       "owner": "tools/memory_guard.py",
       "summary": "Seconds the memory guard waits for a terminated process tree to settle after SIGTERM or SIGKILL before it reports the stuck state; 0, false, off, or no disable the wait, a negative or non-numeric value is ignored, unset means 2, and the WASM CI workflow sets it to 2.",
       "values": []
@@ -4365,6 +4764,7 @@ _REGISTRY_JSON = r"""{
       "default": "",
       "kind": "string",
       "name": "MOLT_MEMORY_GUARD_TOKEN",
+      "output_neutral": true,
       "owner": "src/molt/pytest_memory_guard_bootstrap.py",
       "summary": "tools/memory_guard.py sets it to a random 32-character hex token for each guarded child; the pytest bootstrap requires at least 16 characters to accept an enclosing guard, molt.temporary_artifacts names the scratch generation with it, and persistent daemons never inherit it.",
       "values": []
@@ -4374,6 +4774,7 @@ _REGISTRY_JSON = r"""{
       "default": "0.03",
       "kind": "float",
       "name": "MOLT_MIDEND_BUDGET_ALPHA",
+      "output_neutral": false,
       "owner": "src/molt/frontend/lowering/midend_policy.py",
       "summary": "Per-op coefficient in the mid-end time budget formula (base + alpha * ops + beta * blocks) * scale in milliseconds; an empty or non-numeric value falls back to 0.03.",
       "values": []
@@ -4383,6 +4784,7 @@ _REGISTRY_JSON = r"""{
       "default": "0.75",
       "kind": "float",
       "name": "MOLT_MIDEND_BUDGET_BETA",
+      "output_neutral": false,
       "owner": "src/molt/frontend/lowering/midend_policy.py",
       "summary": "Per-block coefficient in the mid-end time budget formula (base + alpha * ops + beta * blocks) * scale in milliseconds; an empty or non-numeric value falls back to 0.75.",
       "values": []
@@ -4392,6 +4794,7 @@ _REGISTRY_JSON = r"""{
       "default": "",
       "kind": "float",
       "name": "MOLT_MIDEND_BUDGET_MS",
+      "output_neutral": false,
       "owner": "src/molt/frontend/lowering/midend_policy.py",
       "summary": "Fixed per-function mid-end time budget in milliseconds that replaces the computed (base + alpha * ops + beta * blocks) * scale value; negative values clamp to 0, a non-numeric value is ignored, and unset keeps the computed budget.",
       "values": []
@@ -4401,6 +4804,7 @@ _REGISTRY_JSON = r"""{
       "default": "1",
       "kind": "float",
       "name": "MOLT_MIDEND_BUDGET_SCALE",
+      "output_neutral": false,
       "owner": "src/molt/frontend/lowering/midend_policy.py",
       "summary": "Multiplier applied to the computed mid-end time budget; negative values clamp to 0, and an empty or non-numeric value falls back to 1.",
       "values": []
@@ -4410,6 +4814,7 @@ _REGISTRY_JSON = r"""{
       "default": "1",
       "kind": "bool",
       "name": "MOLT_MIDEND_HOT_TIER_PROMOTION",
+      "output_neutral": false,
       "owner": "src/molt/frontend/lowering/midend_policy.py",
       "summary": "Allows the mid-end to promote hot functions to a higher optimization tier; 0, false, no, or off disable promotion, and every other value, including unset, enables it.",
       "values": []
@@ -4419,6 +4824,7 @@ _REGISTRY_JSON = r"""{
       "default": "",
       "kind": "int",
       "name": "MOLT_MIDEND_MAX_ROUNDS",
+      "output_neutral": false,
       "owner": "src/molt/frontend/lowering/midend_policy.py",
       "summary": "Overrides the number of mid-end optimization rounds per function with an integer of at least 2 (smaller or non-integer values fall back to 2); unset uses the tier and profile table, and the WASM benchmark and test runners set 3 when it is unset.",
       "values": []
@@ -4428,6 +4834,7 @@ _REGISTRY_JSON = r"""{
       "default": "48",
       "kind": "int",
       "name": "MOLT_MIDEND_MONOLITH_FUNCTION_THRESHOLD",
+      "output_neutral": false,
       "owner": "src/molt/frontend/lowering/midend_policy.py",
       "summary": "Function count at which a module counts as a monolith for mid-end policy; values below 8 raise to 8, and empty or non-integer values fall back to 48.",
       "values": []
@@ -4437,6 +4844,7 @@ _REGISTRY_JSON = r"""{
       "default": "4000",
       "kind": "int",
       "name": "MOLT_MIDEND_MONOLITH_TOTAL_OPS_THRESHOLD",
+      "output_neutral": false,
       "owner": "src/molt/frontend/lowering/midend_policy.py",
       "summary": "Total op count at which a module counts as a monolith for mid-end policy; values below 256 raise to 256, and empty or non-integer values fall back to 4000.",
       "values": []
@@ -4446,6 +4854,7 @@ _REGISTRY_JSON = r"""{
       "default": "",
       "kind": "enum",
       "name": "MOLT_MIDEND_PROFILE",
+      "output_neutral": false,
       "owner": "src/molt/frontend/lowering/midend_policy.py",
       "summary": "Overrides the mid-end optimization profile for every function; dev or release (case-insensitive) replace the build's profile, and any other value, including unset, keeps the build's profile.",
       "values": [
@@ -4458,6 +4867,7 @@ _REGISTRY_JSON = r"""{
       "default": "800",
       "kind": "int",
       "name": "MOLT_MIDEND_SKIP_OP_THRESHOLD",
+      "output_neutral": false,
       "owner": "src/molt/frontend/lowering/midend_policy.py",
       "summary": "Op count above which the mid-end skips a function as oversized; values below 1 and empty or non-integer values fall back to 800.",
       "values": []
@@ -4467,6 +4877,7 @@ _REGISTRY_JSON = r"""{
       "default": "0",
       "kind": "bool",
       "name": "MOLT_MIDEND_STATS",
+      "output_neutral": false,
       "owner": "src/molt/frontend/lowering/midend_policy.py",
       "summary": "Prints mid-end statistics to stderr at the end of lowering and logs each function's degrade level; any set value, even 0 or empty, enables those two logs, while the cross-block CSE fallback log needs a non-empty value.",
       "values": []
@@ -4476,6 +4887,7 @@ _REGISTRY_JSON = r"""{
       "default": "",
       "kind": "list",
       "name": "MOLT_MIDEND_TIER_A_FUNCTIONS",
+      "output_neutral": false,
       "owner": "src/molt/frontend/lowering/midend_policy.py",
       "summary": "Comma-separated function names the mid-end classifies as tier A with hot promotion disabled; it takes precedence over the tier C and tier B function lists and over the module-prefix lists, and unset names no function.",
       "values": []
@@ -4485,6 +4897,7 @@ _REGISTRY_JSON = r"""{
       "default": "",
       "kind": "list",
       "name": "MOLT_MIDEND_TIER_A_MODULE_PREFIXES",
+      "output_neutral": false,
       "owner": "src/molt/frontend/lowering/midend_policy.py",
       "summary": "Comma-separated module names or dotted prefixes whose functions the mid-end classifies as tier A when no function-level list matches; a module matches when its name equals the prefix or starts with the prefix plus a dot, and unset names no module.",
       "values": []
@@ -4494,6 +4907,7 @@ _REGISTRY_JSON = r"""{
       "default": "",
       "kind": "list",
       "name": "MOLT_MIDEND_TIER_B_FUNCTIONS",
+      "output_neutral": false,
       "owner": "src/molt/frontend/lowering/midend_policy.py",
       "summary": "Comma-separated function names the mid-end classifies as tier B with hot promotion disabled; a name that also appears in the tier A or tier C list takes that tier instead, and unset names no function.",
       "values": []
@@ -4503,6 +4917,7 @@ _REGISTRY_JSON = r"""{
       "default": "",
       "kind": "list",
       "name": "MOLT_MIDEND_TIER_B_MODULE_PREFIXES",
+      "output_neutral": false,
       "owner": "src/molt/frontend/lowering/midend_policy.py",
       "summary": "Comma-separated module names or dotted prefixes whose functions the mid-end classifies as tier B when no function-level list matches; a module matches when its name equals the prefix or starts with the prefix plus a dot, and unset names no module.",
       "values": []
@@ -4512,6 +4927,7 @@ _REGISTRY_JSON = r"""{
       "default": "",
       "kind": "list",
       "name": "MOLT_MIDEND_TIER_C_FUNCTIONS",
+      "output_neutral": false,
       "owner": "src/molt/frontend/lowering/midend_policy.py",
       "summary": "Comma-separated function names the mid-end classifies as tier C with hot promotion disabled; a name that also appears in the tier A list takes tier A, the tier C list wins over the tier B list, and unset names no function.",
       "values": []
@@ -4521,6 +4937,7 @@ _REGISTRY_JSON = r"""{
       "default": "",
       "kind": "list",
       "name": "MOLT_MIDEND_TIER_C_MODULE_PREFIXES",
+      "output_neutral": false,
       "owner": "src/molt/frontend/lowering/midend_policy.py",
       "summary": "Comma-separated module names or dotted prefixes whose functions the mid-end classifies as tier C when no function-level list matches; a module matches when its name equals the prefix or starts with the prefix plus a dot, and unset names no module.",
       "values": []
@@ -4530,6 +4947,7 @@ _REGISTRY_JSON = r"""{
       "default": "",
       "kind": "enum",
       "name": "MOLT_MIDEND_TIER_FORCE",
+      "output_neutral": false,
       "owner": "src/molt/frontend/lowering/midend_policy.py",
       "summary": "Forces every function to one mid-end tier (A, B, or C, case-insensitive) with hot promotion disabled; any other value, including unset, lets the function and module-prefix lists and the size heuristics classify each function.",
       "values": [
@@ -4543,6 +4961,7 @@ _REGISTRY_JSON = r"""{
       "default": "",
       "kind": "float",
       "name": "MOLT_MIDEND_WORK_BUDGET",
+      "output_neutral": false,
       "owner": "src/molt/frontend/lowering/midend_policy.py",
       "summary": "Fixed deterministic work-unit budget for the mid-end degrade ladder that replaces the value computed from the tier's base budget, round count, and op count; negative values clamp to 0, a non-numeric value is ignored, and unset keeps the computed budget.",
       "values": []
@@ -4552,6 +4971,7 @@ _REGISTRY_JSON = r"""{
       "default": "",
       "kind": "path",
       "name": "MOLT_MLIR_DUMP_DIR",
+      "output_neutral": false,
       "owner": "runtime/molt-backend-mlir/src/tir_to_mlir.rs",
       "summary": "Directory where the MLIR backend writes each function's pre-verification module as <sanitized name>.mlir, creating the directory as needed; a write failure fails the lowering, and unset writes no dumps.",
       "values": []
@@ -4561,6 +4981,7 @@ _REGISTRY_JSON = r"""{
       "default": "",
       "kind": "string",
       "name": "MOLT_MLIR_ONLY_FUNCTION",
+      "output_neutral": false,
       "owner": "runtime/molt-backend-mlir/src/bin/main.rs",
       "summary": "Exact function name; when set, molt-backend-mlir lowers only that function and skips the rest of the input IR, and unset lowers every function.",
       "values": []
@@ -4570,6 +4991,7 @@ _REGISTRY_JSON = r"""{
       "default": "O2",
       "kind": "enum",
       "name": "MOLT_MLIR_OPT_LEVEL",
+      "output_neutral": false,
       "owner": "runtime/molt-backend-mlir/src/bin/main.rs",
       "summary": "MLIR optimization level for molt-backend-mlir that overrides --opt-level; accepted spellings are O0, O1, O2, O3 or 0 to 3, any other value exits with code 2, and unset keeps O2 or the command-line level.",
       "values": [
@@ -4588,6 +5010,7 @@ _REGISTRY_JSON = r"""{
       "default": "0",
       "kind": "bool",
       "name": "MOLT_MLIR_TRACE_FUNCTIONS",
+      "output_neutral": false,
       "owner": "runtime/molt-backend-mlir/src/bin/main.rs",
       "summary": "Presence of any value makes molt-backend-mlir print a lowering line with the function name to stderr before each function it lowers; unset prints nothing.",
       "values": []
@@ -4597,6 +5020,7 @@ _REGISTRY_JSON = r"""{
       "default": "1400",
       "kind": "int",
       "name": "MOLT_MODULE_CHUNK_OPS",
+      "output_neutral": false,
       "owner": "src/molt/cli/frontend_pipeline.py",
       "summary": "Maximum ops per chunk when the frontend splits native module-init functions into eagerly called chunks; 0 disables chunking, negative values clamp to 0, a non-integer value keeps the default with a warning; the default is 1400, and 1500 for Luau transpile builds.",
       "values": []
@@ -4606,6 +5030,7 @@ _REGISTRY_JSON = r"""{
       "default": "",
       "kind": "path-list",
       "name": "MOLT_MODULE_ROOTS",
+      "output_neutral": false,
       "owner": "src/molt/cli/build_inputs.py",
       "summary": "os.pathsep-separated external module roots for molt build imports, the compiled runtime's sys.path, and Cython package custody; each entry is a plain path or a dotted alias (pkg.name=/path), missing entries are reported, the value keys the molt-run wrapper build cache, and unset adds no roots beyond the project.",
       "values": []
@@ -4615,6 +5040,7 @@ _REGISTRY_JSON = r"""{
       "default": "0",
       "kind": "bool",
       "name": "MOLT_MP_DEBUG",
+      "output_neutral": false,
       "owner": "src/molt/stdlib/multiprocessing/_core.py",
       "summary": "Set to 1 to print multiprocessing spawn, worker, and entry-resolution diagnostics to stderr; the parent copies the value into every spawned child's environment; only the exact value 1 enables it, default off.",
       "values": []
@@ -4624,6 +5050,7 @@ _REGISTRY_JSON = r"""{
       "default": "",
       "kind": "string",
       "name": "MOLT_MP_ENTRY",
+      "output_neutral": false,
       "owner": "src/molt/stdlib/multiprocessing/_core.py",
       "summary": "Module name of the parent's entry module; multiprocessing Process.start and the pool worker spawn set it for the child, and the child's _spawn_main imports it to rebuild __main__ (treated as __main__ when unset).",
       "values": []
@@ -4633,6 +5060,7 @@ _REGISTRY_JSON = r"""{
       "default": "",
       "kind": "path",
       "name": "MOLT_MP_MAIN_PATH",
+      "output_neutral": false,
       "owner": "src/molt/stdlib/multiprocessing/_core.py",
       "summary": "Absolute path of the parent's __main__ file; multiprocessing spawn sets it for the child, and the child's _spawn_main derives a fallback module name from it when the entry module is __main__; unset adds no path candidate.",
       "values": []
@@ -4642,6 +5070,7 @@ _REGISTRY_JSON = r"""{
       "default": "0",
       "kind": "bool",
       "name": "MOLT_MP_SPAWN",
+      "output_neutral": false,
       "owner": "runtime/molt-runtime/src/builtins/platform.rs",
       "summary": "Marks a multiprocessing child; the parent sets it to 1 when it spawns a Process or pool worker, the compiled entry module skips its top-level body when the frozen startup selector is exactly 1, multiprocessing.spawn then runs spawn_main, and the runtime process-io trace reports whether it is present.",
       "values": []
@@ -4651,6 +5080,7 @@ _REGISTRY_JSON = r"""{
       "default": "",
       "kind": "string",
       "name": "MOLT_MP_START_METHOD",
+      "output_neutral": false,
       "owner": "src/molt/stdlib/multiprocessing/_core.py",
       "summary": "Start method name the parent selected (spawn, fork, or forkserver); multiprocessing spawn sets it for the child, and the child's _spawn_main adopts it as its default start method; unset keeps the child's built-in default.",
       "values": []
@@ -4660,6 +5090,7 @@ _REGISTRY_JSON = r"""{
       "default": "0",
       "kind": "bool",
       "name": "MOLT_MP_TRACE_SPAWN",
+      "output_neutral": false,
       "owner": "src/molt/stdlib/multiprocessing/_core.py",
       "summary": "Set to 1 to write low-level multiprocessing spawn trace lines straight to file descriptor 2; only the exact value 1 enables it, default off.",
       "values": []
@@ -4669,6 +5100,7 @@ _REGISTRY_JSON = r"""{
       "default": "",
       "kind": "path",
       "name": "MOLT_NODE_BIN",
+      "output_neutral": false,
       "owner": "src/molt/node_runtime.py",
       "summary": "Path or command name of the Node binary that runs WASM artifacts; an explicit value must resolve to an executable and never falls back; when unset Molt uses the provisioned pinned Node, then Node on the host PATH.",
       "values": []
@@ -4678,6 +5110,7 @@ _REGISTRY_JSON = r"""{
       "default": "0",
       "kind": "bool",
       "name": "MOLT_OVERFLOW_PEEL_STATS",
+      "output_neutral": false,
       "owner": "runtime/molt-passes/src/tir/passes/overflow_peel.rs",
       "summary": "Set to 1 to make the overflow_peel pass print per-function peel and refusal counts to stderr and write an overflow_peel/<func>.txt debug artifact; the CLI then streams backend stderr instead of swallowing it; only the exact value 1 enables it, default off.",
       "values": []
@@ -4687,6 +5120,7 @@ _REGISTRY_JSON = r"""{
       "default": "/tmp/paddleocr-onnx",
       "kind": "path",
       "name": "MOLT_PADDLEOCR_MODEL_ROOT",
+      "output_neutral": false,
       "owner": "tests/helpers/paddleocr_paths.py",
       "summary": "Directory of the PaddleOCR ONNX model cache the OCR e2e tests read in HuggingFace cache layout (<repo>/refs/main and <repo>/snapshots/<id>); a leading ~ is expanded, default /tmp/paddleocr-onnx.",
       "values": []
@@ -4696,6 +5130,7 @@ _REGISTRY_JSON = r"""{
       "default": "",
       "kind": "path",
       "name": "MOLT_PASS_DELTA_PATH",
+      "output_neutral": false,
       "owner": "runtime/molt-passes/src/tir/pass_delta.rs",
       "summary": "File that receives appended pass-delta JSON lines while MOLT_EMIT_PASS_DELTA=1 is active; missing parent directories are created; when unset the lines go to the tir/pass_delta.jsonl debug artifact.",
       "values": []
@@ -4705,6 +5140,7 @@ _REGISTRY_JSON = r"""{
       "default": "",
       "kind": "enum",
       "name": "MOLT_PERF_PROFILE",
+      "output_neutral": false,
       "owner": "src/molt/cli/rust_cpu_policy.py",
       "summary": "Rust CPU policy of a build; native-arch compiles the runtime and backend compiler of a --target native build with -C target-cpu=native and binds the flag into their identities; other targets keep the baseline and warn; installed Molt and toolchain transfer reject it; any other value is an error; default unset (baseline).",
       "values": [
@@ -4716,6 +5152,7 @@ _REGISTRY_JSON = r"""{
       "default": "1",
       "kind": "enum",
       "name": "MOLT_PORTABLE",
+      "output_neutral": false,
       "owner": "src/molt/cli/backend_execution.py",
       "summary": "Selects baseline-ISA codegen for standalone native artifacts; 1 or true (the default when unset) keeps the portable target baseline, 0 or false enables host-CPU specialization, and the CLI and both native backends reject any other value.",
       "values": [
@@ -4730,6 +5167,7 @@ _REGISTRY_JSON = r"""{
       "default": "",
       "kind": "bool",
       "name": "MOLT_PREFER_EXTERNAL_ARTIFACTS",
+      "output_neutral": false,
       "owner": "src/molt/dx.py",
       "summary": "Set to 1, true, yes, or on to place Cargo targets, caches, and temp dirs under the first healthy external artifact root; 0, false, no, or off keeps repo-local roots; when unset the pyproject [tool.molt.dx] prefer_external_artifacts setting decides (off by default).",
       "values": []
@@ -4739,6 +5177,7 @@ _REGISTRY_JSON = r"""{
       "default": "",
       "kind": "path",
       "name": "MOLT_PREFIX",
+      "output_neutral": false,
       "owner": "packaging/install.sh",
       "summary": "Install root that packaging/install.sh unpacks the release tarball into (bin/ lives under it); --prefix overrides it; default $XDG_DATA_HOME/molt, or ~/.local/share/molt when XDG_DATA_HOME is unset.",
       "values": []
@@ -4748,6 +5187,7 @@ _REGISTRY_JSON = r"""{
       "default": "0",
       "kind": "bool",
       "name": "MOLT_PRESERVE_AMBIENT_TMPDIR",
+      "output_neutral": false,
       "owner": "src/molt/dx.py",
       "summary": "Set to 1, true, yes, or on to keep inherited TMPDIR, TMP, and TEMP values that point at system temp roots (/tmp, /var/tmp, /var/folders) when an external artifact root is preferred; default off, which drops them so temp files land under the artifact root.",
       "values": []
@@ -4757,6 +5197,7 @@ _REGISTRY_JSON = r"""{
       "default": "",
       "kind": "int",
       "name": "MOLT_PROCESS_PIPE_MAX_QUEUED_BYTES",
+      "output_neutral": false,
       "owner": "runtime/molt-runtime/src/state/runtime_state.rs",
       "summary": "Queued-byte budget for each stdin, stdout, or stderr pipe stream of a runtime-spawned child process; a positive integer sets the cap, otherwise the stream default applies (MOLT_STREAM_MAX_QUEUED_BYTES, else 16777216 bytes). Captured by RuntimePolicy before Ready and inherited by isolates; later environment changes cannot select new policy or destinations.",
       "values": []
@@ -4766,6 +5207,7 @@ _REGISTRY_JSON = r"""{
       "default": "0",
       "kind": "bool",
       "name": "MOLT_PROCESS_SENTINEL_REPORT_ONLY",
+      "output_neutral": false,
       "owner": "tools/process_sentinel.py",
       "summary": "Set to 1, true, yes, or on to make tools/process_sentinel.py report every verified would-be termination without sending signals; default off.",
       "values": []
@@ -4775,6 +5217,7 @@ _REGISTRY_JSON = r"""{
       "default": "1000",
       "kind": "int",
       "name": "MOLT_PROCESS_TEARDOWN_JOIN_TIMEOUT_MS",
+      "output_neutral": false,
       "owner": "runtime/molt-runtime/src/async_rt/process.rs",
       "summary": "Milliseconds the runtime waits at teardown for each spawned child's wait thread after the kill phase; a non-numeric value falls back to 1000. ProcessRegistry captures the deadline at startup; isolate registries inherit it and settlement never rereads the environment.",
       "values": []
@@ -4784,6 +5227,7 @@ _REGISTRY_JSON = r"""{
       "default": "50",
       "kind": "int",
       "name": "MOLT_PROCESS_TEARDOWN_TERM_GRACE_MS",
+      "output_neutral": false,
       "owner": "runtime/molt-runtime/src/async_rt/process.rs",
       "summary": "Milliseconds the runtime waits at teardown for still-running spawned children to exit after the terminate request before it kills them; a non-numeric value falls back to 50. ProcessRegistry captures the deadline at startup; isolate registries inherit it and settlement never rereads the environment.",
       "values": []
@@ -4793,6 +5237,7 @@ _REGISTRY_JSON = r"""{
       "default": "0",
       "kind": "bool",
       "name": "MOLT_PROFILE",
+      "output_neutral": false,
       "owner": "runtime/molt-runtime/src/state/metrics.rs",
       "summary": "Enables the runtime profiling counters (allocation, dispatch, GC, and epoch metrics) and the profile dump on native and WASM; exactly 1 enables it, read once per process, and MOLT_ASSERT_NO_LEAK also turns the counters on; default off.",
       "values": []
@@ -4802,6 +5247,7 @@ _REGISTRY_JSON = r"""{
       "default": "",
       "kind": "path",
       "name": "MOLT_PROJECT_ROOT",
+      "output_neutral": false,
       "owner": "src/molt/cli/project_roots.py",
       "summary": "Explicit user project directory for CLI commands; a relative path resolves against the current directory, and an invalid path is kept and diagnosed; when unset Molt walks up from the input path to the nearest directory with project markers.",
       "values": []
@@ -4811,6 +5257,7 @@ _REGISTRY_JSON = r"""{
       "default": "0",
       "kind": "bool",
       "name": "MOLT_PROMOTE_DEBUG",
+      "output_neutral": false,
       "owner": "runtime/molt-passes/src/tir/passes/module_slot_promotion/mod.rs",
       "summary": "Set to 1 to write the module_slot_promotion refusal-reason log to the promotion/<module>.txt debug artifact and stream backend stderr through the CLI; only the exact value 1 enables it, default off.",
       "values": []
@@ -4820,6 +5267,7 @@ _REGISTRY_JSON = r"""{
       "default": "",
       "kind": "string",
       "name": "MOLT_PROOF_CHILD_CUSTODY_ENDPOINT",
+      "output_neutral": false,
       "owner": "tools/proof_queue_pkg/python_child_custody.py",
       "summary": "host:port of the proof queue's child custody event server; the guarded proof runner sets it for every Python child, and the child custody bootstrap connects to it to journal executable admissions; a missing or malformed endpoint fails the child.",
       "values": []
@@ -4829,6 +5277,7 @@ _REGISTRY_JSON = r"""{
       "default": "",
       "kind": "string",
       "name": "MOLT_PROOF_CHILD_CUSTODY_JSON",
+      "output_neutral": false,
       "owner": "tools/proof_queue_pkg/python_child_custody.py",
       "summary": "JSON policy (schema molt.proof-child-custody.v1) that names the toolchain closure a proof child may execute; the guarded proof runner sets it, and the Python child custody bootstrap installs its audit hook only when the value is present.",
       "values": []
@@ -4838,6 +5287,7 @@ _REGISTRY_JSON = r"""{
       "default": "",
       "kind": "string",
       "name": "MOLT_PROOF_CHILD_CUSTODY_TOKEN",
+      "output_neutral": false,
       "owner": "tools/proof_queue_pkg/python_child_custody.py",
       "summary": "Secret the proof child presents on the custody channel so the event server can authenticate it; the guarded proof runner sets it together with the endpoint, and the child custody bootstrap reads it.",
       "values": []
@@ -4847,6 +5297,7 @@ _REGISTRY_JSON = r"""{
       "default": "",
       "kind": "string",
       "name": "MOLT_PROOF_CHILD_CUSTODY_WORKER_PARENT",
+      "output_neutral": false,
       "owner": "tools/proof_queue_pkg/node_child_custody.cjs",
       "summary": "Authenticated creator connection for a Node Worker custody hook; the existing Worker wrapper overwrites supplied values and binds the child thread to the creator's actual exit observation. Main-thread processes ignore inherited Worker metadata.",
       "values": []
@@ -4856,6 +5307,7 @@ _REGISTRY_JSON = r"""{
       "default": "",
       "kind": "float",
       "name": "MOLT_PROOF_COMMAND_TIMEOUT_SEC",
+      "output_neutral": false,
       "owner": "src/molt/cargo_execution_policy.py",
       "summary": "Calibrated wall-clock budget in seconds of the owning proof command; tools/proof_plan.py sets it for each command child and rejects plan env overrides, and nested Cargo or execution guards in that child raise their default timeouts to at least this floor; a non-positive or non-finite value is an error.",
       "values": []
@@ -4865,6 +5317,7 @@ _REGISTRY_JSON = r"""{
       "default": "0",
       "kind": "bool",
       "name": "MOLT_PROOF_QUEUE",
+      "output_neutral": false,
       "owner": "src/molt/pytest_memory_guard_bootstrap.py",
       "summary": "Marks a process launched by the proof queue runner, which sets it to 1 beside MOLT_PROOF_QUEUE_DB and MOLT_PROOF_QUEUE_RUN_ID; the pytest guard bootstrap and the final WASM runtime preflight require the exact value 1, dx_build_timer accepts 1, true, yes, or on to reuse the outer memory guard, and the same name is the queue's guard-limit prefix.",
       "values": []
@@ -4874,6 +5327,7 @@ _REGISTRY_JSON = r"""{
       "default": "",
       "kind": "string",
       "name": "MOLT_PROOF_QUEUE_AUTHOR",
+      "output_neutral": false,
       "owner": "tools/proof_queue_pkg/state.py",
       "summary": "Author name recorded on proof queue notes; when unset the queue uses USERNAME, then USER, then agent.",
       "values": []
@@ -4883,6 +5337,7 @@ _REGISTRY_JSON = r"""{
       "default": "",
       "kind": "path",
       "name": "MOLT_PROOF_QUEUE_DB",
+      "output_neutral": false,
       "owner": "src/molt/pytest_memory_guard_bootstrap.py",
       "summary": "Path of the proof queue's SQLite database (suffix .sqlite3); the queue runner sets it for each guarded run, and the pytest guard bootstrap and the final WASM runtime preflight read it to verify the run's custody.",
       "values": []
@@ -4892,6 +5347,7 @@ _REGISTRY_JSON = r"""{
       "default": "8",
       "kind": "float",
       "name": "MOLT_PROOF_QUEUE_RETAIN_GB",
+      "output_neutral": false,
       "owner": "tools/proof_queue_pkg/run_retention.py",
       "summary": "Byte bound in GiB (a positive number) for the newest reclaimable proof queue runs whose evidence files retention keeps; proof_queue.py retention --keep-gb overrides it; default 8.",
       "values": []
@@ -4901,6 +5357,7 @@ _REGISTRY_JSON = r"""{
       "default": "200",
       "kind": "int",
       "name": "MOLT_PROOF_QUEUE_RETAIN_RUNS",
+      "output_neutral": false,
       "owner": "tools/proof_queue_pkg/run_retention.py",
       "summary": "Number of newest reclaimable proof queue runs (a positive integer) whose evidence files retention keeps; failed, unresolved, pinned and dependency runs are kept beyond it; proof_queue.py retention --keep-runs overrides it; default 200.",
       "values": []
@@ -4910,6 +5367,7 @@ _REGISTRY_JSON = r"""{
       "default": "",
       "kind": "string",
       "name": "MOLT_PROOF_QUEUE_RUN_ID",
+      "output_neutral": false,
       "owner": "src/molt/pytest_memory_guard_bootstrap.py",
       "summary": "Identifier of the current proof queue run (at most 240 characters); the queue runner sets it for each guarded child, and the pytest guard bootstrap, the final WASM runtime preflight, and pact witness acceptance read it to bind evidence to that run.",
       "values": []
@@ -4919,6 +5377,7 @@ _REGISTRY_JSON = r"""{
       "default": "1",
       "kind": "int",
       "name": "MOLT_PROOF_QUEUE_SIZE",
+      "output_neutral": false,
       "owner": "tools/proof_queue_pkg/state.py",
       "summary": "Number of concurrent proof queue runs (a positive integer); molt queue --queue-size sets it for the queue process; default 1.",
       "values": []
@@ -4928,6 +5387,7 @@ _REGISTRY_JSON = r"""{
       "default": "",
       "kind": "path",
       "name": "MOLT_PROOF_SCRATCH_ROOT",
+      "output_neutral": false,
       "owner": "src/molt/dx.py",
       "summary": "Scratch directory a guarded proof run may write its outputs to; the proof queue's guarded execution sets a fresh one per run, and tools that produce artifacts default their output roots to it; when unset tools write under the checkout custody root's tmp directory.",
       "values": []
@@ -4937,6 +5397,7 @@ _REGISTRY_JSON = r"""{
       "default": "",
       "kind": "string",
       "name": "MOLT_PROOF_SOURCE_EXTENSION_LINK_INPUTS",
+      "output_neutral": false,
       "owner": "src/molt/source_extension_link_inputs.py",
       "summary": "JSON record (schema molt.source-extension-link-inputs.v2) of the captured source-extension link inputs for a target triple; the guarded proof runner sets it for typed producer commands, the CLI validates and uses it instead of capturing the inputs itself, and the execution environment refuses user-supplied values.",
       "values": []
@@ -4946,6 +5407,7 @@ _REGISTRY_JSON = r"""{
       "default": "",
       "kind": "path",
       "name": "MOLT_PROOF_SOURCE_ROOT",
+      "output_neutral": false,
       "owner": "tools/proof_queue_pkg/python_custody_bootstrap.py",
       "summary": "Absolute canonical path of the proof queue's validated source snapshot; the guarded proof runner sets it for typed commands, the Python custody bootstrap exposes that checkout's src only to the typed Molt module payload, and user-supplied values are refused.",
       "values": []
@@ -4955,6 +5417,7 @@ _REGISTRY_JSON = r"""{
       "default": "",
       "kind": "path",
       "name": "MOLT_PROOF_TEST_CARGO_OUTPUT_ROOT",
+      "output_neutral": false,
       "owner": "tests/proof_queue_owned_roots.py",
       "summary": "Short root directory for Cargo outputs of the native supervisor tests; the CI workflow sets it under RUNNER_TEMP, Windows runs require it, and other platforms fall back to the checkout custody root's tmp/supervisor-fixtures.",
       "values": []
@@ -4964,6 +5427,7 @@ _REGISTRY_JSON = r"""{
       "default": "",
       "kind": "path",
       "name": "MOLT_PROOF_TEST_METADATA_ROOT",
+      "output_neutral": false,
       "owner": "tests/proof_queue_owned_roots.py",
       "summary": "Existing short root directory for the metadata executable CAS used by the real proof queue tests; the CI workflow sets it under RUNNER_TEMP, and the tests fail when it is unset.",
       "values": []
@@ -4973,6 +5437,7 @@ _REGISTRY_JSON = r"""{
       "default": "",
       "kind": "string",
       "name": "MOLT_PROOF_TIER",
+      "output_neutral": false,
       "owner": "tools/proof_plan.py",
       "summary": "Proof tier this process gates (pr, main, or nightly as named in tools/proof_plan.toml); when unset the tier derives from GITHUB_EVENT_NAME, and with neither set every tier runs.",
       "values": []
@@ -4982,6 +5447,7 @@ _REGISTRY_JSON = r"""{
       "default": ".venv/bin/python3",
       "kind": "path",
       "name": "MOLT_PY",
+      "output_neutral": false,
       "owner": "tools/verify_native_binary_valid.sh",
       "summary": "Python interpreter that tools/verify_native_binary_valid.sh uses to build and run the validity corpus; default .venv/bin/python3.",
       "values": []
@@ -4991,6 +5457,7 @@ _REGISTRY_JSON = r"""{
       "default": "",
       "kind": "path",
       "name": "MOLT_PYTEST_CURRENT_TEST_FILE",
+      "output_neutral": false,
       "owner": "src/molt/pytest_memory_guard_bootstrap.py",
       "summary": "Path of the JSON file that records the currently running pytest test under memory-guard custody; the guard bootstrap sets it for the re-executed pytest child and the proof queue runner sets it for test commands, and the bootstrap canonicalizes it and requires it when it verifies proof queue custody.",
       "values": []
@@ -5000,6 +5467,7 @@ _REGISTRY_JSON = r"""{
       "default": "0",
       "kind": "bool",
       "name": "MOLT_PYTEST_OUTER_GUARD_REEXEC",
+      "output_neutral": false,
       "owner": "src/molt/pytest_memory_guard_bootstrap.py",
       "summary": "The pytest guard bootstrap sets it to 1 when it re-executes pytest under tools/memory_guard.py; the child raises if it sees the flag without a live guard ancestor, and dx treats any non-empty value as a pytest context.",
       "values": []
@@ -5009,6 +5477,7 @@ _REGISTRY_JSON = r"""{
       "default": "0",
       "kind": "bool",
       "name": "MOLT_PYTEST_RANDOM_ORDER",
+      "output_neutral": false,
       "owner": "tools/dev_test_runner.py",
       "summary": "Set to 1 to run the tools/dev.py test runner with pytest random ordering; the seed comes from MOLT_PYTEST_RANDOM_SEED or is drawn fresh; only the exact value 1 enables it, default off.",
       "values": []
@@ -5018,6 +5487,7 @@ _REGISTRY_JSON = r"""{
       "default": "",
       "kind": "string",
       "name": "MOLT_PYTEST_RANDOM_SEED",
+      "output_neutral": false,
       "owner": "tools/dev_test_runner.py",
       "summary": "Integer seed for pytest random ordering in the tools/dev.py test runner; setting it also enables random order; when unset with random order on, the runner draws a fresh 32-bit seed.",
       "values": []
@@ -5027,6 +5497,7 @@ _REGISTRY_JSON = r"""{
       "default": "1",
       "kind": "int",
       "name": "MOLT_PYTEST_TRUTH_MINIMUM_EXECUTED",
+      "output_neutral": false,
       "owner": "tools/pytest_truth_plugin.py",
       "summary": "Minimum number of executed tests tools/pytest_truth_plugin.py requires before it writes a passing receipt; must be an integer of at least 1; default 1.",
       "values": []
@@ -5036,6 +5507,7 @@ _REGISTRY_JSON = r"""{
       "default": "",
       "kind": "path",
       "name": "MOLT_PYTEST_TRUTH_RECEIPT",
+      "output_neutral": false,
       "owner": "tools/pytest_truth_plugin.py",
       "summary": "Receipt JSON file (schema molt.pytest-truth.v1) that tools/pytest_truth_plugin.py writes with executed, passed, and skipped counts; a relative path resolves against the current directory; the plugin refuses to start when it is unset.",
       "values": []
@@ -5045,6 +5517,7 @@ _REGISTRY_JSON = r"""{
       "default": "",
       "kind": "path",
       "name": "MOLT_PYTHON",
+      "output_neutral": false,
       "owner": "tools/molt_shell_env.sh",
       "summary": "Python interpreter path that tools/molt_shell_env.sh exports from molt_init_shell_context (the checkout's venv python.exe or .venv/bin/python, else python3 on PATH) for the scripts that source it; molt_run_context_env reuses an already exported value.",
       "values": []
@@ -5054,6 +5527,7 @@ _REGISTRY_JSON = r"""{
       "default": "",
       "kind": "string",
       "name": "MOLT_PYTHON_VERSION",
+      "output_neutral": false,
       "owner": "runtime/molt-runtime/src/object/ops_sys.rs",
       "summary": "Target Python version as major.minor or major.minor.micro that the runtime reports in sys.version_info when MOLT_SYS_VERSION_INFO is unset; an unparsable or negative value is ignored; default 3.12.0.",
       "values": []
@@ -5063,6 +5537,7 @@ _REGISTRY_JSON = r"""{
       "default": "@informalsystems/quint@0.32.0",
       "kind": "string",
       "name": "MOLT_QUINT_NPM_PACKAGE",
+      "output_neutral": false,
       "owner": ".github/workflows/formal.yml",
       "summary": "npm package spec the formal workflow installs globally to get the Quint CLI; the workflow env map sets it to @informalsystems/quint@0.32.0.",
       "values": []
@@ -5072,6 +5547,7 @@ _REGISTRY_JSON = r"""{
       "default": "quint_evaluator-x86_64-unknown-linux-gnu.tar.gz",
       "kind": "string",
       "name": "MOLT_QUINT_RUST_EVALUATOR_ASSET",
+      "output_neutral": false,
       "owner": ".github/workflows/formal.yml",
       "summary": "Release asset file name of the Quint Rust evaluator tarball the formal workflow downloads from the informalsystems/quint GitHub release; the workflow env map sets it.",
       "values": []
@@ -5081,6 +5557,7 @@ _REGISTRY_JSON = r"""{
       "default": "61755a09d5052d93a4e75e840059edfd0d3674aeda164b9d2464be3d6e21b1c2",
       "kind": "string",
       "name": "MOLT_QUINT_RUST_EVALUATOR_SHA256",
+      "output_neutral": false,
       "owner": ".github/workflows/formal.yml",
       "summary": "Expected SHA-256 digest of the Quint Rust evaluator tarball; the formal workflow checks the download against it with sha256sum before it extracts the evaluator.",
       "values": []
@@ -5090,6 +5567,7 @@ _REGISTRY_JSON = r"""{
       "default": "v0.6.0",
       "kind": "string",
       "name": "MOLT_QUINT_RUST_EVALUATOR_VERSION",
+      "output_neutral": false,
       "owner": ".github/workflows/formal.yml",
       "summary": "Release tag of the Quint Rust evaluator the formal workflow downloads and installs under ~/.quint/rust-evaluator-<version>; the workflow env map sets it.",
       "values": []
@@ -5099,6 +5577,7 @@ _REGISTRY_JSON = r"""{
       "default": "",
       "kind": "string",
       "name": "MOLT_REGISTRY_PASSWORD",
+      "output_neutral": false,
       "owner": "src/molt/cli/package_registry.py",
       "summary": "Password for basic auth to the package registry in molt publish; read only when no bearer token is active and --registry-password is absent; a value starting with @ names a file to read the secret from; requires a user name.",
       "values": []
@@ -5108,6 +5587,7 @@ _REGISTRY_JSON = r"""{
       "default": "30",
       "kind": "float",
       "name": "MOLT_REGISTRY_TIMEOUT",
+      "output_neutral": false,
       "owner": "src/molt/cli/package_registry.py",
       "summary": "Registry request timeout in seconds for molt publish; must be a number greater than zero; --registry-timeout overrides it; default 30.",
       "values": []
@@ -5117,6 +5597,7 @@ _REGISTRY_JSON = r"""{
       "default": "",
       "kind": "string",
       "name": "MOLT_REGISTRY_TOKEN",
+      "output_neutral": false,
       "owner": "src/molt/cli/package_registry.py",
       "summary": "Bearer token for the package registry in molt publish; read when --registry-token is absent and no --registry-user is given; a value starting with @ names a file to read the token from.",
       "values": []
@@ -5126,6 +5607,7 @@ _REGISTRY_JSON = r"""{
       "default": "",
       "kind": "string",
       "name": "MOLT_REGISTRY_USER",
+      "output_neutral": false,
       "owner": "src/molt/cli/package_registry.py",
       "summary": "User name for basic auth to the package registry in molt publish; read when no bearer token is active and --registry-user is absent; requires a password.",
       "values": []
@@ -5135,6 +5617,7 @@ _REGISTRY_JSON = r"""{
       "default": "0",
       "kind": "bool",
       "name": "MOLT_REGRTEST_COVERAGE",
+      "output_neutral": false,
       "owner": "tools/molt_regrtest_shim.py",
       "summary": "tools/cpython_regrtest.py sets it to 1 for the regrtest shim child when coverage is enabled; tools/molt_regrtest_shim.py then adds coverage --parallel-mode arguments; any other value disables coverage.",
       "values": []
@@ -5144,6 +5627,7 @@ _REGISTRY_JSON = r"""{
       "default": "",
       "kind": "path",
       "name": "MOLT_REGRTEST_COVERAGE_DIR",
+      "output_neutral": false,
       "owner": "tools/molt_regrtest_shim.py",
       "summary": "Directory whose .coverage data file the regrtest shim writes; tools/cpython_regrtest.py sets it for the shim child, and the shim skips coverage when it is unset.",
       "values": []
@@ -5153,6 +5637,7 @@ _REGISTRY_JSON = r"""{
       "default": "",
       "kind": "list",
       "name": "MOLT_REGRTEST_COVERAGE_SOURCE",
+      "output_neutral": false,
       "owner": "tools/molt_regrtest_shim.py",
       "summary": "Comma-separated source packages the regrtest shim passes as coverage --source; tools/cpython_regrtest.py sets it for the shim child from its coverage_source list.",
       "values": []
@@ -5162,6 +5647,7 @@ _REGISTRY_JSON = r"""{
       "default": "",
       "kind": "path",
       "name": "MOLT_REGRTEST_CPYTHON_DIR",
+      "output_neutral": false,
       "owner": "src/molt/cli/module_resolution.py",
       "summary": "Path to a CPython checkout; the CLI maps <dir>/Lib/test modules and keeps test.* on the module roots, the stdlib test and test.support packages extend their search path from it, and tools/molt_regrtest_shim.py sets it for its child from --cpython-dir; unset disables CPython regrtest resolution.",
       "values": []
@@ -5171,6 +5657,7 @@ _REGISTRY_JSON = r"""{
       "default": "",
       "kind": "string",
       "name": "MOLT_REGRTEST_MOLT_CMD",
+      "output_neutral": false,
       "owner": "tools/molt_regrtest_shim.py",
       "summary": "Shell-like command tools/molt_regrtest_shim.py uses to run each test file; --molt-cmd overrides it; default <sys.executable> -m molt.cli run.",
       "values": []
@@ -5180,6 +5667,7 @@ _REGISTRY_JSON = r"""{
       "default": "release",
       "kind": "string",
       "name": "MOLT_RELEASE_BACKEND_CARGO_PROFILE",
+      "output_neutral": false,
       "owner": "src/molt/cli/cargo_profiles.py",
       "summary": "Cargo profile name for the backend compiler build when the build profile is release; must match ^[A-Za-z0-9][A-Za-z0-9_-]*$ or the default is used and an error is reported; default release.",
       "values": []
@@ -5189,6 +5677,7 @@ _REGISTRY_JSON = r"""{
       "default": "release-output",
       "kind": "string",
       "name": "MOLT_RELEASE_CARGO_PROFILE",
+      "output_neutral": false,
       "owner": "src/molt/cli/cargo_profiles.py",
       "summary": "Cargo profile name for the runtime staticlib build when the build profile is release; must match ^[A-Za-z0-9][A-Za-z0-9_-]*$ or the default is used and an error is reported; default release-output.",
       "values": []
@@ -5198,6 +5687,7 @@ _REGISTRY_JSON = r"""{
       "default": "",
       "kind": "path",
       "name": "MOLT_REPO_ROOT",
+      "output_neutral": false,
       "owner": "bench/scripts/run_stack.sh",
       "summary": "Repository root that bench/scripts/run_stack.sh exports for its embedded Python helper; the helper falls back to the script's grandparent directory when it is unset.",
       "values": []
@@ -5207,6 +5697,7 @@ _REGISTRY_JSON = r"""{
       "default": "0",
       "kind": "bool",
       "name": "MOLT_REQUIRE_EXTERNAL_ARTIFACTS",
+      "output_neutral": false,
       "owner": "src/molt/dx.py",
       "summary": "Set to 1, true, yes, or on to fail closed when no healthy external artifact root is available instead of falling back to repo-local roots; explicit artifact paths must also remain outside the checkout on every platform; this does not require another physical device; default off.",
       "values": []
@@ -5216,6 +5707,7 @@ _REGISTRY_JSON = r"""{
       "default": "0",
       "kind": "bool",
       "name": "MOLT_REQUIRE_SIGNATURE",
+      "output_neutral": false,
       "owner": "src/molt/cli/entrypoint_dispatch.py",
       "summary": "Set to 1, true, yes, or on to require a signature in molt publish; --require-signature and the publish config require_signature setting take precedence; default off.",
       "values": []
@@ -5225,6 +5717,7 @@ _REGISTRY_JSON = r"""{
       "default": "",
       "kind": "int",
       "name": "MOLT_RESOURCE_MAX_ALLOCATIONS",
+      "output_neutral": false,
       "owner": "runtime/molt-runtime/src/object/ops_sys.rs",
       "summary": "Positive live-allocation-count limit configured on each LimitedTracker; emitted from resources.max_allocations. Runtime init rejects empty, zero or non-integer values. Only selected allocation hooks account usage, and independent thread-local trackers do not provide an aggregate cap. Native and WASM child plans inherit the frozen typed limit and preserve tighter explicit requests. Unset leaves this count unlimited; whole-runtime enforcement remains V1-19 work (docs/RESOURCE_CONTROLS.md). Captured once during runtime startup; later process or application mapping changes cannot widen the parent policy.",
       "values": []
@@ -5234,6 +5727,7 @@ _REGISTRY_JSON = r"""{
       "default": "",
       "kind": "int",
       "name": "MOLT_RESOURCE_MAX_DURATION_MS",
+      "output_neutral": false,
       "owner": "runtime/molt-runtime/src/object/ops_sys.rs",
       "summary": "Positive elapsed-time limit in milliseconds configured on each LimitedTracker; emitted from resources.max_duration. Runtime init rejects empty, zero or non-integer values, and native and WASM child plans inherit the frozen typed limit and preserve tighter explicit requests. Unset leaves duration unlimited. No production consumers of the tracker time-check method are present in the inspected runtime; this setting does not establish execution-time enforcement (docs/RESOURCE_CONTROLS.md). Captured once during runtime startup; later process or application mapping changes cannot widen the parent policy.",
       "values": []
@@ -5243,6 +5737,7 @@ _REGISTRY_JSON = r"""{
       "default": "",
       "kind": "string",
       "name": "MOLT_RESOURCE_MAX_MEMORY",
+      "output_neutral": false,
       "owner": "runtime/molt-runtime/src/object/ops_sys.rs",
       "summary": "Memory limit configured on each LimitedTracker; accepts positive raw bytes or a human-readable size such as 64M or 1.5GiB directly, with base-1024 units. The manifest emits raw bytes from resources.max_memory; malformed or non-positive values abort runtime init. Native and WASM child plans use the parsed startup byte limit, including human-size values, and preserve tighter explicit requests. Native Linux init attempts an optional RLIMIT_DATA backstop; lookup or installation failure does not establish protection. Selected hooks and independent thread-local usage do not provide a whole-runtime or aggregate cap. Unset leaves tracker memory unlimited (docs/RESOURCE_CONTROLS.md). Captured once during runtime startup; later process or application mapping changes cannot widen the parent policy.",
       "values": []
@@ -5252,6 +5747,7 @@ _REGISTRY_JSON = r"""{
       "default": "",
       "kind": "int",
       "name": "MOLT_RESOURCE_MAX_OPERATION_RESULT",
+      "output_neutral": false,
       "owner": "runtime/molt-runtime/src/object/ops_sys.rs",
       "summary": "Positive combined result-size fallback in bytes for LimitedTracker operation checks; runtime init parses it, but the capability manifest does not emit it. Native and WASM child plans inherit the frozen typed limit and preserve tighter explicit requests. Each unset per-operation cap uses this value, or 10 MiB when it is absent; UnlimitedTracker performs no operation checks. No production consumers of the tracker operation-check method are present in the inspected runtime, so this configuration is not builtin enforcement (docs/RESOURCE_CONTROLS.md). Captured once during runtime startup; later process or application mapping changes cannot widen the parent policy.",
       "values": []
@@ -5261,6 +5757,7 @@ _REGISTRY_JSON = r"""{
       "default": "",
       "kind": "int",
       "name": "MOLT_RESOURCE_MAX_POW_RESULT",
+      "output_neutral": false,
       "owner": "runtime/molt-runtime/src/object/ops_sys.rs",
       "summary": "Positive byte cap configured for LimitedTracker integer-power estimates; emitted from resources.operation_limits.max_pow_result. Runtime init rejects empty, zero or non-integer values, and native and WASM child plans inherit the frozen typed limit and preserve tighter explicit requests. Unset falls back to MOLT_RESOURCE_MAX_OPERATION_RESULT or 10 MiB when LimitedTracker is installed. The tracker operation-check method has no production runtime consumers; this setting does not enforce a builtin power limit (docs/RESOURCE_CONTROLS.md). Captured once during runtime startup; later process or application mapping changes cannot widen the parent policy.",
       "values": []
@@ -5270,6 +5767,7 @@ _REGISTRY_JSON = r"""{
       "default": "",
       "kind": "int",
       "name": "MOLT_RESOURCE_MAX_RECURSION_DEPTH",
+      "output_neutral": false,
       "owner": "runtime/molt-runtime/src/object/ops_sys.rs",
       "summary": "Positive recursion-depth limit configured on each LimitedTracker; emitted from resources.max_recursion_depth. Runtime init rejects empty, zero or non-integer values, and native and WASM child plans inherit the frozen typed limit and preserve tighter explicit requests. Unset leaves tracker recursion unlimited. No production consumers of the tracker recursion-check method are present in the inspected runtime; frame enforcement and catchable RecursionError behavior remain unqualified (docs/RESOURCE_CONTROLS.md). Captured once during runtime startup; later process or application mapping changes cannot widen the parent policy.",
       "values": []
@@ -5279,6 +5777,7 @@ _REGISTRY_JSON = r"""{
       "default": "",
       "kind": "int",
       "name": "MOLT_RESOURCE_MAX_REPEAT_RESULT",
+      "output_neutral": false,
       "owner": "runtime/molt-runtime/src/object/ops_sys.rs",
       "summary": "Positive byte cap configured for LimitedTracker repetition estimates; emitted from resources.operation_limits.max_repeat_result. Runtime init rejects empty, zero or non-integer values, and native and WASM child plans inherit the frozen typed limit and preserve tighter explicit requests. Unset falls back to MOLT_RESOURCE_MAX_OPERATION_RESULT or 10 MiB when LimitedTracker is installed. The tracker operation-check method has no production runtime consumers; this setting does not enforce a builtin repetition limit (docs/RESOURCE_CONTROLS.md). Captured once during runtime startup; later process or application mapping changes cannot widen the parent policy.",
       "values": []
@@ -5288,6 +5787,7 @@ _REGISTRY_JSON = r"""{
       "default": "",
       "kind": "int",
       "name": "MOLT_RESOURCE_MAX_SHIFT_RESULT",
+      "output_neutral": false,
       "owner": "runtime/molt-runtime/src/object/ops_sys.rs",
       "summary": "Positive byte cap configured for LimitedTracker integer left-shift and multiplication estimates; emitted from resources.operation_limits.max_shift_result. Runtime init rejects empty, zero or non-integer values, and native and WASM child plans inherit the frozen typed limit and preserve tighter explicit requests. Unset falls back to MOLT_RESOURCE_MAX_OPERATION_RESULT or 10 MiB when LimitedTracker is installed. The tracker operation-check method has no production runtime consumers; standalone arithmetic guards are separate and do not establish enforcement of this setting (docs/RESOURCE_CONTROLS.md). Captured once during runtime startup; later process or application mapping changes cannot widen the parent policy.",
       "values": []
@@ -5297,6 +5797,7 @@ _REGISTRY_JSON = r"""{
       "default": "",
       "kind": "int",
       "name": "MOLT_RESOURCE_MAX_STRING_RESULT",
+      "output_neutral": false,
       "owner": "runtime/molt-runtime/src/object/ops_sys.rs",
       "summary": "Positive byte cap configured for LimitedTracker string-replacement estimates; emitted from resources.operation_limits.max_string_result. Runtime init rejects empty, zero or non-integer values, and native and WASM child plans inherit the frozen typed limit and preserve tighter explicit requests. Unset falls back to MOLT_RESOURCE_MAX_OPERATION_RESULT or 10 MiB when LimitedTracker is installed. The tracker operation-check method has no production runtime consumers; this setting does not enforce a builtin string-result limit (docs/RESOURCE_CONTROLS.md). Captured once during runtime startup; later process or application mapping changes cannot widen the parent policy.",
       "values": []
@@ -5306,6 +5807,7 @@ _REGISTRY_JSON = r"""{
       "default": "",
       "kind": "string",
       "name": "MOLT_RUNTIME_BUILD_PROFILE",
+      "output_neutral": false,
       "owner": "src/molt/cli/runtime_wasm_build_policy.py",
       "summary": "Cargo profile name (for example dev-fast) for the runtime-wasm build in an iteration loop; an explicit MOLT_WASM_CARGO_PROFILE wins over it, a name that fails the cargo profile pattern is ignored, and unset builds the derived profile (wasm-release for release, else the cargo profile); release verification refuses it.",
       "values": []
@@ -5315,6 +5817,7 @@ _REGISTRY_JSON = r"""{
       "default": "",
       "kind": "path",
       "name": "MOLT_RUNTIME_CALLABLE_SYMBOLS",
+      "output_neutral": false,
       "owner": "runtime/molt-ir/src/runtime_callable_symbols.rs",
       "summary": "Path of the file listing the linked runtime staticlib's molt_* callable symbols, one per line; the CLI (src/molt/cli/runtime_native_codegen.py) sets it with MOLT_RUNTIME_CALLABLE_SYMBOLS_SHA256 for the backend child, which must receive both or neither and panics on a missing file, digest mismatch, non-UTF-8 content or an empty list; unset lets only standalone codegen probes run.",
       "values": []
@@ -5324,6 +5827,7 @@ _REGISTRY_JSON = r"""{
       "default": "",
       "kind": "string",
       "name": "MOLT_RUNTIME_CALLABLE_SYMBOLS_SHA256",
+      "output_neutral": false,
       "owner": "runtime/molt-ir/src/runtime_callable_symbols.rs",
       "summary": "Lowercase 64-hex SHA-256 digest of the MOLT_RUNTIME_CALLABLE_SYMBOLS file; the CLI (src/molt/cli/runtime_native_codegen.py) sets it for the backend child, which verifies the file bytes against it before admitting any callable symbol and panics on mismatch or when only one of the pair is set.",
       "values": []
@@ -5333,6 +5837,7 @@ _REGISTRY_JSON = r"""{
       "default": "0",
       "kind": "bool",
       "name": "MOLT_RUNTIME_FEEDBACK",
+      "output_neutral": false,
       "owner": "runtime/molt-runtime/src/state/runtime_state.rs",
       "summary": "Enables writing the runtime profile JSON payload to a feedback file at profile dump when runtime profiling (MOLT_PROFILE) is active; exactly 1 enables it; default off. Captured through RuntimeFlag by RuntimePolicy before Ready and inherited by isolates; later environment changes cannot select new policy or destinations.",
       "values": []
@@ -5342,6 +5847,7 @@ _REGISTRY_JSON = r"""{
       "default": "molt_runtime_feedback.json",
       "kind": "path",
       "name": "MOLT_RUNTIME_FEEDBACK_FILE",
+      "output_neutral": false,
       "owner": "runtime/molt-runtime/src/state/runtime_state.rs",
       "summary": "Path of the JSON file that MOLT_RUNTIME_FEEDBACK writes the profile payload to, with parent directories created; unset or empty writes molt_runtime_feedback.json in the working directory; write errors print a molt_runtime_feedback_error line to stderr. Captured by RuntimePolicy before Ready and inherited by isolates; later environment changes cannot select new policy or destinations.",
       "values": []
@@ -5351,6 +5857,7 @@ _REGISTRY_JSON = r"""{
       "default": "0",
       "kind": "bool",
       "name": "MOLT_RUNTIME_GPU_CUDA",
+      "output_neutral": false,
       "owner": "src/molt/cli/runtime_features.py",
       "summary": "Adds the molt_gpu_cuda cargo feature to the native runtime build when set to 1, true, yes, or on (case-insensitive); unset, empty, or any other value leaves it off; wasm32 targets ignore it; release verification refuses it.",
       "values": []
@@ -5360,6 +5867,7 @@ _REGISTRY_JSON = r"""{
       "default": "0",
       "kind": "bool",
       "name": "MOLT_RUNTIME_GPU_HIP",
+      "output_neutral": false,
       "owner": "src/molt/cli/runtime_features.py",
       "summary": "Adds the molt_gpu_hip cargo feature to the native runtime build when set to 1, true, yes, or on (case-insensitive); unset, empty, or any other value leaves it off; wasm32 targets ignore it; release verification refuses it.",
       "values": []
@@ -5369,6 +5877,7 @@ _REGISTRY_JSON = r"""{
       "default": "0",
       "kind": "bool",
       "name": "MOLT_RUNTIME_GPU_METAL",
+      "output_neutral": false,
       "owner": "src/molt/cli/runtime_features.py",
       "summary": "Adds the molt_gpu_metal cargo feature to the native runtime build when set to 1, true, yes, or on (case-insensitive), and on macOS also adds -framework Metal and -lobjc to the native link; unset, empty, or any other value leaves it off; wasm32 targets ignore it; release verification refuses it.",
       "values": []
@@ -5378,6 +5887,7 @@ _REGISTRY_JSON = r"""{
       "default": "0",
       "kind": "bool",
       "name": "MOLT_RUNTIME_GPU_WEBGPU",
+      "output_neutral": false,
       "owner": "src/molt/cli/runtime_features.py",
       "summary": "Adds the molt_gpu_webgpu cargo feature to the native runtime build when set to 1, true, yes, or on (case-insensitive), and on macOS also adds the Metal, Foundation, QuartzCore and AppKit frameworks and -lobjc to the native link; unset, empty, or any other value leaves it off; wasm32 targets ignore it; release verification refuses it.",
       "values": []
@@ -5387,6 +5897,7 @@ _REGISTRY_JSON = r"""{
       "default": "1",
       "kind": "bool",
       "name": "MOLT_RUNTIME_TK_NATIVE",
+      "output_neutral": false,
       "owner": "src/molt/cli/runtime_features.py",
       "summary": "Controls the molt_tk_native cargo feature of the native runtime build; unset or empty enables it, 1, true, yes, or on (case-insensitive) enable it, and any other value disables it; wasm32 targets ignore it; release verification refuses it.",
       "values": []
@@ -5396,6 +5907,7 @@ _REGISTRY_JSON = r"""{
       "default": "",
       "kind": "bool",
       "name": "MOLT_RUNTIME_WASM_INCREMENTAL",
+      "output_neutral": false,
       "owner": "src/molt/cli/runtime_wasm_build_policy.py",
       "summary": "Selects a stable, session-independent incremental target dir with CARGO_INCREMENTAL=1 for the runtime-wasm build; 1, true, yes, or on force it on and 0, false, no, or off force it off (case-insensitive); unset means on when MOLT_RUNTIME_BUILD_PROFILE pins a profile and off otherwise.",
       "values": []
@@ -5405,6 +5917,7 @@ _REGISTRY_JSON = r"""{
       "default": "",
       "kind": "int",
       "name": "MOLT_SCCP_MAX_ITERS",
+      "output_neutral": false,
       "owner": "src/molt/frontend/lowering/midend_policy.py",
       "summary": "Caps the SCCP iteration count per midend round when set; parsed as an integer with a floor of 1 (invalid or smaller values become 1); unset applies no override.",
       "values": []
@@ -5414,6 +5927,7 @@ _REGISTRY_JSON = r"""{
       "default": "",
       "kind": "path",
       "name": "MOLT_SCIENTIFIC_STACK_CONFIG",
+      "output_neutral": false,
       "owner": "src/molt/scientific_stack_versions.py",
       "summary": "Path of the scientific stack versions TOML file; unset reads config/scientific_stack_versions.toml under the compiler source root.",
       "values": []
@@ -5423,6 +5937,7 @@ _REGISTRY_JSON = r"""{
       "default": "4",
       "kind": "float",
       "name": "MOLT_SCRATCH_BUDGET_GB",
+      "output_neutral": false,
       "owner": "src/molt/disk_capacity.py",
       "summary": "Free space in GiB that a guarded run's scratch volume needs; molt.temporary_artifacts.acquire_guard_scratch refuses to start the run when the volume has less, before the child launches, instead of failing mid-run with ENOSPC.",
       "values": []
@@ -5432,6 +5947,7 @@ _REGISTRY_JSON = r"""{
       "default": "disk",
       "kind": "string",
       "name": "MOLT_SCRATCH_STORAGE",
+      "output_neutral": false,
       "owner": "src/molt/dx.py",
       "summary": "Run scratch storage: disk (scratch under the artifact root's tmp), memory (Linux /dev/shm), or the absolute path of a memory-backed directory the operator mounted, such as a macOS RAM disk; Molt never creates or mounts one. Locks, guard markers and build control stay on disk in every mode.",
       "values": []
@@ -5441,6 +5957,7 @@ _REGISTRY_JSON = r"""{
       "default": "logs/security/events.jsonl",
       "kind": "path",
       "name": "MOLT_SECURITY_EVENTS_FILE",
+      "output_neutral": false,
       "owner": "tools/secret_guard.py",
       "summary": "Path of the JSONL file that tools/secret_guard.py appends security events to, with ~ expanded and a relative path resolved against the working directory; unset or blank uses logs/security/events.jsonl.",
       "values": []
@@ -5450,6 +5967,7 @@ _REGISTRY_JSON = r"""{
       "default": "auto",
       "kind": "enum",
       "name": "MOLT_SERVER",
+      "output_neutral": false,
       "owner": "bench/scripts/run_stack.sh",
       "summary": "Demo HTTP server that bench/scripts/run_stack.sh starts; auto picks gunicorn when importable, then uvicorn, else the Django runserver, the script exports the resolved value, and run_demo_bench.py matches server processes by it; any other value exits with an error.",
       "values": [
@@ -5464,6 +5982,7 @@ _REGISTRY_JSON = r"""{
       "default": "15",
       "kind": "int",
       "name": "MOLT_SERVER_KEEPALIVE",
+      "output_neutral": false,
       "owner": "bench/scripts/run_stack.sh",
       "summary": "Keep-alive timeout in seconds that bench/scripts/run_stack.sh passes as gunicorn --keep-alive or uvicorn --timeout-keep-alive; default 15; the Django runserver ignores it.",
       "values": []
@@ -5473,6 +5992,7 @@ _REGISTRY_JSON = r"""{
       "default": "8000",
       "kind": "int",
       "name": "MOLT_SERVER_PORT",
+      "output_neutral": false,
       "owner": "bench/scripts/run_stack.sh",
       "summary": "TCP port on 127.0.0.1 that the demo server binds in bench/scripts/run_stack.sh, and the port run_demo_bench.py scans for listening server pids; default 8000.",
       "values": []
@@ -5482,6 +6002,7 @@ _REGISTRY_JSON = r"""{
       "default": "2",
       "kind": "int",
       "name": "MOLT_SERVER_THREADS",
+      "output_neutral": false,
       "owner": "bench/scripts/run_stack.sh",
       "summary": "Thread count per gunicorn gthread worker (--threads) in bench/scripts/run_stack.sh; default 2; uvicorn and the Django runserver ignore it.",
       "values": []
@@ -5491,6 +6012,7 @@ _REGISTRY_JSON = r"""{
       "default": "",
       "kind": "int",
       "name": "MOLT_SERVER_WORKERS",
+      "output_neutral": false,
       "owner": "bench/scripts/run_stack.sh",
       "summary": "Worker process count that bench/scripts/run_stack.sh passes as --workers to gunicorn or uvicorn; unset uses the online CPU count capped at 4, or 2 when the count is unknown.",
       "values": []
@@ -5500,6 +6022,7 @@ _REGISTRY_JSON = r"""{
       "default": "",
       "kind": "string",
       "name": "MOLT_SESSION_ID",
+      "output_neutral": false,
       "owner": "src/molt/dx.py",
       "summary": "Session label that scopes Cargo target dirs, backend daemon identity records and session artifact names; when unset src/molt/dx.py generates <prefix>-<pid> and marks it with MOLT_SESSION_ID_GENERATED=1, so only an explicitly pinned value isolates build custody per session; molt validate defaults it to validate and CI workflows set it in their env maps.",
       "values": []
@@ -5509,6 +6032,7 @@ _REGISTRY_JSON = r"""{
       "default": "0",
       "kind": "bool",
       "name": "MOLT_SESSION_ID_GENERATED",
+      "output_neutral": false,
       "owner": "src/molt/dx.py",
       "summary": "Marks MOLT_SESSION_ID as generated rather than pinned; src/molt/dx.py sets it to 1 in the environment it builds when it generates the session id, and its readers in dx.py (1, true, yes, or on) then treat the session as unpinned and keep the stable shared Cargo target dir; a person never sets it.",
       "values": []
@@ -5518,6 +6042,7 @@ _REGISTRY_JSON = r"""{
       "default": "",
       "kind": "string",
       "name": "MOLT_SESSION_PREFIX",
+      "output_neutral": false,
       "owner": "tools/throughput_env.sh",
       "summary": "Prefix for the generated MOLT_SESSION_ID (<prefix>-<pid>) that the bench, parity and throughput shell scripts pass as --session-prefix to tools/run_context_env.py; unset lets each script use its own name (bench, demo-stack, parity, throughput).",
       "values": []
@@ -5527,6 +6052,7 @@ _REGISTRY_JSON = r"""{
       "default": "",
       "kind": "path",
       "name": "MOLT_SHELL_ROOT",
+      "output_neutral": false,
       "owner": "tools/molt_shell_env.sh",
       "summary": "Repository root that molt_init_shell_context in tools/molt_shell_env.sh records from its argument and exports, then uses to select MOLT_PYTHON and MOLT_HOST_ROOT; no other code reads it and a person never sets it.",
       "values": []
@@ -5536,6 +6062,7 @@ _REGISTRY_JSON = r"""{
       "default": "0",
       "kind": "bool",
       "name": "MOLT_SKIP_BINARY_VALIDITY_CHECK",
+      "output_neutral": false,
       "owner": "src/molt/cli/native_binary.py",
       "summary": "Disables the post-link native binary validity gate (header, image kind and architecture check plus the optional smoke probe) when set to exactly 1, for diagnostics only; default off; molt validate reports any truthy value as a disabled proof gate.",
       "values": []
@@ -5545,6 +6072,7 @@ _REGISTRY_JSON = r"""{
       "default": "0",
       "kind": "bool",
       "name": "MOLT_SKIP_CARGO_LOCK",
+      "output_neutral": false,
       "owner": "src/molt/cli/lockfiles.py",
       "summary": "Skips the Cargo.lock verification in the lockfile check, with a warning, when set to exactly 1; default off; molt validate reports any truthy value as a disabled proof gate.",
       "values": []
@@ -5554,6 +6082,7 @@ _REGISTRY_JSON = r"""{
       "default": "0",
       "kind": "bool",
       "name": "MOLT_SKIP_RUNTIME_REBUILD",
+      "output_neutral": false,
       "owner": "src/molt/cargo_execution_policy.py",
       "summary": "Forbids source builds and provenance refreshes of runtime and backend artifacts when set to exactly 1, so a build that needs one fails with a message naming the variable; default off; release verification refuses it.",
       "values": []
@@ -5563,6 +6092,7 @@ _REGISTRY_JSON = r"""{
       "default": "",
       "kind": "path",
       "name": "MOLT_SOURCE_EXTENSION_SET_REGISTRY_CONFIG",
+      "output_neutral": false,
       "owner": "src/molt/cli/source_extension_set_registry.py",
       "summary": "Path of the source extension package set registry TOML file; unset reads config/source_extension_package_sets.toml under the compiler source root.",
       "values": []
@@ -5572,6 +6102,7 @@ _REGISTRY_JSON = r"""{
       "default": "",
       "kind": "path",
       "name": "MOLT_SOURCE_ROOT",
+      "output_neutral": false,
       "owner": "src/molt/source_root.py",
       "summary": "Compiler source root, resolved against the working directory when relative and kept even when invalid; unset uses the platform wheel's installed distribution source directory when present, else the checkout containing the molt package; packaging/bootstrap.py and the build environment also set it for child processes.",
       "values": []
@@ -5581,6 +6112,7 @@ _REGISTRY_JSON = r"""{
       "default": "0.20",
       "kind": "float",
       "name": "MOLT_SPEC_SLO_CODE_SIZE_LIMIT",
+      "output_neutral": false,
       "owner": "tools/specialization_slo.py",
       "summary": "Maximum allowed code size regression ratio for the specialization SLO tracker; a float, and invalid values fall back to the default 0.20.",
       "values": []
@@ -5590,6 +6122,7 @@ _REGISTRY_JSON = r"""{
       "default": "0.10",
       "kind": "float",
       "name": "MOLT_SPEC_SLO_COMPILE_TIME_LIMIT",
+      "output_neutral": false,
       "owner": "tools/specialization_slo.py",
       "summary": "Maximum allowed compile time regression ratio for the specialization SLO tracker; a float, and invalid values fall back to the default 0.10.",
       "values": []
@@ -5599,6 +6132,7 @@ _REGISTRY_JSON = r"""{
       "default": "5",
       "kind": "int",
       "name": "MOLT_SPEC_SLO_MIN_SAMPLES",
+      "output_neutral": false,
       "owner": "tools/specialization_slo.py",
       "summary": "Number of specialization samples required before the SLO tracker enforces its limits; an integer, and invalid values fall back to the default 5.",
       "values": []
@@ -5608,6 +6142,7 @@ _REGISTRY_JSON = r"""{
       "default": "0.80",
       "kind": "float",
       "name": "MOLT_SPEC_SLO_SUCCESS_RATE_FLOOR",
+      "output_neutral": false,
       "owner": "tools/specialization_slo.py",
       "summary": "Minimum specialization success rate the SLO tracker accepts; a float, and invalid values fall back to the default 0.80.",
       "values": []
@@ -5617,6 +6152,7 @@ _REGISTRY_JSON = r"""{
       "default": "0",
       "kind": "bool",
       "name": "MOLT_SROA_REPORT",
+      "output_neutral": false,
       "owner": "runtime/molt-passes/src/tir/passes/sroa/engine.rs",
       "summary": "Collects per-root diagnostics (rejected, blocked and not-removable allocation roots) in the TIR scalar-replacement pass when set to exactly 1; default off.",
       "values": []
@@ -5626,6 +6162,7 @@ _REGISTRY_JSON = r"""{
       "default": "",
       "kind": "enum",
       "name": "MOLT_STAGE_AUDIT",
+      "output_neutral": false,
       "owner": "runtime/molt-ir/src/stage_audit.rs",
       "summary": "Outermost compiler stage whose stage-audit stream the backend prints to stderr; each stage also audits the stages it contains: wasm audits WASM planning and emission, the TIR module pipeline and drop insertion, module audits the last two, drop audits drop insertion alone; unset audits nothing, and an unknown value audits nothing and warns once.",
       "values": [
@@ -5639,6 +6176,7 @@ _REGISTRY_JSON = r"""{
       "default": "",
       "kind": "path",
       "name": "MOLT_STARTUP_PYTHON",
+      "output_neutral": false,
       "owner": "tools/startup_bench.py",
       "summary": "Path of the development baseline CPython interpreter that tools/startup_bench.py measures against; unset uses the running interpreter. The selected interpreter is verified before measurement; an invalid explicit path fails without substitution. This does not select an interpreter for compiled Molt programs.",
       "values": []
@@ -5648,6 +6186,7 @@ _REGISTRY_JSON = r"""{
       "default": "",
       "kind": "list",
       "name": "MOLT_STATIC_IMPORT_MODULES",
+      "output_neutral": false,
       "owner": "src/molt/cli/config_resolution.py",
       "summary": "Comma or space separated Python module names forced into the build's module graph; each must be a dotted identifier that resolves to an admitted module, else the build fails; unset adds none.",
       "values": []
@@ -5657,6 +6196,7 @@ _REGISTRY_JSON = r"""{
       "default": "",
       "kind": "path",
       "name": "MOLT_STDLIB_CACHE_ENTRY",
+      "output_neutral": false,
       "owner": "runtime/molt-backend/src/backend_process/native_artifact.rs",
       "summary": "Optional canonical shared-stdlib/<key>/stdlib.a cache entry; required MOLT_STDLIB_OBJ must be outside that cache root or inside its durable canonical home subtree; CLI preparation hydrates the required output before app-cache admission, backend requests use this entry for constituent reuse and cache publication, and per-request environment reset prevents daemon state leakage.",
       "values": []
@@ -5666,6 +6206,7 @@ _REGISTRY_JSON = r"""{
       "default": "",
       "kind": "string",
       "name": "MOLT_STDLIB_CACHE_KEY",
+      "output_neutral": false,
       "owner": "runtime/molt-backend/src/backend_process/daemon/compile/target.rs",
       "summary": "Expected cache key of the shared stdlib archive named by MOLT_STDLIB_OBJ; src/molt/cli/backend_compile.py sets it for the backend child, which admits the cached archive only when the sidecar key and MOLT_STDLIB_CACHE_MANIFEST both match; a person never sets it.",
       "values": []
@@ -5675,6 +6216,7 @@ _REGISTRY_JSON = r"""{
       "default": "",
       "kind": "string",
       "name": "MOLT_STDLIB_CACHE_MANIFEST",
+      "output_neutral": false,
       "owner": "runtime/molt-backend/src/backend_process/daemon/compile/target.rs",
       "summary": "Expected manifest text (cache variant, target triple and compiler fingerprint) of the shared stdlib archive; src/molt/cli/backend_compile.py sets it for the backend child beside MOLT_STDLIB_CACHE_KEY, and a mismatch with the archive sidecar is a cache miss; a person never sets it.",
       "values": []
@@ -5684,6 +6226,7 @@ _REGISTRY_JSON = r"""{
       "default": "",
       "kind": "string",
       "name": "MOLT_STDLIB_MODULE_SYMBOLS",
+      "output_neutral": false,
       "owner": "runtime/molt-ir/src/stdlib_module_symbols.rs",
       "summary": "JSON array of unique, non-empty ASCII identifier strings naming the stdlib modules that belong to the shared stdlib partition; src/molt/cli/backend_compile.py sets it for the backend child when the stdlib object split is active, and the backend rejects malformed JSON and empty, duplicate or non-identifier entries; a person never sets it.",
       "values": []
@@ -5693,6 +6236,7 @@ _REGISTRY_JSON = r"""{
       "default": "",
       "kind": "path",
       "name": "MOLT_STDLIB_OBJ",
+      "output_neutral": false,
       "owner": "runtime/molt-backend-native/src/native_backend/simple_backend/module_metadata.rs",
       "summary": "Required build-owned shared stdlib archive output for the native partition; backend requests retain its bytes and semantic sidecars through link independently of optional cache retention. Standalone native requests own their explicitly supplied output path; malformed non-Unicode paths are rejected.",
       "values": []
@@ -5702,6 +6246,7 @@ _REGISTRY_JSON = r"""{
       "default": "auto",
       "kind": "enum",
       "name": "MOLT_STDLIB_PROFILE",
+      "output_neutral": false,
       "owner": "src/molt/cli/config_resolution.py",
       "summary": "Stdlib profile ceiling for a build; the --stdlib-profile flag outranks it, it outranks toml config and deploy defaults, and the CLI passes the one resolved value to module-graph construction and to the runtime staticlib selector so they agree; invalid values are ignored and unset means auto.",
       "values": [
@@ -5718,6 +6263,7 @@ _REGISTRY_JSON = r"""{
       "default": "16777216",
       "kind": "int",
       "name": "MOLT_STREAM_MAX_QUEUED_BYTES",
+      "output_neutral": false,
       "owner": "runtime/molt-runtime/src/async_rt/channels/stream.rs",
       "summary": "Default per-stream queued byte limit for runtime async channel streams; a positive integer clamped to the range 65536 to 1073741824, and non-numeric or zero values are ignored; default 16777216. RuntimePolicy captures this value once before Ready; ordinary, hook and process-pipe streams consume the frozen budget.",
       "values": []
@@ -5727,6 +6273,7 @@ _REGISTRY_JSON = r"""{
       "default": "",
       "kind": "path",
       "name": "MOLT_SYSROOT",
+      "output_neutral": false,
       "owner": "src/molt/cli/build_output_layout.py",
       "summary": "Sysroot directory for native linking, resolved against the project root when relative; the --sysroot option wins over it and MOLT_CROSS_SYSROOT is the fallback; unset means no sysroot.",
       "values": []
@@ -5736,6 +6283,7 @@ _REGISTRY_JSON = r"""{
       "default": "",
       "kind": "string",
       "name": "MOLT_SYS_ABIFLAGS",
+      "output_neutral": false,
       "owner": "runtime/molt-runtime/src/object/ops_sys.rs",
       "summary": "Value the runtime reports as sys.abiflags; default empty.",
       "values": []
@@ -5745,6 +6293,7 @@ _REGISTRY_JSON = r"""{
       "default": "1013",
       "kind": "int",
       "name": "MOLT_SYS_API_VERSION",
+      "output_neutral": false,
       "owner": "runtime/molt-runtime/src/object/ops_sys.rs",
       "summary": "Value the runtime reports as sys.api_version; a non-negative integer, and invalid values fall back to the default 1013.",
       "values": []
@@ -5754,6 +6303,7 @@ _REGISTRY_JSON = r"""{
       "default": "",
       "kind": "string",
       "name": "MOLT_SYS_CACHE_TAG",
+      "output_neutral": false,
       "owner": "runtime/molt-runtime/src/object/ops_sys.rs",
       "summary": "Value the runtime reports as sys.implementation.cache_tag; unset or empty computes <implementation name>-<major><minor>, for example molt-312.",
       "values": []
@@ -5763,6 +6313,7 @@ _REGISTRY_JSON = r"""{
       "default": "",
       "kind": "path",
       "name": "MOLT_SYS_EXECUTABLE",
+      "output_neutral": false,
       "owner": "runtime/molt-runtime/src/builtins/platform.rs",
       "summary": "Captured once at runtime startup as the path reported by sys.executable and used by multiprocessing spawn; unset or empty selects the frozen argv[0] projection. Later environment mutation cannot rewrite it.",
       "values": []
@@ -5772,6 +6323,7 @@ _REGISTRY_JSON = r"""{
       "default": "molt",
       "kind": "string",
       "name": "MOLT_SYS_IMPLEMENTATION_NAME",
+      "output_neutral": false,
       "owner": "runtime/molt-runtime/src/object/ops_sys.rs",
       "summary": "Value the runtime reports as sys.implementation.name; unset or blank means molt.",
       "values": []
@@ -5781,6 +6333,7 @@ _REGISTRY_JSON = r"""{
       "default": "",
       "kind": "string",
       "name": "MOLT_SYS_VERSION",
+      "output_neutral": false,
       "owner": "runtime/molt-runtime/src/object/ops_sys.rs",
       "summary": "Value the runtime reports as sys.version; unset or empty formats it from the version info.",
       "values": []
@@ -5790,6 +6343,7 @@ _REGISTRY_JSON = r"""{
       "default": "",
       "kind": "string",
       "name": "MOLT_SYS_VERSION_INFO",
+      "output_neutral": false,
       "owner": "runtime/molt-runtime/src/object/ops_sys.rs",
       "summary": "Target Python version the runtime reports as sys.version_info, written as major,minor,micro,releaselevel,serial; a malformed value is ignored, MOLT_PYTHON_VERSION (major.minor or major.minor.micro) is tried next, and the built-in default is 3.12.0 final 0.",
       "values": []
@@ -5799,6 +6353,7 @@ _REGISTRY_JSON = r"""{
       "default": "",
       "kind": "path",
       "name": "MOLT_TARGET_ROOT",
+      "output_neutral": false,
       "owner": "src/molt/dx.py",
       "summary": "Selected toolchain state root under which pinned sccache, Binaryen, LLVM and WASI tools are installed and found; valid explicit selections are preserved, invalid paths are rejected, and an unset value uses MOLT_HOME/target-root for installed compilers or the existing checkout, hosted or scratch custody default for development.",
       "values": []
@@ -5808,6 +6363,7 @@ _REGISTRY_JSON = r"""{
       "default": "",
       "kind": "path",
       "name": "MOLT_TCL_LIB",
+      "output_neutral": false,
       "owner": "runtime/molt-runtime-tk/src/tk/tcl.rs",
       "summary": "Explicit path of the Tcl shared library that the native Tk lane tries first; unset or blank falls through to the bundled runtime, platform and MOLT_TCL_LIB_DIR candidates. Captured by initialize_library_policy before Ready for the process-lifetime Tcl API; capture does not load a library and later environment writes cannot redirect it.",
       "values": []
@@ -5817,6 +6373,7 @@ _REGISTRY_JSON = r"""{
       "default": "",
       "kind": "path",
       "name": "MOLT_TCL_LIB_DIR",
+      "output_neutral": false,
       "owner": "runtime/molt-runtime-tk/src/tk/tcl.rs",
       "summary": "Directory in which the native Tk lane tries the platform's preferred Tcl library names (libtcl9.0, 8.7 and 8.6 dylibs, tcl87t and tcl86t DLLs, libtcl8.7 and 8.6 shared objects) after the bundled and platform candidates; unset or blank adds none. Captured by initialize_library_policy before Ready for the process-lifetime Tcl API; capture does not load a library and later environment writes cannot redirect it.",
       "values": []
@@ -5826,6 +6383,7 @@ _REGISTRY_JSON = r"""{
       "default": "",
       "kind": "bool",
       "name": "MOLT_TEST_APP_BOOTSTRAP_UNAVAILABLE_CHILD",
+      "output_neutral": false,
       "owner": "runtime/molt-runtime-core/src/app_bootstrap.rs",
       "summary": "A cargo unit test in app_bootstrap.rs sets it to 1 when it re-executes its own test binary, and the child reads its presence (any value) to run the unavailable-initializer abort path; a person never sets it.",
       "values": []
@@ -5835,6 +6393,7 @@ _REGISTRY_JSON = r"""{
       "default": "0",
       "kind": "bool",
       "name": "MOLT_TEST_COLD_SCRATCH_ALLOC_CHILD",
+      "output_neutral": false,
       "owner": "runtime/molt-runtime/src/wasm_abi_exports.rs",
       "summary": "A cargo unit test in wasm_abi_exports.rs sets it to 1 when it re-executes its own test binary, and the child, seeing exactly 1, runs the cold resource-denial scratch allocation path; a person never sets it.",
       "values": []
@@ -5844,6 +6403,7 @@ _REGISTRY_JSON = r"""{
       "default": "0",
       "kind": "bool",
       "name": "MOLT_TEST_SCRIPT_OUTER_GUARD_REEXEC",
+      "output_neutral": false,
       "owner": "src/molt/pytest_memory_guard_bootstrap.py",
       "summary": "src/molt/pytest_memory_guard_bootstrap.py sets it to 1 in the environment of a repo test module or script it re-executes under tools/memory_guard.py, and the re-executed child reads it (any non-empty value) to raise when no live ancestor guard can be verified; a person never sets it.",
       "values": []
@@ -5853,6 +6413,7 @@ _REGISTRY_JSON = r"""{
       "default": "",
       "kind": "string",
       "name": "MOLT_TEST_SOURCE_IDENTITY_JSON",
+      "output_neutral": false,
       "owner": "runtime/test_support/captured_runtime_children.rs",
       "summary": "JSON object describing the admitted Cargo truth source identity; tools/cargo_test_binary_runner.py sets it for the cargo test binary child, and runtime/test_support/captured_runtime_children.rs reads it into the source_identity field of each MOLT_RUNTIME_DESCENDANT_RECEIPT record, panicking on invalid JSON; unset records null; a person never sets it.",
       "values": []
@@ -5862,6 +6423,7 @@ _REGISTRY_JSON = r"""{
       "default": "0",
       "kind": "bool",
       "name": "MOLT_THREAD_ISOLATED",
+      "output_neutral": false,
       "owner": "runtime/molt-runtime/src/state/runtime_state.rs",
       "summary": "Makes thread spawn use the isolated-heap ThreadSpawnIsolated operation and makes shared-thread calls raise RuntimeError when set to exactly 1; default off. Captured through RuntimeFlag by RuntimePolicy before Ready and inherited by isolates; later environment changes cannot select new policy or destinations.",
       "values": []
@@ -5871,6 +6433,7 @@ _REGISTRY_JSON = r"""{
       "default": "",
       "kind": "path",
       "name": "MOLT_TINYGRAD_UPAT_STATIC_EXEC_ROOT",
+      "output_neutral": false,
       "owner": "tools/tinygrad_off_shelf_adapter.py",
       "summary": "Directory the tinygrad adapter inserts at the front of sys.path to import the _molt_tinygrad_upat_static_exec_registry module; an import failure raises a MOLT_COMPAT_ERROR; unset installs no registry.",
       "values": []
@@ -5880,6 +6443,7 @@ _REGISTRY_JSON = r"""{
       "default": "0",
       "kind": "bool",
       "name": "MOLT_TIR_DUMP",
+      "output_neutral": false,
       "owner": "runtime/molt-backend-native/src/native_backend/simple_backend/compile_driver.rs",
       "summary": "Prints each non-extern function's TIR to stderr before LLVM lowering when set to exactly 1 (TIR_DUMP=1 has the same effect); default off.",
       "values": []
@@ -5889,6 +6453,7 @@ _REGISTRY_JSON = r"""{
       "default": "",
       "kind": "string",
       "name": "MOLT_TIR_TRACE_FUNC",
+      "output_neutral": false,
       "owner": "runtime/molt-tir/src/tir/pipeline_cache.rs",
       "summary": "Enables per-stage TIR pipeline trace lines on stderr; 1 traces every function and any other value traces the functions whose name contains it; unset traces nothing.",
       "values": []
@@ -5898,6 +6463,7 @@ _REGISTRY_JSON = r"""{
       "default": "0",
       "kind": "bool",
       "name": "MOLT_TK_PROFILE_HEADLESS",
+      "output_neutral": false,
       "owner": "tools/scripts/profile_tk_perf.py",
       "summary": "Makes tools/scripts/profile_tk_perf.py only validate the tkinter import with a withdrawn root window instead of running the profile when set to 1, true, or yes (case-insensitive); default off.",
       "values": []
@@ -5907,6 +6473,7 @@ _REGISTRY_JSON = r"""{
       "default": "",
       "kind": "path",
       "name": "MOLT_TOOLCHAIN_CACHE",
+      "output_neutral": false,
       "owner": "tools/bootstrap_actionlint.py",
       "summary": "Base directory under which tools/bootstrap_actionlint.py installs actionlint-<version>-<platform>; unset uses ~/.cache/molt/toolchains.",
       "values": []
@@ -5916,6 +6483,7 @@ _REGISTRY_JSON = r"""{
       "default": "0",
       "kind": "bool",
       "name": "MOLT_TRACE_ARGV",
+      "output_neutral": false,
       "owner": "runtime/molt-runtime/src/object/ops_sys.rs",
       "summary": "Prints a molt_set_argv line with argc and argv0 to stderr when the runtime installs process arguments and the value is exactly 1; default off.",
       "values": []
@@ -5925,6 +6493,7 @@ _REGISTRY_JSON = r"""{
       "default": "0",
       "kind": "bool",
       "name": "MOLT_TRACE_ASYNCGEN_CLOSE",
+      "output_neutral": false,
       "owner": "runtime/molt-runtime/src/async_rt/generators.rs",
       "summary": "Prints an asyncgen_aclose line with the generator address and its started, closed and pending state to stderr on each async generator aclose when set to exactly 1; default off.",
       "values": []
@@ -5934,6 +6503,7 @@ _REGISTRY_JSON = r"""{
       "default": "0",
       "kind": "bool",
       "name": "MOLT_TRACE_ASYNCIO_CONNECT",
+      "output_neutral": false,
       "owner": "runtime/molt-runtime/src/async_rt/generators.rs",
       "summary": "Prints molt async connect lines (errno and socket) to stderr during asyncio socket connect handling when set to exactly 1; read once per process, default off.",
       "values": []
@@ -5943,6 +6513,7 @@ _REGISTRY_JSON = r"""{
       "default": "0",
       "kind": "bool",
       "name": "MOLT_TRACE_ATTR_LOOKUP",
+      "output_neutral": false,
       "owner": "runtime/molt-runtime/src/builtins/attributes/state.rs",
       "summary": "Prints a MOLT_TRACE_ATTR_LOOKUP line (depth, type, owner, attribute) to stderr for the first 400 attribute lookups when set to exactly 1, read once per process; default off.",
       "values": []
@@ -5952,6 +6523,7 @@ _REGISTRY_JSON = r"""{
       "default": "0",
       "kind": "bool",
       "name": "MOLT_TRACE_BAD_ASYNCIO_TOKEN",
+      "output_neutral": false,
       "owner": "runtime/molt-runtime/src/async_rt/scheduler/asyncio_runtime/token.rs",
       "summary": "Prints a molt bad asyncio token line with the offending type and value to stderr before the TypeError when set to exactly 1; default off.",
       "values": []
@@ -5961,6 +6533,7 @@ _REGISTRY_JSON = r"""{
       "default": "0",
       "kind": "bool",
       "name": "MOLT_TRACE_BAD_MODULE_NAME",
+      "output_neutral": false,
       "owner": "runtime/molt-runtime/src/builtins/modules.rs",
       "summary": "Prints a molt bad module name line (call site, type, value and top frame) to stderr when a module name argument is not a string and the value is exactly 1; default off.",
       "values": []
@@ -5970,6 +6543,7 @@ _REGISTRY_JSON = r"""{
       "default": "0",
       "kind": "bool",
       "name": "MOLT_TRACE_BAD_MODULE_NAME_BT",
+      "output_neutral": false,
       "owner": "runtime/molt-runtime/src/builtins/modules.rs",
       "summary": "Appends a captured Rust backtrace to each MOLT_TRACE_BAD_MODULE_NAME diagnostic when set to exactly 1; it has no effect unless MOLT_TRACE_BAD_MODULE_NAME=1; default off.",
       "values": []
@@ -5979,6 +6553,7 @@ _REGISTRY_JSON = r"""{
       "default": "0",
       "kind": "bool",
       "name": "MOLT_TRACE_BIGINT_SHIFT",
+      "output_neutral": false,
       "owner": "runtime/molt-runtime/src/object/ops_arith.rs",
       "summary": "Enables stderr tracing inside the integer left-shift path when set to exactly 1, read once per process; default off.",
       "values": []
@@ -5988,6 +6563,7 @@ _REGISTRY_JSON = r"""{
       "default": "0",
       "kind": "bool",
       "name": "MOLT_TRACE_BLOCK_ON",
+      "output_neutral": false,
       "owner": "runtime/molt-runtime/src/async_rt/scheduler/mod.rs",
       "summary": "Prints molt async trace lines to stderr about the future a task is blocked on and the block_on exit state (pending, handlers and raise flags) when set to exactly 1; default off.",
       "values": []
@@ -5997,6 +6573,7 @@ _REGISTRY_JSON = r"""{
       "default": "0",
       "kind": "bool",
       "name": "MOLT_TRACE_BLOCK_ON_CHAIN",
+      "output_neutral": false,
       "owner": "runtime/molt-runtime/src/async_rt/scheduler/mod.rs",
       "summary": "Set to 1 to print, when a block_on poll stays pending on a future of unknown kind, the chain of awaited futures up to 8 levels deep as molt async trace: block_on_chain lines on stderr; it takes effect only when MOLT_TRACE_BLOCK_ON=1 is also set, and unset or any other value prints nothing.",
       "values": []
@@ -6006,6 +6583,7 @@ _REGISTRY_JSON = r"""{
       "default": "0",
       "kind": "bool",
       "name": "MOLT_TRACE_BLOCK_ON_EPILOGUE",
+      "output_neutral": false,
       "owner": "runtime/molt-runtime/src/async_rt/scheduler/mod.rs",
       "summary": "Set to 1 to print one stderr line per labelled step of the block_on epilogue (exception-stack restore, task_mark_done, wake_await_waiters and the other steps) each time block_on finishes; read once per process, and unset or any other value prints nothing.",
       "values": []
@@ -6015,6 +6593,7 @@ _REGISTRY_JSON = r"""{
       "default": "0",
       "kind": "bool",
       "name": "MOLT_TRACE_BLOCK_ON_RESULT",
+      "output_neutral": false,
       "owner": "runtime/molt-runtime/src/async_rt/scheduler/mod.rs",
       "summary": "Set to 1 to print molt block_on poll result=<bits> pending_kind=<exception name or none> on stderr after every scheduled poll inside block_on; read once per process, and unset or any other value prints nothing.",
       "values": []
@@ -6024,6 +6603,7 @@ _REGISTRY_JSON = r"""{
       "default": "0",
       "kind": "bool",
       "name": "MOLT_TRACE_BUILTIN_FUNC",
+      "output_neutral": false,
       "owner": "runtime/molt-runtime/src/builtins/functions/function_abi.rs",
       "summary": "Set to 1 to print molt builtin_func new: lines with the function pointer, trampoline pointer and arity on stderr each time the runtime creates a builtin function object; read once per process, and unset or any other value prints nothing.",
       "values": []
@@ -6033,6 +6613,7 @@ _REGISTRY_JSON = r"""{
       "default": "0",
       "kind": "bool",
       "name": "MOLT_TRACE_BUILTIN_TYPE",
+      "output_neutral": false,
       "owner": "runtime/molt-runtime/src/builtins/types/class_model.rs",
       "summary": "Set to 1 to print molt builtin_type tag=<tag> bits=<bits> on stderr each time molt_builtin_type resolves a builtin type object; read once per process, and unset or any other value prints nothing.",
       "values": []
@@ -6042,6 +6623,7 @@ _REGISTRY_JSON = r"""{
       "default": "0",
       "kind": "bool",
       "name": "MOLT_TRACE_BYTES_FROM_BYTES",
+      "output_neutral": false,
       "owner": "runtime/molt-runtime/src/builtins/strings.rs",
       "summary": "Set to 1 to print [molt bytes_from_bytes] lines (length, pointer, type id, flags, and the empty and cache-hit cases) on stderr each time the runtime builds a bytes object from a raw buffer; read once per process, and unset or any other value prints nothing.",
       "values": []
@@ -6051,6 +6633,7 @@ _REGISTRY_JSON = r"""{
       "default": "0",
       "kind": "bool",
       "name": "MOLT_TRACE_BYTES_STRIP",
+      "output_neutral": false,
       "owner": "runtime/molt-runtime/src/object/ops_bytes/sequence_methods.rs",
       "summary": "Set to 1 to print stderr diagnostics about the haystack and chars operands of bytes strip, lstrip and rstrip calls; read once per process, and unset or any other value prints nothing.",
       "values": []
@@ -6060,6 +6643,7 @@ _REGISTRY_JSON = r"""{
       "default": "0",
       "kind": "bool",
       "name": "MOLT_TRACE_CALLARGS",
+      "output_neutral": false,
       "owner": "runtime/molt-runtime/src/call/bind/arguments.rs",
       "summary": "Set to 1 to print [molt callargs] lifecycle lines (new, push_pos, expand_star, free, guard_drop, invalid_builder) on stderr for every call-argument builder; the molt debug trace callargs family sets it to 1 for the child run, it is read once per process, and unset or any other value prints nothing.",
       "values": []
@@ -6069,6 +6653,7 @@ _REGISTRY_JSON = r"""{
       "default": "",
       "kind": "enum",
       "name": "MOLT_TRACE_CALL_BIND",
+      "output_neutral": false,
       "owner": "runtime/molt-runtime/src/call/bind.rs",
       "summary": "Controls call-binding tracing on stderr: 1 prints the calling frame when binding fails on a non-pointer callee, all or verbose also prints molt call_bind enter with the callee type and argument counts for every bound call; read once per process and cached, and unset or any other value disables tracing.",
       "values": [
@@ -6082,6 +6667,7 @@ _REGISTRY_JSON = r"""{
       "default": "0",
       "kind": "bool",
       "name": "MOLT_TRACE_CALL_BIND_IC",
+      "output_neutral": false,
       "owner": "runtime/molt-runtime/src/call/bind/inline_cache.rs",
       "summary": "Set to 1 to print [molt call_bind_ic] hit and bypass lines with site, kind, arity and reason on stderr for the direct-function inline cache; the molt debug trace call_bind_ic family sets it to 1 for the child run, it is read once per process, and unset or any other value prints nothing.",
       "values": []
@@ -6091,6 +6677,7 @@ _REGISTRY_JSON = r"""{
       "default": "0",
       "kind": "bool",
       "name": "MOLT_TRACE_CALL_BIND_MISSING",
+      "output_neutral": false,
       "owner": "runtime/molt-runtime/src/call/bind/frame_binding.rs",
       "summary": "Set to 1 to print molt call_bind: missing required arg func=<name> arg=<name> pos=<n> on stderr just before binding raises TypeError for a missing argument; read once per process, and unset or any other value prints nothing.",
       "values": []
@@ -6100,6 +6687,7 @@ _REGISTRY_JSON = r"""{
       "default": "0",
       "kind": "bool",
       "name": "MOLT_TRACE_CALL_DISPATCH",
+      "output_neutral": false,
       "owner": "runtime/molt-runtime/src/object/ops_builtins.rs",
       "summary": "Set to 1 to print [molt dispatch] call_func_dispatch with the callable type, argument count and code id on stderr for every dispatched call; read once per process, and unset or any other value prints nothing.",
       "values": []
@@ -6109,6 +6697,7 @@ _REGISTRY_JSON = r"""{
       "default": "0",
       "kind": "bool",
       "name": "MOLT_TRACE_CALL_DISPATCH_ARGS",
+      "output_neutral": false,
       "owner": "runtime/molt-runtime/src/object/ops_builtins.rs",
       "summary": "Set to 1 to add one [molt dispatch arg] line per argument (index, type, bits) under each MOLT_TRACE_CALL_DISPATCH line; it has no effect unless MOLT_TRACE_CALL_DISPATCH=1, is read once per process, and unset or any other value adds nothing.",
       "values": []
@@ -6118,6 +6707,7 @@ _REGISTRY_JSON = r"""{
       "default": "0",
       "kind": "bool",
       "name": "MOLT_TRACE_CALL_FUNCTION_OBJ0",
+      "output_neutral": false,
       "owner": "runtime/molt-runtime/src/call/function.rs",
       "summary": "Set to 1 on the wasm32 runtime to print the function name and trampoline details on stderr before call_function_obj0 enters a trampoline; the read is compiled only for wasm32, happens once per process, and unset or any other value prints nothing.",
       "values": []
@@ -6127,6 +6717,7 @@ _REGISTRY_JSON = r"""{
       "default": "0",
       "kind": "bool",
       "name": "MOLT_TRACE_CALL_FUNCTION_OBJ1",
+      "output_neutral": false,
       "owner": "runtime/molt-runtime/src/call/function.rs",
       "summary": "Set to 1 on the wasm32 runtime to print the function name and trampoline details on stderr when call_function_obj1 dispatches a one-argument call; the read is compiled only for wasm32, happens once per process, and unset or any other value prints nothing.",
       "values": []
@@ -6136,6 +6727,7 @@ _REGISTRY_JSON = r"""{
       "default": "0",
       "kind": "bool",
       "name": "MOLT_TRACE_CALL_FUNCTION_TRAMPOLINE",
+      "output_neutral": false,
       "owner": "runtime/molt-runtime/src/call/function.rs",
       "summary": "Set to 1 on the wasm32 runtime to print the function name and result on stderr after each trampoline call returns; the read is compiled only for wasm32, happens once per process, and unset or any other value prints nothing.",
       "values": []
@@ -6145,6 +6737,7 @@ _REGISTRY_JSON = r"""{
       "default": "0",
       "kind": "bool",
       "name": "MOLT_TRACE_CALL_FUNCTION_VEC",
+      "output_neutral": false,
       "owner": "runtime/molt-runtime/src/call/function.rs",
       "summary": "Set to 1 to print [molt call_function_vec] with lane, name, fn_ptr, trampoline pointer, closure bits, arity, argc and one line per argument on stderr for every vector-argument function call; read once per process, and unset or any other value prints nothing.",
       "values": []
@@ -6154,6 +6747,7 @@ _REGISTRY_JSON = r"""{
       "default": "0",
       "kind": "bool",
       "name": "MOLT_TRACE_CALL_RETURN",
+      "output_neutral": false,
       "owner": "runtime/molt-runtime/src/call/function.rs",
       "summary": "Set to 1 to print [molt call_return0] name=<function> type=<result type> bits=<bits> on stderr after every call_function_obj0 return; read once per process, and unset or any other value prints nothing.",
       "values": []
@@ -6163,6 +6757,7 @@ _REGISTRY_JSON = r"""{
       "default": "0",
       "kind": "bool",
       "name": "MOLT_TRACE_CALL_TYPE_BUILDER",
+      "output_neutral": false,
       "owner": "runtime/molt-runtime/src/call/bind/constructors.rs",
       "summary": "Set to 1 to print [DEBUG] call_type_with_arguments with the class name, bits and exception-subclass flag on stderr for every type call that goes through the constructor builder; read once per process, and unset or any other value prints nothing.",
       "values": []
@@ -6172,6 +6767,7 @@ _REGISTRY_JSON = r"""{
       "default": "0",
       "kind": "bool",
       "name": "MOLT_TRACE_CANCEL_MSG",
+      "output_neutral": false,
       "owner": "runtime/molt-runtime/src/async_rt/cancellation.rs",
       "summary": "Set to 1 to print molt cancel msg set task=<ptr> msg=<text> on stderr when a task cancel message is stored and when CancelledError arguments are built from it; read once per process, and unset or any other value prints nothing.",
       "values": []
@@ -6181,6 +6777,7 @@ _REGISTRY_JSON = r"""{
       "default": "0",
       "kind": "bool",
       "name": "MOLT_TRACE_CANCEL_TOKEN",
+      "output_neutral": false,
       "owner": "runtime/molt-runtime/src/async_rt/cancellation.rs",
       "summary": "Set to 1 to print molt cancel token new, register and set_current lines (token id, parent, task) on stderr for every cancel-token transition; read once per process, and unset or any other value prints nothing.",
       "values": []
@@ -6190,6 +6787,7 @@ _REGISTRY_JSON = r"""{
       "default": "0",
       "kind": "bool",
       "name": "MOLT_TRACE_CAPI",
+      "output_neutral": false,
       "owner": "runtime/molt-cpython-abi/src/capi_trace.rs",
       "summary": "Any non-empty value other than 0 makes the C-API shim print [MOLT_TRACE_CAPI] call <name>(<detail>) for instrumented C-API calls and [MOLT_TRACE_CAPI] silent-failure <name> when a call returns a failure sentinel with no pending exception; it is read on every event so WASI hosts can forward it, tools/witness_iter.py and tools/native_numpy_discovery.sh default it to 1 for discovery runs, and unset or 0 prints nothing.",
       "values": []
@@ -6199,6 +6797,7 @@ _REGISTRY_JSON = r"""{
       "default": "0",
       "kind": "bool",
       "name": "MOLT_TRACE_COMPILE_FUNC",
+      "output_neutral": false,
       "owner": "runtime/molt-backend-native/src/native_backend/function_compiler.rs",
       "summary": "Truthy values 1, true, yes or on (case-insensitive, trimmed) make the native backend print [molt-native-compile] start <function> ops=<n> params=<n> on stderr and append the same record to the native/compile_trace.txt debug artifact for every function it compiles; the molt debug trace compile_func family sets it to 1 for the child run, and unset, empty or any other value prints nothing.",
       "values": []
@@ -6208,6 +6807,7 @@ _REGISTRY_JSON = r"""{
       "default": "0",
       "kind": "bool",
       "name": "MOLT_TRACE_DEALLOC",
+      "output_neutral": false,
       "owner": "wasm/run_wasm.js",
       "summary": "Set to 1 so the Node WASM host prints, for each molt_Py_DECREF that crosses the split-runtime boundary with the refcount about to reach zero, the object's type name and its tp_dealloc and tp_free slot values read from shared memory; unset or any other value prints nothing.",
       "values": []
@@ -6217,6 +6817,7 @@ _REGISTRY_JSON = r"""{
       "default": "0",
       "kind": "bool",
       "name": "MOLT_TRACE_DECREF_ZERO_FUNCTION",
+      "output_neutral": false,
       "owner": "runtime/molt-runtime/src/object/mod.rs",
       "summary": "Set to 1 to print molt dec_ref_zero function with the function pointer and a captured backtrace on stderr when the refcount of the cached molt_object_init_subclass or molt_type_init builtin function object reaches zero; read once per process, and unset or any other value prints nothing.",
       "values": []
@@ -6226,6 +6827,7 @@ _REGISTRY_JSON = r"""{
       "default": "0",
       "kind": "bool",
       "name": "MOLT_TRACE_DECREF_ZERO_FUNCTION_ALL",
+      "output_neutral": false,
       "owner": "runtime/molt-runtime/src/object/mod.rs",
       "summary": "Set to 1 to print molt dec_ref_zero function name=<name> fn_ptr=<ptr> obj_ptr=<ptr> followed by a captured backtrace on stderr every time any function object is freed; read once per process, and unset or any other value prints nothing.",
       "values": []
@@ -6235,6 +6837,7 @@ _REGISTRY_JSON = r"""{
       "default": "0",
       "kind": "bool",
       "name": "MOLT_TRACE_EXCEPTION_STACK",
+      "output_neutral": false,
       "owner": "runtime/molt-runtime/src/builtins/exceptions/state.rs",
       "summary": "Set to 1 to print molt exc stack push and pop lines with task, depth, baseline, frame and line on stderr for every exception-handler stack transition; read once per process, and unset or any other value prints nothing.",
       "values": []
@@ -6244,6 +6847,7 @@ _REGISTRY_JSON = r"""{
       "default": "0",
       "kind": "bool",
       "name": "MOLT_TRACE_EXC_RC",
+      "output_neutral": false,
       "owner": "runtime/molt-runtime/src/object/mod.rs",
       "summary": "Set to 1 to print EXC_RC_INC and EXC_RC_DEC lines with the pointer and the old and new refcount on stderr for every refcount transition of an exception object; read once per process, and unset or any other value prints nothing.",
       "values": []
@@ -6253,6 +6857,7 @@ _REGISTRY_JSON = r"""{
       "default": "0",
       "kind": "bool",
       "name": "MOLT_TRACE_EXC_VALID",
+      "output_neutral": false,
       "owner": "runtime/molt-runtime/src/builtins/exceptions.rs",
       "summary": "Set to 1 to print [EXC_VALID] lines on stderr when an exception slot holds a non-pointer or an object that is not an exception instance; read once per process, and unset or any other value prints nothing.",
       "values": []
@@ -6262,6 +6867,7 @@ _REGISTRY_JSON = r"""{
       "default": "0",
       "kind": "bool",
       "name": "MOLT_TRACE_EXPORT_RETURN_BITS",
+      "output_neutral": false,
       "owner": "wasm/browser_host.js",
       "summary": "Set to 1 so the browser_host.js harness prints [molt export return] <export> bits=<bits> through console.error for every exported-function result; it is read only when a Node-style process.env exists, so it has no effect inside a browser, and unset or any other value prints nothing.",
       "values": []
@@ -6271,6 +6877,7 @@ _REGISTRY_JSON = r"""{
       "default": "0",
       "kind": "bool",
       "name": "MOLT_TRACE_FUNCTION_BIND_META",
+      "output_neutral": false,
       "owner": "runtime/molt-runtime/src/call/bind/frame_binding.rs",
       "summary": "Set to 1 to print [molt bind_meta] name=<function> total_pos=<n> posonly=<n> kwonly=<n> has_vararg=<bool> has_varkw=<bool> on stderr for every function binding; the molt debug trace function_bind_meta family sets it to 1 for the child run, it is read once per process, and unset or any other value prints nothing.",
       "values": []
@@ -6280,6 +6887,7 @@ _REGISTRY_JSON = r"""{
       "default": "0",
       "kind": "bool",
       "name": "MOLT_TRACE_FUNC_NEW",
+      "output_neutral": false,
       "owner": "runtime/molt-runtime/src/builtins/functions/function_abi.rs",
       "summary": "Set to 1 to print molt func new: and molt func new closure: lines with fn_ptr, trampoline pointer, arity, closure bits and entry custody on stderr each time the runtime creates a function object; read once per process, and unset or any other value prints nothing.",
       "values": []
@@ -6289,6 +6897,7 @@ _REGISTRY_JSON = r"""{
       "default": "0",
       "kind": "bool",
       "name": "MOLT_TRACE_GC",
+      "output_neutral": false,
       "owner": "runtime/molt-runtime/src/object/gc.rs",
       "summary": "Set to 1 to print molt gc: lines with the generation, candidate count, unreachable count and collected count on stderr for every cycle collection; read once per process, and unset or any other value prints nothing.",
       "values": []
@@ -6298,6 +6907,7 @@ _REGISTRY_JSON = r"""{
       "default": "",
       "kind": "int",
       "name": "MOLT_TRACE_GC_TYPE",
+      "output_neutral": false,
       "owner": "runtime/molt-runtime/src/object/gc.rs",
       "summary": "Numeric heap type id whose objects the cycle collector reports on stderr during collection (the effective refcount per candidate, each internal-edge subtraction that targets the type, and the reachable source that re-roots a candidate); parsed once per process, a value that is not a valid heap type id is ignored, and unset reports nothing.",
       "values": []
@@ -6307,6 +6917,7 @@ _REGISTRY_JSON = r"""{
       "default": "0",
       "kind": "bool",
       "name": "MOLT_TRACE_GENERATOR_ALLOC",
+      "output_neutral": false,
       "owner": "runtime/molt-runtime/src/async_rt/generators.rs",
       "summary": "Set to 1 to print molt_task_new enter and molt_task_new ok lines with poll function, closure size, kind, pointer and type id on stderr for every generator, coroutine or task allocation; read once per process, and unset or any other value prints nothing.",
       "values": []
@@ -6316,6 +6927,7 @@ _REGISTRY_JSON = r"""{
       "default": "0",
       "kind": "bool",
       "name": "MOLT_TRACE_GENERATOR_STATE",
+      "output_neutral": false,
       "owner": "runtime/molt-runtime/src/async_rt/generators.rs",
       "summary": "Set to 1 to print [molt generator_send] state_before=<n> state_after=<n> result_type=<type> result_bits=<bits> on stderr for every generator send; read once per process, and unset or any other value prints nothing.",
       "values": []
@@ -6325,6 +6937,7 @@ _REGISTRY_JSON = r"""{
       "default": "0",
       "kind": "bool",
       "name": "MOLT_TRACE_GET_ATTR",
+      "output_neutral": false,
       "owner": "runtime/molt-runtime/src/builtins/modules.rs",
       "summary": "Set to exactly 1 to make the runtime print module_get_attr: mod=<bits> attr=<bits> name=<attr> on stderr for every module attribute lookup (MOLT_TRACE_MODULE_ATTRS=all or verbose prints the same line); read once per process, and unset or any other value prints nothing.",
       "values": []
@@ -6334,6 +6947,7 @@ _REGISTRY_JSON = r"""{
       "default": "0",
       "kind": "bool",
       "name": "MOLT_TRACE_GPU_BACKEND",
+      "output_neutral": false,
       "owner": "runtime/molt-gpu-runtime/src/lib.rs",
       "summary": "Set to 1 to print [molt gpu backend] metal or [molt gpu backend] webgpu on stderr when a GPU kernel or packed attention path launches; the read exists only in wasm32, macOS metal-backend and webgpu-backend builds, happens once per process and is cached, and unset or any other value prints nothing.",
       "values": []
@@ -6343,6 +6957,7 @@ _REGISTRY_JSON = r"""{
       "default": "0",
       "kind": "bool",
       "name": "MOLT_TRACE_GPU_BUFFER_TO_LIST",
+      "output_neutral": false,
       "owner": "runtime/molt-gpu-runtime/src/tensor_runtime/contiguous.rs",
       "summary": "Set to 1 to print molt gpu buffer_to_list count=<n> on stderr for every GPU buffer to list conversion; read on every call, and unset or any other value prints nothing.",
       "values": []
@@ -6352,6 +6967,7 @@ _REGISTRY_JSON = r"""{
       "default": "0",
       "kind": "bool",
       "name": "MOLT_TRACE_GPU_KERNEL_LAUNCH",
+      "output_neutral": false,
       "owner": "runtime/molt-gpu-runtime/src/lib.rs",
       "summary": "Set to 1 to print [molt gpu launch] lines with tid, block id, block and grid dimensions, and the ok or exception outcome of each thread on stderr for every GPU kernel launch; read once per process and cached, and unset or any other value prints nothing.",
       "values": []
@@ -6361,6 +6977,7 @@ _REGISTRY_JSON = r"""{
       "default": "0",
       "kind": "bool",
       "name": "MOLT_TRACE_GPU_LINEAR",
+      "output_neutral": false,
       "owner": "runtime/molt-gpu-runtime/src/tensor_runtime/contiguous.rs",
       "summary": "Set to 1 to print molt gpu linear lines with outer, in_features, out_features, item sizes and byte counts, plus a done line, on stderr for every GPU linear kernel call; read on every call, and unset or any other value prints nothing.",
       "values": []
@@ -6370,6 +6987,7 @@ _REGISTRY_JSON = r"""{
       "default": "0",
       "kind": "bool",
       "name": "MOLT_TRACE_GPU_SCATTER_ROWS",
+      "output_neutral": false,
       "owner": "runtime/molt-gpu-runtime/src/tensor_runtime/tensor_methods.rs",
       "summary": "Set to 1 to print molt gpu scatter_rows lines with base, updates and indices shapes, row counts, an index preview and copied bytes on stderr for every GPU scatter_rows call; read on every call, and unset or any other value prints nothing.",
       "values": []
@@ -6379,6 +6997,7 @@ _REGISTRY_JSON = r"""{
       "default": "0",
       "kind": "bool",
       "name": "MOLT_TRACE_GPU_SDPA",
+      "output_neutral": false,
       "owner": "runtime/molt-gpu-runtime/src/tensor_runtime/attention.rs",
       "summary": "Set to 1 to print molt gpu sdpa batch=<n> heads=<n> seq_q=<n> seq_k=<n> dim=<n> value_dim=<n> out_elems=<n> on stderr for every scaled dot-product attention call; read on every call, and unset or any other value prints nothing.",
       "values": []
@@ -6388,6 +7007,7 @@ _REGISTRY_JSON = r"""{
       "default": "0",
       "kind": "bool",
       "name": "MOLT_TRACE_GPU_TAKE_ROWS",
+      "output_neutral": false,
       "owner": "runtime/molt-gpu-runtime/src/tensor_runtime/tensor_methods.rs",
       "summary": "Set to 1 to print molt gpu take_rows lines with input and index shapes, row counts, an index preview and copied bytes on stderr for every GPU take_rows call; read on every call, and unset or any other value prints nothing.",
       "values": []
@@ -6397,6 +7017,7 @@ _REGISTRY_JSON = r"""{
       "default": "0",
       "kind": "bool",
       "name": "MOLT_TRACE_GPU_THREAD_ID",
+      "output_neutral": false,
       "owner": "runtime/molt-gpu-runtime/src/lib.rs",
       "summary": "Set to 1 to print [molt gpu thread_id] tid=<n> on stderr every time a kernel reads its thread id; read once per process and cached, and unset or any other value prints nothing.",
       "values": []
@@ -6406,6 +7027,7 @@ _REGISTRY_JSON = r"""{
       "default": "0",
       "kind": "bool",
       "name": "MOLT_TRACE_IMPORT_TRANSACTION",
+      "output_neutral": false,
       "owner": "runtime/molt-runtime/src/builtins/platform_importlib_ffi/import_transaction.rs",
       "summary": "Set to 1 to print [molt import_transaction] name=<name> level=<n> resolved=<name> fromlist=<list> on stderr for every importlib import transaction; read once per process, and unset or any other value prints nothing.",
       "values": []
@@ -6415,6 +7037,7 @@ _REGISTRY_JSON = r"""{
       "default": "0",
       "kind": "bool",
       "name": "MOLT_TRACE_INIT_SUBCLASS",
+      "output_neutral": false,
       "owner": "runtime/molt-runtime/src/builtins/attributes/class_lookup.rs",
       "summary": "Set to 1 to print molt init_subclass lines on stderr that describe each lookup of the __init_subclass__ attribute (found value, allow_missing result, class and builtin status); read once per process, and unset or any other value prints nothing.",
       "values": []
@@ -6424,6 +7047,7 @@ _REGISTRY_JSON = r"""{
       "default": "0",
       "kind": "bool",
       "name": "MOLT_TRACE_INVALID_DECREF",
+      "output_neutral": false,
       "owner": "runtime/molt-runtime/src/object/mod.rs",
       "summary": "Set to 1 to print a captured backtrace after the molt fatal: invalid object header message when dec_ref meets a corrupted or freed object, just before the process aborts; read once per process, and unset or any other value prints no backtrace.",
       "values": []
@@ -6433,6 +7057,7 @@ _REGISTRY_JSON = r"""{
       "default": "0",
       "kind": "bool",
       "name": "MOLT_TRACE_IO_POLLER",
+      "output_neutral": false,
       "owner": "runtime/molt-runtime/src/async_rt/io_poller.rs",
       "summary": "Set to 1 to print molt io poller: register, event and ready lines with future, socket, fd, event mask and waiter count on stderr for the socket I/O poller; read once per process, and unset or any other value prints nothing.",
       "values": []
@@ -6442,6 +7067,7 @@ _REGISTRY_JSON = r"""{
       "default": "0",
       "kind": "bool",
       "name": "MOLT_TRACE_IO_WAIT_ERRORS",
+      "output_neutral": false,
       "owner": "runtime/molt-runtime/src/async_rt/io_poller.rs",
       "summary": "Set to 1 to print molt io_wait error: lines on stderr when an I/O wait sees an invalid socket or register_wait fails; read once per process, and unset or any other value prints nothing.",
       "values": []
@@ -6451,6 +7077,7 @@ _REGISTRY_JSON = r"""{
       "default": "0",
       "kind": "bool",
       "name": "MOLT_TRACE_ISINSTANCE",
+      "output_neutral": false,
       "owner": "runtime/molt-runtime/src/builtins/types/class_model.rs",
       "summary": "Set to 1 to print molt isinstance val_type=<type> class_type=<type> result=<bool> on stderr for every isinstance call; read once per process, and unset or any other value prints nothing.",
       "values": []
@@ -6460,6 +7087,7 @@ _REGISTRY_JSON = r"""{
       "default": "",
       "kind": "enum",
       "name": "MOLT_TRACE_IS_FUNCTION",
+      "output_neutral": false,
       "owner": "runtime/molt-runtime/src/builtins/callable.rs",
       "summary": "Controls stderr logging of molt_is_function_obj: 1 logs only calls whose argument is None, all logs every call with bits, pointer, type id and result; read on every call, and unset or any other value logs nothing.",
       "values": [
@@ -6472,6 +7100,7 @@ _REGISTRY_JSON = r"""{
       "default": "0",
       "kind": "bool",
       "name": "MOLT_TRACE_ITER_ARG",
+      "output_neutral": false,
       "owner": "runtime/molt-runtime/src/object/ops_iter.rs",
       "summary": "Set to 1 to print [molt iter arg] frame=<code name> line=<n> type=<type> bits=<bits> on stderr for every molt_iter call; read once per process, and unset or any other value prints nothing.",
       "values": []
@@ -6481,6 +7110,7 @@ _REGISTRY_JSON = r"""{
       "default": "0",
       "kind": "bool",
       "name": "MOLT_TRACE_LEN",
+      "output_neutral": false,
       "owner": "runtime/molt-runtime/src/object/ops_sys.rs",
       "summary": "Set to 1 to print molt_len arg_type=<type> bits=<bits> pending=<bool> on stderr for every len() call; read once per process, and unset or any other value prints nothing.",
       "values": []
@@ -6490,6 +7120,7 @@ _REGISTRY_JSON = r"""{
       "default": "0",
       "kind": "bool",
       "name": "MOLT_TRACE_LINE",
+      "output_neutral": false,
       "owner": "runtime/molt-runtime/src/object/ops_builtins.rs",
       "summary": "Set to 1 to print MOLT_TRACE_LINE <line> on stderr every time the compiled program records a new source line in its frame; read once per process, and unset or any other value prints nothing.",
       "values": []
@@ -6499,6 +7130,7 @@ _REGISTRY_JSON = r"""{
       "default": "0",
       "kind": "bool",
       "name": "MOLT_TRACE_LINE_PENDING",
+      "output_neutral": false,
       "owner": "runtime/molt-runtime/src/object/ops_builtins.rs",
       "summary": "Set to 1 to print MOLT_TRACE_LINE_PENDING <line> <kind> <detail> on stderr when a source line is recorded while an exception is pending; read once per process, and unset or any other value prints nothing.",
       "values": []
@@ -6508,6 +7140,7 @@ _REGISTRY_JSON = r"""{
       "default": "",
       "kind": "path",
       "name": "MOLT_TRACE_LOWERING_CTX",
+      "output_neutral": false,
       "owner": "src/molt/cli/module_cache.py",
       "summary": "Path of a file to which the CLI appends one JSON line per module (module name, lowering-context digest and a sha256 prefix per payload field) while it computes frontend lowering-cache keys; tools/witness_iter.py sets it for wasm-confirm runs, a failed write is ignored, and unset or empty writes nothing.",
       "values": []
@@ -6517,6 +7150,7 @@ _REGISTRY_JSON = r"""{
       "default": "",
       "kind": "enum",
       "name": "MOLT_TRACE_MODULE_ATTRS",
+      "output_neutral": false,
       "owner": "runtime/molt-runtime/src/builtins/modules.rs",
       "summary": "Controls module attribute tracing on stderr: 1 prints the module name and attribute for module attribute stores and lookup decisions, all or verbose also prints module_get_attr for every lookup; read once per process and cached, and unset or any other value prints nothing.",
       "values": [
@@ -6530,6 +7164,7 @@ _REGISTRY_JSON = r"""{
       "default": "0",
       "kind": "bool",
       "name": "MOLT_TRACE_MODULE_CACHE",
+      "output_neutral": false,
       "owner": "runtime/molt-runtime/src/builtins/modules.rs",
       "summary": "Set to 1 to print module cache hit, miss, set and SKIPPED lines with the module name and bits on stderr for the runtime module cache; read once per process, and unset or any other value prints nothing.",
       "values": []
@@ -6539,6 +7174,7 @@ _REGISTRY_JSON = r"""{
       "default": "0",
       "kind": "bool",
       "name": "MOLT_TRACE_MODULE_ENSURE",
+      "output_neutral": false,
       "owner": "runtime/molt-runtime/src/builtins/module_table.rs",
       "summary": "Set to 1 to print module ensure init: id=<n> name=<name> init_ptr=<ptr> pending_before=<bool> on stderr for every module initialization transaction; read once per process, and unset or any other value prints nothing.",
       "values": []
@@ -6548,6 +7184,7 @@ _REGISTRY_JSON = r"""{
       "default": "",
       "kind": "enum",
       "name": "MOLT_TRACE_MODULE_GLOBALS",
+      "output_neutral": false,
       "owner": "runtime/molt-runtime/src/builtins/modules.rs",
       "summary": "Controls module-global tracing on stderr: 1 traces only the names _SYS_FLAGS_SEQUENCE_FIELDS and _FlagsTuple, all or verbose traces every module global load and store; read once per process and cached, and unset or any other value prints nothing.",
       "values": [
@@ -6561,6 +7198,7 @@ _REGISTRY_JSON = r"""{
       "default": "0",
       "kind": "bool",
       "name": "MOLT_TRACE_NAME_ERROR",
+      "output_neutral": false,
       "owner": "runtime/molt-runtime/src/builtins/modules.rs",
       "summary": "Set to 1 to print molt name error lines with module, name, globals pointer and pending state on stderr when a NameError is raised or a global is deleted; read once per process, and unset or any other value prints nothing.",
       "values": []
@@ -6570,6 +7208,7 @@ _REGISTRY_JSON = r"""{
       "default": "0",
       "kind": "bool",
       "name": "MOLT_TRACE_NATIVE_LINK",
+      "output_neutral": false,
       "owner": "src/molt/cli/link_pipeline.py",
       "summary": "Set to 1 to make the molt CLI print native-link trace: with the output object, stdlib object, runtime library and output binary paths on stderr after the native link step; unset or any other value prints nothing.",
       "values": []
@@ -6579,6 +7218,7 @@ _REGISTRY_JSON = r"""{
       "default": "0",
       "kind": "bool",
       "name": "MOLT_TRACE_NOT_CALLABLE",
+      "output_neutral": false,
       "owner": "runtime/molt-runtime/src/call/class_init.rs",
       "summary": "Set to 1 to print the current frame's code name and file on stderr when the runtime raises TypeError for a call on a non-callable object; read once per process, and unset or any other value prints nothing.",
       "values": []
@@ -6588,6 +7228,7 @@ _REGISTRY_JSON = r"""{
       "default": "0",
       "kind": "bool",
       "name": "MOLT_TRACE_OBJECT_STATE",
+      "output_neutral": false,
       "owner": "runtime/molt-runtime/src/object/mod.rs",
       "summary": "Set to 1 to print molt object_state get and set lines with the pointer and state on stderr for every generator or coroutine state read and write; read once per process, and unset or any other value prints nothing.",
       "values": []
@@ -6597,6 +7238,7 @@ _REGISTRY_JSON = r"""{
       "default": "",
       "kind": "string",
       "name": "MOLT_TRACE_OP_PROGRESS",
+      "output_neutral": false,
       "owner": "runtime/molt-backend-native/src/native_backend/simple_backend/trace_ops.rs",
       "summary": "Selector <filter>[:<stride>] that makes the native backend insert a molt_debug_trace call every <stride> ops in matching functions, which print trace <function> op=<index> on stderr at run time; filter 1 or all (case-insensitive) matches every function, any other text matches functions whose name equals or contains it, stride is a positive integer with default 5000, and unset or blank inserts nothing.",
       "values": []
@@ -6606,6 +7248,7 @@ _REGISTRY_JSON = r"""{
       "default": "0",
       "kind": "bool",
       "name": "MOLT_TRACE_OP_PROGRESS_STDERR",
+      "output_neutral": false,
       "owner": "runtime/molt-backend-native/src/native_backend/function_compiler.rs",
       "summary": "Set to 1 to make the native backend also print [molt-native-op] func=<name> op=<index> kind=<op> block=<id> filled=<bool> on stderr at compile time for each op that MOLT_TRACE_OP_PROGRESS instruments; it has no effect without MOLT_TRACE_OP_PROGRESS, and unset or any other value prints nothing.",
       "values": []
@@ -6615,6 +7258,7 @@ _REGISTRY_JSON = r"""{
       "default": "0",
       "kind": "bool",
       "name": "MOLT_TRACE_OP_SIGTRAP",
+      "output_neutral": false,
       "owner": "runtime/molt-runtime/src/builtins/modules.rs",
       "summary": "Set to 1 on Unix to install a SIGTRAP handler at the first molt_debug_trace call that writes molt trace last op=<index> to stderr and exits with status 128 plus the signal number; read once per process, there is no handler on Windows, and unset or any other value installs nothing.",
       "values": []
@@ -6624,6 +7268,7 @@ _REGISTRY_JSON = r"""{
       "default": "0",
       "kind": "bool",
       "name": "MOLT_TRACE_OP_SILENT",
+      "output_neutral": false,
       "owner": "runtime/molt-runtime/src/builtins/modules.rs",
       "summary": "Set to 1 to suppress the trace <function> op=<index> stderr line that MOLT_TRACE_OP_PROGRESS instrumentation prints, while the last op index is still recorded for the SIGTRAP handler; read once per process, and unset or any other value keeps the line.",
       "values": []
@@ -6633,6 +7278,7 @@ _REGISTRY_JSON = r"""{
       "default": "0",
       "kind": "bool",
       "name": "MOLT_TRACE_POLL_RETURN",
+      "output_neutral": false,
       "owner": "runtime/molt-runtime/src/async_rt/poll.rs",
       "summary": "Set to 1 on the wasm32 runtime to print the poll function kind (async_sleep, promise, the asyncio watchers and others) and result on stderr after every indirect poll call; the read is compiled only for wasm32, happens once per process, and unset or any other value prints nothing.",
       "values": []
@@ -6642,6 +7288,7 @@ _REGISTRY_JSON = r"""{
       "default": "0",
       "kind": "bool",
       "name": "MOLT_TRACE_PROCESS_IO",
+      "output_neutral": false,
       "owner": "runtime/molt-runtime/src/async_rt/process/native_io.rs",
       "summary": "Set to 1 to print a byte preview of every read from and write to a child process pipe on stderr; read once per process, and unset or any other value prints nothing.",
       "values": []
@@ -6651,6 +7298,7 @@ _REGISTRY_JSON = r"""{
       "default": "0",
       "kind": "bool",
       "name": "MOLT_TRACE_PROCESS_SPAWN",
+      "output_neutral": false,
       "owner": "runtime/molt-runtime/src/async_rt/process.rs",
       "summary": "Set to 1 to print the first three argv entries on stderr each time the runtime spawns a child process; the read is compiled only for non-wasm32 targets, happens once per process, and unset or any other value prints nothing.",
       "values": []
@@ -6660,6 +7308,7 @@ _REGISTRY_JSON = r"""{
       "default": "0",
       "kind": "bool",
       "name": "MOLT_TRACE_PROMISE",
+      "output_neutral": false,
       "owner": "runtime/molt-runtime/src/async_rt/generators.rs",
       "summary": "Set to 1 to print molt async trace: promise_new, promise_poll, promise_set_result_enter, await_register_promise and await_clear_promise lines on stderr for promise futures (MOLT_ASYNC_TRACE enables some of the same lines); read once per process, and unset or any other value prints nothing.",
       "values": []
@@ -6669,6 +7318,7 @@ _REGISTRY_JSON = r"""{
       "default": "0",
       "kind": "bool",
       "name": "MOLT_TRACE_PTR_REGISTRY",
+      "output_neutral": false,
       "owner": "runtime/molt-obj-model/src/lib.rs",
       "summary": "Set to 1 to print ptr_registry register count=<n> on stderr every 100000 pointer registrations and one backtrace when the count reaches 1000000; read once per process and cached, and unset or any other value prints nothing.",
       "values": []
@@ -6678,6 +7328,7 @@ _REGISTRY_JSON = r"""{
       "default": "",
       "kind": "int",
       "name": "MOLT_TRACE_RC_TYPE",
+      "output_neutral": false,
       "owner": "runtime/molt-runtime/src/object/mod.rs",
       "summary": "Numeric heap type id whose objects get a MOLT_RC_INC or MOLT_RC_DEC line with the pointer and the old and new refcount on stderr for every refcount transition; parsed once per process, a value that is not a valid heap type id is ignored, and unset prints nothing.",
       "values": []
@@ -6687,6 +7338,7 @@ _REGISTRY_JSON = r"""{
       "default": "0",
       "kind": "bool",
       "name": "MOLT_TRACE_REQUIRE_INTRINSIC",
+      "output_neutral": false,
       "owner": "runtime/molt-runtime/src/intrinsics/registry.rs",
       "summary": "Set to 1 to print molt intrinsic_resolve: and molt require_intrinsic: lines with the requested name, argument type and resolution status on stderr for every runtime intrinsic lookup; read once per process, and unset or any other value prints nothing.",
       "values": []
@@ -6696,6 +7348,7 @@ _REGISTRY_JSON = r"""{
       "default": "0",
       "kind": "bool",
       "name": "MOLT_TRACE_RUNTIME_INIT",
+      "output_neutral": false,
       "owner": "runtime/molt-runtime/src/state/runtime_state.rs",
       "summary": "Set to 1 to print [molt runtime_init] +<total>us (d<delta>us) <stage> on stderr for every runtime initialization stage (enter, state_allocated, intrinsics_registered, capabilities, ok and the others); tools/cold_start_decompose.py and tools/startup_bench.py set it to 1 to collect per-stage medians, it is read once per process, and unset or any other value prints nothing.",
       "values": []
@@ -6705,6 +7358,7 @@ _REGISTRY_JSON = r"""{
       "default": "0",
       "kind": "bool",
       "name": "MOLT_TRACE_SET_NAME",
+      "output_neutral": false,
       "owner": "runtime/molt-runtime/src/builtins/types/class_model/hierarchy.rs",
       "summary": "Set to 1 to print the class name, attribute key and descriptor on stderr for every __set_name__ applied while a class is created; read once per process, and unset or any other value prints nothing.",
       "values": []
@@ -6714,6 +7368,7 @@ _REGISTRY_JSON = r"""{
       "default": "0",
       "kind": "bool",
       "name": "MOLT_TRACE_SHUTDOWN",
+      "output_neutral": false,
       "owner": "runtime/molt-runtime/src/state/lifecycle.rs",
       "summary": "Set to exactly 1 to print each runtime shutdown step to stderr; the value is read once per process; unset or any other value stays silent.",
       "values": []
@@ -6723,6 +7378,7 @@ _REGISTRY_JSON = r"""{
       "default": "0",
       "kind": "bool",
       "name": "MOLT_TRACE_SIMPLE_IMPORT",
+      "output_neutral": false,
       "owner": "runtime/molt-passes/src/tir/lower_from_simple.rs",
       "summary": "Set to exactly 1 to print every SimpleIR import operation (function, kind, args, var, out, s_value) to stderr before each function lowers to TIR; unset or any other value stays silent.",
       "values": []
@@ -6732,6 +7388,7 @@ _REGISTRY_JSON = r"""{
       "default": "0",
       "kind": "bool",
       "name": "MOLT_TRACE_SLEEP",
+      "output_neutral": false,
       "owner": "runtime/molt-runtime/src/async_rt/generators.rs",
       "summary": "Set to exactly 1 to trace asyncio sleep handling to stderr; the value is read once per process; unset or any other value stays silent.",
       "values": []
@@ -6741,6 +7398,7 @@ _REGISTRY_JSON = r"""{
       "default": "0",
       "kind": "bool",
       "name": "MOLT_TRACE_SOCKET_RECV",
+      "output_neutral": false,
       "owner": "runtime/molt-runtime/src/async_rt/sockets/state.rs",
       "summary": "Set to exactly 1 to trace socket receive calls to stderr on runtimes built with native network I/O; the value is read once per process; unset or any other value stays silent.",
       "values": []
@@ -6750,6 +7408,7 @@ _REGISTRY_JSON = r"""{
       "default": "0",
       "kind": "bool",
       "name": "MOLT_TRACE_SOCKET_SEND",
+      "output_neutral": false,
       "owner": "runtime/molt-runtime/src/async_rt/sockets/state.rs",
       "summary": "Set to exactly 1 to trace socket send calls to stderr on runtimes built with native network I/O; the value is read once per process; unset or any other value stays silent.",
       "values": []
@@ -6759,6 +7418,7 @@ _REGISTRY_JSON = r"""{
       "default": "0",
       "kind": "bool",
       "name": "MOLT_TRACE_SSA_IMPORT",
+      "output_neutral": false,
       "owner": "runtime/molt-ir/src/tir/ssa/op_lowering.rs",
       "summary": "Set to exactly 1 to print every Import opcode (function, kind, args, var, out, operands) to stderr during SSA lowering; unset or any other value stays silent.",
       "values": []
@@ -6768,6 +7428,7 @@ _REGISTRY_JSON = r"""{
       "default": "0",
       "kind": "bool",
       "name": "MOLT_TRACE_STDIO_BUILD",
+      "output_neutral": false,
       "owner": "runtime/molt-runtime/src/builtins/io/open.rs",
       "summary": "Set to exactly 1 to report pending exceptions to stderr while the runtime builds and caches the sys.stdin, sys.stdout and sys.stderr handles; the value is read once per process; unset or any other value stays silent.",
       "values": []
@@ -6777,6 +7438,7 @@ _REGISTRY_JSON = r"""{
       "default": "0",
       "kind": "bool",
       "name": "MOLT_TRACE_STRING_FROM_BYTES",
+      "output_neutral": false,
       "owner": "runtime/molt-runtime/src/builtins/strings.rs",
       "summary": "Set to exactly 1 to trace the string-from-bytes FFI path to stderr; the value is read once per process; unset or any other value stays silent.",
       "values": []
@@ -6786,6 +7448,7 @@ _REGISTRY_JSON = r"""{
       "default": "0",
       "kind": "bool",
       "name": "MOLT_TRACE_SYS_MODULE",
+      "output_neutral": false,
       "owner": "runtime/molt-runtime/src/builtins/modules.rs",
       "summary": "Set to exactly 1 to trace sys module construction to stderr, including any exception kind left pending after argv/executable and stdio population; unset or any other value stays silent.",
       "values": []
@@ -6795,6 +7458,7 @@ _REGISTRY_JSON = r"""{
       "default": "0",
       "kind": "bool",
       "name": "MOLT_TRACE_SYS_VERSION",
+      "output_neutral": false,
       "owner": "runtime/molt-runtime/src/object/ops_sys.rs",
       "summary": "Set to exactly 1 to print the raw MOLT_SYS_VERSION_INFO value and sys.version resolution to stderr; the value is read once per process; unset or any other value stays silent.",
       "values": []
@@ -6804,6 +7468,7 @@ _REGISTRY_JSON = r"""{
       "default": "0",
       "kind": "bool",
       "name": "MOLT_TRACE_TASK_LAST_EXCEPTION_CLEAR",
+      "output_neutral": false,
       "owner": "runtime/molt-runtime/src/async_rt/scheduler/asyncio_runtime/task_registry.rs",
       "summary": "Set to exactly 1 to print the task pointer to stderr each time asyncio clears a task's last exception; unset or any other value stays silent.",
       "values": []
@@ -6813,6 +7478,7 @@ _REGISTRY_JSON = r"""{
       "default": "0",
       "kind": "bool",
       "name": "MOLT_TRACE_TASK_RESULT",
+      "output_neutral": false,
       "owner": "runtime/molt-runtime/src/async_rt/scheduler/diagnostics.rs",
       "summary": "Set to exactly 1 to trace asyncio task result delivery to stderr; the value is read once per process; unset or any other value stays silent.",
       "values": []
@@ -6822,6 +7488,7 @@ _REGISTRY_JSON = r"""{
       "default": "",
       "kind": "bool",
       "name": "MOLT_TRACE_TCL",
+      "output_neutral": false,
       "owner": "runtime/molt-runtime-tk/src/tk/native.rs",
       "summary": "Any set value, including 0, enables Tcl command tracing to stderr on native-tcl builds of the tkinter runtime; the presence check runs once and is cached; unset stays silent.",
       "values": []
@@ -6831,6 +7498,7 @@ _REGISTRY_JSON = r"""{
       "default": "0",
       "kind": "bool",
       "name": "MOLT_TRACE_TRACE_ENTER_SLOT",
+      "output_neutral": false,
       "owner": "runtime/molt-runtime/src/object/ops_builtins.rs",
       "summary": "Set to exactly 1 to trace the trace-enter slot path of builtin call dispatch to stderr; the value is read once per process; unset or any other value stays silent.",
       "values": []
@@ -6840,6 +7508,7 @@ _REGISTRY_JSON = r"""{
       "default": "0",
       "kind": "bool",
       "name": "MOLT_TRACE_TRACE_EXIT_PENDING",
+      "output_neutral": false,
       "owner": "runtime/molt-runtime/src/object/ops_builtins.rs",
       "summary": "Set to exactly 1 to trace exceptions left pending at the trace-exit slot of builtin call dispatch to stderr; the value is read once per process; unset or any other value stays silent.",
       "values": []
@@ -6849,6 +7518,7 @@ _REGISTRY_JSON = r"""{
       "default": "0",
       "kind": "bool",
       "name": "MOLT_TRACE_TRAMPOLINE_POLICY",
+      "output_neutral": false,
       "owner": "runtime/molt-runtime/src/call/function.rs",
       "summary": "Set to exactly 1 to print the fixed-arity trampoline decision (fn_ptr, tramp_ptr, nargs, reserved_info, force_trampoline) to stderr on every function-object call; the value is read once per process; unset or any other value stays silent.",
       "values": []
@@ -6858,6 +7528,7 @@ _REGISTRY_JSON = r"""{
       "default": "0",
       "kind": "bool",
       "name": "MOLT_TRACE_TYPE_CALL",
+      "output_neutral": false,
       "owner": "runtime/molt-runtime/src/object/ops_builtins.rs",
       "summary": "Set to exactly 1 to print each type.__call__ invocation (kind, class name, cls_bits) to stderr; unset or any other value stays silent.",
       "values": []
@@ -6867,6 +7538,7 @@ _REGISTRY_JSON = r"""{
       "default": "0",
       "kind": "bool",
       "name": "MOLT_TRACE_TYPE_NEW_INIT",
+      "output_neutral": false,
       "owner": "runtime/molt-runtime/src/call/bind/builtin_args.rs",
       "summary": "Set to exactly 1 to print each type.__new__/__init__ binding (self, metaclass, positional and keyword counts) and missing-argument failures to stderr; unset or any other value stays silent.",
       "values": []
@@ -6876,6 +7548,7 @@ _REGISTRY_JSON = r"""{
       "default": "0",
       "kind": "bool",
       "name": "MOLT_TRACE_TYPE_NEW_INIT_BT",
+      "output_neutral": false,
       "owner": "runtime/molt-runtime/src/call/bind/builtin_args.rs",
       "summary": "Set to exactly 1, together with MOLT_TRACE_TYPE_NEW_INIT=1, to append a captured Rust backtrace to each type.__new__/__init__ binding trace on stderr; unset or any other value prints no backtrace.",
       "values": []
@@ -6885,6 +7558,7 @@ _REGISTRY_JSON = r"""{
       "default": "",
       "kind": "bool",
       "name": "MOLT_TRACE_UNBOUND_ELIM",
+      "output_neutral": false,
       "owner": "runtime/molt-tir/src/passes/unbound_checks.rs",
       "summary": "Any set value, including 0, prints each function that still holds missing-variable checks after unbound-check elimination, with removed and surviving counts, to stderr; unset stays silent.",
       "values": []
@@ -6894,6 +7568,7 @@ _REGISTRY_JSON = r"""{
       "default": "adpena",
       "kind": "list",
       "name": "MOLT_TRUSTED_PR_AUTHORS",
+      "output_neutral": false,
       "owner": ".github/workflows/pr_trust_gate.yml",
       "summary": "GitHub repository variable with comma-separated GitHub logins whose pull requests and commit chains the PR trust gate and trust labeler accept; entries are trimmed, lowercased and matched as substrings; empty or unset means adpena.",
       "values": []
@@ -6903,6 +7578,7 @@ _REGISTRY_JSON = r"""{
       "default": "trusted-pr",
       "kind": "string",
       "name": "MOLT_TRUSTED_PR_LABEL",
+      "output_neutral": false,
       "owner": ".github/workflows/pr_trust_labeler.yml",
       "summary": "GitHub repository variable naming the label the PR trust labeler applies to pull requests from trusted authors; empty or unset means trusted-pr.",
       "values": []
@@ -6912,6 +7588,7 @@ _REGISTRY_JSON = r"""{
       "default": "",
       "kind": "path",
       "name": "MOLT_TRUSTED_SIGNERS",
+      "output_neutral": false,
       "owner": "src/molt/cli/entrypoint_dispatch.py",
       "summary": "Path to the trust-policy file (JSON or TOML) of trusted signers for molt publish; --trusted-signers and the publish config take precedence; a remote-registry publish that requires or verifies signatures fails when neither is set.",
       "values": []
@@ -6921,6 +7598,7 @@ _REGISTRY_JSON = r"""{
       "default": "0",
       "kind": "bool",
       "name": "MOLT_TTY",
+      "output_neutral": false,
       "owner": "tools/bench.py",
       "summary": "Set to exactly 1 to run tools/bench.py, tools/bench_wasm.py and tools/dev.py in TTY mode with live terminal output (same as --tty); any other value or unset keeps non-TTY output.",
       "values": []
@@ -6930,6 +7608,7 @@ _REGISTRY_JSON = r"""{
       "default": "dev",
       "kind": "enum",
       "name": "MOLT_TV_BUILD_PROFILE",
+      "output_neutral": false,
       "owner": "tools/translation_validate.py",
       "summary": "Default Molt build profile for tools/translation_validate.py, dev or release; --build-profile overrides it; default dev.",
       "values": [
@@ -6942,6 +7621,7 @@ _REGISTRY_JSON = r"""{
       "default": "",
       "kind": "path",
       "name": "MOLT_TV_DIR",
+      "output_neutral": false,
       "owner": "src/molt/frontend/tv_hooks.py",
       "summary": "Directory where the translation-validation hooks write per-pass before/after IR snapshots when MOLT_TV_EMIT=1; it is created if missing; unset means a fresh molt_tv_ directory under MOLT_DIFF_TMPDIR, TMPDIR, MOLT_EXT_ROOT/tmp or the repo-local tmp directory, printed to stderr on first use.",
       "values": []
@@ -6951,6 +7631,7 @@ _REGISTRY_JSON = r"""{
       "default": "0",
       "kind": "bool",
       "name": "MOLT_TV_EMIT",
+      "output_neutral": false,
       "owner": "src/molt/frontend/tv_hooks.py",
       "summary": "Set to exactly 1 to make the mid-end write before/after IR snapshots for every pass into the MOLT_TV_DIR dump directory; the value is read once per process; any other value or unset disables emission.",
       "values": []
@@ -6960,6 +7641,7 @@ _REGISTRY_JSON = r"""{
       "default": "4",
       "kind": "int",
       "name": "MOLT_TV_JOBS",
+      "output_neutral": false,
       "owner": "tools/translation_validate.py",
       "summary": "Default number of parallel validation jobs for tools/translation_validate.py; --jobs overrides it; a non-integer value raises ValueError at import; default 4.",
       "values": []
@@ -6969,6 +7651,7 @@ _REGISTRY_JSON = r"""{
       "default": "",
       "kind": "string",
       "name": "MOLT_TV_PYTHON",
+      "output_neutral": false,
       "owner": "tools/translation_validate.py",
       "summary": "Explicit CPython command that tools/translation_validate.py runs as the ground-truth interpreter; unset or blank resolves the target Python from the project configuration.",
       "values": []
@@ -6978,6 +7661,7 @@ _REGISTRY_JSON = r"""{
       "default": "60",
       "kind": "int",
       "name": "MOLT_TV_TIMEOUT",
+      "output_neutral": false,
       "owner": "tools/translation_validate.py",
       "summary": "Default per-file timeout in seconds for tools/translation_validate.py; --timeout overrides it; a non-integer value raises ValueError at import; default 60.",
       "values": []
@@ -6987,6 +7671,7 @@ _REGISTRY_JSON = r"""{
       "default": "30",
       "kind": "float",
       "name": "MOLT_TY_TIMEOUT",
+      "output_neutral": false,
       "owner": "src/molt/cli/typecheck.py",
       "summary": "Timeout in seconds for the ty check subprocess that src/molt/cli/typecheck.py runs; non-numeric or non-positive values fall back to 30.",
       "values": []
@@ -6996,6 +7681,7 @@ _REGISTRY_JSON = r"""{
       "default": "untrusted-pr",
       "kind": "string",
       "name": "MOLT_UNTRUSTED_PR_LABEL",
+      "output_neutral": false,
       "owner": ".github/workflows/pr_trust_labeler.yml",
       "summary": "GitHub repository variable naming the label the PR trust labeler applies to pull requests from untrusted authors or forks; empty or unset means untrusted-pr.",
       "values": []
@@ -7005,6 +7691,7 @@ _REGISTRY_JSON = r"""{
       "default": "auto",
       "kind": "enum",
       "name": "MOLT_USE_SCCACHE",
+      "output_neutral": false,
       "owner": "src/molt/cli/cargo_execution.py",
       "summary": "Controls whether Molt Cargo builds wire sccache as RUSTC_WRAPPER: 0, false, no or off disables it, 1, true, yes or on forces the pinned sccache, and auto (the default when unset) uses it when provisioned except on Windows where auto means off; DX shells from molt.dx preset 1 (0 on Windows).",
       "values": [
@@ -7024,6 +7711,7 @@ _REGISTRY_JSON = r"""{
       "default": "demo",
       "kind": "string",
       "name": "MOLT_UV_GROUP",
+      "output_neutral": false,
       "owner": "bench/scripts/run_stack.sh",
       "summary": "uv dependency group that bench/scripts/run_stack.sh syncs and runs the demo stack with; default demo.",
       "values": []
@@ -7033,6 +7721,7 @@ _REGISTRY_JSON = r"""{
       "default": "dx",
       "kind": "string",
       "name": "MOLT_UV_PROJECT_PURPOSE",
+      "output_neutral": false,
       "owner": "src/molt/dx.py",
       "summary": "Purpose label that, with MOLT_UV_PROJECT_PYTHON, names the durable managed uv project environment under the artifact root when UV_PROJECT_ENVIRONMENT is unset; tools/run_context_env.py --dx and tools/uv_project_env.py set it; default dx.",
       "values": []
@@ -7042,6 +7731,7 @@ _REGISTRY_JSON = r"""{
       "default": "3.12",
       "kind": "string",
       "name": "MOLT_UV_PROJECT_PYTHON",
+      "output_neutral": false,
       "owner": "src/molt/dx.py",
       "summary": "Python version label that, with MOLT_UV_PROJECT_PURPOSE, names the durable managed uv project environment under the artifact root when UV_PROJECT_ENVIRONMENT is unset; tools/run_context_env.py --dx and tools/uv_project_env.py set it; default 3.12.",
       "values": []
@@ -7051,6 +7741,7 @@ _REGISTRY_JSON = r"""{
       "default": "",
       "kind": "string",
       "name": "MOLT_UV_PYTHON",
+      "output_neutral": false,
       "owner": "bench/scripts/run_stack.sh",
       "summary": "Python version or interpreter that bench/scripts/run_stack.sh passes to uv run and uv sync; unset means the version pinned in .python-version.",
       "values": []
@@ -7060,6 +7751,7 @@ _REGISTRY_JSON = r"""{
       "default": "1",
       "kind": "bool",
       "name": "MOLT_UV_SYNC",
+      "output_neutral": false,
       "owner": "bench/scripts/run_stack.sh",
       "summary": "Set to 0 to skip the uv sync step before bench/scripts/run_stack.sh starts the demo stack; any other value or unset runs uv sync for the selected group and Python; the perf_demo workflow sets 0.",
       "values": []
@@ -7069,6 +7761,7 @@ _REGISTRY_JSON = r"""{
       "default": "",
       "kind": "path",
       "name": "MOLT_VENV",
+      "output_neutral": false,
       "owner": "tools/venv_exec.py",
       "summary": "Path to the repository virtualenv that tools/venv_exec.py runs pinned tools from, resolved against the repo root when relative; tools/molt_dev.py injects it for gates (own .venv, then the main worktree .venv) and the proof-queue CLI reads it as the last fallback for a warm project environment; unset means <repo>/.venv.",
       "values": []
@@ -7078,6 +7771,7 @@ _REGISTRY_JSON = r"""{
       "default": "",
       "kind": "string",
       "name": "MOLT_VERIFIED_SUBSET_RUNNER",
+      "output_neutral": false,
       "owner": "tools/verified_subset.py",
       "summary": "GitHub runner label that the verified-subset workflow exports from its matrix; tools/verified_subset.py requires it to equal the coordinate's runner when it records the CI execution identity and raises ValueError otherwise; unset outside CI.",
       "values": []
@@ -7087,6 +7781,7 @@ _REGISTRY_JSON = r"""{
       "default": "0",
       "kind": "bool",
       "name": "MOLT_VERIFY_ANALYSIS",
+      "output_neutral": false,
       "owner": "runtime/molt-passes/src/tir/pass_manager.rs",
       "summary": "Set to exactly 1 to run the per-pass analysis self-check after every TIR pass in the pass manager; unset or any other value skips the check.",
       "values": []
@@ -7096,6 +7791,7 @@ _REGISTRY_JSON = r"""{
       "default": "0",
       "kind": "bool",
       "name": "MOLT_VERIFY_SIGNATURE",
+      "output_neutral": false,
       "owner": "src/molt/cli/entrypoint_dispatch.py",
       "summary": "Enables signature verification for molt publish when --verify-signature and the publish config leave it unset; 1, true, yes or on (case-insensitive) enable it; any other value or unset means off, except that a remote-registry publish which requires signatures turns it on.",
       "values": []
@@ -7105,6 +7801,7 @@ _REGISTRY_JSON = r"""{
       "default": "",
       "kind": "path",
       "name": "MOLT_VFS_BUNDLE",
+      "output_neutral": false,
       "owner": "runtime/molt-runtime-vfs/src/load.rs",
       "summary": "Path to a directory or .tar file mounted at /bundle together with /tmp and /dev. Runtime startup freezes route, explicit absence and relative-path basis before Ready; payload loading remains lazy. Molt WASM hosts set this value for guests; unset selects no virtual filesystem. Isolates share the selected mount and quota owner.",
       "values": []
@@ -7114,6 +7811,7 @@ _REGISTRY_JSON = r"""{
       "default": "268435456",
       "kind": "int",
       "name": "MOLT_VFS_BUNDLE_MAX_BYTES",
+      "output_neutral": false,
       "owner": "runtime/molt-runtime-vfs/src/load.rs",
       "summary": "Maximum total bytes the VFS bundle loader accepts across all bundle entries; non-numeric or zero values fall back to 268435456 (256 MiB). Captured with the VFS route before Ready; later environment writes do not change the selected quota or link policy.",
       "values": []
@@ -7123,6 +7821,7 @@ _REGISTRY_JSON = r"""{
       "default": "100000",
       "kind": "int",
       "name": "MOLT_VFS_BUNDLE_MAX_ENTRIES",
+      "output_neutral": false,
       "owner": "runtime/molt-runtime-vfs/src/load.rs",
       "summary": "Maximum number of entries the VFS bundle loader accepts; non-numeric or zero values fall back to 100000. Captured with the VFS route before Ready; later environment writes do not change the selected quota or link policy.",
       "values": []
@@ -7132,6 +7831,7 @@ _REGISTRY_JSON = r"""{
       "default": "67108864",
       "kind": "int",
       "name": "MOLT_VFS_BUNDLE_MAX_ENTRY_BYTES",
+      "output_neutral": false,
       "owner": "runtime/molt-runtime-vfs/src/load.rs",
       "summary": "Maximum bytes of one bundle entry the VFS bundle loader accepts; non-numeric or zero values fall back to 67108864 (64 MiB). Captured with the VFS route before Ready; later environment writes do not change the selected quota or link policy.",
       "values": []
@@ -7141,6 +7841,7 @@ _REGISTRY_JSON = r"""{
       "default": "16777216",
       "kind": "int",
       "name": "MOLT_VFS_BUNDLE_MAX_PATH_BYTES",
+      "output_neutral": false,
       "owner": "runtime/molt-runtime-vfs/src/load.rs",
       "summary": "Maximum total bytes of entry paths the VFS bundle loader accepts across the bundle; non-numeric or zero values fall back to 16777216 (16 MiB). Captured with the VFS route before Ready; later environment writes do not change the selected quota or link policy.",
       "values": []
@@ -7150,6 +7851,7 @@ _REGISTRY_JSON = r"""{
       "default": "0",
       "kind": "bool",
       "name": "MOLT_VFS_BUNDLE_UNSAFE_FOLLOW_HOST_LINKS",
+      "output_neutral": false,
       "owner": "runtime/molt-runtime-vfs/src/load.rs",
       "summary": "Set to exactly 1 to let a directory bundle follow host symlinks, junctions and other reparse points into /bundle for native development; unset, empty or 0 rejects any host link, and any other value fails the bundle load. Captured with the VFS route before Ready; later environment writes do not change the selected quota or link policy.",
       "values": []
@@ -7159,6 +7861,7 @@ _REGISTRY_JSON = r"""{
       "default": "64",
       "kind": "int",
       "name": "MOLT_VFS_TMP_QUOTA_MB",
+      "output_neutral": false,
       "owner": "runtime/molt-runtime-vfs/src/load.rs",
       "summary": "Quota in MiB for the in-memory /tmp mount of the runtime virtual filesystem; molt-wasm-host sets it for the guest from --vfs-tmp-quota; non-numeric values or unset mean 64. Captured with the VFS route before Ready; later environment writes do not change the selected quota or link policy.",
       "values": []
@@ -7168,6 +7871,7 @@ _REGISTRY_JSON = r"""{
       "default": "0",
       "kind": "bool",
       "name": "MOLT_VRANGE_REPORT",
+      "output_neutral": false,
       "owner": "runtime/molt-passes/src/tir/passes/value_range/mod.rs",
       "summary": "Set to exactly 1 to emit a per-function value-range report (loop-header induction-variable recurrences and every proven global integer range) to the debug-artifact channel after the value-range pass; unset or any other value emits nothing.",
       "values": []
@@ -7177,6 +7881,7 @@ _REGISTRY_JSON = r"""{
       "default": "",
       "kind": "string",
       "name": "MOLT_VSDEVCMD_CALL",
+      "output_neutral": false,
       "owner": "src/molt/platform_toolchain.py",
       "summary": "src/molt/platform_toolchain.py sets it to the quoted VsDevCmd.bat path in the environment of the cmd.exe child it runs to capture the MSVC build environment; the child command expands it as %MOLT_VSDEVCMD_CALL%, and the captured environment drops it afterwards.",
       "values": []
@@ -7186,6 +7891,7 @@ _REGISTRY_JSON = r"""{
       "default": "",
       "kind": "string",
       "name": "MOLT_WASI_C_ABI_PLAN",
+      "output_neutral": false,
       "owner": "src/molt/wasi_sdk_identity.py",
       "summary": "Bounded versioned projection of the manifest-selected WASI SDK C runtime, shared by Python consumers and Rust build scripts. Contains the exact single-thread wasip1 target, SDK roots and libc/long-double/compiler-rt/CRT content identities. Missing, malformed or conflicting projections refuse C-runtime builds; environment text is not native content-use attestation.",
       "values": []
@@ -7195,6 +7901,7 @@ _REGISTRY_JSON = r"""{
       "default": "",
       "kind": "path",
       "name": "MOLT_WASI_LIBTEST_ARTIFACT",
+      "output_neutral": false,
       "owner": "runtime/molt-wasm-host/tests/wasi_runtime_lifecycle.rs",
       "summary": "The runtime test gate passes the exact Cargo-produced WASI libtest image to the native lifecycle integration consumer; its paired SHA-256 is verified before production-host compilation and execution.",
       "values": []
@@ -7204,6 +7911,7 @@ _REGISTRY_JSON = r"""{
       "default": "",
       "kind": "string",
       "name": "MOLT_WASI_LIBTEST_SHA256",
+      "output_neutral": false,
       "owner": "runtime/molt-wasm-host/tests/wasi_runtime_lifecycle.rs",
       "summary": "Binds the WASI libtest artifact bytes selected by the runtime test gate before the lifecycle integration consumer invokes the production host.",
       "values": []
@@ -7213,6 +7921,7 @@ _REGISTRY_JSON = r"""{
       "default": "",
       "kind": "path",
       "name": "MOLT_WASI_SYSROOT",
+      "output_neutral": false,
       "owner": "src/molt/cli/runtime_wasm_build_support.py",
       "summary": "Path to the WASI sysroot used for wasm32 runtime builds, source-extension compiles and wasi-libc archive lookup; WASI_SYSROOT names the same fact; unset means the sysroot resolves from WASI_SDK_PATH, WASI_SDK_PREFIX, MOLT_TARGET_ROOT, the provisioned WASI SDK or known system locations, and Molt exports the resolved path to its build children.",
       "values": []
@@ -7222,6 +7931,7 @@ _REGISTRY_JSON = r"""{
       "default": "0",
       "kind": "bool",
       "name": "MOLT_WASM_BENCH_WS",
+      "output_neutral": false,
       "owner": "tools/bench_wasm.py",
       "summary": "Set to exactly 1 to include the websocket wait benchmark in tools/bench_wasm.py (same as --ws); any other value or unset skips it.",
       "values": []
@@ -7231,6 +7941,7 @@ _REGISTRY_JSON = r"""{
       "default": "",
       "kind": "string",
       "name": "MOLT_WASM_BUDGET",
+      "output_neutral": false,
       "owner": "tools/wasm_size_audit.py",
       "summary": "Total WASM size budget for tools/wasm_size_audit.py as a size spec such as 16MB, 8192KB or 16777216 (bytes); --budget overrides it; unset means no total budget unless --budget-check applies its 16MB default.",
       "values": []
@@ -7240,6 +7951,7 @@ _REGISTRY_JSON = r"""{
       "default": "",
       "kind": "string",
       "name": "MOLT_WASM_BUDGET_CODE",
+      "output_neutral": false,
       "owner": "tools/wasm_size_audit.py",
       "summary": "Code section size budget for tools/wasm_size_audit.py as a size spec such as 10MB; --budget-code overrides it; unset means no code budget unless --budget-check applies its 10MB default.",
       "values": []
@@ -7249,6 +7961,7 @@ _REGISTRY_JSON = r"""{
       "default": "",
       "kind": "string",
       "name": "MOLT_WASM_BUDGET_DATA",
+      "output_neutral": false,
       "owner": "tools/wasm_size_audit.py",
       "summary": "Data section size budget for tools/wasm_size_audit.py as a size spec such as 4MB; --budget-data overrides it; unset means no data budget unless --budget-check applies its 4MB default.",
       "values": []
@@ -7258,6 +7971,7 @@ _REGISTRY_JSON = r"""{
       "default": "90",
       "kind": "float",
       "name": "MOLT_WASM_BUILD_TIMEOUT_SEC",
+      "output_neutral": false,
       "owner": "tools/bench_wasm.py",
       "summary": "Wall-clock limit in seconds for each molt build --target wasm that tools/bench_wasm.py runs; non-numeric or non-positive values raise RuntimeError; blank or unset means 90.",
       "values": []
@@ -7267,6 +7981,7 @@ _REGISTRY_JSON = r"""{
       "default": "",
       "kind": "bool",
       "name": "MOLT_WASM_CACHE",
+      "output_neutral": false,
       "owner": "runtime/molt-wasm-host/src/engine.rs",
       "summary": "Controls the Wasmtime compilation cache in molt-wasm-host: 1 enables the default cache, 0 disables caching even when MOLT_WASM_CACHE_CONFIG is set, and any other value is an error; unset means disabled unless MOLT_WASM_CACHE_CONFIG names a config file.",
       "values": []
@@ -7276,6 +7991,7 @@ _REGISTRY_JSON = r"""{
       "default": "",
       "kind": "path",
       "name": "MOLT_WASM_CACHE_CONFIG",
+      "output_neutral": false,
       "owner": "runtime/molt-wasm-host/src/engine.rs",
       "summary": "Path to a Wasmtime cache configuration file that molt-wasm-host loads for its compilation cache; an empty value is an error and MOLT_WASM_CACHE=0 overrides it; unset means no config file.",
       "values": []
@@ -7285,6 +8001,7 @@ _REGISTRY_JSON = r"""{
       "default": "0",
       "kind": "bool",
       "name": "MOLT_WASM_CALL_INDIRECT_DEBUG",
+      "output_neutral": false,
       "owner": "wasm/loader_bridge.js",
       "summary": "Set to exactly 1 to make the WASM host scripts (run_wasm.js, loader_bridge.js and browser_host.js when run under Node) print each molt_call_indirect dispatch with its table index and call arguments to stderr; any other value or unset stays silent.",
       "values": []
@@ -7294,6 +8011,7 @@ _REGISTRY_JSON = r"""{
       "default": "0",
       "kind": "bool",
       "name": "MOLT_WASM_CALL_INDIRECT_SMOKE",
+      "output_neutral": false,
       "owner": "wasm/run_wasm.js",
       "summary": "Set to exactly 1 to make wasm/run_wasm.js call the output module's molt_call_indirect2 export once before normal startup and print the result to stderr; it throws when the export is missing; any other value or unset skips the smoke call.",
       "values": []
@@ -7303,6 +8021,7 @@ _REGISTRY_JSON = r"""{
       "default": "",
       "kind": "string",
       "name": "MOLT_WASM_CARGO_PROFILE",
+      "output_neutral": false,
       "owner": "src/molt/cli/runtime_wasm_build_policy.py",
       "summary": "Cargo profile for the wasm32 runtime build; it wins over MOLT_RUNTIME_BUILD_PROFILE; unset or blank means MOLT_RUNTIME_BUILD_PROFILE when set, else wasm-release for the release profile, else the selected Cargo profile; tools/verified_subset.py strips it from the build environment.",
       "values": []
@@ -7312,6 +8031,7 @@ _REGISTRY_JSON = r"""{
       "default": "",
       "kind": "string",
       "name": "MOLT_WASM_CC",
+      "output_neutral": false,
       "owner": "src/molt/cli/source_extension_toolchain.py",
       "summary": "WASM C compiler for source-plan extension builds, as an executable path or a command line; it is preferred over MOLT_CROSS_CC and must compile a WASI probe before upstream packages compile; the name matches case-insensitively on Windows; unset falls back to MOLT_CROSS_CC, zig, or clang with a WASI sysroot.",
       "values": []
@@ -7321,6 +8041,7 @@ _REGISTRY_JSON = r"""{
       "default": "0",
       "kind": "bool",
       "name": "MOLT_WASM_COMPILE_FAST",
+      "output_neutral": false,
       "owner": "runtime/molt-wasm-host/src/engine.rs",
       "summary": "Set to 1 to make molt-wasm-host compile WASM with optimization level none for faster loading at lower run speed; 0 or unset keeps full optimization; any other value is an error.",
       "values": []
@@ -7330,6 +8051,7 @@ _REGISTRY_JSON = r"""{
       "default": "0",
       "kind": "bool",
       "name": "MOLT_WASM_COMPILE_SERIAL",
+      "output_neutral": false,
       "owner": "runtime/molt-wasm-host/src/engine.rs",
       "summary": "Set to 1 to make molt-wasm-host compile WASM modules serially instead of in parallel; 0 or unset keeps parallel compilation; any other value is an error.",
       "values": []
@@ -7339,6 +8061,7 @@ _REGISTRY_JSON = r"""{
       "default": "none",
       "kind": "enum",
       "name": "MOLT_WASM_CONTROL_RUNNER",
+      "output_neutral": false,
       "owner": "tools/bench_wasm.py",
       "summary": "Default --control-runner for tools/bench_wasm.py, the second runner that re-runs failed benchmarks to classify node-specific failures; none, node or wasmtime, and it must differ from --runner; default none.",
       "values": [
@@ -7352,6 +8075,7 @@ _REGISTRY_JSON = r"""{
       "default": "",
       "kind": "list",
       "name": "MOLT_WASM_CPYTHON_ABI_DATA_EXPORTS",
+      "output_neutral": false,
       "owner": "runtime/molt-runtime/build.rs",
       "summary": "src/molt/cli/runtime_wasm_build_spec.py sets it to the newline-separated CPython ABI data symbols the wasm32 runtime must export; runtime/molt-runtime/build.rs reads it and panics when a symbol is not also in MOLT_WASM_CPYTHON_ABI_EXPORTS, and the runtime build identity records the sorted symbol set; unset means no data exports.",
       "values": []
@@ -7361,6 +8085,7 @@ _REGISTRY_JSON = r"""{
       "default": "",
       "kind": "list",
       "name": "MOLT_WASM_CPYTHON_ABI_EXPORTS",
+      "output_neutral": false,
       "owner": "runtime/molt-runtime/build.rs",
       "summary": "src/molt/cli/runtime_wasm_build_spec.py sets it to the newline-separated CPython ABI function symbols the wasm32 runtime must export; runtime/molt-runtime/build.rs reads it to emit export anchors (ignored for non-wasm32 targets), and the runtime build identity records the sorted symbol set; unset means no requested exports.",
       "values": []
@@ -7370,6 +8095,7 @@ _REGISTRY_JSON = r"""{
       "default": "1048576",
       "kind": "int",
       "name": "MOLT_WASM_DATA_BASE",
+      "output_neutral": false,
       "owner": "runtime/molt-backend-wasm/src/wasm_options.rs",
       "summary": "src/molt/cli/wasm_codegen_layout.py sets it in the WASM backend environment to the data segment base address in bytes after backend_compile.py drops any inherited value; the backend rounds it up to 8 bytes and clamps it to u32; non-numeric or unset means 1048576 (1 MiB).",
       "values": []
@@ -7379,6 +8105,7 @@ _REGISTRY_JSON = r"""{
       "default": "",
       "kind": "path",
       "name": "MOLT_WASM_DB_COMPILED_EXPORTS",
+      "output_neutral": false,
       "owner": "runtime/molt-wasm-host/src/path_resolver.rs",
       "summary": "Path to a compiled-exports manifest that molt-wasm-host and wasm/run_wasm.js pass to molt-worker as --compiled-exports when they spawn the database worker; unset passes no compiled exports.",
       "values": []
@@ -7388,6 +8115,7 @@ _REGISTRY_JSON = r"""{
       "default": "250",
       "kind": "int",
       "name": "MOLT_WASM_DB_TIMEOUT_MS",
+      "output_neutral": false,
       "owner": "runtime/molt-wasm-host/src/path_resolver.rs",
       "summary": "Timeout in milliseconds for database worker queries issued by molt-wasm-host and wasm/run_wasm.js; the retired MOLT_DB_QUERY_TIMEOUT_MS is read as a fallback; non-numeric values or unset mean 250.",
       "values": []
@@ -7397,6 +8125,7 @@ _REGISTRY_JSON = r"""{
       "default": "",
       "kind": "path",
       "name": "MOLT_WASM_DEPLOY_RUNTIME",
+      "output_neutral": false,
       "owner": "tools/wasm_link_runtime_data.py",
       "summary": "Path to the trusted deploy-ready split runtime that tools/wasm_link_runtime_data.py uses when no explicit override is passed; a value that is not a file is ignored; with neither, the tool raises FileNotFoundError.",
       "values": []
@@ -7406,6 +8135,7 @@ _REGISTRY_JSON = r"""{
       "default": "0",
       "kind": "bool",
       "name": "MOLT_WASM_DICT_METHOD_DEBUG",
+      "output_neutral": false,
       "owner": "runtime/molt-runtime/src/builtins/containers.rs",
       "summary": "Set to exactly 1 on wasm32 builds to print the function address of the dict get, setdefault and fromkeys method descriptors to stderr when they are built; any other value, unset or a non-wasm32 build stays silent.",
       "values": []
@@ -7415,6 +8145,7 @@ _REGISTRY_JSON = r"""{
       "default": "",
       "kind": "list",
       "name": "MOLT_WASM_DYNAMIC_REQUIRED_EXPORTS",
+      "output_neutral": false,
       "owner": "tools/wasm_link_optimizer_policy.py",
       "summary": "Comma-separated runtime export names that the wasm link optimizer keeps alive in addition to the exports the app imports and the essential host-facing exports; blank entries are ignored and unset adds none.",
       "values": []
@@ -7424,6 +8155,7 @@ _REGISTRY_JSON = r"""{
       "default": "",
       "kind": "path",
       "name": "MOLT_WASM_EXPORT_CALLS_JSON",
+      "output_neutral": false,
       "owner": "wasm/run_wasm.js",
       "summary": "tools/bench_wasm.py sets it for its node run_wasm.js child: the path of a JSON file whose calls array names app exports and arguments that the host invokes after main initialization; a file without a calls array is an error and unset means no host export calls.",
       "values": []
@@ -7433,6 +8165,7 @@ _REGISTRY_JSON = r"""{
       "default": "",
       "kind": "path",
       "name": "MOLT_WASM_HOST_BIN",
+      "output_neutral": false,
       "owner": "src/molt/cli/wasm_host.py",
       "summary": "Explicit path of the prebuilt molt-wasm-host executable for compiler, benchmark and validation consumers; a value that is not a regular file resolves to no host. When unset, select the caller's target directory, else the project's Cargo target from molt.dx.project_cargo_target_dir (CARGO_TARGET_DIR, the development artifact root, or <root>/target), using only the requested Cargo profile and native executable suffix; a missing selected binary never falls through to another build.",
       "values": []
@@ -7442,6 +8175,7 @@ _REGISTRY_JSON = r"""{
       "default": "0",
       "kind": "bool",
       "name": "MOLT_WASM_HOST_DEBUG",
+      "output_neutral": false,
       "owner": "runtime/molt-wasm-host/src/main.rs",
       "summary": "Presence of the variable with any value switches the molt-wasm-host default log filter from off to off,molt_wasm_host=debug so host stage diagnostics reach stderr; a MOLT_WASM_HOST_LOG value replaces that filter.",
       "values": []
@@ -7451,6 +8185,7 @@ _REGISTRY_JSON = r"""{
       "default": "",
       "kind": "string",
       "name": "MOLT_WASM_HOST_LOG",
+      "output_neutral": false,
       "owner": "runtime/molt-wasm-host/src/main.rs",
       "summary": "env_logger filter directive for molt-wasm-host stderr diagnostics, for example off,molt_wasm_host::precompiled=debug; when unset the filter is off, or off,molt_wasm_host=debug when MOLT_WASM_HOST_DEBUG is set.",
       "values": []
@@ -7460,6 +8195,7 @@ _REGISTRY_JSON = r"""{
       "default": "0",
       "kind": "bool",
       "name": "MOLT_WASM_IMPORT_AUDIT",
+      "output_neutral": false,
       "owner": "runtime/molt-backend-wasm/src/wasm/module_abi/finalize.rs",
       "summary": "Set to 1 to print wasm backend import-usage diagnostics to stderr: the used and unused import counts at module finalization, the imports removed by import stripping with the byte savings, and the generic-lowering reason for each function the fast lowering rejects; any other value is off.",
       "values": []
@@ -7469,6 +8205,7 @@ _REGISTRY_JSON = r"""{
       "default": "0",
       "kind": "bool",
       "name": "MOLT_WASM_KEEP",
+      "output_neutral": false,
       "owner": "tools/bench_wasm.py",
       "summary": "Set to 1 to keep each benchmark's temporary wasm artifact directory after tools/bench_wasm.py runs it; --keep-artifacts also sets it to 1 for child processes, and any other value deletes the directory.",
       "values": []
@@ -7478,6 +8215,7 @@ _REGISTRY_JSON = r"""{
       "default": "",
       "kind": "path",
       "name": "MOLT_WASM_LD",
+      "output_neutral": false,
       "owner": "src/molt/llvm_toolchain.py",
       "summary": "Path of the wasm-ld executable for wasm links; it must name one executable without arguments and be the wasm-ld entrypoint. When unset, wasm-ld comes only from the manifest-owned WASI SDK (WASI_SDK_PATH or the provisioned SDK), never from PATH; SDK provisioning, the proof queue and the release workflow set it to the provisioned SDK's wasm-ld for child builds.",
       "values": []
@@ -7487,6 +8225,7 @@ _REGISTRY_JSON = r"""{
       "default": "1",
       "kind": "bool",
       "name": "MOLT_WASM_LINKED",
+      "output_neutral": false,
       "owner": "src/molt/cli/build_output_layout.py",
       "summary": "Controls whether a wasm build produces linked output by default; unset or any value other than 0, false, no, or off (case-insensitive) selects linked output, and 0 keeps the unlinked module unless --linked, --require-linked, --linked-output, or --split-runtime is given.",
       "values": []
@@ -7496,6 +8235,7 @@ _REGISTRY_JSON = r"""{
       "default": "",
       "kind": "path",
       "name": "MOLT_WASM_LOG",
+      "output_neutral": false,
       "owner": "tools/bench_wasm.py",
       "summary": "Path of a file to which tools/bench_wasm.py appends subprocess output when --log-file is not given; unset means no log file.",
       "values": []
@@ -7505,6 +8245,7 @@ _REGISTRY_JSON = r"""{
       "default": "",
       "kind": "path",
       "name": "MOLT_WASM_MANIFEST_PATH",
+      "output_neutral": false,
       "owner": "runtime/molt-wasm-host/src/path_resolver.rs",
       "summary": "Runtime manifest that molt-wasm-host and wasm/run_wasm.js execute when no manifest argument is given; the path must end in .json, the default is dist/manifest.json under the current directory (../dist/manifest.json beside run_wasm.js), and tools/bench_wasm.py sets it for its runner children.",
       "values": []
@@ -7514,6 +8255,7 @@ _REGISTRY_JSON = r"""{
       "default": "8388608",
       "kind": "int",
       "name": "MOLT_WASM_MAX_STACK",
+      "output_neutral": false,
       "owner": "runtime/molt-wasm-host/src/engine.rs",
       "summary": "Maximum wasm stack in bytes for the molt-wasm-host engine; the value must be a positive integer that fits usize and leaves room for 131072 bytes of async-stack headroom, otherwise the host fails to start; default 8388608.",
       "values": []
@@ -7523,6 +8265,7 @@ _REGISTRY_JSON = r"""{
       "default": "64",
       "kind": "int",
       "name": "MOLT_WASM_MIN_PAGES",
+      "output_neutral": false,
       "owner": "runtime/molt-backend-wasm/src/wasm/module_abi/host_surface.rs",
       "summary": "Floor on the minimum page count (64 KiB pages) of the imported linear memory in wasm output; the backend uses the larger of this value and the pages the data segments need, and a non-numeric value falls back to 64.",
       "values": []
@@ -7532,6 +8275,7 @@ _REGISTRY_JSON = r"""{
       "default": "2000",
       "kind": "int",
       "name": "MOLT_WASM_MODULE_CHUNK_OPS",
+      "output_neutral": false,
       "owner": "src/molt/cli/frontend_pipeline.py",
       "summary": "Maximum ops per module-initialization chunk for wasm targets; the frontend splits module init into chunks of this size, 0 disables chunking, negative values clamp to 0, and a non-integer value warns and uses 2000.",
       "values": []
@@ -7541,6 +8285,7 @@ _REGISTRY_JSON = r"""{
       "default": "1",
       "kind": "bool",
       "name": "MOLT_WASM_NATIVE_EH",
+      "output_neutral": false,
       "owner": "runtime/molt-backend-wasm/src/wasm_options.rs",
       "summary": "Native wasm exception handling (tag section with try_table, catch, and throw) in backend output; enabled unless the value is exactly 0.",
       "values": []
@@ -7550,6 +8295,7 @@ _REGISTRY_JSON = r"""{
       "default": "",
       "kind": "int",
       "name": "MOLT_WASM_NODE_MAX_OLD_SPACE_MB",
+      "output_neutral": false,
       "owner": "tools/bench_wasm.py",
       "summary": "V8 old-space heap limit in MB that tools/bench_wasm.py passes to the node runner as --max-old-space-size when --node-max-old-space-mb is not given; the value must be a positive integer or the tool fails, and unset passes no limit.",
       "values": []
@@ -7559,6 +8305,7 @@ _REGISTRY_JSON = r"""{
       "default": "",
       "kind": "string",
       "name": "MOLT_WASM_NODE_OPTIONS",
+      "output_neutral": false,
       "owner": "tools/bench_wasm.py",
       "summary": "Extra node command-line options, split with shlex, that tools/bench_wasm.py appends to the node runner command before wasm/run_wasm.js; unset adds none.",
       "values": []
@@ -7568,6 +8315,7 @@ _REGISTRY_JSON = r"""{
       "default": "",
       "kind": "path",
       "name": "MOLT_WASM_OPT",
+      "output_neutral": false,
       "owner": "src/molt/wasm_optimizer_identity.py",
       "summary": "Path of the wasm-opt executable for post-link WASM optimization; a non-empty value is an explicit pin, and an unusable pin stops resolution instead of falling back. When unset, wasm-opt comes from PATH, then from the manifest-owned Binaryen release under MOLT_TARGET_ROOT/toolchains. The molt-wasm-ci workflow sets it to the provisioned Binaryen's wasm-opt. The MOLT_WASM_OPT stem separately scopes the guard limits of wasm-opt runs.",
       "values": []
@@ -7577,6 +8325,7 @@ _REGISTRY_JSON = r"""{
       "default": "0",
       "kind": "bool",
       "name": "MOLT_WASM_POLL_DEBUG",
+      "output_neutral": false,
       "owner": "runtime/molt-runtime/src/async_rt/poll.rs",
       "summary": "Set to 1 to print each async poll function address, with its normalized wasm table address when they differ, to stderr from the wasm32 runtime; any other value is off and native builds never read it.",
       "values": []
@@ -7586,6 +8335,7 @@ _REGISTRY_JSON = r"""{
       "default": "0",
       "kind": "bool",
       "name": "MOLT_WASM_PRECOMPILED",
+      "output_neutral": false,
       "owner": "runtime/molt-wasm-host/src/precompiled.rs",
       "summary": "Set to 1 to make molt-wasm-host load host-produced .molt.cwasm containers for the main and runtime modules instead of compiling them at load time; 0 or unset compiles, and any other value is an error.",
       "values": []
@@ -7595,6 +8345,7 @@ _REGISTRY_JSON = r"""{
       "default": "",
       "kind": "path",
       "name": "MOLT_WASM_PRECOMPILED_PATH",
+      "output_neutral": false,
       "owner": "src/molt/cli/wasm_deployment.py",
       "summary": "Path of the main module's precompiled container: molt-wasm-host reads it as the .molt.cwasm to load (and molt-wasm-host --precompile writes it), and molt deploy uses it as the cwasm output path; an empty value is an error, and when unset the host uses <main module>.molt.cwasm beside the source.",
       "values": []
@@ -7604,6 +8355,7 @@ _REGISTRY_JSON = r"""{
       "default": "",
       "kind": "path",
       "name": "MOLT_WASM_PRECOMPILED_RUNTIME_PATH",
+      "output_neutral": false,
       "owner": "src/molt/cli/wasm_deployment.py",
       "summary": "Path of the runtime module's precompiled container: molt-wasm-host reads it as the .molt.cwasm to load (and molt-wasm-host --precompile writes it), and molt deploy uses it as the runtime cwasm output path; an empty value is an error, and when unset the host uses <runtime module>.molt.cwasm beside the source.",
       "values": []
@@ -7613,6 +8365,7 @@ _REGISTRY_JSON = r"""{
       "default": "auto",
       "kind": "enum",
       "name": "MOLT_WASM_PROFILE",
+      "output_neutral": false,
       "owner": "runtime/molt-backend-wasm/src/wasm_options.rs",
       "summary": "Wasm import-planning profile for the wasm backend: auto, full, or pure (the backend treats any other spelling as auto); molt build sets it from --wasm-profile in the backend process environment, and the frontend takes the same value as a parameter (pure also enables pure-wasm dead-module elimination when tree shaking is on); default auto.",
       "values": [
@@ -7626,6 +8379,7 @@ _REGISTRY_JSON = r"""{
       "default": "",
       "kind": "bool",
       "name": "MOLT_WASM_RELOCATABLE",
+      "output_neutral": false,
       "owner": "runtime/molt-backend-wasm/src/wasm_options.rs",
       "summary": "src/molt/cli/wasm_codegen_layout.py sets it to 1 in the WASM backend environment, after backend_compile.py drops any inherited value, when the build links the module (relocatable codegen with relocation sections for wasm-ld); only the exact value 1 enables it.",
       "values": []
@@ -7635,6 +8389,7 @@ _REGISTRY_JSON = r"""{
       "default": "node",
       "kind": "enum",
       "name": "MOLT_WASM_RUNNER",
+      "output_neutral": false,
       "owner": "tools/bench_wasm.py",
       "summary": "Default --runner for tools/bench_wasm.py, node or wasmtime; default node.",
       "values": [
@@ -7647,6 +8402,7 @@ _REGISTRY_JSON = r"""{
       "default": "300",
       "kind": "float",
       "name": "MOLT_WASM_RUNTIME_BUILD_TIMEOUT_SEC",
+      "output_neutral": false,
       "owner": "tools/bench_wasm.py",
       "summary": "Wall-clock limit in seconds for the runtime wasm cargo build that tools/bench_wasm.py runs; the value must be a positive number or the tool fails; default 300.",
       "values": []
@@ -7656,6 +8412,7 @@ _REGISTRY_JSON = r"""{
       "default": "",
       "kind": "path",
       "name": "MOLT_WASM_RUNTIME_DIR",
+      "output_neutral": false,
       "owner": "src/molt/cli/build_output_layout.py",
       "summary": "Directory that holds the wasm runtime artifacts (molt_runtime.wasm and molt_runtime_reloc.wasm) for source-checkout builds and the wasm tools; when unset Molt uses <MOLT_EXT_ROOT>/wasm (a relative MOLT_EXT_ROOT is anchored at the project root), else molt-runtime-wasm inside the project's Cargo target beside the native runtime libraries, never the working directory or the source tree; an installed Molt rejects the variable because it ships its own runtime cells.",
       "values": []
@@ -7665,6 +8422,7 @@ _REGISTRY_JSON = r"""{
       "default": "0",
       "kind": "bool",
       "name": "MOLT_WASM_RUNTIME_FORCE_LOCAL_TARGET",
+      "output_neutral": false,
       "owner": "tools/bench_wasm.py",
       "summary": "Set to 1 to make tools/bench_wasm.py build the runtime wasm in the session-scoped cargo target directory derived from the repository root instead of the shared cargo target root; any other value uses the shared root.",
       "values": []
@@ -7674,6 +8432,7 @@ _REGISTRY_JSON = r"""{
       "default": "0",
       "kind": "bool",
       "name": "MOLT_WASM_RUNTIME_GPU_PRIMITIVES",
+      "output_neutral": false,
       "owner": "tools/bench_wasm.py",
       "summary": "Set to 1, true, yes, or on (case-insensitive) to add the molt_gpu_primitives cargo feature to the runtime wasm build in tools/bench_wasm.py; any other value leaves the feature off.",
       "values": []
@@ -7683,6 +8442,7 @@ _REGISTRY_JSON = r"""{
       "default": "auto",
       "kind": "enum",
       "name": "MOLT_WASM_RUNTIME_REBUILD",
+      "output_neutral": false,
       "owner": "tools/bench_wasm.py",
       "summary": "Runtime wasm rebuild policy for tools/bench_wasm.py: always (or 1, true, yes) rebuilds every run, never (or 0, false, no) never rebuilds and fails when the runtime is missing or invalid, and any other value means auto, which rebuilds when the runtime is missing, invalid, or older than its sources.",
       "values": [
@@ -7702,6 +8462,7 @@ _REGISTRY_JSON = r"""{
       "default": "",
       "kind": "int",
       "name": "MOLT_WASM_SPLIT_RUNTIME_APP_TABLE_BASE",
+      "output_neutral": false,
       "owner": "src/molt/cli/backend_compile.py",
       "summary": "molt build strips any inherited value and sets it for the wasm backend process from the bound runtime layout: the app's function-table base (u32) in a split-runtime build, which the backend ignores when it does not parse; unset means no split-runtime app table base.",
       "values": []
@@ -7711,6 +8472,7 @@ _REGISTRY_JSON = r"""{
       "default": "",
       "kind": "int",
       "name": "MOLT_WASM_TABLE_BASE",
+      "output_neutral": false,
       "owner": "src/molt/cli/backend_compile.py",
       "summary": "Function-table base index (u32) shared by the wasm backend and the wasm32 runtime: molt build strips any inherited value and sets it for the backend from the bound runtime layout, tools/bench_wasm.py sets it from the runtime's table minimum, and molt-wasm-host, wasm/run_wasm.js, and the browser host pass the detected table base to the guest environment only when it is unset, where the runtime reads it as a positive integer; values that do not parse fall back to the built-in default.",
       "values": []
@@ -7720,6 +8482,7 @@ _REGISTRY_JSON = r"""{
       "default": "0",
       "kind": "bool",
       "name": "MOLT_WASM_TAIL_CALL",
+      "output_neutral": false,
       "owner": "runtime/molt-backend-wasm/src/wasm_options.rs",
       "summary": "Set to 1, true, TRUE, on, or ON to emit return_call tail calls (wasm tail-call proposal) in backend output; off by default until the target feature probe proves support.",
       "values": []
@@ -7729,6 +8492,7 @@ _REGISTRY_JSON = r"""{
       "default": "",
       "kind": "path",
       "name": "MOLT_WASM_TEST_CARGO_TARGET_DIR",
+      "output_neutral": false,
       "owner": "tests/wasm_linked_runner.py",
       "summary": "Cargo target directory for the linked wasm parity tests' molt-wasm-host lookup and wasm test builds; when unset the tests use <MOLT_EXT_ROOT>/target when external artifacts are allowed, else target/pytest_wasm/<lane> under the repository, tools/disk_guard.py never reclaims it, and the wasm CI workflow sets it to the session target directory. Admitted Python Cargo proofs bind it to the leased Cargo generation for both host lookup and builds.",
       "values": []
@@ -7738,6 +8502,7 @@ _REGISTRY_JSON = r"""{
       "default": "",
       "kind": "string",
       "name": "MOLT_WASM_TEST_LANE",
+      "output_neutral": false,
       "owner": "tests/wasm_linked_runner.py",
       "summary": "Lane name that isolates WASM test artifacts: tests/wasm_linked_runner.py uses it as the directory name under target/pytest_wasm and inside generated session ids, and when unset it uses worker_<PYTEST_XDIST_WORKER> under pytest-xdist and local otherwise.",
       "values": []
@@ -7747,6 +8512,7 @@ _REGISTRY_JSON = r"""{
       "default": "1",
       "kind": "bool",
       "name": "MOLT_WASM_TEST_USE_EXTERNAL",
+      "output_neutral": false,
       "owner": "tests/wasm_linked_runner.py",
       "summary": "Lets the linked wasm parity tests place build outputs and the cargo target directory under the external artifact root when it differs from the repository; unset or any value other than 0, false, no, or off (case-insensitive) allows it, and the wasm CI workflow sets it to 1.",
       "values": []
@@ -7756,6 +8522,7 @@ _REGISTRY_JSON = r"""{
       "default": "0",
       "kind": "bool",
       "name": "MOLT_WASM_TRACE",
+      "output_neutral": false,
       "owner": "wasm/run_wasm.js",
       "summary": "Set to 1 to make wasm/run_wasm.js print each molt_runtime import call with its argument types and converted arguments to stderr; any other value is off.",
       "values": []
@@ -7765,6 +8532,7 @@ _REGISTRY_JSON = r"""{
       "default": "0",
       "kind": "bool",
       "name": "MOLT_WASM_TRACE_EXIT",
+      "output_neutral": false,
       "owner": "wasm/run_wasm.js",
       "summary": "Set to 1 to make wasm/run_wasm.js print each WASI proc_exit call with its exit code, module path, and a JavaScript stack trace to stderr; any other value is off.",
       "values": []
@@ -7774,6 +8542,7 @@ _REGISTRY_JSON = r"""{
       "default": "",
       "kind": "path",
       "name": "MOLT_WASM_TRACE_FILE",
+      "output_neutral": false,
       "owner": "wasm/run_wasm.js",
       "summary": "Path of a file to which wasm/run_wasm.js appends trace marks (proc_exit codes and, with the matching flags, WASI fd_close, fd_write, and os_close events); unset disables the marks, and write errors are ignored.",
       "values": []
@@ -7783,6 +8552,7 @@ _REGISTRY_JSON = r"""{
       "default": "",
       "kind": "int",
       "name": "MOLT_WASM_TRACE_I32_AT",
+      "output_neutral": false,
       "owner": "wasm/run_wasm.js",
       "summary": "Linear-memory byte address whose little-endian u32 value wasm/run_wasm.js prints at trace points when MOLT_WASM_TRACE_RUN=1; unset, non-integer, negative, or out-of-range addresses print nothing.",
       "values": []
@@ -7792,6 +8562,7 @@ _REGISTRY_JSON = r"""{
       "default": "0",
       "kind": "bool",
       "name": "MOLT_WASM_TRACE_ISOLATE_IMPORT",
+      "output_neutral": false,
       "owner": "wasm/run_wasm.js",
       "summary": "Set to 1 to make wasm/run_wasm.js print each isolate_import phase with its module id and result or error to stderr; any other value is off.",
       "values": []
@@ -7801,6 +8572,7 @@ _REGISTRY_JSON = r"""{
       "default": "0",
       "kind": "bool",
       "name": "MOLT_WASM_TRACE_OS_CLOSE",
+      "output_neutral": false,
       "owner": "wasm/run_wasm.js",
       "summary": "Set to 1 to make wasm/run_wasm.js record an os_close:<fd> mark for each guest os_close call in the MOLT_WASM_TRACE_FILE file; without that file nothing is written, and any other value is off.",
       "values": []
@@ -7810,6 +8582,7 @@ _REGISTRY_JSON = r"""{
       "default": "0",
       "kind": "bool",
       "name": "MOLT_WASM_TRACE_RUN",
+      "output_neutral": false,
       "owner": "wasm/run_wasm.js",
       "summary": "Set to 1 to make wasm/run_wasm.js print run-stage diagnostics to stderr (instantiation steps, host export calls, traceback formatting failures) and to arm the table-slot, table-range, table-diff, and i32 trace probes; any other value is off.",
       "values": []
@@ -7819,6 +8592,7 @@ _REGISTRY_JSON = r"""{
       "default": "0",
       "kind": "bool",
       "name": "MOLT_WASM_TRACE_SOCKET_HOST",
+      "output_neutral": false,
       "owner": "wasm/run_wasm.js",
       "summary": "Set to 1 to make wasm/run_wasm.js print socket-host operations (bind, listen, and address decoding with handles and decoded addresses) to stderr; any other value is off.",
       "values": []
@@ -7828,6 +8602,7 @@ _REGISTRY_JSON = r"""{
       "default": "0",
       "kind": "bool",
       "name": "MOLT_WASM_TRACE_TABLE_DIFF",
+      "output_neutral": false,
       "owner": "wasm/run_wasm.js",
       "summary": "Set to 1 to make wasm/run_wasm.js snapshot the function table and print up to 20 changed slots between trace points when MOLT_WASM_TRACE_RUN=1; any other value is off.",
       "values": []
@@ -7837,6 +8612,7 @@ _REGISTRY_JSON = r"""{
       "default": "",
       "kind": "string",
       "name": "MOLT_WASM_TRACE_TABLE_RANGE",
+      "output_neutral": false,
       "owner": "wasm/run_wasm.js",
       "summary": "Function-table slot range start:end (end optional) whose state, name, and length wasm/run_wasm.js prints at trace points when MOLT_WASM_TRACE_RUN=1; unset or an invalid range prints nothing.",
       "values": []
@@ -7846,6 +8622,7 @@ _REGISTRY_JSON = r"""{
       "default": "",
       "kind": "int",
       "name": "MOLT_WASM_TRACE_TABLE_SLOT",
+      "output_neutral": false,
       "owner": "wasm/run_wasm.js",
       "summary": "Function-table slot index whose state, name, and length wasm/run_wasm.js prints at trace points when MOLT_WASM_TRACE_RUN=1; unset or a negative or non-numeric value prints nothing.",
       "values": []
@@ -7855,6 +8632,7 @@ _REGISTRY_JSON = r"""{
       "default": "0",
       "kind": "bool",
       "name": "MOLT_WASM_TRACE_WASI",
+      "output_neutral": false,
       "owner": "wasm/browser_host.js",
       "summary": "Set to 1 to make wasm/browser_host.js print browser WASI events (the guest environment, proc_exit, proc_raise, and file-descriptor operations) to the console; it is read only when a process.env object exists, and any other value is off.",
       "values": []
@@ -7864,6 +8642,7 @@ _REGISTRY_JSON = r"""{
       "default": "0",
       "kind": "bool",
       "name": "MOLT_WASM_TRACE_WASI_IO",
+      "output_neutral": false,
       "owner": "wasm/run_wasm.js",
       "summary": "Set to 1 to make wasm/run_wasm.js wrap WASI fd_close and fd_write and record their fd and return code as marks in the MOLT_WASM_TRACE_FILE file; without that file nothing is written, and any other value is off.",
       "values": []
@@ -7873,6 +8652,7 @@ _REGISTRY_JSON = r"""{
       "default": "0",
       "kind": "bool",
       "name": "MOLT_WASM_TRACE_WASI_IO_STACK",
+      "output_neutral": false,
       "owner": "wasm/run_wasm.js",
       "summary": "Set to 1 to add a JavaScript stack trace to each fd_close mark and each failing fd_write mark that MOLT_WASM_TRACE_WASI_IO=1 writes to the MOLT_WASM_TRACE_FILE file; it has no effect without that flag, and any other value is off.",
       "values": []
@@ -7882,6 +8662,7 @@ _REGISTRY_JSON = r"""{
       "default": "0",
       "kind": "bool",
       "name": "MOLT_WASM_TRAP_ON_EXIT",
+      "output_neutral": false,
       "owner": "wasm/run_wasm.js",
       "summary": "Set to 1 to make wasm/run_wasm.js throw a JavaScript error on WASI proc_exit instead of letting the guest exit, so the exit site surfaces as a trap with a stack; any other value is off.",
       "values": []
@@ -7891,6 +8672,7 @@ _REGISTRY_JSON = r"""{
       "default": "1048576",
       "kind": "int",
       "name": "MOLT_WASM_WS_BUFFER_MAX",
+      "output_neutral": false,
       "owner": "wasm/run_wasm.js",
       "summary": "Maximum WebSocket bufferedAmount in bytes before wasm/run_wasm.js stops reporting a socket as write-ready and returns EWOULDBLOCK from sends; parsed with parseInt, a non-numeric value yields NaN and never marks a socket write-ready; default 1048576.",
       "values": []
@@ -7900,6 +8682,7 @@ _REGISTRY_JSON = r"""{
       "default": "5",
       "kind": "float",
       "name": "MOLT_WINDOWS_PROCESS_SNAPSHOT_TIMEOUT_SEC",
+      "output_neutral": false,
       "owner": "tools/memory_guard_core/windows_snapshot.py",
       "summary": "Budget in seconds for the Windows process-table snapshot helper that the memory guard and process sentinels use; 0, false, off, no, or a non-positive number removes the budget, a non-numeric value uses 5, and exceeding the budget fails closed to an empty process table; default 5.",
       "values": []
@@ -7909,6 +8692,7 @@ _REGISTRY_JSON = r"""{
       "default": "",
       "kind": "path",
       "name": "MOLT_WITNESS_CACHE",
+      "output_neutral": false,
       "owner": "tools/witness_iter.py",
       "summary": "Directory for the persistent content-addressed frontend-lowering cache that tools/witness_iter.py exports as MOLT_CACHE to the witness drive; default witness-warm-cache in the checkout's Cargo target (molt.dx.project_cargo_target_dir), created when missing.",
       "values": []
@@ -7918,6 +8702,7 @@ _REGISTRY_JSON = r"""{
       "default": "",
       "kind": "string",
       "name": "MOLT_WITNESS_EXPECTED_GIT_HEAD",
+      "output_neutral": false,
       "owner": "tools/pact_witness_acceptance.py",
       "summary": "tools/proof_queue_pkg/pact.py sets it for the pact witness acceptance child to the expected git HEAD commit; tools/pact_witness_acceptance.py refuses to run when it is unset or when the checkout's HEAD differs.",
       "values": []
@@ -7927,6 +8712,7 @@ _REGISTRY_JSON = r"""{
       "default": "",
       "kind": "path",
       "name": "MOLT_WITNESS_EXPECTED_REPO_ROOT",
+      "output_neutral": false,
       "owner": "tools/pact_witness_acceptance.py",
       "summary": "tools/proof_queue_pkg/pact.py sets it for the pact witness acceptance child to the resolved repository root; tools/pact_witness_acceptance.py refuses to run when it is unset or when the git toplevel or its own root differs from it.",
       "values": []
@@ -7936,6 +8722,7 @@ _REGISTRY_JSON = r"""{
       "default": "",
       "kind": "bool",
       "name": "MOLT_WITNESS_ITERATION",
+      "output_neutral": false,
       "owner": "tools/pact_witness_acceptance.py",
       "summary": "Iteration-mode switch for witness runs; tools/pact_witness_acceptance.py requires it to be exactly 0 (the proof queue locks that value) and refuses to produce acceptance evidence when it is unset or any other value.",
       "values": []
@@ -7945,6 +8732,7 @@ _REGISTRY_JSON = r"""{
       "default": "1048576",
       "kind": "int",
       "name": "MOLT_WITNESS_STATIC_TLS",
+      "output_neutral": false,
       "owner": "tools/witness_iter.py",
       "summary": "Byte count for the glibc.rtld.optional_static_tls tunable that tools/witness_iter.py appends to GLIBC_TUNABLES for the native witness driver so a dlopen'ed harness with initial-exec TLS (mimalloc) can load; default 1048576.",
       "values": []
@@ -7954,6 +8742,7 @@ _REGISTRY_JSON = r"""{
       "default": "MoltCodonUbuntu",
       "kind": "string",
       "name": "MOLT_WITNESS_WSL_DISTRO",
+      "output_neutral": false,
       "owner": "tools/witness_iter.py",
       "summary": "Name of the WSL distribution that tools/witness_iter.py dispatches into when run on native Windows; default MoltCodonUbuntu.",
       "values": []
@@ -7963,6 +8752,7 @@ _REGISTRY_JSON = r"""{
       "default": "",
       "kind": "path",
       "name": "MOLT_WITNESS_WSL_REPO",
+      "output_neutral": false,
       "owner": "tools/witness_iter.py",
       "summary": "Repository path inside the WSL distribution that tools/witness_iter.py uses when dispatching from native Windows; when unset the tool translates the Windows repository path with wslpath -a.",
       "values": []
@@ -7972,6 +8762,7 @@ _REGISTRY_JSON = r"""{
       "default": "/root/.molt-witness-target",
       "kind": "path",
       "name": "MOLT_WITNESS_WSL_TARGET",
+      "output_neutral": false,
       "owner": "tools/witness_iter.py",
       "summary": "CARGO_TARGET_DIR inside the WSL distribution for the dispatched tools/witness_iter.py build, kept off the Windows tree; default /root/.molt-witness-target.",
       "values": []
@@ -7981,6 +8772,7 @@ _REGISTRY_JSON = r"""{
       "default": "dev-fast",
       "kind": "string",
       "name": "MOLT_WORKER_CARGO_PROFILE",
+      "output_neutral": false,
       "owner": "bench/scripts/run_stack.sh",
       "summary": "Cargo profile that bench/scripts/run_stack.sh uses to build molt-worker when no molt-worker is on PATH; default dev-fast.",
       "values": []
@@ -7990,6 +8782,7 @@ _REGISTRY_JSON = r"""{
       "default": "",
       "kind": "string",
       "name": "MOLT_WORKER_CMD",
+      "output_neutral": false,
       "owner": "src/molt_accel/decorator.py",
       "summary": "Whitespace-split command line that starts a molt-worker process for molt_accel, molt-wasm-host, and wasm/run_wasm.js database offload (for example molt-worker --stdio --exports <manifest>); when unset the readers look for molt-worker or molt_worker on PATH with the packaged default exports, the retired MOLT_WASM_DB_WORKER_CMD takes precedence in the host and run_wasm.js, and bench/scripts/run_stack.sh sets it for the demo stack.",
       "values": []
@@ -7999,6 +8792,7 @@ _REGISTRY_JSON = r"""{
       "default": "",
       "kind": "path",
       "name": "MOLT_WORKER_EXPORTS",
+      "output_neutral": false,
       "owner": "runtime/molt-wasm-host/src/path_resolver.rs",
       "summary": "Path of the worker exports manifest JSON that molt-wasm-host and wasm/run_wasm.js hand to the database worker; a path that does not exist is ignored, the retired MOLT_WASM_DB_EXPORTS takes precedence, and the fallback is src/molt_accel/default_exports.json then demo/molt_worker_app/molt_exports.json (relative to the current directory for the host and to the script directory for run_wasm.js).",
       "values": []
@@ -8008,6 +8802,7 @@ _REGISTRY_JSON = r"""{
       "default": "64",
       "kind": "int",
       "name": "MOLT_WORKER_MAX_QUEUE",
+      "output_neutral": false,
       "owner": "runtime/molt-worker/src/main.rs",
       "summary": "Request queue depth for molt-worker; --max-queue overrides it, values that are not positive integers fall back to 64, and bench/scripts/run_demo_bench.py records it in the bench artifact.",
       "values": []
@@ -8017,6 +8812,7 @@ _REGISTRY_JSON = r"""{
       "default": "sync",
       "kind": "enum",
       "name": "MOLT_WORKER_RUNTIME",
+      "output_neutral": false,
       "owner": "runtime/molt-worker/src/main.rs",
       "summary": "molt-worker execution runtime, sync or async (case-insensitive, --runtime overrides it); an unknown value warns and uses sync, and Postgres mode (MOLT_DB_POSTGRES_DSN) requires async.",
       "values": [
@@ -8029,6 +8825,7 @@ _REGISTRY_JSON = r"""{
       "default": "",
       "kind": "int",
       "name": "MOLT_WORKER_THREADS",
+      "output_neutral": false,
       "owner": "runtime/molt-worker/src/main.rs",
       "summary": "Synchronous worker thread count for molt-worker; --threads overrides it, values that are not positive integers are ignored, when unset the worker uses the available CPU parallelism (4 when unknown), and bench/scripts/run_demo_bench.py records it in the bench artifact.",
       "values": []
@@ -8038,6 +8835,7 @@ _REGISTRY_JSON = r"""{
       "default": "",
       "kind": "enum",
       "name": "MOLT_WORKER_WIRE",
+      "output_neutral": false,
       "owner": "src/molt_accel/decorator.py",
       "summary": "Wire codec for the molt_accel worker client, json or msgpack; when it and the retired MOLT_WIRE are unset the client uses msgpack if the msgpack package is installed, else json, asking for msgpack without the package is an error, and bench/scripts/run_demo_bench.py records it in the bench artifact.",
       "values": [
@@ -8050,6 +8848,7 @@ _REGISTRY_JSON = r"""{
       "default": "2000",
       "kind": "int",
       "name": "MOLT_WS_BENCH_ITERS",
+      "output_neutral": false,
       "owner": "tests/benchmarks/bench_ws_wait.py",
       "summary": "Number of websocket send/recv round trips tests/benchmarks/bench_ws_wait.py performs; the value must parse as an integer, default 2000.",
       "values": []
@@ -8059,6 +8858,7 @@ _REGISTRY_JSON = r"""{
       "default": "32",
       "kind": "int",
       "name": "MOLT_WS_BENCH_SIZE",
+      "output_neutral": false,
       "owner": "tests/benchmarks/bench_ws_wait.py",
       "summary": "Payload size in bytes of each websocket echo message in tests/benchmarks/bench_ws_wait.py; the value must parse as an integer, default 32.",
       "values": []
@@ -8068,6 +8868,7 @@ _REGISTRY_JSON = r"""{
       "default": "",
       "kind": "string",
       "name": "MOLT_WS_BENCH_URL",
+      "output_neutral": false,
       "owner": "tests/benchmarks/bench_ws_wait.py",
       "summary": "Websocket URL the tests/benchmarks/bench_ws_wait.py client connects to; when unset the benchmark starts its own echo server on 127.0.0.1 with an ephemeral port and connects to that.",
       "values": []

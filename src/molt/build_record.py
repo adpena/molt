@@ -44,6 +44,9 @@ _SESSION_ENVIRONMENT_KEYS = frozenset(
         "ITERM_SESSION_ID",
         "LINES",
         "OLDPWD",
+        # pytest's temporary root, which the memory guard rebinds to each
+        # guarded child's scratch lease; only pytest reads it.
+        "PYTEST_DEBUG_TEMPROOT",
         "SECURITYSESSIONID",
         "SHLVL",
         "SSH_AGENT_PID",
@@ -185,7 +188,18 @@ def request_key(
     interpreter_version: str,
     host: Mapping[str, str],
 ) -> str | None:
-    """Identity of one build request, or None when it is not plain data."""
+    """Identity of one build request, or None when it is not plain data.
+
+    The environment is keyed whole except terminal-session names and the
+    registry's output-neutral names: a guarded build carries a fresh guard
+    token, marker and scratch lease, and memory budgets measured at launch.
+    """
+    from molt.environment_registry import load_registry
+
+    # The registry loads only when a MOLT_* name is set, as at CLI start.
+    registry = (
+        load_registry() if any(key.startswith("MOLT_") for key in environment) else None
+    )
     material = {
         "schema": _SCHEMA,
         "arguments": dict(arguments),
@@ -197,6 +211,11 @@ def request_key(
             key: value
             for key, value in environment.items()
             if key not in _SESSION_ENVIRONMENT_KEYS
+            and not (
+                registry is not None
+                and key.startswith("MOLT_")
+                and registry.is_output_neutral(key)
+            )
         },
     }
     try:

@@ -25,7 +25,7 @@ from pathlib import Path
 import re
 import sys
 import tomllib
-from typing import Any
+from typing import Any, NoReturn
 
 _REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(_REPO_ROOT) not in sys.path:
@@ -92,7 +92,7 @@ class RegistryFormatError(ValueError):
     """The TOML authority violates the registry contract."""
 
 
-def _fail(message: str) -> None:
+def _fail(message: str) -> NoReturn:
     raise RegistryFormatError(f"{SOURCE_TOML.relative_to(ROOT).as_posix()}: {message}")
 
 
@@ -168,6 +168,16 @@ def _check_kind_fields(
     return audience, kind, default, values
 
 
+def _output_neutral(row: dict[str, Any], *, context: str) -> bool:
+    """A row is output-neutral only when it says so: the build record keys
+    every other value."""
+    if "output_neutral" not in row:
+        return False
+    if row["output_neutral"] is not True:
+        _fail(f"{context}: output_neutral is written only as true")
+    return True
+
+
 def _check_sorted(names: list[str], *, context: str) -> None:
     for previous, current in zip(names, names[1:]):
         if current <= previous:
@@ -217,6 +227,7 @@ def build_payload(data: dict[str, Any]) -> dict[str, Any]:
             "values",
             "owner",
             "summary",
+            "output_neutral",
         }
         if extra:
             _fail(f"{context}: unknown fields {sorted(extra)}")
@@ -229,6 +240,7 @@ def build_payload(data: dict[str, Any]) -> dict[str, Any]:
                 "values": values,
                 "owner": owner,
                 "summary": summary,
+                "output_neutral": _output_neutral(row, context=context),
             }
         )
     _check_sorted([v["name"] for v in variables], context="[[variable]]")
@@ -280,6 +292,7 @@ def build_payload(data: dict[str, Any]) -> dict[str, Any]:
             "values",
             "owner",
             "summary",
+            "output_neutral",
         }
         if extra:
             _fail(f"{context}: unknown fields {sorted(extra)}")
@@ -298,6 +311,7 @@ def build_payload(data: dict[str, Any]) -> dict[str, Any]:
                 "values": values,
                 "owner": owner,
                 "summary": summary,
+                "output_neutral": _output_neutral(row, context=context),
             }
         )
     _check_sorted([f["suffix"] for f in families], context="[[family]]")
@@ -541,6 +555,14 @@ def render_doc(payload: dict[str, Any]) -> str:
         "in `runtime/molt-runtime/src/` are on only when set to exactly `1`. "
         "The runtime reads all of them once per process, at the first flag it "
         "needs, so a program that changes `os.environ` does not change them.",
+        "",
+        "Output-neutral names supervise a build and never change its outputs; "
+        "the build record's request key leaves them out: "
+        + ", ".join(
+            [f"`{v['name']}`" for v in variables if v["output_neutral"]]
+            + [f"`MOLT_<STEM>{f['suffix']}`" for f in families if f["output_neutral"]]
+        )
+        + ".",
         "",
         "## Contents",
         "",
