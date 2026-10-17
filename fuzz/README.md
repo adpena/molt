@@ -19,7 +19,7 @@ rustup toolchain install "$RUST_NIGHTLY" --profile minimal
 | `fuzz_ir_parse`     | JSON deserialization of SimpleIR (`from_json_str`)      |
 | `fuzz_wasm_compile` | Full WASM compilation pipeline from arbitrary IR        |
 | `fuzz_nan_boxing`   | NaN-boxing encode/decode roundtrip invariants           |
-| `fuzz_ir_passes`    | Optimization passes (fold, inline, escape, RC coalesce) |
+| `fuzz_ir_passes`    | Every SimpleIR pipeline pass, dead ops, dead functions  |
 | `fuzz_ir_validate`  | IR validation with edge-case field combinations         |
 
 ## Running
