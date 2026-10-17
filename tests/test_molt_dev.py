@@ -500,8 +500,9 @@ def test_committed_gate_manifest_selects_backend_native_llvm(drv):
         "backend-llvm",
     ]
     assert (
-        "cargo test --locked --profile release-fast -p molt-backend-native --features llvm --lib"
-        in gates
+        "cargo test --locked --profile release-fast -p molt-backend-native"
+        " -p molt-backend --features molt-backend/native-backend,molt-backend/llvm"
+        " --lib --test ir_contract_validation --no-fail-fast" in gates
     )
     assert "python tools/audit_op_kinds.py --check" in gates
 
