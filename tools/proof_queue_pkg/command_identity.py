@@ -1556,14 +1556,16 @@ def _tool_identity(
             )
         try:
             selected_content_path = resolve_single_file_path(
-                resolved.stdout, probe_cwd=probe_cwd
+                resolved.stdout,
+                probe_cwd=probe_cwd,
+                preserve_entrypoint=policy.python_identity_role == "runtime",
             )
+            if policy.python_identity_role == "runtime":
+                selected_content_path = process_image_capture.custody_path(
+                    selected_content_path
+                )
         except (OSError, ValueError) as exc:
             raise ValueError(f"{name} content-path probe is invalid: {exc}") from exc
-        if policy.python_identity_role == "runtime":
-            selected_content_path = process_image_capture.custody_path(
-                Path(resolved.stdout.strip()).absolute()
-            )
         content_resolver_identity = _executable_identity(resolver)
     selected_python_runtime = None
     if policy.python_identity_role == "runtime":

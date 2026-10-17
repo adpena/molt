@@ -44,10 +44,18 @@ fetch  →  rebase  →  verify-commits  →  markers  →  gates  →  push  �
    rebase is **aborted** (restoring the pre-rebase HEAD) and the run fails
    loudly; it never leaves a half-applied rebase. Pin the resulting full commit
    once for markers, gate selection, source checks, push and confirmation.
-3. **verify-commits (hazard 1)** — every source commit's **patch-id** computed
-   *before* the rebase must be present *after*: either replayed into the new
-   branch range, or already-upstream (the legitimate patch-id dedup). A missing
-   patch-id is a **LOUD FAIL listing the dangling shas**; integration stops.
+3. **verify-commits (hazard 1)** — when no rebase occurs, the captured full HEAD
+   must remain identical and contain the captured upstream tip. That immutable
+   commit preserves its complete ancestry, including empty commits; no patch
+   diffs or patch IDs are computed. Any HEAD drift fails before gates or push.
+   An actual rebase computes each source commit's **patch-id** before mutation
+   and verifies survival afterward: either replayed into the new branch range,
+   or in the captured pre-rebase `HEAD..upstream` incoming span. The latter
+   admits an independently cherry-picked patch even when replay leaves an empty
+   candidate range; it never scans the full upstream history. Empty-diff source
+   commits retain their explicit not-patch-tracked diagnostic. A missing
+   patch-id is a **LOUD FAIL listing the dangling shas**. A dry-run requiring
+   replay reports that survival remains unverified.
 4. **markers (hazard 8)** — declared `--marker` content markers
    (`exists:<path>` / `contains:<path>::<needle>`) are checked against the
    post-rebase tree via python file ops. A mismatch fails before push.
@@ -56,6 +64,11 @@ fetch  →  rebase  →  verify-commits  →  markers  →  gates  →  push  �
    gates and every matching rule run. A non-zero gate or source/HEAD drift halts
    the run **before push**. `--extra-gate` only adds arc-specific gates. There is
    no gate-skipping or alternate-manifest landing route.
+   Prerequisite failures are reported together. Content-resolver and version-query
+   failures retain the probe command, directory, actual cause and bounded output; they do not
+   fabricate an unavailable image path. Relative interpreter aliases preserve the
+   selected entrypoint and canonicalize against the declared probe directory
+   without changing the validated executable image.
 6. **push** — `git push origin <captured-commit>:refs/heads/main`. Foreign Git
    hooks remain active and both rejection streams are retained. Git identity
    reads ignore local replacement refs. The push command's **exit code is
@@ -74,7 +87,7 @@ code, so `integrate` is CI-usable (exit `0` ok, `1` a check failed, `2` usage).
 
 | # | Hazard | Countermeasure in the driver |
 |---|--------|------------------------------|
-| 1 | **Rebase silently drops commits** (patch-id dedup vs moved-upstream) | `integrate` computes each source commit's `git patch-id --stable` *before* the rebase and verifies it survives *after* — present in the new range OR provably already-upstream by patch-id. Missing ⇒ LOUD FAIL listing the dangling shas; never proceeds. |
+| 1 | **Rebase silently drops commits** (patch-id dedup vs moved-upstream) | Without replay, require unchanged captured HEAD and upstream ancestry, with zero patch-diff work. Actual replay computes source `git patch-id --stable` before mutation and verifies survival afterward. Missing ⇒ LOUD FAIL listing the dangling shas; never proceeds. |
 | 2 | **Push exit codes lie** (rtk/sandbox swallow; 144-detached pushes can “succeed”) | `verify-push` / the push step **fetch** the remote and confirm `origin/<branch>` **contains** the tip via `merge-base --is-ancestor`. Cleanup is gated on that, never on the push command's exit. |
 | 3 | **Worktree cleanup loses work** | cleanup **refuses** if unpushed commits exist (`origin/main..HEAD` non-empty) **or** tracked staged/unstaged changes exist (excluding the ignore set). `--force` requires **naming the sha** being abandoned (deliberate + auditable). The main worktree is never removed. |
 | 4 | **Partial WIP salvage** (split staged vs unstaged) | `secure-wip` enumerates **all** tracked modifications from `git status --porcelain -z` (staged + unstaged + adds), honors partner-excludes, and commits them in **ONE** `WIP-RECOVERY`-marked commit scoped to an explicit pathspec (a pre-staged excluded file is left out). |

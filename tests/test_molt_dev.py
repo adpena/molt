@@ -98,6 +98,23 @@ def _git(repo: Path, *args: str, check: bool = True, input_text: str | None = No
     return proc
 
 
+def _record_driver_git_commands(drv, monkeypatch):
+    commands = []
+    original = drv.Git._run
+
+    def record(self, args, **kwargs):
+        commands.append(list(args))
+        return original(self, args, **kwargs)
+
+    monkeypatch.setattr(drv.Git, "_run", record)
+    return commands
+
+
+def _assert_no_patch_diff_work(commands):
+    assert not any(args[0] == "patch-id" for args in commands)
+    assert not any(args[0] == "diff-tree" and "-p" in args for args in commands)
+
+
 def _init_repo(path: Path) -> None:
     path.mkdir(parents=True, exist_ok=True)
     _git(path, "init", "-q", "-b", "main")
@@ -719,65 +736,63 @@ def test_verify_push_catches_non_landed_tip(drv, origin_and_clone):
 # --------------------------------------------------------------------------
 
 
-def test_integrate_detects_dropped_commit(drv, origin_and_clone, monkeypatch):
-    """Simulate a rebase that DROPS a source commit and prove integrate fails.
-
-    We monkeypatch Git.commits_in_range so that, for the post-rebase branch
-    range, the source commit's patch-id is absent (as if a conflict resolution
-    discarded it), while the source range still lists it. The patch-id survival
-    check must then raise a DriverError naming the dangling sha.
-    """
-    origin, work = origin_and_clone
+def test_integrate_detects_dropped_commit(drv, origin_and_clone):
+    """An unmatched source patch in neither real Git range is a hard failure."""
+    _, work = origin_and_clone
     git = drv.Git(work)
+    upstream = git.rev_parse("origin/main")
     dropped = _commit_file(work, "feature.py", "x = 1\n", "feat: important change")
-
-    source_shas = [dropped]
     pre = {dropped: git.patch_id(dropped)}
     assert pre[dropped] is not None
-
-    # New range contains NOTHING (the commit was 'dropped'); upstream too.
-    monkeypatch.setattr(drv.Git, "commits_in_range", lambda self, rng: [], raising=True)
+    _git(work, "checkout", "--detach", upstream)
+    upstream = _commit_file(
+        work, "unrelated.py", "other = 2\n", "unrelated incoming patch"
+    )
+    _git(work, "checkout", "main")
+    assert git.patch_id(upstream) != pre[dropped]
+    # Model a replay that discarded the source: candidate equals upstream.
+    # Neither that candidate nor the pinned incoming span contains its patch.
     with pytest.raises(drv.DriverError) as exc:
         drv._verify_no_dropped_commits(
-            git, source_shas, pre, "origin/main..HEAD", git.rev_parse("origin/main")
+            git, [dropped], pre, f"{upstream}..{upstream}", f"{dropped}..{upstream}"
         )
     assert "DROPPED COMMITS" in str(exc.value)
     assert git.short(dropped) in str(exc.value)
 
 
-def test_integrate_accepts_already_upstream_by_patch_id(drv, origin_and_clone):
-    """A source change that is ALREADY upstream (same patch-id) is NOT dropped.
-
-    Build a commit, push an equivalent change to origin under a different sha,
-    then verify the survival check accounts for the source by upstream patch-id
-    match (the legitimate "moved upstream" dedup) rather than flagging it.
-    """
+def test_integrate_accepts_already_upstream_by_patch_id(
+    drv, origin_and_clone, monkeypatch
+):
+    """A real replay deduplicates an independently landed patch into no commits."""
     origin, work = origin_and_clone
     git = drv.Git(work)
-
-    # Local source commit.
-    src = _commit_file(work, "shared.py", "value = 42\n", "feat: shared value")
-    pre = {src: git.patch_id(src)}
-
-    # Push an EQUIVALENT change to origin from a separate clone (different sha,
-    # same diff -> same patch-id).
+    source = _commit_file(work, "shared.py", "value = 42\n", "feat: shared value")
     other = work.parent / "other"
     _git(work.parent, "clone", "-q", str(origin), str(other))
     _git(other, "config", "user.email", "dev2@molt.test")
     _git(other, "config", "user.name", "Other Dev")
-    _commit_file(other, "shared.py", "value = 42\n", "feat: same shared value")
+    _commit_file(other, "upstream.txt", "independent\n", "advance upstream")
+    _git(other, "fetch", "-q", str(work), source)
+    _git(other, "cherry-pick", source)
+    upstream = _git(other, "rev-parse", "HEAD").stdout.strip()
+    assert upstream != source
     _git(other, "push", "-q", "origin", "main")
 
-    git.fetch("origin", "main")
-    upstream = git.rev_parse("origin/main")
-
-    # The branch range (origin/main..HEAD) no longer contains the source change
-    # by patch-id once origin has it; but the upstream span does. The check must
-    # pass (no DriverError) because the patch-id is found upstream.
-    # We pass a new_range that excludes the source to force the upstream branch.
-    drv._verify_no_dropped_commits(
-        git, [src], pre, f"{upstream}..{src}", upstream
-    )  # must NOT raise
+    commands = _record_driver_git_commands(drv, monkeypatch)
+    assert drv.cmd_integrate(_integrate_ns(drv, repo=str(work))) == drv.EXIT_OK
+    assert git.head_sha() == upstream
+    assert git.commits_in_range(f"{upstream}..HEAD") == []
+    assert not git.is_ancestor(source, upstream)
+    assert (work / "shared.py").read_text(encoding="utf-8") == "value = 42\n"
+    assert (
+        _git(work, "ls-remote", "origin", "refs/heads/main").stdout.split()[0]
+        == upstream
+    )
+    replay = next(index for index, args in enumerate(commands) if args[0] == "rebase")
+    # No candidate commits remain; survival must inspect the captured incoming
+    # span and its distinct cherry-picked commit, not upstream..upstream.
+    assert ["rev-list", f"{source}..{upstream}"] in commands[replay + 1 :]
+    assert ["diff-tree", "-p", "--no-color", upstream] in commands[replay + 1 :]
 
 
 def test_patch_id_stable_across_rebase(drv, origin_and_clone):
@@ -1334,27 +1349,52 @@ gates = ["echo build-started > build-started.txt"]
     assert origin_main == seed  # still just the seed commit
 
 
-def test_integrate_full_push_and_confirm(drv, origin_and_clone, tmp_path):
+@pytest.mark.parametrize("pin_upstream", [False, True])
+def test_integrate_full_push_and_confirm(
+    drv, origin_and_clone, monkeypatch, pin_upstream
+):
     # The happy path end-to-end: a passing gate, real push, fetch+ancestor
     # confirm. Proves the push-confirm gate accepts a genuinely-landed tip.
     origin, work = origin_and_clone
-    _commit_file(work, "src/molt/ok.py", "ok = True\n", "feat: ok")
+    feature = _commit_file(work, "src/molt/ok.py", "ok = True\n", "feat: ok")
+    _git(work, "commit", "--allow-empty", "-qm", "intentional empty source commit")
     git = drv.Git(work)
     tip = git.head_sha()
+    upstream = git.rev_parse("origin/main")
+    commands = _record_driver_git_commands(drv, monkeypatch)
     ns = _integrate_ns(
         drv,
         repo=str(work),
         no_push=False,
+        expected_upstream=upstream if pin_upstream else None,
     )
     assert drv.cmd_integrate(ns) == drv.EXIT_OK
+    _assert_no_patch_diff_work(commands)
+    assert not any(args[0] == "rebase" for args in commands)
+    assert git.head_sha() == tip
+    assert _git(work, "ls-remote", "origin", "refs/heads/main").stdout.split()[0] == tip
+    assert _git(work, "show", f"{tip}:src/molt/ok.py").stdout == "ok = True\n"
+    assert git.is_ancestor(feature, tip)
     # origin/main now contains the tip (confirmed by the same ancestor check).
     git.fetch("origin", "main")
     assert git.is_ancestor(tip, "origin/main")
 
 
-def test_integrate_dry_run_mutates_nothing(drv, origin_and_clone, tmp_path):
+@pytest.mark.parametrize("needs_rebase", [False, True])
+def test_integrate_dry_run_mutates_nothing(
+    drv, origin_and_clone, monkeypatch, needs_rebase
+):
     origin, work = origin_and_clone
     _commit_file(work, "src/molt/d.py", "d = 1\n", "feat: d")
+    if needs_rebase:
+        other = work.parent / "dry-upstream"
+        _git(work.parent, "clone", "-q", str(origin), str(other))
+        _git(other, "config", "user.email", "other@example.test")
+        _git(other, "config", "user.name", "Other")
+        _commit_file(other, "upstream.txt", "advance\n", "upstream advance")
+        _git(other, "push", "-q", "origin", "main")
+        _git(work, "fetch", "-q", "origin", "main")
+    commands = _record_driver_git_commands(drv, monkeypatch)
     git = drv.Git(work)
     head_before = git.head_sha()
     origin_before = _git(work, "rev-parse", "origin/main").stdout.strip()
@@ -1367,6 +1407,42 @@ def test_integrate_dry_run_mutates_nothing(drv, origin_and_clone, tmp_path):
     assert drv.cmd_integrate(ns) == drv.EXIT_OK
     assert git.head_sha() == head_before
     assert _git(work, "rev-parse", "origin/main").stdout.strip() == origin_before
+    _assert_no_patch_diff_work(commands)
+    assert not any(args[0] == "rebase" for args in commands)
+
+
+@pytest.mark.parametrize("has_source", [False, True])
+def test_integrate_no_rebase_rejects_head_drift_before_selection(
+    drv, origin_and_clone, monkeypatch, has_source
+):
+    _, work = origin_and_clone
+    upstream = _git(work, "rev-parse", "origin/main").stdout.strip()
+    if has_source:
+        _commit_file(work, "feature.py", "value = 1\n", "feature")
+    captured = _git(work, "rev-parse", "HEAD").stdout.strip()
+    trigger = f"{captured}..{upstream}" if has_source else f"{upstream}..{captured}"
+    original = drv.Git.commits_in_range
+    changed = False
+
+    def move_head(self, range_expr):
+        nonlocal changed
+        result = original(self, range_expr)
+        if range_expr == trigger and not changed:
+            changed = True
+            _git(work, "commit", "--allow-empty", "-qm", "concurrent source drift")
+        return result
+
+    monkeypatch.setattr(drv.Git, "commits_in_range", move_head)
+    commands = _record_driver_git_commands(drv, monkeypatch)
+    with pytest.raises(drv.DriverError, match="source HEAD changed"):
+        drv.cmd_integrate(_integrate_ns(drv, repo=str(work)))
+    assert changed
+    assert _git(work, "rev-parse", "HEAD").stdout.strip() != captured
+    assert (
+        _git(work, "ls-remote", "origin", "refs/heads/main").stdout.split()[0]
+        == upstream
+    )
+    _assert_no_patch_diff_work(commands)
 
 
 def test_integrate_nothing_to_do_is_green(drv, origin_and_clone):
@@ -1971,23 +2047,45 @@ def test_integrate_remote_race_after_gates_is_not_rebased_or_force_pushed(
     )
 
 
-def test_integrate_clean_rebase_runs_committed_policy(drv, origin_and_clone):
+def test_integrate_clean_rebase_runs_committed_policy(
+    drv, origin_and_clone, monkeypatch, capsys
+):
     origin, work = origin_and_clone
-    _commit_file(work, "feature.py", "value = 1\n", "local")
+    source = _commit_file(work, "feature.py", "value = 1\n", "local")
+    _git(work, "commit", "--allow-empty", "-qm", "intentional empty replay")
+    empty = _git(work, "rev-parse", "HEAD").stdout.strip()
     other = work.parent / "upstream"
     _git(work.parent, "clone", "-q", str(origin), str(other))
     _git(other, "config", "user.email", "upstream@example.test")
     _git(other, "config", "user.name", "Upstream")
     upstream = _commit_file(other, "other.py", "other = 1\n", "upstream")
     _git(other, "push", "origin", "main")
+    commands = _record_driver_git_commands(drv, monkeypatch)
     assert drv.cmd_integrate(_integrate_ns(drv, repo=str(work))) == drv.EXIT_OK
     selected = _git(work, "rev-parse", "HEAD").stdout.strip()
+    assert selected != source
+    replay = next(index for index, args in enumerate(commands) if args[0] == "rebase")
+    assert ["diff-tree", "-p", "--no-color", source] in commands[:replay]
+    assert ["diff-tree", "-p", "--no-color", selected] in commands[replay + 1 :]
+    assert any(args[0] == "patch-id" for args in commands[:replay])
+    assert any(args[0] == "patch-id" for args in commands[replay + 1 :])
     assert drv.Git(work).is_ancestor(upstream, selected)
     assert (
         _git(work, "ls-remote", "origin", "refs/heads/main").stdout.split()[0]
         == selected
     )
     assert (work / "feature.py").read_text(encoding="utf-8") == "value = 1\n"
+    assert (
+        _git(work, "log", "-1", "--format=%s").stdout.strip()
+        == "intentional empty replay"
+    )
+    assert (
+        _git(work, "rev-parse", "HEAD^{tree}").stdout
+        == _git(work, "rev-parse", "HEAD~1^{tree}").stdout
+    )
+    output = capsys.readouterr()
+    assert "empty diffs (no patch-id, not patch-tracked)" in output.out + output.err
+    assert empty[:9] in output.out + output.err
 
 
 def test_integrate_classifies_raw_paths_without_git_quote_escaping(

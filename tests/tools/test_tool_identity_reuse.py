@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -1428,6 +1429,73 @@ def selected_runtime_fixture(tmp_path, monkeypatch):
         owners=owners,
         minor=minor,
     )
+
+
+@pytest.mark.parametrize("spelling", ["relative", "absolute-with-parent"])
+def test_selected_runtime_reuse_preserves_canonical_entrypoint_from_probe_cwd(
+    tmp_path, monkeypatch, spelling
+):
+    from tests.executable_test_support import custody_spelling
+
+    fixture = selected_runtime_fixture(tmp_path, monkeypatch)
+    selected = fixture.selected[0]
+    if os.name != "nt":
+        assert selected.is_symlink(), "the POSIX cell must retain a real venv alias"
+    probe_directory = tmp_path / "probe-cwd"
+    probe_directory.mkdir()
+    command_directory = tmp_path / "command-cwd"
+    command_directory.mkdir()
+    relative = os.path.relpath(selected, probe_directory)
+    emitted = relative if spelling == "relative" else str(probe_directory / relative)
+    expected = custody_spelling(selected)
+    fixture.installations[expected] = fixture.installations[str(selected)]
+    policy = replace(
+        fixture.policy,
+        root=tmp_path,
+        data={**fixture.policy.data, "probe_cwd": "probe-cwd"},
+    )
+    plan = replace(fixture.plan, toolchain_policies=(policy,))
+    original_run = command_identity._run_captured
+    resolutions = []
+    versions = []
+
+    def run(command, **kwargs):
+        argv = list(command)
+        assert kwargs["cwd"] == probe_directory
+        if argv[0] == str(fixture.uv):
+            resolutions.append(argv)
+            return subprocess.CompletedProcess(argv, 0, emitted + "\n", "")
+        if argv[-1:] == ["--version"]:
+            versions.append(argv)
+        return original_run(command, **kwargs)
+
+    monkeypatch.setattr(command_identity, "_run_captured", run)
+    telemetry = []
+
+    def capture():
+        result = command_identity._tool_identity(
+            plan,
+            policy.name,
+            {"python": None},
+            [sys.executable, "-c", "pass"],
+            cwd=command_directory,
+            env=os.environ,
+            reuse_root=tmp_path / "reuse",
+            reuse_telemetry=telemetry,
+        )
+        command_identity._validate_toolchain_identity(plan, policy.name, result)
+        return result
+
+    first = capture()
+    assert capture() == first
+    assert first["content_path"] == expected
+    assert first["python_runtime"]["launch_argv"] == [expected, "-B", "-I", "-S"]
+    assert (
+        first["executable_sha256"] == hashlib.sha256(selected.read_bytes()).hexdigest()
+    )
+    assert versions == [[expected, "--version"]]
+    assert len(resolutions) == 2, "warm reuse must still select the current alias"
+    assert [row["state"] for row in telemetry] == ["miss", "hit"]
 
 
 @pytest.mark.parametrize(

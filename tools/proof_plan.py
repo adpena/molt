@@ -46,8 +46,7 @@ from tools.command_execution import (  # noqa: E402
     CommandExecutor,
     GUARD_CANCELLATION_OBSERVATION_SECONDS,
 )
-from tools.toolchain_probe import resolve_single_file_path  # noqa: E402
-from tools import proof_receipts  # noqa: E402
+from tools import proof_receipts, toolchain_probe  # noqa: E402
 from molt.portable_paths import portable_relative_path  # noqa: E402
 from molt.process_guard import run_completed_command  # noqa: E402
 from tools.git_identity import (  # noqa: E402
@@ -60,7 +59,6 @@ _COMMANDS = CommandExecutor(prefix="MOLT_PROOF", repo_root=ROOT)
 
 from molt.cargo_execution_policy import (  # noqa: E402
     PROOF_COMMAND_TIMEOUT_ENV,
-    cargo_subprocess_environment,
     load_ci_cargo_policy,
     normalize_cargo_environment,
 )
@@ -2922,53 +2920,47 @@ def _version_fingerprint(
             command_path, role=policy.name, root=probe_directory, env=os.environ
         )
     elif isinstance(content_path_command, list):
+        resolved = toolchain_probe.run_toolchain_probe(
+            policy.name,
+            content_path_command,
+            stage="content resolver",
+            cwd=probe_directory,
+            environment=os.environ,
+        )
         try:
-            resolved = subprocess.run(
-                content_path_command,
-                cwd=probe_directory,
-                check=False,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                text=True,
-                timeout=5,
-                env=cargo_subprocess_environment(content_path_command, os.environ)[0],
-                encoding="utf-8",
-            )
-            if resolved.returncode != 0:
-                raise OSError("toolchain content resolver failed")
-            content_path = resolve_single_file_path(
+            content_path = toolchain_probe.resolve_single_file_path(
                 resolved.stdout,
                 probe_cwd=probe_directory,
+                preserve_entrypoint=policy.python_identity_role == "runtime",
             )
-            if policy.python_identity_role == "runtime":
-                content_path = Path(resolved.stdout.strip()).absolute()
-        except (IndexError, OSError, ValueError, subprocess.TimeoutExpired):
-            content_path = Path("unavailable")
+        except (OSError, ValueError) as exc:
+            raise toolchain_probe.probe_failure(
+                policy.name,
+                content_path_command,
+                probe_directory,
+                f"invalid resolved path ({type(exc).__name__}): {exc}",
+                stage="content resolver",
+                stdout=resolved.stdout,
+                stderr=resolved.stderr,
+            ) from exc
     executable_sha256 = (
         launcher_sha256 if content_path == launcher_path else content_hash(content_path)
     )
-    try:
-        version_argv = [
-            str(content_path)
-            if policy.name in {"rustc", "cargo"}
-            or policy.data.get("version_from_content_path")
-            else path,
-            *policy.data["version_args"],
-        ]
-        completed = subprocess.run(
-            version_argv,
-            cwd=probe_directory,
-            check=False,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            text=True,
-            timeout=5,
-            env=cargo_subprocess_environment(version_argv, os.environ)[0],
-            encoding="utf-8",
-        )
-        version = completed.stdout.strip()
-    except (OSError, subprocess.TimeoutExpired) as exc:
-        version = f"unavailable:{type(exc).__name__}"
+    version_argv = [
+        str(content_path)
+        if policy.name in {"rustc", "cargo"}
+        or policy.data.get("version_from_content_path")
+        else path,
+        *policy.data["version_args"],
+    ]
+    completed = toolchain_probe.run_toolchain_probe(
+        policy.name,
+        version_argv,
+        stage="version query",
+        cwd=probe_directory,
+        environment=os.environ,
+    )
+    version = completed.stdout.strip()
     sdk_digest = ""
     if sdk_closure is not None:
         sdk_digest = hashlib.sha256(
