@@ -789,6 +789,11 @@ def _verified_backend_daemon_record(
     identity = record.identity
     if identity.socket_path != process.socket_path:
         return None
+    if (
+        identity.started_at_ns is None
+        or identity.started_at_ns != process.sample.started_at_ns
+    ):
+        return None
     if not daemon_custody.backend_daemon_command_matches_identity(
         process.sample.argv
         if process.sample.argv is not None
@@ -798,26 +803,6 @@ def _verified_backend_daemon_record(
     ):
         return None
     return record
-
-
-def _terminate_verified_backend_daemon(
-    process: _BackendDaemonProcess,
-    records_by_pid: Mapping[int, daemon_custody.BackendDaemonIdentityRecord],
-    *,
-    grace: float = 0.75,
-) -> bool:
-    record = _verified_backend_daemon_record(process, records_by_pid)
-    if record is None:
-        return False
-
-    if not daemon_custody.terminate_backend_daemon_identity(
-        record.identity,
-        grace=grace,
-        pid_alive=_pid_alive,
-    ):
-        return False
-    daemon_custody.remove_backend_daemon_identity(record.path)
-    return True
 
 
 def _retire_idle_backend_daemon(
@@ -840,12 +825,7 @@ def _retire_idle_backend_daemon(
         return False
     from molt.cli.backend_execution import retire_backend_daemon
 
-    # Record retirement first, so no pruner stops the daemon while it drains.
-    daemon_custody.mark_backend_daemon_retiring(record)
-    if retire_backend_daemon(process.socket_path, timeout=_DAEMON_CONTROL_TIMEOUT_S):
-        return True
-    daemon_custody.write_backend_daemon_identity(record.path, record.identity)
-    return False
+    return retire_backend_daemon(process.socket_path, timeout=_DAEMON_CONTROL_TIMEOUT_S)
 
 
 def _prune_custody_event_path() -> Path:
@@ -1040,61 +1020,25 @@ def _prune_backend_daemons() -> None:
     if os.name != "posix":
         return
     max_rss_kb = _parse_int_env("MOLT_DIFF_DAEMON_MAX_RSS_KB", 2_500_000)
-    unresponsive_stale_sec = max(
-        60, _parse_int_env("MOLT_DIFF_DAEMON_STALE_SEC", 10 * 60)
-    )
-    processes_by_socket: dict[Path, list[_BackendDaemonProcess]] = {}
+    if max_rss_kb <= 0:
+        return
+    records_by_pid = None
     for process in _list_backend_daemon_processes():
+        rss_kb = process.sample.rss_kb
+        if rss_kb is None or rss_kb <= max_rss_kb:
+            continue
         if not _pid_alive(process.sample.pid):
             continue
-        processes_by_socket.setdefault(process.socket_path, []).append(process)
-    records_by_pid = _current_session_backend_daemon_records_by_pid()
-    for socket_path, processes in processes_by_socket.items():
-        # A retiring daemon has unlinked its socket and exits once drained,
-        # so no rule below may stop it.
-        verified = [
-            process
-            for process in processes
-            if (record := _verified_backend_daemon_record(process, records_by_pid))
-            is not None
-            and not record.identity.retiring
-        ]
-        if max_rss_kb > 0:
-            filtered: list[_BackendDaemonProcess] = []
-            for process in verified:
-                rss_kb = process.sample.rss_kb
-                if (
-                    rss_kb is not None
-                    and rss_kb > max_rss_kb
-                    and _retire_idle_backend_daemon(process, records_by_pid)
-                ):
-                    print(
-                        "[INFO] Retired idle backend daemon pid="
-                        f"{process.sample.pid} rss={rss_kb}KB (> {max_rss_kb}KB)"
-                    )
-                    continue
-                filtered.append(process)
-            verified = filtered
-        if not verified:
-            continue
-        if not socket_path.exists():
-            for process in verified:
-                _terminate_verified_backend_daemon(process, records_by_pid)
-            continue
-        if len(verified) > 1:
-            # Keep the newest pid; terminate duplicate daemons bound to the same socket.
-            for process in verified[:-1]:
-                _terminate_verified_backend_daemon(process, records_by_pid)
-            verified = verified[-1:]
-        if _daemon_health(socket_path) is None:
-            process = verified[0]
-            age_sec = process.sample.elapsed_sec
-            if age_sec is not None and age_sec >= unresponsive_stale_sec:
-                if _terminate_verified_backend_daemon(process, records_by_pid):
-                    print(
-                        "[INFO] Pruned stale unresponsive backend daemon pid="
-                        f"{process.sample.pid} age={age_sec}s socket={socket_path}"
-                    )
+        if records_by_pid is None:
+            records_by_pid = _current_session_backend_daemon_records_by_pid()
+        # Missing health cannot prove idleness or socket ownership. The
+        # daemon owns autonomous retirement; this optional RSS policy asks
+        # only a verified, idle responder to drain its accepted connections.
+        if _retire_idle_backend_daemon(process, records_by_pid):
+            print(
+                "[INFO] Retired idle backend daemon pid="
+                f"{process.sample.pid} rss={rss_kb}KB (> {max_rss_kb}KB)"
+            )
 
 
 def _prune_stale_build_locks() -> None:

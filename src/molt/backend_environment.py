@@ -10,7 +10,7 @@ import json
 import os
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Mapping
+from typing import Literal, Mapping, cast
 
 from molt.backend_executable_names import (
     CODEGEN_BACKENDS,
@@ -25,68 +25,148 @@ from molt.source_root import compiler_source_root
 DEBUG_ARTIFACT_DIR_ENV = "MOLT_DEBUG_ARTIFACT_DIR"
 DEBUG_ARTIFACT_SCRATCH_PURPOSE = "molt-backend"
 
-_CATALOG = json.loads(Path(__file__).with_suffix(".json").read_text(encoding="utf-8"))
-_GROUPS = {
-    "common",
-    "native",
-    "wasm",
-    "diagnostic",
-    "observation",
-    "resource",
-    "transport",
-    "runtime_identity",
-    "build_identity",
-}
-if (
-    not isinstance(_CATALOG, dict)
-    or _CATALOG.get("schema") != 1
-    or set(_CATALOG) != _GROUPS | {"schema"}
-):
-    raise ValueError("unsupported backend environment catalog")
-_CATALOG.pop("schema")
-if any(
-    not isinstance(names, list)
-    or not all(
-        isinstance(name, str)
-        and name
-        and name.isascii()
-        and name.replace("_", "").isalnum()
-        and name == name.upper()
-        for name in names
-    )
-    for names in _CATALOG.values()
-):
-    raise ValueError("malformed backend environment catalog group")
-_ALL = [name for names in _CATALOG.values() for name in names]
-if len(_ALL) != len(set(_ALL)):
-    raise ValueError("duplicate backend environment catalog entry")
+
+@dataclass(frozen=True, slots=True)
+class _EnvironmentGroup:
+    request_scoped: bool
+    semantic_target: Literal["native", "wasm", "both", "none"]
+    native_worker: bool
+    projection: Literal["raw", "presence"]
+    diagnostic_bypass: bool
+    request_reuse_only: bool
+    keys: tuple[str, ...]
+
+
+def _parse_catalog(catalog: object) -> dict[str, _EnvironmentGroup]:
+    if (
+        not isinstance(catalog, dict)
+        or set(catalog) != {"schema", "groups"}
+        or type(catalog["schema"]) is not int
+        or catalog["schema"] != 2
+        or not isinstance(catalog["groups"], dict)
+        or not catalog["groups"]
+    ):
+        raise ValueError("unsupported backend environment catalog")
+    groups: dict[str, _EnvironmentGroup] = {}
+    seen: set[str] = set()
+    for name, role in catalog["groups"].items():
+        if (
+            not isinstance(name, str)
+            or not name
+            or not name.isascii()
+            or not all(
+                part and part.isalpha() and part.islower() for part in name.split("_")
+            )
+            or not isinstance(role, dict)
+            or set(role)
+            != {
+                "request_scoped",
+                "semantic_target",
+                "native_worker",
+                "projection",
+                "diagnostic_bypass",
+                "request_reuse_only",
+                "keys",
+            }
+            or any(
+                type(role[field]) is not bool
+                for field in (
+                    "request_scoped",
+                    "native_worker",
+                    "diagnostic_bypass",
+                    "request_reuse_only",
+                )
+            )
+            or role["semantic_target"] not in ("native", "wasm", "both", "none")
+            or role["projection"] not in ("raw", "presence")
+            or (
+                role["request_reuse_only"]
+                and (
+                    not role["request_scoped"]
+                    or role["native_worker"]
+                    or role["semantic_target"] == "none"
+                )
+            )
+            or (
+                role["native_worker"]
+                and role["semantic_target"] not in ("native", "both")
+            )
+            or not isinstance(role["keys"], list)
+            or not role["keys"]
+        ):
+            raise ValueError("malformed backend environment catalog group")
+        for key in role["keys"]:
+            if (
+                not isinstance(key, str)
+                or not key
+                or not key.isascii()
+                or not all(
+                    char.isupper() or char.isdigit() or char == "_" for char in key
+                )
+                or key in seen
+            ):
+                raise ValueError(
+                    "malformed or duplicate backend environment catalog entry"
+                )
+            seen.add(key)
+        groups[name] = _EnvironmentGroup(
+            request_scoped=role["request_scoped"],
+            semantic_target=cast(
+                Literal["native", "wasm", "both", "none"], role["semantic_target"]
+            ),
+            native_worker=role["native_worker"],
+            projection=cast(Literal["raw", "presence"], role["projection"]),
+            diagnostic_bypass=role["diagnostic_bypass"],
+            request_reuse_only=role["request_reuse_only"],
+            keys=tuple(role["keys"]),
+        )
+    return groups
+
+
+_CATALOG = _parse_catalog(
+    json.loads(Path(__file__).with_suffix(".json").read_text(encoding="utf-8"))
+)
+_REQUEST_KEYS = tuple(
+    key for role in _CATALOG.values() if role.request_scoped for key in role.keys
+)
+_DIAGNOSTIC_KEYS = tuple(
+    key for role in _CATALOG.values() if role.diagnostic_bypass for key in role.keys
+)
 
 
 def environment_keys(*groups: str) -> tuple[str, ...]:
-    return tuple(name for group in groups for name in _CATALOG[group])
+    return tuple(name for group in groups for name in _CATALOG[group].keys)
+
+
+def request_environment_keys() -> tuple[str, ...]:
+    """Raw settings the catalog permits a daemon request to carry."""
+    return _REQUEST_KEYS
+
+
+def request_environment_inputs(env: Mapping[str, str]) -> dict[str, str]:
+    return {name: env[name] for name in _REQUEST_KEYS if name in env}
 
 
 def compilation_diagnostics_requested(env: Mapping[str, str] | None = None) -> bool:
     """Requested compilation diagnostics require execution, including empty values."""
     if env is None:
         env = os.environ
-    return any(name in env for name in environment_keys("diagnostic"))
+    return any(name in env for name in _DIAGNOSTIC_KEYS)
 
 
 def codegen_environment_inputs(
     *, is_wasm: bool, env: Mapping[str, str]
-) -> dict[str, str]:
-    keys = environment_keys(
-        "common",
-        "native",
-        "runtime_identity",
-        "build_identity",
-        "diagnostic",
-        "observation",
-    )
-    if is_wasm:
-        keys += environment_keys("wasm")
-    return {name: env[name] for name in sorted(keys) if name in env}
+) -> dict[str, str | bool]:
+    """Project actual operation settings, excluding transport and observation."""
+    target = "wasm" if is_wasm else "native"
+    inputs: dict[str, str | bool] = {}
+    for role in _CATALOG.values():
+        if role.request_reuse_only or role.semantic_target not in (target, "both"):
+            continue
+        for name in role.keys:
+            if name in env:
+                inputs[name] = True if role.projection == "presence" else env[name]
+    return dict(sorted(inputs.items()))
 
 
 def backend_debug_artifact_dir(env: Mapping[str, str]) -> Path:
@@ -127,7 +207,9 @@ class CodegenSelection:
         if self.wasm_profile is not None and not self.wasm_profile:
             raise ValueError("an empty wasm profile selects nothing; use None")
 
-    def environment(self, base: Mapping[str, str]) -> dict[str, str]:
+    def environment(
+        self, base: Mapping[str, str], *, profile: str | None = None
+    ) -> dict[str, str]:
         """Return a copy of ``base`` with this selection applied."""
         if base.get("MOLT_GUARD_SCRATCH_ROOT"):
             from molt.temporary_artifacts import guard_scratch
@@ -137,6 +219,8 @@ class CodegenSelection:
             # daemons remove it before acquiring their longer-lived temp root.
             guard_scratch(base)
         env = dict(base)
+        if profile in ("release-size", "wasm-release"):
+            env.setdefault("MOLT_BACKEND_OPT_LEVEL", "speed_and_size")
         env["MOLT_BACKEND"] = self.backend
         env[DEBUG_ARTIFACT_DIR_ENV] = str(backend_debug_artifact_dir(base))
         if self.portable:

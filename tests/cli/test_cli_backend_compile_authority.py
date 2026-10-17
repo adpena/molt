@@ -6,7 +6,7 @@ import os
 import pytest
 
 import molt.cli as cli
-from molt.cli import backend_compile
+from molt.cli import backend_compile, backend_execution
 from molt.cli import build_pipeline
 
 _BACKEND_COMPILE_NAMES = (
@@ -37,13 +37,13 @@ def test_backend_compiler_fingerprint_is_exact_without_mutating_ambient_environm
     name = "MOLT_BACKEND_COMPILER_FINGERPRINT"
     monkeypatch.setenv(name, "stale")
     source_env = {name: "stale", "unrelated": "preserved"}
-    child_env = backend_compile._backend_environment_with_compiler_fingerprint(
+    child_env = backend_execution._backend_environment_with_compiler_fingerprint(
         source_env, "compiler-build-v2"
     )
     assert os.environ[name] == "stale"
     assert source_env == {name: "stale", "unrelated": "preserved"}
     assert child_env[name] == "compiler-build-v2"
-    cleared_env = backend_compile._backend_environment_with_compiler_fingerprint(
+    cleared_env = backend_execution._backend_environment_with_compiler_fingerprint(
         child_env, None
     )
     assert cleared_env == {"unrelated": "preserved"}

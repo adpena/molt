@@ -29,6 +29,8 @@ from molt.backend_binary_identity import identify_backend_binary
 from molt.cli.backend_execution import (
     _backend_native_codegen_identity,
     _backend_codegen_env_digest,
+    _backend_request_environment,
+    _backend_environment_with_compiler_fingerprint,
     _backend_features_for_build_target,
 )
 from molt.cli.build_output_layout import _resolve_cache_root
@@ -54,6 +56,7 @@ from molt.cli.models import (
 from molt.cli.runtime_paths import _build_state_root, _normalize_runtime_stdlib_profile
 from molt.cli.rust_cpu_policy import RustCpuPolicy
 from molt.target_python import TargetPythonVersion
+from molt.cli.wasm_codegen_layout import WasmCodegenLayout
 from molt.cli.runtime_native_codegen import (
     NativeRuntimeCodegenBinding,
     native_runtime_codegen_environment,
@@ -294,6 +297,7 @@ def _prepare_backend_cache_setup(
     emit_mode: str,
     is_wasm: bool,
     linked: bool,
+    wasm_layout: WasmCodegenLayout | None,
     project_root: Path,
     cache_dir: str | None,
     output_artifact: Path,
@@ -385,9 +389,29 @@ def _prepare_backend_cache_setup(
     stage_start = time.perf_counter()
     # The same projection the backend process receives (backend_compile's
     # dispatch), so the cache key binds what the backend actually reads.
-    backend_environment = native_runtime_codegen_environment(
-        codegen.environment(os.environ), native_runtime_codegen_binding
+    backend_environment = _backend_environment_with_compiler_fingerprint(
+        native_runtime_codegen_environment(
+            codegen.environment(os.environ, profile=profile),
+            native_runtime_codegen_binding,
+        ),
+        backend_compiler_fingerprint,
     )
+    backend_environment = _backend_request_environment(
+        backend_environment,
+        entry_module=entry_module if artifact_contract.is_native else None,
+        stdlib_module_symbols_json=stdlib_module_symbols_json,
+    )
+    if is_wasm:
+        if wasm_layout is None:
+            raise ValueError("WASM cache identity requires a bound runtime layout")
+        for name in (
+            "MOLT_WASM_DATA_BASE",
+            "MOLT_WASM_TABLE_BASE",
+            "MOLT_WASM_SPLIT_RUNTIME_APP_TABLE_BASE",
+            "MOLT_WASM_RELOCATABLE",
+        ):
+            backend_environment.pop(name, None)
+        backend_environment.update(wasm_layout.backend_environment())
     cache_variant = _build_cache_variant(
         profile=profile,
         runtime_cargo=runtime_cargo_profile,
@@ -486,6 +510,8 @@ def _prepare_backend_cache_setup(
             )
         return _BackendCacheSetup(
             artifact_contract=artifact_contract,
+            backend_environment=backend_environment,
+            wasm_layout=wasm_layout,
             cache_enabled=False,
             cache_key=None,
             function_cache_key=None,
@@ -555,6 +581,8 @@ def _prepare_backend_cache_setup(
         warnings.append(f"Cache disabled: {exc}")
         return _BackendCacheSetup(
             artifact_contract=artifact_contract,
+            backend_environment=backend_environment,
+            wasm_layout=wasm_layout,
             cache_enabled=False,
             cache_key=cache_key,
             function_cache_key=function_cache_key,
@@ -711,6 +739,8 @@ def _prepare_backend_cache_setup(
     )
     return _BackendCacheSetup(
         artifact_contract=artifact_contract,
+        backend_environment=backend_environment,
+        wasm_layout=wasm_layout,
         cache_enabled=True,
         stdlib_cache_entry_path=stdlib_cache_entry_path,
         cache_key=cache_key,

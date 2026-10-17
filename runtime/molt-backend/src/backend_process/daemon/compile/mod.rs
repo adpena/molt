@@ -51,7 +51,15 @@ fn compile_job<Slot>(
         Err(error) => return response::daemon_job_error_response(job.id, error),
     };
     let (cache_key, function_cache_key) = if target.memory_cache_allowed() {
-        job.take_artifact_cache_keys()
+        match job.take_artifact_cache_keys() {
+            Ok(keys) => keys,
+            Err(error) => {
+                return response::daemon_job_error_response(
+                    job.id,
+                    format!("invalid backend semantic environment: {error}"),
+                );
+            }
+        }
     } else {
         (None, None)
     };

@@ -82,6 +82,7 @@ def test_symbol_reader_failure_is_a_build_error_and_releases_ir_lease(
         ),
     )
     cache_setup = _BackendCacheSetup(
+        backend_environment={},
         artifact_contract=resolve_backend_artifact_contract(
             target="native", emit_mode="obj", target_triple=None
         ),

@@ -14,7 +14,7 @@ from molt.cli.rust_cpu_policy import RustCpuPolicy
 from molt.cli import backend_binary as cli_backend_binary
 from molt.cli import backend_execution as cli_backend_execution
 from molt.backend_executable_names import backend_executable_name
-from molt.cli.backend_compile import _backend_environment_with_compiler_fingerprint
+from molt.cli.backend_execution import _backend_environment_with_compiler_fingerprint
 from molt.exact_json import canonical_json_sha256
 import pytest
 from molt.cli import runtime_fingerprints as cli_runtime_fingerprints

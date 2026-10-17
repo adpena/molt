@@ -162,6 +162,7 @@ def terminal_build(
         revoke_native_runtime_admission=lambda: None,
     )
     cache_setup = _BackendCacheSetup(
+        backend_environment={},
         artifact_contract=resolve_backend_artifact_contract(
             target="native", emit_mode="bin"
         ),

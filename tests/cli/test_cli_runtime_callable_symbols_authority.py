@@ -506,6 +506,7 @@ def test_callable_dispatch_and_all_cache_tiers_are_operation_owned(
 
     def cache_for(binding):
         return backend_cache_setup._prepare_backend_cache_setup(
+            wasm_layout=None,
             backend_bin=backend,
             cache_enabled=True,
             ir={"functions": []},
@@ -541,6 +542,7 @@ def test_callable_dispatch_and_all_cache_tiers_are_operation_owned(
 
     def dispatch(binding):
         result, error = backend_compile._prepare_backend_dispatch(
+            backend_environment=CodegenSelection().environment(os.environ, profile="dev"),
             is_rust_transpile=False,
             is_luau_transpile=False,
             is_wasm=False,
@@ -784,6 +786,7 @@ def test_native_object_output_rejects_runtime_generation_drift(
         lambda **_kwargs: pytest.fail("mutated object reported success"),
     )
     cache_setup = _BackendCacheSetup(
+        backend_environment={},
         artifact_contract=resolve_backend_artifact_contract(
             target="native", emit_mode="obj"
         ),

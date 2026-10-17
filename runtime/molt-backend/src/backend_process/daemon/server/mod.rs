@@ -11,8 +11,9 @@ use std::os::fd::AsRawFd;
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::Path;
 use std::sync::Arc;
+use std::time::Duration;
 
-use super::super::io_limits::{daemon_max_jobs, daemon_request_limit_bytes};
+use super::super::io_limits::{daemon_idle_timeout, daemon_max_jobs, daemon_request_limit_bytes};
 use super::super::memory_guard::widen_process_memory_guard;
 use super::cache::{DaemonCache, daemon_cache_limit_bytes};
 use connection::handle_daemon_connection;
@@ -57,30 +58,67 @@ pub(crate) fn run_daemon(socket_path: &str) -> io::Result<()> {
         daemon_request_limit_bytes(),
         daemon_max_jobs(),
         compile_slots,
-        Retirement::new(socket.to_path_buf(), wake),
+        Retirement::new(socket.to_path_buf(), wake)?,
     ));
+    serve(&listener, &woken, &state, daemon_idle_timeout())
+}
+
+/// Accepts connections until the daemon retires: on request, or once no
+/// connection has been live for ``idle_timeout``.
+fn serve(
+    listener: &UnixListener,
+    woken: &UnixStream,
+    state: &Arc<DaemonState>,
+    idle_timeout: Option<Duration>,
+) -> io::Result<()> {
     // Concurrent builds share one warm daemon: each connection is served on
     // its own thread, and compiles beyond the core count wait for a slot.
+    let mut wait = idle_timeout;
     loop {
-        let retired = wait_for_connection_or_retirement(&listener, &woken)?;
-        accept_queued(&listener, &state);
-        if retired {
-            // Retirement unlinks the socket before it writes the wake byte,
-            // so every client that connected is in the drained backlog, and
-            // new clients start a fresh daemon.
-            break;
+        match wait_for_connection_or_retirement(listener, woken, wait)? {
+            Wake::Idle => {
+                // A daemon nobody uses must not outlive its builds. The idle
+                // clock starts when the last connection ends, so a long
+                // compile never shortens the next idle period.
+                let timeout = idle_timeout.expect("only a timed wait reports idle");
+                match state.idle_for() {
+                    // Retiring unlinks the socket and wakes this loop, which
+                    // drains any client that connected meanwhile.
+                    Some(idle) if idle >= timeout => state.retire(),
+                    Some(idle) => wait = Some(timeout - idle),
+                    None => wait = idle_timeout,
+                }
+            }
+            Wake::Connection => {
+                accept_queued(listener, state);
+                wait = idle_timeout;
+            }
+            Wake::Retired => {
+                // Retirement unlinks the socket before it writes the wake byte,
+                // so every client that connected is in the drained backlog, and
+                // new clients start a fresh daemon.
+                accept_queued(listener, state);
+                break;
+            }
         }
     }
     state.wait_for_connections();
     Ok(())
 }
 
-/// Blocks until a client connects or retirement wakes the loop; returns
-/// whether retirement did.
+enum Wake {
+    Connection,
+    Retired,
+    Idle,
+}
+
+/// Blocks until a client connects, retirement wakes the loop, or
+/// ``idle_timeout`` passes with neither.
 fn wait_for_connection_or_retirement(
     listener: &UnixListener,
     woken: &UnixStream,
-) -> io::Result<bool> {
+    idle_timeout: Option<Duration>,
+) -> io::Result<Wake> {
     let mut fds = [
         libc::pollfd {
             fd: listener.as_raw_fd(),
@@ -93,15 +131,54 @@ fn wait_for_connection_or_retirement(
             revents: 0,
         },
     ];
+    let started = idle_timeout.map(|_| std::time::Instant::now());
+    poll_for_wake(
+        &mut fds,
+        idle_timeout,
+        || started.expect("only timed waits read the clock").elapsed(),
+        |fds, timeout_ms| {
+            // SAFETY: `fds` holds two live descriptors for the call's duration.
+            let ready =
+                unsafe { libc::poll(fds.as_mut_ptr(), fds.len() as libc::nfds_t, timeout_ms) };
+            if ready < 0 {
+                Err(io::Error::last_os_error())
+            } else {
+                Ok(ready > 0)
+            }
+        },
+    )
+}
+
+/// One relative wait keeps its original budget across interruptions. Generic
+/// clock/poll operations let tests exercise that protocol without real signals
+/// or sleeps; the actual listener uses the same loop and no allocation.
+fn poll_for_wake(
+    fds: &mut [libc::pollfd; 2],
+    idle_timeout: Option<Duration>,
+    mut elapsed: impl FnMut() -> Duration,
+    mut poll: impl FnMut(&mut [libc::pollfd; 2], libc::c_int) -> io::Result<bool>,
+) -> io::Result<Wake> {
     loop {
-        // SAFETY: `fds` holds two live descriptors for the call's duration.
-        let ready = unsafe { libc::poll(fds.as_mut_ptr(), fds.len() as libc::nfds_t, -1) };
-        if ready >= 0 {
-            return Ok(fds[1].revents & libc::POLLIN != 0);
-        }
-        let err = io::Error::last_os_error();
-        if err.kind() != io::ErrorKind::Interrupted {
-            return Err(err);
+        let timeout_ms = idle_timeout.map_or(-1, |timeout| {
+            // Round a positive fractional millisecond up: truncating it to
+            // zero would busy-poll until the idle deadline.
+            timeout
+                .saturating_sub(elapsed())
+                .as_nanos()
+                .div_ceil(1_000_000)
+                .min(libc::c_int::MAX as u128) as libc::c_int
+        });
+        match poll(fds, timeout_ms) {
+            Ok(false) => return Ok(Wake::Idle),
+            Ok(true) => {
+                return Ok(if fds[1].revents & libc::POLLIN != 0 {
+                    Wake::Retired
+                } else {
+                    Wake::Connection
+                });
+            }
+            Err(err) if err.kind() == io::ErrorKind::Interrupted => continue,
+            Err(err) => return Err(err),
         }
     }
 }
@@ -147,3 +224,6 @@ fn accept_queued(listener: &UnixListener, state: &Arc<DaemonState>) {
         }
     }
 }
+
+#[cfg(test)]
+mod tests;

@@ -68,20 +68,41 @@ the same way. Two concurrent compiles would read each other's values.
 ### Cache identity and job transitions
 
 The cache and single-flight table use the same typed identity: the caller's
-source key, configuration namespace and complete `DaemonJobTarget`. Native
+source key, configuration namespace, complete `DaemonJobTarget`, and admitted
+semantic environment. Native
 identity includes both target triple and object/archive kind. WASM identity
 includes relocation mode and all three layout overrides, retaining absent
 versus explicit zero. Structural equality and hashing derive from the existing
 closed target/options types; adding an option therefore changes identity
 without maintaining a second field list or encoding.
 
-The module and function keys share one immutable target/namespace context.
+Schema 2 of `src/molt/backend_environment.json` owns request transport,
+semantic target applicability, raw/presence projection, native-worker capture,
+diagnostics bypass and reuse-only constraints. Both Python and the generated
+Rust enums consume these roles. Resource budgets, observation destinations and
+optional cache publication paths are transported without fragmenting artifact
+identity; diagnostics force execution. A stdlib output path contributes presence,
+while entry module, module symbols and expected reuse constraints contribute
+actual values. The core frontend variant excludes reuse constraints derived
+from that variant, avoiding recursive stdlib keys.
+
+Cache setup resolves profile defaults, selected entry/stdlib context and the
+admitted WASM runtime layout before computing keys. It carries that environment
+and layout to dispatch; daemon and one-shot execution apply the same selected
+partition contract. Later runtime binding checks still reject changed files.
+Native worker schema 2 carries typed keys with raw strings/null so existing
+failure replay manifests remain usable.
+
+The module and function keys share one immutable target/namespace/environment context.
 Request strings move into the keys; the LRU, its order queue and single-flight
 retain shared handles rather than formatting and copying composite strings.
 Equal module/function source keys share a handle. A bypassed cache or an empty
 source key creates no key or context. Key preparation allocates one context and up to two keys,
-plus a native triple clone when present. Hashing scales with key, namespace and
-triple length; WASM options take fixed work. This performs no serialization,
+plus a native triple clone when present. A keyed request lazily projects its
+semantic settings once per selected target, copying only included raw values;
+subsequent jobs share the same Arc. Unkeyed and bypassed jobs need no projection.
+Hashing scales with included semantic bytes (including stdlib manifests), key,
+namespace and triple length; WASM options take fixed work. This performs no serialization,
 cryptographic hash, file read, syscall or guest operation. These costs belong
 to compiler requests, never emitted binaries; no wall-clock improvement is
 claimed without a controlled measurement.
@@ -119,22 +140,42 @@ cache identity](https://github.com/mozilla/sccache/blob/main/docs/Caching.md)
 and [Bazel's explicit action inputs and command](https://bazel.build/remote/caching).
 Molt's in-process cache keeps structural keys instead of introducing a second
 serialized target schema. The configuration namespace and source key remain
-caller-provided. Binding the admitted semantic environment and actual consumed
-IR to those claims remains open under V1-01; target isolation alone does not
-establish authenticated compiler-input or release provenance.
+caller-provided. Actual admitted semantic settings now bind cache and flight identity even
+when a caller repeats its configuration claim. Binding consumed IR bytes to
+caller source claims remains open under V1-01; target/environment isolation
+does not establish authenticated compiler-input or release provenance.
 
 ### Retirement
 
-- A `{"retire": true}` request unlinks the socket first, so the next build finds no socket and starts a
-  fresh daemon. The daemon then writes the wake byte; the accept loop stops only on that byte, so it
-  accepts every connection queued before the unlink, waits for every connection thread, and exits.
-  Accepted work always finishes.
+- A `{"retire": true}` request, or `MOLT_BACKEND_DAEMON_IDLE_TIMEOUT` seconds
+  without a live connection, starts retirement. The default timeout is 1800
+  seconds; zero disables it. The idle clock starts at daemon creation and resets
+  when the last connection finishes. A long compile cannot consume the next idle
+  interval. The existing listener/wake poll owns the timer; no timer thread or
+  repeated process scan is added. Interrupted polls retain their original
+  monotonic budget, and positive fractional milliseconds round up rather than
+  busy-polling. Disabled idle timeouts read no timer clock.
+- Retirement unlinks the socket before writing the wake byte. The accept loop
+  stops only on that byte, drains the accepted backlog, waits for every
+  connection thread, and exits. Accepted work finishes. Before unlinking, the
+  daemon compares the path's device/inode with the socket it bound. Cooperating
+  launchers serialize startup and preserve a verified live socket; replacement
+  starts after unlink. This preflight identity check is not an atomic defense
+  against arbitrary external pathname replacement or concurrent direct launches.
 - Health reports `active_jobs` (jobs admitted and not answered) and `retiring`.
 - `tests/molt_diff.py` retires a verified daemon whose RSS exceeds `MOLT_DIFF_DAEMON_MAX_RSS_KB` only
-  when the daemon at the socket reports that daemon's pid and no active jobs. It records `retiring` in
-  the daemon's identity first; no pruner stops a retiring daemon, and the CLI's start path treats a
-  retiring daemon without a socket as absent instead of stopping it. Before this change the pruner sent SIGTERM to any oversized daemon,
-  mid-compile; three WASM builds in the 2026-10-15 corpus failed with "no linked module" that way.
+  when the observed process generation matches its identity and the responder
+  reports that pid with no active jobs. The daemon owns its retiring state;
+  Python writes no parallel retirement marker. The harness never signals a
+  daemon based on age, missing health or a missing socket. A silent/busy daemon
+  remains under its own lifecycle and explicit owner cancellation. Disabled RSS
+  maintenance scans no processes or identity files, and ordinary small daemons
+  trigger no identity-file scan. Before this change the pruner sent SIGTERM to
+  oversized daemons mid-compile; three WASM builds in the 2026-10-15 corpus failed
+  with "no linked module" that way.
+- A verified daemon with no socket may be draining accepted work. The launcher
+  starts its successor without stopping it. Missing readiness alone does not
+  replace a verified live daemon with a socket.
 - The CLI orphan sweep removes a dead retired daemon's identity but leaves its socket path, which now
   belongs to the successor.
 
@@ -152,10 +193,8 @@ establish authenticated compiler-input or release provenance.
 
 ## Open work
 
-- HF-219: an idle timeout. Prior art runs the timer from the last completion with no work in flight
-  (sccache's timer runs from the last arrival and can abort long compiles); defaults are 10 min
-  (sccache), 2 h (Kotlin) and 3 h (Gradle, Bazel), with a short never-used timeout (Kotlin, 60 s). Size it
-  from measured reuse intervals.
+- Qualify the idle policy on supported daemon hosts and measure reuse intervals,
+  memory retention and cold rewarming costs before claiming an optimal default.
 - Memory admission by declared request budgets, corrected by measured pressure (Linux PSI, cgroup v2),
   instead of the static envelope.
 - A client that disconnects does not cancel its compile; the output still reaches the cache.

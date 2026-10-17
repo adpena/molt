@@ -1010,6 +1010,16 @@ _REGISTRY_JSON = r"""{
     },
     {
       "audience": "user",
+      "default": "1800",
+      "kind": "int",
+      "name": "MOLT_BACKEND_DAEMON_IDLE_TIMEOUT",
+      "output_neutral": false,
+      "owner": "runtime/molt-backend/src/backend_process/io_limits/limits.rs",
+      "summary": "Seconds the backend daemon waits with no connection before it retires and unlinks its socket; 0 keeps it alive, and non-numeric values use 1800.",
+      "values": []
+    },
+    {
+      "audience": "user",
       "default": "5242880",
       "kind": "int",
       "name": "MOLT_BACKEND_DAEMON_LOG_MAX_BYTES",
@@ -3102,16 +3112,6 @@ _REGISTRY_JSON = r"""{
     },
     {
       "audience": "developer",
-      "default": "600",
-      "kind": "int",
-      "name": "MOLT_DIFF_DAEMON_STALE_SEC",
-      "output_neutral": false,
-      "owner": "tests/molt_diff.py",
-      "summary": "Minimum process age in seconds before tests/molt_diff.py terminates a backend daemon that no longer answers a socket ping; values below 60 are raised to 60, non-numeric values fall back to 600.",
-      "values": []
-    },
-    {
-      "audience": "developer",
       "default": "1",
       "kind": "bool",
       "name": "MOLT_DIFF_DISABLE_DAEMON_ON_DYLD",
@@ -3478,7 +3478,7 @@ _REGISTRY_JSON = r"""{
       "name": "MOLT_DIFF_PRUNE_EVERY",
       "output_neutral": false,
       "owner": "tests/molt_diff.py",
-      "summary": "Number of completed differential tests between pruning passes that remove orphan diff workers, orphan build helpers and oversized or unresponsive backend daemons during a parallel run; 0 or a negative value disables the periodic passes, non-numeric values fall back to 32.",
+      "summary": "Number of completed differential tests between maintenance passes that remove orphan diff workers and orphan build helpers and request graceful retirement of verified idle oversized backend daemons; silent or busy daemons are left to their own lifecycle and explicit owner cancellation. 0 or a negative value disables the periodic passes, non-numeric values fall back to 32.",
       "values": []
     },
     {

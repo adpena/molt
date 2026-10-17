@@ -152,6 +152,7 @@ def test_daemon_dispatch_converts_compiler_identity_rejection(
 
     monkeypatch.setattr(backend_compile, "_backend_daemon_config_digest", reject)
     prepared, error = backend_compile._prepare_backend_dispatch(
+        backend_environment=CodegenSelection().environment(os.environ, profile="dev"),
         is_rust_transpile=False,
         is_luau_transpile=False,
         is_wasm=False,

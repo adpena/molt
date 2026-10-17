@@ -748,6 +748,7 @@ def test_prepare_backend_setup_warms_native_runtime_with_requested_stdlib_profil
         runtime_lib=tmp_path / "libmolt_runtime.a"
     )
     cache_setup = cli_models._BackendCacheSetup(
+        backend_environment={},
         artifact_contract=resolve_backend_artifact_contract(
             target="native", emit_mode="obj", target_triple=None
         ),
@@ -792,6 +793,7 @@ def test_prepare_backend_setup_warms_native_runtime_with_requested_stdlib_profil
     )
 
     prepared, err = cli_backend_compile._prepare_backend_setup(
+        split_runtime=False,
         is_rust_transpile=False,
         is_luau_transpile=False,
         is_wasm=False,
@@ -832,6 +834,7 @@ def test_prepare_backend_setup_records_backend_stage_timings(
         runtime_lib=tmp_path / "libmolt_runtime.a"
     )
     cache_setup = cli_models._BackendCacheSetup(
+        backend_environment={},
         artifact_contract=resolve_backend_artifact_contract(
             target="native", emit_mode="obj", target_triple=None
         ),
@@ -887,6 +890,7 @@ def test_prepare_backend_setup_records_backend_stage_timings(
     )
 
     prepared, err = cli_backend_compile._prepare_backend_setup(
+        split_runtime=False,
         is_rust_transpile=False,
         is_luau_transpile=False,
         is_wasm=False,
@@ -938,6 +942,7 @@ def test_prepare_backend_setup_enables_source_loader_for_native_artifacts(
         runtime_lib=tmp_path / "libmolt_runtime.a"
     )
     cache_setup = cli_models._BackendCacheSetup(
+        backend_environment={},
         artifact_contract=resolve_backend_artifact_contract(
             target="native", emit_mode="obj", target_triple=None
         ),
@@ -1004,6 +1009,7 @@ def test_prepare_backend_setup_enables_source_loader_for_native_artifacts(
     )
 
     prepared, err = cli_backend_compile._prepare_backend_setup(
+        split_runtime=False,
         is_rust_transpile=False,
         is_luau_transpile=False,
         is_wasm=False,

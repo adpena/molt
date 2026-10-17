@@ -17,44 +17,49 @@ use std::collections::BTreeMap;
 use std::ffi::OsString;
 use std::io;
 use std::process::Command;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, OnceLock};
 
 include!(concat!(env!("OUT_DIR"), "/backend_environment_keys.rs"));
 
-impl BackendEnvGroup {
-    /// Whether a daemon request carries this group. Build identity names the
-    /// compiler binary, which the daemon's config digest fixes for its whole
-    /// life, so it stays in the process environment.
-    pub const fn request_scoped(self) -> bool {
-        match self {
-            BackendEnvGroup::BuildIdentity => false,
-            BackendEnvGroup::Common
-            | BackendEnvGroup::Native
-            | BackendEnvGroup::RuntimeIdentity
-            | BackendEnvGroup::Wasm
-            | BackendEnvGroup::Diagnostic
-            | BackendEnvGroup::Observation
-            | BackendEnvGroup::Resource
-            | BackendEnvGroup::Transport => true,
-        }
-    }
+/// The actual backend target selecting a catalog semantic projection.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BackendCodegenTarget {
+    Native,
+    Wasm,
+}
 
-    /// Whether the group selects native code generation, so a serialized
-    /// native worker job binds it.
-    const fn native_codegen_identity(self) -> bool {
+impl BackendSemanticTarget {
+    fn includes(self, target: BackendCodegenTarget) -> bool {
+        matches!(
+            (self, target),
+            (Self::Both, _)
+                | (Self::Native, BackendCodegenTarget::Native)
+                | (Self::Wasm, BackendCodegenTarget::Wasm)
+        )
+    }
+}
+
+/// An identity value preserves raw empty strings or intentionally only presence.
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum SemanticEnvironmentValue {
+    Raw(Box<str>),
+    Present,
+}
+
+impl BackendIdentityProjection {
+    fn project(self, value: impl FnOnce() -> String) -> SemanticEnvironmentValue {
         match self {
-            BackendEnvGroup::Common
-            | BackendEnvGroup::Native
-            | BackendEnvGroup::RuntimeIdentity
-            | BackendEnvGroup::BuildIdentity => true,
-            BackendEnvGroup::Wasm
-            | BackendEnvGroup::Diagnostic
-            | BackendEnvGroup::Observation
-            | BackendEnvGroup::Resource
-            | BackendEnvGroup::Transport => false,
+            Self::Raw => SemanticEnvironmentValue::Raw(value().into_boxed_str()),
+            Self::Presence => SemanticEnvironmentValue::Present,
         }
     }
+}
+
+/// Immutable actual request inputs, shared by every cache tier and job.
+#[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct SemanticBackendEnvironment {
+    values: BTreeMap<BackendEnv, SemanticEnvironmentValue>,
 }
 
 /// The variables a daemon request carries.
@@ -67,10 +72,19 @@ pub fn daemon_request_env_keys() -> impl Iterator<Item = BackendEnv> {
 
 /// One request's backend settings. Absent and empty values stay distinct:
 /// several pass controls test presence, not truthiness.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default)]
 pub struct BackendEnvironment {
     values: BTreeMap<BackendEnv, Box<str>>,
+    native_semantics: OnceLock<Arc<SemanticBackendEnvironment>>,
+    wasm_semantics: OnceLock<Arc<SemanticBackendEnvironment>>,
 }
+
+impl PartialEq for BackendEnvironment {
+    fn eq(&self, other: &Self) -> bool {
+        self.values == other.values
+    }
+}
+impl Eq for BackendEnvironment {}
 
 impl BackendEnvironment {
     /// Admits a daemon request's `env` object against the closed key set.
@@ -91,7 +105,10 @@ impl BackendEnvironment {
                 .ok_or_else(|| format!("backend environment variable {name} must be a string"))?;
             values.insert(key, value.into());
         }
-        Ok(Self { values })
+        Ok(Self {
+            values,
+            ..Self::default()
+        })
     }
 
     /// A snapshot with exactly these settings.
@@ -102,11 +119,40 @@ impl BackendEnvironment {
                 .into_iter()
                 .map(|(key, value)| (key, value.into()))
                 .collect(),
+            ..Self::default()
         }
     }
 
     pub fn get(&self, key: BackendEnv) -> Option<&str> {
         self.values.get(&key).map(|value| &**value)
+    }
+
+    /// Each target projects once, only when an eligible keyed job requests it.
+    /// Presence-only paths allocate no copied path string. Other semantic bytes
+    /// are copied once per request/target, never per job or warm lookup.
+    pub fn semantic_identity(
+        &self,
+        target: BackendCodegenTarget,
+    ) -> Arc<SemanticBackendEnvironment> {
+        let slot = match target {
+            BackendCodegenTarget::Native => &self.native_semantics,
+            BackendCodegenTarget::Wasm => &self.wasm_semantics,
+        };
+        Arc::clone(slot.get_or_init(|| {
+            Arc::new(SemanticBackendEnvironment {
+                values: self
+                    .values
+                    .iter()
+                    .filter(|(key, _)| {
+                        key.group().request_scoped()
+                            && key.group().semantic_target().includes(target)
+                    })
+                    .map(|(key, value)| {
+                        (*key, key.group().projection().project(|| value.to_string()))
+                    })
+                    .collect(),
+            })
+        }))
     }
 }
 
@@ -229,6 +275,31 @@ fn try_var(key: BackendEnv) -> io::Result<Option<String>> {
     }
 }
 
+/// Bind cache admission to the actual active request, never a caller digest.
+/// Direct compiler consumers use the same process accessor and reject invalid
+/// Unicode. Build identity is fixed for a daemon process and is not request data.
+pub fn current_semantic_environment(
+    target: BackendCodegenTarget,
+) -> io::Result<Arc<SemanticBackendEnvironment>> {
+    if let Some(identity) = SCOPE.with(|scope| {
+        scope
+            .borrow()
+            .as_ref()
+            .map(|env| env.semantic_identity(target))
+    }) {
+        return Ok(identity);
+    }
+    let mut values = BTreeMap::new();
+    for key in
+        daemon_request_env_keys().filter(|key| key.group().semantic_target().includes(target))
+    {
+        if let Some(value) = try_var(key)? {
+            values.insert(key, key.group().projection().project(|| value));
+        }
+    }
+    Ok(Arc::new(SemanticBackendEnvironment { values }))
+}
+
 /// Gives a child backend process exactly the current request's settings. In
 /// a one-shot process the child already inherits them.
 pub fn configure_child(command: &mut Command) {
@@ -248,17 +319,19 @@ pub fn configure_child(command: &mut Command) {
 pub fn compilation_diagnostics_requested() -> bool {
     BackendEnv::ALL
         .iter()
-        .filter(|key| key.group() == BackendEnvGroup::Diagnostic)
+        .filter(|key| key.group().diagnostic_bypass())
         .any(|key| is_set(*key))
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct NativeCodegenEnvironment {
     schema: u32,
-    pub values: BTreeMap<String, Option<String>>,
+    /// Raw child-process values also form the independently replayable failure manifest.
+    pub values: BTreeMap<BackendEnv, Option<String>>,
 }
 
-const NATIVE_CODEGEN_ENVIRONMENT_SCHEMA: u32 = 1;
+const NATIVE_CODEGEN_ENVIRONMENT_SCHEMA: u32 = 2;
 
 impl NativeCodegenEnvironment {
     pub fn capture() -> io::Result<Self> {
@@ -271,7 +344,7 @@ impl NativeCodegenEnvironment {
         let values = BackendEnv::ALL
             .iter()
             .filter(|key| key.group().native_codegen_identity())
-            .map(|key| lookup(*key).map(|value| (key.name().to_string(), value)))
+            .map(|key| lookup(*key).map(|value| (*key, value)))
             .collect::<io::Result<_>>()?;
         Ok(Self {
             schema: NATIVE_CODEGEN_ENVIRONMENT_SCHEMA,
@@ -428,3 +501,7 @@ mod tests {
         assert!(carry().0.is_none());
     }
 }
+
+#[cfg(test)]
+#[path = "backend_environment/semantic_tests.rs"]
+mod semantic_tests;

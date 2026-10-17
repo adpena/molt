@@ -167,10 +167,10 @@ def test_backend_rejects_unowned_inherited_guard_scratch(tmp_path):
 
 
 def test_guard_scratch_is_not_a_request_or_codegen_identity_input():
-    from molt.cli.backend_execution import _BACKEND_REQUEST_ENV_KNOBS
+    from molt.backend_environment import request_environment_keys
 
     guard = {"MOLT_GUARD_SCRATCH_ROOT": "/request-specific-scratch"}
-    assert "MOLT_GUARD_SCRATCH_ROOT" not in _BACKEND_REQUEST_ENV_KNOBS
+    assert "MOLT_GUARD_SCRATCH_ROOT" not in request_environment_keys()
     assert _backend_codegen_env_digest(
         is_wasm=False, env=guard
     ) == _backend_codegen_env_digest(is_wasm=False, env={})
@@ -207,3 +207,115 @@ def test_optional_stdlib_cache_requires_distinct_owned_output(tmp_path, output, 
         error
         == "Shared stdlib cache entry requires a distinct build-owned archive output"
     )
+
+
+def test_operation_cache_keys_follow_selected_inputs_and_ignore_ambient_custody(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    from molt.cli import backend_cache_setup
+    from molt.cli.backend_artifact_contract import resolve_backend_artifact_contract
+    from molt.cli.models import _ModuleGraphMetadata
+    from molt.cli.rust_cpu_policy import RustCpuPolicy
+    from molt.target_python import TargetPythonVersion
+
+    def setup(entry: str = "main", profile: str = "dev"):
+        return backend_cache_setup._prepare_backend_cache_setup(
+            backend_bin=tmp_path / "backend",
+            cache_enabled=True,
+            ir={"functions": []},
+            target="native",
+            artifact_contract=resolve_backend_artifact_contract(
+                target="native", emit_mode="bin"
+            ),
+            profile=profile,
+            runtime_cargo_profile="dev-fast",
+            backend_cargo_profile="dev-fast",
+            emit_mode="bin",
+            is_wasm=False,
+            linked=False,
+            wasm_layout=None,
+            project_root=tmp_path,
+            cache_dir=str(tmp_path / "cache"),
+            output_artifact=tmp_path / "output.a",
+            warnings=[],
+            entry_module=entry,
+            module_graph_metadata=_ModuleGraphMetadata(
+                logical_source_path_by_module={},
+                entry_override_by_module={},
+                module_is_namespace_by_module={},
+                module_is_package_by_module={},
+                module_execution_kind_by_module={},
+                frontend_module_costs=None,
+                stdlib_like_by_module={},
+            ),
+            target_python=TargetPythonVersion(3, 12, 0),
+            backend_compiler_fingerprint="selected-compiler",
+            codegen=CodegenSelection(),
+            rust_cpu=RustCpuPolicy.BASELINE,
+        )
+
+    for name in environment_keys(
+        "common",
+        "native",
+        "native_context",
+        "native_partition",
+        "native_reuse",
+        "build_identity",
+    ):
+        monkeypatch.delenv(name, raising=False)
+    baseline = setup()
+    for name in environment_keys(
+        "native_context",
+        "native_partition",
+        "native_reuse",
+        "transport",
+        "build_identity",
+        "observation",
+        "resource",
+    ):
+        monkeypatch.setenv(name, "hostile-ambient-custody")
+    # Do not feed invalid resource budgets through unrelated host admission.
+    for name in environment_keys("resource"):
+        monkeypatch.delenv(name)
+    selected = setup()
+    for name in ("cache_key", "function_cache_key", "stdlib_object_cache_key"):
+        assert getattr(selected, name) == getattr(baseline, name)
+        assert getattr(setup(entry="different"), name) != getattr(baseline, name)
+    assert selected.backend_environment["MOLT_ENTRY_MODULE"] == "main"
+    assert (
+        selected.backend_environment["MOLT_BACKEND_COMPILER_FINGERPRINT"]
+        == "selected-compiler"
+    )
+    assert selected.backend_environment["MOLT_STDLIB_MODULE_SYMBOLS"] == "[]"
+    assert "MOLT_STDLIB_OBJ" not in selected.backend_environment
+    sized = setup(profile="release-size")
+    assert sized.backend_environment["MOLT_BACKEND_OPT_LEVEL"] == "speed_and_size"
+    assert sized.cache_key != baseline.cache_key
+
+
+@pytest.mark.parametrize("is_wasm", [False, True])
+def test_catalog_roles_separate_semantics_from_observation_and_transport(is_wasm):
+    from molt.backend_environment import request_environment_inputs
+
+    baseline = _backend_codegen_env_digest(is_wasm=is_wasm, env={})
+    for name in environment_keys("diagnostic", "observation", "resource", "transport"):
+        assert _backend_codegen_env_digest(is_wasm=is_wasm, env={name: ""}) == baseline
+        assert request_environment_inputs({name: ""}) == {name: ""}
+    if not is_wasm:
+        absent = codegen_environment_inputs(is_wasm=False, env={})
+        left = codegen_environment_inputs(
+            is_wasm=False, env={"MOLT_STDLIB_OBJ": "/left.a"}
+        )
+        right = codegen_environment_inputs(
+            is_wasm=False, env={"MOLT_STDLIB_OBJ": "/right.a"}
+        )
+        assert left == right == {"MOLT_STDLIB_OBJ": True}
+        assert left != absent
+        # Reuse constraints derive from the core variant; feeding them back
+        # into it would make the stdlib key recursively depend on itself.
+        assert (
+            _backend_codegen_env_digest(
+                is_wasm=False, env={"MOLT_STDLIB_CACHE_KEY": "derived"}
+            )
+            == baseline
+        )

@@ -318,6 +318,7 @@ def _run_backend_pipeline(
                 profile=profile,
                 backend_cargo_profile=prepared_build_config.backend_cargo_profile,
                 linked=output_layout.linked,
+                split_runtime=output_layout.split_runtime,
                 project_root=prepared_build_roots.project_root,
                 cache_dir=cache_dir,
                 output_artifact=output_layout.output_artifact,

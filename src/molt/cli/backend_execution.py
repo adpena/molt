@@ -18,7 +18,11 @@ from molt.default_paths import (
     validate_required_stdlib_output,
     shared_stdlib_archive_cache_root,
 )
-from molt.backend_environment import environment_keys, codegen_environment_inputs
+from molt.backend_environment import (
+    environment_keys,
+    codegen_environment_inputs,
+    request_environment_inputs,
+)
 from molt import backend_daemon_custody as _daemon_custody
 from molt.backend_executable_names import (
     DEFAULT_BACKEND_FEATURES as _DEFAULT_BACKEND_FEATURES,
@@ -64,7 +68,6 @@ from molt.cli.command_runtime import (
     _load_cli_harness_memory_guard,
     _run_completed_command,
 )
-from molt.cli.config_resolution import ENTRY_OVERRIDE_ENV
 from molt.cli.env_paths import _resolve_env_path
 from molt.cli.models import _BackendDaemonCompileResult
 from molt.cli.runtime_native_codegen import (
@@ -83,30 +86,10 @@ from molt.cli.runtime_paths import (
 _BACKEND_DAEMON_PROTOCOL_VERSION = 1
 
 
-_BACKEND_CODEGEN_ENV_DIGEST_SCHEMA_VERSION = 7
+_BACKEND_CODEGEN_ENV_DIGEST_SCHEMA_VERSION = 8
 
 
-_DAEMON_CONFIG_DIGEST_SCHEMA_VERSION = 9
-
-
-# Catalog projections, not independent knob lists. The daemon admits each
-# request's controls against the same catalog and scopes them to that request.
-_BACKEND_CODEGEN_REQUEST_ENV_KNOBS = environment_keys(
-    "common", "native", "wasm", "runtime_identity", "diagnostic", "observation"
-)
-_BACKEND_RESOURCE_ENV_KNOBS = environment_keys("resource")
-_BACKEND_REQUEST_ENV_KNOBS = (
-    _BACKEND_CODEGEN_REQUEST_ENV_KNOBS + _BACKEND_RESOURCE_ENV_KNOBS
-)
-_NATIVE_CODEGEN_ENV_KNOBS = environment_keys(
-    "common",
-    "native",
-    "runtime_identity",
-    "build_identity",
-    "diagnostic",
-    "observation",
-)
-_WASM_CODEGEN_ENV_KNOBS = environment_keys("wasm")
+_DAEMON_CONFIG_DIGEST_SCHEMA_VERSION = 10
 
 
 @functools.lru_cache(maxsize=256)
@@ -231,30 +214,66 @@ def _observed_native_codegen_identity(
     return canonical_json_sha256(payload)
 
 
-@functools.lru_cache(maxsize=64)
-def _backend_codegen_env_inputs_cached(
-    is_wasm: bool,
-    native_values: tuple[tuple[str, str], ...],
-    wasm_values: tuple[tuple[str, str], ...],
-) -> dict[str, str]:
-    payload = {key: value for key, value in native_values}
-    if is_wasm:
-        payload.update({key: value for key, value in wasm_values})
-    return {name: payload[name] for name in sorted(payload)}
-
-
 def _backend_codegen_env_inputs(
     *,
     is_wasm: bool,
     env: Mapping[str, str] | None = None,
-) -> dict[str, str]:
+) -> dict[str, str | bool]:
     source = (
         env if env is not None else native_runtime_codegen_environment(os.environ, None)
     )
-    payload = codegen_environment_inputs(is_wasm=is_wasm, env=source)
-    if env is None:
-        return _backend_codegen_env_inputs_cached(is_wasm, tuple(payload.items()), ())
-    return payload
+    return codegen_environment_inputs(is_wasm=is_wasm, env=source)
+
+
+_BACKEND_COMPILER_FINGERPRINT_ENV = "MOLT_BACKEND_COMPILER_FINGERPRINT"
+
+
+def _backend_environment_with_compiler_fingerprint(
+    base_env: Mapping[str, str],
+    fingerprint: str | None,
+) -> dict[str, str]:
+    backend_env = dict(base_env)
+    if fingerprint:
+        backend_env[_BACKEND_COMPILER_FINGERPRINT_ENV] = fingerprint
+    else:
+        backend_env.pop(_BACKEND_COMPILER_FINGERPRINT_ENV, None)
+    return backend_env
+
+
+def _backend_request_environment(
+    base: Mapping[str, str],
+    *,
+    entry_module: str | None,
+    stdlib_object_path: Path | None = None,
+    stdlib_object_cache_key: str | None = None,
+    stdlib_object_manifest: str | None = None,
+    stdlib_module_symbols_json: str | None = None,
+    cache_entry: Path | None = None,
+) -> dict[str, str]:
+    """Apply this operation's native partition contract, never ambient custody.
+
+    Cache construction calls this before the stdlib key/path exists. Its split
+    boolean already belongs to the cache variant; no invented path enters the
+    environment just to represent partition presence.
+    """
+    env = dict(base)
+    for key in environment_keys("native_context", "native_partition", "native_reuse"):
+        env.pop(key, None)
+    env.pop("MOLT_STDLIB_CACHE_ENTRY", None)
+    selected = {
+        "MOLT_ENTRY_MODULE": entry_module,
+        "MOLT_STDLIB_OBJ": str(stdlib_object_path)
+        if stdlib_object_path is not None
+        else None,
+        "MOLT_STDLIB_CACHE_KEY": stdlib_object_cache_key,
+        "MOLT_STDLIB_CACHE_MANIFEST": stdlib_object_manifest,
+        "MOLT_STDLIB_MODULE_SYMBOLS": stdlib_module_symbols_json,
+        "MOLT_STDLIB_CACHE_ENTRY": str(cache_entry)
+        if cache_entry is not None
+        else None,
+    }
+    env.update((key, value) for key, value in selected.items() if value is not None)
+    return env
 
 
 def _command_has_path_separator(command: str) -> bool:
@@ -553,17 +572,11 @@ def _sweep_orphaned_backend_daemon_locks(
                 _remove_backend_daemon_identity(identity_file)
                 cleaned += 1
                 continue
+            # A daemon that retired removed its own socket. A socket left at
+            # the path is a crashed daemon's or a successor's; the next start
+            # there probes it before removing it.
             _remove_backend_daemon_identity(identity_file)
             cleaned += 1
-            if identity.retiring:
-                # A retired daemon removed its own socket; any socket at that
-                # path now belongs to the daemon that succeeded it.
-                continue
-            try:
-                if identity.socket_path.exists():
-                    identity.socket_path.unlink()
-            except OSError:
-                pass
 
     return cleaned
 
@@ -727,19 +740,6 @@ def _backend_daemon_identity_from_health(
         backend_bin=backend_bin,
         process_command=_backend_daemon_process_command,
         environ=environ,
-    )
-
-
-def _terminate_backend_daemon_identity(
-    identity: _BackendDaemonIdentity,
-    *,
-    grace: float = 1.0,
-) -> bool:
-    return _daemon_custody.terminate_backend_daemon_identity(
-        identity,
-        grace=grace,
-        health_probe=_backend_daemon_health_probe,
-        pid_alive=_pid_alive,
     )
 
 
@@ -1051,23 +1051,19 @@ def _backend_daemon_compile_request_bytes(
     # them per-request (the daemon process inherits env from startup,
     # not from the build request). The caller supplies the build's own
     # mapping, so its codegen selection reaches the daemon explicitly.
-    env_passthrough = {}
-    for key in _BACKEND_REQUEST_ENV_KNOBS:
-        val = request_environment.get(key)
-        if val is not None:
-            env_passthrough[key] = val
-    if entry_module:
-        env_passthrough[ENTRY_OVERRIDE_ENV] = entry_module
-    if stdlib_object_path is not None:
-        env_passthrough["MOLT_STDLIB_OBJ"] = str(stdlib_object_path)
-    if cache_entry is not None:
-        env_passthrough["MOLT_STDLIB_CACHE_ENTRY"] = str(Path(cache_entry).resolve())
-    if stdlib_object_cache_key:
-        env_passthrough["MOLT_STDLIB_CACHE_KEY"] = stdlib_object_cache_key
-    if stdlib_object_manifest:
-        env_passthrough["MOLT_STDLIB_CACHE_MANIFEST"] = stdlib_object_manifest
-    if stdlib_module_symbols_json:
-        env_passthrough["MOLT_STDLIB_MODULE_SYMBOLS"] = stdlib_module_symbols_json
+    env_passthrough = request_environment_inputs(
+        _backend_request_environment(
+            request_environment,
+            entry_module=entry_module or None,
+            stdlib_object_path=stdlib_object_path,
+            stdlib_object_cache_key=stdlib_object_cache_key,
+            stdlib_object_manifest=stdlib_object_manifest,
+            stdlib_module_symbols_json=stdlib_module_symbols_json,
+            cache_entry=Path(cache_entry).resolve()
+            if cache_entry is not None
+            else None,
+        )
+    )
     # Callable inputs are selected by this operation's binding, never ambient
     # Python process state. Rust admits the exact supplied bytes before parsing.
     try:
@@ -1325,24 +1321,14 @@ def _start_backend_daemon(
                 # queue on that socket; restarting here can orphan a busy
                 # daemon and submit the same heavy full-IR request twice.
                 return publish_ready_custody()
-            elif existing_identity.retiring:
-                # A retiring daemon unlinked its socket and is finishing the
-                # connections it accepted. Start its successor, whose identity
-                # replaces this record; never stop the draining daemon.
-                existing_identity = None
-            else:
-                _terminate_backend_daemon_identity(
-                    existing_identity,
-                    grace=1.0,
-                )
-                _remove_backend_daemon_identity(identity_path)
-                existing_identity = None
+            # The daemon unlinks its socket only when it retires, on request
+            # or when idle, and then exits once its accepted connections
+            # finish. Start its successor, whose identity replaces this
+            # record; never stop the draining daemon.
+            existing_identity = None
         else:
-            _report_daemon_issue(
-                "Ignoring stale backend daemon identity "
-                f"{identity_path}; recorded pid {existing_identity.pid} is not "
-                "a verified live daemon."
-            )
+            # The daemon exited. A clean retirement removed its socket; a
+            # socket left behind is reported and removed below.
             _remove_backend_daemon_identity(identity_path)
             existing_identity = None
     try:
