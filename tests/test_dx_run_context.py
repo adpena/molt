@@ -1927,7 +1927,11 @@ def test_workspace_targets_execute_own_cargo_sources(tmp_path):
             and key not in {"RUSTC_WRAPPER", "RUSTC_WORKSPACE_WRAPPER"}
         }
         caller.update(
-            MOLT_EXT_ROOT=str(artifact), CARGO_INCREMENTAL="0", MOLT_USE_SCCACHE="0"
+            MOLT_EXT_ROOT=str(artifact),
+            CARGO_INCREMENTAL="0",
+            MOLT_USE_SCCACHE="0",
+            # Two registry-free workspace fixtures own this measured budget.
+            MOLT_DISK_GUARD_HIGH_WATER_GB="1",
         )
         # Launch as consumers do: the linker needs the context's TMP to exist
         # (MSVC link.exe writes its response file there).

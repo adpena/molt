@@ -5145,7 +5145,7 @@ def test_executor_real_cargo_test_timeout_retains_completed_incremental_cache(
     )
     (project / "hang.rs").write_text(
         "#[test]\nfn hanging_test() {\n"
-        'std::fs::write(std::env::var("MOLT_TEST_STARTED").unwrap(), b"started").unwrap();\n'
+        'std::fs::write(std::env::var("TEST_STARTED_FILE").unwrap(), b"started").unwrap();\n'
         "loop { std::thread::sleep(std::time::Duration::from_secs(1)); }\n}\n",
         encoding="utf-8",
     )
@@ -5155,6 +5155,9 @@ def test_executor_real_cargo_test_timeout_retains_completed_incremental_cache(
         **dict.fromkeys(CARGO_WRAPPER_ENV_NAMES, ""),
         "CARGO_TARGET_DIR": str(target),
         "CARGO_INCREMENTAL": "1",
+        # This registry-free crate still measures real free space, with its
+        # own headroom rather than the full-runtime build's disk budget.
+        "MOLT_DISK_GUARD_HIGH_WATER_GB": "1",
     }
     manifest = ["--manifest-path", str(project / "Cargo.toml"), "--test", "hang"]
     # Compile outside the timed partition: the 12-second budget then covers only
@@ -5176,7 +5179,7 @@ def test_executor_real_cargo_test_timeout_retains_completed_incremental_cache(
             "timeout_seconds": 12,
             "toolchains": ["cargo", "python"],
             "argv": ["cargo", "test", "--offline", *manifest],
-            "env": {**cargo_env, "MOLT_TEST_STARTED": str(started)},
+            "env": {**cargo_env, "TEST_STARTED_FILE": str(started)},
         },
     )
     plan = _synthetic_executor_plan((command,), limits={"resource-a": 1})
