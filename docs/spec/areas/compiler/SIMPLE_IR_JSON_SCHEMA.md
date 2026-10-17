@@ -637,8 +637,6 @@ All use the standard `args` + `out` pattern.
 | `id`                  | `args`, `out`                 | id(obj)                  |
 | `ord`                 | `args`, `out`                 | ord(ch)                  |
 | `chr`                 | `args`, `out`                 | chr(n)                   |
-| `hash`                | `args`, `out`                 | hash(obj)                |
-| `bool_from_obj`       | `args`, `out`                 | bool(obj)                |
 
 ### Box/Unbox and Memory
 
@@ -787,21 +785,6 @@ consumed, `result` and `last` the accumulator and loop target after them, and
 | `binding_alias`     | `args`, `out`         | Alias bits plus owned local retain |
 | `cast`              | `args`, `out`         | Type cast                        |
 | `widen`             | `args`, `out`         | Widen representation             |
-| `json_parse`        | `args`, `out`         | Parse JSON string                |
-| `msgpack_parse`     | `args`, `out`         | Parse msgpack bytes              |
-| `cbor_parse`        | `args`, `out`         | Parse CBOR bytes                 |
-| `file_open`         | `args`, `out`         | Open file                        |
-| `file_read`         | `args`, `out`         | Read file                        |
-| `file_write`        | `args`, `out`         | Write file                       |
-| `file_close`        | `args`, `out`         | Close file                       |
-| `file_flush`        | `args`, `out`         | Flush file                       |
-| `env_get`           | `args`, `out`         | Get environment variable         |
-| `memoryview_new`    | `args`, `out`         | Create memoryview                |
-| `memoryview_tobytes`| `args`, `out`         | memoryview.tobytes()             |
-| `buffer2d_new`      | `args`, `out`         | Create 2D buffer                 |
-| `buffer2d_get`      | `args`, `out`         | Get from 2D buffer               |
-| `buffer2d_set`      | `args`, `out`         | Set in 2D buffer                 |
-| `buffer2d_matmul`   | `args`, `out`         | 2D buffer matrix multiply        |
 | `state_block_start` | --                    | State machine block start        |
 | `state_block_end`   | --                    | State machine block end          |
 
