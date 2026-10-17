@@ -4,12 +4,19 @@ from __future__ import annotations
 
 from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
+from functools import cache
 import json
+import math
 import os
 from pathlib import Path
 import re
 import shutil
 import stat
+import sys
+from typing import TYPE_CHECKING, Literal
+
+if TYPE_CHECKING:
+    import ctypes
 
 
 _GIB = 1024**3
@@ -26,9 +33,10 @@ DISK_GUARD_HIGH_WATER_ENV = "MOLT_DISK_GUARD_HIGH_WATER_GB"
 # A guarded run starts only when its scratch volume has this much free space.
 DEFAULT_SCRATCH_BUDGET_BYTES = 4 * _GIB
 SCRATCH_BUDGET_ENV = "MOLT_SCRATCH_BUDGET_GB"
-DISK_CAPACITY_DIAGNOSTIC_SCHEMA = "molt.disk-capacity.v1"
+DISK_CAPACITY_DIAGNOSTIC_SCHEMA = "molt.disk-capacity.v2"
 
 FreeSpaceMeasurement = Callable[[Path], int]
+CapacityMeasurement = Literal["filesystem", "supplied", "darwin-important-usage"]
 
 
 @dataclass(frozen=True, slots=True)
@@ -40,6 +48,24 @@ class DiskCapacityProbe:
     free_bytes: int | None
     required_bytes: int
     error: str | None = None
+    important_usage_bytes: int | None = None
+    measurement: CapacityMeasurement = "filesystem"
+
+    @property
+    def available_bytes(self) -> int | None:
+        return (
+            self.important_usage_bytes
+            if self.measurement == "darwin-important-usage"
+            else self.free_bytes
+        )
+
+    @property
+    def ready(self) -> bool:
+        return (
+            self.error is None
+            and self.available_bytes is not None
+            and self.available_bytes >= self.required_bytes
+        )
 
     def as_dict(self) -> dict[str, object]:
         return {
@@ -48,6 +74,9 @@ class DiskCapacityProbe:
                 None if self.measured_path is None else str(self.measured_path)
             ),
             "free_bytes": self.free_bytes,
+            "important_usage_bytes": self.important_usage_bytes,
+            "available_bytes": self.available_bytes,
+            "measurement": self.measurement,
             "required_bytes": self.required_bytes,
             "error": self.error,
         }
@@ -98,6 +127,20 @@ def _setting_error(
         f"{default_bytes / _GIB:g} GiB default.",
         diagnostic,
     )
+
+
+def capacity_bytes_from_gib(value: float) -> int:
+    """Convert a caller's non-negative GiB budget to bounded whole bytes."""
+    byte_value = value * _GIB
+    if (
+        not math.isfinite(byte_value)
+        or byte_value < 0
+        or byte_value > _MAX_SUPPORTED_BYTES
+    ):
+        raise ValueError(
+            f"capacity must be finite and non-negative, at most {_MAX_SUPPORTED_BYTES} bytes"
+        )
+    return math.ceil(byte_value)
 
 
 def minimum_headroom_bytes(env: Mapping[str, str] | None = None) -> int:
@@ -227,20 +270,99 @@ def _default_measure_free_bytes(path: Path) -> int:
     return shutil.disk_usage(path).free
 
 
+@cache
+def _darwin_capacity_api() -> tuple[ctypes.CDLL, ctypes.c_void_p]:
+    """Retain only immutable ABI bindings, never an observed capacity."""
+    import ctypes
+
+    pointer = ctypes.c_void_p
+    cf = ctypes.CDLL(
+        "/System/Library/Frameworks/CoreFoundation.framework/CoreFoundation"
+    )
+    create = cf.CFURLCreateFromFileSystemRepresentation
+    create.argtypes = [pointer, ctypes.c_char_p, ctypes.c_long, ctypes.c_ubyte]
+    create.restype = pointer
+    copy = cf.CFURLCopyResourcePropertyForKey
+    copy.argtypes = [pointer, pointer, ctypes.POINTER(pointer), ctypes.POINTER(pointer)]
+    copy.restype = ctypes.c_ubyte
+    get_type = cf.CFGetTypeID
+    get_type.argtypes = [pointer]
+    get_type.restype = ctypes.c_ulong
+    number_type = cf.CFNumberGetTypeID
+    number_type.argtypes = []
+    number_type.restype = ctypes.c_ulong
+    number_value = cf.CFNumberGetValue
+    number_value.argtypes = [pointer, ctypes.c_long, pointer]
+    number_value.restype = ctypes.c_ubyte
+    error_code = cf.CFErrorGetCode
+    error_code.argtypes = [pointer]
+    error_code.restype = ctypes.c_long
+    release = cf.CFRelease
+    release.argtypes = [pointer]
+    release.restype = None
+    key = pointer.in_dll(cf, "kCFURLVolumeAvailableCapacityForImportantUsageKey")
+    if not key.value:
+        raise OSError("Darwin important-usage capacity key is unavailable")
+    return cf, key
+
+
+def _darwin_important_usage_bytes(path: Path) -> int:
+    """Read Apple's allocation estimate; never purge or fall back after failure.
+
+    CFURL.h defines this as capacity for explicitly requested, replaceable
+    resources, including space the OS expects to purge. A fresh CFURL avoids
+    retaining resource-value answers across admission calls.
+    """
+    import ctypes
+
+    cf, key = _darwin_capacity_api()
+    encoded = os.fsencode(path)
+    url = cf.CFURLCreateFromFileSystemRepresentation(None, encoded, len(encoded), 1)
+    if not url:
+        raise OSError("Darwin capacity could not create the volume URL")
+    value, error = ctypes.c_void_p(), ctypes.c_void_p()
+    try:
+        if not cf.CFURLCopyResourcePropertyForKey(
+            url, key, ctypes.byref(value), ctypes.byref(error)
+        ):
+            code = cf.CFErrorGetCode(error) if error.value else None
+            raise OSError(
+                f"Darwin important-usage capacity query failed: CFError {code}"
+            )
+        if not value.value or cf.CFGetTypeID(value) != cf.CFNumberGetTypeID():
+            raise ValueError("Darwin important-usage capacity is not a CFNumber")
+        result = ctypes.c_int64()
+        # kCFNumberSInt64Type is 4; GetValue must report an exact conversion.
+        if not cf.CFNumberGetValue(value, 4, ctypes.byref(result)):
+            raise ValueError("Darwin important-usage capacity is not an exact int64")
+        if result.value < 0:
+            raise ValueError("Darwin important-usage capacity is negative")
+        return result.value
+    finally:
+        if value.value:
+            cf.CFRelease(value)
+        if error.value:
+            cf.CFRelease(error)
+        cf.CFRelease(url)
+
+
 def _probe_failure(
     requested_path: Path,
     required_bytes: int,
     error: BaseException,
     *,
     measured_path: Path | None = None,
+    free_bytes: int | None = None,
+    measurement: CapacityMeasurement = "filesystem",
 ) -> DiskCapacityProbe:
     detail = f"{type(error).__name__}: {error}"
     return DiskCapacityProbe(
         requested_path=requested_path,
         measured_path=measured_path,
-        free_bytes=None,
+        free_bytes=free_bytes,
         required_bytes=required_bytes,
         error=detail,
+        measurement=measurement,
     )
 
 
@@ -251,9 +373,13 @@ def _rejection_message(
     for probe in probes:
         if probe.error is not None:
             details.append(f"cannot measure {probe.requested_path}: {probe.error}")
-        elif probe.free_bytes is not None and probe.free_bytes < probe.required_bytes:
+        elif (
+            probe.available_bytes is not None
+            and probe.available_bytes < probe.required_bytes
+        ):
             details.append(
-                f"{probe.requested_path} has {probe.free_bytes} bytes free on "
+                f"{probe.requested_path} has {probe.available_bytes} bytes available "
+                f"by {probe.measurement} ({probe.free_bytes} bytes raw free) on "
                 f"{probe.measured_path}, below the required "
                 f"{probe.required_bytes} bytes"
             )
@@ -297,8 +423,9 @@ def require_scratch_capacity(
 ) -> DiskCapacityReceipt:
     """Require the scratch budget free on every scratch volume before a run.
 
-    A run that would exhaust its scratch volume fails here, before it starts,
-    instead of failing mid-run with ENOSPC.
+    Insufficient observed capacity rejects the run before it starts. Admission
+    reserves no space; concurrent allocations and estimate changes can still
+    cause ENOSPC during the run.
     """
 
     return _require_capacity(
@@ -307,6 +434,102 @@ def require_scratch_capacity(
         purpose="scratch",
         remedy=_SCRATCH_REMEDY,
         measure_free_bytes=measure_free_bytes,
+    )
+
+
+def probe_capacity(
+    path: Path,
+    *,
+    required_bytes: int,
+    measure_free_bytes: FreeSpaceMeasurement | None = None,
+) -> DiskCapacityProbe:
+    """Observe capacity for one caller-owned budget without creating any paths.
+
+    Raw free capacity proves admission cheaply. Only insufficient Darwin raw
+    capacity needs the OS estimate for important, replaceable resources. A
+    failed estimate never falls back to a different measurement. An explicit
+    supplied measurement owns the complete answer (including in tests).
+    """
+    if (
+        not isinstance(required_bytes, int)
+        or isinstance(required_bytes, bool)
+        or not 0 <= required_bytes <= _MAX_SUPPORTED_BYTES
+    ):
+        raise ValueError("required capacity must be a non-negative int64")
+    raw_path = Path(path)
+    try:
+        resolved = raw_path.expanduser().resolve(strict=False)
+    except (OSError, RuntimeError, ValueError) as exc:
+        return _probe_failure(raw_path, required_bytes, exc)
+    return _measure_capacity(resolved, required_bytes, measure_free_bytes)
+
+
+def _measure_capacity(
+    resolved: Path,
+    required_bytes: int,
+    measure_free_bytes: FreeSpaceMeasurement | None,
+) -> DiskCapacityProbe:
+    try:
+        measured_path = _nearest_existing_directory(resolved)
+    except (OSError, ValueError) as exc:
+        return _probe_failure(resolved, required_bytes, exc)
+    measurement: CapacityMeasurement = (
+        "filesystem" if measure_free_bytes is None else "supplied"
+    )
+    measure = (
+        _default_measure_free_bytes
+        if measure_free_bytes is None
+        else measure_free_bytes
+    )
+    try:
+        free_bytes = measure(measured_path)
+        if (
+            not isinstance(free_bytes, int)
+            or isinstance(free_bytes, bool)
+            or free_bytes < 0
+        ):
+            raise ValueError("free-space measurement must be a non-negative integer")
+    except Exception as exc:
+        return _probe_failure(
+            resolved,
+            required_bytes,
+            exc,
+            measured_path=measured_path,
+            measurement=measurement,
+        )
+    important_usage_bytes = None
+    if (
+        measure_free_bytes is None
+        and sys.platform == "darwin"
+        and free_bytes < required_bytes
+    ):
+        measurement = "darwin-important-usage"
+        try:
+            important_usage_bytes = _darwin_important_usage_bytes(measured_path)
+            if (
+                not isinstance(important_usage_bytes, int)
+                or isinstance(important_usage_bytes, bool)
+                or not 0 <= important_usage_bytes <= _MAX_SUPPORTED_BYTES
+            ):
+                raise ValueError(
+                    "Darwin important-usage capacity must be a non-negative int64"
+                )
+        except Exception as exc:
+            return _probe_failure(
+                resolved,
+                required_bytes,
+                exc,
+                measured_path=measured_path,
+                free_bytes=free_bytes,
+                measurement=measurement,
+            )
+    return DiskCapacityProbe(
+        requested_path=resolved,
+        measured_path=measured_path,
+        free_bytes=free_bytes,
+        required_bytes=required_bytes,
+        important_usage_bytes=important_usage_bytes,
+        measurement=measurement,
     )
 
 
@@ -324,12 +547,6 @@ def _require_capacity(
     free space. It never creates directories, reclaims storage, invokes
     another process, or honors a test/runtime bypass.
     """
-
-    measure = (
-        _default_measure_free_bytes
-        if measure_free_bytes is None
-        else measure_free_bytes
-    )
 
     resolved_paths: dict[str, Path] = {}
     resolution_failures: list[DiskCapacityProbe] = []
@@ -359,55 +576,13 @@ def _require_capacity(
         resolution_failures,
         key=lambda probe: _path_sort_key(probe.requested_path),
     )
-    for resolved in sorted(resolved_paths.values(), key=_path_sort_key):
-        try:
-            measured_path = _nearest_existing_directory(resolved)
-        except (OSError, ValueError) as exc:
-            probes.append(_probe_failure(resolved, required_bytes, exc))
-            continue
-        try:
-            free_bytes = measure(measured_path)
-        except Exception as exc:
-            probes.append(
-                _probe_failure(
-                    resolved,
-                    required_bytes,
-                    exc,
-                    measured_path=measured_path,
-                )
-            )
-            continue
-        if (
-            not isinstance(free_bytes, int)
-            or isinstance(free_bytes, bool)
-            or free_bytes < 0
-        ):
-            probes.append(
-                _probe_failure(
-                    resolved,
-                    required_bytes,
-                    ValueError("free-space measurement must be a non-negative integer"),
-                    measured_path=measured_path,
-                )
-            )
-            continue
-        probes.append(
-            DiskCapacityProbe(
-                requested_path=resolved,
-                measured_path=measured_path,
-                free_bytes=free_bytes,
-                required_bytes=required_bytes,
-            )
-        )
+    probes.extend(
+        _measure_capacity(resolved, required_bytes, measure_free_bytes)
+        for resolved in sorted(resolved_paths.values(), key=_path_sort_key)
+    )
 
     probes.sort(key=lambda probe: _path_sort_key(probe.requested_path))
-    rejected = tuple(
-        probe
-        for probe in probes
-        if probe.error is not None
-        or probe.free_bytes is None
-        or probe.free_bytes < required_bytes
-    )
+    rejected = tuple(probe for probe in probes if not probe.ready)
     if rejected:
         diagnostic = {
             "schema": DISK_CAPACITY_DIAGNOSTIC_SCHEMA,

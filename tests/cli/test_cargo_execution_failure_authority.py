@@ -766,16 +766,24 @@ def test_guard_timeout_is_preserved_in_execution_evidence(
     assert evidence["attempts"][0]["timed_out"] is True
 
 
+@pytest.mark.parametrize("platform", ["darwin", "linux", "win32"])
 def test_cargo_capacity_rejection_has_probe_evidence_and_never_spawns(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    platform: str,
 ) -> None:
     executed: list[list[str]] = []
     target = tmp_path / "cargo-target"
+    monkeypatch.setattr(DISK_CAPACITY, "sys", SimpleNamespace(platform=platform))
     monkeypatch.setattr(
         DISK_CAPACITY,
         "_default_measure_free_bytes",
         lambda _path: DEFAULT_MINIMUM_HEADROOM_BYTES - 1,
+    )
+    monkeypatch.setattr(
+        DISK_CAPACITY,
+        "_darwin_important_usage_bytes",
+        lambda path: DEFAULT_MINIMUM_HEADROOM_BYTES - 1,
     )
     monkeypatch.setattr(
         CARGO,
@@ -800,6 +808,13 @@ def test_cargo_capacity_rejection_has_probe_evidence_and_never_spawns(
             "requested_path": str(target.resolve()),
             "measured_path": str(tmp_path.resolve()),
             "free_bytes": DEFAULT_MINIMUM_HEADROOM_BYTES - 1,
+            "important_usage_bytes": (
+                DEFAULT_MINIMUM_HEADROOM_BYTES - 1 if platform == "darwin" else None
+            ),
+            "available_bytes": DEFAULT_MINIMUM_HEADROOM_BYTES - 1,
+            "measurement": (
+                "darwin-important-usage" if platform == "darwin" else "filesystem"
+            ),
             "required_bytes": DEFAULT_MINIMUM_HEADROOM_BYTES,
             "error": None,
         }
@@ -872,6 +887,9 @@ def test_cargo_admits_explicit_build_dir_as_a_second_output_root(
         DISK_CAPACITY,
         "_default_measure_free_bytes",
         lambda path: free_by_path[path],
+    )
+    monkeypatch.setattr(
+        DISK_CAPACITY, "_darwin_important_usage_bytes", lambda path: free_by_path[path]
     )
     monkeypatch.setattr(
         CARGO,

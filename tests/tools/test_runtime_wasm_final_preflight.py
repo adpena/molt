@@ -470,19 +470,25 @@ def test_canonical_host_path_rejects_filesystem_aliases(
         )
 
 
+@pytest.mark.parametrize(
+    "reserve_args, expected_bytes",
+    [([], 8589934592), (["--reserve-gib=0"], 0), (["--reserve-gib=0.0000000005"], 1)],
+)
 def test_cli_refuses_source_only_validation_and_forwards_build_status(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, reserve_args, expected_bytes
 ) -> None:
     with pytest.raises(SystemExit):
         preflight.main(["--project-root", str(tmp_path)])
 
     context = _context(tmp_path)
     monkeypatch.setattr(preflight, "_resolve_preflight_context", lambda *_args: context)
-    monkeypatch.setattr(
-        preflight,
-        "build_preflight",
-        lambda **_kwargs: {"schema": preflight.SCHEMA, "status": "ready", "errors": []},
-    )
+    budgets = []
+
+    def build(**kwargs):
+        budgets.append(kwargs["reserve_bytes"])
+        return {"schema": preflight.SCHEMA, "status": "ready", "errors": []}
+
+    monkeypatch.setattr(preflight, "build_preflight", build)
     receipts: list[Path] = []
     monkeypatch.setattr(
         preflight,
@@ -504,7 +510,11 @@ def test_cli_refuses_source_only_validation_and_forwards_build_status(
 
     monkeypatch.setattr(preflight, "forward_command", fake_forward)
 
-    assert preflight.main(["--project-root", str(tmp_path), "--launch"]) == 17
+    assert (
+        preflight.main(["--project-root", str(tmp_path), "--launch", *reserve_args])
+        == 17
+    )
+    assert budgets == [expected_bytes]
 
     assert receipts == [
         context.roots.custody / "logs/runtime_wasm_final_preflight" / "run-current.json"
@@ -512,3 +522,100 @@ def test_cli_refuses_source_only_validation_and_forwards_build_status(
     assert "internal-runtime-wasm-build" in launched[0]
     assert "both" in launched[0]
     assert custody_revalidations == ["run-current"]
+
+
+@pytest.mark.parametrize(
+    "estimated", [0, 8 * 1024**3 - 1, 8 * 1024**3, OSError("capacity unavailable")]
+)
+def test_disk_facts_use_native_capacity_but_keep_raw_telemetry(
+    tmp_path, monkeypatch, estimated
+):
+    from molt import disk_capacity
+
+    monkeypatch.setattr(disk_capacity, "sys", SimpleNamespace(platform="darwin"))
+    monkeypatch.setattr(disk_capacity, "_default_measure_free_bytes", lambda path: 7)
+
+    def native(path):
+        if isinstance(estimated, Exception):
+            raise estimated
+        return estimated
+
+    monkeypatch.setattr(disk_capacity, "_darwin_important_usage_bytes", native)
+    facts = preflight._disk_facts([tmp_path], reserve_bytes=8 * 1024**3)
+    assert len(facts) == 1
+    fact = facts[0]
+    assert fact["free_bytes"] == 7
+    assert fact["measurement"] == "darwin-important-usage"
+    assert fact["available_bytes"] == (
+        None if isinstance(estimated, Exception) else estimated
+    )
+    assert fact["ready"] is (estimated == 8 * 1024**3)
+    assert bool(fact["error"]) is isinstance(estimated, Exception)
+
+
+def test_disk_facts_distinguish_mounts_with_same_root_spelling_and_measure_once(
+    tmp_path,
+    monkeypatch,
+):
+    from molt.disk_capacity import DiskCapacityProbe
+
+    class MountedPath(type(Path())):
+        def stat(self, *args, **kwargs):
+            return SimpleNamespace(st_dev=11 if "first" in self.parts else 22)
+
+    first = MountedPath(tmp_path / "first" / "outputs")
+    second = MountedPath(tmp_path / "second" / "outputs")
+    assert first.anchor == second.anchor
+    monkeypatch.setattr(
+        preflight, "_nearest_existing_directory", lambda path: MountedPath(path)
+    )
+    # These are independent filesystem facts, not values derived from the grouping key.
+    calls = []
+
+    def probe(path, *, required_bytes):
+        calls.append(path)
+        raw = 10 if path == first else 2
+        return DiskCapacityProbe(path, path, raw, required_bytes)
+
+    monkeypatch.setattr(preflight, "probe_capacity", probe)
+    monkeypatch.setattr(
+        preflight,
+        "shutil",
+        SimpleNamespace(
+            disk_usage=lambda path: SimpleNamespace(
+                total=100,
+                used=90 if path == first else 98,
+                free=10 if path == first else 2,
+            )
+        ),
+    )
+    facts = preflight._disk_facts([first, second, first], reserve_bytes=8)
+    assert len(facts) == 2
+    assert calls == [first, second]
+    assert [fact["volume"] for fact in facts] == [11, 22]
+    assert [fact["ready"] for fact in facts] == [True, False]
+    assert [fact["free_bytes"] for fact in facts] == [10, 2]
+
+
+@pytest.mark.parametrize(
+    "configured", ["-1", "nan", "inf", "-inf", "1e999", "8589934592"]
+)
+def test_wasm_reserve_rejects_invalid_value_before_queue_context(
+    tmp_path, monkeypatch, capsys, configured
+):
+    monkeypatch.setattr(
+        preflight,
+        "_resolve_preflight_context",
+        lambda *args: pytest.fail("invalid reserve resolved queue context"),
+    )
+    assert (
+        preflight.main(
+            ["--project-root", str(tmp_path), "--launch", f"--reserve-gib={configured}"]
+        )
+        == 2
+    )
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["status"] == "blocked"
+    assert payload["errors"][0].startswith(
+        "RuntimeWasmPreflightError: invalid --reserve-gib"
+    )

@@ -37,6 +37,11 @@ from molt.cli.runtime_wasm_build_spec import (  # noqa: E402
     _runtime_wasm_toolchain_manifest_path,
 )
 from molt.cli.runtime_wasm_generation import runtime_wasm_generation_path  # noqa: E402
+from molt.disk_capacity import (  # noqa: E402
+    _nearest_existing_directory,
+    capacity_bytes_from_gib,
+    probe_capacity,
+)
 from molt.dx import (  # noqa: E402
     ARTIFACT_ROOT_ENV,
     checkout_custody,
@@ -55,7 +60,7 @@ from tools.memory_guard_core.active_custody import read_marker_records  # noqa: 
 from tools.command_execution import CommandExecutor  # noqa: E402
 
 
-SCHEMA = "molt.runtime-wasm-final-preflight.v2"
+SCHEMA = "molt.runtime-wasm-final-preflight.v3"
 _COMMANDS = CommandExecutor.for_file(__file__)
 _GIT_TIMEOUT_SECONDS = 30.0
 _COMPILER_MUTEX = "compiler-build-resource"
@@ -508,25 +513,27 @@ def _resolve_preflight_context(
 def _disk_facts(
     paths: Sequence[Path], *, reserve_bytes: int
 ) -> list[dict[str, object]]:
-    by_volume: dict[str, dict[str, object]] = {}
+    by_volume: dict[int, dict[str, object]] = {}
     for path in paths:
-        anchor = path
-        while not anchor.exists() and anchor != anchor.parent:
-            anchor = anchor.parent
+        anchor = _nearest_existing_directory(path.expanduser().resolve(strict=False))
+        volume = anchor.stat().st_dev
+        if volume in by_volume:
+            continue
+        capacity = probe_capacity(anchor, required_bytes=reserve_bytes)
         usage = shutil.disk_usage(anchor)
-        volume = os.path.normcase(os.fspath(anchor.anchor or anchor))
-        by_volume.setdefault(
-            volume,
-            {
-                "volume": volume,
-                "anchor": os.fspath(anchor),
-                "total_bytes": usage.total,
-                "used_bytes": usage.used,
-                "free_bytes": usage.free,
-                "reserve_bytes": reserve_bytes,
-                "ready": usage.free >= reserve_bytes,
-            },
-        )
+        by_volume[volume] = {
+            "volume": volume,
+            "anchor": os.fspath(anchor),
+            "total_bytes": usage.total,
+            "used_bytes": usage.used,
+            "free_bytes": capacity.free_bytes,
+            "available_bytes": capacity.available_bytes,
+            "important_usage_bytes": capacity.important_usage_bytes,
+            "measurement": capacity.measurement,
+            "error": capacity.error,
+            "reserve_bytes": reserve_bytes,
+            "ready": capacity.ready,
+        }
     return [by_volume[key] for key in sorted(by_volume)]
 
 
@@ -829,10 +836,16 @@ def main(argv: Sequence[str] | None = None) -> int:
         )
 
     try:
+        try:
+            reserve_bytes = capacity_bytes_from_gib(args.reserve_gib)
+        except ValueError as exc:
+            raise RuntimeWasmPreflightError(
+                f"invalid --reserve-gib value {args.reserve_gib!r}: {exc}"
+            ) from None
         context = _resolve_preflight_context(args.project_root, os.environ)
         payload = build_preflight(
             context=context,
-            reserve_bytes=max(0, int(args.reserve_gib * 1024**3)),
+            reserve_bytes=reserve_bytes,
             build_profile=args.build_profile,
             stdlib_profile=args.stdlib_profile,
         )

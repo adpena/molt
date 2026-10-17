@@ -3865,6 +3865,7 @@ def test_rust_cargo_probe_rejects_low_capacity_before_compile(tmp_path, monkeypa
         return result
 
     monkeypatch.setattr(disk_capacity, "_default_measure_free_bytes", lambda path: 1)
+    monkeypatch.setattr(disk_capacity, "_darwin_important_usage_bytes", lambda path: 1)
     monkeypatch.setattr(toolchain_capture, "_COMMANDS", SimpleNamespace(run=run))
     with pytest.raises(
         toolchain_capture.RustLinkCaptureError, match="capacity admission rejected"

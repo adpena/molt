@@ -7,7 +7,6 @@ import json
 import os
 from pathlib import Path
 import re
-import shutil
 import subprocess
 import sys
 import tarfile
@@ -21,6 +20,7 @@ import platform
 import pytest
 from tests.process_guard_common import start_owned_test_process
 
+from molt import disk_capacity
 from molt.llvm_toolchain import (
     llvm_bootstrap_command,
     llvm_release,
@@ -1129,12 +1129,11 @@ def test_llvm_alone_requires_atl_after_shared_msvc_activation(tmp_path):
 def test_resource_preflight_rejects_insufficient_disk(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    install_module_view(
-        monkeypatch,
-        "shutil",
-        shutil,
-        bootstrap_llvm,
-        disk_usage=lambda _path: SimpleNamespace(free=10 * 1024**3),
+    monkeypatch.setattr(
+        disk_capacity, "_default_measure_free_bytes", lambda path: 10 * 1024**3
+    )
+    monkeypatch.setattr(
+        disk_capacity, "_darwin_important_usage_bytes", lambda path: 10 * 1024**3
     )
 
     with pytest.raises(SystemExit, match="only 10.0 GiB is available"):
@@ -1148,12 +1147,8 @@ def test_resource_preflight_rejects_insufficient_disk(
 def test_resource_preflight_rejects_insufficient_memory(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    install_module_view(
-        monkeypatch,
-        "shutil",
-        shutil,
-        bootstrap_llvm,
-        disk_usage=lambda _path: SimpleNamespace(free=100 * 1024**3),
+    monkeypatch.setattr(
+        disk_capacity, "_default_measure_free_bytes", lambda path: 100 * 1024**3
     )
     monkeypatch.setattr(
         bootstrap_llvm,
@@ -1349,3 +1344,100 @@ def test_bootstrap_check_uses_selected_tool_state_for_default_prefix(
     assert bootstrap_llvm.main(["--check"]) == 0
     assert observed == [expected]
     assert not selected.exists()
+
+
+@pytest.mark.parametrize(
+    "estimated", [0, 40 * 1024**3 - 1, 40 * 1024**3, OSError("capacity unavailable")]
+)
+def test_resource_preflight_uses_native_capacity_at_llvm_budget(
+    tmp_path, monkeypatch, estimated
+):
+    install_module_view(monkeypatch, "sys", sys, disk_capacity, platform="darwin")
+    monkeypatch.setattr(disk_capacity, "_default_measure_free_bytes", lambda path: 7)
+
+    def native(path):
+        if isinstance(estimated, Exception):
+            raise estimated
+        return estimated
+
+    monkeypatch.setattr(disk_capacity, "_darwin_important_usage_bytes", native)
+    monkeypatch.setattr(
+        bootstrap_llvm,
+        "plan_resource_pressure",
+        lambda **kwargs: SimpleNamespace(available_gb=16.0, physical_gb=16.0),
+    )
+    if isinstance(estimated, Exception) or estimated < 40 * 1024**3:
+        with pytest.raises(SystemExit):
+            bootstrap_llvm._preflight_resources(
+                tmp_path, required_free_gb=40.0, required_memory_gb=8.0
+            )
+    else:
+        bootstrap_llvm._preflight_resources(
+            tmp_path, required_free_gb=40.0, required_memory_gb=8.0
+        )
+
+
+@pytest.mark.parametrize(
+    "gib", [-1.0, float("nan"), float("inf"), -float("inf"), 1e308, 8589934592.0]
+)
+def test_llvm_capacity_budget_rejects_invalid_value_before_probe(
+    tmp_path, monkeypatch, gib
+):
+    monkeypatch.setattr(
+        bootstrap_llvm,
+        "probe_capacity",
+        lambda *args, **kwargs: pytest.fail(
+            "invalid LLVM budget reached capacity probe"
+        ),
+    )
+    with pytest.raises(SystemExit, match="invalid --required-free-gb"):
+        bootstrap_llvm._preflight_resources(
+            tmp_path, required_free_gb=gib, required_memory_gb=0
+        )
+
+
+@pytest.mark.parametrize(
+    "gib, expected", [(0.0, 0), (40.0, 42949672960), (2.0**-31, 1)]
+)
+def test_llvm_capacity_budget_preserves_zero_default_and_fractional_bytes(
+    tmp_path, monkeypatch, gib, expected
+):
+    from molt.disk_capacity import DiskCapacityProbe
+
+    observed = []
+
+    def probe(path, *, required_bytes):
+        observed.append(required_bytes)
+        return DiskCapacityProbe(path, path, expected, required_bytes)
+
+    monkeypatch.setattr(bootstrap_llvm, "probe_capacity", probe)
+    monkeypatch.setattr(
+        bootstrap_llvm,
+        "plan_resource_pressure",
+        lambda **kwargs: SimpleNamespace(available_gb=16.0, physical_gb=16.0),
+    )
+    bootstrap_llvm._preflight_resources(
+        tmp_path, required_free_gb=gib, required_memory_gb=8
+    )
+    assert observed == [expected]
+
+
+def test_llvm_cli_does_not_clamp_negative_disk_budget(tmp_path, monkeypatch):
+    monkeypatch.setenv("MOLT_TARGET_ROOT", str(tmp_path / "toolchain"))
+    monkeypatch.setattr(bootstrap_llvm, "_compatible_cmake", lambda *args: CMAKE_TOOL)
+    monkeypatch.setattr(
+        bootstrap_llvm, "_required_build_tool", lambda *args: NINJA_TOOL
+    )
+    monkeypatch.setattr(
+        bootstrap_llvm, "activate_msvc_environment", lambda env, **kwargs: dict(env)
+    )
+    install_module_view(
+        monkeypatch, "platform", platform, bootstrap_llvm, system=lambda: "Darwin"
+    )
+    monkeypatch.setattr(
+        bootstrap_llvm,
+        "probe_capacity",
+        lambda *args, **kwargs: pytest.fail("negative CLI disk budget was clamped"),
+    )
+    with pytest.raises(SystemExit, match="invalid --required-free-gb"):
+        bootstrap_llvm.main(["--required-free-gb=-1"])
