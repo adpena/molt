@@ -175,6 +175,7 @@ from molt.file_locks import (  # noqa: E402
     _release_file_lock,
     _try_acquire_file_lock,
 )
+from molt.dx import project_cargo_target_dir  # noqa: E402
 
 from tools.molt_dev_detached import (  # noqa: E402
     DETACHED_STATE_ROOT,
@@ -962,6 +963,10 @@ def _integrate_exclusive(args: argparse.Namespace) -> int:
     env = immutable_git_environment(os.environ)
     env["MOLT_SESSION_ID"] = args.session_id
     env["PYTHONPATH"] = os.pathsep.join((str(repo / "src"), str(repo)))
+    # Cargo gates build into the target Molt's own builds of this checkout use.
+    # Bare Cargo would compile cold into the worktree's ./target, which the
+    # worktree cleanup then deletes, so every landing paid a full build.
+    env.setdefault("CARGO_TARGET_DIR", str(project_cargo_target_dir(repo, env)))
     if not dry:
         _assert_integration_source(git, selected_commit)
         config.admit(touched, matched_rules, list(args.extra_gate or []))
@@ -1317,6 +1322,7 @@ def _cleanup_worktree(
     if main_repo.resolve() == repo.resolve():
         _fail("refusing to remove the MAIN worktree; this targets disposable worktrees")
         return EXIT_FAIL
+    _retire_checkout_daemons(repo)
     remove_args = ["worktree", "remove"]
     # `git worktree remove` refuses (without --force) on ANY modified/untracked
     # file, including the ignored-set churn (e.g. legacy/keyed wasm sha sidecars) our OWN
@@ -1341,6 +1347,25 @@ def _cleanup_worktree(
         return EXIT_FAIL
     _ok(f"removed worktree {repo}")
     return EXIT_OK
+
+
+def _retire_checkout_daemons(repo: Path) -> None:
+    """Retire the backend daemons of a checkout about to be removed.
+
+    They would otherwise hold their memory until their idle timeout. A failure
+    leaves them to that timeout and does not block the cleanup.
+    """
+    from molt.cli.backend_execution import retire_project_backend_daemons
+
+    try:
+        pids = retire_project_backend_daemons(repo, os.environ)
+    except (OSError, ValueError) as exc:
+        _warn(
+            f"backend daemons of {repo} were not retired ({exc}); they retire when idle"
+        )
+        return
+    if pids:
+        _ok(f"retired {len(pids)} backend daemon(s) of {repo}: pids {list(pids)}")
 
 
 def _main_worktree(git: Git) -> Path | None:

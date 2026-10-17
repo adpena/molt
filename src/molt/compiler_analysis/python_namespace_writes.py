@@ -108,9 +108,29 @@ _WHOLE_READ_CALLS: Final = frozenset(
         "type",
     }
 )
-_IMPORT_HOOK_OBJECTS: Final = frozenset(
-    {"sys.modules", "sys.meta_path", "sys.path_hooks", "sys.path_importer_cache"}
-)
+# The standard import-hook objects and their native container kinds.
+_IMPORT_HOOK_OBJECTS: Final[dict[str, Literal["list", "dict"]]] = {
+    "sys.modules": "dict",
+    "sys.meta_path": "list",
+    "sys.path_hooks": "list",
+    "sys.path_importer_cache": "dict",
+}
+# The method an augmented assignment calls on its target first.
+_INPLACE_METHODS: Final[dict[type[ast.operator], str]] = {
+    ast.Add: "__iadd__",
+    ast.Sub: "__isub__",
+    ast.Mult: "__imul__",
+    ast.MatMult: "__imatmul__",
+    ast.Div: "__itruediv__",
+    ast.FloorDiv: "__ifloordiv__",
+    ast.Mod: "__imod__",
+    ast.Pow: "__ipow__",
+    ast.LShift: "__ilshift__",
+    ast.RShift: "__irshift__",
+    ast.BitAnd: "__iand__",
+    ast.BitOr: "__ior__",
+    ast.BitXor: "__ixor__",
+}
 
 
 @dataclass(frozen=True, slots=True)
@@ -512,7 +532,7 @@ class _NamespaceWriteCollector:
             for site in names:
                 node, parent = site.node, site.parent
                 if isinstance(parent, ast.AugAssign) and parent.target is node:
-                    self._record("sys", None, "import_hooks", site)
+                    self._star_hook_use(site, _INPLACE_METHODS[type(parent.op)])
 
     def _star_receiver_root(self, node: ast.AST) -> ast.Name | None:
         """Unwrap a possible star receiver, including carried lexical values."""
@@ -531,24 +551,47 @@ class _NamespaceWriteCollector:
     def _visit_star_hook_mutation(self, site: _Site) -> None:
         node, parent = site.node, site.parent
         if isinstance(node, ast.Subscript):
-            mutates = isinstance(node.ctx, (ast.Store, ast.Del))
-        elif isinstance(node, ast.Attribute):
-            mutates = (
-                isinstance(parent, ast.Call)
-                and parent.func is node
-                and (
-                    builtin_method_writes_receiver("list", node.attr)
-                    or builtin_method_writes_receiver("dict", node.attr)
-                )
-            )
+            if isinstance(node.ctx, ast.Store):
+                method = "__setitem__"
+            elif isinstance(node.ctx, ast.Del):
+                method = "__delitem__"
+            else:
+                return
+        elif (
+            isinstance(node, ast.Attribute)
+            and isinstance(parent, ast.Call)
+            and parent.func is node
+        ):
+            method = node.attr
         else:
             return
-        if mutates and self._star_receiver_root(node.value) is not None:
-            # The imported value could be sys.modules or an import-hook list.
-            # Its native receiver mutations share the builtin capability
-            # authority. Custom callbacks retain their own source execution;
-            # calling an unrelated method is not a native hook-container write.
-            self._record("sys", None, "import_hooks", site)
+        if self._star_receiver_root(node.value) is not None:
+            self._star_hook_use(
+                _Site(
+                    node.value,
+                    node,
+                    parent,
+                    site.module_scope,
+                    site.source_owner,
+                    site.executing,
+                    site.callback_deferred,
+                ),
+                method,
+            )
+
+    def _star_hook_use(self, site: _Site, method: str) -> None:
+        """A receiver a star import may supply calls ``method`` natively.
+
+        The imported value could be any standard import-hook object, so each
+        one whose container kind writes through ``method`` is used as its
+        explicit reference would be. The builtin capability authority decides:
+        ``append`` cannot change ``sys.modules`` and ``|=`` cannot change
+        ``sys.meta_path``. Custom callbacks retain their own source execution;
+        calling an unrelated method is not a native hook-container write.
+        """
+        for spelling, kind in _IMPORT_HOOK_OBJECTS.items():
+            if builtin_method_writes_receiver(kind, method):
+                self._import_hook_use(site, spelling)
 
     def _record(
         self,

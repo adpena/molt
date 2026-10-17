@@ -84,7 +84,10 @@ fn serve(
                 match state.idle_for() {
                     // Retiring unlinks the socket and wakes this loop, which
                     // drains any client that connected meanwhile.
-                    Some(idle) if idle >= timeout => state.retire(),
+                    Some(idle) if idle >= timeout => {
+                        eprintln!("backend daemon retiring after {idle:.1?} without a connection");
+                        state.retire();
+                    }
                     Some(idle) => wait = Some(timeout - idle),
                     None => wait = idle_timeout,
                 }

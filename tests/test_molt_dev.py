@@ -942,6 +942,28 @@ def test_cleanup_allows_clean_pushed(drv, origin_and_clone, tmp_path):
     assert not wt.exists()
 
 
+def test_cleanup_retires_the_checkout_daemons_before_removing_it(
+    drv, origin_and_clone, tmp_path, monkeypatch
+):
+    from molt.cli import backend_execution
+
+    origin, _work = origin_and_clone
+    wt = _worktree_off(origin, tmp_path, "wt_daemons")
+    retired: list[tuple[Path, bool]] = []
+
+    def retire(project_root, env, **kwargs):
+        retired.append((project_root, project_root.exists()))
+        return (4321,)
+
+    monkeypatch.setattr(backend_execution, "retire_project_backend_daemons", retire)
+    rc = drv._cleanup_worktree(
+        drv.Git(wt), wt, "origin/main", drv.DEFAULT_IGNORE_GLOBS, force_sha=None
+    )
+    assert rc == drv.EXIT_OK
+    assert retired == [(wt, True)], "daemons retire while their checkout still exists"
+    assert not wt.exists()
+
+
 def test_cleanup_refuses_unpushed(drv, origin_and_clone, tmp_path):
     origin, _work = origin_and_clone
     wt = _worktree_off(origin, tmp_path, "wt_unpushed")
@@ -1638,6 +1660,41 @@ def test_integrate_lock_covers_fetch_gates_push_confirmation_and_cleanup(
     handle = file_locks._try_acquire_file_lock(lock_path, create=False)
     assert handle is not None
     file_locks._release_file_lock(handle)
+
+
+@pytest.mark.parametrize("explicit", [False, True])
+def test_integrate_gates_build_into_the_checkouts_cargo_target(
+    drv, origin_and_clone, monkeypatch, tmp_path, explicit
+):
+    from molt.dx import project_cargo_target_dir
+
+    _, work = origin_and_clone
+    _commit_file(work, "gate-source.txt", "source\n", "source for gate target")
+    monkeypatch.setenv("MOLT_PREFER_EXTERNAL_ARTIFACTS", "1")
+    if explicit:
+        monkeypatch.setenv("CARGO_TARGET_DIR", str(tmp_path / "operator-target"))
+    else:
+        monkeypatch.delenv("CARGO_TARGET_DIR", raising=False)
+    targets = []
+
+    def gate(command, repo, env):
+        targets.append((env["CARGO_TARGET_DIR"], dict(env)))
+        return 0
+
+    monkeypatch.setattr(drv, "run_gate", gate)
+    assert drv.cmd_integrate(_integrate_ns(drv, repo=str(work))) == drv.EXIT_OK
+    assert targets
+    for target, env in targets:
+        if explicit:
+            assert target == str(tmp_path / "operator-target")
+            continue
+        # The target Molt's own builds of this checkout select, which outlives
+        # the worktree: never the worktree's ./target.
+        without = {
+            key: value for key, value in env.items() if key != "CARGO_TARGET_DIR"
+        }
+        assert target == str(project_cargo_target_dir(work.resolve(), without))
+        assert not Path(target).is_relative_to(work.resolve())
 
 
 def test_integrate_dry_run_never_resolves_or_acquires_integration_lock(
