@@ -18,7 +18,7 @@ Landing checks execute the generator and authority inputs captured from the exac
 | CI selection families | 5 | 12 |
 | Hashed executable authority inputs | 1 | 367 |
 | Local path rules | 35 | 55 |
-| Unique local commands | 73 | 127 |
+| Unique local commands | 73 | 89 |
 | Handwritten Python classifier rule tables | 5 | 0 |
 
 ## CI families
@@ -339,57 +339,57 @@ The wrapper conflict was reconfirmed by native CI run `30211145633` job `8981749
 | Rule | Input globs | Commands |
 |---|---:|---:|
 | `frontend-python` | 1 | 3 |
-| `backend-environment-contract` | 16 | 2 |
+| `backend-environment-contract` | 16 | 1 |
 | `bootstrap-stdlib` | 4 | 1 |
-| `heap-kind-lifetime-authority` | 6 | 2 |
-| `host-capability-authority` | 7 | 2 |
-| `runtime-profile-schema-authority` | 6 | 2 |
-| `op-kind-registry` | 18 | 3 |
-| `frontend-diagnostics` | 6 | 2 |
-| `wasm-abi-registry` | 13 | 2 |
-| `tinygrad-op-contract` | 9 | 3 |
-| `intrinsic-registry` | 9 | 2 |
-| `codec-tables` | 7 | 2 |
-| `stringprep-tables` | 3 | 2 |
-| `llvm-runtime-abi` | 8 | 2 |
-| `source-extension-package-sets` | 44 | 1 |
-| `source-extension-proof-policy` | 60 | 2 |
+| `heap-kind-lifetime-authority` | 6 | 1 |
+| `host-capability-authority` | 7 | 1 |
+| `runtime-profile-schema-authority` | 6 | 1 |
+| `op-kind-registry` | 18 | 2 |
+| `frontend-diagnostics` | 6 | 1 |
+| `wasm-abi-registry` | 13 | 1 |
+| `tinygrad-op-contract` | 9 | 2 |
+| `intrinsic-registry` | 9 | 1 |
+| `codec-tables` | 7 | 1 |
+| `stringprep-tables` | 3 | 1 |
+| `llvm-runtime-abi` | 8 | 1 |
+| `source-extension-package-sets` | 44 | 0 |
+| `source-extension-proof-policy` | 60 | 1 |
 | `suite-honesty` | 4 | 2 |
 | `ecosystem-compat` | 2 | 1 |
-| `tinygrad-upat-static-exec-registry` | 2 | 1 |
+| `tinygrad-upat-static-exec-registry` | 2 | 0 |
 | `docs-architecture` | 4 | 2 |
-| `dev-tooling` | 14 | 5 |
-| `encoding-diagnostics` | 2 | 1 |
+| `dev-tooling` | 14 | 0 |
+| `encoding-diagnostics` | 2 | 0 |
 | `runtime-cargo-input-custody` | 37 | 1 |
-| `rust-toolchain` | 10 | 2 |
-| `table-drift` | 12 | 2 |
-| `findings-registry` | 4 | 1 |
-| `memory-graph` | 5 | 2 |
-| `ci-wiring` | 58 | 2 |
-| `apparatus-hooks` | 11 | 3 |
-| `apparatus-learning-protection` | 12 | 3 |
+| `rust-toolchain` | 10 | 1 |
+| `table-drift` | 12 | 1 |
+| `findings-registry` | 4 | 0 |
+| `memory-graph` | 5 | 1 |
+| `ci-wiring` | 58 | 1 |
+| `apparatus-hooks` | 11 | 2 |
+| `apparatus-learning-protection` | 12 | 2 |
 | `performance-measurement` | 25 | 1 |
-| `apparatus-a11` | 10 | 5 |
-| `apparatus-a8-a12-disk-reclaim` | 11 | 3 |
-| `import-symbol-gate` | 2 | 2 |
-| `phase-exit-manifest` | 7 | 2 |
-| `public-contract` | 19 | 2 |
+| `apparatus-a11` | 10 | 4 |
+| `apparatus-a8-a12-disk-reclaim` | 11 | 2 |
+| `import-symbol-gate` | 2 | 1 |
+| `phase-exit-manifest` | 7 | 1 |
+| `public-contract` | 19 | 1 |
 | `rust-clippy-changed` | 8 | 1 |
 | `backend-native` | 8 | 1 |
 | `backend-daemon-cache` | 5 | 1 |
 | `backend-ir-framing` | 4 | 1 |
 | `native-object-emission` | 5 | 1 |
-| `maintained-zlib-counters` | 14 | 3 |
+| `maintained-zlib-counters` | 14 | 2 |
 | `backend-llvm` | 2 | 1 |
 | `tir-midend` | 11 | 2 |
 | `wasm-host` | 5 | 1 |
 | `gpu-runtime` | 3 | 1 |
-| `runtime-vfs` | 4 | 3 |
+| `runtime-vfs` | 4 | 2 |
 | `runtime-lib` | 3 | 1 |
-| `python-effect-capability-authority` | 6 | 3 |
-| `python-identity-catalog-authority` | 7 | 2 |
-| `builtin-binding-guard-authority` | 9 | 3 |
-| `native-callable-abi` | 19 | 5 |
+| `python-effect-capability-authority` | 6 | 2 |
+| `python-identity-catalog-authority` | 7 | 1 |
+| `builtin-binding-guard-authority` | 9 | 2 |
+| `native-callable-abi` | 19 | 4 |
 | `stringprep-leaf` | 2 | 1 |
 | `cpython-abi-authorities` | 2 | 1 |
 | `compression-stream-state` | 1 | 1 |
