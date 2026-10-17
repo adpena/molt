@@ -221,6 +221,7 @@ def test_mlir_backend_pipeline_uses_tempfile_memory_guard(
         validate_inputs=lambda: None,
         output_artifact=output,
         project_root=tmp_path,
+        molt_root=tmp_path,
         json_output=False,
         verbose=False,
     )

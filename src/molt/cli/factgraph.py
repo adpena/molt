@@ -173,7 +173,7 @@ def execute_backend_fact_graph(
             request.output_path, create_parent=True, role="TIR fact graph output"
         )
         candidate = file_publication.staged_file_path(
-            destination, purpose="factgraph", suffix=destination.suffix
+            destination, purpose="factgraph", suffix=destination.suffix or ".tmp"
         )
     except (OSError, ValueError) as exc:
         return fail(

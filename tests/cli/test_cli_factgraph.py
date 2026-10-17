@@ -168,12 +168,14 @@ def test_factgraph_cli_dispatches_module_entry(tmp_path: Path, monkeypatch) -> N
     assert captured["codegen_backend"] == "cranelift"
 
 
+# A named output need not carry an extension; its stage still needs a name.
+@pytest.mark.parametrize("output_name", ["molt_main.json", "molt_main"])
 def test_execute_backend_fact_graph_uses_target_prefix_and_ir_lease(
-    tmp_path: Path,
+    tmp_path: Path, output_name: str
 ) -> None:
     backend_bin = tmp_path / "molt-backend"
     ir_file = tmp_path / "backend-ir.json"
-    output = tmp_path / "facts" / "molt_main.json"
+    output = tmp_path / "facts" / output_name
     ir_file.write_text('{"functions":[]}\n', encoding="utf-8")
     seen: dict[str, object] = {}
 
