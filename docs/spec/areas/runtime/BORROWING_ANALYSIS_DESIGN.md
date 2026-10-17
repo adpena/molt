@@ -191,8 +191,6 @@ Inline integers, floats, booleans and None have no heap owner, but a Python
 `int` may be a heap-backed bigint. The analysis must consume the shared TIR
 representation and ownership facts before suppressing reference operations.
 
-This interacts with the existing `fast_int` / `fast_float` flags on `OpIR` -- values with these flags set can skip all RC emission.
-
 ### 4.4. Immortal Object Awareness
 
 Immortal lifetime belongs to the canonical pool described in

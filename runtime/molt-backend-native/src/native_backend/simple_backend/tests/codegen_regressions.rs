@@ -847,7 +847,7 @@ fn preloop_value_survives_exception_fallthrough_with_backend_managed_index() {
 }
 
 #[test]
-fn fast_int_overflow_result_does_not_unbox_merged_bigint_result() {
+fn int_overflow_result_does_not_unbox_merged_bigint_result() {
     let clif = compile_function_to_clif_text(
         vec![FunctionIR {
             return_abi: molt_ir::FunctionReturnAbi::Value,
@@ -870,7 +870,6 @@ fn fast_int_overflow_result_does_not_unbox_merged_bigint_result() {
                     kind: "pow".to_string(),
                     args: Some(vec!["base".to_string(), "exp".to_string()]),
                     out: Some("powv".to_string()),
-                    fast_int: Some(true),
                     ..OpIR::default()
                 },
                 OpIR {
@@ -883,7 +882,6 @@ fn fast_int_overflow_result_does_not_unbox_merged_bigint_result() {
                     kind: "sub".to_string(),
                     args: Some(vec!["powv".to_string(), "one".to_string()]),
                     out: Some("maxsize".to_string()),
-                    fast_int: Some(true),
                     ..OpIR::default()
                 },
                 OpIR {

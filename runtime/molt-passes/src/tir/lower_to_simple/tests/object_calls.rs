@@ -744,13 +744,6 @@ fn tir_round_trip_preserves_object_argument_call_sequence() {
         refine_types(&mut tir_func);
         let round_tripped = lower_to_simple_ir(&tir_func);
 
-        for op in &round_tripped {
-            assert!(
-                op.fast_float.is_none(),
-                "roundtrip must not mark object-arg call path as fast_float: {round_tripped:?}"
-            );
-        }
-
         if func_ir.name == "func_objarg__g" {
             let type_of = round_tripped
                 .iter()

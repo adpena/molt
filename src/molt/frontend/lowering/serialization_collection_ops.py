@@ -675,16 +675,6 @@ class SerializationCollectionOpsMixin(GeneratorMixinBase):
                 "args": [arg.name for arg in op.args],
                 "out": op.result.name,
             }
-            # fast_int: when the index argument is a known int,
-            # the backend can use molt_list_getitem_int_fast which
-            # skips full type dispatch and bounds-checks directly.
-            if (
-                len(op.args) == 2
-                and self._hints_enabled()
-                and isinstance(op.args[1], MoltValue)
-                and op.args[1].type_hint in {"int", "bool"}
-            ):
-                index_entry["fast_int"] = True
             list_int_container = (
                 len(op.args) >= 1
                 and isinstance(op.args[0], MoltValue)

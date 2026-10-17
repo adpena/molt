@@ -422,9 +422,8 @@ class ExpressionVisitorMixin(GeneratorMixinBase):
                 res = MoltValue(self.next_var(), type_hint="int")
                 self.emit(MoltOp(kind="CONST", args=[node.value], result=res))
             else:
-                # Use "bigint" hint so _should_fast_int returns False —
-                # bigint values are heap-allocated pointers and must not
-                # be unboxed as inline ints in the fast arithmetic path.
+                # Use the "bigint" hint: bigint values are heap-allocated
+                # pointers and must not be treated as inline ints.
                 res = MoltValue(self.next_var(), type_hint="bigint")
                 self.emit(
                     MoltOp(

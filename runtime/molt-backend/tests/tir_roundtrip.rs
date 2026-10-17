@@ -6,21 +6,18 @@ fn make_comprehension_ir() -> FunctionIR {
             kind: "const".to_string(),
             value: Some(1),
             out: Some("v1".into()),
-            fast_int: Some(true),
             ..Default::default()
         },
         OpIR {
             kind: "const".to_string(),
             value: Some(2),
             out: Some("v2".into()),
-            fast_int: Some(true),
             ..Default::default()
         },
         OpIR {
             kind: "const".to_string(),
             value: Some(3),
             out: Some("v3".into()),
-            fast_int: Some(true),
             ..Default::default()
         },
         OpIR {
@@ -47,14 +44,12 @@ fn make_comprehension_ir() -> FunctionIR {
             kind: "const".to_string(),
             value: Some(0),
             out: Some("v7".into()),
-            fast_int: Some(true),
             ..Default::default()
         },
         OpIR {
             kind: "const".to_string(),
             value: Some(1),
             out: Some("v8".into()),
-            fast_int: Some(true),
             ..Default::default()
         },
         OpIR {
@@ -202,18 +197,6 @@ fn roundtrip_preserves_comprehension_shape_without_transport_hints() {
 fn roundtrip_does_not_reseed_legacy_transport_hints() {
     let roundtripped = roundtrip(&make_comprehension_ir());
 
-    assert!(
-        roundtripped
-            .iter()
-            .filter(|op| op.kind == "const")
-            .all(|op| op.fast_int.is_none()),
-        "typed TIR roundtrip should not reintroduce legacy fast_int hints: {:?}",
-        roundtripped
-            .iter()
-            .filter(|op| op.kind == "const")
-            .map(|op| op.fast_int)
-            .collect::<Vec<_>>(),
-    );
     assert!(
         roundtripped
             .iter()

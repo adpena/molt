@@ -5,7 +5,7 @@ use molt_codegen_abi::{
 use wasm_encoder::{Function, Instruction};
 
 /// Cache of WASM local indices holding frequently-used i64 constants.
-/// When a function body contains 3+ fast_int operations, these locals are
+/// When a function body contains 3+ integer fast-path operations, these locals are
 /// pre-allocated and initialized once at function entry, replacing repeated
 /// `i64.const` immediates with cheaper `local.get` instructions.
 #[derive(Clone, Copy, Default)]

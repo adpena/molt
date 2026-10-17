@@ -6,10 +6,11 @@ Formal schema for the SimpleIR interchange format between the Python frontend
 
 > Scope note: this document describes the current transport format only. The
 > canonical IR architecture and representation contract live in
-> `docs/spec/areas/compiler/0100_MOLT_IR.md`. Fields such as `fast_int`,
-> `fast_float`, and `type_hint` are transitional compatibility hints for
-> transport consumers; they are not a substitute for
-> representation-aware SSA.
+> `docs/spec/areas/compiler/0100_MOLT_IR.md`. The `type_hint` field is a
+> transitional compatibility hint for transport consumers; it is not a
+> substitute for representation-aware SSA. Scalar facts live on typed SSA
+> values; an op that carries the retired `fast_int` or `fast_float` field
+> fails to parse.
 
 ## Transport Formats
 
@@ -241,8 +242,6 @@ site collisions must not substitute an attribute or an instance's value.
 | `var`             | `string?`  | `null`  | Variable name reference (used by store/load patterns)          |
 | `args`            | `string[]?`| `null`  | Operand value names (SSA references)                           |
 | `out`             | `string?`  | `null`  | Result value name (SSA definition)                             |
-| `fast_int`        | `bool?`    | `null`  | Hint: operands are known integers, use unboxed fast path       |
-| `fast_float`      | `bool?`    | `null`  | Hint: operands are known floats, use unboxed fast path         |
 | `stack_eligible`  | `bool?`    | `null`  | Hint: result can be stack-allocated                            |
 | `task_kind`       | `string?`  | `null`  | Physical task classification on `alloc_task`; callable trampoline kind on `func_new` / `func_new_closure` |
 | `task_closure_size` | `int?` | `null` | Nonnegative payload byte size paired with callable task kind; constructor fact, never a mutable Python attribute |
@@ -254,10 +253,9 @@ site collisions must not substitute an attribute or an instance's value.
 | `native_callable_abi` | `string?` | `null` | ABI contract token for the native callable export |
 | `argument_custody` | `("borrowed" \| "transferred")[]?` | `null` | Source call operand custody parallel to `args`; the instruction adopts each `transferred` operand |
 
-`fast_int`, `fast_float`, and `type_hint` exist to describe
-compatibility metadata on the current backend transport. New lowering work
-should prefer preserving explicit representation in typed IR over introducing
-additional transport-only hint fields.
+`type_hint` exists to describe compatibility metadata on the current backend
+transport. New lowering work should prefer preserving explicit representation
+in typed IR over introducing additional transport-only hint fields.
 
 ### Validation Constraints
 
@@ -291,10 +289,6 @@ symbol identity. The source of these roles and requirements is
     transfers the row's `callable_operand` as well, except that a
     `call_bind` or `call_indirect` whose builder's `callargs_new` has the
     `expanded` call form borrows its callable.
-- `fast_int` and `fast_float` cannot both be `true` on the same op.
-- `fast_int` / `fast_float` are accepted only on op families that own scalar
-  specialization. Generic calls and container mutators must not smuggle scalar
-  representation through these transport flags.
 - `container_type` must be one of the canonical container tags accepted by the
   backend contract: `bytearray`, `bytes`, `dict`, `frozenset`, `list`,
   `list_bool`, `list_float`, `list_int`, `range`, `set`, `str`, or `tuple`.
@@ -412,15 +406,13 @@ uses the same `s_value`/`bytes` names, never an implicit `value` fallback.
 | `abs`         | `args` [operand], `out`   | Absolute value           |
 | `invert`      | `args` [operand], `out`   | Bitwise invert (~x)      |
 
-All binary arithmetic ops accept optional `fast_int` / `fast_float` hints.
-
 Inplace variants: `inplace_add`, `inplace_sub`, `inplace_mul`,
 `inplace_bit_or`, `inplace_bit_and`, `inplace_bit_xor`. Same schema as their
 non-inplace counterparts.
 
 **Example:**
 ```json
-{"kind": "add", "args": ["v0", "v1"], "out": "v2", "fast_int": true}
+{"kind": "add", "args": ["v0", "v1"], "out": "v2"}
 ```
 
 ### Comparison
@@ -439,8 +431,6 @@ non-inplace counterparts.
 | `not_in`    | `args`, `out`             | Negated membership       |
 | `contains`  | `args`, `out`, optional `container_type` | `__contains__` with optional type hint |
 | `string_eq` | `args` [lhs, rhs], `out`  | String-specialized `==`  |
-
-Comparisons accept optional `fast_int` / `fast_float`.
 
 ### Logical and Bitwise
 
@@ -925,7 +915,7 @@ Unknown kind strings fall through to `Copy` (no-op).
       "ops": [
         {"kind": "const", "value": 10, "out": "v0"},
         {"kind": "const", "value": 20, "out": "v1"},
-        {"kind": "add", "args": ["v0", "v1"], "out": "v2", "fast_int": true},
+        {"kind": "add", "args": ["v0", "v1"], "out": "v2"},
         {"kind": "const_str", "s_value": "result", "out": "v3"},
         {"kind": "print", "args": ["v3", "v2"]},
         {"kind": "try_start"},

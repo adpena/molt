@@ -461,7 +461,7 @@ pub fn write_function_ir_contract(
     function: &FunctionIR,
     writer: &mut dyn std::io::Write,
 ) -> Result<(), String> {
-    const FUNCTION_IR_CONTRACT_VERSION: &[u8] = b"molt-function-ir-contract-v4\0";
+    const FUNCTION_IR_CONTRACT_VERSION: &[u8] = b"molt-function-ir-contract-v5\0";
     // MessagePack's f64 carrier is total and bit-preserving for every legal IR
     // value, including NaN payloads, infinities, and signed zero. JSON is not:
     // JSON cannot represent their complete bit patterns. Named struct
@@ -495,12 +495,6 @@ pub struct OpIR {
     pub var: Option<String>,
     pub args: Option<Vec<String>>,
     pub out: Option<String>,
-    /// Transitional transport compatibility hint for legacy consumers.
-    /// Not the canonical backend representation contract.
-    pub fast_int: Option<bool>,
-    /// Transitional transport compatibility hint for legacy consumers.
-    /// Not the canonical backend representation contract.
-    pub fast_float: Option<bool>,
     pub stack_eligible: Option<bool>,
     /// Rejected compiler-placement input. Retained at the transport boundary
     /// solely so validation diagnoses unproved arena custody instead of silently
@@ -1662,7 +1656,7 @@ mod json_parse_tests {
                 let first = contract_bytes(&function);
                 assert_eq!(first, contract_bytes(&function));
                 let payload = first
-                    .strip_prefix(b"molt-function-ir-contract-v4\0")
+                    .strip_prefix(b"molt-function-ir-contract-v5\0")
                     .expect("versioned contract");
                 let decoded: FunctionIR = rmp_serde::from_slice(payload).expect("decode contract");
                 assert_eq!(decoded.ops[0].f_value.unwrap().to_bits(), value.to_bits());
@@ -1729,7 +1723,22 @@ mod json_parse_tests {
         assert!(ir.profile.is_none());
         assert!(ir.functions[0].param_types.is_none());
         assert!(ir.functions[0].ops[0].args.is_none());
-        assert!(ir.functions[0].ops[0].fast_int.is_none());
+    }
+
+    #[test]
+    fn simple_ir_from_json_str_rejects_retired_scalar_hints() {
+        // fast_int / fast_float were frontend transport hints that no backend
+        // read; scalar facts live on typed SSA values. A producer that still
+        // emits them fails closed instead of being silently ignored.
+        for field in ["fast_int", "fast_float"] {
+            let document = format!(
+                r#"{{"functions": [{{"return_abi": "void", "name": "__main__",
+                    "params": [], "ops": [{{"kind": "ret_void", "{field}": true}}]}}]}}"#
+            );
+            let error =
+                SimpleIR::from_json_str(&document).expect_err("retired scalar hint must not parse");
+            assert!(error.to_string().contains(field), "{field}: {error}");
+        }
     }
 
     #[test]
@@ -2037,8 +2046,6 @@ mod json_parse_tests {
             var: Some("source".to_string()),
             args: Some(vec!["left".to_string(), "right".to_string()]),
             out: Some("result".to_string()),
-            fast_int: Some(true),
-            fast_float: Some(false),
             stack_eligible: Some(true),
             arena_eligible: Some(false),
             defines_del: Some(true),

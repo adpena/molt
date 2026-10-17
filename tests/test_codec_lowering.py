@@ -1213,7 +1213,7 @@ a @= b
     assert _ops_by_kind(ir, "inplace_matmul")
 
 
-def test_direct_call_result_hints_do_not_poison_fast_int() -> None:
+def test_direct_call_result_hints_do_not_poison_operand_types() -> None:
     src = """
 def f(x):
     return x
@@ -1226,7 +1226,11 @@ d = b + 1
     ir = compile_to_tir(src, type_hint_policy="check")
     add_ops = _ops_by_kind(ir, "add")
     assert len(add_ops) == 2
-    assert add_ops[1].get("fast_int") is not True
+    main_ops = next(fn for fn in ir["functions"] if fn["name"] == "molt_main")["ops"]
+    float_operand = add_ops[1]["args"][0]
+    producer = next(op for op in main_ops if op.get("out") == float_operand)
+    # f(1) and f(1.0) share one callee; neither result may claim int.
+    assert producer.get("type_hint") not in {"int", "bool"}
 
 
 def test_tuple_lowering():
