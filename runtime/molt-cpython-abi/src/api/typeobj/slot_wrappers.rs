@@ -13,6 +13,39 @@ use std::ptr;
 
 mod adapters;
 
+/// Recognize the physical default getter represented by a published wrapper.
+/// CPython update_one_slot requires both the canonical adapter and an admitted
+/// declaring owner before the wrapped implementation can select a direct slot.
+/// Names alone cannot establish this: an unrelated type's wrapper must still
+/// run its descriptor receiver check.
+pub(crate) unsafe fn default_getattribute_wrapper(
+    descriptor: *mut PyObject,
+    receiver: *mut PyTypeObject,
+    default: *mut PyTypeObject,
+) -> bool {
+    unsafe {
+        if descriptor.is_null() || (*descriptor).ob_type != &raw mut PyWrapperDescr_Type {
+            return false;
+        }
+        let wrapper = descriptor.cast::<PyWrapperDescrObject>();
+        let base = (*wrapper).d_base;
+        let definition = SLOT_WRAPPER_DEFS
+            .iter()
+            .find(|row| {
+                row.slot == SlotWrapper::Direct(DirectSlot::GetAttr) && row.base.wrapper.is_some()
+            })
+            .expect("GetAttr has one canonical wrapper adapter");
+        !base.is_null()
+            && (*base).offset == definition.base.offset
+            && (*base).wrapper.map(|adapter| adapter as *const ())
+                == definition.base.wrapper.map(|adapter| adapter as *const ())
+            && (*default)
+                .tp_getattro
+                .is_some_and(|getter| getter as *const () as *mut c_void == (*wrapper).d_wrapped)
+            && super::PyType_IsSubtype(receiver, (*wrapper).d_common.d_type) != 0
+    }
+}
+
 /// CPython's explicit __setattr__/__delattr__ receiver check (typeobject.c
 /// hackcheck). This is shared by physical wrappers and Python's explicit
 /// object/type defaults across the bridge. C PyObject_GenericSetAttr is unchecked.
@@ -800,7 +833,7 @@ unsafe extern "C" fn descr_call(
         return unsafe { type_error("descriptor needs an argument") };
     }
     let self_ = unsafe { sequences::PyTuple_GetItem(args, 0) };
-    if !unsafe { descriptors::receiver(object, self_) } {
+    if !unsafe { descriptors::receiver(object, self_, descriptors::ReceiverContext::Call) } {
         return ptr::null_mut();
     }
     let tail = unsafe { sequences::PyTuple_GetSlice(args, 1, count) };
@@ -822,7 +855,7 @@ pub unsafe extern "C" fn PyWrapper_New(
         return ptr::null_mut();
     }
     let _pins = unsafe { Pins::new([descr, self_]) };
-    if !unsafe { descriptors::receiver(descr, self_) } {
+    if !unsafe { descriptors::receiver(descr, self_, descriptors::ReceiverContext::Binding) } {
         return ptr::null_mut();
     }
     let wrapper = unsafe { memory::_PyObject_GC_New(&raw mut _PyMethodWrapper_Type) }

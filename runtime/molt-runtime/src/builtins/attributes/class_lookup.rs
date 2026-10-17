@@ -25,6 +25,37 @@ impl DefaultGetattribute {
             Self::Type => type_method_bits(py, "__getattribute__"),
         }
     }
+
+    unsafe fn admits(self, py: &PyToken<'_>, owner: *mut u8, candidate: u64) -> Result<bool, ()> {
+        if Some(candidate) == self.bits(py)? {
+            return Ok(true);
+        }
+        unsafe {
+            let Some(foreign) = obj_from_bits(candidate)
+                .as_ptr()
+                .filter(|pointer| object_type_id(*pointer) == TYPE_ID_FOREIGN)
+            else {
+                return Ok(false);
+            };
+            let classes = builtin_classes(py);
+            let default = match self {
+                Self::Object => classes.object,
+                Self::Module => classes.module,
+                Self::Type => classes.type_obj,
+            };
+            molt_cpython_abi::bridge::native_default_getattribute_wrapper(
+                crate::object::foreign::foreign_ptr_from_obj(foreign),
+                MoltObject::from_ptr(owner).bits(),
+                default,
+            )
+            .map_err(|_| {
+                crate::cpython_abi_hooks::propagate_native_failure(
+                    py,
+                    "default attribute wrapper admission",
+                );
+            })
+        }
+    }
 }
 
 /// A class's attribute protocol is plain when its MRO has no `__getattr__`
@@ -77,7 +108,7 @@ pub(super) unsafe fn plain_attribute_protocol(
         ) else {
             return Ok(false);
         };
-        let plain = getattr.is_none() && Some(getattribute) == default.bits(py)?;
+        let plain = getattr.is_none() && default.admits(py, owner, getattribute)?;
         // Resolving the default may publish a namespace; store only a fact
         // that still describes the current class graph.
         if crate::class_layout_version_bits(owner) == layout_version
@@ -130,7 +161,6 @@ where
             dec_ref_bits(py, receiver);
             return result;
         }
-        let default = default.bits(py)?;
         inc_ref_bits(py, receiver);
         inc_ref_bits(py, owner_bits);
         inc_ref_bits(py, name);
@@ -152,14 +182,16 @@ where
             if let Some(bits) = raw {
                 inc_ref_bits(py, bits);
             }
+            let custom = match raw {
+                Some(raw) => !default.admits(py, owner, raw)?,
+                None => false,
+            };
             if fallback.is_some() {
                 traceback_suppress_enter();
             }
             exception_stack_push();
             let result = match raw {
-                Some(raw) if Some(raw) != default => {
-                    descriptor_call1(py, raw, owner, Some(receiver), name)
-                }
+                Some(raw) if custom => descriptor_call1(py, raw, owner, Some(receiver), name),
                 _ => default_lookup(if fallback.is_none() {
                     mode
                 } else {

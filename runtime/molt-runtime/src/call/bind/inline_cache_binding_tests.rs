@@ -375,6 +375,9 @@ fn type_epoch_invalidates_every_mro_resolved_call_cache_family() {
 
 #[test]
 fn native_method_load_preserves_descriptor_identity_and_one_receiver_owner() {
+    extern "C" fn explicit_getter(receiver: u64, name: u64) -> u64 {
+        crate::molt_object_getattribute(receiver, name)
+    }
     let _test = crate::test_support::RuntimeTestTransaction::new();
     crate::with_gil_entry_nopanic!(py, {
         unsafe {
@@ -391,13 +394,22 @@ fn native_method_load_preserves_descriptor_identity_and_one_receiver_owner() {
             let refs = || (*crate::object::header_from_obj_ptr(pointer)).ref_count_snapshot();
             let original_refs = refs();
 
-            // Cold and repeated LOAD_ATTR both return the class descriptor,
-            // never a freshly allocated bound-method payload. The pair owns
-            // exactly one receiver reference, released by CALL or the caller.
-            for site in [964, 964] {
+            // Initial and repeated lookup preserve descriptor identity before
+            // and after C readiness publishes native slot-wrapper namespaces.
+            // Each pair owns exactly one receiver edge, retired by CALL.
+            for ready in [false, true, true] {
+                if ready {
+                    assert_eq!(
+                        molt_cpython_abi::api::typeobj::PyType_Ready(
+                            &raw mut molt_cpython_abi::abi_types::PyList_Type,
+                        ),
+                        0
+                    );
+                    assert!(!exception_pending(py));
+                }
                 let loaded = load_method(
                     py,
-                    MoltObject::from_int(site).bits(),
+                    MoltObject::from_int(964).bits(),
                     receiver,
                     b"reverse".as_ptr(),
                     7,
@@ -451,7 +463,162 @@ fn native_method_load_preserves_descriptor_identity_and_one_receiver_owner() {
             crate::molt_exception_clear();
             dec_ref_bits(py, bound);
             assert_eq!(refs(), original_refs);
-            for value in [receiver, class, label, name] {
+            // Foreign calls below project their argument into C. Establish
+            // that independent view owner explicitly after the pure method-
+            // pair checks: one stable hold, no retained direct C reference.
+            let bridge = &molt_cpython_abi::bridge::GLOBAL_BRIDGE;
+            assert_eq!(bridge.managed_handle_is_uniquely_referenced(receiver), None);
+            let view = bridge.handle_to_borrowed_pyobj(receiver);
+            assert!(!view.is_null());
+            let projected_refs = original_refs + 1;
+            assert_eq!(refs(), projected_refs);
+            assert_eq!(
+                bridge.managed_handle_is_uniquely_referenced(receiver),
+                Some(true)
+            );
+            assert!(!bridge.has_direct_c_refs(receiver));
+            assert_eq!(bridge.gc_ref_adjustment(receiver), -1);
+
+            // Installing a compatible builtin wrapper preserves direct
+            // selection; an unrelated declaring owner remains an override.
+            let getter_name = crate::attr_name_bits_from_bytes(py, b"__getattribute__").unwrap();
+            assert_eq!(
+                molt_cpython_abi::api::typeobj::PyType_Ready(
+                    &raw mut molt_cpython_abi::abi_types::PyTuple_Type,
+                ),
+                0
+            );
+            for source in [
+                builtin_classes(py).object,
+                builtin_classes(py).list,
+                builtin_classes(py).tuple,
+            ] {
+                let wrapper = crate::molt_get_attr_name(source, getter_name);
+                assert!(!exception_pending(py));
+                crate::molt_set_attr_name(class, getter_name, wrapper);
+                assert!(!exception_pending(py));
+                let loaded = load_method(
+                    py,
+                    MoltObject::from_int(964).bits(),
+                    receiver,
+                    b"reverse".as_ptr(),
+                    7,
+                );
+                let minor = (molt_cpython_abi::hooks::hooks_or_stubs().target_python_minor)();
+                if source == builtin_classes(py).tuple && minor < 14 {
+                    assert!(exception_pending(py));
+                    assert_eq!(loaded.self_or_null, LoadedMethod::NULL);
+                    let error = crate::exception_last_bits_noinc(py).unwrap();
+                    assert_eq!(
+                        crate::format_exception_message(py, obj_from_bits(error).as_ptr().unwrap()),
+                        "descriptor '__getattribute__' requires a 'tuple' object but received a 'NoArgsList'"
+                    );
+                    crate::molt_exception_clear();
+                    // Explicit binding retains descr_check's distinct oracle.
+                    assert!(
+                        crate::builtins::attr::descriptor_bind(
+                            py,
+                            wrapper,
+                            Some(class),
+                            Some(receiver),
+                        )
+                        .is_err()
+                    );
+                    let error = crate::exception_last_bits_noinc(py).unwrap();
+                    assert_eq!(
+                        crate::format_exception_message(py, obj_from_bits(error).as_ptr().unwrap()),
+                        "descriptor '__getattribute__' for 'tuple' objects doesn't apply to a 'NoArgsList' object"
+                    );
+                    crate::molt_exception_clear();
+                    // Two explicit arguments share the same direct-call
+                    // receiver boundary, before the wrapper's arity check.
+                    assert!(
+                        crate::builtins::attr::descriptor_call2(
+                            py,
+                            wrapper,
+                            obj_from_bits(class).as_ptr().unwrap(),
+                            Some(receiver),
+                            name,
+                            MoltObject::none().bits(),
+                        )
+                        .is_err()
+                    );
+                    let error = crate::exception_last_bits_noinc(py).unwrap();
+                    assert_eq!(
+                        crate::format_exception_message(py, obj_from_bits(error).as_ptr().unwrap()),
+                        "descriptor '__getattribute__' requires a 'tuple' object but received a 'NoArgsList'"
+                    );
+                    crate::molt_exception_clear();
+                } else {
+                    assert!(!exception_pending(py));
+                    assert_eq!(loaded.self_or_null, receiver);
+                    assert_eq!(refs(), projected_refs + 1);
+                    dec_ref_bits(py, loaded.self_or_null);
+                }
+                dec_ref_bits(py, loaded.callable);
+                dec_ref_bits(py, wrapper);
+                assert_eq!(refs(), projected_refs);
+                assert_eq!(
+                    bridge.managed_handle_is_uniquely_referenced(receiver),
+                    Some(true)
+                );
+                assert!(!bridge.has_direct_c_refs(receiver));
+            }
+            let custom_ptr = crate::builtins::functions::alloc_runtime_function_obj(
+                py,
+                crate::provenance::abi::expose_function_address(explicit_getter as *const ()),
+                2,
+            );
+            assert!(!custom_ptr.is_null());
+            let custom = MoltObject::from_ptr(custom_ptr).bits();
+            crate::molt_set_attr_name(class, getter_name, custom);
+            assert!(!exception_pending(py));
+            dec_ref_bits(py, custom);
+            let through_hook = load_method(
+                py,
+                MoltObject::from_int(964).bits(),
+                receiver,
+                b"reverse".as_ptr(),
+                7,
+            );
+            assert!(!exception_pending(py));
+            assert_eq!(through_hook.self_or_null, LoadedMethod::NULL);
+            assert_eq!(
+                object_type_id(obj_from_bits(through_hook.callable).as_ptr().unwrap()),
+                TYPE_ID_BOUND_METHOD
+            );
+            assert_eq!(refs(), projected_refs + 1);
+            dec_ref_bits(py, through_hook.callable);
+            assert_eq!(refs(), projected_refs);
+            crate::molt_del_attr_name(class, getter_name);
+            assert!(!exception_pending(py));
+
+            // An instance shadow must not acquire a synthetic receiver even
+            // with the native default getter fully readied and cached.
+            crate::molt_set_attr_name(receiver, name, MoltObject::from_int(73).bits());
+            assert!(!exception_pending(py));
+            let shadow = load_method(
+                py,
+                MoltObject::from_int(964).bits(),
+                receiver,
+                b"reverse".as_ptr(),
+                7,
+            );
+            assert!(!exception_pending(py));
+            assert_eq!(shadow.callable, MoltObject::from_int(73).bits());
+            assert_eq!(shadow.self_or_null, LoadedMethod::NULL);
+            assert_eq!(refs(), projected_refs);
+            dec_ref_bits(py, shadow.callable);
+            assert_eq!(
+                bridge.managed_handle_is_uniquely_referenced(receiver),
+                Some(true)
+            );
+            assert!(!bridge.has_direct_c_refs(receiver));
+            dec_ref_bits(py, receiver);
+            // Releasing the final semantic owner retires the view's stable
+            // hold too; an invocation or projection leak leaves an entry.
+            assert_eq!(bridge.managed_handle_is_uniquely_referenced(receiver), None);
+            for value in [class, label, name, getter_name] {
                 dec_ref_bits(py, value);
             }
         }

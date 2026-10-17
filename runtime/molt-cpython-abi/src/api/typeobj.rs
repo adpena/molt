@@ -50,7 +50,9 @@ pub(crate) use root_metadata::type_setattro;
 use slot_wrappers::SLOT_WRAPPER_DEFS;
 pub(crate) use slot_wrappers::completes_call_operands as slot_wrapper_completes_call_operands;
 pub use slot_wrappers::{PyDescr_NewWrapper, PyWrapper_New};
-pub(crate) use slot_wrappers::{setter_admitted, setter_type_admitted};
+pub(crate) use slot_wrappers::{
+    default_getattribute_wrapper, setter_admitted, setter_type_admitted,
+};
 
 /// Build a real Init wrapper for a runtime integration witness. Runtime-bound
 /// builtin namespaces contain managed semantic descriptors, so reading their
