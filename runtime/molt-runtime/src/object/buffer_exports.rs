@@ -443,35 +443,6 @@ impl<'a, 'py> ScopedBuffer<'a, 'py> {
         }
     }
 
-    /// The caller owns the admitted export throughout the raw callback. The
-    /// readonly descriptor and its descendants borrow only that scope, so none
-    /// can delay the original export's release after write returns.
-    pub(crate) fn readonly_subview<'scope>(
-        &'scope self,
-        start: usize,
-        len: usize,
-    ) -> Result<CallbackMemoryView<'scope>, u64> {
-        let total = self
-            .contiguous_len()
-            .map_err(|error| error.raise(self.py, "a contiguous buffer is required"))?;
-        if start > total || len > total - start {
-            return Err(crate::raise_exception(
-                self.py,
-                "SystemError",
-                "invalid IO buffer subspan",
-            ));
-        }
-        unsafe {
-            CallbackMemoryView::borrow(
-                self.py,
-                self,
-                self.export.data.wrapping_add(start),
-                len,
-                CallbackMemoryViewAccess::ReadOnly,
-            )
-        }
-    }
-
     /// Semantic format belongs to the retained export, not the fixed-size
     /// geometry transport. This borrow cannot outlive its lease or physical pin.
     pub(crate) fn format(&self) -> &[u8] {
@@ -572,27 +543,6 @@ impl<'a, 'py> ScopedWritableBuffer<'a, 'py> {
             std::ptr::NonNull::<u8>::dangling().as_ptr()
         } else {
             self.buffer.view().data
-        }
-    }
-
-    /// Reborrow admitted writable storage for one raw callback. The callback's
-    /// root and descendants expire before this buffer's counted lease drops.
-    pub(crate) fn writable_subview<'scope>(
-        &'scope mut self,
-        start: usize,
-        len: usize,
-    ) -> Result<CallbackMemoryView<'scope>, u64> {
-        if start > self.len || len > self.len - start {
-            return Err(crate::raise_exception(
-                self.buffer.py,
-                "SystemError",
-                "invalid IO buffer subspan",
-            ));
-        }
-        let py = self.buffer.py;
-        let data = self.as_mut_ptr().wrapping_add(start);
-        unsafe {
-            CallbackMemoryView::borrow(py, self, data, len, CallbackMemoryViewAccess::Writable)
         }
     }
 }

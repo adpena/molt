@@ -698,7 +698,7 @@ mod split_contract_tests {
             JOIN_WRONG_FLAGS.fetch_add(1, Ordering::SeqCst);
         }
         let index = JOIN_EXPORTS.fetch_add(1, Ordering::SeqCst);
-        let bytes: &[u8] = if index % 2 == 0 { b"a" } else { b"bc" };
+        let bytes: &[u8] = if index.is_multiple_of(2) { b"a" } else { b"bc" };
         unsafe {
             molt_cpython_abi::api::buffer::PyBuffer_FillInfo(
                 view,

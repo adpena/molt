@@ -2,6 +2,7 @@
 use std::path::PathBuf;
 
 use crate::audit::AuditArgs;
+#[cfg(not(feature = "stdlib_path"))]
 use molt_runtime_core::host_capabilities_generated::OperationId;
 use molt_runtime_core::prelude::*;
 

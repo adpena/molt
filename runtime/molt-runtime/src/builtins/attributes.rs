@@ -1426,8 +1426,8 @@ pub(crate) unsafe fn get_attr_object_ic_with_mode(
             None => attr_name_bits_from_bytes(py, name),
         }
         .ok_or(())?;
-        if let Some(site_id) = site_id {
-            if field_sites::remember_field_site(
+        if let Some(site_id) = site_id
+            && field_sites::remember_field_site(
                 py,
                 field_sites::FieldAccess::Read,
                 site_id,
@@ -1436,10 +1436,9 @@ pub(crate) unsafe fn get_attr_object_ic_with_mode(
                 name,
             )
             .is_err()
-            {
-                dec_ref_bits(py, name_bits);
-                return Err(());
-            }
+        {
+            dec_ref_bits(py, name_bits);
+            return Err(());
         }
         let out = get_attr_name_with_mode(py, obj_bits, name_bits, mode);
         dec_ref_bits(py, name_bits);

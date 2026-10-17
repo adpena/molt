@@ -1101,7 +1101,9 @@ fn buffer_export_contract_memoryview_geometry_flags_and_retirement() {
     crate::concurrency::gil::with_gil(|py| unsafe {
         // Literal layout expectations follow CPython memoryobject.c::init_flags,
         // not PyBuffer_IsContiguous: its empty rank-one rule is different.
-        let layouts: &[(&str, usize, &[isize], &[isize], usize, bool, bool)] = &[
+        // (label, itemsize, shape, strides, len, c_contiguous, f_contiguous)
+        type Layout<'a> = (&'a str, usize, &'a [isize], &'a [isize], usize, bool, bool);
+        let layouts: &[Layout<'_>] = &[
             ("scalar", 1, &[], &[], 1, true, true),
             ("empty-linear", 1, &[0], &[1], 0, true, true),
             ("empty-strided", 1, &[0], &[2], 0, false, false),
@@ -1500,7 +1502,7 @@ fn native_buffer_formats_preserve_typed_assignment_comparison_and_retirement() {
                         .borrowed_handle_to_new_pyobj(expected_view),
                 );
                 assert!(!view.as_ptr().is_null());
-                let slot = (*(&raw mut PyMemoryView_Type)).tp_richcompare.unwrap();
+                let slot = PyMemoryView_Type.tp_richcompare.unwrap();
                 for operation in [RichCompareOp::Eq, RichCompareOp::Ne] {
                     let op = operation as i32;
                     let expected = if (operation == RichCompareOp::Eq) == compatible {
@@ -1743,6 +1745,7 @@ fn raw_callback_memoryviews_expire_without_extending_exporter_custody() {
     let _transaction = crate::test_support::RuntimeTestTransaction::with_gc_isolation();
     fn exercise(inject_failure: bool, writable: bool, pending_error: bool) {
         crate::concurrency::gil::with_gil(|py| unsafe {
+            use crate::object::buffer_exports::{CallbackMemoryView, CallbackMemoryViewAccess};
             use molt_runtime_core::OwnedRuntimeValue;
             EXPORT_RELEASES.store(0, Ordering::SeqCst);
             EXPORT_FREES.store(0, Ordering::SeqCst);
@@ -1776,13 +1779,30 @@ fn raw_callback_memoryviews_expire_without_extending_exporter_custody() {
             let source_owner = OwnedRuntimeValue::from_owned_bits(py.core_token(), source);
             let input = (!writable)
                 .then(|| crate::object::buffer_exports::ScopedBuffer::simple(&py, source).unwrap());
-            let mut writable_input = writable.then(|| {
+            let writable_input = writable.then(|| {
                 crate::object::buffer_exports::ScopedWritableBuffer::new(&py, source).unwrap()
             });
-            let scope = if let Some(input) = writable_input.as_mut() {
-                input.writable_subview(0, 3).unwrap()
+            // Borrow the span the way raw IO callbacks do (buffered readinto
+            // and write): the scope guard owns every descendant view.
+            let scope = if let Some(input) = writable_input.as_ref() {
+                CallbackMemoryView::borrow(
+                    &py,
+                    input,
+                    input.as_mut_ptr(),
+                    3,
+                    CallbackMemoryViewAccess::Writable,
+                )
+                .unwrap()
             } else {
-                input.as_ref().unwrap().readonly_subview(0, 3).unwrap()
+                let input = input.as_ref().unwrap();
+                CallbackMemoryView::borrow(
+                    &py,
+                    input,
+                    input.as_slice().as_ptr().cast_mut(),
+                    3,
+                    CallbackMemoryViewAccess::ReadOnly,
+                )
+                .unwrap()
             };
             let root = scope.bits();
             let root_ptr = crate::obj_from_bits(root).as_ptr().unwrap();

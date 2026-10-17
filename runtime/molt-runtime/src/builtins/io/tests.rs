@@ -84,6 +84,7 @@ fn vfs_metadata_admission_and_call_budget() {
         Predicate(bool),
         ReadlinkError,
     }
+    type MetadataOperation = (fn(u64) -> u64, Observation);
     let required = ["fs.read", "fs.tmp.read"];
     for mask in 0..4 {
         let backend = MetadataBackend::new();
@@ -92,7 +93,7 @@ fn vfs_metadata_admission_and_call_budget() {
             Some(metadata_mount(backend.clone())),
             |py| {
                 let path = io_string(py, "/tmp/value");
-                let operations: [(fn(u64) -> u64, Observation); 13] = [
+                let operations: [MetadataOperation; 13] = [
                     (|p| crate::molt_os_stat(p), Observation::Stat),
                     (|p| crate::molt_os_lstat(p), Observation::Stat),
                     (|p| crate::molt_path_exists(p), Observation::Predicate(true)),

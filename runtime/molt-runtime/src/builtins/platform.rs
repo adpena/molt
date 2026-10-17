@@ -355,7 +355,7 @@ fn sys_bootstrap_state_from_module_file(
 
     let mut module_roots_entries: Vec<String> = Vec::new();
     let mut module_roots_seen: HashSet<String> = HashSet::new();
-    for entry in split_nonempty_paths(&module_roots_raw, sep) {
+    for entry in split_nonempty_paths(module_roots_raw, sep) {
         let resolved = bootstrap_resolve_path_entry(&entry, &pwd, path_sep);
         append_unique_path_hashed(&mut module_roots_entries, &mut module_roots_seen, &resolved);
         append_unique_path_hashed(&mut paths, &mut paths_seen, &resolved);

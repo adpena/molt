@@ -281,7 +281,7 @@ fn flush_file_handle_on_drop(_py: &PyToken<'_>, handle: &mut MoltFileHandle) {
             if unsafe {
                 buffer_exports::bytearray_try_mutate(mem_ptr, new_len, |data| {
                     data.resize(new_len, 0);
-                    data[mem.pos..end].copy_from_slice(&bytes);
+                    data[mem.pos..end].copy_from_slice(bytes);
                 })
             }
             .is_ok()

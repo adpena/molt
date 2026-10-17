@@ -103,11 +103,6 @@ pub fn alloc_bytes(_py: &CoreGilToken, data: &[u8]) -> *mut u8 {
     crate::with_gil_entry_nopanic!(py, { crate::alloc_bytes(py, data) })
 }
 
-#[cfg(not(feature = "stdlib_path"))]
-pub fn alloc_dict_with_pairs(_py: &CoreGilToken, pairs: &[u64]) -> *mut u8 {
-    crate::with_gil_entry_nopanic!(py, { crate::alloc_dict_with_pairs(py, pairs) })
-}
-
 // ---------------------------------------------------------------------------
 // Object inspection
 // ---------------------------------------------------------------------------
@@ -154,7 +149,7 @@ pub fn dec_ref_bits(_py: &CoreGilToken, bits: u64) {
     })
 }
 
-#[cfg(any(not(feature = "stdlib_itertools"), not(feature = "stdlib_path")))]
+#[cfg(not(feature = "stdlib_itertools"))]
 pub fn inc_ref_bits(_py: &CoreGilToken, bits: u64) {
     crate::with_gil_entry_nopanic!(py, {
         crate::inc_ref_bits(py, bits);
@@ -220,11 +215,6 @@ pub fn type_id_tuple() -> u32 {
 #[cfg(not(feature = "stdlib_http"))]
 pub fn type_id_dict() -> u32 {
     crate::TYPE_ID_DICT
-}
-
-#[cfg(not(feature = "stdlib_path"))]
-pub fn molt_object_hash(bits: u64) -> u64 {
-    crate::object::ops_sys::molt_object_hash(bits)
 }
 
 // ---------------------------------------------------------------------------

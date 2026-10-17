@@ -125,7 +125,7 @@ use memchr::memmem;
 use molt_obj_model::MoltObject;
 use num_bigint::BigInt;
 use num_integer::Integer;
-use num_traits::{Signed, ToPrimitive, Zero};
+use num_traits::{Signed, Zero};
 use std::borrow::Cow;
 use std::sync::atomic::Ordering as AtomicOrdering;
 use std::sync::{Mutex, OnceLock};

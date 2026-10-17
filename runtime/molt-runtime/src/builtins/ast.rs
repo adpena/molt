@@ -1302,9 +1302,7 @@ mod snapshot_tests {
                 max_allocations: Some(0),
                 ..ResourceLimits::default()
             })));
-            let ctors = AstParseCtors::from_bits(py, tuple)
-                .ok()
-                .expect("tuple pin cannot allocate");
+            let ctors = AstParseCtors::from_bits(py, tuple).expect("tuple pin cannot allocate");
             assert!(!exception_pending(py));
             assert_eq!(owners(item), item_refs);
             assert_eq!(owners(tuple), tuple_refs + 1);

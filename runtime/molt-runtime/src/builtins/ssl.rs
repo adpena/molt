@@ -1007,11 +1007,11 @@ pub extern "C" fn molt_ssl_socket_write(handle_bits: u64, data_bits: u64) -> u64
             };
             let n = match &mut state.inner {
                 SslSocketInner::Client(stream) => {
-                    stream.write_all(&data).map_err(|e| e.to_string())?;
+                    stream.write_all(data).map_err(|e| e.to_string())?;
                     data.len()
                 }
                 SslSocketInner::Server(stream) => {
-                    stream.write_all(&data).map_err(|e| e.to_string())?;
+                    stream.write_all(data).map_err(|e| e.to_string())?;
                     data.len()
                 }
             };

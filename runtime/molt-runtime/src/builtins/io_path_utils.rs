@@ -33,6 +33,9 @@ pub(crate) fn path_root_coordinate(
     }
 }
 
+/// A parsed path in its storage coordinate and its `(drive, root)` offsets.
+pub(crate) type RootPathParse<'a> = (std::borrow::Cow<'a, [u8]>, (usize, usize));
+
 /// Parse through the selected native provider, then return offsets in the
 /// original Python storage coordinate. Windows byte paths cross the existing
 /// filesystem codec only here; subsequent join/split operations remain bytes.
@@ -42,7 +45,7 @@ pub(crate) fn root_path_parse<'a>(
     sep: u8,
     bytes: bool,
     coordinate: molt_runtime_platform::path_text::PathCoordinate,
-) -> Result<(std::borrow::Cow<'a, [u8]>, (usize, usize)), u64> {
+) -> Result<RootPathParse<'a>, u64> {
     use molt_runtime_platform::path_text::{PathCoordinate, path_root_offsets};
     if coordinate != PathCoordinate::WindowsUtf16 {
         return Ok((

@@ -446,9 +446,9 @@ pub extern "C" fn molt_codecs_incremental_decoder_decode(
             return MoltObject::none().bits();
         };
         let input_obj = obj_from_bits(input_bits);
-        let Some(ptr) = input_obj.as_ptr() else {
+        if input_obj.as_ptr().is_none() {
             return raise_exception::<_>(_py, "TypeError", "input must be bytes");
-        };
+        }
         let input_export =
             match crate::object::buffer_exports::ScopedBuffer::simple(_py, input_bits) {
                 Ok(input) => input,
@@ -677,13 +677,13 @@ pub extern "C" fn molt_codecs_stream_reader_read(handle_bits: u64, size_bits: u6
             }
             return MoltObject::none().bits();
         }
-        let Some(raw_ptr) = raw_obj.as_ptr() else {
+        if raw_obj.as_ptr().is_none() {
             let ptr = alloc_string(_py, b"");
             if ptr.is_null() {
                 return crate::builtins::exceptions::ExceptionSentinel::exception_sentinel();
             }
             return MoltObject::from_ptr(ptr).bits();
-        };
+        }
         let input_export = match crate::object::buffer_exports::ScopedBuffer::simple(_py, raw_bits)
         {
             Ok(input) => input,
@@ -752,13 +752,13 @@ pub extern "C" fn molt_codecs_stream_reader_readline(handle_bits: u64) -> u64 {
             }
             return MoltObject::none().bits();
         }
-        let Some(raw_ptr) = raw_obj.as_ptr() else {
+        if raw_obj.as_ptr().is_none() {
             let ptr = alloc_string(_py, b"");
             if ptr.is_null() {
                 return crate::builtins::exceptions::ExceptionSentinel::exception_sentinel();
             }
             return MoltObject::from_ptr(ptr).bits();
-        };
+        }
         let input_export = match crate::object::buffer_exports::ScopedBuffer::simple(_py, raw_bits)
         {
             Ok(input) => input,
@@ -965,9 +965,9 @@ pub extern "C" fn molt_codecs_charmap_decode(
 ) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         let input_obj = obj_from_bits(input_bits);
-        let Some(input_ptr) = input_obj.as_ptr() else {
+        if input_obj.as_ptr().is_none() {
             return raise_exception::<_>(_py, "TypeError", "input must be bytes");
-        };
+        }
         let input_export =
             match crate::object::buffer_exports::ScopedBuffer::simple(_py, input_bits) {
                 Ok(input) => input,

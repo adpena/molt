@@ -955,7 +955,7 @@ pub(crate) fn dict_usable_capacity(capacity: usize) -> usize {
 
 fn checked_dict_capacity(entries: usize) -> Option<usize> {
     let minimum = entries.checked_mul(3)?.checked_add(1)? / 2;
-    Some(minimum.max(8).checked_next_power_of_two()?)
+    minimum.max(8).checked_next_power_of_two()
 }
 
 /// _PyDict_NewPresized bounds speculative preallocation, including huge hints.
@@ -968,7 +968,7 @@ pub(crate) fn dict_presize_capacity(entries: usize) -> Option<usize> {
 }
 
 fn checked_dict_growth_capacity(live: usize) -> Option<usize> {
-    Some(live.checked_mul(3)?.max(8).checked_next_power_of_two()?)
+    live.checked_mul(3)?.max(8).checked_next_power_of_two()
 }
 
 /// Reserve every allocation before moving any live row or changing the index.

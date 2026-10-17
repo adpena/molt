@@ -189,6 +189,8 @@ pub(crate) fn native_handle_release(detached: DetachedNativeHandle) {
 
 /// Typed satellite projection of the existing Arc payload authority. The
 /// declaring root crate still supplies the sealed green-edge admission.
+/// Only the compression and crypto satellite bridges declare handles.
+#[cfg(any(feature = "stdlib_compression", feature = "stdlib_crypto"))]
 macro_rules! native_handle_bridge {
     ($new:ident, $clone:ident, $payload:ty) => {
         /// Consumes one Arc<Mutex<Payload>> raw reference on every outcome.
@@ -218,6 +220,7 @@ macro_rules! native_handle_bridge {
         }
     };
 }
+#[cfg(any(feature = "stdlib_compression", feature = "stdlib_crypto"))]
 pub(crate) use native_handle_bridge;
 
 #[cfg(test)]
