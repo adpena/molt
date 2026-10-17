@@ -77,7 +77,6 @@ from __future__ import annotations
 import ast
 import contextlib
 import copy
-import subprocess
 import sys
 import textwrap
 from dataclasses import dataclass
@@ -91,7 +90,7 @@ from tools.import_file import bind_repository_imports  # noqa: E402
 
 bind_repository_imports(__file__)
 
-from tools.generator_io import generator_main  # noqa: E402
+from tools.generator_io import generator_main, ruff_format_source  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[1]
 SRC = ROOT / "src"
@@ -707,36 +706,6 @@ def _split_attrs(
     return attrs[:midpoint], attrs[midpoint:]
 
 
-def _format_generated_text(path: Path, text: str) -> str:
-    """Format generated Python text through the repository formatter."""
-    cmd = [
-        sys.executable,
-        "-m",
-        "ruff",
-        "format",
-        "--no-force-exclude",
-        "--stdin-filename",
-        str(path),
-        "-",
-    ]
-    proc = subprocess.run(
-        cmd,
-        input=text,
-        text=True,
-        capture_output=True,
-        cwd=ROOT,
-        check=False,
-        encoding="utf-8",
-    )
-    if proc.returncode != 0:
-        detail = (proc.stderr or proc.stdout).strip()
-        raise ProtocolGenError(
-            f"failed to format generated protocol text for {path.relative_to(ROOT)}: "
-            f"{detail}"
-        )
-    return proc.stdout
-
-
 def generate() -> dict[Path, str]:
     """Render both generated files. Returns ``{path: rendered_text}``."""
     import molt.frontend._types as types_module
@@ -762,8 +731,8 @@ def generate() -> dict[Path, str]:
         attrs_second, surface.methods, types_module_exports=types_module_exports
     )
     return {
-        OUT_ATTRS: _format_generated_text(OUT_ATTRS, attrs_text),
-        OUT_PROTOCOL: _format_generated_text(OUT_PROTOCOL, protocol_text),
+        OUT_ATTRS: ruff_format_source(path=OUT_ATTRS, source=attrs_text),
+        OUT_PROTOCOL: ruff_format_source(path=OUT_PROTOCOL, source=protocol_text),
     }
 
 

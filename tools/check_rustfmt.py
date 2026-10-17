@@ -18,8 +18,16 @@ import tomllib
 from dataclasses import dataclass
 from pathlib import Path
 
-
 ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+from tools.import_file import bind_repository_imports  # noqa: E402
+
+bind_repository_imports(__file__)
+
+from molt.cargo_workspace import workspace_edition  # noqa: E402
+
 GENERATED_HEAD_LINES = 12
 WINDOWS_COMMAND_LINE_SOFT_LIMIT = 24_000
 RUSTFMT_TIMEOUT_S = 60.0
@@ -414,7 +422,7 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="format selected human Rust files in place",
     )
-    parser.add_argument("--edition", default="2024")
+    parser.add_argument("--edition", default=workspace_edition(ROOT))
     parser.add_argument("--verbose", action="store_true")
     args = parser.parse_args(argv)
 

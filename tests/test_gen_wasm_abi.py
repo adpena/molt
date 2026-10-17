@@ -4,12 +4,10 @@ import copy
 import importlib
 import json
 import re
-import subprocess
 import tomllib
 from pathlib import Path
 
 import pytest
-from tests.process_guard_common import install_module_view
 
 from tools import gen_wasm_abi
 from tools.generator_io import generated_file_matches, stale_outputs
@@ -971,7 +969,7 @@ def test_rust_render_derives_import_variants_once_per_transaction(
         return derive(inputs)
 
     monkeypatch.setattr(gen, "_runtime_import_variants", tracked)
-    monkeypatch.setattr(gen, "_rustfmt_many", lambda modules: modules)
+    monkeypatch.setattr(gen, "rustfmt_sources", lambda modules, label: modules)
     first = gen.render_rs_modules(data)
     assert calls == 1
     assert "WasmRuntimeImport" in first["import_tokens.rs"]
@@ -1002,37 +1000,6 @@ def _exec_rendered_py(rendered_py: str) -> dict[str, object]:
     namespace: dict[str, object] = {}
     exec(rendered_py, namespace)
     return namespace
-
-
-def test_rustfmt_many_materializes_cached_sibling_modules(monkeypatch) -> None:
-    gen = gen_wasm_abi
-    modules = {
-        "mod.rs": "mod child;\n",
-        "child.rs": "pub(crate) fn child() {}\n",
-    }
-    seen: dict[str, bool] = {}
-
-    monkeypatch.setattr(gen, "_rustfmt_version", lambda: "rustfmt-test")
-    monkeypatch.setattr(
-        gen,
-        "_load_rustfmt_cache",
-        lambda name, source, version: source if name == "child.rs" else None,
-    )
-    monkeypatch.setattr(gen, "_store_rustfmt_cache", lambda *args: None)
-
-    def fake_run(cmd, **kwargs):  # type: ignore[no-untyped-def]
-        mod_path = Path(cmd[-1])
-        child_path = mod_path.with_name("child.rs")
-        seen["child_exists"] = child_path.exists()
-        mod_path.write_text("mod child;\n", encoding="utf-8")
-        return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
-
-    install_module_view(monkeypatch, "subprocess", subprocess, gen, run=fake_run)
-
-    rendered = gen._rustfmt_many(modules)
-
-    assert seen["child_exists"] is True
-    assert rendered["child.rs"] == modules["child.rs"]
 
 
 def test_wasm_abi_generated_files_are_in_sync() -> None:
@@ -1097,7 +1064,7 @@ def test_retired_outputs_fail_closed_without_deletion(
     def unreachable(*_args, **_kwargs):
         raise AssertionError("retired outputs must fail before rendering")
 
-    monkeypatch.setattr(gen, "_rustfmt_version", unreachable)
+    monkeypatch.setattr(gen, "rustfmt_version", unreachable)
     with pytest.raises(RuntimeError, match="no longer renders") as raised:
         gen.generated_outputs()
     assert str(stale) in str(raised.value)

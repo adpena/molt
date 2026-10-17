@@ -10,11 +10,10 @@ Usage::
 from __future__ import annotations
 
 from collections import OrderedDict
-from collections.abc import Iterator, Mapping, Sequence
+from collections.abc import Mapping, Sequence
 from pathlib import Path
 import re
 import sys
-import tempfile
 
 _REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(_REPO_ROOT) not in sys.path:
@@ -35,7 +34,11 @@ ROOT = Path(__file__).resolve().parents[1]
 from tools.wasm_abi_gen.intrinsic_availability import (  # noqa: E402
     load_intrinsic_availability,
 )
-from tools.generator_io import display_path, generator_main  # noqa: E402
+from tools.generator_io import (  # noqa: E402
+    display_path,
+    generator_main,
+    rustfmt_sources,
+)
 from tools.intrinsic_manifest import (  # noqa: E402
     IntrinsicEntry,
     parse_intrinsic_manifest,
@@ -301,17 +304,6 @@ LEAF_RESOLVER_REGISTRIES = {
 RETIRED_OUTPUTS = (ROOT / "runtime/molt-backend/src/intrinsic_symbol_overrides.rs",)
 # Formatting runs one guarded rustfmt per batch of scratch files; keep each
 # command line well inside the 32,767-character Windows limit.
-_RUSTFMT_ARGV_CHAR_BUDGET = 16_000
-_HARNESS_MEMORY_GUARD = None
-
-
-def _load_harness_memory_guard():
-    global _HARNESS_MEMORY_GUARD
-    if _HARNESS_MEMORY_GUARD is None:
-        from tools import harness_memory_guard  # type: ignore
-
-        _HARNESS_MEMORY_GUARD = harness_memory_guard
-    return _HARNESS_MEMORY_GUARD
 
 
 # Cargo.toml/cfg-gated Rust modules define whether a feature removes symbol
@@ -606,63 +598,6 @@ def _classify_symbol(
 
     # Fallback: core
     return "core"
-
-
-def _rustfmt(paths: Sequence[Path]) -> None:
-    result = _load_harness_memory_guard().guarded_completed_process(
-        ["rustfmt", "--config", "skip_children=true", *(str(path) for path in paths)],
-        prefix="MOLT_GENERATOR",
-        cwd=ROOT,
-        capture_output=True,
-        text=True,
-        timeout=60.0,
-    )
-    if result.returncode != 0:
-        rendered_paths = ", ".join(str(path) for path in paths)
-        raise RuntimeError(
-            "rustfmt failed for "
-            f"{rendered_paths}:\nstdout:\n{result.stdout}\nstderr:\n{result.stderr}"
-        )
-
-
-def _rustfmt_batches(paths: Sequence[Path]) -> Iterator[list[Path]]:
-    batch: list[Path] = []
-    used = 0
-    for path in paths:
-        cost = len(str(path)) + 3
-        if batch and used + cost > _RUSTFMT_ARGV_CHAR_BUDGET:
-            yield batch
-            batch, used = [], 0
-        batch.append(path)
-        used += cost
-    if batch:
-        yield batch
-
-
-def _format_rust_sources(sources: Mapping[Path, str]) -> dict[Path, str]:
-    """Return the rustfmt-formatted text of every generated Rust source.
-
-    Each source is formatted in its own scratch directory, so a ``mod`` or
-    ``#[path]`` declaration never resolves to a sibling output and every file
-    formats exactly as it would alone. Scratch lives outside the checkout:
-    generator checks run concurrently with proof steps that attest the source
-    tree is clean, and in-tree scratch would make a read-only ``--check``
-    transiently dirty.
-    """
-    if not sources:
-        return {}
-    with tempfile.TemporaryDirectory(prefix="molt-intrinsics-rustfmt-") as raw_tmp:
-        scratch: dict[Path, Path] = {}
-        for index, (output, text) in enumerate(sources.items()):
-            path = Path(raw_tmp) / str(index) / output.name
-            path.parent.mkdir()
-            path.write_text(text, encoding="utf-8", newline="\n")
-            scratch[output] = path
-        for batch in _rustfmt_batches(list(scratch.values())):
-            _rustfmt(batch)
-        return {
-            output: path.read_text(encoding="utf-8") for output, path in scratch.items()
-        }
 
 
 def _resolver_module_name(module_name: str) -> str:
@@ -1190,7 +1125,7 @@ def generated_outputs() -> dict[Path, str]:
             "delete generated files that tools/gen_intrinsics.py no longer "
             "renders: " + ", ".join(display_path(path) for path in stale)
         )
-    outputs = _format_rust_sources(rust_sources)
+    outputs = rustfmt_sources(rust_sources, label="intrinsic Rust sources")
     outputs[OUT_RUNTIME_FEATURE_GATES_PY] = _render_runtime_feature_gates_py()
     outputs[OUT_PYI] = _render_pyi(raw)
     outputs[OUT_INTRINSIC_SYMBOLS_PY] = _render_intrinsic_symbols_py(entries)

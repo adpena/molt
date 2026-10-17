@@ -25,11 +25,12 @@ from tools.import_file import bind_repository_imports  # noqa: E402
 
 bind_repository_imports(__file__)
 
-from tools.generator_io import generator_main, rustfmt_source  # noqa: E402
+from tools.generator_io import (  # noqa: E402
+    generator_main,
+    ruff_format_source,
+    rustfmt_source,
+)
 
-from tools.command_execution import CommandExecutor  # type: ignore  # noqa: E402
-
-_COMMANDS = CommandExecutor.for_file(__file__)
 
 ROOT = Path(__file__).resolve().parents[1]
 SOURCE = ROOT / "runtime" / "native_callable_abi.toml"
@@ -791,34 +792,9 @@ def render_rust(schema: Schema) -> str:
     return "".join(lines)
 
 
-def _format_python(source: str) -> str:
-    completed = _COMMANDS.run(
-        [
-            sys.executable,
-            "-m",
-            "ruff",
-            "format",
-            "--no-force-exclude",
-            "-",
-            "--stdin-filename",
-            str(OUT_PYTHON),
-        ],
-        cwd=ROOT,
-        input=source,
-        text=True,
-        encoding="utf-8",
-        errors="replace",
-        capture_output=True,
-        check=False,
-    )
-    if completed.returncode != 0:
-        raise RuntimeError(f"ruff format failed:\n{completed.stderr}")
-    return completed.stdout
-
-
 def render_all(schema: Schema) -> dict[Path, str]:
     return {
-        OUT_PYTHON: _format_python(render_python(schema)),
+        OUT_PYTHON: ruff_format_source(render_python(schema), path=OUT_PYTHON),
         OUT_RUST: rustfmt_source(render_rust(schema), label="native-callable ABI Rust"),
         OUT_JAVASCRIPT: render_javascript(schema),
     }

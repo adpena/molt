@@ -892,7 +892,7 @@ Family names are built at run time as `<STEM><SUFFIX>`. The stem is the guard sc
 | `MOLT_DX_BUILD` | `tools/dx_build_timer.py` | Guard scope for the DX build timer. |
 | `MOLT_E2E_TEST` | `tests/e2e/invoice_test_images.py` | Guard scope for the end-to-end test suite's subprocesses. |
 | `MOLT_FORMAL` | `tools/linear_hygiene.py` | Guard scope for formal-methods tooling. |
-| `MOLT_GENERATOR` | `tools/gen_intrinsics.py` | Guard scope for code generators that launch subprocesses. |
+| `MOLT_GENERATOR` | `tools/generator_io.py` | Guard scope for code generators that launch subprocesses. |
 | `MOLT_HARNESS` | `src/molt/harness_layers.py` | Guard scope for `molt harness` quality layers. |
 | `MOLT_IR_VERIFY` | `tools/verify_ir_suite.py` | Guard scope for the IR verification suite. |
 | `MOLT_LINK_BENCH` | `tools/native_link_benchmark.py` | Guard scope for the native link benchmark. |
