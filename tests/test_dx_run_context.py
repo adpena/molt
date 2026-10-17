@@ -1847,6 +1847,9 @@ def test_tool_state_and_bundle_keys_use_captured_host_environment_semantics(
 def test_sibling_checkouts_reuse_only_their_own_cargo_intermediates(tmp_path, session):
     artifact = tmp_path / "artifacts"
     first, second = tmp_path / "a", tmp_path / "b"
+    # Each checkout is its own custody root, which must exist.
+    first.mkdir()
+    second.mkdir()
     caller = {"MOLT_EXT_ROOT": str(artifact), "MOLT_PREFER_EXTERNAL_ARTIFACTS": "1"}
     if session:
         caller["MOLT_SESSION_ID"] = session
