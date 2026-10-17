@@ -8,7 +8,7 @@ import time
 from pathlib import Path
 from typing import Any, Mapping
 
-from molt.backend_environment import CodegenSelection
+from molt.backend_environment import CodegenSelection, compilation_diagnostics_requested
 from molt.cli.config_resolution import DEFAULT_RUNTIME_STDLIB_PROFILE
 from molt.cli.backend_cache import (
     _backend_cache_artifact_path,
@@ -469,6 +469,11 @@ def _prepare_backend_cache_setup(
             )
         return module_cache_payload_ir, module_cache_payload_digest
 
+    # Diagnostics may alter execution and output. Excluding them from normal
+    # identities requires disabling both lookup and publication, across tiers.
+    cache_enabled = cache_enabled and not compilation_diagnostics_requested(
+        backend_environment
+    )
     if not cache_enabled:
         # Even with cache disabled, compute stdlib_object_path so the
         # daemon can partition stdlib functions into a shared archive and
