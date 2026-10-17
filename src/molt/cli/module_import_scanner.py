@@ -4,19 +4,15 @@ from molt.compiler_analysis.python_imports import (
     SourceAllExports,
     normalize_stdlib_module_name,
 )
-from molt.compiler_analysis import python_import_scan as _source_import_scan
 
-import ast
 import ntpath
 import os
 import posixpath
 from collections.abc import Collection, Mapping, Sequence
 from pathlib import Path
-from typing import cast
 
 from molt.cli import module_resolution as _module_resolution
 from molt.cli.models import (
-    ImportScanMode,
     _CompleteImportScan,
     _ModuleGraphScanAuthority,
     _RuntimeImportSupportPolicy,
@@ -24,33 +20,10 @@ from molt.cli.models import (
 from molt.compiler_analysis.python_imports import _ImportScanRequests, _StaticSourcePath
 from molt.target_python import (
     TargetPythonVersion,
-    _DEFAULT_TARGET_PYTHON_VERSION,
-)
-from molt.compiler_analysis.python_identity_catalog_generated import (
-    ALL_INVALID_MEMBERS,
-    PythonIdentity,
-)
-from molt.compiler_analysis.python_namespace_graph import PythonNamespacePremise
-from molt.compiler_analysis.python_binding_flow import (
-    PythonBindingPolicy,
-    analyze_python_bindings,
-)
-from molt.compiler_analysis.python_source_keys import (
-    PythonSourceKey,
-    _PythonAstDigestAdmission,
 )
 
 
 IMPORTER_MODULE_NAME = "_molt_importer"
-
-
-_RUNTIME_IMPORT_PROTOCOL_MARKERS = (
-    "import ",
-    "from ",
-    "__import__",
-    "import_module",
-    "find_spec",
-)
 
 
 _RUNTIME_IMPORT_SUPPORT_ROOT_MODULES = (
@@ -69,82 +42,6 @@ _RUNTIME_IMPORT_PROTOCOL_IMPLEMENTATION_MODULES = frozenset(
         IMPORTER_MODULE_NAME,
     }
 )
-
-
-def _source_may_use_runtime_import_protocol(source: str) -> bool:
-    return any(marker in source for marker in _RUNTIME_IMPORT_PROTOCOL_MARKERS)
-
-
-def _tree_uses_runtime_import_protocol(
-    tree: ast.AST,
-    *,
-    module_name: str | None,
-    is_package: bool,
-    source_owner: PythonSourceKey | None = None,
-    source_arguments: tuple[str, ...] = (),
-    import_scan_mode: ImportScanMode = "full",
-    target_python: TargetPythonVersion = _DEFAULT_TARGET_PYTHON_VERSION,
-    ast_digest_admission: _PythonAstDigestAdmission | None = None,
-    include_statements: bool = False,
-    namespace_premise: PythonNamespacePremise | None = None,
-) -> bool:
-    ast_digest_admission = _PythonAstDigestAdmission.for_tree(
-        tree, ast_digest_admission
-    )
-    binding_index = analyze_python_bindings(
-        cast(ast.Module, tree),
-        source_digest=ast_digest_admission.digest,
-        ast_digest_admission=ast_digest_admission,
-        policy=PythonBindingPolicy(
-            target_python=target_python.feature_version,
-            module_name=module_name,
-            module_spec_name=module_name,
-            module_is_package=is_package,
-            module_execution_kind="script" if module_name is None else "imported",
-            foreign_namespace_writes=(
-                None if namespace_premise is None else namespace_premise.foreign_writes
-            ),
-            callback_member_writes=(
-                ALL_INVALID_MEMBERS
-                if namespace_premise is None
-                else namespace_premise.member_writes
-            ),
-        ),
-    )
-    for node in _source_import_scan._scan_nodes_for_import_mode(
-        tree,
-        import_scan_mode,
-        source_owner=source_owner,
-        source_arguments=source_arguments,
-        module_name=module_name,
-        target_python=target_python,
-        ast_digest_admission=ast_digest_admission,
-        namespace_premise=namespace_premise,
-    ):
-        if not binding_index.module_import_flow.states_for(node):
-            continue
-        if include_statements:
-            if isinstance(node, ast.Import):
-                if any(alias.name != "_intrinsics" for alias in node.names):
-                    return True
-            elif isinstance(node, ast.ImportFrom):
-                if node.module == "__future__":
-                    continue
-                if node.level == 0 and (
-                    node.module == "_intrinsics"
-                    or node.module is not None
-                    and node.module.endswith("._intrinsics")
-                ):
-                    continue
-                return True
-        if isinstance(node, ast.Call):
-            fact = binding_index.call_fact(node)
-            if fact is not None and (
-                fact.possible_import_call_kinds()
-                or fact.callee_may_be(PythonIdentity.IMPORTLIB_FIND_SPEC)
-            ):
-                return True
-    return False
 
 
 def _expand_static_package_all_star_children(
@@ -371,149 +268,31 @@ def _explicit_imports_reference_generated_importer(
     )
 
 
-def _module_uses_runtime_import_protocol(
-    *,
-    module_name: str,
-    module_path: Path,
-    module_resolution_cache: "_module_resolution._ModuleResolutionCache",
-    target_python: TargetPythonVersion,
-    import_scan_mode: ImportScanMode = "full",
-    source_owner: PythonSourceKey | None = None,
-    source_arguments: tuple[str, ...] = (),
-    tree: ast.AST | None = None,
-    is_package: bool | None = None,
-    namespace_premise: PythonNamespacePremise | None = None,
-    native_support_function_roots: tuple[str, ...] = (),
-) -> bool:
-    if module_name in _RUNTIME_IMPORT_PROTOCOL_IMPLEMENTATION_MODULES:
-        return False
-    if is_package is None:
-        is_package = module_path.name == "__init__.py"
-
-    def produce() -> bool:
-        scan_tree = tree
-        if scan_tree is None:
-            try:
-                source = module_resolution_cache.read_module_source(
-                    module_path, retain=False
-                )
-            except (OSError, SyntaxError, UnicodeDecodeError):
-                # Keep runtime import support enabled when analysis cannot prove the
-                # graph is fully static.
-                return True
-            if not _source_may_use_runtime_import_protocol(source):
-                return False
-            try:
-                parsed = module_resolution_cache.parse_module_ast(
-                    module_path,
-                    source,
-                    filename=str(module_path),
-                    retain=True,
-                    target_python=target_python,
-                )
-                scan_tree = parsed.tree
-                ast_digest_admission = parsed.admission
-            except SyntaxError:
-                return True
-        else:
-            ast_digest_admission = _PythonAstDigestAdmission(scan_tree)
-        if native_support_function_roots:
-            if not isinstance(scan_tree, ast.Module):
-                raise ValueError("native support selection requires a module source")
-            selected, _pruned = module_resolution_cache.native_support_view(
-                module_path,
-                scan_tree,
-                native_support_function_roots,
-                ast_digest_admission=ast_digest_admission,
-                target_python=target_python,
-            )
-            scan_tree, ast_digest_admission = selected.tree, selected.admission
-        return _tree_uses_runtime_import_protocol(
-            scan_tree,
-            module_name=module_name,
-            is_package=is_package,
-            import_scan_mode=import_scan_mode,
-            source_owner=source_owner,
-            source_arguments=source_arguments,
-            target_python=target_python,
-            ast_digest_admission=ast_digest_admission,
-            include_statements=True,
-            namespace_premise=namespace_premise,
-        )
-
-    return module_resolution_cache.uses_runtime_import_protocol(
-        module_path,
-        producer=produce,
-        module_name=module_name,
-        is_package=is_package,
-        import_scan_mode=import_scan_mode,
-        source_owner=source_owner,
-        source_arguments=source_arguments,
-        target_python_tag=target_python.tag,
-        namespace_premise=namespace_premise,
-        native_support_function_roots=native_support_function_roots,
-    )
-
-
 def _module_graph_needs_runtime_import_support(
     *,
     module_graph: Mapping[str, Path],
     scan_authority: _ModuleGraphScanAuthority,
-    module_resolution_cache: "_module_resolution._ModuleResolutionCache",
     explicit_imports: Collection[str],
-    entry_module: str,
-    entry_path: Path,
-    entry_tree: ast.AST | None,
-    target_python: TargetPythonVersion,
 ) -> _RuntimeImportSupportPolicy:
+    """Whether the closed graph needs the runtime import protocol.
+
+    Each scan records whether its reached code imports or may call an import
+    entry point (`_uses_runtime_import_protocol`), and discovery ORs that bit
+    into the module's scan authority; a source that was not scanned claims
+    it. The decision reads those bits and no source.
+    """
     scan_authority.validate_graph(module_graph)
     scan_authority.validate_source_generations()
-    try:
-        needs_generated_importer = _explicit_imports_reference_generated_importer(
-            explicit_imports
-        )
-        if needs_generated_importer:
-            return _RuntimeImportSupportPolicy(
-                needs_generated_importer=True,
-                needs_runtime_import_support=True,
-            )
-        for module_name, module_path in sorted(module_graph.items()):
-            tree = (
-                entry_tree
-                if module_name == entry_module and module_path == entry_path
-                else None
-            )
-            import_scan_mode = scan_authority.mode_for(module_name, module_path)
-            owners = (
-                ()
-                if import_scan_mode == "full"
-                else sorted(scan_authority.by_module[module_name].deferred_owners)
-            )
-            for source_owner, source_arguments in ((None, ()), *owners):
-                if _module_uses_runtime_import_protocol(
-                    module_name=module_name,
-                    module_path=module_path,
-                    module_resolution_cache=module_resolution_cache,
-                    target_python=target_python,
-                    import_scan_mode=import_scan_mode,
-                    source_owner=source_owner,
-                    source_arguments=source_arguments,
-                    tree=tree,
-                    is_package=scan_authority.by_module[module_name].is_package,
-                    namespace_premise=scan_authority.by_module[
-                        module_name
-                    ].namespace_premise,
-                    native_support_function_roots=scan_authority.by_module[
-                        module_name
-                    ].native_support_function_roots,
-                ):
-                    return _RuntimeImportSupportPolicy(
-                        needs_generated_importer=False,
-                        needs_runtime_import_support=True,
-                    )
+    if _explicit_imports_reference_generated_importer(explicit_imports):
         return _RuntimeImportSupportPolicy(
-            needs_generated_importer=False,
-            needs_runtime_import_support=False,
+            needs_generated_importer=True,
+            needs_runtime_import_support=True,
         )
-    finally:
-        scan_authority.validate_source_generations()
+    return _RuntimeImportSupportPolicy(
+        needs_generated_importer=False,
+        needs_runtime_import_support=any(
+            source.uses_runtime_import_protocol
+            for source in scan_authority.sources
+            if source.module_name not in _RUNTIME_IMPORT_PROTOCOL_IMPLEMENTATION_MODULES
+        ),
+    )

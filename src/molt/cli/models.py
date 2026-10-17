@@ -121,6 +121,8 @@ class _ModuleSourceScanAuthority:
     mode: ImportScanMode
     is_package: bool | None = None
     requires_runtime_package_anchor: bool = False
+    # Some scan of this source reached an import or an import-capable call.
+    uses_runtime_import_protocol: bool = False
     deferred_owners: frozenset[tuple[PythonSourceKey, tuple[str, ...]]] = frozenset()
     namespace_premise: PythonNamespacePremise | None = None
     source_sha256: str | None = None
@@ -241,6 +243,10 @@ class _ModuleGraphScanAuthority:
                     prior.requires_runtime_package_anchor
                     or source.requires_runtime_package_anchor
                 )
+                uses_runtime_import_protocol = (
+                    prior.uses_runtime_import_protocol
+                    or source.uses_runtime_import_protocol
+                )
                 deferred_owners = prior.deferred_owners | source.deferred_owners
                 namespace_premise = join_python_namespace_premises(
                     prior.namespace_premise, source.namespace_premise
@@ -251,6 +257,8 @@ class _ModuleGraphScanAuthority:
                     deferred_owners != source.deferred_owners
                     or requires_runtime_package_anchor
                     != source.requires_runtime_package_anchor
+                    or uses_runtime_import_protocol
+                    != source.uses_runtime_import_protocol
                     or namespace_premise != source.namespace_premise
                     or source_sha256 != source.source_sha256
                     or native_support_function_roots
@@ -259,6 +267,7 @@ class _ModuleGraphScanAuthority:
                     source = replace(
                         source,
                         requires_runtime_package_anchor=requires_runtime_package_anchor,
+                        uses_runtime_import_protocol=uses_runtime_import_protocol,
                         deferred_owners=deferred_owners,
                         namespace_premise=namespace_premise,
                         source_sha256=source_sha256,
@@ -313,6 +322,7 @@ class _ModuleGraphScanAuthority:
                 "requires_runtime_package_anchor": (
                     source.requires_runtime_package_anchor
                 ),
+                "uses_runtime_import_protocol": source.uses_runtime_import_protocol,
                 "namespace_premise": (
                     None
                     if source.namespace_premise is None

@@ -186,6 +186,9 @@ def _bind_precomputed_module_import_scan(
             import_scan_mode,
             is_package,
             scan.requires_runtime_package_anchor,
+            uses_runtime_import_protocol=(
+                scan.source_requests.uses_runtime_import_protocol
+            ),
             namespace_premise=namespace_premise,
             source_sha256=snapshot.sha256,
             package_paths=package_paths,
@@ -210,6 +213,8 @@ def _validate_precomputed_module_import_scan(
         or bool(record.authority.deferred_owners)
         or record.authority.requires_runtime_package_anchor
         != record.scan.requires_runtime_package_anchor
+        or record.authority.uses_runtime_import_protocol
+        != record.scan.source_requests.uses_runtime_import_protocol
         or record.target_python_tag != target_python.tag
     ):
         raise ValueError(f"precomputed source scan lost custody: {module_name!r}")
@@ -889,6 +894,8 @@ def _discover_module_graph_from_paths(
                 authority,
                 requires_runtime_package_anchor=authority.requires_runtime_package_anchor
                 or loaded.scan.requires_runtime_package_anchor,
+                uses_runtime_import_protocol=authority.uses_runtime_import_protocol
+                or loaded.scan.source_requests.uses_runtime_import_protocol,
             )
             accept_source_scan(
                 module_name,
@@ -1010,6 +1017,15 @@ def _discover_module_graph_from_paths(
                 if precomputed is not None
                 else _CompleteImportScan(_ImportScanRequests((), ()), (), ())
             )
+            # No scan proves what an unscanned source imports.
+            scan_sources[module_name] = replace(
+                scan_sources[module_name],
+                uses_runtime_import_protocol=scan_sources[
+                    module_name
+                ].uses_runtime_import_protocol
+                or precomputed is None
+                or accepted_scan.source_requests.uses_runtime_import_protocol,
+            )
             accept_source_scan(
                 module_name,
                 path,
@@ -1047,12 +1063,18 @@ def _discover_module_graph_from_paths(
             )
         except (OSError, SyntaxError, UnicodeDecodeError):
             merge_namespace_writes(UNKNOWN_GRAPH_NAMESPACE_WRITES)
+            # A source that cannot be analyzed may import at run time.
+            scan_sources[module_name] = replace(
+                scan_sources[module_name], uses_runtime_import_protocol=True
+            )
             continue
         scan_receipts[_SourceScanJob(module_name, None)] = receipt
         scan_sources[module_name] = replace(
             scan_sources[module_name],
             requires_runtime_package_anchor=authority.requires_runtime_package_anchor
             or loaded.scan.requires_runtime_package_anchor,
+            uses_runtime_import_protocol=authority.uses_runtime_import_protocol
+            or loaded.scan.source_requests.uses_runtime_import_protocol,
         )
         accept_source_scan(
             module_name,

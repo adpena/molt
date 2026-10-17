@@ -1341,10 +1341,8 @@ def _finalize_runtime_import_closure(
     roots: Sequence[Path],
     stdlib_root: Path,
     stdlib_allowlist: set[str],
-    entry_module: str,
     target_python: TargetPythonVersion,
     import_admission_policy: _ImportAdmissionPolicy | None,
-    entry_tree: ast.AST | None = None,
     previous_custody: _RuntimeImportScanCustody | None = None,
     project_root: Path | None = None,
 ) -> _RuntimeImportClosure:
@@ -1358,12 +1356,7 @@ def _finalize_runtime_import_closure(
     policy = _module_import_scanner._module_graph_needs_runtime_import_support(
         module_graph=module_graph,
         scan_authority=authority,
-        module_resolution_cache=module_resolution_cache,
         explicit_imports=explicit_imports,
-        entry_module=entry_module,
-        entry_path=module_graph[entry_module],
-        entry_tree=entry_tree,
-        target_python=target_python,
     )
     runtime_roots = set(dispatch_roots) | set(explicit_imports)
     dynamic_owner_required = any(
@@ -1428,12 +1421,7 @@ def _finalize_runtime_import_closure(
         policy = _module_import_scanner._module_graph_needs_runtime_import_support(
             module_graph=module_graph,
             scan_authority=_ModuleGraphScanAuthority(tuple(scan_authorities.values())),
-            module_resolution_cache=module_resolution_cache,
             explicit_imports=runtime_roots,
-            entry_module=entry_module,
-            entry_path=module_graph[entry_module],
-            entry_tree=entry_tree,
-            target_python=target_python,
         )
         if dynamic_owner_required and not policy.needs_runtime_import_support:
             policy = _RuntimeImportSupportPolicy(
@@ -1613,7 +1601,6 @@ def _materialize_import_plan(
             roots=prepared_module_graph.roots,
             stdlib_root=stdlib_root,
             stdlib_allowlist=stdlib_allowlist,
-            entry_module=entry_module,
             target_python=prepared_module_graph.target_python,
             import_admission_policy=_native_support_source_admission_policy(
                 next_native_artifact_plan
@@ -2123,8 +2110,6 @@ def _prepare_entry_module_graph(
             roots=roots,
             stdlib_root=stdlib_root,
             stdlib_allowlist=stdlib_allowlist,
-            entry_module=entry_module,
-            entry_tree=entry_tree,
             target_python=target_python,
             import_admission_policy=import_admission_policy,
         )
