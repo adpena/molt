@@ -72,3 +72,11 @@ default-features = false
 
 [lints.rust]
 unsafe_op_in_unsafe_fn = "deny"
+
+[lints.rust.unused]
+level = "allow"
+priority = -1
+
+[lints.clippy.all]
+level = "allow"
+priority = -1
