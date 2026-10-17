@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import hashlib
+import importlib.util
 import json
 import multiprocessing
 import os
+import py_compile
 import stat
 import sys
 import time
@@ -272,8 +274,9 @@ def test_a_started_program_records_its_search(tmp_path: Path, transient: Path) -
     assert not _current(record, output)
 
 
-def test_observations_skip_excluded_roots_and_map_bytecode_to_source(
+def test_observations_skip_excluded_roots_and_keep_bytecode_and_source(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     kept = tmp_path / "src" / "a.py"
     cached = tmp_path / "cache" / "entry"
@@ -282,9 +285,13 @@ def test_observations_skip_excluded_roots_and_map_bytecode_to_source(
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text("", encoding="utf-8")
     ledger = _future_ledger()
-    ledger.observed |= {("file", os.fspath(cached)), ("file", os.fspath(bytecode))}
+    monkeypatch.setattr(sys, "pycache_prefix", None)
+    monkeypatch.setattr(input_report, "_SINK", ledger)
+    for path in (cached, bytecode):
+        input_report._audit_hook("open", (os.fspath(path), "r", 0))
+    monkeypatch.setattr(input_report, "_SINK", None)
     build_record.resolve_observed(ledger, (tmp_path / "cache",))
-    assert set(ledger.files) == {os.fspath(kept)}, "a module loaded from bytecode"
+    assert set(ledger.files) == {os.fspath(kept), os.fspath(bytecode)}
 
 
 @pytest.mark.parametrize(
@@ -628,6 +635,231 @@ def test_vanished_observations_become_probes_with_their_parent(tmp_path: Path) -
     assert not ledger.refusals
 
 
+@pytest.mark.parametrize("kind", ["file", "directory"])
+def test_nested_failed_observations_keep_each_probe_and_the_existing_boundary(
+    tmp_path: Path, kind: str
+) -> None:
+    output = tmp_path / "app"
+    output.write_bytes(b"binary")
+    failed = tmp_path / "missing" / "nested" / "input"
+    # Publication changes its own product directory, not this input boundary.
+    build_record.record_path(tmp_path / "state", KEY).parent.mkdir(parents=True)
+    ledger = _future_ledger()
+    ledger.observed.add((kind, os.fspath(failed)))
+    build_record.resolve_observed(ledger, ())
+    assert set(ledger.probes) == {
+        os.fspath(failed),
+        os.fspath(failed.parent),
+        os.fspath(failed.parent.parent),
+    }
+    assert all(value is None for value in ledger.probes.values())
+    assert set(ledger.directories) == {os.fspath(tmp_path)}
+    record, reason = _write(tmp_path, ledger, output)
+    assert reason is None and _current(record, output)
+    failed.parent.mkdir(parents=True)
+    if kind == "file":
+        failed.write_bytes(b"new input")
+    else:
+        failed.mkdir()
+    assert not _current(record, output), "a previously absent lookup now resolves"
+
+
+def test_removed_nested_input_keeps_a_racy_boundary_even_with_explicit_probes(
+    tmp_path: Path,
+) -> None:
+    import shutil
+
+    output = tmp_path / "app"
+    output.write_bytes(b"binary")
+    failed = tmp_path / "existing" / "nested" / "input"
+    failed.parent.mkdir(parents=True)
+    failed.write_bytes(b"input that was read then removed")
+    before = input_report.stat_token(tmp_path)
+    assert before is not None
+    # The start/racy threshold admits the ancestor generation before removal,
+    # and must reject the actual generation produced by the subtree removal.
+    ledger = build_record.InputLedger(
+        before[5] + build_record.DIGEST_RACY_WINDOW_NS + 1
+    )
+    shutil.rmtree(tmp_path / "existing")
+    after = input_report.stat_token(tmp_path)
+    assert after is not None and after[5] > before[5]
+    ledger.probe(failed, None)
+    ledger.probe(failed.parent, None)
+    ledger.observed.add(("file", os.fspath(failed)))
+    build_record.resolve_observed(ledger, ())
+    assert not ledger.refusals, "the lookup itself is fully reportable"
+    assert os.fspath(tmp_path) in ledger.directories
+    assert _write(tmp_path, ledger, output)[1] == (
+        f"input changed after the recording process started: {tmp_path}"
+    )
+
+
+def test_failed_traversal_records_a_regular_file_boundary_as_a_file(
+    tmp_path: Path,
+) -> None:
+    output = tmp_path / "app"
+    output.write_bytes(b"binary")
+    boundary = tmp_path / "not-a-directory"
+    boundary.write_bytes(b"blocking file")
+    failed = boundary / "nested" / "input"
+    ledger = _future_ledger()
+    ledger.observed.add(("file", os.fspath(failed)))
+    build_record.resolve_observed(ledger, ())
+    assert set(ledger.files) == {os.fspath(boundary)}
+    assert ledger.directories == {}
+    record, reason = _write(tmp_path, ledger, output)
+    assert reason is None and _current(record, output)
+    boundary.unlink()
+    failed.parent.mkdir(parents=True)
+    failed.write_bytes(b"now reachable")
+    assert not _current(record, output)
+
+
+def test_failed_lookup_refuses_an_existing_boundary_without_a_change_token(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    output = tmp_path / "app"
+    output.write_bytes(b"binary")
+    failed = tmp_path / "missing" / "nested" / "input"
+    ledger = _future_ledger()
+    ledger.observed.add(("file", os.fspath(failed)))
+    real_stat = build_record.stat_token
+
+    def without_boundary_token(path, metadata=None):
+        if os.fspath(path) == os.fspath(tmp_path):
+            return None
+        return real_stat(path, metadata)
+
+    monkeypatch.setattr(build_record, "stat_token", without_boundary_token)
+    build_record.resolve_observed(ledger, ())
+    assert ledger.refusals == [f"unreportable lookup generation {tmp_path}"]
+    assert _write(tmp_path, ledger, output)[1] == ledger.refusals[0]
+
+
+@pytest.mark.skipif(
+    os.name == "nt" or (hasattr(os, "geteuid") and os.geteuid() == 0),
+    reason="requires POSIX search permissions for an unprivileged process",
+)
+def test_permission_failure_keeps_its_exact_probe_and_directory_boundary(
+    tmp_path: Path,
+) -> None:
+    import errno
+
+    output = tmp_path / "app"
+    output.write_bytes(b"binary")
+    boundary = tmp_path / "denied"
+    boundary.mkdir()
+    failed = boundary / "input"
+    boundary.chmod(0)
+    try:
+        ledger = _future_ledger()
+        ledger.observed.add(("file", os.fspath(failed)))
+        build_record.resolve_observed(ledger, ())
+        assert ledger.probes[os.fspath(failed)] == ("", errno.EACCES)
+        assert set(ledger.directories) == {os.fspath(boundary)}
+        record, reason = _write(tmp_path, ledger, output)
+        assert reason is None and _current(record, output)
+        boundary.chmod(0o700)
+        assert not _current(record, output), "permission restoration changes the lookup"
+    finally:
+        boundary.chmod(0o700)
+
+
+def test_sibling_failed_lookups_reuse_only_completed_ancestor_chains(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    parent = tmp_path.joinpath(*(f"missing-{i}" for i in range(24)))
+    siblings = [parent / f"input-{i}" for i in range(32)]
+    ledger = _future_ledger()
+    for name in siblings:
+        ledger.probe(name, None)
+        ledger.observed.add(("file", os.fspath(name)))
+    real_stat = build_record.stat_token
+    calls: dict[str, int] = {}
+
+    def count_subject_stat(path, metadata=None):
+        name = os.fspath(path)
+        if name == os.fspath(tmp_path) or name.startswith(os.fspath(tmp_path) + os.sep):
+            calls[name] = calls.get(name, 0) + 1
+        return real_stat(path, metadata)
+
+    monkeypatch.setattr(build_record, "stat_token", count_subject_stat)
+    build_record.resolve_observed(ledger, ())
+    assert not ledger.refusals
+    assert set(ledger.directories) == {os.fspath(tmp_path)}
+    assert len(calls) == 32 + 24 + 1
+    assert max(calls.values()) == 1, "shared missing ancestors are traversed once"
+    assert len(ledger.probes) == 32 + 24
+
+
+@pytest.mark.parametrize("transition", ["directory", "lookup"])
+def test_repeated_equal_facts_are_accepted_but_changed_facts_refuse(
+    tmp_path: Path, transition: str
+) -> None:
+    subject = tmp_path / "subject"
+    subject.mkdir()
+    ledger = _future_ledger()
+
+    def report():
+        if transition == "directory":
+            token = input_report.stat_token(subject)
+            assert token is not None
+            ledger.directory(subject, token)
+        else:
+            ledger.probe(
+                subject / "child", input_report.resolved_probe(subject / "child")
+            )
+
+    report()
+    report()
+    assert ledger.refusals == []
+    child = subject / "child"
+    child.mkdir()
+    report()
+    report()
+    expected = f"{'directory' if transition == 'directory' else 'lookup'} changed during the build: {subject if transition == 'directory' else child}"
+    assert ledger.refusals == [expected]
+    child.rmdir()
+    report()
+    report()
+    assert ledger.refusals == [expected, expected], (
+        "restoring the first outcome cannot erase a conflict"
+    )
+
+
+def test_probe_conflicts_keep_prior_refusals_and_distinguish_absence_from_no_fact(
+    tmp_path: Path,
+) -> None:
+    import errno
+
+    subject = tmp_path / "probe"
+    ledger = _future_ledger()
+    ledger.refuse("prior refusal")
+    outcomes = [None, ("", errno.EACCES), ("", errno.ELOOP), None]
+    for index, outcome in enumerate(outcomes):
+        ledger.probe(subject, outcome)
+        ledger.probe(subject, outcome)
+        assert (
+            ledger.refusals
+            == ["prior refusal"]
+            + [f"lookup changed during the build: {subject}"] * index
+        )
+    assert ledger.probes[os.fspath(subject)] is None
+
+
+def test_an_unreportable_directory_keeps_its_original_fact_and_refusal(
+    tmp_path: Path,
+) -> None:
+    ledger = _future_ledger()
+    token = input_report.stat_token(tmp_path)
+    assert token is not None
+    ledger.directory(tmp_path, token)
+    ledger.directory(tmp_path, None)
+    assert ledger.directories[os.fspath(tmp_path)] == token
+    assert ledger.refusals == [f"unreportable directory {tmp_path}"]
+
+
 def test_unused_records_are_trimmed(tmp_path: Path) -> None:
     root = tmp_path / "build_records"
     old = build_record.record_path(tmp_path, "a" * 64)
@@ -718,3 +950,129 @@ def test_the_recorder_stays_outside_the_frontend_fingerprint() -> None:
     }
     assert "input_report.py" in names
     assert "build_record.py" not in names
+
+
+def _execute_cached_fixture(source: Path) -> int:
+    spec = importlib.util.spec_from_file_location("record_bytecode_fixture", source)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module.VALUE
+
+
+def _worker_execute_cached_fixture(source: Path, prefix: str) -> int:
+    sys.pycache_prefix = prefix
+    return _execute_cached_fixture(source)
+
+
+@pytest.mark.parametrize("prefixed", [False, True])
+@pytest.mark.parametrize("changed", ["bytecode", "source"])
+@pytest.mark.usefixtures("fresh_process")
+def test_actual_cached_code_and_source_both_bind_the_record(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, prefixed: bool, changed: str
+) -> None:
+    monkeypatch.setattr(
+        sys, "pycache_prefix", str(tmp_path / "product-cache") if prefixed else None
+    )
+    source = tmp_path / "subject.py"
+    source.write_text("VALUE = 11\n", encoding="utf-8")
+    donor = tmp_path / "donor.py"
+    donor.write_text("VALUE = 22\n", encoding="utf-8")
+    source_stat = source.stat()
+    os.utime(donor, ns=(source_stat.st_atime_ns, source_stat.st_mtime_ns))
+    cache = Path(importlib.util.cache_from_source(str(source)))
+    py_compile.compile(
+        str(source),
+        cfile=str(cache),
+        doraise=True,
+        invalidation_mode=py_compile.PycInvalidationMode.TIMESTAMP,
+    )
+    ledger = _future_ledger()
+    input_report.install_sink(ledger, str(tmp_path / "unused-worker-log"))
+    try:
+        assert _execute_cached_fixture(source) == 11
+    finally:
+        input_report.remove_sink()
+    # The existing product exclusion may cover a shared cache. Actual observed
+    # bytecode is an explicit potential input and cannot be discarded with it.
+    build_record.resolve_observed(ledger, (cache.parent,))
+    assert {str(source), str(cache)} <= set(ledger.files)
+    assert ("file", str(source)) in ledger.observed
+    assert ("file", str(cache)) in ledger.observed
+    output = tmp_path / "app"
+    output.write_bytes(b"11")
+    record, reason = _write(tmp_path, ledger, output)
+    assert reason is None and _current(record, output)
+    if changed == "bytecode":
+        # No pyc parser or forged header: equal-size/equal-mtime source files
+        # produce caches accepted by ordinary CPython timestamp validation.
+        py_compile.compile(
+            str(donor),
+            cfile=str(cache),
+            dfile=str(source),
+            doraise=True,
+            invalidation_mode=py_compile.PycInvalidationMode.TIMESTAMP,
+        )
+        assert source.read_text(encoding="utf-8") == "VALUE = 11\n"
+        assert _execute_cached_fixture(source) == 22
+    else:
+        source.write_text("VALUE = 33\n", encoding="utf-8")
+    assert not _current(record, output)
+
+
+@pytest.mark.usefixtures("fresh_process")
+def test_worker_reports_source_using_its_own_cache_prefix(
+    tmp_path: Path, transient: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source = tmp_path / "worker_subject.py"
+    source.write_text("VALUE = 11\n", encoding="utf-8")
+    worker_prefix = str(tmp_path / "worker-cache")
+    with monkeypatch.context() as worker_layout:
+        worker_layout.setattr(sys, "pycache_prefix", worker_prefix)
+        cache = Path(importlib.util.cache_from_source(str(source)))
+        py_compile.compile(str(source), cfile=str(cache), doraise=True)
+    monkeypatch.setattr(sys, "pycache_prefix", str(tmp_path / "parent-cache"))
+    with build_record.recording(transient) as ledger:
+        with ProcessPoolExecutor(
+            max_workers=1,
+            mp_context=multiprocessing.get_context("spawn"),
+            initializer=input_report.worker_initializer,
+            initargs=(input_report.worker_log_dir(),),
+        ) as pool:
+            assert (
+                pool.submit(
+                    _worker_execute_cached_fixture, source, worker_prefix
+                ).result()
+                == 11
+            )
+    assert ("file", str(cache)) in ledger.observed
+    assert ("file", str(source)) in ledger.observed
+    assert {str(cache), str(source)} <= set(ledger.files)
+    assert not ledger.refusals
+
+
+@pytest.mark.parametrize(
+    "filename", ["sourceless.pyc", "malformed.cpython-312.bad-extra.pyc"]
+)
+@pytest.mark.usefixtures("fresh_process")
+def test_unmapped_bytecode_keeps_actual_input_without_guessing_source(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, filename: str
+) -> None:
+    monkeypatch.setattr(sys, "pycache_prefix", None)
+    path = tmp_path / filename
+    path.write_bytes(b"bytecode")
+    ledger = _future_ledger()
+    monkeypatch.setattr(input_report, "_SINK", ledger)
+    input_report._audit_hook("open", (str(path), "r", 0))
+    monkeypatch.setattr(input_report, "_SINK", None)
+    assert ledger.observed == {("file", str(path))}
+    build_record.resolve_observed(ledger, ())
+    assert set(ledger.files) == {str(path)}
+
+
+def test_source_only_record_epoch_is_rejected(tmp_path: Path) -> None:
+    _source, _tool, output, record = _fixture(tmp_path)
+    payload = json.loads(record.read_text(encoding="utf-8"))
+    payload["schema"] = "molt-build-record-v4"
+    record.write_text(json.dumps(payload), encoding="utf-8")
+    assert build_record.check(record, KEY, output) == "no record for this request"
