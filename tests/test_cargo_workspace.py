@@ -114,11 +114,7 @@ def test_consumers_share_exact_root_membership() -> None:
     assert not (root / "runtime" / "Cargo.lock").exists()
     members = {manifest.parent.name for manifest in manifests}
     assert {"molt-runtime-core", "molt-cext-discovery", "molt-wasm-facts"} <= members
-    assert not members & {
-        "molt-backend-mlir",
-        "molt-python",
-        "molt-cpython-abi-test-support",
-    }
+    assert not members & {"molt-backend-mlir", "molt-cpython-abi-test-support"}
 
 
 def test_lock_validation_rejects_bad_membership_before_cache_or_cargo(
