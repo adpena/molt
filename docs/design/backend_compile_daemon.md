@@ -94,7 +94,7 @@ Native worker schema 2 carries typed keys with raw strings/null so existing
 failure replay manifests remain usable.
 
 The module and function keys share one immutable target/namespace/environment context.
-Request strings move into the keys; the LRU, its order queue and single-flight
+Request strings move into the keys; the LRU and single-flight
 retain shared handles rather than formatting and copying composite strings.
 Equal module/function source keys share a handle. A bypassed cache or an empty
 source key creates no key or context. Key preparation allocates one context and up to two keys,
@@ -107,13 +107,64 @@ cryptographic hash, file read, syscall or guest operation. These costs belong
 to compiler requests, never emitted binaries; no wall-clock improvement is
 claimed without a controlled measurement.
 
-Every cache touch also checks the existing order-compaction threshold. Above
-eight generations per live entry plus 32, one linear heap construction retains
-only the live stamps. This applies to hits as well as insertions: a daemon
-serving an unchanged artifact has bounded bookkeeping instead of growing one
-stale heap node per request. The LRU still evicts the least recently used live
-entry under its byte budget. Lookup/order maintenance is amortized logarithmic
-in live entries, with bounded linear compaction; output bytes remain shared.
+### Resident ownership and eviction
+
+The daemon and TIR memory tier share `molt_passes::resident_cache::ResidentCache`.
+It uses the already pinned [hashlink ordered map](https://docs.rs/hashlink/0.12.2/hashlink/linked_hash_map/struct.LinkedHashMap.html)
+with Rust's randomized hasher: one lookup promotes a live node in place, and
+oldest removal drops its key/value owners immediately. Both custom heaps and
+logical clocks are deleted. Warm hits allocate nothing and retain no historical
+generations. Expected lookup/promotion is constant work after key hashing;
+semantic key hashing still scales with the bytes already documented above.
+An insertion that evicts E entries does O(E) map operations. Sparse storage is
+shrunk only on mutation when table capacity exceeds four times live entries;
+that amortized linear reclamation never runs on a hit.
+
+Limits measure charged retained ownership, rather than payload length alone.
+Each entry charges its inline key/value/charge storage and four pointer words
+for links/table slots. The daemon additionally charges the complete source key,
+namespace, native triple, typed context, immutable semantic projection and raw
+values, output allocation and Arc headers. TIR charges its hash, precomputed
+quarantine path capacity, payload and Arc headers. Immutable semantic projections
+use canonical ordered boxed slices, so their allocation extent is directly
+known. Metadata accounting inspects field lengths/capacities on insertion; it
+performs no byte scan, serialization, I/O or process spawn. Equal identities
+with different allocation capacity remain semantically equal. A single oversized
+entry is refused before it can evict unrelated work; replacement retires the old
+value even when the new one cannot be retained. Zero-sized payloads still pay
+for metadata; byte arithmetic cannot overflow admission.
+
+Shared contexts/outputs are conservatively charged per entry. This can retain
+fewer artifacts than unique-allocation accounting, in exchange for avoiding a
+second ownership registry, pointer-identity bookkeeping and synchronization on
+every cache operation. Artifact buffers remain shared, not copied. The budget
+is explicitly an ownership charge: allocator headers/slack, table capacity
+rounding, active compiles, flight waiters and outputs retained by callers are
+not process RSS. The mutation reclamation rule bounds historical table/free-node
+capacity relative to live entries. Health `cache_bytes` and TIR
+`resident_bytes` report that same charge; their configured limits use those
+units. Full process/resource acceptance remains V1-07.
+
+The ownership weighers destructure the closed key/context/target types without
+`..`; adding a field fails the weigher until its allocation policy is explicit.
+The semantic projection also has one exhaustive ownership definition. Retention
+accounting never participates in structural identity.
+
+A 2026-10-17 Darwin arm64 mechanism comparison compiles the frozen 79b4892ec
+heap owner and this owner into one optimized executable with identical surrogate
+string keys: 128 resident entries, 200,000 warm hits, nine alternating rounds.
+Median loop time falls from 15.42 ms to 7.19 ms. This isolates order maintenance
+and lookup overhead; it does not measure full request context hashing, frontend
+compilation, product startup or release performance. Real TIR warm-hit controls
+retain zero allocations for 10,000 shared 1 MiB hits, and native/WASM daemon
+producer/replay controls exercise the typed request boundary. Independent tiny
+payload controls reject metadata above budget, and weak handles prove immediate
+release of replaced/evicted allocations. V1-07 still owns full acceptance.
+
+This follows the explicit resource-limit policy of [LLVM cache pruning](https://github.com/llvm/llvm-project/blob/main/llvm/include/llvm/Support/CachePruning.h)
+while preserving the existing authenticated Go-style disk store. Disk integrity,
+quarantine, trimming and request single-flight keep their existing owners; no
+cache policy is added to the emitted program or runtime dependency graph.
 
 The existing job state machine remains:
 

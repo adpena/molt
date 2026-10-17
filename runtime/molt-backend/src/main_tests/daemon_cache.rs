@@ -473,9 +473,11 @@ fn daemon_cache_get_bytes_updates_lru_without_cloning() {
     let bytes = cache.get_bytes(&key).expect("cache hit");
     assert_eq!(bytes.as_ref(), &[1, 2, 3, 4]);
 
-    let entry = cache.entries.get(&key).expect("entry retained");
-    assert_eq!(entry.bytes.as_ref(), &[1, 2, 3, 4]);
-    assert_eq!(entry.stamp, cache.clock);
+    assert_eq!(cache.usage().0, 1);
+    assert!(
+        cache.usage().1 > bytes.len(),
+        "keys and storage participate in the budget"
+    );
 }
 
 #[test]
@@ -495,15 +497,14 @@ fn daemon_cache_can_share_bytes_across_keys() {
     cache.insert(Arc::clone(&module_key), Arc::clone(&shared));
     cache.insert(Arc::clone(&function_key), shared);
 
-    let module = cache.entries.get(&module_key).expect("module entry");
-    let function = cache.entries.get(&function_key).expect("function entry");
-    assert!(Arc::ptr_eq(&module.bytes, &function.bytes));
+    let module = cache.get_bytes(&module_key).expect("module entry");
+    let function = cache.get_bytes(&function_key).expect("function entry");
+    assert!(Arc::ptr_eq(&module, &function));
 }
 
 #[test]
 fn daemon_hit_only_cache_bounds_order_memory_and_preserves_eviction() {
-    let mut cache = DaemonLru::new(Some(8));
-    let first = cache_fixture_job(served_target(), "first")
+    let first = cache_fixture_job(served_target(), "first1")
         .take_artifact_cache_keys()
         .expect("fixture cache identity")
         .module;
@@ -511,30 +512,147 @@ fn daemon_hit_only_cache_bounds_order_memory_and_preserves_eviction() {
         .take_artifact_cache_keys()
         .expect("fixture cache identity")
         .module;
-    let third = cache_fixture_job(served_target(), "third")
+    let third = cache_fixture_job(served_target(), "third3")
         .take_artifact_cache_keys()
         .expect("fixture cache identity")
         .module;
     let (first, second, third) = (first.unwrap(), second.unwrap(), third.unwrap());
     let payload = Arc::<[u8]>::from([1, 2, 3, 4].as_slice());
+    let mut probe = DaemonLru::new(None);
+    probe.insert(Arc::clone(&first), Arc::clone(&payload));
+    let budget = 2 * probe.usage().1;
+    let mut cache = DaemonLru::new(Some(budget));
     cache.insert(Arc::clone(&first), Arc::clone(&payload));
     cache.insert(Arc::clone(&second), Arc::from([5, 6, 7, 8].as_slice()));
     for _ in 0..1024 {
         let hit = cache.get_bytes(&first).expect("warm first entry");
         assert!(Arc::ptr_eq(&hit, &payload));
-        assert!(
-            cache.order.len() <= 64,
-            "hit-only traffic must not retain a generation for every lookup"
+        assert_eq!(
+            cache.usage(),
+            (2, budget),
+            "warm hits cannot retain generations"
         );
     }
-    assert_eq!(cache.entries.len(), 2);
-    assert_eq!(cache.bytes, 8);
+    assert_eq!(cache.usage(), (2, budget));
     cache.insert(Arc::clone(&third), Arc::from([9, 10, 11, 12].as_slice()));
     assert!(cache.get_bytes(&second).is_none(), "evict the cold entry");
     assert!(Arc::ptr_eq(&cache.get_bytes(&first).unwrap(), &payload));
     assert_eq!(cache.get_bytes(&third).unwrap().as_ref(), &[9, 10, 11, 12]);
-    assert_eq!(cache.entries.len(), 2);
-    assert_eq!(cache.bytes, 8);
+    assert_eq!(cache.usage(), (2, budget));
+}
+
+#[test]
+fn daemon_tiny_outputs_cannot_hide_large_request_metadata() {
+    use molt_ir::backend_environment::{BackendEnvironment, enter};
+    for dimension in ["source", "source-capacity", "namespace", "environment"] {
+        let large = "x".repeat(16 * 1024);
+        let object = if dimension == "environment" {
+            serde_json::json!({"MOLT_MAX_FUNCTION_OPS": large})
+        } else {
+            serde_json::json!({})
+        };
+        let environment = BackendEnvironment::from_request(object.as_object().unwrap()).unwrap();
+        let _scope = enter(Arc::new(environment));
+        let mut job = cache_fixture_job(served_target(), "small");
+        match dimension {
+            "source" => job.cache_key = large,
+            "source-capacity" => {
+                job.cache_key = String::with_capacity(16 * 1024);
+                job.cache_key.push_str("small");
+            }
+            "namespace" => job.config_namespace = Some(large),
+            _ => {}
+        }
+        let key = job.take_artifact_cache_keys().unwrap().module.unwrap();
+        let weak = Arc::downgrade(&key);
+        let mut cache = DaemonLru::new(Some(1024));
+        cache.insert(key, Arc::from([1].as_slice()));
+        assert_eq!(cache.usage(), (0, 0), "unaccounted {dimension}");
+        assert!(
+            weak.upgrade().is_none(),
+            "rejected {dimension} key cannot linger in order storage"
+        );
+    }
+}
+
+#[test]
+#[cfg(feature = "native-backend")]
+fn daemon_tiny_outputs_charge_native_target_storage() {
+    let target = DaemonJobTarget::Native(NativeTargetOptions {
+        target_triple: Some("x".repeat(16 * 1024)),
+        ..NativeTargetOptions::default()
+    });
+    let key = cache_fixture_job(target, "small")
+        .take_artifact_cache_keys()
+        .unwrap()
+        .module
+        .unwrap();
+    let mut cache = DaemonLru::new(Some(1024));
+    cache.insert(key, Arc::from([1].as_slice()));
+    assert_eq!(cache.usage(), (0, 0));
+}
+
+#[test]
+fn daemon_eviction_drops_the_actual_typed_key_immediately() {
+    let mut cache = DaemonLru::new(None);
+    let key = cache_fixture_job(served_target(), "first1")
+        .take_artifact_cache_keys()
+        .unwrap()
+        .module
+        .unwrap();
+    let weak = Arc::downgrade(&key);
+    cache.insert(key, Arc::from([1].as_slice()));
+    let budget = cache.usage().1;
+    // Move the populated owner into the exact budget, without cloning its key.
+    let mut bounded = DaemonLru::new(Some(budget));
+    let first = cache_fixture_job(served_target(), "first1")
+        .take_artifact_cache_keys()
+        .unwrap()
+        .module
+        .unwrap();
+    let first_weak = Arc::downgrade(&first);
+    bounded.insert(first, Arc::from([1].as_slice()));
+    let second = cache_fixture_job(served_target(), "second")
+        .take_artifact_cache_keys()
+        .unwrap()
+        .module
+        .unwrap();
+    bounded.insert(second, Arc::from([2].as_slice()));
+    assert_eq!(bounded.usage().0, 1);
+    assert!(
+        first_weak.upgrade().is_none(),
+        "evicted key must not survive through stale order records"
+    );
+    drop(cache);
+    assert!(weak.upgrade().is_none());
+}
+
+#[test]
+fn daemon_replacement_releases_equal_keys_with_different_allocation_capacity() {
+    let mut cache = DaemonLru::new(None);
+    let mut job = cache_fixture_job(served_target(), "same");
+    job.cache_key = String::with_capacity(16 * 1024);
+    job.cache_key.push_str("same");
+    let old = job.take_artifact_cache_keys().unwrap().module.unwrap();
+    let weak = Arc::downgrade(&old);
+    cache.insert(old, Arc::from([1].as_slice()));
+    let charged_before = cache.usage().1;
+    let replacement = cache_fixture_job(served_target(), "same")
+        .take_artifact_cache_keys()
+        .unwrap()
+        .module
+        .unwrap();
+    cache.insert(Arc::clone(&replacement), Arc::from([2].as_slice()));
+    assert!(
+        weak.upgrade().is_none(),
+        "replaced metadata cannot survive in stale order generations"
+    );
+    assert_eq!(cache.usage().0, 1);
+    assert!(
+        cache.usage().1 < charged_before,
+        "charge follows the actual retained owner"
+    );
+    assert_eq!(cache.get_bytes(&replacement).unwrap().as_ref(), &[2]);
 }
 
 #[test]

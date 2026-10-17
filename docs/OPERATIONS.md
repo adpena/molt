@@ -545,8 +545,12 @@ uv run --python 3.12 python -u tests/molt_diff.py tests/differential/basic/exec_
   `MOLT_BACKEND_TIR_CACHE_MEMORY_MB` wins, then propagated memory-guard
   availability/reserve env (`MOLT_MEMORY_AVAILABLE_GB`,
   `MOLT_MEMORY_RESERVE_GB`, and `MOLT_CLI_*` aliases), otherwise total
-  physical memory. Disk hits for oversized artifacts are returned without
-  retaining them in RAM.
+  physical memory. The shared compiler resident-cache authority charges retained
+  keys, quarantine paths, payloads, Arc headers and entry/link storage. Daemon
+  `cache_bytes` and TIR `resident_bytes` report this conservative ownership
+  charge, not process RSS; shared allocations are charged per entry. Oversized
+  entries are returned without retaining them, and warm hits allocate nothing.
+  The full contract is in [the daemon design](design/backend_compile_daemon.md#resident-ownership-and-eviction).
 - **Backend TIR cache concurrency**: `molt-passes::tir::cache` is a lock-free
   content-addressed store, the design of Go's build cache
   (`cmd/go/internal/cache`). Each artifact is an authenticated envelope (key,

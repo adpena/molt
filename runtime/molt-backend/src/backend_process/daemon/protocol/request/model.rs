@@ -59,6 +59,41 @@ pub(crate) struct DaemonCacheKey {
     pub(super) source: String,
 }
 
+impl DaemonCacheKey {
+    /// All transitive allocations retained by this Arc key. Sharing with other
+    /// tiers/requests is deliberately charged per entry, never deduplicated by
+    /// a second ownership registry. Accounting is excluded from typed identity.
+    pub(crate) fn retained_bytes(&self) -> usize {
+        let Self { context, source } = self;
+        let DaemonCacheContext {
+            config_namespace,
+            target,
+            environment,
+        } = context.as_ref();
+        let target_bytes = match target {
+            #[cfg(feature = "native-backend")]
+            DaemonJobTarget::Native(NativeTargetOptions {
+                target_triple,
+                output_kind: _,
+            }) => target_triple.as_ref().map_or(0, String::capacity),
+            #[cfg(feature = "wasm-backend")]
+            DaemonJobTarget::Wasm(WasmTargetOptions {
+                link_relocs: _,
+                data_base: _,
+                table_base: _,
+                split_runtime_app_table_base: _,
+            }) => 0,
+        };
+        std::mem::size_of::<Self>()
+            .saturating_add(4 * std::mem::size_of::<usize>()) // key/context Arc headers
+            .saturating_add(source.capacity())
+            .saturating_add(std::mem::size_of::<DaemonCacheContext>())
+            .saturating_add(config_namespace.as_ref().map_or(0, String::capacity))
+            .saturating_add(target_bytes)
+            .saturating_add(environment.retained_bytes())
+    }
+}
+
 /// The admitted cache tiers share their context and may share the same key.
 /// No tier key means that tier has no cache or single-flight authority.
 #[derive(Debug, Default, PartialEq, Eq)]

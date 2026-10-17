@@ -74,13 +74,13 @@ impl DaemonCache {
 
     #[cfg(all(test, feature = "native-backend"))]
     pub(crate) fn is_empty(&self) -> bool {
-        lock(&self.lru).entries.is_empty()
+        lock(&self.lru).usage().0 == 0
     }
 
-    /// Entry count and resident bytes, for health reports.
+    /// Entry count and charged retained ownership bytes, for health reports.
+    /// Includes keys/context/output storage; this is not process RSS.
     pub(crate) fn usage(&self) -> (usize, usize) {
-        let lru = lock(&self.lru);
-        (lru.entries.len(), lru.bytes)
+        lock(&self.lru).usage()
     }
 
     /// Join `key`'s single flight.

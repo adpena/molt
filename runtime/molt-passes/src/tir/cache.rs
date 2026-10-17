@@ -24,7 +24,6 @@
 //! the cache is advisory, and verification turns any crash residue into a
 //! miss. Opening a cache performs no I/O.
 
-use std::collections::HashMap;
 use std::ffi::OsStr;
 use std::fs::File;
 use std::io::{Read, Write};
@@ -34,6 +33,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use sha2::{Digest, Sha256};
+
+use crate::resident_cache::ResidentCache;
 
 const BACKEND_CACHE_NAMESPACE_VERSION: &str = "molt-backend-tir-cache-v8-lock-free-content-store";
 const CACHE_ARTIFACT_MAGIC: &[u8] = b"MOLT:CACHE-ARTIFACT:v1\0";
@@ -73,17 +74,8 @@ pub struct CompilationCache {
     /// `None` for an explicitly placed cache, which owns only itself.
     namespace_root: Option<PathBuf>,
 
-    /// Resident payloads: `content_hash` → [`ResidentEntry`].
-    resident: HashMap<Arc<str>, ResidentEntry>,
-    /// Bytes currently retained in resident payloads.
-    memory_bytes: usize,
-    /// Maximum bytes retained in memory.
-    max_memory_bytes: usize,
-    /// Monotonic logical clock for in-memory LRU eviction.
-    memory_clock: u64,
-    /// Indexed min-heap of resident entries. Touches mutate heap nodes in
-    /// place, so warm hits allocate nothing and stale nodes never accumulate.
-    memory_lru: Vec<MemoryLruNode>,
+    /// Resident ownership: payloads, keys, quarantine paths and entry storage.
+    resident: ResidentCache<Arc<str>, ResidentEntry>,
 
     /// Maximum files (artifacts and poison sidecars) a trim leaves on disk.
     max_entries: usize,
@@ -98,14 +90,6 @@ struct ResidentEntry {
     data: Arc<[u8]>,
     /// Precomputed so the quarantine probe on a warm hit allocates nothing.
     poison_path: PathBuf,
-    /// Position in `CompilationCache::memory_lru`, whose node holds the stamp.
-    memory_lru_index: usize,
-}
-
-#[derive(Debug)]
-struct MemoryLruNode {
-    stamp: u64,
-    content_hash: Arc<str>,
 }
 
 static CACHE_TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
@@ -130,6 +114,7 @@ pub struct CompilationCacheTelemetry {
 #[derive(Debug, Clone, Copy, Default, Eq, PartialEq)]
 pub struct CompilationCacheStats {
     pub resident_entries: usize,
+    /// Charged key/path/payload/entry ownership, not process RSS.
     pub resident_bytes: usize,
     pub max_entries: usize,
     pub max_resident_bytes: usize,
@@ -278,11 +263,7 @@ impl CompilationCache {
             cache_dir,
             functions_dir,
             namespace_root: None,
-            resident: HashMap::new(),
-            memory_bytes: 0,
-            max_memory_bytes,
-            memory_clock: 0,
-            memory_lru: Vec::new(),
+            resident: ResidentCache::new(Some(max_memory_bytes)),
             max_entries,
             max_persistent_bytes,
             telemetry: CompilationCacheTelemetry::default(),
@@ -391,7 +372,6 @@ impl CompilationCache {
         {
             if *existing == *artifact {
                 self.telemetry.reuses = self.telemetry.reuses.saturating_add(1);
-                self.touch_memory_entry(content_hash);
                 return Ok(());
             }
             return Err(self.quarantine(content_hash, &existing, artifact));
@@ -730,10 +710,10 @@ impl CompilationCache {
 
     pub fn stats(&self) -> CompilationCacheStats {
         CompilationCacheStats {
-            resident_entries: self.memory_lru.len(),
-            resident_bytes: self.memory_bytes,
+            resident_entries: self.resident.len(),
+            resident_bytes: self.resident.bytes(),
             max_entries: self.max_entries,
-            max_resident_bytes: self.max_memory_bytes,
+            max_resident_bytes: self.resident.max_bytes().expect("bounded TIR cache"),
             max_persistent_bytes: self.max_persistent_bytes,
             telemetry: self.telemetry,
         }
@@ -748,131 +728,38 @@ impl CompilationCache {
             self.forget_resident(content_hash);
             return None;
         }
-        self.touch_memory_entry(content_hash);
         Some(bytes)
     }
 
     fn forget_resident(&mut self, content_hash: &str) {
-        let Some(index) = self
-            .resident
-            .get(content_hash)
-            .map(|entry| entry.memory_lru_index)
-        else {
-            return;
-        };
-        self.memory_lru_remove(index);
-        if let Some(entry) = self.resident.remove(content_hash) {
-            self.memory_bytes = self.memory_bytes.saturating_sub(entry.data.len());
-        }
-    }
-
-    fn touch_memory_entry(&mut self, content_hash: &str) {
-        self.memory_clock = self.memory_clock.wrapping_add(1);
-        let Some(lru_index) = self
-            .resident
-            .get(content_hash)
-            .map(|entry| entry.memory_lru_index)
-        else {
-            return;
-        };
-        self.memory_lru[lru_index].stamp = self.memory_clock;
-        self.memory_lru_sift_down(lru_index);
+        self.resident.remove(content_hash);
     }
 
     fn store_memory_data(&mut self, content_hash: &str, bytes: Arc<[u8]>) {
-        self.forget_resident(content_hash);
-        if self.max_memory_bytes == 0 || bytes.len() > self.max_memory_bytes {
+        if self
+            .resident
+            .max_bytes()
+            .is_some_and(|max| max == 0 || bytes.len() > max)
+        {
+            self.forget_resident(content_hash);
             return;
         }
         let Some(poison_path) = self.poison_path(content_hash) else {
             return;
         };
-        let key = Arc::<str>::from(content_hash);
-        self.memory_clock = self.memory_clock.wrapping_add(1);
-        self.memory_bytes = self.memory_bytes.saturating_add(bytes.len());
-        let lru_index = self.memory_lru.len();
-        self.memory_lru.push(MemoryLruNode {
-            stamp: self.memory_clock,
-            content_hash: Arc::clone(&key),
-        });
+        let allocation_bytes = content_hash
+            .len()
+            .saturating_add(4 * std::mem::size_of::<usize>()) // key/output Arc headers
+            .saturating_add(bytes.len())
+            .saturating_add(poison_path.capacity());
         self.resident.insert(
-            key,
+            Arc::<str>::from(content_hash),
             ResidentEntry {
                 data: bytes,
                 poison_path,
-                memory_lru_index: lru_index,
             },
+            allocation_bytes,
         );
-        self.memory_lru_sift_up(lru_index);
-        self.evict_memory();
-    }
-
-    fn evict_memory(&mut self) {
-        while self.memory_bytes > self.max_memory_bytes && !self.memory_lru.is_empty() {
-            let content_hash = Arc::clone(&self.memory_lru[0].content_hash);
-            self.forget_resident(&content_hash);
-        }
-    }
-
-    fn memory_lru_remove(&mut self, index: usize) -> MemoryLruNode {
-        let last = self.memory_lru.len() - 1;
-        if index != last {
-            self.memory_lru_swap(index, last);
-        }
-        let removed = self.memory_lru.pop().expect("LRU removal requires a node");
-        if index < self.memory_lru.len() {
-            let index = self.memory_lru_sift_up(index);
-            self.memory_lru_sift_down(index);
-        }
-        removed
-    }
-
-    fn memory_lru_sift_up(&mut self, mut index: usize) -> usize {
-        while index > 0 {
-            let parent = (index - 1) / 2;
-            if !self.memory_lru_less(index, parent) {
-                break;
-            }
-            self.memory_lru_swap(index, parent);
-            index = parent;
-        }
-        index
-    }
-
-    fn memory_lru_sift_down(&mut self, mut index: usize) {
-        loop {
-            let left = index * 2 + 1;
-            if left >= self.memory_lru.len() {
-                break;
-            }
-            let right = left + 1;
-            let smallest = if right < self.memory_lru.len() && self.memory_lru_less(right, left) {
-                right
-            } else {
-                left
-            };
-            if !self.memory_lru_less(smallest, index) {
-                break;
-            }
-            self.memory_lru_swap(index, smallest);
-            index = smallest;
-        }
-    }
-
-    fn memory_lru_less(&self, left: usize, right: usize) -> bool {
-        let left = &self.memory_lru[left];
-        let right = &self.memory_lru[right];
-        (left.stamp, left.content_hash.as_ref()) < (right.stamp, right.content_hash.as_ref())
-    }
-
-    fn memory_lru_swap(&mut self, left: usize, right: usize) {
-        self.memory_lru.swap(left, right);
-        for index in [left, right] {
-            let hash = self.memory_lru[index].content_hash.as_ref();
-            if let Some(entry) = self.resident.get_mut(hash) {
-                entry.memory_lru_index = index;
-            }
-        }
     }
 }
 

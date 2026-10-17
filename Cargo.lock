@@ -2750,6 +2750,7 @@ dependencies = [
 name = "molt-passes"
 version = "0.1.0"
 dependencies = [
+ "hashlink",
  "libc",
  "molt-ir",
  "num-integer",

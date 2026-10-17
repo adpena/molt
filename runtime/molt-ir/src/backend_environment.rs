@@ -59,7 +59,28 @@ impl BackendIdentityProjection {
 /// Immutable actual request inputs, shared by every cache tier and job.
 #[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct SemanticBackendEnvironment {
-    values: BTreeMap<BackendEnv, SemanticEnvironmentValue>,
+    // Canonical enum order from BackendEnvironment's ordered map. Immutable
+    // projections need no tree nodes or spare capacity.
+    values: Box<[(BackendEnv, SemanticEnvironmentValue)]>,
+}
+
+impl SemanticBackendEnvironment {
+    /// Ownership charge when retained through an Arc by a compiler cache.
+    /// Shared projections are conservatively charged to each resident key.
+    pub fn retained_bytes(&self) -> usize {
+        let Self { values } = self;
+        values.iter().fold(
+            std::mem::size_of::<Self>()
+                .saturating_add(2 * std::mem::size_of::<usize>())
+                .saturating_add(std::mem::size_of_val(&**values)),
+            |bytes, (_, value)| {
+                bytes.saturating_add(match value {
+                    SemanticEnvironmentValue::Raw(value) => value.len(),
+                    SemanticEnvironmentValue::Present => 0,
+                })
+            },
+        )
+    }
 }
 
 /// The variables a daemon request carries.
@@ -297,7 +318,9 @@ pub fn current_semantic_environment(
             values.insert(key, key.group().projection().project(|| value));
         }
     }
-    Ok(Arc::new(SemanticBackendEnvironment { values }))
+    Ok(Arc::new(SemanticBackendEnvironment {
+        values: values.into_iter().collect(),
+    }))
 }
 
 /// Gives a child backend process exactly the current request's settings. In
