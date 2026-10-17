@@ -573,8 +573,8 @@ _REGISTRY_JSON = r"""{
     },
     {
       "name": "MOLT_DEV",
-      "owner": "tools/molt_dev.py",
-      "summary": "Guard scope for the `molt_dev.py` driver commands."
+      "owner": "tools/molt_dev_common.py",
+      "summary": "Guard scope for the shared guarded driver command helper."
     },
     {
       "name": "MOLT_DEV_CLEANUP",

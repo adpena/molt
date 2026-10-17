@@ -885,7 +885,7 @@ Family names are built at run time as `<STEM><SUFFIX>`. The stem is the guard sc
 | `MOLT_CONFORMANCE` | `src/molt/cli/toolchain_validation.py` | Guard scope for conformance and toolchain validation runs. |
 | `MOLT_CROSS` | `src/molt/cli/command_runtime.py` | Guard scope for cross-platform runtime commands (Node, WASM hosts, pinned tools). |
 | `MOLT_DEPLOY` | `tools/check_memory_guard_wiring.py` | Guard scope for deploy scripts. |
-| `MOLT_DEV` | `tools/molt_dev.py` | Guard scope for the `molt_dev.py` driver commands. |
+| `MOLT_DEV` | `tools/molt_dev_common.py` | Guard scope for the shared guarded driver command helper. |
 | `MOLT_DEV_CLEANUP` | `tools/artifact_cleanup.py` | Guard scope for artifact cleanup helpers. |
 | `MOLT_DEV_TEST` | `tools/dev_test_runner.py` | Guard scope for the dev test runner. |
 | `MOLT_DIFF` | `src/molt/cli/command_runtime.py` | Guard scope for differential (`molt diff`) runs and their workers. |
