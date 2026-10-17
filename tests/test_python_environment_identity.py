@@ -825,14 +825,21 @@ def test_batch_bind_uses_one_open_per_fresh_file_and_keeps_the_final_fence(
     paths = [tmp_path / name for name in ("a.py", "b.py")]
     for path in paths:
         path.write_bytes(path.name.encode())
+    foreign = tmp_path / "foreign.bin"
+    foreign.write_bytes(b"unrelated descriptor traffic")
     opened = []
     open_stable = toolchain_identity.open_stable_regular_file
 
     def counted(path, **kwargs):
-        opened.append(Path(path).name)
+        if Path(path) in paths:
+            opened.append(Path(path).name)
         return open_stable(path, **kwargs)
 
     monkeypatch.setattr(toolchain_identity, "open_stable_regular_file", counted)
+    with toolchain_identity.open_stable_regular_file(
+        foreign, label="foreign"
+    ) as observed:
+        assert observed.stream.read() == b"unrelated descriptor traffic"
     context = files.PythonFileCaptureContext()
     rows = [(path, path.lstat()) for path in paths]
     context.bind_many(rows, label="fixture")

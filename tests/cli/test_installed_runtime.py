@@ -1560,11 +1560,15 @@ def test_installed_wasm_admits_consumed_members_once_per_transaction(
     _forbid_cargo(monkeypatch)
     _ship_installed_wasm_cell(bundle, tmp_path)
     cell = _select_installed_wasm(bundle)
+    owned_roots = (cell.members_root, cell.retained_root)
+    foreign = tmp_path / "foreign.bin"
+    foreign.write_bytes(b"unrelated descriptor traffic")
     captured = []
     original = toolchain_identity.stable_regular_file_handle_identity
 
     def capture(opened, **kwargs):
-        captured.append(opened.path)
+        if any(opened.path.is_relative_to(root) for root in owned_roots):
+            captured.append(opened.path)
         return original(opened, **kwargs)
 
     monkeypatch.setattr(
@@ -1572,6 +1576,16 @@ def test_installed_wasm_admits_consumed_members_once_per_transaction(
     )
     monkeypatch.setattr(
         runtime_wasm_generation, "stable_regular_file_handle_identity", capture
+    )
+    with toolchain_identity.open_stable_regular_file(
+        foreign, label="foreign"
+    ) as opened:
+        observed = toolchain_identity.stable_regular_file_handle_identity(
+            opened, label="foreign"
+        )
+        assert opened.stream.read() == b"unrelated descriptor traffic"
+    assert (
+        observed.sha256 == hashlib.sha256(b"unrelated descriptor traffic").hexdigest()
     )
     first = installed_runtime.admit_installed_wasm_runtime(cell)
     shipped = {
