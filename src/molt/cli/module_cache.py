@@ -26,6 +26,7 @@ from molt.cli.cache_fingerprints import (
 from molt.cli.cache_keys import (
     _cache_json_value,
     _decode_class_identity,
+    _encode_class_identity,
     _json_ir_default,
 )
 from molt.opcode_literal_payloads import integer_literal_value
@@ -1483,7 +1484,7 @@ def _module_lowering_context_payload(
     return {
         # The context owns the captured bytes, not a later file stat/hash.
         # Inline text and raw path bytes are distinct source generations.
-        "version": 4,
+        "version": 5,
         "module_name": module_name,
         "logical_source_path": logical_source_path,
         "is_package": is_package,
@@ -1519,14 +1520,73 @@ def _module_lowering_context_payload(
     }
 
 
+# A module's scoped class view repeats the class statements of its whole
+# dependency closure: encoding the views cost 41 MB and 0.68 s of a 92-module
+# edit-rebuild. Each class statement is digested once and the view digest is
+# a Merkle combination of (class identity, class digest) pairs.
+_CLASS_INFO_DIGESTS: dict[int, tuple[ClassInfo, bytes]] = {}
+_CLASS_ID_BYTES: dict[ClassId, bytes] = {}
+_CLASS_DIGEST_LIMIT = 65536
+
+
+def _canonical_json_bytes(value: Any) -> bytes:
+    return json.dumps(
+        _cache_json_value(value),
+        sort_keys=True,
+        separators=(",", ":"),
+        default=_json_ir_default,
+    ).encode("utf-8")
+
+
+def _bounded_put(memo: dict[Any, Any], key: Any, value: Any) -> None:
+    if len(memo) >= _CLASS_DIGEST_LIMIT:
+        memo.pop(next(iter(memo)))
+    memo[key] = value
+
+
+def _class_info_digest(info: ClassInfo) -> bytes:
+    # visit_ClassDef builds a ClassInfo and nothing writes it afterwards, so a
+    # digest stays valid for the object's lifetime; the memo holds the object,
+    # so its id cannot name a different object while the entry exists.
+    cached = _CLASS_INFO_DIGESTS.get(id(info))
+    if cached is not None and cached[0] is info:
+        return cached[1]
+    digest = hashlib.sha256(_canonical_json_bytes(info)).digest()
+    _bounded_put(_CLASS_INFO_DIGESTS, id(info), (info, digest))
+    return digest
+
+
+def _class_id_bytes(class_id: ClassId) -> bytes:
+    cached = _CLASS_ID_BYTES.get(class_id)
+    if cached is None:
+        cached = _canonical_json_bytes(_encode_class_identity(class_id))
+        _bounded_put(_CLASS_ID_BYTES, class_id, cached)
+    return cached
+
+
+def _class_view_sort_key(class_id: object) -> tuple[str, str, int, int, int]:
+    if not isinstance(class_id, ClassId):
+        raise TypeError(f"a scoped class view is keyed by ClassId, not {class_id!r}")
+    return class_id.sort_key()
+
+
+def _known_classes_digest(classes: Mapping[ClassId, ClassInfo]) -> str:
+    hasher = hashlib.sha256(b"molt.lowering-known-classes.v1\0")
+    for class_id in sorted(classes, key=_class_view_sort_key):
+        identity = _class_id_bytes(class_id)
+        hasher.update(len(identity).to_bytes(4, "little"))
+        hasher.update(identity)
+        hasher.update(_class_info_digest(classes[class_id]))
+    return hasher.hexdigest()
+
+
 def _module_lowering_context_digest(payload: dict[str, Any]) -> str | None:
     try:
-        encoded = json.dumps(
-            _cache_json_value(payload),
-            sort_keys=True,
-            separators=(",", ":"),
-            default=_json_ir_default,
-        ).encode("utf-8")
+        if "known_classes" in payload:
+            payload = dict(
+                payload, known_classes=_known_classes_digest(payload["known_classes"])
+            )
+        encoded = _canonical_json_bytes(payload)
     except (TypeError, ValueError):
         return None
     digest = hashlib.sha256(encoded).hexdigest()
