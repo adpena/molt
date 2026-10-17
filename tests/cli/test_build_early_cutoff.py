@@ -6,7 +6,10 @@ and what it read, not the record's internals.
 
 from __future__ import annotations
 
+import inspect
 import os
+import sys
+import tempfile
 import time
 from pathlib import Path
 from typing import Any
@@ -14,6 +17,7 @@ from typing import Any
 import pytest
 
 from molt import build_record
+from molt.file_hashing import DIGEST_RACY_WINDOW_NS
 from molt.cli import build_command
 
 
@@ -100,6 +104,70 @@ def test_an_unchanged_build_reuses_its_output(
     _run(build, project, output)
     assert len(calls) == 2, "an edited input rebuilds"
     assert output.read_text(encoding="utf-8") == "binary of print(2)\n"
+
+
+def _judge_changes_during_the_build(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Start the recording process when the fixture finished writing: its
+    inputs pass the racy rule, and every change the build makes is racy."""
+    written = time.time_ns()
+    monkeypatch.setattr(
+        "molt.process_birth.current_process_started_ns",
+        lambda: written + DIGEST_RACY_WINDOW_NS,
+    )
+    time.sleep(0.01)
+
+
+def test_temporary_files_leave_the_recorded_build_current(
+    project: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # A temporary file the build creates and removes in the system temporary
+    # directory would change that input directory during the build.
+    monkeypatch.setattr(build_record, "_BUILDS_ENTERED", 0)
+    _judge_changes_during_the_build(monkeypatch)
+    calls: list[str] = []
+    fake = _fake_build(calls)
+
+    def build_with_temporary_file(*args: Any, **kwargs: Any) -> int:
+        with tempfile.NamedTemporaryFile() as scratch:
+            scratch.write(b"intermediate")
+        with tempfile.TemporaryDirectory():
+            pass
+        return fake(*args, **kwargs)
+
+    build_with_temporary_file.__signature__ = inspect.signature(fake)  # type: ignore[attr-defined]
+    build = build_command._with_early_cutoff(build_with_temporary_file)
+    output = tmp_path / "app"
+    _run(build, project, output)
+    _run(build, project, output)
+    assert len(calls) == 1, "the build's temporary files are products"
+
+
+def test_a_guarded_child_leaves_the_recorded_build_current(
+    project: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Cargo, the backend and the linker run under the memory guard. Each run
+    # leases a scratch generation, writes custody markers and removes the
+    # generation when the child ends; none of it is an input of the binary.
+    from molt import process_guard
+
+    monkeypatch.setattr(build_record, "_BUILDS_ENTERED", 0)
+    _judge_changes_during_the_build(monkeypatch)
+    calls: list[str] = []
+    fake = _fake_build(calls)
+
+    def guarded_build(*args: Any, **kwargs: Any) -> int:
+        child = process_guard.run_completed_command(
+            [sys.executable, "-c", "pass"], env=dict(os.environ)
+        )
+        assert child.returncode == 0
+        return fake(*args, **kwargs)
+
+    guarded_build.__signature__ = inspect.signature(fake)  # type: ignore[attr-defined]
+    build = build_command._with_early_cutoff(guarded_build)
+    output = tmp_path / "app"
+    _run(build, project, output)
+    _run(build, project, output)
+    assert len(calls) == 1, "the guard's custody is not an input"
 
 
 def test_a_changed_output_or_another_name_rebuilds(

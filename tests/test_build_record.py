@@ -31,6 +31,12 @@ def fresh_process(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(input_report, "_WORKER_LOG_DIR", None)
 
 
+@pytest.fixture
+def transient(tmp_path_factory: pytest.TempPathFactory) -> Path:
+    """The recorder's transient root, outside every directory a test lists."""
+    return tmp_path_factory.mktemp("transient")
+
+
 def _future_ledger() -> build_record.InputLedger:
     # Fixture files change now; a start 10 s ahead keeps them out of the racy
     # window, as if they had been written long before the build.
@@ -156,11 +162,11 @@ def test_inputs_changed_after_the_process_started_are_racy(tmp_path: Path) -> No
     assert reason is not None and os.fspath(source) in reason
 
 
-def test_the_racy_bound_is_the_process_start() -> None:
+def test_the_racy_bound_is_the_process_start(transient: Path) -> None:
     # A batch server imports the compiler long before its first build: an edit
     # in between changes code the server already runs.
     before = time.time_ns()
-    with build_record.recording() as ledger:
+    with build_record.recording(transient) as ledger:
         pass
     started = current_process_started_ns()
     assert started is not None and ledger.started_ns == started
@@ -219,10 +225,12 @@ def test_a_damaged_record_is_never_current(tmp_path: Path) -> None:
 
 
 @pytest.mark.usefixtures("fresh_process")
-def test_the_audit_hook_observes_reads_listings_and_programs(tmp_path: Path) -> None:
+def test_the_audit_hook_observes_reads_listings_and_programs(
+    tmp_path: Path, transient: Path
+) -> None:
     data = tmp_path / "data.txt"
     data.write_text("payload", encoding="utf-8")
-    with build_record.recording() as ledger:
+    with build_record.recording(transient) as ledger:
         data.read_text(encoding="utf-8")
         os.listdir(tmp_path)
         (tmp_path / "written.txt").write_text("not an input", encoding="utf-8")
@@ -238,7 +246,7 @@ def test_the_audit_hook_observes_reads_listings_and_programs(tmp_path: Path) -> 
 
 
 @pytest.mark.usefixtures("fresh_process")
-def test_a_started_program_records_its_search(tmp_path: Path) -> None:
+def test_a_started_program_records_its_search(tmp_path: Path, transient: Path) -> None:
     # A new tool earlier on PATH, or a retargeted link, selects another program.
     early, late, missing = tmp_path / "early", tmp_path / "late", tmp_path / "none"
     early.mkdir()
@@ -247,7 +255,7 @@ def test_a_started_program_records_its_search(tmp_path: Path) -> None:
     tool.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
     tool.chmod(0o755)
     search = os.pathsep.join(map(os.fspath, (missing, early, late)))
-    with build_record.recording() as ledger:
+    with build_record.recording(transient) as ledger:
         input_report._report_program_selection("cc", {"PATH": search}, tmp_path)
     assert ledger.probes[os.fspath(tool)] == (os.path.realpath(tool), stat.S_IFREG)
     assert os.fspath(tool) in ledger.files
@@ -285,13 +293,13 @@ def test_observations_skip_excluded_roots_and_map_bytecode_to_source(
 )
 @pytest.mark.usefixtures("fresh_process")
 def test_worker_reads_and_reports_merge_into_the_parent_ledger(
-    tmp_path: Path, start_method: str
+    tmp_path: Path, start_method: str, transient: Path
 ) -> None:
     data = tmp_path / "worker-input.txt"
     data.write_text("payload", encoding="utf-8")
     reported = tmp_path / "worker-reported.toml"
     reported.write_text("x = 1\n", encoding="utf-8")
-    with build_record.recording() as ledger:
+    with build_record.recording(transient) as ledger:
         with ProcessPoolExecutor(
             max_workers=1,
             mp_context=multiprocessing.get_context(start_method),
@@ -307,8 +315,8 @@ def test_worker_reads_and_reports_merge_into_the_parent_ledger(
 
 
 @pytest.mark.usefixtures("fresh_process")
-def test_a_lost_worker_fact_refuses_the_record(tmp_path: Path) -> None:
-    with build_record.recording() as ledger:
+def test_a_lost_worker_fact_refuses_the_record(tmp_path: Path, transient: Path) -> None:
+    with build_record.recording(transient) as ledger:
         log_dir = input_report.worker_log_dir()
         assert log_dir is not None
         (Path(log_dir) / "4242.jsonl.failed").write_text("", encoding="utf-8")
@@ -389,7 +397,7 @@ def test_only_named_products_are_excluded_and_explicit_inputs_win(
     source = tmp_path / "project" / "config.toml"
     scratch = tmp_path / "scratch"
     product = scratch / "object.o"
-    output = tmp_path / "project" / "app"
+    output = tmp_path / "out" / "app"
     for path in (source, product, output):
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text("", encoding="utf-8")
@@ -413,14 +421,55 @@ def test_only_named_products_are_excluded_and_explicit_inputs_win(
     assert {os.fspath(output), os.fspath(product)} <= explicit.files.keys()
 
 
+def test_the_outputs_publication_custody_is_a_product(tmp_path: Path) -> None:
+    from molt import artifact_publication, file_publication
+
+    output = tmp_path / "out" / "app"
+    output.parent.mkdir()
+    output.write_bytes(b"binary")
+    receipt = artifact_publication.publication_receipt_path(output)
+    receipt.write_text("{}", encoding="utf-8")
+    other_receipt = artifact_publication.publication_receipt_path(
+        output.parent / "other"
+    )
+    other_receipt.write_text("{}", encoding="utf-8")
+    # A stage and a journal the publication created and removed again.
+    stage = file_publication.staged_file_path(output, purpose="stage")
+    receipt_stage = file_publication.staged_file_path(receipt)
+    journal = output.parent / f".molt-artifact-publication-{'0' * 32}.json"
+    ledger = _future_ledger()
+    ledger.observed |= {
+        ("file", os.fspath(receipt)),
+        ("file", os.fspath(stage)),
+        ("file", os.fspath(receipt_stage)),
+        ("file", os.fspath(journal)),
+        ("file", os.fspath(output.parent / ".molt-artifact-publication.lock")),
+        ("file", os.fspath(other_receipt)),
+        # The publication's own scan for journals.
+        ("directory", os.fspath(output.parent)),
+    }
+    build_record.resolve_observed(ledger, (), published_output=output)
+    # Another destination's receipt stays an input; nothing records the
+    # directory the publication changed.
+    assert set(ledger.files) == {os.fspath(other_receipt)}
+    assert ledger.directories == {} and ledger.probes == {}
+
+    # A reader that consumes the directory reports it, and that report stays.
+    explicit = _future_ledger()
+    explicit.directory(output.parent, input_report.stat_token(output.parent))
+    explicit.observed = {("directory", os.fspath(output.parent))}
+    build_record.resolve_observed(explicit, (), published_output=output)
+    assert set(explicit.directories) == {os.fspath(output.parent)}
+
+
 @pytest.mark.usefixtures("fresh_process")
 def test_mkdir_and_failed_write_attempts_never_own_existing_inputs(
-    tmp_path: Path,
+    tmp_path: Path, transient: Path
 ) -> None:
     source = tmp_path / "project" / "config.toml"
     source.parent.mkdir()
     source.write_text("version = 1\n", encoding="utf-8")
-    with build_record.recording() as ledger:
+    with build_record.recording(transient) as ledger:
         assert source.read_text(encoding="utf-8") == "version = 1\n"
         os.listdir(source.parent)
         source.parent.mkdir(parents=True, exist_ok=True)
@@ -438,7 +487,7 @@ def test_mkdir_and_failed_write_attempts_never_own_existing_inputs(
 )
 @pytest.mark.usefixtures("fresh_process")
 def test_mkdir_relative_to_descriptor_does_not_exclude_a_cwd_decoy(
-    tmp_path, monkeypatch
+    tmp_path, monkeypatch, transient
 ):
     actual = tmp_path / "actual"
     decoy = tmp_path / "decoy"
@@ -449,7 +498,7 @@ def test_mkdir_relative_to_descriptor_does_not_exclude_a_cwd_decoy(
     monkeypatch.chdir(decoy)
     descriptor = os.open(actual, os.O_RDONLY)
     try:
-        with build_record.recording() as ledger:
+        with build_record.recording(transient) as ledger:
             source.read_text(encoding="utf-8")
             with pytest.raises(FileExistsError):
                 os.mkdir("existing", dir_fd=descriptor)
@@ -463,10 +512,12 @@ def test_mkdir_relative_to_descriptor_does_not_exclude_a_cwd_decoy(
     "mode", ["r+", "a+", "a", "read-then-write", "os-rdwr", "os-append"]
 )
 @pytest.mark.usefixtures("fresh_process")
-def test_updates_preserve_input_reads_and_refuse_racy_records(tmp_path, mode):
+def test_updates_preserve_input_reads_and_refuse_racy_records(
+    tmp_path, mode, transient
+):
     source = tmp_path / "input"
     source.write_text("before", encoding="utf-8")
-    with build_record.recording() as ledger:
+    with build_record.recording(transient) as ledger:
         if mode.startswith("os-"):
             flags = os.O_RDWR if mode == "os-rdwr" else os.O_WRONLY | os.O_APPEND
             descriptor = os.open(source, flags)
