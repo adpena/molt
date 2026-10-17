@@ -10,8 +10,18 @@ verified against both selected workspace locks before path replacement. The
 complete published package is retained except its library `Cargo.lock`; the
 Molt root and standalone runtime-fuzz locks select dependencies. The upstream
 `LICENSE` and other original package files are unchanged except the four source
-files identified below. Tests use the upstream crate's own libtest target and
-dev-dependencies; there is no separate test harness or vendored lock.
+files identified below and the normalized `Cargo.toml` lint table. Tests use the
+upstream crate's own libtest target and dev-dependencies; there is no separate
+test harness or vendored lock.
+
+The normalized `Cargo.toml` sets the rustc `unused` group and `clippy::all` to
+`allow` at priority -1; `unsafe_op_in_unsafe_fn` stays `deny`. Cargo caps a
+registry copy's lints, but this workspace member is linted like Molt source, so
+`cargo clippy -D warnings` failed on unmodified upstream code: an unused NEON
+import and a redundant `unsafe` on aarch64, and unused C-allocator shims,
+same-width casts and a doc-comment blank line on wasm32 (HF-318). Fixing those
+lines would widen the patch beyond the counter repair. `Cargo.toml.orig`
+remains the unmodified archive source.
 
 The latest published version checked was 0.6.8. Upstream main
 `7909c0fc48f5d29f6610770e31d6f0c924f9ec3b` still has the same missing counter
