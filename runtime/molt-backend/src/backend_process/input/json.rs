@@ -1,7 +1,11 @@
 use std::io;
 
-use super::source::{invalid_ir_exit, open_ir_file};
+use super::source::{invalid_ir, open_ir_file};
 use crate::backend_process::io_limits::{read_bounded_request_bytes, stdin_request_limit_bytes};
+
+pub(crate) fn decode(reader: impl io::Read) -> io::Result<molt_backend::BackendIrDocument> {
+    serde_json::from_reader(reader).map_err(|err| invalid_ir("IR JSON", err))
+}
 
 pub(super) fn read_json_backend_ir_document(
     ir_file_path: Option<&str>,
@@ -9,10 +13,7 @@ pub(super) fn read_json_backend_ir_document(
     if let Some(ir_path) = ir_file_path {
         let file = open_ir_file(ir_path)?;
         let reader = io::BufReader::with_capacity(1 << 20, file);
-        return match serde_json::from_reader::<_, molt_backend::BackendIrDocument>(reader) {
-            Ok(ir) => Ok(ir),
-            Err(err) => invalid_ir_exit("IR JSON", err),
-        };
+        return decode(reader);
     }
 
     let raw_bytes = read_bounded_request_bytes(
@@ -28,8 +29,5 @@ pub(super) fn read_json_backend_ir_document(
     })?;
     let result = serde_json::from_str::<molt_backend::BackendIrDocument>(&buffer);
     drop(buffer);
-    match result {
-        Ok(ir) => Ok(ir),
-        Err(err) => invalid_ir_exit("IR JSON", err),
-    }
+    result.map_err(|err| invalid_ir("IR JSON", err))
 }

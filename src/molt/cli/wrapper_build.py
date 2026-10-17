@@ -36,6 +36,7 @@ from molt.cli.config_resolution import (
     _resolve_build_config,
     _select_codegen_backend,
     resolve_stdlib_profile,
+    runtime_target,
 )
 from molt.default_paths import _default_molt_bin
 from molt.cli.env_overrides import temporary_env_overrides
@@ -54,7 +55,6 @@ from molt.cli.json_contract import (
 from molt.cli.models import (
     _ResolvedBuildEntry,
     _WrapperBuildContract,
-    runtime_target,
 )
 from molt.cli.module_graph import _materialize_import_plan, _prepare_entry_module_graph
 from molt.cli.module_resolution import _stdlib_root_path

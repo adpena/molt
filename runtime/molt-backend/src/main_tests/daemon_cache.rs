@@ -268,6 +268,10 @@ fn served_target() -> (DaemonJobTarget, &'static str) {
 #[test]
 fn daemon_probe_cache_only_returns_needs_ir_on_miss() {
     let _env_guard = TestEnvGuard::clear(SHARED_STDLIB_CACHE_ENV_KEYS);
+    let missing_lease =
+        molt_ir::debug_artifacts::prepare_unique_debug_artifact_path("probe-missing-ir")
+            .expect("unique absent lease");
+    assert!(!missing_lease.exists());
     let cache = DaemonCache::new(None);
     let result = compile_single_job(
         DaemonJobRequest {
@@ -280,7 +284,7 @@ fn daemon_probe_cache_only_returns_needs_ir_on_miss() {
             skip_function_output_if_synced: false,
             probe_cache_only: true,
             ir: None,
-            ir_path: None,
+            ir_path: Some(missing_lease.to_string_lossy().into_owned()),
             config_namespace: None,
         },
         &cache,
@@ -293,7 +297,7 @@ fn daemon_probe_cache_only_returns_needs_ir_on_miss() {
 }
 
 #[test]
-fn daemon_probe_cache_only_hits_without_ir() {
+fn daemon_probe_cache_only_hits_without_reading_ir() {
     let _env_guard = TestEnvGuard::clear(SHARED_STDLIB_CACHE_ENV_KEYS);
     let cache = DaemonCache::new(None);
     cache.insert(
@@ -306,27 +310,31 @@ fn daemon_probe_cache_only_hits_without_ir() {
         .as_nanos();
     let output = std::env::temp_dir().join(format!("molt-backend-probe-hit-{nonce}.wasm"));
 
-    let result = compile_single_job(
-        DaemonJobRequest {
-            id: "job0".to_string(),
-            target: served_target().0,
-            output: output.to_string_lossy().into_owned(),
-            cache_key: "module".to_string(),
-            function_cache_key: Some("function".to_string()),
-            skip_module_output_if_synced: false,
-            skip_function_output_if_synced: false,
-            probe_cache_only: true,
-            ir: None,
-            ir_path: None,
-            config_namespace: None,
-        },
-        &cache,
-    );
+    let missing_lease = output.with_extension("missing-ir");
+    assert!(!missing_lease.exists());
+    for ir_path in [None, Some(missing_lease.to_string_lossy().into_owned())] {
+        let result = compile_single_job(
+            DaemonJobRequest {
+                id: "job0".to_string(),
+                target: served_target().0,
+                output: output.to_string_lossy().into_owned(),
+                cache_key: "module".to_string(),
+                function_cache_key: Some("function".to_string()),
+                skip_module_output_if_synced: false,
+                skip_function_output_if_synced: false,
+                probe_cache_only: true,
+                ir: None,
+                ir_path,
+                config_namespace: None,
+            },
+            &cache,
+        );
 
-    assert!(result.ok);
-    assert!(result.cached);
-    assert!(!result.needs_ir);
-    assert!(output.exists());
+        assert!(result.ok);
+        assert!(result.cached);
+        assert!(!result.needs_ir);
+        assert!(output.exists());
+    }
     let _ = std::fs::remove_file(output);
 }
 
@@ -532,4 +540,42 @@ fn concurrent_requests_for_one_artifact_compile_it_once() {
         "builds wrote different bytes for one artifact"
     );
     std::fs::remove_dir_all(root).expect("remove fixture");
+}
+
+#[cfg(feature = "native-backend")]
+#[test]
+fn daemon_json_lease_rejects_suffix_before_output_publication() {
+    let _env_guard = TestEnvGuard::clear(SHARED_STDLIB_CACHE_ENV_KEYS);
+    let nonce = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let root =
+        std::env::temp_dir().join(format!("molt-daemon-frame-{}-{nonce}", std::process::id()));
+    std::fs::create_dir(&root).unwrap();
+    let lease = root.join("input.json");
+    let output = root.join("output.o");
+    for bytes in [
+        b"{\"functions\":[]}{}".as_slice(),
+        b"{\"functions\":[]}!".as_slice(),
+    ] {
+        std::fs::write(&lease, bytes).unwrap();
+        let job = DaemonJobRequest::from_json_value(
+            &serde_json::json!({
+                "id":"lease-frame", "is_wasm":false, "output":output.to_str().unwrap(),
+                "cache_key":"", "ir_path":lease.to_str().unwrap(),
+            }),
+            "job",
+        )
+        .unwrap();
+        let response = compile_single_job(job, &DaemonCache::new(None));
+        assert!(!response.ok && !response.cached && !response.output_written);
+        let error = response.message.expect("lease error");
+        assert!(
+            error.contains("ir_path") && error.contains("trailing"),
+            "{error}"
+        );
+        assert!(!output.exists());
+    }
+    std::fs::remove_dir_all(root).unwrap();
 }

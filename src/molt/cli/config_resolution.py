@@ -178,6 +178,16 @@ def _select_capability_input(
     return next((candidate for candidate in candidates if candidate is not None), None)
 
 
+def runtime_target(target: str) -> str:
+    """Project a compiler target onto its runtime platform.
+
+    ``llvm`` selects the LLVM backend for the native host. Keep this projection
+    beside backend selection so platform and wrapper consumers share that rule
+    without importing the compiler's model graph.
+    """
+    return "native" if target == "llvm" else target
+
+
 def _select_codegen_backend(
     target: str, backend_choice: str
 ) -> tuple[str, CodegenBackend, str | None]:
@@ -213,7 +223,7 @@ def _select_codegen_backend(
                 ),
             )
         backend_choice = "llvm"
-        target = "native"
+        target = runtime_target(target)
     if backend_choice == "auto":
         return target, DEFAULT_CODEGEN_BACKEND, None
     if backend_choice not in CODEGEN_BACKENDS:

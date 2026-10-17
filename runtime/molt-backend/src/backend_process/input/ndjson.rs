@@ -1,6 +1,6 @@
 use std::io;
 
-use super::source::{invalid_ir_exit, open_ir_file};
+use super::source::{invalid_ir, open_ir_file};
 use crate::backend_process::io_limits::{RequestBoundedRead, stdin_request_limit_bytes};
 
 pub(super) fn read_ndjson_backend_ir_document(
@@ -9,10 +9,8 @@ pub(super) fn read_ndjson_backend_ir_document(
     if let Some(ir_path) = ir_file_path {
         let file = open_ir_file(ir_path)?;
         let reader = io::BufReader::new(file);
-        return match molt_backend::BackendIrDocument::from_ndjson_reader(reader) {
-            Ok(ir) => Ok(ir),
-            Err(err) => invalid_ir_exit("NDJSON IR", err),
-        };
+        return molt_backend::BackendIrDocument::from_ndjson_reader(reader)
+            .map_err(|err| invalid_ir("NDJSON IR", err));
     }
 
     let stdin = io::stdin();
@@ -22,8 +20,6 @@ pub(super) fn read_ndjson_backend_ir_document(
         "backend stdin request",
     );
     let reader = io::BufReader::new(bounded);
-    match molt_backend::BackendIrDocument::from_ndjson_reader(reader) {
-        Ok(ir) => Ok(ir),
-        Err(err) => invalid_ir_exit("NDJSON IR", err),
-    }
+    molt_backend::BackendIrDocument::from_ndjson_reader(reader)
+        .map_err(|err| invalid_ir("NDJSON IR", err))
 }

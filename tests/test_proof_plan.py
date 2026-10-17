@@ -764,6 +764,30 @@ def test_llvm_proofs_select_implementation_libtests_and_driver_link_consumer() -
     assert linkage[linkage.index("--test") + 1] == "llvm_generated_object_linkage"
 
 
+def test_ir_input_receivers_run_with_enabled_and_disabled_cbor() -> None:
+    compiler = next(
+        row for row in PLAN.commands if row.id == "rust.test.compiler-authorities"
+    )
+    assert "--bins" in compiler.argv
+    features = compiler.argv[compiler.argv.index("--features") + 1].split(",")
+    assert "molt-backend/cbor" in features
+
+    local = next(rule for rule in PLAN.local_rules if rule["name"] == "backend-native")
+    tests = [shlex.split(gate) for gate in local["gates"] if "cargo test " in gate]
+    assert tests
+    assert all("--bins" in argv for argv in tests)
+    assert all("cbor" not in argv[argv.index("--features") + 1] for argv in tests)
+    enabled = next(
+        rule for rule in PLAN.local_rules if rule["name"] == "backend-ir-framing"
+    )
+    assert enabled["globs"]
+    for gate in enabled["gates"]:
+        argv = shlex.split(gate)
+        assert argv[argv.index("--bin") + 1] == "molt-backend"
+        assert "cbor" in argv[argv.index("--features") + 1].split(",")
+        assert "backend_process::input::tests" in argv
+
+
 def test_cpython_abi_owner_reuses_the_compiler_graph_and_registered_local_lane() -> (
     None
 ):
