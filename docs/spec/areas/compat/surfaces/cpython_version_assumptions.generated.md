@@ -8,7 +8,7 @@ The inventory includes older and future Python 3 minor spellings, full eight-dig
 
 - `authority-routed` files: 62
 - `operational-tooling` files: 56
-- `scattered-assumption` files: 351
+- `scattered-assumption` files: 353
 
 ## Files
 
@@ -16,10 +16,12 @@ The inventory includes older and future Python 3 minor spellings, full eight-dig
 |---|---:|---|---|
 | `src/molt/_environment_registry.py` | 6 | operational-tooling | `sys.version_info` |
 | `src/molt/_host_capabilities_generated.py` | 3 | operational-tooling | `3.12` |
+| `src/molt/cli/build_results.py` | 1 | scattered-assumption | `3.2` |
 | `src/molt/cli/deps.py` | 1 | operational-tooling | `sys.version_info` |
 | `src/molt/cli/entrypoint_parser.py` | 18 | scattered-assumption | `3.12` |
 | `src/molt/cli/extension_scan_surface.py` | 1 | scattered-assumption | `PY_VERSION_HEX` |
 | `src/molt/cli/factgraph.py` | 3 | scattered-assumption | `3.12` |
+| `src/molt/cli/native_link_plan.py` | 1 | scattered-assumption | `3.2` |
 | `src/molt/cli/python_import_resolution.py` | 3 | authority-routed | `sys.version_info` |
 | `src/molt/cli/setup_readiness.py` | 2 | authority-routed | `3.12` |
 | `src/molt/cli/source_extension_cython.py` | 2 | scattered-assumption | `3.12` |
