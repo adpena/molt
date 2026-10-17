@@ -196,9 +196,11 @@ def test_workspace_dev_dependency_wildcard_preserves_workspace_policy() -> None:
         "molt-codegen-abi": {"opt-level": 1, "debug": 0},
         "molt-artifact-publish": {"opt-level": 1, "debug": 0},
         "molt-runtime": {"opt-level": 2, "debug": 0},
-        # The maintained vendor patch is a member only so its upstream tests
-        # resolve; it keeps the dependency debug policy, not a hot override.
+        # The maintained vendor patches are members only so their upstream
+        # tests resolve; they keep the dependency debug policy, not a hot
+        # override.
         "cranelift-object": {"debug": 0},
+        "zlib-rs": {"debug": 0},
     }
     assert expected_hot_members.keys() <= workspace_names
 
@@ -461,7 +463,13 @@ def test_runtime_tk_native_feature_is_owned_by_leaf_crate() -> None:
         "stdlib_tk",
         "molt-runtime-tk/native-tcl",
     ]
-    assert tk_manifest["features"]["native-tcl"] == ["tk", "dep:libloading"]
+    # The native Tcl loader sets the process environment through the
+    # runtime-platform crate (1afa7afe4).
+    assert tk_manifest["features"]["native-tcl"] == [
+        "tk",
+        "dep:libloading",
+        "dep:molt-runtime-platform",
+    ]
 
 
 def test_runtime_micro_profile_includes_core_non_network_intrinsics() -> None:
