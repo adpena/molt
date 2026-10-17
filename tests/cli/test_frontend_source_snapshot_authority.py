@@ -632,11 +632,11 @@ def test_malformed_execution_projection_rejects_entire_scan(
             == request
         )
         key = scans._import_scan_cache_key(source, **options)
-        payload = scans._read_import_scan_payload(tmp_path, key)
+        payload = scans._read_import_scan_payload(tmp_path, source, key)
         assert payload is not None
         malformed = dict(payload, source_executions=[{"module": "child", "path": 17}])
 
-        def read_malformed(_root: Path, _key: str) -> dict[str, Any]:
+        def read_malformed(_root: Path, _path: Path, _key: str) -> dict[str, Any]:
             return malformed
 
         monkeypatch.setattr(scans, "_read_import_scan_payload", read_malformed)

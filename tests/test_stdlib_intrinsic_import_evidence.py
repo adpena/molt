@@ -1079,8 +1079,8 @@ def test_malformed_cached_namespace_summary_recomputes_canonical_syntax(
     parse = cache._parse_source_for_target
     parses = []
 
-    def corrupt(project_root, key):
-        payload = copy.deepcopy(read(project_root, key))
+    def corrupt(project_root, path, key):
+        payload = copy.deepcopy(read(project_root, path, key))
         assert payload is not None
         payload["facts"]["namespace_summary"][field] = invalid
         return payload
@@ -1165,8 +1165,8 @@ def test_intrinsic_metadata_rejects_boolean_namespace_member_mask(
     )
     read = cache._read_intrinsic_facts_payload
 
-    def corrupt(project_root, key):
-        payload = copy.deepcopy(read(project_root, key))
+    def corrupt(project_root, path, key):
+        payload = copy.deepcopy(read(project_root, path, key))
         assert payload is not None
         payload["identity"]["namespace_premise"]["member_writes"] = False
         return payload

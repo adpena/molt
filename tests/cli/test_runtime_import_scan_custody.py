@@ -800,6 +800,7 @@ def test_owner_analysis_persists_source_pure_and_completes_each_catalog(
     assert set(second[1]) == set(widened.modules)
     record = module_graph_cache._read_import_scan_payload(
         tmp_path,
+        owner,
         module_graph_cache._import_scan_cache_key(
             owner,
             module_name="pkg.entry",
