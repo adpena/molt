@@ -1072,6 +1072,21 @@ def test_non_python_command_requires_a_closed_toolchain_registration() -> None:
         )
 
 
+def _admitted_plan_toolchains(
+    plan: proof_plan.ProofPlan, command: proof_plan.ProofCommand
+) -> list[str]:
+    """Static closure plus the contextual Cargo build generator a row declares.
+
+    Static preflight has no Cargo context, so ``required_toolchains`` never
+    names ``build-python``. A row that declares ``cargo_build_python = true``
+    admits that runtime role in its envelope (docs/agent/PROOF_QUEUE.md).
+    """
+    static = list(plan.required_toolchains(command))
+    if command.data.get("cargo_build_python") is not True:
+        return static
+    return list(dict.fromkeys([*static, *plan.toolchain_closure(["build-python"])]))
+
+
 def test_every_proof_plan_command_uses_its_exact_nonempty_toolchain_authority() -> None:
     plan = proof_plan.ProofPlan.load()
     assert plan.commands
@@ -1092,7 +1107,9 @@ def test_every_proof_plan_command_uses_its_exact_nonempty_toolchain_authority() 
         envelope = command_admission.envelope_for_command(command.argv)
         assert envelope["kind"] == "proof-plan", command.id
         assert command.id in envelope["proof_plan_command_ids"]
-        assert envelope["toolchains"] == list(plan.required_toolchains(command))
+        assert envelope["toolchains"] == _admitted_plan_toolchains(plan, command), (
+            command.id
+        )
         assert envelope["toolchains"], command.id
 
 
@@ -1137,7 +1154,7 @@ def test_exact_wasm_e2e_commands_own_declared_child_toolchains(
     assert envelope["process_closure"] == {
         "kind": "proof-plan",
         "descendants": "declared-toolchains",
-        "toolchains": list(plan.required_toolchains(command)),
+        "toolchains": _admitted_plan_toolchains(plan, command),
     }
 
     with pytest.raises(
@@ -1298,7 +1315,7 @@ def test_native_toolchain_inference_and_declared_sdk_policy_coexist() -> None:
     assert selected["kind"] == "proof-plan"
     assert selected["proof_plan_command_ids"] == [command.id]
     assert "wasi-clang" in selected["toolchains"]
-    assert selected["toolchains"] == list(plan.toolchain_closure(command.toolchains))
+    assert selected["toolchains"] == _admitted_plan_toolchains(plan, command)
     verifier = next(
         item for item in plan.commands if item.id == "native.integration.python-custody"
     )
@@ -18350,19 +18367,24 @@ def test_multiple_registered_variants_never_turn_transport_changes_into_leaves(
             "--macos",
         ),
     ]
+    ids = ["fixture.full", "fixture.macos"]
     entrypoint = command_admission._command_entrypoint(commands[0])
-    registry["entrypoints"][entrypoint] = ["fixture.full", "fixture.macos"]
-    for index, command in enumerate(commands):
+    registry["entrypoints"][entrypoint] = list(ids)
+    # Each fixture row projects every registered field the real registry does,
+    # including its Cargo build-generator declaration (a compiling driver).
+    for command_id, command in zip(ids, commands, strict=True):
         registry["exact"][command] = {
-            "ids": [f"fixture.{index}"],
+            "ids": [command_id],
             "toolchains": ("python", "uv", "cargo", "rustc"),
             "cargo_native_units": {},
+            "cargo_build_python": True,
         }
+        registry["cargo_build_python"][command_id] = True
     monkeypatch.setattr(command_admission, "_proof_command_registry", lambda: registry)
     for command in commands:
         envelope = command_admission.envelope_for_command(command)
         assert envelope["kind"] == "proof-plan"
-        assert {"cargo", "rustc"} <= set(envelope["toolchains"])
+        assert {"cargo", "rustc", "build-python"} <= set(envelope["toolchains"])
     for command in (
         (*commands[0], "--verbose"),
         (
