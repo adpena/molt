@@ -601,7 +601,11 @@ class ProofPlan:
         return toolchain_closure(self.toolchain_policies, names)
 
     def required_toolchains(self, command: ProofCommand) -> tuple[str, ...]:
-        """Return the complete process/tool identity closure for one command."""
+        """Return the static process/tool identity closure for one command.
+
+        Queue admission adds contextual prerequisites that need the command's
+        Cargo context, such as the declared ``build-python`` generator.
+        """
 
         return self.toolchain_closure(command.toolchains)
 
