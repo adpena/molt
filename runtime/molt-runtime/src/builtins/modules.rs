@@ -39,6 +39,7 @@ mod execution;
 mod import_star;
 mod runpy;
 mod type_attributes;
+pub(crate) use type_attributes::raise_module_attribute_miss;
 mod type_protocol;
 pub(crate) use type_protocol::publish_module_methods;
 
@@ -2499,11 +2500,11 @@ pub extern "C" fn molt_module_get_attr(module_bits: u64, attr_bits: u64) -> u64 
                 }
                 return val;
             }
-            let module_name = string_obj_to_owned(obj_from_bits(module_name_bits(module_ptr)))
-                .unwrap_or_default();
-            let attr_name = string_obj_to_owned(obj_from_bits(attr_bits))
-                .unwrap_or_else(|| "<attr>".to_string());
             if debug_attr {
+                let module_name = string_obj_to_owned(obj_from_bits(module_name_bits(module_ptr)))
+                    .unwrap_or_default();
+                let attr_name = string_obj_to_owned(obj_from_bits(attr_bits))
+                    .unwrap_or_else(|| "<attr>".to_string());
                 let mut present = false;
                 let order = crate::dict_live_entries(_dict_ptr);
                 let entries = crate::dict_len(_dict_ptr);
@@ -2521,8 +2522,7 @@ pub extern "C" fn molt_module_get_attr(module_bits: u64, attr_bits: u64) -> u64 
                     module_name, attr_name, present, entries, pending
                 );
             }
-            let msg = format!("module '{module_name}' has no attribute '{attr_name}'");
-            raise_exception::<_>(_py, "AttributeError", &msg)
+            raise_module_attribute_miss(_py, module_ptr, attr_bits)
         }
     })
 }

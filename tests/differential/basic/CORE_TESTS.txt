@@ -14,6 +14,7 @@ tests/differential/basic/class_namespace_lookup.py
 tests/differential/basic/condition_flow_truth_custody.py
 tests/differential/basic/exceptiongroup_notes_propagation.py
 tests/differential/basic/expression_result_authority.py
+tests/differential/basic/module_attribute_miss.py
 tests/differential/basic/module_function_observation.py
 tests/differential/basic/namespace_publication_release.py
 tests/differential/basic/pattern_matching_basic.py

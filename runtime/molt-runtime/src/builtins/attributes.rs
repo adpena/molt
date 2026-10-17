@@ -14,7 +14,6 @@ use crate::builtins::attr::{
 use crate::builtins::containers::tuple_method_bits;
 #[cfg(test)]
 use crate::builtins::exceptions::exception_matches_builtin_name;
-use crate::builtins::exceptions::molt_exception_last_pending;
 use crate::builtins::frames::suspended_frame_bits;
 use crate::builtins::methods::{
     asyncgen_method_bits, complex_method_bits, generator_method_bits, object_method_bits,
@@ -1267,64 +1266,63 @@ pub unsafe extern "C" fn molt_get_attr_generic(
             }
             let slice = std::slice::from_raw_parts(attr_name_ptr, attr_name_len);
             let attr_name = std::str::from_utf8(slice).unwrap_or("<attr>");
-            let type_id = object_type_id(obj_ptr);
             let Some(attr_bits) = attr_name_bits_from_bytes(_py, slice) else {
                 return MoltObject::none().bits();
             };
             let found = attr_lookup_ptr(_py, obj_ptr, attr_bits);
+            if let Ok(None) = found {
+                raise_attribute_miss(_py, obj_ptr, attr_bits, attr_name);
+            }
             dec_ref_bits(_py, attr_bits);
             match found {
-                Ok(Some(value)) => return value,
-                Err(()) => return MoltObject::none().bits(),
-                Ok(None) => {}
+                Ok(Some(value)) => value,
+                Ok(None) | Err(()) => MoltObject::none().bits(),
             }
-            if type_id == TYPE_ID_DATACLASS {
-                let desc_ptr = dataclass_desc_ptr(obj_ptr);
-                if !desc_ptr.is_null() && (*desc_ptr).slots && !(*desc_ptr).allows_dict {
-                    let name = &(*desc_ptr).name;
-                    let type_label = if name.is_empty() {
-                        "dataclass"
-                    } else {
-                        name.as_str()
-                    };
-                    return attr_error_with_obj(
-                        _py,
-                        type_label,
-                        attr_name,
-                        MoltObject::from_ptr(obj_ptr).bits(),
-                    );
-                }
-                let type_label = if !desc_ptr.is_null() {
-                    let name = &(*desc_ptr).name;
-                    if name.is_empty() {
-                        "dataclass"
-                    } else {
-                        name.as_str()
-                    }
-                } else {
-                    "dataclass"
-                };
-                return attr_error(_py, type_label, attr_name);
+        })
+    }
+}
+
+/// The AttributeError a required lookup raises once every protocol step has
+/// missed. As in CPython's `PyObject_GetAttr`, it records `name` and `obj` for
+/// every receiver; a module reports its own message family.
+pub(crate) unsafe fn raise_attribute_miss(
+    py: &PyToken<'_>,
+    obj_ptr: *mut u8,
+    name_bits: u64,
+    attr_name: &str,
+) {
+    unsafe {
+        let obj_bits = MoltObject::from_ptr(obj_ptr).bits();
+        match object_type_id(obj_ptr) {
+            TYPE_ID_MODULE => {
+                crate::builtins::modules::raise_module_attribute_miss(py, obj_ptr, name_bits);
             }
-            if type_id == TYPE_ID_TYPE {
+            TYPE_ID_TYPE => {
                 let class_name = string_obj_to_owned(obj_from_bits(class_name_bits(obj_ptr)))
                     .unwrap_or_default();
-                let msg = format!("type object '{class_name}' has no attribute '{attr_name}'");
-                let res = attr_error_with_message(_py, &msg);
-                let exc_bits = molt_exception_last_pending();
-                if !obj_from_bits(exc_bits).is_none() {
-                    let _ = molt_raise(exc_bits);
-                    dec_ref_bits(_py, exc_bits);
-                }
-                return res;
+                let message = format!("type object '{class_name}' has no attribute '{attr_name}'");
+                attr_error_with_obj_message(py, &message, attr_name, obj_bits);
             }
-            attr_error_with_obj(
-                _py,
-                type_name(_py, MoltObject::from_ptr(obj_ptr)),
-                attr_name,
-                MoltObject::from_ptr(obj_ptr).bits(),
-            )
-        })
+            TYPE_ID_DATACLASS => {
+                let desc_ptr = dataclass_desc_ptr(obj_ptr);
+                let name = if desc_ptr.is_null() {
+                    ""
+                } else {
+                    let name = &(*desc_ptr).name;
+                    name.as_str()
+                };
+                let label = if name.is_empty() { "dataclass" } else { name };
+                attr_error_with_obj(py, label, attr_name, obj_bits);
+            }
+            _ => {
+                attr_error_with_obj(
+                    py,
+                    type_name(py, MoltObject::from_ptr(obj_ptr)),
+                    attr_name,
+                    obj_bits,
+                );
+            }
+        }
     }
 }
 
@@ -1603,45 +1601,7 @@ pub(crate) fn get_attr_name_with_mode(
             }
             let attr_name = string_obj_to_owned(obj_from_bits(name_bits))
                 .unwrap_or_else(|| "<attr>".to_string());
-            let type_id = object_type_id(obj_ptr);
-            if type_id == TYPE_ID_DATACLASS {
-                let desc_ptr = dataclass_desc_ptr(obj_ptr);
-                if !desc_ptr.is_null() && (*desc_ptr).slots && !(*desc_ptr).allows_dict {
-                    let name = &(*desc_ptr).name;
-                    let type_label = if name.is_empty() {
-                        "dataclass"
-                    } else {
-                        name.as_str()
-                    };
-                    let _ = attr_error_with_obj(_py, type_label, &attr_name, obj_bits);
-                    return Err(());
-                }
-                let type_label = if !desc_ptr.is_null() {
-                    let name = &(*desc_ptr).name;
-                    if name.is_empty() {
-                        "dataclass"
-                    } else {
-                        name.as_str()
-                    }
-                } else {
-                    "dataclass"
-                };
-                let _ = attr_error_with_obj(_py, type_label, &attr_name, obj_bits);
-                return Err(());
-            }
-            if type_id == TYPE_ID_TYPE {
-                let class_name = string_obj_to_owned(obj_from_bits(class_name_bits(obj_ptr)))
-                    .unwrap_or_default();
-                let msg = format!("type object '{class_name}' has no attribute '{attr_name}'");
-                let _ = attr_error_with_obj_message(_py, &msg, &attr_name, obj_bits);
-                return Err(());
-            }
-            let _ = attr_error_with_obj(
-                _py,
-                type_name(_py, MoltObject::from_ptr(obj_ptr)),
-                &attr_name,
-                obj_bits,
-            );
+            raise_attribute_miss(_py, obj_ptr, name_bits, &attr_name);
             return Err(());
         }
         let attr_name =

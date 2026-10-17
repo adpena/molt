@@ -475,6 +475,11 @@ end
                 "\tif name == \"__dict__\" then return module end\n",
                 "\tlocal present, value = molt_frame_namespace_get(module, name)\n",
                 "\tif present then return value end\n",
+                // CPython labels the miss with a str `__name__` and drops it otherwise.
+                "\tlocal named, label = molt_frame_namespace_get(module, \"__name__\")\n",
+                "\tif named and type(label) == \"string\" then\n",
+                "\t\terror({__type = \"AttributeError\", __msg = \"module '\" .. label .. \"' has no attribute '\" .. tostring(name) .. \"'\"})\n",
+                "\tend\n",
                 "\terror({__type = \"AttributeError\", __msg = \"module has no attribute '\" .. tostring(name) .. \"'\"})\n",
                 "end\n\n",
                 "local function molt_module_del_global(module: any, name: any, missing_ok: boolean): any\n",

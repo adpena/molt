@@ -18,6 +18,7 @@ core:
       - tests/differential/basic/module_function_observation.py
       - tests/differential/basic/class_namespace_lookup.py
       - tests/differential/basic/attribute_lookup_transactions.py
+      - tests/differential/basic/module_attribute_miss.py
       - tests/differential/basic/class_annotation_namespace.py
       - tests/differential/basic/class_annotation_namespace_313.py
       - tests/differential/basic/class_constructor_cell_callbacks.py
