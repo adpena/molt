@@ -20,6 +20,14 @@ pub(super) fn emit_op_loop_runtime_call(
     op: &OpIR,
     call: OpLoopRuntimeCallSpec,
 ) {
+    if let Some(abi) = molt_ir::runtime_boxed_abi_generated::runtime_boxed_op_abi(&op.kind) {
+        assert_eq!(
+            op.args.as_deref().unwrap_or(&[]).len(),
+            abi.arity,
+            "{} boxed-call arity",
+            op.kind,
+        );
+    }
     let profile_local = context.guard_profile_local;
     if let Some(local) = profile_local {
         func.instruction(&Instruction::LocalGet(local));

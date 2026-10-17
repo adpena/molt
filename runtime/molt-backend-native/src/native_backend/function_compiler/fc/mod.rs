@@ -111,7 +111,6 @@ pub(in crate::native_backend::function_compiler) mod slice_ops;
 pub(in crate::native_backend::function_compiler) mod statistics;
 pub(in crate::native_backend::function_compiler) mod subscript_get;
 pub(in crate::native_backend::function_compiler) mod subscript_store;
-pub(in crate::native_backend::function_compiler) mod text_predicates;
 pub(in crate::native_backend::function_compiler) mod text_transform;
 pub(in crate::native_backend::function_compiler) mod truthiness;
 pub(in crate::native_backend::function_compiler) mod type_checks;

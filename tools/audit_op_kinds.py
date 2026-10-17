@@ -21,7 +21,8 @@ copy of the table:
      UAF-escalation precondition,
   5. the native + WASM SimpleIR dispatch (``function_compiler.rs`` / ``wasm.rs``),
      reached via the ``lower_to_simple`` ``_original_kind`` restoration. The native
-     dispatch routes purely via each ``fc/*`` handler's ``HANDLED_KINDS`` slice
+     dispatch routes via ``FAMILY_DISPATCH_TABLE`` references to local handler
+     ``HANDLED_KINDS`` or generated boxed-call slices
      (``op_family::native_op_family``); a codegen-reaching kind that the frontend
      emits but that NO slice claims is dead at dispatch. Result-producing gaps
      hit the loud catch-all panic, while no-result gaps silently skip side effects
@@ -850,71 +851,151 @@ def extract_rust_str_slice_consts(
     return out
 
 
-def extract_native_routing_slice_kinds() -> set[str]:
-    """The EXACT native routing authority: the union of every
-    `fc/*::HANDLED_KINDS`, `INLINE_DISPATCH_KINDS`, and
-    `NATIVE_NO_CODEGEN_RESULT_KINDS` slice.
+def _native_routing_source(module: str) -> Path:
+    """Resolve a table/dispatch module reference, without a second kind registry."""
+    parts = module.split("::")
+    if len(parts) == 1:
+        return NATIVE_FC_DIR / f"{module}.rs"
+    return (
+        ROOT
+        / "runtime"
+        / parts[0].replace("_", "-")
+        / "src"
+        / Path(*parts[1:]).with_suffix(".rs")
+    )
 
-    This is precisely the set `op_family::native_op_family` routes (plus the
-    inline-dispatch and legitimate-no-codegen allowlists). A kind NOT in this set
-    is dead at dispatch: result-producing ops hit the loud catch-all panic, while
-    no-result side-effect/control-flow ops silently disappear. Unlike
-    `extract_native_simpleir_arm_kinds`,
-    this does NOT include the advisory textual `function_compiler.rs` arm scan,
-    which over-counts (it picks up `"k" =>` arms in unrelated pre-analysis helpers
-    — e.g. `"copy" =>` in a `op.var` reader at function_compiler.rs:1919 — that do
-    NOT route the value op). The D8 native_codegen_gap check MUST key on this exact
-    set, not the advisory union, or the very `copy` bug it exists to catch is
-    masked by the textual over-count.
+
+def extract_native_routing_slice_kinds() -> set[str]:
+    """Exact table-referenced routing slices, plus the two inline dispositions.
+
+    Unreferenced handler declarations cannot claim routing. Generated external
+    slices participate through the same table as local handler slices.
     """
     out: set[str] = set()
-    if NATIVE_FC_DIR.exists():
-        for path in sorted(NATIVE_FC_DIR.glob("*.rs")):
-            consts = extract_rust_str_slice_consts(path)
-            for name, kinds in consts.items():
-                if (
-                    name == "INLINE_DISPATCH_KINDS"
-                    or name.endswith("HANDLED_KINDS")
-                    or name == "NATIVE_NO_CODEGEN_RESULT_KINDS"
-                ):
-                    out.update(kinds)
+    for refs in extract_native_family_dispatch_slices().values():
+        for module, name in refs:
+            out.update(
+                _extract_required_rust_str_slice(_native_routing_source(module), name)
+            )
+    for name in ("INLINE_DISPATCH_KINDS", "NATIVE_NO_CODEGEN_RESULT_KINDS"):
+        out.update(
+            _extract_required_rust_str_slice(NATIVE_FC_DIR / "op_family.rs", name)
+        )
     return out
 
 
 def extract_native_family_dispatch_slices() -> dict[str, list[tuple[str, str]]]:
-    """Parse `FAMILY_DISPATCH_TABLE`: family -> referenced handler slices."""
+    """Parse every FAMILY_DISPATCH_TABLE row; unsupported references fail closed."""
     text = NATIVE_FC_DIR.joinpath("op_family.rs").read_text(encoding="utf-8")
-    rows: dict[str, list[tuple[str, str]]] = {}
-    for match in re.finditer(
+    masked = mask_rust_comments_and_strings(text)
+    table = re.search(
+        r"\bconst\s+FAMILY_DISPATCH_TABLE\b[^=]*=\s*&\[(.*?)\];", masked, re.S
+    )
+    if table is None:
+        raise RustMatchParseError("missing FAMILY_DISPATCH_TABLE")
+    row_re = re.compile(
         r"\(\s*NativeOpFamily::(?P<family>[A-Za-z0-9_]+)\s*,\s*"
-        r"super::(?P<module>[A-Za-z0-9_]+)::(?P<const>[A-Z0-9_]+)\s*,?\s*\)",
-        text,
-    ):
-        rows.setdefault(match.group("family"), []).append(
-            (match.group("module"), match.group("const"))
-        )
+        r"(?P<module>[a-z][a-z0-9_]*(?:::[a-z][a-z0-9_]*)+)::"
+        r"(?P<const>[A-Z0-9_]+)\s*,?\s*\)\s*,"
+    )
+    rows: dict[str, list[tuple[str, str]]] = {}
+    body = table.group(1)
+    if row_re.sub("", body).strip():
+        raise RustMatchParseError("unsupported FAMILY_DISPATCH_TABLE row")
+    for match in row_re.finditer(body):
+        module = match["module"]
+        if module.startswith("super::"):
+            module = module.removeprefix("super::")
+        rows.setdefault(match["family"], []).append((module, match["const"]))
     return rows
 
 
+def _native_boxed_dispatch_projection(block: str) -> tuple[str, str] | None:
+    """Closed generated-ABI -> checked operands -> owned transaction projection.
+
+    Match the entire masked arm, not a helper name or a call hidden in a branch.
+    Diagnostic strings are intentionally immaterial. No operation names live here.
+    """
+    compact = re.sub(r"\s+", "", block)
+    match = re.fullmatch(
+        r"\{letabi=(?P<module>[a-z][a-z0-9_]*(?:::[a-z][a-z0-9_]*)+)::"
+        r"(?P<function>runtime_boxed_op_abi)\(&op\.kind\)\.expect\(\);"
+        r"letargs=op\.args\.as_deref\(\)\.unwrap_or\(&\[\]\);"
+        r"assert_eq!\(args\.len\(\),abi\.arity,,op\.kind\);"
+        r"shared::emit_operand_transaction_call\(&op,args,abi\.symbol,"
+        r"&mutself\.module,&mutself\.import_ids,&mutbuilder,&mutimport_refs,"
+        r"&mutsealed_blocks,&vars,representation_plan,&nbc,"
+        r"&mutblock_tracked_obj,&mutblock_tracked_ptr,?\);\}",
+        compact,
+    )
+    return (match["module"], match["function"]) if match else None
+
+
 def extract_native_family_handlers() -> dict[str, tuple[str, str]]:
-    """Parse compile dispatch: family -> (`fc` module, handler function)."""
+    """Parse local handlers or fully checked generated boxed-call projections."""
     text = NATIVE_RS.read_text(encoding="utf-8")
+    masked = mask_rust_comments_and_strings(text)
     handlers: dict[str, tuple[str, str]] = {}
-    guard_re = re.compile(r"op_family == Some\(fc::NativeOpFamily::([A-Za-z0-9_]+)\)")
-    matches = list(guard_re.finditer(text))
-    for index, match in enumerate(matches):
+    # The whole wildcard arm header must be canonical. Matching only the
+    # equality suffix would let a false prefix guard claim a live family route.
+    guard_re = re.compile(
+        r"(?:^|[{},])\s*_\s+if\s+op_family\s*==\s*"
+        r"Some\(fc::NativeOpFamily::([A-Za-z0-9_]+)\)\s*=>\s*\{"
+    )
+    for match in guard_re.finditer(masked):
         family = match.group(1)
-        block_end = (
-            matches[index + 1].start() if index + 1 < len(matches) else len(text)
-        )
-        block = text[match.end() : block_end]
+        opening = match.end() - 1
+        block = masked[opening : _rust_block_end(masked, opening, family)]
+        if family in handlers:
+            raise RustMatchParseError(f"duplicate NativeOpFamily::{family} dispatch")
+        projection = _native_boxed_dispatch_projection(block)
+        if projection is not None:
+            handlers[family] = projection
+            continue
+        # A malformed generated transaction cannot hide behind another fc call.
+        if "runtime_boxed_op_abi" in block or "emit_operand_transaction_call" in block:
+            raise RustMatchParseError(
+                f"NativeOpFamily::{family} has invalid boxed-call projection"
+            )
         call = re.search(r"\bfc::([A-Za-z0-9_]+)::(handle_[A-Za-z0-9_]+)\s*\(", block)
         if call is None:
             raise RustMatchParseError(
-                f"NativeOpFamily::{family} dispatch does not call an fc handler"
+                f"NativeOpFamily::{family} dispatch does not call an fc handler or boxed-call projection"
             )
         handlers[family] = (call.group(1), call.group(2))
     return handlers
+
+
+def _native_boxed_mapper_kinds(path: Path, fn_name: str) -> set[str]:
+    """The generated mapper's actual arm domain, with its closed None default.
+
+    Generator checks own the ABI records/indices. This audit compares operation
+    domains and refuses a mapper that changes the projection grammar.
+    """
+    source = _rust_function_source(path, fn_name)
+    masked = mask_rust_comments_and_strings(source)
+    match = re.fullmatch(
+        r"fn\s+runtime_boxed_op_abi\s*\(kind:\s*&str\)\s*->\s*"
+        r"Option<&'static RuntimeBoxedAbi>\s*\{\s*match kind\s*\{(?P<arms>.*?)\}\s*\}",
+        masked,
+        re.S,
+    )
+    if match is None:
+        raise RustMatchParseError(f"{path}:{fn_name} is not a generated boxed mapper")
+    start, end = match.span("arms")
+    # Use the existing lexical mask to skip comments, retaining source literals.
+    arm_mask = masked[start:end]
+    arm_re = re.compile(r"\s+=>\s*Some\(&RUNTIME_BOXED_ABIS\[\d+\]\),")
+    tail = re.sub(r"_\s*=>\s*None\s*,?\s*$", "", arm_mask)
+    if tail == arm_mask or arm_re.sub("", tail).strip():
+        raise RustMatchParseError(f"{path}:{fn_name} has unsupported boxed mapper arms")
+    kinds = extract_match_arms(path, fn_name, "match kind {")
+    # Every Some arm must have exactly one operation literal, never an expression.
+    if len(kinds) != len(list(arm_re.finditer(tail))):
+        raise RustMatchParseError(
+            f"{path}:{fn_name} has duplicate or nonliteral boxed mapper arms"
+        )
+    return set(kinds)
 
 
 def _registry_kind_projection(path: Path, helper: str) -> tuple[str, set[str]]:
@@ -1006,11 +1087,12 @@ def extract_native_handler_routing_drifts() -> list[str]:
     """Compare each extracted native handler's real match arms to routed slices.
 
     `FAMILY_DISPATCH_TABLE` is the dispatch authority. Most families reference a
-    single local `HANDLED_KINDS` slice, but delegated families may reference
+    local `HANDLED_KINDS` or generated boxed-call slice; delegated families may reference
     sibling slices too (`vec_reductions::HANDLED_KINDS` routes into
     `handle_arith_op`). The union of slices routed to a family and that family's
     handler's raw-spelling arm preimage must be exact peers. Canonical dispatch
     is accepted only through a fully verified generated-registry projection.
+    Boxed dispatch is checked structurally and compared to its actual mapper domain.
     """
     drifts: list[str] = []
     dispatch_slices = extract_native_family_dispatch_slices()
@@ -1023,16 +1105,23 @@ def extract_native_handler_routing_drifts() -> list[str]:
             )
             continue
         module, fn_name = handler
-        path = NATIVE_FC_DIR / f"{module}.rs"
+        if "::" in module and any(owner != module for owner, _ in slice_refs):
+            raise RustMatchParseError(
+                f"NativeOpFamily::{family} boxed mapper and routing slice have different owners"
+            )
+        path = _native_routing_source(module)
         slice_kinds: set[str] = set()
         slice_labels: list[str] = []
         for slice_module, const_name in slice_refs:
-            const_path = NATIVE_FC_DIR / f"{slice_module}.rs"
-            consts = extract_rust_str_slice_consts(const_path, names={const_name})
-            kinds = consts.get(const_name, set())
+            const_path = _native_routing_source(slice_module)
+            kinds = _extract_required_rust_str_slice(const_path, const_name)
             slice_kinds.update(kinds)
             slice_labels.append(f"{slice_module}::{const_name}")
-        arm_kinds = extract_native_handler_arm_kinds(path, fn_name, slice_kinds)
+        arm_kinds = (
+            _native_boxed_mapper_kinds(path, fn_name)
+            if "::" in module
+            else extract_native_handler_arm_kinds(path, fn_name, slice_kinds)
+        )
         const_label = "+".join(slice_labels)
         for kind in sorted(arm_kinds - slice_kinds):
             drifts.append(
@@ -1070,7 +1159,7 @@ def extract_llvm_preserved_handler_routing_drifts() -> list[str]:
 def extract_native_simpleir_arm_kinds() -> set[str]:
     """Native SimpleIR coverage from extracted op-family authorities (ADVISORY).
 
-    `fc/*::HANDLED_KINDS` is now the native routing source of truth. The old
+    `FAMILY_DISPATCH_TABLE` references are the native routing source of truth. The old
     `function_compiler.rs` arm scan remains included so inline arms and any
     not-yet-extracted residual arms stay visible during decomposition. Because the
     textual scan can over-count (see extract_simpleir_arm_kinds's caveat), this

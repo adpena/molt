@@ -135,7 +135,11 @@ fn lower_slice_new(args: &[&str], out: Option<&str>) -> (Function, BTreeMap<&'st
 
 /// Calls to `symbol`, identified by module function id so every local FuncRef
 /// alias counts (the owned-result sink declares its own release reference).
-fn import_calls(function: &Function, ids: &BTreeMap<&'static str, u32>, symbol: &str) -> Vec<Inst> {
+pub(super) fn import_calls(
+    function: &Function,
+    ids: &BTreeMap<&'static str, u32>,
+    symbol: &str,
+) -> Vec<Inst> {
     let Some(&id) = ids.get(symbol) else {
         return Vec::new();
     };
@@ -273,5 +277,68 @@ fn bound_borrowed_transaction_result_is_secured_before_temporary_release() {
             "{}",
             function.display()
         );
+    }
+}
+
+#[test]
+fn shared_boxed_calls_retire_temporary_and_discarded_owners_separately() {
+    use molt_ir::runtime_boxed_abi_generated::{RUNTIME_BOXED_OP_KINDS, runtime_boxed_op_abi};
+    for &kind in RUNTIME_BOXED_OP_KINDS {
+        let abi = runtime_boxed_op_abi(kind).unwrap();
+        for bound in [false, true] {
+            let op = OpIR {
+                kind: kind.into(),
+                args: Some(
+                    (0..abi.arity)
+                        .map(|i| if i % 2 == 0 { "wide" } else { "wider" }.into())
+                        .collect(),
+                ),
+                out: bound.then(|| "result".into()),
+                ..OpIR::default()
+            };
+            let (function, ids) =
+                lower_with_wide_operands(&op, |backend, builder, refs, sealed, vars, plan| {
+                    let (mut objects, mut pointers) = (BTreeMap::new(), BTreeMap::new());
+                    super::super::shared::emit_operand_transaction_call(
+                        &op,
+                        op.args.as_deref().unwrap(),
+                        abi.symbol,
+                        &mut backend.module,
+                        &mut backend.import_ids,
+                        builder,
+                        refs,
+                        sealed,
+                        vars,
+                        plan,
+                        &crate::NanBoxConsts::new(),
+                        &mut objects,
+                        &mut pointers,
+                    );
+                });
+            assert_eq!(
+                import_calls(&function, &ids, "molt_int_from_i64").len(),
+                2,
+                "{kind}"
+            );
+            assert_eq!(
+                import_calls(&function, &ids, "molt_exception_pending_fast").len(),
+                2,
+                "{kind}"
+            );
+            let calls = import_calls(&function, &ids, abi.symbol);
+            assert_eq!(calls.len(), 1, "{kind}: {}", function.display());
+            assert_eq!(function.dfg.inst_args(calls[0]).len(), abi.arity);
+            assert_eq!(
+                import_calls(&function, &ids, "molt_inc_ref_obj").len(),
+                0,
+                "{kind}"
+            );
+            assert_eq!(
+                import_calls(&function, &ids, "molt_dec_ref_obj").len(),
+                if bound { 2 } else { 3 },
+                "two temporary owners plus only the discarded result: {kind}: {}",
+                function.display()
+            );
+        }
     }
 }

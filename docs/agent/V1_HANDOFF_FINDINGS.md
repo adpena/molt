@@ -91,6 +91,28 @@ Every repair must retire its replaced implementation and move all consumers
 together. A source review, unit pass or generator check does not establish
 target execution.
 
+The 24 text-predicate calls now share the existing generated boxed ABI across
+native, LLVM and WASM; the 1,645-line native handler is retired. The actual
+family table and generated mapper own routing coverage, including rejection of
+unreachable audit arms. The executable fixture and its frontend control require
+all 24 specialized producers before callback invalidation. On 2026-10-17 that
+48-call fixture matches CPython 3.12.15 through Cranelift, LLVM and linked WASM
+on the Apple arm64 host, with an empty executable search path and empty Python
+home/import paths during target execution. The retained native compilers emit
+byte-identical archives for that fixture; three interleaved samples after warmup
+observe median compiler-child times of 1.218 s before and 1.190 s after.
+Sampled median peak RSS is 90.9/92.5 MiB per process and 322.9/331.3 MiB per
+tree. These bounded observations establish no speedup, memory improvement or
+release portfolio acceptance. The shared transaction's two short-lived operand
+and signature vectors remain compiler allocation costs under V1-07; they do not
+become runtime buffers in the emitted program.
+Ten targeted Rust consumer/ownership controls, the owning frontend and audit
+suites, and 296 runtime-plan controls pass. WASI metadata queries now reuse
+already admitted dependency/final-crate resource records instead of rejecting
+their valid combined mode flags; explicit conflicts within a lane still fail.
+These changes belong to compiler and development work. Full typed CFG/ownership
+transport, source custody and the release performance/target matrix remain open.
+
 The unused LLVM PGO prototype and its six self-contained helper tests were
 removed. No production caller consumed its string IR or
 profile parser; the obsolete helper alone required an external profile tool.
@@ -156,8 +178,7 @@ Keep the accepted architecture and open findings as the work queue. Finish the
 shared IO/codec, buffer, dictionary, runtime-policy and C-API ownership contracts
 through their consumers; measure compiler, development and emitted-runtime costs
 separately. The next native migration must retain full typed SSA custody through
-codegen and partitioning, including guard invalidation and finalizers. Reuse the
-generated ABI authority for the 24 text-predicate handlers, and measure the
+codegen and partitioning, including guard invalidation and finalizers. The 24 text-predicate handlers now use the generated ABI authority; measure the
 post-cache splitter before retiring it. No unexecuted target or release cell is
 promoted by a source merge. V1.0 remains held.
 

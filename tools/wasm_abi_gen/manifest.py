@@ -869,6 +869,45 @@ def runtime_boxed_call_specs(data: dict) -> list[dict]:
     return [specs[symbol] for symbol in sorted(specs)]
 
 
+def runtime_boxed_op_specs(data: dict) -> list[dict]:
+    """Select explicitly shared calls from the existing op-loop authority.
+
+    This is an admission to one positional call on every backend, not a new
+    callable registry. Machine shape and custody come from the boxed ABI.
+    Marked calls, borrowed aliases, poll results, immediate recipes and custom
+    dependency/discard protocols must retain their specialized owners.
+    """
+    imports = {entry["name"]: entry for entry in data["import"]}
+    boxed = {spec["runtime_name"]: spec for spec in runtime_boxed_call_specs(data)}
+    shared = []
+    for entry in data.get("op_loop_runtime_call", []):
+        enabled = entry.get("shared_boxed_call", False)
+        if not isinstance(enabled, bool):
+            raise WasmAbiManifestError(
+                f"op_loop_runtime_call {entry['kind']!r} has invalid shared_boxed_call"
+            )
+        if not enabled:
+            continue
+        name = entry["import_name"]
+        symbol = runtime_export_name(imports[name])
+        abi = boxed.get(symbol)
+        if (
+            not entry.get("boxed_call", False)
+            or abi is None
+            or abi["result"] != "i64"
+            or abi.get("ownership") is not None
+            or entry.get("marked_import_name") is not None
+            or entry.get("discard_result", False)
+            or entry.get("required_imports", [name]) != [name]
+        ):
+            raise WasmAbiManifestError(
+                f"op_loop_runtime_call {entry['kind']!r} shared_boxed_call requires "
+                "one positional boxed call with an owned result and no extra protocol"
+            )
+        shared.append({**entry, "runtime_name": symbol})
+    return sorted(shared, key=lambda entry: entry["kind"])
+
+
 def runtime_import_return_specs(data: dict) -> dict[str, str]:
     """Resolve every runtime return from one semantic authority, fail closed.
 
@@ -1734,6 +1773,11 @@ def _expand_op_loop_runtime_calls(data: dict) -> list[dict]:
             raise WasmAbiManifestError(
                 f"op_loop_runtime_call_group entry {idx} has invalid boxed_call"
             )
+        shared_boxed_call = entry.get("shared_boxed_call", False)
+        if not isinstance(shared_boxed_call, bool):
+            raise WasmAbiManifestError(
+                f"op_loop_runtime_call_group entry {idx} has invalid shared_boxed_call"
+            )
         for kind in kinds:
             expanded_import_name = import_name or kind
             expanded_entry = {
@@ -1748,6 +1792,8 @@ def _expand_op_loop_runtime_calls(data: dict) -> list[dict]:
                 expanded_entry["marked_import_name"] = marked_import_name
             if boxed_call:
                 expanded_entry["boxed_call"] = True
+            if shared_boxed_call:
+                expanded_entry["shared_boxed_call"] = True
             expanded.append(expanded_entry)
     return expanded
 
@@ -2258,6 +2304,7 @@ def validate_loaded_manifest(
     data["op_loop_runtime_call"] = op_loop_runtime_calls
     data.pop("op_loop_runtime_call_group", None)
     return_contracts = runtime_import_return_specs(data)
+    runtime_boxed_op_specs(data)
     # Raw-bits direct-call rows share this validated return authority.
     data["runtime_raw_abi"] = runtime_raw_abi_specs(data)
     for required, kinds in (

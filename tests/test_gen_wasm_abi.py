@@ -3312,3 +3312,95 @@ def test_every_frontend_direct_runtime_call_has_a_wasm_import() -> None:
                 direct_calls.add(args.elts[0].value)
     assert "molt_gpu_kernel_descriptor_set" in direct_calls
     assert sorted(direct_calls - runtime_exports) == []
+
+
+def test_shared_boxed_ops_admit_only_complete_text_predicate_family() -> None:
+    data = manifest.load_manifest()
+    rows = manifest.runtime_boxed_op_specs(data)
+    expected = {
+        f"{receiver}_{method}{suffix}": 6 if suffix else 2
+        for receiver in ("string", "bytes", "bytearray")
+        for method in ("find", "startswith", "endswith", "count")
+        for suffix in ("", "_slice")
+    }
+    assert {row["kind"]: len(row["args"]) for row in rows} == expected
+    abi = {row["runtime_name"]: row for row in manifest.runtime_boxed_call_specs(data)}
+    for row in rows:
+        assert abi[row["runtime_name"]] == {
+            "runtime_name": f"molt_{row['kind']}",
+            "arity": expected[row["kind"]],
+            "result": "i64",
+        }
+
+
+def _shared_boxed_op_fixture() -> dict:
+    data = _boxed_abi_fixture()
+    data["import"][0]["runtime_name"] = "molt_different_export"
+    data["op_loop_runtime_call"] = [
+        {
+            "kind": "example_op",
+            "import_name": "example",
+            "args": ["local:0"],
+            "boxed_call": True,
+            "shared_boxed_call": True,
+        }
+    ]
+    return data
+
+
+def test_shared_boxed_op_mapping_uses_explicit_symbol_not_kind_spelling() -> None:
+    data = _shared_boxed_op_fixture()
+    rows = manifest.runtime_boxed_op_specs(data)
+    assert rows[0]["kind"] == "example_op"
+    assert rows[0]["runtime_name"] == "molt_different_export"
+    gen = gen_wasm_abi
+    source = gen.render_runtime_boxed_abi_rs(data)
+    assert '"example_op" => Some(&RUNTIME_BOXED_ABIS[0])' in source
+    assert 'symbol: "molt_different_export"' in source
+    assert "molt_example_op" not in source
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        "transport_only",
+        "borrowed",
+        "poll",
+        "void",
+        "raw",
+        "reordered",
+        "wrong_arity",
+        "marked",
+        "discard",
+        "dependencies",
+        "invalid_opt_in",
+    ],
+)
+def test_shared_boxed_ops_refuse_heterogeneous_protocols(mutation: str) -> None:
+    data = _shared_boxed_op_fixture()
+    entry = data["op_loop_runtime_call"][0]
+    imported = data["import"][0]
+    if mutation == "transport_only":
+        entry["boxed_call"] = False
+    elif mutation in ("borrowed", "poll"):
+        imported["return_contract"] = (
+            "borrowed_object" if mutation == "borrowed" else "poll_result"
+        )
+    elif mutation == "void":
+        imported["type"] = 2
+    elif mutation == "raw":
+        imported["type"] = 1
+    elif mutation == "reordered":
+        entry["args"] = ["local:1"]
+    elif mutation == "wrong_arity":
+        entry["args"] = ["local:0", "local:1"]
+    elif mutation == "marked":
+        entry["marked_import_name"] = "example_marked"
+    elif mutation == "discard":
+        entry["discard_result"] = True
+    elif mutation == "dependencies":
+        entry["required_imports"] = ["example", "another"]
+    else:
+        entry["shared_boxed_call"] = "yes"
+    with pytest.raises(manifest.WasmAbiManifestError, match="boxed"):
+        manifest.runtime_boxed_op_specs(data)
