@@ -1531,20 +1531,6 @@ impl SimpleBackend {
                         &mut block_tracked_ptr,
                     );
                 }
-                // handle_memoryview_buffer_op family — extracted to fc::memoryview_buffer (M1)
-                _ if op_family == Some(fc::NativeOpFamily::MemoryviewBuffer) => {
-                    fc::memoryview_buffer::handle_memoryview_buffer_op(
-                        &op,
-                        &mut self.module,
-                        &mut self.import_ids,
-                        &mut builder,
-                        &mut import_refs,
-                        &mut sealed_blocks,
-                        &vars,
-                        representation_plan,
-                        &nbc,
-                    );
-                }
                 // handle_dataclass_op family — extracted to fc::dataclass (M1)
                 _ if op_family == Some(fc::NativeOpFamily::Dataclass) => {
                     fc::dataclass::handle_dataclass_op(
@@ -1596,22 +1582,6 @@ impl SimpleBackend {
                         fc::OpFlow::Continue => continue,
                         fc::OpFlow::Proceed => {}
                     }
-                }
-                // handle_parse_op family — extracted to fc::parse_ops (M1)
-                _ if op_family == Some(fc::NativeOpFamily::ParseOps) => {
-                    fc::parse_ops::handle_parse_op(
-                        &op,
-                        &mut self.module,
-                        &mut self.import_ids,
-                        &mut builder,
-                        &mut import_refs,
-                        &mut sealed_blocks,
-                        &vars,
-                        representation_plan,
-                        &nbc,
-                        &mut block_tracked_obj,
-                        &mut block_tracked_ptr,
-                    );
                 }
                 // handle_coroutine_op family - extracted to fc::coroutine (M1)
                 _ if op_family == Some(fc::NativeOpFamily::Coroutine) => {

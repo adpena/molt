@@ -2384,17 +2384,8 @@ def test_wasm_abi_manifest_owns_lir_runtime_calls() -> None:
     assert op_loop_calls["module_import_star"]["lir_operand_count"] == 2
     assert op_loop_calls["context_depth"]["lir_variant"] == "ContextDepth"
     assert op_loop_calls["context_depth"]["lir_operand_count"] == 0
-    for kind, import_name in (
-        ("json_parse", "json_parse_scalar_obj"),
-        ("msgpack_parse", "msgpack_parse_scalar_obj"),
-        ("cbor_parse", "cbor_parse_scalar_obj"),
-    ):
-        assert op_loop_calls[kind] == {
-            "kind": kind,
-            "import_name": import_name,
-            "args": ["local:0"],
-            "required_imports": [import_name],
-        }
+    # The scalar parse kinds lost their last producer (HF-197).
+    assert not {"json_parse", "msgpack_parse", "cbor_parse"} & op_loop_calls.keys()
     assert "sink" not in op_loop_calls["asyncgen_new"]
     assert "dec_ref_obj" not in op_loop_calls["asyncgen_new"]["required_imports"]
     assert "chan_drop" not in op_loop_calls

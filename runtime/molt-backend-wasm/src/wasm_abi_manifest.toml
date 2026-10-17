@@ -6351,21 +6351,6 @@ import_name = "format_builtin"
 args = ["local:0", "local:1"]
 
 [[op_loop_runtime_call]]
-kind = "json_parse"
-import_name = "json_parse_scalar_obj"
-args = ["local:0"]
-
-[[op_loop_runtime_call]]
-kind = "msgpack_parse"
-import_name = "msgpack_parse_scalar_obj"
-args = ["local:0"]
-
-[[op_loop_runtime_call]]
-kind = "cbor_parse"
-import_name = "cbor_parse_scalar_obj"
-args = ["local:0"]
-
-[[op_loop_runtime_call]]
 kind = "exception_finally_pending_observer"
 import_name = "exception_last_pending"
 marked_import_name = "async_work_poll_and_exception_last_pending"
@@ -6574,7 +6559,6 @@ kinds = [
   "string_rstrip",
   "bytes_split",
   "bytearray_split",
-  "buffer2d_matmul",
   "bytes_find",
   "bytearray_find",
   "string_find",
@@ -6603,8 +6587,6 @@ kinds = [
   "int_from_obj",
   "int_from_str_of_obj",
   "complex_from_obj",
-  "buffer2d_new",
-  "buffer2d_get",
   "string_split_field_start",
   "string_split_field_end",
   "string_split_field_is_ascii",
@@ -6620,8 +6602,6 @@ kinds = [
   "bytes_replace",
   "string_replace",
   "bytearray_replace",
-  "buffer2d_set",
-  "memoryview_cast",
   "string_split_ws_dict_inc",
   "bytearray_fill_range",
 ]

@@ -131,15 +131,6 @@ fn lower_preserved_passthrough_class_routes_to_runtime() {
         ("guard_type", 2, false, None, "molt_guard_type"),
         ("guard_type", 2, true, None, "molt_guard_type"),
         ("dataclass_new", 4, true, None, "molt_dataclass_new"),
-        ("json_parse", 1, true, None, "molt_json_parse_scalar_obj"),
-        (
-            "msgpack_parse",
-            1,
-            true,
-            None,
-            "molt_msgpack_parse_scalar_obj",
-        ),
-        ("cbor_parse", 1, true, None, "molt_cbor_parse_scalar_obj"),
         (
             "stateful_locals_register",
             2,
@@ -683,13 +674,6 @@ fn dedicated_object_abi_arms_box_raw_operands_and_keep_raw_words() {
             None,
             "molt_format_builtin",
             "(i64 %boxed_int, i64 %boxed_int)",
-        ),
-        (
-            "json_parse",
-            1,
-            None,
-            "molt_json_parse_scalar_obj",
-            "(i64 %boxed_int)",
         ),
         (
             "exception_match_builtin",

@@ -57,9 +57,6 @@ pub(super) const HANDLED_KINDS: &[&str] = &[
     "guard_type",
     "guard_tag",
     "guard_layout",
-    "json_parse",
-    "msgpack_parse",
-    "cbor_parse",
     "floordiv",
     "invert",
     "contains",
@@ -999,42 +996,6 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                     RuntimeResultCustody::Unowned,
                     kind,
                     "guard_layout",
-                );
-                true
-            }
-
-            // Structured-data scalar parse (`json.loads`/`msgpack`/`cbor` on a
-            // single scalar): `molt_<fmt>_parse_scalar_obj(value)`. The native
-            // handler (`fc::parse_ops::handle_parse_op`) has a raw-pointer FAST
-            // path (it reads `{arg}_ptr`/`{arg}_len` companion vars into a stack
-            // out-param via `molt_<fmt>_parse_scalar`) AND this boxed SLOW path
-            // for the general case. The fast path is a pure perf optimization
-            // keyed on a native-only raw-string-pointer var convention the
-            // TIR/LLVM lane does not carry; the slow `*_scalar_obj(value)` call is
-            // the SEMANTICALLY COMPLETE lowering native falls back to whenever the
-            // companion vars are absent (its `else` branch), so the LLVM lane uses
-            // it unconditionally — same result, no fast-path reboxing avoidance.
-            // The generic `molt_<kind>` fallback cannot claim these: the symbol is
-            // `molt_<fmt>_parse_scalar_obj`, not `molt_<fmt>_parse`. operands =
-            // [value]. A `Copy` passthrough would return the unparsed input.
-            "json_parse" | "msgpack_parse" | "cbor_parse" => {
-                let Some(&val_id) = op.operands.first() else {
-                    return false;
-                };
-                let symbol = match kind {
-                    "json_parse" => "molt_json_parse_scalar_obj",
-                    "msgpack_parse" => "molt_msgpack_parse_scalar_obj",
-                    "cbor_parse" => "molt_cbor_parse_scalar_obj",
-                    _ => unreachable!("outer match restricts kind to the three parse ops"),
-                };
-                let parse_fn = self.ensure_runtime_i64_fn(symbol, 1);
-                self.emit_borrowed_runtime_call(
-                    op,
-                    parse_fn,
-                    &[RuntimeArg::Operand(val_id)],
-                    Self::canonical_boxed_return(symbol, 1),
-                    kind,
-                    "parse_scalar",
                 );
                 true
             }

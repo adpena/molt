@@ -990,24 +990,6 @@ pub(crate) fn op_loop_runtime_call(kind: &str, marked: bool) -> Option<OpLoopRun
             required_imports: &[WasmRuntimeImport::FormatBuiltin],
             discard_result: false,
         }),
-        "json_parse" => Some(OpLoopRuntimeCallSpec {
-            import: WasmRuntimeImport::JsonParseScalarObj,
-            args: &[OpLoopRuntimeArgSpec::Local(0)],
-            required_imports: &[WasmRuntimeImport::JsonParseScalarObj],
-            discard_result: false,
-        }),
-        "msgpack_parse" => Some(OpLoopRuntimeCallSpec {
-            import: WasmRuntimeImport::MsgpackParseScalarObj,
-            args: &[OpLoopRuntimeArgSpec::Local(0)],
-            required_imports: &[WasmRuntimeImport::MsgpackParseScalarObj],
-            discard_result: false,
-        }),
-        "cbor_parse" => Some(OpLoopRuntimeCallSpec {
-            import: WasmRuntimeImport::CborParseScalarObj,
-            args: &[OpLoopRuntimeArgSpec::Local(0)],
-            required_imports: &[WasmRuntimeImport::CborParseScalarObj],
-            discard_result: false,
-        }),
         "exception_finally_pending_observer" if marked => Some(OpLoopRuntimeCallSpec {
             import: WasmRuntimeImport::AsyncWorkPollAndExceptionLastPending,
             args: &[],
@@ -1932,15 +1914,6 @@ pub(crate) fn op_loop_runtime_call(kind: &str, marked: bool) -> Option<OpLoopRun
             required_imports: &[WasmRuntimeImport::BytearraySplit],
             discard_result: false,
         }),
-        "buffer2d_matmul" => Some(OpLoopRuntimeCallSpec {
-            import: WasmRuntimeImport::Buffer2dMatmul,
-            args: &[
-                OpLoopRuntimeArgSpec::Local(0),
-                OpLoopRuntimeArgSpec::Local(1),
-            ],
-            required_imports: &[WasmRuntimeImport::Buffer2dMatmul],
-            discard_result: false,
-        }),
         "bytes_find" => Some(OpLoopRuntimeCallSpec {
             import: WasmRuntimeImport::BytesFind,
             args: &[
@@ -2149,26 +2122,6 @@ pub(crate) fn op_loop_runtime_call(kind: &str, marked: bool) -> Option<OpLoopRun
             required_imports: &[WasmRuntimeImport::ComplexFromObj],
             discard_result: false,
         }),
-        "buffer2d_new" => Some(OpLoopRuntimeCallSpec {
-            import: WasmRuntimeImport::Buffer2dNew,
-            args: &[
-                OpLoopRuntimeArgSpec::Local(0),
-                OpLoopRuntimeArgSpec::Local(1),
-                OpLoopRuntimeArgSpec::Local(2),
-            ],
-            required_imports: &[WasmRuntimeImport::Buffer2dNew],
-            discard_result: false,
-        }),
-        "buffer2d_get" => Some(OpLoopRuntimeCallSpec {
-            import: WasmRuntimeImport::Buffer2dGet,
-            args: &[
-                OpLoopRuntimeArgSpec::Local(0),
-                OpLoopRuntimeArgSpec::Local(1),
-                OpLoopRuntimeArgSpec::Local(2),
-            ],
-            required_imports: &[WasmRuntimeImport::Buffer2dGet],
-            discard_result: false,
-        }),
         "string_split_field_start" => Some(OpLoopRuntimeCallSpec {
             import: WasmRuntimeImport::StringSplitFieldStart,
             args: &[
@@ -2262,28 +2215,6 @@ pub(crate) fn op_loop_runtime_call(kind: &str, marked: bool) -> Option<OpLoopRun
                 OpLoopRuntimeArgSpec::Local(3),
             ],
             required_imports: &[WasmRuntimeImport::BytearrayReplace],
-            discard_result: false,
-        }),
-        "buffer2d_set" => Some(OpLoopRuntimeCallSpec {
-            import: WasmRuntimeImport::Buffer2dSet,
-            args: &[
-                OpLoopRuntimeArgSpec::Local(0),
-                OpLoopRuntimeArgSpec::Local(1),
-                OpLoopRuntimeArgSpec::Local(2),
-                OpLoopRuntimeArgSpec::Local(3),
-            ],
-            required_imports: &[WasmRuntimeImport::Buffer2dSet],
-            discard_result: false,
-        }),
-        "memoryview_cast" => Some(OpLoopRuntimeCallSpec {
-            import: WasmRuntimeImport::MemoryviewCast,
-            args: &[
-                OpLoopRuntimeArgSpec::Local(0),
-                OpLoopRuntimeArgSpec::Local(1),
-                OpLoopRuntimeArgSpec::Local(2),
-                OpLoopRuntimeArgSpec::Local(3),
-            ],
-            required_imports: &[WasmRuntimeImport::MemoryviewCast],
             discard_result: false,
         }),
         "string_split_ws_dict_inc" => Some(OpLoopRuntimeCallSpec {

@@ -3232,7 +3232,6 @@ fn runtime_copy_results_release_or_transfer_only_their_own_reference() {
         ("module_new", 1),
         ("exception_current", 0),
         ("gen_send", 2),
-        ("json_parse", 1),
         ("call_async", 1),
         ("list_append", 2),
     ] {

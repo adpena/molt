@@ -13,8 +13,8 @@ Validated structured CFG uses `function_body.rs` and `flow_dispatch.rs` separate
 - `compile-error`: `8`
 - `implemented-exact`: `199`
 - `implemented-target-limited`: `15`
-- `not-admitted`: `205`
-- `total`: `427`
+- `not-admitted`: `201`
+- `total`: `423`
 
 ## Matrix
 
@@ -82,7 +82,6 @@ Validated structured CFG uses `function_body.rs` and `flow_dispatch.rs` separate
 | `callargs_push_method_receiver` | `implemented-exact` | Lowered and outside every generated target-contract limitation. |
 | `callargs_push_pos` | `implemented-exact` | Lowered and outside every generated target-contract limitation. |
 | `cast_int` | `not-admitted` | Shared generated target contract rejects this semantic family before source generation. |
-| `cbor_parse` | `not-admitted` | Operation is unclassified in the generated target-contract authority. |
 | `check_exception` | `compile-error` | Checked Luau emission rejects this arm through the shared unsupported-operation helper. |
 | `checked_add` | `not-admitted` | Shared generated target contract rejects this semantic family before source generation. |
 | `checked_mul` | `not-admitted` | Shared generated target contract rejects this semantic family before source generation. |
@@ -269,7 +268,6 @@ Validated structured CFG uses `function_body.rs` and `flow_dispatch.rs` separate
 | `iter` | `implemented-exact` | Lowered and outside every generated target-contract limitation. |
 | `iter_next` | `implemented-exact` | Lowered and outside every generated target-contract limitation. |
 | `iter_next_unboxed` | `implemented-exact` | Lowered and outside every generated target-contract limitation. |
-| `json_parse` | `not-admitted` | Operation is unclassified in the generated target-contract authority. |
 | `jump` | `compile-error` | Checked Luau emission rejects this arm through the shared unsupported-operation helper. |
 | `label` | `implemented-exact` | Lowered and outside every generated target-contract limitation. |
 | `le` | `implemented-exact` | Lowered and outside every generated target-contract limitation. |
@@ -309,7 +307,6 @@ Validated structured CFG uses `function_body.rs` and `flow_dispatch.rs` separate
 | `lshift` | `not-admitted` | Shared generated target contract rejects this semantic family before source generation. |
 | `lt` | `implemented-exact` | Lowered and outside every generated target-contract limitation. |
 | `matmul` | `not-admitted` | Operation is unclassified in the generated target-contract authority. |
-| `memoryview_cast` | `not-admitted` | Operation is unclassified in the generated target-contract authority. |
 | `missing` | `implemented-exact` | Lowered and outside every generated target-contract limitation. |
 | `mod` | `not-admitted` | Shared generated target contract rejects this semantic family before source generation. |
 | `mod_` | `not-admitted` | Shared generated target contract rejects this semantic family before source generation. |
@@ -328,7 +325,6 @@ Validated structured CFG uses `function_body.rs` and `flow_dispatch.rs` separate
 | `module_set_attr` | `implemented-exact` | Lowered and outside every generated target-contract limitation. |
 | `module_slot` | `implemented-exact` | Lowered and outside every generated target-contract limitation. |
 | `modulo` | `not-admitted` | Shared generated target contract rejects this semantic family before source generation. |
-| `msgpack_parse` | `not-admitted` | Operation is unclassified in the generated target-contract authority. |
 | `mul` | `implemented-target-limited` | Shared target contract admits only representation-proven non-integer scalar domains. |
 | `ne` | `implemented-exact` | Lowered and outside every generated target-contract limitation. |
 | `none_const` | `not-admitted` | Operation is unclassified in the generated target-contract authority. |
