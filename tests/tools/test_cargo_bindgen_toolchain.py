@@ -1002,13 +1002,25 @@ def test_documentation_temporary_executables_stay_in_existing_cargo_root(
         descendants="declared-toolchains", env=env
     )
     assert roots == [{"role": "build-output", "path": str(target)}]
+    # docs/agent/PROOF_QUEUE.md names the typed build-output bindings that
+    # follow the leased generation for every Cargo operation.
+    build_outputs = {
+        name: str(target)
+        for name in (
+            "CARGO_TARGET_DIR",
+            "CARGO_BUILD_BUILD_DIR",
+            "MOLT_CARGO_BUILD_DIR_BASE",
+        )
+    }
+    assert {name: env[name] for name in build_outputs} == build_outputs
     if required:
         for name in ("TMPDIR", "TMP", "TEMP"):
             assert env[name] == str(target)
             assert name in bound["passed_names"] and name in bound["override_names"]
         assert bound["cargo_output_environment"] == outputs.identity()
     else:
-        assert env == original
+        # A non-documentation build keeps the caller's temporary directory.
+        assert env == {**original, **build_outputs}
         assert bound["cargo_output_environment"] == outputs.identity()
     assert original["TEMP"] == str(tmp_path / "guard-scratch")
 
