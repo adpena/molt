@@ -1,4 +1,4 @@
-use super::model::DaemonJobRequest;
+use super::model::{DaemonArtifactCacheKeys, DaemonJobRequest};
 use std::sync::Arc;
 
 fn job(module: &str, function: Option<&str>) -> DaemonJobRequest {
@@ -18,7 +18,8 @@ fn key_take_moves_buffers_and_shares_context_without_opening_ir() {
     let module_buffer = job.cache_key.as_ptr();
     let function_buffer = job.function_cache_key.as_ref().unwrap().as_ptr();
     let namespace_buffer = job.config_namespace.as_ref().unwrap().as_ptr();
-    let (module, function) = job.take_artifact_cache_keys().expect("cache identity");
+    let DaemonArtifactCacheKeys { module, function } =
+        job.take_artifact_cache_keys().expect("cache identity");
     let module = module.unwrap();
     let function = function.unwrap();
     assert_eq!(module.source.as_ptr(), module_buffer);
@@ -38,7 +39,7 @@ fn key_take_moves_buffers_and_shares_context_without_opening_ir() {
     );
     assert_eq!(
         job.take_artifact_cache_keys().expect("cache identity"),
-        (None, None)
+        DaemonArtifactCacheKeys::default()
     );
 }
 
@@ -49,16 +50,17 @@ fn blank_tiers_disable_caching_and_equal_normalized_tiers_share_one_key() {
             job(" \u{2003}\n", function)
                 .take_artifact_cache_keys()
                 .expect("cache identity"),
-            (None, None)
+            DaemonArtifactCacheKeys::default()
         );
     }
-    let (module, function) = job("\u{2003}same \n", Some(" same\t"))
+    let DaemonArtifactCacheKeys { module, function } = job("\u{2003}same \n", Some(" same\t"))
         .take_artifact_cache_keys()
         .expect("cache identity");
-    let (module, function) = (module.unwrap(), function.unwrap());
+    let module = module.unwrap();
+    let function = function.unwrap();
     assert_eq!(module.source, "same");
     assert!(Arc::ptr_eq(&module, &function));
-    let (module, function) = job("", Some("function"))
+    let DaemonArtifactCacheKeys { module, function } = job("", Some("function"))
         .take_artifact_cache_keys()
         .expect("cache identity");
     assert!(module.is_none());
@@ -172,18 +174,18 @@ fn cache_context_binds_the_active_environment_not_the_asserted_namespace() {
         let _scope = enter(Arc::clone(&one));
         let mut job = job("same", None);
         job.config_namespace = Some("asserted-unchanged".to_owned());
-        job.take_artifact_cache_keys().unwrap().0.unwrap()
+        job.take_artifact_cache_keys().unwrap().module.unwrap()
     };
     let second = {
         let _scope = enter(request("1"));
         let mut job = job("same", None);
         job.config_namespace = Some("asserted-unchanged".to_owned());
-        job.take_artifact_cache_keys().unwrap().0.unwrap()
+        job.take_artifact_cache_keys().unwrap().module.unwrap()
     };
     assert_ne!(first, second);
     let _scope = enter(one);
     let mut job = job("another", None);
-    let third = job.take_artifact_cache_keys().unwrap().0.unwrap();
+    let third = job.take_artifact_cache_keys().unwrap().module.unwrap();
     assert!(Arc::ptr_eq(
         &first.context.environment,
         &third.context.environment

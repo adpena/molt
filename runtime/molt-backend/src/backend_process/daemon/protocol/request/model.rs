@@ -58,3 +58,11 @@ pub(crate) struct DaemonCacheKey {
     pub(super) context: std::sync::Arc<DaemonCacheContext>,
     pub(super) source: String,
 }
+
+/// The admitted cache tiers share their context and may share the same key.
+/// No tier key means that tier has no cache or single-flight authority.
+#[derive(Debug, Default, PartialEq, Eq)]
+pub(crate) struct DaemonArtifactCacheKeys {
+    pub(crate) module: Option<std::sync::Arc<DaemonCacheKey>>,
+    pub(crate) function: Option<std::sync::Arc<DaemonCacheKey>>,
+}

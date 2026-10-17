@@ -33,9 +33,10 @@ fn seed_daemon_cache(cache: &DaemonCache, kind: &str, source: &str, bytes: &[u8]
         "native_output_kind": if kind == "wasm" { None } else { Some(kind) },
     });
     let mut job = DaemonJobRequest::from_json_value(&value, "fixture").unwrap();
-    let (key, _) = job
+    let key = job
         .take_artifact_cache_keys()
-        .expect("fixture cache identity");
+        .expect("fixture cache identity")
+        .module;
     cache.insert(key.expect("nonempty fixture key"), Arc::from(bytes));
 }
 
@@ -462,9 +463,10 @@ fn daemon_actual_environment_scopes_compiled_module_and_function_reuse() {
 #[test]
 fn daemon_cache_get_bytes_updates_lru_without_cloning() {
     let mut cache = DaemonLru::new(None);
-    let (key, _) = cache_fixture_job(served_target(), "module")
+    let key = cache_fixture_job(served_target(), "module")
         .take_artifact_cache_keys()
-        .expect("fixture cache identity");
+        .expect("fixture cache identity")
+        .module;
     let key = key.unwrap();
     cache.insert(Arc::clone(&key), Arc::from(vec![1, 2, 3, 4]));
 
@@ -480,12 +482,14 @@ fn daemon_cache_get_bytes_updates_lru_without_cloning() {
 fn daemon_cache_can_share_bytes_across_keys() {
     let mut cache = DaemonLru::new(None);
     let shared = Arc::<[u8]>::from(vec![9, 8, 7, 6]);
-    let (module_key, _) = cache_fixture_job(served_target(), "module")
+    let module_key = cache_fixture_job(served_target(), "module")
         .take_artifact_cache_keys()
-        .expect("fixture cache identity");
-    let (function_key, _) = cache_fixture_job(served_target(), "function")
+        .expect("fixture cache identity")
+        .module;
+    let function_key = cache_fixture_job(served_target(), "function")
         .take_artifact_cache_keys()
-        .expect("fixture cache identity");
+        .expect("fixture cache identity")
+        .module;
     let module_key = module_key.unwrap();
     let function_key = function_key.unwrap();
     cache.insert(Arc::clone(&module_key), Arc::clone(&shared));
@@ -499,15 +503,18 @@ fn daemon_cache_can_share_bytes_across_keys() {
 #[test]
 fn daemon_hit_only_cache_bounds_order_memory_and_preserves_eviction() {
     let mut cache = DaemonLru::new(Some(8));
-    let (first, _) = cache_fixture_job(served_target(), "first")
+    let first = cache_fixture_job(served_target(), "first")
         .take_artifact_cache_keys()
-        .expect("fixture cache identity");
-    let (second, _) = cache_fixture_job(served_target(), "second")
+        .expect("fixture cache identity")
+        .module;
+    let second = cache_fixture_job(served_target(), "second")
         .take_artifact_cache_keys()
-        .expect("fixture cache identity");
-    let (third, _) = cache_fixture_job(served_target(), "third")
+        .expect("fixture cache identity")
+        .module;
+    let third = cache_fixture_job(served_target(), "third")
         .take_artifact_cache_keys()
-        .expect("fixture cache identity");
+        .expect("fixture cache identity")
+        .module;
     let (first, second, third) = (first.unwrap(), second.unwrap(), third.unwrap());
     let payload = Arc::<[u8]>::from([1, 2, 3, 4].as_slice());
     cache.insert(Arc::clone(&first), Arc::clone(&payload));
@@ -588,9 +595,10 @@ fn daemon_probe_cache_only_returns_needs_ir_on_miss() {
 fn daemon_probe_cache_only_hits_without_reading_ir() {
     let _env_guard = TestEnvGuard::clear(SHARED_STDLIB_CACHE_ENV_KEYS);
     let cache = DaemonCache::new(None);
-    let (key, _) = cache_fixture_job(served_target(), "module")
+    let key = cache_fixture_job(served_target(), "module")
         .take_artifact_cache_keys()
-        .expect("fixture cache identity");
+        .expect("fixture cache identity")
+        .module;
     cache.insert(key.unwrap(), Arc::from(vec![1_u8, 2, 3]));
     let nonce = SystemTime::now()
         .duration_since(UNIX_EPOCH)

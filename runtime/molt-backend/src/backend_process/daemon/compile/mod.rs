@@ -5,7 +5,7 @@ mod response;
 mod target;
 
 use super::cache::{DaemonCache, Flight, try_write_cached_daemon_job_output};
-use super::protocol::{DaemonJobRequest, DaemonJobResponse};
+use super::protocol::{DaemonArtifactCacheKeys, DaemonJobRequest, DaemonJobResponse};
 use target::ResolvedJobTarget;
 
 /// Compiles one job for a connection. A panicking compile is a compiler bug:
@@ -50,7 +50,7 @@ fn compile_job<Slot>(
         Ok(target) => target,
         Err(error) => return response::daemon_job_error_response(job.id, error),
     };
-    let (cache_key, function_cache_key) = if target.memory_cache_allowed() {
+    let keys = if target.memory_cache_allowed() {
         match job.take_artifact_cache_keys() {
             Ok(keys) => keys,
             Err(error) => {
@@ -61,13 +61,13 @@ fn compile_job<Slot>(
             }
         }
     } else {
-        (None, None)
+        DaemonArtifactCacheKeys::default()
     };
     if let Some(response) = try_write_cached_daemon_job_output(
         cache,
         &job,
-        cache_key.as_ref(),
-        function_cache_key.as_ref(),
+        keys.module.as_ref(),
+        keys.function.as_ref(),
     ) {
         return response;
     }
@@ -78,7 +78,7 @@ fn compile_job<Slot>(
 
     // Concurrent requests for one artifact compile it once: the leader holds
     // the flight until its output is cached, and the rest then reuse it.
-    let flight_key = cache_key.as_ref().or(function_cache_key.as_ref());
+    let flight_key = keys.module.as_ref().or(keys.function.as_ref());
     let _flight = if let Some(flight_key) = flight_key {
         let flight = cache.begin(flight_key);
         // Probe again: a follower finds the leader's output, and a new leader
@@ -86,8 +86,8 @@ fn compile_job<Slot>(
         if let Some(response) = try_write_cached_daemon_job_output(
             cache,
             &job,
-            cache_key.as_ref(),
-            function_cache_key.as_ref(),
+            keys.module.as_ref(),
+            keys.function.as_ref(),
         ) {
             return response;
         }
@@ -115,8 +115,8 @@ fn compile_job<Slot>(
     match output::write_daemon_compiled_output(
         cache,
         &job.output,
-        cache_key.as_ref(),
-        function_cache_key.as_ref(),
+        keys.module.as_ref(),
+        keys.function.as_ref(),
         compiled_output,
     ) {
         Ok(warnings) => response::daemon_job_success_response(job.id, warnings),
