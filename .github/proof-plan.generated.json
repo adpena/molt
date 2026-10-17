@@ -369,7 +369,7 @@
     "tests/tools/test_win_job_contract.py",
     "tests/tools/test_windows_process_api.py"
   ],
-  "authority_sha256": "104ab40f6bb70f43e47156039c589abd06c499501e340594de06d27ad1bd8c73",
+  "authority_sha256": "1c73c61fa59e61a641c5a71d975104ac0f8a9c376276a160b171470b1e6f05d6",
   "cargo_environment_policy": {
     "incident_command": "cargo metadata --locked --format-version 1",
     "incident_commit": "20b046b79bd4ca64a8c859f737f6e330377bcc4e",
@@ -3105,7 +3105,6 @@
         "tests/tools/test_check_runtime_serial_bridge_imports.py",
         "tests/tools/test_check_runtime_symbol_owners.py",
         "tests/tools/test_check_rustfmt.py",
-        "tests/tools/test_check_satellite_parity.py",
         "tests/tools/test_check_stdlib_intrinsic_surface.py",
         "tests/tools/test_check_type_coverage_todos.py",
         "tests/tools/test_ci_triage.py",
