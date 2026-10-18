@@ -39,6 +39,13 @@ impl Category {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum RepeatMode {
+    Greedy,
+    Lazy,
+    Possessive,
+}
+
 #[derive(Debug)]
 pub(crate) enum ReNode {
     Empty,
@@ -57,8 +64,9 @@ pub(crate) enum ReNode {
         node: Box<ReNode>,
         min_count: u64,
         max_count: Option<u64>,
-        greedy: bool,
+        mode: RepeatMode,
     },
+    Atomic(Box<ReNode>),
     Group {
         node: Box<ReNode>,
         index: u32,

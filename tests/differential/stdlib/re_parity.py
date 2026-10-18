@@ -1424,6 +1424,204 @@ def test_subject_admission_and_export_custody():
     print("exhausted iterator stays live without export", bytes(source.data))
 
 
+def test_atomic_groups_and_possessive_repeats():
+    """CPython 3.12 atomic barriers, per-iteration commits and consumer state.
+
+    Oracle: CPython v3.12.15 Modules/_sre/sre_lib.h POSSESSIVE_REPEAT_ONE,
+    POSSESSIVE_REPEAT and ATOMIC_GROUP; Lib/test/test_re.py's atomic and
+    possessive tests. Reuse the carrier's capture() observation authority.
+    """
+
+    def snapshot(match):
+        if match is None:
+            return None
+        spans = tuple(match.span(group) for group in range(match.re.groups + 1))
+        return capture(match), spans, match.groupdict()
+
+    cases = (
+        ("ordinary-star-control", r"a*a", "aa"),
+        ("possessive-star", r"a*+a", "aa"),
+        ("possessive-plus", r"a++a", "aa"),
+        ("possessive-optional", r"a?+a", "a"),
+        ("possessive-bounded", r"a{1,2}+a", "aa"),
+        ("possessive-tail-hit", r"a{1,2}+b", "aab"),
+        ("possessive-zero-count", r"(a){0}+a", "a"),
+        ("ordinary-alternative-control", r"(?:a|ab)b", "abb"),
+        ("atomic-alternative", r"(?>a|ab)b", "abb"),
+        ("atomic-alternative-priority", r"(?>ab|a)b", "abb"),
+        ("atomic-outer-rescue", r"(?:(?>a|ab)c|ab)", "ab"),
+        # Each mandatory possessive iteration commits before the next starts.
+        # An atomic ordinary repeat can retry an earlier branch until its
+        # own entire minimum succeeds, then commits the resulting prefix.
+        ("possessive-minimum", r"(?:a|ab){2}+", "abab"),
+        ("atomic-repeat-minimum", r"(?>(?:a|ab){2})", "abab"),
+        ("atomic-tail-inside", r"(?>(?:a|ab){2}b)", "abab"),
+        ("possessive-minimum-hit", r"(?:a|ab){2}+b", "aab"),
+        ("possessive-empty-star", r"()*+a", "a"),
+        ("possessive-empty-counted", r"(){2,3}+a", "a"),
+        ("possessive-empty-assertion", r"(?=(a)){2,3}+a", "a"),
+        ("possessive-nullable-minimum", r"(|a){1,2}+c", "ac"),
+        ("atomic-nullable-tail-inside", r"(?>(|a){1,2}c)", "ac"),
+        ("possessive-optional-capture-undo", r"(a(b)?){1,3}+c", "abac"),
+        ("possessive-closing-order", r"(?P<outer>(?P<inner>a))++b", "aab"),
+        ("atomic-failed-outer-branch", r"(?:(?>(a))c|(ab))", "ab"),
+        ("atomic-positive-assertion", r"(?=(?>(a|ab)))\1c", "abc"),
+        ("atomic-positive-priority", r"(?=(?>(ab|a)))\1c", "abc"),
+        ("negative-ordinary-control", r"(?!(a|ab)c)(abc)", "abc"),
+        ("negative-atomic-undo", r"(?!(?>(a|ab))c)(abc)", "abc"),
+        ("atomic-conditional-undo", r"(?:(?>(a))c|a)(?(1)b|d)", "ad"),
+        ("possessive-open-group-conditional", r"(?:(a(?(1)b|c))x){2}+", "acxacx"),
+        ("possessive-failed-iteration-conditional", r"(?:(a)b)*+(?(1)c|d)", "d"),
+        ("ordinary-backreference-control", r"(a|ab)\1", "abab"),
+        ("atomic-backreference", r"(?>(a|ab))\1", "abab"),
+        ("atomic-backreference-priority", r"(?>(ab|a))\1", "abab"),
+        ("nested-atomic-first-branch", r"(?>(?>(a|ab))b)c", "abbc"),
+        ("nested-atomic-priority", r"(?>(?>(ab|a))b)c", "abbc"),
+        ("atomic-lookbehind-width", r"(?<=(?>ab))c", "abc"),
+        ("possessive-lookbehind-width", r"(?<=a{2}+)b", "aab"),
+        # Upstream gh-91616: the lazy repeat's first inner success must win.
+        ("atomic-inner-lazy", r"(?s:(?>.*?\.).*)\Z", "a.txt"),
+        ("possessive-partial-optional-undo", r"(?:(a)(b)){1,3}+ac", "abac"),
+        ("possessive-outer-choice-undo", r"(?:(?:(a)(b)){1,3}+x|(abac))", "abac"),
+        (
+            "atomic-possessive-outer-choice-undo",
+            r"(?:(?>(?:(a)(b)){1,3}+)x|(abac))",
+            "abac",
+        ),
+        ("possessive-inside-ordinary-repeat", r"((a?)*+){1,2}b", "aab"),
+        ("possessive-inside-atomic", r"(?>(a?)*+)b", "aab"),
+        ("possessive-inside-positive-assertion", r"(?=((a?)*+)b)aab", "aab"),
+        ("possessive-inside-negative-assertion", r"(?!(?:(a?)*+)c)(aab)", "aab"),
+        # The mandatory empty match sets group 1. Its first optional body
+        # must still run, and now takes the conditional's consuming branch.
+        ("possessive-first-optional-after-empty-minimum", r"(?:(?(1)a|())){1,2}+", "a"),
+        (
+            "possessive-first-optional-after-counted-minimum",
+            r"(?:(?(1)a|())){2,3}+",
+            "aa",
+        ),
+    )
+    for kind in ("str", "bytes"):
+        for label, expression, subject in cases:
+            if kind == "bytes":
+                expression = expression.encode("ascii")
+                subject = subject.encode("ascii")
+            compiled = re.compile(expression)
+            matched = compiled.match(subject)
+            full = compiled.fullmatch(subject)
+            searched = compiled.search(subject)
+            if label == "possessive-minimum":
+                assert matched is None
+            elif label == "atomic-repeat-minimum":
+                assert matched is not None
+                assert matched.span() == (0, 3)
+                assert matched.group() == subject[:3]
+            print(
+                (
+                    "atomic-direct",
+                    kind,
+                    label,
+                    expression,
+                    subject,
+                    ("match", snapshot(matched)),
+                    ("fullmatch", snapshot(full)),
+                    ("search", snapshot(searched)),
+                )
+            )
+
+    consumers = (
+        ("atomic-minimum", r"((?>(?:a|ab){2}))", "abab"),
+        ("possessive-minimum", r"((?:a|ab){2}+)", "abab"),
+        ("atomic-empty-retry", r"(?P<empty>(?>))|(?P<run>a++)", "aa"),
+        ("possessive-nullable-captures", r"((a)?)*+", "ab"),
+    )
+    for kind in ("str", "bytes"):
+        for label, expression, subject in consumers:
+            replacement = r"<\g<1>>"
+            marker = "#"
+            if kind == "bytes":
+                expression = expression.encode("ascii")
+                subject = subject.encode("ascii")
+                replacement = replacement.encode("ascii")
+                marker = marker.encode("ascii")
+            compiled = re.compile(expression)
+            iterator = compiled.finditer(subject)
+            found = [snapshot(match) for match in iterator]
+            exhausted = list(iterator)
+            calls = []
+
+            def replace(match):
+                before = snapshot(match)
+                nested = compiled.search(subject)
+                calls.append((before, snapshot(nested), snapshot(match) == before))
+                return marker
+
+            print(
+                (
+                    "atomic-consumers",
+                    kind,
+                    label,
+                    expression,
+                    subject,
+                    found,
+                    exhausted,
+                    compiled.findall(subject),
+                    compiled.split(subject),
+                    compiled.subn(replacement, subject),
+                    compiled.sub(replace, subject, count=2),
+                    calls,
+                )
+            )
+
+
+
+def test_verbose_tokens_and_scoped_lexing():
+    # CPython Lib/re/_parser.py consumes compound syntax through raw get/match;
+    # VERBOSE only skips between tokens. Preserve original source at the ABI.
+    cases = (
+        ("possessive-separated", "(?x)a* +", "aaa", 0),
+        ("possessive-comment-separated", "(?x)a* # comment\n+", "aaa", 0),
+        ("lazy-separated", "(?x)a* ?", "aaa", 0),
+        ("possessive-adjacent", "(?x)a*+", "aaa", 0),
+        ("atomic-separated", "(?x)(? >a)", "a", 0),
+        ("group-prefix-separated", "(?x)( ? >a)", "a", 0),
+        ("atomic-adjacent", "(?x)(?>a)", "a", 0),
+        ("extension-separated", "(?x)(? :a)", "a", 0),
+        ("named-header-separated", "(?x)(?P<na me>a)", "a", 0),
+        ("named-ref-separated", "(?x)(?P<name>a)(?P=na me)", "aa", 0),
+        ("nonpython-named-extension", "(?<name>a)", "a", 0),
+        ("numeric-ref-adjacency", r"(?x)(a)\1 2", "aa2", 0),
+        ("braced-digit-adjacency", "(?x)a{1 2}", "a{12}", 0),
+        ("scoped-disable-global", "(?-x: a#b )", " a#b ", re.X),
+        ("scoped-disable-inline", "(?x:(?-x:a b#c))", "a b#c", 0),
+        ("scoped-enable-comment", "(?x:a# comment\nb)", "ab", 0),
+        ("scoped-restore", "(?x:a b)(?-x: c)", "ab c", 0),
+        ("scoped-reenable", "(?x:(?-x:a b)(?x: c ))", "a bc", 0),
+        ("escaped-space-hash", r"a\ b\#c", "a b#c", re.X),
+        ("class-space-hash", "[ #]+", " # ", re.X),
+        ("unicode-nonverbose-space", "a\u00a0b", "a\u00a0b", re.X),
+        ("braced-omitted-min", "a{,2}+b", "aab", 0),
+        ("braced-omitted-bounds", "a{,}+b", "aab", 0),
+        ("braced-literal-empty", "a{}", "a{}", 0),
+        ("braced-literal-spaced", "a{1, 2}", "a{1,2}", re.X),
+        ("braced-literal-spaced-plain", "a{1, 2}", "a{1, 2}", 0),
+    )
+    for kind in ("str", "bytes"):
+        for label, expression, subject, flags in cases:
+            if kind == "bytes":
+                expression = expression.encode("utf-8")
+                subject = subject.encode("utf-8")
+            try:
+                compiled = re.compile(expression, flags)
+            except re.error:
+                # This observes language admission. Error message/position
+                # fidelity remains its separate owning parser contract.
+                observed = "syntax-error"
+            else:
+                observed = capture(compiled.fullmatch(subject))
+            print("verbose-lexing", kind, label, observed)
+
+
 def main():
     test_internal_module_imports()
     test_match_search_fullmatch()
@@ -1443,6 +1641,8 @@ def main():
     test_inline_flags()
     test_anchors()
     test_continuation_and_capture_restoration()
+    test_atomic_groups_and_possessive_repeats()
+    test_verbose_tokens_and_scoped_lexing()
     test_alternation()
     test_backreferences()
     test_assertions_and_named_references()

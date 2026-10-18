@@ -41,6 +41,7 @@ struct RepeatState {
     last_optional_start: Option<NonZeroUsize>,
 }
 
+#[derive(Clone, Copy)]
 enum Undo {
     Start(u32, Option<NonZeroUsize>),
     End(u32, Option<NonZeroUsize>),
@@ -56,13 +57,34 @@ struct Choice {
     retry: Retry,
     undo: usize,
 }
-struct Assertion {
+#[derive(Clone, Copy)]
+struct Possessive {
+    entry: usize,
+    min: u64,
+    max: Option<u64>,
+    count: u64,
+    last_optional_start: Option<NonZeroUsize>,
+    iteration_undo: usize,
+    iteration_start: usize,
+}
+
+#[derive(Clone, Copy)]
+enum ScopeKind {
+    Assertion {
+        expected_end: Option<usize>,
+        positive: bool,
+    },
+    Atomic,
+    Possessive(Possessive),
+}
+
+#[derive(Clone, Copy)]
+struct Scope {
     next: usize,
     pos: usize,
-    expected_end: Option<usize>,
-    positive: bool,
     choices: usize,
     undo: usize,
+    kind: ScopeKind,
 }
 
 /// One workspace per operation, reused across search starts. Undo records contain
@@ -76,7 +98,9 @@ pub(super) struct Matcher<'a> {
     repeats: Vec<RepeatState>,
     undo: Vec<Undo>,
     choices: Vec<Choice>,
-    assertions: Vec<Assertion>,
+    scopes: Vec<Scope>,
+    undo_seen: Vec<usize>,
+    undo_epoch: usize,
 }
 
 fn slots<T: Clone>(len: usize, value: T) -> Result<Vec<T>, MatchError> {
@@ -102,7 +126,9 @@ impl<'a> Matcher<'a> {
             repeats: slots(compiled.program.repeats, RepeatState::default())?,
             undo: Vec::new(),
             choices: Vec::new(),
-            assertions: Vec::new(),
+            scopes: Vec::new(),
+            undo_seen: Vec::new(),
+            undo_epoch: 0,
         })
     }
 
@@ -115,6 +141,41 @@ impl<'a> Matcher<'a> {
                 Undo::Repeat(index, value) => self.repeats[index] = value,
             }
         }
+    }
+
+    /// After a possessive iteration commits, no live continuation points into
+    /// its journal interval. Retain the first old value for each changed slot,
+    /// enough for an outer alternative to undo the entire committed scope.
+    /// This bounds history by touched slots rather than repetition count.
+    fn compact_undo(&mut self, checkpoint: usize) -> Result<(), MatchError> {
+        if self.undo.len() <= checkpoint + 1 {
+            return Ok(());
+        }
+        let captures = self.marks.len() * 2;
+        if self.undo_seen.is_empty() {
+            self.undo_seen = slots(captures + 1 + self.repeats.len(), 0)?;
+        }
+        self.undo_epoch = self.undo_epoch.wrapping_add(1);
+        if self.undo_epoch == 0 {
+            self.undo_seen.fill(0);
+            self.undo_epoch = 1;
+        }
+        let mut write = checkpoint;
+        for read in checkpoint..self.undo.len() {
+            let key = match self.undo[read] {
+                Undo::Start(index, _) => index as usize * 2,
+                Undo::End(index, _) => index as usize * 2 + 1,
+                Undo::LastIndex(_) => captures,
+                Undo::Repeat(index, _) => captures + 1 + index,
+            };
+            if self.undo_seen[key] != self.undo_epoch {
+                self.undo_seen[key] = self.undo_epoch;
+                self.undo[write] = self.undo[read];
+                write += 1;
+            }
+        }
+        self.undo.truncate(write);
+        Ok(())
     }
 
     fn start_group(&mut self, index: u32, pos: usize) -> Result<(), MatchError> {
@@ -197,7 +258,7 @@ impl<'a> Matcher<'a> {
             plan,
             min,
             max,
-            greedy,
+            mode,
             next,
         } = self.compiled.program.code[pc]
         else {
@@ -207,7 +268,7 @@ impl<'a> Matcher<'a> {
         let mut count = count;
         let mut pos = pos;
         if retry {
-            if greedy {
+            if mode == RepeatMode::Greedy {
                 if count == min {
                     return Ok(None);
                 }
@@ -228,7 +289,7 @@ impl<'a> Matcher<'a> {
                 count += 1;
                 pos += width;
             }
-            if greedy {
+            if mode != RepeatMode::Lazy {
                 while max.is_none_or(|max| count < max) && self.matches_one(plan, pos) {
                     count += 1;
                     pos += width;
@@ -237,18 +298,20 @@ impl<'a> Matcher<'a> {
         }
         // The checkpoint precedes capture projection: retries restore the state
         // before the loop, then reconstruct exactly the selected last iteration.
-        if (greedy && count > min) || (!greedy && max.is_none_or(|max| count < max)) {
+        if (mode == RepeatMode::Greedy && count > min)
+            || (mode == RepeatMode::Lazy && max.is_none_or(|max| count < max))
+        {
             self.choose(Retry::Single { pc, count, pos })?;
         }
         self.single_captures(plan, count, pos)?;
         Ok(Some((next, pos)))
     }
 
-    /// Resume a priority alternative. Assertion-local alternatives cannot escape
-    /// their barrier; successful positive assertions discard their retries.
+    /// Resume a priority alternative within the innermost scope. A scope may
+    /// commit success or turn local failure into assertion/repetition success.
     fn backtrack(&mut self) -> Result<Option<(usize, usize)>, MatchError> {
         loop {
-            let barrier = self.assertions.last().map_or(0, |frame| frame.choices);
+            let barrier = self.scopes.last().map_or(0, |frame| frame.choices);
             if self.choices.len() > barrier {
                 let choice = self.choices.pop().expect("choice barrier");
                 self.rollback(choice.undo);
@@ -260,9 +323,18 @@ impl<'a> Matcher<'a> {
                         }
                     }
                 }
-            } else if let Some(frame) = self.assertions.pop() {
+            } else if let Some(frame) = self.scopes.pop() {
+                if let ScopeKind::Possessive(repeat) = frame.kind
+                    && repeat.count >= repeat.min
+                {
+                    self.rollback(repeat.iteration_undo);
+                    return Ok(Some((frame.next, repeat.iteration_start)));
+                }
                 self.rollback(frame.undo);
-                if !frame.positive {
+                if let ScopeKind::Assertion {
+                    positive: false, ..
+                } = frame.kind
+                {
                     return Ok(Some((frame.next, frame.pos)));
                 }
             } else {
@@ -279,7 +351,7 @@ impl<'a> Matcher<'a> {
         require_advance: Option<usize>,
     ) -> Result<Option<usize>, MatchError> {
         self.choices.clear();
-        self.assertions.clear();
+        self.scopes.clear();
         self.rollback(0);
         let mut pc = self.compiled.program.entry;
         let mut pos = start;
@@ -293,19 +365,52 @@ impl<'a> Matcher<'a> {
                     }
                     failed = true;
                 }
-                Instruction::AssertionAccept => {
-                    let frame = self.assertions.last().expect("assertion accept");
-                    if frame.expected_end.is_some_and(|end| pos != end) {
+                Instruction::ScopeAccept => {
+                    let frame = *self.scopes.last().expect("scope accept");
+                    if matches!(frame.kind, ScopeKind::Assertion {
+                        expected_end: Some(end), ..
+                    } if pos != end)
+                    {
                         failed = true;
                     } else {
-                        let frame = self.assertions.pop().expect("assertion frame");
                         self.choices.truncate(frame.choices);
-                        if frame.positive {
-                            pc = frame.next;
-                            pos = frame.pos;
-                        } else {
-                            self.rollback(frame.undo);
-                            failed = true;
+                        match frame.kind {
+                            ScopeKind::Assertion { positive, .. } => {
+                                self.scopes.pop();
+                                if positive {
+                                    pc = frame.next;
+                                    pos = frame.pos;
+                                } else {
+                                    self.rollback(frame.undo);
+                                    failed = true;
+                                }
+                            }
+                            ScopeKind::Atomic => {
+                                self.scopes.pop();
+                                self.compact_undo(frame.undo)?;
+                                pc = frame.next;
+                            }
+                            ScopeKind::Possessive(mut repeat) => {
+                                if repeat.count >= repeat.min {
+                                    repeat.last_optional_start =
+                                        Some(position_mark(repeat.iteration_start));
+                                }
+                                repeat.count += 1;
+                                self.compact_undo(frame.undo)?;
+                                if repeat.max.is_none_or(|max| repeat.count < max)
+                                    && (repeat.count < repeat.min
+                                        || repeat.last_optional_start != Some(position_mark(pos)))
+                                {
+                                    repeat.iteration_start = pos;
+                                    repeat.iteration_undo = self.undo.len();
+                                    self.scopes.last_mut().expect("possessive scope").kind =
+                                        ScopeKind::Possessive(repeat);
+                                    pc = repeat.entry;
+                                } else {
+                                    self.scopes.pop();
+                                    pc = frame.next;
+                                }
+                            }
                         }
                     }
                 }
@@ -387,12 +492,14 @@ impl<'a> Matcher<'a> {
                         }
                     } else {
                         checked_push(
-                            &mut self.assertions,
-                            Assertion {
+                            &mut self.scopes,
+                            Scope {
                                 next,
                                 pos,
-                                expected_end: width.map(|_| pos),
-                                positive,
+                                kind: ScopeKind::Assertion {
+                                    expected_end: width.map(|_| pos),
+                                    positive,
+                                },
                                 choices: self.choices.len(),
                                 undo: self.undo.len(),
                             },
@@ -400,6 +507,49 @@ impl<'a> Matcher<'a> {
                         // Nested lookahead sees the original subject window even
                         // inside lookbehind; only assertion acceptance fixes end.
                         pos -= width.unwrap_or(0) as usize;
+                        pc = entry;
+                    }
+                }
+                Instruction::Atomic { entry, next } => {
+                    checked_push(
+                        &mut self.scopes,
+                        Scope {
+                            next,
+                            pos,
+                            choices: self.choices.len(),
+                            undo: self.undo.len(),
+                            kind: ScopeKind::Atomic,
+                        },
+                    )?;
+                    pc = entry;
+                }
+                Instruction::Possessive {
+                    entry,
+                    min,
+                    max,
+                    next,
+                } => {
+                    if max == Some(0) {
+                        pc = next;
+                    } else {
+                        checked_push(
+                            &mut self.scopes,
+                            Scope {
+                                next,
+                                pos,
+                                choices: self.choices.len(),
+                                undo: self.undo.len(),
+                                kind: ScopeKind::Possessive(Possessive {
+                                    entry,
+                                    min,
+                                    max,
+                                    count: 0,
+                                    last_optional_start: None,
+                                    iteration_undo: self.undo.len(),
+                                    iteration_start: pos,
+                                }),
+                            },
+                        )?;
                         pc = entry;
                     }
                 }
@@ -623,6 +773,55 @@ fn anchor_matches(
 mod workspace_tests {
     use super::*;
 
+    fn workspace_bytes(matcher: &Matcher<'_>) -> usize {
+        matcher.marks.capacity() * size_of::<Marks>()
+            + matcher.repeats.capacity() * size_of::<RepeatState>()
+            + matcher.undo.capacity() * size_of::<Undo>()
+            + matcher.choices.capacity() * size_of::<Choice>()
+            + matcher.scopes.capacity() * size_of::<Scope>()
+            + matcher.undo_seen.capacity() * size_of::<usize>()
+    }
+
+    #[test]
+    fn possessive_commits_bound_history_and_preserve_outer_capture_rollback() {
+        for len in [20_000, 200_000] {
+            let mut text = vec!['a'; len];
+            text.push('z');
+            for (pattern, expected_groups, expected_lastindex) in [
+                (
+                    "((a|ab))++z",
+                    vec![None, Some((len - 1, len)), Some((len - 1, len))],
+                    Some(1),
+                ),
+                (
+                    "(?:((a|ab))++x|(a+)z)",
+                    vec![None, None, None, Some((0, len))],
+                    Some(3),
+                ),
+            ] {
+                let compiled = parse_pattern_typed(pattern, 0, false)
+                    .unwrap()
+                    .compile()
+                    .unwrap();
+                let mut matcher =
+                    Matcher::new(&compiled, SubjectStorage::Text(&text), text.len()).unwrap();
+                assert_eq!(
+                    matcher.run(0, true, None).unwrap(),
+                    Some(text.len()),
+                    "{pattern}"
+                );
+                let bytes = workspace_bytes(&matcher);
+                assert!(
+                    bytes < 8192,
+                    "{pattern} retained {bytes} bytes for {len} units"
+                );
+                let result = matcher.result(0, text.len()).unwrap();
+                assert_eq!(result.groups, expected_groups, "{pattern}");
+                assert_eq!(result.lastindex, expected_lastindex, "{pattern}");
+            }
+        }
+    }
+
     #[test]
     fn fixed_width_repeat_workspace_is_independent_of_subject_length() {
         let compiled = parse_pattern_typed("((a)())+a", 0, false)
@@ -635,11 +834,7 @@ mod workspace_tests {
             assert_eq!(matcher.run(0, true, None).unwrap(), Some(len));
             // Capacities retain peak allocations. This budget excludes the
             // deliberately prepared subject and includes every VM workspace.
-            let bytes = matcher.marks.capacity() * size_of::<Marks>()
-                + matcher.repeats.capacity() * size_of::<RepeatState>()
-                + matcher.undo.capacity() * size_of::<Undo>()
-                + matcher.choices.capacity() * size_of::<Choice>()
-                + matcher.assertions.capacity() * size_of::<Assertion>();
+            let bytes = workspace_bytes(&matcher);
             assert!(
                 bytes < 8192,
                 "fixed-width repeat retained {bytes} workspace bytes for {len} units"

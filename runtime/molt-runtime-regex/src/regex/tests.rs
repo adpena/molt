@@ -41,61 +41,6 @@ fn scanner_spans_bytes(pattern: &str, subject: &[u8]) -> Vec<(usize, usize)> {
 }
 
 #[test]
-fn test_strip_verbose_empty() {
-    assert_eq!(re_strip_verbose_impl("", 64), "");
-}
-
-#[test]
-fn test_strip_verbose_no_whitespace() {
-    assert_eq!(re_strip_verbose_impl("abc", 64), "abc");
-}
-
-#[test]
-fn test_strip_verbose_strips_spaces() {
-    assert_eq!(re_strip_verbose_impl("a b c", 64), "abc");
-}
-
-#[test]
-fn test_strip_verbose_strips_comments() {
-    let pat = "a  # match a\nb  # match b\n";
-    assert_eq!(re_strip_verbose_impl(pat, 64), "ab");
-}
-
-#[test]
-fn test_strip_verbose_escaped_space() {
-    // `\ ` should survive
-    assert_eq!(re_strip_verbose_impl("\\ x", 64), "\\ x");
-}
-
-#[test]
-fn test_strip_verbose_escaped_hash() {
-    assert_eq!(re_strip_verbose_impl("\\#", 64), "\\#");
-}
-
-#[test]
-fn test_strip_verbose_class_preserved() {
-    // Whitespace and # inside [...] must be kept verbatim.
-    assert_eq!(re_strip_verbose_impl("[ # ]", 64), "[ # ]");
-}
-
-#[test]
-fn test_strip_verbose_class_escape() {
-    // `\]` inside a class should not close it.
-    assert_eq!(re_strip_verbose_impl("[\\]]", 64), "[\\]]");
-}
-
-#[test]
-fn test_strip_verbose_no_flag_unchanged() {
-    // flags=0 means NOT verbose — pattern should come back unchanged
-    let pat = "a b # comment\n";
-    assert_eq!(re_strip_verbose_impl(pat, 0), pat);
-}
-
-// -----------------------------------------------------------------------
-// Phase-1 parser tests
-// -----------------------------------------------------------------------
-
-#[test]
 fn test_parse_empty_pattern() {
     let cp = parse_pattern("", 0).unwrap();
     assert!(matches!(cp.root, ReNode::Empty));
@@ -178,12 +123,12 @@ fn test_parse_repeat_star() {
         ReNode::Repeat {
             min_count,
             max_count,
-            greedy,
+            mode,
             ..
         } => {
             assert_eq!(*min_count, 0);
             assert!(max_count.is_none());
-            assert!(*greedy);
+            assert_eq!(*mode, RepeatMode::Greedy);
         }
         other => panic!("expected Repeat, got {other:?}"),
     }
@@ -196,12 +141,12 @@ fn test_parse_repeat_lazy() {
         ReNode::Repeat {
             min_count,
             max_count,
-            greedy,
+            mode,
             ..
         } => {
             assert_eq!(*min_count, 1);
             assert!(max_count.is_none());
-            assert!(!(*greedy));
+            assert_eq!(*mode, RepeatMode::Lazy);
         }
         other => panic!("expected Repeat, got {other:?}"),
     }
@@ -472,7 +417,7 @@ fn test_fixed_width_repeat_exact() {
         node: Box::new(ReNode::Any),
         min_count: 3,
         max_count: Some(3),
-        greedy: true,
+        mode: RepeatMode::Greedy,
     };
     assert_eq!(fixed_width(&node, None), Some(3));
 }
@@ -483,7 +428,7 @@ fn test_fixed_width_repeat_variable() {
         node: Box::new(ReNode::Any),
         min_count: 1,
         max_count: Some(3),
-        greedy: true,
+        mode: RepeatMode::Greedy,
     };
     assert_eq!(fixed_width(&node, None), None);
 }
@@ -1621,4 +1566,64 @@ fn replacement_units_keep_surrogates_and_reject_surrogate_group_names() {
             position: 3,
         }
     );
+}
+
+#[test]
+fn verbose_lexing_preserves_token_adjacency_and_scoped_source() {
+    // Independently observed CPython language admission and fullmatch results.
+    for is_bytes in [false, true] {
+        for pattern in [
+            "(?x)a* +",
+            "(?x)a* # comment\n+",
+            "(?x)a* ?",
+            "(?x)(? >a)",
+            "(?x)( ? >a)",
+            "(?x)(? :a)",
+            "(?x)(?P<na me>a)",
+            "(?x)(?P<name>a)(?P=na me)",
+            "(?<name>a)",
+        ] {
+            assert!(
+                parse_pattern_typed(pattern, 0, is_bytes).is_err(),
+                "{pattern}"
+            );
+        }
+        for (pattern, text, flags) in [
+            ("(?x)a*+", "aaa", 0),
+            ("(?x)(?>a)", "a", 0),
+            ("(?-x: a#b )", " a#b ", RE_VERBOSE),
+            ("(?x:(?-x:a b#c))", "a b#c", 0),
+            ("(?x:a# comment\nb)", "ab", 0),
+            ("(?x:a b)(?-x: c)", "ab c", 0),
+            ("(?x:(?-x:a b)(?x: c ))", "a bc", 0),
+            (r"a\ b\#c", "a b#c", RE_VERBOSE),
+            ("[ #]+", " # ", RE_VERBOSE),
+            (r"(?x)(a)\1 2", "aa2", 0),
+            ("(?x)a{1 2}", "a{12}", 0),
+            ("a{,2}+b", "aab", 0),
+            ("a{,}+b", "aab", 0),
+            ("a{}", "a{}", 0),
+            ("a{1, 2}", "a{1,2}", RE_VERBOSE),
+            ("a{1, 2}", "a{1, 2}", 0),
+        ] {
+            let compiled = parse_pattern_typed(pattern, flags, is_bytes)
+                .unwrap()
+                .compile()
+                .unwrap();
+            let found = if is_bytes {
+                execute_match_bytes(
+                    &compiled,
+                    text.as_bytes(),
+                    0,
+                    text.len(),
+                    MatchMode::FullMatch,
+                )
+            } else {
+                execute_match(&compiled, text, 0, text.len(), MatchMode::FullMatch)
+            }
+            .unwrap();
+            let found = found.unwrap_or_else(|| panic!("missing {pattern:?} {text:?}"));
+            assert_eq!((found.start, found.end), (0, text.len()));
+        }
+    }
 }

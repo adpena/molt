@@ -365,7 +365,7 @@ The inventory includes older and future Python 3 minor spellings, full eight-dig
 | `runtime/molt-runtime-platform/src/env_support.rs` | 2 | scattered-assumption | `3.15` |
 | `runtime/molt-runtime-platform/src/path_text.rs` | 2 | scattered-assumption | `3.12` |
 | `runtime/molt-runtime-platform/src/windows_abi.rs` | 1 | scattered-assumption | `3.12` |
-| `runtime/molt-runtime-regex/src/regex/state_machine_tests.rs` | 3 | scattered-assumption | `3.12` |
+| `runtime/molt-runtime-regex/src/regex/state_machine_tests.rs` | 4 | scattered-assumption | `3.12` |
 | `runtime/molt-runtime-regex/src/regex/substitution.rs` | 1 | scattered-assumption | `3.7` |
 | `runtime/molt-runtime-regex/src/regex/tests.rs` | 2 | scattered-assumption | `3.12` |
 | `runtime/molt-runtime-serial/src/base64_mod.rs` | 2 | scattered-assumption | `3.12` |

@@ -63,6 +63,39 @@ preserves simple-repeat throughput without one choice or capture copy per input
 unit. It is determined by program structure, not pattern spelling or a builtin name.
 Lazy repeats consume additional input only when their continuation demands it.
 
+The parser owns VERBOSE lexical state for both text and bytes. It skips only
+Python's six ASCII verbose whitespace characters and comments between tokens;
+compound group headers, numeric references, braced counts and lazy/possessive
+suffixes consume adjacent raw units. Scoped flag changes apply while parsing
+their body and restore the enclosing lexical state afterwards. Incomplete braced
+quantifiers remain literal source, and omitted lower bounds are admitted.
+The former whole-pattern verbose rewrite and its intrinsic, fixture, exports
+and generated ABI rows are deleted. Rewriting first destroyed token adjacency,
+disabled scoped whitespace, changed source positions and copied the pattern.
+Original source now crosses the compile boundary once.
+
+Atomic groups and possessive repeats share the assertion engine's typed scope
+stack and choice barriers. Atomic success discards every alternative created
+inside the group. A possessive repeat commits each successful body iteration,
+including mandatory iterations; a later failed mandatory iteration cannot retry
+an earlier one. A failed optional iteration restores its partial captures and
+continues with the preceding committed result. These are distinct protocols:
+`(?:a|ab){2}+` fails on `abab`, while `(?>(?:a|ab){2})` matches `aba` in CPython.
+The parser's closed repeat mode distinguishes greedy, lazy and possessive
+execution. Fixed-width possessive plans scan without a retry cursor.
+
+After a possessive iteration or atomic group commits, the VM compacts its undo
+interval to the first old value per touched slot. All surviving outer choice and
+scope checkpoints precede that interval. Capture values and closing order stay
+live; an outer failure can still roll the entire scope back. Possessive history
+therefore scales with touched capture/repeat slots and live body backtracking,
+not completed iteration count. Compaction scans that bounded journal and lazily
+allocates one epoch array indexed by the existing slots; patterns that never
+compact allocate none. This does not bound an individual body search or generic
+backtracking elsewhere in the pattern, or shrink the peak Vec capacity needed
+by such a search. The shared inline scope stores the largest possessive state;
+assertion-frame bytes and throughput remain part of target performance acceptance.
+
 ## Cost and failure contract
 
 Compilation costs scale with source/program size; numeric repetition bounds are
@@ -140,12 +173,11 @@ development side; emitted programs pay only for their required matching machiner
 * Generate version-pinned CPython Unicode category and case data, including special
   IGNORECASE equivalences, ASCII/bytes/locale rules and Python-version changes such
   as empty-subject `\B`. Ambient host Unicode tables cannot define target semantics.
-* Complete atomic-group and possessive-quantifier parsing/execution and faithfully
-  reject invalid syntax. Keep their control protocols distinct: CPython 3.12's
-  `(?:a|ab){2}+` fails on `abab`, while `(?>(?:a|ab){2})` matches `aba`.
-  Possessive iteration barriers cannot simply wrap an ordinary counted repeat. Do not add non-CPython regex dialect extensions as an
-  ecosystem workaround. CPython-version admission also owns bound limits, error
-  locations, named groups and width analysis.
+* Qualify atomic-group and possessive-quantifier parsing/execution through nested
+  assertions, capture rollback, iteration, substitution and split on both targets.
+  Faithfully reject invalid syntax; CPython-version admission also owns bound
+  limits, error locations, named groups and width analysis. Do not add non-CPython
+  regex dialect extensions as an ecosystem workaround.
 * Qualify pathological matching and long-input behavior, CPU and peak-memory cost,
   startup, compiled-pattern size, emitted binary size and build time. Set budgets
   from reproducible measurements, not aspirational multipliers or crate marketing.
@@ -166,7 +198,8 @@ must qualify the grouped carrier; a reference-only preservation check cannot.
 
 [CPython 3.12.15 `sre_lib.h`](https://github.com/python/cpython/blob/v3.12.15/Modules/_sre/sre_lib.h)
 provides the reference for explicit contexts, ordered retries, mark restoration,
-assertions, fullmatch/must-advance acceptance and `REPEAT_ONE`. Molt uses Rust-owned
+assertions, fullmatch/must-advance acceptance, `REPEAT_ONE`, `ATOMIC_GROUP` and
+the per-body `POSSESSIVE_REPEAT` calls. Molt uses Rust-owned
 state and capture recipes rather than copying C stack macros; observable behavior
 must be proved independently against CPython.
 

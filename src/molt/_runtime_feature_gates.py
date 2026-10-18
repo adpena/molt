@@ -174,7 +174,6 @@ RUNTIME_FEATURE_GATES: tuple[tuple[str, str], ...] = (
     ("molt_re_pattern_info", "stdlib_regex"),
     ("molt_re_scanner_new", "stdlib_regex"),
     ("molt_re_finditer_next", "stdlib_regex"),
-    ("molt_re_strip_verbose", "stdlib_regex"),
     ("molt_re_compile", "stdlib_regex"),
     ("molt_re_execute", "stdlib_regex"),
     ("molt_re_escape", "stdlib_regex"),

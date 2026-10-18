@@ -2,9 +2,8 @@
 //!
 //! The `re` package compiles a pattern with `molt_re_compile`, runs it with
 //! `molt_re_execute`, and reads results, substitutions and splits through the
-//! other `molt_re_*` entry points re-exported below. `molt_re_strip_verbose`
-//! pre-processes a VERBOSE/X-flag pattern by removing unescaped whitespace and
-//! `#`-comments (it respects `[…]` classes and escape sequences).
+//! other `molt_re_*` entry points re-exported below. The parser owns VERBOSE
+//! whitespace, comments and scoped flags without rewriting the source.
 //!
 //! All functions follow the canonical Molt intrinsic ABI:
 //!   `pub extern "C" fn molt_re_*(args: u64) -> u64`
@@ -49,8 +48,6 @@ mod substitution;
 #[cfg(test)]
 #[path = "regex/tests.rs"]
 mod tests;
-#[path = "regex/verbose_backref.rs"]
-mod verbose_backref;
 
 pub use registry::{PatternHandle, ScannerHandle};
 
@@ -75,12 +72,9 @@ use program::*;
 use registry::*;
 #[allow(unused_imports)]
 use substitution::*;
-#[allow(unused_imports)]
-use verbose_backref::*;
 
 pub use compile_api::{molt_re_compile, molt_re_pattern_info};
 pub use execute_api::{molt_re_execute, molt_re_finditer_next, molt_re_scanner_new};
 pub use functions_re::{molt_re_expand_replacement, molt_re_group_values};
 
 pub use substitution::{molt_re_escape, molt_re_split, molt_re_sub};
-pub use verbose_backref::molt_re_strip_verbose;
