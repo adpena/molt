@@ -6521,7 +6521,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         name: "molt_json_scanstring_obj",
         symbol: "molt_json_scanstring_obj",
         arity: 3,
-        defaults: &[],
+        defaults: &[IntrinsicDefaultValue::Bool(true)],
         python_name: Some("scanstring"),
     },
     IntrinsicSpec {

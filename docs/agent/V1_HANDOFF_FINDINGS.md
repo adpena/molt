@@ -106,8 +106,10 @@ stdlib text crate and the foreign WTF-8 view that cannot represent adjacent
 Python surrogate code points under its own invariant. Runtime core owns one
 borrowed, allocation-free surrogatepass iterator and encoder for all consumers,
 including generated charmaps and Windows paths. The crate-graph ratchet and the
-pinned CPython boundary-byte oracle pass; compiled consumer qualification is
-pending. The bounded development-side kernel experiment rejected a slower
+pinned CPython boundary-byte oracle pass. Actual Linux aarch64 target-3.12
+Unicode and bytes-regex consumers pass on native and WASM. The codec consumer
+exposed a missing public scanner default; its complete replay remains required.
+The bounded development-side kernel experiment rejected a slower
 stack-buffer encoder. This source correction neither closes HF-329 nor proves
 comparative runtime performance, full conformance or release acceptance.
 
@@ -173,10 +175,18 @@ and the installed release matrix remain unqualified; V1.0 release is still held.
 Differential proof declarations now select their host compiler independently
 from their guest build profile. The development text/codec cohort previously
 requested a development guest while leaving the host compiler at its release
-default, causing a separate source build instead of the intended shared
-`dev-fast` cohort. All seven proof declarations now name their host choice;
-ordinary compiler defaults remain unchanged. Actual text/codec consumer
-qualification remains pending.
+default, causing an unintended release compiler build. All seven proof
+declarations now name their host choice; ordinary compiler defaults remain
+unchanged. Matching profiles does not merge distinct backend feature graphs.
+Their remaining build cost belongs to HF-334.
+
+CPython's `_json.scanstring` accepts an omitted `strict` argument with value
+`True`. Its direct intrinsic export omitted that default. The existing manifest
+default authority now declares it, preserving one callable and the fixed
+three-argument runtime ABI across registry, bootstrap and compiled handles.
+The owning differential exercises both `_json` and `json.decoder` aliases,
+omitted and explicit strictness, and control-character rejection. Generator
+regression sensitivity is established; compiled replay remains required.
 
 Linux process snapshots can legitimately report a zero boot-relative birth
 value. Development custody now retains those observations while preserving

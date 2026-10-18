@@ -57,6 +57,11 @@ def test_manifest_literal_defaults_feed_generated_intrinsic_metadata() -> None:
     assert length_hint.defaults == ("IntrinsicDefaultValue::Int(0)",)
     assert by_name["molt_getframe"].arity == 1
     assert by_name["molt_getframe"].defaults == ("IntrinsicDefaultValue::Int(0)",)
+    # CPython Modules/_json.c uses On|p with strict initialized to 1.
+    assert by_name["molt_json_scanstring_obj"].arity == 3
+    assert by_name["molt_json_scanstring_obj"].defaults == (
+        "IntrinsicDefaultValue::Bool(true)",
+    )
     for name in ("molt_require_intrinsic_runtime", "molt_load_intrinsic_runtime"):
         assert by_name[name].arity == 2
         assert by_name[name].defaults == ("IntrinsicDefaultValue::None",)
