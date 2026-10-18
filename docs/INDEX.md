@@ -74,6 +74,7 @@ the source of truth.
 - Backend compile daemon (concurrent requests, request-scoped settings, single flight, retirement): [design/backend_compile_daemon.md](design/backend_compile_daemon.md)
 - Host capacity and scheduling (one CPU and memory authority, declared per-unit needs, one scheduler; HF-334): [design/host_capacity.md](design/host_capacity.md)
 - Landing queue (main advances only to a commit that passed its selected proofs on every cell; rollups on the owner's machines; HF-334): [design/landing_queue.md](design/landing_queue.md)
+- Process environment (one Windows/POSIX name-rule authority for child environments, after Rust `EnvKey`, Cargo `Env` and Go `dedupEnvCase`; HF-355): [design/process_environment.md](design/process_environment.md)
 - Op-kind registry and generated dispatch/classifier direction: [design/foundation/25_op_kind_registry.md](design/foundation/25_op_kind_registry.md)
 - One SimpleIR optimization pipeline for every target: [design/foundation/76_simple_ir_pass_pipeline.md](design/foundation/76_simple_ir_pass_pipeline.md)
 - Generator fusion and deforestation routing: [design/generator_fusion.md](design/generator_fusion.md)
