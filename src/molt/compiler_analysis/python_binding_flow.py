@@ -47,7 +47,9 @@ from molt.compiler_analysis.python_identity_catalog_generated import (
     UNBOUND_IDENTITY,
 )
 from molt.compiler_analysis.python_call_arguments import call_argument_schedule
-from molt.compiler_analysis.python_namespace_writes import python_namespace_summary
+from molt.compiler_analysis.python_namespace_writes import (
+    _resolved_python_namespace_summary,
+)
 from molt.compiler_analysis.python_source_keys import (
     PythonSourceKey,
     PythonSourceProjection,
@@ -2872,7 +2874,11 @@ class _Analyzer:
         )
         return module | self.callback_slot_mask
 
-    def _configure_callback_namespace(self, tree: ast.Module) -> None:
+    def _configure_callback_namespace(
+        self,
+        tree: ast.Module,
+        ast_digest_admission: _PythonAstDigestAdmission | None,
+    ) -> None:
         """Bound the globals a callback can rebind, when the policy verifies it.
 
         Without a graph premise every global stays callback-exposed. With one,
@@ -2882,8 +2888,10 @@ class _Analyzer:
         """
         foreign = self.policy.foreign_namespace_writes
         own = (
-            python_namespace_summary(
-                tree, target_python=self.policy.target_python
+            _resolved_python_namespace_summary(
+                tree,
+                target_python=self.policy.target_python,
+                ast_digest_admission=ast_digest_admission,
             ).own_names
             if foreign is not None
             else None
@@ -7631,7 +7639,12 @@ class _Analyzer:
             else:
                 yield replace(fact, builtin_guard_bit=BUILTIN_BINDING_GUARD_BITS[name])
 
-    def analyze(self, tree: ast.Module) -> _BindingAnalysis:
+    def analyze(
+        self,
+        tree: ast.Module,
+        *,
+        ast_digest_admission: _PythonAstDigestAdmission | None = None,
+    ) -> _BindingAnalysis:
         self._future_annotations = any(
             isinstance(statement, ast.ImportFrom)
             and statement.module == "__future__"
@@ -7665,7 +7678,7 @@ class _Analyzer:
         self._module_read_slots_prepared = False
         self.module_slots = list(module.slots.values())
         self.module_slot_mask = sum(1 << slot for slot in self.module_slots)
-        self._configure_callback_namespace(tree)
+        self._configure_callback_namespace(tree, ast_digest_admission)
         if self._star_import_origins:
             # Star imports can shadow otherwise undeclared globals, including
             # builtin fallbacks. Give actual global reads storage so the
@@ -8047,13 +8060,17 @@ def analyze_python_bindings(
         if ast_digest_admission.digest != source_digest:
             raise ValueError("binding source digest does not match AST admission")
         ast_digest_admission.resolved_private_tree(tree)
-    return _cached_binding_index(lambda: tree, source_digest, policy)
+    return _cached_binding_index(
+        lambda: tree, source_digest, policy, ast_digest_admission=ast_digest_admission
+    )
 
 
 def _cached_binding_index(
     load_tree: Callable[[], ast.Module],
     source_digest: str,
     policy: PythonBindingPolicy,
+    *,
+    ast_digest_admission: _PythonAstDigestAdmission | None = None,
 ) -> PythonBindingIndex:
     parsed: ast.Module | None = None
 
@@ -8063,7 +8080,12 @@ def _cached_binding_index(
             parsed = load_tree()
         return parsed
 
-    analysis = _binding_analysis(tree, source_digest, policy.flow_policy())
+    analysis = _binding_analysis(
+        tree,
+        source_digest,
+        policy.flow_policy(),
+        ast_digest_admission=ast_digest_admission,
+    )
     # Projections are owned by their core, so eviction cannot leave a second
     # global cache retaining orphaned facts. Each source retains at most eight
     # module contexts; computing either level uses the same single-flight law.
@@ -8076,12 +8098,16 @@ def _binding_analysis(
     tree: Callable[[], ast.Module],
     source_digest: str,
     policy: PythonBindingFlowPolicy,
+    *,
+    ast_digest_admission: _PythonAstDigestAdmission | None = None,
 ) -> _BindingAnalysis:
     if type(policy) is not PythonBindingFlowPolicy:
         raise TypeError("binding fixpoint requires an exact flow-only policy")
     return _CORE_CACHE.get_or_compute(
         (_ANALYSIS_SCHEMA, source_digest, policy),
-        lambda: _Analyzer(policy, source_digest).analyze(tree()),
+        lambda: _Analyzer(policy, source_digest).analyze(
+            tree(), ast_digest_admission=ast_digest_admission
+        ),
     )
 
 
@@ -8099,7 +8125,9 @@ def analyze_python_binding_facts(
         if ast_digest_admission.digest != source_digest:
             raise ValueError("binding source digest does not match AST admission")
         ast_digest_admission.resolved_private_tree(tree)
-    return _binding_analysis(lambda: tree, source_digest, policy).facts
+    return _binding_analysis(
+        lambda: tree, source_digest, policy, ast_digest_admission=ast_digest_admission
+    ).facts
 
 
 def analyze_python_source_bindings(

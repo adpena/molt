@@ -697,23 +697,20 @@ def stdlib_module_intrinsic_facts(
         module_name, path, target_python=target_python, source=source
     )
     use = _intrinsic_use_from_tree(tree)
+    evidence = _stdlib_module_import_evidence_from_tree(
+        module_name,
+        path,
+        tree,
+        target_python=target_python,
+        namespace_premise=namespace_premise,
+    )
+    namespace_summary = evidence.source_scan.namespace_summary
+    assert namespace_summary is not None, "full-module scan requires namespace syntax"
     return StdlibModuleIntrinsicFacts(
         _stdlib_module_intrinsic_status_from_tree(tree, path.name, use),
-        _stdlib_module_import_evidence_from_tree(
-            module_name,
-            path,
-            tree,
-            target_python=target_python,
-            namespace_premise=namespace_premise,
-        ),
+        evidence,
         use,
-        python_namespace_summary(
-            tree,
-            package=python_package_name(
-                module_name, is_package=path.name == "__init__.py"
-            ),
-            target_python=target_python.feature_version,
-        ),
+        namespace_summary,
     )
 
 

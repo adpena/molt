@@ -29,7 +29,7 @@ from molt.compiler_analysis.python_namespace_writes import (
     PythonNamespaceWrite,
     decode_python_namespace_write,
     python_namespace_write_payload,
-    python_namespace_summary,
+    _resolved_python_namespace_summary,
     python_package_name,
 )
 from molt.cli.python_import_resolution import (
@@ -644,7 +644,7 @@ def local_python_import_closure(
                     # The analysis parsed this snapshot; summarize the same AST.
                     writes = writes_by_source.get(module_source)
                     if writes is None:
-                        writes = python_namespace_summary(
+                        writes = _resolved_python_namespace_summary(
                             parsed.tree,
                             package=python_package_name(module, is_package=is_package),
                             target_python=_local_import_binding_policy().target_python,

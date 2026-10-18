@@ -2109,6 +2109,80 @@ def test_module_export_fact_is_shared_by_owner_arguments_and_star_consumer(
     assert len(declarations) == 2
 
 
+def test_namespace_syntax_is_shared_by_binding_and_graph_projections(
+    tmp_path, monkeypatch
+):
+    from molt.compiler_analysis import python_binding_flow, python_namespace_writes
+    from molt.compiler_analysis.python_namespace_graph import PythonNamespacePremise
+    from molt.compiler_analysis.python_source_keys import python_node_source_key
+
+    source = (
+        "from . import target\n"
+        "__all__ = ['namespace_visible']\n"
+        "def namespace_callback(name):\n"
+        "    global namespace_marker\n"
+        "    namespace_marker = name\n"
+        "    target.flag = name\n"
+    )
+    path = write(tmp_path / "pkg/entry.py", source)
+    target = TargetPythonVersion(3, 12, 0)
+    parsed = _ModuleResolutionCache().parse_module_ast(
+        path, source, filename=str(path), target_python=target
+    )
+    original = python_namespace_writes._NamespaceWriteCollector.collect
+    collected = []
+
+    def collect(collector):
+        collected.append(collector.package)
+        return original(collector)
+
+    monkeypatch.setattr(
+        python_namespace_writes._NamespaceWriteCollector, "collect", collect
+    )
+    owner = python_node_source_key(parsed.tree.body[-1])
+    for premise in (
+        PythonNamespacePremise((), 0),
+        PythonNamespacePremise(("namespace_marker",), 0),
+        PythonNamespacePremise(None, 0),
+    ):
+        for source_owner, arguments in (
+            (None, ()),
+            (owner, ("one",)),
+            (owner, ("two",)),
+        ):
+            projection = _source_import_scan._collect_imports_for_graph(
+                parsed.tree,
+                "pkg.entry",
+                source_owner=source_owner,
+                source_arguments=arguments,
+                namespace_premise=premise,
+                target_python=target,
+                ast_digest_admission=parsed.admission,
+            )
+            if source_owner is None:
+                assert projection.namespace_summary.own_names == {"namespace_marker"}
+                assert {
+                    write.module
+                    for write in projection.namespace_summary.foreign_writes
+                } == {"pkg.target"}
+            else:
+                assert projection.namespace_summary is None
+        # The facts-only API uses the same core/source generation as the index
+        # API exercised by graph discovery; it must retain the syntax owner.
+        python_binding_flow.analyze_python_binding_facts(
+            parsed.tree,
+            source_digest=parsed.admission.digest,
+            ast_digest_admission=parsed.admission,
+            policy=python_binding_flow.PythonBindingFlowPolicy(
+                foreign_namespace_writes=premise.foreign_writes,
+                callback_member_writes=premise.member_writes,
+            ),
+        )
+    # Resolving foreign relative imports needs a package; own callback names do
+    # not. Neither syntax fact depends on owners, arguments or graph premises.
+    assert sorted(collected, key=lambda package: package or "") == [None, "pkg"]
+
+
 def test_module_export_fact_qualifies_target_and_namespace_premise():
     from molt.compiler_analysis.python_namespace_graph import PythonNamespacePremise
     from molt.compiler_analysis.python_source_keys import _PythonAstDigestAdmission

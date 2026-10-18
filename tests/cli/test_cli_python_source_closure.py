@@ -2031,6 +2031,13 @@ def test_a_dead_relative_import_is_a_lexical_edge(tmp_path: Path) -> None:
 def test_namespace_premise_fixpoint_reuses_every_cached_round(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    from molt.compiler_analysis import python_namespace_writes
+
+    monkeypatch.setattr(
+        python_namespace_writes,
+        "resolve_python_private_names",
+        lambda *_args: pytest.fail("captured host tree was normalized again"),
+    )
     seed, typeonly = _type_checking_package(tmp_path)
     (seed.parent / "peer.py").write_text(
         "import pkg.entry\npkg.entry.TYPE_CHECKING = True\n", encoding="utf-8"
@@ -2045,7 +2052,7 @@ def test_namespace_premise_fixpoint_reuses_every_cached_round(
     )
     monkeypatch.setattr(
         graph,
-        "python_namespace_summary",
+        "_resolved_python_namespace_summary",
         lambda *_args, **_kwargs: pytest.fail("unchanged source was summarized again"),
     )
     assert (

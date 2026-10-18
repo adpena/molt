@@ -20,6 +20,24 @@ from molt.target_python import _DEFAULT_TARGET_PYTHON_VERSION
 from tests.source_record_test_support import source_records
 
 
+def test_intrinsic_facts_reuse_the_full_scan_namespace_authority(tmp_path):
+    from molt.stdlib_intrinsic_policy import stdlib_module_intrinsic_facts
+
+    owner = tmp_path / "owner.py"
+    facts = stdlib_module_intrinsic_facts(
+        "pkg.owner",
+        owner,
+        source="from . import target\ndef callback():\n    target.flag = 1\n",
+        target_python=_DEFAULT_TARGET_PYTHON_VERSION,
+    )
+    assert (
+        facts.namespace_summary is facts.import_evidence.source_scan.namespace_summary
+    )
+    assert {
+        (write.module, write.name) for write in facts.namespace_summary.foreign_writes
+    } == {("pkg.target", "flag")}
+
+
 def test_intrinsic_relationships_do_not_turn_dynamic_metadata_into_static_edges(
     tmp_path: Path,
 ) -> None:
@@ -1040,7 +1058,7 @@ def test_intrinsic_source_metadata_rebinds_facts_but_reuses_syntax_summary(
     "field,invalid",
     [
         ("schema", True),
-        ("schema", 2),  # Retired summary before lexical star-import custody.
+        ("schema", 3),  # Retired summary before private-name normalization.
         ("own_names", {}),
         ("own_names", ["duplicate", "duplicate"]),
         ("own_reflection_line", True),
