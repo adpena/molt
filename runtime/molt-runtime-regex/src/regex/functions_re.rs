@@ -207,7 +207,7 @@ pub(super) fn replacement_error_result(py: &CoreGilToken, error: ReplacementErro
                 OwnedRuntimeValue::from_owned_bits(py, MoltObject::from_ptr(name_ptr).bits())
             };
             let repr_bits = rt_repr(name.bits());
-            if exception_pending(py) {
+            if rt_exception_pending() {
                 return MoltObject::none().bits();
             }
             let repr = unsafe { OwnedRuntimeValue::from_owned_bits(py, repr_bits) };
