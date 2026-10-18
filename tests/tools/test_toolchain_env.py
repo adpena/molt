@@ -9,6 +9,7 @@ import sys
 from types import SimpleNamespace
 
 import pytest
+from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[2]
 for _path in (str(ROOT), str(ROOT / "src")):
@@ -125,7 +126,7 @@ def test_missing_providers_name_their_install_commands_and_never_download(
 
 
 @pytest.mark.skipif(os.name != "posix", reason="POSIX decoy executables")
-def test_projection_satisfies_the_preflight_that_refuses_the_ambient_shell(
+def test_admission_puts_pinned_providers_ahead_of_the_ambient_shell(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     # HF-231: Homebrew's LLD 23.1.3 and wasm-tools 1.262.0 first on PATH.
@@ -144,18 +145,22 @@ def test_projection_satisfies_the_preflight_that_refuses_the_ambient_shell(
         decoy.chmod(0o755)
     monkeypatch.setenv("PATH", f"{decoys}{os.pathsep}{os.environ['PATH']}")
     names = PLAN.toolchain_closure(["ld.lld", "wasm-tools"])
-    with pytest.raises(ValueError) as refused:
+    # The version contract refuses the ambient tools ...
+    with pytest.raises(ValueError, match="toolchain contract violation"):
         proof_plan.toolchain_fingerprints(PLAN.toolchain_policies, names)
-    assert (
-        'eval "$(python3 tools/toolchain_env.py --toolchain ld.lld '
-        '--toolchain wasm-tools)"' in str(refused.value)
+    # ... and every executor admits through the projection CI uses, so no
+    # shell needs projecting by hand.
+    with mock.patch.dict(os.environ):
+        admitted = proof_plan.admit_toolchains(PLAN.toolchain_policies, names)
+        assert set(names) <= set(admitted.fingerprints)
+        assert not [key for key in admitted.environment if WASI_KEY.search(key)]
+        assert {
+            key: os.environ[key] for key in admitted.environment
+        } == admitted.environment
+        assert not os.environ["PATH"].startswith(str(decoys))
+    assert admitted.environment == toolchain_env.toolchain_environment(
+        PLAN, names, environ=dict(os.environ)
     )
-    delta = toolchain_env.toolchain_environment(PLAN, names, environ=dict(os.environ))
-    assert not [key for key in delta if WASI_KEY.search(key)]
-    for key, value in delta.items():
-        monkeypatch.setenv(key, value)
-    fingerprints = proof_plan.toolchain_fingerprints(PLAN.toolchain_policies, names)
-    assert set(names) <= set(fingerprints)
 
 
 def test_llvm_projection_matches_what_ci_exports(tmp_path: Path) -> None:

@@ -489,11 +489,12 @@ class GateConfig:
 
     def admit(
         self, touched: list[str], matched: list[GateRule], extra: list[str]
-    ) -> None:
+    ) -> dict[str, str]:
+        """Admit the selected gates' toolchains; return the projected variables."""
         from tools.proof_plan import (
+            admit_toolchains,
             load_toolchain_policies,
             toolchain_closure,
-            toolchain_fingerprints,
         )
 
         selected_owners = {f"local.{rule.name}" for rule in matched}
@@ -523,7 +524,7 @@ class GateConfig:
             for identifier, tools in selected.items():
                 for name in toolchain_closure(policies, tools):
                     owners.setdefault(name, []).append(identifier)
-            toolchain_fingerprints(policies, tuple(owners), owners=owners)
+            return admit_toolchains(policies, tuple(owners), owners=owners).environment
         except (ValueError, OSError, KeyError) as exc:
             raise DriverError(
                 f"selected gate prerequisites failed; executed=0: {exc}"
@@ -1036,7 +1037,7 @@ def _integrate_exclusive(args: argparse.Namespace) -> int:
     env.setdefault("CARGO_TARGET_DIR", str(project_cargo_target_dir(repo, env)))
     if not dry:
         _assert_integration_source(git, selected_commit)
-        config.admit(touched, matched_rules, list(args.extra_gate or []))
+        env.update(config.admit(touched, matched_rules, list(args.extra_gate or [])))
         _assert_integration_source(git, selected_commit)
     gate_seconds: list[tuple[float, str]] = []
     for cmd in gate_cmds:
