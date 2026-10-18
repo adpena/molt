@@ -42,7 +42,7 @@ impl ReParser {
     }
 
     pub(super) fn is_verbose(&self) -> bool {
-        (self.flags | self.inline_flags) & RE_VERBOSE != 0
+        self.flags & RE_VERBOSE != 0
     }
 
     pub(super) fn skip_verbose_whitespace(&mut self) {
@@ -161,102 +161,97 @@ impl ReParser {
 
     pub(super) fn parse_factor(&mut self) -> Result<ReNode, String> {
         let node = self.parse_atom()?;
-        let ch = self.peek();
-        if ch.is_none() {
+        let bounds = match self.peek() {
+            Some('*') => {
+                self.raw_next()?;
+                Some((0, None))
+            }
+            Some('+') => {
+                self.raw_next()?;
+                Some((1, None))
+            }
+            Some('?') => {
+                self.raw_next()?;
+                Some((0, Some(1)))
+            }
+            Some('{') => self.parse_braced_repeat()?,
+            _ => None,
+        };
+        let Some((min_count, max_count)) = bounds else {
             return Ok(node);
-        }
-        match ch.unwrap() {
-            '*' | '+' | '?' => {
-                let quant = self.next_ch()?;
-                let (min_count, max_count) = match quant {
-                    '*' => (0, None),
-                    '+' => (1, None),
-                    '?' => (0, Some(1)),
-                    _ => unreachable!(),
-                };
-                let greedy = if self.peek() == Some('?') {
-                    self.next_ch()?;
-                    false
-                } else {
-                    true
-                };
-                Ok(ReNode::Repeat {
-                    node: Box::new(node),
-                    min_count,
-                    max_count,
-                    greedy,
-                })
-            }
-            '{' => {
-                let start_pos = self.pos;
-                self.next_ch()?; // consume '{'
-                let min_res = self.parse_number();
-                if min_res.is_err() {
-                    // Not a valid quantifier â€” backtrack.
-                    self.pos = start_pos;
-                    return Ok(node);
-                }
-                let min_count = min_res.unwrap();
-                let max_count = if self.peek() == Some(',') {
-                    self.next_ch()?; // consume ','
-                    if self.peek() == Some('}') {
-                        None // {n,} â€” unbounded
-                    } else {
-                        let max_res = self.parse_number();
-                        if max_res.is_err() {
-                            self.pos = start_pos;
-                            return Ok(node);
-                        }
-                        Some(max_res.unwrap())
-                    }
-                } else {
-                    Some(min_count)
-                };
-                if self.peek() != Some('}') {
-                    // Backtrack â€” not a valid quantifier.
-                    self.pos = start_pos;
-                    return Ok(node);
-                }
-                self.next_ch()?; // consume '}'
-                if let Some(max) = max_count
-                    && max < min_count
-                {
-                    return Err("invalid quantifier range".to_string());
-                }
-                let greedy = if self.peek() == Some('?') {
-                    self.next_ch()?;
-                    false
-                } else {
-                    true
-                };
-                Ok(ReNode::Repeat {
-                    node: Box::new(node),
-                    min_count,
-                    max_count,
-                    greedy,
-                })
-            }
-            _ => Ok(node),
-        }
+        };
+        let mode = self.parse_repeat_mode()?;
+        Ok(ReNode::Repeat {
+            node: Box::new(node),
+            min_count,
+            max_count,
+            mode,
+        })
     }
 
-    pub(super) fn parse_number(&mut self) -> Result<u64, String> {
-        let mut digits = String::new();
-        loop {
-            match self.peek() {
-                Some(c) if c.is_ascii_digit() => {
-                    self.next_ch()?;
-                    digits.push(c);
-                }
-                _ => break,
+    /// A quantifier is one contiguous token. Incomplete braces are literals;
+    /// verbose whitespace/comments may occur around, never within, the token.
+    fn parse_braced_repeat(&mut self) -> Result<Option<(u64, Option<u64>)>, String> {
+        let start = self.pos;
+        self.raw_next()?;
+        let min_start = self.pos;
+        while self.raw_peek().is_some_and(|c| c.is_ascii_digit()) {
+            self.pos += 1;
+        }
+        let min_end = self.pos;
+        let comma = self.raw_peek() == Some(',');
+        let max_start;
+        let max_end;
+        if comma {
+            self.pos += 1;
+            max_start = self.pos;
+            while self.raw_peek().is_some_and(|c| c.is_ascii_digit()) {
+                self.pos += 1;
             }
+            max_end = self.pos;
+        } else {
+            max_start = min_start;
+            max_end = min_end;
         }
-        if digits.is_empty() {
-            return Err("expected number".to_string());
+        if self.raw_peek() != Some('}') || (!comma && min_start == min_end) {
+            self.pos = start;
+            return Ok(None);
         }
-        digits
-            .parse::<u64>()
-            .map_err(|_| "number overflow".to_string())
+        self.pos += 1;
+        let number = |start: usize, end: usize| {
+            self.chars[start..end]
+                .iter()
+                .try_fold(0u64, |value, c| {
+                    value
+                        .checked_mul(10)
+                        .and_then(|v| v.checked_add((*c as u64) - ('0' as u64)))
+                })
+                .ok_or_else(|| "number overflow".to_string())
+        };
+        let min = number(min_start, min_end)?;
+        let max = if comma && max_start == max_end {
+            None
+        } else {
+            Some(number(max_start, max_end)?)
+        };
+        if max.is_some_and(|max| max < min) {
+            return Err("invalid quantifier range".to_string());
+        }
+        Ok(Some((min, max)))
+    }
+
+    fn parse_repeat_mode(&mut self) -> Result<RepeatMode, String> {
+        Ok(match self.raw_peek() {
+            Some('?') => {
+                self.raw_next()?;
+                RepeatMode::Lazy
+            }
+            Some('+') => {
+                self.raw_next()?;
+                RepeatMode::Possessive
+            }
+            _ => RepeatMode::Greedy,
+        })
     }
 
     // -----------------------------------------------------------------------
@@ -271,8 +266,16 @@ impl ReParser {
             '$' => Ok(ReNode::Anchor(Anchor::End)),
             '(' => self.parse_group(),
             '[' => self.parse_class(),
+            '{' => {
+                self.pos -= 1;
+                if self.parse_braced_repeat()?.is_some() {
+                    return Err("nothing to repeat".to_string());
+                }
+                self.raw_next()?;
+                Ok(ReNode::Literal("{".to_string()))
+            }
             '\\' => self.parse_escape(),
-            c if ")*+?{}|".contains(c) => Err(format!("unexpected character '{c}'")),
+            c if ")*+?|".contains(c) => Err(format!("unexpected character '{c}'")),
             c => Ok(ReNode::Literal(c.to_string())),
         }
     }
@@ -282,8 +285,8 @@ impl ReParser {
     // -----------------------------------------------------------------------
 
     pub(super) fn parse_group(&mut self) -> Result<ReNode, String> {
-        if self.peek() == Some('?') {
-            self.next_ch()?; // consume '?'
+        if self.raw_peek() == Some('?') {
+            self.raw_next()?; // consume '?'
             return self.parse_extension_group();
         }
         // Capturing group â€” assign index at open-paren time (CPython order).
@@ -303,15 +306,24 @@ impl ReParser {
     }
 
     pub(super) fn parse_extension_group(&mut self) -> Result<ReNode, String> {
-        let marker = self.peek();
+        let marker = self.raw_peek();
         match marker {
-            Some('=') => {
-                self.next_ch()?;
+            Some('>') => {
+                self.raw_next()?;
                 let node = self.parse_expr()?;
-                if self.peek() != Some(')') {
+                if self.raw_peek() != Some(')') {
                     return Err("missing )".to_string());
                 }
-                self.next_ch()?;
+                self.raw_next()?;
+                Ok(ReNode::Atomic(Box::new(node)))
+            }
+            Some('=') => {
+                self.raw_next()?;
+                let node = self.parse_expr()?;
+                if self.raw_peek() != Some(')') {
+                    return Err("missing )".to_string());
+                }
+                self.raw_next()?;
                 Ok(ReNode::Look {
                     node: Box::new(node),
                     behind: false,
@@ -320,12 +332,12 @@ impl ReParser {
                 })
             }
             Some('!') => {
-                self.next_ch()?;
+                self.raw_next()?;
                 let node = self.parse_expr()?;
-                if self.peek() != Some(')') {
+                if self.raw_peek() != Some(')') {
                     return Err("missing )".to_string());
                 }
-                self.next_ch()?;
+                self.raw_next()?;
                 Ok(ReNode::Look {
                     node: Box::new(node),
                     behind: false,
@@ -334,16 +346,16 @@ impl ReParser {
                 })
             }
             Some('<') => {
-                self.next_ch()?; // consume '<'
-                let look_kind = self.peek();
+                self.raw_next()?; // consume '<'
+                let look_kind = self.raw_peek();
                 match look_kind {
                     Some('=') => {
-                        self.next_ch()?;
+                        self.raw_next()?;
                         let node = self.parse_expr()?;
-                        if self.peek() != Some(')') {
+                        if self.raw_peek() != Some(')') {
                             return Err("missing )".to_string());
                         }
-                        self.next_ch()?;
+                        self.raw_next()?;
                         let width =
                             fixed_width(&node, Some(&self.group_widths)).ok_or_else(|| {
                                 "look-behind requires fixed-width pattern".to_string()
@@ -356,12 +368,12 @@ impl ReParser {
                         })
                     }
                     Some('!') => {
-                        self.next_ch()?;
+                        self.raw_next()?;
                         let node = self.parse_expr()?;
-                        if self.peek() != Some(')') {
+                        if self.raw_peek() != Some(')') {
                             return Err("missing )".to_string());
                         }
-                        self.next_ch()?;
+                        self.raw_next()?;
                         let width =
                             fixed_width(&node, Some(&self.group_widths)).ok_or_else(|| {
                                 "look-behind requires fixed-width pattern".to_string()
@@ -373,47 +385,40 @@ impl ReParser {
                             width: Some(width),
                         })
                     }
-                    _ => {
-                        // Named group: (?P<name>...) already consumed '<', so
-                        // this is a raw (?<name>...) style from parse_extension_group.
-                        // Actually we get here only when parse_extension_group sees
-                        // marker=='<' and dispatches here.  We have already consumed '<'.
-                        // So we must handle the named-group body:
-                        self.parse_named_group_body()
-                    }
+                    _ => Err("unknown extension".to_string()),
                 }
             }
             Some('(') => {
                 // Conditional: (?(id)yes|no)
-                self.next_ch()?; // consume '('
+                self.raw_next()?; // consume '('
                 let mut digits = String::new();
                 loop {
-                    match self.peek() {
+                    match self.raw_peek() {
                         Some(c) if c.is_ascii_digit() => {
-                            self.next_ch()?;
+                            self.raw_next()?;
                             digits.push(c);
                         }
                         _ => break,
                     }
                 }
-                if digits.is_empty() || self.peek() != Some(')') {
+                if digits.is_empty() || self.raw_peek() != Some(')') {
                     return Err("bad character in group name".to_string());
                 }
-                self.next_ch()?; // consume ')'
+                self.raw_next()?; // consume ')'
                 let group_index = digits
                     .parse::<u32>()
                     .map_err(|_| "group index overflow".to_string())?;
                 let yes_node = self.parse_term()?;
-                let no_node = if self.peek() == Some('|') {
-                    self.next_ch()?;
+                let no_node = if self.raw_peek() == Some('|') {
+                    self.raw_next()?;
                     self.parse_term()?
                 } else {
                     ReNode::Empty
                 };
-                if self.peek() != Some(')') {
+                if self.raw_peek() != Some(')') {
                     return Err("missing )".to_string());
                 }
-                self.next_ch()?;
+                self.raw_next()?;
                 Ok(ReNode::Conditional {
                     group_index,
                     yes: Box::new(yes_node),
@@ -422,21 +427,21 @@ impl ReParser {
             }
             Some(':') => {
                 // Non-capturing group.
-                self.next_ch()?;
+                self.raw_next()?;
                 let node = self.parse_expr()?;
-                if self.peek() != Some(')') {
+                if self.raw_peek() != Some(')') {
                     return Err("missing )".to_string());
                 }
-                self.next_ch()?;
+                self.raw_next()?;
                 Ok(node)
             }
             Some('P') => {
-                self.next_ch()?; // consume 'P'
-                let name_marker = self.peek();
+                self.raw_next()?; // consume 'P'
+                let name_marker = self.raw_peek();
                 match name_marker {
                     Some('=') => {
                         // Named back-reference: (?P=name)
-                        self.next_ch()?;
+                        self.raw_next()?;
                         let name = self.read_until_close_paren()?;
                         if name.is_empty() {
                             return Err("missing group name".to_string());
@@ -453,7 +458,7 @@ impl ReParser {
                     }
                     Some('<') => {
                         // Named capturing group: (?P<name>...)
-                        self.next_ch()?; // consume '<'
+                        self.raw_next()?; // consume '<'
                         self.parse_named_group_body()
                     }
                     _ => Err("bad character in group name".to_string()),
@@ -465,21 +470,21 @@ impl ReParser {
         }
     }
 
-    /// Read a group name terminated by ')'.  Consumes characters but NOT the ')'.
+    /// Read a raw group name and consume its terminating ')'.
     pub(super) fn read_until_close_paren(&mut self) -> Result<String, String> {
         let mut name = String::new();
         loop {
-            match self.peek() {
+            match self.raw_peek() {
                 None => return Err("missing )".to_string()),
                 Some(')') => {
-                    self.next_ch()?;
+                    self.raw_next()?;
                     break;
                 }
-                Some(c) if is_meta_char(c) || c == '<' || c == '>' => {
+                Some(c) if is_meta_char(c) || c == '<' || c == '>' || c.is_ascii_whitespace() => {
                     return Err("bad character in group name".to_string());
                 }
                 Some(c) => {
-                    self.next_ch()?;
+                    self.raw_next()?;
                     name.push(c);
                 }
             }
@@ -491,17 +496,17 @@ impl ReParser {
     pub(super) fn parse_named_group_body(&mut self) -> Result<ReNode, String> {
         let mut name = String::new();
         loop {
-            match self.peek() {
+            match self.raw_peek() {
                 None => return Err("unterminated group name".to_string()),
                 Some('>') => {
-                    self.next_ch()?;
+                    self.raw_next()?;
                     break;
                 }
-                Some(c) if is_meta_char(c) || c == '<' || c == '>' => {
+                Some(c) if is_meta_char(c) || c == '<' || c == '>' || c.is_ascii_whitespace() => {
                     return Err("bad character in group name".to_string());
                 }
                 Some(c) => {
-                    self.next_ch()?;
+                    self.raw_next()?;
                     name.push(c);
                 }
             }
@@ -546,17 +551,17 @@ impl ReParser {
         let mut clear_flags: i64 = 0;
         let mut seen_minus = false;
         loop {
-            match self.peek() {
+            match self.raw_peek() {
                 None => return Err("unterminated inline flag".to_string()),
                 Some('-') => {
-                    self.next_ch()?;
+                    self.raw_next()?;
                     seen_minus = true;
                 }
                 Some(
                     c @ ('i' | 'm' | 's' | 'x' | 'a' | 'L' | 'u' | 'I' | 'M' | 'S' | 'X' | 'A'
                     | 'U'),
                 ) => {
-                    self.next_ch()?;
+                    self.raw_next()?;
                     let bit = flag_char_to_bit(c);
                     if seen_minus {
                         clear_flags |= bit;
@@ -567,20 +572,25 @@ impl ReParser {
                 _ => break,
             }
         }
-        match self.peek() {
+        match self.raw_peek() {
             Some(')') => {
-                self.next_ch()?;
+                self.raw_next()?;
                 self.inline_flags |= add_flags;
                 self.inline_flags &= !clear_flags;
+                self.flags = (self.flags | add_flags) & !clear_flags;
                 Ok(ReNode::Empty)
             }
             Some(':') => {
-                self.next_ch()?;
-                let node = self.parse_expr()?;
-                if self.peek() != Some(')') {
+                self.raw_next()?;
+                let saved_flags = self.flags;
+                self.flags = (self.flags | add_flags) & !clear_flags;
+                let result = self.parse_expr();
+                self.flags = saved_flags;
+                let node = result?;
+                if self.raw_peek() != Some(')') {
                     return Err("missing )".to_string());
                 }
-                self.next_ch()?;
+                self.raw_next()?;
                 Ok(ReNode::ScopedFlags {
                     node: Box::new(node),
                     add_flags,
@@ -615,9 +625,9 @@ impl ReParser {
             c @ '0'..='9' => {
                 let mut digits = String::from(c);
                 loop {
-                    match self.peek() {
+                    match self.raw_peek() {
                         Some(d) if d.is_ascii_digit() => {
-                            self.next_ch()?;
+                            self.raw_next()?;
                             digits.push(d);
                         }
                         _ => break,
@@ -786,7 +796,7 @@ pub(super) fn fixed_width(
         ReNode::Anchor(_) => Some(0),
         ReNode::CharClass { .. } => Some(1),
         ReNode::Backref(idx) => group_widths?.get(idx).copied().flatten(),
-        ReNode::Group { node, .. } => fixed_width(node, group_widths),
+        ReNode::Group { node, .. } | ReNode::Atomic(node) => fixed_width(node, group_widths),
         ReNode::Look { .. } => Some(0),
         ReNode::ScopedFlags { node, .. } => fixed_width(node, group_widths),
         ReNode::Conditional { yes, no, .. } => {
