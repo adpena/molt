@@ -27,6 +27,7 @@ from tools.import_file import bind_repository_imports  # noqa: E402
 ROOT = bind_repository_imports(__file__)
 
 from molt.cargo_workspace import workspace_edition  # noqa: E402
+from tools.git_identity import branch_changed_paths  # noqa: E402
 
 GENERATED_HEAD_LINES = 12
 WINDOWS_COMMAND_LINE_SOFT_LIMIT = 24_000
@@ -66,57 +67,6 @@ def _decode_z_paths(payload: bytes) -> tuple[Path, ...]:
     return tuple(paths)
 
 
-def _merge_base(ref: str) -> str | None:
-    proc = subprocess.run(
-        ["git", "-C", str(ROOT), "merge-base", ref, "HEAD"],
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        check=False,
-    )
-    if proc.returncode != 0:
-        return None
-    base = proc.stdout.decode("ascii", errors="ignore").strip()
-    return base or None
-
-
-def _upstream_ref() -> str | None:
-    proc = subprocess.run(
-        [
-            "git",
-            "-C",
-            str(ROOT),
-            "rev-parse",
-            "--abbrev-ref",
-            "--symbolic-full-name",
-            "@{upstream}",
-        ],
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        check=False,
-    )
-    if proc.returncode != 0:
-        return None
-    ref = proc.stdout.decode("utf-8", errors="replace").strip()
-    return ref or None
-
-
-def _changed_base() -> str | None:
-    candidates: list[str] = []
-    upstream = _upstream_ref()
-    if upstream is not None:
-        candidates.append(upstream)
-    candidates.extend(["origin/main", "main"])
-    seen: set[str] = set()
-    for candidate in candidates:
-        if candidate in seen:
-            continue
-        seen.add(candidate)
-        base = _merge_base(candidate)
-        if base is not None:
-            return base
-    return None
-
-
 def _tracked_rust_paths() -> tuple[Path, ...]:
     return _decode_z_paths(_run_git(["ls-files", "-z", "--", "*.rs"]))
 
@@ -137,32 +87,17 @@ def _explicit_rust_paths(raw_paths: list[str]) -> tuple[Path, ...]:
     return tuple(sorted(paths, key=lambda path: path.as_posix()))
 
 
-def _changed_rust_paths() -> tuple[Path, ...]:
-    paths: set[Path] = set()
-    for args in (
-        ["diff", "--name-only", "-z", "--", "*.rs"],
-        ["diff", "--cached", "--name-only", "-z", "--", "*.rs"],
-        ["ls-files", "--others", "--exclude-standard", "-z", "--", "*.rs"],
-    ):
-        paths.update(_decode_z_paths(_run_git(args)))
-    base = _changed_base()
-    if base is not None:
-        paths.update(
-            _decode_z_paths(
-                _run_git(
-                    [
-                        "diff",
-                        "--name-only",
-                        "-z",
-                        "--diff-filter=ACMRTUXB",
-                        f"{base}...HEAD",
-                        "--",
-                        "*.rs",
-                    ]
-                )
-            )
-        )
-    return tuple(sorted(paths, key=lambda path: path.as_posix()))
+def _changed_rust_paths(base: str) -> tuple[Path, ...]:
+    """Existing Rust files the branch changes against *base*, worktree included."""
+    changed = branch_changed_paths(
+        base,
+        run_git=lambda args: _run_git(args).decode("utf-8", errors="surrogateescape"),
+    )
+    return tuple(
+        Path(path)
+        for path in changed
+        if path.endswith(".rs") and (ROOT / path).is_file()
+    )
 
 
 def _head_text(path: Path) -> str:
@@ -410,7 +345,12 @@ def main(argv: list[str] | None = None) -> int:
     mode.add_argument(
         "--changed",
         action="store_true",
-        help="check changed, staged, and untracked Rust source files",
+        help="check Rust files the branch changes against --base, worktree included",
+    )
+    parser.add_argument(
+        "--base",
+        default="origin/main",
+        help="integration target for --changed (default: origin/main)",
     )
     parser.add_argument(
         "paths",
@@ -431,7 +371,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.paths:
         paths = _explicit_rust_paths(args.paths)
     else:
-        paths = _tracked_rust_paths() if args.all else _changed_rust_paths()
+        paths = _tracked_rust_paths() if args.all else _changed_rust_paths(args.base)
     selection = select_rust_paths(paths)
     _print_third_party_notice(selection.third_party, verbose=args.verbose)
     _print_generated_notice(selection.generated, verbose=args.verbose)
