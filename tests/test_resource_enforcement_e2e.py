@@ -3,14 +3,13 @@
 These tests verify that resource limits configured via environment variables
 are actually enforced when running Python programs through Molt.
 
-Note: These tests require `molt run` to be available. They are skipped
-if the Molt CLI is not found.
+The compiled cases run this checkout's CLI through the test interpreter,
+never a `molt` that happens to be first on PATH.
 """
 
 from __future__ import annotations
 
 import os
-import shutil
 import subprocess
 import sys
 import tempfile
@@ -20,8 +19,8 @@ import pytest
 from tests.native_process_guard import run_native_test_process
 
 
-def _molt_available() -> bool:
-    return shutil.which("molt") is not None
+# The checkout under test, not an installed `molt` script.
+_MOLT_CLI = (sys.executable, "-m", "molt.cli")
 
 
 def _run_molt(
@@ -36,7 +35,7 @@ def _run_molt(
         if env_overrides:
             env.update(env_overrides)
         return run_native_test_process(
-            ["molt", "run", path],
+            [*_MOLT_CLI, "run", path],
             capture_output=True,
             text=True,
             timeout=timeout,
@@ -44,7 +43,7 @@ def _run_molt(
         )
     except subprocess.TimeoutExpired:
         return subprocess.CompletedProcess(
-            args=["molt", "run", path],
+            args=[*_MOLT_CLI, "run", path],
             returncode=-1,
             stdout="",
             stderr="TIMEOUT",
@@ -153,7 +152,6 @@ def test_resource_env_vars_absent_when_no_limits():
     assert "MOLT_RESOURCE_MAX_DURATION_MS" not in env
 
 
-@pytest.mark.skipif(not _molt_available(), reason="requires the Molt CLI")
 @pytest.mark.skipif(os.name != "posix", reason="extended spawn uses POSIX sessions")
 def test_child_resource_policy_survives_real_environment_mutation():
     """Inspect actual child environments through both shipped spawn entrypoints."""
@@ -204,7 +202,6 @@ for extended in (False, True):
     )
 
 
-@pytest.mark.skipif(not _molt_available(), reason="requires the Molt CLI")
 def test_runtime_feedback_destination_cannot_be_enabled_by_environment_write(tmp_path):
     """A guest may change its environment without gaining a file output sink."""
     canary = tmp_path / "unauthorized-feedback.json"

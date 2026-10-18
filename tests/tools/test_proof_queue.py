@@ -6913,7 +6913,8 @@ def test_proof_queue_status_shows_active_pytest_current_test(
 
     monkeypatch.setenv("MOLT_MEMORY_GUARD_STATE_ROOT", str(tmp_path / "memory_guard"))
     monkeypatch.setenv("MOLT_PYTEST_CURRENT_TEST_FILE", str(current_path))
-    monkeypatch.delenv("PYTEST_XDIST_WORKER", raising=False)
+    # This process publishes the aggregate record: it is no xdist worker.
+    monkeypatch.setattr(bootstrap, "_XDIST_WORKER_ID", None)
 
     class Item:
         nodeid = "tests/test_molt_dev.py::test_cleanup_force_requires_matching_sha"
@@ -19051,14 +19052,17 @@ def test_live_queue_status_projects_actual_xdist_workers_not_controller(
     class Item:
         nodeid = "tests/test_status.py::active_worker"
 
+    # Each process's identity is the one xdist configured it with.
     if aggregate_exists:
-        monkeypatch.delenv("PYTEST_XDIST_WORKER", raising=False)
+        monkeypatch.setattr(bootstrap, "_XDIST_WORKER_ID", None)
+        monkeypatch.setattr(bootstrap, "_XDIST_CONTROLLER", True)
         bootstrap.pytest_runtest_logfinish(
             "controller_finished_case", ("file", 1, "unit")
         )
-    monkeypatch.setenv("PYTEST_XDIST_WORKER", "gw1")
+    monkeypatch.setattr(bootstrap, "_XDIST_CONTROLLER", False)
+    monkeypatch.setattr(bootstrap, "_XDIST_WORKER_ID", "gw1")
     bootstrap.pytest_runtest_call(Item())
-    monkeypatch.setenv("PYTEST_XDIST_WORKER", "gw0")
+    monkeypatch.setattr(bootstrap, "_XDIST_WORKER_ID", "gw0")
     bootstrap.pytest_runtest_setup(Item())
     summary = tmp_path / "running.json"
     summary.write_text(
