@@ -2711,14 +2711,14 @@ def test_integrate_admission_projects_the_selected_checkout_into_real_gate(
     _origin, work = origin_and_clone
     provider = tmp_path / "selected checkout tools"
     provider.mkdir()
-    executable = provider / "fixture-tool"
-    # Preserve the native image's platform identity (macOS system-image
-    # restrictions do not survive a copy), while selecting our own entrypoint.
-    executable.symlink_to("/bin/echo")
+    executable = provider / "cat"
+    # Preserve both the native image and argv[0] utility selection across
+    # macOS system-image restrictions and multicall coreutils implementations.
+    executable.symlink_to("/bin/cat")
     observed_roots = []
 
     def discover(name, root, *, environ):
-        assert name == "fixture-tool"
+        assert name == "cat"
         assert root == work
         observed_roots.append(root)
         return SimpleNamespace(executable=executable)
@@ -2727,16 +2727,23 @@ def test_integrate_admission_projects_the_selected_checkout_into_real_gate(
     # Admission updates this process; retain fixture cleanup for that real write.
     monkeypatch.setenv("PATH", os.environ["PATH"])
     _commit_file(
+        work, "tool-version.txt", "selected-checkout-tool\n", "owned tool version input"
+    )
+    gate = (
+        f'test "$(command -v cat)" = {shlex.quote(str(executable))} && '
+        'test "$(cat tool-version.txt)" = selected-checkout-tool'
+    )
+    _commit_file(
         work,
         "tools/proof_plan.toml",
-        """
-always = ['test "$(fixture-tool selected-checkout-tool)" = selected-checkout-tool']
-always_toolchains = ["fixture-tool"]
+        f"""
+always = [{json.dumps(gate)}]
+always_toolchains = ["cat"]
 [[toolchain_policy]]
-name = "fixture-tool"
+name = "cat"
 projection = "tool-release"
-executable = "fixture-tool"
-version_args = ["selected-checkout-tool"]
+executable = "cat"
+version_args = ["tool-version.txt"]
 version_pattern = '^selected-checkout-tool$'
 """,
         "selected checkout tool projection",
@@ -2746,6 +2753,7 @@ version_pattern = '^selected-checkout-tool$'
         == drv.EXIT_OK
     )
     assert observed_roots == [work]
+    assert os.environ["PATH"].split(os.pathsep)[0] == str(provider)
 
 
 def test_selected_local_gate_does_not_materialize_unrelated_policy(

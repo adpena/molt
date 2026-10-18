@@ -1202,13 +1202,17 @@ def test_generator_admission_projects_its_explicit_source_root(tmp_path, monkeyp
 
     provider = tmp_path / "selected generator tools"
     provider.mkdir()
-    executable = provider / "fixture-tool"
-    # The owned alias retains the native system image's execution identity.
-    executable.symlink_to("/bin/echo")
+    executable = provider / "cat"
+    # Retain the native image and its utility basename: multicall coreutils
+    # dispatch by argv[0], and macOS system images cannot safely be copied.
+    executable.symlink_to("/bin/cat")
+    (tmp_path / "tool-version.txt").write_text(
+        "selected-generator-tool\n", encoding="utf-8"
+    )
     observed_roots = []
 
     def discover(name, root, *, environ):
-        assert name == "fixture-tool"
+        assert name == "cat"
         assert root == tmp_path
         observed_roots.append(root)
         return SimpleNamespace(executable=executable)
@@ -1219,18 +1223,19 @@ def test_generator_admission_projects_its_explicit_source_root(tmp_path, monkeyp
     (tmp_path / "tools/proof_plan.toml").write_text(
         """
 [[toolchain_policy]]
-name = "fixture-tool"
+name = "cat"
 projection = "tool-release"
-executable = "fixture-tool"
-version_args = ["selected-generator-tool"]
+executable = "cat"
+version_args = ["tool-version.txt"]
 version_pattern = '^selected-generator-tool$'
 """,
         encoding="utf-8",
     )
-    rows = [generators.Generator("selected-generator", (), True, ("fixture-tool",))]
+    rows = [generators.Generator("selected-generator", (), True, ("cat",))]
     fingerprints, bindings = generators.admit_generators(rows, root=tmp_path)
     assert observed_roots == [tmp_path]
-    assert fingerprints["fixture-tool"]["version"] == "selected-generator-tool"
+    assert fingerprints["cat"]["version"] == "selected-generator-tool"
+    assert fingerprints["cat"]["path"] == str(executable)
     assert bindings == {}
     assert os.environ["PATH"].split(os.pathsep)[0] == str(provider)
 
