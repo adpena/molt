@@ -131,10 +131,13 @@ def test_windows_job_sampling_automatically_avoids_global_process_table() -> Non
         assert duty_cycle is None
 
 
-@pytest.mark.skipif(sys.platform != "darwin", reason="Darwin kernel process filters")
-def test_darwin_guard_polls_read_the_tree_not_the_host_table() -> None:
-    # Each poll once parsed every kern.proc row of the host (about 1,300 on a
-    # developer Mac) to keep the few of this tree (HF-358).
+@pytest.mark.skipif(
+    not memory_guard._process_model.posix_custody_reads_partial_rows(),
+    reason="this host reads the process table for custody",
+)
+def test_guard_polls_read_the_tree_not_the_host_table() -> None:
+    # Each poll once read every process of the host (about 1,300 kern.proc rows
+    # on a developer Mac, or every /proc entry) to keep the few of this tree.
     grandchild = "import time; x=bytearray(20_000_000); time.sleep(0.3)"
     child = (
         "import subprocess,sys,time;"
@@ -153,7 +156,10 @@ def test_darwin_guard_polls_read_the_tree_not_the_host_table() -> None:
 
     assert result.returncode == 0
     assert result.sampling_telemetry is not None
-    assert result.sampling_telemetry.source == "darwin_custody_rows"
+    assert (
+        result.sampling_telemetry.source
+        == memory_guard._process_model.posix_custody_source()
+    )
     # The tree's rows plus the guard's own lineage, never the host table.
     lineage = memory_guard._process_model.posix_custody_lineage(os.getpid())
     assert 2 <= result.sampling_telemetry.max_process_rows <= len(lineage) + 4
@@ -161,8 +167,11 @@ def test_darwin_guard_polls_read_the_tree_not_the_host_table() -> None:
     assert result.peak_total.rss_kb > result.peak.rss_kb
 
 
-@pytest.mark.skipif(sys.platform != "darwin", reason="Darwin kernel process filters")
-def test_darwin_guard_kill_decides_protection_on_the_host_table(monkeypatch) -> None:
+@pytest.mark.skipif(
+    not memory_guard._process_model.posix_custody_reads_partial_rows(),
+    reason="this host reads the process table for custody",
+)
+def test_guard_kill_decides_protection_on_the_host_table(monkeypatch) -> None:
     # Polls read custody rows; a kill re-reads the host table (samples=None)
     # before it judges which groups it may signal.
     kills: list[tuple[str, object]] = []
@@ -187,7 +196,10 @@ def test_darwin_guard_kill_decides_protection_on_the_host_table(monkeypatch) -> 
 
     assert result.returncode != 0
     assert result.sampling_telemetry is not None
-    assert result.sampling_telemetry.source == "darwin_custody_rows"
+    assert (
+        result.sampling_telemetry.source
+        == memory_guard._process_model.posix_custody_source()
+    )
     assert ("rss_limit", None) in kills
 
 

@@ -885,6 +885,117 @@ def _linux_bind_command(
     return (shlex.join(argv) if argv is not None else comm), argv, "full"
 
 
+def _linux_proc_children(pid: int, proc_root: Path) -> tuple[int, ...]:
+    """The children of every thread of ``pid``; a child belongs to its forking thread."""
+    try:
+        tasks = list((proc_root / str(pid) / "task").iterdir())
+    except OSError:
+        return ()
+    children: list[int] = []
+    for task in tasks:
+        try:
+            text = (task / "children").read_text(encoding="utf-8")
+        except OSError:
+            continue  # The thread exited between the listing and the read.
+        children.extend(int(item) for item in text.split())
+    return tuple(children)
+
+
+@lru_cache(maxsize=None)
+def _linux_proc_children_supported() -> bool:
+    """Whether the kernel publishes ``task/<tid>/children`` (CONFIG_PROC_CHILDREN)."""
+    if not sys.platform.startswith("linux"):
+        return False
+    task = Path("/proc/self/task") / str(threading.get_native_id())
+    return (task / "children").is_file()
+
+
+def _linux_custody_rows(
+    interest: CustodyInterest, proc_root: Path
+) -> dict[int, tuple[tuple[int, int, int, str], int]]:
+    """``stat`` rows of the interest set, walked through each pid's children."""
+
+    rows: dict[int, tuple[tuple[int, int, int, str], int]] = {}
+    for pid in sorted(interest.exact_pids | interest.tree_pids):
+        row = _linux_proc_stat_row(pid, proc_root)
+        if row is not None:
+            rows[pid] = row
+    pending = sorted(pid for pid in interest.tree_pids if pid in rows)
+    walked: set[int] = set()
+    while pending:
+        parent = pending.pop()
+        if parent in walked:
+            continue
+        walked.add(parent)
+        for child in _linux_proc_children(parent, proc_root):
+            if child not in rows:
+                row = _linux_proc_stat_row(child, proc_root)
+                # A pid reused between the two reads names another parent.
+                if row is None or row[0][0] != parent:
+                    continue
+                rows[child] = row
+            pending.append(child)
+    return rows
+
+
+def _linux_uptime_sec(proc_root: Path) -> float:
+    try:
+        return time.clock_gettime(time.CLOCK_BOOTTIME)
+    except (AttributeError, OSError):
+        try:
+            return float((proc_root / "uptime").read_text(encoding="utf-8").split()[0])
+        except (IndexError, OSError, ValueError) as exc:
+            raise ProcessSnapshotError(
+                f"Linux boot-time clock is unavailable: {exc}"
+            ) from exc
+
+
+def _linux_sample(
+    pid: int,
+    identity: tuple[int, int, int, str],
+    rss_kb: int,
+    *,
+    proc_root: Path,
+    stat_reader: Callable[[int, Path], tuple[int, int, int, str] | None],
+    uptime_sec: float,
+) -> ProcessSample:
+    ppid, pgid, started_at_ns, comm = identity
+    return native_process_sample(
+        pid=pid,
+        ppid=ppid,
+        rss_kb=rss_kb,
+        pgid=pgid,
+        elapsed_sec=max(0, int(uptime_sec - started_at_ns / 1_000_000_000)),
+        started_at_ns=started_at_ns,
+        bind_command=partial(
+            _linux_bind_command, pid, started_at_ns, comm, proc_root, stat_reader
+        ),
+    )
+
+
+def sample_processes_linux_proc_custody(
+    interest: CustodyInterest,
+    proc_root: Path = Path("/proc"),
+    *,
+    uptime_sec: float | None = None,
+) -> dict[int, ProcessSample]:
+    """Linux samples of one interest set, bound exactly as the full scan's are."""
+
+    if uptime_sec is None:
+        uptime_sec = _linux_uptime_sec(proc_root)
+    return {
+        pid: _linux_sample(
+            pid,
+            identity,
+            rss_kb,
+            proc_root=proc_root,
+            stat_reader=_linux_proc_stat_identity,
+            uptime_sec=uptime_sec,
+        )
+        for pid, (identity, rss_kb) in _linux_custody_rows(interest, proc_root).items()
+    }
+
+
 def sample_processes_linux_proc(
     proc_root: Path = Path("/proc"),
     *,
@@ -906,17 +1017,7 @@ def sample_processes_linux_proc(
     except OSError as exc:
         raise ProcessSnapshotError(f"Linux /proc enumeration failed: {exc}") from exc
     if uptime_sec is None:
-        try:
-            uptime_sec = time.clock_gettime(time.CLOCK_BOOTTIME)
-        except (AttributeError, OSError):
-            try:
-                uptime_sec = float(
-                    (proc_root / "uptime").read_text(encoding="utf-8").split()[0]
-                )
-            except (IndexError, OSError, ValueError) as exc:
-                raise ProcessSnapshotError(
-                    f"Linux boot-time clock is unavailable: {exc}"
-                ) from exc
+        uptime_sec = _linux_uptime_sec(proc_root)
     injected_reader = stat_reader is not None
     if stat_reader is None:
         stat_reader = _linux_proc_stat_identity
@@ -929,17 +1030,13 @@ def sample_processes_linux_proc(
             identity, rss_kb = (None, 0) if row is None else row
         if identity is None:
             continue
-        ppid, pgid, started_at_ns, comm = identity
-        samples[pid] = native_process_sample(
-            pid=pid,
-            ppid=ppid,
-            rss_kb=rss_kb,
-            pgid=pgid,
-            elapsed_sec=max(0, int(uptime_sec - started_at_ns / 1_000_000_000)),
-            started_at_ns=started_at_ns,
-            bind_command=partial(
-                _linux_bind_command, pid, started_at_ns, comm, proc_root, stat_reader
-            ),
+        samples[pid] = _linux_sample(
+            pid,
+            identity,
+            rss_kb,
+            proc_root=proc_root,
+            stat_reader=stat_reader,
+            uptime_sec=uptime_sec,
         )
     if not samples:
         raise ProcessSnapshotError("Linux /proc snapshot contained no stable rows")
@@ -1523,15 +1620,15 @@ def parse_windows_process_snapshot_rows(
 
 def posix_custody_reads_partial_rows() -> bool:
     """Whether ``sample_processes_posix_custody`` omits rows outside the interest."""
-    return sys.platform == "darwin"
+    return sys.platform == "darwin" or _linux_proc_children_supported()
 
 
 def posix_custody_lineage(pid: int) -> frozenset[int]:
     """``pid`` and its ancestors, read row by row, for a custody interest.
 
-    Protection walks a tree member's ancestry through the guard to launchd, so
-    custody rows that hold this lineage judge every tree member as the host
-    table does.
+    Protection walks a tree member's ancestry through the guard to the init
+    process, so custody rows that hold this lineage judge every tree member
+    as the host table does.
     """
     if not posix_custody_reads_partial_rows():
         return frozenset()
@@ -1539,17 +1636,24 @@ def posix_custody_lineage(pid: int) -> frozenset[int]:
     current = pid
     while current > 0 and current not in lineage:
         lineage.add(current)
-        row = _darwin_proc_kernel_row(current)
-        if row is None or row.ppid <= 0 or row.ppid == current:
+        if sys.platform == "darwin":
+            row = _darwin_proc_kernel_row(current)
+            parent = None if row is None else row.ppid
+        else:
+            stat = _linux_proc_stat_row(current)
+            parent = None if stat is None else stat[0][0]
+        if parent is None or parent <= 0 or parent == current:
             break
-        current = row.ppid
+        current = parent
     return frozenset(lineage)
 
 
 def posix_custody_source() -> str:
     """The telemetry name of the rows ``sample_processes_posix_custody`` reads."""
-    if posix_custody_reads_partial_rows():
+    if sys.platform == "darwin":
         return "darwin_custody_rows"
+    if _linux_proc_children_supported():
+        return "linux_custody_rows"
     return "posix_process_table"
 
 
@@ -1558,11 +1662,14 @@ def sample_processes_posix_custody(
 ) -> dict[int, ProcessSample]:
     """The rows one guard poll needs (docs/design/memory_guard_custody_sampling.md).
 
-    Darwin filters in the kernel. Linux still reads the host table, a superset
-    of the interest set, until its children-file reader lands.
+    Darwin filters in the kernel; Linux walks each tracked pid's children
+    files. A kernel without ``CONFIG_PROC_CHILDREN`` reads the host table, a
+    superset of the interest set.
     """
     if sys.platform == "darwin":
         return _sample_processes_darwin_custody(interest)
+    if _linux_proc_children_supported():
+        return sample_processes_linux_proc_custody(interest)
     return sample_processes_posix()
 
 
