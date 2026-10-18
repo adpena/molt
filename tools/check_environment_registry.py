@@ -1841,7 +1841,19 @@ def _rust_writer_file(path: Path, root: Path) -> _WriterFile:
     return _WriterFile(file_test, modules, writers)
 
 
-def check_process_environment_writers(root: Path = ROOT) -> list[Violation]:
+def _scan_writer_file(job: tuple[Path, Path]) -> tuple[Path, _WriterFile | Violation]:
+    path, root = job
+    try:
+        return path, _rust_writer_file(path, root)
+    except (ValueError, UnicodeError, RecursionError) as error:
+        return path, Violation(
+            "process-writer-source", "", _rel(path, root), 0, str(error)
+        )
+
+
+def check_process_environment_writers(
+    root: Path = ROOT, *, executor: ProcessPoolExecutor | None = None
+) -> list[Violation]:
     """Scan shipped runtime sources independently of name-registry filtering."""
     runtime = root / "runtime"
     files: dict[Path, _WriterFile] = {}
@@ -1859,23 +1871,27 @@ def check_process_environment_writers(root: Path = ROOT) -> list[Violation]:
     visited: set[Path] = set()
     source_root = root.resolve()
     while pending_files:
-        path = pending_files.pop()
-        if path in visited:
-            continue
-        visited.add(path)
-        try:
-            facts = _rust_writer_file(path, root)
-            files[path] = facts
+        jobs = [(path, root) for path in sorted(set(pending_files) - visited)]
+        visited.update(path for path, _ in jobs)
+        pending_files = []
+        # Reuse the repository scan's bounded pool. Only compact file facts
+        # cross process boundaries; lexical buffers die inside each worker.
+        results = (
+            map(_scan_writer_file, jobs)
+            if executor is None
+            else executor.map(_scan_writer_file, jobs, chunksize=16)
+        )
+        for path, result in results:
+            if isinstance(result, Violation):
+                violations.append(result)
+                continue
+            files[path] = result
             # Explicit first-party modules outside src/ are compiled inputs,
-            # too. Do not let a path attribute hide a runtime writer.
+            # too. Discover each wave from the same canonical file facts.
             pending_files.extend(
                 target
-                for target, _ in facts.modules
+                for target, _ in result.modules
                 if target.is_relative_to(source_root) and target.is_file()
-            )
-        except (ValueError, UnicodeError, RecursionError) as error:
-            violations.append(
-                Violation("process-writer-source", "", _rel(path, root), 0, str(error))
             )
     incoming = {
         target
@@ -2581,6 +2597,7 @@ def scan_repository(*, workers: int | None = None, root: Path = ROOT) -> Scan:
     if worker_count == 1:
         results.extend(r for r in map(_scan_python_file, jobs) if r is not None)
         results.extend(r for r in map(_scan_rust_file, rust_paths) if r is not None)
+        writer_violations = check_process_environment_writers(root)
     else:
         with ProcessPoolExecutor(max_workers=worker_count) as pool:
             for result in pool.map(_scan_python_file, jobs, chunksize=16):
@@ -2589,6 +2606,7 @@ def scan_repository(*, workers: int | None = None, root: Path = ROOT) -> Scan:
             for result in pool.map(_scan_rust_file, rust_paths, chunksize=16):
                 if result is not None:
                     results.append(result)
+            writer_violations = check_process_environment_writers(root, executor=pool)
     sites, unresolved = _finish_results(results)
     for path, enforced in _text_paths(root):
         sites.extend(scan_text(path, enforced=enforced, root=root))
@@ -2597,7 +2615,7 @@ def scan_repository(*, workers: int | None = None, root: Path = ROOT) -> Scan:
     return Scan(
         sites=tuple(sites),
         unresolved=tuple(unresolved),
-        writer_violations=tuple(check_process_environment_writers(root)),
+        writer_violations=tuple(writer_violations),
     )
 
 
