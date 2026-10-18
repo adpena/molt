@@ -12047,7 +12047,7 @@ def test_malformed_cached_values_are_rejected_by_both_frontend_validators(
         "size": source_lease.source_size,
         "source_sha256": source_lease.source_sha256,
         "source_kind": source_lease.source_kind,
-        "result": {"functions": []},
+        "result": {"functions": [], "function_metadata": {}},
     }
 
     def validate_lowering(payload):
@@ -12059,9 +12059,18 @@ def test_malformed_cached_values_are_rejected_by_both_frontend_validators(
             context_digest=context_digest,
         )
 
-    assert validate_lowering(lowering) == {"functions": []}
+    assert validate_lowering(lowering) == {"functions": [], "function_metadata": {}}
     assert (
-        validate_lowering(dict(lowering, result={"functions": [], "extra": malformed}))
+        validate_lowering(
+            dict(
+                lowering,
+                result={
+                    "functions": [],
+                    "function_metadata": {},
+                    "extra": malformed,
+                },
+            )
+        )
         is None
     )
 

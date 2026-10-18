@@ -87,6 +87,11 @@ retain executable values and exact metadata; original eager integration fails
 two unchanged-state controls. Binary records, storage consolidation and
 persisted digests remain open under HF-266.
 
+Cache-consumer fixtures carry the same required metadata map as production.
+Source-generation controls first admit a warm entry before changing or removing
+its source; malformed-value controls retain a valid envelope so a missing field
+cannot masquerade as rejection of the intended defect.
+
 The same storage owner now accepts opaque byte records, and all existing import
 scan and intrinsic-fact consumers own their unchanged JSON encoding and admission.
 SQLite rejects oversized or non-BLOB rows before Python materializes their
