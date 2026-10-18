@@ -189,6 +189,19 @@ arity/keyword rejection. The generator regression fails with the old declaration
 all 54 owning Python controls and the actual native/WASM consumer cohort pass.
 Other target versions, platforms and release acceptance remain unqualified.
 
+Backend cache fixtures must own their request environment. Pure cache-key,
+single-flight and byte-storage tests now enter the existing typed empty scope;
+object-publication fixtures construct explicit codegen settings. Tests with
+deliberate semantic settings retain their nonempty scopes, and process-admission
+controls still reject invalid settings. Their baseline uses the canonical
+request-key set instead of a duplicated four-key subset. An isolated self-image
+replay poisons native-partition and common codegen settings before running the
+complete owning cache modules. Sixteen old tests fail with an invalid
+native-partition setting; poisoning the common codegen setting as well exposes
+24 failures. Compiled qualification of the correction is pending.
+These are development-only fixture changes, with no emitted-program lock or
+environment lookup.
+
 Linux process snapshots can legitimately report a zero boot-relative birth
 value. Development custody now retains those observations while preserving
 ambiguous live identities from automatic retirement; marker generations still

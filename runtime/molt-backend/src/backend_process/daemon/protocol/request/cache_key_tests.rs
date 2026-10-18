@@ -12,6 +12,7 @@ fn job(module: &str, function: Option<&str>) -> DaemonJobRequest {
 
 #[test]
 fn key_take_moves_buffers_and_shares_context_without_opening_ir() {
+    let _scope = molt_backend::backend_environment::enter(Arc::default());
     let mut job = job("module", Some("function"));
     job.config_namespace = Some("configuration".to_owned());
     job.ir_path = Some("absent-input-must-not-be-opened".to_owned());
@@ -45,6 +46,7 @@ fn key_take_moves_buffers_and_shares_context_without_opening_ir() {
 
 #[test]
 fn blank_tiers_disable_caching_and_equal_normalized_tiers_share_one_key() {
+    let _scope = molt_backend::backend_environment::enter(Arc::default());
     for function in [None, Some("\t\u{2003}")] {
         assert_eq!(
             job(" \u{2003}\n", function)
@@ -69,6 +71,7 @@ fn blank_tiers_disable_caching_and_equal_normalized_tiers_share_one_key() {
 
 #[test]
 fn namespace_is_structural_and_transport_fields_do_not_change_identity() {
+    let _scope = molt_backend::backend_environment::enter(Arc::default());
     let mut first = job("b:c", None);
     first.config_namespace = Some("a".to_owned());
     let mut second = job("c", None);
@@ -105,6 +108,7 @@ fn namespace_is_structural_and_transport_fields_do_not_change_identity() {
 #[cfg(feature = "native-backend")]
 #[test]
 fn native_target_and_output_kind_both_scope_identity() {
+    let _scope = molt_backend::backend_environment::enter(Arc::default());
     let base =
         serde_json::json!({"id":"job", "is_wasm":false, "output":"unused", "cache_key":"same"});
     let expected = DaemonJobRequest::from_json_value(&base, "job")
@@ -131,6 +135,7 @@ fn native_target_and_output_kind_both_scope_identity() {
 #[cfg(feature = "wasm-backend")]
 #[test]
 fn every_wasm_layout_option_scopes_identity() {
+    let _scope = molt_backend::backend_environment::enter(Arc::default());
     let base =
         serde_json::json!({"id":"job", "is_wasm":true, "output":"unused", "cache_key":"same"});
     let expected = DaemonJobRequest::from_json_value(&base, "job")

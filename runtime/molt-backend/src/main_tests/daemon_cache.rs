@@ -1,13 +1,6 @@
 use super::*;
 use std::sync::Arc;
 
-const SHARED_STDLIB_CACHE_ENV_KEYS: &[&str] = &[
-    "MOLT_STDLIB_OBJ",
-    "MOLT_STDLIB_CACHE_ENTRY",
-    "MOLT_STDLIB_CACHE_KEY",
-    "MOLT_STDLIB_CACHE_MANIFEST",
-];
-
 fn cache_fixture_job(target: DaemonJobTarget, source: &str) -> DaemonJobRequest {
     DaemonJobRequest {
         id: "cache-fixture".to_string(),
@@ -43,7 +36,7 @@ fn seed_daemon_cache(cache: &DaemonCache, kind: &str, source: &str, bytes: &[u8]
 #[test]
 #[cfg(all(feature = "native-backend", any(unix, windows)))]
 fn daemon_non_unicode_stdlib_request_cannot_bypass_admission_on_any_native_transport() {
-    let _env = TestEnvGuard::clear(SHARED_STDLIB_CACHE_ENV_KEYS);
+    let _env = TestEnvGuard::clear(&DAEMON_REQUEST_ENV_KEYS);
     #[cfg(unix)]
     let invalid = {
         use std::os::unix::ffi::OsStringExt;
@@ -120,7 +113,7 @@ fn daemon_non_unicode_stdlib_request_cannot_bypass_admission_on_any_native_trans
 #[test]
 #[cfg(feature = "native-backend")]
 fn daemon_native_object_contract_is_checked_before_cached_or_probe_admission() {
-    let _env = TestEnvGuard::clear(SHARED_STDLIB_CACHE_ENV_KEYS);
+    let _env = TestEnvGuard::clear(&DAEMON_REQUEST_ENV_KEYS);
     let root = std::env::temp_dir().join(format!(
         "molt-daemon-output-admission-{}-{}",
         std::process::id(),
@@ -204,7 +197,7 @@ fn daemon_native_object_contract_is_checked_before_cached_or_probe_admission() {
 #[test]
 #[cfg(feature = "native-backend")]
 fn daemon_cache_artifact_kinds_cannot_alias_even_for_equal_caller_keys() {
-    let _env = TestEnvGuard::clear(SHARED_STDLIB_CACHE_ENV_KEYS);
+    let _env = TestEnvGuard::clear(&DAEMON_REQUEST_ENV_KEYS);
     let cache = DaemonCache::new(None);
     let root = std::env::temp_dir().join(format!(
         "molt-daemon-artifact-kinds-{}-{}",
@@ -462,6 +455,7 @@ fn daemon_actual_environment_scopes_compiled_module_and_function_reuse() {
 
 #[test]
 fn daemon_cache_get_bytes_updates_lru_without_cloning() {
+    let _scope = molt_backend::backend_environment::enter(Arc::default());
     let mut cache = DaemonLru::new(None);
     let key = cache_fixture_job(served_target(), "module")
         .take_artifact_cache_keys()
@@ -482,6 +476,7 @@ fn daemon_cache_get_bytes_updates_lru_without_cloning() {
 
 #[test]
 fn daemon_cache_can_share_bytes_across_keys() {
+    let _scope = molt_backend::backend_environment::enter(Arc::default());
     let mut cache = DaemonLru::new(None);
     let shared = Arc::<[u8]>::from(vec![9, 8, 7, 6]);
     let module_key = cache_fixture_job(served_target(), "module")
@@ -504,6 +499,7 @@ fn daemon_cache_can_share_bytes_across_keys() {
 
 #[test]
 fn daemon_hit_only_cache_bounds_order_memory_and_preserves_eviction() {
+    let _scope = molt_backend::backend_environment::enter(Arc::default());
     let first = cache_fixture_job(served_target(), "first1")
         .take_artifact_cache_keys()
         .expect("fixture cache identity")
@@ -610,6 +606,7 @@ fn daemon_semantic_metadata_has_fixed_charge_and_retains_no_request() {
 #[test]
 #[cfg(feature = "native-backend")]
 fn daemon_tiny_outputs_charge_native_target_storage() {
+    let _scope = molt_backend::backend_environment::enter(Arc::default());
     let target = DaemonJobTarget::Native(NativeTargetOptions {
         target_triple: Some("x".repeat(16 * 1024)),
         ..NativeTargetOptions::default()
@@ -626,6 +623,7 @@ fn daemon_tiny_outputs_charge_native_target_storage() {
 
 #[test]
 fn daemon_eviction_drops_the_actual_typed_key_immediately() {
+    let _scope = molt_backend::backend_environment::enter(Arc::default());
     let mut cache = DaemonLru::new(None);
     let key = cache_fixture_job(served_target(), "first1")
         .take_artifact_cache_keys()
@@ -661,6 +659,7 @@ fn daemon_eviction_drops_the_actual_typed_key_immediately() {
 
 #[test]
 fn daemon_replacement_releases_equal_keys_with_different_allocation_capacity() {
+    let _scope = molt_backend::backend_environment::enter(Arc::default());
     let mut cache = DaemonLru::new(None);
     let mut job = cache_fixture_job(served_target(), "same");
     job.cache_key = String::with_capacity(16 * 1024);
@@ -712,7 +711,7 @@ fn served_target() -> DaemonJobTarget {
 
 #[test]
 fn daemon_probe_cache_only_returns_needs_ir_on_miss() {
-    let _env_guard = TestEnvGuard::clear(SHARED_STDLIB_CACHE_ENV_KEYS);
+    let _env_guard = TestEnvGuard::clear(&DAEMON_REQUEST_ENV_KEYS);
     let missing_lease =
         molt_ir::debug_artifacts::prepare_unique_debug_artifact_path("probe-missing-ir")
             .expect("unique absent lease");
@@ -743,7 +742,7 @@ fn daemon_probe_cache_only_returns_needs_ir_on_miss() {
 
 #[test]
 fn daemon_probe_cache_only_hits_without_reading_ir() {
-    let _env_guard = TestEnvGuard::clear(SHARED_STDLIB_CACHE_ENV_KEYS);
+    let _env_guard = TestEnvGuard::clear(&DAEMON_REQUEST_ENV_KEYS);
     let cache = DaemonCache::new(None);
     let key = cache_fixture_job(served_target(), "module")
         .take_artifact_cache_keys()
@@ -787,7 +786,7 @@ fn daemon_probe_cache_only_hits_without_reading_ir() {
 #[test]
 #[cfg(feature = "native-backend")]
 fn daemon_cache_hit_requires_matching_shared_stdlib_artifact() {
-    let _env_guard = TestEnvGuard::capture(SHARED_STDLIB_CACHE_ENV_KEYS);
+    let _env_guard = TestEnvGuard::clear(&DAEMON_REQUEST_ENV_KEYS);
 
     let cache = DaemonCache::new(None);
     seed_daemon_cache(&cache, "archive", "module", &[1_u8, 2, 3]);
@@ -985,7 +984,7 @@ fn concurrent_requests_for_one_artifact_compile_it_once() {
 #[cfg(feature = "native-backend")]
 #[test]
 fn daemon_json_lease_rejects_suffix_before_output_publication() {
-    let _env_guard = TestEnvGuard::clear(SHARED_STDLIB_CACHE_ENV_KEYS);
+    let _env_guard = TestEnvGuard::clear(&DAEMON_REQUEST_ENV_KEYS);
     let nonce = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap()
