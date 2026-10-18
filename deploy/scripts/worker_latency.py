@@ -1,7 +1,10 @@
-"""Cloudflare Worker latency baseline test.
+"""Measure the latency of the live Falcon-OCR Cloudflare Worker.
 
-Measures DNS resolution, TLS handshake, TTFB, and total response time
-for the Falcon-OCR Cloudflare Worker. Reports p50/p95/p99 latencies.
+A manual probe of the deployed service, not a repository test: it measures
+DNS resolution, TLS handshake, TTFB and total response time, prints
+p50/p95/p99 tables, and ends with one JSON summary line on stdout.
+
+Usage: python deploy/scripts/worker_latency.py
 """
 
 import json
@@ -242,12 +245,8 @@ def main() -> None:
         "health": health_report.summary(),
         "ocr": ocr_report.summary(),
     }
-    json_path = Path(__file__).parent / "test_images" / "latency_results.json"
-    json_path.write_text(json.dumps(combined, indent=2), encoding="utf-8")
-    print(f"\nJSON results written to {json_path}")
+    print(json.dumps(combined, sort_keys=True))
 
 
 if __name__ == "__main__":
-    from pathlib import Path
-
     main()
