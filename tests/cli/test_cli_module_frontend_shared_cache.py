@@ -206,6 +206,7 @@ def test_lowering_reuse_across_sessions_no_relower(
     path = _write_module(project_root, "m", "def g():\n    return 41 + 1\n")
     context_digest = "ab" * 32
     ir_result = {
+        "function_metadata": {},
         "functions": [{"name": "m__g", "params": [], "return_abi": "value"}],
         "profile": "release",
     }
@@ -292,7 +293,10 @@ def test_lowering_reuse_across_projects_and_working_directories(
         module_name="m",
         is_package=False,
         context_digest=context_digest,
-        result={"functions": [{"name": "m__g", "params": [], "return_abi": "value"}]},
+        result={
+            "function_metadata": {},
+            "functions": [{"name": "m__g", "params": [], "return_abi": "value"}],
+        },
     )
 
     _use_session(monkeypatch, "B")
@@ -317,6 +321,7 @@ def test_lowering_cache_hit_returns_fresh_decoded_payload_each_read(
     path = _write_module(project_root, "m", "def g():\n    return 41 + 1\n")
     context_digest = "ab" * 32
     ir_result = {
+        "function_metadata": {},
         "functions": [
             {
                 "name": "m__g",
@@ -448,6 +453,7 @@ def test_mtime_only_change_still_reuses_lowering_from_shared(
     path = _write_module(project_root, "m", "def g():\n    return 41 + 1\n")
     context_digest = "ab" * 32
     ir_result = {
+        "function_metadata": {},
         "functions": [{"name": "m__g", "params": [], "return_abi": "value"}],
         "profile": "release",
     }
@@ -557,6 +563,7 @@ def test_same_size_different_content_is_not_reused(
         is_package=False,
         context_digest=context_digest,
         result={
+            "function_metadata": {},
             "functions": [
                 {
                     "name": "m__f",
@@ -564,7 +571,7 @@ def test_same_size_different_content_is_not_reused(
                     "param_types": ["i64"],
                     "return_abi": "value",
                 }
-            ]
+            ],
         },
     )
 
@@ -622,6 +629,7 @@ def test_changed_source_content_is_not_reused_from_shared(
         is_package=False,
         context_digest=context_digest,
         result={
+            "function_metadata": {},
             "functions": [
                 {
                     "name": "m__f",
@@ -629,7 +637,7 @@ def test_changed_source_content_is_not_reused_from_shared(
                     "param_types": ["i64"],
                     "return_abi": "value",
                 }
-            ]
+            ],
         },
     )
     shared_slot = MC._shared_module_lowering_cache_path_for(
@@ -739,7 +747,10 @@ def test_changed_target_python_is_not_reused_from_shared(
         module_name="m",
         is_package=False,
         context_digest=context_digest,
-        result={"functions": [{"name": "m__f", "params": [], "return_abi": "value"}]},
+        result={
+            "function_metadata": {},
+            "functions": [{"name": "m__f", "params": [], "return_abi": "value"}],
+        },
         target_python=py312,
     )
 
@@ -798,7 +809,10 @@ def test_publish_and_hydrate_never_use_os_link(
         module_name="m",
         is_package=False,
         context_digest=context_digest,
-        result={"functions": [{"name": "m__f", "params": [], "return_abi": "value"}]},
+        result={
+            "function_metadata": {},
+            "functions": [{"name": "m__f", "params": [], "return_abi": "value"}],
+        },
     )
     _use_session(monkeypatch, "B")
     MC._read_persisted_module_lowering(
@@ -831,7 +845,10 @@ def test_env_optout_forces_cold_lowering_miss(
     project_root.mkdir()
     path = _write_module(project_root, "m", "def g():\n    return 41 + 1\n")
     context_digest = "ab" * 32
-    ir_result = {"functions": [{"name": "m__g", "params": [], "return_abi": "value"}]}
+    ir_result = {
+        "function_metadata": {},
+        "functions": [{"name": "m__g", "params": [], "return_abi": "value"}],
+    }
 
     # Populate BOTH tiers in session A with the cache enabled.
     _use_session(monkeypatch, "A")
@@ -900,7 +917,10 @@ def test_env_optout_skips_shared_publish(
         module_name="m",
         is_package=False,
         context_digest=context_digest,
-        result={"functions": [{"name": "m__g", "params": [], "return_abi": "value"}]},
+        result={
+            "function_metadata": {},
+            "functions": [{"name": "m__g", "params": [], "return_abi": "value"}],
+        },
     )
     shared_slot = MC._shared_module_lowering_cache_path_for(
         path, module_name="m", is_package=False, context_digest=context_digest
@@ -980,7 +1000,10 @@ def test_refused_shared_lowering_does_not_refresh_recency(
         module_name="m",
         is_package=False,
         context_digest=digest,
-        result={"functions": [{"name": "m__f", "params": [], "return_abi": "value"}]},
+        result={
+            "function_metadata": {},
+            "functions": [{"name": "m__f", "params": [], "return_abi": "value"}],
+        },
     )
     slot = MC._shared_module_lowering_cache_path_for(
         source, module_name="m", is_package=False, context_digest=digest
@@ -1046,3 +1069,94 @@ def test_shared_cache_copies_need_no_durability_barriers(
     )
     assert hydrated.read_bytes() == source.read_bytes()
     assert not list(tmp_path.glob(".molt-*.tmp"))
+
+
+@pytest.mark.parametrize(
+    "defect",
+    [None, "missing", "orphan", "duplicate", "bad-boundary", "embedded", "schema7"],
+)
+def test_actual_frontend_sidecar_survives_cache_and_refuses_invalid_ownership(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, defect: str | None
+) -> None:
+    import ast
+    from copy import deepcopy
+    from molt.frontend import SimpleTIRGenerator
+
+    path = _write_module(tmp_path, "m", "def answer(value):\n    return value\n")
+    gen = SimpleTIRGenerator(module_name="m")
+    gen.visit(ast.parse(path.read_text(encoding="utf-8")))
+    document = gen.to_json(scope="module")
+    result = {
+        "functions": document["functions"],
+        "function_metadata": document["function_metadata"],
+    }
+    expected = deepcopy(result)
+    _use_session(monkeypatch, "A")
+    context_digest = "ad" * 32
+    lease = _ModuleSourceLease.path_backed(path)
+    MC._write_persisted_module_lowering(
+        tmp_path,
+        path,
+        source_lease=lease,
+        module_name="m",
+        is_package=False,
+        context_digest=context_digest,
+        result=result,
+    )
+    _use_session(monkeypatch, "B")
+    loaded = MC._read_persisted_module_lowering(
+        tmp_path,
+        path,
+        source_lease=lease,
+        module_name="m",
+        is_package=False,
+        context_digest=context_digest,
+    )
+    assert loaded == expected
+    assert loaded is not None
+    assert loaded["functions"] is not result["functions"]
+    assert (
+        loaded["function_metadata"]["molt_init_m"]
+        is not result["function_metadata"]["molt_init_m"]
+    )
+    assert all(
+        "source_module_publication" not in function for function in loaded["functions"]
+    )
+    if defect is None:
+        return
+    broken = deepcopy(result)
+    if defect == "missing":
+        del broken["function_metadata"]
+    elif defect == "orphan":
+        broken["function_metadata"]["absent"] = broken["function_metadata"].pop(
+            "molt_init_m"
+        )
+    elif defect == "duplicate":
+        broken["functions"].append(deepcopy(broken["functions"][0]))
+    elif defect == "bad-boundary":
+        broken["function_metadata"]["molt_init_m"]["source_module_publication"][
+            "boundary_index"
+        ] = -1
+    elif defect == "embedded":
+        broken["functions"][0]["gpu_body_origin"] = {}
+    # Exercise the actual read admission; corrupt bytes use the existing codec.
+    payload = {
+        "version": 7
+        if defect == "schema7"
+        else MC._MODULE_LOWERING_CACHE_SCHEMA_VERSION,
+        "context_digest": context_digest,
+        "source_sha256": lease.source_sha256,
+        "size": lease.source_size,
+        "source_kind": lease.source_kind,
+        "result": json.loads(json.dumps(broken)),
+    }
+    assert (
+        MC._validate_persisted_module_lowering_payload(
+            payload,
+            path,
+            source_lease=lease,
+            module_name="m",
+            context_digest=context_digest,
+        )
+        is None
+    )

@@ -125,6 +125,10 @@ def verify_tir(
     """Verify a complete SimpleIR document with the canonical Rust oracle."""
     if not isinstance(tir, dict):
         return _invalid_format_result("TIR JSON root must be an object")
+    if "function_metadata" in tir:
+        return _invalid_format_result(
+            "executable SimpleIR cannot contain function_metadata"
+        )
     try:
         report = verify_ir(
             tir,

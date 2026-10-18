@@ -46,6 +46,7 @@ from molt.type_facts import TypeFacts
 from molt.toolchain_identity import StableRegularFileIdentity
 
 if TYPE_CHECKING:
+    from molt.frontend.module_publication import FunctionAssemblyMetadata
     from molt.cli.wasm_codegen_layout import WasmCodegenLayout
     from molt.compiler_analysis.python_namespace_graph import PythonNamespacePremise
     from molt.frontend.lowering.exception_lowering import SyntaxErrorName
@@ -880,6 +881,7 @@ class _FrontendIntegrationState:
     functions: list[dict[str, Any]]
     known_classes: dict[ClassId, ClassInfo]
     global_code_ids: dict[str, int] = field(default_factory=dict)
+    function_metadata: dict[str, FunctionAssemblyMetadata] = field(default_factory=dict)
     # HF-220: the module that owns each class statement symbol, and the first
     # module whose stamp or layout guard names each symbol.
     class_definition_owners: dict[str, str] = field(default_factory=dict)
@@ -2377,6 +2379,7 @@ class _PreparedBackendRuntimeContext:
 @dataclass(frozen=True)
 class _PreparedBackendIR:
     ir: dict[str, Any]
+    function_metadata: dict[str, FunctionAssemblyMetadata]
     required_link_features: frozenset[str] = frozenset()
     # Import bedrock registry (molt.cli.module_registry.ModuleRegistry) on the
     # native lane; None on lanes that keep the legacy isolate dispatch.

@@ -453,9 +453,11 @@ def _write_app_export_contract(
         known_func_kinds=kinds,
     )
     generator.visit(tree)
+    document = generator.to_json(scope="module")
     payload = build_app_export_contract(
         entry_module=entry_module,
-        ir=generator.to_json(),
+        ir=document,
+        function_metadata=document["function_metadata"],
         registry_digest="b" * 64,
     )
     actual = {binding["name"]: binding["symbol"] for binding in payload["bindings"]}
@@ -1706,7 +1708,8 @@ def test_append_linking_symbols_uses_exact_parsed_symbol_identity() -> None:
 def _app_adapter_call_abi() -> dict[str, object]:
     contract = build_app_export_contract(
         entry_module="probe",
-        ir={"functions": [{"app_callable_bindings": []}]},
+        ir={"functions": [{"name": "molt_init_probe", "params": [], "ops": []}]},
+        function_metadata={"molt_init_probe": {"app_callable_bindings": []}},
         registry_digest="a" * 64,
     )
     return app_export_call_abi(contract)

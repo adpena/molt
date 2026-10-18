@@ -211,6 +211,10 @@ def test_worker_success_carries_the_consumed_source_generation(
     result = frontend_worker._frontend_lower_module_worker(_worker_payload(path, lease))
     assert result["ok"] is True
     assert result["functions"]
+    assert isinstance(result["function_metadata"], dict)
+    assert set(result["function_metadata"]) <= {
+        function["name"] for function in result["functions"]
+    }
     init_symbol = SimpleTIRGenerator.module_init_symbol("app")
     assert init_symbol in result["func_code_ids"]
     assert "molt_main" not in result["func_code_ids"]
@@ -242,6 +246,7 @@ def test_serial_payload_uses_serialized_module_owners_without_rewriting_records(
         lower_s=0.2,
         total_s=0.3,
     )
+    assert payload["function_metadata"] is document["function_metadata"]
     assert payload["functions"] is document["functions"]
     assert payload["func_code_ids"] == document["code_slots"]
     assert payload["func_code_ids"] != gen.func_code_ids

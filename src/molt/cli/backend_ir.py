@@ -3,7 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 from pathlib import Path
-from typing import Any, Callable, Collection, Mapping, MutableMapping, Sequence, cast
+from typing import Any, Callable, Collection, Mapping, Sequence, cast
 
 from molt.frontend import SimpleTIRGenerator
 from molt.frontend.lowering.function_metadata import (
@@ -13,8 +13,10 @@ from molt.frontend.lowering.function_metadata import (
 )
 from molt.frontend.lowering.op_kinds_generated import SIMPLEIR_STRUCTURAL_KINDS
 from molt.frontend.module_publication import (
-    consume_source_module_publication,
+    FunctionAssemblyMetadata,
     inspect_source_module_publication,
+    parse_function_metadata,
+    reject_embedded_function_metadata,
 )
 from molt.compiler_analysis.python_function_kind import FunctionKind
 from molt.native_callable_abi import (
@@ -1573,6 +1575,7 @@ def _build_static_native_module_init_ops(
 def _attach_static_native_publication_to_source_init(
     function: dict[str, Any],
     *,
+    function_metadata: Mapping[str, Any],
     spec: _ExternalNativeModuleInitSpec,
     register_global_code_id: Callable[[str], int],
 ) -> dict[str, Any]:
@@ -1607,7 +1610,9 @@ def _attach_static_native_publication_to_source_init(
             f"existing source init {init_symbol!r} cannot publish native callables: "
             "ops must be a mutable list of operation objects"
         )
-    publication_envelope = inspect_source_module_publication(function)
+    publication_envelope = inspect_source_module_publication(
+        function, function_metadata
+    )
     if publication_envelope is None:
         raise ValueError(
             f"existing source init {init_symbol!r} cannot publish native callables: "
@@ -1666,6 +1671,7 @@ def _attach_static_native_publication_to_source_init(
 def _append_static_native_module_init_functions(
     functions: list[dict[str, Any]],
     *,
+    function_metadata: Mapping[str, FunctionAssemblyMetadata],
     specs: Sequence[_ExternalNativeModuleInitSpec],
     register_global_code_id: Callable[[str], int],
     registry_lane: bool,
@@ -1679,29 +1685,43 @@ def _append_static_native_module_init_functions(
     init bodies are pure body executors without cache-guard preambles.
     """
     existing: dict[str, list[dict[str, Any]]] = {}
+    function_indices: dict[str, int] = {}
     source_inits: dict[str, int] = {}
     for function_index, func in enumerate(functions):
         if not isinstance(func, dict):
             continue
-        publication_envelope = inspect_source_module_publication(func)
+        # This admission boundary must also refuse legacy bodies without a
+        # native spec; no later consumer can reinterpret an embedded carrier.
+        reject_embedded_function_metadata(func)
         if not isinstance(func.get("name"), str):
             continue
         existing.setdefault(func["name"], []).append(func)
+        function_indices[func["name"]] = function_index
+    metadata = parse_function_metadata(
+        function_metadata, function_symbols=existing.keys()
+    )
+    for symbol, row in metadata.items():
+        if len(existing[symbol]) != 1:
+            raise ValueError(
+                f"multiple executable bodies own metadata symbol {symbol!r}"
+            )
+        func = existing[symbol][0]
+        publication_envelope = inspect_source_module_publication(func, row)
         if publication_envelope is not None:
             publication = publication_envelope.publication
             module = publication["module_name"]
-            if func["name"] != SimpleTIRGenerator.module_init_symbol(module):
+            if symbol != SimpleTIRGenerator.module_init_symbol(module):
                 raise ValueError(
                     f"source module identity {module!r} does not own init "
-                    f"symbol {func['name']!r}"
+                    f"symbol {symbol!r}"
                 )
             if module in source_inits:
                 raise ValueError(f"multiple source init bodies own module {module!r}")
-            source_inits[module] = function_index
+            source_inits[module] = function_indices[symbol]
     for symbol, bodies in existing.items():
         if len(bodies) > 1 and (
             symbol.startswith("molt_init_")
-            or any("source_module_publication" in body for body in bodies)
+            or "source_module_publication" in function_metadata.get(symbol, {})
         ):
             raise ValueError(f"multiple existing init bodies own {symbol!r}")
 
@@ -1755,6 +1775,7 @@ def _append_static_native_module_init_functions(
         if source_index is not None:
             functions[source_index] = _attach_static_native_publication_to_source_init(
                 functions[source_index],
+                function_metadata=function_metadata[init_symbol],
                 spec=spec,
                 register_global_code_id=register_global_code_id,
             )
@@ -1780,24 +1801,6 @@ def _append_static_native_module_init_functions(
         functions.append(function)
         owned_modules.append(spec.module)
         existing[init_symbol] = [function]
-    # Consume the validated frontend envelopes after all native publication has
-    # been assembled. These facts are not part of executable SimpleIR.
-    for function_index, function in enumerate(functions):
-        if not isinstance(function, dict):
-            continue
-        envelope = inspect_source_module_publication(function)
-        if envelope is None:
-            continue
-        # Only the envelope owner and its marked operation are mutable here;
-        # every other operation remains borrowed from the integrated source.
-        ops = list(function["ops"])
-        boundary = ops[envelope.boundary_index]
-        if not isinstance(boundary, MutableMapping):
-            raise TypeError("source module publication boundary must be mutable")
-        ops[envelope.boundary_index] = dict(boundary)
-        replacement = {**function, "ops": ops}
-        consume_source_module_publication(replacement)
-        functions[function_index] = replacement
     return tuple(owned_modules)
 
 
@@ -1995,6 +1998,7 @@ def _reachability_feature_refusal(
 def _finalize_gpu_descriptors(
     functions: list[dict[str, Any]],
     *,
+    function_metadata: Mapping[str, FunctionAssemblyMetadata],
     target_python: TargetPythonVersion,
     global_code_ids: Mapping[str, int],
 ) -> None:
@@ -2013,13 +2017,7 @@ def _finalize_gpu_descriptors(
         if (constants := descriptor_publications(function["ops"]))
     ]
     if not publications:
-        # A plain struct/GPU import never captures or parses reference bodies,
-        # and never retains a hardware-only callable resolver cohort.
-        for index, function in enumerate(functions):
-            if "gpu_body_origin" in function:
-                replacement = dict(function)
-                del replacement["gpu_body_origin"]
-                functions[index] = replacement
+        # No descriptor consumer: reference-body origins remain unvalidated.
         return
 
     from molt.cli.cache_fingerprints import _frontend_semantic_tooling_snapshot
@@ -2048,12 +2046,8 @@ def _finalize_gpu_descriptors(
 
     admitted: dict[str, dict[str, Any]] = {}
     ambiguous: set[str] = set()
-    for index, function in enumerate(functions):
-        evidence = function.get("gpu_body_origin")
-        if "gpu_body_origin" in function:
-            replacement = dict(function)
-            del replacement["gpu_body_origin"]
-            functions[index] = replacement
+    for function in functions:
+        evidence = function_metadata.get(function["name"], {}).get("gpu_body_origin")
         if not isinstance(evidence, dict):
             continue
         role = evidence.get("role")
@@ -2194,6 +2188,7 @@ def _prepare_backend_ir(
     try:
         generated_native_init_modules = _append_static_native_module_init_functions(
             functions,
+            function_metadata=integration_state.function_metadata,
             specs=native_module_init_specs,
             register_global_code_id=register_global_code_id,
             registry_lane=module_table_lane,
@@ -2340,6 +2335,7 @@ def _prepare_backend_ir(
     try:
         _finalize_gpu_descriptors(
             functions,
+            function_metadata=integration_state.function_metadata,
             target_python=target_python,
             global_code_ids=global_code_ids,
         )
@@ -2405,6 +2401,11 @@ def _prepare_backend_ir(
         return None, fail(emit_ir_error, json_output, command="build")
     return _PreparedBackendIR(
         ir=ir,
+        function_metadata={
+            symbol: {"app_callable_bindings": row["app_callable_bindings"]}
+            for symbol, row in integration_state.function_metadata.items()
+            if "app_callable_bindings" in row
+        },
         required_link_features=required_link_features,
         module_registry=module_registry,
     ), None

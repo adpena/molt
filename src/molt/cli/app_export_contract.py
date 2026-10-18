@@ -12,11 +12,14 @@ from __future__ import annotations
 import hashlib
 import json
 from collections.abc import Mapping, Sequence
-from typing import Literal, NotRequired, TypedDict
+from typing import Literal, NotRequired, TypedDict, TYPE_CHECKING
 from pathlib import Path
 
 from molt._wasm_abi_generated import WASM_OUTPUT_EXPORT_ALIAS_PREFIX
 from molt.exact_json import string_keyed_object
+
+if TYPE_CHECKING:
+    from molt.frontend.module_publication import FunctionAssemblyMetadata
 
 
 APP_EXPORT_CONTRACT_SCHEMA = 2
@@ -91,20 +94,40 @@ def _validated_call_abi(raw_abi: object) -> dict[str, object]:
 
 
 def _frontend_resolved_bindings(
-    ir: Mapping[str, object], *, entry_module: str
+    ir: Mapping[str, object],
+    *,
+    entry_module: str,
+    function_metadata: Mapping[str, FunctionAssemblyMetadata],
 ) -> list[AppCallableBinding]:
     raw_functions = ir.get("functions")
     if not isinstance(raw_functions, Sequence) or isinstance(
         raw_functions, (str, bytes, bytearray)
     ):
         raise ValueError("backend IR has no functions list for app export custody")
-    carriers: list[object] = []
-    for index, raw_function in enumerate(raw_functions):
-        function = string_keyed_object(
-            raw_function, context=f"backend IR function {index}"
-        )
-        if "app_callable_bindings" in function:
-            carriers.append(function["app_callable_bindings"])
+    from molt.frontend.module_publication import (
+        parse_function_metadata,
+        reject_embedded_function_metadata,
+    )
+
+    entries: dict[str, Mapping[str, object]] = {}
+    for raw_function in raw_functions:
+        if not isinstance(raw_function, Mapping) or not isinstance(
+            raw_function.get("name"), str
+        ):
+            raise ValueError("backend IR function has no executable symbol")
+        reject_embedded_function_metadata(raw_function)
+        symbol = raw_function["name"]
+        if symbol in entries:
+            raise ValueError(f"duplicate executable function owner {symbol!r}")
+        entries[symbol] = raw_function
+    metadata = parse_function_metadata(
+        function_metadata, function_symbols=entries.keys()
+    )
+    carriers = [
+        row["app_callable_bindings"]
+        for row in metadata.values()
+        if "app_callable_bindings" in row
+    ]
     if len(carriers) != 1:
         raise ValueError(
             "backend IR must contain exactly one frontend-resolved app callable "
@@ -117,12 +140,12 @@ def _frontend_resolved_bindings(
     names = [binding["name"] for binding in bindings]
     if names != sorted(names):
         raise ValueError("frontend app callable bindings must be sorted by name")
-    _require_adopting_export_entries(raw_functions, bindings)
+    _require_adopting_export_entries(entries, bindings)
     return bindings
 
 
 def _require_adopting_export_entries(
-    functions: Sequence[object], bindings: Sequence[AppCallableBinding]
+    entries: Mapping[str, Mapping[str, object]], bindings: Sequence[AppCallableBinding]
 ) -> None:
     """Check each exported entry's declared custody against the call ABI.
 
@@ -132,10 +155,6 @@ def _require_adopting_export_entries(
     have every host release a reference twice, so the contract refuses it.
     """
 
-    entries: dict[str, Mapping[str, object]] = {}
-    for function in functions:
-        if isinstance(function, Mapping) and isinstance(function.get("name"), str):
-            entries[function["name"]] = function
     for binding in bindings:
         symbol = binding["symbol"]
         if binding["disposition"] != "export" or symbol is None:
@@ -257,6 +276,7 @@ def build_app_export_contract(
     *,
     entry_module: str,
     ir: Mapping[str, object],
+    function_metadata: Mapping[str, FunctionAssemblyMetadata],
     registry_digest: str,
 ) -> dict[str, object]:
     if not entry_module:
@@ -268,7 +288,9 @@ def build_app_export_contract(
             "app export contract requires a lowercase SHA-256 registry digest"
         )
 
-    entries = _frontend_resolved_bindings(ir, entry_module=entry_module)
+    entries = _frontend_resolved_bindings(
+        ir, entry_module=entry_module, function_metadata=function_metadata
+    )
 
     payload: dict[str, object] = {
         "schema": APP_EXPORT_CONTRACT_SCHEMA,

@@ -74,6 +74,7 @@ def test_serial_layer_result_records_cache_hits_as_cache_hits(tmp_path: Path) ->
             "source_sha256": source_lease.source_sha256,
             "functions": [],
             "func_code_ids": {},
+            "function_metadata": {},
             "local_classes": {},
         },
         result_timings=_FrontendModuleResultTimings(
@@ -151,6 +152,8 @@ def test_module_result_consumer_keeps_canonical_records_and_diagnostic_names(
     ):
         assert integrated is borrowed
         assert integrated["ops"] is borrowed["ops"]
+    for name, row in document["function_metadata"].items():
+        assert state.function_metadata[name] is row
     symbol = SimpleTIRGenerator.module_init_symbol("m")
     assert symbol in state.global_code_ids and "molt_main" not in state.global_code_ids
     assert set(diagnostics.policy_outcomes_by_function) == {f"m::{symbol}"}
@@ -169,6 +172,7 @@ def test_result_generation_refusal_precedes_integration(
     result = {
         "functions": [],
         "func_code_ids": {},
+        "function_metadata": {},
         "local_classes": {},
     }
     if defect != "missing_stamp":

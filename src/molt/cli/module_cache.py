@@ -13,6 +13,10 @@ from typing import Any, cast
 
 from molt.frontend import MoltValue, SimpleTIRGenerator
 from molt.frontend import BoundMethodHint, ClassId, ClassInfo, DeclaredClass
+from molt.frontend.module_publication import (
+    parse_function_metadata,
+    inspect_source_module_publication,
+)
 from molt.frontend.sema import collect_module_func_kinds
 from molt.frontend.sema.funcmeta import collect_module_func_defaults
 from molt.compiler_analysis.native_support_slice import canonical_native_support_roots
@@ -742,7 +746,7 @@ def _module_lowering_execution_view(
 _MODULE_ANALYSIS_CACHE_SCHEMA_VERSION = 12
 
 
-_MODULE_LOWERING_CACHE_SCHEMA_VERSION = 7
+_MODULE_LOWERING_CACHE_SCHEMA_VERSION = 8
 
 
 _MODULE_ANALYSIS_FUNC_KINDS = frozenset({"sync", "async", "gen", "asyncgen"})
@@ -1388,9 +1392,12 @@ def _module_lowering_local_reference_issue(
     *,
     known_modules: Iterable[str] = (),
 ) -> str | None:
-    missing = missing_local_function_references(
-        module_name, functions, known_modules=known_modules
-    )
+    try:
+        missing = missing_local_function_references(
+            module_name, functions, known_modules=known_modules
+        )
+    except ValueError as exc:
+        return str(exc)
     if not missing:
         return None
     return (
@@ -1779,9 +1786,14 @@ def _validate_persisted_module_lowering_payload(
     raw_functions = result.get("functions")
     if not isinstance(raw_functions, list):
         return None
+    by_symbol: dict[str, dict[str, Any]] = {}
     for function in raw_functions:
         if not isinstance(function, dict):
             return None
+        symbol = function.get("name")
+        if not isinstance(symbol, str) or symbol in by_symbol:
+            return None
+        by_symbol[symbol] = function
         params = function.get("params")
         param_types = function.get("param_types")
         if not isinstance(params, list) or (
@@ -1789,6 +1801,14 @@ def _validate_persisted_module_lowering_payload(
             and (not isinstance(param_types, list) or len(param_types) < len(params))
         ):
             return None
+    try:
+        metadata = parse_function_metadata(
+            result.get("function_metadata"), function_symbols=by_symbol.keys()
+        )
+        for symbol, row in metadata.items():
+            inspect_source_module_publication(by_symbol[symbol], row)
+    except ValueError:
+        return None
     if (
         _module_lowering_local_reference_issue(
             module_name, raw_functions, known_modules=known_modules

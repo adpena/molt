@@ -184,20 +184,40 @@ signature fields. Extern bodies do not carry synthetic `missing`/`ret` signature
 instructions. Function-contract and TIR cache versions reject obsolete carriers;
 old artifacts are not upgraded by guessing a signature.
 
-Before CLI assembly, source initializers carry `source_module_publication` with
-the canonical `module_name`, SSA `module_value`, and integer `failure_label`.
-Exactly one `frame_locals_set` operation owns the
-`source_module_publication_boundary` marker. These assembly-only facts survive
-frontend caching and chunking; assembly validates module identity independently
-of the mangled linkage symbol, inserts native callable publication at that
-boundary, then strips both fields before executable SimpleIR is emitted. A
-symbol collision is not permission to merge different Python modules.
+Frontend artifacts separate executable `functions` from `function_metadata`,
+a mapping from their canonical function symbols to assembly facts. Publication,
+GPU source-origin evidence and app callable bindings belong to this sidecar;
+they never enter executable function records or operations. Both standalone and
+module serialization preserve this separation. The sidecar travels with the
+source- and context-qualified frontend cache record, independently of reusable
+function-body identity. Older cache schemas are misses, not repair requests.
 
-`molt.frontend.module_publication` owns this assembly envelope, its validation,
-and its consumption. The metadata and exactly one marker with value `true`
-must occur together; orphan, false, duplicate, or misplaced markers are errors.
-CLI assembly validates every function before registering code IDs or inserting
-publication operations, including functions without matching native exports.
+The source publication envelope contains canonical `module_name`, SSA
+`module_value`, integer `failure_label`, and the explicit operation boundary.
+`molt.frontend.module_publication` owns validation. Serialization consumes its
+internal single true boundary marker and records its index; assembly checks
+that index against the original `frame_locals_set` before any body rewrite.
+It validates module identity independently of the linkage symbol, including
+initializers without native exports. Missing, orphaned, duplicate, false or
+misplaced publication facts fail admission. A symbol collision does not permit
+merging different Python modules.
+
+GPU descriptor assembly reads its captured origin from the same symbol-keyed
+sidecar, retaining existing source/AST/target/default comparison and lazy
+validation. App export custody receives the retained app binding sidecar
+explicitly after backend preparation and validates transferred parameters
+against the final entries. Final backend input and `--emit-ir` contain no
+assembly sidecar. Compiler preparation does not copy a function merely to
+remove non-executable metadata.
+
+This separation follows [LLVM's distinct metadata representation](https://llvm.org/docs/LangRef.html#metadata)
+and [rustc's immutable, cheaply shared query results](https://rustc-dev-guide.rust-lang.org/query.html).
+Molt's assembly facts can change native publication and export policy, so they
+remain required, qualified compiler inputs; they are not discardable debug
+annotations. The cost is one small sidecar entry per function that owns such
+facts. It removes repeated body scans and metadata-only function replacements,
+without a second IR, optimizer or runtime check. Binary records and persisted
+body digests remain separate migrations under HF-266.
 
 CLI assembly borrows the lowered function records and their operation lists.
 The serializer emits two explicit artifact scopes. A standalone `program`
@@ -212,7 +232,7 @@ The assembly owns its outer function list: a changed function replaces that
 entry, and a changed operation replaces only its path through the function and
 operation list. Unchanged function, operation and parameter-list identities are
 retained. Code-owner validation, import-lane rewriting, native callable
-publication, publication-envelope consumption and GPU descriptor finalization
+publication and GPU descriptor finalization
 follow this rule, including their failure paths. Parameter-type completion
 copies a function only when its declared ABI needs completion.
 
@@ -232,7 +252,7 @@ These ownership rules apply inside the compiler and add no emitted-program work.
 
 The verifier phase is explicit. `tools.check_ir_structure.verify_tir` accepts
 only executable SimpleIR and retains strict Rust decoding.
-`verify_frontend_tir` validates and projects a copy of frontend assembly IR
+`verify_frontend_tir` validates the sidecar and projects executable frontend IR
 through the shared envelope authority before invoking the same Rust verifier.
 It does not mutate cached frontend input or relax executable transport rules.
 Source-corpus verification (`tools/verify_ir_suite.py`, including nightly and

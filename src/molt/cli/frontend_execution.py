@@ -620,6 +620,7 @@ def _consume_frontend_module_result(
     integration_error = integrate_module_frontend_result(
         module_name,
         ir_functions=cast(list[dict[str, Any]], result["functions"]),
+        function_metadata=result.get("function_metadata"),
         func_code_ids=cast(dict[str, int], result["func_code_ids"]),
         local_classes=_known_classes_from_payload(result["local_classes"]),
     )

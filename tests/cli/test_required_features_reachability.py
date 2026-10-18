@@ -232,6 +232,37 @@ def test_local_reference_validation_requires_only_explicit_target(kind: str) -> 
     )
 
 
+@pytest.mark.parametrize(
+    ("module", "known_modules", "target", "missing"),
+    [
+        ("pkg", ("pkg", "pkg._child"), "pkg__local", True),
+        ("pkg", ("pkg._child",), "pkg__child__work", False),
+        ("pkg", ("pkg._child._grand",), "pkg__child__grand__work", False),
+        ("pkg._child", ("pkg", "pkg._child._grand"), "pkg__child__work", True),
+        ("pkg", ("pkg._child",), "pkg__childish__work", True),
+        ("pkg", ("pkg._childish",), "pkg__child__work", True),
+        ("pkg", ("other._child",), "pkg__child__work", True),
+        ("pkg", ("pkg._child",), "other__work", False),
+        ("pkg", ("pkg._child",), "molt_init_pkg__child", False),
+    ],
+)
+def test_local_reference_ownership_uses_exact_descendant_symbol_boundaries(
+    module: str, known_modules: tuple[str, ...], target: str, missing: bool
+) -> None:
+    functions = [{"name": "owner", "ops": [_call(target)]}]
+    assert FR.missing_local_function_references(
+        module, functions, known_modules=known_modules
+    ) == ((FR.FunctionReferenceEdge("owner", 0, "call", target),) if missing else ())
+    # Supplying the definition discharges the same reference regardless of owner.
+    functions.append({"name": target, "ops": []})
+    assert (
+        FR.missing_local_function_references(
+            module, functions, known_modules=known_modules
+        )
+        == ()
+    )
+
+
 # ---------------------------------------------------------------------------
 # Intrinsic-symbol scanning + feature mapping
 # ---------------------------------------------------------------------------

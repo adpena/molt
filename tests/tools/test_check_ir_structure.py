@@ -10,7 +10,6 @@ import pytest
 import tools.check_ir_structure as check_ir_structure
 import tools.verify_ir_suite as verify_ir_suite
 from molt.frontend import MoltOp, MoltValue, SimpleTIRGenerator, compile_to_tir
-from molt.frontend.module_publication import inspect_source_module_publication
 from tools.check_ir_structure import Diagnostic, verify_frontend_tir, verify_tir
 from tools.rust_ir_verifier import (
     RustIrVerifier,
@@ -72,27 +71,36 @@ def _frontend_publication_ir() -> dict[str, Any]:
                 "name": "molt_init_unit",
                 "params": [],
                 "return_abi": "void",
-                "source_module_publication": {
-                    "module_name": "unit",
-                    "module_value": "module",
-                    "failure_label": 7,
-                },
                 "ops": [
                     {"kind": "const", "value": 0, "out": "module"},
                     {
                         "kind": "frame_locals_set",
                         "args": ["module"],
-                        "source_module_publication_boundary": True,
                     },
                     {"kind": "ret_void"},
                 ],
             }
-        ]
+        ],
+        "function_metadata": {
+            "molt_init_unit": {
+                "source_module_publication": {
+                    "publication": {
+                        "module_name": "unit",
+                        "module_value": "module",
+                        "failure_label": 7,
+                    },
+                    "boundary_index": 1,
+                }
+            }
+        },
     }
 
 
 def test_strict_verifier_rejects_frontend_publication_envelope() -> None:
-    result = verify_tir(_frontend_publication_ir())
+    ir = _frontend_publication_ir()
+    del ir["function_metadata"]
+    ir["functions"][0]["ops"][1]["source_module_publication_boundary"] = True
+    result = verify_tir(ir)
 
     assert not result.ok
     assert any(
@@ -134,109 +142,84 @@ def test_frontend_verifier_forwards_transport_controls(monkeypatch) -> None:
     assert result is sentinel
     assert observed["request_id"] == 41
     assert observed["timeout_seconds"] == 2.5
+    assert "function_metadata" not in observed["tir"]
     function = observed["tir"]["functions"][0]
     assert "source_module_publication" not in function
     assert all("source_module_publication_boundary" not in op for op in function["ops"])
 
 
 @pytest.mark.parametrize("marker", [False, 1, "true"])
-def test_frontend_serialization_preserves_invalid_publication_marker(
+def test_frontend_serialization_rejects_invalid_publication_marker(
     marker: object,
 ) -> None:
-    generator = SimpleTIRGenerator()
-    ops = generator.map_ops_to_json(
-        [
-            MoltOp(
-                kind="FRAME_LOCALS_SET",
-                args=[MoltValue("module")],
-                result=MoltValue("none"),
-                metadata={"source_module_publication_boundary": marker},
-            )
-        ],
-        run_midend=False,
-    )
-    function = {
-        "name": "molt_init_unit",
-        "params": [],
-        "return_abi": "void",
-        "source_module_publication": {
+    generator = SimpleTIRGenerator(module_name="unit")
+    generator.funcs_map["molt_main"]["source_module_publication"] = {
+        "module_name": "unit",
+        "module_value": "module",
+        "failure_label": 7,
+    }
+    generator.funcs_map["molt_main"]["ops"] = [
+        MoltOp(
+            kind="FRAME_LOCALS_SET",
+            args=[MoltValue("module")],
+            result=MoltValue("none"),
+            metadata={"source_module_publication_boundary": marker},
+        )
+    ]
+    with pytest.raises(ValueError, match="publication boundary"):
+        generator.to_json(scope="module", midend_stage="pre-midend")
+
+
+@pytest.mark.parametrize("marker_count", [0, 1, 2])
+def test_frontend_serialization_rejects_missing_or_orphan_or_duplicate_publication_marker(
+    marker_count: int,
+) -> None:
+    generator = SimpleTIRGenerator(module_name="unit")
+    if marker_count != 1:
+        generator.funcs_map["molt_main"]["source_module_publication"] = {
             "module_name": "unit",
             "module_value": "module",
             "failure_label": 7,
-        },
-        "ops": ops,
-    }
-
-    serialized_marker = ops[0]["source_module_publication_boundary"]
-    assert serialized_marker == marker
-    assert type(serialized_marker) is type(marker)
-    with pytest.raises(ValueError, match="publication boundary marker must be true"):
-        inspect_source_module_publication(function)
-
-
-def test_frontend_serialization_rejects_orphan_publication_marker() -> None:
-    generator = SimpleTIRGenerator()
-    ops = generator.map_ops_to_json(
-        [
-            MoltOp(
-                kind="FRAME_LOCALS_SET",
-                args=[MoltValue("module")],
-                result=MoltValue("none"),
-                metadata={"source_module_publication_boundary": True},
-            )
-        ],
-        run_midend=False,
-    )
-
-    with pytest.raises(ValueError, match="has an unowned publication boundary"):
-        inspect_source_module_publication(
-            {"name": "molt_init_unit", "params": [], "return_abi": "void", "ops": ops}
+        }
+    generator.funcs_map["molt_main"]["ops"] = [
+        MoltOp(
+            kind="FRAME_LOCALS_SET",
+            args=[MoltValue("module")],
+            result=MoltValue("none"),
+            metadata={"source_module_publication_boundary": True},
         )
+        for _ in range(marker_count)
+    ]
+    with pytest.raises(ValueError, match="publication boundary"):
+        generator.to_json(scope="module", midend_stage="pre-midend")
 
 
 @pytest.mark.parametrize(
-    ("malformation", "message"),
-    [
-        ("metadata", "missing canonical source-module publication metadata"),
-        ("orphan", "has an unowned publication boundary"),
-        ("false-marker", "publication boundary marker must be true"),
-        ("missing-marker", "must retain exactly one native publication boundary"),
-        ("multiple-markers", "must retain exactly one native publication boundary"),
-        ("wrong-kind", "publication boundary lost its frame-locals anchor"),
-    ],
+    "malformation",
+    ["metadata", "orphan", "bool-index", "missing-index", "past-end", "wrong-kind"],
 )
 def test_frontend_verifier_rejects_malformed_publication_envelope(
     malformation: str,
-    message: str,
 ) -> None:
     ir = _frontend_publication_ir()
-    function = ir["functions"][0]
-    boundary = function["ops"][1]
+    envelope = ir["function_metadata"]["molt_init_unit"]["source_module_publication"]
     if malformation == "metadata":
-        del function["source_module_publication"]["failure_label"]
+        del envelope["publication"]["failure_label"]
     elif malformation == "orphan":
-        del function["source_module_publication"]
-    elif malformation == "false-marker":
-        boundary["source_module_publication_boundary"] = False
-    elif malformation == "missing-marker":
-        del boundary["source_module_publication_boundary"]
-    elif malformation == "multiple-markers":
-        function["ops"].insert(
-            2,
-            {
-                "kind": "frame_locals_set",
-                "args": ["module"],
-                "source_module_publication_boundary": True,
-            },
+        ir["function_metadata"]["absent"] = ir["function_metadata"].pop(
+            "molt_init_unit"
         )
+    elif malformation == "bool-index":
+        envelope["boundary_index"] = False
+    elif malformation == "missing-index":
+        del envelope["boundary_index"]
+    elif malformation == "past-end":
+        envelope["boundary_index"] = 3
     else:
-        boundary["kind"] = "const"
-
+        ir["functions"][0]["ops"][1]["kind"] = "const"
     result = verify_frontend_tir(ir)
-
     assert not result.ok
     assert [diagnostic.kind for diagnostic in result.errors] == ["invalid-format"]
-    assert message in result.errors[0].message
 
 
 def test_generated_field_roles_cover_every_multi_result_transport_shape() -> None:
@@ -353,6 +336,7 @@ def test_source_runner_projects_envelope_and_preserves_request_custody(
     assert result["verifier_lifetime_peak_rss_bytes"] == 4096
     assert "tir" not in result
     assert ir == before
+    assert "function_metadata" not in observed["tir"]
     function = observed["tir"]["functions"][0]
     assert "source_module_publication" not in function
     assert all("source_module_publication_boundary" not in op for op in function["ops"])
@@ -362,7 +346,9 @@ def test_source_runner_reports_malformed_envelope_without_rust_dispatch(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     ir = _frontend_publication_ir()
-    ir["functions"][0]["ops"][1]["source_module_publication_boundary"] = False
+    ir["function_metadata"]["molt_init_unit"]["source_module_publication"][
+        "boundary_index"
+    ] = False
     before = deepcopy(ir)
 
     def unexpected_dispatch(*args, **kwargs):
@@ -380,7 +366,7 @@ def test_source_runner_reports_malformed_envelope_without_rust_dispatch(
     assert result["verifier_request_id"] == 42
     assert result["verifier_pid"] is None
     assert "invalid-format" in result["detail"]
-    assert "boundary marker must be true" in result["detail"]
+    assert "invalid source-module publication envelope" in result["detail"]
     assert ir == before
 
 
@@ -394,7 +380,12 @@ def test_source_runner_real_frontend_to_strict_verifier(tmp_path) -> None:
     assert compiled["status"] == "compiled", compiled
     ir = compiled["tir"]
     before = deepcopy(ir)
-    assert any("source_module_publication" in function for function in ir["functions"])
+    assert any(
+        "source_module_publication" in row for row in ir["function_metadata"].values()
+    )
+    assert all(
+        "source_module_publication" not in function for function in ir["functions"]
+    )
 
     result = verify_ir_suite._finalize_compiled_result(
         compiled, 43, per_case_timeout=60.0

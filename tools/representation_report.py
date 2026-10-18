@@ -20,7 +20,10 @@ import sys
 from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from molt.type_facts import TypeHintPolicy
 
 _REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(_REPO_ROOT) not in sys.path:
@@ -31,6 +34,7 @@ from tools.import_file import bind_repository_imports  # noqa: E402
 bind_repository_imports(__file__)
 
 from molt.frontend import compile_to_tir  # noqa: E402
+from molt.frontend.module_publication import project_frontend_tir_to_executable  # noqa: E402
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
@@ -131,9 +135,11 @@ def run_backend_report(ir: dict[str, Any]) -> dict[str, Any]:
     return report
 
 
-def analyze_file(path: Path, type_hints: str) -> FileReport:
+def analyze_file(path: Path, type_hints: TypeHintPolicy) -> FileReport:
     source = path.read_text(encoding="utf-8")
-    ir = compile_to_tir(source, type_hint_policy=type_hints)
+    ir = project_frontend_tir_to_executable(
+        compile_to_tir(source, type_hint_policy=type_hints)
+    )
     return FileReport(path=path, report=run_backend_report(ir))
 
 
@@ -212,7 +218,9 @@ def aggregate_reports(file_reports: list[FileReport]) -> dict[str, Any]:
     }
 
 
-def report_payload(file_reports: list[FileReport], type_hints: str) -> dict[str, Any]:
+def report_payload(
+    file_reports: list[FileReport], type_hints: TypeHintPolicy
+) -> dict[str, Any]:
     return {
         "schema": BACKEND_SCHEMA,
         "type_hints": type_hints,
