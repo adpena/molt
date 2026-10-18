@@ -195,7 +195,6 @@ def _resolve(
             cargo_plan=plan,
             cargo_profile=profile,
             target_triple="wasm32-wasip1",
-            rustflags=base_rustflags,
             cargo_command=plan.command,
             artifact_selection=RUNTIME_STATICLIB_ARTIFACTS,
             wasi_sysroot=plan.wasi_c_abi.sysroot,
@@ -207,15 +206,17 @@ def _resolve(
         cargo_profile=profile,
         target_triple="wasm32-wasip1",
         runtime_features=runtime_features,
-        base_rustflags=base_rustflags,
         cargo_command=plan.command,
         producer_artifact_selection=artifact_selection,
         members=(
             schema.RuntimeBuildMemberPlan(
                 kind="shared",
                 resolved_rustflags=(
-                    "-C panic=abort --cfg shared"
-                    + (f" -C link-arg=@{response_path}" if response_path else "")
+                    "-C",
+                    "panic=abort",
+                    "--cfg",
+                    "shared",
+                    *((("-C", f"link-arg=@{response_path}")) if response_path else ()),
                 ),
                 publication_transform=(
                     publication if kind == "shared" else "strip-final-link-metadata-v1"
@@ -225,7 +226,7 @@ def _resolve(
             ),
             schema.RuntimeBuildMemberPlan(
                 kind="reloc",
-                resolved_rustflags="-C panic=abort --cfg reloc",
+                resolved_rustflags=("-C", "panic=abort", "--cfg", "reloc"),
                 publication_transform=(
                     publication
                     if kind == "reloc"
@@ -1266,6 +1267,25 @@ def test_identity_rejects_unknown_absolute_flag_path(identity_root: Path) -> Non
             kind="shared",
             publication="strip-final-link-metadata-v1",
             base_rustflags=r"-L D:\poison\runtime",
+        )
+
+
+def test_identity_records_flag_tokens_exactly() -> None:
+    # The projection once split flag strings with a host-dependent shlex and
+    # stripped '"' from every token, so `--cfg feature="std"` was recorded as
+    # `feature="std` and a quoted Windows path kept its quotes.
+    projection = identity._RuntimeFlagProjection.capture(())
+    tokens = ("--cfg", 'feature="std"', "-C", "opt-level=3")
+    assert projection.rustflags(tokens) == list(tokens)
+    with pytest.raises(TypeError, match="token sequences"):
+        projection.rustflags("--cfg feature=std")
+    with pytest.raises(TypeError, match="tuple of tokens"):
+        schema.RuntimeBuildMemberPlan(
+            kind="shared",
+            resolved_rustflags="-C panic=abort",  # type: ignore[arg-type]
+            link_args=(),
+            publication_transform="shared-runtime-publication-v3",
+            preserve_debug=False,
         )
 
 

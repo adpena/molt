@@ -1,8 +1,8 @@
 # Flag strings
 
-Status: slice 1 (boundary authority) implemented, 2026-10-18; slice 2
-(typed identity vectors) pending. Owner: integrator (coordination task
-`claude-cargo-flag-strings`). Ledger: HF-362.
+Status: slices 1 (boundary authority) and 2 (typed identity vectors)
+implemented, 2026-10-18; the export link-argument strings remain. Owner:
+integrator (coordination task `claude-cargo-flag-strings`). Ledger: HF-362.
 
 ## Problem
 
@@ -75,13 +75,22 @@ in about 0.5 s.
   read single quotes, so a quoted token may break a CMake build. This is
   unverified; it needs a Windows release build cell.
 
-## Slice 2
+## Slice 2: typed identity vectors
 
-Identities still hold some flag vectors as strings (`resolved_rustflags:
-str | tuple`, `cargo_rustflags`, `fingerprint_rustflags`, `link_flags`), and
-`_RuntimeFlagProjection.rustflags` splits them with a host-dependent `shlex`.
-Slice 2 makes every internal flag vector a tuple, deletes the string branch,
-and keeps strings only at the process boundary through this module.
+Runtime build identities held Rust flag vectors as `shlex.join` strings, and
+`_RuntimeFlagProjection.rustflags` split them with
+`shlex.split(posix=os.name != "nt")` and stripped `"` from every token. On
+Windows the quotes stayed in the identity; on every host `feature="std"`
+became `feature="std`. Now `RuntimeBuildMemberPlan` and the WASM build spec
+hold tuples, `__post_init__` refuses anything else, the projection refuses a
+string, and the identity functions read `plan.rustflags` instead of a second
+string copy (the dead `base_rustflags` parameter is gone).
+
+Remaining: the export link arguments (`wasm_runtime_*_export_link_args`,
+`link_flags`, `wasm_link_args_from_rustflags`, about 55 references) are
+still one string. They carry only symbol names, so the `shlex` round trip is
+lossless today, but the contract is still a string. Convert them to tuples
+in one migration.
 
 ## Verification
 
