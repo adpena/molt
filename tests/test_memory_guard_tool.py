@@ -1399,6 +1399,7 @@ def test_darwin_sampler_reads_argv_only_for_rows_a_caller_reads(
     assert samples[8].argv == ("worker", "8")
     assert reads["argv"] == [8]
     assert reads["kernel_row"] == [8]
+    assert reads["resident_kb"] == []
     assert dataclasses.replace(samples[8], rss_kb=1) == memory_guard.ProcessSample(
         pid=8,
         ppid=1,
@@ -1409,6 +1410,103 @@ def test_darwin_sampler_reads_argv_only_for_rows_a_caller_reads(
         started_at_ns=8_000,
         argv=("worker", "8"),
     )
+
+
+def test_darwin_sampler_sizes_only_visited_processes_once(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    model = memory_guard._process_model
+    table = {
+        7: _darwin_kernel_row(ppid=3, started_at_ns=7_000),
+        8: _darwin_kernel_row(ppid=7, pgid=8, started_at_ns=8_000),
+        9: _darwin_kernel_row(ppid=1, pgid=9, started_at_ns=9_000),
+    }
+    resident = {7: 40, 8: 60, 9: 10_000}
+    reads = _install_darwin_host(
+        monkeypatch,
+        table,
+        argv=lambda pid: ("worker", str(pid)),
+        resident_kb=resident.__getitem__,
+    )
+    samples = model._sample_processes_darwin()
+    tracker = model.ProcessTreeTracker(7)
+    watched = tracker.update(samples)
+    assert watched == {7, 8}
+    assert reads == {"argv": [], "kernel_row": [], "resident_kb": []}, reads
+
+    # Command classification and the identity census must never size a row.
+    assert samples[9].argv == ("worker", "9")
+    assert reads["resident_kb"] == []
+    peak = model.peak_rss(samples, root_pid=7, watched=watched)
+    assert peak is not None and (peak.pid, peak.rss_kb) == (8, 60)
+    assert reads["resident_kb"] == [7, 8]
+
+    # An independent mutable authority changes, but this sample stays frozen
+    # across every accounting consumer.
+    resident.update({7: 0, 8: 0})
+    total = model.total_rss(samples, root_pid=7, watched=watched)
+    assert total is not None and total.rss_kb == 100
+    violation = model.find_rss_violation(
+        samples, root_pid=7, watched=watched, max_rss_kb=50
+    )
+    assert violation is not None and (violation.pid, violation.rss_kb) == (8, 60)
+    aggregate = model.find_rss_violation(
+        samples, root_pid=7, watched=watched, max_rss_kb=100, max_total_rss_kb=90
+    )
+    assert aggregate is not None and aggregate.rss_kb == 100
+    assert samples[7].rss_kb == 40
+    assert reads["resident_kb"] == [7, 8]
+
+    # A fresh sample binds a fresh value; an explicitly reported outside row
+    # pays for that row only. Serialization visits details intentionally.
+    fresh = model._sample_processes_darwin()
+    assert fresh[7].rss_kb == 0
+    resident[7] = 200
+    assert fresh[7].rss_kb == 0
+    assert dataclasses.asdict(samples[9])["rss_kb"] == 10_000
+    assert reads["resident_kb"] == [7, 8, 7, 9]
+
+
+@pytest.mark.parametrize("later", [None, "zombie", "reused"])
+def test_darwin_sampler_binds_zero_rss_after_sampled_instance_exits(
+    monkeypatch: pytest.MonkeyPatch, later: str | None
+) -> None:
+    model = memory_guard._process_model
+    row = _darwin_kernel_row(started_at_ns=7_000)
+    later_row = {
+        None: None,
+        "zombie": _darwin_kernel_row(model._DARWIN_SZOMB, started_at_ns=7_000),
+        "reused": _darwin_kernel_row(started_at_ns=8_000),
+    }[later]
+    reads = _install_darwin_host(
+        monkeypatch,
+        {7: row},
+        argv=lambda _pid: ("worker",),
+        later_rows=lambda _pid: later_row,
+    )
+    sample = model._sample_processes_darwin()[7]
+    assert sample.rss_kb == sample.rss_kb == 0
+    assert sample.started_at_ns == 7_000
+    assert reads["resident_kb"] == [7]
+    assert reads["argv"] == []
+
+
+def test_native_resident_binding_runs_once_across_readers(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from concurrent.futures import ThreadPoolExecutor
+
+    model = memory_guard._process_model
+    reads = _install_darwin_host(
+        monkeypatch,
+        {7: _darwin_kernel_row()},
+        argv=lambda _pid: ("worker",),
+    )
+    sample = model._sample_processes_darwin()[7]
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        assert list(pool.map(lambda _: sample.rss_kb, range(16))) == [2048] * 16
+    assert reads["resident_kb"] == [7]
+    assert reads["argv"] == []
 
 
 @pytest.mark.parametrize(
@@ -1491,6 +1589,8 @@ def test_darwin_sampler_leaves_rows_withheld_from_the_viewer_unbound(
         # Root reads every process, so the row binds like any other.
         assert sample.started_at_ns == 5_000
         assert sample.argv == ("/sbin/launchd",)
+        assert reads["resident_kb"] == []
+        assert sample.rss_kb == 2048
         assert reads["resident_kb"] == [1]
         return
     assert (sample.ppid, sample.pgid, sample.rss_kb) == (0, 1, 0)

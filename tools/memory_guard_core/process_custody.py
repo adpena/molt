@@ -23,6 +23,7 @@ from tools.memory_guard_core.cargo_quarantine import CargoIncrementalQuarantine
 from tools.memory_guard_core.common import utc_timestamp as _utc_timestamp
 from tools.memory_guard_core.memory_limits import ResolvedMemoryLimits
 from tools.memory_guard_core.windows_snapshot import (
+    WindowsProcessSnapshotRow,
     _windows_process_snapshot_rows_hard_timeout,
 )
 
@@ -403,11 +404,7 @@ def parse_process_table(text: str) -> dict[int, ProcessSample]:
 
 
 def parse_windows_process_snapshot_rows(
-    rows: Sequence[
-        tuple[int, int, int, str, int | None]
-        | tuple[int, int, int, str, int | None, int | None]
-        | tuple[int, int, int, str, int | None, int | None, str]
-    ],
+    rows: Sequence[WindowsProcessSnapshotRow],
 ) -> dict[int, ProcessSample]:
     return _process_model.parse_windows_process_snapshot_rows(rows)
 
