@@ -10,6 +10,7 @@ use crate::object::memoryview::{
 use crate::*;
 use molt_obj_model::MoltObject;
 use num_integer::Integer;
+use num_traits::ToPrimitive;
 
 fn raise_memoryview_buffer_error(py: &PyToken<'_>, object: MoltObject) -> u64 {
     let name = type_name(py, object);
