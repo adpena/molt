@@ -95,6 +95,7 @@ from molt.cli.wasm_codegen_layout import (
 )
 from molt.file_locks import _shared_cache_lock
 from molt.target_python import TargetPythonVersion
+from molt import host_capacity
 
 
 def _record_pipeline_stage_ms(
@@ -997,7 +998,7 @@ def _execute_backend_compile(
                         parents=True, exist_ok=True
                     )
                 backend_env.setdefault(
-                    "RAYON_NUM_THREADS", str(max(2, (os.cpu_count() or 4) // 2))
+                    "RAYON_NUM_THREADS", str(max(2, host_capacity.cpu_count() // 2))
                 )
             cmd = _factgraph.backend_command_prefix(
                 backend_bin=backend_bin,

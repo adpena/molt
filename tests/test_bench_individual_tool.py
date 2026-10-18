@@ -11,6 +11,8 @@ from types import SimpleNamespace
 import pytest
 
 from tools import bench_individual as bench
+from molt.backend_daemon_custody import BackendDaemonObservation
+from tools.memory_guard_core.process_model import ProcessSample
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -178,11 +180,15 @@ def test_bench_individual_isolate_daemon_preserves_foreign_sessions(
     def fake_processes():
         # Session custody is platform-neutral; enumeration is the OS boundary.
         return [
-            bench.BackendDaemonProcess(
-                pid=pid,
-                elapsed_sec=elapsed,
+            BackendDaemonObservation(
+                sample=ProcessSample(
+                    pid=pid,
+                    ppid=1,
+                    rss_kb=0,
+                    command=f"/repo/target/molt-backend --daemon --socket {socket}",
+                    elapsed_sec=elapsed,
+                ),
                 socket_path=socket,
-                command=f"/repo/target/molt-backend --daemon --socket {socket}",
             )
             for pid, elapsed, socket in [
                 (101, 120, owned_socket),
@@ -237,11 +243,15 @@ def test_bench_individual_isolate_daemon_requires_identity_not_socket_env(
 
     def fake_processes():
         return [
-            bench.BackendDaemonProcess(
-                pid=404,
-                elapsed_sec=120,
+            BackendDaemonObservation(
+                sample=ProcessSample(
+                    pid=404,
+                    ppid=1,
+                    rss_kb=0,
+                    command=f"/repo/target/molt-backend --daemon --socket {socket_path}",
+                    elapsed_sec=120,
+                ),
                 socket_path=socket_path,
-                command=f"/repo/target/molt-backend --daemon --socket {socket_path}",
             )
         ]
 

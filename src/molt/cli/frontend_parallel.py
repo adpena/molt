@@ -19,7 +19,7 @@ from molt.cli.models import (
 )
 from molt.cli.module_source import _ModuleSourceCatalog
 from molt.cli.module_stdlib_policy import _looks_like_stdlib_module_name
-from molt.dx import _memory_bounded_worker_count_from_samples, _system_memory_bytes
+from molt import host_capacity
 
 if TYPE_CHECKING:
     from molt.cli.models import ModuleSyntaxErrorInfo
@@ -74,14 +74,14 @@ def _resolve_frontend_parallel_worker_resources() -> _FrontendWorkerResourceDeci
             )
         requested_workers = parsed
         selection_source = "environment_explicit"
-    cpu_count = max(1, os.cpu_count() or 1)
-    total_memory_bytes, available_memory_bytes = _system_memory_bytes()
-    memory_ceiling = _memory_bounded_worker_count_from_samples(
+    cpu_count = host_capacity.cpu_count()
+    total_memory_bytes, available_memory_bytes = host_capacity.memory_bytes()
+    memory_ceiling = host_capacity.worker_count_from_samples(
         bytes_per_worker=_FRONTEND_WORKER_MEMORY_BYTES,
         headroom_bytes=_FRONTEND_WORKER_MEMORY_HEADROOM_BYTES,
         total_memory_bytes=total_memory_bytes,
         available_memory_bytes=available_memory_bytes,
-        cpu_count=cpu_count,
+        cpus=cpu_count,
     )
     selected = (
         memory_ceiling

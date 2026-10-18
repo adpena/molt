@@ -43,7 +43,9 @@ def _daemon_process(module, *, pid, socket_path, backend_bin, rss_kb=64, age=Non
         elapsed_sec=age,
         started_at_ns=1,
     )
-    return module._BackendDaemonProcess(sample=sample, socket_path=socket_path)
+    return module.daemon_custody.BackendDaemonObservation(
+        sample=sample, socket_path=socket_path
+    )
 
 
 def test_molt_diff_daemon_observation_retains_native_resource_sample(
@@ -61,7 +63,7 @@ def test_molt_diff_daemon_observation_retains_native_resource_sample(
     monkeypatch.setattr(
         module.daemon_custody,
         "backend_daemon_process_observations",
-        lambda: [(expected.sample, expected.socket_path)],
+        lambda: [expected],
     )
     observed = module._list_backend_daemon_processes()
     assert observed == [expected]

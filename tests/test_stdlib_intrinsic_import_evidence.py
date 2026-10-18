@@ -1102,14 +1102,14 @@ def test_malformed_cached_namespace_summary_recomputes_canonical_syntax(
 def test_intrinsic_warmer_transports_each_modules_namespace_premise(
     tmp_path, monkeypatch
 ):
-    import molt.dx
+    import molt.host_capacity
     from molt.cli import module_graph_cache as cache
     from molt.compiler_analysis.python_namespace_graph import PythonNamespacePremise
 
     # Actual spawned workers prove the frozen premise crosses the process
     # boundary and populates the same identity the serial reader will admit.
     monkeypatch.setenv("MOLT_BUILD_STATE_DIR", str(tmp_path / "state"))
-    monkeypatch.setattr(molt.dx, "_memory_bounded_worker_count", lambda **_kwargs: 2)
+    monkeypatch.setattr(molt.host_capacity, "worker_count", lambda **_kwargs: 2)
     monkeypatch.setattr(cache, "_INTRINSIC_FACTS_MODULES_PER_WORKER", 1)
     paths = {}
     for module in ("stable", "rewritten"):

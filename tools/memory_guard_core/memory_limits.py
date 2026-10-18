@@ -3,11 +3,8 @@ from __future__ import annotations
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 import os
-from pathlib import Path
-import subprocess
-import sys
-import threading
-from typing import Any, cast
+
+from molt import host_capacity
 
 
 DEFAULT_MAX_RSS_GB = 12.0
@@ -16,9 +13,10 @@ DEFAULT_MAX_GLOBAL_RSS_GB = 36.0
 DEFAULT_HARD_MAX_RSS_GB = 112.0
 DEFAULT_HARD_MAX_GLOBAL_RSS_GB = 4096.0
 DEFAULT_HARD_MAX_CHILD_RLIMIT_GB = 4096.0
-DEFAULT_MEMORY_RESERVE_FRACTION = 0.06
-DEFAULT_MEMORY_RESERVE_MIN_GB = 1.0
-DEFAULT_MEMORY_RESERVE_MAX_GB = 12.0
+# The reserve is the host capacity authority's rule, in the guard's GB.
+DEFAULT_MEMORY_RESERVE_FRACTION = host_capacity.RESERVE_FRACTION
+DEFAULT_MEMORY_RESERVE_MIN_GB = host_capacity.RESERVE_MIN_BYTES / 1024**3
+DEFAULT_MEMORY_RESERVE_MAX_GB = host_capacity.RESERVE_MAX_BYTES / 1024**3
 DEFAULT_GLOBAL_FRACTION_OF_USABLE = 0.97
 DEFAULT_TOTAL_FRACTION_OF_GLOBAL = 0.60
 DEFAULT_PROCESS_FRACTION_OF_TOTAL = 0.90
@@ -111,212 +109,6 @@ def _gb_from_bytes(value: int | None) -> float | None:
     return value / (1024 * 1024 * 1024)
 
 
-def _linux_meminfo_bytes(key: str) -> int | None:
-    try:
-        text = Path("/proc/meminfo").read_text(encoding="utf-8")
-    except OSError:
-        return None
-    for line in text.splitlines():
-        if not line.startswith(f"{key}:"):
-            continue
-        parts = line.split()
-        if len(parts) >= 2 and parts[1].isdigit():
-            return int(parts[1]) * 1024
-    return None
-
-
-def _darwin_physical_memory_bytes() -> int | None:
-    try:
-        return int(os.sysconf("SC_PAGE_SIZE") * os.sysconf("SC_PHYS_PAGES"))
-    except (OSError, ValueError, AttributeError):
-        pass
-    try:
-        result = subprocess.run(
-            ["sysctl", "-n", "hw.memsize"],
-            capture_output=True,
-            text=True,
-            timeout=1.0,
-            check=False,
-            encoding="utf-8",
-        )
-    except (OSError, subprocess.TimeoutExpired, TypeError):
-        result = None
-    if result is not None and result.returncode == 0:
-        raw = result.stdout.strip()
-        if raw.isdigit():
-            return int(raw)
-    return None
-
-
-# The vm_stat rows the guard counts as available memory.
-DARWIN_AVAILABLE_PAGE_ROWS = (
-    "Pages free",
-    "Pages inactive",
-    "Pages speculative",
-    "Pages purgeable",
-)
-# <mach/host_info.h> HOST_VM_INFO64 and its count of natural_t words.
-_DARWIN_HOST_VM_INFO64 = 4
-_DARWIN_VM_STATISTICS64_SIZE = 152
-
-
-@dataclass(frozen=True, slots=True)
-class _DarwinHostVm:
-    """One process-wide binding of the Mach host VM statistics call."""
-
-    ctypes: Any
-    host: int
-    statistics_type: type[Any]
-    host_statistics64: Callable[..., int]
-    page_size: int
-
-
-def _load_darwin_host_vm() -> _DarwinHostVm:
-    import ctypes
-
-    class VmStatistics64(ctypes.Structure):
-        # <mach/vm_statistics.h> struct vm_statistics64, natural alignment.
-        _fields_ = [
-            ("free_count", ctypes.c_uint32),
-            ("active_count", ctypes.c_uint32),
-            ("inactive_count", ctypes.c_uint32),
-            ("wire_count", ctypes.c_uint32),
-            ("zero_fill_count", ctypes.c_uint64),
-            ("reactivations", ctypes.c_uint64),
-            ("pageins", ctypes.c_uint64),
-            ("pageouts", ctypes.c_uint64),
-            ("faults", ctypes.c_uint64),
-            ("cow_faults", ctypes.c_uint64),
-            ("lookups", ctypes.c_uint64),
-            ("hits", ctypes.c_uint64),
-            ("purges", ctypes.c_uint64),
-            ("purgeable_count", ctypes.c_uint32),
-            ("speculative_count", ctypes.c_uint32),
-            ("decompressions", ctypes.c_uint64),
-            ("compressions", ctypes.c_uint64),
-            ("swapins", ctypes.c_uint64),
-            ("swapouts", ctypes.c_uint64),
-            ("compressor_page_count", ctypes.c_uint32),
-            ("throttled_count", ctypes.c_uint32),
-            ("external_page_count", ctypes.c_uint32),
-            ("internal_page_count", ctypes.c_uint32),
-            ("total_uncompressed_pages_in_compressor", ctypes.c_uint64),
-        ]
-
-    if ctypes.sizeof(VmStatistics64) != _DARWIN_VM_STATISTICS64_SIZE:
-        raise OSError(
-            f"vm_statistics64 layout is {ctypes.sizeof(VmStatistics64)} bytes, "
-            f"kernel ABI needs {_DARWIN_VM_STATISTICS64_SIZE}"
-        )
-    libsystem = ctypes.CDLL("/usr/lib/libSystem.B.dylib", use_errno=True)
-    mach_host_self = libsystem.mach_host_self
-    mach_host_self.argtypes = []
-    mach_host_self.restype = ctypes.c_uint32
-    host_page_size = libsystem.host_page_size
-    host_page_size.argtypes = [ctypes.c_uint32, ctypes.POINTER(ctypes.c_size_t)]
-    host_page_size.restype = ctypes.c_int
-    host_statistics64 = libsystem.host_statistics64
-    host_statistics64.argtypes = [
-        ctypes.c_uint32,
-        ctypes.c_int,
-        ctypes.POINTER(VmStatistics64),
-        ctypes.POINTER(ctypes.c_uint32),
-    ]
-    host_statistics64.restype = ctypes.c_int
-    # One send right for the life of the process: every mach_host_self call
-    # adds a reference to the same port.
-    host = int(mach_host_self())
-    page_size = ctypes.c_size_t(0)
-    if host_page_size(host, ctypes.byref(page_size)) != 0 or page_size.value <= 0:
-        raise OSError("host_page_size failed")
-    return _DarwinHostVm(
-        ctypes=ctypes,
-        host=host,
-        statistics_type=VmStatistics64,
-        host_statistics64=host_statistics64,
-        page_size=int(page_size.value),
-    )
-
-
-_DARWIN_HOST_VM_UNSET = object()
-_darwin_host_vm_cache: _DarwinHostVm | None | object = _DARWIN_HOST_VM_UNSET
-_darwin_host_vm_lock = threading.Lock()
-
-
-def _darwin_host_vm() -> _DarwinHostVm | None:
-    """Return the one cached Mach binding, including cached unavailability."""
-
-    global _darwin_host_vm_cache
-    cached = _darwin_host_vm_cache
-    if cached is _DARWIN_HOST_VM_UNSET:
-        with _darwin_host_vm_lock:
-            cached = _darwin_host_vm_cache
-            if cached is _DARWIN_HOST_VM_UNSET:
-                try:
-                    cached = _load_darwin_host_vm()
-                except (AttributeError, OSError, TypeError, ValueError):
-                    cached = None
-                _darwin_host_vm_cache = cached
-    return None if cached is None else cast(_DarwinHostVm, cached)
-
-
-def darwin_vm_pages() -> tuple[int, dict[str, int]] | None:
-    """Return the kernel page size and vm_stat's page counts by row name.
-
-    One ``host_statistics64(HOST_VM_INFO64)`` call reads the counters vm_stat
-    prints, derived the way vm_stat derives them (its "Pages free" excludes
-    the speculative pages the kernel counts as free), without a subprocess.
-    The kernel rate-limits this call for non-platform binaries: in each
-    one-second window a process gets 2-10 fresh reads, then the cached
-    counters, so a caller sees memory at most about a second old.
-    """
-
-    binding = _darwin_host_vm()
-    if binding is None:
-        return None
-    ctypes = binding.ctypes
-    stats = binding.statistics_type()
-    count = ctypes.c_uint32(_DARWIN_VM_STATISTICS64_SIZE // 4)
-    if (
-        binding.host_statistics64(
-            binding.host,
-            _DARWIN_HOST_VM_INFO64,
-            ctypes.byref(stats),
-            ctypes.byref(count),
-        )
-        != 0
-    ):
-        return None
-    pages = {
-        "Pages free": max(0, int(stats.free_count) - int(stats.speculative_count)),
-        "Pages active": int(stats.active_count),
-        "Pages inactive": int(stats.inactive_count),
-        "Pages speculative": int(stats.speculative_count),
-        "Pages throttled": int(stats.throttled_count),
-        "Pages wired down": int(stats.wire_count),
-        "Pages purgeable": int(stats.purgeable_count),
-        "File-backed pages": int(stats.external_page_count),
-        "Anonymous pages": int(stats.internal_page_count),
-        "Pages stored in compressor": int(stats.total_uncompressed_pages_in_compressor),
-        "Pages occupied by compressor": int(stats.compressor_page_count),
-    }
-    return binding.page_size, pages
-
-
-def darwin_available_bytes(page_size: int, pages: Mapping[str, int]) -> int | None:
-    """The bytes the guard counts as available from vm_stat's page rows."""
-
-    available_pages = sum(pages.get(name, 0) for name in DARWIN_AVAILABLE_PAGE_ROWS)
-    if page_size <= 0 or available_pages <= 0:
-        return None
-    return available_pages * page_size
-
-
-def _darwin_available_memory_bytes() -> int | None:
-    parsed = darwin_vm_pages()
-    return None if parsed is None else darwin_available_bytes(*parsed)
-
-
 def physical_memory_bytes(
     prefix: str | None = None,
     environ: Mapping[str, str] | None = None,
@@ -328,14 +120,7 @@ def physical_memory_bytes(
     )
     if override is not None:
         return int(override * 1024 * 1024 * 1024)
-    if sys.platform.startswith("linux"):
-        return _linux_meminfo_bytes("MemTotal")
-    if sys.platform == "darwin":
-        return _darwin_physical_memory_bytes()
-    try:
-        return int(os.sysconf("SC_PAGE_SIZE") * os.sysconf("SC_PHYS_PAGES"))
-    except (OSError, ValueError, AttributeError):
-        return None
+    return host_capacity.memory_bytes()[0]
 
 
 def available_memory_bytes(
@@ -349,11 +134,7 @@ def available_memory_bytes(
     )
     if override is not None:
         return int(override * 1024 * 1024 * 1024)
-    if sys.platform.startswith("linux"):
-        return _linux_meminfo_bytes("MemAvailable")
-    if sys.platform == "darwin":
-        return _darwin_available_memory_bytes()
-    return None
+    return host_capacity.memory_bytes()[1]
 
 
 def adaptive_memory_budget(

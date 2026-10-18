@@ -103,14 +103,8 @@ from tools.memory_guard_core.memory_limits import (  # noqa: E402
     DEFAULT_TOTAL_FRACTION_OF_GLOBAL as DEFAULT_TOTAL_FRACTION_OF_GLOBAL,
     AdaptiveMemoryBudget as AdaptiveMemoryBudget,
     ResolvedMemoryLimits as ResolvedMemoryLimits,
-    _darwin_available_memory_bytes as _darwin_available_memory_bytes,
-    _darwin_physical_memory_bytes as _darwin_physical_memory_bytes,
     _float_env as _float_env,
     _gb_from_bytes as _gb_from_bytes,
-    _linux_meminfo_bytes as _linux_meminfo_bytes,
-    DARWIN_AVAILABLE_PAGE_ROWS as DARWIN_AVAILABLE_PAGE_ROWS,
-    darwin_available_bytes as darwin_available_bytes,
-    darwin_vm_pages as darwin_vm_pages,
     _prefixed_names as _prefixed_names,
     adaptive_memory_budget as adaptive_memory_budget,
     available_memory_bytes as available_memory_bytes,
@@ -855,6 +849,7 @@ def run_guarded(
         child_env,
         max_rss_kb=max_rss_kb,
         child_rlimit_kb=child_rlimit_kb,
+        max_total_rss_kb=max_total_rss_kb,
     )
     start = time.perf_counter()
     observer_cpu_start = time.process_time()

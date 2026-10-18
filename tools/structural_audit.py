@@ -3336,7 +3336,7 @@ def _prewarm_rust_projections(root: Path) -> None:
     The probes project every Rust file under the source roots (test ownership
     ignores a --path selection), so the whole set is warmed once.
     """
-    from molt.dx import _memory_bounded_worker_count
+    from molt import host_capacity
 
     paths = [
         path
@@ -3346,7 +3346,7 @@ def _prewarm_rust_projections(root: Path) -> None:
     ]
     workers = min(
         len(paths) // _PROJECTION_FILES_PER_WORKER,
-        _memory_bounded_worker_count(
+        host_capacity.worker_count(
             bytes_per_worker=_PROJECTION_BYTES_PER_WORKER,
             headroom_bytes=_PROJECTION_MEMORY_HEADROOM_BYTES,
         ),

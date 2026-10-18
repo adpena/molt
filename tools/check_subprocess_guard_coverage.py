@@ -445,12 +445,6 @@ ALLOWLIST: tuple[AllowedRawSubprocessUse, ...] = (
         "bounded git workspace metadata/mutation helper outside benchmark/test lanes",
     ),
     AllowedRawSubprocessUse(
-        "tools/memory_guard_core/memory_limits.py",
-        "_darwin_physical_memory_bytes",
-        "run",
-        "memory guard platform probe for adaptive host budgets",
-    ),
-    AllowedRawSubprocessUse(
         "tools/memory_guard_core/process_model.py",
         "sample_processes_posix",
         "run",

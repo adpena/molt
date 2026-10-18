@@ -52,6 +52,7 @@ from molt.dx import (  # noqa: E402
     proof_scratch_root,
     scratch_root,
 )
+from molt import host_capacity  # noqa: E402
 from molt.file_publication import resolve_owned_path  # noqa: E402
 from molt.portable_paths import portable_relative_path  # noqa: E402
 from molt import backend_daemon_custody as daemon_custody  # noqa: E402
@@ -738,12 +739,6 @@ def _daemon_health(socket_path: Path) -> dict[str, Any] | None:
 
 
 @dataclass(frozen=True)
-class _BackendDaemonProcess:
-    sample: memory_guard.ProcessSample
-    socket_path: Path
-
-
-@dataclass(frozen=True)
 class _PrunableProcess:
     pid: int
     identity: memory_guard.ProcessIdentity
@@ -751,16 +746,10 @@ class _PrunableProcess:
     reason: str
 
 
-def _list_backend_daemon_processes() -> list[_BackendDaemonProcess]:
+def _list_backend_daemon_processes() -> list[daemon_custody.BackendDaemonObservation]:
     return sorted(
-        (
-            _BackendDaemonProcess(
-                sample=sample,
-                socket_path=socket_path,
-            )
-            for sample, socket_path in daemon_custody.backend_daemon_process_observations()
-        ),
-        key=lambda process: process.sample.pid,
+        daemon_custody.backend_daemon_process_observations(),
+        key=lambda process: process.pid,
     )
 
 
@@ -780,7 +769,7 @@ def _current_session_backend_daemon_records_by_pid() -> dict[
 
 
 def _verified_backend_daemon_record(
-    process: _BackendDaemonProcess,
+    process: daemon_custody.BackendDaemonObservation,
     records_by_pid: Mapping[int, daemon_custody.BackendDaemonIdentityRecord],
 ) -> daemon_custody.BackendDaemonIdentityRecord | None:
     record = records_by_pid.get(process.sample.pid)
@@ -806,7 +795,7 @@ def _verified_backend_daemon_record(
 
 
 def _retire_idle_backend_daemon(
-    process: _BackendDaemonProcess,
+    process: daemon_custody.BackendDaemonObservation,
     records_by_pid: Mapping[int, daemon_custody.BackendDaemonIdentityRecord],
 ) -> bool:
     """Retire a daemon that reports no admitted jobs. A busy daemon keeps
@@ -1759,7 +1748,7 @@ def _apply_memory_limit() -> None:
 
 
 def _default_jobs() -> int:
-    count = os.cpu_count() or 1
+    count = host_capacity.cpu_count()
     guard = _diff_memory_guard_config()
     count = min(count, _memory_guard_max_jobs(guard))
     max_jobs = os.environ.get("MOLT_DIFF_MAX_JOBS", "").strip()
@@ -1787,7 +1776,7 @@ def _diff_resource_pressure_plan(
     return resource_pressure.plan_resource_pressure(
         prefix="MOLT_DIFF",
         environ=os.environ,
-        cpu_count=max(1, os.cpu_count() or 1),
+        cpu_count=host_capacity.cpu_count(),
         budget=budget,
         diff_tree_gb=config.max_tree_gb,
         diff_global_gb=config.global_gb,

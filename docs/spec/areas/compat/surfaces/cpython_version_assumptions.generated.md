@@ -8,7 +8,7 @@ The inventory includes older and future Python 3 minor spellings, full eight-dig
 
 - `authority-routed` files: 62
 - `operational-tooling` files: 56
-- `scattered-assumption` files: 338
+- `scattered-assumption` files: 339
 
 ## Files
 
@@ -53,6 +53,7 @@ The inventory includes older and future Python 3 minor spellings, full eight-dig
 | `src/molt/frontend/visitors/statement_control_flow.py` | 4 | scattered-assumption | `3.12` |
 | `src/molt/frontend/visitors/statement_scope.py` | 1 | authority-routed | `3.13` |
 | `src/molt/gpu/turboquant/codebooks.py` | 1 | scattered-assumption | `3.0` |
+| `src/molt/host_capacity.py` | 1 | scattered-assumption | `3.13` |
 | `src/molt/python_external_custody.py` | 1 | scattered-assumption | `3.10` |
 | `src/molt/python_interpreter.py` | 5 | authority-routed | `sys.version_info` |
 | `src/molt/python_runtime_admission.py` | 1 | scattered-assumption | `3.5` |

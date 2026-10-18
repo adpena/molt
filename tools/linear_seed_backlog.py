@@ -4,10 +4,20 @@ import argparse
 from concurrent import futures
 from collections import Counter
 import json
-import os
 import re
+import sys
 from pathlib import Path
 from typing import Any
+
+_REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
+
+from tools.import_file import bind_repository_imports  # noqa: E402
+
+bind_repository_imports(__file__)
+
+from molt import host_capacity  # noqa: E402
 
 
 TODO_RE = re.compile(
@@ -714,7 +724,7 @@ def _extract_all_todos(
     if len(paths) == 1:
         return extract_todos(paths[0], repo_root=repo_root)
 
-    max_workers = min(len(paths), max(os.cpu_count() or 1, 1))
+    max_workers = min(len(paths), host_capacity.cpu_count())
     repo_root_text = str(repo_root) if repo_root is not None else None
     path_values = [(str(path), repo_root_text) for path in paths]
 

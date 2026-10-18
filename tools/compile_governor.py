@@ -17,6 +17,7 @@ from molt.file_locks import (
 )
 
 from tools import resource_pressure  # type: ignore
+from molt import host_capacity
 
 DEFAULT_MAX_COMPILE_SLOTS = resource_pressure.DEFAULT_MAX_COMPILE_SLOTS
 DEFAULT_WAIT_SECONDS = 180.0
@@ -173,7 +174,7 @@ def _max_slots_from_env(
 
 
 def _max_load_from_env(env: Mapping[str, str], *, max_slots: int) -> float:
-    cpu_count = max(1, os.cpu_count() or 1)
+    cpu_count = host_capacity.cpu_count()
     default_load = max(
         float(max_slots),
         float(cpu_count) * DEFAULT_MAX_LOAD_PER_CPU,

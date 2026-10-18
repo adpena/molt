@@ -167,7 +167,9 @@ def test_daemon_observation_uses_only_birth_bound_typed_vectors(
             ProcessSnapshotError=model.ProcessSnapshotError,
         ),
     )
-    assert daemon.backend_daemon_process_observations() == ((valid, Path(argv[-1])),)
+    assert daemon.backend_daemon_process_observations() == (
+        daemon.BackendDaemonObservation(valid, Path(argv[-1])),
+    )
 
 
 @pytest.mark.parametrize("module_name", ["tools.bench_individual", "tests.molt_diff"])
@@ -179,7 +181,9 @@ def test_lateral_daemon_producers_preserve_typed_socket_path(
     argv = (str(tmp_path / "molt-backend"), "--daemon", "--socket", str(socket))
     sample = model.ProcessSample(12, 1, 0, "diagnostic", 12, 1, 100, argv)
     monkeypatch.setattr(
-        daemon, "backend_daemon_process_observations", lambda: ((sample, socket),)
+        daemon,
+        "backend_daemon_process_observations",
+        lambda: (daemon.BackendDaemonObservation(sample, socket),),
     )
     observed = module._list_backend_daemon_processes()
     assert len(observed) == 1 and observed[0].socket_path == socket

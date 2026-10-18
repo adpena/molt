@@ -5,9 +5,9 @@ from __future__ import annotations
 import argparse
 from dataclasses import dataclass
 import math
-import os
 from pathlib import Path
 from typing import Literal, Mapping, Sequence
+from molt import host_capacity
 
 WASI_TARGET = "wasm32-wasip1"
 OBSERVER_FEATURE = "l7-attestation-probe"
@@ -25,7 +25,9 @@ def argument_parser() -> argparse.ArgumentParser:
         default="semantic",
     )
     parser.add_argument(
-        "--parallel-threads", type=int, default=max(2, min(8, os.cpu_count() or 2))
+        "--parallel-threads",
+        type=int,
+        default=max(2, min(8, host_capacity.cpu_count())),
     )
     parser.add_argument("--build-timeout-seconds", type=float, default=6300)
     parser.add_argument("--child-timeout-seconds", type=float, default=120)
