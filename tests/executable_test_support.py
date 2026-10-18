@@ -6,17 +6,28 @@ import os
 from pathlib import Path
 import stat
 import sys
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 
 
 _DONOR_FACTORY: Callable[[], Path] | None = None
 _DONOR: Path | None = None
+_BUILD_ENVIRONMENT: Mapping[str, str] | None = None
 
 
-def bind_native_donor_factory(factory: Callable[[], Path] | None) -> None:
-    """Bind the pytest session's lazy directory owner, or release it at teardown."""
-    global _DONOR_FACTORY, _DONOR
+def bind_native_donor_factory(
+    factory: Callable[[], Path] | None, *, environment: Mapping[str, str] | None
+) -> None:
+    """Bind the pytest session's lazy directory owner and build environment, or
+    release both at teardown.
+
+    Fixture executables are session apparatus, so they build in the environment
+    the session started with, never in the environment of the test that first
+    asks: a test that points HOME elsewhere hides rustup's toolchains from the
+    rustc proxy, which then fails or installs a toolchain.
+    """
+    global _DONOR_FACTORY, _DONOR, _BUILD_ENVIRONMENT
     _DONOR_FACTORY, _DONOR = factory, None
+    _BUILD_ENVIRONMENT = None if environment is None else dict(environment)
 
 
 def native_executable_donor() -> Path:
@@ -76,9 +87,12 @@ def build_native_executable(path: Path, rust_source: str) -> Path:
 
     source = path.with_name(f"{path.name}.rs")
     source.write_text(rust_source, encoding="utf-8")
+    if _BUILD_ENVIRONMENT is None:
+        raise RuntimeError("tests/conftest.py must bind the native build environment")
     run_guarded_test_process(
         ["rustc", "--edition=2024", "-C", "opt-level=0", "-o", str(path), str(source)],
         cwd=path.parent,
+        env=_BUILD_ENVIRONMENT,
         check=True,
     )
     return path
