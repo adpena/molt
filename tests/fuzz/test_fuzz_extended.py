@@ -1,25 +1,24 @@
-"""Extended fuzzing tests for CI Tier 3.
+"""Contract tests for the safe-mode program generator at three complexity levels.
 
-Generates programs at various complexity levels, validates syntax, runs them
-under CPython, and checks determinism.  Reports aggregate statistics at the
-end of each parametrized batch.
+``tools/fuzz_compiler_safe.SafeProgramGenerator`` feeds the compiler fuzzer,
+which compiles, runs and compares its programs against CPython in
+``nightly.verification-t3.fuzz-compiler`` and counts every CPython error as a
+failure. These tests hold the generator to that contract without building:
+each program parses, is reproducible from its seed, prints, and runs to a
+clean exit under CPython; and the batch covers the documented AST node types.
 """
 
 from __future__ import annotations
 
 import ast
-import os
 import subprocess
 import sys
-from pathlib import Path
 from random import Random
 
 import pytest
 
 from tests.native_process_guard import run_native_test_process
 from tools.fuzz_compiler_safe import SafeProgramGenerator
-
-_REPO_ROOT = Path(__file__).resolve().parents[2]
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -83,7 +82,7 @@ class TestFuzzExtendedBatch:
     def test_cpython_terminates(self, level: str) -> None:
         max_depth, max_stmts = COMPLEXITY_PRESETS[level]
         hangs: list[int] = []
-        runtime_errors: list[tuple[int, int]] = []
+        runtime_errors: list[tuple[int, int, str]] = []
         for seed in range(SEED_BATCH_SIZE):
             source = _generate(seed, max_depth, max_stmts)
             try:
@@ -97,15 +96,14 @@ class TestFuzzExtendedBatch:
                 hangs.append(seed)
                 continue
             if result.returncode != 0:
-                runtime_errors.append((seed, result.returncode))
+                last_line = (result.stderr.strip().splitlines() or [""])[-1]
+                runtime_errors.append((seed, result.returncode, last_line))
         assert not hangs, f"[{level}] Programs hung for seeds: {hangs}"
-        # Runtime errors are tracked but not fatal -- the generator tries to
-        # produce clean programs but some edge cases may trigger runtime
-        # exceptions.  We allow up to 10% failure rate.
-        max_allowed = max(1, SEED_BATCH_SIZE // 10)
-        assert len(runtime_errors) <= max_allowed, (
-            f"[{level}] Too many runtime errors ({len(runtime_errors)}/{SEED_BATCH_SIZE}): "
-            f"seeds {[s for s, _ in runtime_errors]}"
+        # The fuzzer counts a CPython error as a failed proof, so every safe
+        # program must run to a clean exit.
+        assert not runtime_errors, (
+            f"[{level}] {len(runtime_errors)}/{SEED_BATCH_SIZE} programs failed "
+            f"under CPython: {runtime_errors}"
         )
 
     def test_all_programs_have_print(self, level: str) -> None:
@@ -164,148 +162,3 @@ class TestFuzzASTCoverage:
             all_types |= _collect_ast_node_types(source)
         missing = expected - all_types
         assert not missing, f"Expected AST node types not generated: {sorted(missing)}"
-
-
-# ---------------------------------------------------------------------------
-# Molt compilation (best-effort)
-# ---------------------------------------------------------------------------
-
-
-class TestFuzzMoltCompile:
-    """Try compiling generated programs with Molt if available.
-
-    These tests are skipped when Molt cannot be imported, so they are safe
-    to run in environments where only CPython is present.
-    """
-
-    @staticmethod
-    def _molt_available() -> bool:
-        try:
-            result = run_native_test_process(
-                [sys.executable, "-m", "molt.cli", "--help"],
-                capture_output=True,
-                text=True,
-                timeout=10,
-                cwd=str(_REPO_ROOT),
-            )
-            return result.returncode == 0
-        except Exception:
-            return False
-
-    @pytest.fixture(autouse=True)
-    def _skip_unless_molt(self) -> None:
-        if not self._molt_available():
-            pytest.skip("molt CLI not available")
-
-    def test_compile_ten_programs(self, tmp_path: Path) -> None:
-        """Compile 10 generated programs with molt build."""
-        compile_failures: list[tuple[int, str]] = []
-        env = {
-            **os.environ,
-            "MOLT_BACKEND_DAEMON": "0",
-            "MOLT_USE_SCCACHE": "0",
-            "PYTHONPATH": str(_REPO_ROOT / "src"),
-        }
-        for seed in range(10):
-            source = _generate(seed, max_depth=3, max_stmts=15)
-            src_file = tmp_path / f"fuzz_{seed}.py"
-            src_file.write_text(source, encoding="utf-8")
-            try:
-                result = run_native_test_process(
-                    [
-                        sys.executable,
-                        "-m",
-                        "molt.cli",
-                        "build",
-                        "--build-profile",
-                        "dev",
-                        "--deterministic",
-                        str(src_file),
-                    ],
-                    capture_output=True,
-                    text=True,
-                    timeout=120,
-                    cwd=str(_REPO_ROOT),
-                    env=env,
-                )
-            except subprocess.TimeoutExpired:
-                compile_failures.append((seed, "(timed out)"))
-                continue
-            if result.returncode != 0:
-                compile_failures.append(
-                    (seed, result.stderr[:300] if result.stderr else "(no stderr)")
-                )
-        # We expect most programs to compile; allow a 30% failure rate since
-        # Molt does not yet support every Python construct.
-        max_allowed = max(1, 10 * 30 // 100)
-        assert len(compile_failures) <= max_allowed, (
-            f"{len(compile_failures)}/10 programs failed Molt compilation: "
-            f"{compile_failures}"
-        )
-
-
-# ---------------------------------------------------------------------------
-# Statistics report (always runs last via test ordering)
-# ---------------------------------------------------------------------------
-
-
-class TestFuzzExtendedReport:
-    """Aggregate statistics across a medium-complexity batch."""
-
-    def test_report(self, capsys: pytest.CaptureFixture[str]) -> None:
-        stats = {
-            "generated": 0,
-            "syntax_valid": 0,
-            "runtime_success": 0,
-            "runtime_error": 0,
-            "timeout": 0,
-            "deterministic": 0,
-        }
-        max_depth, max_stmts = COMPLEXITY_PRESETS["medium"]
-        for seed in range(SEED_BATCH_SIZE):
-            source = _generate(seed, max_depth, max_stmts)
-            stats["generated"] += 1
-
-            try:
-                ast.parse(source)
-                stats["syntax_valid"] += 1
-            except SyntaxError:
-                continue
-
-            # Determinism
-            if _generate(seed, max_depth, max_stmts) == source:
-                stats["deterministic"] += 1
-
-            # Runtime
-            try:
-                result = run_native_test_process(
-                    [sys.executable, "-c", source],
-                    capture_output=True,
-                    text=True,
-                    timeout=15,
-                )
-                if result.returncode == 0:
-                    stats["runtime_success"] += 1
-                else:
-                    stats["runtime_error"] += 1
-            except subprocess.TimeoutExpired:
-                stats["timeout"] += 1
-
-        # Print report (visible with pytest -s or captured by capsys)
-        lines = [
-            "",
-            "=== Fuzz Extended Report (medium) ===",
-            f"  Generated:       {stats['generated']}",
-            f"  Syntax valid:    {stats['syntax_valid']}",
-            f"  Deterministic:   {stats['deterministic']}",
-            f"  Runtime success: {stats['runtime_success']}",
-            f"  Runtime error:   {stats['runtime_error']}",
-            f"  Timeout:         {stats['timeout']}",
-            "=====================================",
-        ]
-        report = "\n".join(lines)
-        print(report)
-
-        # Basic sanity: all should be syntax-valid and deterministic
-        assert stats["syntax_valid"] == stats["generated"]
-        assert stats["deterministic"] == stats["generated"]

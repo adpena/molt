@@ -374,7 +374,7 @@
     "tests/tools/test_win_job_contract.py",
     "tests/tools/test_windows_process_api.py"
   ],
-  "authority_sha256": "dc6ad187e601dfa2fdb99259bbae5c2245bc53bc07034674385d9142003cc3e1",
+  "authority_sha256": "36dc929f03dff101d4a997dabdd80392e27de722135b37be9bb1c5f53afcccb5",
   "cargo_environment_policy": {
     "incident_command": "cargo metadata --locked --format-version 1",
     "incident_commit": "20b046b79bd4ca64a8c859f737f6e330377bcc4e",
@@ -1437,6 +1437,45 @@
         "scheduled"
       ],
       "timeout_seconds": 2700,
+      "toolchains": [
+        "python",
+        "uv",
+        "rustc",
+        "cargo"
+      ]
+    },
+    {
+      "argv": [
+        "uv",
+        "run",
+        "python3",
+        "-m",
+        "pytest",
+        "-q",
+        "-n",
+        "2",
+        "tests/fuzz/test_fuzz_differential.py",
+        "tests/fuzz/test_fuzz_extended.py"
+      ],
+      "cache_domain": "cargo-workspace",
+      "cargo_build_python": true,
+      "cargo_native_units": {
+        "target": [
+          "c",
+          "c++"
+        ]
+      },
+      "cell": "linux-x86_64-py312-native-dev",
+      "dependencies": [
+        "nightly.verification-t3.compiler-prewarm"
+      ],
+      "family": "nightly_verification_t3",
+      "id": "nightly.verification-t3.fuzz-tests",
+      "resource_class": "scheduled-suite",
+      "tiers": [
+        "scheduled"
+      ],
+      "timeout_seconds": 1200,
       "toolchains": [
         "python",
         "uv",
@@ -8547,15 +8586,15 @@
         }
       },
       "nightly_verification_t3": {
-        "budget_seconds": 5400,
+        "budget_seconds": 6300,
         "critical_path_seconds": 4800,
         "headroom_seconds": 0,
         "job_reserve_seconds": 600,
-        "projected_makespan_seconds": 4800,
-        "required_job_seconds": 5400,
+        "projected_makespan_seconds": 5700,
+        "required_job_seconds": 6300,
         "resource_capacity_floor_seconds": {
           "compiler-build-resource": 1200,
-          "scheduled-suite": 3375
+          "scheduled-suite": 3675
         }
       },
       "runtime_candidate_costs": {
@@ -11675,7 +11714,7 @@
       "tiers": [
         "scheduled"
       ],
-      "timeout_minutes": 90,
+      "timeout_minutes": 105,
       "workflow": ".github/workflows/nightly.yml"
     },
     {

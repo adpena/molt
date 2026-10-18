@@ -6397,6 +6397,7 @@ def test_native_c_obligation_is_declared_only_for_confirmed_c_builders():
                 "nightly.shards.prepare",
                 "nightly.verification-t3.compiler-prewarm",
                 "nightly.verification-t3.fuzz-compiler",
+                "nightly.verification-t3.fuzz-tests",
                 "nightly.verification-t3.reproducibility",
                 "nightly.verification-t3.translation",
                 "portability.rust.linux-aarch64.clippy-workspace",
