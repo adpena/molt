@@ -34,29 +34,29 @@ def _integrate_module_code_slots_with_state(
     funcs: list[dict[str, Any]],
     local_symbols: set[str],
     class_definitions: Collection[str],
-) -> list[dict[str, Any]]:
-    """Project module code owners without changing the borrowed lowering result."""
-    init_symbol = SimpleTIRGenerator.module_init_symbol(module_name)
-    integrated_functions: list[dict[str, Any]] = []
+) -> None:
+    """Validate and register canonical module owners, borrowing every record."""
+    if "molt_main" in local_symbols:
+        raise ValueError(
+            f"Noncanonical module code owner 'molt_main' in module {module_name}"
+        )
     for func in funcs:
-        source_ops = func.get("ops", [])
-        integrated_ops: list[dict[str, Any]] | None = None
-        for index, original_op in enumerate(source_ops):
-            op = original_op
+        if func.get("name") == "molt_main":
+            raise ValueError(
+                f"Legacy program entry 'molt_main' in module {module_name}"
+            )
+        for op in func.get("ops", []):
             kind = op.get("kind")
             if kind == "code_slots_init":
-                if integrated_ops is None:
-                    integrated_ops = source_ops[:index]
-                continue
+                raise ValueError(
+                    f"Module {module_name} cannot initialize program code slots"
+                )
             if kind in {"code_slot_set", "trace_enter_slot"}:
                 symbol = op.get("s_value")
                 if symbol not in local_symbols or op.get("value") is not None:
                     raise ValueError(
                         f"Missing canonical code owner {symbol!r} in module {module_name}"
                     )
-                if symbol == "molt_main":
-                    symbol = init_symbol
-                    op = {**op, "s_value": symbol}
                 _register_global_code_id_with_state(integration_state, symbol)
             definition = op.get("class_definition")
             if definition is not None:
@@ -75,20 +75,6 @@ def _integrate_module_code_slots_with_state(
                     definition, module_name
                 )
                 _register_global_code_id_with_state(integration_state, definition)
-            if integrated_ops is None and op is not original_op:
-                integrated_ops = source_ops[:index]
-            if integrated_ops is not None:
-                integrated_ops.append(op)
-        if integrated_ops is not None or func.get("name") == "molt_main":
-            projected = dict(func)
-            if integrated_ops is not None:
-                projected["ops"] = integrated_ops
-            if func.get("name") == "molt_main":
-                projected["name"] = init_symbol
-            integrated_functions.append(projected)
-        else:
-            integrated_functions.append(func)
-    return integrated_functions
 
 
 def _validate_class_definition_references_with_state(
@@ -162,7 +148,7 @@ def _integrate_module_frontend_result_with_state(
                 f"and module {module_name}"
             )
     try:
-        integrated_functions = _integrate_module_code_slots_with_state(
+        _integrate_module_code_slots_with_state(
             integration_state,
             module_name,
             ir_functions,
@@ -171,7 +157,7 @@ def _integrate_module_frontend_result_with_state(
         )
     except ValueError as exc:
         return str(exc)
-    integration_state.functions.extend(integrated_functions)
+    integration_state.functions.extend(ir_functions)
     # ClassIds are program-wide identities: one module's classes never
     # replace another module's same-named classes.
     integration_state.known_classes.update(local_classes)

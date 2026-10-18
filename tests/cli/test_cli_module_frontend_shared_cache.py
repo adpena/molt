@@ -557,8 +557,27 @@ def test_same_size_different_content_is_not_reused(
         is_package=False,
         context_digest=context_digest,
         result={
-            "functions": [{"name": "m__f", "params": ["a"], "return_abi": "value"}]
+            "functions": [
+                {
+                    "name": "m__f",
+                    "params": ["a"],
+                    "param_types": ["i64"],
+                    "return_abi": "value",
+                }
+            ]
         },
+    )
+
+    assert (
+        MC._read_persisted_module_lowering(
+            project_root,
+            path,
+            source_lease=_ModuleSourceLease.path_backed(path),
+            module_name="m",
+            is_package=False,
+            context_digest=context_digest,
+        )
+        is not None
     )
 
     _use_session(monkeypatch, "B")
@@ -603,7 +622,14 @@ def test_changed_source_content_is_not_reused_from_shared(
         is_package=False,
         context_digest=context_digest,
         result={
-            "functions": [{"name": "m__f", "params": ["a"], "return_abi": "value"}]
+            "functions": [
+                {
+                    "name": "m__f",
+                    "params": ["a"],
+                    "param_types": ["i64"],
+                    "return_abi": "value",
+                }
+            ]
         },
     )
     shared_slot = MC._shared_module_lowering_cache_path_for(
@@ -612,6 +638,18 @@ def test_changed_source_content_is_not_reused_from_shared(
     assert shared_slot is not None and shared_slot.is_file()
 
     # Session B, DIFFERENT source content at the same path (a real edit).
+    assert (
+        MC._read_persisted_module_lowering(
+            project_root,
+            path,
+            source_lease=_ModuleSourceLease.path_backed(path),
+            module_name="m",
+            is_package=False,
+            context_digest=context_digest,
+        )
+        is not None
+    )
+
     _use_session(monkeypatch, "B")
     path.write_text("def f(a):\n    return a + 999\n", encoding="utf-8")
     _clear_path_caches()  # drop any cached content sha for the old bytes

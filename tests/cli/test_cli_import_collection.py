@@ -9195,11 +9195,10 @@ def test_compiled_source_init_publishes_before_capture_and_rebinding(
             "run = replacement\n"
         )
     )
-    functions = generator.to_json()["functions"]
+    functions = generator.to_json(scope="module")["functions"]
     source_init = next(
-        function for function in functions if function["name"] == "molt_main"
+        function for function in functions if function["name"] == "molt_init_nativepkg"
     )
-    source_init["name"] = "molt_init_nativepkg"
     assert source_init["source_module_publication"]["module_name"] == "nativepkg"
     assert source_init["source_module_publication"]["module_value"]
     publication_failure_label = source_init["source_module_publication"][
@@ -9660,12 +9659,13 @@ def test_entry_source_identity_survives_json_and_explicit_main_registry_alias() 
         source_path="/virtual/application.py",
     )
     generator.visit(ast.parse("pass\n"))
-    functions = json.loads(json.dumps(generator.to_json()["functions"]))
+    functions = json.loads(json.dumps(generator.to_json(scope="module")["functions"]))
     source_init = next(
-        function for function in functions if function["name"] == "molt_main"
+        function
+        for function in functions
+        if function["name"] == SimpleTIRGenerator.module_init_symbol("application")
     )
     assert source_init["source_module_publication"]["module_name"] == "application"
-    source_init["name"] = SimpleTIRGenerator.module_init_symbol("application")
     before = json.loads(json.dumps(source_init))
     borrowed_ops = source_init["ops"]
     assert (
@@ -16557,7 +16557,7 @@ def test_persisted_module_lowering_rejects_missing_local_function_reference(
     result = {
         "functions": [
             {
-                "name": "molt_main",
+                "name": "molt_init_pkg",
                 "params": [],
                 "return_abi": "void",
                 "ops": [
@@ -16587,7 +16587,7 @@ def test_persisted_module_lowering_rejects_missing_local_function_reference(
             "pkg",
             [
                 {
-                    "name": "molt_main",
+                    "name": "molt_init_pkg",
                     "params": [],
                     "ops": [
                         {
@@ -16819,18 +16819,19 @@ def test_persisted_module_lowering_returns_isolated_mutable_results(
         result={
             "functions": [
                 {
-                    "name": "molt_main",
+                    "name": "molt_init_pkg",
+                    "params": [],
                     "return_abi": "void",
                     "ops": [
                         {
                             "kind": "code_slot_set",
-                            "s_value": "molt_main",
+                            "s_value": "molt_init_pkg",
                             "args": ["code", "globals"],
                         }
                     ],
                 }
             ],
-            "func_code_ids": {"molt_main": 0},
+            "func_code_ids": {"molt_init_pkg": 0},
             "local_classes": {},
             "midend_policy_outcomes_by_function": {},
             "midend_pass_stats_by_function": {},
@@ -16858,9 +16859,9 @@ def test_persisted_module_lowering_returns_isolated_mutable_results(
     assert first is not None
     assert second is not None
     first["functions"][0]["ops"][0]["s_value"] = "different_owner"
-    first["func_code_ids"]["molt_main"] = 99
-    assert second["functions"][0]["ops"][0]["s_value"] == "molt_main"
-    assert second["func_code_ids"] == {"molt_main": 0}
+    first["func_code_ids"]["molt_init_pkg"] = 99
+    assert second["functions"][0]["ops"][0]["s_value"] == "molt_init_pkg"
+    assert second["func_code_ids"] == {"molt_init_pkg": 0}
 
 
 def test_finalize_backend_ir_pads_truncated_param_types() -> None:
@@ -16884,8 +16885,14 @@ def test_finalize_backend_ir_pads_truncated_param_types() -> None:
 
 
 @pytest.mark.usefixtures("isolated_frontend_state")
-def test_persisted_module_lowering_repairs_truncated_param_types(
+@pytest.mark.parametrize(
+    ("params", "param_types"),
+    [(["s", "x", "kw"], ["Any"]), (["s"], None), (None, [])],
+)
+def test_persisted_module_lowering_rejects_incomplete_parameter_declarations(
     tmp_path: Path,
+    params: list[str] | None,
+    param_types: list[str] | None,
 ) -> None:
     module_path = tmp_path / "pkg.py"
     module_path.write_text("x = 1\n", encoding="utf-8")
@@ -16905,8 +16912,8 @@ def test_persisted_module_lowering_repairs_truncated_param_types(
             "functions": [
                 {
                     "name": "pkg__f",
-                    "params": ["s", "x", "kw"],
-                    "param_types": ["Any"],
+                    "params": params,
+                    "param_types": param_types,
                     "return_abi": "value",
                     "ops": [],
                 }
@@ -16928,9 +16935,7 @@ def test_persisted_module_lowering_repairs_truncated_param_types(
         context_digest=context_digest,
     )
 
-    assert cached is not None
-    assert cached["functions"][0]["params"] == ["s", "x", "kw"]
-    assert cached["functions"][0]["param_types"] == ["Any", "i64", "i64"]
+    assert cached is None
 
 
 def test_prepare_frontend_parallel_batch_reuses_precomputed_context_digest(

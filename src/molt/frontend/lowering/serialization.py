@@ -499,6 +499,7 @@ class SerializationMixin(
         *,
         function_name: str | None = None,
         run_midend: bool = True,
+        module_init_symbol: str | None = None,
     ) -> list[dict[str, Any]]:
         if function_name is not None:
             self._active_midend_function_name = function_name
@@ -512,6 +513,12 @@ class SerializationMixin(
         json_ops: list[dict[str, Any]] = []
         json_list_int_containers = set(getattr(self, "_list_int_containers", set()))
         function_owns_frame = self._function_needs_frame_trace(function_name)
+        ctx = SerializationContext(
+            json_ops=json_ops,
+            json_list_int_containers=json_list_int_containers,
+            function_name=function_name,
+            module_init_symbol=module_init_symbol,
+        )
 
         # Track json_ops start index for each MoltOp so we can inject
         # expression-level col_offset after the main serialization loop.
@@ -520,11 +527,6 @@ class SerializationMixin(
             validate_frontend_kind(op.kind, diagnostic_function)
             serialized_start = len(json_ops)
             _col_inject.append((serialized_start, op))
-            ctx = SerializationContext(
-                json_ops=json_ops,
-                json_list_int_containers=json_list_int_containers,
-                function_name=function_name,
-            )
             if self._serialize_basic_op(op, ctx):
                 pass
             elif self._serialize_function_op(op, ctx):
@@ -608,11 +610,20 @@ class SerializationMixin(
             ops.insert(0, init_op)
 
     def to_json(
-        self, *, midend_stage: Literal["pre-midend", "post-midend"] = "post-midend"
+        self,
+        *,
+        midend_stage: Literal["pre-midend", "post-midend"] = "post-midend",
+        scope: Literal["program", "module"] = "program",
     ) -> dict[str, Any]:
         if midend_stage not in {"pre-midend", "post-midend"}:
             raise ValueError(f"unsupported IR serialization stage: {midend_stage}")
-        self._ensure_code_slots_init()
+        if scope not in {"program", "module"}:
+            raise ValueError(f"unsupported IR serialization scope: {scope}")
+        module_init_symbol = (
+            self.module_init_symbol(self.module_name) if scope == "module" else None
+        )
+        if scope == "program":
+            self._ensure_code_slots_init()
         funcs_json: list[dict[str, Any]] = []
         # DETERMINISM: sort to ensure stable output regardless of dict insertion order
         for name, data in sorted(self.funcs_map.items()):
@@ -620,10 +631,13 @@ class SerializationMixin(
                 data["ops"],
                 function_name=name,
                 run_midend=midend_stage == "post-midend",
+                module_init_symbol=module_init_symbol,
             )
             func_entry: dict[str, Any] = {
-                "name": name,
-                "params": data["params"],
+                "name": module_init_symbol
+                if name == "molt_main" and module_init_symbol is not None
+                else name,
+                "params": list(data["params"]),
                 "return_abi": data["return_abi"],
                 "ops": json_ops,
             }
@@ -675,4 +689,12 @@ class SerializationMixin(
                 func_entry["source_file"] = self.source_path
             funcs_json.append(func_entry)
         self._maybe_report_midend_stats()
-        return {"functions": funcs_json, "code_slots": dict(self.func_code_ids)}
+        return {
+            "functions": funcs_json,
+            "code_slots": {
+                module_init_symbol
+                if symbol == "molt_main" and module_init_symbol is not None
+                else symbol: code_id
+                for symbol, code_id in self.func_code_ids.items()
+            },
+        }

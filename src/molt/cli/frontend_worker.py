@@ -205,7 +205,7 @@ def _frontend_lower_module_worker(payload: dict[str, Any]) -> dict[str, Any]:
             frontend_phase_timeout,
             phase_name=f"frontend IR lowering ({module_name})",
         ):
-            ir = gen.to_json()
+            ir = gen.to_json(scope="module")
         lower_s = time.perf_counter() - lower_start
     except (CompatibilityError, TimeoutError) as exc:
         worker_finished_ns = time.time_ns()
@@ -248,7 +248,7 @@ def _frontend_lower_module_worker(payload: dict[str, Any]) -> dict[str, Any]:
         "ok": True,
         "source_sha256": source_lease.source_sha256,
         "functions": ir["functions"],
-        "func_code_ids": dict(gen.func_code_ids),
+        "func_code_ids": ir["code_slots"],
         "local_classes": {
             class_id: gen.classes[class_id] for class_id in gen.local_class_ids
         },
@@ -281,7 +281,7 @@ def _module_frontend_payload(
     return {
         "source_sha256": source_sha256,
         "functions": ir["functions"],
-        "func_code_ids": dict(gen.func_code_ids),
+        "func_code_ids": ir["code_slots"],
         "local_classes": {
             class_id: gen.classes[class_id] for class_id in gen.local_class_ids
         },
@@ -528,7 +528,7 @@ def _lower_module_serial_with_context(
             lowering_context.frontend_phase_timeout,
             phase_name=f"frontend IR lowering ({module_name})",
         ):
-            ir = gen.to_json()
+            ir = gen.to_json(scope="module")
         lower_s = time.perf_counter() - lower_start
     except TimeoutError as exc:
         raise _ModuleLowerError(str(exc), timed_out=True) from exc

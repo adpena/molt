@@ -17,12 +17,15 @@ from molt.frontend._mixin_base import GeneratorMixinBase
 class SerializationFunctionOpsMixin(GeneratorMixinBase):
     def _serialize_function_op(self, op: MoltOp, ctx: SerializationContext) -> bool:
         if op.kind == "CODE_SLOTS_INIT":
-            ctx.json_ops.append(
-                {
-                    "kind": "code_slots_init",
-                    "value": int(op.args[0]),
-                }
-            )
+            # The program wrapper owns global allocation. A module record
+            # contains symbolic owners only, even after a program projection.
+            if ctx.module_init_symbol is None:
+                ctx.json_ops.append(
+                    {
+                        "kind": "code_slots_init",
+                        "value": int(op.args[0]),
+                    }
+                )
         elif op.kind == "CLASS_DEF":
             ctx.json_ops.append(
                 {

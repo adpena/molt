@@ -211,8 +211,45 @@ def test_worker_success_carries_the_consumed_source_generation(
     result = frontend_worker._frontend_lower_module_worker(_worker_payload(path, lease))
     assert result["ok"] is True
     assert result["functions"]
+    init_symbol = SimpleTIRGenerator.module_init_symbol("app")
+    assert init_symbol in result["func_code_ids"]
+    assert "molt_main" not in result["func_code_ids"]
+    assert any(function["name"] == init_symbol for function in result["functions"])
+    for function in result["functions"]:
+        assert function["name"] != "molt_main"
+        for op in function["ops"]:
+            assert op["kind"] != "code_slots_init"
+            if op["kind"] in {"code_slot_set", "trace_enter_slot"}:
+                assert op["s_value"] in result["func_code_ids"]
+                assert op.get("value") is None
     consumed_bytes = source.encode("utf-8") if inline else raw
     assert result["source_sha256"] == hashlib.sha256(consumed_bytes).hexdigest()
+
+
+def test_serial_payload_uses_serialized_module_owners_without_rewriting_records() -> (
+    None
+):
+    gen = SimpleTIRGenerator(module_name="app")
+    gen.visit(ast.parse("def answer(value):\n    return value + 1\n"))
+    document = gen.to_json(scope="module")
+    assert "molt_main" in gen.func_code_ids
+    assert "molt_main" not in document["code_slots"]
+    payload = frontend_worker._module_frontend_payload(
+        gen,
+        document,
+        source_sha256="a" * 64,
+        visit_s=0.1,
+        lower_s=0.2,
+        total_s=0.3,
+    )
+    assert payload["functions"] is document["functions"]
+    assert payload["func_code_ids"] == document["code_slots"]
+    assert payload["func_code_ids"] != gen.func_code_ids
+    for source, transferred in zip(
+        document["functions"], payload["functions"], strict=True
+    ):
+        assert transferred is source
+        assert transferred["ops"] is source["ops"]
 
 
 def test_worker_refuses_a_missing_source_lease_without_throwing(tmp_path: Path) -> None:

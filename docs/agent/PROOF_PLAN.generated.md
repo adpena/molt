@@ -348,7 +348,7 @@ The wrapper conflict was reconfirmed by native CI run `30211145633` job `8981749
 |---|---:|---:|
 | `browser-loader-deployment` | 12 | 0 |
 | `frontend-python` | 1 | 3 |
-| `frontend-ir-assembly` | 20 | 0 |
+| `frontend-ir-assembly` | 28 | 0 |
 | `build-output-identity` | 6 | 0 |
 | `backend-environment-contract` | 19 | 0 |
 | `bootstrap-stdlib` | 4 | 1 |
