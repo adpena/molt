@@ -600,6 +600,9 @@ unsafe extern "C" fn hook_int_to_bytes(
             out,
             little_endian != 0,
             signed != 0,
+            // Physical C-API layout projection belongs to the published 3.12
+            // ABI, independently of the compiled Python target version.
+            crate::builtins::numbers::EmptySignedBytes::AllowMinusOne,
         )
     })
 }

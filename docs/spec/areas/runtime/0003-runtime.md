@@ -32,6 +32,41 @@ Rejected index results and callback exceptions retain the
 canonical conversion diagnostics. Signed ties-to-even decimal multiples share
 one decision across integer carriers and negative float digit counts.
 
+Integer byte conversion publishes its defaults once in the native callable's
+owned default tuple: `int.to_bytes(length=1, byteorder='big', *, signed=False)`
+and `int.from_bytes(bytes, byteorder='big', *, signed=False)`. The common codec
+binder reads that tuple, rejects positional `signed`, and reuses the shared
+Clinic keyword admission. Omission uses the internal missing sentinel for big
+endian order; it does not allocate a default string or consult host byte order.
+Both operations admit byteorder as Unicode before evaluating signed truth,
+then validate the exact case-sensitive contents. Converter failures preserve
+the original exception and prevent later conversion callbacks.
+
+`from_bytes` follows `PyObject_Bytes`, including subclass `__bytes__`, buffer and
+iterable conversion. Exact immutable bytes decode directly; exact bytearray
+storage uses the existing counted export owner. Normalized conversion storage
+retires before the requested integer subclass constructor, and the intermediate
+integer retires after that borrowed constructor call. This uses the ordinary
+runtime conversion and ownership mechanisms in standalone native and WASM
+binaries; no host interpreter is involved.
+
+The common integer encoder has an explicit empty-signed-output policy. A Python
+3.12 target permits `(-1).to_bytes(0, signed=True)`; Python 3.13/3.14 targets
+raise `OverflowError` because an empty output cannot hold its sign bit. Only
+that zero-width negative case consults the guest version; ordinary nonempty
+conversions perform no version query. The explicitly published five-argument
+3.12 `_PyLong_AsByteArray` C ABI and its physical integer-layout projection keep
+the 3.12 policy independently of the guest Python version. This distinguishes
+guest language semantics from the admitted extension ABI; it adds no Python
+3.15 support claim. The existing bigint differential owns Python call semantics,
+and the common encoder's byte/status controls exercise both empty-output
+policies. Actual verified cells remain defined by their target proof receipts.
+
+These rules follow pinned CPython's [3.12.13 Clinic argument converters](https://github.com/python/cpython/blob/3bb231a6a5dc02b95658877318bf61501a7209e9/Objects/clinic/longobject.c.h),
+[3.12.13 integer codec bodies](https://github.com/python/cpython/blob/3bb231a6a5dc02b95658877318bf61501a7209e9/Objects/longobject.c),
+and the sign-bit validation in [3.13.16](https://github.com/python/cpython/blob/cbc944f4bc59639a444dd971c737788ba2283a91/Objects/longobject.c)
+and [3.14.8](https://github.com/python/cpython/blob/8e6e75d9102e39bed2a2b279203a396741180f12/Objects/longobject.c).
+
 Heap objects are referenced directly via tagged 48-bit canonical pointers.
 Typed native handles are managed heap objects whose declared owner operations
 retain and retire the Rust payload. The payload's Arc or raw Rust allocation
