@@ -45,7 +45,11 @@ pub extern "C" fn molt_re_compile(pattern_bits: u64, flags_bits: u64) -> u64 {
             );
         }
         match parse_pattern_typed(&pattern, flags, is_bytes) {
-            Ok(compiled) => {
+            Ok(parsed) => {
+                let compiled = match parsed.compile() {
+                    Ok(compiled) => compiled,
+                    Err(error) => return match_error_result(_py, error),
+                };
                 match pattern_handle_new(std::sync::Arc::new(PatternHandle::new(compiled))) {
                     Some(bits) => bits,
                     None => MoltObject::none().bits(),
