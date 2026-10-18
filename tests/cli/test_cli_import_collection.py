@@ -4275,7 +4275,7 @@ def test_run_subprocess_captured_to_tempfiles_does_not_block_on_inherited_pipes(
     parent.write_text(
         "import pathlib, subprocess, sys\n"
         "child = subprocess.Popen(\n"
-        f"    [sys.executable, '-c', 'import time; time.sleep(5.0)', {marker!r}],\n"
+        f"    [sys.executable, '-c', 'import time; time.sleep(60.0)', {marker!r}],\n"
         "    stdout=sys.stdout,\n"
         "    stderr=sys.stderr,\n"
         ")\n"
@@ -4284,17 +4284,21 @@ def test_run_subprocess_captured_to_tempfiles_does_not_block_on_inherited_pipes(
         encoding="utf-8",
     )
 
+    # A run that waited on the inherited pipes would reach the timeout long
+    # before the child exits. A loaded host can take seconds to start and
+    # census the processes, so the oracle is the timeout, not a wall bound.
+    timeout = 30.0
     start = time.perf_counter()
     result = COMMAND_RUNTIME._run_subprocess_captured_to_tempfiles(
         [sys.executable, str(parent)],
-        timeout=2.0,
+        timeout=timeout,
     )
     elapsed = time.perf_counter() - start
     child_pid = int(child_pid_file.read_text(encoding="utf-8"))
 
     assert result.returncode == 0
     assert "parent-done" in cli_output.subprocess_output_text(result.stdout)
-    assert elapsed < 2.5
+    assert elapsed < timeout
     assert result.descendants_closed is True
     argv = process_command_argv(child_pid)
     assert argv is None or marker not in argv
