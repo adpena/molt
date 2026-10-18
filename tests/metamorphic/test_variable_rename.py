@@ -5,10 +5,8 @@ produces different output after renaming, it has a variable-identity bug.
 """
 
 import ast
-import sys
 import pytest
 
-sys.path.insert(0, ".")
 from tools.metamorphic_runner import MetamorphicRunner
 
 
@@ -121,7 +119,5 @@ def test_variable_rename_equivalence(program: str):
         pytest.fail(f"Build/run error: {result.error}")
 
     assert result.equivalent, (
-        f"Output differs after variable renaming!\n"
-        f"Original stdout: {result.original_stdout!r}\n"
-        f"Renamed stdout:  {result.transformed_stdout!r}"
+        f"Output differs after variable renaming!\n{result.describe()}"
     )

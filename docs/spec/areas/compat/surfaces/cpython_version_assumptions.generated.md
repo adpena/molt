@@ -449,7 +449,7 @@ The inventory includes older and future Python 3 minor spellings, full eight-dig
 | `tools/perf_scoreboard_profile.py` | 1 | authority-routed | `3.0` |
 | `tools/perf_scoreboard_resolver.py` | 6 | scattered-assumption | `3.11` |
 | `tools/proof_executor.py` | 2 | operational-tooling | `sys.version_info` |
-| `tools/proof_plan.toml` | 67 | authority-routed | `3.12` |
+| `tools/proof_plan.toml` | 69 | authority-routed | `3.12` |
 | `tools/proof_queue_pkg/command_admission.py` | 3 | authority-routed | `3.12` |
 | `tools/proof_queue_pkg/policy.py` | 4 | scattered-assumption | `3.12` |
 | `tools/proof_queue_pkg/presentation.py` | 9 | scattered-assumption | `3.12` |

@@ -95,9 +95,9 @@ def _validate_backend_cache_artifact(
 ) -> StableRegularFileIdentity:
     # Native shape, member framing and nm consume one admitted owned handle.
     # Content-keyed facts are published only after its closing fences pass.
+    # The artifact opener owns the identity-path check: it compares the
+    # resolved path, the same path a captured identity records.
     try:
-        if identity is not None and identity.path != path.expanduser().absolute():
-            raise ValueError("Backend validation identity belongs to another path")
         if artifact_contract.is_native:
             with _native_symbols._native_symbol_facts_admission(
                 path,
@@ -284,7 +284,9 @@ def _copy_verified_backend_artifact(
 ) -> StableRegularFileIdentity:
     """Publish attested bytes without aliasing mutable output to immutable cache."""
     try:
-        if identity.path != src.expanduser().absolute():
+        # Identities from the artifact opener record the resolved path; compare
+        # the file each path names, so a symlinked stage directory still matches.
+        if identity.path.resolve(strict=True) != src.resolve(strict=True):
             raise ValueError("Backend copy identity belongs to another source path")
         verify_stable_regular_file_identity(identity, label="backend copy source")
         _atomic_copy_file(src, dst, expected_sha256=identity.sha256)
