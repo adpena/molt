@@ -32,3 +32,37 @@ def test_driver_layout_readme_mentions_shared_and_target_classes() -> None:
     assert "wasm/" in readme
     assert "cloudflare/" in readme
     assert "native/" in readme
+
+
+def test_shared_artifact_wire_paths_and_order_are_host_independent(
+    tmp_path: Path,
+) -> None:
+    import hashlib
+
+    from drivers._shared.artifacts import artifact_record, directory_records
+
+    # Distinct names also on case-insensitive filesystems; native Windows Path
+    # ordering would put lowercase a before uppercase Z.
+    names = [
+        "weights/a-low.bin",
+        "weights/Z-high.bin",
+        "nested space/config.json",
+        "weights.part.bin",
+    ]
+    payload = b"independent bytes\r\n"
+    for name in names:
+        path = tmp_path / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(payload)
+    one = artifact_record(kind="fixture", path=tmp_path / names[0], root=tmp_path)
+    assert one["relative_path"] == "weights/a-low.bin"
+    rows = directory_records(kind="fixture", root=tmp_path)
+    assert [row["relative_path"] for row in rows] == [
+        "nested space/config.json",
+        "weights.part.bin",
+        "weights/Z-high.bin",
+        "weights/a-low.bin",
+    ]
+    assert all(row["size_bytes"] == len(payload) for row in rows)
+    assert all(row["sha256"] == hashlib.sha256(payload).hexdigest() for row in rows)
+    assert all("\\" not in row["relative_path"] for row in rows)

@@ -16,6 +16,7 @@ def sha256_file(path: Path) -> str:
 def artifact_record(
     *, kind: str, path: Path, root: Path | None = None
 ) -> dict[str, Any]:
+    """Record native file custody with a host-independent relative wire path."""
     resolved = path.resolve()
     payload = {
         "kind": kind,
@@ -24,7 +25,7 @@ def artifact_record(
         "sha256": sha256_file(resolved),
     }
     if root is not None:
-        payload["relative_path"] = str(resolved.relative_to(root.resolve()))
+        payload["relative_path"] = resolved.relative_to(root.resolve()).as_posix()
     return payload
 
 
@@ -34,11 +35,15 @@ def directory_records(
     root: Path,
     include_hidden: bool = False,
 ) -> list[dict[str, Any]]:
+    """Publish records in canonical relative-path order on every host."""
     resolved_root = root.resolve()
     if not resolved_root.exists():
         raise FileNotFoundError(f"artifact directory not found: {resolved_root}")
     records: list[dict[str, Any]] = []
-    for path in sorted(p for p in resolved_root.rglob("*") if p.is_file()):
+    for path in sorted(
+        (p for p in resolved_root.rglob("*") if p.is_file()),
+        key=lambda p: p.relative_to(resolved_root).as_posix(),
+    ):
         if not include_hidden and any(
             part.startswith(".") for part in path.relative_to(resolved_root).parts
         ):

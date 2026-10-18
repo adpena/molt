@@ -692,6 +692,7 @@
         "drivers/cloudflare/thin_adapter/verify.py",
         "tests/fixtures/falcon_ocr/**",
         "tools/gen_browser_asset_graph.py",
+        "drivers/_shared/artifacts.py",
         "tests/test_wasm_runner_table_base.py/**",
         "tests/cli/test_cli_import_collection.py/**",
         "tests/test_wasm_startup_failures.py/**",
@@ -9180,7 +9181,7 @@
       "local.backend-llvm.0": "cargo test --locked --profile release-fast -p molt-backend-native -p molt-backend --features molt-backend/native-backend,molt-backend/llvm --lib --test ir_contract_validation --no-fail-fast",
       "local.backend-native.0": "cargo test --locked --profile release-fast -p molt-backend -p molt-backend-native -p molt-artifact-publish --features molt-backend/native-backend --lib --bins --no-fail-fast",
       "local.bootstrap-stdlib.0": "python tools/check_stdlib_intrinsics.py --critical-allowlist",
-      "local.browser-loader-deployment.pytest": "python -m pytest -q -n auto --molt-worker-memory-gb=2.5 tests/test_browser_asset_closure.py tests/test_driver_cloudflare_verify.py tests/test_driver_cloudflare_worker.py tests/test_falcon_ocr_prompt_contract.py",
+      "local.browser-loader-deployment.pytest": "python -m pytest -q -n auto --molt-worker-memory-gb=2.5 tests/test_driver_layout.py tests/test_browser_asset_closure.py tests/test_driver_cloudflare_verify.py tests/test_driver_cloudflare_worker.py tests/test_falcon_ocr_prompt_contract.py",
       "local.browser-loader-deployment.pytest-select-0": "python -m pytest -q -n auto --molt-worker-memory-gb=2.5 -k 'not (test_falcon_browser_driver_init_and_ocr_tokens_roundtrip or test_falcon_browser_driver_reuses_cached_weights_on_second_init or test_falcon_browser_driver_init_from_manifest_roundtrip)' tests/test_falcon_driver_scaffold.py",
       "local.build-output-identity.pytest": "python -m pytest -q -n auto --molt-worker-memory-gb=1.0 tests/cli/test_cli_build_identity.py tests/cli/test_cli_build_output_layout_authority.py tests/cli/test_cli_frontend_pipeline_authority.py",
       "local.builtin-binding-guard-authority.0": "python tools/gen_builtin_binding_guards.py --check",
@@ -9280,6 +9281,8 @@
         "description": "Retained browser asset closures, Falcon execution manifests and initialization ownership.",
         "gates": [],
         "globs": [
+          "drivers/_shared/artifacts.py",
+          "tests/test_driver_layout.py",
           "tools/gen_browser_asset_graph.py",
           "tests/test_browser_asset_closure.py",
           "drivers/falcon/browser_webgpu/deploy.py",
@@ -9293,6 +9296,7 @@
         ],
         "name": "browser-loader-deployment",
         "pytest": [
+          "tests/test_driver_layout.py",
           "tests/test_browser_asset_closure.py",
           "tests/test_driver_cloudflare_verify.py",
           "tests/test_driver_cloudflare_worker.py",

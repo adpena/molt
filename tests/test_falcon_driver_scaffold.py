@@ -4,6 +4,7 @@ import hashlib
 import importlib.util
 import json
 import shutil
+import subprocess
 import sys
 import threading
 
@@ -398,48 +399,14 @@ def test_falcon_driver_bench_script_help() -> None:
     assert "--target-root" in res.stdout
 
 
-def test_falcon_driver_verify_wrapper_emits_json(tmp_path: Path) -> None:
-    target_root = tmp_path / "falcon-target"
-    artifact_dir = target_root / "dist" / "browser_split"
-    artifact_dir.mkdir(parents=True)
-    (artifact_dir / "app.wasm").write_bytes(b"\0asm\x01\x00\x00\x00")
-    (artifact_dir / "molt_runtime.wasm").write_bytes(b"\0asm\x01\x00\x00\x00")
-    _write_execution_fixture(artifact_dir)
-    (target_root / "config.json").write_text('{"dim":2}\n', encoding="utf-8")
-    weights_dir = target_root / "weights"
-    weights_dir.mkdir()
-    (weights_dir / "layer0.safetensors").write_bytes(b"weights")
-    (weights_dir / "tokenizer.json").write_text(
-        '{"model":{"vocab":{}}}\n', encoding="utf-8"
-    )
-
-    res = _run_test_process(
-        [
-            sys.executable,
-            str(VERIFY_PY),
-            "--target-root",
-            str(target_root),
-            "--weights-base-url",
-            "https://weights.example.invalid/falcon",
-            "--wrangler",
-            "true",
-        ],
-        cwd=ROOT,
-        text=True,
-        capture_output=True,
-        check=False,
-    )
-    assert res.returncode == 0, res.stderr
-    payload = json.loads(res.stdout)
-    assert payload["target"] == "falcon.browser_webgpu"
-    assert payload["bundle"]["bundle_root"]
-    assert payload["bundle_contract"]["manifest_asset"]
-    assert payload["wrangler_check"]["returncode"] == 0
-    assert payload["wrangler_dry_run"]["returncode"] == 0
-
-
-def test_falcon_driver_verify_wrapper_accepts_alternate_weights_root(
+@pytest.mark.parametrize(
+    "alternate_weights", [False, True], ids=["default", "alternate"]
+)
+def test_falcon_driver_verify_wrapper_emits_json(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    alternate_weights: bool,
 ) -> None:
     target_root = tmp_path / "falcon-target"
     artifact_dir = target_root / "dist" / "browser_split"
@@ -448,47 +415,101 @@ def test_falcon_driver_verify_wrapper_accepts_alternate_weights_root(
     (artifact_dir / "molt_runtime.wasm").write_bytes(b"\0asm\x01\x00\x00\x00")
     _write_execution_fixture(artifact_dir)
     (target_root / "config.json").write_text('{"dim":2}\n', encoding="utf-8")
-
-    weights_root = tmp_path / "falcon-weights-f16"
-    weights_root.mkdir()
-    (weights_root / "config.json").write_text('{"dim":2}\n', encoding="utf-8")
-    (weights_root / "model.safetensors").write_bytes(b"weights-f16")
-    (weights_root / "tokenizer.json").write_text(
+    weights_dir = (
+        tmp_path / "falcon-weights-f16"
+        if alternate_weights
+        else target_root / "weights"
+    )
+    model_name = "model.safetensors" if alternate_weights else "layer0.safetensors"
+    model_bytes = b"weights-f16" if alternate_weights else b"weights"
+    base_url = "https://weights.example.invalid/" + (
+        "falcon-f16" if alternate_weights else "falcon"
+    )
+    weights_dir.mkdir()
+    if alternate_weights:
+        (weights_dir / "config.json").write_text('{"dim":2}\n', encoding="utf-8")
+    (weights_dir / model_name).write_bytes(model_bytes)
+    (weights_dir / "tokenizer.json").write_text(
         '{"model":{"vocab":{}}}\n', encoding="utf-8"
     )
 
-    res = _run_test_process(
+    from drivers.cloudflare.thin_adapter import verify as thin_verify
+    from drivers.falcon.browser_webgpu import verify
+
+    commands = []
+
+    def external_success(cmd, *, cwd, env, verbose):
+        commands.append((list(cmd), cwd))
+        return subprocess.CompletedProcess(cmd, 0, "external success\n", "")
+
+    monkeypatch.setattr(thin_verify, "_run_command", external_success)
+    monkeypatch.setattr(verify, "REPO_ROOT", tmp_path / "project")
+    artifacts_root = tmp_path / "artifacts"
+    monkeypatch.setenv("MOLT_EXT_ROOT", str(artifacts_root))
+    monkeypatch.setenv("MOLT_SCRATCH_STORAGE", "disk")
+    monkeypatch.setattr(
+        sys,
+        "argv",
         [
-            sys.executable,
             str(VERIFY_PY),
             "--target-root",
             str(target_root),
-            "--weights-root",
-            str(weights_root),
+            *(["--weights-root", str(weights_dir)] if alternate_weights else []),
             "--weights-base-url",
-            "https://weights.example.invalid/falcon-f16",
+            base_url,
             "--wrangler",
-            "true",
+            "wrangler-fixture",
+            "--run-id",
+            "falcon-portable",
         ],
-        cwd=ROOT,
-        text=True,
-        capture_output=True,
-        check=False,
     )
-    assert res.returncode == 0, res.stderr
-    payload = json.loads(res.stdout)
+    assert verify.main() == 0
+    payload = json.loads(capsys.readouterr().out)
+    bundle_root = Path(payload["bundle"]["bundle_root"])
+    config = str(bundle_root / "wrangler.jsonc")
+    assert len(commands) == 2
+    assert commands[0] == (
+        ["wrangler-fixture", "check", "--config", config],
+        bundle_root,
+    )
+    dry_out = Path(commands[1][0][4])
+    assert dry_out == (
+        artifacts_root.resolve()
+        / "tmp"
+        / "drivers"
+        / "cloudflare"
+        / "falcon-portable"
+        / "dry-run"
+    )
+    assert dry_out.is_dir()
+    assert commands[1] == (
+        [
+            "wrangler-fixture",
+            "deploy",
+            "--dry-run",
+            "--outdir",
+            str(dry_out),
+            "--config",
+            config,
+        ],
+        bundle_root,
+    )
+    assert payload["target"] == "falcon.browser_webgpu"
+    assert payload["bundle"]["bundle_root"]
+    assert payload["bundle_contract"]["manifest_asset"]
+    assert payload["wrangler_check"]["returncode"] == 0
+    assert payload["wrangler_dry_run"]["returncode"] == 0
     manifest = json.loads(
         Path(payload["bundle"]["manifest_asset"]).read_text(encoding="utf-8")
     )
-    assert (
-        manifest["weights"]["base_url"] == "https://weights.example.invalid/falcon-f16"
-    )
+    assert manifest["weights"]["base_url"] == base_url
     model_record = next(
         record
         for record in manifest["weights"]["files"]
-        if record["path"] == "model.safetensors"
+        if record["path"] == model_name
     )
-    assert model_record["size_bytes"] == len(b"weights-f16")
+    assert model_record["size_bytes"] == len(model_bytes)
+    assert model_record["sha256"] == hashlib.sha256(model_bytes).hexdigest()
 
 
 def test_falcon_browser_driver_init_and_ocr_tokens_roundtrip(tmp_path: Path) -> None:
