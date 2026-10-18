@@ -74,7 +74,7 @@ from molt.cli.runtime_wasm_validation import (
     _split_runtime_wasm_missing_exports,
 )
 from molt.cli.wasm_link_args import (
-    wasm_link_args_from_rustflags as _wasm_link_args_from_rustflags,
+    wasm_link_args_from_rust_flag_tokens as _wasm_link_args_from_rust_flag_tokens,
     wasm_link_output_arguments,
 )
 from molt.cli.wasm_link_args import (
@@ -666,7 +666,7 @@ def _link_runtime_staticlib_to_reloc_wasm(
     json_output: bool,
     link_timeout: float | None,
     cargo_plan: RuntimeCargoPlan,
-    export_link_args: str = "",
+    export_link_args: tuple[str, ...] = (),
 ) -> bool:
     c_abi = cargo_plan.wasi_c_abi
     if c_abi is None:
@@ -687,7 +687,7 @@ def _link_runtime_staticlib_to_reloc_wasm(
         whole_archive=[str(staticlib_path)],
         trailing=[str(libc_archive)],
     )
-    export_args = _wasm_link_args_from_rustflags(export_link_args)
+    export_args = _wasm_link_args_from_rust_flag_tokens(export_link_args)
     export_response_identity = None
     if export_args:
         export_response_path = _write_wasm_link_args_response_file(
@@ -698,7 +698,7 @@ def _link_runtime_staticlib_to_reloc_wasm(
         export_response_identity = stable_regular_file_identity(
             export_response_path, label="runtime WASM export response"
         )
-        export_args = [f"@{export_response_path}"]
+        export_args = (f"@{export_response_path}",)
     command = (
         wasm_ld,
         "-r",

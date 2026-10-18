@@ -64,7 +64,7 @@ def test_artifact_receipts_reject_resealed_shape_and_numeric_coercion(
         validate_artifact_content_identity(receipt)
     assert not _runtime_fingerprint_payload_is_valid(
         {
-            "version": 3,
+            "version": 4,
             **_SOURCE_FINGERPRINT,
             "artifact_content_identity": receipt,
         }

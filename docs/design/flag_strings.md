@@ -1,7 +1,7 @@
 # Flag strings
 
-Status: slices 1 (boundary authority) and 2 (typed identity vectors)
-implemented, 2026-10-18; the export link-argument strings remain. Owner:
+Status: slices 1 (boundary authority), 2 (typed identity vectors) and 3
+(WASM export link vectors) implemented, 2026-10-18. Owner:
 integrator (coordination task `claude-cargo-flag-strings`). Ledger: HF-362.
 
 ## Problem
@@ -82,15 +82,36 @@ Runtime build identities held Rust flag vectors as `shlex.join` strings, and
 `shlex.split(posix=os.name != "nt")` and stripped `"` from every token. On
 Windows the quotes stayed in the identity; on every host `feature="std"`
 became `feature="std`. Now `RuntimeBuildMemberPlan` and the WASM build spec
-hold tuples, `__post_init__` refuses anything else, the projection refuses a
-string, and the identity functions read `plan.rustflags` instead of a second
-string copy (the dead `base_rustflags` parameter is gone).
+hold tuples. The member plan's `__post_init__` refuses anything else, the
+projection refuses a string, and the identity functions read `plan.rustflags`
+instead of a second string copy (the dead `base_rustflags` parameter is gone).
 
-Remaining: the export link arguments (`wasm_runtime_*_export_link_args`,
-`link_flags`, `wasm_link_args_from_rustflags`, about 55 references) are
-still one string. They carry only symbol names, so the `shlex` round trip is
-lossless today, but the contract is still a string. Convert them to tuples
-in one migration.
+## Slice 3: WASM export link vectors
+
+`wasm_runtime_*_export_link_args` returns a tuple of Rust flag tokens, with
+each export represented by `("-C", "link-arg=--export-if-defined=NAME")`.
+Export ordering remains sorted. The WASM build spec carries `runtime_exports`
+and `link_flags` as tuples; shared import flags precede those export tokens.
+Cargo plan and member fingerprint projections consume the tuples directly.
+
+`wasm_link_args_from_rust_flag_tokens` extracts ordered linker operands with
+`rust_flag_spans` and refuses a string. Relocatable runtime links and the
+combined Cargo producer pass those operands through
+`write_wasm_link_args_response_file`, one admitted argument per line. Cargo
+environment strings still use `FlagStringRule` at their boundary. No shell
+quoting or splitting occurs on the export vectors.
+
+Runtime family identities continue to serialize flag tuples as JSON lists.
+Artifact fingerprint sidecars use version 4, invalidating earlier sidecars
+for this completed contract migration; the family/member identity wire
+schemas retain their existing list representation. Tools that carry export
+symbol sets rather than flag vectors keep those sets.
+
+This removes string construction and shell parsing over the export surface
+from build planning and relinking. Tuple construction and operand extraction
+are linear in the number of exports, after the existing sort. It adds no
+processes, filesystem operations or response-file writes; response-file
+content addressing and reuse are unchanged.
 
 ## Verification
 
@@ -100,3 +121,9 @@ in one migration.
 - `tests/cli/test_runtime_family_authority.py`: an SDK under a path with a
   quote (and, on POSIX, a backslash) reaches the plan unchanged; an SDK under
   a path with a space fails early.
+- `tests/cli/test_wasm_runtime_exports.py` and
+  `tests/cli/test_runtime_wasm_single_compile.py`: export tokens, ordering,
+  shared imports and member identity projections.
+- `tests/test_wasm_longdouble_durable_provisioning.py` and
+  `tests/test_bench_wasm_runtime_build_flags.py`: token extraction without
+  shell interpretation and byte-stable response files.
