@@ -229,11 +229,13 @@ def _native_fixture_donor(tmp_path_factory: pytest.TempPathFactory) -> Iterator[
     """Bind a lazy donor without loading runtime construction in unrelated tests."""
     from tests.executable_test_support import bind_native_donor_factory
 
-    bind_native_donor_factory(lambda: tmp_path_factory.mktemp("native-donor"))
+    bind_native_donor_factory(
+        lambda: tmp_path_factory.mktemp("native-donor"), environment=os.environ
+    )
     try:
         yield
     finally:
-        bind_native_donor_factory(None)
+        bind_native_donor_factory(None, environment=None)
 
 
 @pytest.fixture(scope="session")
