@@ -157,7 +157,7 @@ def test_task_creation_does_not_invent_poll_companion(kind: str) -> None:
         {
             "name": "worker_poll",
             "params": ["p0"],
-            "ops": [_builtin_func("v1", "molt_re_finditer_collect")],
+            "ops": [_builtin_func("v1", "molt_re_finditer_next")],
         },
     ]
     reachable = RF.reachable_function_names(functions)
@@ -178,7 +178,7 @@ def test_explicit_poll_target_retains_its_feature(kind: str) -> None:
         {"name": "worker", "ops": []},
         {
             "name": "worker_poll",
-            "ops": [_builtin_func("v1", "molt_re_finditer_collect")],
+            "ops": [_builtin_func("v1", "molt_re_finditer_next")],
         },
         {"name": "worker_poll_poll", "ops": []},
     ]
@@ -442,10 +442,9 @@ def test_refusal_reports_complete_independent_target_and_profile_requirements(
             "molt_re_escape",
             "molt_re_execute",
             "molt_re_expand_replacement",
-            "molt_re_finditer_collect",
+            "molt_re_finditer_next",
             "molt_re_group_values",
-            "molt_re_match_group",
-            "molt_re_match_groupdict",
+            "molt_re_scanner_new",
         ),
     }
     symbols = (*sqlite_symbols, *feature_symbols["stdlib_regex"])
@@ -561,8 +560,9 @@ def test_real_re_module_intrinsics_are_link_affecting_regex() -> None:
     for symbol in (
         "molt_re_compile",
         "molt_re_execute",
+        "molt_re_scanner_new",
+        "molt_re_finditer_next",
         "molt_re_escape",
-        "molt_re_match_group",
     ):
         assert link_affecting_feature_gate_for_symbol(symbol) == "stdlib_regex"
 

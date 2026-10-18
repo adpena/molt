@@ -14,3 +14,4 @@ pub mod bridge;
 mod bridge_test_stubs;
 
 pub mod regex;
+pub use regex::{PatternHandle, ScannerHandle};

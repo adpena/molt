@@ -4,6 +4,40 @@
 
 use super::*;
 use std::collections::HashMap;
+use std::sync::Arc;
+
+fn scanner_spans_text(pattern: &str, text: &str) -> Vec<(usize, usize)> {
+    let chars: Vec<char> = text.chars().collect();
+    let compiled = Arc::new(PatternHandle::new(
+        parse_pattern_typed(pattern, 0, false).unwrap(),
+    ));
+    let mut scanner = ScannerHandle::new(Arc::clone(&compiled), 0, chars.len(), None);
+    let mut spans = Vec::new();
+    while let Some(found) = advance_scanner(
+        &compiled.compiled,
+        &mut scanner,
+        SubjectStorage::Text(&chars),
+    ) {
+        spans.push((found.start, found.end));
+    }
+    spans
+}
+
+fn scanner_spans_bytes(pattern: &str, subject: &[u8]) -> Vec<(usize, usize)> {
+    let compiled = Arc::new(PatternHandle::new(
+        parse_pattern_typed(pattern, 0, true).unwrap(),
+    ));
+    let mut scanner = ScannerHandle::new(Arc::clone(&compiled), 0, subject.len(), None);
+    let mut spans = Vec::new();
+    while let Some(found) = advance_scanner(
+        &compiled.compiled,
+        &mut scanner,
+        SubjectStorage::Bytes(subject),
+    ) {
+        spans.push((found.start, found.end));
+    }
+    spans
+}
 
 #[test]
 fn test_strip_verbose_empty() {
@@ -961,6 +995,57 @@ fn test_match_digits_in_parens() {
 }
 
 // --- finditer_collect ---
+
+#[test]
+fn scanner_retries_nonempty_alternative_at_same_position() {
+    let expected = [(0, 0), (0, 1), (1, 1)];
+    assert_eq!(scanner_spans_text("|a", "a"), expected);
+    assert_eq!(scanner_spans_bytes("|a", b"a"), expected);
+}
+
+#[test]
+fn scanner_empty_match_advances_and_allows_end_empty() {
+    assert_eq!(scanner_spans_bytes("", b"a"), [(0, 0), (1, 1)]);
+    assert_eq!(scanner_spans_text("", "a"), [(0, 0), (1, 1)]);
+}
+
+#[test]
+fn scanner_preserves_lazy_repeat_and_unicode_character_offsets() {
+    assert_eq!(scanner_spans_text("a+?", "aa"), [(0, 1), (1, 2)]);
+    assert_eq!(scanner_spans_text(".", "éx"), [(0, 1), (1, 2)]);
+}
+
+#[test]
+fn scanner_observes_mutated_bytes_between_transitions() {
+    let pattern = Arc::new(PatternHandle::new(
+        parse_pattern_typed("a", 0, true).unwrap(),
+    ));
+    let mut scanner = ScannerHandle::new(Arc::clone(&pattern), 0, 2, None);
+    let mut subject = *b"ab";
+    let first = advance_scanner(
+        &pattern.compiled,
+        &mut scanner,
+        SubjectStorage::Bytes(&subject),
+    )
+    .unwrap();
+    assert_eq!((first.start, first.end), (0, 1));
+    subject[1] = b'a';
+    let second = advance_scanner(
+        &pattern.compiled,
+        &mut scanner,
+        SubjectStorage::Bytes(&subject),
+    )
+    .unwrap();
+    assert_eq!((second.start, second.end), (1, 2));
+    assert!(
+        advance_scanner(
+            &pattern.compiled,
+            &mut scanner,
+            SubjectStorage::Bytes(&subject),
+        )
+        .is_none()
+    );
+}
 
 #[test]
 fn test_finditer_collect_basic() {

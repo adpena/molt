@@ -12,12 +12,14 @@ use molt_obj_model::MoltObject;
 use num_integer::Integer;
 
 fn raise_memoryview_buffer_error(py: &PyToken<'_>, object: MoltObject) -> u64 {
+    let name = type_name(py, object);
+    let name = String::from_utf8_lossy(&name.as_bytes()[..name.len().min(200)]);
     raise_exception(
         py,
         "TypeError",
         &format!(
             "memoryview: a bytes-like object is required, not '{}'",
-            type_name(py, object)
+            name
         ),
     )
 }
@@ -25,44 +27,67 @@ fn raise_memoryview_buffer_error(py: &PyToken<'_>, object: MoltObject) -> u64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_memoryview_new(bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
-        let obj = obj_from_bits(bits);
-        let ptr = match obj.as_ptr() {
-            Some(ptr) => ptr,
-            None => {
+        memoryview_new_with_flags(_py, bits, molt_cpython_abi::abi_types::PyBUF_FULL_RO)
+    })
+}
+
+fn memoryview_new_with_flags(_py: &PyToken<'_>, bits: u64, buffer_flags: i32) -> u64 {
+    memoryview_new_with_flags_mode(_py, bits, buffer_flags, false)
+}
+
+fn memoryview_new_with_flags_mode(
+    _py: &PyToken<'_>,
+    bits: u64,
+    buffer_flags: i32,
+    force_buffer_export: bool,
+) -> u64 {
+    let obj = obj_from_bits(bits);
+    let ptr = match obj.as_ptr() {
+        Some(ptr) => ptr,
+        None => {
+            return raise_memoryview_buffer_error(_py, obj);
+        }
+    };
+    unsafe {
+        let type_id = object_type_id(ptr);
+        if type_id == TYPE_ID_MEMORYVIEW && !force_buffer_export {
+            if !super::memoryview::require_exportable(_py, ptr) {
+                return MoltObject::none().bits();
+            }
+            let storage = match TypedStridedStorage::from_object_bits(bits) {
+                Ok(storage) => storage,
+                Err(TypedStridedStorageError::ReleasedMemoryView) => {
+                    return raise_released_memoryview(_py);
+                }
+                Err(_) => return MoltObject::none().bits(),
+            };
+            let out_ptr = alloc_memoryview_from_storage(_py, storage);
+            if out_ptr.is_null() {
+                return MoltObject::none().bits();
+            }
+            return MoltObject::from_ptr(out_ptr).bits();
+        }
+
+        if force_buffer_export || !super::buffer_exports::is_exact_builtin_storage(_py, bits) {
+            // CPython checks the buffer slot before invoking it. A missing
+            // slot has memoryview's diagnostic; a real exporter owns its
+            // failure. Keep the same projected object for both operations.
+            let object = match molt_cpython_abi::native_custody::project_buffer_object(bits) {
+                Ok(object) => object,
+                Err(_) => return MoltObject::none().bits(),
+            };
+            if molt_cpython_abi::api::buffer::PyObject_CheckBuffer(object.as_ptr()) == 0 {
                 return raise_memoryview_buffer_error(_py, obj);
             }
-        };
-        unsafe {
-            let type_id = object_type_id(ptr);
-            if type_id == TYPE_ID_MEMORYVIEW {
-                if !super::memoryview::require_exportable(_py, ptr) {
-                    return MoltObject::none().bits();
-                }
-                let storage = match TypedStridedStorage::from_object_bits(bits) {
-                    Ok(storage) => storage,
-                    Err(TypedStridedStorageError::ReleasedMemoryView) => {
-                        return raise_released_memoryview(_py);
-                    }
-                    Err(_) => return MoltObject::none().bits(),
-                };
-                let out_ptr = alloc_memoryview_from_storage(_py, storage);
-                if out_ptr.is_null() {
-                    return MoltObject::none().bits();
-                }
-                return MoltObject::from_ptr(out_ptr).bits();
-            }
-
-            if !super::buffer_exports::is_exact_builtin_storage(_py, bits) {
-                let lease = match molt_cpython_abi::native_custody::acquire_buffer(
-                    bits,
-                    molt_cpython_abi::abi_types::PyBUF_FULL_RO,
-                ) {
-                    Ok(lease) => lease,
-                    Err(_) => return MoltObject::none().bits(),
-                };
-                let descriptor = match molt_cpython_abi::api::buffer::descriptor_from_pybuffer(
-                    lease.descriptor(),
-                ) {
+            let lease = match molt_cpython_abi::native_custody::acquire_buffer_from_object(
+                object.as_ptr(),
+                buffer_flags,
+            ) {
+                Ok(lease) => lease,
+                Err(_) => return MoltObject::none().bits(),
+            };
+            let descriptor =
+                match molt_cpython_abi::api::buffer::descriptor_from_pybuffer(lease.descriptor()) {
                     Ok(descriptor) => descriptor,
                     Err(molt_cpython_abi::api::buffer::InvalidBufferDescriptor) => {
                         return raise_exception(
@@ -72,47 +97,54 @@ pub extern "C" fn molt_memoryview_new(bits: u64) -> u64 {
                         );
                     }
                 };
-                let format = (*lease.descriptor()).format;
-                return super::memoryview::from_native_descriptor(
-                    _py,
-                    &descriptor,
-                    format,
-                    Some(lease),
-                );
-            }
-            if type_id == TYPE_ID_BYTES || type_id == TYPE_ID_BYTEARRAY {
-                let readonly = type_id == TYPE_ID_BYTES;
-                let format_ptr = alloc_string(_py, b"B");
-                if format_ptr.is_null() {
-                    return MoltObject::none().bits();
-                }
-                let format_bits = MoltObject::from_ptr(format_ptr).bits();
-                // Allocation can run finalizers; capture byte length together
-                // with the data pointer only after that callback boundary.
-                let len = bytes_len(ptr);
-                let storage = TypedStridedStorage::one_dim(
-                    bytes_data(ptr) as *mut u8,
-                    readonly,
-                    len,
-                    1,
-                    1,
-                    0,
-                    bits,
-                    format_bits,
-                );
-                let out_ptr = match storage {
-                    Some(storage) => alloc_memoryview_from_storage(_py, storage),
-                    None => std::ptr::null_mut(),
-                };
-                dec_ref_bits(_py, format_bits);
-                if out_ptr.is_null() {
-                    return MoltObject::none().bits();
-                }
-                return MoltObject::from_ptr(out_ptr).bits();
-            }
+            let format = (*lease.descriptor()).format;
+            return super::memoryview::from_native_descriptor(
+                _py,
+                &descriptor,
+                format,
+                Some(lease),
+            );
         }
-        raise_memoryview_buffer_error(_py, obj)
-    })
+        if type_id == TYPE_ID_BYTES || type_id == TYPE_ID_BYTEARRAY {
+            let readonly = type_id == TYPE_ID_BYTES;
+            let format_ptr = alloc_string(_py, b"B");
+            if format_ptr.is_null() {
+                return MoltObject::none().bits();
+            }
+            let format_bits = MoltObject::from_ptr(format_ptr).bits();
+            // Allocation can run finalizers; capture byte length together
+            // with the data pointer only after that callback boundary.
+            let len = bytes_len(ptr);
+            let storage = TypedStridedStorage::one_dim(
+                bytes_data(ptr) as *mut u8,
+                readonly,
+                len,
+                1,
+                1,
+                0,
+                bits,
+                format_bits,
+            );
+            let out_ptr = match storage {
+                Some(storage) => alloc_memoryview_from_storage(_py, storage),
+                None => std::ptr::null_mut(),
+            };
+            dec_ref_bits(_py, format_bits);
+            if out_ptr.is_null() {
+                return MoltObject::none().bits();
+            }
+            return MoltObject::from_ptr(out_ptr).bits();
+        }
+    }
+    raise_memoryview_buffer_error(_py, obj)
+}
+
+/// Internal regex admission matching PyBUF_SIMPLE even for an already-created
+/// memoryview. The public `_from_flags` operation intentionally retains its
+/// CPython clone behavior for non-contiguous memoryviews.
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_memoryview_from_simple_buffer(bits: u64) -> u64 {
+    crate::with_gil_entry_nopanic!(_py, { memoryview_new_with_flags_mode(_py, bits, 0, true) })
 }
 
 #[unsafe(no_mangle)]
@@ -123,18 +155,27 @@ pub extern "C" fn molt_memoryview_from_flags(obj_bits: u64, flags_bits: u64) -> 
         let Some(flags) = index_bigint_from_obj(_py, flags_bits, &err) else {
             return MoltObject::none().bits();
         };
+        let Some(buffer_flags) = flags.to_i32() else {
+            return raise_exception::<_>(
+                _py,
+                "OverflowError",
+                "Python int too large to convert to C int",
+            );
+        };
         if flags.is_odd()
             && let Some(obj_ptr) = maybe_ptr_from_bits(obj_bits)
         {
             unsafe {
                 let type_id = object_type_id(obj_ptr);
                 // CPython ignores writable-flag checks when the input is already a memoryview.
-                if type_id == TYPE_ID_BYTES {
+                if type_id == TYPE_ID_BYTES
+                    && super::buffer_exports::is_exact_builtin_storage(_py, obj_bits)
+                {
                     return raise_exception::<_>(_py, "BufferError", "Object is not writable.");
                 }
             }
         }
-        molt_memoryview_new(obj_bits)
+        memoryview_new_with_flags(_py, obj_bits, buffer_flags)
     })
 }
 

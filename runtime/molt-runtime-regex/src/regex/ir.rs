@@ -1,12 +1,15 @@
 use std::collections::HashMap;
 
 // ---------------------------------------------------------------------------
-// IR node enum â€” mirrors the Python dataclasses in re/__init__.py
+// IR node enum for the shared text/byte matcher.
 // ---------------------------------------------------------------------------
 
 #[derive(Debug, Clone)]
 pub(crate) enum ReNode {
     Empty,
+    /// Internal search continuation: accept only if the overall match has
+    /// advanced beyond this attempt's starting position.
+    RequireAdvance,
     Literal(String),
     Any,
     Anchor(String),
@@ -48,7 +51,7 @@ pub(crate) enum ReNode {
 }
 
 // ---------------------------------------------------------------------------
-// Compiled pattern â€” stored in the global registry
+// Immutable compiled payload owned by PatternHandle.
 // ---------------------------------------------------------------------------
 
 #[derive(Debug)]
@@ -57,6 +60,9 @@ pub(crate) struct CompiledPattern {
     pub group_count: u32,
     pub group_names: HashMap<String, u32>,
     pub flags: i64,
+    /// Whether the parsed source was a bytes pattern. Pattern units are
+    /// represented one-to-one as Unicode scalar values in the range 0..=255.
+    pub is_bytes: bool,
     /// Position (char index) of a nested-set-in-charclass warning, or None.
     pub warn_pos: Option<i64>,
 }

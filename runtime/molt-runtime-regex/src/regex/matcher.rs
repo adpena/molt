@@ -9,13 +9,44 @@ use super::*;
 // on character indices (not byte indices) to match Python's `re` semantics.
 
 /// Match state threaded through the recursive engine.
-pub(super) struct MatchState {
-    /// Character array of the subject string.
-    pub(super) chars: Vec<char>,
+#[derive(Clone, Copy)]
+pub(super) enum SubjectStorage<'a> {
+    Text(&'a [char]),
+    Bytes(&'a [u8]),
+}
+
+impl SubjectStorage<'_> {
+    #[inline]
+    pub(super) fn len(&self) -> usize {
+        match self {
+            Self::Text(chars) => chars.len(),
+            Self::Bytes(bytes) => bytes.len(),
+        }
+    }
+
+    #[inline]
+    pub(super) fn unit(&self, index: usize) -> char {
+        match self {
+            Self::Text(chars) => chars[index],
+            Self::Bytes(bytes) => char::from(bytes[index]),
+        }
+    }
+}
+
+/// Match state threaded through the recursive engine.
+pub(super) struct MatchState<'a> {
+    /// Borrowed, indexed subject prepared once per public operation.
+    pub(super) subject: SubjectStorage<'a>,
+    /// Whether the compiled pattern uses bytes semantics.
+    pub(super) is_bytes: bool,
     /// Effective flags for the current match context.
     pub(super) flags: i64,
     /// End of the search window (char index, exclusive).
     pub(super) end: usize,
+    /// Present only while a scanner retries a prior empty match. The
+    /// synthetic RequireAdvance continuation rejects that empty path while
+    /// allowing the matcher to backtrack into later alternatives.
+    pub(super) require_advance_from: Option<usize>,
     /// Group captures: index 0 is unused (group 0 is the whole match).
     /// Each entry is Some((start, end)) or None if the group was not
     /// captured.  Indexed by group number (1-based).
@@ -27,14 +58,21 @@ pub(super) struct MatchState {
 
 pub(super) const MAX_RECURSION_DEPTH: usize = 5000;
 
-impl MatchState {
-    pub(super) fn new(text: &str, flags: i64, group_count: u32, end: usize) -> Self {
-        let chars: Vec<char> = text.chars().collect();
+impl<'a> MatchState<'a> {
+    pub(super) fn new(
+        subject: SubjectStorage<'a>,
+        flags: i64,
+        is_bytes: bool,
+        group_count: u32,
+        end: usize,
+    ) -> Self {
         let groups = vec![None; (group_count + 1) as usize];
         Self {
-            chars,
+            subject,
+            is_bytes,
             flags,
             end,
+            require_advance_from: None,
             groups,
             depth: 0,
         }
@@ -67,7 +105,7 @@ impl MatchState {
 
     #[inline]
     pub(super) fn is_ascii(&self) -> bool {
-        self.flags & RE_ASCII != 0
+        self.is_bytes || self.flags & RE_ASCII != 0
     }
 
     /// Check if a character is a "word" character for \b / \w purposes.
@@ -80,6 +118,9 @@ impl MatchState {
     #[inline]
     pub(super) fn char_eq(&self, a: char, b: char) -> bool {
         if self.is_ignorecase() {
+            if self.is_bytes {
+                return a.to_ascii_lowercase() == b.to_ascii_lowercase();
+            }
             let al: Vec<char> = a.to_lowercase().collect();
             let bl: Vec<char> = b.to_lowercase().collect();
             al == bl
@@ -99,7 +140,7 @@ pub(super) fn try_match(
     node: &ReNode,
     pos: usize,
     rest: &[ReNode],
-    state: &mut MatchState,
+    state: &mut MatchState<'_>,
 ) -> Option<usize> {
     state.depth += 1;
     if state.depth > MAX_RECURSION_DEPTH {
@@ -113,7 +154,7 @@ pub(super) fn try_match(
 
 /// Match a continuation (a slice of nodes that must match in sequence starting
 /// from `pos`).  Returns `Some(final_pos)` on success.
-pub(super) fn match_rest(rest: &[ReNode], pos: usize, state: &mut MatchState) -> Option<usize> {
+pub(super) fn match_rest(rest: &[ReNode], pos: usize, state: &mut MatchState<'_>) -> Option<usize> {
     if rest.is_empty() {
         return Some(pos);
     }
@@ -124,10 +165,18 @@ pub(super) fn try_match_inner(
     node: &ReNode,
     pos: usize,
     rest: &[ReNode],
-    state: &mut MatchState,
+    state: &mut MatchState<'_>,
 ) -> Option<usize> {
     match node {
         ReNode::Empty => match_rest(rest, pos, state),
+
+        ReNode::RequireAdvance => {
+            if state.require_advance_from.is_some_and(|start| pos > start) {
+                match_rest(rest, pos, state)
+            } else {
+                None
+            }
+        }
 
         ReNode::Literal(s) => {
             let lit_chars: Vec<char> = s.chars().collect();
@@ -135,7 +184,7 @@ pub(super) fn try_match_inner(
                 return None;
             }
             for (i, &lc) in lit_chars.iter().enumerate() {
-                if !state.char_eq(state.chars[pos + i], lc) {
+                if !state.char_eq(state.subject.unit(pos + i), lc) {
                     return None;
                 }
             }
@@ -146,7 +195,7 @@ pub(super) fn try_match_inner(
             if pos >= state.end {
                 return None;
             }
-            let ch = state.chars[pos];
+            let ch = state.subject.unit(pos);
             if !state.is_dotall() && ch == '\n' {
                 return None;
             }
@@ -170,7 +219,7 @@ pub(super) fn try_match_inner(
             if pos >= state.end {
                 return None;
             }
-            let ch = state.chars[pos];
+            let ch = state.subject.unit(pos);
             let hit = char_class_matches(ch, *negated, ranges, chars, categories, state);
             if hit {
                 match_rest(rest, pos + 1, state)
@@ -233,7 +282,7 @@ pub(super) fn try_match_inner(
                 return None;
             }
             for i in 0..ref_len {
-                if !state.char_eq(state.chars[gstart + i], state.chars[pos + i]) {
+                if !state.char_eq(state.subject.unit(gstart + i), state.subject.unit(pos + i)) {
                     return None;
                 }
             }
@@ -294,7 +343,7 @@ pub(super) fn try_match_group_then_rest(
     index: u32,
     pos: usize,
     rest: &[ReNode],
-    state: &mut MatchState,
+    state: &mut MatchState<'_>,
 ) -> Option<usize> {
     // We create a synthetic rest that records the group then continues.
     // Since we can't easily insert a callback, we use a two-phase approach:
@@ -365,7 +414,7 @@ pub(super) fn try_match_group_with_continuation(
     index: u32,
     pos: usize,
     rest: &[ReNode],
-    state: &mut MatchState,
+    state: &mut MatchState<'_>,
 ) -> Option<usize> {
     // We create a synthetic node that represents "set group N to (pos, HERE),
     // then match rest".  We encode this as a special wrapper.
@@ -470,7 +519,7 @@ pub(super) fn collect_repeat_positions(
     pos: usize,
     min: usize,
     max: usize,
-    state: &mut MatchState,
+    state: &mut MatchState<'_>,
     positions: &mut Vec<usize>,
     count: usize,
 ) {
@@ -494,14 +543,14 @@ pub(super) fn collect_repeat_positions(
 
 /// Match an anchor node.  Returns `Some(pos)` if the anchor condition holds
 /// (anchors consume zero characters).
-pub(super) fn match_anchor(kind: &str, pos: usize, state: &MatchState) -> Option<usize> {
+pub(super) fn match_anchor(kind: &str, pos: usize, state: &MatchState<'_>) -> Option<usize> {
     match kind {
         "start" => {
             // ^ â€” matches beginning of string, or after \n in MULTILINE.
             if pos == 0 {
                 return Some(pos);
             }
-            if state.is_multiline() && pos > 0 && state.chars[pos - 1] == '\n' {
+            if state.is_multiline() && pos > 0 && state.subject.unit(pos - 1) == '\n' {
                 return Some(pos);
             }
             None
@@ -512,11 +561,11 @@ pub(super) fn match_anchor(kind: &str, pos: usize, state: &MatchState) -> Option
             if pos == state.end {
                 return Some(pos);
             }
-            if state.is_multiline() && pos < state.end && state.chars[pos] == '\n' {
+            if state.is_multiline() && pos < state.end && state.subject.unit(pos) == '\n' {
                 return Some(pos);
             }
             // $ also matches before a trailing newline even without MULTILINE.
-            if !state.is_multiline() && pos == state.end - 1 && state.chars[pos] == '\n' {
+            if !state.is_multiline() && pos == state.end - 1 && state.subject.unit(pos) == '\n' {
                 return Some(pos);
             }
             None
@@ -531,15 +580,16 @@ pub(super) fn match_anchor(kind: &str, pos: usize, state: &MatchState) -> Option
             if pos == state.end {
                 return Some(pos);
             }
-            if pos == state.end - 1 && state.chars[pos] == '\n' {
+            if pos == state.end - 1 && state.subject.unit(pos) == '\n' {
                 return Some(pos);
             }
             None
         }
         "word_boundary" => {
             // \b â€” word boundary.
-            let left_word = pos > 0 && state.is_word_char(state.chars[pos - 1]);
-            let right_word = pos < state.chars.len() && state.is_word_char(state.chars[pos]);
+            let left_word = pos > 0 && state.is_word_char(state.subject.unit(pos - 1));
+            let right_word =
+                pos < state.subject.len() && state.is_word_char(state.subject.unit(pos));
             if left_word != right_word {
                 Some(pos)
             } else {
@@ -548,8 +598,9 @@ pub(super) fn match_anchor(kind: &str, pos: usize, state: &MatchState) -> Option
         }
         "word_boundary_not" => {
             // \B â€” non-word-boundary.
-            let left_word = pos > 0 && state.is_word_char(state.chars[pos - 1]);
-            let right_word = pos < state.chars.len() && state.is_word_char(state.chars[pos]);
+            let left_word = pos > 0 && state.is_word_char(state.subject.unit(pos - 1));
+            let right_word =
+                pos < state.subject.len() && state.is_word_char(state.subject.unit(pos));
             if left_word == right_word {
                 Some(pos)
             } else {
@@ -567,7 +618,7 @@ pub(super) fn char_class_matches(
     ranges: &[(String, String)],
     chars: &[String],
     categories: &[String],
-    state: &MatchState,
+    state: &MatchState<'_>,
 ) -> bool {
     let mut hit = false;
 
@@ -588,6 +639,16 @@ pub(super) fn char_class_matches(
             let lo = lo_str.chars().next().unwrap_or('\0');
             let hi = hi_str.chars().next().unwrap_or('\0');
             if state.is_ignorecase() {
+                if state.is_bytes {
+                    let ch_lower = ch.to_ascii_lowercase();
+                    let lo_lower = lo.to_ascii_lowercase();
+                    let hi_lower = hi.to_ascii_lowercase();
+                    if ch_lower >= lo_lower && ch_lower <= hi_lower {
+                        hit = true;
+                        break;
+                    }
+                    continue;
+                }
                 let ch_lower = ch.to_lowercase().next().unwrap_or(ch);
                 let lo_lower = lo.to_lowercase().next().unwrap_or(lo);
                 let hi_lower = hi.to_lowercase().next().unwrap_or(hi);
@@ -666,7 +727,7 @@ pub(super) fn try_match_repeat(
     max_count: Option<u64>,
     greedy: bool,
     rest: &[ReNode],
-    state: &mut MatchState,
+    state: &mut MatchState<'_>,
 ) -> Option<usize> {
     let min = min_count as usize;
     let max = max_count.map(|m| m as usize).unwrap_or(usize::MAX);
@@ -748,7 +809,7 @@ pub(super) fn try_match_look(
     behind: bool,
     positive: bool,
     width: Option<u64>,
-    state: &mut MatchState,
+    state: &mut MatchState<'_>,
 ) -> Option<usize> {
     if behind {
         // Look-behind: check the substring ending at `pos`.

@@ -43,6 +43,11 @@ pub(super) fn resolve_symbol(symbol: &str) -> Option<u64> {
             "crate::molt_memoryview_toreadonly",
             crate::molt_memoryview_toreadonly as *const (),
         )),
+        #[cfg(feature = "stdlib_regex")]
+        "molt_memoryview_from_simple_buffer" => Some(crate::builtins::functions::runtime_fn_addr(
+            "crate::molt_memoryview_from_simple_buffer",
+            crate::molt_memoryview_from_simple_buffer as *const (),
+        )),
         _ => None,
     }
 }

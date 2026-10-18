@@ -15,9 +15,11 @@ use molt_runtime_core::obj_from_bits;
 use molt_runtime_core::prelude::*;
 
 use crate::bridge::{
-    alloc_dict_with_pairs, alloc_list, alloc_string, alloc_tuple, attr_name_bits_from_bytes,
-    dec_ref_bits, dict_get_in_place, dict_set_in_place, dict_snapshot, inc_ref_bits,
-    object_type_id, raise_exception, seq_snapshot, string_obj_to_owned, to_i64,
+    alloc_bytes, alloc_dict_with_pairs, alloc_list, alloc_string, alloc_tuple,
+    attr_name_bits_from_bytes, bytes_obj_to_borrowed, bytes_pattern_to_string, dec_ref_bits,
+    dict_get_in_place, dict_set_in_place, dict_snapshot, inc_ref_bits, object_type_id,
+    pattern_handle_arc, pattern_handle_new, raise_exception, scanner_handle_arc,
+    scanner_handle_new, seq_snapshot, string_obj_to_owned, to_i64,
 };
 
 #[path = "regex/common.rs"]
@@ -32,8 +34,6 @@ mod execute_api;
 mod functions_re;
 #[path = "regex/ir.rs"]
 mod ir;
-#[path = "regex/match_api.rs"]
-mod match_api;
 #[path = "regex/matcher.rs"]
 mod matcher;
 #[path = "regex/parser.rs"]
@@ -48,6 +48,8 @@ mod tests;
 #[path = "regex/verbose_backref.rs"]
 mod verbose_backref;
 
+pub use registry::{PatternHandle, ScannerHandle};
+
 #[allow(unused_imports)]
 use common::*;
 #[allow(unused_imports)]
@@ -61,8 +63,6 @@ use functions_re::*;
 #[allow(unused_imports)]
 use ir::*;
 #[allow(unused_imports)]
-use match_api::*;
-#[allow(unused_imports)]
 use matcher::*;
 #[allow(unused_imports)]
 use parser::*;
@@ -74,9 +74,8 @@ use substitution::*;
 use verbose_backref::*;
 
 pub use compile_api::{molt_re_compile, molt_re_pattern_info};
-pub use execute_api::{molt_re_execute, molt_re_finditer_collect};
+pub use execute_api::{molt_re_execute, molt_re_finditer_next, molt_re_scanner_new};
 pub use functions_re::{molt_re_expand_replacement, molt_re_group_values};
 
-pub use match_api::{molt_re_match_group, molt_re_match_groupdict, molt_re_match_groups};
 pub use substitution::{molt_re_escape, molt_re_split, molt_re_sub};
 pub use verbose_backref::molt_re_strip_verbose;

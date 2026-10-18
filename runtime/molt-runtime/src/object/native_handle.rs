@@ -43,6 +43,18 @@ unsafe impl NativeHandleNoMoltEdges for std::sync::Mutex<molt_runtime_crypto::ha
 impl sealed::Sealed for std::sync::Mutex<molt_runtime_crypto::hmac::HmacHandle> {}
 #[cfg(feature = "stdlib_crypto")]
 unsafe impl NativeHandleNoMoltEdges for std::sync::Mutex<molt_runtime_crypto::hmac::HmacHandle> {}
+// Regex patterns are immutable Rust-owned data. Scanners add their existing
+// mutex around Rust-owned incremental state; neither payload may retain a Molt
+// object, runtime edge or exported buffer lease.
+#[cfg(feature = "stdlib_regex")]
+impl sealed::Sealed for molt_runtime_regex::regex::PatternHandle {}
+#[cfg(feature = "stdlib_regex")]
+unsafe impl NativeHandleNoMoltEdges for molt_runtime_regex::regex::PatternHandle {}
+#[cfg(feature = "stdlib_regex")]
+impl sealed::Sealed for std::sync::Mutex<molt_runtime_regex::regex::ScannerHandle> {}
+#[cfg(feature = "stdlib_regex")]
+unsafe impl NativeHandleNoMoltEdges for std::sync::Mutex<molt_runtime_regex::regex::ScannerHandle> {}
+
 #[cfg(not(target_arch = "wasm32"))]
 impl sealed::Sealed for crate::concurrency::isolates::MoltThreadHandle {}
 #[cfg(not(target_arch = "wasm32"))]
@@ -189,17 +201,19 @@ pub(crate) fn native_handle_release(detached: DetachedNativeHandle) {
 
 /// Typed satellite projection of the existing Arc payload authority. The
 /// declaring root crate still supplies the sealed green-edge admission.
-/// Only the compression and crypto satellite bridges declare handles.
-#[cfg(any(feature = "stdlib_compression", feature = "stdlib_crypto"))]
+/// Each bridge declares its complete Arc payload type, including any mutex.
+#[cfg(any(
+    feature = "stdlib_compression",
+    feature = "stdlib_crypto",
+    feature = "stdlib_regex"
+))]
 macro_rules! native_handle_bridge {
     ($new:ident, $clone:ident, $payload:ty) => {
-        /// Consumes one Arc<Mutex<Payload>> raw reference on every outcome.
+        /// Consumes one Arc<Payload> raw reference on every outcome.
         #[unsafe(no_mangle)]
         pub unsafe extern "C" fn $new(pointer: *const std::ffi::c_void) -> u64 {
             $crate::with_gil_entry_nopanic!(py, {
-                let payload = unsafe {
-                    std::sync::Arc::<std::sync::Mutex<$payload>>::from_raw(pointer.cast())
-                };
+                let payload = unsafe { std::sync::Arc::<$payload>::from_raw(pointer.cast()) };
                 let bits = $crate::object::native_handle::native_handle_new(py, payload);
                 if bits == 0 {
                     $crate::MoltObject::none().bits()
@@ -213,14 +227,18 @@ macro_rules! native_handle_bridge {
         #[unsafe(no_mangle)]
         pub unsafe extern "C" fn $clone(bits: u64) -> *const std::ffi::c_void {
             $crate::with_gil_entry_nopanic!(_py, {
-                $crate::object::native_handle::native_handle_arc::<std::sync::Mutex<$payload>>(bits)
+                $crate::object::native_handle::native_handle_arc::<$payload>(bits)
                     .map(|payload| std::sync::Arc::into_raw(payload).cast())
                     .unwrap_or(std::ptr::null())
             })
         }
     };
 }
-#[cfg(any(feature = "stdlib_compression", feature = "stdlib_crypto"))]
+#[cfg(any(
+    feature = "stdlib_compression",
+    feature = "stdlib_crypto",
+    feature = "stdlib_regex"
+))]
 pub(crate) use native_handle_bridge;
 
 #[cfg(test)]
