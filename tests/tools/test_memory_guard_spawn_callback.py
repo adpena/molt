@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import sys
 import time
 
@@ -128,6 +129,78 @@ def test_windows_job_sampling_automatically_avoids_global_process_table() -> Non
     else:
         # A coarse Windows CPU clock can read zero; the share is unmeasurable.
         assert duty_cycle is None
+
+
+@pytest.mark.skipif(
+    not memory_guard._process_model.posix_custody_reads_partial_rows(),
+    reason="this host reads the process table for custody",
+)
+def test_guard_polls_read_the_tree_not_the_host_table() -> None:
+    # Each poll once read every process of the host (about 1,300 kern.proc rows
+    # on a developer Mac, or every /proc entry) to keep the few of this tree.
+    grandchild = "import time; x=bytearray(20_000_000); time.sleep(0.3)"
+    child = (
+        "import subprocess,sys,time;"
+        "x=bytearray(20_000_000);"
+        "p=subprocess.Popen([sys.executable,'-c',sys.argv[1]]);"
+        "time.sleep(0.3);p.wait()"
+    )
+
+    result = memory_guard.run_guarded(
+        [sys.executable, "-c", child, grandchild],
+        max_rss_kb=256 * 1024,
+        max_total_rss_kb=512 * 1024,
+        poll_interval=0.01,
+        capture_output=True,
+    )
+
+    assert result.returncode == 0
+    assert result.sampling_telemetry is not None
+    assert (
+        result.sampling_telemetry.source
+        == memory_guard._process_model.posix_custody_source()
+    )
+    # The tree's rows plus the guard's own lineage, never the host table.
+    lineage = memory_guard._process_model.posix_custody_lineage(os.getpid())
+    assert 2 <= result.sampling_telemetry.max_process_rows <= len(lineage) + 4
+    assert result.peak_total is not None and result.peak is not None
+    assert result.peak_total.rss_kb > result.peak.rss_kb
+
+
+@pytest.mark.skipif(
+    not memory_guard._process_model.posix_custody_reads_partial_rows(),
+    reason="this host reads the process table for custody",
+)
+def test_guard_kill_decides_protection_on_the_host_table(monkeypatch) -> None:
+    # Polls read custody rows; a kill re-reads the host table (samples=None)
+    # before it judges which groups it may signal.
+    kills: list[tuple[str, object]] = []
+    original = memory_guard.terminate_watched_processes
+
+    def recording(root_pid, **kwargs):  # noqa: ANN001, ANN003, ANN202
+        kills.append((kwargs["reason"], kwargs.get("samples")))
+        return original(root_pid, **kwargs)
+
+    monkeypatch.setattr(memory_guard, "terminate_watched_processes", recording)
+
+    result = memory_guard.run_guarded(
+        [
+            sys.executable,
+            "-c",
+            "import time; x=bytearray(200_000_000); time.sleep(10)",
+        ],
+        max_rss_kb=64 * 1024,
+        poll_interval=0.01,
+        capture_output=True,
+    )
+
+    assert result.returncode != 0
+    assert result.sampling_telemetry is not None
+    assert (
+        result.sampling_telemetry.source
+        == memory_guard._process_model.posix_custody_source()
+    )
+    assert ("rss_limit", None) in kills
 
 
 @pytest.mark.skipif(not sys.platform.startswith("win"), reason="Windows Job telemetry")

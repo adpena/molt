@@ -95,6 +95,7 @@ def test_darwin_kernel_argv_preserves_spaces_quotes_and_empty_arguments():
         proc_task_info_type=object,
         kinfo=None,
         proc_pidinfo=unused,
+        proc_listpids=unused,
         sysctl=sysctl,
     )
     assert authority.argv(12) == argv

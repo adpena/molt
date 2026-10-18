@@ -1208,6 +1208,56 @@ def _write_linux_proc_sample(
     (proc / "cmdline").write_bytes(b"python\0worker.py\0")
 
 
+def test_linux_custody_poll_walks_thread_children_not_every_proc_entry(
+    tmp_path: Path,
+) -> None:
+    model = memory_guard._process_model
+    # 100 forked 101 from its main thread; 101 forked 102 from a second
+    # thread. 103 was reparented to init and stays tracked by pid. 104's
+    # number was reused by an unrelated process between the two reads. 500 is
+    # the suite lease owner: its row, never its children. 900 is unrelated.
+    for pid, ppid, pgid in (
+        (100, 50, 100),
+        (101, 100, 100),
+        (102, 101, 100),
+        (103, 1, 103),
+        (104, 999, 999),
+        (500, 1, 500),
+        (501, 500, 500),
+        (900, 1, 900),
+    ):
+        _write_linux_proc_sample(
+            tmp_path, pid=pid, ppid=ppid, pgid=pgid, start_ticks=pid
+        )
+    for pid, tasks in {
+        100: {100: "101 104"},
+        101: {101: "", 1011: "102"},
+        102: {102: ""},
+        103: {103: ""},
+        500: {500: "501"},
+    }.items():
+        for tid, children in tasks.items():
+            task = tmp_path / str(pid) / "task" / str(tid)
+            task.mkdir(parents=True)
+            (task / "children").write_text(children, encoding="utf-8")
+
+    interest = model.CustodyInterest(
+        tree_pids=frozenset({100, 103}), exact_pids=frozenset({500})
+    )
+    custody = model.sample_processes_linux_proc_custody(
+        interest, tmp_path, uptime_sec=1000.0
+    )
+    full = model.sample_processes_linux_proc(tmp_path, uptime_sec=1000.0)
+
+    assert set(custody) == {100, 101, 102, 103, 500}
+    by_custody = model.ProcessTreeTracker(100)
+    by_custody.known_pids.add(103)
+    by_table = model.ProcessTreeTracker(100)
+    by_table.known_pids.add(103)
+    assert by_custody.update(custody) == by_table.update(full) == {100, 101, 102, 103}
+    assert custody[102].rss_kb == full[102].rss_kb == 4096
+
+
 def test_linux_proc_sampler_binds_lineage_identity_command_and_rss(
     tmp_path: Path,
 ) -> None:
@@ -1670,6 +1720,141 @@ def test_actual_darwin_sampler_omits_unreaped_child() -> None:
             child.stdout.close()
     assert model._darwin_proc_kernel_row(child.pid) is None
     assert child.pid not in model.sample_processes_posix()
+
+
+@pytest.mark.skipif(sys.platform != "darwin", reason="Darwin kernel process filters")
+def test_actual_darwin_custody_poll_tracks_the_tree_the_host_table_does() -> None:
+    model = memory_guard._process_model
+    authority = model._load_darwin_process_authority()
+    # A live tree: this test's child holds two real grandchildren.
+    child = start_owned_test_process(
+        [
+            sys.executable,
+            "-I",
+            "-S",
+            "-c",
+            "import os, subprocess\n"
+            "kids = [subprocess.Popen(['/bin/sleep', '30']) for _ in range(2)]\n"
+            "os.write(1, b'x'); os.read(0, 1)\n"
+            "for kid in kids: kid.kill(); kid.wait()\n",
+        ],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+    )
+    try:
+        assert child.stdout is not None and child.stdin is not None
+        assert child.stdout.read(1) == b"x"
+        table = authority.kernel_table()
+        grandchildren = {pid for pid, row in table.items() if row.ppid == child.pid}
+        assert len(grandchildren) == 2
+        assert set(authority.child_pids(child.pid)) == grandchildren
+        lineage = model.posix_custody_lineage(os.getpid())
+        assert {os.getpid(), 1} <= lineage
+        interest = model.CustodyInterest(
+            tree_pids=frozenset({child.pid}), exact_pids=lineage
+        )
+        custody = model._sample_processes_darwin_custody(interest)
+        full = model._darwin_samples(table)
+        by_table = model.ProcessTreeTracker(child.pid).update(full)
+        by_custody = model.ProcessTreeTracker(child.pid).update(custody)
+        assert by_custody == {child.pid, *grandchildren}
+        # Rows outside the tree differ in count, never in the tracked set.
+        assert by_custody == by_table
+        assert len(custody) < len(full)
+        # Protection judges tree members through their ancestry, which the
+        # lineage keeps: the verdicts match the host table's, owned or not.
+        groups = {full[pid].pgid for pid in by_table}
+        for owned in (frozenset(by_table), frozenset()):
+            verdicts = []
+            for samples in (custody, full):
+                protected = model.protected_process_group_ids(
+                    samples,
+                    self_pid=os.getpid(),
+                    self_pgid=os.getpgrp(),
+                    owned_pids=owned,
+                )
+                verdicts.append(
+                    (
+                        {pgid for pgid in groups if pgid in protected},
+                        model.filter_protected_watched_pids(
+                            samples,
+                            set(by_table),
+                            protected_pgids=protected,
+                            current_pid=os.getpid(),
+                        ),
+                    )
+                )
+            assert verdicts[0] == verdicts[1]
+    finally:
+        if not child.stdin.closed:
+            child.stdin.close()
+        child.wait(timeout=5)
+        if child.stdout is not None:
+            child.stdout.close()
+
+
+@pytest.mark.skipif(
+    not memory_guard._process_model.posix_custody_reads_partial_rows(),
+    reason="this host reads the process table for custody",
+)
+def test_actual_custody_poll_judges_a_live_tree_as_the_host_table_does() -> None:
+    model = memory_guard._process_model
+    child = start_owned_test_process(
+        [
+            sys.executable,
+            "-I",
+            "-S",
+            "-c",
+            "import os, subprocess\n"
+            "kids = [subprocess.Popen(['sleep', '30']) for _ in range(2)]\n"
+            "os.write(1, b'x'); os.read(0, 1)\n"
+            "for kid in kids: kid.kill(); kid.wait()\n",
+        ],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+    )
+    try:
+        assert child.stdout is not None and child.stdin is not None
+        assert child.stdout.read(1) == b"x"
+        full = model.sample_processes_posix()
+        custody = model.sample_processes_posix_custody(
+            model.CustodyInterest(
+                tree_pids=frozenset({child.pid}),
+                exact_pids=model.posix_custody_lineage(os.getpid()),
+            )
+        )
+        by_table = model.ProcessTreeTracker(child.pid).update(full)
+        by_custody = model.ProcessTreeTracker(child.pid).update(custody)
+        assert len(by_custody) == 3 and by_custody == by_table
+        assert len(custody) < len(full)
+        groups = {full[pid].pgid for pid in by_table}
+        for owned in (frozenset(by_table), frozenset()):
+            verdicts = []
+            for samples in (custody, full):
+                protected = model.protected_process_group_ids(
+                    samples,
+                    self_pid=os.getpid(),
+                    self_pgid=os.getpgrp(),
+                    owned_pids=owned,
+                )
+                verdicts.append(
+                    (
+                        {pgid for pgid in groups if pgid in protected},
+                        model.filter_protected_watched_pids(
+                            samples,
+                            set(by_table),
+                            protected_pgids=protected,
+                            current_pid=os.getpid(),
+                        ),
+                    )
+                )
+            assert verdicts[0] == verdicts[1]
+    finally:
+        if not child.stdin.closed:
+            child.stdin.close()
+        child.wait(timeout=5)
+        if child.stdout is not None:
+            child.stdout.close()
 
 
 def test_descendant_pids_includes_grandchildren() -> None:

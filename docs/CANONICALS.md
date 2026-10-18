@@ -44,6 +44,7 @@ of truth when a claim drifts.
 - [design/host_capacity.md](design/host_capacity.md)
 - [design/flag_strings.md](design/flag_strings.md)
 - [design/landing_queue.md](design/landing_queue.md)
+- [design/memory_guard_custody_sampling.md](design/memory_guard_custody_sampling.md)
 - [design/process_environment.md](design/process_environment.md)
 - [architecture/compilation-model.md](architecture/compilation-model.md)
 - [architecture/gpu-primitive-stack.md](architecture/gpu-primitive-stack.md)
