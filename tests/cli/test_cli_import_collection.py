@@ -31150,6 +31150,55 @@ def test_backend_daemon_log_tail_mark_and_since_are_bounded(tmp_path: Path) -> N
     assert "four" in truncated
 
 
+def test_backend_daemon_log_interval_excludes_concurrent_appends(
+    tmp_path: Path,
+) -> None:
+    log_path = tmp_path / "daemon.log"
+    log_path.write_bytes(b"one\ntwo\nthree\n")
+
+    def open_after_append(mode: str):
+        with log_path.open("ab") as writer:
+            writer.write(b"another request\n" * 100)
+        return log_path.open(mode)
+
+    observed_log = SimpleNamespace(stat=log_path.stat, open=open_after_append)
+    assert (
+        cli_backend_daemon_logs._backend_daemon_log_since(observed_log, 0, max_bytes=11)
+        == "...(daemon log truncated to recent output)\ntwo\nthree"
+    )
+
+
+def test_backend_daemon_log_tail_bounds_file_bytes(tmp_path: Path) -> None:
+    log_path = tmp_path / "daemon.log"
+    budget = cli_backend_daemon_logs._BACKEND_DAEMON_VERBOSE_LOG_MAX_BYTES
+    with log_path.open("wb") as writer:
+        writer.seek(4 * budget)
+        writer.write(b"\nrecent one\nrecent two\n")
+    read_bytes = []
+
+    class Reader(io.BufferedReader):
+        def read(self, size: int = -1) -> bytes:
+            data = super().read(size)
+            read_bytes.append(len(data))
+            return data
+
+    def read_text(**kwargs):
+        text = log_path.read_text(**kwargs)
+        read_bytes.append(len(text.encode("utf-8")))
+        return text
+
+    observed_log = SimpleNamespace(
+        stat=log_path.stat,
+        open=lambda mode: Reader(log_path.open(mode, buffering=0)),
+        read_text=read_text,
+    )
+    assert (
+        cli_backend_daemon_logs._backend_daemon_log_tail(observed_log, max_lines=2)
+        == "recent one\nrecent two"
+    )
+    assert read_bytes and sum(read_bytes) <= budget
+
+
 def test_backend_daemon_skip_output_sync_flags_track_artifact_state(
     tmp_path: Path,
 ) -> None:

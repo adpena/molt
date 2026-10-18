@@ -5,10 +5,10 @@ from pathlib import Path
 
 
 def _backend_daemon_log_tail(log_path: Path, *, max_lines: int = 30) -> str | None:
-    try:
-        lines = log_path.read_text(encoding="utf-8", errors="replace").splitlines()
-    except OSError:
+    text = _backend_daemon_log_since(log_path, 0)
+    if text is None:
         return None
+    lines = text.splitlines()
     if not lines:
         return None
     tail = lines[-max_lines:]
@@ -47,7 +47,9 @@ def _backend_daemon_log_since(
     try:
         with log_path.open("rb") as handle:
             handle.seek(start)
-            data = handle.read()
+            # Bind the interval to the observed end. Concurrent appends must
+            # neither extend the diagnostic nor defeat its byte budget.
+            data = handle.read(size - start)
     except OSError:
         return None
     text = data.decode("utf-8", errors="replace")
