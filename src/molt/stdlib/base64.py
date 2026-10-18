@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from _intrinsics import require_intrinsic as _require_intrinsic
 
+import binascii
 from typing import Any
 
 _molt_base64_b64encode = _require_intrinsic("molt_base64_b64encode")
@@ -98,7 +99,7 @@ def b64encode(s: Any, altchars: Any | None = None) -> bytes:
 
 
 def b64decode(s: Any, altchars: Any | None = None, validate: bool = False) -> bytes:
-    return _molt_base64_b64decode(s, altchars, validate)
+    return _molt_base64_b64decode(binascii.Error, s, altchars, validate)
 
 
 def standard_b64encode(s: Any) -> bytes:
@@ -106,7 +107,7 @@ def standard_b64encode(s: Any) -> bytes:
 
 
 def standard_b64decode(s: Any) -> bytes:
-    return _molt_base64_standard_b64decode(s)
+    return _molt_base64_standard_b64decode(binascii.Error, s)
 
 
 def urlsafe_b64encode(s: Any) -> bytes:
@@ -114,7 +115,7 @@ def urlsafe_b64encode(s: Any) -> bytes:
 
 
 def urlsafe_b64decode(s: Any) -> bytes:
-    return _molt_base64_urlsafe_b64decode(s)
+    return _molt_base64_urlsafe_b64decode(binascii.Error, s)
 
 
 def b32encode(s: Any) -> bytes:
@@ -122,7 +123,7 @@ def b32encode(s: Any) -> bytes:
 
 
 def b32decode(s: Any, casefold: bool = False, map01: Any | None = None) -> bytes:
-    return _molt_base64_b32decode(s, casefold, map01)
+    return _molt_base64_b32decode(binascii.Error, s, casefold, map01)
 
 
 def b32hexencode(s: Any) -> bytes:
@@ -130,7 +131,7 @@ def b32hexencode(s: Any) -> bytes:
 
 
 def b32hexdecode(s: Any, casefold: bool = False) -> bytes:
-    return _molt_base64_b32hexdecode(s, casefold)
+    return _molt_base64_b32hexdecode(binascii.Error, s, casefold)
 
 
 def b16encode(s: Any) -> bytes:
@@ -138,7 +139,7 @@ def b16encode(s: Any) -> bytes:
 
 
 def b16decode(s: Any, casefold: bool = False) -> bytes:
-    return _molt_base64_b16decode(s, casefold)
+    return _molt_base64_b16decode(binascii.Error, s, casefold)
 
 
 def a85encode(
@@ -228,7 +229,7 @@ def encodebytes(s: Any) -> bytes:
 
 def decodebytes(s: Any) -> bytes:
     _input_type_check(s)
-    return _molt_base64_decodebytes(s)
+    return _molt_base64_decodebytes(binascii.Error, s)
 
 
 def encodestring(s: Any) -> bytes:

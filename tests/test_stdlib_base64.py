@@ -33,7 +33,7 @@ _FAKE_INTRINSICS.setdefault(
 )
 _FAKE_INTRINSICS.setdefault(
     "molt_base64_b64decode",
-    lambda data, altchars=None, validate=False: py_base64.b64decode(
+    lambda error_type, data, altchars=None, validate=False: py_base64.b64decode(
         data, altchars=altchars, validate=validate
     ),
 )
@@ -43,7 +43,7 @@ _FAKE_INTRINSICS.setdefault(
 )
 _FAKE_INTRINSICS.setdefault(
     "molt_base64_standard_b64decode",
-    lambda data: py_base64.standard_b64decode(data),
+    lambda error_type, data: py_base64.standard_b64decode(data),
 )
 _FAKE_INTRINSICS.setdefault(
     "molt_base64_urlsafe_b64encode",
@@ -51,14 +51,14 @@ _FAKE_INTRINSICS.setdefault(
 )
 _FAKE_INTRINSICS.setdefault(
     "molt_base64_urlsafe_b64decode",
-    lambda data: py_base64.urlsafe_b64decode(data),
+    lambda error_type, data: py_base64.urlsafe_b64decode(data),
 )
 _FAKE_INTRINSICS.setdefault(
     "molt_base64_b32encode", lambda data: py_base64.b32encode(data)
 )
 _FAKE_INTRINSICS.setdefault(
     "molt_base64_b32decode",
-    lambda data, casefold=False, map01=None: py_base64.b32decode(
+    lambda error_type, data, casefold=False, map01=None: py_base64.b32decode(
         data, casefold=casefold, map01=map01
     ),
 )
@@ -68,14 +68,18 @@ _FAKE_INTRINSICS.setdefault(
 )
 _FAKE_INTRINSICS.setdefault(
     "molt_base64_b32hexdecode",
-    lambda data, casefold=False: py_base64.b32hexdecode(data, casefold=casefold),
+    lambda error_type, data, casefold=False: py_base64.b32hexdecode(
+        data, casefold=casefold
+    ),
 )
 _FAKE_INTRINSICS.setdefault(
     "molt_base64_b16encode", lambda data: py_base64.b16encode(data)
 )
 _FAKE_INTRINSICS.setdefault(
     "molt_base64_b16decode",
-    lambda data, casefold=False: py_base64.b16decode(data, casefold=casefold),
+    lambda error_type, data, casefold=False: py_base64.b16decode(
+        data, casefold=casefold
+    ),
 )
 _FAKE_INTRINSICS.setdefault(
     "molt_base64_a85encode",
@@ -104,7 +108,7 @@ _FAKE_INTRINSICS.setdefault(
 )
 _FAKE_INTRINSICS.setdefault(
     "molt_base64_decodebytes",
-    lambda data: py_base64.decodebytes(data),
+    lambda error_type, data: py_base64.decodebytes(data),
 )
 
 

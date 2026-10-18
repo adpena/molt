@@ -5761,7 +5761,7 @@ pub(crate) const RUNTIME_CALLABLE_IMPORTS: &[RuntimeCallableImportSpec] = &[
     RuntimeCallableImportSpec {
         runtime_name: "molt_binascii_a2b_base64",
         import: WasmRuntimeImport::BinasciiA2bBase64,
-        arity: 1,
+        arity: 3,
     },
     RuntimeCallableImportSpec {
         runtime_name: "molt_binascii_b2a_base64",
@@ -5771,7 +5771,7 @@ pub(crate) const RUNTIME_CALLABLE_IMPORTS: &[RuntimeCallableImportSpec] = &[
     RuntimeCallableImportSpec {
         runtime_name: "molt_binascii_a2b_hex",
         import: WasmRuntimeImport::BinasciiA2bHex,
-        arity: 1,
+        arity: 2,
     },
     RuntimeCallableImportSpec {
         runtime_name: "molt_binascii_b2a_hex",
@@ -5791,12 +5791,12 @@ pub(crate) const RUNTIME_CALLABLE_IMPORTS: &[RuntimeCallableImportSpec] = &[
     RuntimeCallableImportSpec {
         runtime_name: "molt_binascii_a2b_uu",
         import: WasmRuntimeImport::BinasciiA2bUu,
-        arity: 1,
+        arity: 2,
     },
     RuntimeCallableImportSpec {
         runtime_name: "molt_binascii_b2a_uu",
         import: WasmRuntimeImport::BinasciiB2aUu,
-        arity: 1,
+        arity: 2,
     },
     RuntimeCallableImportSpec {
         runtime_name: "molt_binascii_crc32",
@@ -10791,7 +10791,7 @@ pub(crate) const RUNTIME_CALLABLE_IMPORTS: &[RuntimeCallableImportSpec] = &[
     RuntimeCallableImportSpec {
         runtime_name: "molt_base64_b64decode",
         import: WasmRuntimeImport::Base64B64decode,
-        arity: 3,
+        arity: 4,
     },
     RuntimeCallableImportSpec {
         runtime_name: "molt_base64_standard_b64encode",
@@ -10801,7 +10801,7 @@ pub(crate) const RUNTIME_CALLABLE_IMPORTS: &[RuntimeCallableImportSpec] = &[
     RuntimeCallableImportSpec {
         runtime_name: "molt_base64_standard_b64decode",
         import: WasmRuntimeImport::Base64StandardB64decode,
-        arity: 1,
+        arity: 2,
     },
     RuntimeCallableImportSpec {
         runtime_name: "molt_base64_urlsafe_b64encode",
@@ -10811,7 +10811,7 @@ pub(crate) const RUNTIME_CALLABLE_IMPORTS: &[RuntimeCallableImportSpec] = &[
     RuntimeCallableImportSpec {
         runtime_name: "molt_base64_urlsafe_b64decode",
         import: WasmRuntimeImport::Base64UrlsafeB64decode,
-        arity: 1,
+        arity: 2,
     },
     RuntimeCallableImportSpec {
         runtime_name: "molt_base64_b32encode",
@@ -10821,7 +10821,7 @@ pub(crate) const RUNTIME_CALLABLE_IMPORTS: &[RuntimeCallableImportSpec] = &[
     RuntimeCallableImportSpec {
         runtime_name: "molt_base64_b32decode",
         import: WasmRuntimeImport::Base64B32decode,
-        arity: 3,
+        arity: 4,
     },
     RuntimeCallableImportSpec {
         runtime_name: "molt_base64_b32hexencode",
@@ -10831,7 +10831,7 @@ pub(crate) const RUNTIME_CALLABLE_IMPORTS: &[RuntimeCallableImportSpec] = &[
     RuntimeCallableImportSpec {
         runtime_name: "molt_base64_b32hexdecode",
         import: WasmRuntimeImport::Base64B32hexdecode,
-        arity: 2,
+        arity: 3,
     },
     RuntimeCallableImportSpec {
         runtime_name: "molt_base64_b16encode",
@@ -10841,7 +10841,7 @@ pub(crate) const RUNTIME_CALLABLE_IMPORTS: &[RuntimeCallableImportSpec] = &[
     RuntimeCallableImportSpec {
         runtime_name: "molt_base64_b16decode",
         import: WasmRuntimeImport::Base64B16decode,
-        arity: 2,
+        arity: 3,
     },
     RuntimeCallableImportSpec {
         runtime_name: "molt_base64_a85encode",
@@ -10871,7 +10871,7 @@ pub(crate) const RUNTIME_CALLABLE_IMPORTS: &[RuntimeCallableImportSpec] = &[
     RuntimeCallableImportSpec {
         runtime_name: "molt_base64_decodebytes",
         import: WasmRuntimeImport::Base64Decodebytes,
-        arity: 1,
+        arity: 2,
     },
     RuntimeCallableImportSpec {
         runtime_name: "molt_copy_copy",
