@@ -33,6 +33,7 @@ from molt.cli.cargo_resource_custody import (
     CargoResourceRoot,
 )
 from molt.cli.runtime_cargo_plan import (
+    CargoEnvironment,
     RuntimeCargoPlan,
     _CargoEnvironment,
     _cargo_build_directory_base,
@@ -743,7 +744,7 @@ def runtime_cargo_plan(
     return RuntimeCargoPlan(
         root,
         command,
-        MappingProxyType(environment),
+        CargoEnvironment(environment),
         requested_target or host,
         host,
         executable,

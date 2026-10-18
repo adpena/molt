@@ -1806,8 +1806,8 @@ def test_rust_linker_selector_must_reconcile_with_executable_custody(
         plan = replace(
             plan,
             rustflags=flags,
-            environment=MappingProxyType(
-                {**plan.environment, "CARGO_ENCODED_RUSTFLAGS": "\x1f".join(flags)}
+            environment=plan.environment.updated(
+                {"CARGO_ENCODED_RUSTFLAGS": "\x1f".join(flags)}
             ),
         )
     else:
@@ -2596,22 +2596,64 @@ def test_selected_sdk_search_context_precedes_user_roots_without_recapture(
 
 def test_sdk_search_context_cannot_be_removed_from_retained_plan(plan_root):
     from dataclasses import replace
-    from types import MappingProxyType
 
     plan = _plan(plan_root, target="wasm32-wasip1", args=("--target", "wasm32-wasip1"))
     flags = plan.rustflags[4:]
     damaged = replace(
         plan,
         rustflags=flags,
-        environment=MappingProxyType(
-            {
-                **plan.environment,
-                "CARGO_ENCODED_RUSTFLAGS": "\x1f".join(flags),
-            }
+        environment=plan.environment.updated(
+            {"CARGO_ENCODED_RUSTFLAGS": "\x1f".join(flags)}
         ),
     )
     with pytest.raises(ValueError, match="admitted target context"):
         damaged.verify()
+
+
+def test_windows_environment_names_keep_target_c_selectors_through_the_plan(
+    plan_root, readonly_wasi_sdk
+):
+    # Windows stores CC_wasm32-wasip1 as CC_WASM32-WASIP1, and cc-rs still
+    # selects it. Every hosted Windows plan once lost that rule when it
+    # pinned its build directory, and verify() refused its own C tools.
+    windows = plans._CargoEnvironment(
+        {
+            "CARGO_HOME": str(plan_root / "cargo-home"),
+            "WASI_SDK_PATH": str(readonly_wasi_sdk().sdk),
+        },
+        case_insensitive=True,
+    )
+    plan = plans.resolve_runtime_cargo_plan(
+        plan_root,
+        env=windows,
+        cargo_command=("cargo", "rustc", "--target", "wasm32-wasip1"),
+        requested_target="wasm32-wasip1",
+        host_target="x86_64-unknown-linux-gnu",
+    )
+    assert plan.environment.case_insensitive
+    assert "CC_WASM32-WASIP1" in set(plan.environment)
+    for role in ("cc", "cxx", "ar", "ranlib"):
+        selector = f"{role.upper()}_wasm32-wasip1"
+        assert plan.environment[selector] == os.fspath(plan.tools[role])
+    assert plan.environment["CARGO_BUILD_BUILD_DIR"] == os.fspath(plan.build_directory)
+    plan.verify()
+
+
+def test_cargo_environment_updates_keep_their_name_rule_and_never_mutate():
+    windows = plans.CargoEnvironment({"Path": "a"}, case_insensitive=True)
+    updated = windows.updated({"cc_wasm32-wasip1": "clang"})
+    assert dict(updated) == {"PATH": "a", "CC_WASM32-WASIP1": "clang"}
+    assert updated["CC_wasm32-wasip1"] == "clang" and updated.case_insensitive
+    assert dict(windows) == {"PATH": "a"}
+    posix = plans.CargoEnvironment({"CC": "gcc"}, case_insensitive=False)
+    assert dict(posix.updated({"cc": "lowercase"})) == {"CC": "gcc", "cc": "lowercase"}
+    assert posix.get("Cc") is None
+
+
+def test_a_plan_refuses_an_environment_without_its_name_rule(plan_root):
+    plan = _plan(plan_root)
+    with pytest.raises(TypeError, match="must be a CargoEnvironment"):
+        replace(plan, environment=MappingProxyType(dict(plan.environment)))
 
 
 @pytest.mark.parametrize("simd,freestanding", [(True, False), (False, True)])
