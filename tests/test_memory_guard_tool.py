@@ -1672,6 +1672,77 @@ def test_actual_darwin_sampler_omits_unreaped_child() -> None:
     assert child.pid not in model.sample_processes_posix()
 
 
+@pytest.mark.skipif(sys.platform != "darwin", reason="Darwin kernel process filters")
+def test_actual_darwin_custody_poll_tracks_the_tree_the_host_table_does() -> None:
+    model = memory_guard._process_model
+    authority = model._load_darwin_process_authority()
+    # A live tree: this test's child holds two real grandchildren.
+    child = start_owned_test_process(
+        [
+            sys.executable,
+            "-I",
+            "-S",
+            "-c",
+            "import os, subprocess\n"
+            "kids = [subprocess.Popen(['/bin/sleep', '30']) for _ in range(2)]\n"
+            "os.write(1, b'x'); os.read(0, 1)\n"
+            "for kid in kids: kid.kill(); kid.wait()\n",
+        ],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+    )
+    try:
+        assert child.stdout is not None and child.stdin is not None
+        assert child.stdout.read(1) == b"x"
+        table = authority.kernel_table()
+        grandchildren = {pid for pid, row in table.items() if row.ppid == child.pid}
+        assert len(grandchildren) == 2
+        assert set(authority.child_pids(child.pid)) == grandchildren
+        lineage = model.posix_custody_lineage(os.getpid())
+        assert {os.getpid(), 1} <= lineage
+        interest = model.CustodyInterest(
+            tree_pids=frozenset({child.pid}), exact_pids=lineage
+        )
+        custody = model._sample_processes_darwin_custody(interest)
+        full = model._darwin_samples(table)
+        by_table = model.ProcessTreeTracker(child.pid).update(full)
+        by_custody = model.ProcessTreeTracker(child.pid).update(custody)
+        assert by_custody == {child.pid, *grandchildren}
+        # Rows outside the tree differ in count, never in the tracked set.
+        assert by_custody == by_table
+        assert len(custody) < len(full)
+        # Protection judges tree members through their ancestry, which the
+        # lineage keeps: the verdicts match the host table's, owned or not.
+        groups = {full[pid].pgid for pid in by_table}
+        for owned in (frozenset(by_table), frozenset()):
+            verdicts = []
+            for samples in (custody, full):
+                protected = model.protected_process_group_ids(
+                    samples,
+                    self_pid=os.getpid(),
+                    self_pgid=os.getpgrp(),
+                    owned_pids=owned,
+                )
+                verdicts.append(
+                    (
+                        {pgid for pgid in groups if pgid in protected},
+                        model.filter_protected_watched_pids(
+                            samples,
+                            set(by_table),
+                            protected_pgids=protected,
+                            current_pid=os.getpid(),
+                        ),
+                    )
+                )
+            assert verdicts[0] == verdicts[1]
+    finally:
+        if not child.stdin.closed:
+            child.stdin.close()
+        child.wait(timeout=5)
+        if child.stdout is not None:
+            child.stdout.close()
+
+
 def test_descendant_pids_includes_grandchildren() -> None:
     samples = {
         100: memory_guard.ProcessSample(100, 1, 10, "root"),

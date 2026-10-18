@@ -1846,6 +1846,7 @@ def test_darwin_native_argv_decoder_preserves_boundaries_and_raw_bytes():
         proc_task_info_type=object,
         kinfo=None,
         proc_pidinfo=unused,
+        proc_listpids=unused,
         sysctl=sysctl,
     )
     assert authority.argv(7) == tuple(
