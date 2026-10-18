@@ -313,9 +313,12 @@ if (binding !== 'makeHostArgObject') {
 
 def test_node_runner_rejects_startup_error_before_host_exports(tmp_path: Path) -> None:
     source = (ROOT / "wasm/run_wasm.js").read_text(encoding="utf-8")
+    # runMain admits its argv through the real runner-argument resolver.
+    resolver_start = source.index("const resolveRunnerArguments = (argv) => {")
+    resolver_end = source.index("\nconst openGuestStderr =", resolver_start)
     start = source.index("const runMain = async () => {")
     end = source.index("\nlet terminationHandlersInstalled", start)
-    run_main = source[start:end]
+    run_main = source[resolver_start:resolver_end] + "\n" + source[start:end]
     _run_node(
         "const runMainSource = "
         + json.dumps(run_main)
@@ -334,7 +337,10 @@ async function exercise(primary, split, fails, cleanupErrors = []) {
   const runtime = {};
   const context = {
     appInstanceForHostCalls: null, appInstanceForExceptions: null,
-    runtimeInstance: runtime, initWasmAssets() {}, traceMark: mark => traces.push(mark), traceRun: false,
+    process: {argv: ['node', 'run_wasm.js', 'manifest.json']},
+    runnerGuestArgs: [], guestStderrCapture: null,
+    runtimeInstance: runtime, traceMark: mark => traces.push(mark), traceRun: false,
+    initWasmAssets(manifestPath) { assert.equal(manifestPath, 'manifest.json'); },
     formatTraceError,
     wasmBuffer: {}, linkedBuffer: split ? null : {}, runtimeBuffer: {},
     runtimeManifest: {mode: split ? 'split-runtime' : 'linked'},
@@ -428,6 +434,7 @@ const runtimeFailure = new Error('runtime shutdown');
 const hostFailure = new Error('host close');
 const context = {
   hostLifecycleState: 'live',
+  guestStderrCapture: null,
   runtimeInstance: {},
   runtimeLifetime: () => ({dispose() {
     assert.equal(context.hostLifecycleState, 'runtime-shutdown');
