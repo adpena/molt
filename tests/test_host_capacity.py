@@ -326,3 +326,32 @@ def test_a_parent_memory_slice_keeps_raw_and_bounded_readings(monkeypatch) -> No
     monkeypatch.setenv(host_capacity.MEMORY_SLICE_ENV, "eight")
     with pytest.raises(ValueError, match="must be a positive integer"):
         host_capacity.memory_capacity().bounded_bytes
+
+
+def test_a_slice_already_holds_the_machine_reserve(monkeypatch) -> None:
+    gib = 1024**3
+    monkeypatch.setattr(
+        host_capacity, "_probe_memory_bytes", lambda: (64 * gib, 40 * gib)
+    )
+    monkeypatch.delenv(host_capacity.MEMORY_SLICE_ENV, raising=False)
+    capacity = host_capacity.memory_capacity()
+    assert host_capacity.headroom_bytes(capacity) == host_capacity.reserve_bytes(
+        64 * gib
+    )
+    # A parent cut the slice from memory beyond the reserve.
+    monkeypatch.setenv(host_capacity.MEMORY_SLICE_ENV, str(3 * gib))
+    delegated = host_capacity.memory_capacity()
+    assert host_capacity.headroom_bytes(delegated) == 0
+    assert delegated.bounded_bytes == (3 * gib, 3 * gib)
+    # Headroom belongs to this captured allocation, not a later environment
+    # or a second native observation of a different host state.
+    monkeypatch.setenv(host_capacity.MEMORY_SLICE_ENV, "later-invalid-selection")
+    monkeypatch.setattr(
+        host_capacity,
+        "_probe_memory_bytes",
+        lambda: pytest.fail("headroom must not observe memory a second time"),
+    )
+    assert host_capacity.headroom_bytes(capacity) == host_capacity.reserve_bytes(
+        64 * gib
+    )
+    assert host_capacity.headroom_bytes(delegated) == 0

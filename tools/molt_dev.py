@@ -136,6 +136,10 @@ import time
 import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from tools.proof_plan import PytestMemoryUnits
 
 # Bind both tools and molt before loading any repository module; an editable
 # installation or an unrelated cwd must not select another checkout.
@@ -406,12 +410,12 @@ class GateRule:
 
 @dataclass
 class GateConfig:
+    pytest_memory_units: "PytestMemoryUnits"
     rules: list[GateRule] = field(default_factory=list)
     always: list[str] = field(default_factory=list)
     prerequisites: dict[str, tuple[str, tuple[str, ...]]] = field(default_factory=dict)
     prerequisite_policy: dict = field(default_factory=dict)
     root: Path = field(default_factory=lambda: Path(__file__).resolve().parents[1])
-    pytest_workers: int = 1
 
     @staticmethod
     def load(path: Path) -> "GateConfig":
@@ -428,6 +432,7 @@ class GateConfig:
     @staticmethod
     def parse(source: str, label: str, *, root: Path | None = None) -> "GateConfig":
         from tools.proof_plan import (
+            PytestMemoryUnits,
             local_gate_commands,
             local_pytest_select_errors,
             local_pytest_selections,
@@ -478,16 +483,17 @@ class GateConfig:
         if not isinstance(always, list) or not all(isinstance(g, str) for g in always):
             raise DriverError("gate manifest `always` must be a list of str")
         try:
-            commands = local_gate_commands(data)
+            memory_units = PytestMemoryUnits(data.get("command", ()))
+            commands = local_gate_commands(data, memory_units=memory_units)
         except ValueError as exc:
-            raise DriverError(f"invalid local gate binding: {exc}") from exc
+            raise DriverError(f"invalid local gate policy: {exc}") from exc
         return GateConfig(
+            pytest_memory_units=memory_units,
             rules=rules,
             always=list(always),
             prerequisites=commands,
             prerequisite_policy={"toolchain_policy": data.get("toolchain_policy", [])},
             root=_REPO_ROOT if root is None else root,
-            pytest_workers=int(data.get("local_pytest_workers", 1)),
         )
 
     def admit(
@@ -574,7 +580,9 @@ class GateConfig:
                     pytest_index = len(selected)
                 _add(
                     [
-                        local_pytest_argv(targets, self.pytest_workers, select)
+                        local_pytest_argv(
+                            targets, select, memory_units=self.pytest_memory_units
+                        )
                         for select, targets in rule.pytest_select
                     ]
                 )
@@ -584,7 +592,10 @@ class GateConfig:
                         pytest_targets.append(target)
         if pytest_index is not None:
             selected.insert(
-                pytest_index, local_pytest_argv(pytest_targets, self.pytest_workers)
+                pytest_index,
+                local_pytest_argv(
+                    pytest_targets, memory_units=self.pytest_memory_units
+                ),
             )
         return selected, matched_rules
 

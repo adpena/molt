@@ -20,6 +20,9 @@ _CGROUP_MEMBERSHIP = Path("/proc/self/cgroup")
 # The memory a parent lets this process tree use: the memory guard exports
 # the tree cap it enforces.
 MEMORY_SLICE_ENV = "MOLT_HOST_MEMORY_SLICE_BYTES"
+# Ad hoc or unowned pytest targets use this unit; registered commands and
+# local cohorts project their measured owning envelopes from the proof plan.
+DEFAULT_PYTEST_WORKER_MEMORY_GB = 2.5
 _GIB = 1024**3
 # What the operating system and its supervisors keep of physical memory: a
 # fraction, at least the minimum and at most the maximum.
@@ -185,6 +188,18 @@ def _probe_memory_bytes() -> tuple[int | None, int | None]:
     total = int(page_size) * int(total_pages) if total_pages > 0 else None
     available = int(page_size) * int(available_pages) if available_pages > 0 else None
     return total, available
+
+
+def headroom_bytes(capacity: MemoryCapacity) -> int:
+    """Memory a unit of work must leave free in this process's context.
+
+    The machine's reserve, unless a parent exported a memory slice: every
+    slice (a guard's tree cap, an executor's per-command share) is cut from
+    memory beyond that reserve, so it already holds it.
+    """
+    if capacity.tree_limit_bytes is not None:
+        return 0
+    return reserve_bytes(capacity.total_bytes)
 
 
 def reserve_bytes(total_bytes: int | None) -> int:
