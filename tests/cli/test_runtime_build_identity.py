@@ -2431,7 +2431,10 @@ def test_native_executable_fixture_preserves_independent_images(
         assert not image.is_symlink()
         assert not image.samefile(source)
         assert hashlib.sha256(image.read_bytes()).hexdigest() == original
-        assert image.stat().st_mode & 0o111 == source.stat().st_mode & 0o111
+        # Windows has no execute bits: os.stat derives them from the name's
+        # extension, and these fixture names have none.
+        if os.name != "nt":
+            assert image.stat().st_mode & 0o111 == source.stat().st_mode & 0o111
     assert not first.samefile(second)
     with first.open("r+b") as stream:
         stream.write(b"changed fixture")
