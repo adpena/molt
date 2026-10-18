@@ -362,7 +362,10 @@ fn byte_search(
             && unsafe { object_type_id(pointer) } == TYPE_ID_BYTES
         {
             needle = unsafe { std::slice::from_raw_parts(bytes_data(pointer), bytes_len(pointer)) };
-        } else if !tail && !crate::object::buffer_exports::supports_buffer(py, source) {
+        } else if !tail
+            && !crate::object::buffer_exports::supports_buffer(py, source)
+                .map_err(|error| error.raise(py, "invalid buffer preparation"))?
+        {
             let Some(value) = crate::builtins::numbers::index_ssize_clamped_from_obj(
                 py,
                 source,

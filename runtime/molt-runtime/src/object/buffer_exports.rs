@@ -52,23 +52,21 @@ pub(crate) fn is_exact_builtin_storage(py: &PyToken<'_>, source: u64) -> bool {
     class == builtins.bytes || class == builtins.bytearray || class == builtins.memoryview
 }
 
-/// Callback-free eligibility follows the same semantic slots as acquisition.
-/// Exact builtin storage has an immutable protocol and needs no C projection.
-pub(crate) fn supports_buffer(_py: &PyToken<'_>, source: u64) -> bool {
+/// Eligibility invokes no exporter. Exact builtin storage needs no projection;
+/// all other objects prepare their semantic class before the pure slot query.
+/// An unavailable slot is a successful false result. Preparation failure keeps
+/// its selected exception and must never select a consumer's fallback protocol.
+pub(crate) fn supports_buffer(py: &PyToken<'_>, source: u64) -> Result<bool, BufferAccessError> {
     if crate::obj_from_bits(source).as_ptr().is_none() {
-        return false;
+        return Ok(false);
+    }
+    if is_exact_builtin_storage(py, source) {
+        return Ok(true);
     }
     unsafe {
-        if is_exact_builtin_storage(_py, source) {
-            return true;
-        }
-        molt_cpython_abi::api::errors::with_preserved_error(|| {
-            let object = super::foreign::NativeObjectOwner::from_owned(
-                molt_cpython_abi::bridge::GLOBAL_BRIDGE.borrowed_handle_to_new_pyobj(source),
-            );
-            !object.as_ptr().is_null()
-                && molt_cpython_abi::api::buffer::PyObject_CheckBuffer(object.as_ptr()) != 0
-        })
+        let object = molt_cpython_abi::native_custody::project_buffer_object(source)
+            .map_err(|_| BufferAccessError::Preparation)?;
+        Ok(molt_cpython_abi::api::buffer::PyObject_CheckBuffer(object.as_ptr()) != 0)
     }
 }
 
