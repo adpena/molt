@@ -374,7 +374,7 @@
     "tests/tools/test_win_job_contract.py",
     "tests/tools/test_windows_process_api.py"
   ],
-  "authority_sha256": "dc3e7a319a733c1b5a16a066407f6bcafefef487e694884b25f3b3dea68dc915",
+  "authority_sha256": "63e21f0c5e1a99afa870a0bee0379d79ccea693ca7a8b2fc0170f7a36ba9da44",
   "cargo_environment_policy": {
     "incident_command": "cargo metadata --locked --format-version 1",
     "incident_commit": "20b046b79bd4ca64a8c859f737f6e330377bcc4e",
@@ -9216,7 +9216,7 @@
       "local.runtime-lib.0": "python tools/run_runtime_test_gate.py --profile release-output --build-timeout-seconds 6300 --child-timeout-seconds 120 --parallel-threads 8",
       "local.runtime-profile-schema-authority.0": "python tools/gen_runtime_profile_schema.py --check",
       "local.runtime-profile-schema-authority.pytest": "python -m pytest -q -n auto --molt-worker-memory-gb=0.75 tests/test_gen_runtime_profile_schema.py tests/test_runtime_profile_schema.py",
-      "local.runtime-regex.0": "cargo test --locked --profile dev-fast -p molt-runtime-regex -p molt-stdlib-text --no-default-features --lib -- regex:: wtf8::",
+      "local.runtime-regex.0": "cargo test --locked --profile dev-fast -p molt-runtime-regex -p molt-stdlib-text --no-default-features --no-fail-fast --lib -- regex:: wtf8::",
       "local.runtime-regex.pytest": "python -m pytest -q -n auto --molt-worker-memory-gb=0.5 tests/test_stdlib_re.py",
       "local.runtime-vfs.0": "cargo clippy --locked -p molt-runtime-vfs --all-targets --all-features -- -D warnings",
       "local.runtime-vfs.1": "cargo test --locked -p molt-runtime-vfs --all-features --no-fail-fast",
@@ -11068,7 +11068,7 @@
         ],
         "description": "Typed regex parser/matcher and shared lossless text codec: one fast-profile pure Rust cohort plus facade contracts.",
         "gates": [
-          "cargo test --locked --profile dev-fast -p molt-runtime-regex -p molt-stdlib-text --no-default-features --lib -- regex:: wtf8::"
+          "cargo test --locked --profile dev-fast -p molt-runtime-regex -p molt-stdlib-text --no-default-features --no-fail-fast --lib -- regex:: wtf8::"
         ],
         "globs": [
           "runtime/molt-runtime-regex/**/*.rs",

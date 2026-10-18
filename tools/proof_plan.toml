@@ -5425,7 +5425,7 @@ globs = [
   "tests/test_stdlib_re.py",
 ]
 gates = [
-  "cargo test --locked --profile dev-fast -p molt-runtime-regex -p molt-stdlib-text --no-default-features --lib -- regex:: wtf8::",
+  "cargo test --locked --profile dev-fast -p molt-runtime-regex -p molt-stdlib-text --no-default-features --no-fail-fast --lib -- regex:: wtf8::",
 ]
 pytest = [
   "tests/test_stdlib_re.py",
