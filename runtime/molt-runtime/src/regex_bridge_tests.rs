@@ -64,9 +64,11 @@ fn regex_aggregates_retain_each_created_child_once() {
                     )
                 }
             };
-            let source = make(b"left_owner::right_owner");
+            // Spaces keep these results outside identifier canonicalization,
+            // so the assertions measure newly allocated child ownership.
+            let source = make(b"left owner::right owner");
             let expression = make(b"::");
-            let replacement = make(b"replacement_owner");
+            let replacement = make(b"replacement owner");
             let pattern = unsafe {
                 OwnedRuntimeValue::from_owned_bits(
                     py.core_token(),
