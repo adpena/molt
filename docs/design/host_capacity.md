@@ -114,9 +114,12 @@ sequentially. Volume choice is measured per machine, not a fixed path.
    (affinity, then the tightest cgroup quota, as Rust does) and the one memory
    probe (Linux meminfo bounded by the cgroup, the Mach VM counters on macOS,
    `GlobalMemoryStatusEx` on Windows); the probes in `molt.dx` and the guard
-   are deleted, and every sizing read of `os.cpu_count()` uses it. Next: the
-   pytest auto-workers hook and every fixed count moved to declared units
-   sized from measured peaks.
+   are deleted, and every sizing read of `os.cpu_count()` uses it. The guard
+   measures the unit: each sample sums the RSS under each xdist worker (found
+   from the current-test records the workers publish), and every receipt
+   carries `worker_peaks`, the largest worker subtree and the tests with the
+   largest peaks. Next: the pytest auto-workers hook and every fixed count
+   moved to declared units sized from those peaks.
 2. Split the tests that alone bound a suite's wall time.
 3. Landing gates through the proof executor, with declared timeouts and
    resource classes, longest first; the first step of the
