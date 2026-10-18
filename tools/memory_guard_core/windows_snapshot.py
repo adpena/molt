@@ -9,6 +9,7 @@ import sys
 import time
 from functools import lru_cache
 from types import SimpleNamespace
+from typing import TypeAlias
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(_REPO_ROOT) not in sys.path:
@@ -25,6 +26,7 @@ from tools.windows_process_api import bind_process_query_api, process_query_api 
 DEFAULT_WINDOWS_PROCESS_SNAPSHOT_TIMEOUT_SEC = 5.0
 WINDOWS_PROCESS_SNAPSHOT_TIMEOUT_ENV = "MOLT_WINDOWS_PROCESS_SNAPSHOT_TIMEOUT_SEC"
 WINDOWS_PROCESS_SNAPSHOT_HELPER_ARG = "--molt-windows-process-snapshot-json"
+WindowsProcessSnapshotRow: TypeAlias = tuple[int, int, str, int | None, int | None, str]
 WINDOWS_FULL_COMMAND_LINE_EXECUTABLE_NAMES = frozenset(
     {
         "cargo.exe",
@@ -71,24 +73,22 @@ def _windows_process_snapshot_timeout_sec(
 
 def _coerce_windows_process_snapshot_rows(
     payload: object,
-) -> list[tuple[int, int, int, str, int | None, int | None, str]]:
+) -> list[WindowsProcessSnapshotRow]:
     if not isinstance(payload, list):
         raise ValueError("Windows process snapshot payload must be a list")
-    rows: list[tuple[int, int, int, str, int | None, int | None, str]] = []
+    rows: list[WindowsProcessSnapshotRow] = []
     seen_pids: set[int] = set()
     for row in payload:
-        if not isinstance(row, list) or len(row) != 7:
-            raise ValueError("Windows process snapshot row must have seven fields")
-        pid, ppid, rss_kb, command, elapsed_sec, started_at_ns, command_kind = row
+        if not isinstance(row, list) or len(row) != 6:
+            raise ValueError("Windows process snapshot row must have six fields")
+        pid, ppid, command, elapsed_sec, started_at_ns, command_kind = row
         if not (
             isinstance(pid, int)
             and isinstance(ppid, int)
-            and isinstance(rss_kb, int)
             and isinstance(command, str)
-            and not any(isinstance(value, bool) for value in (pid, ppid, rss_kb))
+            and not any(isinstance(value, bool) for value in (pid, ppid))
             and pid > 0
             and ppid >= 0
-            and rss_kb >= 0
         ):
             raise ValueError("Windows process snapshot row has invalid field types")
         if elapsed_sec is not None and (
@@ -124,15 +124,11 @@ def _coerce_windows_process_snapshot_rows(
         if pid in seen_pids:
             raise ValueError("Windows process snapshot contains duplicate PID")
         seen_pids.add(pid)
-        rows.append(
-            (pid, ppid, rss_kb, command, elapsed_sec, started_at_ns, command_kind)
-        )
+        rows.append((pid, ppid, command, elapsed_sec, started_at_ns, command_kind))
     return rows
 
 
-def _windows_process_snapshot_rows_hard_timeout() -> list[
-    tuple[int, int, int, str, int | None, int | None, str]
-]:
+def _windows_process_snapshot_rows_hard_timeout() -> list[WindowsProcessSnapshotRow]:
     if os.name != "nt":
         return []
     timeout_sec = _windows_process_snapshot_timeout_sec()
@@ -220,6 +216,14 @@ def _working_set_rss_kb(counters) -> int:
     return max(0, int((counters.WorkingSetSize + 1023) // 1024))
 
 
+def _windows_handle_resident_kb(api, handle) -> int | None:
+    counters = api.counters_type()
+    counters.cb = api.ctypes.sizeof(api.counters_type)
+    if not api.get_process_memory_info(handle, api.ctypes.byref(counters), counters.cb):
+        return None
+    return _working_set_rss_kb(counters)
+
+
 def windows_process_handle_rss_kb(handle: object) -> int | None:
     if os.name != "nt" or not handle:
         return None
@@ -229,31 +233,53 @@ def windows_process_handle_rss_kb(handle: object) -> int | None:
         return None
 
     try:
-        import ctypes
-        from ctypes import wintypes
-
-        process_memory_counters_type = _windows_process_memory_counters_type(
-            ctypes,
-            wintypes,
-        )
-        psapi = ctypes.WinDLL("psapi", use_last_error=True)
-        get_process_memory_info = _windows_get_process_memory_info(
-            psapi,
-            ctypes,
-            wintypes,
-            process_memory_counters_type,
-        )
-        counters = process_memory_counters_type()
-        counters.cb = ctypes.sizeof(process_memory_counters_type)
-        if not get_process_memory_info(
-            wintypes.HANDLE(handle_value),
-            ctypes.byref(counters),
-            counters.cb,
-        ):
-            return None
+        api = _windows_snapshot_api()
+        return _windows_handle_resident_kb(api, api.wintypes.HANDLE(handle_value))
     except (AttributeError, OSError, TypeError, ValueError):
         return None
-    return _working_set_rss_kb(counters)
+
+
+def windows_process_resident_kb(pid: int, expected_birth_ns: int | None) -> int:
+    """Size one sampled instance through one birth-checked process handle."""
+
+    if os.name != "nt" or type(pid) is not int or not 0 < pid <= 0xFFFFFFFF:
+        return 0
+    if type(expected_birth_ns) is not int or expected_birth_ns <= 0:
+        return 0
+    try:
+        api = _windows_snapshot_api()
+        handle = api.open_process(0x0410, False, pid)  # QUERY_INFORMATION | VM_READ.
+    except (AttributeError, OSError, TypeError, ValueError):
+        return 0
+    if not handle:
+        return 0
+    resident_kb = 0
+    try:
+        created, exited, kernel, user = (api.wintypes.FILETIME() for _ in range(4))
+        if api.get_process_times(
+            handle,
+            api.ctypes.byref(created),
+            api.ctypes.byref(exited),
+            api.ctypes.byref(kernel),
+            api.ctypes.byref(user),
+        ) and (
+            _filetime_to_unix_ns(
+                int(created.dwLowDateTime), int(created.dwHighDateTime)
+            )
+            == expected_birth_ns
+            and not (exited.dwLowDateTime or exited.dwHighDateTime)
+        ):
+            resident_kb = _windows_handle_resident_kb(api, handle) or 0
+    except (AttributeError, OSError, TypeError, ValueError):
+        resident_kb = 0
+    finally:
+        try:
+            closed = api.close_handle(handle)
+        except (AttributeError, OSError, TypeError, ValueError):
+            closed = False
+        if not closed:
+            resident_kb = 0
+    return resident_kb
 
 
 def windows_process_handle_started_at_ns(handle: object) -> int | None:
@@ -574,9 +600,7 @@ def _snapshot_image_name(api, handle, enforce_deadline):
     return None
 
 
-def _windows_process_snapshot_rows() -> list[
-    tuple[int, int, int, str, int | None, int | None, str]
-]:
+def _windows_process_snapshot_rows() -> list[WindowsProcessSnapshotRow]:
     if os.name != "nt":
         return []
     timeout_sec = _windows_process_snapshot_timeout_sec()
@@ -592,13 +616,11 @@ def _windows_process_snapshot_rows() -> list[
     api = _windows_snapshot_api()
     ctypes = api.ctypes
     wintypes = api.wintypes
-    process_memory_counters_type = api.counters_type
     create_snapshot = api.create_snapshot
     process_first = api.process_first
     process_next = api.process_next
     close_handle = api.close_handle
     open_process = api.open_process
-    get_process_memory_info = api.get_process_memory_info
     get_process_times = api.get_process_times
     TH32CS_SNAPPROCESS = 0x00000002
     PROCESS_QUERY_INFORMATION = 0x0400
@@ -609,7 +631,7 @@ def _windows_process_snapshot_rows() -> list[
     snapshot = create_snapshot(TH32CS_SNAPPROCESS, 0)
     if snapshot == api.invalid_handle_value:
         raise ProcessSnapshotError("Windows process snapshot creation failed")
-    rows: list[tuple[int, int, int, str, int | None, int | None, str]] = []
+    rows: list[WindowsProcessSnapshotRow] = []
     try:
         entry = api.ProcessEntry32W()
         entry.dwSize = ctypes.sizeof(api.ProcessEntry32W)
@@ -627,7 +649,6 @@ def _windows_process_snapshot_rows() -> list[
                 ppid = 0
                 bound_pid: int | None = None
                 bound_ppid: int | None = None
-                rss_kb = 0
                 elapsed_sec: int | None = None
                 started_at_ns: int | None = None
                 exe_name = str(entry.szExeFile).strip()
@@ -669,15 +690,6 @@ def _windows_process_snapshot_rows() -> list[
                         else:
                             command = image_name or ""
                             command_kind = "image" if image_name else "unavailable"
-                        counters = process_memory_counters_type()
-                        counters.cb = ctypes.sizeof(process_memory_counters_type)
-                        if get_process_memory_info(
-                            handle,
-                            ctypes.byref(counters),
-                            counters.cb,
-                        ):
-                            enforce_deadline("reading process memory counters")
-                            rss_kb = _working_set_rss_kb(counters)
                         created = wintypes.FILETIME()
                         exited = wintypes.FILETIME()
                         kernel = wintypes.FILETIME()
@@ -713,7 +725,6 @@ def _windows_process_snapshot_rows() -> list[
                     (
                         pid,
                         ppid,
-                        rss_kb,
                         command,
                         elapsed_sec,
                         started_at_ns,

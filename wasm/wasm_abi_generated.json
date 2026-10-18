@@ -5386,7 +5386,6 @@
     "re_pattern_info": "molt_re_pattern_info",
     "re_scanner_new": "molt_re_scanner_new",
     "re_split": "molt_re_split",
-    "re_strip_verbose": "molt_re_strip_verbose",
     "re_sub": "molt_re_sub",
     "re_subject_snapshot": "molt_re_subject_snapshot",
     "re_subject_view": "molt_re_subject_view",

@@ -672,7 +672,6 @@ def _module_lowering_metadata_view(
         logical_source_path=module_graph_metadata.logical_source_path_by_module[
             module_name
         ],
-        entry_override=module_graph_metadata.entry_override_by_module[module_name],
         module_is_namespace=module_graph_metadata.module_is_namespace_by_module[
             module_name
         ],
@@ -1402,7 +1401,6 @@ def _module_lowering_context_payload(
     *,
     source_lease: _ModuleSourceLease,
     logical_source_path: str,
-    entry_override: str | None,
     module_execution_kind: ModuleExecutionKind,
     known_classes_snapshot: Mapping[ClassId, ClassInfo],
     parse_codec: ParseCodec,
@@ -1484,12 +1482,11 @@ def _module_lowering_context_payload(
     return {
         # The context owns the captured bytes, not a later file stat/hash.
         # Inline text and raw path bytes are distinct source generations.
-        "version": 5,
+        "version": 6,
         "module_name": module_name,
         "logical_source_path": logical_source_path,
         "is_package": is_package,
         "module_is_namespace": module_is_namespace,
-        "entry_module": entry_override,
         "module_execution_kind": module_execution_kind,
         "compiler_fingerprint": _frontend_semantic_tooling_fingerprint(),
         "target_python": target_python.tag,
@@ -1654,7 +1651,6 @@ def _module_lowering_context_digest_for_module(
     *,
     source_lease: _ModuleSourceLease,
     logical_source_path: str,
-    entry_override: str | None,
     module_execution_kind: ModuleExecutionKind,
     known_classes_snapshot: Mapping[ClassId, ClassInfo],
     parse_codec: ParseCodec,
@@ -1695,7 +1691,6 @@ def _module_lowering_context_digest_for_module(
         module_path,
         source_lease=source_lease,
         logical_source_path=logical_source_path,
-        entry_override=entry_override,
         module_execution_kind=module_execution_kind,
         known_classes_snapshot=known_classes_snapshot,
         parse_codec=parse_codec,
@@ -1911,7 +1906,6 @@ def _load_cached_module_lowering_result(
     *,
     source_lease: _ModuleSourceLease,
     logical_source_path: str,
-    entry_override: str | None,
     module_execution_kind: ModuleExecutionKind,
     is_package: bool,
     known_classes_snapshot: dict[ClassId, ClassInfo],
@@ -1956,7 +1950,6 @@ def _load_cached_module_lowering_result(
             module_path,
             source_lease=source_lease,
             logical_source_path=logical_source_path,
-            entry_override=entry_override,
             module_execution_kind=module_execution_kind,
             known_classes_snapshot=known_classes_snapshot,
             parse_codec=parse_codec,
@@ -2018,7 +2011,6 @@ def _module_worker_payload(
     fallback_policy: FallbackPolicy,
     module_is_namespace: bool,
     module_execution_kind: ModuleExecutionKind,
-    entry_module: str | None,
     type_facts: TypeFacts | None,
     enable_phi: bool,
     known_modules: Collection[str],
@@ -2089,7 +2081,6 @@ def _module_worker_payload(
         "fallback_policy": fallback_policy,
         "module_is_namespace": module_is_namespace,
         "module_execution_kind": module_execution_kind,
-        "entry_module": entry_module,
         "enable_phi": enable_phi,
         "known_modules": scoped_inputs.known_modules_payload,
         "direct_call_modules": scoped_inputs.direct_call_modules_payload,

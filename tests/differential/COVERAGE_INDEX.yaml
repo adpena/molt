@@ -451,9 +451,7 @@ stdlib:
       - tests/differential/stdlib/random_state_basic.py
   re:
     tests:
-      - tests/differential/stdlib/re_bytes_admission.py
-      - tests/differential/stdlib/re_split_maxsplit.py
-      - tests/differential/stdlib/re_unicode_flags.py
+      - tests/differential/stdlib/re_parity.py
   select:
     tests:
       - tests/differential/stdlib/select_basic.py

@@ -22,11 +22,7 @@ from molt.frontend._mixin_base import GeneratorMixinBase
 
 class AppBindingAuthorityMixin(GeneratorMixinBase):
     def _is_entry_app_binding_scope(self) -> bool:
-        return (
-            self.current_func_name == "molt_main"
-            and self.entry_module is not None
-            and self.module_name == self.entry_module
-        )
+        return self.current_func_name == "molt_main" and self.is_entry_module
 
     def _app_callable_from_value(
         self, value: MoltValue
@@ -79,7 +75,7 @@ class AppBindingAuthorityMixin(GeneratorMixinBase):
             superseded = [item for item in superseded if item != symbol]
         binding: dict[str, Any] = {
             "name": name,
-            "qualified_name": f"{self.entry_module}.{name}",
+            "qualified_name": f"{self.module_name}.{name}",
             "kind": kind_value,
             "origin": origin,
             "disposition": disposition,

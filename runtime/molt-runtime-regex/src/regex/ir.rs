@@ -1,21 +1,62 @@
+use super::program::Program;
+
 // ---------------------------------------------------------------------------
 // IR node enum for the shared text/byte matcher.
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Clone)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Anchor {
+    Start,
+    End,
+    StartAbsolute,
+    EndAbsolute,
+    Boundary,
+    NotBoundary,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Category {
+    Digit,
+    NotDigit,
+    Space,
+    NotSpace,
+    Word,
+    NotWord,
+}
+
+impl Category {
+    /// Called only after the parser admits one of the six category escapes.
+    pub(super) fn from_escape(ch: char) -> Self {
+        match ch {
+            'd' => Self::Digit,
+            'D' => Self::NotDigit,
+            's' => Self::Space,
+            'S' => Self::NotSpace,
+            'w' => Self::Word,
+            'W' => Self::NotWord,
+            _ => unreachable!("admitted category escape"),
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum RepeatMode {
+    Greedy,
+    Lazy,
+    Possessive,
+}
+
+#[derive(Debug)]
 pub(crate) enum ReNode {
     Empty,
-    /// Internal search continuation: accept only if the overall match has
-    /// advanced beyond this attempt's starting position.
-    RequireAdvance,
     Literal(String),
     Any,
-    Anchor(String),
+    Anchor(Anchor),
     CharClass {
         negated: bool,
         ranges: Vec<(String, String)>,
         chars: Vec<String>,
-        categories: Vec<String>,
+        categories: Vec<Category>,
     },
     Concat(Vec<ReNode>),
     Alt(Vec<ReNode>),
@@ -23,8 +64,9 @@ pub(crate) enum ReNode {
         node: Box<ReNode>,
         min_count: u64,
         max_count: Option<u64>,
-        greedy: bool,
+        mode: RepeatMode,
     },
+    Atomic(Box<ReNode>),
     Group {
         node: Box<ReNode>,
         index: u32,
@@ -58,7 +100,7 @@ pub(crate) enum ReNode {
 pub(crate) type NamedGroups = indexmap::IndexMap<String, u32>;
 
 #[derive(Debug)]
-pub(crate) struct CompiledPattern {
+pub(crate) struct ParsedPattern {
     pub root: ReNode,
     pub group_count: u32,
     pub group_names: NamedGroups,
@@ -67,5 +109,16 @@ pub(crate) struct CompiledPattern {
     /// represented one-to-one as Unicode scalar values in the range 0..=255.
     pub is_bytes: bool,
     /// Position (char index) of a nested-set-in-charclass warning, or None.
+    pub warn_pos: Option<i64>,
+}
+
+/// A pattern owns exactly one executable program. The AST is compilation input.
+#[derive(Debug)]
+pub(crate) struct CompiledPattern {
+    pub(super) program: Program,
+    pub group_count: u32,
+    pub group_names: NamedGroups,
+    pub flags: i64,
+    pub is_bytes: bool,
     pub warn_pos: Option<i64>,
 }

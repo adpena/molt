@@ -24,11 +24,6 @@ pub(super) fn resolve_symbol(symbol: &str) -> Option<u64> {
             crate::molt_re_subject_view as *const (),
         )),
         #[cfg(feature = "stdlib_regex")]
-        "molt_re_strip_verbose" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_re_strip_verbose",
-            crate::molt_re_strip_verbose as *const (),
-        )),
-        #[cfg(feature = "stdlib_regex")]
         "molt_re_compile" => Some(crate::builtins::functions::runtime_fn_addr(
             "crate::molt_re_compile",
             crate::molt_re_compile as *const (),

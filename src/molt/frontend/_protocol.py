@@ -101,7 +101,6 @@ if TYPE_CHECKING:
 
 
 class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
-    globals: dict[str, MoltValue]
     imported_attr_names: dict[str, str]
     imported_module_attr_mutations: set[tuple[str, str]]
     imported_module_provenance: dict[str, frozenset[str]]
@@ -110,6 +109,7 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
     in_annotation: Any
     in_generator: Any
     instance_attr_mutations: dict[ClassId, set[str]]
+    is_entry_module: bool
     known_classes: dict[ClassId, ClassInfo]
     known_func_defaults: dict[str, dict[str, dict[str, Any]]]
     known_func_kinds: dict[str, dict[str, str]]
@@ -213,7 +213,6 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
         module_spec_name: str | None = ...,
         module_is_namespace: bool = ...,
         module_execution_kind: ModuleExecutionKind | None = ...,
-        entry_module: str | None = ...,
         enable_phi: bool = ...,
         known_modules: set[str] | None = ...,
         direct_call_modules: set[str] | None = ...,
@@ -1907,7 +1906,6 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
         module_spec_name: str | None,
         module_is_namespace: bool,
         module_execution_kind: ModuleExecutionKind | None,
-        entry_module: str | None,
         module_chunking: bool,
         module_chunk_max_ops: int,
         known_modules: set[str] | None,

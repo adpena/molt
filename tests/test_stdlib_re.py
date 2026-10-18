@@ -31,7 +31,7 @@ def source_re():
             match.span(i) if match.start(i) >= 0 else None
             for i in range(1, match.re.groups + 1)
         )
-        return match.start(), match.end(), spans
+        return match.start(), match.end(), spans, match.lastindex
 
     def execute(handle, subject, pos, end, mode):
         pattern = handle
@@ -120,7 +120,6 @@ def source_re():
         "molt_re_expand_replacement": expand_replacement,
         "molt_re_subject_snapshot": subject_snapshot,
         "molt_re_subject_view": subject_view,
-        "molt_re_strip_verbose": lambda pattern, _flags: pattern,
     }
     with intrinsic_registry(behavior):
         from molt.stdlib import re as module
@@ -399,5 +398,88 @@ def test_capture_read_reuses_sre_admission_error_policy(source_re, failure_type)
     actual = observe(source_re)
     assert actual[:3] == expected[:3]
     # The facade fixture's host memoryview() asks FULL_RO. The actual target
-    # SIMPLE flags and lease lifetime are owned by re_bytes_admission.py.
+    # SIMPLE flags and lease lifetime are owned by re_parity.py's
+    # test_subject_admission_and_export_custody semantic group.
     assert len(actual[3]) == len(expected[3])
+
+
+@pytest.mark.parametrize(
+    "pattern,subject",
+    [
+        ("(a(b))", "ab"),
+        ("(?P<outer>a(?P<inner>b))", "ab"),
+        ("((a)|(b))+", "ab"),
+        ("(a){1,3}a", "aaa"),
+        ("(a)?b", "b"),
+        ("(?=(a))a", "a"),
+    ],
+)
+def test_match_closing_order_is_intrinsic_custody(source_re, pattern, subject):
+    expected = cpython_re.fullmatch(pattern, subject)
+    actual = source_re.fullmatch(pattern, subject)
+    assert actual.lastindex == expected.lastindex
+    assert actual.lastgroup == expected.lastgroup
+    assert actual.groups() == expected.groups()
+    scanned = next(source_re.finditer(pattern, subject))
+    oracle = next(cpython_re.finditer(pattern, subject))
+    assert scanned.lastindex == oracle.lastindex
+    assert scanned.lastgroup == oracle.lastgroup
+
+
+@pytest.mark.parametrize("is_bytes", [False, True])
+def test_pattern_windows_clamp_offsets_independently_like_cpython(source_re, is_bytes):
+    expression = b"(|a)" if is_bytes else "(|a)"
+    subject = b"zaaz" if is_bytes else "zaaz"
+    expected = cpython_re.compile(expression)
+    actual = source_re.compile(expression)
+
+    def snapshot(match):
+        if match is None:
+            return None
+        return (
+            match.span(),
+            match.groups(),
+            tuple(match.span(i) for i in range(match.re.groups + 1)),
+            match.lastindex,
+            match.pos,
+            match.endpos,
+            match.string is subject,
+        )
+
+    # CPython state_init clamps to subject length, never pos to endpos.
+    # In particular match can accept an empty group beyond endpos while
+    # fullmatch, search and scanner operations produce no match there.
+    for pos, endpos in (
+        (-3, -1),
+        (-3, 2),
+        (1, 2),
+        (3, 1),
+        (9, 2),
+        (9, 9),
+        (2, -9),
+        (-3, 9),
+        (9, None),
+    ):
+        for name in ("match", "fullmatch", "search", "finditer", "findall"):
+            oracle = getattr(expected, name)
+            receiver = getattr(actual, name)
+            if endpos is None:
+                wanted = oracle(subject, pos)
+                found = receiver(subject, pos)
+            else:
+                wanted = oracle(subject, pos, endpos)
+                found = receiver(subject, pos, endpos)
+            if name == "finditer":
+                wanted = [snapshot(match) for match in wanted]
+                found = [snapshot(match) for match in found]
+            elif name != "findall":
+                wanted = snapshot(wanted)
+                found = snapshot(found)
+            assert found == wanted, (name, pos, endpos)
+
+    # A consuming path cannot use subject units beyond the endpos boundary.
+    required = source_re.compile(b"(a)" if is_bytes else "(a)")
+    assert required.match(subject, 1, 0) is None
+    assert required.fullmatch(subject, 1, 0) is None
+    assert required.search(subject, 1, 0) is None
+    assert list(required.finditer(subject, 1, 0)) == []

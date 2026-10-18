@@ -1587,18 +1587,19 @@ def test_windows_pytest_custody_roots_preserve_explicit_temproot(
     assert not pytest_memory_guard_bootstrap.install_pytest_custody_roots()
     assert os.environ["PYTEST_DEBUG_TEMPROOT"] == str(explicit)
     assert not explicit.is_relative_to(proof_root)
-    assert not proof_root.exists()
     assert explicit.is_dir()
     assert any(explicit.iterdir())
-    assert (
-        tmp_path
-        / "artifact-root"
-        / "tmp"
-        / "pytest-cache"
-        / dx.checkout_component(pytest_memory_guard_bootstrap.ROOT)
-        / "v"
-        / "cache"
-    ).is_dir()
+    # A queue run keeps its pytest cache in the run's execution scratch; the
+    # explicit temporary root stays where the caller put it.
+    caches = [
+        path
+        for path in proof_root.rglob("cache")
+        if path.is_dir()
+        and path.parent.name == "v"
+        and path.parent.parent.name == "pytest-cache"
+    ]
+    assert len(caches) == 1, caches
+    assert not (tmp_path / "artifact-root" / "tmp" / "pytest-cache").exists()
 
 
 def test_pytest_startup_rejects_hook_disabling_flags() -> None:

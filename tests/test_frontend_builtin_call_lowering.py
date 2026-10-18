@@ -1932,7 +1932,7 @@ def test_chunked_stdlib_intrinsics_import_binding_survives_reset() -> None:
     gen = SimpleTIRGenerator(
         module_name="json",
         source_path=str(source_path),
-        entry_module="json",
+        module_execution_kind="module",
         module_chunking=True,
         module_chunk_max_ops=1,
     )
@@ -1986,7 +1986,7 @@ def test_chunked_stdlib_intrinsics_value_binding_uses_runtime_require_intrinsic(
     gen = SimpleTIRGenerator(
         module_name="sys",
         source_path=str(source_path),
-        entry_module="sys",
+        module_execution_kind="module",
         module_chunking=True,
         module_chunk_max_ops=1,
     )
@@ -2046,7 +2046,7 @@ def test_module_chunking_starts_new_chunk_before_large_multiline_assignment() ->
 def test_module_chunk_failure_cleanup_is_not_success_fallthrough() -> None:
     gen = SimpleTIRGenerator(
         module_name="chunk_cleanup",
-        entry_module="chunk_cleanup",
+        module_execution_kind="module",
         module_chunking=True,
         module_chunk_max_ops=1,
     )
@@ -5309,7 +5309,7 @@ def test_fake_optional_intrinsic_loader_does_not_reserve_python_symbol(
     gen = SimpleTIRGenerator(
         source_path="molt/gpu/tensor.py",
         module_name="molt.gpu.tensor",
-        entry_module="molt.gpu.tensor",
+        module_execution_kind="module",
     )
     gen.visit(tree)
     ir = gen.to_json()

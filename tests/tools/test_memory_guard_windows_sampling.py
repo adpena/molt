@@ -5,6 +5,7 @@ import os
 import subprocess
 from types import SimpleNamespace
 import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -84,18 +85,33 @@ def _windows_guard_creationflags(module) -> int:
     )
 
 
-def test_parse_windows_process_snapshot_rows_builds_process_samples() -> None:
+def test_parse_windows_process_snapshot_rows_binds_only_visited_resident_sizes(
+    monkeypatch,
+) -> None:
     module = memory_guard
     rows = [
-        (100, 42, 2, "python.exe", 7, 123456789),
-        (101, 100, 0, "", None),
-        (0, 0, 8192, "System Idle Process", None),
+        (100, 42, "python.exe", 7, 123456789, "full"),
+        (101, 100, "", None, None, "unavailable"),
+        (102, 42, "other.exe", 8, 123456790, "image"),
+        (0, 0, "System Idle Process", None, None, "image"),
     ]
+    resident_reads = []
+
+    def resident(pid, birth):
+        if birth is None:
+            return 0
+        resident_reads.append((pid, birth))
+        assert (pid, birth) == (100, 123456789)
+        return 2
+
+    monkeypatch.setattr(process_model, "windows_process_resident_kb", resident)
 
     samples = module.parse_windows_process_snapshot_rows(rows)
 
-    assert sorted(samples) == [100, 101]
+    assert sorted(samples) == [100, 101, 102]
+    assert resident_reads == []
     assert samples[100].ppid == 42
+    assert samples[100].rss_kb == 2
     assert samples[100].rss_kb == 2
     assert samples[100].command == "python.exe"
     assert samples[100].elapsed_sec == 7
@@ -104,6 +120,7 @@ def test_parse_windows_process_snapshot_rows_builds_process_samples() -> None:
     assert samples[101].rss_kb == 0
     assert samples[101].command == "pid:101"
     assert samples[101].elapsed_sec is None
+    assert resident_reads == [(100, 123456789)]
 
 
 def test_sample_processes_uses_windows_sampler_on_nt(monkeypatch) -> None:
@@ -358,8 +375,9 @@ def test_sample_processes_windows_uses_injected_snapshot_authority(monkeypatch) 
     monkeypatch.setattr(
         module,
         "_windows_process_snapshot_rows_hard_timeout",
-        lambda: [(7, 1, 9, "python.exe", 3)],
+        lambda: [(7, 1, "python.exe", 3, 123, "full")],
     )
+    monkeypatch.setattr(process_model, "windows_process_resident_kb", lambda *args: 9)
 
     samples = module.sample_processes_windows()
 
@@ -448,14 +466,14 @@ def test_windows_process_snapshot_hard_timeout_decodes_complete_rows(
         assert args[0][-1] == windows_snapshot.WINDOWS_PROCESS_SNAPSHOT_HELPER_ARG
         return SimpleNamespace(
             returncode=0,
-            stdout='[[7,1,9,"python.exe",3,123456789,"full"]]',
+            stdout='[[7,1,"python.exe",3,123456789,"full"]]',
             stderr="",
         )
 
     _fake_custody(monkeypatch, "subprocess", subprocess, run=fake_run)
 
     assert windows_snapshot._windows_process_snapshot_rows_hard_timeout() == [
-        (7, 1, 9, "python.exe", 3, 123456789, "full")
+        (7, 1, "python.exe", 3, 123456789, "full")
     ]
 
 
@@ -474,7 +492,7 @@ def test_windows_process_snapshot_hard_timeout_rejects_partial_payload(
         subprocess,
         run=lambda *args, **kwargs: SimpleNamespace(  # noqa: ARG005, ANN002, ANN003
             returncode=0,
-            stdout='[[7,1,9,"python.exe",3]]',
+            stdout='[[7,1,"python.exe",3]]',
             stderr="",
         ),
     )
@@ -544,17 +562,15 @@ def test_windows_snapshot_accepts_parent_and_identity_from_same_handle() -> None
     ) == (3, 123)
 
 
-def test_windows_process_handle_rss_fails_closed_when_psapi_unavailable(
+def test_windows_process_handle_rss_fails_closed_when_native_api_unavailable(
     monkeypatch,
 ) -> None:
-    import ctypes
-
     install_module_os_view(monkeypatch, windows_snapshot, name="nt")
 
-    def missing_psapi(*_args, **_kwargs):
-        raise OSError("psapi unavailable")
+    def missing_api():
+        raise OSError("native process API unavailable")
 
-    monkeypatch.setattr(ctypes, "WinDLL", missing_psapi, raising=False)
+    monkeypatch.setattr(windows_snapshot, "_windows_snapshot_api", missing_api)
 
     assert windows_snapshot.windows_process_handle_rss_kb(1234) is None
 
@@ -566,6 +582,176 @@ def test_windows_process_handle_rss_rejects_invalid_handle_values(
 
     assert windows_snapshot.windows_process_handle_rss_kb(None) is None
     assert windows_snapshot.windows_process_handle_rss_kb("not-a-handle") is None
+
+
+@pytest.mark.parametrize(
+    "fault",
+    [
+        "none",
+        "denied",
+        "birth",
+        "exited",
+        "times_failed",
+        "rss_failed",
+        "read_raises",
+        "close_failed",
+        "close_raises",
+    ],
+)
+def test_windows_resident_size_uses_one_birth_bound_handle(monkeypatch, fault):
+    import ctypes
+    from ctypes import wintypes
+
+    class Counters(ctypes.Structure):
+        _fields_ = [("cb", ctypes.c_uint32), ("WorkingSetSize", ctypes.c_size_t)]
+
+    calls = []
+    birth_ns = 3_000_000_000
+    # FILETIME is 100 ns ticks since 1601; the fixture is three Unix seconds.
+    created_ticks = 116444736030000000 + (fault == "birth")
+
+    def open_process(rights, inherit, pid):
+        calls.append(("open", rights, inherit, pid))
+        return None if fault == "denied" else 44
+
+    def get_times(handle, created, exited, kernel, user):
+        calls.append(("times", handle))
+        created._obj.dwLowDateTime = created_ticks & 0xFFFFFFFF
+        created._obj.dwHighDateTime = created_ticks >> 32
+        exited._obj.dwLowDateTime = int(fault == "exited")
+        return fault != "times_failed"
+
+    def get_memory(handle, counters, size):
+        calls.append(("rss", handle))
+        assert size == ctypes.sizeof(Counters)
+        if fault == "read_raises":
+            raise OSError("process exited while sizing")
+        counters._obj.WorkingSetSize = 2049
+        return fault != "rss_failed"
+
+    def close(handle):
+        calls.append(("close", handle))
+        if fault == "close_raises":
+            raise OSError("close denied")
+        return fault != "close_failed"
+
+    api = SimpleNamespace(
+        ctypes=ctypes,
+        wintypes=wintypes,
+        counters_type=Counters,
+        open_process=open_process,
+        get_process_times=get_times,
+        get_process_memory_info=get_memory,
+        close_handle=close,
+    )
+    install_module_os_view(monkeypatch, windows_snapshot, name="nt")
+    monkeypatch.setattr(windows_snapshot, "_windows_snapshot_api", lambda: api)
+
+    assert windows_snapshot.windows_process_resident_kb(7, birth_ns) == (
+        3 if fault == "none" else 0
+    )
+    expected = [("open", 0x0410, False, 7)]
+    if fault != "denied":
+        expected.append(("times", 44))
+        if fault not in {"birth", "exited", "times_failed"}:
+            expected.append(("rss", 44))
+        expected.append(("close", 44))
+    assert calls == expected
+
+
+@pytest.mark.parametrize(
+    ("pid", "birth"),
+    [(0, 1), (-1, 1), (True, 1), (2**32, 1), (7, 0), (7, True), (7, None)],
+)
+def test_windows_resident_size_rejects_unbound_identity(monkeypatch, pid, birth):
+    install_module_os_view(monkeypatch, windows_snapshot, name="nt")
+
+    def forbidden_api():
+        raise AssertionError("unbound identity reached the native API")
+
+    monkeypatch.setattr(windows_snapshot, "_windows_snapshot_api", forbidden_api)
+    assert windows_snapshot.windows_process_resident_kb(pid, birth) == 0
+
+
+def test_windows_snapshot_keeps_readable_identity_without_resident_queries(
+    monkeypatch,
+):
+    import ctypes
+    from ctypes import wintypes
+
+    class Entry(ctypes.Structure):
+        _fields_ = [
+            ("dwSize", ctypes.c_uint32),
+            ("th32ProcessID", ctypes.c_uint32),
+            ("szExeFile", ctypes.c_wchar * 30),
+        ]
+
+    class Counters(ctypes.Structure):
+        _fields_ = [("cb", ctypes.c_uint32), ("WorkingSetSize", ctypes.c_size_t)]
+
+    last_error = [0]
+    opened = []
+    closed = []
+    resident_reads = []
+
+    def first(handle, entry):
+        entry._obj.th32ProcessID = 7
+        entry._obj.szExeFile = "other.exe"
+        return True
+
+    def next_row(handle, entry):
+        last_error[0] = 18
+        return False
+
+    def get_times(handle, created, exited, kernel, user):
+        ticks = 116444736030000000
+        created._obj.dwLowDateTime = ticks & 0xFFFFFFFF
+        created._obj.dwHighDateTime = ticks >> 32
+        return True
+
+    def get_memory(*args):
+        resident_reads.append(args[0])
+        raise AssertionError("host identity snapshot must not size processes")
+
+    api = SimpleNamespace(
+        ctypes=SimpleNamespace(
+            sizeof=ctypes.sizeof,
+            byref=ctypes.byref,
+            set_last_error=lambda value: last_error.__setitem__(0, value),
+            get_last_error=lambda: last_error[0],
+        ),
+        wintypes=wintypes,
+        counters_type=Counters,
+        create_snapshot=lambda *args: 99,
+        process_first=first,
+        process_next=next_row,
+        close_handle=lambda handle: closed.append(handle) or True,
+        open_process=lambda *args: opened.append(args) or 44,
+        get_process_memory_info=get_memory,
+        get_process_times=get_times,
+        invalid_handle_value=-1,
+        ProcessEntry32W=Entry,
+    )
+    install_module_os_view(monkeypatch, windows_snapshot, name="nt")
+    monkeypatch.setattr(windows_snapshot, "_windows_snapshot_api", lambda: api)
+    monkeypatch.setattr(
+        windows_snapshot,
+        "_snapshot_basic_info",
+        lambda *args: SimpleNamespace(
+            UniqueProcessId=7, InheritedFromUniqueProcessId=3
+        ),
+    )
+    monkeypatch.setattr(
+        windows_snapshot, "_snapshot_image_name", lambda *args: "other.exe"
+    )
+    install_module_view(monkeypatch, "time", time, windows_snapshot, time=lambda: 10)
+
+    assert windows_snapshot._windows_process_snapshot_rows() == [
+        (7, 3, "other.exe", 7, 3_000_000_000, "image")
+    ]
+    assert resident_reads == []
+    assert opened == [(0x0410, False, 7)]
+    assert closed == [44, 99]
 
 
 def test_windows_guarded_popen_uses_new_process_group(monkeypatch) -> None:
@@ -1886,7 +2072,7 @@ def test_all_default_windows_sampling_uses_isolated_authority(monkeypatch, modul
         monkeypatch.setattr(
             module,
             "_windows_process_snapshot_rows_hard_timeout",
-            lambda: [(7, 1, 9, "python.exe", 3, 123)],
+            lambda: [(7, 1, "python.exe", 3, 123, "full")],
         )
         assert module.sample_processes_windows()[7].command == "python.exe"
 
@@ -1908,28 +2094,38 @@ def test_windows_native_av_helper_is_typed_failure(monkeypatch):
 @pytest.mark.parametrize(
     "row",
     [
-        [True, 1, 9, "python.exe", 3, 123],
-        [7, -1, 9, "python.exe", 3, 123],
-        [7, 1, -1, "python.exe", 3, 123],
-        [7, 1, 9, "python.exe", True, 123],
-        [7, 1, 9, "python.exe", 3, 0],
+        [True, 1, "python.exe", 3, 123],
+        [7, -1, "python.exe", 3, 123],
+        [7, 1, 9, 3, 123],
+        [7, 1, "python.exe", True, 123],
+        [7, 1, "python.exe", 3, 0],
     ],
 )
 def test_windows_helper_admission_rejects_invalid_identity_coordinates(row):
-    seven_field_row = [*row, "full"]
-    assert len(seven_field_row) == 7
+    six_field_row = [*row, "full"]
+    assert len(six_field_row) == 6
     with pytest.raises(ValueError, match="field types|elapsed_sec|started_at_ns"):
-        windows_snapshot._coerce_windows_process_snapshot_rows([seven_field_row])
+        windows_snapshot._coerce_windows_process_snapshot_rows([six_field_row])
 
 
 def test_windows_helper_admission_rejects_duplicate_pids():
-    row = [7, 1, 9, "python.exe", 3, 123, "full"]
+    row = [7, 1, "python.exe", 3, 123, "full"]
     with pytest.raises(ValueError, match="duplicate"):
         windows_snapshot._coerce_windows_process_snapshot_rows([row, row])
 
 
-def test_unknown_windows_command_preserves_memory_and_birth_without_role_inference():
-    row = [7, 1, 123, "", 3, 456, "unavailable"]
+def test_windows_helper_admission_rejects_obsolete_resident_size_field():
+    with pytest.raises(ValueError, match="six fields"):
+        windows_snapshot._coerce_windows_process_snapshot_rows(
+            [[7, 1, 9, "python.exe", 3, 123, "full"]]
+        )
+
+
+def test_unknown_windows_command_preserves_memory_and_birth_without_role_inference(
+    monkeypatch,
+):
+    row = [7, 1, "", 3, 456, "unavailable"]
+    monkeypatch.setattr(process_model, "windows_process_resident_kb", lambda *args: 123)
     validated = windows_snapshot._coerce_windows_process_snapshot_rows([row])
     sample = process_model.parse_windows_process_snapshot_rows(validated)[7]
     assert sample.command_kind == "unavailable"
@@ -1953,7 +2149,7 @@ def test_unknown_windows_command_preserves_memory_and_birth_without_role_inferen
 def test_windows_command_authority_must_match_helper_text(command, kind):
     with pytest.raises(ValueError):
         windows_snapshot._coerce_windows_process_snapshot_rows(
-            [[7, 1, 9, command, 3, 123, kind]]
+            [[7, 1, command, 3, 123, kind]]
         )
 
 
@@ -2025,13 +2221,11 @@ def test_windows_enumeration_requires_documented_complete_marker(monkeypatch, er
     api = SimpleNamespace(
         ctypes=shim,
         wintypes=SimpleNamespace(),
-        counters_type=object,
         create_snapshot=lambda *args: 99,
         process_first=first,
         process_next=next_row,
         close_handle=closed.append,
         open_process=lambda *args: None,
-        get_process_memory_info=lambda *args: False,
         get_process_times=lambda *args: False,
         invalid_handle_value=-1,
         ProcessEntry32W=Entry,
@@ -2040,7 +2234,7 @@ def test_windows_enumeration_requires_documented_complete_marker(monkeypatch, er
     monkeypatch.setattr(windows_snapshot, "_windows_snapshot_api", lambda: api)
     if error == 18:
         rows = windows_snapshot._windows_process_snapshot_rows()
-        assert rows == [(7, 0, 0, "", None, None, "unavailable")]
+        assert rows == [(7, 0, "", None, None, "unavailable")]
     else:
         with pytest.raises(
             windows_snapshot.ProcessSnapshotError, match="before completion"
@@ -2087,5 +2281,5 @@ def test_missing_command_authority_never_grants_argument_credit():
 def test_critical_executable_helper_cannot_downgrade_to_image_authority(command):
     with pytest.raises(ValueError, match="critical"):
         windows_snapshot._coerce_windows_process_snapshot_rows(
-            [[7, 1, 9, command, 3, 123, "image"]]
+            [[7, 1, command, 3, 123, "image"]]
         )

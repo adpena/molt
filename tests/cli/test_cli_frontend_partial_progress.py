@@ -72,7 +72,6 @@ def _run_batch(project_root: Path, module_graph: dict[str, Path]):
     names = sorted(module_graph)
     metadata = _ModuleGraphMetadata(
         logical_source_path_by_module={n: str(module_graph[n]) for n in names},
-        entry_override_by_module={n: None for n in names},
         module_is_namespace_by_module={n: False for n in names},
         module_is_package_by_module={n: False for n in names},
         module_execution_kind_by_module={n: "imported" for n in names},
@@ -201,7 +200,6 @@ def _context_digest(project_root: Path, path: Path, name: str) -> str:
         path,
         source_lease=_ModuleSourceLease.path_backed(path),
         logical_source_path=str(path),
-        entry_override=None,
         module_execution_kind="imported",
         is_package=False,
         known_classes_snapshot={},
