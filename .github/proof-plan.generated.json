@@ -374,7 +374,7 @@
     "tests/tools/test_win_job_contract.py",
     "tests/tools/test_windows_process_api.py"
   ],
-  "authority_sha256": "36dc929f03dff101d4a997dabdd80392e27de722135b37be9bb1c5f53afcccb5",
+  "authority_sha256": "74eaf925267ccb09820f2ad43f7e6d5f19774bd4cb037453afead208dff81592",
   "cargo_environment_policy": {
     "incident_command": "cargo metadata --locked --format-version 1",
     "incident_commit": "20b046b79bd4ca64a8c859f737f6e330377bcc4e",
@@ -5452,6 +5452,7 @@
         "tests/test_cloudflare_demo_verify.py",
         "tests/test_cloudflare_ocr_tokenizer_contract.py",
         "tests/test_cloudflare_queue_batch_ocr_contract.py",
+        "tests/test_cloudflare_worker_access_contract.py",
         "tests/test_codec_family_private_module_surface.py",
         "tests/test_codecs_private_module_surface.py",
         "tests/test_coff_import_library.py",
@@ -5820,6 +5821,7 @@
         "tests/test_cloudflare_demo_verify.py",
         "tests/test_cloudflare_ocr_tokenizer_contract.py",
         "tests/test_cloudflare_queue_batch_ocr_contract.py",
+        "tests/test_cloudflare_worker_access_contract.py",
         "tests/test_codec_family_private_module_surface.py",
         "tests/test_codecs_private_module_surface.py",
         "tests/test_coff_import_library.py",

@@ -65,14 +65,6 @@ def test_worker_fallback_chain():
     )
 
 
-def test_worker_health_reports_backends():
-    """Health endpoint reports status of all backends."""
-    source = _read(os.path.join(CF_DIR, "worker.js"))
-    assert "backends" in source, "Health response must include backends status"
-    assert "molt-gpu" in source, "Health must report molt-gpu backend"
-    assert "paddle-ocr" in source, "Health must report paddle-ocr backend"
-
-
 # ---------------------------------------------------------------------------
 # 2. x402 payment verification
 # ---------------------------------------------------------------------------
@@ -114,29 +106,6 @@ def test_x402_price_matches_mcp():
     assert "1000" in source, "x402.js must reference 1000 USDC units (6 decimals)"
 
 
-def test_x402_payment_required_response():
-    """402 response includes payment instructions per x402 spec."""
-    source = _read(os.path.join(CF_DIR, "x402.js"))
-    assert "payment_required" in source, (
-        "402 response must include payment_required object"
-    )
-    assert "X-Payment-Version" in source, (
-        "402 response must include X-Payment-Version header"
-    )
-    assert "X-Payment-Network" in source, (
-        "402 response must include X-Payment-Network header"
-    )
-    assert "X-Payment-Currency" in source, (
-        "402 response must include X-Payment-Currency header"
-    )
-    assert "X-Payment-Amount" in source, (
-        "402 response must include X-Payment-Amount header"
-    )
-    assert "X-Payment-Recipient" in source, (
-        "402 response must include X-Payment-Recipient header"
-    )
-
-
 def test_x402_timestamp_validation():
     """x402 validates payment timestamp within acceptable skew."""
     source = _read(os.path.join(CF_DIR, "x402.js"))
@@ -144,61 +113,15 @@ def test_x402_timestamp_validation():
     assert "300" in source, "x402.js must use 300 second skew tolerance"
 
 
-def test_x402_dev_mode_skip():
-    """x402 skips verification when no wallet is configured (dev mode)."""
-    source = _read(os.path.join(CF_DIR, "x402.js"))
-    assert "authorized: true" in source, (
-        "x402.js must authorize when no wallet configured"
-    )
-
-
 # ---------------------------------------------------------------------------
-# 3. CORS headers
+# 3. CORS, method and payment access: run through the worker's fetch handler
+#    in tests/test_cloudflare_worker_access_contract.py.
 # ---------------------------------------------------------------------------
-
-
-def test_cors_restricted_origin():
-    """CORS is restricted to freeinvoicemaker.app only."""
-    source = _read(os.path.join(CF_DIR, "worker.js"))
-    assert "freeinvoicemaker.app" in source, "CORS must reference freeinvoicemaker.app"
-    # Ensure no wildcard CORS
-    assert 'Access-Control-Allow-Origin": "*"' not in source, (
-        "CORS must NOT use wildcard origin"
-    )
-
-
-def test_cors_allowed_headers():
-    """CORS allows required custom headers."""
-    source = _read(os.path.join(CF_DIR, "worker.js"))
-    assert "X-Payment-402" in source, "CORS must allow X-Payment-402 header"
-    assert "X-Request-ID" in source, "CORS must allow X-Request-ID header"
-
-
-def test_cors_preflight():
-    """Worker handles OPTIONS preflight requests."""
-    source = _read(os.path.join(CF_DIR, "worker.js"))
-    assert "OPTIONS" in source, "Worker must handle OPTIONS requests"
-    assert "204" in source, "Preflight must return 204"
 
 
 # ---------------------------------------------------------------------------
 # 4. Health endpoint
 # ---------------------------------------------------------------------------
-
-
-def test_health_no_auth_required():
-    """Health endpoint is handled before x402 verification in the handler."""
-    source = _read(os.path.join(CF_DIR, "worker.js"))
-    # Within the handler body, /health must be checked before verifyX402.
-    # Find the first occurrence of each within the handler function.
-    handler_start = source.find("handler: async")
-    assert handler_start != -1, "Worker must define handler function"
-    handler_body = source[handler_start:]
-    health_pos = handler_body.find('"/health"')
-    payment_pos = handler_body.find("verifyX402")
-    assert health_pos != -1, "Handler must check /health"
-    assert payment_pos != -1, "Handler must call verifyX402"
-    assert health_pos < payment_pos, "/health must be checked before x402 verification"
 
 
 def test_health_response_schema():
@@ -230,22 +153,6 @@ def test_error_415_wrong_type():
     source = _read(os.path.join(CF_DIR, "ocr_api.js"))
     assert "415" in source, "OCR API must return 415 for unsupported formats"
     assert "Unsupported" in source, "415 response must mention unsupported format"
-
-
-def test_error_402_payment_required():
-    """Worker returns 402 when payment is missing or invalid."""
-    source = _read(os.path.join(CF_DIR, "x402.js"))
-    assert "402" in source, "x402.js must return 402 status"
-    assert "paymentRequiredResponse" in source, (
-        "x402.js must define paymentRequiredResponse"
-    )
-
-
-def test_error_405_method_not_allowed():
-    """Worker returns 405 for non-POST requests to OCR endpoints."""
-    source = _read(os.path.join(CF_DIR, "worker.js"))
-    assert "405" in source, "Worker must return 405 for wrong method"
-    assert "Method not allowed" in source, "405 response must include error message"
 
 
 def test_error_503_fallback():
