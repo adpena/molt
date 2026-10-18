@@ -601,20 +601,32 @@ def test_host_triple_selector_wins_over_host_generic_tool(
     plan.verify()
 
 
-def test_host_triple_c_flag_inputs_are_captured(tmp_path: Path) -> None:
+@pytest.mark.parametrize("case_insensitive", [False, True])
+def test_host_triple_c_flag_inputs_are_captured(
+    tmp_path: Path, case_insensitive: bool
+) -> None:
     header = tmp_path / "host-header.h"
     header.write_bytes(b"host-specific header")
     env = _CargoEnvironment(
         {
             "CFLAGS_x86_64-unknown-linux-gnu": shlex.join(("-include", str(header))),
             "CC_SHELL_ESCAPED_FLAGS": "1",
-        }
+        },
+        case_insensitive=case_insensitive,
     )
     plan = _resolve_c_build_resources(
         env, target=TARGET, host_target="x86_64-unknown-linux-gnu"
     )
-    key = env.canonical_key("CFLAGS_x86_64-unknown-linux-gnu")
-    assert key in plan.environment
+    # Windows stores the variable as CFLAGS_X86_64-UNKNOWN-LINUX-GNU; the
+    # projection still names it as cc-rs does, on every host.
+    assert set(plan.environment) == {
+        "CC_SHELL_ESCAPED_FLAGS",
+        "CFLAGS_x86_64-unknown-linux-gnu",
+    }
+    assert plan.environment["CFLAGS_x86_64-unknown-linux-gnu"] == (
+        "-include",
+        "${c/CFLAGS_x86_64-unknown-linux-gnu/flags/0}",
+    )
     assert plan.roots[0].path == header
 
 

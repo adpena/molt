@@ -560,13 +560,18 @@ def _resolve_c_build_resources(
         return tuple(result)
 
     shell_flags = env.get("CC_SHELL_ESCAPED_FLAGS", "") not in {"", "0", "false", "no"}
+    # The projection names each variable as cc-rs spells it, as the search
+    # entries below do, so readers and identities agree on every host. One
+    # variable that two spellings select on Windows is projected once.
+    selected: set[str] = set()
     for name in runtime_c_flag_environment_names(target, host_target):
         key = env.canonical_key(name)
-        if key not in env or key in projection:
+        if key not in env or key in selected:
             continue
+        selected.add(key)
         value = env[key]
         if name in _C_FLAG_CONTROLS:
-            projection[key] = (value,)
+            projection[name] = (value,)
             continue
         try:
             tokens = runtime_c_flag_tokens(value, shell_escaped=shell_flags)
@@ -574,7 +579,7 @@ def _resolve_c_build_resources(
             raise ValueError(
                 f"runtime C {name} has invalid shell-escaped flags: {exc}"
             ) from exc
-        projection[key] = flags(tokens, name=key)
+        projection[name] = flags(tokens, name=name)
     for name in _C_SEARCH_ENVIRONMENTS:
         if name not in env:
             continue
