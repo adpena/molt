@@ -88,7 +88,7 @@ def purge() -> None:
 # ---------------------------------------------------------------------------
 # Match — thin wrapper around intrinsic result tuple
 # ---------------------------------------------------------------------------
-# Intrinsic result: (match_start, match_end, group_spans)
+# Intrinsic result: (match_start, match_end, group_spans, last_closed_group)
 # group_spans is 1-indexed; group 0 = overall match from start/end.
 
 
@@ -101,6 +101,7 @@ class Match:
         "_start",
         "_end",
         "_group_spans",
+        "_lastindex",
     )
 
     def __init__(
@@ -112,6 +113,7 @@ class Match:
         start: int,
         end: int,
         group_spans: tuple[tuple[int, int] | None, ...],
+        lastindex: int | None,
     ) -> None:
         self._pattern = pattern
         self._string = string
@@ -120,6 +122,7 @@ class Match:
         self._start = start
         self._end = end
         self._group_spans = group_spans
+        self._lastindex = lastindex
 
     def group(self, *indices: int | str) -> Any:
         if not indices:
@@ -189,11 +192,7 @@ class Match:
 
     @property
     def lastindex(self) -> int | None:
-        last: int | None = None
-        for i in range(len(self._group_spans)):
-            if self._group_spans[i] is not None:
-                last = i + 1
-        return last
+        return self._lastindex
 
     @property
     def lastgroup(self) -> str | None:
@@ -339,7 +338,7 @@ class Pattern:
         raw = _molt_re_execute(self._handle, text, start, end, mode)
         if raw is None:
             return None
-        return Match(self, string, start, end, raw[0], raw[1], raw[2])
+        return Match(self, string, start, end, raw[0], raw[1], raw[2], raw[3])
 
 
 class _RegexScanner(Iterator[Match]):
@@ -401,6 +400,7 @@ class _RegexScanner(Iterator[Match]):
             raw[0],
             raw[1],
             raw[2],
+            raw[3],
         )
 
 
@@ -434,12 +434,13 @@ def _subject_for(pattern: Pattern, string: Any) -> str | bytes:
 
 
 def _clamp_span(length: int, pos: int, endpos: int | None) -> tuple[int, int]:
+    # CPython state_init clamps each offset to the physical subject length.
     start = max(pos, 0)
     end = length if endpos is None else max(endpos, 0)
     if end > length:
         end = length
-    if start > end:
-        start = end
+    if start > length:
+        start = length
     return start, end
 
 
