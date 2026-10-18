@@ -5,12 +5,8 @@ from __future__ import annotations
 from _intrinsics import require_intrinsic as _require_intrinsic
 
 
-class Error(ValueError):
-    pass
-
-
-class Incomplete(Error):
-    pass
+Error = _require_intrinsic("molt_binascii_error_type")()
+Incomplete = _require_intrinsic("molt_binascii_incomplete_type")()
 
 
 # Keep public callables as intrinsic-backed builtins so API-shape probes

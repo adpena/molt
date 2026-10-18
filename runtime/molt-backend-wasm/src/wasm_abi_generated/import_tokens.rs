@@ -1551,6 +1551,8 @@ pub(crate) enum WasmRuntimeImport {
     CodecsLookupName,
     EncodingsAliasesMap,
     BinasciiA2bBase64,
+    BinasciiErrorType,
+    BinasciiIncompleteType,
     BinasciiB2aBase64,
     BinasciiA2bHex,
     BinasciiB2aHex,

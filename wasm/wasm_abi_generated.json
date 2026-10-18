@@ -2681,6 +2681,8 @@
     "binascii_b2a_uu": "molt_binascii_b2a_uu",
     "binascii_crc32": "molt_binascii_crc32",
     "binascii_crc_hqx": "molt_binascii_crc_hqx",
+    "binascii_error_type": "molt_binascii_error_type",
+    "binascii_incomplete_type": "molt_binascii_incomplete_type",
     "bisect_insort_left": "molt_bisect_insort_left",
     "bisect_insort_right": "molt_bisect_insort_right",
     "bisect_left": "molt_bisect_left",
