@@ -149,7 +149,63 @@ pub extern "C" fn molt_re_subject_view(subject_bits: u64) -> u64 {
 pub extern "C" fn __molt_regex_subject_slice(subject_bits: u64, start: usize, end: usize) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         if start > end {
-            return MoltObject::none().bits();
+            return raise_exception::<u64>(_py, "IndexError", "invalid group span");
+        }
+        if let Some(subject_ptr) = obj_from_bits(subject_bits).as_ptr()
+            && unsafe { object_type_id(subject_ptr) } == TYPE_ID_STRING
+        {
+            let subject = obj_from_bits(subject_bits);
+            let (byte_start, byte_end) = (unsafe {
+                crate::object::ops_format::with_string_bytes(subject, |bytes| {
+                    let key = Some(subject_ptr as usize);
+                    let start = crate::object::ops_string::utf8_char_to_byte_index_cached(
+                        _py,
+                        bytes,
+                        i64::try_from(start).unwrap_or(i64::MAX),
+                        key,
+                    );
+                    let end = crate::object::ops_string::utf8_char_to_byte_index_cached(
+                        _py,
+                        bytes,
+                        i64::try_from(end).unwrap_or(i64::MAX),
+                        key,
+                    );
+                    (start, end)
+                })
+            })
+            .expect("TYPE_ID_STRING must expose its physical WTF-8 storage under the GIL");
+            let size = byte_end.saturating_sub(byte_start);
+            let ptr = if size == 0 {
+                alloc_string(_py, &[])
+            } else {
+                crate::object::builders::alloc_inline_bytes_with_len(
+                    _py,
+                    size,
+                    crate::object::builders::InlineBytesKind::String,
+                )
+            };
+            if ptr.is_null() {
+                return MoltObject::none().bits();
+            }
+            if size != 0 {
+                // Allocation may run finalizers. Reacquire the immutable string
+                // storage only after it has completed, and never retain this
+                // borrow across another runtime call.
+                (unsafe {
+                    crate::object::ops_format::with_string_bytes(
+                        obj_from_bits(subject_bits),
+                        |bytes| {
+                            std::ptr::copy_nonoverlapping(
+                                bytes.as_ptr().add(byte_start),
+                                crate::object::layout::InlineBytesStorage::data(ptr),
+                                size,
+                            );
+                        },
+                    )
+                })
+                .expect("retained TYPE_ID_STRING must keep its physical storage");
+            }
+            return MoltObject::from_ptr(ptr).bits();
         }
         let Some(input) = regex_subject_buffer(_py, subject_bits, unsafe {
             ByteInput::acquire(_py.core_token(), subject_bits)
@@ -157,10 +213,12 @@ pub extern "C" fn __molt_regex_subject_slice(subject_bits: u64, start: usize, en
             return MoltObject::none().bits();
         };
         let len = unsafe { input.bytes(_py.core_token()).len() };
-        if end > len {
-            return MoltObject::none().bits();
-        }
-        let size = end - start;
+        // Match marks belong to the earlier search operation. The source may
+        // have shrunk since then; CPython clamps both marks to its current
+        // buffer length when each capture is read.
+        let start = start.min(len);
+        let end = end.min(len);
+        let size = end.saturating_sub(start);
         let ptr = if size == 0 {
             alloc_bytes(_py, &[])
         } else {
