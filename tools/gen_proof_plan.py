@@ -222,7 +222,6 @@ def _json_projection(plan: ProofPlan) -> str:
             "always": plan.always,
             "always_toolchains": plan.always_toolchains,
             "rule": plan.local_rules,
-            "local_pytest_workers": plan.local_pytest_workers,
         }
     )
     local_commands = {
@@ -288,7 +287,6 @@ def _json_projection(plan: ProofPlan) -> str:
             "measurement_command": cargo_policy.measurement_command,
         },
         "local": {
-            "pytest_workers": plan.local_pytest_workers,
             "always": list(plan.always),
             "always_command_ids": local_ids.get("local.always", []),
             "commands": local_commands,

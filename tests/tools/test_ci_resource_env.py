@@ -291,18 +291,14 @@ def test_github_env_carries_the_guard_caps(tmp_path: Path) -> None:
 
 
 @pytest.mark.parametrize(
-    ("physical_gb", "available_gb", "cpus", "workers_expected"),
-    # be612afe9 calibrated the queue suites' budgets on 2 macOS and 4 Linux workers.
-    [(7.0, 3.22, 3, 2), (16.0, 14.25, 4, 4)],
+    ("physical_gb", "available_gb", "cpus"),
+    [(7.0, 3.22, 3), (16.0, 14.25, 4)],
 )
-def test_github_env_sizes_pytest_auto_workers_from_the_plan(
-    tmp_path: Path,
-    physical_gb: float,
-    available_gb: float,
-    cpus: int,
-    workers_expected: int,
+def test_github_env_leaves_pytest_workers_to_each_command(
+    tmp_path: Path, physical_gb: float, available_gb: float, cpus: int
 ) -> None:
-    # `pytest -n auto` reads this variable, so one plan sizes test workers.
+    # Each command's `-n auto` sizes its workers from its declared unit
+    # (molt.pytest_capacity_plugin); the runner exports no count of its own.
     module = ci_resource_env
     plan = module.plan_ci_resources(
         environ={},
@@ -316,9 +312,7 @@ def test_github_env_sizes_pytest_auto_workers_from_the_plan(
     lines = dict(
         line.split("=", 1) for line in env_file.read_text(encoding="utf-8").splitlines()
     )
-    workers = int(lines["PYTEST_XDIST_AUTO_NUM_WORKERS"])
-    assert workers == plan.python_test_workers == workers_expected
-    assert 1 <= workers <= cpus
+    assert "PYTEST_XDIST_AUTO_NUM_WORKERS" not in lines
     # Differential jobs fit the tree budget; light pytest workers may exceed it.
     resource = plan.resource_plan
     assert (

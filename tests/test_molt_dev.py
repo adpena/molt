@@ -517,7 +517,6 @@ def test_committed_gate_manifest_is_valid(drv):
 
 def test_selected_rules_run_their_pytest_targets_in_one_invocation(drv, tmp_path):
     source = """
-local_pytest_workers = 3
 always = ["python tools/check_a.py"]
 [[rule]]
 name = "first"
@@ -554,7 +553,7 @@ toolchains = ["python"]
             "pytest",
             "-q",
             "-n",
-            "3",
+            "auto",
             "tests/test_a.py",
             "tests/test_shared.py",
             "tests/test_b.py::test_one",
@@ -565,7 +564,6 @@ toolchains = ["python"]
 
 def test_selected_rules_run_each_pytest_selection_on_its_own(drv, tmp_path):
     source = """
-local_pytest_workers = 3
 [[rule]]
 name = "first"
 globs = ["src/a/**"]
@@ -588,7 +586,7 @@ toolchains = ["python"]
         (tmp_path / "tests" / f"test_{name}.py").write_text("", encoding="utf-8")
     cfg = drv.GateConfig.parse(source, "pytest selection fixture", root=tmp_path)
     gates, _ = cfg.select(["src/a/x.py", "src/b/y.py"])
-    prefix = ("python", "-m", "pytest", "-q", "-n", "3")
+    prefix = ("python", "-m", "pytest", "-q", "-n", "auto")
     # A selection applies to every target of its run, so it never merges
     # into the shared run; an identical selection runs once.
     assert gates == [
@@ -639,7 +637,7 @@ def test_structured_gate_preserves_node_ids_without_a_shell(
     )
     from tools.proof_plan import local_pytest_argv
 
-    command = local_pytest_argv(targets, 3)
+    command = local_pytest_argv(targets)
     observed = []
 
     def guarded(argv, **kwargs):
@@ -650,7 +648,7 @@ def test_structured_gate_preserves_node_ids_without_a_shell(
         molt_dev_common.harness_memory_guard, "guarded_completed_process", guarded
     )
     assert molt_dev_common._run_live_gate(command, repo=tmp_path, env={}) == 0
-    assert observed == [["python", "-m", "pytest", "-q", "-n", "3", *targets]]
+    assert observed == [["python", "-m", "pytest", "-q", "-n", "auto", *targets]]
 
 
 def _gate_args(gate):

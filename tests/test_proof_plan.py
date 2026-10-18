@@ -370,7 +370,8 @@ def test_generated_local_dx_projection_has_stable_command_ids() -> None:
         f"local.{first['name']}.pytest-select-{index}"
         for index, _ in enumerate(first.get("pytest_select", []))
     ]
-    assert local["pytest_workers"] == PLAN.local_pytest_workers > 0
+    # Landing pytest sizes its workers per host (-n auto); no count is projected.
+    assert "pytest_workers" not in local
 
 
 @pytest.mark.parametrize(
@@ -391,9 +392,7 @@ def test_local_pytest_targets_are_existing_test_paths(target, message) -> None:
 
 def test_local_pytest_targets_project_one_command_per_rule() -> None:
     rule = next(rule for rule in PLAN.local_rules if rule.get("pytest"))
-    commands = proof_plan.local_gate_commands(
-        {"rule": [rule], "local_pytest_workers": PLAN.local_pytest_workers}
-    )
+    commands = proof_plan.local_gate_commands({"rule": [rule]})
     command, tools = commands[f"local.{rule['name']}.pytest"]
     assert shlex.split(command) == [
         "python",
@@ -401,7 +400,7 @@ def test_local_pytest_targets_project_one_command_per_rule() -> None:
         "pytest",
         "-q",
         "-n",
-        str(PLAN.local_pytest_workers),
+        "auto",
         *rule["pytest"],
     ]
     assert tools == tuple(rule["toolchains"])
@@ -427,11 +426,9 @@ def test_local_pytest_selections_name_one_selection_and_tests(entry, message) ->
     )
 
 
-def test_local_pytest_selections_run_on_the_plan_workers() -> None:
+def test_local_pytest_selections_size_workers_per_host() -> None:
     rule = next(rule for rule in PLAN.local_rules if rule.get("pytest_select"))
-    commands = proof_plan.local_gate_commands(
-        {"rule": [rule], "local_pytest_workers": PLAN.local_pytest_workers}
-    )
+    commands = proof_plan.local_gate_commands({"rule": [rule]})
     for index, entry in enumerate(rule["pytest_select"]):
         (key,) = set(entry) - {"targets"}
         command, tools = commands[f"local.{rule['name']}.pytest-select-{index}"]
@@ -441,7 +438,7 @@ def test_local_pytest_selections_run_on_the_plan_workers() -> None:
             "pytest",
             "-q",
             "-n",
-            str(PLAN.local_pytest_workers),
+            "auto",
             f"-{key}",
             entry[key],
             *entry["targets"],
@@ -1690,7 +1687,7 @@ def test_wasm_backend_prewarm_admits_the_consumer_compiler(
     monkeypatch.setenv("MOLT_BACKEND_DAEMON", "1")
     for command in (prewarm, consumer):
         environment, _policies = proof_plan._command_environment(
-            PLAN, command, command.data["timeout_seconds"]
+            PLAN, command, command.data["timeout_seconds"], memory_share=None
         )
         assert {name: environment[name] for name in inherited} == inherited
         assert environment["RUSTC_WRAPPER"] == "/opt/cache/sccache"
@@ -1748,7 +1745,7 @@ def test_wasm_python_consumers_share_prebuild_entrypoint_and_wrapper_selection(
     monkeypatch.setenv("MOLT_BUILD_PYTHON", "/selected/build-python")
     for row in rows.values():
         environment, _policies = proof_plan._command_environment(
-            PLAN, row, row.data["timeout_seconds"]
+            PLAN, row, row.data["timeout_seconds"], memory_share=None
         )
         assert environment["RUSTC_WRAPPER"] == "/selected/sccache"
         assert environment["CARGO_INCREMENTAL"] == (
@@ -2437,7 +2434,9 @@ def test_sccache_environment_policy_covers_every_rust_proof_family(
         "wasm",
     }
     for command in rust_commands:
-        environment, applied = proof_plan._command_environment(PLAN, command, 30)
+        environment, applied = proof_plan._command_environment(
+            PLAN, command, 30, memory_share=None
+        )
         assert environment["CARGO_INCREMENTAL"] == "0", command.id
         assert applied == (
             "sccache-disables-incremental",
@@ -2481,7 +2480,7 @@ def test_compiler_build_commands_use_shared_timeout_budgets() -> None:
     }
     for command in compiler_commands:
         environment, _applied = proof_plan._command_environment(
-            PLAN, command, int(command.data["timeout_seconds"])
+            PLAN, command, int(command.data["timeout_seconds"]), memory_share=None
         )
         assert environment[PROOF_COMMAND_TIMEOUT_ENV] == str(
             command.data["timeout_seconds"]
@@ -2544,7 +2543,9 @@ def test_command_direct_rustc_override_does_not_apply_sccache_policy(
         data={**template.data, "env": {wrapper_env: ""}},
     )
 
-    environment, applied = proof_plan._command_environment(PLAN, command, 30)
+    environment, applied = proof_plan._command_environment(
+        PLAN, command, 30, memory_share=None
+    )
 
     assert environment[wrapper_env] == ""
     assert environment["CARGO_INCREMENTAL"] == "1"
@@ -4117,7 +4118,9 @@ def test_provisioned_lean_fingerprint_admits_formal_build_receipt(
     monkeypatch.setattr(
         proof_plan,
         "_run_command",
-        lambda _plan, current, _cancel: _successful_synthetic_record(current),
+        lambda _plan, current, _cancel, *, memory_share: _successful_synthetic_record(
+            current
+        ),
     )
     receipt_path = tmp_path / "formal-lean-receipt.json"
 
@@ -4428,6 +4431,8 @@ def test_executor_schedules_dependencies_and_resources_with_deterministic_receip
         _plan: proof_plan.ProofPlan,
         command: proof_plan.ProofCommand,
         _cancel: threading.Event,
+        *,
+        memory_share: int | None,
     ) -> dict[str, object]:
         resource = str(command.data["resource_class"])
         with lock:
@@ -4491,7 +4496,7 @@ def test_executor_partition_failure_preserves_independent_work_and_blocks_depend
     )
     live_started = threading.Event()
 
-    def fake_run(_plan, command, cancel):
+    def fake_run(_plan, command, cancel, *, memory_share):
         if command.id == "synthetic.fail":
             assert live_started.wait(timeout=1)
             return {
@@ -4639,6 +4644,8 @@ def test_executor_does_not_convert_control_plane_interrupts_into_records(
         _plan: proof_plan.ProofPlan,
         _command: proof_plan.ProofCommand,
         _cancel: threading.Event,
+        *,
+        memory_share: int | None,
     ) -> dict[str, object]:
         raise KeyboardInterrupt
 
@@ -4820,7 +4827,7 @@ def test_executor_rejects_source_mutation_during_partition(
     monkeypatch.setattr(
         proof_plan,
         "_run_command",
-        lambda _plan, command, _cancel: {
+        lambda _plan, command, _cancel, *, memory_share: {
             "id": command.id,
             "status": "success",
             "returncode": 0,
@@ -5273,7 +5280,7 @@ def test_executor_stops_on_candidate_change_even_when_checkout_is_clean(
     )
     plan = _synthetic_executor_plan(commands, limits={"resource-a": 1})
 
-    def run(_plan, command, _cancel):
+    def run(_plan, command, _cancel, *, memory_share):
         current[field] = "c" * 40
         return _successful_synthetic_record(command)
 
@@ -5308,7 +5315,7 @@ def test_executor_control_plane_interrupt_cancels_siblings_before_join(
     live_started = threading.Event()
     closed = threading.Event()
 
-    def run(_plan, command, cancel):
+    def run(_plan, command, cancel, *, memory_share):
         if command.id == "interrupt":
             assert live_started.wait(1)
             raise KeyboardInterrupt
@@ -5400,7 +5407,7 @@ def test_executor_real_cargo_test_timeout_retains_completed_incremental_cache(
         },
     )
     plan = _synthetic_executor_plan((command,), limits={"resource-a": 1})
-    record = proof_plan._run_command(plan, command)
+    record = proof_plan._run_command(plan, command, memory_share=None)
     assert started.read_bytes() == b"started", record
     assert record["status"] == "timeout"
     assert record["returncode"] == 124
@@ -5630,7 +5637,9 @@ def test_python_rust_consumers_admit_tools_before_any_partition(
     monkeypatch.setattr(
         proof_plan,
         "_run_command",
-        lambda *_args: pytest.fail("payload scheduled before toolchain admission"),
+        lambda *_args, **_kwargs: pytest.fail(
+            "payload scheduled before toolchain admission"
+        ),
     )
     receipt_path = tmp_path / "unprovisioned.json"
     assert proof_plan.execute_commands(PLAN, commands, receipt_path) == 2
@@ -5762,11 +5771,11 @@ def test_executor_cancellation_requires_exact_terminal_closure(
     monkeypatch.setattr(proof_plan, "_COMMANDS", SimpleNamespace(start_guarded=start))
     if defect in {"missing", "unclosed", "startup"}:
         with pytest.raises(RuntimeError) as caught:
-            proof_plan._run_command(plan, command, event)
+            proof_plan._run_command(plan, command, event, memory_share=None)
         assert caught.value.guard_command is owned
         record = caught.value.proof_record
     else:
-        record = proof_plan._run_command(plan, command, event)
+        record = proof_plan._run_command(plan, command, event, memory_share=None)
     assert record["guard_returncode"] == (130 if defect == "noncanonical-code" else 137)
     assert record["failure_scope"] == "global"
     assert record["status"] == ("cancelled" if defect is None else "failure")
@@ -5819,7 +5828,7 @@ def test_executor_retains_owner_in_failure_receipt_and_library_exception(
     }
     error.proof_record = record
 
-    def run(*_args):
+    def run(*_args, **_kwargs):
         raise error
 
     monkeypatch.setattr(proof_plan, "_run_command", run)
@@ -7319,3 +7328,24 @@ def test_selected_runtime_fingerprint_and_receipt_bind_consumed_unicode(
             "runtime fingerprint is invalid" in error
             for error in _verify_receipts(PLAN, [command.family], receipt_root)
         )
+
+
+def test_executor_divides_memory_among_the_commands_it_runs_at_once(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Each concurrent command sizes `-n auto` within its own share; four
+    # commands sizing from the whole host would overcommit it fourfold.
+    gib = 1024**3
+    monkeypatch.setattr(
+        proof_plan.host_capacity, "memory_bytes", lambda: (64 * gib, 40 * gib)
+    )
+    monkeypatch.setattr(proof_plan.host_capacity, "headroom_bytes", lambda: 4 * gib)
+    plan = replace(PLAN, executor_max_workers=4)
+    assert proof_plan._command_memory_share(plan, 9) == 9 * gib
+    assert proof_plan._command_memory_share(plan, 2) == 18 * gib
+    assert proof_plan._command_memory_share(plan, 1) == 36 * gib
+    command = next(c for c in PLAN.commands if "pytest" in c.data["argv"])
+    environment, _applied = proof_plan._command_environment(
+        PLAN, command, 30, memory_share=9 * gib
+    )
+    assert environment[proof_plan.host_capacity.MEMORY_SLICE_ENV] == str(9 * gib)
