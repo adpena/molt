@@ -703,6 +703,7 @@ setup_evidence = ["config/llvm_toolchain_releases.toml::default_release = \"22.1
 
 [[toolchain_policy]]
 name = "hosted-clang"
+selection_only = true
 # Reuse a verified SDK when installed; a matching host image on PATH is also
 # admitted. Native C fixture objects do not consume the LLVM library ABI.
 projection = "llvm-sdk"
