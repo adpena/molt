@@ -7049,6 +7049,60 @@ def test_native_fixture_compiler_capability_keeps_llvm_abi_pin_separate() -> Non
     assert not re.search(fixture.data["version_pattern"], "unidentified compiler")
 
 
+@pytest.mark.parametrize("rule_name", ["tir-midend", "native-callable-abi"])
+def test_local_wasm_libtest_declares_its_actual_guest_tools(rule_name: str) -> None:
+    from tools import molt_dev
+
+    config = molt_dev.GateConfig.load(PLAN.path)
+    rule = next(rule for rule in config.rules if rule.name == rule_name)
+    isolated = replace(config, rules=[rule], always=[])
+    gates, matched = isolated.select(
+        ["runtime/molt-backend-wasm/src/wasm/tests/native_callable.rs"]
+    )
+    assert [rule.name for rule in matched] == [rule_name]
+    (test_gate,) = [
+        gate
+        for gate in gates
+        if isinstance(gate.command, str) and gate.command.startswith("cargo test ")
+    ]
+    assert "-p molt-backend-wasm" in test_gate.command
+    assert {"node", "wasm-ld"} <= set(PLAN.toolchain_closure(test_gate.toolchains))
+    for command_id in (
+        "rust.test.ir-wasm-runtime-authorities",
+        "rust.test.default-truth",
+    ):
+        ci = next(command for command in PLAN.commands if command.id == command_id)
+        assert {"node", "wasm-ld"} <= set(PLAN.required_toolchains(ci))
+
+
+@pytest.mark.parametrize(
+    "rule_name", ["backend-native", "backend-llvm", "native-callable-abi"]
+)
+def test_native_execution_helper_selects_all_compiled_consumers(rule_name: str) -> None:
+    from tools import molt_dev
+
+    config = molt_dev.GateConfig.load(PLAN.path)
+    rule = next(rule for rule in config.rules if rule.name == rule_name)
+    gates, matched = replace(config, rules=[rule], always=[]).select(
+        ["runtime/test_support/native_object_execution.rs"]
+    )
+    assert [rule.name for rule in matched] == [rule_name]
+    test_gates = [
+        gate
+        for gate in gates
+        if isinstance(gate.command, str) and gate.command.startswith("cargo test ")
+    ]
+    assert test_gates
+    assert all(
+        "rustc" in PLAN.toolchain_closure(gate.toolchains) for gate in test_gates
+    )
+
+
+def test_shared_native_execution_helper_selects_rust_and_llvm_ci() -> None:
+    selected = PLAN.select(["runtime/test_support/native_object_execution.rs"])
+    assert {"rust", "llvm"} <= {family.name for family in selected.selected}
+
+
 def test_wasm_runtime_and_host_prerequisites_follow_actual_consumers():
     commands = {command.id: command for command in PLAN.commands}
     for name in ("wasm.build.shared-runtime", "wasm.build.split-runtime-release"):
