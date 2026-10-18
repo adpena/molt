@@ -263,7 +263,10 @@ def test_expand_and_sub_preserve_each_surrogate_codepoint(source_re):
     assert invalid_name is not None
     with pytest.raises(source_re.error) as exc_info:
         invalid_name.expand("\\g<unknown\ud800>")
-    assert str(exc_info.value) == "bad character in group name 'unknown\\ud800' at position 3"
+    assert (
+        str(exc_info.value)
+        == "bad character in group name 'unknown\\ud800' at position 3"
+    )
 
 
 def test_bytes_subclass_compile_subject_replacement_and_expand_authority(source_re):
@@ -302,7 +305,8 @@ def test_bytes_subclass_compile_subject_replacement_and_expand_authority(source_
 @pytest.mark.parametrize("expression", [b"a", "a"])
 @pytest.mark.parametrize("operation", ["search", "finditer", "split", "sub"])
 @pytest.mark.parametrize(
-    "subject_kind", ["none", "int", "list", TypeError, ValueError, BufferError, MemoryError, "strided"]
+    "subject_kind",
+    ["none", "int", "list", TypeError, ValueError, BufferError, MemoryError, "strided"],
 )
 def test_subject_admission_matches_real_sre_error_and_handler_context(
     source_re, expression, operation, subject_kind
@@ -333,13 +337,19 @@ def test_subject_admission_matches_real_sre_error_and_handler_context(
         except LookupError as outer:
             try:
                 if operation == "sub":
-                    compiled.sub(b"X" if isinstance(expression, bytes) else "X", subject)
+                    compiled.sub(
+                        b"X" if isinstance(expression, bytes) else "X", subject
+                    )
                 else:
                     getattr(compiled, operation)(subject)
             except Exception as error:
                 return (
-                    type(error), str(error), error.__context__ is outer,
-                    len(subject.flags) if isinstance(subject, RejectingBuffer) else None,
+                    type(error),
+                    str(error),
+                    error.__context__ is outer,
+                    len(subject.flags)
+                    if isinstance(subject, RejectingBuffer)
+                    else None,
                 )
         raise AssertionError("invalid subject unexpectedly admitted")
 
@@ -349,7 +359,9 @@ def test_subject_admission_matches_real_sre_error_and_handler_context(
     assert observe(source_re) == expected
 
 
-@pytest.mark.parametrize("failure_type", [TypeError, ValueError, BufferError, MemoryError])
+@pytest.mark.parametrize(
+    "failure_type", [TypeError, ValueError, BufferError, MemoryError]
+)
 def test_capture_read_reuses_sre_admission_error_policy(source_re, failure_type):
     class CaptureBuffer:
         def __init__(self):
@@ -372,7 +384,12 @@ def test_capture_read_reuses_sre_admission_error_policy(source_re, failure_type)
             try:
                 match.group()
             except Exception as error:
-                return type(error), str(error), error.__context__ is outer, subject.flags
+                return (
+                    type(error),
+                    str(error),
+                    error.__context__ is outer,
+                    subject.flags,
+                )
         raise AssertionError("capture exporter failure unexpectedly ignored")
 
     expected = observe(cpython_re)
