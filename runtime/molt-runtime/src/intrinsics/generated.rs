@@ -4933,7 +4933,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         symbol: "molt_binascii_a2b_base64",
         arity: 3,
         defaults: &[],
-        python_name: None,
+        python_name: Some("a2b_base64"),
     },
     IntrinsicSpec {
         name: "molt_binascii_b2a_base64",
@@ -4947,14 +4947,14 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         symbol: "molt_binascii_a2b_hex",
         arity: 2,
         defaults: &[],
-        python_name: None,
+        python_name: Some("a2b_hex"),
     },
     IntrinsicSpec {
         name: "molt_binascii_unhexlify",
         symbol: "molt_binascii_a2b_hex",
         arity: 2,
         defaults: &[],
-        python_name: None,
+        python_name: Some("unhexlify"),
     },
     IntrinsicSpec {
         name: "molt_binascii_b2a_hex",
@@ -4989,14 +4989,14 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         symbol: "molt_binascii_a2b_uu",
         arity: 2,
         defaults: &[],
-        python_name: None,
+        python_name: Some("a2b_uu"),
     },
     IntrinsicSpec {
         name: "molt_binascii_b2a_uu",
         symbol: "molt_binascii_b2a_uu",
         arity: 2,
         defaults: &[],
-        python_name: None,
+        python_name: Some("b2a_uu"),
     },
     IntrinsicSpec {
         name: "molt_binascii_crc32",

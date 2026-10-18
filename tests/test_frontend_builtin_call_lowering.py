@@ -2516,15 +2516,16 @@ def test_function_task_definition_requires_complete_typed_layout(
 
 
 @pytest.mark.parametrize(
-    ("declaration", "symbol"),
+    ("declaration", "symbol", "arity"),
     [
-        ("molt_operator_inv", "molt_operator_invert"),
-        ("molt_binascii_hexlify", "molt_binascii_b2a_hex"),
-        ("molt_binascii_unhexlify", "molt_binascii_a2b_hex"),
+        ("molt_operator_inv", "molt_operator_invert", 1),
+        ("molt_binascii_hexlify", "molt_binascii_b2a_hex", 1),
+        # unhexlify also takes binascii.Error, the class it raises.
+        ("molt_binascii_unhexlify", "molt_binascii_a2b_hex", 2),
     ],
 )
 def test_intrinsic_alias_preserves_declaration_and_canonical_executable(
-    declaration: str, symbol: str
+    declaration: str, symbol: str, arity: int
 ) -> None:
     gen = SimpleTIRGenerator(module_name="intrinsic_alias_probe")
     gen.visit(
@@ -2541,7 +2542,7 @@ def test_intrinsic_alias_preserves_declaration_and_canonical_executable(
         if op["kind"] == "builtin_func" and op.get("builtin_name") == declaration
     ]
     assert callable_op["s_value"] == symbol
-    assert callable_op["value"] == 1
+    assert callable_op["value"] == arity
     (name_op,) = [op for op in ops if op.get("out") == callable_op["args"][0]]
     assert name_op["kind"] == "const_str"
     assert name_op["s_value"] == declaration
