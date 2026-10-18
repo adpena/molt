@@ -27,6 +27,81 @@ def _writes(source: str, package: str | None = "pkg.sub") -> set[tuple]:
     }
 
 
+def test_admitted_namespace_syntax_qualifies_package_target_and_tree(monkeypatch):
+    from molt.compiler_analysis import python_namespace_writes as syntax
+    from molt.compiler_analysis.python_source_keys import _PythonAstDigestAdmission
+
+    source = "from . import target\ndef callback():\n    target.flag = 1\n"
+    tree = ast.parse(source)
+    admission = _PythonAstDigestAdmission(tree)
+    collected = []
+    original = syntax._NamespaceWriteCollector.collect
+
+    def collect(collector):
+        collected.append(collector.tree)
+        return original(collector)
+
+    monkeypatch.setattr(syntax._NamespaceWriteCollector, "collect", collect)
+    for minor in (12, 13, 14, 15):
+        options = dict(target_python=(3, minor), ast_digest_admission=admission)
+        first = python_namespace_summary(tree, package="left", **options)
+        assert python_namespace_summary(tree, package="left", **options) is first
+        second = python_namespace_summary(tree, package="right", **options)
+        assert {write.module for write in first.foreign_writes} == {"left.target"}
+        assert {write.module for write in second.foreign_writes} == {"right.target"}
+    assert len(collected) == 8
+    with pytest.raises(ValueError, match="different tree"):
+        python_namespace_summary(ast.parse(source), ast_digest_admission=admission)
+    assert len(collected) == 8
+
+    # Mutable callers have no admission: their next query must see the edit.
+    tree.body[1].body[0].targets[0].attr = "changed"
+    fresh = python_namespace_summary(tree, package="left")
+    assert {write.name for write in fresh.foreign_writes} == {"changed"}
+    generation = _PythonAstDigestAdmission(tree)
+    assert (
+        python_namespace_summary(tree, package="left", ast_digest_admission=generation)
+        == fresh
+    )
+
+
+@pytest.mark.parametrize("admitted", [False, True])
+def test_namespace_syntax_uses_cpython_private_bindings(monkeypatch, admitted):
+    import sys
+    from types import ModuleType
+
+    from molt.compiler_analysis.python_source_keys import _PythonAstDigestAdmission
+
+    target = ModuleType("private_namespace_target")
+    monkeypatch.setitem(sys.modules, target.__name__, target)
+    source = (
+        "import private_namespace_target as target\n"
+        "class _Writer:\n"
+        "    target.__attribute = 1\n"
+        "    def callback(self):\n"
+        "        global __own\n"
+        "        __own = 2\n"
+        "        target.__attribute = 3\n"
+        "        setattr(target, '__literal', 4)\n"
+    )
+    namespace = {}
+    exec(compile(source, "<private-namespace-oracle>", "exec"), namespace)
+    namespace["_Writer"]().callback()
+    written = set(vars(target)) - {
+        "__name__",
+        "__doc__",
+        "__package__",
+        "__loader__",
+        "__spec__",
+    }
+    own = set(namespace) - {"__builtins__", "target", "_Writer"}
+    tree = ast.parse(source)
+    admission = _PythonAstDigestAdmission(tree) if admitted else None
+    summary = python_namespace_summary(tree, ast_digest_admission=admission)
+    assert {write.name for write in summary.foreign_writes} == written
+    assert summary.own_names == own
+
+
 def test_foreign_writer_owners_match_real_definition_execution(monkeypatch) -> None:
     import sys
     from types import ModuleType

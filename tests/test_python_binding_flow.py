@@ -2333,10 +2333,10 @@ def test_concurrent_contexts_share_one_single_flight_core(
     entered, release = Event(), Event()
     analyze = flow._Analyzer.analyze
 
-    def blocked(self, tree):
+    def blocked(self, tree, *, ast_digest_admission=None):
         entered.set()
         assert release.wait(5)
-        return analyze(self, tree)
+        return analyze(self, tree, ast_digest_admission=ast_digest_admission)
 
     monkeypatch.setattr(flow._Analyzer, "analyze", blocked)
     source = "__package__ = 'pkg'\nfrom . import child\n"

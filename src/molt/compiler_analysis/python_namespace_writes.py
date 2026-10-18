@@ -25,7 +25,10 @@ import ast
 from dataclasses import dataclass
 from typing import Final, Literal, NamedTuple, TypeAlias, cast, get_args
 
-from molt.python_private_names import python_import_binding
+from molt.python_private_names import (
+    python_import_binding,
+    resolve_python_private_names,
+)
 from molt.compiler_analysis.python_builtin_shapes import builtin_method_writes_receiver
 from molt.compiler_analysis.python_lexical_scope import (
     LexicalDefinitionNode,
@@ -36,6 +39,7 @@ from molt.compiler_analysis.python_lexical_scope import (
 )
 from molt.compiler_analysis.python_source_keys import (
     PythonSourceKey,
+    _PythonAstDigestAdmission,
     decode_python_source_key,
     python_node_source_key,
 )
@@ -45,7 +49,7 @@ from molt.compiler_analysis.python_value_identity import (
 from molt.target_python import _DEFAULT_TARGET_PYTHON_VERSION
 
 # Persisted summaries carry this; bump it when the recognized syntax changes.
-SUMMARY_SCHEMA: Final = 3
+SUMMARY_SCHEMA: Final = 4
 
 PythonNamespaceWriteConstruct: TypeAlias = Literal[
     # ``module.name = value``, ``del module.name``, ``module.name += value``
@@ -214,20 +218,56 @@ def python_namespace_summary(
     *,
     package: str | None = None,
     target_python: tuple[int, int] = _DEFAULT_TARGET_PYTHON_VERSION.feature_version,
+    ast_digest_admission: _PythonAstDigestAdmission | None = None,
 ) -> PythonNamespaceSummary:
     """Summarize ``tree``; ``package`` resolves its relative imports.
 
     Without ``package`` a relative import binds no module reference. The own
-    part of the summary never depends on it.
+    part of the summary never depends on it. An existing read-only AST admission
+    owns syntax facts across binding policies and graph scans. Mutable callers
+    without that admission recompute; no tree or digest is captured for them.
     """
+    if ast_digest_admission is not None:
+        ast_digest_admission.resolved_private_tree(tree)
+    else:
+        resolve_python_private_names(tree)
+    return _resolved_python_namespace_summary(
+        tree,
+        package=package,
+        target_python=target_python,
+        ast_digest_admission=ast_digest_admission,
+    )
 
+
+def _resolved_python_namespace_summary(
+    tree: ast.Module,
+    *,
+    package: str | None = None,
+    target_python: tuple[int, int] = _DEFAULT_TARGET_PYTHON_VERSION.feature_version,
+    ast_digest_admission: _PythonAstDigestAdmission | None = None,
+) -> PythonNamespaceSummary:
+    """The syntax projection for an already resolved analysis tree.
+
+    Binding analysis and captured host-source snapshots own private-name
+    resolution before reaching here. Do not normalize them a second time or
+    require a new AST digest just to query syntax. The public entry above
+    normalizes arbitrary caller trees through that same canonical authority.
+    """
+    context = (target_python, package)
+    if ast_digest_admission is not None:
+        cached = ast_digest_admission.namespace_summaries.get(context)
+        if cached is not None:
+            return cached
     collector = _NamespaceWriteCollector(tree, package, target_python)
     collector.collect()
-    return PythonNamespaceSummary(
+    summary = PythonNamespaceSummary(
         None if collector.own_reflection_line else frozenset(collector.own_names),
         tuple(sorted(collector.writes.values(), key=_source_order)),
         collector.own_reflection_line,
     )
+    if ast_digest_admission is not None:
+        ast_digest_admission.namespace_summaries[context] = summary
+    return summary
 
 
 def _source_order(write: PythonNamespaceWrite) -> tuple[int, str, str, str]:

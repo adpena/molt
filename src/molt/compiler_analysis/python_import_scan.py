@@ -1892,6 +1892,7 @@ def _collect_imports_for_graph(
                 tree,
                 package=python_package_name(module_name or "", is_package=is_package),
                 target_python=target_python.feature_version,
+                ast_digest_admission=ast_digest_admission,
             )
             if source_owner is None and isinstance(tree, ast.Module)
             else None

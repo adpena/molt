@@ -16,6 +16,7 @@ from collections.abc import Mapping
 if TYPE_CHECKING:
     from molt.compiler_analysis.python_imports import SourceAllExports
     from molt.compiler_analysis.python_namespace_graph import PythonNamespacePremise
+    from molt.compiler_analysis.python_namespace_writes import PythonNamespaceSummary
     from molt.target_python import TargetPythonVersion
 
 
@@ -264,6 +265,10 @@ class _PythonAstDigestAdmission:
 
     module_all_exports: dict[
         tuple[TargetPythonVersion, PythonNamespacePremise | None], SourceAllExports
+    ] = field(default_factory=dict, init=False, repr=False, compare=False)
+
+    namespace_summaries: dict[
+        tuple[tuple[int, int], str | None], PythonNamespaceSummary
     ] = field(default_factory=dict, init=False, repr=False, compare=False)
 
     _private_names_resolved: bool = field(

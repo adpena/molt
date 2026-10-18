@@ -125,6 +125,24 @@ receiver behavior.
    It summarizes the own names its deferred code rebinds
    (`None` on dynamic own reflection) and its named writes to other modules' namespaces, as
    `(receiver spelling, name, construct, line, execution owner)`. It is conservative by spelling.
+   The existing read-only AST admission owns these syntax facts by target language
+   version and relative-import package. Binding-core policies, graph premises,
+   activated bodies and arguments do not change syntax. Graph and binding queries
+   therefore share that source generation's summaries; intrinsic classification
+   consumes the full scan's summary directly. Unadmitted mutable trees recompute.
+   Canonical private-name resolution precedes publication, so a class's
+   `target.__member` and `global __name` retain CPython's mangled bindings while
+   literal strings passed to `setattr` retain their exact spelling. Summary schema
+   4 rejects records from before this normalization. This uses the admitted AST's
+   existing lifetime, adds no global or persistent cache, and adds no runtime work
+   to compiled programs. Already resolved binding and host-source trees query
+   the same internal projection without repeating private-name normalization or
+   acquiring an otherwise unused AST digest. A cold normalized query costs one syntax traversal; a repeated
+   admitted query costs one context lookup, with no hash, I/O or process launch.
+   This follows LLVM's [analysis ownership and invalidation guidance](https://llvm.org/docs/NewPassManager.html#using-analyses):
+   repeatedly computing an outer-unit analysis from inner-unit requests can make
+   compile time quadratic. Molt's source generation is the owner here; a new or
+   mutable AST cannot reuse an old generation's facts.
 2. **The binding flow takes a premise.** `PythonBindingFlowPolicy.foreign_namespace_writes` lists the
    names other graph code writes into this module (`None`, the default, means any name);
    `callback_member_writes` lists the canonical members code in the graph writes (default: all). With a
