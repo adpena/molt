@@ -1285,7 +1285,7 @@ def test_shared_string_storage_exercises_both_real_backends(changed: str) -> Non
         if path.is_file() and path.name.startswith("re_") and path.suffix == ".py"
     )
     assert selected == expected
-    assert "tests/differential/stdlib/re_bytes_admission.py" in selected
+    assert "tests/differential/stdlib/re_parity.py" in selected
     assert "tests/differential/stdlib/re_*.py" in selectors
 
 

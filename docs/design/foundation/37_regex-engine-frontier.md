@@ -108,9 +108,20 @@ development side; emitted programs pay only for their required matching machiner
   scanning, assertion atomicity, replacement/split semantics and error behavior
   across text/bytes, native/WASM, supported Python versions and runtime profiles.
   Existing public differential carriers and pure Rust vectors own the first
-  continuation/capture family. Every existing `re_*.py` carrier automatically joins
-  the owning native/WASM cohort; the complete CPython regex corpus and adversarial
-  grammar-generated cases remain broader acceptance.
+  continuation/capture family. The canonical `re_parity.py` program groups matching,
+  flags, captures, scanning, substitution, imports and buffer custody by contract.
+  It retains the 27 former carriers' scenario inputs and 200 assertions, with
+  byte-exact CPython stdout after grouping. Observable subject classes stay at module
+  scope, and raw multiline patterns retain their exact token bytes. The suspicious
+  nested-set warning retains its category, message and compile operation; its source
+  filename and line follow the consolidated file. Broader stderr/source-location
+  conformance remains an acceptance obligation.
+
+  One executable per target owns this semantic family; storage and codec consumers
+  keep their distinct programs. This cuts the owning cohort from 58 to six product
+  builds without deleting scenarios or adding a test dispatcher. Future regex
+  carriers still join through the canonical filename selector. Full CPython regex
+  corpus and adversarial grammar-generated cases remain broader acceptance.
 * Provide bounded regular execution and bounded memory without weakening match
   priority or captures. Thompson/Pike execution, bounded backtracking and prefilters
   require separate semantic proofs over the same program. Nullable-loop captures
@@ -145,6 +156,13 @@ development side; emitted programs pay only for their required matching machiner
   earn their dependency, code-size and compile-time cost in each target/profile.
 
 ## Primary precedents and decisions
+
+[CPython 3.12.15 `test_re.py`](https://github.com/python/cpython/blob/v3.12.15/Lib/test/test_re.py)
+groups regex scenarios in one semantic suite. Molt follows that grouping while
+using its existing differential runner and independent CPython execution. Test
+compilation and linking are development costs; ordinary binaries acquire no
+validation machinery. Compiled conformance and the actual build-phase timings
+must qualify the grouped carrier; a reference-only preservation check cannot.
 
 [CPython 3.12.15 `sre_lib.h`](https://github.com/python/cpython/blob/v3.12.15/Modules/_sre/sre_lib.h)
 provides the reference for explicit contexts, ordered retries, mark restoration,

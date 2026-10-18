@@ -8,7 +8,7 @@ type ExpectedMatch<'a> = (Span, &'a [Option<Span>], Option<u32>);
 type CpythonCase<'a> = (&'a str, &'a str, &'a str, Option<ExpectedMatch<'a>>);
 
 /// Literal observations retained from CPython 3.12.15, 3.13.12 and 3.14.4t in
-/// re_backtracking_edge.py/re_fullmatch_finditer.py. CPython sre_lib.h MARK
+/// re_parity.py continuation/scanner groups. CPython sre_lib.h MARK
 /// closing and LASTMARK_RESTORE own lastindex; SUCCESS owns fullmatch and
 /// must_advance. These are execution oracles, independent of instruction shape.
 fn assert_cpython_case(

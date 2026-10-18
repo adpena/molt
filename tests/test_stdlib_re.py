@@ -399,7 +399,8 @@ def test_capture_read_reuses_sre_admission_error_policy(source_re, failure_type)
     actual = observe(source_re)
     assert actual[:3] == expected[:3]
     # The facade fixture's host memoryview() asks FULL_RO. The actual target
-    # SIMPLE flags and lease lifetime are owned by re_bytes_admission.py.
+    # SIMPLE flags and lease lifetime are owned by re_parity.py's
+    # test_subject_admission_and_export_custody semantic group.
     assert len(actual[3]) == len(expected[3])
 
 
