@@ -489,13 +489,11 @@ pub extern "C" fn molt_string_split_field_ord_at_bounds(
             if i < 0 || i >= len {
                 return raise_exception::<_>(_py, "IndexError", "string index out of range");
             }
-            let Some(code) = unsafe { molt_stdlib_text::wtf8::from_validated_bytes(field) }
-                .code_points()
-                .nth(i as usize)
+            let Some(code) = molt_runtime_core::text_storage::code_points(field).nth(i as usize)
             else {
                 return raise_exception::<_>(_py, "IndexError", "string index out of range");
             };
-            MoltObject::from_int(code.to_u32() as i64).bits()
+            MoltObject::from_int(code as i64).bits()
         }
     })
 }

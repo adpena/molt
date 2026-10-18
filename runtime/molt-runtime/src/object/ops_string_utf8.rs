@@ -6,7 +6,6 @@ use crate::object::utf8_cache::{
 };
 use crate::*;
 use memchr::memmem;
-use molt_stdlib_text::wtf8;
 use std::sync::Arc;
 
 use super::bytes_count_impl;
@@ -354,11 +353,9 @@ pub(crate) fn wtf8_step(bytes: &[u8], cursor: usize, from_right: bool) -> Option
     let code = if bytes[start].is_ascii() {
         u32::from(bytes[start])
     } else {
-        unsafe { wtf8::from_validated_bytes(&bytes[start..]) }
-            .code_points()
+        molt_runtime_core::text_storage::code_points(&bytes[start..])
             .next()
             .unwrap()
-            .to_u32()
     };
     let next = if from_right {
         start

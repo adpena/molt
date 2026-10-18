@@ -141,10 +141,7 @@ fn ascii_escape(bytes: &[u8]) -> String {
     // Copy the all-ASCII prefix in bulk
     out.push_str(std::str::from_utf8(&bytes[..first_non_ascii]).expect("ASCII prefix"));
     // Process remaining characters
-    for cp in unsafe { molt_stdlib_text::wtf8::from_validated_bytes(&bytes[first_non_ascii..]) }
-        .code_points()
-    {
-        let code = cp.to_u32();
+    for code in molt_runtime_core::text_storage::code_points(&bytes[first_non_ascii..]) {
         if code < 128 {
             out.push(code as u8 as char);
         } else {

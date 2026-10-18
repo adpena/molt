@@ -227,7 +227,7 @@ pub(crate) fn path_from_bits(_py: &PyToken<'_>, file_bits: u64) -> Result<std::p
     path_from_bits_with_flavor(_py, file_bits).map(|(path, _flavor)| path)
 }
 
-/// Python text is stored as WTF-8; OS strings use the selected filesystem
+/// Python text uses UTF-8 surrogatepass; OS strings use the selected filesystem
 /// codec on POSIX and native wide-character storage on Windows.
 pub(crate) fn os_string_from_text(
     py: &PyToken<'_>,
@@ -237,9 +237,17 @@ pub(crate) fn os_string_from_text(
     #[cfg(windows)]
     {
         use std::os::windows::ffi::OsStringExt;
-        let wide: Vec<u16> = unsafe { molt_stdlib_text::wtf8::from_validated_bytes(text) }
-            .to_ill_formed_utf16()
-            .collect();
+        let points = molt_runtime_core::text_storage::code_points(text);
+        let mut wide = Vec::with_capacity(points.size_hint().0);
+        for code in points {
+            if code <= 0xffff {
+                wide.push(code as u16);
+            } else {
+                let scalar = code - 0x10000;
+                wide.push(0xd800 | (scalar >> 10) as u16);
+                wide.push(0xdc00 | (scalar & 0x3ff) as u16);
+            }
+        }
         let _ = (py, owner);
         Ok(std::ffi::OsString::from_wide(&wide))
     }
@@ -825,15 +833,9 @@ fn glob1_text(
         names
             .retain(|name| molt_runtime_platform::fnmatch::fnmatch_match_bytes_impl(name, pattern));
     } else {
-        let pattern: Vec<u32> = unsafe { molt_stdlib_text::wtf8::from_validated_bytes(pattern) }
-            .code_points()
-            .map(|point| point.to_u32())
-            .collect();
+        let pattern: Vec<u32> = molt_runtime_core::text_storage::code_points(pattern).collect();
         names.retain(|name| {
-            let name: Vec<u32> = unsafe { molt_stdlib_text::wtf8::from_validated_bytes(name) }
-                .code_points()
-                .map(|point| point.to_u32())
-                .collect();
+            let name: Vec<u32> = molt_runtime_core::text_storage::code_points(name).collect();
             molt_runtime_platform::fnmatch::fnmatch_match_units(&name, &pattern)
         });
     }

@@ -9,9 +9,7 @@ fn text(parts: &[&[u8]]) -> Vec<u8> {
     parts.concat()
 }
 fn text_len(bytes: &[u8]) -> usize {
-    unsafe { molt_stdlib_text::wtf8::from_validated_bytes(bytes) }
-        .code_points()
-        .count()
+    molt_runtime_core::text_storage::code_points(bytes).count()
 }
 
 // ─── helpers ────────────────────────────────────────────────────────────────
