@@ -61,6 +61,27 @@ retain the historical repair evidence without treating it as release acceptance.
 
 ## Active integration
 
+The current compiler-cost work reuses the cross-project lowering-cache repair
+(HF-327) and one shared fast-profile Cargo cohort for the native-callable ABI
+family. The remaining import-graph work belongs to HF-285: a retained 32-module
+probe requested 1,633 distinct semantic scan records, including owner scans
+revisited under revised namespace premises. Its unchanged replay accepted every
+record and wrote none. Read-only replays of those same keys took 86 ms in the
+existing store, so the earlier 2.89-second read phase does not establish a
+persistent SQLite bottleneck. Bounded ingestion batching improved a separate
+cold-write experiment but did not improve warm reads or establish better writer
+tails; it is not an integrated optimization. Reduce proven repeated semantic
+work before introducing another cache or storage protocol. These costs are
+development/compiler work and add nothing to emitted programs.
+
+The bytes-regex consumer migration in HF-322 is bounded by
+[the regex authority](../design/foundation/37_regex-engine-frontier.md).
+Owned patterns, incremental scanner state and correct buffer custody do not
+qualify the existing backtracker's complexity, recursion-limit behavior,
+Unicode tables or missing atomic/possessive semantics. Those remain security,
+correctness and performance exit obligations under HF-329; the historical
+two-tier engine design is not an implemented or accepted release capability.
+
 Local landing policy merges plain pytest targets into one parallel invocation;
 selector-bearing gates retain their declared scope. The driver and policy share
 one test-path/node-ID validator, including root containment. Generated batches
@@ -1135,6 +1156,7 @@ none is accepted as release debt or as a reason to weaken the declared matrix.
 | HF-314 | Four Cargo features carry live code that no proof cell builds: `free-threaded` (molt-runtime, molt-backend, molt-backend-native, molt-codegen-abi), `polly`, `vfs_bundle_tar` and molt-lang-cpython-abi's `simd`. A change can break any of them unnoticed. | HF-281 feature census, 2026-10-17; `cargo check -p molt-runtime --features free-threaded` passes today. | Wire each into a cell that builds and tests it (free-threaded matches the project's GIL-less direction), or measure it and delete it. |
 | HF-322 | Base64 decode normalization erases subtype protocols and exception context. The two Base64 parsers disagree with CPython padding/ignored-input rules; native errors also miss the exported binascii class. Python Base32/Base16 error sites have different context and mutable-binding authority from C primitives. | Pinned CPython source and independent 3.12.13 oracle: the shared parser matches 76,766 generated strict/permissive cases. Bounded alternating mechanism measurements cover valid, padded, line-folded and ignored input. Actual WASM execution exposed shared memoryview admission, integer byte-codec defaults, regex bytes-pattern support and Clinic exception-replacement defects; native Cargo compilation succeeded but artifact input coverage refused ambiguous dep-info. These consumer families remain part of the open qualification, rather than weakening the CPython oracle. | Complete current 3.12–3.14 facade/primitive/ABI/fixture migration: canonical source owns generic protocols and actual Python failure operations, native success specialization declines without a pending algorithm error, one shared Base64 state machine owns C primitive parsing, existing runtime exception ownership publishes actual binascii classes. Run actual native/WASM differential and the owning runtime/ABI proofs before closing. Python 3.15 intake remains V1-35. |
 | HF-323 | Five split-runtime WASM tests expose host-call argument double release, obsolete profile assertions, escaped safetensors bytes and a driver compiled outside its package. | Source integration preserves transferred FunctionIR parameter custody across Node, browser host and browser embed; shared host invocation owns conversion cleanup and only the exported frame owns submitted arguments. Schema/profile, frontend and host-lifecycle controls pass on Darwin arm64. | Execute all five actual compiled regressions after the combined runtime source freeze, including retained arguments/owned results, u64 unpack, binary input, profile JSON and the package-module Falcon driver. All live driver build consumers use the module entry. |
+| HF-329 | The shared regex matcher retains recursive backtracking and returns no match when its recursion ceiling is exceeded. Owned Pattern/scanner state and bytes admission do not establish bounded matching complexity, CPython Unicode tables or atomic/possessive semantics. | Live `regex/matcher.rs` retains the depth-limit `None` path; [the regex design](../design/foundation/37_regex-engine-frontier.md) distinguishes this implementation from its unimplemented engine frontier. Current consumer work does not qualify these failure and performance modes. | Complete one coherent regex engine authority with explicit admitted semantics, correct failure behavior and measured complexity, preserving CPython matching priority and captures across text/bytes and native/WASM. Prove adversarial matching, long-input behavior, Unicode/version cells and the required syntax before release; do not classify implementation gaps as a smaller verified subset or close this row through the HF-322 consumer repair. |
 
 
 

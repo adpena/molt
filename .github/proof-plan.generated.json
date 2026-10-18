@@ -369,7 +369,7 @@
     "tests/tools/test_win_job_contract.py",
     "tests/tools/test_windows_process_api.py"
   ],
-  "authority_sha256": "7956bdc66596d87db2e675727ed2d51c8cf960e251f18b2fcd00225395860ba5",
+  "authority_sha256": "e07953ab1955e0a04e10140849f2a9c38beead360b1b735eb3afda11a8e54205",
   "cargo_environment_policy": {
     "incident_command": "cargo metadata --locked --format-version 1",
     "incident_commit": "20b046b79bd4ca64a8c859f737f6e330377bcc4e",
@@ -5550,6 +5550,7 @@
         "tests/test_statistics_private_module_surface.py",
         "tests/test_stdlib_base64.py",
         "tests/test_stdlib_binascii.py",
+        "tests/test_stdlib_re.py",
         "tests/test_stdlib_importlib_machinery.py",
         "tests/test_stdlib_inspect_signature_binding.py",
         "tests/test_stdlib_package_bootstrap_surface.py",
@@ -5918,6 +5919,7 @@
         "tests/test_statistics_private_module_surface.py",
         "tests/test_stdlib_base64.py",
         "tests/test_stdlib_binascii.py",
+        "tests/test_stdlib_re.py",
         "tests/test_stdlib_importlib_machinery.py",
         "tests/test_stdlib_inspect_signature_binding.py",
         "tests/test_stdlib_package_bootstrap_surface.py",
@@ -8640,6 +8642,8 @@
       "local.runtime-lib.0": "python tools/run_runtime_test_gate.py --profile release-output --build-timeout-seconds 6300 --child-timeout-seconds 120 --parallel-threads 8",
       "local.runtime-profile-schema-authority.0": "python tools/gen_runtime_profile_schema.py --check",
       "local.runtime-profile-schema-authority.pytest": "python -m pytest -q -n 4 tests/test_gen_runtime_profile_schema.py tests/test_runtime_profile_schema.py",
+      "local.runtime-regex.0": "cargo test --locked --profile dev-fast -p molt-runtime-regex --lib",
+      "local.runtime-regex.pytest": "python -m pytest -q -n 4 tests/test_stdlib_re.py",
       "local.runtime-vfs.0": "cargo clippy --locked -p molt-runtime-vfs --all-targets --all-features -- -D warnings",
       "local.runtime-vfs.1": "cargo test --locked -p molt-runtime-vfs --all-features --no-fail-fast",
       "local.runtime-vfs.pytest": "python -m pytest -q -n 4 tests/test_browser_vfs.py",
@@ -10318,6 +10322,32 @@
       },
       {
         "command_ids": [
+          "local.runtime-regex.0",
+          "local.runtime-regex.pytest"
+        ],
+        "description": "Typed text/bytes regex parser and matcher: execute the shared pure engine controls and facade contracts.",
+        "gates": [
+          "cargo test --locked --profile dev-fast -p molt-runtime-regex --lib"
+        ],
+        "globs": [
+          "runtime/molt-runtime-regex/**/*.rs",
+          "runtime/molt-runtime-regex/Cargo.toml",
+          "runtime/molt-runtime/src/regex_bridge.rs",
+          "src/molt/stdlib/re/**/*.py",
+          "tests/test_stdlib_re.py"
+        ],
+        "name": "runtime-regex",
+        "pytest": [
+          "tests/test_stdlib_re.py"
+        ],
+        "toolchains": [
+          "python",
+          "rustc",
+          "cargo"
+        ]
+      },
+      {
+        "command_ids": [
           "local.stringprep-leaf.0"
         ],
         "description": "StringPrep Rust leaf crate: build health for extracted runtime code.",
@@ -10975,6 +11005,18 @@
       "local.runtime-profile-schema-authority.pytest": [
         "python",
         "rustfmt"
+      ],
+      "local.runtime-regex.0": [
+        "python",
+        "rustc",
+        "cargo",
+        "git"
+      ],
+      "local.runtime-regex.pytest": [
+        "python",
+        "rustc",
+        "cargo",
+        "git"
       ],
       "local.runtime-vfs.0": [
         "python",
