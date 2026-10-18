@@ -1942,11 +1942,53 @@ def _validate_rust_variant(section: str, idx: int, value: object) -> str:
     return value
 
 
+# Accepted sections belong to this validator. Derived projections are accepted
+# only for revalidation and are discarded/recomputed from their source sections.
+MANIFEST_FIELDS = frozenset(
+    {
+        "callable_table_publication",
+        "const_op_policy",
+        "container_runtime_selector",
+        "external_native_link_import",
+        "import",
+        "link_allowed_import",
+        "lir_runtime_call",
+        "non_runtime_callable_intrinsic",
+        "numeric_runtime_selector",
+        "op_loop_runtime_call",
+        "op_loop_runtime_call_group",
+        "output_export_policy",
+        "pure_skip_prefix",
+        "reserved_runtime_callable",
+        "runtime_export_policy",
+        "static_type",
+        "strip_import_prefix_rule",
+        "strip_import_rule",
+        "table_layout",
+        "wasm_bulk_memory_op",
+        "witness_frontier",
+    }
+)
+DERIVED_MANIFEST_FIELDS = frozenset(
+    {
+        "runtime_import",
+        "runtime_callable_abi",
+        "runtime_raw_abi",
+        "runtime_host_export_signature",
+    }
+)
+
+
 def validate_loaded_manifest(
     data: dict,
     *,
     reject_manual_runtime_features: bool = False,
 ) -> dict:
+    unknown_fields = data.keys() - MANIFEST_FIELDS - DERIVED_MANIFEST_FIELDS
+    if unknown_fields:
+        raise WasmAbiManifestError(f"unknown manifest fields: {sorted(unknown_fields)}")
+    for field in DERIVED_MANIFEST_FIELDS:
+        data.pop(field, None)
     table_layout = data.get("table_layout")
     if not isinstance(table_layout, dict):
         raise WasmAbiManifestError("manifest must define [table_layout]")
@@ -2610,58 +2652,6 @@ def validate_loaded_manifest(
         rust_exports,
     )
 
-    fallback_entries = data.get("runtime_import_fallback", [])
-    if not isinstance(fallback_entries, list):
-        raise WasmAbiManifestError("runtime_import_fallback must be a list of tables")
-    seen_fallback_imports: set[str] = set()
-    for idx, entry in enumerate(fallback_entries):
-        if not isinstance(entry, dict):
-            raise WasmAbiManifestError(
-                f"runtime_import_fallback entry {idx} must be a table"
-            )
-        import_name = entry.get("import")
-        if not isinstance(import_name, str) or not import_name:
-            raise WasmAbiManifestError(
-                f"runtime_import_fallback entry {idx} has invalid import"
-            )
-        if import_name in seen_fallback_imports:
-            raise WasmAbiManifestError(
-                f"duplicate runtime import fallback {import_name!r}"
-            )
-        if import_name not in seen_imports:
-            raise WasmAbiManifestError(
-                f"runtime import fallback {import_name!r} is not a known import"
-            )
-        seen_fallback_imports.add(import_name)
-        strategy = entry.get("strategy")
-        if strategy not in {"call_bind_ic", "direct_export"}:
-            raise WasmAbiManifestError(
-                f"runtime import fallback {import_name!r} has invalid strategy "
-                f"{strategy!r}"
-            )
-        call_arity = entry.get("call_arity")
-        if strategy == "call_bind_ic":
-            if not isinstance(call_arity, int) or call_arity < 0:
-                raise WasmAbiManifestError(
-                    f"runtime import fallback {import_name!r} must define "
-                    "non-negative call_arity for call_bind_ic"
-                )
-        elif call_arity is not None:
-            raise WasmAbiManifestError(
-                f"runtime import fallback {import_name!r} cannot define "
-                "call_arity for direct_export"
-            )
-        exports = _validate_string_list(
-            "runtime_import_fallback",
-            "exports",
-            entry.get("exports"),
-        )
-        for export_name in exports:
-            if not export_name.startswith("molt_"):
-                raise WasmAbiManifestError(
-                    f"runtime import fallback {import_name!r} export "
-                    f"{export_name!r} must start with 'molt_'"
-                )
     link_allowed = data.get("link_allowed_import", [])
     if not isinstance(link_allowed, list):
         raise WasmAbiManifestError("link_allowed_import must be a list of tables")

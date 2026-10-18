@@ -7,7 +7,6 @@ from molt._wasm_abi_generated import (
     WASM_CALL_INDIRECT_IMPORTS,
     WASM_EXTERNAL_NATIVE_LINK_IMPORT_PRIMITIVE_CLASSES,
     WASM_DEFAULT_APP_TABLE_BASE,
-    WASM_RUNTIME_IMPORT_FALLBACK_SPECS,
     WASM_RESERVED_RUNTIME_CALLABLE_BASE,
     WASM_RESERVED_RUNTIME_CALLABLES,
     WASM_RESERVED_RUNTIME_CALLABLE_TRAMPOLINE_ABI_BY_RUNTIME,
@@ -32,9 +31,7 @@ __all__ = (
     "_generate_split_wrangler_jsonc",
     "_runtime_export_name_for_import_from_manifest",
     "_runtime_import_name_for_export_from_manifest",
-    "_runtime_import_canonical_names_from_manifest",
     "_runtime_import_export_names_from_manifest",
-    "_runtime_import_fallbacks_from_manifest",
     "_runtime_import_result_kinds_from_manifest",
     "_runtime_import_signatures_from_manifest",
     "_split_runtime_browser_abi_from_manifest",
@@ -160,17 +157,6 @@ def _runtime_import_export_names_from_manifest(
     return export_names
 
 
-def _runtime_import_canonical_names_from_manifest(
-    import_names: Iterable[str],
-) -> dict[str, str]:
-    canonical_names: dict[str, str] = {}
-    for import_name in sorted(set(import_names)):
-        canonical_name = wasm_split_runtime_canonical_import_name(import_name)
-        if canonical_name != import_name:
-            canonical_names[import_name] = canonical_name
-    return canonical_names
-
-
 def _runtime_export_signature_for_cpython_abi_link_import(
     import_name: str,
     runtime_export_signatures: Mapping[str, Mapping[str, object]] | None,
@@ -208,17 +194,6 @@ def _runtime_import_result_kind_from_manifest(import_name: str) -> str | None:
     return wasm_import_result_kind(manifest_import_name)
 
 
-def _runtime_import_fallbacks_from_manifest() -> dict[str, dict[str, object]]:
-    return {
-        import_name: {
-            "strategy": strategy,
-            "call_arity": call_arity,
-            "exports": list(exports),
-        }
-        for import_name, strategy, call_arity, exports in WASM_RUNTIME_IMPORT_FALLBACK_SPECS
-    }
-
-
 def _reserved_runtime_callables_from_manifest() -> list[dict[str, object]]:
     return [
         {
@@ -239,7 +214,6 @@ def _split_runtime_browser_abi_from_manifest() -> dict[str, object]:
     return {
         "call_indirect_imports": list(WASM_CALL_INDIRECT_IMPORTS),
         "reserved_runtime_callables": _reserved_runtime_callables_from_manifest(),
-        "runtime_import_fallbacks": _runtime_import_fallbacks_from_manifest(),
         "table_layout": {
             "default_app_table_base": WASM_DEFAULT_APP_TABLE_BASE,
             "reserved_runtime_callable_base": WASM_RESERVED_RUNTIME_CALLABLE_BASE,
@@ -287,12 +261,6 @@ def _generate_split_worker_js(
     runtime_import_result_kinds_json = json.dumps(
         runtime_import_result_kinds, sort_keys=True
     )
-    runtime_import_canonical_names = _runtime_import_canonical_names_from_manifest(
-        runtime_import_names,
-    )
-    runtime_import_canonical_names_json = json.dumps(
-        runtime_import_canonical_names, sort_keys=True
-    )
     runtime_import_signatures_json = json.dumps(
         runtime_import_signatures, sort_keys=True
     )
@@ -303,9 +271,6 @@ def _generate_split_worker_js(
         dict(runtime_export_signatures or {}), sort_keys=True
     )
     call_indirect_imports_json = json.dumps(list(WASM_CALL_INDIRECT_IMPORTS))
-    runtime_import_fallbacks_json = json.dumps(
-        _runtime_import_fallbacks_from_manifest(), sort_keys=True
-    )
     reserved_runtime_callables_json = json.dumps(
         _reserved_runtime_callables_from_manifest(),
         sort_keys=True,
@@ -336,13 +301,14 @@ import runtimeModule from "./molt_runtime.wasm";
 import appModule from "./app.wasm";
 
 const {
+  bindRuntimeFunctionImports,
   callableTableFromModule,
   callableTableSignature,
   runtimeExceptionPending,
   verifyCallableTableEntries,
 } = globalThis.MoltWasmLoaderBridge;
 const runtimeCallableTable = callableTableFromModule(runtimeModule, "runtime wasm");
-const { createRuntimeLifetime, boxRuntimeInt, withRuntimeOwnedValues, combinedError } = globalThis.MoltRuntimeLifecycle;
+const { createRuntimeLifetime, combinedError } = globalThis.MoltRuntimeLifecycle;
 const appCallableTable = callableTableFromModule(appModule, "app wasm");
 
 class ProcExit { constructor(code) { this.code = code; } }
@@ -422,9 +388,7 @@ export default {
     const runtimeImportResultKinds = __MOLT_RUNTIME_IMPORT_RESULT_KINDS__;
     const runtimeImportSignatures = __MOLT_RUNTIME_IMPORT_SIGNATURES__;
     const runtimeImportExportNames = __MOLT_RUNTIME_IMPORT_EXPORT_NAMES__;
-    const runtimeImportCanonicalNames = __MOLT_RUNTIME_IMPORT_CANONICAL_NAMES__;
     const runtimeExportSignatures = __MOLT_RUNTIME_EXPORT_SIGNATURES__;
-    const runtimeImportFallbacks = __MOLT_RUNTIME_IMPORT_FALLBACKS__;
     const callIndirectImportNames = __MOLT_CALL_INDIRECT_IMPORTS__;
     const reservedRuntimeCallables = __MOLT_RESERVED_RUNTIME_CALLABLES__;
     const DEFAULT_WASM_APP_TABLE_BASE = __MOLT_DEFAULT_WASM_APP_TABLE_BASE__;
@@ -1082,62 +1046,15 @@ export default {
       );
     };
 
-    const buildRuntimeImports = (module, runtimeInstance) => {
-      const imports = {};
-      const callBindIc = runtimeInstance.exports.molt_call_bind_ic;
-      const callargsNew = runtimeInstance.exports.molt_callargs_new;
-      const callargsPushPos = runtimeInstance.exports.molt_callargs_push_pos;
-      const makeCallBindFallback = (arity) => {
-        if (
-          typeof callBindIc !== "function" ||
-          typeof callargsNew !== "function" ||
-          typeof callargsPushPos !== "function"
-        ) {
-          return null;
-        }
-        return (methodBits, ...argBits) => {
-          return withRuntimeOwnedValues(runtimeInstance, [arity, 0],
-            value => boxRuntimeInt(runtimeInstance, value), ([arityBits, zeroBits]) => {
-              const builderBits = callargsNew(arityBits, zeroBits);
-              for (const argBitsValue of argBits) {
-                callargsPushPos(builderBits, argBitsValue);
-              }
-              return callBindIc(zeroBits, methodBits, builderBits);
-            }, true);
-        };
-      };
-      const runtimeFallback = (importName) => {
-        const manifestImportName = runtimeImportCanonicalNames[importName] || importName;
-        const fallback = runtimeImportFallbacks[manifestImportName] || null;
-        if (!fallback || !Array.isArray(fallback.exports) || fallback.exports.length === 0) {
-          return null;
-        }
-        if (fallback.strategy === "call_bind_ic") {
-          if (typeof fallback.call_arity !== "number") return null;
-          return makeCallBindFallback(fallback.call_arity);
-        }
-        if (fallback.strategy === "direct_export" && fallback.exports.length === 1) {
-          const candidate = runtimeInstance.exports[fallback.exports[0]];
-          return typeof candidate === "function" ? candidate : null;
-        }
-        return null;
-      };
-      for (const entry of WebAssembly.Module.imports(module)) {
-        if (entry.module !== "molt_runtime") continue;
-        const exportName = runtimeImportExportNames[entry.name] || null;
-        let fn = exportName ? runtimeInstance.exports[exportName] : null;
+    const buildRuntimeImports = (module, runtimeInstance) => bindRuntimeFunctionImports(
+      WebAssembly.Module.imports(module), runtimeInstance.exports,
+      name => runtimeImportExportNames[name] || null,
+      (entry, fn) => {
         const exportSignature = runtimeExportSignatures[entry.name] || null;
         const signature = runtimeImportSignatures[entry.name] || exportSignature;
         const resultKind = runtimeImportResultKinds[entry.name] || (signature ? signature.result : null);
-        let callSignature = runtimeExportSignatures[entry.name] || signature;
-        if (typeof fn !== "function") {
-          fn = runtimeFallback(entry.name);
-          callSignature = signature;
-        }
-        if (typeof fn !== "function") {
-          throw new Error(`molt_runtime missing export ${exportName || entry.name} for import ${entry.name}`);
-        }
-        imports[entry.name] = (...args) => {
+        const callSignature = runtimeExportSignatures[entry.name] || signature;
+        return (...args) => {
           const callArgs = callSignature && Array.isArray(callSignature.params)
             ? args.map((value, index) => normalizeValueForKind(value, callSignature.params[index] || null))
             : args;
@@ -1152,9 +1069,8 @@ export default {
           }
           return normalizeImportResult(out, resultKind);
         };
-      }
-      return imports;
-    };
+      },
+    );
 
     const hostEnv = {
       memory: wasmMemory,
@@ -1416,16 +1332,8 @@ export default {
             runtime_import_export_names_json,
         )
         .replace(
-            "__MOLT_RUNTIME_IMPORT_CANONICAL_NAMES__",
-            runtime_import_canonical_names_json,
-        )
-        .replace(
             "__MOLT_RUNTIME_EXPORT_SIGNATURES__",
             runtime_export_signatures_json,
-        )
-        .replace(
-            "__MOLT_RUNTIME_IMPORT_FALLBACKS__",
-            runtime_import_fallbacks_json,
         )
         .replace(
             "__MOLT_CALL_INDIRECT_IMPORTS__",

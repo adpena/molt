@@ -96,7 +96,6 @@ from molt.cli.wasm import (
     _generate_split_worker_js,
     _generate_split_wrangler_jsonc,
     _runtime_export_name_for_import_from_manifest,
-    _runtime_import_canonical_names_from_manifest,
     _runtime_import_export_names_from_manifest,
     _runtime_import_name_for_export_from_manifest,
     _runtime_import_result_kinds_from_manifest,
@@ -308,7 +307,6 @@ def _app_export_manifest(
 class _RuntimeImportAbiManifest(TypedDict):
     module: str
     names: list[str]
-    canonical_names: dict[str, str]
     export_names: dict[str, str]
     signatures: dict[str, dict[str, object]]
     runtime_export_signatures: dict[str, WasmExportSignature]
@@ -382,7 +380,6 @@ def _runtime_import_abi_manifest(
     return {
         "module": "molt_runtime",
         "names": sorted(names),
-        "canonical_names": _runtime_import_canonical_names_from_manifest(names),
         "export_names": _runtime_import_export_names_from_manifest(names),
         "signatures": _runtime_import_signatures_from_manifest(
             names,

@@ -1,5 +1,7 @@
 # Canonical WASM ABI/import manifest.
 # Generated consumers are produced by tools/gen_wasm_abi.py.
+# Runtime imports require their exact declared exports and signatures; another
+# function with the same machine type is not a substitute for its result contract.
 # Edit this file, then run: python tools/gen_wasm_abi.py --write
 
 # Static function type table. Import `type` indices below, exception tags, and
@@ -6984,51 +6986,6 @@ host_exports = [
   "molt_type_ready",
   "molt_type_tag_of_bits",
 ]
-
-[[runtime_import_fallback]]
-import = "fast_list_append"
-strategy = "call_bind_ic"
-call_arity = 1
-exports = [
-  "molt_call_bind_ic",
-  "molt_callargs_new",
-  "molt_callargs_push_pos",
-]
-
-[[runtime_import_fallback]]
-import = "fast_str_join"
-strategy = "call_bind_ic"
-call_arity = 1
-exports = [
-  "molt_call_bind_ic",
-  "molt_callargs_new",
-  "molt_callargs_push_pos",
-]
-
-[[runtime_import_fallback]]
-import = "fast_dict_get"
-strategy = "call_bind_ic"
-call_arity = 2
-exports = [
-  "molt_call_bind_ic",
-  "molt_callargs_new",
-  "molt_callargs_push_pos",
-]
-
-[[runtime_import_fallback]]
-import = "dict_setitem"
-strategy = "direct_export"
-exports = ["molt_dict_set"]
-
-[[runtime_import_fallback]]
-import = "dict_getitem"
-strategy = "direct_export"
-exports = ["molt_dict_getitem_borrowed"]
-
-[[runtime_import_fallback]]
-import = "tuple_getitem"
-strategy = "direct_export"
-exports = ["molt_tuple_getitem_borrowed"]
 
 # Linker allowlist for undefined host symbols accepted by wasm-ld when linking
 # app/runtime WASM artifacts. Generated into tools/wasm_allowed_imports.txt.

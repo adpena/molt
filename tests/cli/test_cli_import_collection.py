@@ -24982,7 +24982,7 @@ def test_runtime_wasm_exports_satisfy_required_surface(
     )
 
 
-def test_runtime_wasm_exports_satisfy_browser_runtime_fallback_surface(
+def test_runtime_wasm_exports_require_canonical_browser_surface(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -25032,6 +25032,26 @@ def test_runtime_wasm_exports_satisfy_browser_runtime_fallback_surface(
         "molt_resource_on_allocate",
         "molt_resource_on_free",
     }
+    missing = required - {"molt_resource_on_allocate", "molt_resource_on_free"}
+    assert not RUNTIME_WASM_VALIDATION._runtime_wasm_exports_satisfy(wasm, required)
+    assert (
+        RUNTIME_WASM_VALIDATION._runtime_wasm_missing_exports(wasm, required) == missing
+    )
+    # Adding the exact six producers admits the same runtime image. The old
+    # substitutes remain present, so presence alone cannot explain the result.
+    canonical_payload = bytearray(_encode_varuint(len(exports) + len(missing)))
+    for index, name in enumerate((*exports, *sorted(missing))):
+        encoded = name.encode("utf-8")
+        canonical_payload.extend(_encode_varuint(len(encoded)))
+        canonical_payload.extend(encoded)
+        canonical_payload.append(0x00)
+        canonical_payload.extend(_encode_varuint(index))
+    wasm.write_bytes(
+        b"\0asm\x01\0\0\0"
+        + b"\x07"
+        + _encode_varuint(len(canonical_payload))
+        + canonical_payload
+    )
     assert RUNTIME_WASM_VALIDATION._runtime_wasm_exports_satisfy(wasm, required)
     assert (
         RUNTIME_WASM_VALIDATION._runtime_wasm_missing_exports(wasm, required) == set()

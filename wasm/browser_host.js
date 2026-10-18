@@ -141,6 +141,7 @@ const traceBrowserWasi =
   process.env.MOLT_WASM_TRACE_WASI === '1';
 
 const {
+  bindRuntimeFunctionImports,
   callIsolateImportExport,
   callReservedRuntimeCallable,
   callRuntimeByteSpanOutImport,
@@ -1273,125 +1274,72 @@ const buildEnv = (memory, table, callIndirect, logFn, overrides) => {
 };
 
 const buildRuntimeImports = (outputImports, runtimeInstance, options = {}) => {
-  const imports = {};
   const runtimeImportAbi = options.runtimeImportAbi || {};
   const manifestNames = new Set(runtimeImportAbi.names || []);
   const signatures = runtimeImportAbi.signatures || {};
   const runtimeExportNames = runtimeImportAbi.export_names || {};
   const runtimeExportSignatures = runtimeImportAbi.runtime_export_signatures || {};
   const resultKinds = runtimeImportAbi.result_kinds || {};
-  const runtimeImportFallbacks = options.runtimeImportFallbacks || {};
-  const runtimeExport = (name) => {
-    const fn = runtimeInstance.exports[name];
-    return typeof fn === 'function' ? fn : null;
-  };
-  const makeCallBindFallback = (entryName, fallback) => {
-    if (!Number.isInteger(fallback.call_arity)) {
-      throw new Error(`manifest fallback for ${entryName} missing call_arity`);
-    }
-    const exports = Array.isArray(fallback.exports) ? fallback.exports : [];
-    const [callBindName, callargsNewName, callargsPushPosName] = exports;
-    const callBindIc = runtimeExport(callBindName);
-    const callargsNew = runtimeExport(callargsNewName);
-    const callargsPushPos = runtimeExport(callargsPushPosName);
-    if (!callBindIc || !callargsNew || !callargsPushPos) {
-      throw new Error(`runtime missing fallback exports for ${entryName}`);
-    }
-    return (methodBits, ...argBits) => {
-      return withRuntimeOwnedValues(runtimeInstance, [fallback.call_arity, 0],
-        value => boxRuntimeInt(runtimeInstance, value), ([arityBits, zeroBits]) => {
-          const builderBits = callargsNew(arityBits, zeroBits);
-          for (const argBitsValue of argBits) {
-            callargsPushPos(builderBits, argBitsValue);
-          }
-          return callBindIc(zeroBits, methodBits, builderBits);
-        }, true);
-    };
-  };
-  const resolveFallback = (entryName) => {
-    const fallback = runtimeImportFallbacks[entryName] || null;
-    if (!fallback) {
-      return null;
-    }
-    if (fallback.strategy === 'call_bind_ic') {
-      return makeCallBindFallback(entryName, fallback);
-    }
-    if (fallback.strategy === 'direct_export') {
-      const exports = Array.isArray(fallback.exports) ? fallback.exports : [];
-      if (exports.length !== 1) {
-        throw new Error(`manifest fallback for ${entryName} must name one export`);
+  return bindRuntimeFunctionImports(
+    outputImports.funcImports, runtimeInstance.exports,
+    name => runtimeExportNames[name] || null,
+    (entry, fn) => {
+      if (!manifestNames.has(entry.name)) {
+        throw new Error(`app runtime import ${entry.name} missing from manifest`);
       }
-      return runtimeExport(exports[0]);
-    }
-    throw new Error(`unsupported manifest fallback strategy for ${entryName}: ${fallback.strategy}`);
-  };
-  for (const entry of outputImports.funcImports) {
-    if (entry.module !== 'molt_runtime') continue;
-    if (!manifestNames.has(entry.name)) {
-      throw new Error(`app runtime import ${entry.name} missing from manifest`);
-    }
-    const exportSignature = runtimeExportSignatures[entry.name] || null;
-    const signature = signatures[entry.name] || exportSignature;
-    if (!signature || !Array.isArray(signature.params)) {
-      throw new Error(`app runtime import ${entry.name} missing manifest signature`);
-    }
-    const resultKind = resultKinds[entry.name] || signature.result || null;
-    if (!resultKind) {
-      throw new Error(`app runtime import ${entry.name} missing manifest result kind`);
-    }
-    const exportName = runtimeExportNames[entry.name] || null;
-    imports[entry.name] = (...args) => {
-      let fn = exportName ? runtimeExport(exportName) : null;
-      let callSignature = runtimeExportSignatures[entry.name] || signature;
-      if (!fn) {
-        fn = resolveFallback(entry.name);
-        callSignature = signature;
+      const exportSignature = runtimeExportSignatures[entry.name] || null;
+      const signature = signatures[entry.name] || exportSignature;
+      if (!signature || !Array.isArray(signature.params)) {
+        throw new Error(`app runtime import ${entry.name} missing manifest signature`);
       }
-      if (typeof fn !== 'function') {
-        throw new Error(`molt_runtime missing export ${exportName || entry.name} for import ${entry.name}`);
+      const resultKind = resultKinds[entry.name] || signature.result || null;
+      if (!resultKind) {
+        throw new Error(`app runtime import ${entry.name} missing manifest result kind`);
       }
-      const callArgs = callSignature && Array.isArray(callSignature.params)
-        ? args.map((value, index) => normalizeValueForKind(value, callSignature.params[index] || null))
-        : args;
-      const runtimeMemory =
-        typeof options.runtimeMemoryProvider === 'function'
-          ? options.runtimeMemoryProvider()
-          : null;
-      const appMemory =
-        typeof options.appMemoryProvider === 'function' ? options.appMemoryProvider() : null;
-      if (runtimeImportByteSpanOutNames.has(entry.name) && appMemory) {
-        const bridgedResult = callRuntimeByteSpanOutImport({
-          runtime: runtimeInstance,
-          runtimeMemory,
-          appMemory,
-          fn,
-          args: callArgs,
-          name: entry.name,
-          readBytesFromMemory,
-          allocRuntimeTempBytes,
-          freeRuntimeTempBytes,
-          writeU64ToMemory,
-        });
-        return normalizeValueForKind(bridgedResult, resultKind);
-      }
-      if (runtimeImportObjectArrayArgNames.has(entry.name) && appMemory) {
-        const bridgedResult = callRuntimeObjectArrayArgImport({
-          runtime: runtimeInstance,
-          runtimeMemory,
-          appMemory,
-          fn,
-          args: callArgs,
-          name: entry.name,
-          readBytesFromMemory,
-          allocRuntimeTempBytes,
-          freeRuntimeTempBytes,
-        });
-        return normalizeValueForKind(bridgedResult, resultKind);
-      }
-      return normalizeValueForKind(fn(...callArgs), resultKind);
-    };
-  }
-  return imports;
+      const callSignature = runtimeExportSignatures[entry.name] || signature;
+      return (...args) => {
+        const callArgs = callSignature && Array.isArray(callSignature.params)
+          ? args.map((value, index) => normalizeValueForKind(value, callSignature.params[index] || null))
+          : args;
+        const runtimeMemory =
+          typeof options.runtimeMemoryProvider === 'function'
+            ? options.runtimeMemoryProvider()
+            : null;
+        const appMemory =
+          typeof options.appMemoryProvider === 'function' ? options.appMemoryProvider() : null;
+        if (runtimeImportByteSpanOutNames.has(entry.name) && appMemory) {
+          const bridgedResult = callRuntimeByteSpanOutImport({
+            runtime: runtimeInstance,
+            runtimeMemory,
+            appMemory,
+            fn,
+            args: callArgs,
+            name: entry.name,
+            readBytesFromMemory,
+            allocRuntimeTempBytes,
+            freeRuntimeTempBytes,
+            writeU64ToMemory,
+          });
+          return normalizeValueForKind(bridgedResult, resultKind);
+        }
+        if (runtimeImportObjectArrayArgNames.has(entry.name) && appMemory) {
+          const bridgedResult = callRuntimeObjectArrayArgImport({
+            runtime: runtimeInstance,
+            runtimeMemory,
+            appMemory,
+            fn,
+            args: callArgs,
+            name: entry.name,
+            readBytesFromMemory,
+            allocRuntimeTempBytes,
+            freeRuntimeTempBytes,
+          });
+          return normalizeValueForKind(bridgedResult, resultKind);
+        }
+        return normalizeValueForKind(fn(...callArgs), resultKind);
+      };
+    },
+  );
 };
 
 const createBrowserDbHost = (state, options) => {
@@ -3801,8 +3749,6 @@ export const loadMoltWasm = async (options = {}) => {
 
     const runtimeCallableLayout = runtimeCallableTableLayout(runtimeManifest);
     const activeReservedRuntimeCallables = runtimeCallableLayout.reservedRuntimeCallables;
-    const runtimeImportFallbacks =
-      runtimeManifest?.abi?.browser_embed?.runtime_import_fallbacks || {};
     const wasmBytes = await tryFetch(wasmUrl);
     if (!wasmBytes) {
       throw new Error(`Failed to load wasm at ${wasmUrl}`);
@@ -3940,36 +3886,6 @@ export const loadMoltWasm = async (options = {}) => {
       'molt_isolate_import',
       'output',
     );
-    const outputImportObject = {
-      molt_runtime: buildRuntimeImports(outputImports, {
-        exports: new Proxy(
-          {},
-          {
-            get(_target, exportName) {
-              if (!state.runtimeInstance) {
-                throw new Error(`molt_runtime not initialized (${String(exportName)})`);
-              }
-              return state.runtimeInstance.exports[exportName];
-            },
-          },
-        ),
-      }, {
-        runtimeImportAbi,
-        runtimeImportFallbacks,
-        runtimeMemoryProvider: () => state.memory,
-        appMemoryProvider: () => appState.memory,
-      }),
-      env: {
-        memory,
-        __indirect_function_table: table,
-      },
-      wasi_snapshot_preview1: buildOwnedWasiStub(appState),
-    };
-    installWasmTagImports(outputImportObject, outputImports);
-    const outputModule = await WebAssembly.instantiate(wasmBytes, outputImportObject);
-    outputInstance = outputModule.instance;
-    appState.memory = outputInstance.exports.molt_memory || outputInstance.exports.memory || memory;
-
     const runtimeImportObject = {
       env,
       wasi_snapshot_preview1: buildOwnedWasiStub(state),
@@ -3985,6 +3901,23 @@ export const loadMoltWasm = async (options = {}) => {
         setTableBase(BigInt(detectedWasmTableBase));
       }
     }
+    const outputImportObject = {
+      molt_runtime: buildRuntimeImports(outputImports, runtimeInstance, {
+        runtimeImportAbi,
+        runtimeMemoryProvider: () => state.memory,
+        appMemoryProvider: () => appState.memory,
+      }),
+      env: {
+        memory,
+        __indirect_function_table: table,
+      },
+      wasi_snapshot_preview1: buildOwnedWasiStub(appState),
+    };
+    installWasmTagImports(outputImportObject, outputImports);
+    const outputModule = await WebAssembly.instantiate(wasmBytes, outputImportObject);
+    outputInstance = outputModule.instance;
+    appState.memory = outputInstance.exports.molt_memory || outputInstance.exports.memory || memory;
+
     verifyCallableTableEntries(runtimeCallableTable, table, 'runtime wasm');
     verifyCallableTableEntries(appCallableTable, table, 'app wasm');
     return {

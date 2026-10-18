@@ -121,6 +121,176 @@ def _minimal_wasm_module() -> bytes:
     return attested_empty_callable_table(b"\x00asm\x01\x00\x00\x00")
 
 
+def test_all_hosts_bind_exact_runtime_exports_once(tmp_path: Path) -> None:
+    """Real Wasm calls distinguish canonical producers from old substitutes."""
+    if shutil.which("node") is None:
+        pytest.skip("node is required for runtime import binding")
+    from molt.capability_manifest import CapabilityManifest
+    from molt.cli.wasm import _generate_split_worker_js
+
+    root = Path(__file__).resolve().parents[1]
+    names = {
+        "fast_list_append": 2,
+        "fast_str_join": 2,
+        "fast_dict_get": 3,
+        "dict_setitem": 3,
+        "dict_getitem": 2,
+        "tuple_getitem": 2,
+    }
+    types = [_wasm_func_type([0x7E] * arity, [0x7E]) for arity in names.values()]
+    declarations = _wasm_vec([_wasm_u32(i) for i in range(len(names))])
+    runtime_bodies = []
+    app_bodies = []
+    for index, arity in enumerate(names.values()):
+        body = b"\x00" + _wasm_i64_const(101 + index) + b"\x0b"
+        runtime_bodies.append(_wasm_u32(len(body)) + body)
+        args = b"".join(b"\x20" + _wasm_u32(i) for i in range(arity))
+        body = b"\x00" + args + b"\x10" + _wasm_u32(index) + b"\x0b"
+        app_bodies.append(_wasm_u32(len(body)) + body)
+    header = b"\x00asm\x01\x00\x00\x00" + _wasm_section(1, _wasm_vec(types))
+    app = (
+        header
+        + _wasm_section(
+            2,
+            _wasm_vec(
+                [
+                    _wasm_import_func("molt_runtime", name, index)
+                    for index, name in enumerate(names)
+                ]
+            ),
+        )
+        + _wasm_section(3, declarations)
+        + _wasm_section(
+            7,
+            _wasm_vec(
+                [
+                    _wasm_export(name, 0, len(names) + index)
+                    for index, name in enumerate(names)
+                ]
+            ),
+        )
+        + _wasm_section(10, _wasm_vec(app_bodies))
+    )
+    for filename, exports in (
+        ("exact", [f"molt_{name}" for name in names]),
+        (
+            "substitutes",
+            [
+                "molt_call_bind_ic",
+                "molt_callargs_new",
+                "molt_callargs_push_pos",
+                "molt_dict_set",
+                "molt_dict_getitem_borrowed",
+                "molt_tuple_getitem_borrowed",
+            ],
+        ),
+    ):
+        (tmp_path / f"{filename}.wasm").write_bytes(
+            header
+            + _wasm_section(3, declarations)
+            + _wasm_section(
+                7,
+                _wasm_vec([_wasm_export(name, 0, i) for i, name in enumerate(exports)]),
+            )
+            + _wasm_section(10, _wasm_vec(runtime_bodies))
+        )
+    (tmp_path / "app.wasm").write_bytes(app)
+    worker = _generate_split_worker_js(
+        resolved_capability_policy=CapabilityManifest().resolve(),
+        shared_memory_initial_pages=8,
+        shared_table_initial=16,
+        shared_table_base=None,
+        runtime_import_names=names,
+    )
+    worker_path = tmp_path / "worker.js"
+    worker_path.write_text(worker, encoding="utf-8")
+    script = tmp_path / "exact-runtime-imports.cjs"
+    script.write_text(
+        "const root = "
+        + json.dumps(str(root))
+        + ";\n"
+        + "const names = "
+        + json.dumps(names)
+        + ";\n"
+        + r"""
+const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const path = require('node:path');
+const vm = require('node:vm');
+const bridge = require(path.join(root, 'wasm/loader_bridge.js'));
+const app = new WebAssembly.Module(fs.readFileSync(path.join(__dirname, 'app.wasm')));
+const entries = WebAssembly.Module.imports(app);
+const exact = new WebAssembly.Instance(new WebAssembly.Module(
+  fs.readFileSync(path.join(__dirname, 'exact.wasm'))));
+const substitutes = new WebAssembly.Instance(new WebAssembly.Module(
+  fs.readFileSync(path.join(__dirname, 'substitutes.wasm'))));
+const exportNames = Object.fromEntries(Object.keys(names).map(name => [name, `molt_${name}`]));
+const signatures = Object.fromEntries(Object.entries(names).map(([name, arity]) =>
+  [name, { params: Array(arity).fill('i64'), result: 'i64' }]));
+const resultKinds = Object.fromEntries(Object.keys(names).map(name => [name, 'i64']));
+const abi = { names: Object.keys(names), signatures, export_names: exportNames,
+  runtime_export_signatures: signatures, result_kinds: resultKinds };
+const sources = [
+  ['node', 'wasm/run_wasm.js', 'const buildRuntimeImportDirect', 'const traceTableSlot',
+    'buildRuntimeImportDirect(runtime)'],
+  ['browser', 'wasm/browser_host.js', 'const buildRuntimeImports', 'const createBrowserDbHost',
+    'buildRuntimeImports({funcImports: entries}, runtime, {runtimeImportAbi: abi})'],
+  ['embed', 'wasm/browser_embed.js', 'const buildRuntimeImports', 'const buildMinimalWasi',
+    'buildRuntimeImports(app, runtime, {abi: {runtime_imports: abi}})'],
+  ['worker', path.join(__dirname, 'worker.js'), 'const buildRuntimeImports', 'const hostEnv',
+    'buildRuntimeImports(app, runtime)'],
+];
+for (const [host, filename, start, end, call] of sources) {
+  const text = fs.readFileSync(path.resolve(root, filename), 'utf8');
+  const source = text.slice(text.indexOf(start), text.indexOf(end, text.indexOf(start)));
+  assert(source.startsWith(start), `${host} actual binder source`);
+  let reads = 0;
+  let adapters = 0;
+  const runtime = {exports: new Proxy(exact.exports, { get(target, name) {
+    reads += 1;
+    return Reflect.get(target, name);
+  }})};
+  const context = vm.createContext({ ...bridge, WebAssembly, app, entries, runtime, abi,
+    outputImports: {funcImports: entries}, appWasmMemory: null,
+    runtimeExportNameForImport: name => exportNames[name],
+    runtimeExportImportSignature: name => signatures[name.slice(5)],
+    makeRuntimeImportAdapter: (name, fn) => { adapters += 1; return fn; },
+    runtimeImportByteSpanOutNames: new Set(), runtimeImportObjectArrayArgNames: new Set(),
+    runtimeImportExportNames: exportNames, runtimeExportSignatures: signatures,
+    runtimeImportSignatures: signatures, runtimeImportResultKinds: resultKinds,
+    normalizeImportResult: bridge.normalizeValueForKind,
+    formatDebugValue: String, traceRun: false, traceDealloc: false,
+  });
+  vm.runInContext(`${source}\nglobalThis.bind = () => ${call};`, context);
+  const imports = context.bind();
+  assert.equal(reads, 6, `${host} resolves each export once at startup`);
+  const instance = new WebAssembly.Instance(app, {molt_runtime: imports});
+  for (let repeat = 0; repeat < 3; repeat += 1) {
+    Object.entries(names).forEach(([name, arity], index) => {
+      assert.equal(instance.exports[name](...Array(arity).fill(1n)), BigInt(101 + index),
+        `${host} canonical identity for ${name}`);
+    });
+  }
+  assert.equal(reads, 6, `${host} has no per-call export resolution`);
+  if (host === 'node') assert.equal(adapters, 6, 'Node constructs adapters only at binding');
+  context.runtime = substitutes;
+  assert.throws(() => context.bind(), error => {
+    assert.match(error.message, /missing required exports/);
+    for (const name of Object.keys(names)) assert(error.message.includes(`molt_${name}`));
+    return true;
+  }, `${host} rejects all missing exports together before guest execution`);
+}
+console.log('four hosts: exact identity, startup binding, complete missing-export diagnostic');
+""",
+        encoding="utf-8",
+    )
+    run = _run_wasm_test_process(
+        ["node", str(script)], cwd=root, env=os.environ, timeout=30
+    )
+    assert run.returncode == 0, run.stderr
+    assert "four hosts: exact identity" in run.stdout
+
+
 _LIFETIME_IMPORTS = (
     "exception_pending",
     "runtime_execution_enter",
@@ -172,7 +342,6 @@ def _webgpu_embed_manifest(app_wasm: bytes, runtime_wasm: bytes) -> dict[str, ob
         "abi": {
             "browser_embed": {
                 "call_indirect_imports": ["molt_call_indirect0"],
-                "runtime_import_fallbacks": {},
                 "reserved_runtime_callables": [],
                 "table_layout": {
                     "default_app_table_base": 256,
@@ -427,7 +596,7 @@ def test_browser_host_runtime_import_bridge_requires_manifest_abi() -> None:
     assert "if (!manifestNames.has(entry.name))" in browser_host
     assert "if (!signature || !Array.isArray(signature.params))" in browser_host
     assert "if (!resultKind)" in browser_host
-    assert "fn = resolveFallback(entry.name);" in browser_host
+    assert "return bindRuntimeFunctionImports(" in browser_host
     assert "const hasFallback" not in browser_host
     assert "if (!hasManifestImport && !hasFallback)" not in browser_host
 
@@ -1213,7 +1382,7 @@ def test_browser_embed_forward_roundtrips_float32_typed_arrays(
             dispatch,
         ) in WASM_RESERVED_RUNTIME_CALLABLES
     ]
-    assert "fast_list_append" in browser_abi["runtime_import_fallbacks"]
+    assert "runtime_import_fallbacks" not in browser_abi
     runtime_imports = manifest["abi"]["runtime_imports"]
     import molt.wasm_artifact as wasm_artifact
 

@@ -23,6 +23,30 @@
   const CALLABLE_TABLE_VALUE_TYPE_FORMAT = callableTableAbi.value_type_format;
   const UTF8_DECODER = new TextDecoder('utf-8');
 
+  // Resolve the exact generated identities once, before application startup.
+  // Adaptation belongs to each host's memory/representation bridge, not to
+  // export selection. Successful binding allocates only the required table;
+  // complete missing-export diagnostics allocate only on refusal.
+  const bindRuntimeFunctionImports = (entries, runtimeExports, exportForImport, adapt) => {
+    const imports = Object.create(null);
+    let missing = null;
+    for (const entry of entries) {
+      if (entry.module !== 'molt_runtime') continue;
+      const exportName = exportForImport(entry.name);
+      const fn = exportName ? runtimeExports[exportName] : null;
+      if (typeof fn !== 'function') {
+        if (missing === null) missing = new Set();
+        missing.add(`${entry.name} -> ${exportName || '<unmapped>'}`);
+        continue;
+      }
+      imports[entry.name] = adapt(entry, fn, exportName);
+    }
+    if (missing !== null) {
+      throw new Error(`molt_runtime missing required exports: ${[...missing].sort().join(', ')}`);
+    }
+    return imports;
+  };
+
   // Canonical runtime ABI: molt_exception_pending is () -> u64 raw 0/1.
   // A missing/wrong-shaped export is never evidence of successful execution.
   const runtimeExceptionPending = (instance) => {
@@ -1295,6 +1319,7 @@
 
   return {
     CALLABLE_TABLE_SECTION_NAME,
+    bindRuntimeFunctionImports,
     callableTableFromModule,
     callableTableSignature,
     callIndirectObjectSignature,

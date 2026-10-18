@@ -2225,7 +2225,6 @@ def render_js_abi(data: dict) -> str:
     runtime_export_by_import: dict[str, str] = {
         entry["name"]: _runtime_export_name(entry) for entry in data["import"]
     }
-    runtime_import_canonical_names: dict[str, str] = {}
     external_native_link_imports = {
         entry["name"]: entry["primitive_class"]
         for entry in data.get("link_allowed_import", [])
@@ -2244,21 +2243,11 @@ def render_js_abi(data: dict) -> str:
         split_export_name = _split_runtime_external_export_name(name)
         runtime_export_by_import.setdefault(name, split_export_name)
         runtime_export_by_import.setdefault(split_export_name, split_export_name)
-        runtime_import_canonical_names.setdefault(split_export_name, name)
 
     payload = {
         "generated_by": "tools/gen_wasm_abi.py",
         "callable_table_publication": dict(data["callable_table_publication"]),
         "runtime_export_by_import": runtime_export_by_import,
-        "runtime_import_canonical_names": runtime_import_canonical_names,
-        "runtime_import_fallbacks": {
-            entry["import"]: {
-                "strategy": entry["strategy"],
-                "call_arity": entry.get("call_arity"),
-                "exports": list(entry["exports"]),
-            }
-            for entry in data.get("runtime_import_fallback", [])
-        },
         "external_native_link_imports": {
             "primitive_classes": external_native_link_imports,
             "symbol_kinds": external_native_link_import_symbol_kinds,

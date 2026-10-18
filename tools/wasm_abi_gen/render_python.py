@@ -305,23 +305,6 @@ def render_py(
         lines.append(f'        "{name}",\n')
     lines.append("    }\n")
     lines.append(")\n\n")
-    lines.append(
-        "WASM_RUNTIME_IMPORT_FALLBACK_EXPORTS: tuple[tuple[str, tuple[str, ...]], ...] = (\n"
-    )
-    for entry in data.get("runtime_import_fallback", []):
-        lines.append(f'    ("{entry["import"]}", {_py_tuple(entry["exports"])}),\n')
-    lines.append(")\n\n")
-    lines.append(
-        "WASM_RUNTIME_IMPORT_FALLBACK_SPECS: tuple[tuple[str, str, int | None, tuple[str, ...]], ...] = (\n"
-    )
-    for entry in data.get("runtime_import_fallback", []):
-        call_arity = entry.get("call_arity")
-        call_arity_repr = "None" if call_arity is None else str(call_arity)
-        lines.append(
-            f'    ("{entry["import"]}", "{entry["strategy"]}", '
-            f"{call_arity_repr}, {_py_tuple(entry['exports'])}),\n"
-        )
-    lines.append(")\n\n")
     lines.append("WASM_LINK_ALLOWED_IMPORTS: tuple[str, ...] = (\n")
     for entry in data.get("link_allowed_import", []):
         lines.append(f'    "{entry["name"]}",\n')

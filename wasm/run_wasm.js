@@ -12,6 +12,7 @@ const {
   WEBGPU_DISPATCH_HOST_IMPORT,
 } = require('./target_feature_manifest.json').constants;
 const {
+  bindRuntimeFunctionImports,
   callIsolateImportExport,
   callReservedRuntimeCallable,
   callRuntimeByteSpanOutImport,
@@ -38,9 +39,6 @@ const {
 const runtimeExportByImport = wasmAbiGenerated.runtime_export_by_import || {};
 const externalNativeLinkImports = wasmAbiGenerated.external_native_link_imports || {};
 let runtimeImportExportNames = runtimeExportByImport;
-const runtimeCanonicalByImport = wasmAbiGenerated.runtime_import_canonical_names || {};
-let runtimeImportCanonicalNames = runtimeCanonicalByImport;
-const runtimeImportFallbacks = wasmAbiGenerated.runtime_import_fallbacks || {};
 let UndiciWebSocket = null;
 try {
   ({ WebSocket: UndiciWebSocket } = require('undici'));
@@ -260,19 +258,12 @@ const initWasmAssets = (manifestPath) => {
   wasmBuffer = resolved.wasmBuffer;
   const manifestRuntimeImports = runtimeManifest?.abi?.runtime_imports || {};
   const manifestRuntimeImportExportNames = manifestRuntimeImports.export_names || null;
-  const manifestRuntimeImportCanonicalNames = manifestRuntimeImports.canonical_names || null;
   runtimeImportExportNames = manifestRuntimeImportExportNames
     ? {
         ...runtimeExportByImport,
         ...manifestRuntimeImportExportNames,
       }
     : runtimeExportByImport;
-  runtimeImportCanonicalNames = manifestRuntimeImportCanonicalNames
-    ? {
-        ...runtimeCanonicalByImport,
-        ...manifestRuntimeImportCanonicalNames,
-      }
-    : runtimeCanonicalByImport;
   activeRuntimeCallableLayout = runtimeCallableTableLayout(runtimeManifest);
   linkedPath = resolved.linkedPath;
   linkedBuffer = resolved.linkedBuffer;
@@ -5144,65 +5135,17 @@ const makeRuntimeImportAdapter = (
   };
 };
 
-const runtimeFallbackFunction = (runtimeExports, name) => {
-  const manifestName = runtimeImportCanonicalNames[name] || name;
-  const fallback = runtimeImportFallbacks[manifestName] || null;
-  if (!fallback || !Array.isArray(fallback.exports) || fallback.exports.length === 0) {
-    return null;
-  }
-  if (fallback.strategy === 'call_bind_ic') {
-    if (!Number.isInteger(fallback.call_arity)) {
-      return null;
-    }
-    const callBindIc = runtimeExports.molt_call_bind_ic;
-    const callargsNew = runtimeExports.molt_callargs_new;
-    const callargsPushPos = runtimeExports.molt_callargs_push_pos;
-    if (typeof callBindIc !== 'function' || typeof callargsNew !== 'function' || typeof callargsPushPos !== 'function') {
-      return null;
-    }
-    // The composite receives the app's own i64 bits unconverted.
-    const fn = (methodBits, ...argBits) => {
-      const runtime = { exports: runtimeExports };
-      return withRuntimeOwnedValues(runtime, [fallback.call_arity, 0],
-        value => boxRuntimeInt(runtime, value), ([arityBits, zeroBits]) => {
-          const builderBits = callargsNew(arityBits, zeroBits);
-          for (const argBitsValue of argBits) {
-            callargsPushPos(builderBits, argBitsValue);
-          }
-          return callBindIc(zeroBits, methodBits, builderBits);
-        }, true);
-    };
-    return { fn, sig: null };
-  }
-  if (fallback.strategy === 'direct_export' && fallback.exports.length === 1) {
-    const [exportName] = fallback.exports;
-    const candidate = runtimeExports[exportName];
-    return typeof candidate === 'function'
-      ? { fn: candidate, sig: runtimeExportImportSignature(exportName) }
-      : null;
-  }
-  return null;
-};
-
-const buildRuntimeImportDirect = (runtimeInst) => {
-  const runtimeImports = {};
-  for (const entry of outputImports.funcImports) {
-    if (entry.module !== 'molt_runtime') {
-      continue;
-    }
-    const runtimeExport = runtimeExportNameForImport(entry.name);
-    const direct = runtimeExport ? runtimeInst.exports[runtimeExport] : null;
-    const resolved =
-      typeof direct === 'function'
-        ? { fn: direct, sig: runtimeExportImportSignature(runtimeExport) }
-        : runtimeFallbackFunction(runtimeInst.exports, entry.name);
-    if (!resolved) {
-      throw new Error(
-        `molt_runtime.${entry.name} missing export ${runtimeExport || entry.name}`,
-      );
-    }
-    const { fn, sig } = resolved;
-    runtimeImports[entry.name] = (...args) => {
+const buildRuntimeImportDirect = (runtimeInst) => bindRuntimeFunctionImports(
+  outputImports.funcImports,
+  runtimeInst.exports,
+  runtimeExportNameForImport,
+  (entry, fn, runtimeExport) => {
+    const adapted = makeRuntimeImportAdapter(
+      entry.name, fn, runtimeExportImportSignature(runtimeExport),
+      { appMemoryProvider: () => appWasmMemory },
+    );
+    if (!traceRun && !traceDealloc) return adapted;
+    return (...args) => {
       if (traceRun) {
         console.error(`[molt wasm] direct runtime import ${entry.name} argc=${args.length}`);
       }
@@ -5241,13 +5184,10 @@ const buildRuntimeImportDirect = (runtimeInst) => {
           console.error('[molt wasm] dealloc probe error:', err.message);
         }
       }
-      return makeRuntimeImportAdapter(entry.name, fn, sig, {
-        appMemoryProvider: () => appWasmMemory,
-      })(...args);
+      return adapted(...args);
     };
-  }
-  return runtimeImports;
-};
+  },
+);
 
 const traceTableSlot = (table, label) => {
   if (!traceRun || !traceTableSlotRaw || !table) {

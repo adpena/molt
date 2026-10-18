@@ -555,11 +555,11 @@ def test_generate_split_worker_builds_runtime_import_wrappers_from_app_surface()
         },
     )
 
-    assert "const buildRuntimeImports = (module, runtimeInstance) => {" in content
-    assert "for (const entry of WebAssembly.Module.imports(module)) {" in content
-    assert "boxRuntimeInt, withRuntimeOwnedValues" in content
-    assert "withRuntimeOwnedValues(runtimeInstance, [arity, 0]" in content
-    assert "value => boxRuntimeInt(runtimeInstance, value)" in content
+    assert (
+        "const buildRuntimeImports = (module, runtimeInstance) => bindRuntimeFunctionImports("
+        in content
+    )
+    assert "WebAssembly.Module.imports(module), runtimeInstance.exports," in content
     assert "const boxInt =" not in content
     assert "const TAG_INT =" not in content
     assert "const INT_MASK =" not in content
@@ -591,11 +591,7 @@ def test_generate_split_worker_builds_runtime_import_wrappers_from_app_surface()
         'const runtimeExportSignatures = {"function_set_builtin": {"params": ["i64"], "result": "i64"}, "string_from_bytes": {"params": ["i64", "i64", "i64"], "result": "i64"}};'
         in content
     )
-    assert "const runtimeImportFallbacks =" in content
-    assert '"fast_dict_get": {"call_arity": 2' in content
-    assert '"strategy": "call_bind_ic"' in content
-    assert '"dict_getitem": {"call_arity": null' in content
-    assert '"exports": ["molt_dict_getitem_borrowed"]' in content
+    assert "bindRuntimeFunctionImports" in content
     assert "callableTableFromModule(appModule" in content
     assert "callableTableFromModule(runtimeModule" in content
     assert "const TAG_NONE = 0x0003000000000000n;" in content
@@ -612,15 +608,13 @@ def test_generate_split_worker_builds_runtime_import_wrappers_from_app_surface()
         "const resultKind = runtimeImportResultKinds[entry.name] || (signature ? signature.result : null);"
         in content
     )
-    assert "const exportName = runtimeImportExportNames[entry.name] || null;" in content
+    assert "name => runtimeImportExportNames[name] || null," in content
     assert "exportCandidates" not in content
     assert "`molt_${entry.name}`" not in content
     assert (
-        "let callSignature = runtimeExportSignatures[entry.name] || signature;"
+        "const callSignature = runtimeExportSignatures[entry.name] || signature;"
         in content
     )
-    assert "fn = runtimeFallback(entry.name);" in content
-    assert "callSignature = signature;" in content
     assert 'entry.name === "fast_dict_get"' not in content
     assert (
         "? args.map((value, index) => normalizeValueForKind(value, callSignature.params[index] || null))"
@@ -695,11 +689,11 @@ def test_static_js_isolate_import_bridges_use_single_i64_handle() -> None:
         "const resultKind = resultKinds[entry.name] || signature.result || null;"
         in browser_embed
     )
-    assert "const exportName = runtimeExportNames[entry.name] || null;" in browser_embed
+    assert "name => runtimeExportNames[name] || null," in browser_embed
     assert "exportCandidates" not in browser_embed
     assert "`molt_${entry.name}`" not in browser_embed
     assert (
-        "let callSignature = runtimeExportSignatures[entry.name] || signature;"
+        "const callSignature = runtimeExportSignatures[entry.name] || signature;"
         in browser_embed
     )
     assert (
@@ -712,10 +706,7 @@ def test_static_js_isolate_import_bridges_use_single_i64_handle() -> None:
         "const runtimeExportByImport = wasmAbiGenerated.runtime_export_by_import || {};"
         in run_wasm
     )
-    assert (
-        "const runtimeImportFallbacks = wasmAbiGenerated.runtime_import_fallbacks || {};"
-        in run_wasm
-    )
+    assert "bindRuntimeFunctionImports," in run_wasm
     assert "let runtimeImportExportNames = runtimeExportByImport;" in run_wasm
     assert (
         "const manifestRuntimeImportExportNames = manifestRuntimeImports.export_names || null;"
@@ -736,13 +727,13 @@ def test_static_js_isolate_import_bridges_use_single_i64_handle() -> None:
     assert "runtimeLifetime(runtimeInst).execute(operation)" in run_wasm
     assert "exports?.molt_runtime_execution_enter" not in run_wasm
     assert "exports?.molt_runtime_execution_leave" not in run_wasm
-    assert "const runtimeExport = runtimeExportNameForImport(entry.name);" in run_wasm
+    assert "  runtimeExportNameForImport," in run_wasm
     # Reserved callables use the shared dispatcher; direct module imports
     # retain the name-resolution contract below. The dispatcher's argument and
     # result semantics execute in test_wasm_reserved_callable_arity.py.
     assert "return callReservedRuntimeCallable({" in run_wasm
     assert "entry: reservedRuntimeCallable," in run_wasm
-    assert ": runtimeFallbackFunction(runtimeInst.exports, entry.name);" in run_wasm
+    assert "runtimeExportImportSignature(runtimeExport)" in run_wasm
     assert "entry.name.startsWith('molt_')" not in run_wasm
     assert "`molt_${entry.name}`" not in run_wasm
     assert "`molt_${name}`" not in run_wasm
@@ -866,10 +857,7 @@ def test_static_browser_host_split_runtime_imports_are_manifest_backed() -> None
         in browser_host
     )
     assert "const resultKinds = runtimeImportAbi.result_kinds || {};" in browser_host
-    assert (
-        "const runtimeImportFallbacks = options.runtimeImportFallbacks || {};"
-        in browser_host
-    )
+    assert "return bindRuntimeFunctionImports(" in browser_host
     assert "app runtime import ${entry.name} missing from manifest" in browser_host
     assert "app runtime import ${entry.name} missing manifest signature" in browser_host
     assert (
@@ -886,21 +874,21 @@ def test_static_browser_host_split_runtime_imports_are_manifest_backed() -> None
         "const resultKind = resultKinds[entry.name] || signature.result || null;"
         in browser_host
     )
-    assert "const exportName = runtimeExportNames[entry.name] || null;" in browser_host
+    assert "name => runtimeExportNames[name] || null" in browser_host
     assert "exportCandidates" not in browser_host
     assert "`molt_${entry.name}`" not in browser_host
     assert (
-        "let callSignature = runtimeExportSignatures[entry.name] || signature;"
+        "const callSignature = runtimeExportSignatures[entry.name] || signature;"
         in browser_host
     )
-    assert "fn = resolveFallback(entry.name);" in browser_host
+    assert "return bindRuntimeFunctionImports(" in browser_host
     assert (
         "normalizeValueForKind(value, callSignature.params[index] || null)"
         in browser_host
     )
     assert "return normalizeValueForKind(fn(...callArgs), resultKind);" in browser_host
     assert "runtimeImportAbi," in browser_host
-    assert "runtimeImportFallbacks," in browser_host
+    assert "bindRuntimeFunctionImports," in browser_host
     assert "entry.name === 'fast_list_append'" not in browser_host
     assert "entry.name === 'dict_setitem'" not in browser_host
 
@@ -1126,7 +1114,6 @@ def test_cpython_abi_runtime_imports_use_runtime_export_signatures() -> None:
 
     from molt.cli.wasm import (
         _generate_split_worker_js,
-        _runtime_import_canonical_names_from_manifest,
         _runtime_import_export_names_from_manifest,
         _runtime_import_result_kinds_from_manifest,
         _runtime_import_signatures_from_manifest,
@@ -1191,9 +1178,6 @@ def test_cpython_abi_runtime_imports_use_runtime_export_signatures() -> None:
     assert _runtime_import_export_names_from_manifest({"molt_PyArg_ParseTuple"}) == {
         "molt_PyArg_ParseTuple": "molt_PyArg_ParseTuple"
     }
-    assert _runtime_import_canonical_names_from_manifest({"molt_PyArg_ParseTuple"}) == {
-        "molt_PyArg_ParseTuple": "PyArg_ParseTuple"
-    }
 
     worker_js = _generate_split_worker_js(
         resolved_capability_policy=_default_runtime_policy(),
@@ -1224,7 +1208,6 @@ def test_cpython_abi_runtime_imports_use_runtime_export_signatures() -> None:
         },
     )
     assert '"molt_PyArg_ParseTuple": "molt_PyArg_ParseTuple"' in public_worker_js
-    assert '"molt_PyArg_ParseTuple": "PyArg_ParseTuple"' in public_worker_js
     assert 'importName.startsWith("molt_")' not in public_worker_js
 
 

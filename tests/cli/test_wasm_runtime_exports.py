@@ -16,9 +16,11 @@ from molt._wasm_runtime_exports import (
     wasm_runtime_export_link_args,
     wasm_runtime_export_name_for_import,
     wasm_runtime_import_names,
+    wasm_runtime_missing_required_exports,
     wasm_runtime_shared_export_link_args,
 )
 from molt._wasm_abi_generated import (
+    WASM_RUNTIME_HOST_EXPORTS,
     wasm_runtime_export_name,
     wasm_runtime_import_name,
 )
@@ -526,27 +528,56 @@ def test_wasm_runtime_export_link_args_keeps_host_runtime_exports(
         assert f"link-arg=--export-if-defined={name}" in flags
 
 
-def test_wasm_runtime_export_link_args_expands_browser_runtime_fallback_exports() -> (
-    None
-):
-    flags = wasm_runtime_export_link_args(
-        {
-            "dict_getitem",
-            "dict_setitem",
-            "tuple_getitem",
-            "fast_dict_get",
-            "fast_list_append",
-            "fast_str_join",
-            "resource_on_allocate",
-            "resource_on_free",
-        }
+@pytest.mark.parametrize(
+    "missing_exports",
+    [
+        wasm_runtime_missing_required_exports,
+        wasm_split_runtime_missing_required_exports,
+    ],
+)
+def test_runtime_admission_requires_every_canonical_export(missing_exports) -> None:
+    required = {
+        "dict_getitem",
+        "dict_setitem",
+        "tuple_getitem",
+        "fast_dict_get",
+        "fast_list_append",
+        "fast_str_join",
+    }
+    canonical = {"molt_" + name for name in required}
+    substitutes = {
+        "molt_dict_getitem_borrowed",
+        "molt_dict_set",
+        "molt_tuple_getitem_borrowed",
+        "molt_call_bind_ic",
+        "molt_callargs_new",
+        "molt_callargs_push_pos",
+    }
+    assert missing_exports(substitutes, required) == canonical
+    assert missing_exports(substitutes | canonical, required) == set()
+    assert missing_exports(substitutes | {"molt_fast_str_join"}, required) == (
+        canonical - {"molt_fast_str_join"}
     )
-    assert "link-arg=--export-if-defined=molt_dict_getitem_borrowed" in flags
-    assert "link-arg=--export-if-defined=molt_dict_set" in flags
-    assert "link-arg=--export-if-defined=molt_tuple_getitem_borrowed" in flags
-    assert "link-arg=--export-if-defined=molt_call_bind_ic" in flags
-    assert "link-arg=--export-if-defined=molt_callargs_new" in flags
-    assert "link-arg=--export-if-defined=molt_callargs_push_pos" in flags
+
+
+def test_runtime_link_roots_keep_only_requested_and_host_exports() -> None:
+    required = {
+        "dict_getitem",
+        "dict_setitem",
+        "tuple_getitem",
+        "fast_dict_get",
+        "fast_list_append",
+        "fast_str_join",
+    }
+    flags = wasm_runtime_export_link_args(required)
+    actual = {
+        flag.split("=", 2)[-1]
+        for flag in flags
+        if flag.startswith("link-arg=--export-if-defined=")
+    }
+    assert actual == {"molt_" + name for name in required} | set(
+        WASM_RUNTIME_HOST_EXPORTS
+    )
 
 
 def test_reached_runtime_import_names_read_stdlib_intrinsics() -> None:
