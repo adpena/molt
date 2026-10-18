@@ -24,12 +24,16 @@ pytestmark = pytest.mark.usefixtures("developer_host_context")
 
 @pytest.fixture(autouse=True)
 def _isolate_synthetic_queue_repos_from_hosted_cargo_target(
+    developer_host_context: None,
     monkeypatch: pytest.MonkeyPatch,
+    tmp_path_factory: pytest.TempPathFactory,
 ) -> None:
     # Hosted CI exports its Cargo cache target; an explicit target directory
-    # rightly wins over the custody-derived one these tests assert.
+    # rightly wins over the custody-derived one these tests assert. The queue
+    # creates the derived directories, so they derive from a disposable
+    # artifact root, never the host's.
     monkeypatch.delenv("CARGO_TARGET_DIR", raising=False)
-    monkeypatch.delenv("MOLT_EXT_ROOT", raising=False)
+    monkeypatch.setenv("MOLT_EXT_ROOT", str(tmp_path_factory.mktemp("artifacts")))
 
 
 def test_molt_queue_parser_preserves_queue_args() -> None:
