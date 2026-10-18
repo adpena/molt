@@ -1038,14 +1038,19 @@ def test_lowering_cache_cannot_publish_or_serve_a_different_source_generation(
         is_package=False,
         context_digest="a" * 64,
     )
+    result = {"functions": [], "function_metadata": {}}
     module_cache._write_persisted_module_lowering(
-        tmp_path, path, result={"functions": []}, **options
+        tmp_path, path, result=result, **options
     )
     local = module_cache._module_lowering_cache_path(
         tmp_path, path, module_name="owner", is_package=False
     )
     before = local.read_bytes()
     assert json.loads(before)["source_sha256"] == lease.source_sha256
+    assert (
+        module_cache._read_persisted_module_lowering(tmp_path, path, **options)
+        == result
+    )
     if change == "same-stat":
         path.write_bytes(b"VALUE = 2\n")
         os.utime(path, ns=(metadata.st_atime_ns, metadata.st_mtime_ns))
@@ -1056,7 +1061,10 @@ def test_lowering_cache_cannot_publish_or_serve_a_different_source_generation(
     with pytest.raises(module_source.PythonSourceChangedError):
         with contextlib.suppress(OSError):
             module_cache._write_persisted_module_lowering(
-                tmp_path, path, result={"functions": [{"name": "stale"}]}, **options
+                tmp_path,
+                path,
+                result={"functions": [{"name": "stale"}], "function_metadata": {}},
+                **options,
             )
     assert local.read_bytes() == before
     with pytest.raises(module_source.PythonSourceChangedError):

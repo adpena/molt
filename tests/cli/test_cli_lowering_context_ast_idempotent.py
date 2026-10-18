@@ -212,7 +212,11 @@ def test_persisted_cache_admission_rejects_noncanonical_integer_metadata(
                 "version": MC._MODULE_LOWERING_CACHE_SCHEMA_VERSION,
                 "source_kind": "path",
                 "context_digest": "context",
-                "result": {"functions": [], "constant_metadata": raw},
+                "result": {
+                    "functions": [],
+                    "function_metadata": {},
+                    "constant_metadata": raw,
+                },
             }
             # Read actual JSON carriers, as both persisted cache tiers do.
             analysis_result = MC._validate_persisted_module_analysis_payload(
