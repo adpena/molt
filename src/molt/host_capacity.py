@@ -17,6 +17,15 @@ from typing import Any, cast
 
 _CGROUP_ROOT = Path("/sys/fs/cgroup")
 _CGROUP_MEMBERSHIP = Path("/proc/self/cgroup")
+# The memory a parent lets this process tree use: the memory guard exports
+# the tree cap it enforces.
+MEMORY_SLICE_ENV = "MOLT_HOST_MEMORY_SLICE_BYTES"
+_GIB = 1024**3
+# What the operating system and its supervisors keep of physical memory: a
+# fraction, at least the minimum and at most the maximum.
+RESERVE_FRACTION = 0.06
+RESERVE_MIN_BYTES = 1 * _GIB
+RESERVE_MAX_BYTES = 12 * _GIB
 
 
 def cpu_count(
@@ -121,8 +130,23 @@ def memory_bytes() -> tuple[int | None, int | None]:
     """Total and live available physical memory, one host snapshot.
 
     Linux bounds both by the active cgroup; macOS reads the Mach VM counters
-    vm_stat prints; Windows asks GlobalMemoryStatusEx.
+    vm_stat prints; Windows asks GlobalMemoryStatusEx. The memory slice the
+    parent exported bounds both.
     """
+    total, available = _probe_memory_bytes()
+    raw = os.environ.get(MEMORY_SLICE_ENV, "").strip()
+    if not raw:
+        return total, available
+    if not raw.isdigit() or int(raw) <= 0:
+        raise ValueError(f"{MEMORY_SLICE_ENV} must be a positive integer, got {raw!r}")
+    memory_slice = int(raw)
+    return (
+        memory_slice if total is None else min(total, memory_slice),
+        memory_slice if available is None else min(available, memory_slice),
+    )
+
+
+def _probe_memory_bytes() -> tuple[int | None, int | None]:
     if os.name == "nt":
         return _windows_memory_bytes()
     if sys.platform.startswith("linux"):
@@ -144,6 +168,15 @@ def memory_bytes() -> tuple[int | None, int | None]:
     total = int(page_size) * int(total_pages) if total_pages > 0 else None
     available = int(page_size) * int(available_pages) if available_pages > 0 else None
     return total, available
+
+
+def reserve_bytes(total_bytes: int | None) -> int:
+    """Memory no unit of work may claim on a machine with ``total_bytes``."""
+    if total_bytes is None:
+        return RESERVE_MIN_BYTES
+    return int(
+        min(RESERVE_MAX_BYTES, max(RESERVE_MIN_BYTES, total_bytes * RESERVE_FRACTION))
+    )
 
 
 def worker_count(

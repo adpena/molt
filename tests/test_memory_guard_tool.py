@@ -3339,6 +3339,36 @@ def test_adaptive_budget_clamps_large_hosts_below_rss_conversion_cap() -> None:
     assert memory_guard.max_rss_kb_from_gb(budget.max_process_rss_gb) > 0
 
 
+def test_guard_exports_its_tree_cap_as_the_memory_slice() -> None:
+    from tools.memory_guard_core.process_custody import (
+        _inject_guard_memory_contract_env,
+    )
+
+    env: dict[str, str] = {}
+    _inject_guard_memory_contract_env(
+        env,
+        max_rss_kb=4 * 1024 * 1024,
+        child_rlimit_kb=None,
+        max_total_rss_kb=10 * 1024 * 1024,
+    )
+    assert env[host_capacity.MEMORY_SLICE_ENV] == str(10 * 1024**3)
+    # A nested guard narrows its parent's slice and never widens it.
+    _inject_guard_memory_contract_env(
+        env,
+        max_rss_kb=4 * 1024 * 1024,
+        child_rlimit_kb=None,
+        max_total_rss_kb=20 * 1024 * 1024,
+    )
+    assert env[host_capacity.MEMORY_SLICE_ENV] == str(10 * 1024**3)
+    _inject_guard_memory_contract_env(
+        env,
+        max_rss_kb=4 * 1024 * 1024,
+        child_rlimit_kb=None,
+        max_total_rss_kb=6 * 1024 * 1024,
+    )
+    assert env[host_capacity.MEMORY_SLICE_ENV] == str(6 * 1024**3)
+
+
 def test_available_memory_bytes_reads_the_host_capacity_authority(
     monkeypatch,
 ) -> None:

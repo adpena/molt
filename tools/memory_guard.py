@@ -849,6 +849,7 @@ def run_guarded(
         child_env,
         max_rss_kb=max_rss_kb,
         child_rlimit_kb=child_rlimit_kb,
+        max_total_rss_kb=max_total_rss_kb,
     )
     start = time.perf_counter()
     observer_cpu_start = time.process_time()
