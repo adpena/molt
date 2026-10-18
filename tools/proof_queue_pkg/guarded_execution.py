@@ -431,7 +431,7 @@ def execute_guarded_request(request_path: Path) -> int:
         inherited_env, _tool_release_prefixes = prefer_tool_release_prefixes(
             inherited_env, envelope.get("toolchains", []), cwd=cwd
         )
-        canonical_env = dict(command_identity._CANONICAL_EXECUTION_ENV)
+        canonical_env = dict(command_identity.CANONICAL_EXECUTION_ENV)
         if "node" in envelope.get("toolchains", []):
             canonical_env["NODE_OPTIONS"] = execution_custody.node_bootstrap_options()
         inherited_env.update(canonical_env)
