@@ -166,7 +166,7 @@ def _excluded_read_roots(arguments: Mapping[str, Any]) -> tuple[Path, ...]:
     binary is projected separately as one product file."""
     from molt import dx, memory_guard_paths, temporary_artifacts
     from molt.cli import runtime_paths
-    from molt.cli.build_output_layout import _default_build_root
+    from molt.cli.build_output_layout import _default_build_base
     from molt.cli.project_roots import _find_project_root
     from molt.source_root import compiler_source_root
 
@@ -197,8 +197,8 @@ def _excluded_read_roots(arguments: Mapping[str, Any]) -> tuple[Path, ...]:
     if out_dir:
         roots.append(Path(out_dir).expanduser() / ".molt_build")
     else:
-        # Every output's default artifact root shares this parent.
-        roots.append(_default_build_root("entry").parent)
+        # Every build's default artifacts root lies under this base.
+        roots.append(_default_build_base())
     return tuple(roots)
 
 
@@ -267,7 +267,21 @@ def _with_early_cutoff(build_function: Callable[..., int]) -> Callable[..., int]
     return build
 
 
+def _in_build_scope(build_function: Callable[..., int]) -> Callable[..., int]:
+    """Hold the build's claim on its artifacts root for exactly this build."""
+
+    @functools.wraps(build_function)
+    def build(*args: Any, **kwargs: Any) -> int:
+        from molt.cli.build_output_layout import build_scope
+
+        with build_scope():
+            return build_function(*args, **kwargs)
+
+    return build
+
+
 @_with_early_cutoff
+@_in_build_scope
 def build(
     file_path: str | None,
     target: Target = "native",

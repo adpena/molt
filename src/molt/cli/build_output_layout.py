@@ -1,9 +1,14 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from contextlib import ExitStack, contextmanager
+from contextvars import ContextVar
+from dataclasses import dataclass, field
 import functools
+import hashlib
+import json
 import os
-from collections.abc import Mapping
+import sys
+from collections.abc import Generator, Mapping
 from pathlib import Path
 import re
 
@@ -101,13 +106,88 @@ def _wasm_runtime_root_from_env(project_root: Path, env: Mapping[str, str]) -> P
     return project_cargo_target_dir(project_root, env) / WASM_RUNTIME_TARGET_DIR
 
 
-@functools.lru_cache(maxsize=256)
-def _default_build_root_cached(output_base: str, home_root_str: str) -> Path:
-    return Path(home_root_str) / "build" / _safe_output_base(output_base)
+@functools.lru_cache(maxsize=8)
+def _default_build_base_cached(home_root_str: str) -> Path:
+    return Path(home_root_str) / "build"
 
 
-def _default_build_root(output_base: str) -> Path:
-    return _default_build_root_cached(output_base, os.fspath(_default_molt_home()))
+def _default_build_base() -> Path:
+    """Where builds without ``--out-dir`` keep their intermediates."""
+    return _default_build_base_cached(os.fspath(_default_molt_home()))
+
+
+def artifacts_identity(
+    *, project_root: Path, source_path: Path, target: str, profile: str
+) -> str:
+    """Name one build configuration's intermediates.
+
+    Two builds share an artifacts root only when they build the same entry of
+    the same project for the same target and profile, as Bazel keys an output
+    base by its workspace. An entry's file name alone is shared by unrelated
+    programs, which then linked each other's objects.
+    """
+    material = json.dumps(
+        {
+            "profile": profile,
+            "project": os.fspath(project_root.resolve()),
+            "source": os.fspath(source_path.resolve()),
+            "target": target,
+        },
+        sort_keys=True,
+    )
+    return hashlib.sha256(material.encode("utf-8")).hexdigest()[:16]
+
+
+@dataclass
+class _BuildScope:
+    stack: ExitStack
+    claimed: set[Path] = field(default_factory=set)
+
+
+_BUILD_SCOPE: ContextVar[_BuildScope | None] = ContextVar(
+    "molt_build_scope", default=None
+)
+
+
+@contextmanager
+def build_scope() -> Generator[None]:
+    """Hold one build's claims on its artifacts roots until the build returns."""
+    with ExitStack() as stack:
+        token = _BUILD_SCOPE.set(_BuildScope(stack))
+        try:
+            yield
+        finally:
+            _BUILD_SCOPE.reset(token)
+
+
+def _claim_artifacts_root(root: Path) -> None:
+    """Serialize concurrent builds of one configuration, as Cargo locks its
+    build directory, so no build reads another's half-written objects."""
+    scope = _BUILD_SCOPE.get()
+    if scope is None:
+        raise RuntimeError("an artifacts root is claimed only inside build_scope()")
+    if root in scope.claimed:
+        return
+    from molt.file_locks import (
+        _acquire_file_lock,
+        _release_file_lock,
+        _try_acquire_file_lock,
+    )
+
+    lock_path = root / ".molt-build.lock"
+    handle = _try_acquire_file_lock(lock_path)
+    if handle is None:
+        print(
+            f"molt: waiting for another build of this program to release {root}",
+            file=sys.stderr,
+        )
+        handle = _acquire_file_lock(
+            lock_path,
+            timeout_s=None,
+            timeout_message=f"artifacts root stayed claimed: {root}",
+        )
+    scope.claimed.add(root)
+    scope.stack.callback(_release_file_lock, handle)
 
 
 @functools.lru_cache(maxsize=256)
@@ -179,14 +259,20 @@ def _resolve_sysroot(project_root: Path, sysroot: str | None) -> Path | None:
 
 
 def _resolve_output_roots(
-    project_root: Path, out_dir: Path | None, output_base: str
+    project_root: Path, out_dir: Path | None, output_base: str, *, identity: str
 ) -> tuple[Path, Path, Path]:
+    """The build's artifacts, binary and output roots; claims the artifacts root.
+
+    ``identity`` (``artifacts_identity``) keeps two configurations' objects
+    apart; the claim keeps two builds of one configuration apart.
+    """
+    name = f"{_safe_output_base(output_base)}-{identity}"
     if out_dir is not None:
-        artifacts_root = out_dir / ".molt_build" / _safe_output_base(output_base)
+        artifacts_root = out_dir / ".molt_build" / name
         bin_root = out_dir
         output_root = out_dir
     else:
-        artifacts_root = _default_build_root(output_base)
+        artifacts_root = _default_build_base() / name
         bin_root = _default_molt_bin()
         output_root = project_root / "dist"
 
@@ -194,6 +280,7 @@ def _resolve_output_roots(
     # destination is chosen (`_resolve_output_path`): a build that names its
     # output leaves no empty `dist/` or binary directory behind.
     _mkdir_resilient(artifacts_root)
+    _claim_artifacts_root(artifacts_root)
     return artifacts_root, bin_root, output_root
 
 

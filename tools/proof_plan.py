@@ -825,6 +825,45 @@ class Selection:
     fail_closed_reason: str | None = None
 
 
+def _resolve_ci_command_test_inputs(
+    families: tuple[ProofFamily, ...], commands: tuple[ProofCommand, ...]
+) -> None:
+    """Project validated command targets into their change-selected owners.
+
+    A literal ``tests`` target owns itself and its descendants, whether it is
+    a file or directory. The existing ``path/**`` matcher expresses that
+    without stat calls, collection, extension guesses or glob interpretation
+    of a target's spelling. Scheduled families have no changed-path owner.
+    Resolve once at load time; selection and generated projections read the
+    same family data. Work is linear in declared argv, inputs and path parts.
+    """
+    targets: dict[str, dict[str, None]] = {family.name: {} for family in families}
+    for command in commands:
+        owner = targets.get(command.family)
+        if owner is None:
+            continue
+        for argument in command.argv:
+            path = argument.split("::", 1)[0].rstrip("/")
+            if path == "tests" or path.startswith("tests/"):
+                owner[path] = None
+
+    for family in families:
+        owned = targets[family.name]
+        # Exact copies of command targets are not another source of ownership.
+        inputs = [pattern for pattern in family.inputs if pattern not in owned]
+        subtrees = {
+            pattern[:-3].rstrip("/") for pattern in inputs if pattern.endswith("/**")
+        }
+        for target in owned:
+            parents = tuple(str(parent) for parent in PurePosixPath(target).parents)
+            if target in subtrees or any(
+                parent in subtrees or parent in owned for parent in parents
+            ):
+                continue
+            inputs.append(target + "/**")
+        family.data["inputs"] = inputs
+
+
 @dataclass(frozen=True, slots=True)
 class ProofPlan:
     path: Path
@@ -1047,6 +1086,7 @@ class ProofPlan:
         errors = plan.validate()
         if errors:
             raise ValueError("invalid proof plan:\n- " + "\n- ".join(errors))
+        _resolve_ci_command_test_inputs(plan.families, plan.commands)
         return plan
 
     def named_lane(self, lane_id: str) -> NamedLane:

@@ -294,10 +294,22 @@ def test_resolve_output_roots_defaults_final_outputs_to_dist(
 ) -> None:
     monkeypatch.setenv("MOLT_CACHE", str(tmp_path / ".molt_cache"))
 
-    _artifacts_root, bin_root, output_root = (
-        cli_build_output_layout._resolve_output_roots(tmp_path, None, "app")
+    identity = cli_build_output_layout.artifacts_identity(
+        project_root=tmp_path,
+        source_path=tmp_path / "app.py",
+        target="native",
+        profile="dev",
     )
+    with cli_build_output_layout.build_scope():
+        artifacts_root, bin_root, output_root = (
+            cli_build_output_layout._resolve_output_roots(
+                tmp_path, None, "app", identity=identity
+            )
+        )
 
+    assert artifacts_root == (
+        cli_build_output_layout._default_build_base() / f"app-{identity}"
+    )
     assert output_root == tmp_path / "dist"
     assert bin_root == DEFAULT_PATHS._default_molt_bin()
     # A default root exists only once a default destination is chosen: a build
@@ -437,7 +449,7 @@ def test_default_molt_cache_uses_ext_root_when_home_is_unavailable(
     DEFAULT_PATHS._default_molt_cache_cached.cache_clear()
     DEFAULT_PATHS._default_molt_home_cached.cache_clear()
     DEFAULT_PATHS._default_molt_bin_cached.cache_clear()
-    cli_build_output_layout._default_build_root_cached.cache_clear()
+    cli_build_output_layout._default_build_base_cached.cache_clear()
     cli_build_output_layout._resolve_cache_root_cached.cache_clear()
 
     assert DEFAULT_PATHS._default_molt_cache() == ext_root / ".molt_cache"
