@@ -298,6 +298,12 @@ crate::builtins::methods::native_method_table!(range_method_bits, publish_range_
     comparison: crate::object::ops_compare::builtin_families::BuiltinComparison::Range, {
 
 }, {
+        "__getitem__" => Some(builtin_func_bits(
+            _py,
+            NativeCallableSpec::declared(NativeCallableKind::WrapperDescriptor, builtin_classes(_py).range, "__getitem__").with_text_signature("($self, key, /)"),
+            fn_addr!(crate::object::ops::molt_getitem_builtin),
+            2,
+        )),
         "count" => Some(builtin_func_bits(
             _py,
             NativeCallableSpec::declared(NativeCallableKind::MethodDescriptor, builtin_classes(_py).range, "count"),

@@ -320,6 +320,72 @@ fn native_tuple_and_io_dictionaries_have_one_traversed_cleared_owner() {
 }
 
 #[test]
+fn sequence_getitem_declarations_own_lookup_namespace_and_descriptor_metadata() {
+    let _transaction = crate::test_support::RuntimeTestTransaction::new();
+    crate::with_gil_entry_nopanic!(py, {
+        let classes = builtin_classes(py);
+        let key = attr_name_bits_from_bytes(py, b"__getitem__").unwrap();
+        let owner_key = attr_name_bits_from_bytes(py, b"__objclass__").unwrap();
+        let signature_key = attr_name_bits_from_bytes(py, b"__text_signature__").unwrap();
+        for (owner, kind, signature) in [
+            (classes.bytes, classes.wrapper_descriptor, "($self, key, /)"),
+            (
+                classes.bytearray,
+                classes.wrapper_descriptor,
+                "($self, key, /)",
+            ),
+            (classes.list, classes.method_descriptor, "($self, index, /)"),
+            (classes.tuple, classes.wrapper_descriptor, "($self, key, /)"),
+            (classes.range, classes.wrapper_descriptor, "($self, key, /)"),
+            (classes.str, classes.wrapper_descriptor, "($self, key, /)"),
+            (
+                classes.memoryview,
+                classes.wrapper_descriptor,
+                "($self, key, /)",
+            ),
+        ] {
+            let descriptor =
+                crate::builtins::methods::builtin_class_method_bits(py, owner, "__getitem__")
+                    .expect("native lookup succeeds")
+                    .expect("every builtin sequence declares its subscription descriptor");
+            assert_eq!(type_of_bits(py, descriptor), kind);
+            let pointer = obj_from_bits(descriptor).as_ptr().unwrap();
+            unsafe {
+                let declaring = attr_lookup_ptr(py, pointer, owner_key)
+                    .expect("owner lookup succeeds")
+                    .unwrap();
+                assert_eq!(declaring, owner);
+                dec_ref_bits(py, declaring);
+                let text = attr_lookup_ptr(py, pointer, signature_key)
+                    .expect("signature lookup succeeds")
+                    .unwrap();
+                assert_eq!(
+                    string_obj_to_owned(obj_from_bits(text)).as_deref(),
+                    Some(signature)
+                );
+                dec_ref_bits(py, text);
+                assert!(crate::builtins::methods::publish_builtin_class_methods(
+                    py, owner
+                ));
+                let namespace =
+                    obj_from_bits(class_dict_bits(obj_from_bits(owner).as_ptr().unwrap()))
+                        .as_ptr()
+                        .unwrap();
+                assert_eq!(
+                    dict_get_in_place(py, namespace, key).expect("namespace lookup succeeds"),
+                    Some(descriptor),
+                    "namespace and lazy lookup must use the same declaration",
+                );
+            }
+            assert!(!exception_pending(py));
+        }
+        dec_ref_bits(py, signature_key);
+        dec_ref_bits(py, owner_key);
+        dec_ref_bits(py, key);
+    });
+}
+
+#[test]
 fn native_callable_declarations_own_public_identity_and_binding() {
     let _transaction = crate::test_support::RuntimeTestTransaction::new();
     crate::with_gil_entry_nopanic!(py, {
