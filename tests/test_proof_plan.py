@@ -1269,6 +1269,29 @@ def test_shared_string_storage_exercises_both_real_backends(changed: str) -> Non
     } <= set(argv)
 
 
+@pytest.mark.parametrize(
+    "changed,consumer",
+    [
+        (
+            "src/molt/cli/backend_daemon_logs.py",
+            "tests/cli/test_cli_import_collection.py",
+        ),
+        ("tests/conftest.py", "tests/test_backend_daemon_suite_custody.py"),
+        ("tools/harness_memory_guard.py", "tests/test_backend_daemon_suite_custody.py"),
+    ],
+)
+def test_daemon_lifetime_and_diagnostics_select_their_consumers(
+    changed: str, consumer: str
+) -> None:
+    from tools import molt_dev
+
+    gates, _ = molt_dev.GateConfig.load(PLAN.path).select([changed])
+    assert any(
+        consumer in (shlex.split(gate) if isinstance(gate, str) else gate)
+        for gate in gates
+    )
+
+
 def test_runtime_leaf_change_runs_rust_without_llvm_or_formal() -> None:
     classes = _classes("runtime/molt-stdlib-text/src/tokenize.rs")
     assert classes["rust"] is True

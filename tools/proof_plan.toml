@@ -3972,6 +3972,7 @@ globs = [
   "src/molt/backend_environment.json",
   "src/molt/cli/backend_cache_setup.py",
   "src/molt/cli/backend_compile.py",
+  "src/molt/cli/backend_daemon_logs.py",
   "src/molt/cli/backend_execution.py",
   "src/molt/cli/backend_pipeline.py",
   "src/molt/cli/models.py",
@@ -4578,6 +4579,8 @@ description = "Daemon observation, identity and retirement custody, and the tool
 globs = [
   "src/molt/backend_daemon_custody.py",
   "src/molt/backend_daemon_suite_custody.py",
+  "tests/conftest.py",
+  "tools/harness_memory_guard.py",
   "tests/molt_diff.py",
   "tools/bench_individual.py",
   "tests/test_backend_daemon_custody.py",
