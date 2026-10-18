@@ -284,6 +284,45 @@ def _build_cache_variant(
     return ";".join(parts)
 
 
+def backend_operation_environment(
+    *,
+    codegen: CodegenSelection,
+    profile: str,
+    native_runtime_codegen_binding: NativeRuntimeCodegenBinding | None,
+    backend_compiler_fingerprint: str | None,
+    entry_module: str | None,
+    stdlib_module_symbols_json: str | None,
+    wasm_layout: WasmCodegenLayout | None,
+) -> dict[str, str]:
+    """The environment one backend operation receives.
+
+    Cache identity and every backend dispatch (builds and fact graphs) use
+    this one projection, so a cache key binds what the backend reads.
+    """
+    environment = _backend_environment_with_compiler_fingerprint(
+        native_runtime_codegen_environment(
+            codegen.environment(os.environ, profile=profile),
+            native_runtime_codegen_binding,
+        ),
+        backend_compiler_fingerprint,
+    )
+    environment = _backend_request_environment(
+        environment,
+        entry_module=entry_module,
+        stdlib_module_symbols_json=stdlib_module_symbols_json,
+    )
+    if wasm_layout is not None:
+        for name in (
+            "MOLT_WASM_DATA_BASE",
+            "MOLT_WASM_TABLE_BASE",
+            "MOLT_WASM_SPLIT_RUNTIME_APP_TABLE_BASE",
+            "MOLT_WASM_RELOCATABLE",
+        ):
+            environment.pop(name, None)
+        environment.update(wasm_layout.backend_environment())
+    return environment
+
+
 def _prepare_backend_cache_setup(
     *,
     backend_bin: Path,
@@ -387,31 +426,17 @@ def _prepare_backend_cache_setup(
         return cache_fingerprint_inputs
 
     stage_start = time.perf_counter()
-    # The same projection the backend process receives (backend_compile's
-    # dispatch), so the cache key binds what the backend actually reads.
-    backend_environment = _backend_environment_with_compiler_fingerprint(
-        native_runtime_codegen_environment(
-            codegen.environment(os.environ, profile=profile),
-            native_runtime_codegen_binding,
-        ),
-        backend_compiler_fingerprint,
-    )
-    backend_environment = _backend_request_environment(
-        backend_environment,
+    if is_wasm and wasm_layout is None:
+        raise ValueError("WASM cache identity requires a bound runtime layout")
+    backend_environment = backend_operation_environment(
+        codegen=codegen,
+        profile=profile,
+        native_runtime_codegen_binding=native_runtime_codegen_binding,
+        backend_compiler_fingerprint=backend_compiler_fingerprint,
         entry_module=entry_module if artifact_contract.is_native else None,
         stdlib_module_symbols_json=stdlib_module_symbols_json,
+        wasm_layout=wasm_layout if is_wasm else None,
     )
-    if is_wasm:
-        if wasm_layout is None:
-            raise ValueError("WASM cache identity requires a bound runtime layout")
-        for name in (
-            "MOLT_WASM_DATA_BASE",
-            "MOLT_WASM_TABLE_BASE",
-            "MOLT_WASM_SPLIT_RUNTIME_APP_TABLE_BASE",
-            "MOLT_WASM_RELOCATABLE",
-        ):
-            backend_environment.pop(name, None)
-        backend_environment.update(wasm_layout.backend_environment())
     cache_variant = _build_cache_variant(
         profile=profile,
         runtime_cargo=runtime_cargo_profile,

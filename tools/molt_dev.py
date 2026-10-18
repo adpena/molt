@@ -398,6 +398,10 @@ class GateRule:
     gates: list[str]
     description: str = ""
     pytest: list[str] = field(default_factory=list)
+    # (selection argv, targets): each runs as its own pytest invocation.
+    pytest_select: list[tuple[tuple[str, ...], tuple[str, ...]]] = field(
+        default_factory=list
+    )
 
 
 @dataclass
@@ -425,6 +429,8 @@ class GateConfig:
     def parse(source: str, label: str, *, root: Path | None = None) -> "GateConfig":
         from tools.proof_plan import (
             local_gate_commands,
+            local_pytest_select_errors,
+            local_pytest_selections,
             local_pytest_target_errors,
             local_rule_field_error,
         )
@@ -452,7 +458,11 @@ class GateConfig:
             ):
                 raise DriverError(f"gate rule {name!r} `gates` must be a list of str")
             pytest_targets = entry.get("pytest", [])
-            if errors := local_pytest_target_errors(name, pytest_targets, root=root):
+            errors = local_pytest_target_errors(name, pytest_targets, root=root)
+            errors += local_pytest_select_errors(
+                name, entry.get("pytest_select", []), root=root
+            )
+            if errors:
                 raise DriverError("\n".join(errors))
             rules.append(
                 GateRule(
@@ -461,6 +471,7 @@ class GateConfig:
                     gates=gates,
                     description=str(entry.get("description", "")),
                     pytest=pytest_targets,
+                    pytest_select=local_pytest_selections(entry),
                 )
             )
         always = data.get("always", [])
@@ -528,7 +539,8 @@ class GateConfig:
         then rules in manifest order; duplicates are de-duplicated preserving
         first occurrence (so a determinism gate listed by two rules runs once).
         Every matched rule's pytest targets run in one pytest invocation, at
-        the place of the first rule that has any.
+        the place of the first rule that has any. A rule's pytest selections
+        (``-k`` or ``-m``) each run on their own after it.
         """
         from tools.proof_plan import local_pytest_argv
 
@@ -539,10 +551,11 @@ class GateConfig:
         pytest_targets: list[str] = []
         pytest_index: int | None = None
 
-        def _add(cmds: list[str]) -> None:
+        def _add(cmds: list[str] | list[tuple[str, ...]]) -> None:
             for cmd in cmds:
-                if cmd not in seen_commands:
-                    seen_commands.add(cmd)
+                key = cmd if isinstance(cmd, str) else shlex.join(cmd)
+                if key not in seen_commands:
+                    seen_commands.add(key)
                     selected.append(cmd)
 
         if touched:
@@ -553,6 +566,12 @@ class GateConfig:
                 _add(rule.gates)
                 if rule.pytest and pytest_index is None:
                     pytest_index = len(selected)
+                _add(
+                    [
+                        local_pytest_argv(targets, self.pytest_workers, select)
+                        for select, targets in rule.pytest_select
+                    ]
+                )
                 for target in rule.pytest:
                     if target not in seen_pytest:
                         seen_pytest.add(target)

@@ -3884,7 +3884,11 @@ globs = [
   "tests/runtime_build_identity_helper.py",
 ]
 gates = [
-  "python -m pytest -q tests/cli/test_cli_import_collection.py -k 'backend_codegen or backend_daemon or backend_cache_setup or backend_setup or backend_compile or backend_pipeline or backend_dispatch or codegen_selection or fingerprint_env'",
+]
+pytest_select = [
+  { k = "backend_codegen or backend_daemon or backend_cache_setup or backend_setup or backend_compile or backend_pipeline or backend_dispatch or codegen_selection or fingerprint_env", targets = [
+    "tests/cli/test_cli_import_collection.py",
+  ] },
 ]
 pytest = [
   "tests/cli/test_backend_environment_contract.py",
@@ -4307,7 +4311,11 @@ globs = [
   "tools/proof_queue_pkg/cli.py",
 ]
 gates = [
-  "python -m pytest -q tests/tools/test_proof_queue.py -k 'proof_queue_pact_witness or proof_queue_rejects_scipy or proof_queue_requires_explicit_scipy or rejects_expected_extension_identity_drift'",
+]
+pytest_select = [
+  { k = "proof_queue_pact_witness or proof_queue_rejects_scipy or proof_queue_requires_explicit_scipy or rejects_expected_extension_identity_drift", targets = [
+    "tests/tools/test_proof_queue.py",
+  ] },
 ]
 pytest = [
   "tests/cli/test_source_extension_link_inputs.py",
@@ -4465,7 +4473,21 @@ globs = [
   "tests/cli/test_cargo_execution_failure_authority.py",
 ]
 gates = [
-  "python -m pytest -q -m 'not slow' tests/cli/test_cargo_build_reads.py tests/cli/test_runtime_source_identity.py tests/cli/test_runtime_c_resource_custody.py tests/cli/test_runtime_build_identity.py tests/cli/test_runtime_native_generation.py tests/cli/test_runtime_wasm_single_compile.py tests/cli/test_compiler_identity.py tests/cli/test_runtime_family_authority.py tests/cli/test_cargo_execution_failure_authority.py tests/test_toolchain_identity.py tests/test_runtime_build_python.py",
+]
+pytest_select = [
+  { m = "not slow", targets = [
+    "tests/cli/test_cargo_build_reads.py",
+    "tests/cli/test_runtime_source_identity.py",
+    "tests/cli/test_runtime_c_resource_custody.py",
+    "tests/cli/test_runtime_build_identity.py",
+    "tests/cli/test_runtime_native_generation.py",
+    "tests/cli/test_runtime_wasm_single_compile.py",
+    "tests/cli/test_compiler_identity.py",
+    "tests/cli/test_runtime_family_authority.py",
+    "tests/cli/test_cargo_execution_failure_authority.py",
+    "tests/test_toolchain_identity.py",
+    "tests/test_runtime_build_python.py",
+  ] },
 ]
 
 # --- Rust toolchain authority -------------------------------------------
@@ -4724,7 +4746,25 @@ globs = [
   "tests/tools/test_perf_scoreboard.py", "tests/tools/test_perf_methodology.py",
 ]
 gates = [
-  "python -m pytest -q -m 'not slow' tests/test_node_runtime.py tests/test_bench_tool.py tests/test_bench_audit.py tests/test_bench_report.py tests/test_temporary_artifacts.py tests/tools/test_direct_run_process_custody.py tests/tools/test_cold_start_decompose.py tests/tools/test_perf_profile_selection.py tests/tools/test_perf_release_integrity.py tests/tools/test_perf_scoreboard.py tests/tools/test_perf_methodology.py tests/tools/test_perf_schema.py tests/tools/test_perf_history.py tests/tools/test_perf_board.py tests/tools/test_perf_authority.py",
+]
+pytest_select = [
+  { m = "not slow", targets = [
+    "tests/test_node_runtime.py",
+    "tests/test_bench_tool.py",
+    "tests/test_bench_audit.py",
+    "tests/test_bench_report.py",
+    "tests/test_temporary_artifacts.py",
+    "tests/tools/test_direct_run_process_custody.py",
+    "tests/tools/test_cold_start_decompose.py",
+    "tests/tools/test_perf_profile_selection.py",
+    "tests/tools/test_perf_release_integrity.py",
+    "tests/tools/test_perf_scoreboard.py",
+    "tests/tools/test_perf_methodology.py",
+    "tests/tools/test_perf_schema.py",
+    "tests/tools/test_perf_history.py",
+    "tests/tools/test_perf_board.py",
+    "tests/tools/test_perf_authority.py",
+  ] },
 ]
 
 # --- APPARATUS Wave 4 A11 claims custody + preflight + commit serializer ---

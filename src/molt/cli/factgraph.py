@@ -317,11 +317,29 @@ def emit_pipeline_fact_graph(
                 )
             except (OSError, ValueError) as exc:
                 return fail(str(exc), json_output, command="build")
+        from molt.cli.backend_cache_setup import backend_operation_environment
+
+        is_native = not (
+            output_layout.is_wasm
+            or output_layout.is_rust_transpile
+            or output_layout.is_luau_transpile
+        )
+        native_binding = runtime_context.runtime_state.native_runtime_codegen_binding
         prepared_backend_dispatch, dispatch_error = prepare_backend_dispatch(
             is_rust_transpile=output_layout.is_rust_transpile,
             is_luau_transpile=output_layout.is_luau_transpile,
             is_wasm=output_layout.is_wasm,
             wasm_layout=wasm_layout,
+            # The projection a build's dispatch and cache identity receive.
+            backend_environment=backend_operation_environment(
+                codegen=build_config.codegen,
+                profile=profile,
+                native_runtime_codegen_binding=native_binding,
+                backend_compiler_fingerprint=runtime_context.backend_compiler_fingerprint,
+                entry_module=entry_module if is_native else None,
+                stdlib_module_symbols_json=None,
+                wasm_layout=wasm_layout,
+            ),
             deterministic=deterministic,
             profile=profile,
             cargo_timeout=build_config.cargo_timeout,
@@ -335,9 +353,7 @@ def emit_pipeline_fact_graph(
             warnings=build_preamble.warnings,
             backend_bin=runtime_context.backend_bin,
             backend_compiler_fingerprint=(runtime_context.backend_compiler_fingerprint),
-            native_runtime_codegen_binding=(
-                runtime_context.runtime_state.native_runtime_codegen_binding
-            ),
+            native_runtime_codegen_binding=native_binding,
             start_daemon=False,
             codegen=build_config.codegen,
             rust_cpu=build_preamble.rust_cpu,

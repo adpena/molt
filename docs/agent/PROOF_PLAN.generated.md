@@ -18,7 +18,7 @@ Landing checks execute the generator and authority inputs captured from the exac
 | CI selection families | 5 | 12 |
 | Hashed executable authority inputs | 1 | 367 |
 | Local path rules | 35 | 56 |
-| Unique local commands | 73 | 88 |
+| Unique local commands | 73 | 84 |
 | Handwritten Python classifier rule tables | 5 | 0 |
 
 ## CI families
@@ -339,7 +339,7 @@ The wrapper conflict was reconfirmed by native CI run `30211145633` job `8981749
 | Rule | Input globs | Commands |
 |---|---:|---:|
 | `frontend-python` | 1 | 3 |
-| `backend-environment-contract` | 16 | 1 |
+| `backend-environment-contract` | 16 | 0 |
 | `bootstrap-stdlib` | 4 | 1 |
 | `heap-kind-lifetime-authority` | 6 | 1 |
 | `host-capability-authority` | 7 | 1 |
@@ -353,14 +353,14 @@ The wrapper conflict was reconfirmed by native CI run `30211145633` job `8981749
 | `stringprep-tables` | 3 | 1 |
 | `llvm-runtime-abi` | 8 | 1 |
 | `source-extension-package-sets` | 44 | 0 |
-| `source-extension-proof-policy` | 60 | 1 |
+| `source-extension-proof-policy` | 60 | 0 |
 | `suite-honesty` | 4 | 2 |
 | `ecosystem-compat` | 2 | 1 |
 | `tinygrad-upat-static-exec-registry` | 2 | 0 |
 | `docs-architecture` | 4 | 2 |
 | `dev-tooling` | 14 | 0 |
 | `encoding-diagnostics` | 2 | 0 |
-| `runtime-cargo-input-custody` | 37 | 1 |
+| `runtime-cargo-input-custody` | 37 | 0 |
 | `rust-toolchain` | 10 | 1 |
 | `table-drift` | 12 | 1 |
 | `findings-registry` | 4 | 0 |
@@ -368,7 +368,7 @@ The wrapper conflict was reconfirmed by native CI run `30211145633` job `8981749
 | `ci-wiring` | 58 | 1 |
 | `apparatus-hooks` | 11 | 2 |
 | `apparatus-learning-protection` | 12 | 2 |
-| `performance-measurement` | 25 | 1 |
+| `performance-measurement` | 25 | 0 |
 | `apparatus-a11` | 10 | 4 |
 | `apparatus-a8-a12-disk-reclaim` | 11 | 2 |
 | `import-symbol-gate` | 2 | 1 |
