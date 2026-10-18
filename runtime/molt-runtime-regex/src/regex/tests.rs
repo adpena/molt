@@ -4,6 +4,10 @@
 
 use super::*;
 use std::collections::HashMap;
+
+fn parse_pattern(pattern: &str, flags: i64) -> Result<CompiledPattern, String> {
+    parse_pattern_typed(pattern, flags, false)
+}
 use std::sync::Arc;
 
 fn scanner_spans_text(pattern: &str, text: &str) -> Vec<(usize, usize)> {

@@ -871,10 +871,6 @@ pub(super) fn fixed_width(
 // parse_pattern: top-level entry point
 // ---------------------------------------------------------------------------
 
-pub(super) fn parse_pattern(pattern: &str, flags: i64) -> Result<CompiledPattern, String> {
-    parse_pattern_typed(pattern, flags, false)
-}
-
 pub(super) fn parse_pattern_typed(
     pattern: &str,
     flags: i64,
