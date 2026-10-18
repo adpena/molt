@@ -3841,15 +3841,22 @@ def test_every_authority_input_mutation_invalidates_receipt(
     (tmp_path / "receipt.json").write_text(json.dumps(receipt), encoding="utf-8")
     original = proof_plan._authority_sha256(PLAN)
     assert proof_plan._authority_sha256(PLAN, authority_input_bytes) == original
-    for relative, raw in authority_input_bytes.items():
-        mutated = proof_plan._authority_sha256(
+    # Every input feeds the digest, and no two inputs collide.
+    mutated = {
+        relative: proof_plan._authority_sha256(
             PLAN, {**authority_input_bytes, relative: raw + b"\0"}
         )
-        assert mutated != original, relative
-        with monkeypatch.context() as context:
-            context.setattr(proof_plan, "_authority_sha256", lambda _plan: mutated)
-            errors = _verify_receipts(PLAN, ["python_static"], tmp_path)
-        assert any("authority digest" in error for error in errors), relative
+        for relative, raw in authority_input_bytes.items()
+    }
+    assert original not in mutated.values()
+    assert len(set(mutated.values())) == len(mutated)
+    # The verdict compares the digest value, so one changed digest proves that
+    # any changed input invalidates the receipt.
+    changed = next(iter(mutated.values()))
+    with monkeypatch.context() as context:
+        context.setattr(proof_plan, "_authority_sha256", lambda _plan: changed)
+        errors = _verify_receipts(PLAN, ["python_static"], tmp_path)
+    assert any("authority digest" in error for error in errors)
 
 
 def test_authority_digest_is_lf_crlf_checkout_invariant(
