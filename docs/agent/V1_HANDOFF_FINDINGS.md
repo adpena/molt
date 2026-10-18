@@ -128,8 +128,11 @@ controller-owned lease, inherited before workers start and closed after they
 join. Serial sentinels and parallel sessions share the same scope authority;
 parallel sessions add no RSS scanner. The existing native regression retains
 structured errors, checks both program exit statuses and rejects command-owned
-orphan termination. Corrected actual worker/native qualification remains
-required; a passing retry alone cannot close V1-01 or V1-12.
+orphan termination. Corrected Linux aarch64 Python 3.12 qualification passes
+all nine actual native builds and CPython output comparisons with zero
+command-owned daemon kills and one suite transfer. The actual nested-worker
+inheritance and terminal-close control passes on macOS. Broader platform,
+shutdown and release-matrix obligations remain under V1-01 and V1-12.
 Daemon diagnostic intervals can contain concurrent peers; they are not
 request-exclusive evidence. Tail and interval reads now share the existing
 byte-bounded reader and freeze the observed end before reading, removing a
