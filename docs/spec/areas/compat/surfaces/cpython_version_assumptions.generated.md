@@ -8,7 +8,7 @@ The inventory includes older and future Python 3 minor spellings, full eight-dig
 
 - `authority-routed` files: 62
 - `operational-tooling` files: 56
-- `scattered-assumption` files: 339
+- `scattered-assumption` files: 340
 
 ## Files
 
@@ -143,7 +143,7 @@ The inventory includes older and future Python 3 minor spellings, full eight-dig
 | `src/molt/stdlib/token.py` | 1 | scattered-assumption | `3.12` |
 | `src/molt/stdlib/tomllib/__init__.py` | 1 | scattered-assumption | `3.11` |
 | `src/molt/stdlib/traceback.py` | 1 | operational-tooling | `sys.version_info` |
-| `src/molt/stdlib/typing.py` | 5 | operational-tooling | `_sys.version_info` |
+| `src/molt/stdlib/typing.py` | 8 | operational-tooling | `_sys.version_info` |
 | `src/molt/stdlib/unittest/__init__.py` | 2 | scattered-assumption | `3.11` |
 | `src/molt/stdlib/unittest/async_case.py` | 1 | scattered-assumption | `3.12` |
 | `src/molt/stdlib/unittest/loader.py` | 4 | scattered-assumption | `3.13` |
@@ -336,7 +336,7 @@ The inventory includes older and future Python 3 minor spellings, full eight-dig
 | `runtime/molt-runtime/src/object/ops_bytes_ascii.rs` | 6 | scattered-assumption | `3.12` |
 | `runtime/molt-runtime/src/object/ops_convert.rs` | 4 | scattered-assumption | `3.12` |
 | `runtime/molt-runtime/src/object/ops_encoding.rs` | 3 | scattered-assumption | `3.12` |
-| `runtime/molt-runtime/src/object/ops_format.rs` | 1 | scattered-assumption | `3.14` |
+| `runtime/molt-runtime/src/object/ops_format.rs` | 2 | scattered-assumption | `3.14` |
 | `runtime/molt-runtime/src/object/ops_hash.rs` | 15 | scattered-assumption | `3.14` |
 | `runtime/molt-runtime/src/object/ops_iter.rs` | 6 | scattered-assumption | `3.12` |
 | `runtime/molt-runtime/src/object/ops_list.rs` | 4 | scattered-assumption | `3.13` |
@@ -365,6 +365,7 @@ The inventory includes older and future Python 3 minor spellings, full eight-dig
 | `runtime/molt-runtime-platform/src/path_text.rs` | 2 | scattered-assumption | `3.12` |
 | `runtime/molt-runtime-platform/src/windows_abi.rs` | 1 | scattered-assumption | `3.12` |
 | `runtime/molt-runtime-regex/src/regex/substitution.rs` | 2 | scattered-assumption | `3.7` |
+| `runtime/molt-runtime-serial/src/binascii.rs` | 6 | scattered-assumption | `3.12` |
 | `runtime/molt-runtime-serial/src/csv.rs` | 8 | scattered-assumption | `3.12` |
 | `runtime/molt-runtime-serial/src/structs.rs` | 1 | scattered-assumption | `3.0` |
 | `runtime/molt-runtime-stringprep/src/stringprep.rs` | 1 | scattered-assumption | `3.2` |
