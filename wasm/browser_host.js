@@ -65,7 +65,7 @@ const WASI_WHENCE_SET = 0;
 const WASI_WHENCE_CUR = 1;
 const WASI_WHENCE_END = 2;
 
-const { createRuntimeLifetime, createRuntimeDisposer, boxRuntimeInt, createRuntimeStream, withRuntimeOwnedValues, makeRuntimeIntList, combinedError } = globalThis.MoltRuntimeLifecycle;
+const { createRuntimeLifetime, createRuntimeDisposer, boxRuntimeInt, createRuntimeStream, withRuntimeOwnedValues, invokeAppExport, makeRuntimeIntList, combinedError } = globalThis.MoltRuntimeLifecycle;
 const runtimeLifetimes = new WeakMap();
 const runtimeLifetime = (runtimeInstance, runtimeImportAbi) => {
   let lifetime = runtimeLifetimes.get(runtimeInstance);
@@ -3607,9 +3607,10 @@ export const loadMoltWasm = async (options = {}) => {
       if (typeof fn !== 'function') {
         throw new Error(`app export missing: ${exportName}`);
       }
-      return withRuntimeOwnedValues(runtime, Array.isArray(args) ? args : [],
-        arg => makeBrowserHostArgObject(runtime, memory, arg), argBits =>
-          decodeOwnedExportResult(runtime, memory, fn(...argBits), exportName));
+      // The export adopts its arguments and returns one owned result.
+      return decodeOwnedExportResult(runtime, memory,
+        invokeAppExport(runtime, fn, Array.isArray(args) ? args : [],
+          arg => makeBrowserHostArgObject(runtime, memory, arg)), exportName);
     });
   };
   const dispose = createRuntimeDisposer(
