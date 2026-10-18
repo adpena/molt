@@ -371,7 +371,7 @@
     "tests/tools/test_win_job_contract.py",
     "tests/tools/test_windows_process_api.py"
   ],
-  "authority_sha256": "cd9dd5a46d99d12528a7d6c15e4c1237611e4ebb394404cd19092d3ae4c8c627",
+  "authority_sha256": "b3771258805ef3eba092d0aba544d4837addac439368e3e46d2f3abe8521d7d9",
   "cargo_environment_policy": {
     "incident_command": "cargo metadata --locked --format-version 1",
     "incident_commit": "20b046b79bd4ca64a8c859f737f6e330377bcc4e",
@@ -473,7 +473,7 @@
         "pr",
         "main"
       ],
-      "timeout_minutes": 293,
+      "timeout_minutes": 333,
       "workflow": ".github/workflows/molt-wasm-ci.yml"
     },
     {
@@ -4111,6 +4111,9 @@
         "pytest",
         "-q",
         "tests/test_wasm_split_runtime.py::test_linked_host_export_attribute_error_does_not_return_none",
+        "tests/test_wasm_split_runtime.py::test_split_runtime_host_export_calls_preserve_owned_results",
+        "tests/test_wasm_split_runtime.py::test_split_runtime_host_export_struct_unpack_from_reads_u64",
+        "tests/test_wasm_split_runtime.py::test_split_runtime_profile_json_emits_on_wasm",
         "tests/test_wasm_runtime_heavy_regressions.py::test_wasm_open_reports_all_missing_grants_before_mutation",
         "tests/test_wasm_runtime_heavy_regressions.py::test_wasm_compiled_finder_describes_module_before_initialization",
         "tests/test_wasm_runtime_heavy_regressions.py::test_wasm_final_tir_preserves_effects_scalar_proofs_and_escaped_calls"
@@ -4250,6 +4253,90 @@
       ],
       "family": "wasm",
       "id": "wasm.integration.host-exports.tensor-row-ops",
+      "resource_class": "compiler-build-resource",
+      "tiers": [
+        "pr",
+        "main"
+      ],
+      "timeout_budget": "cold",
+      "timeout_env": [
+        "MOLT_CARGO_TIMEOUT",
+        "MOLT_WASM_TEST_TIMEOUT_SEC"
+      ],
+      "timeout_seconds": 1200,
+      "toolchains": [
+        "python",
+        "uv",
+        "node",
+        "rustc",
+        "cargo",
+        "ld.lld",
+        "wasm-ld",
+        "wasm-tools",
+        "wasi-clang",
+        "wasm-opt"
+      ]
+    },
+    {
+      "argv": [
+        "python3",
+        "tools/venv_exec.py",
+        "python3",
+        "-m",
+        "pytest",
+        "-q",
+        "tests/test_wasm_split_runtime.py::test_split_runtime_host_export_bytes_survive_raw_temp_cleanup"
+      ],
+      "cache_domain": "cargo-workspace",
+      "cargo_build_python": true,
+      "cell": "linux-x86_64-py312-wasm-dev",
+      "dependencies": [
+        "wasm.build.backend"
+      ],
+      "family": "wasm",
+      "id": "wasm.integration.host-exports.gpu-bytes-ownership",
+      "resource_class": "compiler-build-resource",
+      "tiers": [
+        "pr",
+        "main"
+      ],
+      "timeout_budget": "cold",
+      "timeout_env": [
+        "MOLT_CARGO_TIMEOUT",
+        "MOLT_WASM_TEST_TIMEOUT_SEC"
+      ],
+      "timeout_seconds": 1200,
+      "toolchains": [
+        "python",
+        "uv",
+        "node",
+        "rustc",
+        "cargo",
+        "ld.lld",
+        "wasm-ld",
+        "wasm-tools",
+        "wasi-clang",
+        "wasm-opt"
+      ]
+    },
+    {
+      "argv": [
+        "python3",
+        "tools/venv_exec.py",
+        "python3",
+        "-m",
+        "pytest",
+        "-q",
+        "tests/test_wasm_split_runtime.py::test_linked_falcon_ocr_wasm_driver_runs_stub_generation"
+      ],
+      "cache_domain": "cargo-workspace",
+      "cargo_build_python": true,
+      "cell": "linux-x86_64-py312-wasm-dev",
+      "dependencies": [
+        "wasm.build.backend"
+      ],
+      "family": "wasm",
+      "id": "wasm.integration.host-exports.falcon-driver",
       "resource_class": "compiler-build-resource",
       "tiers": [
         "pr",
@@ -8261,14 +8348,14 @@
         }
       },
       "wasm": {
-        "budget_seconds": 17580,
+        "budget_seconds": 19980,
         "critical_path_seconds": 2400,
         "headroom_seconds": 0,
         "job_reserve_seconds": 180,
-        "projected_makespan_seconds": 17400,
-        "required_job_seconds": 17580,
+        "projected_makespan_seconds": 19800,
+        "required_job_seconds": 19980,
         "resource_capacity_floor_seconds": {
-          "compiler-build-resource": 17400,
+          "compiler-build-resource": 19800,
           "python-tests": 420,
           "wasm-runtime": 450
         }
@@ -10483,6 +10570,7 @@
           "runtime/molt-runtime-regex/**/*.rs",
           "runtime/molt-runtime-regex/Cargo.toml",
           "runtime/molt-stdlib-text/src/wtf8.rs",
+          "runtime/molt-stdlib-text/src/wtf8_tests.rs",
           "runtime/molt-stdlib-text/Cargo.toml",
           "runtime/molt-runtime/src/regex_bridge.rs",
           "src/molt/stdlib/re/**/*.py",

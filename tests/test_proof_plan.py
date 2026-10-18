@@ -1709,6 +1709,8 @@ def test_wasm_python_consumers_share_prebuild_entrypoint_and_wrapper_selection(
         "wasm.integration.host-exports.tinygrad-dtype",
         "wasm.integration.host-exports.tinygrad-tensor",
         "wasm.integration.host-exports.tensor-row-ops",
+        "wasm.integration.host-exports.gpu-bytes-ownership",
+        "wasm.integration.host-exports.falcon-driver",
         "wasm.test.freestanding-e2e",
         "wasm.test.finally-pending-observer-parity.native",
         "wasm.test.finally-pending-observer-parity.wasm",
@@ -1771,6 +1773,14 @@ def test_wasm_host_export_applications_have_independent_cold_partitions() -> Non
             "test_linked_host_export_tensor_row_ops_accept_equivalent_float_dtype",
             set(),
         ),
+        "wasm.integration.host-exports.gpu-bytes-ownership": (
+            "test_split_runtime_host_export_bytes_survive_raw_temp_cleanup",
+            set(),
+        ),
+        "wasm.integration.host-exports.falcon-driver": (
+            "test_linked_falcon_ocr_wasm_driver_runs_stub_generation",
+            set(),
+        ),
     }
     rows = {
         row.id: row
@@ -1799,6 +1809,9 @@ def test_wasm_host_export_applications_have_independent_cold_partitions() -> Non
     )
     assert boundaries.argv[6:] == (
         "tests/test_wasm_split_runtime.py::test_linked_host_export_attribute_error_does_not_return_none",
+        "tests/test_wasm_split_runtime.py::test_split_runtime_host_export_calls_preserve_owned_results",
+        "tests/test_wasm_split_runtime.py::test_split_runtime_host_export_struct_unpack_from_reads_u64",
+        "tests/test_wasm_split_runtime.py::test_split_runtime_profile_json_emits_on_wasm",
         "tests/test_wasm_runtime_heavy_regressions.py::test_wasm_open_reports_all_missing_grants_before_mutation",
         "tests/test_wasm_runtime_heavy_regressions.py::test_wasm_compiled_finder_describes_module_before_initialization",
         "tests/test_wasm_runtime_heavy_regressions.py::test_wasm_final_tir_preserves_effects_scalar_proofs_and_escaped_calls",
