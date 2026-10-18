@@ -397,7 +397,7 @@ def test_publication_change_reuses_only_compile_and_member_output() -> None:
         second = runtime_build_fingerprint(after, scope=scope)
         assert first["hash"] == second["hash"]
         assert fingerprints._runtime_fingerprint_payload_is_valid(
-            {"version": 3, **first}
+            {"version": 4, **first}
         )
 
 
@@ -406,7 +406,7 @@ def test_fingerprint_is_a_checked_projection_not_an_independent_claim(
     scope: str,
 ) -> None:
     identity = native_runtime_staticlib_identity()
-    payload = {"version": 3, **runtime_build_fingerprint(identity, scope=scope)}
+    payload = {"version": 4, **runtime_build_fingerprint(identity, scope=scope)}
     assert fingerprints._runtime_fingerprint_payload_is_valid(payload)
     payload["hash"] = "f" * 64
     assert not fingerprints._runtime_fingerprint_payload_is_valid(payload)
@@ -415,7 +415,7 @@ def test_fingerprint_is_a_checked_projection_not_an_independent_claim(
 @pytest.mark.parametrize("scope", [[], {}, 1, None, "unrecognized"])
 def test_untrusted_fingerprint_scope_fails_without_type_leak(scope: object) -> None:
     payload = {
-        "version": 3,
+        "version": 4,
         **runtime_build_fingerprint(native_runtime_staticlib_identity()),
     }
     payload["build_identity_scope"] = scope
@@ -427,17 +427,17 @@ def test_fingerprint_reader_rejects_duplicate_keys_and_restored_mtime(
 ) -> None:
     path = tmp_path / "identity.json"
     payload = {
-        "version": 3,
+        "version": 4,
         **runtime_build_fingerprint(native_runtime_staticlib_identity()),
     }
     original = json.dumps(payload)
     path.write_text(original, encoding="utf-8")
     assert fingerprints._read_runtime_fingerprint(path) == payload
     before = path.stat()
-    path.write_text(original.replace('"version": 3', '"version": 2'), encoding="utf-8")
+    path.write_text(original.replace('"version": 4', '"version": 3'), encoding="utf-8")
     os.utime(path, ns=(before.st_atime_ns, before.st_mtime_ns))
     assert fingerprints._read_runtime_fingerprint(path) is None
-    path.write_text('{"version":3,' + original[1:], encoding="utf-8")
+    path.write_text('{"version":4,' + original[1:], encoding="utf-8")
     assert fingerprints._read_runtime_fingerprint(path) is None
 
 
@@ -2635,11 +2635,12 @@ def test_selected_sdk_search_context_precedes_user_roots_without_recapture(
     (foreign / "libc.a").write_bytes(b"foreign libc must not shadow selected SDK")
     flags = ("-L", "native=" + str(foreign), "--cfg", "user_preserved")
     key = "CARGO_TARGET_WASM32_WASIP1_RUSTFLAGS" if source == "target" else source
-    value = (
-        "\x1f".join(flags)
-        if source == "CARGO_ENCODED_RUSTFLAGS"
-        else __import__("shlex").join(flags)
-    )
+    rule = {
+        "target": FlagStringRule.CARGO_LIST,
+        "RUSTFLAGS": FlagStringRule.CARGO_RUSTFLAGS,
+        "CARGO_ENCODED_RUSTFLAGS": FlagStringRule.CARGO_ENCODED,
+    }[source]
+    value = rule.encode(flags, variable=key)
     installation = readonly_wasi_sdk()
     captured = []
     original = resource_custody.CargoResourceRoot.walk
@@ -2818,8 +2819,8 @@ def test_combined_runtime_plan_applies_target_policy_after_cargo_features(
         incremental_enabled=False,
         env=environment,
         artifact_selection=specs.RUNTIME_CDYLIB_ARTIFACTS,
-        runtime_exports="",
-        link_flags="",
+        runtime_exports=(),
+        link_flags=(),
         cargo_rustflags=(),
         fingerprint_rustflags=(),
         no_default_features=True,

@@ -315,8 +315,8 @@ def test_codegen_pair_retains_public_abi_without_enabling_unrequested_domains(
         reloc=True,
         **common,
     )
-    assert "--export-if-defined=molt_add" in reloc.runtime_exports
-    assert "--export-if-defined=PyTuple_New" in reloc.runtime_exports
+    assert "link-arg=--export-if-defined=molt_add" in reloc.runtime_exports
+    assert "link-arg=--export-if-defined=PyTuple_New" in reloc.runtime_exports
     assert reloc.runtime_exports == shared.runtime_exports
     assert "stdlib_crypto" not in reloc.fingerprint_features
 
@@ -681,6 +681,11 @@ def test_runtime_publication_authority_is_exact_and_content_addressed(
 
 
 def test_reloc_and_shared_specs_share_compile_but_differ_in_fingerprint() -> None:
+    from molt._wasm_abi_generated import (
+        WASM_RESERVED_RUNTIME_CALLABLE_BASE,
+        WASM_RESERVED_RUNTIME_CALLABLE_COUNT,
+    )
+
     root = _compiler_root()
     shared, reloc = _specs(root)
     assert shared.fingerprint is not None and reloc.fingerprint is not None
@@ -695,8 +700,23 @@ def test_reloc_and_shared_specs_share_compile_but_differ_in_fingerprint() -> Non
     # ...but the artifacts have distinct content identities (link args differ).
     assert shared.fingerprint["hash"] != reloc.fingerprint["hash"]
     # Shared link flags carry the split-runtime import ABI.
-    for flag in ("--import-memory", "--import-table", "--growable-table"):
-        assert flag in shared.link_flags
+    table_base = (
+        1
+        + WASM_RESERVED_RUNTIME_CALLABLE_BASE
+        + 2 * WASM_RESERVED_RUNTIME_CALLABLE_COUNT
+    )
+    assert shared.link_flags == (
+        "-C",
+        "link-arg=--import-memory",
+        "-C",
+        "link-arg=--import-table",
+        "-C",
+        "link-arg=--growable-table",
+        "-C",
+        f"link-arg=--table-base={table_base}",
+        *shared.runtime_exports,
+    )
+    assert reloc.link_flags == reloc.runtime_exports
 
 
 def test_explicit_sdk_verify_rejects_changed_linker(
@@ -795,7 +815,7 @@ def test_native_plan_is_the_pre_staging_runtime_export_authority(
     for spec in specs:
         assert "stdlib_crypto" in spec.fingerprint_features
         for symbol in plan.runtime_export_symbols():
-            assert f"--export-if-defined={symbol}" in spec.runtime_exports
+            assert f"link-arg=--export-if-defined={symbol}" in spec.runtime_exports
     assert specs[0].fingerprint_features == specs[1].fingerprint_features
 
 
@@ -866,7 +886,7 @@ def test_staticlib_compile_identity_survives_final_export_expansion_and_relinks(
         artifact=staticlib,
     )
 
-    linked: list[tuple[Path, str]] = []
+    linked: list[tuple[Path, tuple[str, ...]]] = []
     monkeypatch.setattr(
         runtime_wasm_build, "_build_state_root", lambda _root: state_root
     )
@@ -884,7 +904,7 @@ def test_staticlib_compile_identity_survives_final_export_expansion_and_relinks(
         output_path: Path,
         json_output: bool,
         link_timeout: float | None,
-        export_link_args: str,
+        export_link_args: tuple[str, ...],
         **_kwargs: object,
     ) -> bool:
         del json_output, link_timeout
@@ -913,7 +933,7 @@ def test_staticlib_compile_identity_survives_final_export_expansion_and_relinks(
         spec=final,
     )
     assert linked and linked[0][0] == staticlib
-    assert "--export-if-defined=molt_typing_get_origin" in linked[0][1]
+    assert "link-arg=--export-if-defined=molt_typing_get_origin" in linked[0][1]
 
 
 def test_relocation_root_feature_closure_reports_one_cargo_compile(

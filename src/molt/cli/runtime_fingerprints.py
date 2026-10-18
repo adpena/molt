@@ -22,7 +22,7 @@ from molt.exact_json import read_exact
 from molt.python_identity_common import _valid_sha256
 from molt.wasm_artifact import is_valid_wasm_binary
 
-_RUNTIME_FINGERPRINT_SCHEMA_VERSION = 3
+_RUNTIME_FINGERPRINT_SCHEMA_VERSION = 4
 _FIELDS = frozenset(
     {
         "version",
@@ -60,7 +60,10 @@ def _artifact_semantic_identity(fingerprint: Mapping[str, Any]) -> dict[str, Any
 def _runtime_fingerprint_payload_is_valid(payload: object) -> bool:
     if not isinstance(payload, dict) or set(payload) - _FIELDS:
         return False
-    if type(payload.get("version")) is not int or payload.get("version") != 3:
+    if (
+        type(payload.get("version")) is not int
+        or payload.get("version") != _RUNTIME_FINGERPRINT_SCHEMA_VERSION
+    ):
         return False
     if not _valid_sha256(payload.get("hash")):
         return False
@@ -260,7 +263,9 @@ def _artifact_needs_rebuild(
         or not _artifact_content_looks_valid(artifact)
     ):
         return True
-    if not _runtime_fingerprint_payload_is_valid({"version": 3, **fingerprint}):
+    if not _runtime_fingerprint_payload_is_valid(
+        {"version": _RUNTIME_FINGERPRINT_SCHEMA_VERSION, **fingerprint}
+    ):
         return True
     if not _runtime_fingerprint_payload_is_valid(stored_fingerprint):
         return True

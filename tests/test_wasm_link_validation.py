@@ -9913,7 +9913,7 @@ def test_shared_runtime_exports_cpython_abi_data_symbols_as_globals() -> None:
     assert {"Py_None", "PyExc_ValueError", "PyList_Type"}.issubset(data_symbols)
     args = wasm_runtime_shared_export_link_args()
     for name in ("Py_None", "PyBool_Type", "PyExc_ValueError", "PyList_Type"):
-        assert f"--export-if-defined={name}" in args, name
+        assert f"link-arg=--export-if-defined={name}" in args, name
 
 
 @pytest.mark.parametrize(

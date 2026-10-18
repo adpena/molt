@@ -22973,10 +22973,16 @@ def test_reloc_runtime_wasm_exports_runtime_owned_gpu_intrinsics(
         required_exports=None,
         required_link_features=frozenset(),
     )
-    assert "--import-memory" not in spec.cargo_rustflags
-    assert "--import-table" not in spec.cargo_rustflags
-    assert "--export-if-defined=molt_gpu_matmul_contiguous" not in spec.cargo_rustflags
-    assert "--export-if-defined=molt_gpu_matmul_contiguous" in spec.runtime_exports
+    assert "link-arg=--import-memory" not in spec.cargo_rustflags
+    assert "link-arg=--import-table" not in spec.cargo_rustflags
+    assert (
+        "link-arg=--export-if-defined=molt_gpu_matmul_contiguous"
+        not in spec.cargo_rustflags
+    )
+    assert (
+        "link-arg=--export-if-defined=molt_gpu_matmul_contiguous"
+        in spec.runtime_exports
+    )
 
 
 def _install_fake_wasm_link_runner(
