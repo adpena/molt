@@ -4920,6 +4920,7 @@ globs = [
   "tests/tools/test_lane_maturity.py",
   "tests/tools/test_powerplay_acceptance.py",
   "tests/tools/test_proof_queue_lane_maturity.py",
+  "tests/tools/test_proof_queue_disk_capacity.py",
   "tests/tools/test_disk_guard.py",
 ]
 gates = [
@@ -4930,6 +4931,7 @@ pytest = [
   "tests/tools/test_lane_maturity.py",
   "tests/tools/test_powerplay_acceptance.py",
   "tests/tools/test_proof_queue_lane_maturity.py",
+  "tests/tools/test_proof_queue_disk_capacity.py",
   "tests/tools/test_disk_guard.py",
   "tests/tools/test_check_gate_liveness.py",
 ]

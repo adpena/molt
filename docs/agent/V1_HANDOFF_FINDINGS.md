@@ -137,11 +137,17 @@ that residual classification cost remains a V1-07 obligation. Normal regex
 buffer execution exits cleanly, but does not independently qualify the earlier
 exceptional-shutdown observation.
 
-The remaining runtime allocation-failure, compiled split-runtime and integration
-qualification is held at development storage admission. The allocation gate
-refused before Cargo compilation; it supplies no runtime pass or failure.
-The source migration and bounded target results above do not qualify those
-unexecuted consumers or authorize release acceptance.
+Mac runtime allocation-failure, compiled split-runtime and integration
+qualification remains held at development storage admission. Its allocation
+gate refused before Cargo compilation and supplies no runtime pass or failure.
+The existing Linux VM admits storage, but tool capture exposed queue overrides
+arriving after DX had already selected cache wrappers and derived output roots.
+One requested environment now feeds validation, admission and DX resolution;
+the existing child-delivery and queue-owned custody rules remain intact. Its
+regression fails on the old ordering and the owning 22 controls pass on macOS;
+actual Linux guarded replay remains required. This correction is development
+work and adds nothing to emitted programs. The bounded target results above do
+not qualify unexecuted consumers or authorize release acceptance.
 
 Local landing policy merges plain pytest targets into one parallel invocation;
 selector-bearing gates retain their declared scope. The driver and policy share

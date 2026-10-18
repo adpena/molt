@@ -375,7 +375,7 @@ The wrapper conflict was reconfirmed by native CI run `30211145633` job `8981749
 | `apparatus-learning-protection` | 12 | 2 |
 | `performance-measurement` | 25 | 0 |
 | `apparatus-a11` | 10 | 4 |
-| `apparatus-a8-a12-disk-reclaim` | 11 | 2 |
+| `apparatus-a8-a12-disk-reclaim` | 12 | 2 |
 | `import-symbol-gate` | 2 | 1 |
 | `phase-exit-manifest` | 7 | 1 |
 | `public-contract` | 19 | 1 |
