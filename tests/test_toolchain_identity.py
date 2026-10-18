@@ -1455,3 +1455,32 @@ def test_digest_cache_prunes_rows_past_the_age_budget(
     with sqlite3.connect(store) as connection:
         paths = {row[0] for row in connection.execute("SELECT path FROM digests")}
     assert paths == {os.fspath(new)}
+
+
+@pytest.mark.skipif(
+    os.name == "nt" or os.geteuid() == 0,
+    reason="POSIX directory permissions; root traverses mode-000 directories",
+)
+def test_path_search_skips_a_directory_it_cannot_traverse(tmp_path):
+    # execvp skips a PATH directory that answers EACCES and keeps searching;
+    # an unreadable entry earlier on PATH must not end the search.
+    import shutil
+
+    blocked = tmp_path / "blocked"
+    blocked.mkdir()
+    selected = tmp_path / "selected"
+    selected.mkdir()
+    tool = selected / "molt-probe-tool"
+    tool.write_bytes(b"#!/bin/sh\n")
+    tool.chmod(0o755)
+    blocked.chmod(0)
+    try:
+        path = os.pathsep.join((str(blocked), str(selected)))
+        expected = shutil.which("molt-probe-tool", path=path)
+        assert expected == str(tool)
+        found = identity.find_executable(
+            "molt-probe-tool", environment={"PATH": path}, cwd=tmp_path
+        )
+        assert found == tool
+    finally:
+        blocked.chmod(0o755)
