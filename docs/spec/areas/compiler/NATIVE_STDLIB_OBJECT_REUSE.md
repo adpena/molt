@@ -30,7 +30,12 @@ the canonical versioned FunctionIR contract. It also binds every field of the
 admitted shared-stdlib compiler manifest except its whole-program `cache_key`.
 In particular the complete cache variant, compiler fingerprint, exact profile,
 backend selection, runtime callable semantics and canonical codegen environment
-remain exact. The executing backend file's SHA256 and the effective Cranelift
+remain exact. The manifest carries the object variant: the build configuration
+with the codegen environment projected to the native-worker roles a job reads
+(`native_object_environment_inputs`). The program context (entry module and
+stdlib module set) only selects the functions of each job and never reaches the
+worker, so it stays out of the manifest; whole-program keys and the archive key
+bind it. A new import therefore keeps every unchanged constituent. The executing backend file's SHA256 and the effective Cranelift
 target/shared/ISA flags plus host TIR SIMD facts are additional inputs. LLVM
 builds bind the host triple, CPU and features used by its target-machine owner.
 Transport paths and timestamps are never content identity. The existing CLI

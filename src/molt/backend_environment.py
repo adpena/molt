@@ -154,19 +154,42 @@ def compilation_diagnostics_requested(env: Mapping[str, str] | None = None) -> b
     return any(name in env for name in _DIAGNOSTIC_KEYS)
 
 
+def _role_inputs(
+    env: Mapping[str, str], roles: list[_EnvironmentGroup]
+) -> dict[str, str | bool]:
+    inputs: dict[str, str | bool] = {}
+    for role in roles:
+        for name in role.keys:
+            if name in env:
+                inputs[name] = True if role.projection == "presence" else env[name]
+    return dict(sorted(inputs.items()))
+
+
 def codegen_environment_inputs(
     *, is_wasm: bool, env: Mapping[str, str]
 ) -> dict[str, str | bool]:
     """Project actual operation settings, excluding transport and observation."""
     target = "wasm" if is_wasm else "native"
-    inputs: dict[str, str | bool] = {}
-    for role in _CATALOG.values():
-        if role.request_reuse_only or role.semantic_target not in (target, "both"):
-            continue
-        for name in role.keys:
-            if name in env:
-                inputs[name] = True if role.projection == "presence" else env[name]
-    return dict(sorted(inputs.items()))
+    return _role_inputs(
+        env,
+        [
+            role
+            for role in _CATALOG.values()
+            if not role.request_reuse_only and role.semantic_target in (target, "both")
+        ],
+    )
+
+
+def native_object_environment_inputs(env: Mapping[str, str]) -> dict[str, str | bool]:
+    """Project the settings one self-contained native object job reads.
+
+    These are the native-worker roles, the values molt-ir's
+    ``NativeCodegenEnvironment`` captures into every batch job. The program's
+    context (entry module, stdlib module set) only chooses which functions
+    form each job; it never reaches the worker. Objects shared across programs
+    bind this projection, so a new import cannot invalidate their machine code.
+    """
+    return _role_inputs(env, [role for role in _CATALOG.values() if role.native_worker])
 
 
 def backend_debug_artifact_dir(env: Mapping[str, str]) -> Path:

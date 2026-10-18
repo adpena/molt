@@ -21,6 +21,7 @@ from molt.default_paths import (
 from molt.backend_environment import (
     environment_keys,
     codegen_environment_inputs,
+    native_object_environment_inputs,
     request_environment_inputs,
 )
 from molt import backend_daemon_custody as _daemon_custody
@@ -289,6 +290,17 @@ def _backend_codegen_env_digest(
         "schema": _BACKEND_CODEGEN_ENV_DIGEST_SCHEMA_VERSION,
         "target": "wasm" if is_wasm else "native",
         "inputs": _backend_codegen_env_inputs(is_wasm=is_wasm, env=env),
+    }
+    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def _native_object_codegen_env_digest(env: Mapping[str, str]) -> str:
+    """Digest the settings a native object job reads, without program context."""
+    payload: dict[str, object] = {
+        "schema": _BACKEND_CODEGEN_ENV_DIGEST_SCHEMA_VERSION,
+        "target": "native-object",
+        "inputs": native_object_environment_inputs(env),
     }
     encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
     return hashlib.sha256(encoded).hexdigest()

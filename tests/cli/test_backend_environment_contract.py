@@ -1,3 +1,4 @@
+import json
 from pathlib import Path
 
 import pytest
@@ -209,8 +210,12 @@ def test_optional_stdlib_cache_requires_distinct_owned_output(tmp_path, output, 
     )
 
 
-def test_operation_cache_keys_follow_selected_inputs_and_ignore_ambient_custody(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+def _native_cache_setup(
+    tmp_path: Path,
+    *,
+    entry: str = "main",
+    profile: str = "dev",
+    stdlib_modules: tuple[str, ...] = (),
 ):
     from molt.cli import backend_cache_setup
     from molt.cli.backend_artifact_contract import resolve_backend_artifact_contract
@@ -218,41 +223,47 @@ def test_operation_cache_keys_follow_selected_inputs_and_ignore_ambient_custody(
     from molt.cli.rust_cpu_policy import RustCpuPolicy
     from molt.target_python import TargetPythonVersion
 
+    return backend_cache_setup._prepare_backend_cache_setup(
+        backend_bin=tmp_path / "backend",
+        cache_enabled=True,
+        ir={"functions": []},
+        target="native",
+        artifact_contract=resolve_backend_artifact_contract(
+            target="native", emit_mode="bin"
+        ),
+        profile=profile,
+        runtime_cargo_profile="dev-fast",
+        backend_cargo_profile="dev-fast",
+        emit_mode="bin",
+        is_wasm=False,
+        linked=False,
+        wasm_layout=None,
+        project_root=tmp_path,
+        cache_dir=str(tmp_path / "cache"),
+        output_artifact=tmp_path / "output.a",
+        warnings=[],
+        entry_module=entry,
+        module_graph_metadata=_ModuleGraphMetadata(
+            logical_source_path_by_module={},
+            entry_override_by_module={},
+            module_is_namespace_by_module={},
+            module_is_package_by_module={},
+            module_execution_kind_by_module={},
+            frontend_module_costs=None,
+            stdlib_like_by_module={name: True for name in stdlib_modules},
+        ),
+        target_python=TargetPythonVersion(3, 12, 0),
+        backend_compiler_fingerprint="selected-compiler",
+        codegen=CodegenSelection(),
+        rust_cpu=RustCpuPolicy.BASELINE,
+    )
+
+
+def test_operation_cache_keys_follow_selected_inputs_and_ignore_ambient_custody(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
     def setup(entry: str = "main", profile: str = "dev"):
-        return backend_cache_setup._prepare_backend_cache_setup(
-            backend_bin=tmp_path / "backend",
-            cache_enabled=True,
-            ir={"functions": []},
-            target="native",
-            artifact_contract=resolve_backend_artifact_contract(
-                target="native", emit_mode="bin"
-            ),
-            profile=profile,
-            runtime_cargo_profile="dev-fast",
-            backend_cargo_profile="dev-fast",
-            emit_mode="bin",
-            is_wasm=False,
-            linked=False,
-            wasm_layout=None,
-            project_root=tmp_path,
-            cache_dir=str(tmp_path / "cache"),
-            output_artifact=tmp_path / "output.a",
-            warnings=[],
-            entry_module=entry,
-            module_graph_metadata=_ModuleGraphMetadata(
-                logical_source_path_by_module={},
-                entry_override_by_module={},
-                module_is_namespace_by_module={},
-                module_is_package_by_module={},
-                module_execution_kind_by_module={},
-                frontend_module_costs=None,
-                stdlib_like_by_module={},
-            ),
-            target_python=TargetPythonVersion(3, 12, 0),
-            backend_compiler_fingerprint="selected-compiler",
-            codegen=CodegenSelection(),
-            rust_cpu=RustCpuPolicy.BASELINE,
-        )
+        return _native_cache_setup(tmp_path, entry=entry, profile=profile)
 
     for name in environment_keys(
         "common",
@@ -327,3 +338,44 @@ def test_catalog_roles_separate_semantics_from_observation_and_transport(is_wasm
             )
             == baseline
         )
+
+
+def test_stdlib_constituent_authority_binds_object_inputs_not_program_context(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """The backend keys every stdlib archive constituent by this manifest
+    without its cache_key (shared_stdlib_cache/publish/objects.rs), together
+    with the constituent's own job. An added import or another entry module
+    changes the program, never an unchanged constituent's machine code.
+    """
+    for name in environment_keys(
+        "common", "native", "native_context", "native_partition", "native_reuse"
+    ):
+        monkeypatch.delenv(name, raising=False)
+
+    def constituent_authority(selected) -> dict[str, object]:
+        manifest = json.loads(selected.stdlib_object_manifest)
+        del manifest["cache_key"]
+        return manifest
+
+    def program_context(selected) -> dict[str, str]:
+        return {
+            name: selected.backend_environment[name]
+            for name in environment_keys("native_context")
+        }
+
+    baseline = _native_cache_setup(tmp_path, stdlib_modules=("sys", "warnings"))
+    for changed in (
+        _native_cache_setup(tmp_path, stdlib_modules=("shlex", "sys", "warnings")),
+        _native_cache_setup(tmp_path, entry="tool", stdlib_modules=("sys", "warnings")),
+    ):
+        # The program's own artifacts still follow its context.
+        assert program_context(changed) != program_context(baseline)
+        assert changed.cache_key != baseline.cache_key
+        assert changed.stdlib_object_cache_key != baseline.stdlib_object_cache_key
+        assert constituent_authority(changed) == constituent_authority(baseline)
+
+    # Settings an object job reads still separate constituents.
+    monkeypatch.setenv("MOLT_BACKEND_REGALLOC_ALGORITHM", "single_pass")
+    tuned = _native_cache_setup(tmp_path, stdlib_modules=("sys", "warnings"))
+    assert constituent_authority(tuned) != constituent_authority(baseline)
