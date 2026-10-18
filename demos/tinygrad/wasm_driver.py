@@ -1,7 +1,8 @@
 """
 WASM entry point for Falcon-OCR inference.
 
-Compiled with: molt build wasm_driver.py --target wasm
+Compiled from the repository root with:
+    molt build --module demos.tinygrad.wasm_driver --target wasm
 
 Exports two functions consumed by the browser-side loader and the
 Cloudflare Worker:
