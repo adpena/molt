@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from molt.process_environment import ProcessEnvironmentBuilder
+
 import os
 import hashlib
 import json
@@ -140,7 +142,7 @@ def _resolve(
     wasi_sdk: WasiSdkInstallation | None = None,
 ) -> schema.RuntimeBuildIdentity:
     target = None if kind == "native" else "wasm32-wasip1"
-    ambient = cargo_plans._CargoEnvironment(os.environ)
+    ambient = ProcessEnvironmentBuilder(os.environ)
     # Ambient cc-rs inputs (the RunContext exports CFLAGS_<wasm target>, and
     # Xcode shells export SDKROOT) would enter every identity resolved here.
     # Each test supplies the exact C environment it asserts through extra_env.

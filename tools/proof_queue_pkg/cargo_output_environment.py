@@ -12,6 +12,7 @@ from molt.dx import (
     generated_session_id,
     proof_scratch_root,
 )
+from molt.process_environment import NameRule, ProcessEnvironment
 from tools.proof_queue_pkg import command_admission, command_identity
 
 TEMPORARY_VARIABLE_NAMES = ("TEMP", "TMP", "TMPDIR")
@@ -21,10 +22,6 @@ def require_independent_cargo_target(env: Mapping[str, str]) -> None:
     """A queued driver cannot replace the Cargo generation it was admitted into."""
     if env.get(PROOF_SCRATCH_ROOT_ENV, "").strip():
         raise ValueError("queued Cargo ownership forbids secondary target relocation")
-
-
-def _name_key(name: str) -> str:
-    return name.upper() if os.name == "nt" else name
 
 
 @dataclass(frozen=True)
@@ -165,7 +162,7 @@ class CargoOutputEnvironment:
         return bindings
 
     def owns(self, name: str) -> bool:
-        return _name_key(name) in self.names
+        return NameRule.host().key(name) in self.names
 
     def workspace_environment(self, env: Mapping[str, str]) -> dict[str, str]:
         """Use the existing compiler-input projection, retaining pinned isolation.
@@ -180,10 +177,11 @@ class CargoOutputEnvironment:
         )
 
     def caller_environment(self, env: Mapping[str, str]) -> dict[str, str]:
-        return {name: value for name, value in env.items() if not self.owns(name)}
+        return ProcessEnvironment(env).without(self.names).child_block()
 
     def bind(self, env: Mapping[str, str], *, target: Path) -> dict[str, str]:
-        self.validate_request_environment(env)
+        environment = ProcessEnvironment(env)
+        self.validate_request_environment(environment)
         if (
             not target.is_absolute()
             or not target.is_dir()
@@ -193,19 +191,18 @@ class CargoOutputEnvironment:
             raise ValueError(
                 "Cargo output environment requires the canonical leased target directory"
             )
-        bindings = self._bindings(env, target=target)
+        bindings = self._bindings(environment, target=target)
         if self.scratch_names and not Path(bindings[self.scratch_names[0]]).is_dir():
             raise ValueError("Python Cargo proof scratch is not an existing directory")
-        selected = self.caller_environment(env)
-        selected.update(bindings)
-        return selected
+        return environment.without(self.names).updated(bindings).child_block()
 
     def validate(self, env: Mapping[str, str], *, target: Path) -> None:
         # Do not reopen outputs: the parent also verifies historical terminal
         # receipts after an owner has retired a generation. Values, not current
         # artifact existence, establish this binding.
-        actual = {name: value for name, value in env.items() if self.owns(name)}
-        expected = self._bindings(env, target=target)
+        environment = ProcessEnvironment(env)
+        actual = {name: environment[name] for name in self.names if name in environment}
+        expected = self._bindings(environment, target=target)
         if actual != expected:
             raise ValueError(
                 "Cargo output environment differs from its leased generation"
