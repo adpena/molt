@@ -55,7 +55,7 @@ from __future__ import annotations
 from typing import Iterable, Mapping, Sequence
 
 from molt._intrinsic_symbols import (
-    INTRINSIC_SYMBOL_NAMES,
+    INTRINSIC_SIGNATURES,
     intrinsic_runtime_symbol_name,
 )
 from molt._runtime_feature_gates import (
@@ -73,7 +73,7 @@ _PROTECTED_RUNTIME_ENTRYPOINTS = _function_references.PROTECTED_RUNTIME_ENTRYPOI
 reachable_function_names = _function_references.reachable_function_names
 
 _RUNTIME_INTRINSIC_SYMBOL_NAMES: frozenset[str] = frozenset(
-    INTRINSIC_SYMBOL_NAMES.values()
+    symbol for symbol, _arity in INTRINSIC_SIGNATURES.values()
 )
 
 # ---------------------------------------------------------------------------

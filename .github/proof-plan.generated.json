@@ -9214,7 +9214,7 @@
       "local.import-symbol-gate.0": "python tools/import_symbol_gate.py",
       "local.import-symbol-gate.pytest": "python -m pytest -q -n auto --molt-worker-memory-gb=1.75 tests/tools/test_import_symbol_gate.py",
       "local.intrinsic-registry.0": "python tools/gen_intrinsics.py --check",
-      "local.intrinsic-registry.pytest": "python -m pytest -q -n auto --molt-worker-memory-gb=1.75 tests/test_gen_intrinsics.py",
+      "local.intrinsic-registry.pytest": "python -m pytest -q -n auto --molt-worker-memory-gb=2.5 tests/test_gen_intrinsics.py tests/test_frontend_builtin_call_lowering.py::test_intrinsic_alias_preserves_declaration_and_canonical_executable tests/test_frontend_builtin_call_lowering.py::test_intrinsic_lowering_uses_isolated_python_package_without_runtime_sources tests/test_frontend_builtin_call_lowering.py::test_frontend_intrinsic_function_objects_use_runtime_default_authority tests/test_frontend_builtin_call_lowering.py::test_frontend_builtin_func_specs_are_wasm_manifest_backed tests/test_stdlib_intrinsic_registry.py tests/test_stdlib_inspect_coroutine_marking.py tests/cli/test_required_features_reachability.py tests/cli/test_wasm_runtime_exports.py tests/cli/test_cli_lowering_cache_tooling_scope.py::test_kept_analysis_and_intrinsic_edits_still_invalidate",
       "local.llvm-runtime-abi.0": "python tools/llvm_runtime_abi_audit.py --check",
       "local.llvm-runtime-abi.pytest": "python -m pytest -q -n auto --molt-worker-memory-gb=1.75 tests/test_llvm_runtime_abi_audit.py",
       "local.maintained-zlib-counters.0": "cargo test --locked --profile dev-fast -p zlib-rs@0.6.8 --lib --no-default-features --features rust-allocator,std,ZLIB_DEBUG -- counter_wrap --nocapture --test-threads=1",
@@ -9651,14 +9651,19 @@
           "local.intrinsic-registry.0",
           "local.intrinsic-registry.pytest"
         ],
-        "description": "Intrinsic registry: manifest/category sync + generated resolver ownership.",
+        "description": "Intrinsic registry: generated signatures, frontend lowering, reachability and resolver ownership.",
         "gates": [
           "python tools/gen_intrinsics.py --check"
         ],
         "globs": [
           "tools/gen_intrinsics.py",
           "src/molt/_intrinsics.pyi",
+          "src/molt/_intrinsic_symbols.py",
           "src/molt/_runtime_feature_gates.py",
+          "src/molt/frontend/_types.py",
+          "src/molt/frontend/lowering/runtime_references.py",
+          "src/molt/cli/required_features.py",
+          "src/molt/_wasm_runtime_exports.py",
           "runtime/molt-runtime/src/intrinsics/manifest.pyi",
           "runtime/molt-runtime/src/intrinsics/categories.toml",
           "runtime/molt-runtime/src/intrinsics/generated.rs",
@@ -9668,7 +9673,16 @@
         ],
         "name": "intrinsic-registry",
         "pytest": [
-          "tests/test_gen_intrinsics.py"
+          "tests/test_gen_intrinsics.py",
+          "tests/test_frontend_builtin_call_lowering.py::test_intrinsic_alias_preserves_declaration_and_canonical_executable",
+          "tests/test_frontend_builtin_call_lowering.py::test_intrinsic_lowering_uses_isolated_python_package_without_runtime_sources",
+          "tests/test_frontend_builtin_call_lowering.py::test_frontend_intrinsic_function_objects_use_runtime_default_authority",
+          "tests/test_frontend_builtin_call_lowering.py::test_frontend_builtin_func_specs_are_wasm_manifest_backed",
+          "tests/test_stdlib_intrinsic_registry.py",
+          "tests/test_stdlib_inspect_coroutine_marking.py",
+          "tests/cli/test_required_features_reachability.py",
+          "tests/cli/test_wasm_runtime_exports.py",
+          "tests/cli/test_cli_lowering_cache_tooling_scope.py::test_kept_analysis_and_intrinsic_edits_still_invalidate"
         ],
         "toolchains": [
           "python",

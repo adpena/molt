@@ -358,7 +358,7 @@ The wrapper conflict was reconfirmed by native CI run `30211145633` job `8981749
 | `frontend-diagnostics` | 6 | 1 |
 | `wasm-abi-registry` | 13 | 1 |
 | `tinygrad-op-contract` | 9 | 2 |
-| `intrinsic-registry` | 9 | 1 |
+| `intrinsic-registry` | 14 | 1 |
 | `codec-tables` | 7 | 1 |
 | `stringprep-tables` | 3 | 1 |
 | `llvm-runtime-abi` | 8 | 1 |

@@ -944,12 +944,13 @@ def _render_intrinsic_symbols_py(entries: list[IntrinsicEntry]) -> str:
     )
     lines.append("# DO NOT EDIT BY HAND.\n\n")
     lines.append("from __future__ import annotations\n\n")
-    lines.append("INTRINSIC_SYMBOL_NAMES: dict[str, str] = {\n")
+    lines.append("INTRINSIC_SIGNATURES: dict[str, tuple[str, int]] = {\n")
     for entry in entries:
-        lines.append(f'    "{entry.name}": "{entry.symbol}",\n')
+        lines.append(f'    "{entry.name}": ("{entry.symbol}", {entry.arity}),\n')
     lines.append("}\n\n\n")
     lines.append("def intrinsic_runtime_symbol_name(name: str) -> str:\n")
-    lines.append("    return INTRINSIC_SYMBOL_NAMES.get(name, name)\n")
+    lines.append("    signature = INTRINSIC_SIGNATURES.get(name)\n")
+    lines.append("    return name if signature is None else signature[0]\n")
     return "".join(lines)
 
 

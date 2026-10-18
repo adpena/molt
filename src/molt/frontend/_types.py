@@ -11,7 +11,6 @@ from __future__ import annotations
 import ast
 from dataclasses import dataclass, field
 from enum import StrEnum
-from pathlib import Path
 from typing import (
     TYPE_CHECKING,
     Any,
@@ -24,12 +23,12 @@ from typing import (
     overload,
 )
 
+from molt._intrinsic_symbols import INTRINSIC_SIGNATURES
 from molt._wasm_abi_generated import wasm_runtime_callable_arity
 from molt.compat import CompatibilityError, CompatibilityReporter, FallbackPolicy
 from molt.frontend.cfg_analysis import CFGGraph, ControlMaps, build_cfg
 from molt.frontend.module_publication import SourceModulePublication
 from molt.type_facts import normalize_type_hint
-from molt.source_root import compiler_source_root
 
 if TYPE_CHECKING:
     # _TrackedOpsList's `owner` is the assembled generator. Imported under
@@ -953,92 +952,12 @@ BUILTIN_FUNC_SPECS: dict[str, BuiltinFuncSpec] = {
     ),
 }
 
-# ── intrinsic arity lookup (compile-time optimisation) ────────────
-# Build a reverse map from runtime name -> arity so that compile-time
-# _require_intrinsic validation can confirm known intrinsic symbols
-# before lowering them to runtime resolver calls.
-
-_INTRINSIC_ARITY_CACHE: dict[str, int] | None = None
-_INTRINSIC_SYMBOL_CACHE: dict[str, str] | None = None
-
-
-def _intrinsic_signature_paths() -> list[Path]:
-    return [
-        Path(__file__).resolve().parent.parent / "_intrinsics.pyi",
-        compiler_source_root()
-        / "runtime"
-        / "molt-runtime"
-        / "src"
-        / "intrinsics"
-        / "manifest.pyi",
-    ]
-
-
-def _split_intrinsic_params(params_str: str) -> list[str]:
-    if not params_str:
-        return []
-    depth = 0
-    parts: list[str] = []
-    current = ""
-    for ch in params_str:
-        if ch in "([{":
-            depth += 1
-            current += ch
-        elif ch in ")]}":
-            depth -= 1
-            current += ch
-        elif ch == "," and depth == 0:
-            parts.append(current.strip())
-            current = ""
-        else:
-            current += ch
-    if current.strip():
-        parts.append(current.strip())
-    return [p for p in parts if p and not p.startswith("*")]
-
-
-def _iter_intrinsic_signatures() -> Iterable[tuple[str, list[str]]]:
-    import re as _re
-
-    sig_re = _re.compile(r"^def\s+(\w+)\(([^)]*)\)")
-    for pyi_path in _intrinsic_signature_paths():
-        if not pyi_path.exists():
-            continue
-        text = pyi_path.read_text(encoding="utf-8")
-        collapsed: list[str] = []
-        buf = ""
-        for line in text.splitlines():
-            if buf:
-                buf += " " + line.strip()
-                if ")" in buf:
-                    collapsed.append(buf)
-                    buf = ""
-            elif line.startswith("def "):
-                if ")" in line:
-                    collapsed.append(line)
-                else:
-                    buf = line.strip()
-        for line in collapsed:
-            match = sig_re.match(line)
-            if match:
-                yield match.group(1), _split_intrinsic_params(match.group(2).strip())
-
-
-def _ensure_intrinsic_arity_cache() -> dict[str, int]:
-    """Return the cached runtime-name -> arity map for intrinsic callables."""
-    global _INTRINSIC_ARITY_CACHE
-    from molt import input_report
-
-    for path in _intrinsic_signature_paths():
-        input_report.report_data_file(path)
-    if _INTRINSIC_ARITY_CACHE is None:
-        cache: dict[str, int] = {}
-        for spec in BUILTIN_FUNC_SPECS.values():
-            cache[spec.runtime] = _builtin_func_abi_arity(spec)
-        for name, params in _iter_intrinsic_signatures():
-            cache.setdefault(name, len(params))
-        _INTRINSIC_ARITY_CACHE = cache
-    return _INTRINSIC_ARITY_CACHE
+# Intrinsic declarations and builtin specifications are separate closed domains.
+# Index existing builtin records without executing ABI validation during import:
+# the WASM ABI generator itself imports this frontend metadata.
+_BUILTIN_FUNC_SPECS_BY_RUNTIME = {
+    spec.runtime: spec for spec in BUILTIN_FUNC_SPECS.values()
+}
 
 
 def _builtin_func_declared_arity(spec: BuiltinFuncSpec) -> int:
@@ -1064,54 +983,21 @@ def _builtin_func_abi_arity(spec: BuiltinFuncSpec) -> int:
     return manifest_arity
 
 
-def _ensure_intrinsic_symbol_cache() -> dict[str, str]:
-    """Return the cached intrinsic name -> canonical runtime symbol map."""
-    global _INTRINSIC_SYMBOL_CACHE
-    from molt import input_report
-
-    generated_path = (
-        compiler_source_root()
-        / "runtime"
-        / "molt-runtime"
-        / "src"
-        / "intrinsics"
-        / "generated.rs"
-    )
-    input_report.report_data_file(generated_path)
-    if _INTRINSIC_SYMBOL_CACHE is None:
-        import re as _re
-
-        cache: dict[str, str] = {}
-        if generated_path.exists():
-            text = generated_path.read_text(encoding="utf-8")
-            entry_re = _re.compile(
-                r'IntrinsicSpec\s*\{\s*name:\s*"(?P<name>[^"]+)"\s*,\s*symbol:\s*"(?P<symbol>[^"]+)"',
-                _re.DOTALL,
-            )
-            for match in entry_re.finditer(text):
-                cache.setdefault(match.group("name"), match.group("symbol"))
-        _INTRINSIC_SYMBOL_CACHE = cache
-    return _INTRINSIC_SYMBOL_CACHE
-
-
-def _canonical_intrinsic_runtime_name(runtime_name: str) -> str:
-    return _ensure_intrinsic_symbol_cache().get(runtime_name, runtime_name)
+def _intrinsic_signature(runtime_name: str) -> tuple[str, int] | None:
+    """Resolve a declared intrinsic or frontend builtin without source discovery."""
+    signature = INTRINSIC_SIGNATURES.get(runtime_name)
+    if signature is not None:
+        return signature
+    builtin = _BUILTIN_FUNC_SPECS_BY_RUNTIME.get(runtime_name)
+    if builtin is None:
+        return None
+    return runtime_name, _builtin_func_abi_arity(builtin)
 
 
 def _intrinsic_arity_exact(runtime_name: str) -> int | None:
-    """Return the parameter count for *runtime_name*, or ``None`` if unknown."""
-    return _ensure_intrinsic_arity_cache().get(runtime_name)
-
-
-def _intrinsic_arity(runtime_name: str) -> int:
-    """Return the parameter count for *runtime_name*.
-
-    1. Check BUILTIN_FUNC_SPECS (keyed by Python name, value has .runtime).
-    2. Fall back to parsing molt/_intrinsics.pyi for ``def <name>(...)``.
-    3. Default to 0 if not found anywhere.
-    """
-    arity = _intrinsic_arity_exact(runtime_name)
-    return 0 if arity is None else arity
+    """Return total ABI argument slots; unknown names remain distinct from zero."""
+    signature = _intrinsic_signature(runtime_name)
+    return None if signature is None else signature[1]
 
 
 @dataclass(frozen=True)
@@ -1374,14 +1260,9 @@ __all__ = [
     "_MOLT_MODULE_CHUNK_PREFIX",
     "MOLT_BIND_KIND_CLINIC_NAMED",
     "BUILTIN_FUNC_SPECS",
-    "_INTRINSIC_ARITY_CACHE",
-    "_INTRINSIC_SYMBOL_CACHE",
     "_builtin_func_abi_arity",
-    "_ensure_intrinsic_arity_cache",
-    "_ensure_intrinsic_symbol_cache",
-    "_canonical_intrinsic_runtime_name",
+    "_intrinsic_signature",
     "_intrinsic_arity_exact",
-    "_intrinsic_arity",
     "TryScope",
     "MethodInfo",
     "ClassInfo",

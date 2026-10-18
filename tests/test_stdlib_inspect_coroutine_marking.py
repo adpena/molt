@@ -7,7 +7,7 @@ import types
 from functools import partial
 from pathlib import Path
 
-from molt._intrinsic_symbols import INTRINSIC_SYMBOL_NAMES
+from molt._intrinsic_symbols import INTRINSIC_SIGNATURES
 
 
 def test_coroutine_mark_is_an_identity_protocol_separate_from_code_kind(monkeypatch):
@@ -19,7 +19,7 @@ def test_coroutine_mark_is_an_identity_protocol_separate_from_code_kind(monkeypa
         "molt_inspect_isasyncgenfunction": inspect.isasyncgenfunction,
     }
     # A host stub must not hide missing registration in the compiled loader.
-    assert set(predicates) <= INTRINSIC_SYMBOL_NAMES.keys()
+    assert set(predicates) <= INTRINSIC_SIGNATURES.keys()
     intrinsic.require_intrinsic = lambda name: predicates.get(name, lambda *args: None)
     monkeypatch.setitem(sys.modules, "_intrinsics", intrinsic)
     path = Path(__file__).resolve().parents[1] / "src/molt/stdlib/inspect.py"
