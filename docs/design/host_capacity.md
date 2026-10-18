@@ -124,9 +124,13 @@ telemetry preserves an inherited tree allocation within the hard guard ceiling
 and retains the conservative fallback process ceiling; zero available bytes
 remain observed pressure. The guest runtime and its memory policy are
 unaffected. Known-host nesting, pressure, explicit environment selection, RSS
-accounting and scheduler consumers have focused Python coverage. Corrected
-Linux optimizer execution and resource measurements remain required before
-acceptance.
+accounting and scheduler consumers have focused Python coverage. The corrected
+Linux/aarch64 Python 3.12 pipeline passes all nine host-boundary/final-TIR/finder
+cases and the separate GPU retained-bytes and Falcon package-entry cases with
+accepted source custody. The largest observed process tree is 4.14 GiB. These
+are scoped correctness and resource observations; the Falcon fixture uses a
+stub model. The owning Rust budget/cache controls, other matrix cells and
+comparative performance acceptance remain separate obligations.
 
 ## Storage
 

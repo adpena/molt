@@ -2303,8 +2303,6 @@ def test_runtime_import_conformance_receivers_execute_both_targets() -> None:
     assert {"pr", "main"} <= set(row.data["tiers"])
     assert row.data["resource_class"] == "compiler-build-resource"
     assert row.data["timeout_budget"] == "cold"
-    family = next(family for family in PLAN.families if family.name == "wasm")
-    assert {*receivers, json_receiver} <= set(family.inputs)
     assert "wasm" in {family.name for family in PLAN.select([fixture_list]).selected}
     for receiver in (*receivers, json_receiver, *fixture_receivers):
         assert "wasm" in {family.name for family in PLAN.select([receiver]).selected}
@@ -3290,6 +3288,177 @@ def test_toolchain_path_probe_has_one_shared_exact_decoder(tmp_path: Path) -> No
         )
     with pytest.raises(ValueError, match="did not name a file"):
         toolchain_probe.resolve_single_file_path("bin\n", probe_cwd=tmp_path)
+
+
+@pytest.mark.parametrize(
+    ("family", "path"),
+    [
+        ("platform_portability", "tests/cli/test_source_package_seal.py"),
+        ("platform_portability", "tests/test_exact_json.py"),
+        ("platform_portability", "tests/tools/test_fs_delete.py"),
+        ("platform_portability", "tests/test_temporary_artifacts.py"),
+        ("platform_portability", "tests/tools/test_cargo_bindgen_toolchain.py"),
+        (
+            "platform_portability",
+            "tests/tools/test_proof_queue_execution_custody_p0.py",
+        ),
+        ("platform_portability", "tests/tools/test_proof_supervisor_generation.py"),
+        ("platform_portability", "tests/test_wasm_linked_runner_node_flags.py"),
+        ("platform_portability", "tests/test_bench_wasm_node_resolver.py"),
+        ("platform_portability", "tests/test_exception_diagnostics.py"),
+        ("platform_portability", "tests/tools/test_memory_guard_windows_sampling.py"),
+        ("wasm", "tests/cli/test_cli_import_collection.py"),
+        ("wasm", "tests/test_browser_vfs.py"),
+        ("wasm", "tests/test_finally_pending_observer_parity.py"),
+        ("wasm", "tests/molt_diff.py"),
+        ("native_integration", "tests/cli/test_runtime_build_identity.py"),
+        ("native_integration", "tests/test_runtime_build_python.py"),
+        ("native_integration", "tests/cli/test_cli_python_source_closure.py"),
+        ("native_integration", "tests/cli/test_c_api_headers.py"),
+        ("native_integration", "tests/cli/test_cli_native_main_stub_authority.py"),
+        ("native_integration", "tests/test_native_importlib_public_api_regressions.py"),
+        ("native_integration", "tests/cli/test_backend_daemon_sequential.py"),
+        ("native_integration", "tests/cli/test_cli_build_identity.py"),
+        ("llvm", "tests/cli/test_cli_native_link_command_authority.py"),
+        ("llvm", "tests/test_native_lir_loop_join_semantics.py"),
+    ],
+)
+def test_declared_command_test_changes_select_their_ci_owner(family, path) -> None:
+    # These real receivers were absent from hand-maintained family inputs.
+    # Owning a command must suffice, including commands that select one node.
+    # Global authority changes already select every family; they cannot stand
+    # in for this command's direct ownership edge.
+    selection = replace(PLAN, authority_inputs=()).select([path])
+    assert family in {row.name for row in selection.selected}
+    assert selection.reasons[family] == (path,)
+    resolved = next(row for row in PLAN.families if row.name == family)
+    assert resolved.data["inputs"] == list(resolved.inputs)
+
+
+def test_command_target_subtrees_are_literal_and_resolved_without_scanning(
+    monkeypatch,
+) -> None:
+    family = proof_plan.ProofFamily(
+        "owner",
+        {
+            "inputs": [
+                "src/dependency.py",
+                "tests/additional*.py",
+                "tests/probes/case.py",
+            ],
+            "dependencies": [],
+        },
+    )
+    argv = [
+        "python",
+        "-m",
+        "pytest",
+        "tests/probes/",
+        "tests/probes/case.py::test[a::b]",
+        "tests/literal[0].py::test[quoted::parameter]",
+        "tests/whole_file.py::test_case",
+        "tests/whole_file.py::test_other",
+    ]
+    commands = tuple(
+        proof_plan.ProofCommand(str(index), {"family": owner, "argv": targets})
+        for index, (owner, targets) in enumerate(
+            (
+                ("owner", argv),
+                ("scheduled", ["pytest", "tests/scheduled.py"]),
+                ("unknown", ["pytest", "tests/unknown.py"]),
+            )
+        )
+    )
+    with monkeypatch.context() as scope:
+        scope.setattr(
+            proof_plan, "Path", lambda *_a, **_k: pytest.fail("no path probes")
+        )
+        proof_plan._resolve_ci_command_test_inputs((family,), commands)
+    assert family.inputs == (
+        "src/dependency.py",
+        "tests/additional*.py",
+        "tests/probes/**",
+        "tests/literal[0].py/**",
+        "tests/whole_file.py/**",
+    )
+    # Selection reads the resolved authority, without walking command argv.
+    argv.clear()
+    plan = replace(PLAN, authority_inputs=(), families=(family,), commands=())
+    for path in (
+        "tests/probes",
+        "tests/probes/deeper/new_test.py",
+        "tests/literal[0].py",
+        "tests/whole_file.py",
+        "src/dependency.py",
+        "tests/additional_future.py",
+    ):
+        assert plan.select([path]).selected == (family,)
+    for path in (
+        "tests/probes_adjacent/test.py",
+        "tests/literal0.py",
+        "tests/whole_file.py_adjacent",
+        "tests/scheduled.py",
+        "tests/unknown.py",
+    ):
+        assert not plan.select([path]).selected
+
+
+def test_command_directory_ownership_and_dependency_globs_select_ci() -> None:
+    assert _classes("tests/differential/basic/augassign_inplace_builtin_sanity.py")[
+        "platform_portability"
+    ]
+    assert not _classes("tests/differential/basic_adjacent/probe.py")[
+        "platform_portability"
+    ]
+    for family, path in (
+        ("native_integration", "tests/proof_queue_custody_test_support.py"),
+        ("native_integration", "tests/cli/test_native_link_future.py"),
+        ("wasm", "tests/wasm_linked_runner.py"),
+        ("wasm", "tests/test_wasm_future.py"),
+        ("llvm", "vendor/llvm/LICENSE.TXT"),
+    ):
+        assert _classes(path)[family]
+    projection = json.loads(gen_proof_plan._json_projection(PLAN))
+    assert projection["ci_families"] == [family.data for family in PLAN.families]
+    assert projection["scheduled_families"] == [
+        family.data for family in PLAN.scheduled_families
+    ]
+    assert all("inputs" not in family.data for family in PLAN.scheduled_families)
+
+
+@pytest.mark.parametrize(
+    ("replacement", "message"),
+    [
+        ('family = "not-a-family"', "unknown family 'not-a-family'"),
+        (
+            'argv = ["pytest", "tests/no_such_receiver.py"]',
+            "repository input does not exist",
+        ),
+        ('argv = "tests/test_exact_json.py"', "argv must be a non-empty string list"),
+    ],
+)
+def test_command_input_resolution_keeps_load_validation(
+    monkeypatch, replacement, message
+) -> None:
+    source = PLAN.path.read_text(encoding="utf-8")
+    block = re.search(
+        r'(?ms)^\[\[command\]\]\nid = "python.unit.harness"\n.*?(?=^\[\[|\Z)',
+        source,
+    )
+    assert block is not None
+    field = replacement.split(" = ", 1)[0]
+    changed = re.sub(rf"(?m)^{field} = .*?$", lambda _: replacement, block.group())
+    source = source[: block.start()] + changed + source[block.end() :]
+    original_read = Path.read_text
+    monkeypatch.setattr(
+        Path,
+        "read_text",
+        lambda path, *a, **k: (
+            source if path == PLAN.path else original_read(path, *a, **k)
+        ),
+    )
+    with pytest.raises(ValueError, match=re.escape(message)):
+        proof_plan.ProofPlan.load(PLAN.path)
 
 
 def test_manifest_rejects_missing_repository_command_inputs() -> None:
