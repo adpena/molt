@@ -26,7 +26,7 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any, Callable, Collection, Mapping, Sequence, cast
+from typing import Any, Callable, Collection, Iterator, Mapping, Sequence, cast
 
 import pytest
 
@@ -4316,7 +4316,6 @@ def test_build_module_lowering_metadata_precomputes_module_flags(
     }
     (
         logical_source_path_by_module,
-        entry_override_by_module,
         namespace_by_module,
         (is_package_by_module),
         execution_kind_by_module,
@@ -4330,8 +4329,6 @@ def test_build_module_lowering_metadata_precomputes_module_flags(
 
     assert logical_source_path_by_module["pkg"] == "/generated/pkg/__init__.py"
     assert logical_source_path_by_module["pkg.mod"] == str(module_graph["pkg.mod"])
-    assert entry_override_by_module["app_entry"] == "app_entry"
-    assert entry_override_by_module["pkg.mod"] == "app_entry"
     assert namespace_by_module["pkg"] is True
     assert namespace_by_module["pkg.mod"] is False
     assert is_package_by_module["pkg"] is True
@@ -9639,7 +9636,7 @@ def test_native_publication_rejects_export_for_a_different_containing_module(
 def test_entry_source_identity_survives_json_and_explicit_main_registry_alias() -> None:
     generator = SimpleTIRGenerator(
         module_name="application",
-        entry_module="application",
+        module_execution_kind="module",
         source_path="/virtual/application.py",
     )
     generator.visit(ast.parse("pass\n"))
@@ -17188,7 +17185,6 @@ def test_load_cached_module_lowering_result_needs_no_module_stat(
         module_path,
         source_lease=cli_module_source._ModuleSourceLease.path_backed(module_path),
         logical_source_path=str(module_path),
-        entry_override=None,
         module_execution_kind="imported",
         is_package=False,
         known_classes_snapshot={},
@@ -17359,7 +17355,6 @@ def test_module_lowering_context_payload_ignores_unrelated_func_defaults(
         module_path,
         source_lease=source_lease,
         logical_source_path="/tmp/main.py",
-        entry_override=None,
         module_execution_kind="imported",
         known_classes_snapshot={},
         parse_codec="json",
@@ -17408,7 +17403,6 @@ def test_module_lowering_context_payload_tracks_frontend_tooling_fingerprint(
         module_name="main",
         module_path=module_path,
         logical_source_path="/tmp/main.py",
-        entry_override=None,
         module_execution_kind="imported",
         known_classes_snapshot={},
         parse_codec="json",
@@ -17461,7 +17455,6 @@ def test_module_lowering_context_payload_scopes_known_modules_and_hot_functions(
         module_path,
         source_lease=source_lease,
         logical_source_path="/tmp/main.py",
-        entry_override=None,
         module_execution_kind="imported",
         known_classes_snapshot={},
         parse_codec="json",
@@ -17509,7 +17502,6 @@ def test_module_lowering_context_payload_scopes_known_classes(tmp_path: Path) ->
         module_path,
         source_lease=source_lease,
         logical_source_path="/tmp/main.py",
-        entry_override=None,
         module_execution_kind="imported",
         known_classes_snapshot={
             ClassId("main", "MainClass"): {"fields": {}},
@@ -17558,7 +17550,6 @@ def test_module_worker_payload_scopes_parallel_lowering_inputs() -> None:
         fallback_policy="error",
         module_is_namespace=False,
         module_execution_kind="imported",
-        entry_module=None,
         type_facts=None,
         enable_phi=True,
         known_modules=("alpha", "main", "unrelated"),
@@ -17612,7 +17603,6 @@ def test_module_worker_payload_reuses_prebuilt_stdlib_allowlist() -> None:
         fallback_policy="error",
         module_is_namespace=False,
         module_execution_kind="imported",
-        entry_module=None,
         type_facts=None,
         enable_phi=True,
         known_modules=("main",),
@@ -17851,7 +17841,6 @@ def test_worker_source_lease_rejects_path_drift(tmp_path: Path) -> None:
             fallback_policy="error",
             module_is_namespace=False,
             module_execution_kind="imported",
-            entry_module=None,
             type_facts=None,
             enable_phi=True,
             known_modules=("main",),
@@ -17900,7 +17889,6 @@ def test_module_lowering_context_payload_scopes_type_facts(tmp_path: Path) -> No
         module_path,
         source_lease=source_lease,
         logical_source_path="/tmp/main.py",
-        entry_override=None,
         module_execution_kind="imported",
         known_classes_snapshot={},
         parse_codec="json",
@@ -17953,7 +17941,6 @@ def test_module_worker_payload_scopes_type_facts() -> None:
         fallback_policy="error",
         module_is_namespace=False,
         module_execution_kind="imported",
-        entry_module=None,
         type_facts=type_facts,
         enable_phi=True,
         known_modules=("alpha", "main", "unrelated"),
@@ -18253,7 +18240,6 @@ def test_module_lowering_context_payload_reuses_precomputed_scoped_inputs(
         module_path,
         source_lease=source_lease,
         logical_source_path="/tmp/main.py",
-        entry_override=None,
         module_execution_kind="imported",
         known_classes_snapshot={},
         parse_codec="json",
@@ -18314,7 +18300,6 @@ def test_module_worker_payload_reuses_precomputed_scoped_inputs(
         fallback_policy="error",
         module_is_namespace=False,
         module_execution_kind="imported",
-        entry_module=None,
         type_facts=None,
         enable_phi=True,
         known_modules=("alpha", "main"),
@@ -18379,7 +18364,6 @@ def test_load_cached_module_lowering_result_reuses_precomputed_views(
         module_path,
         source_lease=cli_module_source._ModuleSourceLease.path_backed(module_path),
         logical_source_path=str(module_path),
-        entry_override=None,
         module_execution_kind="imported",
         is_package=False,
         known_classes_snapshot={},
@@ -18417,7 +18401,6 @@ def test_module_frontend_generator_uses_scoped_inputs() -> None:
     gen = cli_frontend_worker._module_frontend_generator(
         module_name="main",
         logical_source_path="/tmp/main.py",
-        entry_override=None,
         module_is_namespace=False,
         module_execution_kind="script",
         parse_codec="json",
@@ -18464,7 +18447,6 @@ def test_module_lowering_context_digest_for_module_reuses_precomputed_views(
         module_path,
         source_lease=source_lease,
         logical_source_path="/tmp/main.py",
-        entry_override=None,
         module_execution_kind="imported",
         known_classes_snapshot={},
         parse_codec="json",
@@ -18505,7 +18487,6 @@ def test_module_lowering_context_digest_includes_native_callable_exports(
     source_lease = cli_module_source._ModuleSourceLease.path_backed(module_path)
     common: dict[str, object] = {
         "logical_source_path": "/tmp/main.py",
-        "entry_override": None,
         "module_execution_kind": "imported",
         "known_classes_snapshot": {},
         "parse_codec": "json",
@@ -18576,7 +18557,6 @@ def test_module_lowering_context_digest_includes_native_python_exports(
     source_lease = cli_module_source._ModuleSourceLease.path_backed(module_path)
     common: dict[str, object] = {
         "logical_source_path": "/tmp/main.py",
-        "entry_override": None,
         "module_execution_kind": "imported",
         "known_classes_snapshot": {},
         "parse_codec": "json",
@@ -18629,7 +18609,6 @@ def test_module_lowering_context_digest_includes_target_sys_platform(
     source_lease = cli_module_source._ModuleSourceLease.path_backed(module_path)
     common: dict[str, object] = {
         "logical_source_path": "/tmp/main.py",
-        "entry_override": None,
         "module_execution_kind": "imported",
         "known_classes_snapshot": {},
         "parse_codec": "json",
@@ -18684,7 +18663,6 @@ def test_module_lowering_context_digest_includes_scoped_func_kinds(
     )
     common: dict[str, object] = {
         "logical_source_path": str(module_path),
-        "entry_override": None,
         "module_execution_kind": "imported",
         "known_classes_snapshot": {},
         "parse_codec": "json",
@@ -18758,7 +18736,6 @@ def test_module_lowering_context_digest_ignores_type_facts_metadata_noise(
         module_path,
         source_lease=source_lease,
         logical_source_path="/tmp/main.py",
-        entry_override="main",
         module_execution_kind="imported",
         known_classes_snapshot={},
         parse_codec="json",
@@ -18791,7 +18768,6 @@ def test_module_lowering_context_digest_ignores_type_facts_metadata_noise(
         module_path,
         source_lease=source_lease,
         logical_source_path="/tmp/main.py",
-        entry_override="main",
         module_execution_kind="imported",
         known_classes_snapshot={},
         parse_codec="json",
@@ -20358,7 +20334,6 @@ def test_build_module_graph_metadata_bundles_related_views(tmp_path: Path) -> No
     )
 
     assert metadata.logical_source_path_by_module["pkg"] == "/generated/pkg/__init__.py"
-    assert metadata.entry_override_by_module["app_entry"] == "app_entry"
     assert metadata.module_is_namespace_by_module["pkg"] is True
     assert metadata.module_is_package_by_module["pkg"] is True
     assert metadata.module_execution_kind_by_module == {
@@ -20691,7 +20666,6 @@ def test_module_lowering_metadata_view_reuses_precomputed_maps(tmp_path: Path) -
     )
 
     assert view.logical_source_path == "generated/pkg.py"
-    assert view.entry_override == "pkg"
     assert view.module_is_namespace is False
     assert view.is_package is False
     assert view.module_execution_kind == "module"
@@ -21966,7 +21940,6 @@ def test_prepare_backend_setup_materializes_backend_before_cache_key(
 
     empty_module_graph_metadata = cli_models._ModuleGraphMetadata(
         logical_source_path_by_module={},
-        entry_override_by_module={},
         module_is_namespace_by_module={},
         module_is_package_by_module={},
         module_execution_kind_by_module={},
@@ -22084,7 +22057,6 @@ def test_prepare_backend_setup_stages_runtime_callables_before_native_cache_hit(
     cache_setup_kwargs: list[dict[str, object]] = []
     empty_module_graph_metadata = cli_models._ModuleGraphMetadata(
         logical_source_path_by_module={},
-        entry_override_by_module={},
         module_is_namespace_by_module={},
         module_is_package_by_module={},
         module_execution_kind_by_module={},
@@ -22215,7 +22187,6 @@ def test_prepare_backend_setup_stages_runtime_callables_before_native_cache_miss
     cache_setup_kwargs: list[dict[str, object]] = []
     empty_module_graph_metadata = cli_models._ModuleGraphMetadata(
         logical_source_path_by_module={},
-        entry_override_by_module={},
         module_is_namespace_by_module={},
         module_is_package_by_module={},
         module_execution_kind_by_module={},
@@ -22342,7 +22313,6 @@ def test_prepare_backend_setup_uses_runtime_callable_digest_instead_of_native_as
     cache_setup_kwargs: list[dict[str, object]] = []
     empty_module_graph_metadata = cli_models._ModuleGraphMetadata(
         logical_source_path_by_module={},
-        entry_override_by_module={},
         module_is_namespace_by_module={},
         module_is_package_by_module={},
         module_execution_kind_by_module={},
@@ -22476,7 +22446,6 @@ def test_prepare_backend_setup_stages_runtime_callables_for_object_emit_without_
     cache_setup_kwargs: list[dict[str, object]] = []
     empty_module_graph_metadata = cli_models._ModuleGraphMetadata(
         logical_source_path_by_module={},
-        entry_override_by_module={},
         module_is_namespace_by_module={},
         module_is_package_by_module={},
         module_execution_kind_by_module={},
@@ -25210,7 +25179,6 @@ def test_run_backend_pipeline_defers_native_runtime_readiness_until_after_codege
     )
     empty_module_graph_metadata = cli_models._ModuleGraphMetadata(
         logical_source_path_by_module={},
-        entry_override_by_module={},
         module_is_namespace_by_module={},
         module_is_package_by_module={},
         module_execution_kind_by_module={},
@@ -33202,7 +33170,6 @@ def test_cache_variant_differs_when_stdlib_split_toggles(tmp_path: Path) -> None
     warnings: list[str] = []
     module_graph_metadata = cli_models._ModuleGraphMetadata(
         logical_source_path_by_module={},
-        entry_override_by_module={},
         module_is_namespace_by_module={},
         module_is_package_by_module={},
         module_execution_kind_by_module={},
@@ -33283,7 +33250,6 @@ def test_prepare_backend_cache_setup_routes_stdlib_object_to_explicit_cache_dir(
     }
     module_graph_metadata = cli_models._ModuleGraphMetadata(
         logical_source_path_by_module={},
-        entry_override_by_module={},
         module_is_namespace_by_module={},
         module_is_package_by_module={},
         module_execution_kind_by_module={},
@@ -33361,7 +33327,6 @@ def test_prepare_backend_cache_setup_routes_no_cache_stdlib_object_to_explicit_c
     }
     module_graph_metadata = cli_models._ModuleGraphMetadata(
         logical_source_path_by_module={},
-        entry_override_by_module={},
         module_is_namespace_by_module={},
         module_is_package_by_module={},
         module_execution_kind_by_module={},
@@ -34620,14 +34585,13 @@ def test_failed_wasm_link_evidence_survives_private_deployment_cleanup(
     } == old_outputs
 
 
-def _capture_hashseed_cli_builds(
-    project: Path, cache_root: Path, parse_codec: str, workers: int, output: str
-) -> dict[str, object]:
+@contextlib.contextmanager
+def _real_frontend_fake_backend(
+    project: Path, cache_root: Path, workers: int, records: list[dict[str, object]]
+) -> Iterator[None]:
     """Real CLI/frontend/cache inputs; replace only native artifact production."""
     from tests.determinism.test_ir_determinism import _production_ir_record
 
-    records: list[dict[str, object]] = []
-    diagnostics: list[dict[str, object]] = []
     backend_bin = project / "fixture-backend"
     if not backend_bin.exists():
         backend_bin.write_bytes(b"one unchanged backend image")
@@ -34687,22 +34651,38 @@ def _capture_hashseed_cli_builds(
             return result
 
         patch.setattr(cli_backend_cache_setup, "_prepare_backend_cache_setup", capture)
-        for generation in ("cold", "warm"):
-            stdout = io.StringIO()
-            with contextlib.redirect_stdout(stdout):
-                result = cli_build_command.build(
-                    str(project / "main.py"),
-                    emit="obj",
-                    output=str(project / output),
-                    parse_codec=parse_codec,
-                    profile="dev",
-                    deterministic=False,
-                    json_output=True,
-                    diagnostics=True,
-                )
-            assert result == 0, (generation, stdout.getvalue())
-            payload = json.loads(stdout.getvalue())
-            diagnostics.append(payload["data"]["compile_diagnostics"])
+        yield
+
+
+def _cli_build_diagnostics(
+    project: Path, entry: str, output: str, parse_codec: str = "json"
+) -> dict[str, object]:
+    stdout = io.StringIO()
+    with contextlib.redirect_stdout(stdout):
+        result = cli_build_command.build(
+            str(project / entry),
+            emit="obj",
+            output=str(project / output),
+            parse_codec=parse_codec,
+            profile="dev",
+            deterministic=False,
+            json_output=True,
+            diagnostics=True,
+        )
+    assert result == 0, (entry, stdout.getvalue())
+    return json.loads(stdout.getvalue())["data"]["compile_diagnostics"]
+
+
+def _capture_hashseed_cli_builds(
+    project: Path, cache_root: Path, parse_codec: str, workers: int, output: str
+) -> dict[str, object]:
+    """Real CLI/frontend/cache inputs; replace only native artifact production."""
+    records: list[dict[str, object]] = []
+    with _real_frontend_fake_backend(project, cache_root, workers, records):
+        diagnostics = [
+            _cli_build_diagnostics(project, "main.py", output, parse_codec)
+            for _generation in ("cold", "warm")
+        ]
     assert len(records) == 2
     assert records[0] == records[1], (
         "warm frontend hydration changed emitted IR/cache identity"
@@ -34718,6 +34698,29 @@ def _capture_hashseed_cli_builds(
         "records": records,
         "warm_hits": diagnostics[1]["frontend_lowering_cache"]["hits"],
     }
+
+
+def test_programs_share_the_lowered_form_of_every_imported_module(
+    tmp_path: Path,
+) -> None:
+    # The entry's name once entered every module's lowering identity, so each
+    # new program re-lowered its whole import closure: 0 of 41 modules reused
+    # between two copies of one subprocess program. Only the entry lowers anew.
+    project = tmp_path / "project"
+    project.mkdir()
+    (project / "shared.py").write_text(
+        "def value():\n    return 41 + 1\n", encoding="utf-8"
+    )
+    for name in ("first", "second"):
+        (project / f"{name}.py").write_text(
+            "import shared\nprint(shared.value())\n", encoding="utf-8"
+        )
+    with _real_frontend_fake_backend(project, tmp_path / "cache", 0, []):
+        first = _cli_build_diagnostics(project, "first.py", "first.o")
+        second = _cli_build_diagnostics(project, "second.py", "second.o")
+    cold, warm = first["frontend_lowering_cache"], second["frontend_lowering_cache"]
+    assert cold["hits"] == 0 and cold["observed"] == warm["observed"] > 2
+    assert warm["hits"] == warm["observed"] - 1
 
 
 # Every IR codec and frontend worker mode, each under one fixed and one random

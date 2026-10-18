@@ -253,13 +253,11 @@ def _build_module_lowering_metadata(
     namespace_module_names: Collection[str],
 ) -> tuple[
     dict[str, str],
-    dict[str, str | None],
     dict[str, bool],
     dict[str, bool],
     dict[str, ModuleExecutionKind],
 ]:
     logical_source_path_by_module: dict[str, str] = {}
-    entry_override_by_module: dict[str, str | None] = {}
     module_is_namespace_by_module: dict[str, bool] = {}
     module_is_package_by_module: dict[str, bool] = {}
     module_execution_kind_by_module: dict[str, ModuleExecutionKind] = {}
@@ -269,20 +267,16 @@ def _build_module_lowering_metadata(
         logical_source_path_by_module[module_name] = generated_module_source_paths.get(
             module_name, str(module_path)
         )
-        # Every lowered module needs to know the canonical entry module name.
-        # The frontend uses `entry_module` together with `module_name` to
-        # recognize the real entry module and emit __main__ cache/name
-        # semantics for it. Passing `None` for the entry module itself causes
-        # `__name__` to lower as the ordinary module name instead of "__main__".
-        entry_override_by_module[module_name] = entry_module
         module_is_namespace_by_module[module_name] = module_name in namespace_modules
         module_is_package_by_module[module_name] = module_path.name == "__init__.py"
+        # Only the entry runs as __main__. Its kind is the one fact lowering
+        # reads for __main__ semantics, so imported modules never carry the
+        # entry's name and every program shares their lowered form.
         module_execution_kind_by_module[module_name] = (
             entry_execution_kind if module_name == entry_module else "imported"
         )
     return (
         logical_source_path_by_module,
-        entry_override_by_module,
         module_is_namespace_by_module,
         module_is_package_by_module,
         module_execution_kind_by_module,
@@ -327,7 +321,6 @@ def _build_module_graph_metadata(
 ) -> _ModuleGraphMetadata:
     (
         logical_source_path_by_module,
-        entry_override_by_module,
         module_is_namespace_by_module,
         module_is_package_by_module,
         module_execution_kind_by_module,
@@ -356,7 +349,6 @@ def _build_module_graph_metadata(
     )
     return _ModuleGraphMetadata(
         logical_source_path_by_module=MappingProxyType(logical_source_path_by_module),
-        entry_override_by_module=MappingProxyType(entry_override_by_module),
         module_is_namespace_by_module=MappingProxyType(module_is_namespace_by_module),
         module_is_package_by_module=MappingProxyType(module_is_package_by_module),
         module_execution_kind_by_module=MappingProxyType(

@@ -32,7 +32,7 @@ def _frontend_ir_and_contract(
     }
     generator = SimpleTIRGenerator(
         module_name="probe",
-        entry_module="probe",
+        module_execution_kind="module",
         known_modules={"probe", "helpers"},
         known_func_kinds=known_kinds,
         # ``helpers`` is compiled into the same build, so its declared
