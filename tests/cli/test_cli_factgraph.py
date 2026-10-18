@@ -298,6 +298,7 @@ def test_emit_pipeline_fact_graph_reports_requested_target_and_backend(
     )
     monkeypatch.setenv("MOLT_RUNTIME_CALLABLE_SYMBOLS", "foreign-operation")
     monkeypatch.setenv("MOLT_RUNTIME_CALLABLE_SYMBOLS_SHA256", "0" * 64)
+    monkeypatch.setenv("MOLT_STDLIB_OBJ", str(tmp_path / "foreign-stdlib.o"))
 
     def fake_run(
         cmd: list[str], **kwargs: object
@@ -314,6 +315,8 @@ def test_emit_pipeline_fact_graph_reports_requested_target_and_backend(
             env["MOLT_RUNTIME_CALLABLE_SYMBOLS_SHA256"]
             == binding.callable_symbols.sha256
         )
+        # The operation's projection, not the caller's ambient partition.
+        assert "MOLT_STDLIB_OBJ" not in env
         graph_output = Path(cmd[cmd.index("--fact-graph-output") + 1])
         produced.append(graph_output)
         graph_output.parent.mkdir(parents=True, exist_ok=True)

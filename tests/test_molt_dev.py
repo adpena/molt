@@ -563,6 +563,47 @@ toolchains = ["python"]
     ]
 
 
+def test_selected_rules_run_each_pytest_selection_on_its_own(drv, tmp_path):
+    source = """
+local_pytest_workers = 3
+[[rule]]
+name = "first"
+globs = ["src/a/**"]
+gates = []
+pytest = ["tests/test_a.py"]
+pytest_select = [{ k = "fast or quick", targets = ["tests/test_b.py"] }]
+toolchains = ["python"]
+[[rule]]
+name = "second"
+globs = ["src/b/**"]
+gates = []
+pytest_select = [
+  { k = "fast or quick", targets = ["tests/test_b.py"] },
+  { m = "not slow", targets = ["tests/test_b.py"] },
+]
+toolchains = ["python"]
+"""
+    (tmp_path / "tests").mkdir()
+    for name in ("a", "b"):
+        (tmp_path / "tests" / f"test_{name}.py").write_text("", encoding="utf-8")
+    cfg = drv.GateConfig.parse(source, "pytest selection fixture", root=tmp_path)
+    gates, _ = cfg.select(["src/a/x.py", "src/b/y.py"])
+    prefix = ("python", "-m", "pytest", "-q", "-n", "3")
+    # A selection applies to every target of its run, so it never merges
+    # into the shared run; an identical selection runs once.
+    assert gates == [
+        (*prefix, "tests/test_a.py"),
+        (*prefix, "-k", "fast or quick", "tests/test_b.py"),
+        (*prefix, "-m", "not slow", "tests/test_b.py"),
+    ]
+    assert set(cfg.prerequisites) == {
+        "local.first.pytest",
+        "local.first.pytest-select-0",
+        "local.second.pytest-select-0",
+        "local.second.pytest-select-1",
+    }
+
+
 @pytest.mark.parametrize(
     "target,message",
     [
