@@ -824,7 +824,7 @@ pub use crate::object::{
     MoltHeader, bump_type_version, global_type_version, molt_dec_ref, molt_inc_ref,
 };
 #[cfg(feature = "stdlib_regex")]
-pub use crate::regex_bridge::molt_re_subject_snapshot;
+pub use crate::regex_bridge::{molt_re_subject_snapshot, molt_re_subject_view};
 pub(crate) use crate::state::cache::{
     InternedNames, MethodCache, RuntimeStaticNames, intern_runtime_static_name, intern_static_name,
     runtime_static_name_slot,

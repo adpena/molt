@@ -33,15 +33,6 @@ pub extern "C" fn molt_memoryview_new(bits: u64) -> u64 {
 }
 
 fn memoryview_new_with_flags(_py: &PyToken<'_>, bits: u64, buffer_flags: i32) -> u64 {
-    memoryview_new_with_flags_mode(_py, bits, buffer_flags, false)
-}
-
-fn memoryview_new_with_flags_mode(
-    _py: &PyToken<'_>,
-    bits: u64,
-    buffer_flags: i32,
-    force_buffer_export: bool,
-) -> u64 {
     let obj = obj_from_bits(bits);
     let ptr = match obj.as_ptr() {
         Some(ptr) => ptr,
@@ -51,7 +42,7 @@ fn memoryview_new_with_flags_mode(
     };
     unsafe {
         let type_id = object_type_id(ptr);
-        if type_id == TYPE_ID_MEMORYVIEW && !force_buffer_export {
+        if type_id == TYPE_ID_MEMORYVIEW {
             if !super::memoryview::require_exportable(_py, ptr) {
                 return MoltObject::none().bits();
             }
@@ -69,7 +60,7 @@ fn memoryview_new_with_flags_mode(
             return MoltObject::from_ptr(out_ptr).bits();
         }
 
-        if force_buffer_export || !super::buffer_exports::is_exact_builtin_storage(_py, bits) {
+        if !super::buffer_exports::is_exact_builtin_storage(_py, bits) {
             // CPython checks the buffer slot before invoking it. A missing
             // slot has memoryview's diagnostic; a real exporter owns its
             // failure. Keep the same projected object for both operations.
@@ -138,14 +129,6 @@ fn memoryview_new_with_flags_mode(
         }
     }
     raise_memoryview_buffer_error(_py, obj)
-}
-
-/// Internal regex admission matching PyBUF_SIMPLE even for an already-created
-/// memoryview. The public `_from_flags` operation intentionally retains its
-/// CPython clone behavior for non-contiguous memoryviews.
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_memoryview_from_simple_buffer(bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, { memoryview_new_with_flags_mode(_py, bits, 0, true) })
 }
 
 #[unsafe(no_mangle)]

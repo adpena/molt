@@ -87,3 +87,84 @@ for limit in (-1, 0, 1):
         print("limits", limit, re.split(expression, value, maxsplit=limit))
         print(re.subn(expression, replacement, value, count=limit))
         print(re.subn(expression, lambda match: replacement, value, count=limit))
+
+
+# All SRE subjects enter the same PyBUF_SIMPLE role, including text-pattern
+# mismatches. Exporter errors are replaced; the active handled error remains
+# the resulting TypeError's context rather than the discarded exporter error.
+def admission_result(label, operation):
+    try:
+        raise LookupError("outer admission handler")
+    except LookupError as outer:
+        try:
+            operation()
+        except Exception as exc:
+            print(label, type(exc).__name__, str(exc), exc.__context__ is outer)
+
+
+for expression in (b"a", "a"):
+    compiled = re.compile(expression)
+    for value in (None, 7, []):
+        for name in ("search", "finditer", "split", "sub"):
+            if name == "sub":
+                replacement = b"X" if isinstance(expression, bytes) else "X"
+                operation = lambda: compiled.sub(replacement, value)
+            else:
+                operation = lambda: getattr(compiled, name)(value)
+            admission_result(("nonbuffer", expression, name, type(value).__name__), operation)
+
+
+class SREBuffer:
+    def __init__(self, failure=None):
+        self.data = bytearray(b"aa")
+        self.failure = failure
+        self.flags = []
+        self.releases = 0
+
+    def __buffer__(self, flags):
+        self.flags.append(flags)
+        if self.failure is not None:
+            raise self.failure
+        return memoryview(self.data)
+
+    def __release_buffer__(self, view):
+        self.releases += 1
+        view.release()
+
+
+for failure_type in (TypeError, ValueError, BufferError, MemoryError):
+    for expression in (b"a", "a"):
+        compiled = re.compile(expression)
+        for name in ("search", "finditer"):
+            source = SREBuffer(failure_type("exporter failure"))
+            admission_result(
+                ("exporter", failure_type.__name__, expression, name),
+                lambda: getattr(compiled, name)(source),
+            )
+            print("failed export custody", source.flags, source.releases)
+    source = SREBuffer()
+    match = re.search(b"a", source)
+    source.failure = failure_type("capture exporter failure")
+    admission_result(("capture", failure_type.__name__), lambda: match.group())
+    print("capture export custody", source.flags, source.releases)
+
+for expression in (b"a", "a"):
+    for name in ("search", "finditer"):
+        strided = memoryview(b"axax")[::2]
+        admission_result(
+            ("strided", expression, name),
+            lambda: getattr(re.compile(expression), name)(strided),
+        )
+        strided.release()
+
+source = SREBuffer()
+iterator = re.finditer(b"a", source)
+print("scanner admission flags", source.flags, source.releases)
+try:
+    source.data.append(0)
+except BufferError:
+    print("scanner holds export", True)
+print("scanner spans", [match.span() for match in iterator])
+print("scanner exhaustion custody", source.flags, source.releases)
+source.data.append(0)
+print("exhausted iterator stays live without export", bytes(source.data))

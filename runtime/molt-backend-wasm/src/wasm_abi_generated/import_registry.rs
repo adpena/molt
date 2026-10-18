@@ -5500,6 +5500,11 @@ pub(crate) const IMPORT_REGISTRY: &[RuntimeImportSpec] = &[
         type_idx: 2,
     },
     RuntimeImportSpec {
+        import: WasmRuntimeImport::ReSubjectView,
+        name: "re_subject_view",
+        type_idx: 2,
+    },
+    RuntimeImportSpec {
         import: WasmRuntimeImport::ShlexQuote,
         name: "shlex_quote",
         type_idx: 2,
@@ -9183,11 +9188,6 @@ pub(crate) const IMPORT_REGISTRY: &[RuntimeImportSpec] = &[
         import: WasmRuntimeImport::MemoryviewFromFlags,
         name: "memoryview_from_flags",
         type_idx: 3,
-    },
-    RuntimeImportSpec {
-        import: WasmRuntimeImport::MemoryviewFromSimpleBuffer,
-        name: "memoryview_from_simple_buffer",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::MemoryviewTolist,
@@ -16328,6 +16328,8 @@ pub(crate) fn wasm_runtime_import(name: &str) -> Option<WasmRuntimeImport> {
         "molt_re_expand_replacement" => Some(WasmRuntimeImport::ReExpandReplacement),
         "re_subject_snapshot" => Some(WasmRuntimeImport::ReSubjectSnapshot),
         "molt_re_subject_snapshot" => Some(WasmRuntimeImport::ReSubjectSnapshot),
+        "re_subject_view" => Some(WasmRuntimeImport::ReSubjectView),
+        "molt_re_subject_view" => Some(WasmRuntimeImport::ReSubjectView),
         "shlex_quote" => Some(WasmRuntimeImport::ShlexQuote),
         "molt_shlex_quote" => Some(WasmRuntimeImport::ShlexQuote),
         "shlex_split_ex" => Some(WasmRuntimeImport::ShlexSplitEx),
@@ -18064,8 +18066,6 @@ pub(crate) fn wasm_runtime_import(name: &str) -> Option<WasmRuntimeImport> {
         "molt_wrapper_member_delete" => Some(WasmRuntimeImport::WrapperMemberDelete),
         "memoryview_from_flags" => Some(WasmRuntimeImport::MemoryviewFromFlags),
         "molt_memoryview_from_flags" => Some(WasmRuntimeImport::MemoryviewFromFlags),
-        "memoryview_from_simple_buffer" => Some(WasmRuntimeImport::MemoryviewFromSimpleBuffer),
-        "molt_memoryview_from_simple_buffer" => Some(WasmRuntimeImport::MemoryviewFromSimpleBuffer),
         "memoryview_tolist" => Some(WasmRuntimeImport::MemoryviewTolist),
         "molt_memoryview_tolist" => Some(WasmRuntimeImport::MemoryviewTolist),
         "memoryview_count" => Some(WasmRuntimeImport::MemoryviewCount),

@@ -2853,6 +2853,10 @@ fn buffer_consumers_preserve_cold_semantic_class_preparation_failure() {
             (2, b"41".as_slice()),
             (3, b"=41".as_slice()),
             (4, b"!00  \n".as_slice()),
+            #[cfg(feature = "stdlib_regex")]
+            (5, b"A".as_slice()),
+            #[cfg(feature = "stdlib_regex")]
+            (6, b"A".as_slice()),
         ] {
             let (class, instance) = preparation_buffer_instance(
                 py,
@@ -2879,6 +2883,10 @@ fn buffer_consumers_preserve_cold_semantic_class_preparation_failure() {
                 2 => molt_runtime_serial::binascii::molt_binascii_a2b_hex(instance.bits()),
                 3 => molt_runtime_serial::binascii::molt_binascii_a2b_qp(instance.bits()),
                 4 => molt_runtime_serial::binascii::molt_binascii_a2b_uu(instance.bits()),
+                #[cfg(feature = "stdlib_regex")]
+                5 => crate::molt_re_subject_snapshot(instance.bits()),
+                #[cfg(feature = "stdlib_regex")]
+                6 => crate::molt_re_subject_view(instance.bits()),
                 _ => unreachable!(),
             };
             assert!(!GLOBAL_BRIDGE.type_has_projection(class.bits()));
@@ -2931,7 +2939,7 @@ fn buffer_consumers_preserve_cold_semantic_class_preparation_failure() {
             assert!(!projected.as_ptr().is_null());
             let result = ExceptionValue::adopt(py, invoke());
             assert!(!crate::exception_pending(py), "consumer {consumer}");
-            if consumer == 0 {
+            if consumer == 0 || consumer == 6 {
                 crate::molt_memoryview_release(result.bits());
             } else {
                 assert_eq!(

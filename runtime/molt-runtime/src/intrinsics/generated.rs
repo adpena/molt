@@ -1051,6 +1051,13 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         python_name: None,
     },
     IntrinsicSpec {
+        name: "molt_re_subject_view",
+        symbol: "molt_re_subject_view",
+        arity: 1,
+        defaults: &[],
+        python_name: None,
+    },
+    IntrinsicSpec {
         name: "molt_shlex_quote",
         symbol: "molt_shlex_quote",
         arity: 1,
@@ -8698,13 +8705,6 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         name: "molt_memoryview_from_flags",
         symbol: "molt_memoryview_from_flags",
         arity: 2,
-        defaults: &[],
-        python_name: None,
-    },
-    IntrinsicSpec {
-        name: "molt_memoryview_from_simple_buffer",
-        symbol: "molt_memoryview_from_simple_buffer",
-        arity: 1,
         defaults: &[],
         python_name: None,
     },

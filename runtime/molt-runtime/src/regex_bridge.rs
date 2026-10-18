@@ -6,7 +6,7 @@
 
 use crate::object::ops::string_obj_to_owned as _string_obj_to_owned;
 use crate::*;
-use molt_cpython_abi::native_custody::ByteInput;
+use molt_cpython_abi::native_custody::{BufferAcquireError, ByteInput};
 
 #[cfg(feature = "stdlib_regex")]
 crate::object::native_handle::native_handle_bridge!(
@@ -21,38 +21,58 @@ crate::object::native_handle::native_handle_bridge!(
     std::sync::Mutex<molt_runtime_regex::ScannerHandle>
 );
 
+/// SRE's getstring role replaces every failed buffer export, including a
+/// missing slot, with its own type diagnostic. Runtime projection/allocation
+/// preparation happens before that protocol and retains its original error.
+fn regex_subject_buffer<T>(
+    py: &PyToken<'_>,
+    subject_bits: u64,
+    result: Result<T, BufferAcquireError>,
+) -> Option<T> {
+    match result {
+        Ok(input) => Some(input),
+        Err(BufferAcquireError::Preparation) => None,
+        Err(BufferAcquireError::Exporter) => {
+            crate::builtins::exceptions::with_saved_raised_exception(py, || {
+                let name = crate::object::ops::protocol_type_name(py, subject_bits, 200);
+                raise_exception::<()>(
+                    py,
+                    "TypeError",
+                    &format!("expected string or bytes-like object, got '{name}'"),
+                );
+                false
+            });
+            None
+        }
+    }
+}
+
+fn immutable_regex_subject(py: &PyToken<'_>, bits: u64) -> bool {
+    let Some(ptr) = obj_from_bits(bits).as_ptr() else {
+        return false;
+    };
+    let type_id = unsafe { object_type_id(ptr) };
+    type_id == TYPE_ID_STRING
+        || (type_id == TYPE_ID_BYTES
+            && crate::object::buffer_exports::is_exact_builtin_storage(py, bits))
+}
+
 /// Admit a regex subject once at the Python buffer boundary. Text and exact
 /// immutable bytes retain their existing object; mutable and arbitrary
 /// exporters become an immutable byte snapshot for the matching operation.
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_re_subject_snapshot(subject_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
-        let subject = obj_from_bits(subject_bits);
-        let Some(ptr) = subject.as_ptr() else {
-            return raise_exception::<u64>(
-                _py,
-                "TypeError",
-                "expected string or bytes-like object",
-            );
-        };
-        let type_id = unsafe { object_type_id(ptr) };
-        if type_id == TYPE_ID_STRING {
-            inc_ref_bits(_py, subject_bits);
-            return subject_bits;
-        }
-        // Exact immutable bytes need no exporter call. Subclasses must go
-        // through their actual buffer slot, which may override their storage.
-        if type_id == TYPE_ID_BYTES
-            && super::object::buffer_exports::is_exact_builtin_storage(_py, subject_bits)
-        {
+        if immutable_regex_subject(_py, subject_bits) {
             inc_ref_bits(_py, subject_bits);
             return subject_bits;
         }
         // ByteInput uses the canonical PyBUF_SIMPLE custody and keeps the
         // exporter alive until the snapshot has been allocated.
-        let input = match unsafe { ByteInput::acquire(_py.core_token(), subject_bits) } {
-            Ok(input) => input,
-            Err(_) => return MoltObject::none().bits(),
+        let Some(input) = regex_subject_buffer(_py, subject_bits, unsafe {
+            ByteInput::acquire(_py.core_token(), subject_bits)
+        }) else {
+            return MoltObject::none().bits();
         };
         // Read the leased length, then allocate before borrowing the mutable
         // exporter again: allocation may run finalizers, so no buffer slice
@@ -85,6 +105,43 @@ pub extern "C" fn molt_re_subject_snapshot(subject_bits: u64) -> u64 {
     })
 }
 
+/// Retain immutable subjects directly; otherwise acquire exactly one SIMPLE
+/// export and transfer it to the ordinary traced memoryview storage owner.
+/// The Python scanner owns this view until exhaustion, never a GREEN handle.
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_re_subject_view(subject_bits: u64) -> u64 {
+    crate::with_gil_entry_nopanic!(_py, {
+        if immutable_regex_subject(_py, subject_bits) {
+            inc_ref_bits(_py, subject_bits);
+            return subject_bits;
+        }
+        let Some(lease) = regex_subject_buffer(_py, subject_bits, unsafe {
+            molt_cpython_abi::native_custody::acquire_buffer(
+                subject_bits,
+                molt_cpython_abi::native_custody::PyBUF_SIMPLE,
+            )
+        }) else {
+            return MoltObject::none().bits();
+        };
+        let descriptor = match unsafe {
+            molt_cpython_abi::api::buffer::descriptor_from_pybuffer(lease.descriptor())
+        } {
+            Ok(descriptor) => descriptor,
+            Err(molt_cpython_abi::api::buffer::InvalidBufferDescriptor) => {
+                return raise_exception(
+                    _py,
+                    "BufferError",
+                    "invalid or indirect memoryview buffer descriptor",
+                );
+            }
+        };
+        let format = unsafe { (*lease.descriptor()).format };
+        unsafe {
+            crate::object::memoryview::from_native_descriptor(_py, &descriptor, format, Some(lease))
+        }
+    })
+}
+
 /// Copy one requested byte capture from the original subject. Allocate the
 /// destination before borrowing exporter memory so no live slice crosses a
 /// possible GC/finalizer boundary; only the capture bytes are copied.
@@ -94,9 +151,10 @@ pub extern "C" fn __molt_regex_subject_slice(subject_bits: u64, start: usize, en
         if start > end {
             return MoltObject::none().bits();
         }
-        let input = match unsafe { ByteInput::acquire(_py.core_token(), subject_bits) } {
-            Ok(input) => input,
-            Err(_) => return MoltObject::none().bits(),
+        let Some(input) = regex_subject_buffer(_py, subject_bits, unsafe {
+            ByteInput::acquire(_py.core_token(), subject_bits)
+        }) else {
+            return MoltObject::none().bits();
         };
         let len = unsafe { input.bytes(_py.core_token()).len() };
         if end > len {
