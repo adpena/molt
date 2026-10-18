@@ -21,10 +21,6 @@ crate::object::native_handle::native_handle_bridge!(
     std::sync::Mutex<molt_runtime_regex::ScannerHandle>
 );
 
-type RuntimeExtensionStateInit = unsafe extern "C" fn() -> *mut u8;
-type RuntimeExtensionStateClear = unsafe extern "C" fn(*mut u8);
-type RuntimeExtensionStateDrop = unsafe extern "C" fn(*mut u8);
-
 /// Admit a regex subject once at the Python buffer boundary. Text and exact
 /// immutable bytes retain their existing object; mutable and arbitrary
 /// exporters become an immutable byte snapshot for the matching operation.
@@ -133,26 +129,6 @@ pub extern "C" fn __molt_regex_subject_slice(subject_bits: u64, start: usize, en
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn __molt_regex_runtime_state_get_or_init(
-    key_ptr: *const u8,
-    key_len: usize,
-    init: RuntimeExtensionStateInit,
-    clear: RuntimeExtensionStateClear,
-    drop: RuntimeExtensionStateDrop,
-) -> *mut u8 {
-    crate::with_gil_entry_nopanic!(_py, {
-        let key = unsafe { std::slice::from_raw_parts(key_ptr, key_len) };
-        crate::state::runtime_extension_state_get_or_init(
-            crate::state::runtime_state::runtime_state(_py),
-            key,
-            init,
-            clear,
-            drop,
-        )
-    })
-}
-
 // ---------------------------------------------------------------------------
 // Exception / error handling
 // ---------------------------------------------------------------------------
@@ -172,11 +148,6 @@ pub extern "C" fn __molt_regex_raise_exception(
             unsafe { std::str::from_utf8_unchecked(std::slice::from_raw_parts(msg_ptr, msg_len)) };
         raise_exception::<u64>(_py, type_name, msg)
     })
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn __molt_regex_exception_pending() -> i32 {
-    crate::with_gil_entry_nopanic!(_py, { if exception_pending(_py) { 1 } else { 0 } })
 }
 
 // ---------------------------------------------------------------------------
@@ -309,14 +280,6 @@ pub extern "C" fn __molt_regex_bytes_view(
     1
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn __molt_regex_is_truthy(bits: u64) -> i32 {
-    crate::with_gil_entry_nopanic!(_py, {
-        let obj = obj_from_bits(bits);
-        if is_truthy(_py, obj) { 1 } else { 0 }
-    })
-}
-
 // ---------------------------------------------------------------------------
 // Reference counting
 // ---------------------------------------------------------------------------
@@ -325,13 +288,6 @@ pub extern "C" fn __molt_regex_is_truthy(bits: u64) -> i32 {
 pub extern "C" fn __molt_regex_dec_ref_bits(bits: u64) {
     crate::with_gil_entry_nopanic!(_py, {
         dec_ref_bits(_py, bits);
-    })
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn __molt_regex_inc_ref_bits(bits: u64) {
-    crate::with_gil_entry_nopanic!(_py, {
-        inc_ref_bits(_py, bits);
     })
 }
 
@@ -358,37 +314,6 @@ pub extern "C" fn __molt_regex_to_i64(bits: u64, out: *mut i64) -> i32 {
 // ---------------------------------------------------------------------------
 
 #[unsafe(no_mangle)]
-pub extern "C" fn __molt_regex_dict_get_in_place(
-    dict_ptr: *mut u8,
-    key_bits: u64,
-    out: *mut u64,
-) -> i32 {
-    crate::with_gil_entry_nopanic!(_py, {
-        match unsafe { dict_get_in_place(_py, dict_ptr, key_bits) } {
-            Ok(Some(bits)) => {
-                unsafe {
-                    *out = bits;
-                }
-                1
-            }
-            Ok(None) => 0,
-            Err(()) => -1,
-        }
-    })
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn __molt_regex_dict_set_in_place(
-    dict_ptr: *mut u8,
-    key_bits: u64,
-    val_bits: u64,
-) -> i32 {
-    crate::with_gil_entry_nopanic!(_py, {
-        i32::from(unsafe { dict_set_in_place(_py, dict_ptr, key_bits, val_bits) })
-    })
-}
-
-#[unsafe(no_mangle)]
 pub extern "C" fn __molt_regex_seq_snapshot(
     ptr: *mut u8,
     out_ptr: *mut *const u64,
@@ -407,60 +332,5 @@ pub extern "C" fn __molt_regex_dict_snapshot(
 ) -> i32 {
     crate::with_gil_entry_nopanic!(_py, {
         unsafe { crate::seq_snapshot_bridge::export_dict(_py, ptr, out_ptr, out_len) }
-    })
-}
-
-// ---------------------------------------------------------------------------
-// Iteration helpers
-// ---------------------------------------------------------------------------
-
-#[unsafe(no_mangle)]
-pub extern "C" fn __molt_regex_molt_iter(bits: u64) -> u64 {
-    crate::object::ops_iter::molt_iter(bits)
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn __molt_regex_molt_iter_next(iter_bits: u64, out: *mut u64) -> i32 {
-    let result = crate::object::ops_iter::molt_iter_next(iter_bits);
-    let none_bits = MoltObject::none().bits();
-    if result == none_bits {
-        crate::with_gil_entry_nopanic!(_py, {
-            if exception_pending(_py) {
-                0 // StopIteration or error
-            } else {
-                // Actual None value — return it.
-                unsafe {
-                    *out = result;
-                }
-                1
-            }
-        })
-    } else {
-        unsafe {
-            *out = result;
-        }
-        1
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Attribute / callable helpers
-// ---------------------------------------------------------------------------
-
-#[unsafe(no_mangle)]
-pub extern "C" fn __molt_regex_attr_name_bits_from_bytes(
-    key_ptr: *const u8,
-    key_len: usize,
-) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
-        let key = unsafe { std::slice::from_raw_parts(key_ptr, key_len) };
-        crate::builtins::attr::attr_name_bits_from_bytes(_py, key).unwrap_or_default()
-    })
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn __molt_regex_call_callable1(call_bits: u64, arg0: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
-        unsafe { crate::call::dispatch::call_callable1(_py, call_bits, arg0) }
     })
 }

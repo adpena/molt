@@ -2,6 +2,19 @@ use super::*;
 use std::collections::HashMap;
 use std::sync::Arc;
 
+/// Python's match-count convention: zero is unlimited, negative is no work.
+fn match_limit(value: i64) -> Option<usize> {
+    if value == 0 {
+        None
+    } else {
+        Some(if value < 0 {
+            0
+        } else {
+            usize::try_from(value).unwrap_or(usize::MAX)
+        })
+    }
+}
+
 // ---------------------------------------------------------------------------
 // molt_re_split — Rust-accelerated re.split()
 // ---------------------------------------------------------------------------
@@ -52,13 +65,9 @@ pub extern "C" fn molt_re_split(handle_bits: u64, text_bits: u64, maxsplit_bits:
         }
         let chars: Vec<char> = text.as_deref().unwrap_or_default().chars().collect();
         let text_len = bytes.map_or(chars.len(), <[u8]>::len);
-        let limit = if maxsplit <= 0 {
-            None
-        } else {
-            Some(maxsplit as usize)
-        };
+        let limit = match_limit(maxsplit);
 
-        let mut result_parts: Vec<u64> = Vec::new();
+        let mut result_parts = Vec::new();
         let mut last: usize = 0;
         let mut splits: usize = 0;
         let subject = if let Some(bytes) = bytes {
@@ -83,9 +92,12 @@ pub extern "C" fn molt_re_split(handle_bits: u64, text_bits: u64, maxsplit_bits:
                 let segment: String = chars[last..m_start].iter().collect();
                 alloc_string(_py, segment.as_bytes())
             };
-            if !seg_ptr.is_null() {
-                result_parts.push(MoltObject::from_ptr(seg_ptr).bits());
+            if seg_ptr.is_null() {
+                return MoltObject::none().bits();
             }
+            result_parts.push(unsafe {
+                OwnedRuntimeValue::from_owned_bits(_py, MoltObject::from_ptr(seg_ptr).bits())
+            });
 
             // Append capturing group values (CPython includes them in split output).
             for i in 1..=(group_count as usize) {
@@ -98,18 +110,26 @@ pub extern "C" fn molt_re_split(handle_bits: u64, text_bits: u64, maxsplit_bits:
                                 let group_text: String = chars[gs..ge].iter().collect();
                                 alloc_string(_py, group_text.as_bytes())
                             };
-                            if !gptr.is_null() {
-                                result_parts.push(MoltObject::from_ptr(gptr).bits());
-                            } else {
-                                result_parts.push(MoltObject::none().bits());
+                            if gptr.is_null() {
+                                return MoltObject::none().bits();
                             }
+                            result_parts.push(unsafe {
+                                OwnedRuntimeValue::from_owned_bits(
+                                    _py,
+                                    MoltObject::from_ptr(gptr).bits(),
+                                )
+                            });
                         }
                         None => {
-                            result_parts.push(MoltObject::none().bits());
+                            result_parts.push(unsafe {
+                                OwnedRuntimeValue::from_owned_bits(_py, MoltObject::none().bits())
+                            });
                         }
                     }
                 } else {
-                    result_parts.push(MoltObject::none().bits());
+                    result_parts.push(unsafe {
+                        OwnedRuntimeValue::from_owned_bits(_py, MoltObject::none().bits())
+                    });
                 }
             }
 
@@ -124,11 +144,14 @@ pub extern "C" fn molt_re_split(handle_bits: u64, text_bits: u64, maxsplit_bits:
             let tail: String = chars[last..].iter().collect();
             alloc_string(_py, tail.as_bytes())
         };
-        if !tail_ptr.is_null() {
-            result_parts.push(MoltObject::from_ptr(tail_ptr).bits());
+        if tail_ptr.is_null() {
+            return MoltObject::none().bits();
         }
+        result_parts.push(unsafe {
+            OwnedRuntimeValue::from_owned_bits(_py, MoltObject::from_ptr(tail_ptr).bits())
+        });
 
-        let list_ptr = alloc_list(_py, &result_parts);
+        let list_ptr = alloc_list(_py, OwnedRuntimeValue::as_bits_slice(&result_parts));
         if list_ptr.is_null() {
             MoltObject::none().bits()
         } else {
@@ -187,11 +210,7 @@ pub extern "C" fn molt_re_sub(
 
         let chars: Vec<char> = text.chars().collect();
         let text_len = chars.len();
-        let limit = if count <= 0 {
-            None
-        } else {
-            Some(count as usize)
-        };
+        let limit = match_limit(count);
 
         // Check if repl contains backreferences (backslash).
         let repl_units: Vec<u32> = repl.chars().map(u32::from).collect();
@@ -253,14 +272,15 @@ pub extern "C" fn molt_re_sub(
 
         // Build result tuple: (result_string, num_replacements).
         let result_str_ptr = alloc_string(_py, out.as_bytes());
-        let result_str_bits = if result_str_ptr.is_null() {
-            MoltObject::none().bits()
-        } else {
-            MoltObject::from_ptr(result_str_ptr).bits()
+        if result_str_ptr.is_null() {
+            return MoltObject::none().bits();
+        }
+        let result_string = unsafe {
+            OwnedRuntimeValue::from_owned_bits(_py, MoltObject::from_ptr(result_str_ptr).bits())
         };
         let count_bits_out = MoltObject::from_int(replaced as i64).bits();
 
-        let tuple_ptr = alloc_tuple(_py, &[result_str_bits, count_bits_out]);
+        let tuple_ptr = alloc_tuple(_py, &[result_string.bits(), count_bits_out]);
         if tuple_ptr.is_null() {
             MoltObject::none().bits()
         } else {
@@ -292,11 +312,7 @@ fn molt_re_sub_bytes(
     };
     let mut out = Vec::with_capacity(text.len());
     let repl_units: Vec<u32> = repl.iter().map(|byte| u32::from(*byte)).collect();
-    let limit = if count <= 0 {
-        None
-    } else {
-        Some(count as usize)
-    };
+    let limit = match_limit(count);
     let mut last = 0usize;
     let mut replaced = 0usize;
     let text_len = text.len();
@@ -334,13 +350,13 @@ fn molt_re_sub_bytes(
     }
     out.extend_from_slice(&text[last..]);
     let result_ptr = alloc_bytes(py, &out);
-    let result_bits = if result_ptr.is_null() {
-        MoltObject::none().bits()
-    } else {
-        MoltObject::from_ptr(result_ptr).bits()
-    };
+    if result_ptr.is_null() {
+        return MoltObject::none().bits();
+    }
+    let result =
+        unsafe { OwnedRuntimeValue::from_owned_bits(py, MoltObject::from_ptr(result_ptr).bits()) };
     let count_bits = MoltObject::from_int(replaced as i64).bits();
-    let tuple_ptr = alloc_tuple(py, &[result_bits, count_bits]);
+    let tuple_ptr = alloc_tuple(py, &[result.bits(), count_bits]);
     if tuple_ptr.is_null() {
         MoltObject::none().bits()
     } else {
@@ -348,7 +364,7 @@ fn molt_re_sub_bytes(
     }
 }
 
-fn expand_match_replacement(
+pub(super) fn expand_match_replacement(
     repl: &[u32],
     subject: SubjectStorage<'_>,
     result: &MatchResult,
@@ -356,8 +372,8 @@ fn expand_match_replacement(
     names: &HashMap<String, u32>,
 ) -> Result<Vec<u32>, super::functions_re::ReplacementError> {
     let mut groups = Vec::with_capacity(group_count as usize + 1);
-    let spans =
-        std::iter::once(Some((result.start, result.end))).chain(result.groups.iter().copied());
+    let spans = std::iter::once(Some((result.start, result.end)))
+        .chain(result.groups.iter().skip(1).copied());
     for span in spans.take(group_count as usize + 1) {
         groups.push(span.map(|(start, end)| {
             (start..end)
@@ -371,31 +387,6 @@ fn expand_match_replacement(
     super::functions_re::re_expand_typed(repl, &groups, names)
 }
 
-#[cfg(test)]
-pub(super) fn expand_repl_with_groups(
-    repl: &str,
-    _text: &str,
-    chars: &[char],
-    result: &MatchResult,
-    group_count: u32,
-    names: &HashMap<String, u32>,
-) -> String {
-    let units: Vec<u32> = repl.chars().map(u32::from).collect();
-    let groups = std::iter::once(Some((result.start, result.end)))
-        .chain(result.groups.iter().copied())
-        .take(group_count as usize + 1)
-        .map(|span| {
-            span.map(|(start, end)| chars[start..end].iter().copied().map(u32::from).collect())
-        })
-        .collect::<Vec<_>>();
-    let expanded = super::functions_re::re_expand_typed(&units, &groups, names).unwrap();
-    expanded
-        .into_iter()
-        .map(char::from_u32)
-        .map(Option::unwrap)
-        .collect()
-}
-
 /// `molt_re_escape(pattern: str) -> str`
 ///
 /// Escape all special regex characters in `pattern` so it can be used as a
@@ -403,15 +394,68 @@ pub(super) fn expand_repl_with_groups(
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_re_escape(pattern_bits: u64) -> u64 {
     molt_runtime_core::with_core_gil!(_py, {
-        let Some(pattern) = string_obj_to_owned(obj_from_bits(pattern_bits)) else {
-            return raise_exception::<_>(_py, "TypeError", "pattern must be str");
+        let object = obj_from_bits(pattern_bits);
+        let is_bytes = object
+            .as_ptr()
+            .is_some_and(|ptr| unsafe { object_type_id(ptr) } == TYPE_ID_BYTES);
+        let escaped = if is_bytes {
+            let Some(pattern) = (unsafe { bytes_obj_to_borrowed(object) }) else {
+                return raise_exception::<_>(_py, "TypeError", "pattern must be str or bytes");
+            };
+            re_escape_impl(pattern)
+        } else {
+            let Some(pattern) = string_obj_to_owned(object) else {
+                return raise_exception::<_>(_py, "TypeError", "pattern must be str or bytes");
+            };
+            re_escape_impl(pattern.as_bytes())
         };
-        let escaped = re_escape_impl(&pattern);
-        let out_ptr = alloc_string(_py, escaped.as_bytes());
+        let out_ptr = if is_bytes {
+            alloc_bytes(_py, &escaped)
+        } else {
+            alloc_string(_py, &escaped)
+        };
         if out_ptr.is_null() {
             MoltObject::none().bits()
         } else {
             MoltObject::from_ptr(out_ptr).bits()
         }
     })
+}
+
+/// CPython's ASCII special-character map applies unchanged to UTF-8 text and
+/// raw byte patterns. Non-ASCII and NUL units pass through without escaping.
+pub(super) fn re_escape_impl(pattern: &[u8]) -> Vec<u8> {
+    let mut escaped = Vec::with_capacity(pattern.len());
+    for &byte in pattern {
+        if matches!(
+            byte,
+            b'(' | b')'
+                | b'['
+                | b']'
+                | b'{'
+                | b'}'
+                | b'?'
+                | b'*'
+                | b'+'
+                | b'-'
+                | b'|'
+                | b'^'
+                | b'$'
+                | b'\\'
+                | b'.'
+                | b'&'
+                | b'~'
+                | b'#'
+                | b' '
+                | b'\t'
+                | b'\n'
+                | b'\r'
+                | 0x0b
+                | 0x0c
+        ) {
+            escaped.push(b'\\');
+        }
+        escaped.push(byte);
+    }
+    escaped
 }

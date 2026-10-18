@@ -74,7 +74,7 @@ pub extern "C" fn molt_re_pattern_info(handle_bits: u64) -> u64 {
             return raise_exception::<_>(_py, "ValueError", "invalid regex handle");
         };
         // Build group_names dict.
-        let mut pairs: Vec<u64> = Vec::with_capacity(compiled.compiled.group_names.len() * 2);
+        let mut pairs = Vec::with_capacity(compiled.compiled.group_names.len() * 2);
         for (name, &idx) in &compiled.compiled.group_names {
             let name_ptr = alloc_string(_py, name.as_bytes());
             if name_ptr.is_null() {
@@ -82,14 +82,17 @@ pub extern "C" fn molt_re_pattern_info(handle_bits: u64) -> u64 {
             }
             let name_bits = MoltObject::from_ptr(name_ptr).bits();
             let idx_bits = MoltObject::from_int(idx as i64).bits();
-            pairs.push(name_bits);
-            pairs.push(idx_bits);
+            pairs.push(unsafe { OwnedRuntimeValue::from_owned_bits(_py, name_bits) });
+            pairs.push(unsafe { OwnedRuntimeValue::from_owned_bits(_py, idx_bits) });
         }
-        let dict_ptr = alloc_dict_with_pairs(_py, &pairs);
+        let dict_ptr = alloc_dict_with_pairs(_py, OwnedRuntimeValue::as_bits_slice(&pairs));
         if dict_ptr.is_null() {
             return MoltObject::none().bits();
         }
-        let dict_bits = MoltObject::from_ptr(dict_ptr).bits();
+        let dictionary = unsafe {
+            OwnedRuntimeValue::from_owned_bits(_py, MoltObject::from_ptr(dict_ptr).bits())
+        };
+        drop(pairs);
 
         let groups_bits = MoltObject::from_int(compiled.compiled.group_count as i64).bits();
         let flags_bits_out = MoltObject::from_int(compiled.compiled.flags).bits();
@@ -98,7 +101,10 @@ pub extern "C" fn molt_re_pattern_info(handle_bits: u64) -> u64 {
             None => MoltObject::none().bits(),
         };
 
-        let tuple_ptr = alloc_tuple(_py, &[groups_bits, dict_bits, flags_bits_out, warn_bits]);
+        let tuple_ptr = alloc_tuple(
+            _py,
+            &[groups_bits, dictionary.bits(), flags_bits_out, warn_bits],
+        );
         if tuple_ptr.is_null() {
             return MoltObject::none().bits();
         }

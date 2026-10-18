@@ -1211,164 +1211,84 @@ fn test_match_pos_beyond_text() {
 // split / sub helper tests (internal logic)
 // -----------------------------------------------------------------------
 
-/// Helper: split a string by a compiled pattern.
+/// Test projection of the production scanner and replacement transitions.
 fn do_split(pattern: &str, text: &str, maxsplit: usize) -> Vec<String> {
-    let compiled = parse_pattern(pattern, 0).unwrap();
+    let pattern = std::sync::Arc::new(PatternHandle::new(parse_pattern(pattern, 0).unwrap()));
     let chars: Vec<char> = text.chars().collect();
-    let text_len = chars.len();
-    let limit = if maxsplit == 0 { None } else { Some(maxsplit) };
-
-    let mut result_parts: Vec<String> = Vec::new();
-    let mut last: usize = 0;
-    let mut splits: usize = 0;
-    let mut cur: usize = 0;
-    let mut prev_empty_at: Option<usize> = None;
-
-    while cur <= text_len {
-        if let Some(lim) = limit
-            && splits >= lim
-        {
+    let mut scanner = ScannerHandle::new(std::sync::Arc::clone(&pattern), 0, chars.len(), None);
+    let mut parts = Vec::new();
+    let mut last = 0;
+    let mut count = 0;
+    while maxsplit == 0 || count < maxsplit {
+        let Some(result) = advance_scanner(
+            &pattern.compiled,
+            &mut scanner,
+            SubjectStorage::Text(&chars),
+        ) else {
             break;
+        };
+        parts.push(chars[last..result.start].iter().collect());
+        for span in result.groups.iter().skip(1) {
+            parts.push(span.map_or_else(String::new, |(start, end)| {
+                chars[start..end].iter().collect()
+            }));
         }
-
-        match execute_match(&compiled, text, cur, text_len, "search") {
-            Some(result) => {
-                let m_start = result.start;
-                let m_end = result.end;
-
-                if m_start == m_end {
-                    if prev_empty_at == Some(m_start) {
-                        if cur < text_len {
-                            cur += 1;
-                        } else {
-                            break;
-                        }
-                        continue;
-                    }
-                    prev_empty_at = Some(m_start);
-                } else {
-                    prev_empty_at = None;
-                }
-
-                let segment: String = chars[last..m_start].iter().collect();
-                result_parts.push(segment);
-
-                // Include capturing groups.
-                for i in 1..=(compiled.group_count as usize) {
-                    if i < result.groups.len() {
-                        match result.groups[i] {
-                            Some((gs, ge)) => {
-                                let group_text: String = chars[gs..ge].iter().collect();
-                                result_parts.push(group_text);
-                            }
-                            None => {
-                                result_parts.push(String::new());
-                            }
-                        }
-                    } else {
-                        result_parts.push(String::new());
-                    }
-                }
-
-                last = m_end;
-                splits += 1;
-
-                if m_end == m_start {
-                    if cur < text_len {
-                        cur = m_start + 1;
-                    } else {
-                        break;
-                    }
-                } else {
-                    cur = m_end;
-                }
-            }
-            None => break,
-        }
+        last = result.end;
+        count += 1;
     }
-
-    let tail: String = chars[last..].iter().collect();
-    result_parts.push(tail);
-    result_parts
+    parts.push(chars[last..].iter().collect());
+    parts
 }
 
-/// Helper: sub with string replacement.
 fn do_sub(pattern: &str, repl: &str, text: &str, count: usize) -> (String, usize) {
-    let compiled = parse_pattern(pattern, 0).unwrap();
+    let pattern = std::sync::Arc::new(PatternHandle::new(parse_pattern(pattern, 0).unwrap()));
     let chars: Vec<char> = text.chars().collect();
-    let text_len = chars.len();
-    let limit = if count == 0 { None } else { Some(count) };
-    let repl_has_backref = repl.contains('\\');
-
-    let mut out = String::with_capacity(text.len());
-    let mut last: usize = 0;
-    let mut replaced: usize = 0;
-    let mut cur: usize = 0;
-    let mut prev_empty_at: Option<usize> = None;
-
-    while cur <= text_len {
-        if let Some(lim) = limit
-            && replaced >= lim
-        {
+    let mut scanner = ScannerHandle::new(std::sync::Arc::clone(&pattern), 0, chars.len(), None);
+    let mut out = String::new();
+    let mut last = 0;
+    let mut replaced = 0;
+    while count == 0 || replaced < count {
+        let Some(result) = advance_scanner(
+            &pattern.compiled,
+            &mut scanner,
+            SubjectStorage::Text(&chars),
+        ) else {
             break;
-        }
-
-        match execute_match(&compiled, text, cur, text_len, "search") {
-            Some(result) => {
-                let m_start = result.start;
-                let m_end = result.end;
-
-                if m_start == m_end {
-                    if prev_empty_at == Some(m_start) {
-                        if cur < text_len {
-                            cur += 1;
-                        } else {
-                            break;
-                        }
-                        continue;
-                    }
-                    prev_empty_at = Some(m_start);
-                } else {
-                    prev_empty_at = None;
-                }
-
-                let segment: String = chars[last..m_start].iter().collect();
-                out.push_str(&segment);
-
-                if repl_has_backref {
-                    let expanded = expand_repl_with_groups(
-                        repl,
-                        text,
-                        &chars,
-                        &result,
-                        compiled.group_count,
-                        &compiled.group_names,
-                    );
-                    out.push_str(&expanded);
-                } else {
-                    out.push_str(repl);
-                }
-
-                last = m_end;
-                replaced += 1;
-
-                if m_end == m_start {
-                    if cur < text_len {
-                        cur = m_start + 1;
-                    } else {
-                        break;
-                    }
-                } else {
-                    cur = m_end;
-                }
-            }
-            None => break,
-        }
+        };
+        out.extend(chars[last..result.start].iter());
+        out.push_str(&expand_repl_with_groups(
+            repl,
+            &chars,
+            &result,
+            pattern.compiled.group_count,
+            &pattern.compiled.group_names,
+        ));
+        last = result.end;
+        replaced += 1;
     }
-
-    let tail: String = chars[last..].iter().collect();
-    out.push_str(&tail);
+    out.extend(chars[last..].iter());
     (out, replaced)
+}
+
+fn expand_repl_with_groups(
+    repl: &str,
+    chars: &[char],
+    result: &MatchResult,
+    group_count: u32,
+    names: &HashMap<String, u32>,
+) -> String {
+    let units: Vec<u32> = repl.chars().map(u32::from).collect();
+    expand_match_replacement(
+        &units,
+        SubjectStorage::Text(chars),
+        result,
+        group_count,
+        names,
+    )
+    .unwrap()
+    .into_iter()
+    .map(|unit| char::from_u32(unit).unwrap())
+    .collect()
 }
 
 #[test]
@@ -1431,7 +1351,7 @@ fn test_expand_repl_numbered_group() {
     };
     let chars: Vec<char> = "hello".chars().collect();
     let names = HashMap::new();
-    let expanded = expand_repl_with_groups("<<\\1>>", "hello", &chars, &result, 1, &names);
+    let expanded = expand_repl_with_groups("<<\\1>>", &chars, &result, 1, &names);
     assert_eq!(expanded, "<<hello>>");
 }
 
@@ -1445,7 +1365,7 @@ fn test_expand_repl_named_group() {
     let chars: Vec<char> = "hello".chars().collect();
     let mut names = HashMap::new();
     names.insert("word".to_string(), 1u32);
-    let expanded = expand_repl_with_groups("<<\\g<word>>>", "hello", &chars, &result, 1, &names);
+    let expanded = expand_repl_with_groups("<<\\g<word>>>", &chars, &result, 1, &names);
     assert_eq!(expanded, "<<hello>>");
 }
 
@@ -1458,7 +1378,7 @@ fn test_expand_repl_group_zero() {
     };
     let chars: Vec<char> = "hello".chars().collect();
     let names = HashMap::new();
-    let expanded = expand_repl_with_groups("<<\\g<0>>>", "hello", &chars, &result, 0, &names);
+    let expanded = expand_repl_with_groups("<<\\g<0>>>", &chars, &result, 0, &names);
     assert_eq!(expanded, "<<hello>>");
 }
 
@@ -1471,7 +1391,7 @@ fn test_expand_repl_escape_sequences() {
     };
     let chars: Vec<char> = "".chars().collect();
     let names = HashMap::new();
-    let expanded = expand_repl_with_groups("a\\nb\\tc\\\\d", "", &chars, &result, 0, &names);
+    let expanded = expand_repl_with_groups("a\\nb\\tc\\\\d", &chars, &result, 0, &names);
     assert_eq!(expanded, "a\nb\tc\\d");
 }
 
@@ -1481,40 +1401,74 @@ fn test_expand_repl_escape_sequences() {
 
 #[test]
 fn test_escape_no_special() {
-    assert_eq!(re_escape_impl("hello world"), "hello world");
+    assert_eq!(re_escape_impl(b"hello world"), b"hello\\ world");
 }
 
 #[test]
 fn test_escape_all_special() {
-    assert_eq!(re_escape_impl("a.b*c?d+e"), "a\\.b\\*c\\?d\\+e");
+    assert_eq!(re_escape_impl(b"a.b*c?d+e"), b"a\\.b\\*c\\?d\\+e");
 }
 
 #[test]
 fn test_escape_brackets_parens() {
-    assert_eq!(re_escape_impl("[foo](bar)"), "\\[foo\\]\\(bar\\)");
+    assert_eq!(re_escape_impl(b"[foo](bar)"), b"\\[foo\\]\\(bar\\)");
 }
 
 #[test]
 fn test_escape_backslash() {
-    assert_eq!(re_escape_impl("a\\b"), "a\\\\b");
+    assert_eq!(re_escape_impl(b"a\\b"), b"a\\\\b");
 }
 
 #[test]
 fn test_escape_pipe_caret_dollar() {
-    assert_eq!(re_escape_impl("^a|b$"), "\\^a\\|b\\$");
+    assert_eq!(re_escape_impl(b"^a|b$"), b"\\^a\\|b\\$");
 }
 
 #[test]
 fn test_escape_braces() {
-    assert_eq!(re_escape_impl("a{1,2}"), "a\\{1,2\\}");
+    assert_eq!(re_escape_impl(b"a{1,2}"), b"a\\{1,2\\}");
 }
 
 #[test]
 fn test_escape_empty() {
-    assert_eq!(re_escape_impl(""), "");
+    assert_eq!(re_escape_impl(b""), b"");
 }
 
 #[test]
 fn test_escape_nul() {
-    assert_eq!(re_escape_impl("a\0b"), "a\\000b");
+    assert_eq!(re_escape_impl(b"a\0b"), b"a\0b");
+}
+
+#[test]
+fn replacement_failure_roles_and_positions_match_cpython() {
+    use super::functions_re::{ReplacementErrorKind, re_expand_typed};
+    let groups = vec![Some(vec![u32::from(b'a')]), Some(vec![u32::from(b'a')])];
+    // Independent CPython 3.12 parser oracles, shared by text and byte templates.
+    for (template, kind, message) in [
+        (
+            r"\z",
+            ReplacementErrorKind::Syntax,
+            r"bad escape \z at position 0",
+        ),
+        (
+            r"\9",
+            ReplacementErrorKind::Syntax,
+            "invalid group reference 9 at position 1",
+        ),
+        (
+            r"\g<missing>",
+            ReplacementErrorKind::Index,
+            "unknown group name 'missing'",
+        ),
+        (
+            r"\777",
+            ReplacementErrorKind::Syntax,
+            r"octal escape value \777 outside of range 0-0o377 at position 0",
+        ),
+    ] {
+        let units: Vec<u32> = template.chars().map(u32::from).collect();
+        let error = re_expand_typed(&units, &groups, &HashMap::new()).unwrap_err();
+        assert_eq!(error.kind, kind);
+        assert_eq!(error.message, message);
+    }
 }
