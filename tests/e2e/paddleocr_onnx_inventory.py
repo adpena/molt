@@ -1,18 +1,38 @@
-"""Test ONNX interpreter correctness against ONNX Runtime.
+"""Print the ONNX op inventory and ONNX Runtime timing of the PaddleOCR models.
 
-Runs the same model through both runtimes and compares outputs.
-Uses numpy directly (no tinygrad dependency) for testing outside molt.
+A manual measurement script, not a test: it calls no Molt code and asserts
+nothing. docs/benchmarks/paddleocr_baseline.md cites its output. It needs
+onnx, onnxruntime and numpy, which no locked dependency group provides, and
+the PaddleOCR models under the root that tests/helpers/paddleocr_paths.py
+names.
+
+Usage: python -m tests.e2e.paddleocr_onnx_inventory
 """
 
+import time
+from pathlib import Path
+
+import numpy as np
 import onnx
 import onnxruntime as ort
-import numpy as np
-import time
 
 from tests.helpers.paddleocr_paths import (
+    PADDLEOCR_MODEL_ROOT_ENV,
     hf_snapshot_artifact_candidate,
-    require_paddleocr_artifact,
+    paddleocr_model_root,
 )
+
+
+def require_paddleocr_artifact(*relative_candidates: str) -> Path:
+    root = paddleocr_model_root().expanduser()
+    for relative in relative_candidates:
+        candidate = root / relative
+        if candidate.is_file():
+            return candidate
+    raise SystemExit(
+        f"no PaddleOCR artifact under {root} ({PADDLEOCR_MODEL_ROOT_ENV}); "
+        f"tried: {', '.join(relative_candidates)}"
+    )
 
 
 DETECTOR_CANDIDATES = (
@@ -29,8 +49,8 @@ ENGLISH_RECOGNIZER_CANDIDATES = (
 )
 
 
-def test_detector_correctness():
-    """Compare detector output: ONNX Runtime vs our interpreter structure."""
+def detector_inventory():
+    """Print the detector's op inventory and ONNX Runtime timing."""
     det_path = require_paddleocr_artifact(*DETECTOR_CANDIDATES)
     model = onnx.load(det_path)
 
@@ -100,8 +120,8 @@ def test_detector_correctness():
     )
 
 
-def test_recognizer_correctness():
-    """Compare recognizer output."""
+def recognizer_inventory():
+    """Print the English recognizer's output shape and op inventory."""
     rec_path = require_paddleocr_artifact(*ENGLISH_RECOGNIZER_CANDIDATES)
 
     sess = ort.InferenceSession(str(rec_path))
@@ -118,5 +138,5 @@ def test_recognizer_correctness():
 
 
 if __name__ == "__main__":
-    test_detector_correctness()
-    test_recognizer_correctness()
+    detector_inventory()
+    recognizer_inventory()
