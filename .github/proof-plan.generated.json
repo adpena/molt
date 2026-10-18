@@ -374,7 +374,7 @@
     "tests/tools/test_win_job_contract.py",
     "tests/tools/test_windows_process_api.py"
   ],
-  "authority_sha256": "faabcdc9788acca109ab3ccc45af7d787d33ef40aa2c9c10dce1493e83e93bbf",
+  "authority_sha256": "f7442191904120b1a4cc5228d6e017825069ecc44046539547b575ce123f7641",
   "cargo_environment_policy": {
     "incident_command": "cargo metadata --locked --format-version 1",
     "incident_commit": "20b046b79bd4ca64a8c859f737f6e330377bcc4e",
@@ -5144,7 +5144,9 @@
         "tests/cli/test_cli_progress.py",
         "tests/cli/test_cli_wasm_codegen_layout.py",
         "tests/cli/test_cli_guard_infrastructure.py",
-        "tests/cli/test_cli_environment_custody.py"
+        "tests/cli/test_cli_environment_custody.py",
+        "tests/cli/test_cli_extension_commands.py",
+        "tests/cli/test_source_extension_reproducibility.py"
       ],
       "cache_domain": "pytest",
       "cell": "linux-x86_64-py312-unit",
@@ -5299,7 +5301,9 @@
         "tests/cli/test_cli_progress.py",
         "tests/cli/test_cli_wasm_codegen_layout.py",
         "tests/cli/test_cli_guard_infrastructure.py",
-        "tests/cli/test_cli_environment_custody.py"
+        "tests/cli/test_cli_environment_custody.py",
+        "tests/cli/test_cli_extension_commands.py",
+        "tests/cli/test_source_extension_reproducibility.py"
       ],
       "cache_domain": "pytest",
       "cell": "macos-arm64-py312-unit",
@@ -6388,6 +6392,8 @@
         "tests/cli/test_cli_python_source_closure.py::test_repository_wasm_linker_closure_reaches_binding_authority",
         "tests/cli/test_native_symbol_authority.py::test_member_symbols_real_native_archive",
         "tests/cli/test_native_symbol_authority.py::test_member_symbols_real_wasm_archive",
+        "tests/cli/test_cli_extension_commands.py::test_extension_build_compiles_iterator_mapping_surface_without_subprocess_mock",
+        "tests/cli/test_cli_extension_commands.py::test_extension_build_real_wasm_object_separates_import_and_data_relocation_closure",
         "tests/cli/test_native_link_plan.py::test_real_elf_extension_link_preserves_eager_members_lazy_dependencies_and_runtime_edges",
         "tests/cli/test_native_link_manifest.py::test_static_nobundle_order_changes_real_archive_resolution",
         "tests/cli/test_link_selection_admission.py",
