@@ -87,9 +87,9 @@ def test_serial_cache_hit_counts_as_layer_cache_hit(tmp_path: Path) -> None:
     assert frontend_parallel._layer_cache_hit_count(recorded) == 1
 
 
+@pytest.mark.usefixtures("no_ambient_guard_caps")
 def test_frontend_parallel_defaults_to_memory_bounded_auto(monkeypatch) -> None:
     gib = 1024**3
-    monkeypatch.delenv(host_capacity.MEMORY_SLICE_ENV, raising=False)
     monkeypatch.delenv("MOLT_FRONTEND_PARALLEL_MODULES", raising=False)
     monkeypatch.setattr(
         host_capacity, "_probe_memory_bytes", lambda: (64 * gib, 7 * gib)
@@ -121,9 +121,9 @@ def test_frontend_parallel_defaults_to_memory_bounded_auto(monkeypatch) -> None:
         frontend_parallel._resolve_frontend_parallel_module_workers()
 
 
+@pytest.mark.usefixtures("no_ambient_guard_caps")
 def test_frontend_worker_policy_payload_exposes_resource_authority(monkeypatch) -> None:
     gib = 1024**3
-    monkeypatch.delenv(host_capacity.MEMORY_SLICE_ENV, raising=False)
     monkeypatch.delenv("MOLT_FRONTEND_PARALLEL_MODULES", raising=False)
     monkeypatch.setattr(
         host_capacity, "_probe_memory_bytes", lambda: (64 * gib, 5 * gib)
@@ -143,9 +143,9 @@ def test_frontend_worker_policy_payload_exposes_resource_authority(monkeypatch) 
     assert payload["worker_memory_headroom_bytes"] > payload["worker_memory_bytes"]
 
 
+@pytest.mark.usefixtures("no_ambient_guard_caps")
 def test_frontend_pool_never_spawns_more_processes_than_modules(monkeypatch) -> None:
     gib = 1024**3
-    monkeypatch.delenv(host_capacity.MEMORY_SLICE_ENV, raising=False)
     monkeypatch.setenv("MOLT_FRONTEND_PARALLEL_MODULES", "32")
     monkeypatch.setattr(
         host_capacity, "_probe_memory_bytes", lambda: (128 * gib, 64 * gib)

@@ -26,8 +26,10 @@ from typing import Any, cast
 
 from tools.memory_guard_core.windows_snapshot import (
     ProcessSnapshotError,
+    WindowsProcessSnapshotRow,
     _windows_process_snapshot_rows_hard_timeout,
     windows_current_process_started_at_ns,
+    windows_process_resident_kb,
 )
 
 
@@ -157,25 +159,26 @@ HOST_CONTROL_PLANE_LINEAGE_PROTECTED_EXECUTABLE_NAMES = (
 NativeCommandBinding = tuple[str, "tuple[str, ...] | None", str]
 """``(command, argv, command_kind)`` bound to one sampled process instance."""
 
-_native_command_binding_lock = threading.Lock()
+_native_detail_binding_lock = threading.Lock()
 
 
 class _BoundOnRead:
     """A ``ProcessSample`` field a native sampler binds on first read.
 
-    A native snapshot reads one kernel row per process: parent, group, birth
-    and resident set. Argv costs a further read per process and only the
-    processes a decision visits need it, so a native row reads its argv the
-    first time ``command``, ``argv`` or ``command_kind`` is read. The binder
-    checks that the pid still names the sampled birth; once bound, every
-    reader sees the same value. Rows built directly carry eager values.
+    Identity stays eager; separately queried details bind only when visited.
+    Related fields (command, argv and command_kind) share one binding. RSS
+    uses the same mechanism independently, so reading argv never sizes a
+    process. Once bound, every reader sees the same value, including zero
+    for a process that exited. Rows built directly carry eager values.
     """
 
-    __slots__ = ("default", "name")
+    __slots__ = ("default", "name", "fields", "binding")
 
-    def __init__(self, default: object = MISSING) -> None:
+    def __init__(self, fields: tuple[str, ...], default: object = MISSING) -> None:
         self.default = default
         self.name = ""
+        self.fields = fields
+        self.binding = "_bind_native_" + fields[0]
 
     def __set_name__(self, owner: type, name: str) -> None:
         self.name = name
@@ -190,13 +193,11 @@ class _BoundOnRead:
             return values[self.name]
         except KeyError:
             pass
-        with _native_command_binding_lock:
+        with _native_detail_binding_lock:
             if self.name not in values:
-                command, argv, command_kind = values["_bind_native_command"]()
-                values["command"] = command
-                values["argv"] = argv
-                values["command_kind"] = command_kind
-                del values["_bind_native_command"]
+                bound = values[self.binding]()
+                values.update(zip(self.fields, bound, strict=True))
+                del values[self.binding]
         return values[self.name]
 
     def __set__(self, instance: object, value: object) -> None:
@@ -207,39 +208,51 @@ class _BoundOnRead:
 class ProcessSample:
     pid: int
     ppid: int
-    rss_kb: int
-    command: str = _BoundOnRead()  # type: ignore[assignment]
+    rss_kb: int = _BoundOnRead(("rss_kb",))  # type: ignore[assignment]
+    command: str = _BoundOnRead(("command", "argv", "command_kind"))  # type: ignore[assignment]
     pgid: int | None = None
     elapsed_sec: int | None = None
     started_at_ns: int | None = None
     # None uses the native sampler's command source; () explicitly means unknown.
-    argv: tuple[str, ...] | None = _BoundOnRead(None)  # type: ignore[assignment]
-    command_kind: str = _BoundOnRead("full")  # type: ignore[assignment]
+    argv: tuple[str, ...] | None = _BoundOnRead(  # type: ignore[assignment]
+        ("command", "argv", "command_kind"), None
+    )
+    command_kind: str = _BoundOnRead(  # type: ignore[assignment]
+        ("command", "argv", "command_kind"), "full"
+    )
 
 
 def native_process_sample(
     *,
     pid: int,
     ppid: int,
-    rss_kb: int,
+    rss_kb: int | Callable[[], int],
     pgid: int | None,
     elapsed_sec: int | None,
     started_at_ns: int | None,
-    bind_command: Callable[[], NativeCommandBinding],
+    bind_command: NativeCommandBinding | Callable[[], NativeCommandBinding],
 ) -> ProcessSample:
-    """Build a kernel-row sample whose command binds on first read."""
+    """Build an identity row with eager or read-once native detail bindings."""
 
     sample = object.__new__(ProcessSample)
     values = sample.__dict__
     values.update(
         pid=pid,
         ppid=ppid,
-        rss_kb=rss_kb,
         pgid=pgid,
         elapsed_sec=elapsed_sec,
         started_at_ns=started_at_ns,
-        _bind_native_command=bind_command,
     )
+    if callable(rss_kb):
+        values["_bind_native_rss_kb"] = lambda: (rss_kb(),)
+    else:
+        values["rss_kb"] = rss_kb
+    if callable(bind_command):
+        values["_bind_native_command"] = bind_command
+    else:
+        values.update(
+            zip(("command", "argv", "command_kind"), bind_command, strict=True)
+        )
     return sample
 
 
@@ -1458,33 +1471,20 @@ def process_started_at_ns(pid: int) -> int | None:
 
 
 def parse_windows_process_snapshot_rows(
-    rows: Sequence[
-        tuple[int, int, int, str, int | None]
-        | tuple[int, int, int, str, int | None, int | None]
-        | tuple[int, int, int, str, int | None, int | None, str]
-    ],
+    rows: Sequence[WindowsProcessSnapshotRow],
 ) -> dict[int, ProcessSample]:
     samples: dict[int, ProcessSample] = {}
-    for row in rows:
-        command_kind = "full"
-        if len(row) == 7:
-            pid, ppid, rss_kb, command, elapsed_sec, started_at_ns, command_kind = row
-        elif len(row) == 5:
-            pid, ppid, rss_kb, command, elapsed_sec = row
-            started_at_ns = None
-        else:
-            pid, ppid, rss_kb, command, elapsed_sec, started_at_ns = row
+    for pid, ppid, command, elapsed_sec, started_at_ns, command_kind in rows:
         if pid <= 0:
             continue
-        samples[pid] = ProcessSample(
+        samples[pid] = native_process_sample(
             pid=pid,
             ppid=max(0, ppid),
-            rss_kb=max(0, rss_kb),
-            command=command.strip() or f"pid:{pid}",
+            rss_kb=partial(windows_process_resident_kb, pid, started_at_ns),
+            bind_command=(command.strip() or f"pid:{pid}", None, command_kind),
             pgid=None,
             elapsed_sec=elapsed_sec,
             started_at_ns=started_at_ns,
-            command_kind=command_kind,
         )
     return samples
 
@@ -1549,17 +1549,32 @@ def _darwin_bind_command(pid: int, row: _DarwinKernelProcRow) -> NativeCommandBi
     return shlex.join(argv), argv, "full"
 
 
+def _darwin_bind_resident_kb(pid: int, started_at_ns: int) -> int:
+    """Size only the sampled live instance, never a replacement using its PID."""
+
+    rss_kb = _darwin_proc_resident_kb(pid)
+    if not rss_kb:
+        return 0
+    after = _darwin_proc_kernel_row(pid)
+    if (
+        after is None
+        or after.status == _DARWIN_SZOMB
+        or after.started_at_ns != started_at_ns
+    ):
+        return 0
+    return rss_kb
+
+
 def _sample_processes_darwin() -> dict[int, ProcessSample]:
     """Instance-bound Darwin samples from one ``kern.proc`` table read.
 
     One ``KERN_PROC_ALL`` sysctl returns parent, group, birth, status, name
-    and effective uid for every process; ``PROC_PIDTASKINFO`` sizes the ones
-    this caller may read. An exited, unreaped (``SZOMB``) row is no live member
-    of any tree and is left out. A row whose detail the kernel withholds keeps
+    and effective uid for every process. An exited, unreaped (``SZOMB``) row
+    is no live member of any tree and is left out. A row whose detail the kernel withholds keeps
     its group and name but binds no ancestry or birth. Every other row binds
-    its argv on first read (``_darwin_bind_command``), so a snapshot costs one
-    sysctl plus one task-info read per readable process, and argv reads only
-    for the processes a decision visits.
+    argv and RSS independently on first read, so a snapshot costs one sysctl.
+    Only visited details incur per-process reads and birth validation; all
+    later reads of that sample reuse the bound value.
     """
 
     now_ns = time.time_ns()
@@ -1582,7 +1597,7 @@ def _sample_processes_darwin() -> dict[int, ProcessSample]:
         samples[pid] = native_process_sample(
             pid=pid,
             ppid=max(0, row.ppid),
-            rss_kb=_darwin_proc_resident_kb(pid),
+            rss_kb=partial(_darwin_bind_resident_kb, pid, row.started_at_ns),
             pgid=row.pgid,
             elapsed_sec=max(0, (now_ns - row.started_at_ns) // 1_000_000_000),
             started_at_ns=row.started_at_ns,
@@ -1592,14 +1607,9 @@ def _sample_processes_darwin() -> dict[int, ProcessSample]:
 
 
 def sample_processes_windows(
-    snapshot_rows: Callable[
-        [],
-        Sequence[
-            tuple[int, int, int, str, int | None]
-            | tuple[int, int, int, str, int | None, int | None]
-            | tuple[int, int, int, str, int | None, int | None, str]
-        ],
-    ] = _windows_process_snapshot_rows_hard_timeout,
+    snapshot_rows: Callable[[], Sequence[WindowsProcessSnapshotRow]] = (
+        _windows_process_snapshot_rows_hard_timeout
+    ),
 ) -> dict[int, ProcessSample]:
     try:
         rows = snapshot_rows()
