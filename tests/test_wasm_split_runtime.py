@@ -1338,153 +1338,22 @@ def test_linked_falcon_ocr_wasm_driver_runs_stub_generation(
     expected_empty = []
     expected_one = [19]
 
-    calls_path = tmp_path / "calls.json"
-    calls_path.write_text(
-        json.dumps(
-            {
-                "calls": [
-                    {
-                        "export": "tinygrad_wasm_driver__init",
-                        "args": [
-                            {
-                                "kind": "bytes_path",
-                                "path": str(weights_path),
-                            },
-                            {
-                                "kind": "text_path",
-                                "path": str(config_path),
-                            },
-                        ],
-                    },
-                    {
-                        "export": "tinygrad_wasm_driver__ocr_tokens",
-                        "args": [
-                            {
-                                "kind": "int",
-                                "value": 32,
-                            },
-                            {
-                                "kind": "int",
-                                "value": 32,
-                            },
-                            {
-                                "kind": "bytes_path",
-                                "path": str(image_path),
-                            },
-                            {
-                                "kind": "list_int",
-                                "value": [1, 2, 3],
-                            },
-                            {
-                                "kind": "int",
-                                "value": 0,
-                            },
-                        ],
-                    },
-                    {
-                        "export": "tinygrad_wasm_driver__ocr_tokens",
-                        "args": [
-                            {
-                                "kind": "int",
-                                "value": 32,
-                            },
-                            {
-                                "kind": "int",
-                                "value": 32,
-                            },
-                            {
-                                "kind": "bytes_path",
-                                "path": str(image_path),
-                            },
-                            {
-                                "kind": "list_int",
-                                "value": [1, 2, 3],
-                            },
-                            {
-                                "kind": "int",
-                                "value": 1,
-                            },
-                        ],
-                    },
-                ]
-            }
-        ),
-        encoding="utf-8",
-    )
-    official_prompt_calls_path = tmp_path / "official_prompt_calls.json"
-    official_prompt_calls_path.write_text(
-        json.dumps(
-            {
-                "calls": [
-                    {
-                        "export": "tinygrad_wasm_driver__init",
-                        "args": [
-                            {
-                                "kind": "bytes_path",
-                                "path": str(weights_path),
-                            },
-                            {
-                                "kind": "text_path",
-                                "path": str(config_path),
-                            },
-                        ],
-                    },
-                    {
-                        "export": "tinygrad_wasm_driver__ocr_tokens",
-                        "args": [
-                            {
-                                "kind": "int",
-                                "value": 32,
-                            },
-                            {
-                                "kind": "int",
-                                "value": 32,
-                            },
-                            {
-                                "kind": "bytes_path",
-                                "path": str(image_path),
-                            },
-                            {
-                                "kind": "list_int",
-                                "value": [
-                                    227,
-                                    46021,
-                                    790,
-                                    2757,
-                                    3463,
-                                    1211,
-                                    1112,
-                                    6883,
-                                    537,
-                                    709,
-                                    257,
-                                ],
-                            },
-                            {
-                                "kind": "int",
-                                "value": 1,
-                            },
-                        ],
-                    },
-                ]
-            }
-        ),
-        encoding="utf-8",
-    )
-
     out_dir = tmp_path / "out"
     out_dir.mkdir()
     env = _split_runtime_build_env(
         session_id="test-linked-falcon-ocr-driver",
         hermetic_module_roots=True,
     )
+    # The driver imports its model relatively, so it runs as a package module
+    # (CPython ``python -m``); a script entry has no parent package.
     build = _run_wasm_test_process(
         [
             sys.executable,
             "-m",
             "molt.cli",
             "build",
-            str(ROOT / "demos/tinygrad/wasm_driver.py"),
+            "--module",
+            "demos.tinygrad.wasm_driver",
             "--target",
             "wasm",
             "--linked",
@@ -1497,30 +1366,62 @@ def test_linked_falcon_ocr_wasm_driver_runs_stub_generation(
     )
     assert build.returncode == 0, build.stdout + build.stderr
 
-    run_env = os.environ.copy()
-    run_env["MOLT_WASM_EXPORT_CALLS_JSON"] = str(calls_path)
-    run = _run_wasm_test_process(
-        ["node", "wasm/run_wasm.js", str(out_dir / "manifest.json")],
-        cwd=ROOT,
-        env=run_env,
-        timeout=60,
-    )
+    # Call the driver's bindings through the published app-export contract.
+    manifest = json.loads((out_dir / "manifest.json").read_text(encoding="utf-8"))
+    exports = {
+        binding["name"]: binding["symbol"]
+        for binding in manifest["abi"]["app_exports"]["bindings"]
+        if binding["disposition"] == "export"
+    }
+    init_call = {
+        "export": exports["init"],
+        "args": [
+            {"kind": "bytes_path", "path": str(weights_path)},
+            {"kind": "text_path", "path": str(config_path)},
+        ],
+    }
 
+    def ocr_call(prompt_ids: list[int], max_new_tokens: int) -> dict[str, object]:
+        return {
+            "export": exports["ocr_tokens"],
+            "args": [
+                {"kind": "int", "value": 32},
+                {"kind": "int", "value": 32},
+                {"kind": "bytes_path", "path": str(image_path)},
+                {"kind": "list_int", "value": prompt_ids},
+                {"kind": "int", "value": max_new_tokens},
+            ],
+        }
+
+    def run_calls(name: str, calls: list[dict[str, object]]):
+        calls_path = tmp_path / f"{name}.json"
+        calls_path.write_text(json.dumps({"calls": calls}), encoding="utf-8")
+        run_env = os.environ.copy()
+        run_env["MOLT_WASM_EXPORT_CALLS_JSON"] = str(calls_path)
+        # The driver reads its trace switches from os.environ.
+        run_env["MOLT_CAPABILITIES"] = "env.read"
+        return _run_wasm_test_process(
+            ["node", "wasm/run_wasm.js", str(out_dir / "manifest.json")],
+            cwd=ROOT,
+            env=run_env,
+            timeout=60,
+        )
+
+    run = run_calls(
+        "calls",
+        [init_call, ocr_call([1, 2, 3], 0), ocr_call([1, 2, 3], 1)],
+    )
     assert run.returncode == 0, run.stderr
     results = json.loads(run.stdout)
     assert results[0]["result_repr"] == "None"
     assert results[1]["result_repr"] == repr(expected_empty)
     assert results[2]["result_repr"] == repr(expected_one)
 
-    official_run_env = os.environ.copy()
-    official_run_env["MOLT_WASM_EXPORT_CALLS_JSON"] = str(official_prompt_calls_path)
-    official_run = _run_wasm_test_process(
-        ["node", "wasm/run_wasm.js", str(out_dir / "manifest.json")],
-        cwd=ROOT,
-        env=official_run_env,
-        timeout=60,
+    # The official Falcon prompt names token ids beyond the stub vocabulary.
+    official_prompt = [227, 46021, 790, 2757, 3463, 1211, 1112, 6883, 537, 709, 257]
+    official_run = run_calls(
+        "official_prompt_calls", [init_call, ocr_call(official_prompt, 1)]
     )
-
     assert official_run.returncode != 0, official_run.stdout
     assert "Index 46021 out of range" in official_run.stderr, official_run.stderr
 
