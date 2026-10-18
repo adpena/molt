@@ -434,12 +434,13 @@ def _subject_for(pattern: Pattern, string: Any) -> str | bytes:
 
 
 def _clamp_span(length: int, pos: int, endpos: int | None) -> tuple[int, int]:
+    # CPython state_init clamps each offset to the physical subject length.
     start = max(pos, 0)
     end = length if endpos is None else max(endpos, 0)
     if end > length:
         end = length
-    if start > end:
-        start = end
+    if start > length:
+        start = length
     return start, end
 
 

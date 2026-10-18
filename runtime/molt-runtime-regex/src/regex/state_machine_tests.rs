@@ -1,5 +1,6 @@
 use super::{
-    CompiledPattern, MatchResult, execute_match, execute_match_bytes, parse_pattern_typed,
+    CompiledPattern, MatchMode, MatchResult, execute_match, execute_match_bytes,
+    parse_pattern_typed,
 };
 
 type Span = (usize, usize);
@@ -23,9 +24,21 @@ fn assert_cpython_case(
             .compile()
             .unwrap();
         let found = if is_bytes {
-            execute_match_bytes(&compiled, text.as_bytes(), window.0, window.1, mode)
+            execute_match_bytes(
+                &compiled,
+                text.as_bytes(),
+                window.0,
+                window.1,
+                MatchMode::try_from(mode).unwrap(),
+            )
         } else {
-            execute_match(&compiled, text, window.0, window.1, mode)
+            execute_match(
+                &compiled,
+                text,
+                window.0,
+                window.1,
+                MatchMode::try_from(mode).unwrap(),
+            )
         }
         .unwrap();
         let context = format!("{pattern:?} {text:?} {mode} {window:?} bytes={is_bytes}");
@@ -198,7 +211,14 @@ fn cpython_nonempty_retry_and_bounds_are_engine_success_constraints() {
         (1, 3),
         Some(((1, 2), &[Some((1, 2))], Some(1))),
     );
-    for mode in ["match", "fullmatch", "search", "search_nonempty"] {
+    assert_cpython_case(
+        "(|a)",
+        "zaaz",
+        "match",
+        (3, 1),
+        Some(((3, 3), &[Some((3, 3))], Some(1))),
+    );
+    for mode in ["fullmatch", "search", "search_nonempty"] {
         assert_cpython_case("(|a)", "zaaz", mode, (3, 1), None);
     }
 }
@@ -311,7 +331,7 @@ fn long_subject_matching_components() {
                     black_box(text.as_str()),
                     0,
                     text.len(),
-                    mode,
+                    MatchMode::try_from(mode).unwrap(),
                 )
                 .unwrap(),
             );
@@ -333,5 +353,85 @@ fn long_subject_matching_components() {
             std::mem::size_of::<CompiledPattern>(),
             std::mem::size_of::<MatchResult>(),
         );
+    }
+}
+
+#[test]
+fn long_concat_executes_without_matcher_recursion_or_ast_tail_copies() {
+    let pattern = ".".repeat(6000);
+    let text = "a".repeat(6000);
+    for is_bytes in [false, true] {
+        let compiled = parse_pattern_typed(&pattern, 0, is_bytes)
+            .unwrap()
+            .compile()
+            .unwrap();
+        let found = if is_bytes {
+            execute_match_bytes(
+                &compiled,
+                text.as_bytes(),
+                0,
+                text.len(),
+                MatchMode::FullMatch,
+            )
+        } else {
+            execute_match(&compiled, &text, 0, text.len(), MatchMode::FullMatch)
+        }
+        .unwrap()
+        .unwrap();
+        assert_eq!((found.start, found.end, found.lastindex), (0, 6000, None));
+    }
+}
+
+#[test]
+fn cpython_optional_progress_excludes_mandatory_iterations() {
+    let cases: &[CpythonCase<'_>] = &[
+        (
+            "(?:(|a)){1,2}c",
+            "ac",
+            "fullmatch",
+            Some(((0, 2), &[Some((0, 1))], Some(1))),
+        ),
+        (
+            "(?:(|a)){1,2}?c",
+            "ac",
+            "fullmatch",
+            Some(((0, 2), &[Some((0, 1))], Some(1))),
+        ),
+        (
+            "(a?){1,2}",
+            "a",
+            "fullmatch",
+            Some(((0, 1), &[Some((1, 1))], Some(1))),
+        ),
+        (
+            "(a?){1,2}?",
+            "a",
+            "fullmatch",
+            Some(((0, 1), &[Some((0, 1))], Some(1))),
+        ),
+    ];
+    for &(pattern, text, mode, expected) in cases {
+        assert_cpython_case(pattern, text, mode, (0, text.len()), expected);
+    }
+}
+
+#[test]
+fn cpython_conditionals_read_current_start_and_previous_end_marks() {
+    let cases: &[CpythonCase<'_>] = &[
+        (
+            "(?:(a(?(1)b|c))x)+",
+            "acxacx",
+            "match",
+            Some(((0, 6), &[Some((3, 5))], Some(1))),
+        ),
+        (
+            "(a(?(1)b|c))+",
+            "acab",
+            "fullmatch",
+            Some(((0, 4), &[Some((2, 4))], Some(1))),
+        ),
+    ];
+    for &(pattern, text, mode, expected) in cases {
+        assert_cpython_case(pattern, text, mode, (0, text.len()), expected);
     }
 }

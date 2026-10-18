@@ -13,7 +13,7 @@ pub(super) struct Program {
 #[derive(Debug)]
 pub(super) enum Predicate {
     Unit(char),
-    Literal(Box<[char]>),
+    Literal(Vec<char>),
     Any,
     Class {
         negated: bool,
@@ -92,12 +92,17 @@ pub(super) enum Instruction {
     Repeat {
         id: usize,
         body: usize,
+        optional: usize,
         min: u64,
         max: Option<u64>,
         greedy: bool,
         next: usize,
     },
     RepeatStep {
+        id: usize,
+        next: usize,
+    },
+    RepeatOptional {
         id: usize,
         next: usize,
     },
@@ -113,6 +118,8 @@ pub(super) enum Instruction {
 #[derive(Debug)]
 pub(super) enum MatchError {
     Memory,
+    InvalidMode,
+    Internal,
 }
 
 impl From<std::collections::TryReserveError> for MatchError {
@@ -182,7 +189,7 @@ impl Program {
                 categories,
             } => self.emit(Instruction::Consume {
                 atom: Atom {
-                    predicate: class_predicate(negated, &ranges, &chars, &categories),
+                    predicate: class_predicate(negated, &ranges, &chars, &categories)?,
                     flags,
                 },
                 next,
@@ -271,9 +278,11 @@ impl Program {
                     let header = self.emit(Instruction::Accept)?;
                     let step = self.emit(Instruction::RepeatStep { id, next: header })?;
                     let body = self.lower(*node, flags, step)?;
+                    let optional = self.emit(Instruction::RepeatOptional { id, next: body })?;
                     self.code[header] = Instruction::Repeat {
                         id,
                         body,
+                        optional,
                         min: min_count,
                         max: max_count,
                         greedy,
@@ -296,7 +305,7 @@ fn literal_predicate(text: &str) -> Result<Predicate, MatchError> {
     let mut chars = Vec::new();
     chars.try_reserve_exact(text.chars().count())?;
     chars.extend(text.chars());
-    Ok(Predicate::Literal(chars.into_boxed_slice()))
+    Ok(Predicate::Literal(chars))
 }
 
 fn class_predicate(
@@ -304,24 +313,34 @@ fn class_predicate(
     ranges: &[(String, String)],
     chars: &[String],
     categories: &[Category],
-) -> Predicate {
-    Predicate::Class {
-        negated,
-        ranges: ranges
-            .iter()
-            .map(|(lo, hi)| {
-                (
-                    lo.chars().next().expect("parser range"),
-                    hi.chars().next().expect("parser range"),
-                )
-            })
-            .collect(),
-        chars: chars
-            .iter()
-            .map(|ch| ch.chars().next().expect("parser class atom"))
-            .collect(),
-        categories: categories.to_vec(),
+) -> Result<Predicate, MatchError> {
+    fn unit(text: &str) -> Result<char, MatchError> {
+        let mut chars = text.chars();
+        let unit = chars.next().ok_or(MatchError::Internal)?;
+        if chars.next().is_some() {
+            return Err(MatchError::Internal);
+        }
+        Ok(unit)
     }
+    let mut decoded_ranges = Vec::new();
+    decoded_ranges.try_reserve_exact(ranges.len())?;
+    for (lo, hi) in ranges {
+        decoded_ranges.push((unit(lo)?, unit(hi)?));
+    }
+    let mut decoded_chars = Vec::new();
+    decoded_chars.try_reserve_exact(chars.len())?;
+    for ch in chars {
+        decoded_chars.push(unit(ch)?);
+    }
+    let mut decoded_categories = Vec::new();
+    decoded_categories.try_reserve_exact(categories.len())?;
+    decoded_categories.extend_from_slice(categories);
+    Ok(Predicate::Class {
+        negated,
+        ranges: decoded_ranges,
+        chars: decoded_chars,
+        categories: decoded_categories,
+    })
 }
 
 /// Structural specialization: every iteration consumes a fixed positive number
@@ -359,7 +378,7 @@ fn single_repeat(node: &ReNode, flags: i64) -> Result<Option<SingleRepeat>, Matc
                 checked_push(
                     &mut plan.atoms,
                     Atom {
-                        predicate: class_predicate(*negated, ranges, chars, categories),
+                        predicate: class_predicate(*negated, ranges, chars, categories)?,
                         flags,
                     },
                 )?;

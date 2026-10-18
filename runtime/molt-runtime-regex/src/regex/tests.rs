@@ -19,13 +19,7 @@ fn scanner_spans_text(pattern: &str, text: &str) -> Vec<(usize, usize)> {
     ));
     let mut scanner = ScannerHandle::new(Arc::clone(&compiled), 0, chars.len(), None);
     let mut spans = Vec::new();
-    while let Some(found) = advance_scanner(
-        &compiled.compiled,
-        &mut scanner,
-        SubjectStorage::Text(&chars),
-    )
-    .unwrap()
-    {
+    while let Some(found) = advance_scanner(&mut scanner, SubjectStorage::Text(&chars)).unwrap() {
         spans.push((found.start, found.end));
     }
     spans
@@ -40,13 +34,7 @@ fn scanner_spans_bytes(pattern: &str, subject: &[u8]) -> Vec<(usize, usize)> {
     ));
     let mut scanner = ScannerHandle::new(Arc::clone(&compiled), 0, subject.len(), None);
     let mut spans = Vec::new();
-    while let Some(found) = advance_scanner(
-        &compiled.compiled,
-        &mut scanner,
-        SubjectStorage::Bytes(subject),
-    )
-    .unwrap()
-    {
+    while let Some(found) = advance_scanner(&mut scanner, SubjectStorage::Bytes(subject)).unwrap() {
         spans.push((found.start, found.end));
     }
     spans
@@ -526,7 +514,7 @@ fn test_parse_octal_escape_in_class() {
 // -----------------------------------------------------------------------
 
 /// Helper: compile + execute in a given mode.
-fn do_execute(pattern: &str, flags: i64, text: &str, mode: &str) -> Option<MatchResult> {
+fn do_execute(pattern: &str, flags: i64, text: &str, mode: MatchMode) -> Option<MatchResult> {
     let compiled = parse_pattern(pattern, flags).unwrap().compile().unwrap();
     let text_len = text.chars().count();
     execute_match(&compiled, text, 0, text_len, mode).unwrap()
@@ -534,17 +522,17 @@ fn do_execute(pattern: &str, flags: i64, text: &str, mode: &str) -> Option<Match
 
 /// Helper: compile + execute "match" mode.
 fn do_match(pattern: &str, text: &str) -> Option<MatchResult> {
-    do_execute(pattern, 0, text, "match")
+    do_execute(pattern, 0, text, MatchMode::Match)
 }
 
 /// Helper: compile + execute "search" mode.
 fn do_search(pattern: &str, text: &str) -> Option<MatchResult> {
-    do_execute(pattern, 0, text, "search")
+    do_execute(pattern, 0, text, MatchMode::Search)
 }
 
 /// Helper: compile + execute "fullmatch" mode.
 fn do_fullmatch(pattern: &str, text: &str) -> Option<MatchResult> {
-    do_execute(pattern, 0, text, "fullmatch")
+    do_execute(pattern, 0, text, MatchMode::FullMatch)
 }
 
 // --- Literal matching ---
@@ -595,7 +583,7 @@ fn test_match_any_no_newline() {
 
 #[test]
 fn test_match_any_dotall() {
-    let m = do_execute(".", RE_DOTALL, "\n", "match").unwrap();
+    let m = do_execute(".", RE_DOTALL, "\n", MatchMode::Match).unwrap();
     assert_eq!(m.end, 1);
 }
 
@@ -642,7 +630,7 @@ fn test_match_charclass_literal_and_escaped_range_endpoints() {
             let ch = char::from(code);
             let text = ch.to_string();
             assert_eq!(
-                execute_match(&compiled, &text, 0, 1, "fullmatch")
+                execute_match(&compiled, &text, 0, 1, MatchMode::FullMatch)
                     .unwrap()
                     .is_some(),
                 expected.contains(ch),
@@ -763,7 +751,7 @@ fn test_match_multiline_anchor() {
         .unwrap();
     let text = "hello\nworld";
     let text_len = text.chars().count();
-    let m = execute_match(&compiled, text, 0, text_len, "search")
+    let m = execute_match(&compiled, text, 0, text_len, MatchMode::Search)
         .unwrap()
         .unwrap();
     assert_eq!(m.start, 6);
@@ -959,7 +947,7 @@ fn test_match_positive_lookbehind() {
     let compiled = parse_pattern("(?<=a)b", 0).unwrap().compile().unwrap();
     let text = "ab";
     let text_len = text.chars().count();
-    let m = execute_match(&compiled, text, 0, text_len, "search")
+    let m = execute_match(&compiled, text, 0, text_len, MatchMode::Search)
         .unwrap()
         .unwrap();
     assert_eq!(m.start, 1);
@@ -971,7 +959,7 @@ fn test_match_negative_lookbehind() {
     let compiled = parse_pattern("(?<!a)b", 0).unwrap().compile().unwrap();
     let text = "cb";
     let text_len = text.chars().count();
-    let m = execute_match(&compiled, text, 0, text_len, "search")
+    let m = execute_match(&compiled, text, 0, text_len, MatchMode::Search)
         .unwrap()
         .unwrap();
     assert_eq!(m.start, 1);
@@ -983,7 +971,7 @@ fn test_match_negative_lookbehind_fail() {
     let compiled = parse_pattern("(?<!a)b", 0).unwrap().compile().unwrap();
     let text = "ab";
     let text_len = text.chars().count();
-    let m = execute_match(&compiled, text, 0, text_len, "search").unwrap();
+    let m = execute_match(&compiled, text, 0, text_len, MatchMode::Search).unwrap();
     assert!(m.is_none());
 }
 
@@ -991,7 +979,7 @@ fn test_match_negative_lookbehind_fail() {
 
 #[test]
 fn test_match_ignorecase() {
-    let m = do_execute("hello", RE_IGNORECASE, "HELLO", "match").unwrap();
+    let m = do_execute("hello", RE_IGNORECASE, "HELLO", MatchMode::Match).unwrap();
     assert_eq!(m.end, 5);
     // CPython 3.12 fullmatch oracle, including non-ASCII and a character
     // whose Rust lowercase iterator contains multiple code points.
@@ -1003,7 +991,7 @@ fn test_match_ignorecase() {
         ("🦀", "🦀", true),
         ("x", "z", false),
     ] {
-        let matched = do_execute(pattern, RE_IGNORECASE, text, "fullmatch");
+        let matched = do_execute(pattern, RE_IGNORECASE, text, MatchMode::FullMatch);
         assert_eq!(matched.is_some(), expected, "{pattern:?} / {text:?}");
         if let Some(matched) = matched {
             assert_eq!((matched.start, matched.end), (0, 1));
@@ -1013,7 +1001,7 @@ fn test_match_ignorecase() {
 
 #[test]
 fn test_match_charclass_ignorecase() {
-    let m = do_execute("[a-z]", RE_IGNORECASE, "Z", "match").unwrap();
+    let m = do_execute("[a-z]", RE_IGNORECASE, "Z", MatchMode::Match).unwrap();
     assert_eq!(m.end, 1);
 }
 
@@ -1065,31 +1053,19 @@ fn scanner_observes_mutated_bytes_between_transitions() {
     ));
     let mut scanner = ScannerHandle::new(Arc::clone(&pattern), 0, 2, None);
     let mut subject = *b"ab";
-    let first = advance_scanner(
-        &pattern.compiled,
-        &mut scanner,
-        SubjectStorage::Bytes(&subject),
-    )
-    .unwrap()
-    .unwrap();
+    let first = advance_scanner(&mut scanner, SubjectStorage::Bytes(&subject))
+        .unwrap()
+        .unwrap();
     assert_eq!((first.start, first.end), (0, 1));
     subject[1] = b'a';
-    let second = advance_scanner(
-        &pattern.compiled,
-        &mut scanner,
-        SubjectStorage::Bytes(&subject),
-    )
-    .unwrap()
-    .unwrap();
+    let second = advance_scanner(&mut scanner, SubjectStorage::Bytes(&subject))
+        .unwrap()
+        .unwrap();
     assert_eq!((second.start, second.end), (1, 2));
     assert!(
-        advance_scanner(
-            &pattern.compiled,
-            &mut scanner,
-            SubjectStorage::Bytes(&subject),
-        )
-        .unwrap()
-        .is_none()
+        advance_scanner(&mut scanner, SubjectStorage::Bytes(&subject),)
+            .unwrap()
+            .is_none()
     );
 }
 
@@ -1102,7 +1078,7 @@ fn test_finditer_collect_basic() {
     let mut cur = 0;
     let end = text_len;
     while cur <= end {
-        match execute_match(&compiled, text, cur, end, "search").unwrap() {
+        match execute_match(&compiled, text, cur, end, MatchMode::Search).unwrap() {
             Some(result) => {
                 let match_end = result.end;
                 results.push((result.start, result.end));
@@ -1189,7 +1165,7 @@ fn test_match_named_group() {
         .unwrap();
     let text = "hello";
     let text_len = text.chars().count();
-    let m = execute_match(&compiled, text, 0, text_len, "match")
+    let m = execute_match(&compiled, text, 0, text_len, MatchMode::Match)
         .unwrap()
         .unwrap();
     assert_eq!(m.groups[1], Some((0, 5)));
@@ -1205,7 +1181,7 @@ fn test_match_named_backref() {
         .unwrap();
     let text = "abc abc";
     let text_len = text.chars().count();
-    let m = execute_match(&compiled, text, 0, text_len, "match")
+    let m = execute_match(&compiled, text, 0, text_len, MatchMode::Match)
         .unwrap()
         .unwrap();
     assert_eq!(m.start, 0);
@@ -1221,7 +1197,7 @@ fn test_match_named_backref_fail() {
         .unwrap();
     let text = "abc def";
     let text_len = text.chars().count();
-    let m = execute_match(&compiled, text, 0, text_len, "match").unwrap();
+    let m = execute_match(&compiled, text, 0, text_len, MatchMode::Match).unwrap();
     assert!(m.is_none());
 }
 
@@ -1262,8 +1238,60 @@ fn test_search_empty_string() {
 #[test]
 fn test_match_pos_beyond_text() {
     let compiled = parse_pattern("a", 0).unwrap().compile().unwrap();
-    let m = execute_match(&compiled, "a", 5, 5, "match").unwrap();
+    let m = execute_match(&compiled, "a", 5, 5, MatchMode::Match).unwrap();
     assert!(m.is_none());
+}
+
+#[test]
+fn test_match_and_search_keep_independently_clamped_bounds() {
+    // CPython's anchored match can accept the empty alternative beyond endpos;
+    // search, fullmatch and scanner instead exhaust the inverted window.
+    for is_bytes in [false, true] {
+        let compiled = parse_pattern_typed("(|a)", 0, is_bytes)
+            .unwrap()
+            .compile()
+            .unwrap();
+        let chars: Vec<char> = "zaaz".chars().collect();
+        let subject = if is_bytes {
+            SubjectStorage::Bytes(b"zaaz")
+        } else {
+            SubjectStorage::Text(&chars)
+        };
+        for (pos, end, expected_start) in [(3, 1, 3), (usize::MAX, 1, 4)] {
+            let matched = execute_match_subject(&compiled, subject, pos, end, MatchMode::Match)
+                .unwrap()
+                .unwrap();
+            assert_eq!(
+                (matched.start, matched.end),
+                (expected_start, expected_start)
+            );
+            assert_eq!(matched.groups[1], Some((expected_start, expected_start)));
+            for mode in [
+                MatchMode::FullMatch,
+                MatchMode::Search,
+                MatchMode::SearchNonempty,
+            ] {
+                assert!(
+                    execute_match_subject(&compiled, subject, pos, end, mode)
+                        .unwrap()
+                        .is_none()
+                );
+            }
+        }
+        let pattern = Arc::new(PatternHandle::new(compiled));
+        let mut scanner = ScannerHandle::new(pattern, 3, 1, None);
+        assert!(advance_scanner(&mut scanner, subject).unwrap().is_none());
+        assert!(scanner.finished);
+        assert_eq!(scanner.pos, 3);
+    }
+}
+
+#[test]
+fn test_unknown_match_mode_is_an_error() {
+    assert!(matches!(
+        MatchMode::try_from("unknown"),
+        Err(MatchError::InvalidMode)
+    ));
 }
 
 // -----------------------------------------------------------------------
@@ -1281,12 +1309,8 @@ fn do_split(pattern: &str, text: &str, maxsplit: usize) -> Vec<String> {
     let mut last = 0;
     let mut count = 0;
     while maxsplit == 0 || count < maxsplit {
-        let Some(result) = advance_scanner(
-            &pattern.compiled,
-            &mut scanner,
-            SubjectStorage::Text(&chars),
-        )
-        .unwrap() else {
+        let Some(result) = advance_scanner(&mut scanner, SubjectStorage::Text(&chars)).unwrap()
+        else {
             break;
         };
         parts.push(chars[last..result.start].iter().collect());
@@ -1312,12 +1336,8 @@ fn do_sub(pattern: &str, repl: &str, text: &str, count: usize) -> (String, usize
     let mut last = 0;
     let mut replaced = 0;
     while count == 0 || replaced < count {
-        let Some(result) = advance_scanner(
-            &pattern.compiled,
-            &mut scanner,
-            SubjectStorage::Text(&chars),
-        )
-        .unwrap() else {
+        let Some(result) = advance_scanner(&mut scanner, SubjectStorage::Text(&chars)).unwrap()
+        else {
             break;
         };
         out.extend(chars[last..result.start].iter());
