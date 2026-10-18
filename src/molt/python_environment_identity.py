@@ -212,6 +212,7 @@ def python_capture_authority_paths(
         "dx",
         "host_capacity",
         "cargo_execution_policy",
+        "process_environment",
         "default_paths",
         "environment_registry",
         "_environment_registry",

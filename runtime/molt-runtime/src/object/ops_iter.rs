@@ -2129,22 +2129,27 @@ fn native_iteration_pair(_py: &PyToken<'_>, iter_bits: u64) -> Option<u64> {
                         if idx == 0 {
                             (0, None, false)
                         } else {
-                            let Ok(text) = std::str::from_utf8(&bytes[..idx]) else {
+                            let (next_idx, _) = super::ops_string::wtf8_step(bytes, idx, true)
+                                .expect("nonempty Python string prefix");
+                            // Preserve one admitted code point, including a
+                            // surrogate, without retaining a heap borrow over GC.
+                            let width = idx - next_idx;
+                            let mut buf = [0u8; 4];
+                            buf[..width].copy_from_slice(&bytes[next_idx..idx]);
+                            let out_ptr = alloc_string(_py, &buf[..width]);
+                            if out_ptr.is_null() {
+                                // CPython reversed_next retires its sequence on
+                                // retrieval failure without clearing MemoryError.
+                                reversed_set_index(ptr, 0);
+                                super::layout::reversed_set_target_bits(
+                                    ptr,
+                                    MoltObject::none().bits(),
+                                );
+                                dec_ref_bits(_py, target_bits);
                                 return Some(MoltObject::none().bits());
-                            };
-                            if let Some(ch) = text.chars().next_back() {
-                                let mut buf = [0u8; 4];
-                                let out = ch.encode_utf8(&mut buf);
-                                let out_ptr = alloc_string(_py, out.as_bytes());
-                                if out_ptr.is_null() {
-                                    return Some(MoltObject::none().bits());
-                                }
-                                let val_bits = MoltObject::from_ptr(out_ptr).bits();
-                                let next_idx = idx - ch.len_utf8();
-                                (next_idx, Some(val_bits), true)
-                            } else {
-                                (0, None, false)
                             }
+                            let val_bits = MoltObject::from_ptr(out_ptr).bits();
+                            (next_idx, Some(val_bits), true)
                         }
                     } else if target_type == TYPE_ID_BYTES || target_type == TYPE_ID_BYTEARRAY {
                         let bytes = std::slice::from_raw_parts(
@@ -2181,7 +2186,11 @@ fn native_iteration_pair(_py: &PyToken<'_>, iter_bits: u64) -> Option<u64> {
                     return Some(MoltObject::from_ptr(tuple_ptr).bits());
                 }
                 reversed_set_index(ptr, 0);
-                if object_class_bits(ptr) == builtin_classes(_py).list_reverseiterator {
+                if object_class_bits(ptr) == builtin_classes(_py).list_reverseiterator
+                    || target_obj
+                        .as_ptr()
+                        .is_some_and(|target| object_type_id(target) == TYPE_ID_STRING)
+                {
                     super::layout::reversed_set_target_bits(ptr, MoltObject::none().bits());
                     dec_ref_bits(_py, target_bits);
                 }
@@ -2306,28 +2315,19 @@ fn native_iteration_pair(_py: &PyToken<'_>, iter_bits: u64) -> Option<u64> {
                             false,
                         ));
                     }
-                    let tail = &bytes[idx..];
-                    let Ok(text) = std::str::from_utf8(tail) else {
-                        return Some(MoltObject::none().bits());
-                    };
-                    let Some(ch) = text.chars().next() else {
-                        return Some(iter_return_cached(
-                            _py,
-                            ptr,
-                            MoltObject::none().bits(),
-                            true,
-                            false,
-                        ));
-                    };
+                    let (next_idx, _) = super::ops_string::wtf8_step(bytes, idx, false)
+                        .expect("nonempty Python string suffix");
+                    let width = next_idx - idx;
                     let mut buf = [0u8; 4];
-                    let out = ch.encode_utf8(&mut buf);
-                    let out_ptr = alloc_string(_py, out.as_bytes());
+                    buf[..width].copy_from_slice(&bytes[idx..next_idx]);
+                    // CPython unicodeiter_next consumes the code point before
+                    // allocating its one-character result, even on failure.
+                    iter_set_index(ptr, next_idx);
+                    let out_ptr = alloc_string(_py, &buf[..width]);
                     if out_ptr.is_null() {
                         return Some(MoltObject::none().bits());
                     }
                     let val_bits = MoltObject::from_ptr(out_ptr).bits();
-                    let next_idx = idx + ch.len_utf8();
-                    iter_set_index(ptr, next_idx);
                     return Some(iter_return_cached(_py, ptr, val_bits, false, true));
                 }
                 if target_type == TYPE_ID_BYTES || target_type == TYPE_ID_BYTEARRAY {
@@ -2937,6 +2937,10 @@ pub extern "C" fn molt_anext(obj_bits: u64) -> u64 {
         }
     })
 }
+
+#[cfg(test)]
+#[path = "ops_iter_string_tests.rs"]
+mod string_tests;
 
 #[cfg(test)]
 mod tests {

@@ -2635,6 +2635,7 @@ def test_selected_sdk_search_context_precedes_user_roots_without_recapture(
     (foreign / "libc.a").write_bytes(b"foreign libc must not shadow selected SDK")
     flags = ("-L", "native=" + str(foreign), "--cfg", "user_preserved")
     key = "CARGO_TARGET_WASM32_WASIP1_RUSTFLAGS" if source == "target" else source
+    # Each variable carries the flags as Cargo reads that variable.
     rule = {
         "target": FlagStringRule.CARGO_LIST,
         "RUSTFLAGS": FlagStringRule.CARGO_RUSTFLAGS,

@@ -14,6 +14,15 @@ fn match_limit(value: i64) -> Option<usize> {
     }
 }
 
+/// Encode only the selected capture/span through canonical surrogatepass storage.
+fn alloc_text_units(py: &CoreGilToken, units: &[u32]) -> *mut u8 {
+    let mut bytes = Vec::with_capacity(units.len());
+    for &unit in units {
+        molt_runtime_core::text_storage::push_code_point(&mut bytes, unit);
+    }
+    alloc_string(py, &bytes)
+}
+
 // ---------------------------------------------------------------------------
 // molt_re_split — Rust-accelerated re.split()
 // ---------------------------------------------------------------------------
@@ -42,14 +51,14 @@ pub extern "C" fn molt_re_split(handle_bits: u64, text_bits: u64, maxsplit_bits:
         let group_count = compiled.compiled.group_count;
         let is_bytes = compiled.compiled.is_bytes;
 
-        let text = if is_bytes {
+        let units = if is_bytes {
             None
         } else {
-            string_obj_to_owned(text_obj)
+            match string_codepoints(_py, text_bits, "expected string or bytes-like object") {
+                Ok(units) => Some(units),
+                Err(bits) => return bits,
+            }
         };
-        if !is_bytes && text.is_none() {
-            return raise_exception::<_>(_py, "TypeError", "expected string or bytes-like object");
-        }
         let bytes = if is_bytes {
             unsafe { bytes_obj_to_borrowed(text_obj) }
         } else {
@@ -62,8 +71,8 @@ pub extern "C" fn molt_re_split(handle_bits: u64, text_bits: u64, maxsplit_bits:
                 "cannot use a bytes pattern on a string-like object",
             );
         }
-        let chars: Vec<char> = text.as_deref().unwrap_or_default().chars().collect();
-        let text_len = bytes.map_or(chars.len(), <[u8]>::len);
+        let units = units.as_deref().unwrap_or_default();
+        let text_len = bytes.map_or(units.len(), <[u8]>::len);
         let limit = match_limit(maxsplit);
 
         let mut result_parts = Vec::new();
@@ -72,7 +81,7 @@ pub extern "C" fn molt_re_split(handle_bits: u64, text_bits: u64, maxsplit_bits:
         let subject = if let Some(bytes) = bytes {
             SubjectStorage::Bytes(bytes)
         } else {
-            SubjectStorage::Text(&chars)
+            SubjectStorage::Text(units)
         };
         let mut scanner = ScannerHandle::new(Arc::clone(&compiled), 0, text_len, None);
         while limit.is_none_or(|lim| splits < lim) {
@@ -88,8 +97,7 @@ pub extern "C" fn molt_re_split(handle_bits: u64, text_bits: u64, maxsplit_bits:
             let seg_ptr = if let Some(bytes) = bytes {
                 alloc_bytes(_py, &bytes[last..m_start])
             } else {
-                let segment: String = chars[last..m_start].iter().collect();
-                alloc_string(_py, segment.as_bytes())
+                alloc_text_units(_py, &units[last..m_start])
             };
             if seg_ptr.is_null() {
                 return MoltObject::none().bits();
@@ -106,8 +114,7 @@ pub extern "C" fn molt_re_split(handle_bits: u64, text_bits: u64, maxsplit_bits:
                             let gptr = if let Some(bytes) = bytes {
                                 alloc_bytes(_py, &bytes[gs..ge])
                             } else {
-                                let group_text: String = chars[gs..ge].iter().collect();
-                                alloc_string(_py, group_text.as_bytes())
+                                alloc_text_units(_py, &units[gs..ge])
                             };
                             if gptr.is_null() {
                                 return MoltObject::none().bits();
@@ -140,8 +147,7 @@ pub extern "C" fn molt_re_split(handle_bits: u64, text_bits: u64, maxsplit_bits:
         let tail_ptr = if let Some(bytes) = bytes {
             alloc_bytes(_py, &bytes[last..])
         } else {
-            let tail: String = chars[last..].iter().collect();
-            alloc_string(_py, tail.as_bytes())
+            alloc_text_units(_py, &units[last..])
         };
         if tail_ptr.is_null() {
             return MoltObject::none().bits();
@@ -196,22 +202,29 @@ pub extern "C" fn molt_re_sub(
             return molt_re_sub_bytes(_py, repl_bits, text_bits, count, &compiled);
         }
 
-        let Some(repl_units) = super::functions_re::string_codepoints(_py, repl_bits) else {
-            return raise_exception::<_>(_py, "TypeError", "replacement must be str");
+        let repl_units = match string_codepoints(_py, repl_bits, "replacement must be str") {
+            Ok(units) => units,
+            Err(bits) => return bits,
         };
-        let Some(text) = string_obj_to_owned(obj_from_bits(text_bits)) else {
-            return raise_exception::<_>(
+        // SAFETY: the retained argument owns immutable surrogatepass storage.
+        let text = match unsafe {
+            string_storage(
                 _py,
-                "TypeError",
+                text_bits,
                 "cannot use a string pattern on a bytes-like object",
-            );
+            )
+        } {
+            Ok(bytes) => bytes,
+            Err(bits) => return bits,
         };
-
-        let chars: Vec<char> = text.chars().collect();
-        let text_len = chars.len();
+        let units = match prepare_text(text) {
+            Ok(units) => units,
+            Err(error) => return match_error_result(_py, error),
+        };
+        let text_len = units.len();
         let limit = match_limit(count);
 
-        // Check if repl contains backreferences (backslash).
+        // Retain the existing original-byte reservation without an extra read.
         let mut out = Vec::with_capacity(text.len());
         let mut last: usize = 0;
         let mut replaced: usize = 0;
@@ -219,7 +232,7 @@ pub extern "C" fn molt_re_sub(
         while limit.is_none_or(|lim| replaced < lim) {
             let result = match super::execute_api::advance_scanner(
                 &mut scanner,
-                SubjectStorage::Text(&chars),
+                SubjectStorage::Text(&units),
             ) {
                 Ok(Some(result)) => result,
                 Ok(None) => break,
@@ -229,13 +242,14 @@ pub extern "C" fn molt_re_sub(
             let m_end = result.end;
 
             // Append text[last..m_start].
-            let segment: String = chars[last..m_start].iter().collect();
-            out.extend_from_slice(segment.as_bytes());
+            for &unit in &units[last..m_start] {
+                molt_runtime_core::text_storage::push_code_point(&mut out, unit);
+            }
 
             // Expand the replacement template.
             let expanded = match expand_match_replacement(
                 &repl_units,
-                SubjectStorage::Text(&chars),
+                SubjectStorage::Text(&units),
                 &result,
                 group_count,
                 &compiled.compiled.group_names,
@@ -254,8 +268,9 @@ pub extern "C" fn molt_re_sub(
         }
 
         // Append the remaining text.
-        let tail: String = chars[last..].iter().collect();
-        out.extend_from_slice(tail.as_bytes());
+        for &unit in &units[last..] {
+            molt_runtime_core::text_storage::push_code_point(&mut out, unit);
+        }
 
         // Build result tuple: (result_string, num_replacements).
         let result_str_ptr = alloc_string(_py, &out);
@@ -364,7 +379,7 @@ pub(super) fn expand_match_replacement(
         groups.push(span.map(|(start, end)| {
             (start..end)
                 .map(|index| match subject {
-                    SubjectStorage::Text(chars) => u32::from(chars[index]),
+                    SubjectStorage::Text(units) => units[index],
                     SubjectStorage::Bytes(bytes) => u32::from(bytes[index]),
                 })
                 .collect()
@@ -390,10 +405,14 @@ pub extern "C" fn molt_re_escape(pattern_bits: u64) -> u64 {
             };
             re_escape_impl(pattern)
         } else {
-            let Some(pattern) = string_obj_to_owned(object) else {
-                return raise_exception::<_>(_py, "TypeError", "pattern must be str or bytes");
+            // SAFETY: the intrinsic argument owns immutable surrogatepass text.
+            let pattern = match unsafe {
+                string_storage(_py, pattern_bits, "pattern must be str or bytes")
+            } {
+                Ok(bytes) => bytes,
+                Err(bits) => return bits,
             };
-            re_escape_impl(pattern.as_bytes())
+            re_escape_impl(pattern)
         };
         let out_ptr = if is_bytes {
             alloc_bytes(_py, &escaped)
