@@ -208,6 +208,14 @@ def _locked_shlex_source() -> Path:
     return sources[0]
 
 
+def _crate_edition(lib: Path) -> str:
+    # A crate compiles under the edition its own manifest declares.
+    manifest = tomllib.loads(
+        (lib.parents[1] / "Cargo.toml").read_text(encoding="utf-8")
+    )
+    return manifest["package"]["edition"]
+
+
 def _decode_field(field: str) -> tuple[str, ...]:
     if not field:
         return ()
@@ -220,7 +228,7 @@ def test_decode_agrees_with_rust_and_the_locked_shlex_crate(tmp_path):
         pytest.skip("rustc unavailable: the differential oracle cannot run")
     shlex_source = _locked_shlex_source()
     run_guarded_test_process(
-        [rustc, "--edition=2018", "--crate-type=rlib", "--crate-name=shlex",
+        [rustc, f"--edition={_crate_edition(shlex_source)}", "--crate-type=rlib", "--crate-name=shlex",
          '--cfg=feature="std"', str(shlex_source), "--out-dir", str(tmp_path)],
         check=True, timeout=120,
     )  # fmt: skip
@@ -228,7 +236,7 @@ def test_decode_agrees_with_rust_and_the_locked_shlex_crate(tmp_path):
     source.write_text(_ORACLE, encoding="utf-8")
     binary = tmp_path / ("oracle.exe" if sys.platform == "win32" else "oracle")
     run_guarded_test_process(
-        [rustc, "--edition=2021", str(source), "-o", str(binary),
+        [rustc, "--edition=2024", str(source), "-o", str(binary),
          "--extern", f"shlex={tmp_path / 'libshlex.rlib'}"],
         check=True, timeout=120,
     )  # fmt: skip
