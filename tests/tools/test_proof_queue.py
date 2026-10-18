@@ -4667,9 +4667,9 @@ def test_python_bootstrap_pytest_keeps_cacheprovider_in_admitted_scratch(
         stderr=subprocess.PIPE,
     )
     assert completed.returncode == 0, completed.stdout + completed.stderr
-    assert json.loads((scratch / "pytest-cache" / "v/custody/value").read_text()) == {
-        "retained": True
-    }
+    assert json.loads(
+        (scratch / "pytest-cache" / "v/custody/value").read_text(encoding="utf-8")
+    ) == {"retained": True}
     assert not (tmp_path / ".pytest_cache").exists()
     already_disabled = command_admission._python_bootstrap_command(
         envelope,

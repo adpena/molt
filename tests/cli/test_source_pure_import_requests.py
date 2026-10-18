@@ -2151,7 +2151,12 @@ def test_module_export_fact_does_not_outlive_source_generation(tmp_path):
     before = load(source, resolution_cache=cache)
     write(source, "__all__ = ['after_']\n")
     namespace = {}
-    exec(compile(source.read_text(), str(source), "exec", dont_inherit=True), namespace)
+    exec(
+        compile(
+            source.read_text(encoding="utf-8"), str(source), "exec", dont_inherit=True
+        ),
+        namespace,
+    )
     after = load(source, resolution_cache=cache)
     assert before.scan.source_requests.all_exports.names == ("before",)
     assert after.scan.source_requests.all_exports.names == tuple(namespace["__all__"])

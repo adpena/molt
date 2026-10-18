@@ -628,7 +628,7 @@ def test_mutation_during_output_identity_refuses(tmp_path, monkeypatch, changed)
     def mutate(opened, **kwargs):
         result = original(opened, **kwargs)
         if opened.path == target:
-            target.write_text("evil bytes")
+            target.write_text("evil bytes", encoding="utf-8")
         return result
 
     monkeypatch.setattr(reads, "stable_regular_file_handle_identity", mutate)
