@@ -1373,7 +1373,7 @@ def _frontend_lowering_cache_summary(
         "reused_s": round(reused_ms / 1000.0, 6),
         "relowered_s": round(relowered_ms / 1000.0, 6),
         "message": (
-            f"lowering cache: {hits}/{misses} (hit_rate={hit_rate:.3f}), "
+            f"lowering cache: {hits}/{observed} hits (hit_rate={hit_rate:.3f}), "
             f"{reused_ms / 1000.0:.6f}s reused / "
             f"{relowered_ms / 1000.0:.6f}s re-lowered"
         ),

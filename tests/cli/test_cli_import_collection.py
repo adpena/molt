@@ -17125,7 +17125,7 @@ def test_frontend_lowering_cache_summary_attests_hits_and_relowered_work() -> No
         "reused_s": 2.0,
         "relowered_s": 0.5,
         "message": (
-            "lowering cache: 2/1 (hit_rate=0.667), "
+            "lowering cache: 2/3 hits (hit_rate=0.667), "
             "2.000000s reused / 0.500000s re-lowered"
         ),
     }
