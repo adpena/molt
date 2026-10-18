@@ -82,13 +82,17 @@ fn regex_aggregates_retain_each_created_child_once() {
                 )
             };
             assert!(!exception_pending(py));
-            let children = unsafe { seq_snapshot(ptr_from_bits(split.bits())) };
-            assert_eq!(children.len(), 2);
-            for &child in children.iter() {
-                assert_eq!(
-                    unsafe { (*header_from_obj_ptr(ptr_from_bits(child))).ref_count_snapshot() },
-                    1
-                );
+            // Inspection must not pin the children whose ownership is measured.
+            unsafe {
+                crate::object::seq_access::with_borrowed(ptr_from_bits(split.bits()), |children| {
+                    assert_eq!(children.len(), 2);
+                    for &child in children.iter() {
+                        assert_eq!(
+                            (*header_from_obj_ptr(ptr_from_bits(child))).ref_count_snapshot(),
+                            1
+                        );
+                    }
+                });
             }
 
             let replaced = unsafe {
@@ -98,12 +102,18 @@ fn regex_aggregates_retain_each_created_child_once() {
                 )
             };
             assert!(!exception_pending(py));
-            let children = unsafe { seq_snapshot(ptr_from_bits(replaced.bits())) };
-            assert_eq!(children.len(), 2);
-            assert_eq!(
-                unsafe { (*header_from_obj_ptr(ptr_from_bits(children[0]))).ref_count_snapshot() },
-                1
-            );
+            unsafe {
+                crate::object::seq_access::with_borrowed(
+                    ptr_from_bits(replaced.bits()),
+                    |children| {
+                        assert_eq!(children.len(), 2);
+                        assert_eq!(
+                            (*header_from_obj_ptr(ptr_from_bits(children[0]))).ref_count_snapshot(),
+                            1
+                        );
+                    },
+                );
+            }
 
             // Independent CPython oracle: opening order z, a, m differs from
             // lexical order and nested-group closing order. The unnamed group
@@ -123,29 +133,31 @@ fn regex_aggregates_retain_each_created_child_once() {
                 )
             };
             assert!(!exception_pending(py));
-            let children = unsafe { seq_snapshot(ptr_from_bits(info.bits())) };
-            assert_eq!(children.len(), 4);
-            assert_eq!(obj_from_bits(children[0]).as_int(), Some(4));
-            assert_eq!(
-                unsafe { (*header_from_obj_ptr(ptr_from_bits(children[1]))).ref_count_snapshot() },
-                1
-            );
-            let names = unsafe {
-                crate::object::ops_dict::dict_snapshot(
-                    py,
-                    ptr_from_bits(children[1]),
-                    crate::object::ops_dict::DictSnapshotKind::Entries,
-                )
-            }
-            .expect("published named-group dictionary");
-            assert_eq!(names.len(), 6);
-            for (pair, (name, ordinal)) in names.chunks_exact(2).zip([("z", 1), ("a", 3), ("m", 4)])
-            {
-                assert_eq!(
-                    string_obj_to_owned(obj_from_bits(pair[0])).as_deref(),
-                    Some(name)
-                );
-                assert_eq!(obj_from_bits(pair[1]).as_int(), Some(ordinal));
+            unsafe {
+                crate::object::seq_access::with_borrowed(ptr_from_bits(info.bits()), |children| {
+                    assert_eq!(children.len(), 4);
+                    assert_eq!(obj_from_bits(children[0]).as_int(), Some(4));
+                    assert_eq!(
+                        (*header_from_obj_ptr(ptr_from_bits(children[1]))).ref_count_snapshot(),
+                        1
+                    );
+                    let names = crate::object::ops_dict::dict_snapshot(
+                        py,
+                        ptr_from_bits(children[1]),
+                        crate::object::ops_dict::DictSnapshotKind::Entries,
+                    )
+                    .expect("published named-group dictionary");
+                    assert_eq!(names.len(), 6);
+                    for (pair, (name, ordinal)) in
+                        names.chunks_exact(2).zip([("z", 1), ("a", 3), ("m", 4)])
+                    {
+                        assert_eq!(
+                            string_obj_to_owned(obj_from_bits(pair[0])).as_deref(),
+                            Some(name)
+                        );
+                        assert_eq!(obj_from_bits(pair[1]).as_int(), Some(ordinal));
+                    }
+                });
             }
         }
     });
@@ -215,13 +227,19 @@ fn regex_capture_aggregate_owns_children_and_rolls_back_every_failure() {
                 )
             };
             assert!(!exception_pending(py));
-            let children = unsafe { seq_snapshot(ptr_from_bits(captured.bits())) };
-            assert_eq!(children.len(), 2);
-            for &child in children.iter() {
-                assert_eq!(
-                    unsafe { (*header_from_obj_ptr(ptr_from_bits(child))).ref_count_snapshot() },
-                    1,
-                    "each boxed capture has exactly one tuple owner"
+            unsafe {
+                crate::object::seq_access::with_borrowed(
+                    ptr_from_bits(captured.bits()),
+                    |children| {
+                        assert_eq!(children.len(), 2);
+                        for &child in children.iter() {
+                            assert_eq!(
+                                (*header_from_obj_ptr(ptr_from_bits(child))).ref_count_snapshot(),
+                                1,
+                                "each boxed capture has exactly one tuple owner"
+                            );
+                        }
+                    },
                 );
             }
             drop(captured);

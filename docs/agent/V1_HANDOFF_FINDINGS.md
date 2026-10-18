@@ -155,8 +155,12 @@ The selected macOS Python/toolchain ownership checks pass, including finite
 watch arming, negative selectors, aliases and required-root refusal. The Linux
 prechecks also pass after binding the basename-interpreter fixture's PATH to
 its selected installation, as CPython's startup algorithm requires. The
-allocation-observer request now passes input-watch capture and reaches Cargo;
-its runtime result remains pending. The environment locator still arms base
+allocation-observer request now passes input-watch capture and reaches Cargo.
+Its first compilation exposed four stale regex ownership-test calls to a removed
+root snapshot API. Those consumers now use the existing scoped borrowed read,
+which preserves their independent reference-count oracle without adding pins;
+both aggregate-ownership cases join the existing observer policy. Compiled
+execution remains required. The environment locator still arms base
 installation prefixes to cover startup selectors not represented in its
 location schema; that broader development cost remains under V1-07 and must be
 reconciled with the existing startup-selection authority. These changes
