@@ -560,7 +560,11 @@ def test_rewrite_fails_closed_on_unregistered_init_call(tmp_path: Path) -> None:
             ],
         }
     ]
+    borrowed = functions[0]
+    before = json.loads(json.dumps(borrowed))
     issue = BACKEND_IR._rewrite_native_import_lanes(functions, registry)
+    assert borrowed == before
+    assert functions[0] is borrowed
     assert issue is not None
     assert "molt_init_smuggled_module" in issue
 
@@ -583,9 +587,26 @@ def test_rewrite_lowers_literal_module_import_to_ensure() -> None:
             ],
         }
     ]
+    borrowed = functions[0]
+    borrowed_ops = borrowed["ops"]
+    before = json.loads(json.dumps(borrowed))
+    unchanged = {"name": "untouched", "ops": [{"kind": "ret_void"}]}
+    dynamic = {
+        "name": "dynamic",
+        "ops": [{"kind": "module_import", "args": ["unknown"], "out": "v0"}],
+    }
+    functions.extend([unchanged, dynamic])
     issue = BACKEND_IR._rewrite_native_import_lanes(functions, registry)
     assert issue is None
+    assert borrowed == before
+    assert functions[0] is not borrowed
+    assert functions[0]["ops"] is not borrowed_ops
+    assert functions[1] is unchanged
+    assert functions[2] is dynamic
     ops = functions[0]["ops"]
+    assert ops[0] is borrowed_ops[0]
+    assert ops[-1] is borrowed_ops[-1]
+    assert ops[-2] is borrowed_ops[-2]
     ensure_calls = [
         op
         for op in ops

@@ -9027,7 +9027,11 @@ def test_native_callable_publication_augments_existing_source_init_once(
     )
     if not existing_prologue_check:
         del source_init["ops"][publication_insert_index]
-    functions = [source_init]
+    borrowed = source_init
+    borrowed_ops = source_init["ops"]
+    before = json.loads(json.dumps(source_init))
+    unchanged = {"name": "unrelated", "params": [], "ops": [{"kind": "ret_void"}]}
+    functions = [source_init, unchanged]
     code_ids: dict[str, int] = {}
 
     def register(symbol: str) -> int:
@@ -9049,7 +9053,16 @@ def test_native_callable_publication_augments_existing_source_init_once(
     init_functions = [
         function for function in functions if function["name"] == "molt_init_nativepkg"
     ]
-    assert init_functions == [source_init]
+    assert len(init_functions) == 1
+    source_init = init_functions[0]
+    assert borrowed == before
+    assert source_init is not borrowed
+    assert source_init["ops"] is not borrowed_ops
+    assert functions[1] is unchanged
+    retained_op_ids = {id(op) for op in source_init["ops"]}
+    for op in borrowed_ops:
+        if "source_module_publication_boundary" not in op:
+            assert id(op) in retained_op_ids
     assert {
         function["name"]
         for function in functions
@@ -9220,6 +9233,8 @@ def test_compiled_source_init_publishes_before_capture_and_rebinding(
         specs=(spec,),
         register_global_code_id=register,
     )
+    borrowed = source_init
+    before = json.loads(json.dumps(borrowed))
     generated = BACKEND_IR._append_static_native_module_init_functions(
         functions,
         specs=(spec,),
@@ -9228,6 +9243,11 @@ def test_compiled_source_init_publishes_before_capture_and_rebinding(
     )
 
     assert generated == ()
+    assert borrowed == before
+    source_init = next(
+        function for function in functions if function["name"] == borrowed["name"]
+    )
+    assert source_init is not borrowed
     assert "source_module_publication" not in source_init
     assert not any(
         op.get("source_module_publication_boundary") is True
@@ -9646,6 +9666,8 @@ def test_entry_source_identity_survives_json_and_explicit_main_registry_alias() 
     )
     assert source_init["source_module_publication"]["module_name"] == "application"
     source_init["name"] = SimpleTIRGenerator.module_init_symbol("application")
+    before = json.loads(json.dumps(source_init))
+    borrowed_ops = source_init["ops"]
     assert (
         BACKEND_IR._append_static_native_module_init_functions(
             functions,
@@ -9655,6 +9677,17 @@ def test_entry_source_identity_survives_json_and_explicit_main_registry_alias() 
         )
         == ()
     )
+    assert source_init == before
+    replacement = next(
+        function for function in functions if function["name"] == source_init["name"]
+    )
+    assert replacement is not source_init
+    assert replacement["ops"] is not borrowed_ops
+    for old, new in zip(borrowed_ops, replacement["ops"], strict=True):
+        if "source_module_publication_boundary" in old:
+            assert new is not old
+        else:
+            assert new is old
     assert all("source_module_publication" not in function for function in functions)
     assert all(
         "source_module_publication_boundary" not in op

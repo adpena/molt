@@ -199,6 +199,24 @@ must occur together; orphan, false, duplicate, or misplaced markers are errors.
 CLI assembly validates every function before registering code IDs or inserting
 publication operations, including functions without matching native exports.
 
+CLI assembly borrows the lowered function records and their operation lists.
+The assembly owns its outer function list: a changed function replaces that
+entry, and a changed operation replaces only its path through the function and
+operation list. Unchanged function, operation and parameter-list identities are
+retained. Code-owner projection, import-lane rewriting, native callable
+publication, publication-envelope consumption and GPU descriptor finalization
+follow this rule, including their failure paths. Parameter-type completion
+copies a function only when its declared ABI needs completion.
+
+This permits the same lowering result to participate in independent assemblies
+without acquiring a previous program's mutations. It also preserves the stable
+owners required for function-digest reuse. As in
+[rustc's immutable query results and stable fingerprints](https://rustc-dev-guide.rust-lang.org/queries/incremental-compilation-in-detail.html),
+cached result reuse requires that later consumers do not rewrite the result.
+There is no recursive frozen-container wrapper or whole-program deep copy:
+the existing traversals validate the records and allocate only changed paths.
+These ownership rules apply inside the compiler and add no emitted-program work.
+
 The verifier phase is explicit. `tools.check_ir_structure.verify_tir` accepts
 only executable SimpleIR and retains strict Rust decoding.
 `verify_frontend_tir` validates and projects a copy of frontend assembly IR

@@ -1364,17 +1364,21 @@ def _normalize_backend_ir_functions(
 ) -> list[dict[str, Any]]:
     normalized: list[dict[str, Any]] = []
     for func in functions:
-        copied = dict(func)
-        params = copied.get("params")
+        params = func.get("params")
         if isinstance(params, list) and params:
-            raw_param_types = copied.get("param_types")
+            raw_param_types = func.get("param_types")
+            if isinstance(raw_param_types, list) and len(raw_param_types) >= len(
+                params
+            ):
+                normalized.append(func)
+                continue
             param_types = (
                 list(raw_param_types) if isinstance(raw_param_types, list) else []
             )
-            if len(param_types) < len(params):
-                param_types.extend(["i64"] * (len(params) - len(param_types)))
-            copied["param_types"] = param_types
-        normalized.append(copied)
+            param_types.extend(["i64"] * (len(params) - len(param_types)))
+            normalized.append({**func, "param_types": param_types})
+        else:
+            normalized.append(func)
     return normalized
 
 

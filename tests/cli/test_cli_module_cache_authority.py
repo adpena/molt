@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import inspect
+from copy import deepcopy
+
+import pytest
 
 import molt.cli as cli
 from molt.cli import module_cache
@@ -53,3 +56,41 @@ def test_cli_module_cache_authority_is_single_home() -> None:
             assert f"{name} =" not in cli_source
         else:
             assert f"def {name}(" not in cli_source
+
+
+@pytest.mark.parametrize("params", [[], ["value"]])
+def test_backend_normalization_retains_canonical_function_owner(params) -> None:
+    function = {
+        "name": "answer",
+        "params": params,
+        "param_types": ["i64"] * len(params),
+        "ops": [{"kind": "ret_void"}],
+    }
+    functions = [function]
+    normalized = module_cache._normalize_backend_ir_functions(functions)
+    assert normalized == functions
+    # The assembly owns its list; unchanged function/operation owners are shared.
+    assert normalized is not functions
+    assert normalized[0] is function
+    assert normalized[0]["ops"] is function["ops"]
+    again = module_cache._normalize_backend_ir_functions(normalized)
+    assert again[0] is function
+
+
+@pytest.mark.parametrize("param_types", [None, [], ["f64"]])
+def test_backend_parameter_completion_copies_only_changed_function(param_types) -> None:
+    function = {
+        "name": "answer",
+        "params": ["left", "right"],
+        "ops": [{"kind": "ret_void"}],
+    }
+    if param_types is not None:
+        function["param_types"] = param_types
+    before = deepcopy(function)
+    (normalized,) = module_cache._normalize_backend_ir_functions([function])
+    assert function == before
+    assert normalized is not function
+    assert normalized["param_types"] == (
+        ["f64", "i64"] if param_types == ["f64"] else ["i64", "i64"]
+    )
+    assert normalized["ops"] is function["ops"]

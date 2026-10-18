@@ -3,7 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 from pathlib import Path
-from typing import Any, Callable, Collection, Mapping, Sequence, cast
+from typing import Any, Callable, Collection, Mapping, MutableMapping, Sequence, cast
 
 from molt.frontend import SimpleTIRGenerator
 from molt.frontend.lowering.function_metadata import (
@@ -677,7 +677,7 @@ def _has_import_lane_site(ops: list[Any]) -> bool:
 
 
 def _rewrite_native_import_lanes(
-    functions: Sequence[dict[str, Any]],
+    functions: list[dict[str, Any]],
     registry: ModuleRegistry,
 ) -> str | None:
     """Lower literal import sites onto symbolic module slots and module ensure.
@@ -701,10 +701,11 @@ def _rewrite_native_import_lanes(
     importlib fallback ladder (runtime-root spec imports, extension loaders)
     is preserved.  Returns an error message when a direct init call targets a
     symbol outside the registry (fail closed — that call could bypass
-    init-exactly-once).
+    init-exactly-once). The function list belongs to assembly; changed entries
+    replace borrowed function records without mutating their operations.
     """
     rewrite_map = _registry_init_symbol_rewrite_map(registry)
-    for func in functions:
+    for function_index, func in enumerate(functions):
         ops = func.get("ops")
         if not isinstance(ops, list) or not _has_import_lane_site(ops):
             continue
@@ -858,7 +859,7 @@ def _rewrite_native_import_lanes(
                     continue
             new_ops.append(op)
         if changed:
-            func["ops"] = new_ops
+            functions[function_index] = {**func, "ops": new_ops}
     return None
 
 
@@ -1574,7 +1575,7 @@ def _attach_static_native_publication_to_source_init(
     *,
     spec: _ExternalNativeModuleInitSpec,
     register_global_code_id: Callable[[str], int],
-) -> None:
+) -> dict[str, Any]:
     """Attach native callable publication to the canonical source init body.
 
     A public Python module and a native artifact may intentionally share the
@@ -1582,6 +1583,8 @@ def _attach_static_native_publication_to_source_init(
     callable publication runs at the declared post-frame/pre-body boundary,
     reusing the source body's module object and exception cleanup. Source code
     may therefore capture the published callable and later rebind it normally.
+    Return the original record on no change, otherwise a replacement sharing
+    every untouched operation with the borrowed source body.
     """
 
     init_symbol = SimpleTIRGenerator.module_init_symbol(spec.module)
@@ -1592,7 +1595,7 @@ def _attach_static_native_publication_to_source_init(
             f"module authority for {spec.module!r}"
         )
     if not spec.module_attr_exports and not spec.direct_symbol_exports:
-        return
+        return function
     if function.get("params") != []:
         raise ValueError(
             f"existing source init {init_symbol!r} cannot publish native callables: "
@@ -1649,10 +1652,15 @@ def _attach_static_native_publication_to_source_init(
     # prologue failure before executing publication side effects. The boundary
     # is a frontend fact; an optimized-away adjacent check is not an authority.
     insertion_index = boundary_index + 1
-    ops[insertion_index:insertion_index] = [
-        {"kind": "check_exception", "value": failure_label},
-        *guarded_publication,
-    ]
+    return {
+        **function,
+        "ops": [
+            *ops[:insertion_index],
+            {"kind": "check_exception", "value": failure_label},
+            *guarded_publication,
+            *ops[insertion_index:],
+        ],
+    }
 
 
 def _append_static_native_module_init_functions(
@@ -1671,8 +1679,8 @@ def _append_static_native_module_init_functions(
     init bodies are pure body executors without cache-guard preambles.
     """
     existing: dict[str, list[dict[str, Any]]] = {}
-    source_inits: dict[str, dict[str, Any]] = {}
-    for func in functions:
+    source_inits: dict[str, int] = {}
+    for function_index, func in enumerate(functions):
         if not isinstance(func, dict):
             continue
         publication_envelope = inspect_source_module_publication(func)
@@ -1689,7 +1697,7 @@ def _append_static_native_module_init_functions(
                 )
             if module in source_inits:
                 raise ValueError(f"multiple source init bodies own module {module!r}")
-            source_inits[module] = func
+            source_inits[module] = function_index
     for symbol, bodies in existing.items():
         if len(bodies) > 1 and (
             symbol.startswith("molt_init_")
@@ -1702,7 +1710,7 @@ def _append_static_native_module_init_functions(
     # identity. Registry aliases own a name/target edge but no function symbol.
     native_names: set[str] = set()
     body_owners: dict[str, str] = {
-        function["name"]: module for module, function in source_inits.items()
+        functions[index]["name"]: module for module, index in source_inits.items()
     }
     for spec in specs:
         if spec.module in native_names:
@@ -1743,10 +1751,10 @@ def _append_static_native_module_init_functions(
     owned_modules: list[str] = []
     for spec in specs:
         init_symbol = SimpleTIRGenerator.module_init_symbol(spec.module)
-        source_init = source_inits.get(spec.module)
-        if source_init is not None:
-            _attach_static_native_publication_to_source_init(
-                source_init,
+        source_index = source_inits.get(spec.module)
+        if source_index is not None:
+            functions[source_index] = _attach_static_native_publication_to_source_init(
+                functions[source_index],
                 spec=spec,
                 register_global_code_id=register_global_code_id,
             )
@@ -1774,9 +1782,22 @@ def _append_static_native_module_init_functions(
         existing[init_symbol] = [function]
     # Consume the validated frontend envelopes after all native publication has
     # been assembled. These facts are not part of executable SimpleIR.
-    for function in functions:
-        if isinstance(function, dict):
-            consume_source_module_publication(function)
+    for function_index, function in enumerate(functions):
+        if not isinstance(function, dict):
+            continue
+        envelope = inspect_source_module_publication(function)
+        if envelope is None:
+            continue
+        # Only the envelope owner and its marked operation are mutable here;
+        # every other operation remains borrowed from the integrated source.
+        ops = list(function["ops"])
+        boundary = ops[envelope.boundary_index]
+        if not isinstance(boundary, MutableMapping):
+            raise TypeError("source module publication boundary must be mutable")
+        ops[envelope.boundary_index] = dict(boundary)
+        replacement = {**function, "ops": ops}
+        consume_source_module_publication(replacement)
+        functions[function_index] = replacement
     return tuple(owned_modules)
 
 
@@ -1987,15 +2008,18 @@ def _finalize_gpu_descriptors(
     from molt.frontend.lowering.gpu_kernel_descriptor import descriptor_publications
 
     publications = [
-        publication
-        for function in functions
-        for publication in descriptor_publications(function["ops"])
+        (index, constants)
+        for index, function in enumerate(functions)
+        if (constants := descriptor_publications(function["ops"]))
     ]
     if not publications:
         # A plain struct/GPU import never captures or parses reference bodies,
         # and never retains a hardware-only callable resolver cohort.
-        for function in functions:
-            function.pop("gpu_body_origin", None)
+        for index, function in enumerate(functions):
+            if "gpu_body_origin" in function:
+                replacement = dict(function)
+                del replacement["gpu_body_origin"]
+                functions[index] = replacement
         return
 
     from molt.cli.cache_fingerprints import _frontend_semantic_tooling_snapshot
@@ -2024,8 +2048,12 @@ def _finalize_gpu_descriptors(
 
     admitted: dict[str, dict[str, Any]] = {}
     ambiguous: set[str] = set()
-    for function in functions:
-        evidence = function.pop("gpu_body_origin", None)
+    for index, function in enumerate(functions):
+        evidence = function.get("gpu_body_origin")
+        if "gpu_body_origin" in function:
+            replacement = dict(function)
+            del replacement["gpu_body_origin"]
+            functions[index] = replacement
         if not isinstance(evidence, dict):
             continue
         role = evidence.get("role")
@@ -2039,19 +2067,30 @@ def _finalize_gpu_descriptors(
             "defaults": evidence["defaults"],
         }
     missing = sorted((set(expected) - admitted.keys()) | ambiguous)
-    for constant in publications:
-        descriptor = json.loads(constant["s_value"])
-        symbol = descriptor.get("symbol")
-        if symbol not in global_code_ids:
-            raise ValueError("GPU metadata publication has no integrated code owner")
-        descriptor["python_bodies"] = admitted if not missing else {}
-        if missing:
-            descriptor["unsupported"] = (
-                "canonical Python buffer body origin unavailable: " + ", ".join(missing)
-            )
-        constant["s_value"] = json.dumps(
-            descriptor, sort_keys=True, separators=(",", ":")
-        )
+    for function_index, constants in publications:
+        replacements: dict[int, dict[str, Any]] = {}
+        for constant in constants:
+            descriptor = json.loads(constant["s_value"])
+            symbol = descriptor.get("symbol")
+            if symbol not in global_code_ids:
+                raise ValueError(
+                    "GPU metadata publication has no integrated code owner"
+                )
+            descriptor["python_bodies"] = admitted if not missing else {}
+            if missing:
+                descriptor["unsupported"] = (
+                    "canonical Python buffer body origin unavailable: "
+                    + ", ".join(missing)
+                )
+            serialized = json.dumps(descriptor, sort_keys=True, separators=(",", ":"))
+            if serialized != constant["s_value"]:
+                replacements[id(constant)] = {**constant, "s_value": serialized}
+        if replacements:
+            function = functions[function_index]
+            functions[function_index] = {
+                **function,
+                "ops": [replacements.get(id(op), op) for op in function["ops"]],
+            }
 
 
 def _prepare_backend_ir(
