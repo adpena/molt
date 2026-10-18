@@ -8,6 +8,7 @@ here; the proof plan runs the gate on it.
 
 from __future__ import annotations
 
+import os
 import sys
 from pathlib import Path
 
@@ -801,3 +802,41 @@ def test_process_writer_is_part_of_existing_registry_check(tmp_path: Path) -> No
     scan = _scan(tmp_path)
     violations = C.check(registry_from_payload(_payload()), scan, root=tmp_path)
     assert {row.rule for row in violations} == {"process-writer-owner"}
+
+
+def test_parallel_scan_matches_serial_with_external_and_malformed_writers(
+    tree: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _write(
+        tree,
+        "runtime/molt-runtime/src/lib.rs",
+        '#[path = "../../../outside.rs"] mod outside;',
+    )
+    _write(
+        tree,
+        "outside.rs",
+        "/* hidden set_var */ fn f() { std::env::set_var(dynamic, value); }",
+    )
+    _write(tree, "runtime/molt-runtime/src/broken.rs", "/* unterminated")
+    serial = C.scan_repository(workers=1, root=tree)
+    parent_pid = os.getpid()
+    writer = C._rust_writer_file
+
+    def worker_only(path: Path, root: Path) -> C._WriterFile:
+        assert os.getpid() != parent_pid, "parallel scan ran writer analysis in parent"
+        return writer(path, root)
+
+    # Spawn imports the unpatched module; fork inherits this PID assertion.
+    # In both cases a serial writer tail would fail here, and the independent
+    # expected diagnostics below prove that real writer work was performed.
+    monkeypatch.setattr(C, "_rust_writer_file", worker_only)
+    parallel = C.scan_repository(workers=2, root=tree)
+    assert serial == parallel
+    assert {(v.path, v.rule) for v in parallel.writer_violations} == {
+        ("outside.rs", "process-writer-owner"),
+        ("runtime/molt-runtime/src/broken.rs", "process-writer-source"),
+    }
+    assert any(
+        s.name == "MOLT_ALPHA" and s.access == C.ACCESS_READ for s in parallel.sites
+    )

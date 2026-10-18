@@ -158,7 +158,7 @@ def test_reloc_link_rejects_changed_inputs_without_replacing_output(
                 cargo_command=("cargo",),
                 requested_target="wasm32-wasip1",
             ),
-            export_link_args="-C link-arg=--export=entry",
+            export_link_args=("-C", "link-arg=--export=entry"),
         )
     assert caught.value.stdout == "link-stdout"
     assert caught.value.stderr == "link-stderr"
@@ -584,24 +584,29 @@ def test_python_projection_is_consumed_by_actual_rust_decoder(
     # Cargo global flags supersede target flags. The direct environment writer
     # preserves that native caller input, and the real Rust decoder refuses the
     # now-incomplete WASI effective lane rather than silently supplementing it.
+    from molt.flag_strings import FlagStringRule
     from molt.llvm_toolchain import project_wasm_toolchain_environment
     from tests.runtime_build_identity_helper import provisioned_wasi_sdk_fixture
 
     installation = provisioned_wasi_sdk_fixture(runtime_fixture_root)
     for name in ("RUSTFLAGS", "CARGO_ENCODED_RUSTFLAGS"):
         incomplete = produced[4:]
-        value = (
-            "\x1f".join(incomplete)
+        rule = (
+            FlagStringRule.CARGO_ENCODED
             if name == "CARGO_ENCODED_RUSTFLAGS"
-            else __import__("shlex").join(incomplete)
+            else FlagStringRule.CARGO_RUSTFLAGS
         )
+        value = rule.encode(incomplete, variable=name)
         projected = project_wasm_toolchain_environment(
             installation, environ={name: value}, rust_target="wasm32-wasip1"
         )
         assert projected[name] == value  # the writer never rewrites global flags
-        assert __import__("shlex").split(
-            projected["CARGO_TARGET_WASM32_WASIP1_RUSTFLAGS"]
-        ) == list(produced)
+        assert (
+            FlagStringRule.CARGO_LIST.decode(
+                projected["CARGO_TARGET_WASM32_WASIP1_RUSTFLAGS"]
+            )
+            == produced
+        )
         result = run_guarded_test_process(
             [
                 str(executable),
@@ -680,14 +685,47 @@ def test_split_renderer_uses_captured_role_paths_without_live_sdk(
     ]
 
 
+def test_wasm_link_argument_extraction_preserves_literal_operands_and_order() -> None:
+    from molt.cli.wasm_link_args import wasm_link_args_from_rust_flag_tokens
+
+    flags = (
+        "-o",
+        "--codegen=link-arg=opaque-output",
+        "--cfg",
+        'feature="std"',
+        "-C",
+        'link-arg=--export=double"quote',
+        r"-Clink-arg=--export=literal\backslash",
+        "--codegen",
+        "link-arg=--export=two words",
+        "--codegen=link_arg=--export=single'quote",
+        "--",
+        "-C",
+        "link-arg=positional",
+    )
+    assert wasm_link_args_from_rust_flag_tokens(flags) == (
+        '--export=double"quote',
+        r"--export=literal\backslash",
+        "--export=two words",
+        "--export=single'quote",
+    )
+
+
+@pytest.mark.parametrize("flags", ["", "-C link-arg=--export=entry"])
+def test_wasm_link_argument_extraction_rejects_flag_strings(flags: str) -> None:
+    from molt.cli.wasm_link_args import wasm_link_args_from_rust_flag_tokens
+
+    with pytest.raises(TypeError, match="token sequence"):
+        wasm_link_args_from_rust_flag_tokens(flags)
+
+
 @pytest.mark.parametrize("spelling", ["-C", "-Cjoined", "--codegen", "--codegen="])
 def test_wasi_codegen_aliases_share_mode_and_raw_argument_admission(
     selected_c_abi, spelling
 ):
-    import shlex
     from molt.cli.wasm_link_args import (
         wasi_external_libc_rustflags,
-        wasm_link_args_from_rustflags,
+        wasm_link_args_from_rust_flag_tokens,
     )
 
     def option(value):
@@ -712,12 +750,12 @@ def test_wasi_codegen_aliases_share_mode_and_raw_argument_admission(
         "link-arg=--export-if-defined=molt_entry_point",
     )
     assert wasi_external_libc_rustflags(normalized, plan=selected_c_abi) == normalized
-    assert wasm_link_args_from_rustflags(shlex.join(original)) == [
-        "--export-if-defined=molt_entry_point"
-    ]
-    assert wasm_link_args_from_rustflags(
-        shlex.join((*original, "--", *option("link-arg=positional")))
-    ) == ["--export-if-defined=molt_entry_point"]
+    assert wasm_link_args_from_rust_flag_tokens(original) == (
+        "--export-if-defined=molt_entry_point",
+    )
+    assert wasm_link_args_from_rust_flag_tokens(
+        (*original, "--", *option("link-arg=positional"))
+    ) == ("--export-if-defined=molt_entry_point",)
     for conflict in ("link-self-contained=yes", "linker-flavor=wasm-lld-cc"):
         with pytest.raises(ValueError, match="external-libc mode conflicts"):
             wasi_external_libc_rustflags(option(conflict), plan=selected_c_abi)
@@ -776,10 +814,9 @@ def test_wasi_clustered_key_aliases_cannot_bypass_required_mode(
 def test_wasi_clustered_projection_preserves_prefix_and_key_value_boundary(
     selected_c_abi,
 ):
-    import shlex
     from molt.cli.wasm_link_args import (
         wasi_external_libc_rustflags,
-        wasm_link_args_from_rustflags,
+        wasm_link_args_from_rust_flag_tokens,
     )
 
     flags = (
@@ -800,7 +837,7 @@ def test_wasi_clustered_projection_preserves_prefix_and_key_value_boundary(
         "link-arg=--export=under_score",
     )
     assert wasi_external_libc_rustflags(normalized, plan=selected_c_abi) == normalized
-    assert wasm_link_args_from_rustflags(shlex.join(flags)) == ["--export=under_score"]
+    assert wasm_link_args_from_rust_flag_tokens(flags) == ("--export=under_score",)
     with pytest.raises(ValueError, match="individually admitted"):
         wasi_external_libc_rustflags(
             ("-gClink_args=--export=one --export=two",), plan=selected_c_abi

@@ -136,6 +136,68 @@ regression tests for developer velocity:
   what changed. Otherwise the elapsed time cannot distinguish structural build
   cost from avoidable operator drag.
 
+
+### 2.2 Repository scanner ownership and bounded work
+
+HF-35 owns repository-check cost. These are development checks; their source
+projections, process pools and regression oracles add no work to compiled guests.
+Reuse operation-local source snapshots and lexical facts. The earlier whole-tree
+Python AST memo was rejected because retaining every tree increased collector
+work and latency. No persistent scanner cache or second registry is introduced.
+
+The structural patch probe groups calls by their enclosing function in one AST
+traversal, then checks each group's source order. A nested function's installer
+cannot authorize a patch in its parent: defining a helper does not execute it.
+Function, async-function and nested-method controls execute that distinction in
+CPython. The old traversal revisited each descendant for every enclosing
+function, making work grow with nesting depth. The replacement costs
+`O(N + sum(K_f log K_f))` for N nodes and K_f calls per function, retaining only
+call references for the current file. The source-order sort preserves the
+existing installation-before-patch rule. It keeps no Python tree across files.
+
+The environment-registry scan keeps its existing bounded process pool alive
+through strict runtime-writer analysis, instead of ending parallel collection
+with a serial lexer tail. One picklable per-file operation retains the same
+strict parser and error translation. Explicit first-party module edges are
+followed in deduplicated waves before the existing production/test closure runs
+in the parent. Workers return compact facts; lexical buffers remain local to a
+file. Standalone and one-worker callers use the same operation serially. No
+executor, filter, cache, registry or output schema is added. Independent external
+module and malformed-source controls require the same diagnostics under serial
+and actual process-pool execution.
+
+This follows [Ruff's per-file AST and semantic traversal](https://docs.astral.sh/ruff/contributing/)
+and [rustc's combined lint traversal](https://rustc-dev-guide.rust-lang.org/diagnostics/lintstore.html):
+share the input analysis while preserving each check's ownership and diagnostic
+contract. Parsed-tree scaling controls distinguish traversal cost from parsing,
+filesystem access, process startup and the complete gate. The live release
+ledger records accepted scope and outstanding audit-cost work.
+
+### 2.3 Policy projections and execution freshness
+
+The generated proof-plan JSON describes policy: commands, dependencies, resource
+budgets, toolchains and declared authority input paths. Its v8 schema omits the
+execution-source digest. Source edits that leave the represented policy unchanged
+cannot change that projection; editing the represented policy still does. The generator
+therefore avoids reading and hashing the authority closure just to render JSON.
+No replacement stamp, cache or artifact is introduced.
+
+Execution receipts retain the complete live authority digest, source commit,
+source tree, toolchain identity and evidence checks. Receipt production and
+verification compute their identities from the canonical authority, independently
+of the projection. A regression control mutates an actual declared input file,
+requires the old receipt to fail, and requires the policy projection to remain
+byte-identical. A policy-change control requires a different projection.
+
+This applies the distinction between a generated command graph and execution
+freshness visible in [CMake's compilation database](https://cmake.org/cmake/help/latest/variable/CMAKE_EXPORT_COMPILE_COMMANDS.html)
+and [Ninja's build graph and log](https://ninja-build.org/manual.html#ref_log).
+Molt keeps its existing execution-attestation contract. Removing the redundant
+stamp prevents source-only edits outside explicit metadata inputs from selecting
+metadata proofs merely by rewriting the generated JSON. Explicit `ci-wiring`
+inputs still select those checks; this is no universal proof-selection exemption.
+These are development-only costs and add no work to emitted programs.
+
 ---
 
 ## 3. The structural facts/mechanisms to build (each tied to the class it retires)

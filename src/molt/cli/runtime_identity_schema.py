@@ -1112,7 +1112,17 @@ def require_native_runtime_staticlib_identity(
 @dataclass(frozen=True)
 class RuntimeBuildMemberPlan:
     kind: str
-    resolved_rustflags: str | tuple[str, ...]
+    resolved_rustflags: tuple[str, ...]
     link_args: tuple[str, ...]
     publication_transform: str
     preserve_debug: bool
+
+    def __post_init__(self) -> None:
+        for field_name in ("resolved_rustflags", "link_args"):
+            tokens = getattr(self, field_name)
+            if type(tokens) is not tuple or not all(
+                type(token) is str and token for token in tokens
+            ):
+                raise TypeError(
+                    f"runtime build member {field_name} must be a tuple of tokens"
+                )

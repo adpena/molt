@@ -8,7 +8,6 @@ from collections.abc import Mapping, Sequence
 import contextlib
 from dataclasses import dataclass
 from pathlib import Path
-import shlex
 import subprocess
 import sys
 from molt.temporary_artifacts import OwnedTemporaryDirectory
@@ -1491,7 +1490,7 @@ def _link_split_app_stage(
                 file=sys.stderr,
             )
         print(
-            "Split-runtime native app linker argv: " + shlex.join(plan.command),
+            "Split-runtime native app linker argv: " + dumps_exact(list(plan.command)),
             file=sys.stderr,
         )
         return _SplitAppLinkResult(1, None)

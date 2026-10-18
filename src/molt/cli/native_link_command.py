@@ -3,10 +3,10 @@ from __future__ import annotations
 import os
 from pathlib import Path
 import platform
-import shlex
 import sys
 from typing import Sequence
 
+from molt.flag_strings import FlagStringRule
 from molt.cli.compiler_target import (
     compiler_target_triple,
     validate_compiler_target,
@@ -210,9 +210,9 @@ def _build_native_link_driver_command(
         if target.os == "macos":
             sysroot_flag = "-isysroot"
         link_cmd.extend([sysroot_flag, str(sysroot_path)])
-    cflags = os.environ.get("CFLAGS", "")
-    if cflags:
-        link_cmd.extend(shlex.split(cflags))
+    # The link driver reads CFLAGS as cc-rs reads it for the runtime's C code,
+    # so one CFLAGS value means the same arguments to both compilers.
+    link_cmd.extend(FlagStringRule.cc(os.environ).decode(os.environ.get("CFLAGS", "")))
     if target.os == "macos":
         # One selected SDK supplies headers, libraries, framework search paths
         # and the default version. An argv sysroot overrides ambient SDKROOT.

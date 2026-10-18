@@ -203,6 +203,7 @@
     "tools/gen_environment_registry.py",
     "src/molt/cargo_execution_policy.py",
     "src/molt/process_environment.py",
+    "src/molt/flag_strings.py",
     "src/molt/cargo_workspace.py",
     "src/molt/process_guard.py",
     "src/molt/llvm_toolchain.py",
@@ -375,7 +376,6 @@
     "tests/tools/test_win_job_contract.py",
     "tests/tools/test_windows_process_api.py"
   ],
-  "authority_sha256": "7d683b2eb8912d35d42233b2190ad8d123a7c7e4adfe9ee65e57fe92067b745f",
   "cargo_environment_policy": {
     "incident_command": "cargo metadata --locked --format-version 1",
     "incident_commit": "20b046b79bd4ca64a8c859f737f6e330377bcc4e",
@@ -6605,6 +6605,7 @@
         "tests/cli/test_runtime_build_identity.py",
         "tests/cli/test_runtime_family_authority.py",
         "tests/test_process_environment.py",
+        "tests/test_flag_strings.py",
         "tests/cli/test_runtime_artifact_selection.py",
         "tests/cli/test_cli_backend_binary_materialization.py",
         "tests/cli/test_cli_artifact_format_validation.py",
@@ -6696,6 +6697,7 @@
         "tests/cli/test_runtime_build_identity.py",
         "tests/cli/test_runtime_family_authority.py",
         "tests/test_process_environment.py",
+        "tests/test_flag_strings.py",
         "tests/cli/test_runtime_artifact_selection.py",
         "tests/cli/test_cli_backend_binary_materialization.py",
         "tests/cli/test_cli_artifact_format_validation.py",
@@ -10107,6 +10109,7 @@
           "src/molt/cli/runtime_wasm_generation.py",
           "src/molt/cargo_execution_policy.py",
           "src/molt/process_environment.py",
+          "src/molt/flag_strings.py",
           "src/molt/python_runtime_admission.py",
           "src/molt/python_environment_identity.py",
           "src/molt/toolchain_identity.py",
@@ -12317,7 +12320,7 @@
       "workflow": ".github/workflows/perf-gate.yml"
     }
   ],
-  "schema": "molt.proof-plan-projection.v7",
+  "schema": "molt.proof-plan-projection.v8",
   "toolchain_policies": [
     {
       "executable": "{python}",

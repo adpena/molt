@@ -22,7 +22,6 @@ from tools.proof_plan import (  # noqa: E402
     DEFAULT_MANIFEST,
     ProofPlan,
     PytestMemoryUnits,
-    _authority_sha256,
     local_gate_commands,
 )
 from tools.generator_io import generator_main, write_generated_texts  # noqa: E402
@@ -240,10 +239,9 @@ def _json_projection(plan: ProofPlan) -> str:
         for rule in plan.local_rules
     ]
     payload = {
-        "schema": "molt.proof-plan-projection.v7",
+        "schema": "molt.proof-plan-projection.v8",
         "authority": str(plan.path.relative_to(ROOT)).replace("\\", "/"),
         "authority_inputs": list(plan.authority_inputs),
-        "authority_sha256": _authority_sha256(plan),
         "receipt_schema": plan.receipt_schema,
         "executor": {
             "max_workers": plan.executor_max_workers,

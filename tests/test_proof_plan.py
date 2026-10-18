@@ -264,10 +264,10 @@ def test_lean_cache_is_ignored_untracked_build_state() -> None:
 
 def test_generated_local_dx_projection_has_stable_command_ids() -> None:
     projection = json.loads(gen_proof_plan._json_projection(PLAN))
-    assert projection["schema"] == "molt.proof-plan-projection.v7"
+    assert projection["schema"] == "molt.proof-plan-projection.v8"
     assert projection["receipt_schema"] == "molt.proof-receipt.v4"
     assert projection["authority_inputs"] == list(PLAN.authority_inputs)
-    assert projection["authority_sha256"] == proof_plan._authority_sha256(PLAN)
+    assert "authority_sha256" not in projection
     assert projection["toolchain_policies"] == [
         policy.data for policy in PLAN.toolchain_policies
     ]
@@ -4366,6 +4366,56 @@ def authority_input_bytes() -> dict[str, bytes]:
         relative: (proof_plan.ROOT / relative).read_bytes()
         for relative in PLAN.authority_inputs
     }
+
+
+def test_source_edits_preserve_policy_projection_but_invalidate_receipts(
+    tmp_path: Path, monkeypatch, authority_input_bytes: dict[str, bytes]
+) -> None:
+    command = next(
+        command
+        for command in PLAN.commands
+        if command.family == "nightly_conformance" and command.evidence_outputs
+    )
+    receipts = tmp_path / "receipts"
+    receipt = _receipt_for(command, receipts)
+    (receipts / "receipt.json").write_text(json.dumps(receipt), encoding="utf-8")
+    projection = gen_proof_plan._json_projection(PLAN)
+    source_identity = proof_plan._source_identity()
+    snapshot = tmp_path / "authority"
+    for relative, raw in authority_input_bytes.items():
+        path = snapshot / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(raw)
+    # Only implementation bytes change; retain the fixture's source commit and
+    # tree so the real verdict isolates execution-authority invalidation.
+    monkeypatch.setattr(proof_plan, "ROOT", snapshot)
+    monkeypatch.setattr(proof_plan, "_source_identity", lambda: source_identity)
+    assert _verify_receipts(PLAN, ["nightly_conformance"], receipts) == []
+
+    relative = "tools/toolchain_probe.py"
+    assert relative in PLAN.authority_inputs
+    (snapshot / relative).write_bytes(
+        authority_input_bytes[relative] + b"\n# execution implementation changed\n"
+    )
+    assert proof_plan._authority_sha256(PLAN) != receipt["authority_sha256"]
+    errors = _verify_receipts(PLAN, ["nightly_conformance"], receipts)
+    assert any("authority digest" in error for error in errors)
+    assert gen_proof_plan._json_projection(PLAN) == projection
+
+    # A policy edit still changes the generated graph, even when source-only
+    # edits no longer do. No content hash may stand in for policy projection.
+    changed_policy = replace(PLAN, executor_max_workers=PLAN.executor_max_workers + 1)
+    changed_projection = gen_proof_plan._json_projection(changed_policy)
+    assert changed_projection != projection
+    assert json.loads(changed_projection)["executor"]["max_workers"] == (
+        PLAN.executor_max_workers + 1
+    )
+    from tools.generator_io import stale_outputs
+
+    output = tmp_path / "proof-plan.generated.json"
+    output.write_text(projection, encoding="utf-8")
+    assert stale_outputs({output: projection}) == []
+    assert stale_outputs({output: changed_projection}) == [output]
 
 
 def test_every_authority_input_mutation_invalidates_receipt(
