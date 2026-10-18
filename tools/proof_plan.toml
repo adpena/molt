@@ -4682,6 +4682,32 @@ pytest = [
   "tests/test_memory_guard_tool.py",
 ]
 
+# --- Guard marker custody and observation -------------------------------
+[[rule]]
+name = "guard-marker-custody"
+toolchains = ["python"]
+description = "Guard generation capture, streaming observers, disk protection, queue diagnostics and final WASM admission."
+globs = [
+  "tools/memory_guard_core/active_custody.py",
+  "tools/memory_guard_custody.py",
+  "tools/runtime_wasm_final_preflight.py",
+  "tools/disk_guard.py",
+  "tools/proof_queue_pkg/diagnostic_evidence.py",
+  "tests/tools/test_memory_guard_custody.py",
+  "tests/tools/test_guard_marker_consumers.py",
+  "tests/tools/test_runtime_wasm_final_preflight.py",
+  "tests/tools/test_disk_guard.py",
+  "tests/tools/test_proof_queue_execution_receipt_details.py",
+]
+gates = []
+pytest = [
+  "tests/tools/test_memory_guard_custody.py",
+  "tests/tools/test_guard_marker_consumers.py",
+  "tests/tools/test_runtime_wasm_final_preflight.py",
+  "tests/tools/test_disk_guard.py",
+  "tests/tools/test_proof_queue_execution_receipt_details.py",
+]
+
 # --- Backend daemon custody --------------------------------------------
 [[rule]]
 name = "backend-daemon-custody"

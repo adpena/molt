@@ -21,7 +21,7 @@ reconciliation report names each one with the command that resolves it.
 from __future__ import annotations
 
 from collections.abc import Callable, Collection, Generator, Mapping
-from contextlib import contextmanager
+from contextlib import closing, contextmanager
 from dataclasses import asdict, dataclass, replace
 import os
 from pathlib import Path
@@ -472,18 +472,29 @@ def _direct_directory(directory: Path, *, role: str) -> bool:
     return True
 
 
-def read_marker_records(active_dir: Path) -> tuple[MarkerRecord, ...]:
-    if not _direct_directory(active_dir, role="active marker"):
-        return ()
+def _iter_marker_paths(
+    directory: Path, *, role: str, prefix: str = "guard-"
+) -> Generator[Path]:
+    if not _direct_directory(directory, role=role):
+        return
     # Do not collapse enumeration/read failure into an empty custody set. Match
     # names before opening; a guard-shaped symlink, directory, or partial file
     # must produce a protective record rather than disappearing from the set.
-    paths = sorted(
-        path
-        for path in active_dir.iterdir()
-        if path.name.startswith("guard-") and path.suffix.lower() == ".json"
-    )
-    return tuple(read_marker_record(path) for path in paths)
+    with os.scandir(directory) as entries:
+        for entry in entries:
+            if entry.name.startswith(prefix) and entry.name.lower().endswith(".json"):
+                yield Path(entry.path)
+
+
+def iter_marker_records(active_dir: Path) -> Generator[MarkerRecord]:
+    """Stream full payloads in directory order; consumers own stable ordering.
+
+    Neither a path inventory nor parsed payloads are retained. Enumeration and
+    record reads occur during iterator consumption and can fail there.
+    """
+    with closing(_iter_marker_paths(active_dir, role="active marker")) as paths:
+        for path in paths:
+            yield read_marker_record(path)
 
 
 def guard_marker_records(active_dir: Path, guard_pid: int) -> tuple[MarkerRecord, ...]:
@@ -498,32 +509,41 @@ def guard_marker_records(active_dir: Path, guard_pid: int) -> tuple[MarkerRecord
         (active_dir, "active marker"),
         (retired_guard_marker_dir(active_dir), "retired marker"),
     ):
-        if not _direct_directory(directory, role=role):
-            continue
         records.extend(
             read_marker_record(path)
-            for path in sorted(directory.iterdir())
-            if path.name.startswith(prefix) and path.suffix.lower() == ".json"
+            for path in sorted(_iter_marker_paths(directory, role=role, prefix=prefix))
         )
     return tuple(records)
 
 
 def active_guard_blockers(active_dir: Path) -> tuple[str, ...]:
     """Name every record that protects artifacts, filesystem-only."""
+    blockers: list[str] = []
     try:
-        records = read_marker_records(active_dir)
+        for record in iter_marker_records(active_dir):
+            if not record.terminal:
+                blockers.append(
+                    f"{record.path} "
+                    f"({record.status if record.error is None else record.error})"
+                )
+            # Do not keep the previous full payload while reading the next.
+            del record
     except (OSError, ValueError) as exc:
-        return (f"{active_dir}: {exc}",)
-    return tuple(
-        f"{record.path} ({record.status if record.error is None else record.error})"
-        for record in records
-        if not record.terminal
-    )
+        blockers.append(f"{active_dir}: {exc}")
+    return tuple(sorted(blockers))
 
 
 def has_active_guard_marker(active_dir: Path) -> bool:
     """Filesystem-only protective projection shared with disk reclamation."""
-    return bool(active_guard_blockers(active_dir))
+    try:
+        with closing(iter_marker_records(active_dir)) as records:
+            for record in records:
+                if not record.terminal:
+                    return True
+                del record
+    except (OSError, ValueError):
+        return True
+    return False
 
 
 @contextmanager
@@ -1069,13 +1089,17 @@ def reconcile_active_guard_markers(
     Capturing records before the snapshot prevents an older snapshot from
     classifying a newly launched guard as absent. Publication holds the same
     lock as the producer and compares the full physical/content generation.
+    Unlike observation-only readers, reconciliation deliberately retains all
+    parsed generations until that later snapshot can classify them safely.
     The injected snapshot must be the complete native process table, never a
     selected group, cache, failed query, or empty result.
     """
     records = (
         _release_records(active_dir, release)
         if release
-        else read_marker_records(active_dir)
+        else tuple(
+            sorted(iter_marker_records(active_dir), key=lambda record: record.path)
+        )
     )
     samples = _validated_snapshot(snapshot)
     timestamp = utc_timestamp()

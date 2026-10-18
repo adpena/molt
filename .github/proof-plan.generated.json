@@ -9206,6 +9206,7 @@
       "local.frontend-python.1": "python tools/verified_subset.py check",
       "local.frontend-python.2": "python tools/check_dynamic_policy.py",
       "local.gpu-runtime.0": "cargo test --locked -p molt-gpu-runtime --all-features --no-fail-fast",
+      "local.guard-marker-custody.pytest": "python -m pytest -q -n auto --molt-worker-memory-gb=2.5 tests/tools/test_memory_guard_custody.py tests/tools/test_guard_marker_consumers.py tests/tools/test_runtime_wasm_final_preflight.py tests/tools/test_disk_guard.py tests/tools/test_proof_queue_execution_receipt_details.py",
       "local.heap-kind-lifetime-authority.0": "python tools/gen_heap_kinds.py --check",
       "local.heap-kind-lifetime-authority.pytest": "python -m pytest -q -n auto --molt-worker-memory-gb=1.75 tests/test_gen_heap_kinds.py",
       "local.host-capability-authority.0": "python tools/gen_host_capabilities.py --check",
@@ -10174,6 +10175,36 @@
           "tests/cli/test_cli_frontend_parallel_authority.py",
           "tests/tools/test_ci_resource_env.py",
           "tests/test_memory_guard_tool.py"
+        ],
+        "toolchains": [
+          "python"
+        ]
+      },
+      {
+        "command_ids": [
+          "local.guard-marker-custody.pytest"
+        ],
+        "description": "Guard generation capture, streaming observers, disk protection, queue diagnostics and final WASM admission.",
+        "gates": [],
+        "globs": [
+          "tools/memory_guard_core/active_custody.py",
+          "tools/memory_guard_custody.py",
+          "tools/runtime_wasm_final_preflight.py",
+          "tools/disk_guard.py",
+          "tools/proof_queue_pkg/diagnostic_evidence.py",
+          "tests/tools/test_memory_guard_custody.py",
+          "tests/tools/test_guard_marker_consumers.py",
+          "tests/tools/test_runtime_wasm_final_preflight.py",
+          "tests/tools/test_disk_guard.py",
+          "tests/tools/test_proof_queue_execution_receipt_details.py"
+        ],
+        "name": "guard-marker-custody",
+        "pytest": [
+          "tests/tools/test_memory_guard_custody.py",
+          "tests/tools/test_guard_marker_consumers.py",
+          "tests/tools/test_runtime_wasm_final_preflight.py",
+          "tests/tools/test_disk_guard.py",
+          "tests/tools/test_proof_queue_execution_receipt_details.py"
         ],
         "toolchains": [
           "python"
@@ -11791,6 +11822,9 @@
         "rustc",
         "cargo",
         "git"
+      ],
+      "local.guard-marker-custody.pytest": [
+        "python"
       ],
       "local.heap-kind-lifetime-authority.0": [
         "python",
