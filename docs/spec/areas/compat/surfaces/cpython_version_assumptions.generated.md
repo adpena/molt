@@ -8,7 +8,7 @@ The inventory includes older and future Python 3 minor spellings, full eight-dig
 
 - `authority-routed` files: 62
 - `operational-tooling` files: 57
-- `scattered-assumption` files: 344
+- `scattered-assumption` files: 346
 
 ## Files
 
@@ -16,6 +16,7 @@ The inventory includes older and future Python 3 minor spellings, full eight-dig
 |---|---:|---|---|
 | `src/molt/_environment_registry.py` | 6 | operational-tooling | `sys.version_info` |
 | `src/molt/_host_capabilities_generated.py` | 3 | operational-tooling | `3.12` |
+| `src/molt/cache_eviction.py` | 1 | scattered-assumption | `3.12` |
 | `src/molt/cli/build_results.py` | 1 | scattered-assumption | `3.2` |
 | `src/molt/cli/deps.py` | 1 | operational-tooling | `sys.version_info` |
 | `src/molt/cli/entrypoint_parser.py` | 18 | scattered-assumption | `3.12` |
@@ -54,6 +55,7 @@ The inventory includes older and future Python 3 minor spellings, full eight-dig
 | `src/molt/frontend/visitors/statement_scope.py` | 1 | authority-routed | `3.13` |
 | `src/molt/gpu/turboquant/codebooks.py` | 1 | scattered-assumption | `3.0` |
 | `src/molt/host_capacity.py` | 1 | scattered-assumption | `3.13` |
+| `src/molt/llvm_wasi_tools.py` | 1 | scattered-assumption | `3.12` |
 | `src/molt/python_external_custody.py` | 1 | scattered-assumption | `3.10` |
 | `src/molt/python_interpreter.py` | 5 | authority-routed | `sys.version_info` |
 | `src/molt/python_runtime_admission.py` | 1 | scattered-assumption | `3.5` |
