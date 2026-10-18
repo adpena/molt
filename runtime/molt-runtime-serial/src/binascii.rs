@@ -741,22 +741,39 @@ pub extern "C" fn molt_binascii_incomplete_type() -> u64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_binascii_a2b_base64(data_bits: u64, strict_bits: u64) -> u64 {
     molt_runtime_core::with_gil_entry!(py, {
-        // Argument Clinic consumes ascii_buffer before strict_mode.__bool__.
-        let input = match AsciiInput::acquire(py, data_bits) {
-            Ok(input) => input,
-            Err(error) => return error,
-        };
-        let strict = is_truthy(py, obj_from_bits(strict_bits));
-        if exception_pending(py) {
-            return MoltObject::none().bits();
-        }
-        let raw = unsafe { input.bytes(py) };
-        let decoded = match crate::base64_mod::b64_decode(raw, strict) {
-            Ok(v) => v,
-            Err(msg) => return raise_binascii_error(py, msg.as_ref()),
-        };
-        alloc_bytes_or_oom(py, &decoded, "a2b_base64")
+        a2b_base64(py, data_bits, Base64Strictness::PythonObject(strict_bits))
     })
+}
+
+pub(crate) enum Base64Strictness {
+    Permissive,
+    PythonObject(u64),
+}
+
+/// Both binascii.a2b_base64 and base64.decodebytes use Clinic's converter.
+/// Retain the exported storage rather than copying it before decoding.
+pub(crate) fn a2b_base64(py: &PyToken, data_bits: u64, strict: Base64Strictness) -> u64 {
+    // Argument Clinic consumes ascii_buffer before strict_mode.__bool__.
+    let input = match AsciiInput::acquire(py, data_bits) {
+        Ok(input) => input,
+        Err(error) => return error,
+    };
+    let strict = match strict {
+        Base64Strictness::Permissive => false,
+        Base64Strictness::PythonObject(bits) => {
+            let strict = is_truthy(py, obj_from_bits(bits));
+            if exception_pending(py) {
+                return MoltObject::none().bits();
+            }
+            strict
+        }
+    };
+    let raw = unsafe { input.bytes(py) };
+    let decoded = match crate::base64_mod::b64_decode(raw, strict) {
+        Ok(v) => v,
+        Err(msg) => return raise_binascii_error(py, msg.as_ref()),
+    };
+    alloc_bytes_or_oom(py, &decoded, "a2b_base64")
 }
 
 #[unsafe(no_mangle)]

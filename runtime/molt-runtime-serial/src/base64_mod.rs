@@ -1124,14 +1124,10 @@ pub extern "C" fn molt_base64_encodebytes(data_bits: u64) -> u64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_base64_decodebytes(data_bits: u64) -> u64 {
     molt_runtime_core::with_gil_entry!(_py, {
-        let raw = match encode_bytes_like_arg(_py, data_bits, PyBUF_SIMPLE) {
-            Ok(v) => v,
-            Err(bits) => return bits,
-        };
-        let decoded = match b64_decode(&raw, false) {
-            Ok(v) => v,
-            Err(msg) => return raise_binascii_error(_py, msg.as_ref()),
-        };
-        alloc_bytes_result(_py, &decoded)
+        crate::binascii::a2b_base64(
+            _py,
+            data_bits,
+            crate::binascii::Base64Strictness::Permissive,
+        )
     })
 }
