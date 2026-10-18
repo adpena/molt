@@ -169,6 +169,14 @@ unqualified; their prerequisites and actual executions remain V1-07 obligations.
 This work is development-only. Performance probes, other platform/version cells
 and the installed release matrix remain unqualified; V1.0 release is still held.
 
+Differential proof declarations now select their host compiler independently
+from their guest build profile. The development text/codec cohort previously
+requested a development guest while leaving the host compiler at its release
+default, causing a separate source build instead of the intended shared
+`dev-fast` cohort. All seven proof declarations now name their host choice;
+ordinary compiler defaults remain unchanged. Actual text/codec consumer
+qualification remains pending.
+
 Linux process snapshots can legitimately report a zero boot-relative birth
 value. Development custody now retains those observations while preserving
 ambiguous live identities from automatic retirement; marker generations still

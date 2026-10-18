@@ -7103,6 +7103,40 @@ def test_shared_native_execution_helper_selects_rust_and_llvm_ci() -> None:
     assert {"rust", "llvm"} <= {family.name for family in selected.selected}
 
 
+def test_differential_proofs_select_their_host_compiler_profile_explicitly() -> None:
+    import shlex
+
+    expected = {
+        "wasm.test.runtime-import-conformance": "dev",
+        "runtime.public-consumers.native": "release",
+        "runtime.public-consumers.wasm": "release",
+    }
+    expected.update(
+        (lane.id, "dev")
+        for lane in PLAN.named_lanes
+        if lane.id.startswith("r6.target-version-parity.")
+    )
+    actual = {}
+    for command in (*PLAN.commands, *PLAN.named_lanes):
+        if "tests/molt_diff.py" not in command.argv:
+            continue
+        actual[command.id] = command.argv[command.argv.index("--compiler-profile") + 1]
+        assert "MOLT_BACKEND_PROFILE" not in command.data.get("env", {})
+    assert actual == expected
+    from tools import molt_dev
+
+    rule = next(
+        rule
+        for rule in molt_dev.GateConfig.load(PLAN.path).rules
+        if rule.name == "runtime-regex"
+    )
+    (differential,) = [
+        shlex.split(gate) for gate in rule.gates if "tests/molt_diff.py" in gate
+    ]
+    assert differential[differential.index("--compiler-profile") + 1] == "dev"
+    assert differential[differential.index("--build-profile") + 1] == "dev"
+
+
 def test_wasm_runtime_and_host_prerequisites_follow_actual_consumers():
     commands = {command.id: command for command in PLAN.commands}
     for name in ("wasm.build.shared-runtime", "wasm.build.split-runtime-release"):

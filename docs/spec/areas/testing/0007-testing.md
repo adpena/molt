@@ -350,6 +350,13 @@ Do not spawn a redundant version probe inside each test. Shared fixture helpers
 select every compiled consumer when changed. These are development prerequisites
 and add no work to emitted programs.
 
+Differential proof commands select the host compiler with `--compiler-profile`
+independently of the emitted program's `--build-profile`. Development conformance
+uses the existing `dev-fast` compiler cohort; release consumers explicitly select
+the release compiler. Omitting the host option preserves the caller's existing
+compiler selection. A development guest request alone does not select a
+development compiler or justify a claim that an existing build will be reused.
+
 Admission requires the caller's explicit repository root. The proof runner
 uses its selected plan root, integration its selected checkout, and generators
 their selected source root. Provider discovery and version admission therefore
