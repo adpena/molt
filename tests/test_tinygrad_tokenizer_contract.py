@@ -6,8 +6,6 @@ from pathlib import Path
 
 import pytest
 
-from tests.stdlib_intrinsic_registry import intrinsic_registry
-
 
 ROOT = Path(__file__).resolve().parents[1]
 TOKENIZER_PATH = ROOT / "demos" / "tinygrad" / "tokenizer.py"
@@ -20,15 +18,9 @@ def _load_tokenizer_module(monkeypatch: pytest.MonkeyPatch):
     assert spec.loader is not None
     module = importlib.util.module_from_spec(spec)
     monkeypatch.setitem(sys.modules, module_name, module)
-    # The module binds its GPU device intrinsic at import; the BPE paths under
-    # test must never call it.
-    with intrinsic_registry({"molt_gpu_prim_device": _device_unused}):
-        spec.loader.exec_module(module)
+    # The BPE tokenizer is plain Python: it binds no runtime intrinsic.
+    spec.loader.exec_module(module)
     return module
-
-
-def _device_unused(*_args: object) -> object:
-    pytest.fail("the BPE tokenizer called the GPU device intrinsic")
 
 
 def test_tokenizer_decode_rejects_unknown_token_id(monkeypatch: pytest.MonkeyPatch):
