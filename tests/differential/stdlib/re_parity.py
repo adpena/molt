@@ -1875,6 +1875,9 @@ def test_raw_codepoint_regex_contract():
         else:
             raise AssertionError("text and byte regex subjects were mixed")
 
+    iteration_subject = "\0A\u00a2\u20ac" + pair + replacement + scalar
+    print(("codepoint-iteration", units(iteration_subject), units(reversed(iteration_subject))))
+
 
 def main():
     test_internal_module_imports()
