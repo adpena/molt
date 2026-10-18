@@ -224,7 +224,7 @@ def test_module_initializers_solely_own_code_and_globals_publication(
     for module in modules:
         generator = SimpleTIRGenerator(
             module_name=module,
-            entry_module=entry_module,
+            module_execution_kind="module" if module == entry_module else "imported",
             known_modules=set(modules),
             source_path=f"generated/{module}.py",
             target_python=(version.major, version.minor),
@@ -348,7 +348,7 @@ def test_shared_module_code_payload_is_stable_when_an_earlier_module_is_added() 
         for module in modules:
             generator = SimpleTIRGenerator(
                 module_name=module,
-                entry_module="common",
+                module_execution_kind="module" if module == "common" else "imported",
                 known_modules={"earlier", "common"},
                 source_path=f"generated/{module}.py",
                 target_python=(3, 12),

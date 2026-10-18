@@ -306,6 +306,166 @@ def test_every_verified_physical_source_has_valid_typed_metadata() -> None:
     assert not any("wasm" in metadata.as_record() for metadata in parsed)
 
 
+@pytest.mark.parametrize("absolute", [False, True])
+def test_filename_patterns_select_one_case_sensitive_sorted_file_set(
+    tmp_path, absolute
+):
+    suite = tmp_path / "suite"
+    suite.mkdir()
+    for name in ("re_z.py", "RE_caps.py", "re_a.py", "re_notes.txt", "other.py"):
+        (suite / name).write_text("print('case')\n", encoding="utf-8")
+    nested = suite / "re_directory.py"
+    nested.mkdir()
+    (nested / "re_nested.py").write_text("print('nested')\n", encoding="utf-8")
+    target = suite / "re_*.py" if absolute else Path("suite/re_*.py")
+    assert test_policy.collect_test_files((target,), repo_root=tmp_path) == (
+        suite / "re_a.py",
+        suite / "re_z.py",
+    )
+    assert test_policy.collect_test_files(
+        ("suite/re_[az].p?",), repo_root=tmp_path
+    ) == (
+        suite / "re_a.py",
+        suite / "re_z.py",
+    )
+
+
+@pytest.mark.parametrize(
+    "targets",
+    [
+        ("suite/re_*.py", "suite/re_a.py"),
+        ("suite/re_a.py", "suite/re_*.py"),
+        ("suite/re_*.py", "suite/re_*.py"),
+    ],
+)
+def test_filename_patterns_share_explicit_duplicate_admission(tmp_path, targets):
+    suite = tmp_path / "suite"
+    suite.mkdir()
+    (suite / "re_a.py").write_text("print('a')\n", encoding="utf-8")
+    with pytest.raises(ValueError, match="selected more than once"):
+        test_policy.collect_test_files(targets, repo_root=tmp_path)
+
+
+def test_filename_patterns_share_portable_collision_admission(tmp_path, monkeypatch):
+    suite = tmp_path / "suite"
+    suite.mkdir()
+    for name in ("re_a.py", "re_b.py"):
+        (suite / name).write_text("print('case')\n", encoding="utf-8")
+    monkeypatch.setattr(test_policy, "portable_path_identity", lambda _: "same")
+    with pytest.raises(ValueError, match="collide on portable filesystems"):
+        test_policy.collect_test_files(("suite/re_*.py",), repo_root=tmp_path)
+
+
+@pytest.mark.parametrize("pattern", ["missing*.py", "*.txt"])
+def test_filename_patterns_refuse_empty_python_selection(tmp_path, pattern):
+    (tmp_path / "notes.txt").write_text("not a test\n", encoding="utf-8")
+    with pytest.raises(ValueError, match="selected no Python tests"):
+        test_policy.collect_test_files((pattern,), repo_root=tmp_path)
+
+
+@pytest.mark.parametrize(
+    "target",
+    [
+        "../outside/re_*.py",
+        "suite/../suite/re_*.py",
+        "su*/re_a.py",
+        "suit?/re_*.py",
+        "suit[e]/re_*.py",
+        "suite/**/re_*.py",
+        "suite/**.py",
+    ],
+)
+def test_filename_pattern_parent_refuses_ambiguity_before_globbing(
+    tmp_path, monkeypatch, target
+):
+    (tmp_path / "suite").mkdir()
+
+    def forbidden_glob(*args, **kwargs):
+        pytest.fail("an unadmitted parent must never be enumerated")
+
+    monkeypatch.setattr(Path, "glob", forbidden_glob)
+    with pytest.raises(ValueError, match="parent directories|nonrecursive"):
+        test_policy.collect_test_files((target,), repo_root=tmp_path)
+
+
+def test_filename_patterns_refuse_absolute_parent_outside_repository(
+    tmp_path, monkeypatch
+):
+    root = tmp_path / "repo"
+    root.mkdir()
+    outside = tmp_path / "outside"
+    outside.mkdir()
+
+    def forbidden_glob(*args, **kwargs):
+        pytest.fail("an external parent must never be enumerated")
+
+    monkeypatch.setattr(Path, "glob", forbidden_glob)
+    with pytest.raises(ValueError, match="escapes the repository"):
+        test_policy.collect_test_files((outside / "re_*.py",), repo_root=root)
+
+
+@pytest.mark.parametrize("kind", ["parent", "file"])
+def test_filename_patterns_refuse_linked_parents_and_matching_files(
+    tmp_path, monkeypatch, kind
+):
+    suite = tmp_path / "suite"
+    suite.mkdir()
+    if kind == "parent":
+        target = tmp_path / "real"
+        target.mkdir()
+        (target / "re_a.py").write_text("print('a')\n", encoding="utf-8")
+        link = suite / "alias"
+        selector = "suite/alias/re_*.py"
+    else:
+        target = suite / "source.py"
+        target.write_text("print('a')\n", encoding="utf-8")
+        link = suite / "re_alias.py"
+        selector = "suite/re_*.py"
+    try:
+        link.symlink_to(target, target_is_directory=kind == "parent")
+    except OSError as exc:
+        if os.name == "nt" and getattr(exc, "winerror", None) == 1314:
+            pytest.skip("Windows account lacks symlink creation privilege")
+        raise
+    if kind == "parent":
+
+        def forbidden_glob(*args, **kwargs):
+            pytest.fail("a linked parent must never be enumerated")
+
+        monkeypatch.setattr(Path, "glob", forbidden_glob)
+    with pytest.raises(ValueError, match="link|junction"):
+        test_policy.collect_test_files((selector,), repo_root=tmp_path)
+
+
+def test_filename_patterns_preserve_existing_files_directories_and_manifests(tmp_path):
+    suite = tmp_path / "suite"
+    suite.mkdir()
+    literal = suite / "re_[literal].py"
+    literal.write_text("print('literal')\n", encoding="utf-8")
+    selected = suite / "re_a.py"
+    selected.write_text("print('a')\n", encoding="utf-8")
+    ordinary = tmp_path / "ordinary"
+    ordinary.mkdir()
+    direct = ordinary / "direct.py"
+    direct.write_text("print('direct')\n", encoding="utf-8")
+    manifest = tmp_path / "manifest"
+    manifest.mkdir()
+    (manifest / "TESTS.txt").write_text(
+        "# owning test selection\nsuite/re_a.py\nordinary\n", encoding="utf-8"
+    )
+    assert test_policy.collect_test_files((literal,), repo_root=tmp_path) == (literal,)
+    assert test_policy.collect_test_files((ordinary,), repo_root=tmp_path) == (direct,)
+    assert test_policy.collect_test_files((manifest,), repo_root=tmp_path) == (
+        direct,
+        selected,
+    )
+    (manifest / "TESTS.txt").write_text("suite/re_*.py\n", encoding="utf-8")
+    assert test_policy.collect_test_files((manifest,), repo_root=tmp_path) == (
+        literal,
+        selected,
+    )
+
+
 def _inventory_fixture(tmp_path: Path):
     root = tmp_path / "repo"
     suite = root / "suite"

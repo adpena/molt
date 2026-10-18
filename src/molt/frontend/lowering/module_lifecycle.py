@@ -38,7 +38,6 @@ class ModuleLifecycleMixin(GeneratorMixinBase):
         module_spec_name: str | None,
         module_is_namespace: bool,
         module_execution_kind: ModuleExecutionKind | None,
-        entry_module: str | None,
         module_chunking: bool,
         module_chunk_max_ops: int,
         known_modules: set[str] | None,
@@ -53,7 +52,10 @@ class ModuleLifecycleMixin(GeneratorMixinBase):
             else ("script" if module_name is None else "imported")
         )
         self.module_spec_name = module_spec_name or self.module_name
-        self.entry_module = entry_module
+        # CPython runs exactly one module as __main__, as a script or with -m;
+        # every other module is imported. The execution kind is the module's
+        # own fact, so lowering never needs the program's entry name.
+        self.is_entry_module = self.module_execution_kind != "imported"
         self.module_prefix = f"{self._sanitize_module_name(self.module_name)}__"
         self.known_modules = set(known_modules or [])
         self.direct_call_modules = set(direct_call_modules or {self.module_name})
@@ -96,9 +98,7 @@ class ModuleLifecycleMixin(GeneratorMixinBase):
         module_val: MoltValue | None = None
         if self.module_name:
             is_real_entry_module = (
-                self.entry_module
-                and self.module_name == self.entry_module
-                and self.module_name != "__main__"
+                self.is_entry_module and self.module_name != "__main__"
             )
             entry_spawn_override_enabled = (
                 is_real_entry_module and "multiprocessing.spawn" in self.known_modules

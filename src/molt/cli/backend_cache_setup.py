@@ -29,6 +29,7 @@ from molt.backend_binary_identity import identify_backend_binary
 from molt.cli.backend_execution import (
     _backend_native_codegen_identity,
     _backend_codegen_env_digest,
+    _native_object_codegen_env_digest,
     _backend_request_environment,
     _backend_environment_with_compiler_fingerprint,
     _backend_features_for_build_target,
@@ -133,6 +134,7 @@ def _cached_stdlib_cache_key_material(
     stdlib_module_symbols_json: str | None,
     target_triple: str | None,
     cache_variant: str,
+    stdlib_object_variant: str,
     stdlib_compiler_fingerprint: str,
     cache_compiler_fingerprint: str,
     cache_tooling_fingerprint: str,
@@ -186,10 +188,13 @@ def _cached_stdlib_cache_key_material(
             # This optional key memo is not the archive admission authority.
             pass
     # Small declarative metadata is projected from the live authority every
-    # time; only the expensive complete-IR key computation is memoized.
+    # time; only the expensive complete-IR key computation is memoized. The
+    # backend keys each archive constituent by this manifest without its
+    # cache_key, so the manifest carries the object variant, never the
+    # program's.
     manifest = _shared_stdlib_manifest(
         cache_key=cache_key,
-        cache_variant=cache_variant,
+        cache_variant=stdlib_object_variant,
         target_triple=target_triple,
         compiler_fingerprint=stdlib_compiler_fingerprint,
     )
@@ -437,36 +442,50 @@ def _prepare_backend_cache_setup(
         stdlib_module_symbols_json=stdlib_module_symbols_json,
         wasm_layout=wasm_layout if is_wasm else None,
     )
-    cache_variant = _build_cache_variant(
-        profile=profile,
-        runtime_cargo=runtime_cargo_profile,
-        backend_cargo=backend_cargo_profile,
-        emit=emit_mode,
-        stdlib_split=split_stdlib_object,
-        codegen_env=_backend_codegen_env_digest(
-            is_wasm=is_wasm, env=backend_environment
-        ),
-        linked=linked,
-        target_python=target_python,
-        stdlib_profile=stdlib_profile,
-        backend_binary_identity=backend_binary_identity,
-        native_codegen_identity=(
-            _backend_native_codegen_identity(
-                backend_bin,
-                backend_identity=backend_binary_identity,
-                target_triple=artifact_contract.native_target.triple,
-                env=backend_environment,
-            )
-            if artifact_contract.native_target is not None
-            else ""
-        ),
-        external_static_packages_digest=native_artifact_plan.digest(),
-        runtime_callable_symbols_digest=(
-            native_runtime_codegen_binding.semantic_digest
-            if native_runtime_codegen_binding is not None
-            else ""
-        ),
-        runtime_wasm_codegen_digest=runtime_wasm_codegen_digest,
+    native_codegen_identity = (
+        _backend_native_codegen_identity(
+            backend_bin,
+            backend_identity=backend_binary_identity,
+            target_triple=artifact_contract.native_target.triple,
+            env=backend_environment,
+        )
+        if artifact_contract.native_target is not None
+        else ""
+    )
+    external_static_packages_digest = native_artifact_plan.digest()
+    runtime_callable_symbols_digest = (
+        native_runtime_codegen_binding.semantic_digest
+        if native_runtime_codegen_binding is not None
+        else ""
+    )
+
+    def variant(codegen_env: str) -> str:
+        return _build_cache_variant(
+            profile=profile,
+            runtime_cargo=runtime_cargo_profile,
+            backend_cargo=backend_cargo_profile,
+            emit=emit_mode,
+            stdlib_split=split_stdlib_object,
+            codegen_env=codegen_env,
+            linked=linked,
+            target_python=target_python,
+            stdlib_profile=stdlib_profile,
+            backend_binary_identity=backend_binary_identity,
+            native_codegen_identity=native_codegen_identity,
+            external_static_packages_digest=external_static_packages_digest,
+            runtime_callable_symbols_digest=runtime_callable_symbols_digest,
+            runtime_wasm_codegen_digest=runtime_wasm_codegen_digest,
+        )
+
+    # Whole-program artifacts bind the program context the backend reads (the
+    # entry module and the stdlib module set). Shared stdlib objects bind only
+    # what one self-contained object job reads, so an added import cannot
+    # invalidate the machine code of every unchanged stdlib unit.
+    cache_variant = variant(
+        _backend_codegen_env_digest(is_wasm=is_wasm, env=backend_environment)
+    )
+    stdlib_object_variant = variant(
+        _native_object_codegen_env_digest(backend_environment)
     )
     _record_backend_cache_stage_ms(
         stage_timings_ms,
@@ -525,6 +544,7 @@ def _prepare_backend_cache_setup(
                 stdlib_module_symbols_json=stdlib_module_symbols_json,
                 target_triple=target_triple,
                 cache_variant=cache_variant,
+                stdlib_object_variant=stdlib_object_variant,
                 stdlib_compiler_fingerprint=stdlib_compiler_fingerprint,
                 cache_compiler_fingerprint=compiler_fingerprint,
                 cache_tooling_fingerprint=tooling_fingerprint,
@@ -648,6 +668,7 @@ def _prepare_backend_cache_setup(
             stdlib_module_symbols_json=stdlib_module_symbols_json,
             target_triple=target_triple,
             cache_variant=cache_variant,
+            stdlib_object_variant=stdlib_object_variant,
             stdlib_compiler_fingerprint=stdlib_compiler_fingerprint,
             cache_compiler_fingerprint=compiler_fingerprint,
             cache_tooling_fingerprint=tooling_fingerprint,

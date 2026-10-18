@@ -448,7 +448,7 @@ def _write_app_export_contract(
     }
     generator = SimpleTIRGenerator(
         module_name=entry_module,
-        entry_module=entry_module,
+        module_execution_kind="module",
         known_modules=set(kinds) | {entry_module},
         known_func_kinds=kinds,
     )
