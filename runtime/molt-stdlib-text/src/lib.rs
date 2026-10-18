@@ -25,4 +25,3 @@ pub mod textwrap;
 pub mod tokenize;
 #[cfg(feature = "stdlib_text")]
 pub mod unicodedata_mod;
-pub mod wtf8;

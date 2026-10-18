@@ -101,6 +101,16 @@ Unicode tables or missing atomic/possessive semantics. Those remain security,
 correctness and performance exit obligations under HF-329; the historical
 two-tier engine design is not an implemented or accepted release capability.
 
+The shared text-storage migration removes regex's same-layer dependency on the
+stdlib text crate and the foreign WTF-8 view that cannot represent adjacent
+Python surrogate code points under its own invariant. Runtime core owns one
+borrowed, allocation-free surrogatepass iterator and encoder for all consumers,
+including generated charmaps and Windows paths. The crate-graph ratchet and the
+pinned CPython boundary-byte oracle pass; compiled consumer qualification is
+pending. The bounded development-side kernel experiment rejected a slower
+stack-buffer encoder. This source correction neither closes HF-329 nor proves
+comparative runtime performance, full conformance or release acceptance.
+
 MIME Base64 decoding and binascii now share the same native ASCII-buffer
 converter, parser and result owner. MIME decoding retains the input lease
 instead of copying its entire input, and applies Clinic's exporter-error policy

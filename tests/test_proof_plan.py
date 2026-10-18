@@ -771,6 +771,7 @@ def test_compiler_runtime_partition_preserves_disjoint_test_and_tool_ownership()
         "molt-backend-wasm",
         "molt-runtime",
         "molt-runtime-regex",
+        "molt-runtime-core",
         "molt-stdlib-text",
         "molt-runtime-platform",
         "molt-gpu-runtime",
@@ -778,7 +779,7 @@ def test_compiler_runtime_partition_preserves_disjoint_test_and_tool_ownership()
     }
     assert not test_packages(core) & test_packages(complement)
     assert core.dependencies == complement.dependencies == ()
-    assert {"regex::", "wtf8::"} <= set(core.argv[core.argv.index("--") + 1 :])
+    assert {"regex::", "text_storage::"} <= set(core.argv[core.argv.index("--") + 1 :])
     assert set(core.toolchains) == {"rustc", "cargo", "node", "wasm-ld"}
     assert proof_plan.cargo_native_units(core.data) == {"target": ["c"]}
     assert "seq_snapshot_bridge::" in core.argv[core.argv.index("--") + 1 :]
@@ -1239,6 +1240,33 @@ def test_native_receipt_contract_selects_existing_integration_batch(path: str) -
     assert command.data["resource_class"] == "compiler-build-resource"
     # It is the first compiler build on the PR tier, where bench-cli does not run.
     assert command.data["timeout_budget"] == "cold"
+
+
+@pytest.mark.parametrize(
+    "changed",
+    [
+        "runtime/molt-runtime-core/src/text_storage.rs",
+        "tests/differential/basic/unicode_surrogate_handling.py",
+    ],
+)
+def test_shared_string_storage_exercises_both_real_backends(changed: str) -> None:
+    from tools import molt_dev
+
+    gates, _ = molt_dev.GateConfig.load(PLAN.path).select([changed])
+    differential = [
+        shlex.split(gate)
+        for gate in gates
+        if isinstance(gate, str) and "tests/molt_diff.py" in shlex.split(gate)
+    ]
+    assert len(differential) == 1
+    argv = differential[0]
+    assert argv[argv.index("--target") + 1] == "native,wasm"
+    assert argv[argv.index("--build-profile") + 1] == "dev"
+    assert {
+        "tests/differential/basic/unicode_surrogate_handling.py",
+        "tests/differential/stdlib/re_bytes_admission.py",
+        "tests/differential/stdlib/codecs_error_handlers_basic.py",
+    } <= set(argv)
 
 
 def test_runtime_leaf_change_runs_rust_without_llvm_or_formal() -> None:

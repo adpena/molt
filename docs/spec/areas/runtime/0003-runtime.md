@@ -212,12 +212,23 @@ struct MoltHeader {
   the peer. Both exports remain live through comparison and release in that
   order. Buffer acquisition, contiguous-span admission and writable admission
   share one scoped owner; capability checks never acquire an export.
-- **Strings**: WTF-8 buffers use the same inline length/data/NUL storage as
+- **Strings**: UTF-8 surrogatepass buffers use the same inline length/data/NUL storage as
   bytes. Embedded NULs remain ordinary content. Allocation and unique-owner
   append initialize the trailing NUL through `InlineBytesStorage`; native
   subclass slots and dictionaries start after the terminator and alignment.
   `find/split/replace/startswith/endswith/count/join` use ASCII fast paths with
   codepoint indexing for non-ASCII.
+  Runtime core's `text_storage` owns code-point iteration and encoding; adjacent
+  explicit surrogates remain distinct, as required by
+  [CPython's codec contract](https://github.com/python/cpython/blob/v3.12.13/Doc/library/codecs.rst).
+  Strided slices seek once through the existing UTF-8 index authority and walk
+  one monotonic byte cursor, copying original code-point spans. Traversal plus
+  output is linear in input and selected bytes; normalized index storage remains
+  proportional to selected elements. Single-character reads copy their span
+  without a temporary encoding buffer. Index cache hits still include ASCII
+  probes, synchronization and bounded local scans; they do not promise constant
+  time. The independent native/WASM differential carrier covers empty, reverse,
+  extreme-step and long cached strings, including surrogates and embedded NULs.
 - **Dicts**: `MoltDict` - Insertion-ordered key/value pairs plus a deterministic, open-addressing hash table for lookups.
     - Table hashing follows the runtime hash secret and capability policy;
       `PYTHONHASHSEED=0` selects deterministic string and bytes hashes.

@@ -244,9 +244,7 @@ fn traceback_source_span_native(
 }
 
 fn traceback_chars(bytes: &[u8]) -> impl Iterator<Item = u32> + '_ {
-    unsafe { molt_stdlib_text::wtf8::from_validated_bytes(bytes) }
-        .code_points()
-        .map(|cp| cp.to_u32())
+    molt_runtime_core::text_storage::code_points(bytes)
 }
 
 fn traceback_whitespace(code: u32) -> bool {

@@ -178,15 +178,39 @@ The public memoryview `_from_flags` clone semantics remain owned by memoryview;
 regex's `molt_re_subject_view` owns its stricter SRE buffer admission.
 
 Capture and replacement text must preserve Python code points, including
-isolated surrogates and adjacent explicit surrogate code points. They borrow
-validated physical storage through the existing runtime owner and use the
-shared `molt-stdlib-text::wtf8` codec authority; Rust `String` and scalar-only
-`char` reconstruction cannot represent that contract. Output encoding must not
-normalize an explicit surrogate pair into one scalar. The shared validated-byte
-view has an unsafe precondition, and every consumer must establish it from
-runtime string storage; it is not an arbitrary-byte decoder. The text crate's
-heavy stdlib feature is unnecessary for this primitive. General matcher Unicode
-semantics remain an independent HF-329 obligation.
+isolated surrogates and adjacent explicit surrogate code points. The existing
+runtime owner supplies borrowed storage to `molt-runtime-core::text_storage`;
+all string, codec, generated charmap and regex consumers share that authority.
+Its L2 placement follows the existing runtime semantic helpers and removes the
+L3 regex-to-text dependency. It adds no crate or external dependency.
+
+The reference is CPython's
+[`surrogatepass` contract](https://github.com/python/cpython/blob/v3.12.13/Doc/library/codecs.rst):
+surrogates are individual code points during UTF-8 encoding. This is broader
+than [well-formed WTF-8](https://wtf-8.codeberg.page/), which excludes adjacent
+high/low surrogate code points. Borrowing a foreign `wtf8::Wtf8` for Python
+storage therefore violates that type's invariant. An owned `Wtf8Buf` also has
+the wrong normalization semantics. The foreign view and dependency are retired;
+Rust `String` and scalar-only `char` cannot carry the complete Python contract.
+
+The borrowed iterator returns `u32` code points with bounds-checked reads and no
+foreign string cast. Producers establish storage validity; arbitrary external
+bytes still enter through their encoding-specific decoder. Iteration costs one
+pass, constant state, no allocation, lock, syscall, or repeated validation pass.
+Debug builds diagnose malformed storage; truncation remains bounds-checked in
+release builds. Strict UTF-8 exports use `std::str::from_utf8` at that boundary.
+The encoder checks out-of-range ordinals before modifying output. The hot
+append helper is inlined across the crate boundary and uses fixed-width slices
+for multibyte output, admitting Vec capacity once per point. A bounded Darwin
+arm64 comparison rejected a variable-width stack-buffer helper: its nine-sample
+medians cost 1.75–1.94 times the existing direct append kernels. The fixed-width
+path preserves the direct ASCII append and removes repeated multibyte capacity
+admission. This kernel experiment does not qualify end-to-end performance or
+other targets. Encoding appends at most four bytes per point without fusing
+surrogates. Independent Rust scalar
+and pinned CPython surrogate-vector controls belong to development tests, with
+native and WASM consumer qualification required separately. General matcher
+Unicode semantics remain an independent HF-329 obligation.
 
 Named-group ordinals and declaration order originate together at group opening
 in [CPython's parser](https://github.com/python/cpython/blob/v3.12.13/Lib/re/_parser.py#L79-L96).

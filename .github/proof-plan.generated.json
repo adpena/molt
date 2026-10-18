@@ -374,7 +374,7 @@
     "tests/tools/test_win_job_contract.py",
     "tests/tools/test_windows_process_api.py"
   ],
-  "authority_sha256": "63e21f0c5e1a99afa870a0bee0379d79ccea693ca7a8b2fc0170f7a36ba9da44",
+  "authority_sha256": "64b2f94b359f8b3fd1ad2f9f43360153d80b0548916160e3cc9ac89c70098538",
   "cargo_environment_policy": {
     "incident_command": "cargo metadata --locked --format-version 1",
     "incident_commit": "20b046b79bd4ca64a8c859f737f6e330377bcc4e",
@@ -7458,6 +7458,8 @@
         "-p",
         "molt-runtime-regex",
         "-p",
+        "molt-runtime-core",
+        "-p",
         "molt-stdlib-text",
         "-p",
         "molt-runtime-platform",
@@ -7496,7 +7498,7 @@
         "gpu_runtime_tests::",
         "kernel_storage::",
         "regex::",
-        "wtf8::",
+        "text_storage::",
         "--nocapture",
         "--test-threads=1"
       ],
@@ -9216,7 +9218,8 @@
       "local.runtime-lib.0": "python tools/run_runtime_test_gate.py --profile release-output --build-timeout-seconds 6300 --child-timeout-seconds 120 --parallel-threads 8",
       "local.runtime-profile-schema-authority.0": "python tools/gen_runtime_profile_schema.py --check",
       "local.runtime-profile-schema-authority.pytest": "python -m pytest -q -n auto --molt-worker-memory-gb=0.75 tests/test_gen_runtime_profile_schema.py tests/test_runtime_profile_schema.py",
-      "local.runtime-regex.0": "cargo test --locked --profile dev-fast -p molt-runtime-regex -p molt-stdlib-text --no-default-features --no-fail-fast --lib -- regex:: wtf8::",
+      "local.runtime-regex.0": "cargo test --locked --profile dev-fast -p molt-runtime-regex -p molt-runtime-core -p molt-stdlib-text --no-default-features --no-fail-fast --lib -- regex:: text_storage::",
+      "local.runtime-regex.1": "python tests/molt_diff.py --python-version 3.12 --molt-target-python 3.12 --build-profile dev --stdlib-profile full --target native,wasm --jobs 1 --no-retry-oom --json tests/differential/basic/unicode_surrogate_handling.py tests/differential/stdlib/re_bytes_admission.py tests/differential/stdlib/codecs_error_handlers_basic.py",
       "local.runtime-regex.pytest": "python -m pytest -q -n auto --molt-worker-memory-gb=0.5 tests/test_stdlib_re.py",
       "local.runtime-vfs.0": "cargo clippy --locked -p molt-runtime-vfs --all-targets --all-features -- -D warnings",
       "local.runtime-vfs.1": "cargo test --locked -p molt-runtime-vfs --all-features --no-fail-fast",
@@ -11064,21 +11067,26 @@
       {
         "command_ids": [
           "local.runtime-regex.0",
+          "local.runtime-regex.1",
           "local.runtime-regex.pytest"
         ],
-        "description": "Typed regex parser/matcher and shared lossless text codec: one fast-profile pure Rust cohort plus facade contracts.",
+        "description": "Typed regex parser/matcher and shared lossless text codec: one fast-profile Rust cohort, facade contracts and actual native/WASM CPython comparisons.",
         "gates": [
-          "cargo test --locked --profile dev-fast -p molt-runtime-regex -p molt-stdlib-text --no-default-features --no-fail-fast --lib -- regex:: wtf8::"
+          "cargo test --locked --profile dev-fast -p molt-runtime-regex -p molt-runtime-core -p molt-stdlib-text --no-default-features --no-fail-fast --lib -- regex:: text_storage::",
+          "python tests/molt_diff.py --python-version 3.12 --molt-target-python 3.12 --build-profile dev --stdlib-profile full --target native,wasm --jobs 1 --no-retry-oom --json tests/differential/basic/unicode_surrogate_handling.py tests/differential/stdlib/re_bytes_admission.py tests/differential/stdlib/codecs_error_handlers_basic.py"
         ],
         "globs": [
           "runtime/molt-runtime-regex/**/*.rs",
           "runtime/molt-runtime-regex/Cargo.toml",
-          "runtime/molt-stdlib-text/src/wtf8.rs",
-          "runtime/molt-stdlib-text/src/wtf8_tests.rs",
+          "runtime/molt-runtime-core/src/text_storage.rs",
+          "runtime/molt-runtime-core/src/text_storage_tests.rs",
           "runtime/molt-stdlib-text/Cargo.toml",
           "runtime/molt-runtime/src/regex_bridge.rs",
           "src/molt/stdlib/re/**/*.py",
-          "tests/test_stdlib_re.py"
+          "tests/test_stdlib_re.py",
+          "tests/differential/basic/unicode_surrogate_handling.py",
+          "tests/differential/stdlib/re_bytes_admission.py",
+          "tests/differential/stdlib/codecs_error_handlers_basic.py"
         ],
         "name": "runtime-regex",
         "pytest": [
@@ -11086,8 +11094,16 @@
         ],
         "toolchains": [
           "python",
+          "uv",
           "rustc",
-          "cargo"
+          "cargo",
+          "node",
+          "ld.lld",
+          "llvm-strip",
+          "wasm-ld",
+          "wasm-tools",
+          "wasi-clang",
+          "wasm-opt"
         ]
       },
       {
@@ -11770,15 +11786,45 @@
       ],
       "local.runtime-regex.0": [
         "python",
+        "uv",
         "rustc",
         "cargo",
-        "git"
+        "git",
+        "node",
+        "ld.lld",
+        "llvm-strip",
+        "wasm-ld",
+        "wasm-tools",
+        "wasi-clang",
+        "wasm-opt"
+      ],
+      "local.runtime-regex.1": [
+        "python",
+        "uv",
+        "rustc",
+        "cargo",
+        "git",
+        "node",
+        "ld.lld",
+        "llvm-strip",
+        "wasm-ld",
+        "wasm-tools",
+        "wasi-clang",
+        "wasm-opt"
       ],
       "local.runtime-regex.pytest": [
         "python",
+        "uv",
         "rustc",
         "cargo",
-        "git"
+        "git",
+        "node",
+        "ld.lld",
+        "llvm-strip",
+        "wasm-ld",
+        "wasm-tools",
+        "wasi-clang",
+        "wasm-opt"
       ],
       "local.runtime-vfs.0": [
         "python",

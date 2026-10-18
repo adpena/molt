@@ -38,14 +38,15 @@ pub(crate) fn require_strict_utf8(py: &PyToken<'_>, bits: u64) -> bool {
     if std::str::from_utf8(value).is_ok() {
         return true;
     }
-    let text = unsafe { molt_stdlib_text::wtf8::from_validated_bytes(value) };
-    let mut points = text.code_points().enumerate().peekable();
+    let mut points = molt_runtime_core::text_storage::code_points(value)
+        .enumerate()
+        .peekable();
     while let Some((start, code)) = points.next() {
-        if (0xd800..=0xdfff).contains(&code.to_u32()) {
+        if (0xd800..=0xdfff).contains(&code) {
             let mut end = start + 1;
             while points
                 .peek()
-                .is_some_and(|(_, code)| (0xd800..=0xdfff).contains(&code.to_u32()))
+                .is_some_and(|(_, code)| (0xd800..=0xdfff).contains(code))
             {
                 points.next();
                 end += 1;

@@ -164,14 +164,9 @@ pub(super) fn string_codepoints(_py: &CoreGilToken, bits: u64) -> Option<Vec<u32
     // SAFETY: the caller holds the core GIL and the original runtime string is
     // retained by the argument/sequence snapshot for this entire operation.
     let bytes = unsafe { rt_string_as_bytes(bits) }?;
-    // SAFETY: runtime strings are admitted only after Molt string storage has
-    // validated its UTF-8/WTF-8 encoding.
-    Some(
-        unsafe { molt_stdlib_text::wtf8::from_validated_bytes(bytes) }
-            .code_points()
-            .map(|point| point.to_u32())
-            .collect(),
-    )
+    // Runtime string producers establish surrogatepass storage; parsing the
+    // borrowed bytes does not create a foreign string view.
+    Some(molt_runtime_core::text_storage::code_points(bytes).collect())
 }
 
 fn string_name(_py: &CoreGilToken, bits: u64) -> Option<String> {
@@ -180,11 +175,8 @@ fn string_name(_py: &CoreGilToken, bits: u64) -> Option<String> {
     // SAFETY: the caller holds the core GIL and the dictionary snapshot keeps
     // each key live during this read.
     let bytes = unsafe { rt_string_as_bytes(bits) }?;
-    // SAFETY: these bytes are runtime string storage; group-name validation
-    // additionally guarantees there are no surrogate code points.
-    unsafe { molt_stdlib_text::wtf8::from_validated_bytes(bytes) }
-        .as_str()
-        .map(str::to_owned)
+    // Check the strict UTF-8 boundary independently of storage admission.
+    std::str::from_utf8(bytes).ok().map(str::to_owned)
 }
 
 /// Return a private `(None, None, message)` marker so the Python facade raises
@@ -197,7 +189,7 @@ pub(super) fn replacement_error_result(py: &CoreGilToken, error: ReplacementErro
         ReplacementError::InvalidGroupName { name, position } => {
             let mut encoded_name = Vec::with_capacity(name.len().saturating_mul(3));
             for unit in name {
-                molt_stdlib_text::wtf8::push_wtf8_codepoint(&mut encoded_name, unit);
+                molt_runtime_core::text_storage::push_code_point(&mut encoded_name, unit);
             }
             let name_ptr = alloc_string(py, &encoded_name);
             if name_ptr.is_null() {
@@ -470,7 +462,7 @@ pub extern "C" fn molt_re_expand_replacement(
         } else {
             let mut bytes = Vec::with_capacity(expanded.len().saturating_mul(2));
             for unit in expanded {
-                molt_stdlib_text::wtf8::push_wtf8_codepoint(&mut bytes, unit);
+                molt_runtime_core::text_storage::push_code_point(&mut bytes, unit);
             }
             alloc_string(_py, &bytes)
         };

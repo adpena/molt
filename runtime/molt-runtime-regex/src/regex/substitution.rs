@@ -245,7 +245,7 @@ pub extern "C" fn molt_re_sub(
                 }
             };
             for unit in expanded {
-                molt_stdlib_text::wtf8::push_wtf8_codepoint(&mut out, unit);
+                molt_runtime_core::text_storage::push_code_point(&mut out, unit);
             }
 
             last = m_end;

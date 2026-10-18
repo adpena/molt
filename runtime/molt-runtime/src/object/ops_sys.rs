@@ -219,13 +219,11 @@ pub extern "C" fn molt_ord(val: u64) -> u64 {
                     if char_count != 1 {
                         return ord_length_error(_py, char_count as usize);
                     }
-                    let Some(code) = unsafe { molt_stdlib_text::wtf8::from_validated_bytes(bytes) }
-                        .code_points()
-                        .next()
+                    let Some(code) = molt_runtime_core::text_storage::code_points(bytes).next()
                     else {
                         return MoltObject::none().bits();
                     };
-                    return MoltObject::from_int(code.to_u32() as i64).bits();
+                    return MoltObject::from_int(code as i64).bits();
                 }
                 if type_id == TYPE_ID_BYTES || type_id == TYPE_ID_BYTEARRAY {
                     let len = bytes_len(ptr);
@@ -1369,7 +1367,7 @@ pub extern "C" fn molt_chr(val: u64) -> u64 {
             }
             let code = i as u32;
             let mut out_bytes = Vec::with_capacity(4);
-            molt_stdlib_text::wtf8::push_wtf8_codepoint(&mut out_bytes, code);
+            molt_runtime_core::text_storage::push_code_point(&mut out_bytes, code);
             let out = alloc_string(_py, &out_bytes);
             if out.is_null() {
                 return MoltObject::none().bits();
@@ -1390,7 +1388,7 @@ pub extern "C" fn molt_chr(val: u64) -> u64 {
             return raise_exception::<_>(_py, "ValueError", "chr() arg not in range(0x110000)");
         };
         let mut out_bytes = Vec::with_capacity(4);
-        molt_stdlib_text::wtf8::push_wtf8_codepoint(&mut out_bytes, code);
+        molt_runtime_core::text_storage::push_code_point(&mut out_bytes, code);
         let out = alloc_string(_py, &out_bytes);
         if out.is_null() {
             return MoltObject::none().bits();
