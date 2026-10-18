@@ -140,6 +140,19 @@ whole-file tail read and open-ended append capture. Independent append and
 byte-count controls detect both old defects. This bounded development-only correction is separate from the daemon
 lifetime repair.
 
+Tool availability must not silently select an unrelated command's ABI. Generic
+CI and DX SDK setup publish availability and the C ABI receipt; runtime plans
+and SDK proof commands explicitly select their Rust target. Local and CI
+execution retain each command's declared tools across deduplication, pytest
+batching and upstream binding, then project from the pre-admission caller
+environment. One aggregate prerequisite check still reports all missing
+capabilities before execution; repeated selections reuse their projection.
+Independent actual-child controls detect the old SDK link-setting leak into
+pure Rust consumers while retaining explicit user flags. Managed-runtime
+startup remains with its existing owner. This is development-only work; actual
+WASI provider and candidate integration qualification remain pending under
+V1-07 and the existing release obligations.
+
 Linux process snapshots can legitimately report a zero boot-relative birth
 value. Development custody now retains those observations while preserving
 ambiguous live identities from automatic retirement; marker generations still

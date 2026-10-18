@@ -65,10 +65,14 @@ ordering; they do not introduce a second SDK search projection or global CRTs.
 The standalone unknown-target CPython ABI retains its own bundled libc obligation;
 it is not interchangeable with the runtime's unbundled downstream archive policy.
 
-The default DX environment exports WASI Rust flags only for `wasm32-wasip1`.
-An explicit unknown-target C-provider environment uses the existing
-`python -m molt.llvm_toolchain --verify-wasm --wasi-rust-target
-wasm32-unknown-unknown --github-env <path>` projection. Native flags are untouched.
+Generic DX and CI SDK setup publish tool availability and the C ABI receipt,
+without selecting a Rust target's libc, CRT or linker. The SDK projection takes
+an optional explicit Rust target; no target preserves caller settings without
+adding target link flags. Runtime Cargo plans select their actual target, and
+proof commands declaring the SDK select its WASI C ABI. Direct Cargo C-provider
+environments explicitly use `python -m molt.llvm_toolchain --verify-wasm
+--wasi-rust-target <target> --wasi-sdk <install> --github-env <path>`, with target
+`wasm32-wasip1` or `wasm32-unknown-unknown`. Native flags are untouched.
 For direct Cargo, global `RUSTFLAGS` or `CARGO_ENCODED_RUSTFLAGS` override Cargo's
 target-specific flags; callers selecting those lanes must carry the complete
 projected WASI context. The shared Rust decoder rejects an incomplete effective
@@ -205,7 +209,28 @@ partial installation cannot trigger competing repairs during proof fanout.
 Proof commands that build Rust declare both `rustc` and `cargo`, including the
 Python binding and runtime-artifact partitions. The existing proof executor
 fingerprints the union of declared tools before scheduling commands; Rust
-fingerprints share its serialized `rustup` domain. Cargo configuration precedence
+fingerprints share its serialized `rustup` domain. Admission of that union does
+not select every toolchain for every child. Local integration and CI capture
+the execution environment before admission, then project each command's declared
+tool closure from that baseline. Already admitted tools on PATH remain valid
+without requiring a managed installation. Identical selections reuse one projection
+per execution. Deduplicated local commands union their contributing owners; batched
+pytest receives only its contributing rules' tools, while selector cohorts keep
+their own. Upstream commit binding preserves this prerequisite identity. Explicit
+caller settings remain inputs; this is not isolation from user-selected flags.
+
+This follows the action-specific tools and environment boundary in
+[Bazel actions](https://bazel.build/rules/lib/builtins/actions.html#run).
+It matters because [Cargo's Rust flag precedence](https://doc.rust-lang.org/cargo/reference/config.html#buildrustflags)
+can make an unrelated injected target flag replace a command's linking mode.
+For example, admitting an SDK consumer beside the pure Rust zlib WASI proof
+must not disable the latter's Rust-owned libc/CRT. Managed runtime executables
+continue to own their selected SDK command startup. No CRT suppression, flag
+sanitization or provider-specific workaround is involved. Projection adds reads
+and small environment copies per distinct tool selection, rather than per test
+or build operation, and adds nothing to emitted programs.
+
+Cargo configuration precedence
 is owned by `molt.rust_toolchain`; runtime plans, queued proofs, and standalone
 fingerprints consume it without importing the CLI. The core SDK/LLVM authorities
 likewise own finite receipt selection and helper-byte capture; guarded proofs

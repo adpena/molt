@@ -29,6 +29,7 @@ import threading
 import time
 import tomllib
 import traceback
+from types import MappingProxyType
 from typing import TYPE_CHECKING, Any, Collection, Iterable, Literal, Mapping
 
 if TYPE_CHECKING:
@@ -3441,7 +3442,11 @@ def project_toolchains(
                 "python3 tools/provision_wasi_sdk.py"
             )
         else:
-            apply(wasm_toolchain_environment_delta(installation, environ=env))
+            apply(
+                wasm_toolchain_environment_delta(
+                    installation, environ=env, rust_target="wasm32-wasip1"
+                )
+            )
     for name in kinds.get("tool-release", ()):
         tool = str(policies[name].data["executable"])
         discovery = discover_pinned_tool(tool, root, environ=env)
@@ -3498,8 +3503,10 @@ def admit_toolchains(
     actions do.
 
     Every executor admits its toolchains here, so no shell needs projecting
-    by hand. The probes and the commands this process starts read
-    ``os.environ``; a caller that copied it earlier applies ``environment``.
+    by hand. Probes read the aggregate projection in ``os.environ``. Execution
+    callers preserve their pre-admission environment and project each command's
+    declared tool closure from that baseline, so unrelated commands do not
+    inherit another command's compiler or target selection.
     A tool the contract admits on PATH still passes when its pinned provider
     is not installed; a refusal names what to install.
     """
@@ -3777,10 +3784,11 @@ def _command_environment(
     command: ProofCommand,
     timeout: int,
     *,
+    environment: Mapping[str, str],
     memory_share: int | None,
 ) -> tuple[dict[str, str], tuple[str, ...]]:
     """Resolve one command environment through shared Cargo invariants."""
-    child_env = dict(os.environ)
+    child_env = dict(environment)
     if memory_share is not None:
         child_env[host_capacity.MEMORY_SLICE_ENV] = str(memory_share)
     existing_pythonpath = child_env.get("PYTHONPATH", "")
@@ -3906,6 +3914,7 @@ def _run_command(
     command: ProofCommand,
     cancel_event: threading.Event | None = None,
     *,
+    environment: Mapping[str, str],
     memory_share: int | None,
 ) -> dict[str, Any]:
     relative_cwd = str(command.data.get("cwd", "."))
@@ -3913,7 +3922,7 @@ def _run_command(
     started_at = dt.datetime.now(dt.UTC).isoformat()
     timeout = int(command.data["timeout_seconds"])
     child_env, applied_environment_policies = _command_environment(
-        plan, command, timeout, memory_share=memory_share
+        plan, command, timeout, environment=environment, memory_share=memory_share
     )
     if cancel_event is not None and cancel_event.is_set():
         return {
@@ -4144,22 +4153,48 @@ def execute_commands(
     receipt_path: Path,
 ) -> int:
     commands = tuple(commands)
+    baseline = MappingProxyType(dict(os.environ))
     memory_share = _command_memory_share(plan, commands)
+    closures = {command.id: plan.required_toolchains(command) for command in commands}
+    environments: dict[tuple[str, ...], Mapping[str, str]] = {}
+
+    def admit(
+        policies: Iterable[ToolchainPolicy], names: tuple[str, ...]
+    ) -> dict[str, dict[str, Any]]:
+        policies = tuple(policies)
+        fingerprints = admit_toolchains(
+            policies, names, root=plan.path.parent.parent
+        ).fingerprints
+        # Admission reports every selected prerequisite before any execution.
+        # Its process-wide union serves probes, never a child's target policy.
+        # Reuse one immutable projection per distinct declared closure.
+        for closure in dict.fromkeys(closures.values()):
+            if closure not in environments:
+                projection = project_toolchains(
+                    policies, closure, environ=baseline, root=plan.path.parent.parent
+                )
+                environments[closure] = MappingProxyType(
+                    {**baseline, **projection.delta}
+                )
+        return fingerprints
+
     return _execute_commands(
         plan,
         commands,
         receipt_path,
         _source_tree_changes=_source_tree_changes,
-        toolchain_fingerprints=lambda policies, names: (
-            admit_toolchains(policies, names, root=plan.path.parent.parent).fingerprints
-        ),
+        toolchain_fingerprints=admit,
         _authority_sha256=_authority_sha256,
         _source_identity=_source_identity,
         _normalized_os=_normalized_os,
         _normalized_arch=_normalized_arch,
-        _required_toolchains=lambda command: _required_toolchains(plan, command),
+        _required_toolchains=lambda command: closures[command.id],
         _run_command=lambda plan, command, event: _run_command(
-            plan, command, event, memory_share=memory_share
+            plan,
+            command,
+            event,
+            environment=environments[closures[command.id]],
+            memory_share=memory_share,
         ),
         _cache_disposition=_cache_disposition,
     )

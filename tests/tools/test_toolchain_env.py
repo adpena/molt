@@ -38,7 +38,8 @@ def _fake_providers(monkeypatch: pytest.MonkeyPatch, *, installed: bool) -> None
     def llvm_delta(_root, _verification, *, environ):
         return {"MOLT_LLVM_PREFIX": "/llvm", "PATH": f"/llvm/bin:{environ['PATH']}"}
 
-    def wasm_delta(_installation, *, environ):
+    def wasm_delta(_installation, *, environ, rust_target):
+        assert rust_target == "wasm32-wasip1"
         del environ
         return {"WASI_SDK_PATH": "/wasi/sdk", "CC_wasm32_wasip1": "/wasi/bin/clang"}
 

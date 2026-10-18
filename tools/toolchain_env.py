@@ -13,7 +13,7 @@ hosted job see the same toolchain:
 Each ``[[toolchain_policy]]`` in ``tools/proof_plan.toml`` names its provider
 in ``projection``: ``llvm-sdk`` (the verified LLVM SDK, as ``molt.llvm_toolchain
 --verify --github-env`` exports it), ``wasi-sdk`` (the provisioned wasi-sdk, as
-``--verify-wasm --github-env`` exports it), ``tool-release`` (a pinned release
+``--verify-wasm --wasi-rust-target wasm32-wasip1 --github-env`` exports it), ``tool-release`` (a pinned release
 from ``config/tool_releases.toml``) or ``binaryen`` (the pinned ``wasm-opt``).
 Policies without a projection are host tools or manage themselves (rustup,
 elan, uv). The WASI variables appear only when the selection needs the
@@ -24,8 +24,10 @@ its install command, and the command exits 2 without printing an environment.
 
 Executors need no shell projection: the proof executor, ``molt_dev.py
 integrate`` and the generators check admit their toolchains through
-``proof_plan.admit_toolchains``, which projects the installed providers first, as CI's
-setup actions do. The ``eval`` lines above serve interactive shells.
+``proof_plan.admit_toolchains``. Each command receives its own declared tools
+from the pre-admission environment; generic SDK setup publishes availability
+without selecting a Rust target's libc/CRT. The ``eval`` lines above explicitly
+select an interactive environment for the declared command or tool set.
 """
 
 from __future__ import annotations

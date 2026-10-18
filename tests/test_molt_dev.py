@@ -542,6 +542,7 @@ toolchains = ["python"]
         (tmp_path / "tests" / f"test_{name}.py").write_text("", encoding="utf-8")
     cfg = drv.GateConfig.parse(source, "merged pytest fixture", root=tmp_path)
     gates, matched = cfg.select(["src/a/x.py", "src/b/y.py"])
+    gates = [gate.command for gate in gates]
     assert [rule.name for rule in matched] == ["first", "second"]
     # One pytest run at the first contributing rule's place, each target once.
     assert gates == [
@@ -587,6 +588,7 @@ toolchains = ["python"]
         (tmp_path / "tests" / f"test_{name}.py").write_text("", encoding="utf-8")
     cfg = drv.GateConfig.parse(source, "pytest selection fixture", root=tmp_path)
     gates, _ = cfg.select(["src/a/x.py", "src/b/y.py"])
+    gates = [gate.command for gate in gates]
     prefix = (
         "python",
         "-m",
@@ -679,6 +681,7 @@ def test_landing_pytest_inherits_actual_larger_owning_units(drv):
             "runtime/molt-runtime/src/builtins/exceptions.rs",
         ]
     )
+    gates = [gate.command for gate in gates]
     import_run = next(
         gate
         for gate in gates
@@ -762,6 +765,7 @@ def test_run_gate_structured_arguments_use_selected_python(drv, tmp_path):
 def test_proof_policy_edits_select_receivers_without_package_production(drv, path):
     cfg = drv.GateConfig.load(COMMITTED_GATES)
     gates, matched = cfg.select([path])
+    gates = [gate.command for gate in gates]
     names = {rule.name for rule in matched}
     assert "source-extension-proof-policy" in names
     assert "source-extension-package-sets" not in names
@@ -807,6 +811,7 @@ def test_proof_policy_edits_select_receivers_without_package_production(drv, pat
 def test_producer_edits_retain_package_and_proof_boundary_checks(drv, path):
     cfg = drv.GateConfig.load(COMMITTED_GATES)
     gates, matched = cfg.select([path])
+    gates = [gate.command for gate in gates]
     names = {rule.name for rule in matched}
     assert {"source-extension-package-sets", "source-extension-proof-policy"} <= names
     selected = {argument for gate in gates for argument in _gate_args(gate)}
@@ -845,6 +850,7 @@ def test_every_producer_trigger_also_selects_its_proof_boundary(drv):
 def test_committed_gate_manifest_selects_tir_midend_ratchet(drv, path):
     cfg = drv.GateConfig.load(COMMITTED_GATES)
     gates, matched = cfg.select([path])
+    gates = [gate.command for gate in gates]
     if not path.startswith("runtime/molt-backend-wasm/"):
         assert [r.name for r in matched] == [
             "rust-clippy-changed",
@@ -877,6 +883,7 @@ def test_committed_gate_manifest_selects_tir_midend_ratchet(drv, path):
 def test_committed_native_policy_includes_owning_crate(drv, path):
     cfg = drv.GateConfig.load(COMMITTED_GATES)
     gates, matched = cfg.select([path])
+    gates = [gate.command for gate in gates]
     rule = next(rule for rule in matched if rule.name == "backend-native")
     (tests,) = [shlex.split(gate) for gate in rule.gates]
     packages = {tests[i + 1] for i, token in enumerate(tests) if token == "-p"}
@@ -902,6 +909,7 @@ def test_committed_source_checks_precede_complete_native_build_selection(drv):
             "config/source_extension_package_sets.toml",
         ]
     )
+    gates = [gate.command for gate in gates]
     # These independent families must survive reordering, including every
     # native build owner and its complete Cargo test/build requirements.
     source_names = {
@@ -936,6 +944,7 @@ def test_committed_source_checks_precede_complete_native_build_selection(drv):
 def test_committed_gate_manifest_selects_molt_ir_op_kind_registry(drv):
     cfg = drv.GateConfig.load(COMMITTED_GATES)
     gates, matched = cfg.select(["tools/op_kinds/render_rust.py"])
+    gates = [gate.command for gate in gates]
 
     # Every host script change also proves its import identity.
     assert [r.name for r in matched] == ["op-kind-registry", "host-entrypoint-imports"]
@@ -943,6 +952,7 @@ def test_committed_gate_manifest_selects_molt_ir_op_kind_registry(drv):
     assert "python tools/audit_op_kinds.py --check" in gates
 
     gates, matched = cfg.select(["runtime/molt-ir/src/tir/op_kinds.toml"])
+    gates = [gate.command for gate in gates]
     assert [r.name for r in matched] == [
         "op-kind-registry",
         "rust-clippy-changed",
@@ -959,6 +969,7 @@ def test_committed_gate_manifest_selects_backend_native_llvm(drv):
             "runtime/molt-backend-native/src/llvm_backend/lowering/preserved_ops/direct_ops.rs"
         ]
     )
+    gates = [gate.command for gate in gates]
 
     assert [r.name for r in matched] == [
         "op-kind-registry",
@@ -976,6 +987,7 @@ def test_committed_gate_manifest_selects_backend_native_llvm(drv):
 def test_committed_gate_manifest_selects_codec_table_registry(drv):
     cfg = drv.GateConfig.load(COMMITTED_GATES)
     gates, matched = cfg.select(["runtime/molt-stdlib-text/src/codec_registry.rs"])
+    gates = [gate.command for gate in gates]
 
     assert [r.name for r in matched] == [
         "codec-tables",
@@ -986,12 +998,14 @@ def test_committed_gate_manifest_selects_codec_table_registry(drv):
     assert "tests/test_gen_codecs.py" in merged
 
     gates, matched = cfg.select(["src/molt/stdlib/encodings/cp1252.py"])
+    gates = [gate.command for gate in gates]
     assert "codec-tables" in {r.name for r in matched}
     assert "python tools/gen_codecs.py --check" in gates
 
     gates, matched = cfg.select(
         ["runtime/molt-stdlib-text/src/codec_aliases_generated.rs"]
     )
+    gates = [gate.command for gate in gates]
     assert [r.name for r in matched] == [
         "codec-tables",
         "rust-clippy-changed",
@@ -1001,6 +1015,7 @@ def test_committed_gate_manifest_selects_codec_table_registry(drv):
     gates, matched = cfg.select(
         ["runtime/molt-stdlib-text/src/charmap_codecs_generated.rs"]
     )
+    gates = [gate.command for gate in gates]
     assert [r.name for r in matched] == [
         "codec-tables",
         "rust-clippy-changed",
@@ -1008,6 +1023,7 @@ def test_committed_gate_manifest_selects_codec_table_registry(drv):
     assert "python tools/gen_codecs.py --check" in gates
 
     gates, matched = cfg.select(["runtime/molt-runtime/src/object/ops_encoding.rs"])
+    gates = [gate.command for gate in gates]
     assert "codec-tables" in {r.name for r in matched}
     assert "python tools/gen_codecs.py --check" in gates
     merged = next(gate for gate in gates if isinstance(gate, tuple))
@@ -1017,6 +1033,7 @@ def test_committed_gate_manifest_selects_codec_table_registry(drv):
 def test_committed_gate_manifest_selects_wasm_host_ratchet(drv):
     cfg = drv.GateConfig.load(COMMITTED_GATES)
     gates, matched = cfg.select(["runtime/molt-wasm-host/src/main.rs"])
+    gates = [gate.command for gate in gates]
 
     assert [r.name for r in matched] == [
         "rust-clippy-changed",
@@ -1054,6 +1071,7 @@ gates = ["echo python-gate"]
 def test_gate_manifest_selection_backend(drv, tmp_path):
     cfg = drv.GateConfig.load(_write_gates(tmp_path))
     gates, matched = cfg.select(["runtime/molt-backend/src/lib.rs"])
+    gates = [gate.command for gate in gates]
     assert "echo always-ran" in gates
     assert "echo backend-gate" in gates
     assert "echo python-gate" not in gates
@@ -1063,6 +1081,7 @@ def test_gate_manifest_selection_backend(drv, tmp_path):
 def test_gate_manifest_selection_python(drv, tmp_path):
     cfg = drv.GateConfig.load(_write_gates(tmp_path))
     gates, matched = cfg.select(["src/molt/frontend.py"])
+    gates = [gate.command for gate in gates]
     assert "echo python-gate" in gates
     assert "echo backend-gate" not in gates
     assert [r.name for r in matched] == ["frontend-python"]
@@ -1072,6 +1091,7 @@ def test_gate_manifest_always_runs(drv, tmp_path):
     # An unmatched change-class still runs `always` gates, nothing else.
     cfg = drv.GateConfig.load(_write_gates(tmp_path))
     gates, matched = cfg.select(["docs/notes.txt"])
+    gates = [gate.command for gate in gates]
     assert gates == ["echo always-ran"]
     assert matched == []
 
@@ -1094,6 +1114,7 @@ gates = ["echo shared", "echo b-only"]
     )
     cfg = drv.GateConfig.load(cfg_path)
     gates, _ = cfg.select(["x/1", "y/2"])
+    gates = [gate.command for gate in gates]
     # 'echo shared' appears once, preserving first-seen order.
     assert gates == ["echo shared", "echo a-only", "echo b-only"]
 
@@ -2900,7 +2921,7 @@ version_pattern = '^selected-checkout-tool$'
         drv.cmd_integrate(_integrate_ns(drv, repo=str(work), no_push=True))
         == drv.EXIT_OK
     )
-    assert observed_roots == [work]
+    assert observed_roots == [work, work]
     assert os.environ["PATH"].split(os.pathsep)[0] == str(provider)
 
 
@@ -2931,11 +2952,12 @@ toolchains = ["unrelated"]
         root=tmp_path,
     )
     commands, matched = cfg.select(["src/one.py"])
+    commands = [gate.command for gate in commands]
     assert commands == ["echo selected"]
     monkeypatch.setattr(
         proof_plan, "_version_fingerprint", lambda _: pytest.fail("unrelated probe ran")
     )
-    assert cfg.admit(["src/one.py"], matched, []) == {}
+    assert cfg.admit(["src/one.py"], matched, []) is None
     with pytest.raises(drv.DriverError, match="lack declared prerequisite custody"):
         cfg.admit(["src/one.py"], matched, ["unknown executable"])
 
@@ -3037,3 +3059,151 @@ python_versions = "supported-targets"
     assert sys.path == before_path
     assert sys.modules["molt.target_python"] is target_python
     assert target_python.SUPPORTED_TARGET_PYTHON_SHORT_VERSIONS is before_catalog
+
+
+def test_gate_selection_preserves_tools_across_batching_dedup_and_extras(drv, tmp_path):
+    (tmp_path / "tests").mkdir()
+    for name in ("a", "b"):
+        (tmp_path / "tests" / f"test_{name}.py").write_text("", encoding="utf-8")
+    cfg = drv.GateConfig.parse(
+        """
+always = ["shared"]
+always_toolchains = ["base"]
+[[rule]]
+name = "first"
+globs = ["src/**"]
+gates = ["shared"]
+pytest = ["tests/test_a.py"]
+pytest_select = [{ k = "chosen", targets = ["tests/test_b.py"] }]
+toolchains = ["first"]
+[[rule]]
+name = "second"
+globs = ["src/**"]
+gates = ["shared"]
+pytest = ["tests/test_b.py"]
+toolchains = ["second"]
+[[rule]]
+name = "sdk"
+globs = ["src/**"]
+gates = ["sdk-command"]
+toolchains = ["sdk"]
+[[rule]]
+name = "unmatched"
+globs = ["other/**"]
+gates = ["explicit-extra"]
+pytest = ["tests/test_b.py"]
+toolchains = ["extra"]
+""",
+        "tool custody fixture",
+        root=tmp_path,
+    )
+    gates, _ = cfg.select(["src/a.py"], extra=["explicit-extra", "shared"])
+    assert [gate.command for gate in gates if isinstance(gate.command, str)] == [
+        "shared",
+        "sdk-command",
+        "explicit-extra",
+    ]
+    assert next(gate.toolchains for gate in gates if gate.command == "shared") == (
+        "base",
+        "first",
+        "second",
+    )
+    assert next(
+        gate.toolchains for gate in gates if gate.command == "explicit-extra"
+    ) == ("extra",)
+    batched = next(
+        gate
+        for gate in gates
+        if isinstance(gate.command, tuple) and "-k" not in gate.command
+    )
+    assert batched.toolchains == ("first", "second")
+    selected = next(
+        gate
+        for gate in gates
+        if isinstance(gate.command, tuple) and "-k" in gate.command
+    )
+    assert selected.toolchains == ("first",)
+    with pytest.raises(drv.DriverError, match="lack declared prerequisite custody"):
+        cfg.select(["src/a.py"], extra=["undeclared"])
+
+
+@pytest.mark.parametrize("explicit_sdk_flags", [False, True])
+def test_integrate_isolates_selected_toolchains_in_real_children(
+    drv, origin_and_clone, tmp_path, monkeypatch, explicit_sdk_flags
+):
+    from tools import proof_plan
+
+    _, work = origin_and_clone
+    flag_key = "CARGO_TARGET_WASM32_WASIP1_RUSTFLAGS"
+    user_flags = "-C target-feature=-reference-types"
+    if explicit_sdk_flags:
+        monkeypatch.setenv(flag_key, user_flags)
+    else:
+        monkeypatch.delenv(flag_key, raising=False)
+    monkeypatch.setenv("RUSTFLAGS", "-C debuginfo=1")
+    outputs = [tmp_path / f"child-{index}.json" for index in range(3)]
+    commands = []
+    for index, output in enumerate(outputs):
+        source = (
+            "import json,os,sys; from pathlib import Path; "
+            f"Path({str(output)!r}).write_text(json.dumps("
+            f'[os.environ.get({flag_key!r}), os.environ["RUSTFLAGS"], sys.argv[1:]]))'
+        )
+        commands.append(_integration_python(source) + " {integration_upstream_commit}")
+    policy = f"""
+always = [{json.dumps(commands[0])}]
+always_toolchains = ["rust"]
+[[toolchain_policy]]
+name = "rust"
+executable = "rust"
+version_pattern = '^ok$'
+[[toolchain_policy]]
+name = "sdk"
+executable = "sdk"
+version_pattern = '^ok$'
+[[rule]]
+name = "sdk"
+globs = ["tools/proof_plan.toml"]
+gates = {json.dumps(commands[1:])}
+toolchains = ["sdk"]
+"""
+    upstream = _git(work, "rev-parse", "origin/main").stdout.strip()
+    _commit_file(work, "tools/proof_plan.toml", policy, "command scoped tools")
+    calls = []
+
+    def project(policies, names, *, environ, root):
+        assert root == work
+        assert environ.get(flag_key) == (user_flags if explicit_sdk_flags else None)
+        calls.append(names)
+        return proof_plan.ToolchainProjection(
+            delta={flag_key: "-C link-self-contained=no"} if "sdk" in names else {},
+            missing=(),
+        )
+
+    monkeypatch.setattr(proof_plan, "project_toolchains", project)
+    monkeypatch.setattr(
+        proof_plan,
+        "_version_fingerprint",
+        lambda policy: {
+            "version": "ok",
+            "launcher_sha256": "a" * 64,
+            "executable_sha256": "b" * 64,
+        },
+    )
+    assert (
+        drv.cmd_integrate(_integrate_ns(drv, repo=str(work), no_push=True))
+        == drv.EXIT_OK
+    )
+    assert json.loads(outputs[0].read_text()) == [
+        user_flags if explicit_sdk_flags else None,
+        "-C debuginfo=1",
+        [upstream],
+    ]
+    for output in outputs[1:]:
+        assert json.loads(output.read_text()) == [
+            "-C link-self-contained=no",
+            "-C debuginfo=1",
+            [upstream],
+        ]
+    # One union admission and one projection per distinct child selection.
+    assert calls == [("rust", "sdk"), ("rust",), ("sdk",)]

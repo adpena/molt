@@ -596,7 +596,7 @@ def test_python_projection_is_consumed_by_actual_rust_decoder(
             else __import__("shlex").join(incomplete)
         )
         projected = project_wasm_toolchain_environment(
-            installation, environ={name: value}
+            installation, environ={name: value}, rust_target="wasm32-wasip1"
         )
         assert projected[name] == value  # the writer never rewrites global flags
         assert __import__("shlex").split(

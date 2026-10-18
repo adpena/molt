@@ -102,9 +102,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     keys: tuple[str, ...] = tuple(DX_ENV_KEYS if args.dx else CANONICAL_RUN_ENV_KEYS)
     if args.dx:
         ensure_repo_src_pythonpath(args.root, env)
-        # A DX shell builds every target: export the provisioned WASI SDK's
-        # tools through the same projection CI and `molt build` use. The SDK
-        # manifest belongs to the compiler source running this tool.
+        # Publish SDK availability without choosing a Rust target's libc/CRT.
+        # Each actual Rust build selects its ABI through RuntimeCargoPlan.
+        # The SDK manifest belongs to the compiler source running this tool.
         keys += apply_provisioned_wasm_toolchain(REPO_ROOT, env)
     fmt = cast(
         Literal["dotenv", "posix", "powershell", "cmd", "json"],
