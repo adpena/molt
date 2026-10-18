@@ -269,6 +269,46 @@ def test_lowering_reuse_across_sessions_no_relower(
     assert shared_slot.read_bytes() == prior_shared
 
 
+def test_lowering_reuse_across_projects_and_working_directories(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # A toolchain module is the same file in every project. A build in a
+    # second project, run from that project's directory, must find the first
+    # project's lowering of it.
+    stdlib_root = tmp_path / "stdlib"
+    stdlib_root.mkdir()
+    path = _write_module(stdlib_root, "m", "def g():\n    return 41 + 1\n")
+    context_digest = "cd" * 32
+    first, second = tmp_path / "first", tmp_path / "second"
+    first.mkdir()
+    second.mkdir()
+
+    _use_session(monkeypatch, "A")
+    monkeypatch.chdir(first)
+    MC._write_persisted_module_lowering(
+        first,
+        path,
+        source_lease=_ModuleSourceLease.path_backed(path),
+        module_name="m",
+        is_package=False,
+        context_digest=context_digest,
+        result={"functions": [{"name": "m__g", "params": [], "return_abi": "value"}]},
+    )
+
+    _use_session(monkeypatch, "B")
+    monkeypatch.chdir(second)
+    reused = MC._read_persisted_module_lowering(
+        second,
+        path,
+        source_lease=_ModuleSourceLease.path_backed(path),
+        module_name="m",
+        is_package=False,
+        context_digest=context_digest,
+    )
+    assert reused is not None
+    assert reused["functions"][0]["name"] == "m__g"
+
+
 def test_lowering_cache_hit_returns_fresh_decoded_payload_each_read(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
