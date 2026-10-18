@@ -21,41 +21,42 @@ const MAXBINSIZE: usize = (MAXLINESIZE / 4) * 3;
 
 // ─── helpers ────────────────────────────────────────────────────────────────
 
-fn bytes_like_arg(_py: &PyToken, bits: u64, _func: &str) -> Result<Vec<u8>, u64> {
+/// CPython `base64._bytes_from_decode_data`: an ASCII `str` or any buffer.
+/// The buffer path is `memoryview(s).tobytes()`, and only its TypeError
+/// becomes the base64 message; any other error propagates unchanged.
+fn bytes_from_decode_data(py: &PyToken, bits: u64) -> Result<Vec<u8>, u64> {
     let obj = obj_from_bits(bits);
-    if obj.is_none() {
-        return Err(raise_exception::<_>(
-            _py,
-            "TypeError",
-            "a bytes-like object is required, not 'NoneType'",
-        ));
-    }
-    let Some(ptr) = obj.as_ptr() else {
-        let type_label = type_name(_py, obj);
-        let msg = format!("a bytes-like object is required, not '{type_label}'");
-        return Err(raise_exception::<_>(_py, "TypeError", &msg));
-    };
-    // Accept strings — encode to ASCII for decode input
-    unsafe {
-        if object_type_id(ptr) == TYPE_ID_STRING {
-            let slice = string_bytes(ptr);
-            // Check for non-ASCII
-            for &b in slice {
-                if b > 127 {
-                    return Err(raise_exception::<_>(
-                        _py,
-                        "ValueError",
-                        "string argument should contain only ASCII characters",
-                    ));
+    if let Some(ptr) = obj.as_ptr() {
+        unsafe {
+            match object_type_id(ptr) {
+                TYPE_ID_STRING => {
+                    let text = string_bytes(ptr);
+                    if !text.is_ascii() {
+                        return Err(raise_exception::<_>(
+                            py,
+                            "ValueError",
+                            "string argument should contain only ASCII characters",
+                        ));
+                    }
+                    return Ok(text.to_vec());
                 }
+                TYPE_ID_BYTES | TYPE_ID_BYTEARRAY => {
+                    return Ok(bytes_like_slice_raw(ptr).unwrap().to_vec());
+                }
+                _ => {}
             }
-            return Ok(slice.to_vec());
-        }
-        if object_type_id(ptr) == TYPE_ID_BYTES || object_type_id(ptr) == TYPE_ID_BYTEARRAY {
-            return Ok(bytes_like_slice_raw(ptr).unwrap().to_vec());
         }
     }
-    snapshot_decode_buffer(_py, bits)
+    snapshot_decode_buffer(py, bits).map_err(|error| {
+        if !pending_exception_matches_builtin(py, "TypeError") {
+            return error;
+        }
+        clear_exception(py);
+        let type_label = type_name(py, obj);
+        let msg =
+            format!("argument should be a bytes-like object or ASCII string, not '{type_label}'");
+        raise_exception::<_>(py, "TypeError", &msg)
+    })
 }
 
 // Python base64 takes a memoryview snapshot for its non-bytes decode and
@@ -943,7 +944,7 @@ pub extern "C" fn molt_base64_b64encode(data_bits: u64, altchars_bits: u64) -> u
         let mut alphabet = *B64_STD;
         let altchars_obj = obj_from_bits(altchars_bits);
         if !altchars_obj.is_none() {
-            let alt = match bytes_like_arg(_py, altchars_bits, "b64encode") {
+            let alt = match bytes_from_decode_data(_py, altchars_bits) {
                 Ok(v) => v,
                 Err(bits) => return bits,
             };
@@ -975,7 +976,7 @@ pub extern "C" fn molt_base64_b64decode(
     validate_bits: u64,
 ) -> u64 {
     molt_runtime_core::with_gil_entry!(_py, {
-        let mut raw = match bytes_like_arg(_py, data_bits, "b64decode") {
+        let mut raw = match bytes_from_decode_data(_py, data_bits) {
             Ok(v) => v,
             Err(bits) => return bits,
         };
@@ -983,7 +984,7 @@ pub extern "C" fn molt_base64_b64decode(
 
         let altchars_obj = obj_from_bits(altchars_bits);
         if !altchars_obj.is_none() {
-            let alt = match bytes_like_arg(_py, altchars_bits, "b64decode") {
+            let alt = match bytes_from_decode_data(_py, altchars_bits) {
                 Ok(v) => v,
                 Err(bits) => return bits,
             };
@@ -1029,7 +1030,7 @@ pub extern "C" fn molt_base64_standard_b64encode(data_bits: u64) -> u64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_base64_standard_b64decode(data_bits: u64) -> u64 {
     molt_runtime_core::with_gil_entry!(_py, {
-        let raw = match bytes_like_arg(_py, data_bits, "standard_b64decode") {
+        let raw = match bytes_from_decode_data(_py, data_bits) {
             Ok(v) => v,
             Err(bits) => return bits,
         };
@@ -1056,7 +1057,7 @@ pub extern "C" fn molt_base64_urlsafe_b64encode(data_bits: u64) -> u64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_base64_urlsafe_b64decode(data_bits: u64) -> u64 {
     molt_runtime_core::with_gil_entry!(_py, {
-        let mut raw = match bytes_like_arg(_py, data_bits, "urlsafe_b64decode") {
+        let mut raw = match bytes_from_decode_data(_py, data_bits) {
             Ok(v) => v,
             Err(bits) => return bits,
         };
@@ -1095,7 +1096,7 @@ pub extern "C" fn molt_base64_b32decode(
     map01_bits: u64,
 ) -> u64 {
     molt_runtime_core::with_gil_entry!(_py, {
-        let raw = match bytes_like_arg(_py, data_bits, "b32decode") {
+        let raw = match bytes_from_decode_data(_py, data_bits) {
             Ok(v) => v,
             Err(bits) => return bits,
         };
@@ -1105,7 +1106,7 @@ pub extern "C" fn molt_base64_b32decode(
             None
         } else {
             // Extract the first byte of the map01 argument
-            let m = match bytes_like_arg(_py, map01_bits, "b32decode") {
+            let m = match bytes_from_decode_data(_py, map01_bits) {
                 Ok(v) => v,
                 Err(bits) => return bits,
             };
@@ -1137,7 +1138,7 @@ pub extern "C" fn molt_base64_b32hexencode(data_bits: u64) -> u64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_base64_b32hexdecode(data_bits: u64, casefold_bits: u64) -> u64 {
     molt_runtime_core::with_gil_entry!(_py, {
-        let raw = match bytes_like_arg(_py, data_bits, "b32hexdecode") {
+        let raw = match bytes_from_decode_data(_py, data_bits) {
             Ok(v) => v,
             Err(bits) => return bits,
         };
@@ -1165,7 +1166,7 @@ pub extern "C" fn molt_base64_b16encode(data_bits: u64) -> u64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_base64_b16decode(data_bits: u64, casefold_bits: u64) -> u64 {
     molt_runtime_core::with_gil_entry!(_py, {
-        let raw = match bytes_like_arg(_py, data_bits, "b16decode") {
+        let raw = match bytes_from_decode_data(_py, data_bits) {
             Ok(v) => v,
             Err(bits) => return bits,
         };
@@ -1207,7 +1208,7 @@ pub extern "C" fn molt_base64_a85decode(
     adobe_bits: u64,
 ) -> u64 {
     molt_runtime_core::with_gil_entry!(_py, {
-        let raw = match bytes_like_arg(_py, data_bits, "a85decode") {
+        let raw = match bytes_from_decode_data(_py, data_bits) {
             Ok(v) => v,
             Err(bits) => return bits,
         };
@@ -1237,7 +1238,7 @@ pub extern "C" fn molt_base64_b85encode(data_bits: u64, pad_bits: u64) -> u64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_base64_b85decode(data_bits: u64) -> u64 {
     molt_runtime_core::with_gil_entry!(_py, {
-        let raw = match bytes_like_arg(_py, data_bits, "b85decode") {
+        let raw = match bytes_from_decode_data(_py, data_bits) {
             Ok(v) => v,
             Err(bits) => return bits,
         };
@@ -1274,7 +1275,7 @@ pub extern "C" fn molt_base64_encodebytes(data_bits: u64) -> u64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_base64_decodebytes(data_bits: u64) -> u64 {
     molt_runtime_core::with_gil_entry!(_py, {
-        let raw = match bytes_like_arg(_py, data_bits, "decodebytes") {
+        let raw = match bytes_from_decode_data(_py, data_bits) {
             Ok(v) => v,
             Err(bits) => return bits,
         };

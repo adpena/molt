@@ -1604,6 +1604,7 @@ stdlib:
   base64:
     tests:
       - tests/differential/stdlib/cpython312plus_api_gap_top_level_base64_8095e159.py
+      - tests/differential/stdlib/base64_decode_argument_types.py
   binascii:
     tests:
       - tests/differential/stdlib/cpython312plus_api_gap_top_level_binascii_e18849f6.py
