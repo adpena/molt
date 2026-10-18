@@ -3820,6 +3820,23 @@ def test_header_changes_execute_real_windows_data_imports(path: str) -> None:
 
 @pytest.mark.parametrize(
     "path",
+    ["tools/release/native_build.py", "tests/tools/test_release_native_build.py"],
+)
+def test_release_flag_changes_execute_real_windows_compilers(path: str) -> None:
+    # Exclude global authority invalidation: the actual consumer edge must own it.
+    selection = replace(PLAN, authority_inputs=()).select([path])
+    assert "platform_portability" in {family.name for family in selection.selected}
+    command = next(c for c in PLAN.commands if c.id == "portability.headers.windows")
+    assert (
+        "tests/tools/test_release_native_build.py::test_msvc_release_path_maps_are_effective_across_build_roots"
+        in command.argv
+    )
+    assert set(command.data["tiers"]) == {"pr", "main"}
+    assert {"hosted-cmake", "hosted-ninja"} <= set(PLAN.required_toolchains(command))
+
+
+@pytest.mark.parametrize(
+    "path",
     ["tools/windows_process_api.py", "tests/tools/test_windows_process_api.py"],
 )
 def test_windows_process_binding_selects_and_executes_portability_proof(
@@ -3945,6 +3962,14 @@ def _receipt_for(
         for name, spelling in spellings.items()
     }
     versions["git"] = "git version 2.53.0"
+    # Image tools have recorded identities rather than repository version pins.
+    versions.update(
+        {
+            "hosted-clang-cl": "clang version 22.1.8",
+            "hosted-cmake": "cmake version 3.31.6",
+            "hosted-ninja": "1.12.1",
+        }
+    )
     toolchains: dict[str, dict[str, str]] = {}
     for name in PLAN.required_toolchains(command):
         path = f"/toolchain/{name}"

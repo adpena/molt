@@ -1,8 +1,8 @@
 # Flag strings
 
-Status: slices 1 (boundary authority), 2 (typed identity vectors) and 3
-(WASM export link vectors) implemented, 2026-10-18. Owner:
-integrator (coordination task `claude-cargo-flag-strings`). Ledger: HF-362.
+Status: flag transport, typed identities and WASM export vectors implemented.
+The Windows release compiler boundary is implemented; full release qualification
+remains open. Owner: integrator. Ledger: HF-362 and HF-363.
 
 ## Problem
 
@@ -66,14 +66,54 @@ None on a hot path. Each decode is one linear pass over a string of tens of
 bytes, once per plan. The `rustc` differential test compiles two small crates
 in about 0.5 s.
 
+The native Windows release producer serializes its compiler-owned options once,
+linearly in the path length. It adds no process, file or runtime check. The
+compiler-boundary regression runs in the existing Windows portability command;
+it does not rebuild Molt. Emitted programs pay no verification overhead.
+
+## Windows release compiler boundary
+
+MSVC ignores `/pathmap` without `/experimental:deterministic`, issuing D9007
+while returning success. Native releases author both options in MSVC's
+[documented `CL` environment](https://learn.microsoft.com/en-us/cpp/build/reference/cl-environment-variables).
+The compiler consumes that string before its explicit arguments. CPython's
+`subprocess.list2cmdline` owns Windows argument quoting. The serialized value is
+bounded by the compiler's 1024-character limit, measured in Windows UTF-16 units;
+oversize values fail before compilation. Ambient `CL` and `_CL_` remain excluded
+by the release environment, and existing compile identities capture both names.
+
+Only `/Brepro` remains in Windows `CFLAGS` and `CXXFLAGS`. This matters because
+[cmake-rs 0.1.58](https://docs.rs/cmake/0.1.58/src/cmake/lib.rs.html) first obtains
+cc-rs's decoded compiler arguments, then concatenates them into a CMake flag
+string without quoting each argument. It does not simply forward the shell
+quotes in raw `CFLAGS`. Embedding literal quotes in a path operand makes CMake's
+command work but changes direct compiler-argument semantics. Keeping path-bearing
+options in the compiler-owned environment preserves both consumers without an
+adapter, vendored dependency, response file or second flag parser.
+
+The owning control compiles real C and C++ through direct driver arguments and
+CMake/Ninja in two relocated roots, including spaces, a quote, Unicode and `#`.
+It requires effective `__FILE__` remapping, no ignored-option diagnostic and
+byte-identical object files per route. The source and test select the existing
+Windows PR/main proof command. This is compiler-boundary qualification, not a
+complete Windows release build or release-matrix acceptance. A compatible
+CMake/Ninja encoding pair is required: older ANSI-generating CMake versions can
+corrupt Unicode paths when paired with a UTF-8 Ninja. The retained qualification
+uses the already installed Visual Studio CMake, explicitly selected in the proof
+environment; it does not modify machine-wide tool selection.
+The proof captures the image CMake and Ninja identities through their hosted
+tool policies; it does not demand the separately pinned scientific-package
+Ninja distribution or install that package group just to run this control.
+
 ## Exceptions and open questions
 
 - `llvm_toolchain._llvm_config_tokens` parses `llvm-config` output, a
   different producer with its own quoting. It stays.
-- `tools/release/native_build.py` gives `CFLAGS` to cc-rs (shell rule) and to
-  CMake, which pastes `CFLAGS` into build commands. On Windows, MSVC does not
-  read single quotes, so a quoted token may break a CMake build. This is
-  unverified; it needs a Windows release build cell.
+- Non-Windows path-bearing flags still require actual CMake-consuming release
+  qualification. The adapter's unquoted join cannot preserve arbitrary argv
+  boundaries; the Windows compiler environment is not a portable replacement
+  for that separate boundary. Full activated dependency and release-cell
+  qualification stays under HF-363.
 
 ## Slice 2: typed identity vectors
 

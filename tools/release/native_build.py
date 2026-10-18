@@ -8,6 +8,7 @@ from dataclasses import asdict
 import os
 from pathlib import Path
 import re
+import subprocess
 import sys
 import tempfile
 from typing import Any
@@ -104,6 +105,7 @@ _TOOL_ROLES = frozenset(
         "ninja",
     }
 )
+_MSVC_CL_MAX_CODE_UNITS = 1024
 # Build policy is authored below. Ambient flags, wrappers, per-target overrides,
 # Python injection and arbitrary Cargo/MOLT variables never enter this map.
 _PLATFORM_ENV = (
@@ -710,7 +712,22 @@ def _select_build_tools(
     rustflags = [f"--remap-path-prefix={work}=/molt", "-C", f"linker={paths['linker']}"]
     if platform == "windows":
         rustflags.extend(("-C", "link-arg=/Brepro", "-C", "link-arg=/DEBUG:NONE"))
-        cflags = ["/Brepro", f"/pathmap:{work}=/molt"]
+        # cl owns this argument string in both cc-rs and CMake builds. Keeping
+        # the path out of CFLAGS avoids cmake-rs rejoining decoded argv without
+        # quoting. /pathmap alone is silently ignored by MSVC (D9007).
+        cl_flags = subprocess.list2cmdline(
+            ["/experimental:deterministic", f"/pathmap:{work}=/molt"]
+        )
+        if (
+            len(cl_flags.encode("utf-16-le", errors="surrogatepass")) // 2
+            > _MSVC_CL_MAX_CODE_UNITS
+        ):
+            raise ValueError(
+                "MSVC CL flags exceed the 1024-character compiler limit; "
+                "select a shorter --build-root"
+            )
+        env["CL"] = cl_flags
+        cflags = ["/Brepro"]
     else:
         rustflags.extend(("-C", f"link-arg=--ld-path={paths['linker_backend']}"))
         cflags = [f"-ffile-prefix-map={work}=/molt", f"-fdebug-prefix-map={work}=/molt"]
