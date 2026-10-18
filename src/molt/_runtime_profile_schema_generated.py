@@ -174,6 +174,15 @@ EPOCH_MEMORY_FIELDS = frozenset(
         "current_rss_delta_bytes",
     )
 )
+RSS_SOURCE_BY_TARGET: Mapping[str, str] = MappingProxyType(
+    {
+        "linux": "proc-self-status",
+        "macos": "mach-task-basic-info",
+        "windows": "windows-process-memory-info",
+        "wasm": "unsupported-wasm",
+        "fallback": "unsupported-target",
+    }
+)
 PROCESS_RSS_SOURCES = frozenset(
     (
         "proc-self-status",
