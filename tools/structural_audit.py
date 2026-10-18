@@ -2645,6 +2645,25 @@ _PROCESS_WIDE_PATCH_PREFILTER = re.compile(
 )
 
 
+def _python_function_calls(tree: ast.AST) -> list[list[ast.Call]]:
+    """Group calls by their owning function in one traversal.
+
+    A nested function's body is deferred, not part of its parent's installed
+    module views. Retain only calls, not a second copy of every subtree.
+    """
+    groups: list[list[ast.Call]] = []
+    pending: list[tuple[ast.AST, list[ast.Call] | None]] = [(tree, None)]
+    while pending:
+        node, calls = pending.pop()
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            calls = []
+            groups.append(calls)
+        elif isinstance(node, ast.Call) and calls is not None:
+            calls.append(node)
+        pending.extend((child, calls) for child in ast.iter_child_nodes(node))
+    return groups
+
+
 def _process_wide_patch_lines(tree: ast.AST) -> list[int]:
     """Lines of ``monkeypatch.setattr`` calls that rebind a shared stdlib module.
 
@@ -2652,14 +2671,9 @@ def _process_wide_patch_lines(tree: ast.AST) -> list[int]:
     for ``module`` and ``os`` rebinds that view, not the process-wide module.
     """
     lines: list[int] = []
-    for function in ast.walk(tree):
-        if not isinstance(function, (ast.FunctionDef, ast.AsyncFunctionDef)):
-            continue
+    for calls in _python_function_calls(tree):
         views: set[tuple[str, str]] = set()
-        calls = sorted(
-            (node for node in ast.walk(function) if isinstance(node, ast.Call)),
-            key=lambda node: (node.lineno, node.col_offset),
-        )
+        calls.sort(key=lambda node: (node.lineno, node.col_offset))
         for call in calls:
             func = call.func
             name = func.id if isinstance(func, ast.Name) else None

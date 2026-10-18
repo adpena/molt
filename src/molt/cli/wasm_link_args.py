@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import hashlib
 import re
-import shlex
 from collections.abc import Sequence
 from pathlib import Path
 
@@ -111,17 +110,15 @@ def wasi_external_libc_rustflags(
     return result
 
 
-def wasm_link_args_from_rustflags(flags: str) -> list[str]:
-    """Extract ordered linker arguments from a Rust flags string."""
-    try:
-        tokens = shlex.split(flags, posix=True)
-    except ValueError as exc:
-        raise ValueError(f"invalid Rust flags: {exc}") from exc
-    return [
+def wasm_link_args_from_rust_flag_tokens(flags: Sequence[str]) -> tuple[str, ...]:
+    """Extract ordered linker arguments from Rust flag tokens."""
+    if isinstance(flags, str):
+        raise TypeError("WASM link flags must be a token sequence, not a string")
+    return tuple(
         span.codegen.removeprefix("link-arg=")
-        for span in rust_flag_spans(tokens)
+        for span in rust_flag_spans(flags)
         if span.codegen is not None and span.codegen.startswith("link-arg=")
-    ]
+    )
 
 
 def write_wasm_link_args_response_file(
@@ -149,10 +146,10 @@ def wasm_link_args_response_file(
     project_root: Path,
     *,
     label: str,
-    link_flags: str,
+    link_flags: tuple[str, ...],
 ) -> Path | None:
     """Materialize ordered link flags under the canonical build-state root."""
-    link_args = wasm_link_args_from_rustflags(link_flags)
+    link_args = wasm_link_args_from_rust_flag_tokens(link_flags)
     if not link_args:
         return None
     return write_wasm_link_args_response_file(

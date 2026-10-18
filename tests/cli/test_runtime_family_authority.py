@@ -34,6 +34,8 @@ from molt.cli.runtime_identity_schema import (
     runtime_build_fingerprint,
 )
 from molt.exact_json import canonical_json_sha256
+from molt.flag_strings import FlagStringError, FlagStringRule
+from molt.llvm_toolchain import project_wasm_toolchain_environment
 from molt import rust_toolchain
 from molt import cargo_execution_policy
 from molt.cargo_execution_policy import validate_cargo_native_dependency_environment
@@ -43,8 +45,10 @@ from tests.rustc_test_support import (
     rustc_target_metadata_stdout as _metadata_stdout,
 )
 from tests.runtime_build_identity_helper import (
+    RuntimeFixtureRoot,
     build_python_identity_fixture,
     native_runtime_staticlib_identity,
+    provisioned_wasi_sdk_fixture,
     runtime_build_identity,
 )
 
@@ -2631,11 +2635,13 @@ def test_selected_sdk_search_context_precedes_user_roots_without_recapture(
     (foreign / "libc.a").write_bytes(b"foreign libc must not shadow selected SDK")
     flags = ("-L", "native=" + str(foreign), "--cfg", "user_preserved")
     key = "CARGO_TARGET_WASM32_WASIP1_RUSTFLAGS" if source == "target" else source
-    value = (
-        "\x1f".join(flags)
-        if source == "CARGO_ENCODED_RUSTFLAGS"
-        else __import__("shlex").join(flags)
-    )
+    # Each variable carries the flags as Cargo reads that variable.
+    rule = {
+        "target": FlagStringRule.CARGO_LIST,
+        "RUSTFLAGS": FlagStringRule.CARGO_RUSTFLAGS,
+        "CARGO_ENCODED_RUSTFLAGS": FlagStringRule.CARGO_ENCODED,
+    }[source]
+    value = rule.encode(flags, variable=key)
     installation = readonly_wasi_sdk()
     captured = []
     original = resource_custody.CargoResourceRoot.walk
@@ -2721,6 +2727,51 @@ def test_windows_environment_names_keep_target_c_selectors_through_the_plan(
     plan.verify()
 
 
+def _private_sdk(root: Path):
+    root.mkdir()
+    return provisioned_wasi_sdk_fixture(RuntimeFixtureRoot(root))
+
+
+def test_sdk_paths_that_shell_quoting_changes_reach_rustc_unchanged(
+    plan_root, tmp_path
+):
+    # The SDK projection once shell-quoted CARGO_TARGET_*_RUSTFLAGS, which
+    # Cargo splits at whitespace and never unquotes: every Windows SDK path (a
+    # backslash) reached rustc as "'native=C:\...'" and the plan refused it.
+    name = "sdk'quote" if os.name == "nt" else "sdk'quote\\back"
+    root = (tmp_path / name).resolve(strict=False)
+    sdk = _private_sdk(root)
+    projected = project_wasm_toolchain_environment(
+        sdk, environ={}, rust_target="wasm32-wasip1"
+    )
+    flags = FlagStringRule.CARGO_LIST.decode(
+        projected["CARGO_TARGET_WASM32_WASIP1_RUSTFLAGS"]
+    )
+    plan = _plan(
+        plan_root,
+        target="wasm32-wasip1",
+        env={"WASI_SDK_PATH": str(sdk.sdk)},
+        args=("--target", "wasm32-wasip1"),
+    )
+    for vector in (flags, plan.rustflags):
+        searched = [
+            Path(operand.removeprefix("native="))
+            for option, operand in zip(vector, vector[1:], strict=False)
+            if option == "-L" and operand.startswith("native=")
+        ]
+        assert searched
+        assert all(path.is_dir() and path.is_relative_to(root) for path in searched)
+    plan.verify()
+
+
+def test_sdk_path_cargo_cannot_carry_fails_before_any_build(plan_root, tmp_path):
+    sdk = _private_sdk(tmp_path / "sdk with space")
+    with pytest.raises(
+        FlagStringError, match="CARGO_TARGET_WASM32_WASIP1_RUSTFLAGS cannot carry"
+    ):
+        project_wasm_toolchain_environment(sdk, environ={}, rust_target="wasm32-wasip1")
+
+
 def test_cargo_environment_updates_keep_their_name_rule_and_never_mutate():
     windows = ProcessEnvironment({"Path": "a"}, rule=NameRule.WINDOWS)
     updated = windows.updated({"cc_wasm32-wasip1": "clang"})
@@ -2769,10 +2820,10 @@ def test_combined_runtime_plan_applies_target_policy_after_cargo_features(
         incremental_enabled=False,
         env=environment,
         artifact_selection=specs.RUNTIME_CDYLIB_ARTIFACTS,
-        runtime_exports="",
-        link_flags="",
-        cargo_rustflags="",
-        fingerprint_rustflags="",
+        runtime_exports=(),
+        link_flags=(),
+        cargo_rustflags=(),
+        fingerprint_rustflags=(),
         no_default_features=True,
         wasm_cargo_features=(),
         fingerprint_features=(),

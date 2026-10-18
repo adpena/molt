@@ -413,13 +413,13 @@ def runtime_build_identity(
     family_seed: str = "family",
     *,
     compile_seed: str | None = None,
-    member_seeds: dict[str, str] | None = None,
+    member_link_args: dict[str, tuple[str, ...]] | None = None,
 ) -> RuntimeBuildIdentity:
     if kind not in {"shared", "reloc"}:
         raise ValueError("WASM fixture member must be shared or reloc")
     members = tuple(
         RuntimeBuildMemberPlan(
-            name, (), ((member_seeds or {}).get(name, name),), name, False
+            name, (), (member_link_args or {}).get(name, (name,)), name, False
         )
         for name in ("shared", "reloc")
     )
@@ -585,12 +585,18 @@ def bind_runtime_wasm_specs(
         simd_enabled=True,
         freestanding=False,
     )
-    member_seeds = {"shared": shared.link_flags, "reloc": reloc.link_flags}
+    member_link_args = {"shared": shared.link_flags, "reloc": reloc.link_flags}
     shared_identity = runtime_build_identity(
-        "shared", family_seed, compile_seed=compile_seed, member_seeds=member_seeds
+        "shared",
+        family_seed,
+        compile_seed=compile_seed,
+        member_link_args=member_link_args,
     )
     reloc_identity = runtime_build_identity(
-        "reloc", family_seed, compile_seed=compile_seed, member_seeds=member_seeds
+        "reloc",
+        family_seed,
+        compile_seed=compile_seed,
+        member_link_args=member_link_args,
     )
     compile_fingerprint = runtime_build_fingerprint(shared_identity, scope="compile")
     return (

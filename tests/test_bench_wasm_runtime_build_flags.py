@@ -195,7 +195,9 @@ def test_wasm_link_response_is_content_addressed_stable_and_windows_safe(
         "--export-if-defined=molt_beta",
         "--export-if-defined=molt_alpha",
     ]
-    link_flags = " ".join(f"-C link-arg={arg}" for arg in link_args)
+    link_flags = tuple(
+        token for arg in link_args for token in ("-C", f"link-arg={arg}")
+    )
     writes: list[Path] = []
     atomic_write = atomic_io._atomic_write_bytes
 

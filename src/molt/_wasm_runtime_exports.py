@@ -514,15 +514,17 @@ def wasm_split_runtime_missing_required_exports(
     return missing
 
 
-def _export_if_defined_link_args(export_names: Iterable[str]) -> str:
-    return "".join(
-        f" -C link-arg=--export-if-defined={name}" for name in sorted(export_names)
+def _export_if_defined_link_args(export_names: Iterable[str]) -> tuple[str, ...]:
+    return tuple(
+        token
+        for name in sorted(export_names)
+        for token in ("-C", f"link-arg=--export-if-defined={name}")
     )
 
 
 def wasm_runtime_shared_export_link_args(
     required_runtime_imports: Iterable[str] | None = None,
-) -> str:
+) -> tuple[str, ...]:
     """Shared split-runtime export surface plus explicit runtime obligations.
 
     The shared artifact always publishes the full generated public ABI. Native
@@ -557,7 +559,7 @@ def wasm_runtime_shared_export_link_args(
 def wasm_runtime_export_link_args(
     required_runtime_imports: Iterable[str] | None = None,
     resolved_modules: Iterable[str] | None = None,
-) -> str:
+) -> tuple[str, ...]:
     if required_runtime_imports is None:
         return wasm_runtime_shared_export_link_args()
     export_names = set(wasm_runtime_required_export_names(required_runtime_imports))

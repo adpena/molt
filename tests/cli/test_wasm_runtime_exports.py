@@ -4,6 +4,7 @@ import pytest
 
 from molt._wasm_runtime_exports import (
     _all_dynamic_runtime_owned_intrinsic_exports,
+    _export_if_defined_link_args,
     wasm_cpython_abi_requested_data_export_names,
     wasm_cpython_abi_requested_export_names,
     wasm_split_runtime_canonical_import_name,
@@ -147,13 +148,36 @@ def test_wasm_runtime_import_names_include_ssl_and_set_surface() -> None:
     assert "ord_at" in names
 
 
+@pytest.mark.parametrize(
+    ("names", "expected"),
+    [
+        ((), ()),
+        (
+            ("molt_zeta", "PyTuple_New", "molt_alpha"),
+            (
+                "-C",
+                "link-arg=--export-if-defined=PyTuple_New",
+                "-C",
+                "link-arg=--export-if-defined=molt_alpha",
+                "-C",
+                "link-arg=--export-if-defined=molt_zeta",
+            ),
+        ),
+    ],
+)
+def test_export_link_args_are_sorted_rust_flag_token_pairs(
+    names: tuple[str, ...], expected: tuple[str, ...]
+) -> None:
+    assert _export_if_defined_link_args(names) == expected
+
+
 def test_wasm_runtime_export_link_args_prefixes_import_registry() -> None:
     flags = wasm_runtime_export_link_args()
-    assert " -C link-arg=--export-if-defined=molt_set_update" in flags
-    assert " -C link-arg=--export-if-defined=molt_ord_at" in flags
-    assert " -C link-arg=--export-if-defined=molt_gpu_matmul_contiguous" in flags
+    assert "link-arg=--export-if-defined=molt_set_update" in flags
+    assert "link-arg=--export-if-defined=molt_ord_at" in flags
+    assert "link-arg=--export-if-defined=molt_gpu_matmul_contiguous" in flags
     assert (
-        " -C link-arg=--export-if-defined="
+        "link-arg=--export-if-defined="
         "molt_gpu_tensor__tensor_scaled_dot_product_attention" in flags
     )
 
@@ -335,25 +359,23 @@ def test_wasm_runtime_export_link_args_adds_runtime_owned_gpu_intrinsics() -> No
     flags = wasm_runtime_export_link_args(
         resolved_modules={"molt.gpu.tensor", "molt.gpu.kv_cache"}
     )
-    assert " -C link-arg=--export-if-defined=molt_gpu_linear_contiguous" in flags
+    assert "link-arg=--export-if-defined=molt_gpu_linear_contiguous" in flags
     assert (
-        " -C link-arg=--export-if-defined="
+        "link-arg=--export-if-defined="
         "molt_gpu_linear_split_last_dim_contiguous" in flags
     )
     assert (
-        " -C link-arg=--export-if-defined="
+        "link-arg=--export-if-defined="
         "molt_gpu_tensor__tensor_scaled_dot_product_attention" in flags
     )
-    assert (
-        " -C link-arg=--export-if-defined=molt_gpu_turboquant_attention_packed" in flags
-    )
+    assert "link-arg=--export-if-defined=molt_gpu_turboquant_attention_packed" in flags
 
 
 def test_wasm_runtime_export_link_args_adds_required_runtime_imports() -> None:
     flags = wasm_runtime_export_link_args({"ssl_cert_none", "ssl_context_new"})
-    assert " -C link-arg=--export-if-defined=molt_ssl_cert_none" in flags
-    assert " -C link-arg=--export-if-defined=molt_ssl_context_new" in flags
-    assert " -C link-arg=--export-if-defined=molt_set_update" not in flags
+    assert "link-arg=--export-if-defined=molt_ssl_cert_none" in flags
+    assert "link-arg=--export-if-defined=molt_ssl_context_new" in flags
+    assert "link-arg=--export-if-defined=molt_set_update" not in flags
 
 
 def test_wasm_runtime_export_link_args_adds_required_cpython_abi_symbols() -> None:
@@ -367,13 +389,13 @@ def test_wasm_runtime_export_link_args_adds_required_cpython_abi_symbols() -> No
             "molt_cpython_abi_date_from_date",
         }
     )
-    assert " -C link-arg=--export-if-defined=PyErr_Format" in flags
-    assert " -C link-arg=--export-if-defined=PyArg_ParseTuple" in flags
-    assert " -C link-arg=--export-if-defined=PyObject_CallFunction" in flags
-    assert " -C link-arg=--export-if-defined=PyArg_ParseTupleAndKeywords" in flags
-    assert " -C link-arg=--export-if-defined=PyTuple_Pack" in flags
-    assert " -C link-arg=--export-if-defined=molt_cpython_abi_date_from_date" in flags
-    assert " -C link-arg=--export-if-defined=PyArray_NDIM" not in flags
+    assert "link-arg=--export-if-defined=PyErr_Format" in flags
+    assert "link-arg=--export-if-defined=PyArg_ParseTuple" in flags
+    assert "link-arg=--export-if-defined=PyObject_CallFunction" in flags
+    assert "link-arg=--export-if-defined=PyArg_ParseTupleAndKeywords" in flags
+    assert "link-arg=--export-if-defined=PyTuple_Pack" in flags
+    assert "link-arg=--export-if-defined=molt_cpython_abi_date_from_date" in flags
+    assert "link-arg=--export-if-defined=PyArray_NDIM" not in flags
 
 
 def test_wasm_runtime_export_link_args_accepts_generated_raw_c_api_symbols() -> None:
@@ -382,10 +404,10 @@ def test_wasm_runtime_export_link_args_accepts_generated_raw_c_api_symbols() -> 
     flags = wasm_runtime_export_link_args(
         {"PyModuleDef_Init", "PyObject_Init", "PyFloat_Check", "PyExc_TypeError"}
     )
-    assert " -C link-arg=--export-if-defined=PyModuleDef_Init" in flags
-    assert " -C link-arg=--export-if-defined=PyObject_Init" in flags
-    assert " -C link-arg=--export-if-defined=PyFloat_Check" in flags
-    assert " -C link-arg=--export-if-defined=PyExc_TypeError" in flags
+    assert "link-arg=--export-if-defined=PyModuleDef_Init" in flags
+    assert "link-arg=--export-if-defined=PyObject_Init" in flags
+    assert "link-arg=--export-if-defined=PyFloat_Check" in flags
+    assert "link-arg=--export-if-defined=PyExc_TypeError" in flags
 
 
 def test_wasm_runtime_export_link_args_rejects_non_runtime_c_api_symbols() -> None:
@@ -399,9 +421,9 @@ def test_wasm_runtime_shared_export_link_args_adds_required_cpython_abi_symbols(
     None
 ):
     flags = wasm_runtime_shared_export_link_args({"PyErr_Format"})
-    assert " -C link-arg=--export-if-defined=PyErr_Format" in flags
-    assert " -C link-arg=--export-if-defined=molt_set_update" in flags
-    assert " -C link-arg=--export-if-defined=PyModuleDef_Init" not in flags
+    assert "link-arg=--export-if-defined=PyErr_Format" in flags
+    assert "link-arg=--export-if-defined=molt_set_update" in flags
+    assert "link-arg=--export-if-defined=PyModuleDef_Init" not in flags
 
 
 def test_wasm_runtime_export_link_args_does_not_widen_required_imports_with_resolved_modules() -> (
@@ -411,11 +433,11 @@ def test_wasm_runtime_export_link_args_does_not_widen_required_imports_with_reso
         {"runtime_init"},
         resolved_modules={"ssl"},
     )
-    assert " -C link-arg=--export-if-defined=molt_runtime_init" in flags
-    assert " -C link-arg=--export-if-defined=molt_runtime_shutdown" in flags
-    assert " -C link-arg=--export-if-defined=molt_set_wasm_table_base" in flags
-    assert " -C link-arg=--export-if-defined=molt_ssl_cert_none" not in flags
-    assert " -C link-arg=--export-if-defined=molt_ssl_context_new" not in flags
+    assert "link-arg=--export-if-defined=molt_runtime_init" in flags
+    assert "link-arg=--export-if-defined=molt_runtime_shutdown" in flags
+    assert "link-arg=--export-if-defined=molt_set_wasm_table_base" in flags
+    assert "link-arg=--export-if-defined=molt_ssl_cert_none" not in flags
+    assert "link-arg=--export-if-defined=molt_ssl_context_new" not in flags
 
 
 def test_wasm_runtime_export_link_args_keeps_runtime_owned_dynamic_intrinsics_in_minimal_mode() -> (
@@ -425,10 +447,10 @@ def test_wasm_runtime_export_link_args_keeps_runtime_owned_dynamic_intrinsics_in
         {"runtime_init"},
         resolved_modules={"molt.gpu.tensor"},
     )
-    assert " -C link-arg=--export-if-defined=molt_runtime_init" in flags
-    assert " -C link-arg=--export-if-defined=molt_gpu_linear_contiguous" in flags
+    assert "link-arg=--export-if-defined=molt_runtime_init" in flags
+    assert "link-arg=--export-if-defined=molt_gpu_linear_contiguous" in flags
     assert (
-        " -C link-arg=--export-if-defined="
+        "link-arg=--export-if-defined="
         "molt_gpu_linear_split_last_dim_contiguous" in flags
     )
 
@@ -481,7 +503,7 @@ def test_wasm_runtime_export_link_args_cover_all_runtime_owned_gpu_intrinsics() 
     )
 
     for name in sorted(RUNTIME_OWNED_GPU_EXPORTS):
-        assert f" -C link-arg=--export-if-defined={name}" in flags
+        assert f"link-arg=--export-if-defined={name}" in flags
 
 
 @pytest.mark.parametrize("required_imports", [None, {"runtime_init"}])
@@ -489,9 +511,9 @@ def test_wasm_runtime_export_link_args_keeps_host_runtime_exports(
     required_imports: set[str] | None,
 ) -> None:
     flags = wasm_runtime_export_link_args(required_imports)
-    assert " -C link-arg=--export-if-defined=molt_runtime_init" in flags
-    assert " -C link-arg=--export-if-defined=molt_runtime_shutdown" in flags
-    assert " -C link-arg=--export-if-defined=molt_set_wasm_table_base" in flags
+    assert "link-arg=--export-if-defined=molt_runtime_init" in flags
+    assert "link-arg=--export-if-defined=molt_runtime_shutdown" in flags
+    assert "link-arg=--export-if-defined=molt_set_wasm_table_base" in flags
     for name in (
         "molt_stream_new",
         "molt_stream_send",
@@ -501,7 +523,7 @@ def test_wasm_runtime_export_link_args_keeps_host_runtime_exports(
         "molt_exception_pending_fast",
         "molt_dec_ref_obj",
     ):
-        assert f" -C link-arg=--export-if-defined={name}" in flags
+        assert f"link-arg=--export-if-defined={name}" in flags
 
 
 def test_wasm_runtime_export_link_args_expands_browser_runtime_fallback_exports() -> (
@@ -519,12 +541,12 @@ def test_wasm_runtime_export_link_args_expands_browser_runtime_fallback_exports(
             "resource_on_free",
         }
     )
-    assert " -C link-arg=--export-if-defined=molt_dict_getitem_borrowed" in flags
-    assert " -C link-arg=--export-if-defined=molt_dict_set" in flags
-    assert " -C link-arg=--export-if-defined=molt_tuple_getitem_borrowed" in flags
-    assert " -C link-arg=--export-if-defined=molt_call_bind_ic" in flags
-    assert " -C link-arg=--export-if-defined=molt_callargs_new" in flags
-    assert " -C link-arg=--export-if-defined=molt_callargs_push_pos" in flags
+    assert "link-arg=--export-if-defined=molt_dict_getitem_borrowed" in flags
+    assert "link-arg=--export-if-defined=molt_dict_set" in flags
+    assert "link-arg=--export-if-defined=molt_tuple_getitem_borrowed" in flags
+    assert "link-arg=--export-if-defined=molt_call_bind_ic" in flags
+    assert "link-arg=--export-if-defined=molt_callargs_new" in flags
+    assert "link-arg=--export-if-defined=molt_callargs_push_pos" in flags
 
 
 def test_reached_runtime_import_names_read_stdlib_intrinsics() -> None:

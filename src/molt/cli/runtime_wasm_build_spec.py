@@ -3,7 +3,6 @@ from __future__ import annotations
 from molt.python_runtime_admission import BuildPythonAdmission
 
 import os
-import shlex
 import time
 from pathlib import Path
 from typing import (
@@ -84,7 +83,7 @@ from molt.cli.runtime_wasm_build_timings import (
     _record_runtime_wasm_build_phase,
 )
 from molt.cli.wasm_link_args import (
-    wasm_link_args_from_rustflags,
+    wasm_link_args_from_rust_flag_tokens,
     write_wasm_link_args_response_file,
 )
 
@@ -104,10 +103,10 @@ class _RuntimeWasmBuildSpec(NamedTuple):
     incremental_enabled: bool
     env: dict[str, str]
     artifact_selection: RuntimeArtifactSelection
-    runtime_exports: str
-    link_flags: str
-    cargo_rustflags: str
-    fingerprint_rustflags: str
+    runtime_exports: tuple[str, ...]
+    link_flags: tuple[str, ...]
+    cargo_rustflags: tuple[str, ...]
+    fingerprint_rustflags: tuple[str, ...]
     no_default_features: bool
     wasm_cargo_features: tuple[str, ...]
     fingerprint_features: tuple[str, ...]
@@ -122,10 +121,8 @@ class _RuntimeWasmBuildSpec(NamedTuple):
         return self._replace(
             cargo_plan=plan,
             env=dict(plan.environment),
-            cargo_rustflags=shlex.join(plan.rustflags),
-            fingerprint_rustflags=shlex.join(
-                (*plan.rustflags, *shlex.split(self.link_flags))
-            ),
+            cargo_rustflags=plan.rustflags,
+            fingerprint_rustflags=(*plan.rustflags, *self.link_flags),
         )
 
 
@@ -167,7 +164,7 @@ def _resolve_runtime_wasm_cargo_specs(
     env["CARGO_TARGET_DIR"] = str(shared.target_root)
     command = _runtime_wasm_combined_cargo_command(shared)
     command[0] = env.get("CARGO", command[0])
-    link_args = wasm_link_args_from_rustflags(shared.link_flags)
+    link_args = wasm_link_args_from_rust_flag_tokens(shared.link_flags)
     if link_args:
         response = write_wasm_link_args_response_file(
             _build_state_root(root) / "wasm_link_args",
@@ -216,21 +213,20 @@ def _resolved_runtime_wasm_family_identities(
         cargo_profile=shared_spec.cargo_profile,
         target_triple="wasm32-wasip1",
         runtime_features=shared_spec.fingerprint_features,
-        base_rustflags=shared_spec.cargo_rustflags,
         cargo_command=shared_spec.cargo_plan.command,
         producer_artifact_selection=RUNTIME_WASM_COMBINED_ARTIFACTS,
         members=(
             RuntimeBuildMemberPlan(
                 kind="shared",
                 resolved_rustflags=shared_spec.fingerprint_rustflags,
-                link_args=tuple(shlex.split(shared_spec.link_flags)),
+                link_args=shared_spec.link_flags,
                 publication_transform="shared-runtime-publication-v3",
                 preserve_debug=preserve_debug,
             ),
             RuntimeBuildMemberPlan(
                 kind="reloc",
                 resolved_rustflags=reloc_spec.fingerprint_rustflags,
-                link_args=tuple(shlex.split(reloc_spec.link_flags)),
+                link_args=reloc_spec.link_flags,
                 publication_transform="relocatable-runtime-publication-v2",
                 preserve_debug=True,
             ),
@@ -407,11 +403,16 @@ def _compute_runtime_wasm_build_spec(
     else:
         runtime_exports = wasm_runtime_shared_export_link_args(required_exports)
         shared_import_flags = (
-            "-C link-arg=--import-memory -C link-arg=--import-table"
-            " -C link-arg=--growable-table"
-            f" -C link-arg=--table-base={1 + WASM_RESERVED_RUNTIME_CALLABLE_BASE + 2 * WASM_RESERVED_RUNTIME_CALLABLE_COUNT}"
+            "-C",
+            "link-arg=--import-memory",
+            "-C",
+            "link-arg=--import-table",
+            "-C",
+            "link-arg=--growable-table",
+            "-C",
+            f"link-arg=--table-base={1 + WASM_RESERVED_RUNTIME_CALLABLE_BASE + 2 * WASM_RESERVED_RUNTIME_CALLABLE_COUNT}",
         )
-        link_flags = f"{shared_import_flags}{runtime_exports}"
+        link_flags = (*shared_import_flags, *runtime_exports)
     effective_stdlib_profile = stdlib_profile or DEFAULT_RUNTIME_STDLIB_PROFILE
     artifact_selection = (
         RUNTIME_STATICLIB_ARTIFACTS if reloc else RUNTIME_CDYLIB_ARTIFACTS
@@ -456,7 +457,7 @@ def _compute_runtime_wasm_build_spec(
         artifact_selection=artifact_selection,
         runtime_exports=runtime_exports,
         link_flags=link_flags,
-        cargo_rustflags="",
+        cargo_rustflags=(),
         fingerprint_rustflags=link_flags,
         no_default_features=no_default_features,
         wasm_cargo_features=tuple(wasm_cargo_features),

@@ -458,11 +458,14 @@ def test_executable_selection_uses_operation_cwd(tmp_path, monkeypatch, selector
     assert Path.cwd() == ambient
 
 
-def test_executable_operation_cwd_preserves_symlink_parent_traversal(tmp_path):
+def test_executable_operation_cwd_follows_the_host_parent_rule(tmp_path):
+    # POSIX resolves ".." after it follows the symlink. Win32 collapses ".."
+    # lexically (GetFullPathNameW) before the file system sees the path, so
+    # CreateProcess runs operation\bin\compiler.exe.
     operation = tmp_path / "operation"
     actual = tmp_path / "actual"
     (actual / "nested").mkdir(parents=True)
-    for directory, content in ((operation, b"poison"), (actual, b"selected")):
+    for directory, content in ((operation, b"lexical"), (actual, b"physical")):
         executable = directory / "bin" / "compiler.exe"
         executable.parent.mkdir(parents=True)
         executable.write_bytes(content)
@@ -474,9 +477,10 @@ def test_executable_operation_cwd_preserves_symlink_parent_traversal(tmp_path):
     selected = identity.resolve_executable(
         "walk/../bin/compiler.exe", environment={}, cwd=operation, label="compiler"
     )
+    expected = operation if os.name == "nt" else actual
     assert selected.is_absolute()
-    assert selected.read_bytes() == b"selected"
-    assert selected.samefile(actual / "bin" / "compiler.exe")
+    assert selected.read_bytes() == (b"lexical" if os.name == "nt" else b"physical")
+    assert selected.samefile(expected / "bin" / "compiler.exe")
 
 
 @pytest.mark.skipif(os.name != "nt", reason="Windows executable name contract")

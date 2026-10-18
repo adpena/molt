@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import os
 import re
-import shlex
 import sys
 import tempfile
 import tomllib
@@ -21,6 +20,7 @@ from types import MappingProxyType
 from typing import Callable, Mapping, Sequence, cast
 
 from molt import process_guard
+from molt.flag_strings import FlagStringError, FlagStringRule
 from molt.process_environment import (
     NameRule,
     ProcessEnvironment,
@@ -260,12 +260,6 @@ def runtime_c_flag_environment_names(
     return tuple(sorted(names))
 
 
-def runtime_c_flag_tokens(value: str, *, shell_escaped: bool) -> tuple[str, ...]:
-    if shell_escaped:
-        return tuple(shlex.split(value, comments=True, posix=True))
-    return tuple(item for item in re.split(r"[ \t\n\r\v\f]+", value) if item)
-
-
 @dataclass(frozen=True, slots=True)
 class RuntimeCResourcePlan:
     roots: tuple[CargoResourceRoot, ...]
@@ -486,7 +480,7 @@ def _resolve_c_build_resources(
             result.extend((option, module + selected))
         return tuple(result)
 
-    shell_flags = env.get("CC_SHELL_ESCAPED_FLAGS", "") not in {"", "0", "false", "no"}
+    c_flag_rule = FlagStringRule.cc(env)
     # The projection names each variable as cc-rs spells it, as the search
     # entries below do, so readers and identities agree on every host. One
     # variable that two spellings select on Windows is projected once.
@@ -501,8 +495,8 @@ def _resolve_c_build_resources(
             projection[name] = (value,)
             continue
         try:
-            tokens = runtime_c_flag_tokens(value, shell_escaped=shell_flags)
-        except ValueError as exc:
+            tokens = c_flag_rule.decode(value)
+        except FlagStringError as exc:
             raise ValueError(
                 f"runtime C {name} has invalid shell-escaped flags: {exc}"
             ) from exc
@@ -1138,15 +1132,20 @@ def _target_tool_defaults(target: str) -> Mapping[str, tuple[str, ...]]:
     return {role: () for role in ("cc", "cxx", "ar", "ranlib", "linker")}
 
 
-def _flags(value: object, *, label: str) -> tuple[str, ...]:
+def _flags(value: object, *, label: str, rule: FlagStringRule) -> tuple[str, ...]:
     if isinstance(value, str):
-        # Cargo splits string flags at whitespace; it does not invoke a shell.
-        return tuple(value.split())
+        # Cargo splits string flags with its own rule; it does not invoke a shell.
+        return rule.decode(value)
     if isinstance(value, (tuple, list)) and all(
         isinstance(item, str) and item for item in value
     ):
         return cast(tuple[str, ...], tuple(value))
     raise ValueError(f"runtime {label} must be a flag string or string array")
+
+
+def cargo_cfg_flags(value: object) -> tuple[str, ...]:
+    """A ``target.'cfg(...)'`` flag value, read as Cargo's StringList."""
+    return _flags(value, label="cfg rustflags", rule=FlagStringRule.CARGO_LIST)
 
 
 def _cargo_string_list(
@@ -1159,9 +1158,17 @@ def _cargo_string_list(
     # Cargo StringList deserializes the merged file/CLI value, then appends
     # its config environment variable. This is not scalar selector precedence.
     value = cargo_configuration_value(_merge(configuration, cli), *keys)
-    configured = _flags(value if value is not None else (), label=".".join(keys))
+    configured = _flags(
+        value if value is not None else (),
+        label=".".join(keys),
+        rule=FlagStringRule.CARGO_LIST,
+    )
     return configured + (
-        _flags(env[environment_name], label=environment_name)
+        _flags(
+            env[environment_name],
+            label=environment_name,
+            rule=FlagStringRule.CARGO_LIST,
+        )
         if environment_name in env
         else ()
     )
@@ -1548,8 +1555,10 @@ class RuntimeCargoPlan:
             or self.environment.get("RUSTC") != os.fspath(self.rustc)
         ):
             raise ValueError("runtime Cargo execution differs from selected tools")
-        if self.environment.get("CARGO_ENCODED_RUSTFLAGS") != "\x1f".join(
-            self.rustflags
+        if self.environment.get(
+            "CARGO_ENCODED_RUSTFLAGS"
+        ) != FlagStringRule.CARGO_ENCODED.encode(
+            self.rustflags, variable="CARGO_ENCODED_RUSTFLAGS"
         ):
             raise ValueError("runtime Cargo execution differs from selected flags")
         for name in ("RUSTC_WRAPPER", "RUSTC_WORKSPACE_WRAPPER"):
@@ -1881,11 +1890,14 @@ def cargo_flag_inputs(
     )
     environment_flags = None
     if "CARGO_ENCODED_" + flag_kind.upper() in environment:
-        encoded = environment["CARGO_ENCODED_" + flag_kind.upper()]
-        environment_flags = tuple(encoded.split("\x1f")) if encoded else ()
+        environment_flags = FlagStringRule.CARGO_ENCODED.decode(
+            environment["CARGO_ENCODED_" + flag_kind.upper()]
+        )
     elif flag_kind.upper() in environment:
         environment_flags = _flags(
-            environment[flag_kind.upper()], label=flag_kind.upper()
+            environment[flag_kind.upper()],
+            label=flag_kind.upper(),
+            rule=FlagStringRule.CARGO_RUSTFLAGS,
         )
     return cfg_tables, target_flags, build_flags, environment_flags
 
@@ -2216,7 +2228,7 @@ def resolve_runtime_cargo_plan(
         target_flags=target_flags,
         build_flags=build_flags,
         environment_flags=environment_flags,
-        flags=lambda value: _flags(value, label="cfg rustflags"),
+        flags=cargo_cfg_flags,
         probe=lambda flags: metadata_for(target_argument, flags, True).cfg,
         transform=finalize_flags,
     )
@@ -2320,7 +2332,9 @@ def resolve_runtime_cargo_plan(
             raise ValueError(
                 "WASI runtime linker differs from the selected SDK raw linker"
             )
-    environment["CARGO_ENCODED_RUSTFLAGS"] = "\x1f".join(rustflags)
+    environment["CARGO_ENCODED_RUSTFLAGS"] = FlagStringRule.CARGO_ENCODED.encode(
+        rustflags, variable="CARGO_ENCODED_RUSTFLAGS"
+    )
     environment["RUSTC"] = os.fspath(rustc)
     # Final explicit selectors win over earlier --config operands as well as
     # environment/config defaults. In particular, CLI wrappers cannot silently

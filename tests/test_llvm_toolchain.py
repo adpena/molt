@@ -13,6 +13,7 @@ from types import SimpleNamespace
 import pytest
 
 from molt import llvm_toolchain
+from molt.flag_strings import FlagStringRule
 from molt.llvm_toolchain import (
     LlvmToolchainConfigError,
     llvm_sys_prefix_env_var,
@@ -1072,15 +1073,15 @@ def test_wasm_cli_exports_target_tools_without_replacing_native_environment(
             )
         return
     key = "CARGO_TARGET_" + rust_target.upper().replace("-", "_") + "_RUSTFLAGS"
-    flags = __import__("shlex").split(exported[key])
-    assert flags[:2] == [
+    flags = FlagStringRule.CARGO_LIST.decode(exported[key])
+    assert flags[:2] == (
         "-L",
         "native=" + str(prefix.resolve() / "sdk/share/wasi-sysroot/lib/wasm32-wasip1"),
-    ]
+    )
     if rust_target == "wasm32-wasip1":
         assert "CARGO_TARGET_WASM32_UNKNOWN_UNKNOWN_RUSTFLAGS" not in exported
-    assert flags[-4:] == ["-C", "link-self-contained=no", "-C", "linker-flavor=wasm-ld"]
-    assert ["--cfg", "explicit_user_target"] == flags[4:6]
+    assert flags[-4:] == ("-C", "link-self-contained=no", "-C", "linker-flavor=wasm-ld")
+    assert ("--cfg", "explicit_user_target") == flags[4:6]
 
 
 def test_default_wasm_projection_preserves_user_rust_selection_without_selecting_one(
@@ -2268,8 +2269,6 @@ def test_managed_nm_recognizes_canonical_install_under_ancestor_alias(
 def test_projected_sdk_target_flags_have_complete_ordered_search_context(
     tmp_path, rust_target
 ):
-    import shlex
-
     prefix = _write_wasi_sdk_installation(tmp_path)
     installation = llvm_toolchain.load_wasi_sdk_installation(
         ROOT, prefix, verify_tree=False
@@ -2278,8 +2277,9 @@ def test_projected_sdk_target_flags_have_complete_ordered_search_context(
     dirs = (plan.path("libc").parent, plan.path("compiler_rt").parent)
     user = tmp_path / "user-libraries"
     prior = {
-        "CARGO_TARGET_WASM32_WASIP1_RUSTFLAGS": shlex.join(
-            ("-L", "native=" + str(user), "--cfg", "kept")
+        "CARGO_TARGET_WASM32_WASIP1_RUSTFLAGS": FlagStringRule.CARGO_LIST.encode(
+            ("-L", "native=" + str(user), "--cfg", "kept"),
+            variable="CARGO_TARGET_WASM32_WASIP1_RUSTFLAGS",
         ),
         "RUSTFLAGS": "--cfg native_unchanged",
         "PATH": "native-path",
@@ -2290,17 +2290,17 @@ def test_projected_sdk_target_flags_have_complete_ordered_search_context(
         installation, environ=prior, rust_target=rust_target
     )
     prefix = ("-L", "native=" + str(dirs[0]), "-L", "native=" + str(dirs[1]))
-    assert tuple(shlex.split(projected[key]))[:4] == prefix
+    assert FlagStringRule.CARGO_LIST.decode(projected[key])[:4] == prefix
     assert projected[key.removesuffix("RUSTFLAGS") + "LINKER"] == str(plan.linker)
     if rust_target == "wasm32-wasip1":
         assert "CARGO_TARGET_WASM32_UNKNOWN_UNKNOWN_RUSTFLAGS" not in projected
         assert "CARGO_TARGET_WASM32_UNKNOWN_UNKNOWN_LINKER" not in projected
-    assert shlex.split(projected[key])[4:8] == [
+    assert FlagStringRule.CARGO_LIST.decode(projected[key])[4:8] == (
         "-L",
         "native=" + str(user),
         "--cfg",
         "kept",
-    ]
+    )
     assert projected["RUSTFLAGS"] == prior["RUSTFLAGS"]
     assert projected["PATH"] == prior["PATH"]
     assert (

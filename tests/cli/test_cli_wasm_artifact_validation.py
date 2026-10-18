@@ -507,7 +507,7 @@ def test_link_runtime_staticlib_to_reloc_wasm_uses_absolute_paths(
             cargo_command=("cargo",),
             requested_target="wasm32-wasip1",
         ),
-        export_link_args="-C link-arg=--export-if-defined=molt_required",
+        export_link_args=("-C", "link-arg=--export-if-defined=molt_required"),
     )
 
     cmd = captured["cmd"]
@@ -580,8 +580,10 @@ def test_link_runtime_staticlib_to_reloc_wasm_does_not_whole_archive_libc(
     libc_archive = tmp_path / "libc.a"
     libc_archive.write_bytes(b"libc")
     export_link_args = (
-        " -C link-arg=--export-if-defined=molt_reloc_required_export"
-        " -C link-arg=--export-if-defined=molt_reloc_other_export"
+        "-C",
+        "link-arg=--export-if-defined=molt_reloc_required_export",
+        "-C",
+        "link-arg=--export-if-defined=molt_reloc_other_export",
     )
     captured: dict[str, object] = {}
 
