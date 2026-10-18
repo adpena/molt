@@ -1493,6 +1493,7 @@ def test_github_job_timeout_covers_resource_aware_dag_envelope() -> None:
             "native.integration.bench-cli",
             "native.integration.capability-manifest",
             "native.integration.cli-smoke",
+            "native.integration.metamorphic",
         }
     ]
     native_build_seconds = sum(
@@ -6392,6 +6393,7 @@ def test_native_c_obligation_is_declared_only_for_confirmed_c_builders():
                 "native.integration.bench-cli",
                 "native.integration.capability-manifest",
                 "native.integration.cli-smoke",
+                "native.integration.metamorphic",
                 "nightly.determinism.compiler-prewarm",
                 "nightly.determinism.runtime",
                 "nightly.shards.prepare",
