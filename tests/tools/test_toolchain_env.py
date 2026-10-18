@@ -151,7 +151,9 @@ def test_admission_puts_pinned_providers_ahead_of_the_ambient_shell(
     # ... and every executor admits through the projection CI uses, so no
     # shell needs projecting by hand.
     with mock.patch.dict(os.environ):
-        admitted = proof_plan.admit_toolchains(PLAN.toolchain_policies, names)
+        admitted = proof_plan.admit_toolchains(
+            PLAN.toolchain_policies, names, root=ROOT
+        )
         assert set(names) <= set(admitted.fingerprints)
         assert not [key for key in admitted.environment if WASI_KEY.search(key)]
         assert {

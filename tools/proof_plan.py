@@ -3301,7 +3301,7 @@ def admit_toolchains(
     *,
     owners: Mapping[str, Iterable[str]] | None = None,
     python_admissions: Mapping[str, BuildPythonAdmission] | None = None,
-    root: Path = ROOT,
+    root: Path,
 ) -> AdmittedToolchains:
     """Put the installed pinned providers first in this process's environment,
     then admit each selected tool by its version contract, as CI's setup
@@ -3926,7 +3926,7 @@ def execute_commands(
         receipt_path,
         _source_tree_changes=_source_tree_changes,
         toolchain_fingerprints=lambda policies, names: (
-            admit_toolchains(policies, names).fingerprints
+            admit_toolchains(policies, names, root=plan.path.parent.parent).fingerprints
         ),
         _authority_sha256=_authority_sha256,
         _source_identity=_source_identity,

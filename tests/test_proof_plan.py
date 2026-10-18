@@ -4049,6 +4049,32 @@ def test_toolchain_fingerprint_domains_serialize_shared_provisioners(
 _REAL_CHILD_DEADLINE_SECONDS = 300
 
 
+def test_executor_admits_toolchains_from_the_selected_plan_root(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    selected_root = tmp_path / "selected checkout"
+    selected_root.mkdir()
+    (selected_root / "sdk-selector").write_text("selected SDK", encoding="utf-8")
+    plan = replace(PLAN, path=selected_root / "tools" / "proof_plan.toml")
+    monkeypatch.setenv("MOLT_LLVM_PREFIX", "unrelated driver SDK")
+
+    def project(_policies, _names, *, environ, root):
+        assert environ["MOLT_LLVM_PREFIX"] == "unrelated driver SDK"
+        return proof_plan.ToolchainProjection(
+            {"MOLT_LLVM_PREFIX": (root / "sdk-selector").read_text(encoding="utf-8")},
+            (),
+        )
+
+    def receive(_plan, _commands, _receipt, *, toolchain_fingerprints, **_kwargs):
+        assert toolchain_fingerprints((), ()) == {}
+        assert os.environ["MOLT_LLVM_PREFIX"] == "selected SDK"
+        return 0
+
+    monkeypatch.setattr(proof_plan, "project_toolchains", project)
+    monkeypatch.setattr(proof_plan, "_execute_commands", receive)
+    assert proof_plan.execute_commands(plan, (), tmp_path / "receipt.json") == 0
+
+
 def test_executor_emits_measured_receipt(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setattr(proof_plan, "_source_tree_changes", lambda: ())
     cell = proof_plan.MatrixCell(

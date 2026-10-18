@@ -181,11 +181,19 @@ the compiled WASM consumers could launch. The existing LLVM naming authority
 now owns their closed grammar; queue admission, compile identity, supervisor
 generation, Cargo workspace and tool-probe reuse share it. Exact SDK selectors
 are bound too, and Cargo configuration cannot silently substitute an uncaptured
-default or forced value. All 95 focused controls pass on macOS, including actual
-Git probe reuse and filesystem-backed workspace partitioning. Prior-source
+default or forced value. All 95 focused controls pass on macOS and Linux,
+including actual Git probe reuse and filesystem-backed workspace partitioning. Prior-source
 controls reproduce unchanged identities after five SDK selector changes; the
-corrected identities distinguish them. Linux execution and compiled consumer
-qualification remain required. This adds no cost to emitted programs.
+corrected identities distinguish them. Compiled consumer qualification remains
+required. This adds no cost to emitted programs.
+
+The incoming shared toolchain admission also requires an explicit repository
+root through proof execution, integration and generators. Every caller now
+forwards its existing plan/checkout/source authority, and omitted roots fail at
+the API boundary. The 16 affected admission controls have relevant passing
+macOS evidence, including real generator fingerprints and a real integration
+gate; two additional executor/provider controls pass. This is bounded consumer
+qualification, with Linux/Windows and full integration still required.
 
 Local landing policy merges plain pytest targets into one parallel invocation;
 selector-bearing gates retain their declared scope. The driver and policy share

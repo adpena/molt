@@ -2701,6 +2701,53 @@ version_pattern = '^ok$'
         assert expected in message
 
 
+@pytest.mark.skipif(os.name == "nt", reason="POSIX executable fixture")
+def test_integrate_admission_projects_the_selected_checkout_into_real_gate(
+    drv, origin_and_clone, tmp_path, monkeypatch
+):
+    from types import SimpleNamespace
+    from molt import tool_releases
+
+    _origin, work = origin_and_clone
+    provider = tmp_path / "selected checkout tools"
+    provider.mkdir()
+    executable = provider / "fixture-tool"
+    # Preserve the native image's platform identity (macOS system-image
+    # restrictions do not survive a copy), while selecting our own entrypoint.
+    executable.symlink_to("/bin/echo")
+    observed_roots = []
+
+    def discover(name, root, *, environ):
+        assert name == "fixture-tool"
+        assert root == work
+        observed_roots.append(root)
+        return SimpleNamespace(executable=executable)
+
+    monkeypatch.setattr(tool_releases, "discover_pinned_tool", discover)
+    # Admission updates this process; retain fixture cleanup for that real write.
+    monkeypatch.setenv("PATH", os.environ["PATH"])
+    _commit_file(
+        work,
+        "tools/proof_plan.toml",
+        """
+always = ['test "$(fixture-tool selected-checkout-tool)" = selected-checkout-tool']
+always_toolchains = ["fixture-tool"]
+[[toolchain_policy]]
+name = "fixture-tool"
+projection = "tool-release"
+executable = "fixture-tool"
+version_args = ["selected-checkout-tool"]
+version_pattern = '^selected-checkout-tool$'
+""",
+        "selected checkout tool projection",
+    )
+    assert (
+        drv.cmd_integrate(_integrate_ns(drv, repo=str(work), no_push=True))
+        == drv.EXIT_OK
+    )
+    assert observed_roots == [work]
+
+
 def test_selected_local_gate_does_not_materialize_unrelated_policy(
     drv, tmp_path, monkeypatch
 ):
@@ -2732,7 +2779,7 @@ toolchains = ["unrelated"]
     monkeypatch.setattr(
         proof_plan, "_version_fingerprint", lambda _: pytest.fail("unrelated probe ran")
     )
-    cfg.admit(["src/one.py"], matched, [])
+    assert cfg.admit(["src/one.py"], matched, []) == {}
     with pytest.raises(drv.DriverError, match="lack declared prerequisite custody"):
         cfg.admit(["src/one.py"], matched, ["unknown executable"])
 

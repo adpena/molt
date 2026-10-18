@@ -483,7 +483,7 @@ class GateConfig:
             always=list(always),
             prerequisites=commands,
             prerequisite_policy={"toolchain_policy": data.get("toolchain_policy", [])},
-            root=root,
+            root=_REPO_ROOT if root is None else root,
             pytest_workers=int(data.get("local_pytest_workers", 1)),
         )
 
@@ -524,7 +524,9 @@ class GateConfig:
             for identifier, tools in selected.items():
                 for name in toolchain_closure(policies, tools):
                     owners.setdefault(name, []).append(identifier)
-            return admit_toolchains(policies, tuple(owners), owners=owners).environment
+            return admit_toolchains(
+                policies, tuple(owners), owners=owners, root=self.root
+            ).environment
         except (ValueError, OSError, KeyError) as exc:
             raise DriverError(
                 f"selected gate prerequisites failed; executed=0: {exc}"
