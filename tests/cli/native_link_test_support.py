@@ -254,6 +254,19 @@ def write_test_static_archive(path: Path, payload: bytes = b"object") -> None:
     path.write_bytes(static_archive_bytes(payload))
 
 
+def write_test_darwin_sdk(path: Path, version: str = "15.4") -> Path:
+    """An SDK directory that `select_darwin_sdk` admits by explicit path.
+
+    Selected through SDKROOT with no DEVELOPER_DIR, it needs no selector
+    process, so a test that plans a Darwin build runs on every host.
+    """
+    path.mkdir()
+    (path / "SDKSettings.json").write_text(
+        f'{{"Version":"{version}"}}', encoding="utf-8"
+    )
+    return path
+
+
 def write_test_native_link_manifest(
     runtime_lib: Path,
     *,

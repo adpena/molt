@@ -56,7 +56,10 @@ from tests.runtime_build_identity_helper import (
 from molt import llvm_toolchain
 from molt.wasi_sysroot import normalize_wasi_sysroot
 from molt.source_extension_link_inputs import SourceExtensionLinkInputs
-from tests.cli.native_link_test_support import static_archive_bytes
+from tests.cli.native_link_test_support import (
+    static_archive_bytes,
+    write_test_darwin_sdk,
+)
 from tests.wasm_object_fixtures import (
     wasm_exporting_i64_unary_symbol as _wasm_exporting_i64_unary_symbol,
 )
@@ -3784,9 +3787,7 @@ def test_source_extension_native_cross_toolchain_preserves_compiler_and_target(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     target_plan = _source_extension_target_plan("aarch64-apple-darwin")
-    sdk = tmp_path / "SDK"
-    sdk.mkdir()
-    (sdk / "SDKSettings.json").write_text('{"Version":"15.4"}', encoding="utf-8")
+    sdk = write_test_darwin_sdk(tmp_path / "SDK")
     monkeypatch.setenv("SDKROOT", str(sdk))
     for name in (
         "DEVELOPER_DIR",

@@ -129,6 +129,7 @@ from tests.cli.native_link_test_support import (
     native_codegen_binding,
     static_archive_bytes,
     transport_codegen_binding,
+    write_test_darwin_sdk,
     write_test_native_link_manifest,
 )
 from tests.cli.process_guard import (
@@ -13155,6 +13156,10 @@ def test_darwin_link_force_loads_each_source_extension_archive_without_runtime_e
     )
     for archive in extension_archives:
         archive.write_bytes(b"extension")
+    # An explicit SDK needs no Darwin selector, so this plan runs on any host.
+    sdk = write_test_darwin_sdk(tmp_path / "SDK")
+    monkeypatch.setenv("SDKROOT", str(sdk))
+    monkeypatch.delenv("DEVELOPER_DIR", raising=False)
 
     monkeypatch.setenv("CC", "clang")
     monkeypatch.setattr(
@@ -13210,6 +13215,9 @@ def test_darwin_link_force_loads_each_source_extension_archive_without_runtime_e
     )
     assert link_plan.command[start : start + len(expected_link_arguments)] == (
         expected_link_arguments
+    )
+    assert link_plan.command[link_plan.command.index("-isysroot") + 1] == str(
+        sdk.resolve()
     )
     assert not any("export_dynamic" in argument for argument in link_plan.command)
     assert not (tmp_path / ".molt_exports.exp").exists()

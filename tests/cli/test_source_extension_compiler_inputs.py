@@ -11,6 +11,7 @@ from molt.cli.source_extension_compiler_inputs import (
     validate_source_extension_tool_command,
     source_extension_compiler_environment,
 )
+from tests.cli.native_link_test_support import write_test_darwin_sdk
 
 
 def test_compiler_environment_removes_hidden_command_overrides_not_sdk_inputs():
@@ -305,9 +306,7 @@ def test_darwin_compiler_projection_rejects_independent_linker_sdk_selection(for
 def test_darwin_compiler_projection_preserves_opaque_backend_arguments(tmp_path):
     from molt.cli.source_extension_compiler_inputs import darwin_compiler_commands
 
-    sdk = tmp_path / "SDK"
-    sdk.mkdir()
-    (sdk / "SDKSettings.json").write_text('{"Version":"15.4"}', encoding="utf-8")
+    sdk = write_test_darwin_sdk(tmp_path / "SDK")
     command = ("clang", "-mllvm", "-mmacosx-version-min=opaque")
     result = darwin_compiler_commands(
         {"c": command}, environment={"SDKROOT": str(sdk)}, arch="arm64"
@@ -320,9 +319,7 @@ def test_darwin_compiler_projection_preserves_opaque_backend_arguments(tmp_path)
 def test_darwin_compiler_projection_canonicalizes_sdk_transport(tmp_path, transport):
     from molt.cli.source_extension_compiler_inputs import darwin_compiler_commands
 
-    sdk = tmp_path / "SDK"
-    sdk.mkdir()
-    (sdk / "SDKSettings.json").write_text('{"Version":"15.4"}', encoding="utf-8")
+    sdk = write_test_darwin_sdk(tmp_path / "SDK")
     roots = {
         "separate": ("-isysroot", str(sdk)),
         "joined": ("-isysroot" + str(sdk),),
