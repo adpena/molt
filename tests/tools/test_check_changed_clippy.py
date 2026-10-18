@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import replace
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -303,9 +304,11 @@ def test_run_gives_a_cold_target_the_cargo_policy_cold_budget(monkeypatch) -> No
     monkeypatch.setattr(gate, "admit_cargo_build", lambda argv, **kwargs: None)
     monkeypatch.setattr(gate, "toolchain_environment", lambda *args, **kwargs: {})
     monkeypatch.setattr(
-        type(gate.COMMANDS),
-        "run",
-        lambda self, argv, **kwargs: seen.append(kwargs["timeout"]) or _Completed(),
+        gate,
+        "COMMANDS",
+        SimpleNamespace(
+            run=lambda argv, **kwargs: seen.append(kwargs["timeout"]) or _Completed()
+        ),
     )
     assert gate.run(command, plan) == 0
     cold = load_ci_cargo_policy().execution_budgets.timeout_seconds("cold")
