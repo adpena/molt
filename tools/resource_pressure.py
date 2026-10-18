@@ -4,6 +4,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from dataclasses import dataclass
 import os
+from molt import host_capacity
 
 if __package__:
     from . import memory_guard
@@ -190,7 +191,9 @@ def plan_resource_pressure(
 ) -> ResourcePressurePlan:
     env = os.environ if environ is None else environ
     normalized_prefix = prefix.strip().upper().rstrip("_") or "MOLT"
-    cpus = max(1, int(cpu_count if cpu_count is not None else (os.cpu_count() or 1)))
+    cpus = max(
+        1, int(cpu_count if cpu_count is not None else host_capacity.cpu_count())
+    )
     memory_budget = budget or memory_guard.adaptive_memory_budget(
         normalized_prefix,
         env,

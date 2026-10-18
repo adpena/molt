@@ -23,6 +23,7 @@ ROOT = Path(__file__).resolve().parents[1]
 _SRC_ROOT = ROOT / "src"
 
 
+from molt import host_capacity  # noqa: E402
 from molt.cargo_execution_policy import (  # noqa: E402
     CargoBuildResourcePolicy,
     load_ci_cargo_policy,
@@ -98,7 +99,9 @@ def plan_ci_resources(
     budget: memory_guard.AdaptiveMemoryBudget | None = None,
 ) -> CiResourcePlan:
     env = os.environ if environ is None else environ
-    cpus = max(1, int(cpu_count if cpu_count is not None else (os.cpu_count() or 1)))
+    cpus = max(
+        1, int(cpu_count if cpu_count is not None else host_capacity.cpu_count())
+    )
     policy = load_ci_resource_policy()
     max_jobs = _positive_int(
         env.get("MOLT_CI_MAX_CARGO_BUILD_JOBS"),
@@ -230,7 +233,7 @@ def darwin_memory_breakdown(page_size: int, pages: Mapping[str, int]) -> str:
 
     The guard counts only some page classes as available; logging all of them
     lets a small runner's budget be judged from evidence (HF-68). The page
-    counts are vm_stat's rows, read by ``memory_guard.darwin_vm_pages``.
+    counts are vm_stat's rows, read by ``molt.host_capacity.darwin_vm_pages``.
     """
     rows = (
         ("free", "Pages free"),
@@ -249,7 +252,9 @@ def darwin_memory_breakdown(page_size: int, pages: Mapping[str, int]) -> str:
         if name in pages
     ]
     counted = "+".join(
-        label for label, name in rows if name in memory_guard.DARWIN_AVAILABLE_PAGE_ROWS
+        label
+        for label, name in rows
+        if name in host_capacity.DARWIN_AVAILABLE_PAGE_ROWS
     )
     return f"macOS memory pages (GiB): {' '.join(parts)}; available counts {counted}"
 
@@ -282,7 +287,7 @@ def main(argv: list[str] | None = None) -> int:
             flush=True,
         )
         if sys.platform == "darwin":
-            vm_pages = memory_guard.darwin_vm_pages()
+            vm_pages = host_capacity.darwin_vm_pages()
             if vm_pages is not None:
                 print(darwin_memory_breakdown(*vm_pages), flush=True)
     return 0

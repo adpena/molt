@@ -712,11 +712,11 @@ def test_real_tk_widgets_keep_python_ownership_across_callable_providers(
 def test_warm_intrinsic_source_facts_runs_workers_only_for_a_large_set(
     tmp_path, monkeypatch
 ):
-    import molt.dx
+    import molt.host_capacity
 
     # Spawned workers inherit the environment, not this process's patches.
     monkeypatch.setenv("MOLT_BUILD_STATE_DIR", str(tmp_path / "state"))
-    monkeypatch.setattr(molt.dx, "_memory_bounded_worker_count", lambda **_: 2)
+    monkeypatch.setattr(molt.host_capacity, "worker_count", lambda **_: 2)
     real_pool = module_graph_cache.ProcessPoolExecutor
 
     def modules(prefix: str, count: int) -> dict[str, Path]:

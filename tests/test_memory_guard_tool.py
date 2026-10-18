@@ -31,6 +31,7 @@ from tools.memory_guard_core import (
 )
 
 import tools.memory_guard as memory_guard
+from molt import host_capacity
 from molt.backend_daemon_suite_custody import LEASE_ENV
 import molt.dx as molt_dx
 from molt.custody_layout import out_of_tree_scratch_root
@@ -3338,36 +3339,14 @@ def test_adaptive_budget_clamps_large_hosts_below_rss_conversion_cap() -> None:
     assert memory_guard.max_rss_kb_from_gb(budget.max_process_rss_gb) > 0
 
 
-def test_darwin_available_bytes_counts_free_inactive_speculative_purgeable() -> None:
-    pages = {
-        "Pages free": 10,
-        "Pages active": 99,
-        "Pages inactive": 20,
-        "Pages speculative": 3,
-        "Pages purgeable": 2,
-        "Pages wired down": 88,
-        "Pages occupied by compressor": 7,
-    }
-
-    assert memory_guard.darwin_available_bytes(16_384, pages) == (
-        (10 + 20 + 3 + 2) * 16_384
-    )
-    assert memory_guard.darwin_available_bytes(16_384, {"Pages active": 9}) is None
-
-
-def test_available_memory_bytes_reads_darwin_vm_pages_without_a_subprocess(
+def test_available_memory_bytes_reads_the_host_capacity_authority(
     monkeypatch,
 ) -> None:
-    def forbidden_run(*args, **kwargs):  # noqa: ANN002, ANN003
-        raise AssertionError("available memory must not spawn vm_stat")
-
-    limits = memory_limits
-    install_module_view(monkeypatch, "sys", sys, limits, platform="darwin")
-    install_module_view(
-        monkeypatch, "subprocess", subprocess, limits, run=forbidden_run
-    )
+    # The guard reads the one host probe; on macOS that is one Mach call,
+    # never a vm_stat subprocess.
+    install_module_view(monkeypatch, "sys", sys, host_capacity, platform="darwin")
     monkeypatch.setattr(
-        limits,
+        host_capacity,
         "darwin_vm_pages",
         lambda: (
             4096,
@@ -3382,79 +3361,6 @@ def test_available_memory_bytes_reads_darwin_vm_pages_without_a_subprocess(
     )
 
     assert memory_guard.available_memory_bytes(environ={}) == 17 * 4096
-
-
-@pytest.mark.skipif(sys.platform != "darwin", reason="Darwin Mach VM statistics")
-def test_actual_darwin_vm_pages_match_vm_stat() -> None:
-    """vm_stat formats the same Mach counters through its own code path."""
-
-    def vm_stat() -> tuple[str, dict[str, int]]:
-        text = str(
-            check_output_guarded_test_process(
-                ["vm_stat"], env={**os.environ, "LC_ALL": "C"}, timeout=30.0
-            )
-        )
-        reported: dict[str, int] = {}
-        for line in text.splitlines()[1:]:
-            name, _, value = line.partition(":")
-            if value.strip().rstrip(".").isdigit():
-                reported[name.strip().strip('"')] = int(value.strip().rstrip("."))
-        return text.splitlines()[0], reported
-
-    repo_root = Path(__file__).resolve().parents[1]
-
-    def fresh_read() -> tuple[int, dict[str, int]]:
-        # macOS rate-limits host_statistics64 for non-platform binaries and
-        # answers a process's excess calls in one window with cached counters:
-        # in CI this process read "Pages free" as 41,711 in three rounds while
-        # vm_stat moved from 55,942 to 54,811. vm_stat is a platform binary and
-        # exempt, and a new process's first call is never rate-limited.
-        text = check_output_guarded_test_process(
-            [
-                sys.executable,
-                "-c",
-                "import json, tools.memory_guard as m; "
-                "print(json.dumps(m.darwin_vm_pages()))",
-            ],
-            cwd=repo_root,
-            env={**os.environ, "PYTHONPATH": str(repo_root / "src")},
-            timeout=60.0,
-        )
-        page_size, pages = json.loads(str(text))
-        return int(page_size), {str(k): int(v) for k, v in pages.items()}
-
-    # Counters move while a busy host runs other tests, so bracket each read
-    # between two vm_stat samples. Pages move between buckets in bursts, so
-    # the slack is 1% of all pages; a wrong counter mapping is a fixed offset
-    # that escapes every bracket.
-    header, sample = vm_stat()
-    rounds = []
-    for _ in range(3):
-        page_size, pages = fresh_read()
-        _header, after = vm_stat()
-        rounds.append((sample, pages, after))
-        sample = after
-    assert f"page size of {page_size} bytes" in header
-    buckets = (
-        "Pages free",
-        "Pages active",
-        "Pages inactive",
-        "Pages speculative",
-        "Pages throttled",
-        "Pages wired down",
-        "Pages occupied by compressor",
-    )
-    slack = max(1024, sum(rounds[0][0][name] for name in buckets) // 100)
-
-    def bracketed(name: str, before: dict, count: int, after: dict) -> bool:
-        low, high = sorted((before[name], after[name]))
-        return low - slack <= count <= high + slack
-
-    for name in rounds[0][1]:
-        assert any(
-            bracketed(name, before, pages[name], after)
-            for before, pages, after in rounds
-        ), (name, slack, [(b[name], p[name], a[name]) for b, p, a in rounds])
 
 
 def test_resolve_memory_limits_refreshes_dynamic_caps() -> None:

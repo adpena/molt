@@ -52,6 +52,7 @@ from molt.dx import (  # noqa: E402
     proof_scratch_root,
     scratch_root,
 )
+from molt import host_capacity  # noqa: E402
 from molt.file_publication import resolve_owned_path  # noqa: E402
 from molt.portable_paths import portable_relative_path  # noqa: E402
 from molt import backend_daemon_custody as daemon_custody  # noqa: E402
@@ -1759,7 +1760,7 @@ def _apply_memory_limit() -> None:
 
 
 def _default_jobs() -> int:
-    count = os.cpu_count() or 1
+    count = host_capacity.cpu_count()
     guard = _diff_memory_guard_config()
     count = min(count, _memory_guard_max_jobs(guard))
     max_jobs = os.environ.get("MOLT_DIFF_MAX_JOBS", "").strip()
@@ -1787,7 +1788,7 @@ def _diff_resource_pressure_plan(
     return resource_pressure.plan_resource_pressure(
         prefix="MOLT_DIFF",
         environ=os.environ,
-        cpu_count=max(1, os.cpu_count() or 1),
+        cpu_count=host_capacity.cpu_count(),
         budget=budget,
         diff_tree_gb=config.max_tree_gb,
         diff_global_gb=config.global_gb,

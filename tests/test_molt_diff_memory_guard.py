@@ -8,6 +8,8 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+
+from molt import host_capacity
 from tests.process_guard_common import (
     install_module_view,
     install_thread_module_view,
@@ -387,7 +389,7 @@ def test_diff_scheduler_uses_memory_scaled_job_budget(monkeypatch) -> None:
     monkeypatch.setenv("MOLT_DIFF_MEMORY_TOTAL_GB", "128")
     monkeypatch.setenv("MOLT_DIFF_MEMORY_AVAILABLE_GB", "96")
     monkeypatch.delenv("MOLT_DIFF_MEM_PER_JOB_GB", raising=False)
-    install_module_view(monkeypatch, "os", os, module, cpu_count=lambda: 12)
+    monkeypatch.setattr(host_capacity, "cpu_count", lambda: 12)
 
     config = module._diff_memory_guard_config()
 
@@ -408,7 +410,7 @@ def test_diff_default_jobs_use_guard_budget_under_memory_pressure(
     monkeypatch.setenv("MOLT_DIFF_MEMORY_TOTAL_GB", "128")
     monkeypatch.setenv("MOLT_DIFF_MEMORY_AVAILABLE_GB", "32")
     monkeypatch.delenv("MOLT_DIFF_MEM_PER_JOB_GB", raising=False)
-    install_module_view(monkeypatch, "os", os, module, cpu_count=lambda: 64)
+    monkeypatch.setattr(host_capacity, "cpu_count", lambda: 64)
 
     config = module._diff_memory_guard_config()
 
@@ -436,7 +438,7 @@ def test_diff_jobs_fit_the_tree_budget_of_the_guard_that_wraps_the_suite(
     monkeypatch.setenv("MOLT_MAX_PROCESS_RSS_GB", "30")
     monkeypatch.setenv("MOLT_MAX_TOTAL_RSS_GB", "37.7")
     monkeypatch.setenv("MOLT_MAX_GLOBAL_RSS_GB", "63")
-    install_module_view(monkeypatch, "os", os, module, cpu_count=lambda: 18)
+    monkeypatch.setattr(host_capacity, "cpu_count", lambda: 18)
     outer = module.harness_memory_guard.limits_from_env("MOLT_HARNESS", os.environ)
 
     config = module._diff_memory_guard_config()

@@ -20183,8 +20183,8 @@ def test_resolve_frontend_parallel_module_workers_from_env(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(
-        cli_frontend_parallel,
-        "_memory_bounded_worker_count_from_samples",
+        cli_frontend_parallel.host_capacity,
+        "worker_count_from_samples",
         lambda **_kwargs: 6,
     )
     monkeypatch.delenv("MOLT_FRONTEND_PARALLEL_MODULES", raising=False)

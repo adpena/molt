@@ -1495,7 +1495,7 @@ def test_tree_identity_workers_are_cpu_memory_file_and_policy_bounded(
         calls.append(kwargs)
         return 7
 
-    monkeypatch.setattr(identity, "_memory_bounded_worker_count", resource_ceiling)
+    monkeypatch.setattr(identity.host_capacity, "worker_count", resource_ceiling)
 
     assert identity._tree_hash_worker_count(3) == 3
     assert identity._tree_hash_worker_count(100) == 7
@@ -1510,7 +1510,7 @@ def test_tree_identity_workers_are_cpu_memory_file_and_policy_bounded(
         },
     ]
     monkeypatch.setattr(
-        identity, "_memory_bounded_worker_count", lambda **_kwargs: 10_000
+        identity.host_capacity, "worker_count", lambda **_kwargs: 10_000
     )
     assert identity._tree_hash_worker_count(100) == identity._TREE_HASH_MAX_WORKERS
 

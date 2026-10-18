@@ -328,6 +328,8 @@
     "tests/test_proof_plan.py",
     "tests/test_harness_memory_guard.py",
     "tests/test_memory_guard_tool.py",
+    "src/molt/host_capacity.py",
+    "tests/test_host_capacity.py",
     "tests/test_child_clock_custody.py",
     "tests/test_perf_calibration.py",
     "tests/test_python_external_custody.py",
@@ -369,7 +371,7 @@
     "tests/tools/test_win_job_contract.py",
     "tests/tools/test_windows_process_api.py"
   ],
-  "authority_sha256": "1473c06a126d94cb1818a344a2072354670485283ce6abc483cca8b8897f344c",
+  "authority_sha256": "1d32d59bec6c69923800f69e9493c9fa5750afaa0a4ceb4afb7c80c26b5613f3",
   "cargo_environment_policy": {
     "incident_command": "cargo metadata --locked --format-version 1",
     "incident_commit": "20b046b79bd4ca64a8c859f737f6e330377bcc4e",
@@ -919,6 +921,8 @@
         "tests/differential/basic/arith.py",
         "tests/test_harness_memory_guard.py",
         "tests/test_memory_guard_tool.py",
+        "src/molt/host_capacity.py",
+        "tests/test_host_capacity.py",
         "tests/test_child_clock_custody.py",
         "tests/test_perf_calibration.py",
         "tests/test_molt_queue_cli.py",
@@ -4568,6 +4572,7 @@
         "tests/tools/test_proof_queue_output_layout.py",
         "tests/tools/test_memory_guard_windows_sampling.py",
         "tests/test_memory_guard_tool.py",
+        "tests/test_host_capacity.py",
         "tests/test_memory_guard_wiring.py",
         "tests/test_molt_diff_memory_guard.py",
         "tests/test_demo_bench_memory_guard.py",
@@ -4636,6 +4641,7 @@
         "tests/tools/test_proof_queue_output_layout.py",
         "tests/tools/test_memory_guard_windows_sampling.py",
         "tests/test_memory_guard_tool.py",
+        "tests/test_host_capacity.py",
         "tests/test_memory_guard_wiring.py",
         "tests/test_molt_diff_memory_guard.py",
         "tests/test_demo_bench_memory_guard.py",
@@ -8105,6 +8111,7 @@
         "pytest",
         "-q",
         "tests/test_memory_guard_tool.py",
+        "tests/test_host_capacity.py",
         "tests/test_memory_guard_wiring.py"
       ],
       "cache_domain": "pytest",
@@ -8606,6 +8613,7 @@
       "local.heap-kind-lifetime-authority.pytest": "python -m pytest -q -n 4 tests/test_gen_heap_kinds.py",
       "local.host-capability-authority.0": "python tools/gen_host_capabilities.py --check",
       "local.host-capability-authority.pytest": "python -m pytest -q -n 4 tests/test_gen_host_capabilities.py tests/test_capability_policy.py",
+      "local.host-capacity.pytest": "python -m pytest -q -n 4 tests/test_host_capacity.py tests/cli/test_cli_frontend_parallel_authority.py tests/tools/test_ci_resource_env.py tests/test_memory_guard_tool.py",
       "local.host-entrypoint-imports.pytest": "python -m pytest -q -n 4 tests/tools/test_import_file.py",
       "local.import-symbol-gate.0": "python tools/import_symbol_gate.py",
       "local.import-symbol-gate.pytest": "python -m pytest -q -n 4 tests/tools/test_import_symbol_gate.py",
@@ -9383,6 +9391,32 @@
         "name": "host-entrypoint-imports",
         "pytest": [
           "tests/tools/test_import_file.py"
+        ],
+        "toolchains": [
+          "python"
+        ]
+      },
+      {
+        "command_ids": [
+          "local.host-capacity.pytest"
+        ],
+        "description": "The one host CPU and memory authority and the probes its consumers read.",
+        "gates": [],
+        "globs": [
+          "src/molt/host_capacity.py",
+          "tools/memory_guard.py",
+          "tools/memory_guard_core/memory_limits.py",
+          "tools/ci_resource_env.py",
+          "tests/test_host_capacity.py",
+          "tests/cli/test_cli_frontend_parallel_authority.py",
+          "tests/tools/test_ci_resource_env.py"
+        ],
+        "name": "host-capacity",
+        "pytest": [
+          "tests/test_host_capacity.py",
+          "tests/cli/test_cli_frontend_parallel_authority.py",
+          "tests/tools/test_ci_resource_env.py",
+          "tests/test_memory_guard_tool.py"
         ],
         "toolchains": [
           "python"
@@ -10907,6 +10941,9 @@
         "python",
         "uv",
         "rustfmt"
+      ],
+      "local.host-capacity.pytest": [
+        "python"
       ],
       "local.host-entrypoint-imports.pytest": [
         "python"
