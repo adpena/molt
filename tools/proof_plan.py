@@ -3713,6 +3713,7 @@ def _run_command(
             round(float(metrics["duration_seconds"]), 6) if metrics_valid else None
         ),
         "peak_rss_bytes": metrics.get("peak_tree_rss_bytes") if metrics_valid else None,
+        "worker_peaks": metrics.get("worker_peaks") if metrics_valid else None,
         "peak_job_commit_bytes": (
             metrics.get("peak_job_commit_bytes") if metrics_valid else None
         ),

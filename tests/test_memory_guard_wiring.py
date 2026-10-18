@@ -921,6 +921,8 @@ def test_custody_root_transition_keeps_parent_child_and_reader_on_one_path(
             child.delenv(key, raising=False)
         for key, value in child_env.items():
             child.setenv(key, value)
+        # The child is an xdist worker only when xdist configured it as one.
+        child.setattr(pytest_memory_guard_bootstrap, "_XDIST_WORKER_ID", worker or None)
         assert (
             pytest_memory_guard_bootstrap.outer_guard_summary_dir()
             == current_path.parent
@@ -1908,9 +1910,9 @@ def test_pytest_current_test_hooks_write_live_identity(
     tmp_path: Path,
 ) -> None:
     current_test_path = tmp_path / "pytest-memory-guard" / "current-test.json"
-    # The aggregate record path; an inherited xdist worker id would select
-    # that worker's own record (covered by the per-worker test below).
-    monkeypatch.delenv("PYTEST_XDIST_WORKER", raising=False)
+    # The aggregate record path: this process is no xdist worker. A worker
+    # writes its own record (covered by the per-worker test below).
+    monkeypatch.setattr(pytest_memory_guard_bootstrap, "_XDIST_WORKER_ID", None)
     monkeypatch.setenv("MOLT_MEMORY_GUARD_STATE_ROOT", str(tmp_path / "memory_guard"))
     monkeypatch.setenv(
         pytest_memory_guard_bootstrap.PYTEST_CURRENT_TEST_FILE_ENV,
@@ -1965,7 +1967,7 @@ def test_pytest_current_test_xdist_writes_per_worker_sidecar(
         pytest_memory_guard_bootstrap.PYTEST_CURRENT_TEST_FILE_ENV,
         str(aggregate_path),
     )
-    monkeypatch.setenv("PYTEST_XDIST_WORKER", "gw1")
+    monkeypatch.setattr(pytest_memory_guard_bootstrap, "_XDIST_WORKER_ID", "gw1")
 
     class Item:
         nodeid = "tests/test_memory_guard_wiring.py::test_xdist_unit"
@@ -1987,7 +1989,7 @@ def test_pytest_current_test_phases_reuse_one_bounded_inode(
     tmp_path: Path,
 ) -> None:
     current = tmp_path / "pytest-memory-guard" / "current-test.json"
-    monkeypatch.delenv("PYTEST_XDIST_WORKER", raising=False)
+    monkeypatch.setattr(pytest_memory_guard_bootstrap, "_XDIST_WORKER_ID", None)
     monkeypatch.setenv("MOLT_MEMORY_GUARD_STATE_ROOT", str(tmp_path / "memory_guard"))
     monkeypatch.setenv("MOLT_PYTEST_CURRENT_TEST_FILE", str(current))
 
@@ -2054,7 +2056,7 @@ def test_pytest_current_test_short_writes_never_commit_partial_identity(
     failure: str,
 ) -> None:
     current = tmp_path / "pytest-memory-guard" / "current-test.json"
-    monkeypatch.delenv("PYTEST_XDIST_WORKER", raising=False)
+    monkeypatch.setattr(pytest_memory_guard_bootstrap, "_XDIST_WORKER_ID", None)
     monkeypatch.setenv("MOLT_MEMORY_GUARD_STATE_ROOT", str(tmp_path / "memory_guard"))
     monkeypatch.setenv("MOLT_PYTEST_CURRENT_TEST_FILE", str(current))
 
@@ -2129,7 +2131,6 @@ from pathlib import Path
 from molt import file_locks,pytest_memory_guard_bootstrap as bootstrap
 os.environ['MOLT_MEMORY_GUARD_STATE_ROOT']=sys.argv[2]
 os.environ['MOLT_PYTEST_CURRENT_TEST_FILE']=sys.argv[1]
-os.environ.pop('PYTEST_XDIST_WORKER',None)
 import contextlib
 exclusive=file_locks._exclusive_record_file
 class Writes:
@@ -2204,7 +2205,7 @@ def test_oversized_current_case_is_explicit_opacity_in_a_bounded_file(
     nodeid: str,
 ) -> None:
     current = tmp_path / "pytest-memory-guard" / "current-test.json"
-    monkeypatch.delenv("PYTEST_XDIST_WORKER", raising=False)
+    monkeypatch.setattr(pytest_memory_guard_bootstrap, "_XDIST_WORKER_ID", None)
     monkeypatch.setenv("MOLT_MEMORY_GUARD_STATE_ROOT", str(tmp_path / "memory_guard"))
     monkeypatch.setenv("MOLT_PYTEST_CURRENT_TEST_FILE", str(current))
 
@@ -2244,8 +2245,15 @@ def test_pytest_immediate_failures_register_once_and_only_format_failed_reports(
     # An inherited environment marker is not evidence that this config is a
     # worker. Real xdist supplies config.workerinput on its worker instance.
     monkeypatch.setenv("PYTEST_XDIST_WORKER", "inherited-worker")
+    # Configuration sets this process's worker identity; restore the live one.
+    monkeypatch.setattr(
+        pytest_memory_guard_bootstrap,
+        "_XDIST_WORKER_ID",
+        pytest_memory_guard_bootstrap._XDIST_WORKER_ID,
+    )
     pytest_memory_guard_config_plugin.pytest_configure(config)
     pytest_memory_guard_bootstrap.pytest_configure(config)
+    assert pytest_memory_guard_bootstrap._XDIST_WORKER_ID is None
     reporter = manager.getplugin("molt-immediate-pytest-failures")
     assert reporter is not None
     manager.check_pending()
@@ -2279,9 +2287,10 @@ def test_pytest_immediate_failures_register_once_and_only_format_failed_reports(
     assert len(events) == 12
     worker_manager = pytest.PytestPluginManager()
     pytest_memory_guard_bootstrap.pytest_configure(
-        SimpleNamespace(pluginmanager=worker_manager, workerinput={})
+        SimpleNamespace(pluginmanager=worker_manager, workerinput={"workerid": "gw3"})
     )
     assert worker_manager.getplugin("molt-immediate-pytest-failures") is None
+    assert pytest_memory_guard_bootstrap._XDIST_WORKER_ID == "gw3"
 
 
 @pytest.mark.parametrize(
@@ -2434,7 +2443,7 @@ def test_current_test_writer_repairs_an_oversized_inode_only_once(
     )
     inode = current.stat().st_ino
     assert memory_guard._read_pytest_current_test_json(current)["truncated"] is True
-    monkeypatch.delenv("PYTEST_XDIST_WORKER", raising=False)
+    monkeypatch.setattr(pytest_memory_guard_bootstrap, "_XDIST_WORKER_ID", None)
     monkeypatch.setenv("MOLT_MEMORY_GUARD_STATE_ROOT", str(tmp_path / "memory_guard"))
     monkeypatch.setenv("MOLT_PYTEST_CURRENT_TEST_FILE", str(current))
     repairs = []

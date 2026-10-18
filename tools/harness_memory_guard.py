@@ -19,6 +19,7 @@ from tools import memory_guard, process_sentinel
 
 from tools.memory_guard_core import harness_outcomes as _harness_outcomes
 from tools.memory_guard_core.memory_limits import ResolvedMemoryLimits
+from tools.memory_guard_core.worker_peaks import WorkerPeakSummary
 
 
 DEFAULT_POLL_INTERVAL_SEC = 0.10
@@ -123,6 +124,7 @@ class GuardedCompletedProcess[Output: str | bytes](subprocess.CompletedProcess[O
         sampling_interval_s: float | None = None,
         cancelled: bool = False,
         descendants_closed: bool = False,
+        worker_peaks: WorkerPeakSummary | None = None,
     ) -> None:
         super().__init__(
             args=list(args), returncode=returncode, stdout=stdout, stderr=stderr
@@ -133,6 +135,7 @@ class GuardedCompletedProcess[Output: str | bytes](subprocess.CompletedProcess[O
         self.violation = violation
         self.peak = peak
         self.peak_total = peak_total
+        self.worker_peaks = worker_peaks
         self.timed_out = timed_out
         self.cancelled = cancelled
         self.descendants_closed = descendants_closed
@@ -886,6 +889,7 @@ def _append_guarded_command_profile(
     termination_reports: Sequence[memory_guard.GuardTerminationReport] = (),
     guard_signal: int | None = None,
     peak_job_commit_bytes: int | None = None,
+    worker_peaks: WorkerPeakSummary | None = None,
     windows_job_cleanup: memory_guard.WindowsJobCleanup | None = None,
     temporary_artifacts: Mapping[str, object] | None = None,
     child_returncode: int | None = None,
@@ -949,6 +953,7 @@ def _append_guarded_command_profile(
         "peak": _rss_record_payload(peak),
         "peak_total": _rss_record_payload(peak_total),
         "peak_job_commit_bytes": peak_job_commit_bytes,
+        "worker_peaks": None if worker_peaks is None else worker_peaks.json_payload(),
         "windows_job_cleanup": memory_guard.windows_job_cleanup_payload(
             windows_job_cleanup
         ),
@@ -1283,6 +1288,7 @@ def guarded_completed_process(
         infrastructure_failure=guarded.infrastructure_failure,
         cancelled=guarded.cancelled,
         descendants_closed=guarded.descendants_closed,
+        worker_peaks=guarded.worker_peaks,
         operation_role=operation_role,
     )
     if profile_error:
@@ -1316,6 +1322,7 @@ def guarded_completed_process(
         sampling_interval_s=resolved_limits.poll_interval,
         cancelled=guarded.cancelled,
         descendants_closed=guarded.descendants_closed,
+        worker_peaks=guarded.worker_peaks,
     )
 
 
@@ -1538,6 +1545,7 @@ def guarded_completed_process_to_tempfiles(
         infrastructure_failure=guarded.infrastructure_failure,
         cancelled=guarded.cancelled,
         descendants_closed=guarded.descendants_closed,
+        worker_peaks=guarded.worker_peaks,
     )
     if profile_error:
         stderr = _append_guard_bytes(stderr, profile_error)
@@ -1574,6 +1582,7 @@ def guarded_completed_process_to_tempfiles(
         sampling_interval_s=resolved_limits.poll_interval,
         cancelled=guarded.cancelled,
         descendants_closed=guarded.descendants_closed,
+        worker_peaks=guarded.worker_peaks,
     )
 
 
