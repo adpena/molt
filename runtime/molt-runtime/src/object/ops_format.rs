@@ -480,21 +480,38 @@ pub(crate) fn format_diagnostic_type_name_bytes(py: &PyToken<'_>, obj: MoltObjec
         .unwrap_or_else(|| format_class_name_bytes(class))
 }
 
+/// One argument of a `types.GenericAlias` or `types.UnionType` repr: CPython's
+/// `ga_repr_item` and `union_repr_item`. `...` is spelled as written and a
+/// class is its qualified name. The union spells `NoneType` as `None`, and so
+/// does the generic alias from Python 3.14 (`_Py_typing_type_repr`).
+fn format_typing_argument(
+    _py: &PyToken<'_>,
+    arg_bits: u64,
+    none_type_as_none: bool,
+) -> FormatOutput {
+    if arg_bits == ellipsis_bits(_py) {
+        return "...".into();
+    }
+    if none_type_as_none && arg_bits == builtin_classes(_py).none_type {
+        return "None".into();
+    }
+    let arg_obj = obj_from_bits(arg_bits);
+    if let Some(arg_ptr) = arg_obj.as_ptr()
+        && unsafe { object_type_id(arg_ptr) } == TYPE_ID_TYPE
+        && let Some(name) = format_qualified_type_name(_py, arg_ptr)
+    {
+        return name.into();
+    }
+    format_obj_output(_py, arg_obj)
+}
+
 fn format_generic_alias(_py: &PyToken<'_>, ptr: *mut u8) -> FormatOutput {
     unsafe {
         let origin_bits = generic_alias_origin_bits(ptr);
         let args_bits = generic_alias_args_bits(ptr);
         let origin_obj = obj_from_bits(origin_bits);
-        let render_arg = |arg_bits: u64| {
-            let arg_obj = obj_from_bits(arg_bits);
-            if let Some(arg_ptr) = arg_obj.as_ptr()
-                && object_type_id(arg_ptr) == TYPE_ID_TYPE
-                && let Some(name) = format_qualified_type_name(_py, arg_ptr)
-            {
-                return name.into();
-            }
-            format_obj_output(_py, arg_obj)
-        };
+        let none_type_as_none = super::ops_sys::runtime_target_at_least(_py, 3, 14);
+        let render_arg = |arg_bits: u64| format_typing_argument(_py, arg_bits, none_type_as_none);
         let origin_repr = if let Some(origin_ptr) = origin_obj.as_ptr() {
             if object_type_id(origin_ptr) == TYPE_ID_TYPE {
                 format_qualified_type_name(_py, origin_ptr)
@@ -537,16 +554,7 @@ fn format_generic_alias(_py: &PyToken<'_>, ptr: *mut u8) -> FormatOutput {
 fn format_union_type(_py: &PyToken<'_>, ptr: *mut u8) -> FormatOutput {
     unsafe {
         let args_bits = union_type_args_bits(ptr);
-        let render_arg = |arg_bits: u64| {
-            let arg_obj = obj_from_bits(arg_bits);
-            if let Some(arg_ptr) = arg_obj.as_ptr()
-                && object_type_id(arg_ptr) == TYPE_ID_TYPE
-                && let Some(name) = format_qualified_type_name(_py, arg_ptr)
-            {
-                return name.into();
-            }
-            format_obj_output(_py, arg_obj)
-        };
+        let render_arg = |arg_bits: u64| format_typing_argument(_py, arg_bits, true);
         let mut out = FormatBuffer::new();
         let args_obj = obj_from_bits(args_bits);
         if let Some(args_ptr) = args_obj.as_ptr()

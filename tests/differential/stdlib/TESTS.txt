@@ -1943,6 +1943,7 @@ tests/differential/stdlib/types_module_subclass.py
 tests/differential/stdlib/types_new_class_failures.py
 tests/differential/stdlib/types_new_class_helpers.py
 tests/differential/stdlib/types_simplenamespace_parity.py
+tests/differential/stdlib/typing_alias_repr_equality.py
 tests/differential/stdlib/typing_annotated.py
 tests/differential/stdlib/typing_basic.py
 tests/differential/stdlib/typing_basic_surface.py

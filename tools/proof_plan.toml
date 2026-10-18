@@ -5543,9 +5543,9 @@ timeout_seconds = 900
 cache_domain = "cargo-workspace"
 id = "r6.target-version-parity.py312"
 cargo_native_units = { target = ["c", "c++"] }
-description = "R6 target-version parity for CPython 3.12: sys metadata, stat, queue shutdown and removed-module fixtures; a missing target interpreter fails closed."
+description = "R6 target-version parity for CPython 3.12: sys metadata, stat, queue shutdown, removed-module and typing-repr fixtures; a missing target interpreter fails closed."
 argv = ["uv", "run", "--active", "--project", ".", "--python", "3.12", "--no-sync", "--no-config", "python", "tests/molt_diff.py", "--jobs", "1", "--python-version", "3.12", "--build-profile", "dev", "--fail-fast"]
-differential_cases = ["tests/differential/stdlib/sys_metadata_intrinsics.py", "tests/differential/stdlib/sys_stat_version_gate.py", "tests/differential/stdlib/stat_api_surface_versioned.py", "tests/differential/stdlib/queue_shutdown_version_gate.py", "tests/differential/stdlib/removed_stdlib_modules_version_gate.py"]
+differential_cases = ["tests/differential/stdlib/sys_metadata_intrinsics.py", "tests/differential/stdlib/sys_stat_version_gate.py", "tests/differential/stdlib/stat_api_surface_versioned.py", "tests/differential/stdlib/queue_shutdown_version_gate.py", "tests/differential/stdlib/removed_stdlib_modules_version_gate.py", "tests/differential/stdlib/typing_alias_repr_equality.py"]
 toolchains = ["python", "uv", "rustc", "cargo", "ld.lld"]
 cargo_build_python = true
 resource_family = "python"
@@ -5556,9 +5556,9 @@ timeout_seconds = 900
 cache_domain = "cargo-workspace"
 id = "r6.target-version-parity.py313"
 cargo_native_units = { target = ["c", "c++"] }
-description = "R6 target-version parity for CPython 3.13: sys metadata, stat, queue shutdown and removed-module fixtures; a missing target interpreter fails closed."
+description = "R6 target-version parity for CPython 3.13: sys metadata, stat, queue shutdown, removed-module and typing-repr fixtures; a missing target interpreter fails closed."
 argv = ["uv", "run", "--active", "--project", ".", "--python", "3.12", "--no-sync", "--no-config", "python", "tests/molt_diff.py", "--jobs", "1", "--python-version", "3.13", "--build-profile", "dev", "--fail-fast"]
-differential_cases = ["tests/differential/stdlib/sys_metadata_intrinsics.py", "tests/differential/stdlib/sys_stat_version_gate.py", "tests/differential/stdlib/stat_api_surface_versioned.py", "tests/differential/stdlib/queue_shutdown_version_gate.py", "tests/differential/stdlib/removed_stdlib_modules_version_gate.py"]
+differential_cases = ["tests/differential/stdlib/sys_metadata_intrinsics.py", "tests/differential/stdlib/sys_stat_version_gate.py", "tests/differential/stdlib/stat_api_surface_versioned.py", "tests/differential/stdlib/queue_shutdown_version_gate.py", "tests/differential/stdlib/removed_stdlib_modules_version_gate.py", "tests/differential/stdlib/typing_alias_repr_equality.py"]
 toolchains = ["python", "uv", "rustc", "cargo", "ld.lld"]
 cargo_build_python = true
 resource_family = "python"
@@ -5569,9 +5569,9 @@ timeout_seconds = 900
 cache_domain = "cargo-workspace"
 id = "r6.target-version-parity.py314"
 cargo_native_units = { target = ["c", "c++"] }
-description = "R6 target-version parity for CPython 3.14: sys metadata, stat, queue shutdown and removed-module fixtures; a missing target interpreter fails closed."
+description = "R6 target-version parity for CPython 3.14: sys metadata, stat, queue shutdown, removed-module and typing-repr fixtures; a missing target interpreter fails closed."
 argv = ["uv", "run", "--active", "--project", ".", "--python", "3.12", "--no-sync", "--no-config", "python", "tests/molt_diff.py", "--jobs", "1", "--python-version", "3.14", "--build-profile", "dev", "--fail-fast"]
-differential_cases = ["tests/differential/stdlib/sys_metadata_intrinsics.py", "tests/differential/stdlib/sys_stat_version_gate.py", "tests/differential/stdlib/stat_api_surface_versioned.py", "tests/differential/stdlib/queue_shutdown_version_gate.py", "tests/differential/stdlib/removed_stdlib_modules_version_gate.py"]
+differential_cases = ["tests/differential/stdlib/sys_metadata_intrinsics.py", "tests/differential/stdlib/sys_stat_version_gate.py", "tests/differential/stdlib/stat_api_surface_versioned.py", "tests/differential/stdlib/queue_shutdown_version_gate.py", "tests/differential/stdlib/removed_stdlib_modules_version_gate.py", "tests/differential/stdlib/typing_alias_repr_equality.py"]
 toolchains = ["python", "uv", "rustc", "cargo", "ld.lld"]
 cargo_build_python = true
 resource_family = "python"
