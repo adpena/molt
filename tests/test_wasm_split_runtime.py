@@ -19,6 +19,7 @@ import re
 import shutil
 import signal
 import socket
+import struct
 import subprocess
 import sys
 import time
@@ -1857,11 +1858,10 @@ def test_split_runtime_host_export_bytes_survive_raw_temp_cleanup(
         encoding="utf-8",
     )
     data_path = tmp_path / "data.bin"
-    payload = (
-        b"O\\x00\\x00\\x00\\x00\\x00\\x00\\x00"
-        b'{"x":{"dtype":"F32","shape":[1],"data_offsets":[0,4]},"__metadata__":{"a":"b"}}'
-        b"\\x00\\x00\\x60\\x40"
-    )
+    # A minimal safetensors file: u64 little-endian header length, the JSON
+    # header, then one F32 tensor. Its NUL bytes cross the host boundary.
+    header = b'{"x":{"dtype":"F32","shape":[1],"data_offsets":[0,4]},"__metadata__":{"a":"b"}}'
+    payload = struct.pack("<Q", len(header)) + header + struct.pack("<f", 3.5)
     data_path.write_bytes(payload)
     calls_path = tmp_path / "calls.json"
     calls_path.write_text(
@@ -1894,7 +1894,8 @@ def test_split_runtime_host_export_bytes_survive_raw_temp_cleanup(
         f"stderr:\n{run.stderr[-2000:]}"
     )
     results = json.loads(run.stdout)
-    assert results[0]["result_repr"] == "[79, 91]"
+    # CPython evaluates main__probe's body on the same bytes.
+    assert results[0]["result_repr"] == repr([payload[0], len(payload)])
 
 
 @pytest.mark.slow
