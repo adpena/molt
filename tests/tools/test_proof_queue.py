@@ -1307,6 +1307,17 @@ def test_native_toolchain_inference_and_declared_sdk_policy_coexist() -> None:
     command_admission._proof_command_registry.cache_clear()
     native = command_admission.envelope_for_command(["clang", "--version"])
     assert native["toolchains"] == ["clang"]
+    plan = proof_plan.ProofPlan.load()
+    fixture = next(
+        command
+        for command in plan.commands
+        if command.id == "python.unit.cli.import-collection"
+    )
+    declared = command_admission.envelope_for_command(list(fixture.argv))
+    assert declared["kind"] == "proof-plan"
+    assert declared["proof_plan_command_ids"] == [fixture.id]
+    assert "hosted-clang" in declared["toolchains"]
+    assert "clang" not in declared["toolchains"]
     scalar = command_admission.envelope_for_command(["llvm-config", "--version"])
     assert scalar["toolchains"] == ["llvm-config"]
     plan = proof_plan.ProofPlan.load()

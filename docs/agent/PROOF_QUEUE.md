@@ -205,8 +205,12 @@ execute. Native stripping and WASM optimization reuse the compiler's existing
 selectors. Their identities bind both the selected entrypoint and resolved
 executable bytes; changing or omitting either invalidates reuse. SDK capture
 includes its symbol reader.
-Compiler-selected dependency roles do not replace direct executable commands or
-make ordinary duplicate executable policies unambiguous.
+Explicit `selection_only` dependency roles do not infer a bare executable name.
+They still resolve, admit and capture the declared executable normally; only
+roles whose version or runtime identity comes from another image require a
+content resolver. Thus native C fixture commands can declare `hosted-clang`
+while a bare `clang` command retains its canonical LLVM ABI policy. Ordinary
+duplicate executable policies remain ambiguous and are refused.
 
 Cargo proofs bind the captured physical Rust compiler and Cargo executable
 before launch. Only commands declaring native C compilation acquire its

@@ -1404,14 +1404,11 @@ class ProofPlan:
                 )
             package = policy.data.get("node_package")
             explicit_selection = policy.data.get("selection_only", False)
-            if type(explicit_selection) is not bool or (
-                explicit_selection
-                and content_path_command is None
-                and selector != "build-python"
-            ):
-                errors.append(
-                    f"{policy.name}: explicit prerequisite requires a typed content resolver"
-                )
+            # Selection controls bare-launcher inference, not image identity.
+            # Ordinary executables already resolve/hash their selected PATH image;
+            # runtime views and selected versions keep their own resolver checks.
+            if type(explicit_selection) is not bool:
+                errors.append(f"{policy.name}: selection_only must be a boolean")
             if package is not None and (
                 not isinstance(package, str)
                 or not package

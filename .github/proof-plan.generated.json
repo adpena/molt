@@ -374,7 +374,7 @@
     "tests/tools/test_win_job_contract.py",
     "tests/tools/test_windows_process_api.py"
   ],
-  "authority_sha256": "4039adf0a859a6df1a4b41c6f459e61e8906ca0311f8c538106e46f667b13e22",
+  "authority_sha256": "db29b7cd12a13068d924baa197b9d3ec10dc1daf55fa630b1023ff79adec039a",
   "cargo_environment_policy": {
     "incident_command": "cargo metadata --locked --format-version 1",
     "incident_commit": "20b046b79bd4ca64a8c859f737f6e330377bcc4e",
@@ -12747,6 +12747,7 @@
       "executable": "clang",
       "name": "hosted-clang",
       "projection": "llvm-sdk",
+      "selection_only": true,
       "setup_evidence": [
         ".github/workflows/ci.yml::Native C object fixtures require the host image's clang."
       ],

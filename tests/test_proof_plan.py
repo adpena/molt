@@ -2686,16 +2686,21 @@ def test_explicit_selection_is_independent_of_version_image_choice():
     assert selected.inferred_executable is None
 
 
-@pytest.mark.parametrize("selector", [True, "yes", 1])
-def test_explicit_selection_requires_typed_resolver_contract(selector):
+@pytest.mark.parametrize("selector", [True, False, "yes", 1])
+def test_explicit_selection_controls_inference_without_changing_executable_identity(
+    selector,
+):
     policies = tuple(
         replace(p, data={**p.data, "selection_only": selector}) if p.name == "uv" else p
         for p in PLAN.toolchain_policies
     )
-    assert (
-        "uv: explicit prerequisite requires a typed content resolver"
-        in replace(PLAN, toolchain_policies=policies).validate()
-    )
+    errors = replace(PLAN, toolchain_policies=policies).validate()
+    if type(selector) is bool:
+        assert errors == []
+        selected = next(policy for policy in policies if policy.name == "uv")
+        assert selected.inferred_executable == (None if selector else "uv")
+    else:
+        assert "uv: selection_only must be a boolean" in errors
 
 
 def test_static_command_rejects_target_derived_toolchain() -> None:
@@ -7036,6 +7041,8 @@ def test_native_fixture_compiler_capability_keeps_llvm_abi_pin_separate() -> Non
     fixture = policies["hosted-clang"]
     abi = policies["clang"]
     assert fixture.data["executable"] == abi.data["executable"] == "clang"
+    assert fixture.inferred_executable is None
+    assert abi.inferred_executable == "clang"
     for version in ("Ubuntu clang version 18.1.8", "Apple clang version 17.0.0"):
         assert re.search(fixture.data["version_pattern"], version)
         assert not re.search(abi.data["version_pattern"], version)
