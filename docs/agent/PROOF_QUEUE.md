@@ -1459,6 +1459,15 @@ names, classes, and keyed fingerprints for every
 passed value, never plaintext values; queued logs and notebooks expose override
 names only.
 
+LLVM SDK environment names come from the same authority as their exporters.
+The exact SDK selectors and versioned llvm-sys, mlir-sys and TableGen prefixes
+remain classified inputs through command admission, supervisor compilation,
+Cargo workspace selection and tool-probe reuse. Changing a selected prefix
+changes those compile identities. Cargo configuration cannot replace a
+captured selector through an unbound `[env]` default or forced value. Unrelated
+MLIR/TableGen names remain unclassified; no broad prefix exception is implied.
+This is development input custody and adds no emitted-program work.
+
 Receipts bind run ID, a fresh execution nonce, row and effective cwd, Git root,
 commit and tree, cleanliness/status digest, environment,
 toolchains, and executable identities at both prelaunch and postcompletion.

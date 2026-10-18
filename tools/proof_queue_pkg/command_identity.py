@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
-from molt.llvm_toolchain import capture_wasi_sdk_selection
+from molt.llvm_toolchain import (
+    capture_wasi_sdk_selection,
+    llvm_toolchain_environment_name,
+)
 
 import contextlib
 import hashlib
@@ -1234,6 +1237,9 @@ def compile_environment_selection(
         if name not in OPERATIONAL_CARGO_NAMES
         and (
             name in COMPILE_ENVIRONMENT_NAMES
+            or llvm_toolchain_environment_name(
+                name.upper() if os.name == "nt" else name
+            )
             or _runtime_c_environment_name(name)
             or cargo_native_dependency_environment_name(name)
             or name in configured
