@@ -46,8 +46,11 @@ pub extern "C" fn molt_re_execute(
             execute_match(&compiled.compiled, &text, pos, end, &mode)
         };
         match matched {
-            Some(result) => build_match_result_bits(_py, &result, compiled.compiled.group_count),
-            None => MoltObject::none().bits(),
+            Ok(Some(result)) => {
+                build_match_result_bits(_py, &result, compiled.compiled.group_count)
+            }
+            Ok(None) => MoltObject::none().bits(),
+            Err(error) => match_error_result(_py, error),
         }
     })
 }
@@ -161,8 +164,9 @@ pub extern "C" fn molt_re_finditer_next(scanner_bits: u64, subject_bits: u64) ->
         };
         drop(scanner);
         match next {
-            Some(result) => build_match_result_bits(_py, &result, group_count),
-            None => MoltObject::none().bits(),
+            Ok(Some(result)) => build_match_result_bits(_py, &result, group_count),
+            Ok(None) => MoltObject::none().bits(),
+            Err(error) => match_error_result(_py, error),
         }
     })
 }
@@ -171,14 +175,14 @@ pub(super) fn advance_scanner(
     compiled: &CompiledPattern,
     scanner: &mut ScannerHandle,
     subject: SubjectStorage<'_>,
-) -> Option<MatchResult> {
+) -> Result<Option<MatchResult>, MatchError> {
     while scanner.pos <= scanner.end {
         let mode = if scanner.must_advance {
             "search_nonempty"
         } else {
             "search"
         };
-        let result = execute_match_subject(compiled, subject, scanner.pos, scanner.end, mode);
+        let result = execute_match_subject(compiled, subject, scanner.pos, scanner.end, mode)?;
         let Some(result) = result else {
             if scanner.must_advance && scanner.pos < scanner.end {
                 scanner.pos += 1;
@@ -186,7 +190,7 @@ pub(super) fn advance_scanner(
                 continue;
             }
             scanner.finished = true;
-            return None;
+            return Ok(None);
         };
         scanner.must_advance = result.start == result.end;
         scanner.pos = if result.start == result.end {
@@ -194,10 +198,10 @@ pub(super) fn advance_scanner(
         } else {
             result.end
         };
-        return Some(result);
+        return Ok(Some(result));
     }
     scanner.finished = true;
-    None
+    Ok(None)
 }
 
 pub(super) fn build_match_result_bits(
@@ -244,11 +248,23 @@ pub(super) fn build_match_result_bits(
         return MoltObject::none().bits();
     }
     let groups_bits = MoltObject::from_ptr(groups_ptr).bits();
-    let result_ptr = alloc_tuple(_py, &[start_bits, end_bits, groups_bits]);
+    let lastindex_bits = result.lastindex.map_or_else(
+        || MoltObject::none().bits(),
+        |index| MoltObject::from_int(i64::from(index)).bits(),
+    );
+    let result_ptr = alloc_tuple(_py, &[start_bits, end_bits, groups_bits, lastindex_bits]);
     dec_ref_bits(_py, groups_bits);
     if result_ptr.is_null() {
         MoltObject::none().bits()
     } else {
         MoltObject::from_ptr(result_ptr).bits()
+    }
+}
+
+pub(super) fn match_error_result(py: &CoreGilToken, error: MatchError) -> u64 {
+    match error {
+        MatchError::Memory => {
+            raise_exception::<_>(py, "MemoryError", "regex workspace allocation failed")
+        }
     }
 }

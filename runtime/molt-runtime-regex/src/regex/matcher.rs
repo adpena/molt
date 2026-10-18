@@ -1,864 +1,661 @@
 use super::*;
 
-// ---------------------------------------------------------------------------
-// Phase-1b: Backtracking match engine
-// ---------------------------------------------------------------------------
-//
-// A recursive backtracking NFA engine that walks the `ReNode` IR tree.  It
-// supports all node types produced by the Phase-1 parser.  The engine operates
-// on character indices (not byte indices) to match Python's `re` semantics.
-
-/// Match state threaded through the recursive engine.
 #[derive(Clone, Copy)]
 pub(super) enum SubjectStorage<'a> {
     Text(&'a [char]),
     Bytes(&'a [u8]),
 }
-
 impl SubjectStorage<'_> {
     #[inline]
-    pub(super) fn len(&self) -> usize {
+    pub(super) fn len(self) -> usize {
         match self {
-            Self::Text(chars) => chars.len(),
+            Self::Text(text) => text.len(),
             Self::Bytes(bytes) => bytes.len(),
         }
     }
-
     #[inline]
-    pub(super) fn unit(&self, index: usize) -> char {
+    pub(super) fn unit(self, index: usize) -> char {
         match self {
-            Self::Text(chars) => chars[index],
+            Self::Text(text) => text[index],
             Self::Bytes(bytes) => char::from(bytes[index]),
         }
     }
 }
 
-/// Match state threaded through the recursive engine.
-pub(super) struct MatchState<'a> {
-    /// Borrowed, indexed subject prepared once per public operation.
-    pub(super) subject: SubjectStorage<'a>,
-    /// Whether the compiled pattern uses bytes semantics.
-    pub(super) is_bytes: bool,
-    /// Effective flags for the current match context.
-    pub(super) flags: i64,
-    /// End of the search window (char index, exclusive).
-    pub(super) end: usize,
-    /// Present only while a scanner retries a prior empty match. The
-    /// synthetic RequireAdvance continuation rejects that empty path while
-    /// allowing the matcher to backtrack into later alternatives.
-    pub(super) require_advance_from: Option<usize>,
-    /// Group captures: index 0 is unused (group 0 is the whole match).
-    /// Each entry is Some((start, end)) or None if the group was not
-    /// captured.  Indexed by group number (1-based).
-    pub(super) groups: Vec<Option<(usize, usize)>>,
-    /// Recursion depth limit to prevent stack overflow on pathological
-    /// patterns.
-    pub(super) depth: usize,
+#[derive(Clone, Copy, Default)]
+struct RepeatState {
+    count: u64,
+    cursor: usize,
+    stalled: bool,
 }
 
-pub(super) const MAX_RECURSION_DEPTH: usize = 5000;
+enum Undo {
+    Start(u32, Option<usize>),
+    Capture(u32, Option<(usize, usize)>),
+    LastIndex(Option<u32>),
+    Repeat(usize, RepeatState),
+}
 
-impl<'a> MatchState<'a> {
+enum Retry {
+    Resume { pc: usize, pos: usize },
+    Single { pc: usize, count: u64, pos: usize },
+}
+struct Choice {
+    retry: Retry,
+    undo: usize,
+}
+struct Assertion {
+    next: usize,
+    pos: usize,
+    expected_end: Option<usize>,
+    positive: bool,
+    choices: usize,
+    undo: usize,
+}
+
+/// One workspace per operation, reused across search starts. Undo records contain
+/// changed slots only; alternatives never copy the capture catalog or program.
+pub(super) struct Matcher<'a> {
+    compiled: &'a CompiledPattern,
+    subject: SubjectStorage<'a>,
+    end: usize,
+    starts: Vec<Option<usize>>,
+    groups: Vec<Option<(usize, usize)>>,
+    lastindex: Option<u32>,
+    repeats: Vec<RepeatState>,
+    undo: Vec<Undo>,
+    choices: Vec<Choice>,
+    assertions: Vec<Assertion>,
+}
+
+fn slots<T: Clone>(len: usize, value: T) -> Result<Vec<T>, MatchError> {
+    let mut items = Vec::new();
+    items.try_reserve_exact(len)?;
+    items.resize(len, value);
+    Ok(items)
+}
+
+impl<'a> Matcher<'a> {
     pub(super) fn new(
+        compiled: &'a CompiledPattern,
         subject: SubjectStorage<'a>,
-        flags: i64,
-        is_bytes: bool,
-        group_count: u32,
         end: usize,
-    ) -> Self {
-        let groups = vec![None; (group_count + 1) as usize];
-        Self {
+    ) -> Result<Self, MatchError> {
+        let count = compiled.group_count as usize + 1;
+        Ok(Self {
+            compiled,
             subject,
-            is_bytes,
-            flags,
             end,
-            require_advance_from: None,
-            groups,
-            depth: 0,
-        }
+            starts: slots(count, None)?,
+            groups: slots(count, None)?,
+            lastindex: None,
+            repeats: slots(compiled.program.repeats, RepeatState::default())?,
+            undo: Vec::new(),
+            choices: Vec::new(),
+            assertions: Vec::new(),
+        })
     }
 
-    /// Save group state for backtracking.
-    pub(super) fn save_groups(&self) -> Vec<Option<(usize, usize)>> {
-        self.groups.clone()
-    }
-
-    /// Restore group state after a failed branch.
-    pub(super) fn restore_groups(&mut self, saved: Vec<Option<(usize, usize)>>) {
-        self.groups = saved;
-    }
-
-    #[inline]
-    pub(super) fn is_ignorecase(&self) -> bool {
-        self.flags & RE_IGNORECASE != 0
-    }
-
-    #[inline]
-    pub(super) fn is_dotall(&self) -> bool {
-        self.flags & RE_DOTALL != 0
-    }
-
-    #[inline]
-    pub(super) fn is_multiline(&self) -> bool {
-        self.flags & RE_MULTILINE != 0
-    }
-
-    #[inline]
-    pub(super) fn is_ascii(&self) -> bool {
-        self.is_bytes || self.flags & RE_ASCII != 0
-    }
-
-    /// Check if a character is a "word" character for \b / \w purposes.
-    #[inline]
-    pub(super) fn is_word_char(&self, ch: char) -> bool {
-        ch == '_' || ch.is_ascii_alphanumeric() || (!self.is_ascii() && ch.is_alphabetic())
-    }
-
-    /// Compare two characters, respecting IGNORECASE.
-    #[inline]
-    pub(super) fn char_eq(&self, a: char, b: char) -> bool {
-        if self.is_ignorecase() {
-            if self.is_bytes {
-                return a.eq_ignore_ascii_case(&b);
+    fn rollback(&mut self, checkpoint: usize) {
+        while self.undo.len() > checkpoint {
+            match self.undo.pop().expect("undo checkpoint") {
+                Undo::Start(index, value) => self.starts[index as usize] = value,
+                Undo::Capture(index, value) => self.groups[index as usize] = value,
+                Undo::LastIndex(value) => self.lastindex = value,
+                Undo::Repeat(index, value) => self.repeats[index] = value,
             }
-            a.to_lowercase().eq(b.to_lowercase())
-        } else {
-            a == b
         }
     }
-}
 
-/// Attempt to match `node` starting at `pos` in the subject, followed by the
-/// continuation nodes in `rest`.  This continuation-passing design is critical
-/// for correct backtracking in quantifiers â€” the quantifier can try different
-/// repetition counts and verify that the rest of the pattern also matches.
-///
-/// Returns `Some(final_pos)` on success or `None` on failure.
-pub(super) fn try_match(
-    node: &ReNode,
-    pos: usize,
-    rest: &[ReNode],
-    state: &mut MatchState<'_>,
-) -> Option<usize> {
-    state.depth += 1;
-    if state.depth > MAX_RECURSION_DEPTH {
-        state.depth -= 1;
-        return None;
+    fn start_group(&mut self, index: u32, pos: usize) -> Result<(), MatchError> {
+        let old = self.starts[index as usize];
+        checked_push(&mut self.undo, Undo::Start(index, old))?;
+        self.starts[index as usize] = Some(pos);
+        Ok(())
     }
-    let result = try_match_inner(node, pos, rest, state);
-    state.depth -= 1;
-    result
-}
 
-/// Match a continuation (a slice of nodes that must match in sequence starting
-/// from `pos`).  Returns `Some(final_pos)` on success.
-pub(super) fn match_rest(rest: &[ReNode], pos: usize, state: &mut MatchState<'_>) -> Option<usize> {
-    if rest.is_empty() {
-        return Some(pos);
+    fn capture(&mut self, index: u32, start: usize, end: usize) -> Result<(), MatchError> {
+        checked_push(
+            &mut self.undo,
+            Undo::Capture(index, self.groups[index as usize]),
+        )?;
+        checked_push(&mut self.undo, Undo::LastIndex(self.lastindex))?;
+        self.groups[index as usize] = Some((start, end));
+        self.lastindex = Some(index);
+        Ok(())
     }
-    try_match(&rest[0], pos, &rest[1..], state)
-}
 
-pub(super) fn try_match_inner(
-    node: &ReNode,
-    pos: usize,
-    rest: &[ReNode],
-    state: &mut MatchState<'_>,
-) -> Option<usize> {
-    match node {
-        ReNode::Empty => match_rest(rest, pos, state),
+    fn repeat(&mut self, id: usize, value: RepeatState) -> Result<(), MatchError> {
+        checked_push(&mut self.undo, Undo::Repeat(id, self.repeats[id]))?;
+        self.repeats[id] = value;
+        Ok(())
+    }
 
-        ReNode::RequireAdvance => {
-            if state.require_advance_from.is_some_and(|start| pos > start) {
-                match_rest(rest, pos, state)
+    fn choose(&mut self, retry: Retry) -> Result<(), MatchError> {
+        checked_push(
+            &mut self.choices,
+            Choice {
+                retry,
+                undo: self.undo.len(),
+            },
+        )
+    }
+
+    fn matches_one(&self, plan: usize, mut pos: usize) -> bool {
+        let single = &self.compiled.program.singles[plan];
+        if single.width > self.end.saturating_sub(pos) {
+            return false;
+        }
+        for atom in &single.atoms {
+            let Some(next) =
+                atom_matches(atom, self.subject, pos, self.end, self.compiled.is_bytes)
+            else {
+                return false;
+            };
+            pos = next;
+        }
+        true
+    }
+
+    fn single_captures(&mut self, plan: usize, count: u64, pos: usize) -> Result<(), MatchError> {
+        if count != 0 {
+            let single = &self.compiled.program.singles[plan];
+            let start = pos - single.width;
+            for recipe in &single.captures {
+                self.start_group(recipe.index, start + recipe.start)?;
+                self.capture(recipe.index, start + recipe.start, start + recipe.end)?;
+            }
+        }
+        Ok(())
+    }
+
+    fn single(
+        &mut self,
+        pc: usize,
+        count: u64,
+        pos: usize,
+        retry: bool,
+    ) -> Result<Option<(usize, usize)>, MatchError> {
+        let Instruction::RepeatOne {
+            plan,
+            min,
+            max,
+            greedy,
+            next,
+        } = self.compiled.program.code[pc]
+        else {
+            unreachable!("single retry opcode")
+        };
+        let width = self.compiled.program.singles[plan].width;
+        let mut count = count;
+        let mut pos = pos;
+        if retry {
+            if greedy {
+                if count == min {
+                    return Ok(None);
+                }
+                count -= 1;
+                pos -= width;
             } else {
-                None
+                if max.is_some_and(|max| count >= max) || !self.matches_one(plan, pos) {
+                    return Ok(None);
+                }
+                count += 1;
+                pos += width;
             }
-        }
-
-        ReNode::Literal(s) => {
-            let lit_chars: Vec<char> = s.chars().collect();
-            if pos + lit_chars.len() > state.end {
-                return None;
+        } else {
+            while count < min {
+                if !self.matches_one(plan, pos) {
+                    return Ok(None);
+                }
+                count += 1;
+                pos += width;
             }
-            for (i, &lc) in lit_chars.iter().enumerate() {
-                if !state.char_eq(state.subject.unit(pos + i), lc) {
-                    return None;
+            if greedy {
+                while max.is_none_or(|max| count < max) && self.matches_one(plan, pos) {
+                    count += 1;
+                    pos += width;
                 }
             }
-            match_rest(rest, pos + lit_chars.len(), state)
         }
-
-        ReNode::Any => {
-            if pos >= state.end {
-                return None;
-            }
-            let ch = state.subject.unit(pos);
-            if !state.is_dotall() && ch == '\n' {
-                return None;
-            }
-            match_rest(rest, pos + 1, state)
+        // The checkpoint precedes capture projection: retries restore the state
+        // before the loop, then reconstruct exactly the selected last iteration.
+        if (greedy && count > min) || (!greedy && max.is_none_or(|max| count < max)) {
+            self.choose(Retry::Single { pc, count, pos })?;
         }
+        self.single_captures(plan, count, pos)?;
+        Ok(Some((next, pos)))
+    }
 
-        ReNode::Anchor(kind) => {
-            if match_anchor(kind, pos, state).is_some() {
-                match_rest(rest, pos, state)
+    /// Resume a priority alternative. Assertion-local alternatives cannot escape
+    /// their barrier; successful positive assertions discard their retries.
+    fn backtrack(&mut self) -> Result<Option<(usize, usize)>, MatchError> {
+        loop {
+            let barrier = self.assertions.last().map_or(0, |frame| frame.choices);
+            if self.choices.len() > barrier {
+                let choice = self.choices.pop().expect("choice barrier");
+                self.rollback(choice.undo);
+                match choice.retry {
+                    Retry::Resume { pc, pos } => return Ok(Some((pc, pos))),
+                    Retry::Single { pc, count, pos } => {
+                        if let Some(resume) = self.single(pc, count, pos, true)? {
+                            return Ok(Some(resume));
+                        }
+                    }
+                }
+            } else if let Some(frame) = self.assertions.pop() {
+                self.rollback(frame.undo);
+                if !frame.positive {
+                    return Ok(Some((frame.next, frame.pos)));
+                }
             } else {
-                None
+                self.rollback(0);
+                return Ok(None);
             }
         }
+    }
 
-        ReNode::CharClass {
+    pub(super) fn run(
+        &mut self,
+        start: usize,
+        fullmatch: bool,
+        require_advance: Option<usize>,
+    ) -> Result<Option<usize>, MatchError> {
+        self.choices.clear();
+        self.assertions.clear();
+        self.rollback(0);
+        let mut pc = self.compiled.program.entry;
+        let mut pos = start;
+        loop {
+            let instruction = &self.compiled.program.code[pc];
+            let mut failed = false;
+            match *instruction {
+                Instruction::Accept => {
+                    if (!fullmatch || pos == self.end) && require_advance != Some(pos) {
+                        return Ok(Some(pos));
+                    }
+                    failed = true;
+                }
+                Instruction::AssertionAccept => {
+                    let frame = self.assertions.last().expect("assertion accept");
+                    if frame.expected_end.is_some_and(|end| pos != end) {
+                        failed = true;
+                    } else {
+                        let frame = self.assertions.pop().expect("assertion frame");
+                        self.choices.truncate(frame.choices);
+                        if frame.positive {
+                            pc = frame.next;
+                            pos = frame.pos;
+                        } else {
+                            self.rollback(frame.undo);
+                            failed = true;
+                        }
+                    }
+                }
+                Instruction::Consume { ref atom, next } => {
+                    if let Some(end) =
+                        atom_matches(atom, self.subject, pos, self.end, self.compiled.is_bytes)
+                    {
+                        pos = end;
+                        pc = next;
+                    } else {
+                        failed = true;
+                    }
+                }
+                Instruction::Anchor { kind, flags, next } => {
+                    if anchor_matches(
+                        kind,
+                        pos,
+                        self.subject,
+                        self.end,
+                        flags,
+                        self.compiled.is_bytes,
+                    ) {
+                        pc = next;
+                    } else {
+                        failed = true;
+                    }
+                }
+                Instruction::Split { first, second } => {
+                    self.choose(Retry::Resume { pc: second, pos })?;
+                    pc = first;
+                }
+                Instruction::GroupStart { index, next } => {
+                    self.start_group(index, pos)?;
+                    pc = next;
+                }
+                Instruction::GroupEnd { index, next } => {
+                    let start =
+                        self.starts[index as usize].expect("compiled group start dominates end");
+                    self.capture(index, start, pos)?;
+                    pc = next;
+                }
+                Instruction::Backref { index, flags, next } => {
+                    if let Some((start, end)) = self.groups.get(index as usize).copied().flatten() {
+                        let width = end - start;
+                        if width <= self.end.saturating_sub(pos)
+                            && (0..width).all(|offset| {
+                                char_eq(
+                                    self.subject.unit(start + offset),
+                                    self.subject.unit(pos + offset),
+                                    flags,
+                                    self.compiled.is_bytes,
+                                )
+                            })
+                        {
+                            pos += width;
+                            pc = next;
+                        } else {
+                            failed = true;
+                        }
+                    } else {
+                        failed = true;
+                    }
+                }
+                Instruction::Conditional { index, yes, no } => {
+                    pc = if self.groups.get(index as usize).is_some_and(Option::is_some) {
+                        yes
+                    } else {
+                        no
+                    };
+                }
+                Instruction::Assert {
+                    entry,
+                    width,
+                    positive,
+                    next,
+                } => {
+                    if width.is_some_and(|width| width > pos as u64) {
+                        if positive {
+                            failed = true;
+                        } else {
+                            pc = next;
+                        }
+                    } else {
+                        checked_push(
+                            &mut self.assertions,
+                            Assertion {
+                                next,
+                                pos,
+                                expected_end: width.map(|_| pos),
+                                positive,
+                                choices: self.choices.len(),
+                                undo: self.undo.len(),
+                            },
+                        )?;
+                        // Nested lookahead sees the original subject window even
+                        // inside lookbehind; only assertion acceptance fixes end.
+                        pos -= width.unwrap_or(0) as usize;
+                        pc = entry;
+                    }
+                }
+                Instruction::RepeatEnter { id, next } => {
+                    self.repeat(
+                        id,
+                        RepeatState {
+                            count: 0,
+                            cursor: pos,
+                            stalled: false,
+                        },
+                    )?;
+                    pc = next;
+                }
+                Instruction::Repeat {
+                    id,
+                    body,
+                    min,
+                    max,
+                    greedy,
+                    next,
+                } => {
+                    let state = self.repeats[id];
+                    let more = max.is_none_or(|max| state.count < max)
+                        && (!state.stalled || state.count < min);
+                    if state.count < min {
+                        if more {
+                            pc = body;
+                        } else {
+                            failed = true;
+                        }
+                    } else if more {
+                        let (first, second) = if greedy { (body, next) } else { (next, body) };
+                        self.choose(Retry::Resume { pc: second, pos })?;
+                        pc = first;
+                    } else {
+                        pc = next;
+                    }
+                }
+                Instruction::RepeatStep { id, next } => {
+                    let old = self.repeats[id];
+                    self.repeat(
+                        id,
+                        RepeatState {
+                            count: old.count + 1,
+                            cursor: pos,
+                            stalled: pos == old.cursor,
+                        },
+                    )?;
+                    pc = next;
+                }
+                Instruction::RepeatOne { .. } => {
+                    if let Some((next, end)) = self.single(pc, 0, pos, false)? {
+                        pc = next;
+                        pos = end;
+                    } else {
+                        failed = true;
+                    }
+                }
+            }
+            if failed {
+                match self.backtrack()? {
+                    Some((next, end)) => {
+                        pc = next;
+                        pos = end;
+                    }
+                    None => return Ok(None),
+                }
+            }
+        }
+    }
+
+    pub(super) fn result(self, start: usize, end: usize) -> MatchResult {
+        MatchResult {
+            start,
+            end,
+            groups: self.groups,
+            lastindex: self.lastindex,
+        }
+    }
+}
+
+#[inline]
+fn ascii(flags: i64, is_bytes: bool) -> bool {
+    is_bytes || flags & RE_ASCII != 0
+}
+#[inline]
+fn word(ch: char, flags: i64, is_bytes: bool) -> bool {
+    ch == '_'
+        || if ascii(flags, is_bytes) {
+            ch.is_ascii_alphanumeric()
+        } else {
+            ch.is_alphanumeric()
+        }
+}
+#[inline]
+pub(super) fn char_eq(a: char, b: char, flags: i64, is_bytes: bool) -> bool {
+    if flags & RE_IGNORECASE == 0 {
+        a == b
+    } else if ascii(flags, is_bytes) {
+        a.eq_ignore_ascii_case(&b)
+    } else {
+        a.to_lowercase().eq(b.to_lowercase())
+    }
+}
+
+fn category_matches(category: Category, ch: char, flags: i64, is_bytes: bool) -> bool {
+    match category {
+        Category::Digit => ch.is_ascii_digit(),
+        Category::NotDigit => !ch.is_ascii_digit(),
+        Category::Space => matches!(ch, ' ' | '\t' | '\n' | '\r' | '\u{000C}' | '\u{000B}'),
+        Category::NotSpace => !matches!(ch, ' ' | '\t' | '\n' | '\r' | '\u{000C}' | '\u{000B}'),
+        Category::Word => word(ch, flags, is_bytes),
+        Category::NotWord => !word(ch, flags, is_bytes),
+    }
+}
+
+#[inline]
+fn atom_matches(
+    atom: &Atom,
+    subject: SubjectStorage<'_>,
+    pos: usize,
+    end: usize,
+    is_bytes: bool,
+) -> Option<usize> {
+    let flags = atom.flags;
+    if let Predicate::Literal(expected) = &atom.predicate {
+        return (expected.len() <= end.saturating_sub(pos)
+            && expected
+                .iter()
+                .enumerate()
+                .all(|(offset, &ch)| char_eq(subject.unit(pos + offset), ch, flags, is_bytes)))
+        .then_some(pos + expected.len());
+    }
+    if pos >= end {
+        return None;
+    }
+    let ch = subject.unit(pos);
+    let matched = match &atom.predicate {
+        Predicate::Unit(expected) => char_eq(ch, *expected, flags, is_bytes),
+        Predicate::Literal(_) => unreachable!("literal handled before subject unit access"),
+        Predicate::Any => flags & RE_DOTALL != 0 || ch != '\n',
+        Predicate::Class {
             negated,
             ranges,
             chars,
             categories,
         } => {
-            if pos >= state.end {
-                return None;
-            }
-            let ch = state.subject.unit(pos);
-            let hit = char_class_matches(ch, *negated, ranges, chars, categories, state);
-            if hit {
-                match_rest(rest, pos + 1, state)
-            } else {
-                None
-            }
-        }
-
-        ReNode::Concat(nodes) => {
-            // Flatten: the concat nodes followed by rest form the new
-            // continuation.
-            if nodes.is_empty() {
-                return match_rest(rest, pos, state);
-            }
-            // Build combined continuation: nodes[1..] ++ rest.
-            let mut combined: Vec<ReNode> = Vec::with_capacity(nodes.len() - 1 + rest.len());
-            combined.extend_from_slice(&nodes[1..]);
-            combined.extend_from_slice(rest);
-            try_match(&nodes[0], pos, &combined, state)
-        }
-
-        ReNode::Alt(options) => {
-            for opt in options {
-                let saved = state.save_groups();
-                if let Some(end_pos) = try_match(opt, pos, rest, state) {
-                    return Some(end_pos);
-                }
-                state.restore_groups(saved);
-            }
-            None
-        }
-
-        ReNode::Repeat {
-            node: inner,
-            min_count,
-            max_count,
-            greedy,
-        } => try_match_repeat(inner, pos, *min_count, *max_count, *greedy, rest, state),
-
-        ReNode::Group { node: inner, index } => {
-            let saved = state.save_groups();
-            // We need to match `inner` and then set the group, then match rest.
-            // Use a wrapper approach: match inner with empty rest, record group,
-            // then match rest.
-            let inner_result = try_match_group_then_rest(inner, *index, pos, rest, state);
-            if inner_result.is_none() {
-                state.restore_groups(saved);
-            }
-            inner_result
-        }
-
-        ReNode::Backref(idx) => {
-            let idx = *idx as usize;
-            if idx >= state.groups.len() {
-                return None;
-            }
-            let (gstart, gend) = state.groups[idx]?;
-            let ref_len = gend - gstart;
-            if pos + ref_len > state.end {
-                return None;
-            }
-            for i in 0..ref_len {
-                if !state.char_eq(state.subject.unit(gstart + i), state.subject.unit(pos + i)) {
-                    return None;
-                }
-            }
-            match_rest(rest, pos + ref_len, state)
-        }
-
-        ReNode::Look {
-            node: inner,
-            behind,
-            positive,
-            width,
-        } => {
-            if try_match_look(inner, pos, *behind, *positive, *width, state).is_some() {
-                match_rest(rest, pos, state)
-            } else {
-                None
-            }
-        }
-
-        ReNode::ScopedFlags {
-            node: inner,
-            add_flags,
-            clear_flags,
-        } => {
-            let old_flags = state.flags;
-            state.flags = (state.flags | add_flags) & !clear_flags;
-            // Match inner under scoped flags, then restore flags before
-            // matching rest (rest should run under the outer flags).
-            let inner_result = try_match(inner, pos, &[], state);
-            state.flags = old_flags;
-            match inner_result {
-                Some(inner_end) => match_rest(rest, inner_end, state),
-                None => None,
-            }
-        }
-
-        ReNode::Conditional {
-            group_index,
-            yes,
-            no,
-        } => {
-            let idx = *group_index as usize;
-            let group_matched = idx < state.groups.len() && state.groups[idx].is_some();
-            if group_matched {
-                try_match(yes, pos, rest, state)
-            } else {
-                try_match(no, pos, rest, state)
-            }
-        }
-    }
-}
-
-/// Match a Group node: match the inner pattern, record the group capture, then
-/// match the rest continuation.  This ensures backtracking can unwind through
-/// the group correctly.
-pub(super) fn try_match_group_then_rest(
-    inner: &ReNode,
-    index: u32,
-    pos: usize,
-    rest: &[ReNode],
-    state: &mut MatchState<'_>,
-) -> Option<usize> {
-    // We create a synthetic rest that records the group then continues.
-    // Since we can't easily insert a callback, we use a two-phase approach:
-    // 1. Match inner with empty rest to find all possible end positions.
-    // 2. For each end position, set the group and try matching rest.
-    //
-    // But that requires enumerating end positions, which is complex.
-    // Instead, we match inner with empty continuation, record the group,
-    // and match rest.  If rest fails, we need to backtrack into inner.
-    //
-    // For simplicity and correctness, we use the approach of matching inner
-    // with a special "set-group-then-rest" continuation.  We encode this
-    // by matching inner, and if it succeeds, setting the group and matching
-    // rest.  If rest fails, we return None which propagates backtracking
-    // back through inner's alternatives/quantifiers.
-
-    // Build a continuation that represents: "set group, then match rest".
-    // We do this by matching inner node with `rest` as continuation, but
-    // wrapping in a way that records the group span.
-    //
-    // The simplest correct approach: match inner with empty rest to get
-    // the inner end position, set the group, match rest.  This is correct
-    // for most cases but doesn't allow inner to backtrack when rest fails.
-    //
-    // For proper backtracking, we need inner to know about rest.  The way
-    // to do this: pass rest into the inner match but intercept the result
-    // to set the group.  But the group span depends on inner's end position,
-    // which is not directly available when rest is already appended.
-    //
-    // Full solution: match inner with empty rest, record end_pos, set group,
-    // match rest.  This works for non-quantifier inner nodes.  For quantifier
-    // inner nodes, the quantifier's backtracking handles it.
-
-    // Simple approach (works for vast majority of patterns):
-    let saved = state.save_groups();
-    // Try matching inner alone first.
-    let inner_end = try_match(inner, pos, &[], state);
-    match inner_end {
-        Some(end_pos) => {
-            state.groups[index as usize] = Some((pos, end_pos));
-            match match_rest(rest, end_pos, state) {
-                Some(final_pos) => Some(final_pos),
-                None => {
-                    // Rest failed â€” we need to try other inner matches.
-                    // For alternation/quantifier inner nodes, the backtracking
-                    // in try_match already handles this.  But since we called
-                    // try_match with empty rest, we got the "first" match.
-                    // We need to enumerate all possible inner end positions.
-                    //
-                    // Re-try with rest appended to inner's continuation.
-                    state.restore_groups(saved);
-                    // Fall through to the continuation-passing approach.
-                    try_match_group_with_continuation(inner, index, pos, rest, state)
-                }
-            }
-        }
-        None => {
-            state.restore_groups(saved);
-            None
-        }
-    }
-}
-
-/// Match a group with full continuation passing for proper backtracking.
-/// This is the fallback when the simple group-then-rest approach fails.
-pub(super) fn try_match_group_with_continuation(
-    inner: &ReNode,
-    index: u32,
-    pos: usize,
-    rest: &[ReNode],
-    state: &mut MatchState<'_>,
-) -> Option<usize> {
-    // We create a synthetic node that represents "set group N to (pos, HERE),
-    // then match rest".  We encode this as a special wrapper.
-    //
-    // Since our try_match doesn't support arbitrary callbacks, we instead
-    // build a Concat of [inner, GroupCapture(index, pos), rest...] where
-    // GroupCapture is handled inline.
-    //
-    // The cleanest approach: wrap rest into a continuation and pass through.
-    // We use a helper node that records the group capture point.
-    //
-    // For now, we use a marker node approach: create a synthetic concat that
-    // is inner followed by rest, and after inner matches at some position,
-    // we intercept to set the group.  This is effectively what the
-    // continuation-passing style already does.
-
-    // Match inner with rest as continuation.  The trick is that we need to
-    // set the group capture BETWEEN inner and rest.  We do this by inserting
-    // a synthetic "group-set" node.  Since we don't have such a node type,
-    // we create a special Concat:
-
-    // Actually, the simplest correct approach for groups with quantifier
-    // inners is to NOT separate inner from rest.  Instead, match the entire
-    // group pattern with rest as continuation, and record the group span
-    // based on how far inner consumed.
-
-    // The way CPython/sre handles this: the group node wraps the inner
-    // pattern, and on entry it marks the group start, and on the inner's
-    // success it marks the group end, then continues with rest.  If rest
-    // fails, it backtracks into inner.
-
-    // We can emulate this by using a try_match variant that records the
-    // group span at each possible inner end position and then tries rest.
-
-    // For alternation inner:
-    match inner {
-        ReNode::Alt(options) => {
-            for opt in options {
-                let saved = state.save_groups();
-                if let Some(end_pos) = try_match(opt, pos, &[], state) {
-                    state.groups[index as usize] = Some((pos, end_pos));
-                    if let Some(final_pos) = match_rest(rest, end_pos, state) {
-                        return Some(final_pos);
-                    }
-                }
-                state.restore_groups(saved);
-            }
-            None
-        }
-        ReNode::Repeat {
-            node: rep_inner,
-            min_count,
-            max_count,
-            greedy,
-        } => {
-            // For quantifier inner, we need to try each possible repetition
-            // count.  Build positions list and try each.
-            let min = *min_count as usize;
-            let max = max_count.map(|m| m as usize).unwrap_or(state.end - pos + 1);
-
-            // Collect all possible end positions after min..=max repetitions.
-            let mut end_positions = Vec::new();
-            collect_repeat_positions(rep_inner, pos, min, max, state, &mut end_positions, 0);
-
-            if *greedy {
-                // Try from most repetitions to fewest.
-                for &end_pos in end_positions.iter().rev() {
-                    let saved = state.save_groups();
-                    state.groups[index as usize] = Some((pos, end_pos));
-                    if let Some(final_pos) = match_rest(rest, end_pos, state) {
-                        return Some(final_pos);
-                    }
-                    state.restore_groups(saved);
-                }
-            } else {
-                // Try from fewest to most.
-                for &end_pos in &end_positions {
-                    let saved = state.save_groups();
-                    state.groups[index as usize] = Some((pos, end_pos));
-                    if let Some(final_pos) = match_rest(rest, end_pos, state) {
-                        return Some(final_pos);
-                    }
-                    state.restore_groups(saved);
-                }
-            }
-            None
-        }
-        _ => {
-            // For simple inner nodes, the single try_match already handles it.
-            // If we got here, there's no alternative to try.
-            None
-        }
-    }
-}
-
-/// Collect all possible end positions after `count`..=`max` repetitions of
-/// `inner` starting from `pos`.  Called recursively.  Note: this temporarily
-/// modifies `state.groups` during recursive calls, but always restores them
-/// before returning.
-pub(super) fn collect_repeat_positions(
-    inner: &ReNode,
-    pos: usize,
-    min: usize,
-    max: usize,
-    state: &mut MatchState<'_>,
-    positions: &mut Vec<usize>,
-    count: usize,
-) {
-    if count >= min {
-        positions.push(pos);
-    }
-    if count >= max {
-        return;
-    }
-    let saved = state.save_groups();
-    if let Some(next) = try_match(inner, pos, &[], state) {
-        if next == pos {
-            // Zero-width â€” don't recurse to avoid infinite loop.
-            state.restore_groups(saved);
-            return;
-        }
-        collect_repeat_positions(inner, next, min, max, state, positions, count + 1);
-    }
-    state.restore_groups(saved);
-}
-
-/// Match an anchor node.  Returns `Some(pos)` if the anchor condition holds
-/// (anchors consume zero characters).
-pub(super) fn match_anchor(kind: &str, pos: usize, state: &MatchState<'_>) -> Option<usize> {
-    match kind {
-        "start" => {
-            // ^ â€” matches beginning of string, or after \n in MULTILINE.
-            if pos == 0 {
-                return Some(pos);
-            }
-            if state.is_multiline() && pos > 0 && state.subject.unit(pos - 1) == '\n' {
-                return Some(pos);
-            }
-            None
-        }
-        "end" => {
-            // $ â€” matches end of string, or before \n in MULTILINE.
-            // Also matches before a final \n at end (CPython behavior).
-            if pos == state.end {
-                return Some(pos);
-            }
-            if state.is_multiline() && pos < state.end && state.subject.unit(pos) == '\n' {
-                return Some(pos);
-            }
-            // $ also matches before a trailing newline even without MULTILINE.
-            if !state.is_multiline() && pos == state.end - 1 && state.subject.unit(pos) == '\n' {
-                return Some(pos);
-            }
-            None
-        }
-        "start_abs" => {
-            // \A â€” matches only at the start of the string.
-            if pos == 0 { Some(pos) } else { None }
-        }
-        "end_abs" => {
-            // \Z â€” matches only at the end of the string (or before a
-            // trailing newline at the very end).
-            if pos == state.end {
-                return Some(pos);
-            }
-            if pos == state.end - 1 && state.subject.unit(pos) == '\n' {
-                return Some(pos);
-            }
-            None
-        }
-        "word_boundary" => {
-            // \b â€” word boundary.
-            let left_word = pos > 0 && state.is_word_char(state.subject.unit(pos - 1));
-            let right_word =
-                pos < state.subject.len() && state.is_word_char(state.subject.unit(pos));
-            if left_word != right_word {
-                Some(pos)
-            } else {
-                None
-            }
-        }
-        "word_boundary_not" => {
-            // \B â€” non-word-boundary.
-            let left_word = pos > 0 && state.is_word_char(state.subject.unit(pos - 1));
-            let right_word =
-                pos < state.subject.len() && state.is_word_char(state.subject.unit(pos));
-            if left_word == right_word {
-                Some(pos)
-            } else {
-                None
-            }
-        }
-        _ => None,
-    }
-}
-
-/// Check whether `ch` matches a character class specification.
-pub(super) fn char_class_matches(
-    ch: char,
-    negated: bool,
-    ranges: &[(String, String)],
-    chars: &[String],
-    categories: &[String],
-    state: &MatchState<'_>,
-) -> bool {
-    let mut hit = false;
-
-    // Check literal chars.
-    for c_str in chars {
-        // Each entry is a single-char string.
-        if let Some(c) = c_str.chars().next()
-            && state.char_eq(ch, c)
-        {
-            hit = true;
-            break;
-        }
-    }
-
-    // Check ranges.
-    if !hit {
-        for (lo_str, hi_str) in ranges {
-            let lo = lo_str.chars().next().unwrap_or('\0');
-            let hi = hi_str.chars().next().unwrap_or('\0');
-            if state.is_ignorecase() {
-                if state.is_bytes {
-                    let ch_lower = ch.to_ascii_lowercase();
-                    let lo_lower = lo.to_ascii_lowercase();
-                    let hi_lower = hi.to_ascii_lowercase();
-                    if ch_lower >= lo_lower && ch_lower <= hi_lower {
-                        hit = true;
-                        break;
-                    }
-                    continue;
-                }
-                let ch_lower = ch.to_lowercase().next().unwrap_or(ch);
-                let lo_lower = lo.to_lowercase().next().unwrap_or(lo);
-                let hi_lower = hi.to_lowercase().next().unwrap_or(hi);
-                if ch_lower >= lo_lower && ch_lower <= hi_lower {
-                    hit = true;
-                    break;
-                }
-                // Also check uppercase range for case-insensitive.
-                let ch_upper = ch.to_uppercase().next().unwrap_or(ch);
-                let lo_upper = lo.to_uppercase().next().unwrap_or(lo);
-                let hi_upper = hi.to_uppercase().next().unwrap_or(hi);
-                if ch_upper >= lo_upper && ch_upper <= hi_upper {
-                    hit = true;
-                    break;
-                }
-            } else if ch >= lo && ch <= hi {
-                hit = true;
-                break;
-            }
-        }
-    }
-
-    // Check categories (\d, \s, \w, etc.)
-    if !hit {
-        for cat in categories {
-            let cat_match = match cat.as_str() {
-                "d" => ch.is_ascii_digit(),
-                "s" => matches!(ch, ' ' | '\t' | '\n' | '\r' | '\u{000C}' | '\u{000B}'),
-                "w" => {
-                    ch == '_'
-                        || ch.is_ascii_alphanumeric()
-                        || (!state.is_ascii() && ch.is_alphabetic())
-                }
-                _ => {
-                    // Handle POSIX classes like "posix:alpha".
-                    if let Some(posix_name) = cat.strip_prefix("posix:") {
-                        match posix_name {
-                            "alpha" => ch.is_alphabetic(),
-                            "digit" => ch.is_ascii_digit(),
-                            "alnum" => ch.is_alphanumeric(),
-                            "space" => ch.is_whitespace(),
-                            "upper" => ch.is_uppercase(),
-                            "lower" => ch.is_lowercase(),
-                            "punct" => ch.is_ascii_punctuation(),
-                            "print" => !ch.is_control(),
-                            "xdigit" => ch.is_ascii_hexdigit(),
-                            _ => false,
-                        }
+            let hit = chars
+                .iter()
+                .any(|expected| char_eq(ch, *expected, flags, is_bytes))
+                || ranges.iter().any(|&(lo, hi)| {
+                    if flags & RE_IGNORECASE == 0 {
+                        (lo..=hi).contains(&ch)
+                    } else if ascii(flags, is_bytes) {
+                        (lo.to_ascii_lowercase()..=hi.to_ascii_lowercase())
+                            .contains(&ch.to_ascii_lowercase())
                     } else {
-                        false
+                        let lower = |ch: char| ch.to_lowercase().next().unwrap_or(ch);
+                        let upper = |ch: char| ch.to_uppercase().next().unwrap_or(ch);
+                        (lower(lo)..=lower(hi)).contains(&lower(ch))
+                            || (upper(lo)..=upper(hi)).contains(&upper(ch))
                     }
-                }
-            };
-            // Handle negated categories (\D, \S, \W).
-            // The parser stores \D as CharClass { negated: true, categories: ["d"] }.
-            // So the negation is handled at the top level, not per-category.
-            if cat_match {
-                hit = true;
-                break;
-            }
+                })
+                || categories
+                    .iter()
+                    .any(|&category| category_matches(category, ch, flags, is_bytes));
+            hit != *negated
         }
-    }
-
-    if negated { !hit } else { hit }
+    };
+    matched.then_some(pos + 1)
 }
 
-/// Match a `Repeat` (quantifier) node with backtracking.
-///
-/// The continuation `rest` is the sequence of nodes that must match after this
-/// quantifier.  This enables the quantifier to backtrack: after matching N
-/// repetitions, it tries to match rest; if rest fails, it adjusts N.
-pub(super) fn try_match_repeat(
-    inner: &ReNode,
+fn anchor_matches(
+    kind: Anchor,
     pos: usize,
-    min_count: u64,
-    max_count: Option<u64>,
-    greedy: bool,
-    rest: &[ReNode],
-    state: &mut MatchState<'_>,
-) -> Option<usize> {
-    let min = min_count as usize;
-    let max = max_count.map(|m| m as usize).unwrap_or(usize::MAX);
-
-    // Collect all reachable positions after 0..=max repetitions.
-    // positions[i] = position after exactly i repetitions (for i >= min, this
-    // is a valid candidate).
-    let mut positions: Vec<usize> = Vec::new();
-    let mut cur = pos;
-    // Match minimum repetitions first (mandatory).
-    for i in 0..min {
-        let saved = state.save_groups();
-        match try_match(inner, cur, &[], state) {
-            Some(next) => {
-                if next == cur && i > 0 {
-                    // Zero-width match in minimum â€” still counts.
-                    state.restore_groups(saved);
-                    break;
-                }
-                cur = next;
-            }
-            None => {
-                state.restore_groups(saved);
-                return None;
+    subject: SubjectStorage<'_>,
+    end: usize,
+    flags: i64,
+    is_bytes: bool,
+) -> bool {
+    match kind {
+        Anchor::Start => {
+            pos == 0 || (flags & RE_MULTILINE != 0 && pos > 0 && subject.unit(pos - 1) == '\n')
+        }
+        Anchor::End => {
+            pos == end
+                || (pos < end
+                    && subject.unit(pos) == '\n'
+                    && (flags & RE_MULTILINE != 0 || pos + 1 == end))
+        }
+        Anchor::StartAbsolute => pos == 0,
+        Anchor::EndAbsolute => pos == end,
+        Anchor::Boundary | Anchor::NotBoundary => {
+            let left = pos > 0 && word(subject.unit(pos - 1), flags, is_bytes);
+            let right = pos < end && word(subject.unit(pos), flags, is_bytes);
+            if matches!(kind, Anchor::Boundary) {
+                left != right
+            } else {
+                end != 0 && left == right
             }
         }
-    }
-    positions.push(cur);
-
-    // Collect additional (optional) repetition positions.
-    let mut count = min;
-    while count < max {
-        let saved = state.save_groups();
-        match try_match(inner, cur, &[], state) {
-            Some(next) => {
-                if next == cur {
-                    // Zero-width match â€” stop collecting.
-                    state.restore_groups(saved);
-                    break;
-                }
-                cur = next;
-                positions.push(cur);
-                count += 1;
-            }
-            None => {
-                state.restore_groups(saved);
-                break;
-            }
-        }
-    }
-
-    if greedy {
-        // Greedy: try from most repetitions to fewest.
-        while let Some(try_pos) = positions.pop() {
-            let saved = state.save_groups();
-            if let Some(final_pos) = match_rest(rest, try_pos, state) {
-                return Some(final_pos);
-            }
-            state.restore_groups(saved);
-        }
-        None
-    } else {
-        // Lazy: try from fewest repetitions to most.
-        for &try_pos in &positions {
-            let saved = state.save_groups();
-            if let Some(final_pos) = match_rest(rest, try_pos, state) {
-                return Some(final_pos);
-            }
-            state.restore_groups(saved);
-        }
-        None
     }
 }
 
-/// Handle lookahead and lookbehind assertions.
-pub(super) fn try_match_look(
-    inner: &ReNode,
-    pos: usize,
-    behind: bool,
-    positive: bool,
-    width: Option<u64>,
-    state: &mut MatchState<'_>,
-) -> Option<usize> {
-    if behind {
-        // Look-behind: check the substring ending at `pos`.
-        let w = width.unwrap_or(0) as usize;
-        if pos < w {
-            // Not enough text behind.
-            return if positive { None } else { Some(pos) };
+#[cfg(test)]
+mod workspace_tests {
+    use super::*;
+
+    #[test]
+    fn fixed_width_repeat_workspace_is_independent_of_subject_length() {
+        let compiled = parse_pattern_typed("((a)())+a", 0, false)
+            .unwrap()
+            .compile()
+            .unwrap();
+        for len in [20_000, 200_000] {
+            let text = vec!['a'; len];
+            let mut matcher = Matcher::new(&compiled, SubjectStorage::Text(&text), len).unwrap();
+            assert_eq!(matcher.run(0, true, None).unwrap(), Some(len));
+            // Capacities retain peak allocations. This budget excludes the
+            // deliberately prepared subject and includes every VM workspace.
+            let bytes = matcher.starts.capacity() * size_of::<Option<usize>>()
+                + matcher.groups.capacity() * size_of::<Option<(usize, usize)>>()
+                + matcher.repeats.capacity() * size_of::<RepeatState>()
+                + matcher.undo.capacity() * size_of::<Undo>()
+                + matcher.choices.capacity() * size_of::<Choice>()
+                + matcher.assertions.capacity() * size_of::<Assertion>();
+            assert!(
+                bytes < 8192,
+                "fixed-width repeat retained {bytes} workspace bytes for {len} units"
+            );
+            let result = matcher.result(0, len);
+            assert_eq!(
+                &result.groups[1..],
+                &[
+                    Some((len - 2, len - 1)),
+                    Some((len - 2, len - 1)),
+                    Some((len - 1, len - 1))
+                ]
+            );
+            assert_eq!(result.lastindex, Some(1));
         }
-        let start = pos - w;
-        let saved = state.save_groups();
-        let old_end = state.end;
-        state.end = pos;
-        let matched = try_match(inner, start, &[], state);
-        state.end = old_end;
-        let ok = match matched {
-            Some(end_pos) => end_pos == pos,
-            None => false,
-        };
-        if positive == ok {
-            if !ok {
-                // Positive lookbehind failed â€” restore.
-                // (ok is false AND positive is false, so this is negative
-                // lookbehind succeeding because the inner didn't match.)
-                state.restore_groups(saved);
-            }
-            // For positive lookbehind success (ok=true, positive=true):
-            // keep the groups from the inner match.
-            // For negative lookbehind success (ok=false, positive=false):
-            // groups already restored above.
-            Some(pos)
-        } else {
-            // Assertion failed â€” always restore.
-            state.restore_groups(saved);
-            None
-        }
-    } else {
-        // Lookahead: check the substring starting at `pos`.
-        let saved = state.save_groups();
-        let matched = try_match(inner, pos, &[], state).is_some();
-        if positive == matched {
-            if !matched {
-                // Negative lookahead succeeded (inner did NOT match) â€”
-                // groups already unchanged, restore to be safe.
-                state.restore_groups(saved);
-            }
-            // Positive lookahead succeeded â€” keep groups from inner.
-            Some(pos)
-        } else {
-            // Assertion failed â€” restore groups.
-            state.restore_groups(saved);
-            None
-        }
+    }
+
+    #[test]
+    fn allocation_refusal_is_an_error_not_no_match() {
+        assert!(matches!(
+            slots::<u64>(usize::MAX, 0),
+            Err(MatchError::Memory)
+        ));
+    }
+
+    #[test]
+    fn long_literals_keep_one_program_block() {
+        let text = "a".repeat(20_000);
+        let compiled = parse_pattern_typed(&text, 0, false)
+            .unwrap()
+            .compile()
+            .unwrap();
+        assert_eq!(
+            compiled.program.code.len(),
+            2,
+            "literal length must not expand VM dispatch storage"
+        );
+        let matched = execute_match(&compiled, &text, 0, text.len(), "fullmatch")
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            (matched.start, matched.end, matched.lastindex),
+            (0, text.len(), None)
+        );
     }
 }

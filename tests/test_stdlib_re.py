@@ -31,7 +31,7 @@ def source_re():
             match.span(i) if match.start(i) >= 0 else None
             for i in range(1, match.re.groups + 1)
         )
-        return match.start(), match.end(), spans
+        return match.start(), match.end(), spans, match.lastindex
 
     def execute(handle, subject, pos, end, mode):
         pattern = handle
@@ -401,3 +401,26 @@ def test_capture_read_reuses_sre_admission_error_policy(source_re, failure_type)
     # The facade fixture's host memoryview() asks FULL_RO. The actual target
     # SIMPLE flags and lease lifetime are owned by re_bytes_admission.py.
     assert len(actual[3]) == len(expected[3])
+
+
+@pytest.mark.parametrize(
+    "pattern,subject",
+    [
+        ("(a(b))", "ab"),
+        ("(?P<outer>a(?P<inner>b))", "ab"),
+        ("((a)|(b))+", "ab"),
+        ("(a){1,3}a", "aaa"),
+        ("(a)?b", "b"),
+        ("(?=(a))a", "a"),
+    ],
+)
+def test_match_closing_order_is_intrinsic_custody(source_re, pattern, subject):
+    expected = cpython_re.fullmatch(pattern, subject)
+    actual = source_re.fullmatch(pattern, subject)
+    assert actual.lastindex == expected.lastindex
+    assert actual.lastgroup == expected.lastgroup
+    assert actual.groups() == expected.groups()
+    scanned = next(source_re.finditer(pattern, subject))
+    oracle = next(cpython_re.finditer(pattern, subject))
+    assert scanned.lastindex == oracle.lastindex
+    assert scanned.lastgroup == oracle.lastgroup

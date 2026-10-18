@@ -374,7 +374,7 @@
     "tests/tools/test_win_job_contract.py",
     "tests/tools/test_windows_process_api.py"
   ],
-  "authority_sha256": "af0b4b621668e8d702036b6cd1f8d0d056dfbd16e8508aaefaccf7b9f6856f89",
+  "authority_sha256": "8dbd635ad1b1e9f93fa278286d824c27bfbca15901e0c944c61672b5ea1169d5",
   "cargo_environment_policy": {
     "incident_command": "cargo metadata --locked --format-version 1",
     "incident_commit": "20b046b79bd4ca64a8c859f737f6e330377bcc4e",
@@ -9224,7 +9224,7 @@
       "local.runtime-profile-schema-authority.0": "python tools/gen_runtime_profile_schema.py --check",
       "local.runtime-profile-schema-authority.pytest": "python -m pytest -q -n auto --molt-worker-memory-gb=0.75 tests/test_gen_runtime_profile_schema.py tests/test_runtime_profile_schema.py",
       "local.runtime-regex.0": "cargo test --locked --profile dev-fast -p molt-runtime-regex -p molt-runtime-core -p molt-stdlib-text --no-default-features --no-fail-fast --lib -- regex:: text_storage::",
-      "local.runtime-regex.1": "python tests/molt_diff.py --python-version 3.12 --molt-target-python 3.12 --compiler-profile dev --build-profile dev --stdlib-profile full --target native,wasm --jobs 1 --no-retry-oom --json tests/differential/basic/unicode_surrogate_handling.py tests/differential/stdlib/re_bytes_admission.py tests/differential/stdlib/codecs_error_handlers_basic.py",
+      "local.runtime-regex.1": "python tests/molt_diff.py --python-version 3.12 --molt-target-python 3.12 --compiler-profile dev --build-profile dev --stdlib-profile full --target native,wasm --jobs 1 --no-retry-oom --json tests/differential/basic/unicode_surrogate_handling.py tests/differential/stdlib/re_bytes_admission.py tests/differential/stdlib/codecs_error_handlers_basic.py tests/differential/stdlib/re_backtracking_edge.py tests/differential/stdlib/re_fullmatch_finditer.py",
       "local.runtime-regex.pytest": "python -m pytest -q -n auto --molt-worker-memory-gb=0.5 tests/test_stdlib_re.py",
       "local.runtime-vfs.0": "cargo clippy --locked -p molt-runtime-vfs --all-targets --all-features -- -D warnings",
       "local.runtime-vfs.1": "cargo test --locked -p molt-runtime-vfs --all-features --no-fail-fast",
@@ -11090,7 +11090,7 @@
         "description": "Typed regex parser/matcher and shared lossless text codec: one fast-profile Rust cohort, facade contracts and actual native/WASM CPython comparisons.",
         "gates": [
           "cargo test --locked --profile dev-fast -p molt-runtime-regex -p molt-runtime-core -p molt-stdlib-text --no-default-features --no-fail-fast --lib -- regex:: text_storage::",
-          "python tests/molt_diff.py --python-version 3.12 --molt-target-python 3.12 --compiler-profile dev --build-profile dev --stdlib-profile full --target native,wasm --jobs 1 --no-retry-oom --json tests/differential/basic/unicode_surrogate_handling.py tests/differential/stdlib/re_bytes_admission.py tests/differential/stdlib/codecs_error_handlers_basic.py"
+          "python tests/molt_diff.py --python-version 3.12 --molt-target-python 3.12 --compiler-profile dev --build-profile dev --stdlib-profile full --target native,wasm --jobs 1 --no-retry-oom --json tests/differential/basic/unicode_surrogate_handling.py tests/differential/stdlib/re_bytes_admission.py tests/differential/stdlib/codecs_error_handlers_basic.py tests/differential/stdlib/re_backtracking_edge.py tests/differential/stdlib/re_fullmatch_finditer.py"
         ],
         "globs": [
           "runtime/molt-runtime-regex/**/*.rs",
@@ -11103,6 +11103,8 @@
           "tests/test_stdlib_re.py",
           "tests/differential/basic/unicode_surrogate_handling.py",
           "tests/differential/stdlib/re_bytes_admission.py",
+          "tests/differential/stdlib/re_backtracking_edge.py",
+          "tests/differential/stdlib/re_fullmatch_finditer.py",
           "tests/differential/stdlib/codecs_error_handlers_basic.py"
         ],
         "name": "runtime-regex",

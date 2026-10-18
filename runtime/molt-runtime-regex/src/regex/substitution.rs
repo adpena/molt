@@ -76,10 +76,14 @@ pub extern "C" fn molt_re_split(handle_bits: u64, text_bits: u64, maxsplit_bits:
         };
         let mut scanner = ScannerHandle::new(Arc::clone(&compiled), 0, text_len, None);
         while limit.is_none_or(|lim| splits < lim) {
-            let Some(result) =
-                super::execute_api::advance_scanner(&compiled.compiled, &mut scanner, subject)
-            else {
-                break;
+            let result = match super::execute_api::advance_scanner(
+                &compiled.compiled,
+                &mut scanner,
+                subject,
+            ) {
+                Ok(Some(result)) => result,
+                Ok(None) => break,
+                Err(error) => return match_error_result(_py, error),
             };
             let m_start = result.start;
             let m_end = result.end;
@@ -217,12 +221,14 @@ pub extern "C" fn molt_re_sub(
         let mut replaced: usize = 0;
         let mut scanner = ScannerHandle::new(Arc::clone(&compiled), 0, text_len, None);
         while limit.is_none_or(|lim| replaced < lim) {
-            let Some(result) = super::execute_api::advance_scanner(
+            let result = match super::execute_api::advance_scanner(
                 &compiled.compiled,
                 &mut scanner,
                 SubjectStorage::Text(&chars),
-            ) else {
-                break;
+            ) {
+                Ok(Some(result)) => result,
+                Ok(None) => break,
+                Err(error) => return match_error_result(_py, error),
             };
             let m_start = result.start;
             let m_end = result.end;
@@ -304,12 +310,14 @@ fn molt_re_sub_bytes(
     let text_len = text.len();
     let mut scanner = ScannerHandle::new(Arc::clone(compiled), 0, text_len, None);
     while limit.is_none_or(|n| replaced < n) {
-        let Some(result) = super::execute_api::advance_scanner(
+        let result = match super::execute_api::advance_scanner(
             &compiled.compiled,
             &mut scanner,
             SubjectStorage::Bytes(text),
-        ) else {
-            break;
+        ) {
+            Ok(Some(result)) => result,
+            Ok(None) => break,
+            Err(error) => return match_error_result(py, error),
         };
         let (start, end) = (result.start, result.end);
         out.extend_from_slice(&text[last..start]);
