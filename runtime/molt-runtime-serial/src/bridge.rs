@@ -84,6 +84,17 @@ pub fn exception_pending(_py: &PyToken) -> bool {
     unsafe { (vt().exception_pending)() != 0 }
 }
 
+/// Match the pending exception against a builtin exception class, subclasses
+/// included, like `PyErr_ExceptionMatches`. The exception stays pending.
+pub fn pending_exception_matches_builtin(_py: &PyToken, name: &str) -> bool {
+    unsafe { (vt().pending_exception_matches_builtin)(name.as_ptr(), name.len()) != 0 }
+}
+
+/// Discard the pending exception, like `PyErr_Clear`.
+pub fn clear_exception(_py: &PyToken) {
+    unsafe { (vt().clear_exception)() }
+}
+
 /// Borrow the class and argument tuple; return an independently owned exception.
 pub fn exception_new_from_class(_py: &PyToken, class_bits: u64, args_bits: u64) -> u64 {
     unsafe { (vt().exception_new_from_class)(class_bits, args_bits) }

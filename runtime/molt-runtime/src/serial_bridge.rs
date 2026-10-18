@@ -43,6 +43,29 @@ extern "C" fn bridge_exception_pending() -> i32 {
     crate::with_gil_entry_nopanic!(_py, { if exception_pending(_py) { 1 } else { 0 } })
 }
 
+/// Observe the raised slot by class inheritance without taking or replacing it.
+/// A name that resolves to no builtin exception class matches nothing.
+extern "C" fn bridge_pending_exception_matches_builtin(
+    name_ptr: *const u8,
+    name_len: usize,
+) -> i32 {
+    crate::with_gil_entry_nopanic!(py, {
+        let name = unsafe {
+            std::str::from_utf8_unchecked(std::slice::from_raw_parts(name_ptr, name_len))
+        };
+        let target = crate::builtins::exceptions::exception_type_bits_from_name(py, name);
+        i32::from(
+            target != 0 && crate::builtins::exceptions::pending_exception_matches_type(py, target),
+        )
+    })
+}
+
+extern "C" fn bridge_clear_exception() {
+    crate::with_gil_entry_nopanic!(py, {
+        clear_exception(py);
+    })
+}
+
 // ---------------------------------------------------------------------------
 // Object allocation
 // ---------------------------------------------------------------------------
@@ -828,6 +851,8 @@ static RUNTIME_VTABLE: RuntimeVtable = RuntimeVtable {
     raise_exception: bridge_raise_exception,
     exception_pending: bridge_exception_pending,
     exception_new_from_class: crate::builtins::exceptions::molt_exception_new_from_class,
+    pending_exception_matches_builtin: bridge_pending_exception_matches_builtin,
+    clear_exception: bridge_clear_exception,
     alloc_tuple: bridge_alloc_tuple,
     alloc_list: bridge_alloc_list,
     alloc_string: bridge_alloc_string,
