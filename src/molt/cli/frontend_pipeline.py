@@ -32,6 +32,7 @@ from molt.cli.build_output_layout import (
     _resolve_build_output_layout,
     _resolve_out_dir,
     _resolve_output_roots,
+    artifacts_identity,
 )
 from molt.cli.external_native import (
     _external_native_artifact_error_summary,
@@ -786,7 +787,15 @@ def _prepare_frontend_stage_state(
     output_base = _output_base_for_entry(entry_module, source_path)
     out_dir_path = _resolve_out_dir(project_root, out_dir)
     artifacts_root, bin_root, output_root = _resolve_output_roots(
-        project_root, out_dir_path, output_base
+        project_root,
+        out_dir_path,
+        output_base,
+        identity=artifacts_identity(
+            project_root=project_root,
+            source_path=source_path,
+            target=target,
+            profile=profile,
+        ),
     )
     prepared_build_outputs, prepared_build_outputs_error = (
         _prepare_build_module_outputs(

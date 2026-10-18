@@ -15699,17 +15699,17 @@ def test_safe_output_base_is_cached() -> None:
     assert info.currsize >= 1
 
 
-def test_default_build_root_is_cached(
+def test_default_build_base_is_cached(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    cli_build_output_layout._default_build_root_cached.cache_clear()
+    cli_build_output_layout._default_build_base_cached.cache_clear()
     monkeypatch.setenv("MOLT_HOME", str(tmp_path / "home-root"))
 
-    first = cli_build_output_layout._default_build_root("hello/world.py")
-    second = cli_build_output_layout._default_build_root("hello/world.py")
+    first = cli_build_output_layout._default_build_base()
+    second = cli_build_output_layout._default_build_base()
 
-    info = cli_build_output_layout._default_build_root_cached.cache_info()
-    assert first == second == (tmp_path / "home-root" / "build" / "hello_world.py")
+    info = cli_build_output_layout._default_build_base_cached.cache_info()
+    assert first == second == (tmp_path / "home-root" / "build")
     assert info.hits >= 1
     assert info.currsize >= 1
 
