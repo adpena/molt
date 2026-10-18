@@ -1039,7 +1039,9 @@ def test_pytest_process_enters_run_context_roots_and_keeps_explicit_ones(
     assert target == dx.cargo_target_dir_for_artifact_root(
         artifact_root, None, source_root=REPO_ROOT
     )
-    assert artifact_root / "target" in target.parents
+    # A checkout that is its own artifact root keeps its target at
+    # <checkout>/target; a shared root nests it under target/checkouts/.
+    assert target.is_relative_to(artifact_root / "target")
     assert "sessions" not in target.relative_to(artifact_root).parts
     assert REPO_ROOT / "target" / "sessions" not in target.parents
 
