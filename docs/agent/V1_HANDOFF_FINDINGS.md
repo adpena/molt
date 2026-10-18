@@ -152,11 +152,14 @@ projects startup roles once, keeps exact/absent/alias inputs finite, and travers
 only their selected ancestors; native resource/archive and environment import
 archive consumers move with it. Required input watch failures remain fatal.
 The selected macOS Python/toolchain ownership checks pass, including finite
-watch arming, negative selectors, aliases and required-root refusal. Actual
-Linux guarded replay remains required. The environment locator still
-arms base installation prefixes to cover startup selectors not represented in
-its location schema; that broader development cost remains under V1-07 and
-must be reconciled with the existing startup-selection authority. These changes
+watch arming, negative selectors, aliases and required-root refusal. The Linux
+prechecks also pass after binding the basename-interpreter fixture's PATH to
+its selected installation, as CPython's startup algorithm requires. The
+allocation-observer request now passes input-watch capture and reaches Cargo;
+its runtime result remains pending. The environment locator still arms base
+installation prefixes to cover startup selectors not represented in its
+location schema; that broader development cost remains under V1-07 and must be
+reconciled with the existing startup-selection authority. These changes
 add nothing to emitted programs. The bounded target results above do not
 qualify unexecuted consumers or authorize release acceptance.
 
