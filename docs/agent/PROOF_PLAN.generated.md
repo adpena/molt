@@ -56,7 +56,7 @@ GitHub job budgets cover the deterministic command-deadline DAG projection plus 
 | `python_security` | pr, main, scheduled | yes | `github-job` | 20 min | 900 s | 60 s | 240 s | `network-audit` | none | `security-hardening` needs `classify-changes` | 4 |
 | `rust_security` | pr, main, scheduled | yes | `github-job` | 21 min | 900 s | 360 s | 0 s | `network-audit` | none | `security-hardening` needs `classify-changes` | 9 |
 | `formal` | pr, main, scheduled | yes | `github-workflow` | 45 min | n/a | n/a | n/a | `formal-tools` | none | `formal-verification` needs `classify-changes` | 8 |
-| `platform_portability` | pr, main | yes | `github-matrix` | 182 min | 10800 s per cell | 120 s | 0 s | `python-tests` | none | `platform-portability` needs `classify-changes` | 148 |
+| `platform_portability` | pr, main | yes | `github-matrix` | 182 min | 10800 s per cell | 120 s | 0 s | `python-tests` | none | `platform-portability` needs `classify-changes` | 150 |
 
 ## Scheduled families
 
@@ -136,6 +136,8 @@ Executable identities bind resolved path, version text, and the repository-relat
 | `clang` | `executable` | — | `clang version 22\.1\.8\b` | `.` | `22.1.8` | 1 |
 | `hosted-clang` | `executable` | — | `clang version [0-9]+\.[0-9]+\.[0-9]+\b` | `.` | `host image C object compiler` | 1 |
 | `hosted-clang-cl` | `executable` | — | `^clang version [0-9]+\.[0-9]+\.[0-9]+\b` | `.` | `windows-2022 image C11 compiler` | 1 |
+| `hosted-cmake` | `executable` | — | `^cmake version [34]\.[0-9]+\.[0-9]+` | `.` | `Windows image CMake` | 1 |
+| `hosted-ninja` | `executable` | — | `^1\.[0-9]+\.[0-9]+` | `.` | `Windows image Ninja` | 1 |
 | `ninja` | `executable` | — | `^1\.13\.2(?:\.git(?:\.kitware\.jobserver-pipe-1)?)?$` | `.` | `1.13.2` | 2 |
 | `wasi-clang` | `executable` | — | `clang version 23\.1\.0\b` | `.` | `23.1.0` | 1 |
 | `llvm-config` | `executable` | — | `^22\.1\.8$` | `.` | `22.1.8` | 1 |

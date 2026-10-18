@@ -7,7 +7,10 @@ from dataclasses import asdict
 import copy
 import hashlib
 import json
+import os
 from pathlib import Path, PurePosixPath
+import shutil
+import sys
 from types import SimpleNamespace
 
 import pytest
@@ -311,6 +314,8 @@ def test_environment_drops_ambient_policy_and_isolates_cargo(tmp_path):
         "RUSTUP_TOOLCHAIN": "nightly",
         "CC": "fake",
         "CFLAGS": "-march=native",
+        "CL": "/DUNRECORDED_POLICY",
+        "_CL_": "/DUNRECORDED_POLICY",
         "PYTHONPATH": "injection",
         "MOLT_RUNTIME_FEATURES": "drift",
         "VCINSTALLDIR": "activated-vc",
@@ -330,11 +335,152 @@ def test_environment_drops_ambient_policy_and_isolates_cargo(tmp_path):
         "RUSTFLAGS",
         "RUSTC",
         "CFLAGS",
+        "CL",
+        "_CL_",
         "CC",
         "PYTHONPATH",
         "MOLT_RUNTIME_FEATURES",
         "CARGO_PROFILE_RELEASE_OPT_LEVEL",
     }.intersection(env)
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="requires the MSVC C/C++ consumer")
+def test_msvc_release_path_maps_are_effective_across_build_roots(tmp_path):
+    from molt.verified_subset import current_host_coordinate
+    from tests.process_guard_common import run_guarded_test_process
+
+    # Keep the command's selected CMake/Ninja; SDK activation only owns MSVC.
+    cmake = shutil.which("cmake")
+    ninja = shutil.which("ninja")
+    env = native_build.activate_msvc_environment(
+        dict(os.environ), repo_root=Path(__file__).resolve().parents[2]
+    )
+    compiler = shutil.which("cl.exe", path=env["PATH"])
+    assert compiler is not None, "native Windows release requires MSVC"
+    librarian = shutil.which("lib.exe", path=env["PATH"])
+    linker = shutil.which("link.exe", path=env["PATH"])
+    assert cmake is not None and ninja is not None, (
+        "native release requires CMake/Ninja"
+    )
+    # Cargo/Rust are not executed by this compiler-boundary control.
+    assert librarian is not None and linker is not None, (
+        "native release requires MSVC tools"
+    )
+    paths = dict.fromkeys(native_build._TOOL_ROLES, Path(sys.executable))
+    paths.update(
+        cc=Path(compiler),
+        cxx=Path(compiler),
+        cmake=Path(cmake),
+        ninja=Path(ninja),
+        ar=Path(librarian),
+        ranlib=Path(librarian),
+        linker=Path(linker),
+    )
+    objects = []
+    cmake_objects = []
+    for name in ("first", "second space '\u00e9#root"):
+        work = tmp_path / name
+        source = work / "source"
+        source.mkdir(parents=True)
+        files = [source / "probe.c", source / "probe.cpp"]
+        for path in files:
+            path.write_text(
+                "const char *molt_path(void) { return __FILE__; }\n", encoding="utf-8"
+            )
+        selected = dict(env)
+        native_build._select_build_tools(
+            selected,
+            paths,
+            work=work,
+            triple=RUST_TARGET_BY_COORDINATE[current_host_coordinate()],
+            platform="windows",
+        )
+        # Decode at the real cc-rs boundary, then execute its compiler argv.
+        # Distinct names keep the C and C++ object outputs independently owned.
+        outputs = []
+        for path, flag_name in zip(files, ("CFLAGS", "CXXFLAGS"), strict=True):
+            output = work / (path.suffix[1:] + ".obj")
+            flags = native_build.FlagStringRule.cc(selected).decode(selected[flag_name])
+            result = run_guarded_test_process(
+                [compiler, "/nologo", "/c", *flags, str(path), "/Fo" + str(output)],
+                cwd=work,
+                env=selected,
+                check=True,
+                timeout=60,
+            )
+            assert "option ignored" not in result.stderr
+            body = output.read_bytes()
+            assert b"/molt" in body, "__FILE__ must name the remapped source root"
+            assert str(work).encode() not in body, (
+                "producer paths must not enter objects"
+            )
+            outputs.append(body)
+        objects.append(outputs)
+        (source / "CMakeLists.txt").write_text(
+            "cmake_minimum_required(VERSION 3.15)\n"
+            "project(MoltPath C CXX)\n"
+            "add_library(path_probe OBJECT probe.c probe.cpp)\n",
+            encoding="utf-8",
+        )
+        build = work / "cmake-build"
+        # Reproduce cmake-rs's decoded-argument join, then exercise CMake's real
+        # compiler commands. Path-bearing flags must reach cl through CL.
+        configure = [
+            cmake,
+            "-S",
+            str(source),
+            "-B",
+            str(build),
+            "-G",
+            "Ninja",
+            "-DCMAKE_MAKE_PROGRAM=" + Path(ninja).as_posix(),
+            "-DCMAKE_C_COMPILER=" + Path(compiler).as_posix(),
+            "-DCMAKE_CXX_COMPILER=" + Path(compiler).as_posix(),
+            "-DCMAKE_C_FLAGS="
+            + " ".join(
+                native_build.FlagStringRule.cc(selected).decode(selected["CFLAGS"])
+            ),
+            "-DCMAKE_CXX_FLAGS="
+            + " ".join(
+                native_build.FlagStringRule.cc(selected).decode(selected["CXXFLAGS"])
+            ),
+            "-DCMAKE_TRY_COMPILE_TARGET_TYPE=STATIC_LIBRARY",
+            "-DCMAKE_BUILD_TYPE=Release",
+        ]
+        run_guarded_test_process(
+            configure, cwd=work, env=selected, check=True, timeout=60
+        )
+        result = run_guarded_test_process(
+            [cmake, "--build", str(build), "--verbose"],
+            cwd=work,
+            env=selected,
+            timeout=60,
+        )
+        assert result.returncode == 0, result.stdout + result.stderr
+        assert "option ignored" not in result.stdout + result.stderr
+        cmake_paths = sorted((build / "CMakeFiles" / "path_probe.dir").glob("*.obj"))
+        assert len(cmake_paths) == 2, "CMake must compile both real translation units"
+        bodies = [path.read_bytes() for path in cmake_paths]
+        for body in bodies:
+            assert b"/molt" in body
+            assert str(work).encode() not in body
+        cmake_objects.append(bodies)
+    assert objects[0] == objects[1], "relocated C and C++ release objects must agree"
+    assert cmake_objects[0] == cmake_objects[1], "relocated CMake objects must agree"
+
+
+def test_release_refuses_msvc_environment_flag_overflow(tmp_path):
+    paths = dict.fromkeys(native_build._TOOL_ROLES, tmp_path / "tool")
+    # Windows counts UTF-16 units, so this is over the limit even though the
+    # Python string has fewer than 1024 code points. No compiler may truncate it.
+    with pytest.raises(ValueError, match="MSVC CL.*1024"):
+        native_build._select_build_tools(
+            {"SYSTEMROOT": str(tmp_path)},
+            paths,
+            work=tmp_path / ("\U0001f600" * 600),
+            triple="x86_64-pc-windows-msvc",
+            platform="windows",
+        )
 
 
 def test_build_cwd_rejects_ancestor_cargo_configuration(tmp_path):

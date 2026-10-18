@@ -1101,6 +1101,7 @@
         "src/molt/cli/completion.py",
         "src/molt/cli/arg_helpers.py",
         "src/molt/cli/entrypoint.py",
+        "tools/release/native_build.py",
         "include/molt/**",
         ".github/actions/setup-project/**",
         "tools/check_rust_toolchain.py",
@@ -1242,6 +1243,7 @@
         "tests/tools/test_tool_identity_reuse.py/**",
         "tests/tools/test_toolchain_capture.py/**",
         "tests/cli/test_c_api_headers.py/**",
+        "tests/tools/test_release_native_build.py/**",
         "tests/test_memory_guard_tool.py/**",
         "tests/test_host_capacity.py/**",
         "tests/test_pytest_capacity_plugin.py/**",
@@ -8649,7 +8651,8 @@
         "-m",
         "pytest",
         "-q",
-        "tests/cli/test_c_api_headers.py::test_optimize_flag_headers_share_data_across_translation_units"
+        "tests/cli/test_c_api_headers.py::test_optimize_flag_headers_share_data_across_translation_units",
+        "tests/tools/test_release_native_build.py::test_msvc_release_path_maps_are_effective_across_build_roots"
       ],
       "cache_domain": "pytest",
       "cargo_build_python": true,
@@ -8668,7 +8671,9 @@
         "uv",
         "rustc",
         "cargo",
-        "hosted-clang-cl"
+        "hosted-clang-cl",
+        "hosted-cmake",
+        "hosted-ninja"
       ]
     },
     {
@@ -12784,13 +12789,37 @@
       "executable": "clang-cl",
       "name": "hosted-clang-cl",
       "setup_evidence": [
-        ".github/workflows/ci.yml::The Windows image supplies clang-cl for the C ABI header probes."
+        ".github/workflows/ci.yml::The Windows image supplies clang-cl, MSVC, CMake and Ninja for compiler-boundary probes."
       ],
       "setup_value": "windows-2022 image C11 compiler",
       "version_args": [
         "--version"
       ],
       "version_pattern": "^clang version [0-9]+\\.[0-9]+\\.[0-9]+\\b"
+    },
+    {
+      "executable": "cmake",
+      "name": "hosted-cmake",
+      "setup_evidence": [
+        ".github/workflows/ci.yml::The Windows image supplies clang-cl, MSVC, CMake and Ninja for compiler-boundary probes."
+      ],
+      "setup_value": "Windows image CMake",
+      "version_args": [
+        "--version"
+      ],
+      "version_pattern": "^cmake version [34]\\.[0-9]+\\.[0-9]+"
+    },
+    {
+      "executable": "ninja",
+      "name": "hosted-ninja",
+      "setup_evidence": [
+        ".github/workflows/ci.yml::The Windows image supplies clang-cl, MSVC, CMake and Ninja for compiler-boundary probes."
+      ],
+      "setup_value": "Windows image Ninja",
+      "version_args": [
+        "--version"
+      ],
+      "version_pattern": "^1\\.[0-9]+\\.[0-9]+"
     },
     {
       "executable": "ninja",
