@@ -8,7 +8,7 @@
 use super::*;
 
 fn code_points(bytes: &[u8]) -> impl Iterator<Item = u32> + '_ {
-    wtf8_from_bytes(bytes)
+    unsafe { molt_stdlib_text::wtf8::from_validated_bytes(bytes) }
         .code_points()
         .map(|code| code.to_u32())
 }

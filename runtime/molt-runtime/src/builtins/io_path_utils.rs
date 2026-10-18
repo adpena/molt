@@ -237,7 +237,7 @@ pub(crate) fn os_string_from_text(
     #[cfg(windows)]
     {
         use std::os::windows::ffi::OsStringExt;
-        let wide: Vec<u16> = crate::object::ops_string::wtf8_from_bytes(text)
+        let wide: Vec<u16> = unsafe { molt_stdlib_text::wtf8::from_validated_bytes(text) }
             .to_ill_formed_utf16()
             .collect();
         let _ = (py, owner);
@@ -825,12 +825,12 @@ fn glob1_text(
         names
             .retain(|name| molt_runtime_platform::fnmatch::fnmatch_match_bytes_impl(name, pattern));
     } else {
-        let pattern: Vec<u32> = crate::object::ops_string::wtf8_from_bytes(pattern)
+        let pattern: Vec<u32> = unsafe { molt_stdlib_text::wtf8::from_validated_bytes(pattern) }
             .code_points()
             .map(|point| point.to_u32())
             .collect();
         names.retain(|name| {
-            let name: Vec<u32> = crate::object::ops_string::wtf8_from_bytes(name)
+            let name: Vec<u32> = unsafe { molt_stdlib_text::wtf8::from_validated_bytes(name) }
                 .code_points()
                 .map(|point| point.to_u32())
                 .collect();

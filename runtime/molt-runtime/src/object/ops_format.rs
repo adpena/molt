@@ -11,7 +11,6 @@ use num_traits::{Signed, ToPrimitive};
 use std::borrow::Cow;
 
 use super::ops::{range_components_bigint, unicode_printable_table};
-use super::ops_string::wtf8_from_bytes;
 
 /// A Python renderer either returns the callback's owned string unchanged or
 /// builds lossless WTF-8 bytes. Rust String is only a host diagnostic adapter.
@@ -2508,7 +2507,7 @@ pub(crate) fn format_string_repr_bytes(bytes: &[u8]) -> String {
     let quote = if use_double { '"' } else { '\'' };
     let mut out = String::new();
     out.push(quote);
-    for cp in wtf8_from_bytes(bytes).code_points() {
+    for cp in unsafe { molt_stdlib_text::wtf8::from_validated_bytes(bytes) }.code_points() {
         let code = cp.to_u32();
         match code {
             0x5C => out.push_str("\\\\"),
@@ -2674,7 +2673,7 @@ pub(crate) fn parse_format_spec(
     bytes: &[u8],
     fractional_grouping: bool,
 ) -> Result<FormatSpec, FormatParseError> {
-    let mut codes = wtf8_from_bytes(bytes)
+    let mut codes = unsafe { molt_stdlib_text::wtf8::from_validated_bytes(bytes) }
         .code_points()
         .map(|code| code.to_u32())
         .peekable();
@@ -2852,7 +2851,7 @@ fn grouped_digits(
 
 fn format_fill_bytes(fill: u32) -> Vec<u8> {
     let mut bytes = Vec::with_capacity(4);
-    super::ops_string::push_wtf8_codepoint(&mut bytes, fill);
+    molt_stdlib_text::wtf8::push_wtf8_codepoint(&mut bytes, fill);
     bytes
 }
 
@@ -2884,7 +2883,7 @@ pub(crate) fn format_character_codepoint(value: &BigInt) -> Result<Vec<u8>, Form
             Cow::Borrowed("%c arg not in range(0x110000)"),
         ))?;
     let mut out = format_buffer(4)?;
-    super::ops_string::push_wtf8_codepoint(&mut out, code);
+    molt_stdlib_text::wtf8::push_wtf8_codepoint(&mut out, code);
     Ok(out)
 }
 

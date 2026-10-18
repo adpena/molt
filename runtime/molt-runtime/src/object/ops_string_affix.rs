@@ -38,7 +38,7 @@ fn string_strip_impl(
             let chars_bytes =
                 std::slice::from_raw_parts(string_bytes(chars_ptr), string_len(chars_ptr));
             Some(
-                wtf8_from_bytes(chars_bytes)
+                unsafe { molt_stdlib_text::wtf8::from_validated_bytes(chars_bytes) }
                     .code_points()
                     .map(|code| code.to_u32())
                     .collect(),

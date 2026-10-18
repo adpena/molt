@@ -3420,7 +3420,7 @@ dependencies = []
 # exercises the borrowed view as well. All children use Cargo custody.
 # Emit assertion detail immediately; a later fatal ownership check must not
 # erase the earlier mismatch diagnostics held by libtest's output capture.
-argv = ["cargo", "test", "--locked", "--timings", "--profile", "dev-fast", "--config", "profile.dev-fast.package.molt-runtime.opt-level=0", "--no-fail-fast", "--lib", "--test", "ownership_memory_contracts", "--test", "test_builtins", "-p", "molt-passes", "-p", "molt-backend-wasm", "-p", "molt-runtime", "-p", "molt-runtime-platform", "-p", "molt-gpu-runtime", "-p", "zlib-rs@0.6.8", "--no-default-features", "--features", "molt-passes/native-backend,molt-passes/wasm-backend,molt-passes/test-util,molt-backend-wasm/test-util,molt-runtime/stdlib_micro,molt-runtime/builtin_complex,molt-runtime/builtin_set,molt-runtime/molt_gpu_primitives,molt-runtime/molt_gpu_webgpu,zlib-rs/std,zlib-rs/rust-allocator,zlib-rs/ZLIB_DEBUG", "--", "errno_build_tests::", "socket_constants::tests::", "libc_compat::tests::synthetic_errno_", "counter_wrap", "tir::", "wasm::", "wasm_abi::", "async_rt::channels::", "async_rt::net_stubs::", "intrinsics::registry::", "call::", "object::", "arena::", "seq_snapshot_bridge::", "builtins::attr::", "builtins::classes::", "builtins::frames::", "builtins::types::", "builtins::modules::", "builtins::functions::function_abi::", "builtins::attributes::", "builtin_bootstrap_lookup", "test_raw_compression_c_exports_are_linkable", "gpu_runtime_tests::", "kernel_storage::", "--nocapture", "--test-threads=1"]
+argv = ["cargo", "test", "--locked", "--timings", "--profile", "dev-fast", "--config", "profile.dev-fast.package.molt-runtime.opt-level=0", "--no-fail-fast", "--lib", "--test", "ownership_memory_contracts", "--test", "test_builtins", "-p", "molt-passes", "-p", "molt-backend-wasm", "-p", "molt-runtime", "-p", "molt-runtime-regex", "-p", "molt-stdlib-text", "-p", "molt-runtime-platform", "-p", "molt-gpu-runtime", "-p", "zlib-rs@0.6.8", "--no-default-features", "--features", "molt-passes/native-backend,molt-passes/wasm-backend,molt-passes/test-util,molt-backend-wasm/test-util,molt-runtime/stdlib_micro,molt-runtime/builtin_complex,molt-runtime/builtin_set,molt-runtime/molt_gpu_primitives,molt-runtime/molt_gpu_webgpu,zlib-rs/std,zlib-rs/rust-allocator,zlib-rs/ZLIB_DEBUG", "--", "errno_build_tests::", "socket_constants::tests::", "libc_compat::tests::synthetic_errno_", "counter_wrap", "tir::", "wasm::", "wasm_abi::", "async_rt::channels::", "async_rt::net_stubs::", "intrinsics::registry::", "call::", "object::", "arena::", "seq_snapshot_bridge::", "builtins::attr::", "builtins::classes::", "builtins::frames::", "builtins::types::", "builtins::modules::", "builtins::functions::function_abi::", "builtins::attributes::", "builtin_bootstrap_lookup", "test_raw_compression_c_exports_are_linkable", "gpu_runtime_tests::", "kernel_storage::", "regex::", "wtf8::", "--nocapture", "--test-threads=1"]
 toolchains = ["rustc", "cargo", "node", "wasm-ld"]
 cargo_build_python = true
 
@@ -5310,16 +5310,18 @@ pytest = [
 [[rule]]
 name = "runtime-regex"
 toolchains = ["python", "rustc", "cargo"]
-description = "Typed text/bytes regex parser and matcher: execute the shared pure engine controls and facade contracts."
+description = "Typed regex parser/matcher and shared lossless text codec: one fast-profile pure Rust cohort plus facade contracts."
 globs = [
   "runtime/molt-runtime-regex/**/*.rs",
   "runtime/molt-runtime-regex/Cargo.toml",
+  "runtime/molt-stdlib-text/src/wtf8.rs",
+  "runtime/molt-stdlib-text/Cargo.toml",
   "runtime/molt-runtime/src/regex_bridge.rs",
   "src/molt/stdlib/re/**/*.py",
   "tests/test_stdlib_re.py",
 ]
 gates = [
-  "cargo test --locked --profile dev-fast -p molt-runtime-regex --lib",
+  "cargo test --locked --profile dev-fast -p molt-runtime-regex -p molt-stdlib-text --no-default-features --lib -- regex:: wtf8::",
 ]
 pytest = [
   "tests/test_stdlib_re.py",

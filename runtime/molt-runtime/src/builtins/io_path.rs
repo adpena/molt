@@ -995,7 +995,7 @@ pub extern "C" fn molt_path_glob(
                     );
                 };
                 parts.push(
-                    crate::object::ops_string::wtf8_from_bytes(&text)
+                    unsafe { molt_stdlib_text::wtf8::from_validated_bytes(&text) }
                         .code_points()
                         .map(|p| p.to_u32())
                         .collect(),
@@ -1050,7 +1050,7 @@ pub extern "C" fn molt_path_glob(
                 .split(|byte| *byte == sep as u8 || (sep == '\\' && *byte == b'/'))
                 .filter(|part| !part.is_empty() && *part != b".")
                 .map(|part| {
-                    crate::object::ops_string::wtf8_from_bytes(part)
+                    unsafe { molt_stdlib_text::wtf8::from_validated_bytes(part) }
                         .code_points()
                         .map(|p| p.to_u32())
                         .collect()
@@ -1146,7 +1146,7 @@ pub extern "C" fn molt_path_glob(
         let matches = match path_glob_matches(&dir, &parts, modern, |name| {
             let text = super::io::os_string_text(_py, name)?;
             Ok::<_, u64>(
-                crate::object::ops_string::wtf8_from_bytes(&text)
+                unsafe { molt_stdlib_text::wtf8::from_validated_bytes(&text) }
                     .code_points()
                     .map(|p| p.to_u32())
                     .collect(),

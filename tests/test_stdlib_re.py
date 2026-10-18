@@ -238,6 +238,34 @@ def test_capture_reads_clamp_mutable_subjects_and_preserve_wtf8(source_re):
     assert text_match.expand("<\\g<surrogate>>") == "<\ud800>"
 
 
+def test_expand_and_sub_preserve_each_surrogate_codepoint(source_re):
+    pattern = source_re.compile("(?P<value>.+)")
+    cases = (
+        ("\ud800", "<\\g<value>>", "<\ud800>"),
+        ("\udfff", "<\\1>", "<\udfff>"),
+        ("\ud83d\ude00", "<\\g<value>>", "<\ud83d\ude00>"),
+        ("\U0001f600", "<\\g<value>>", "<\U0001f600>"),
+    )
+    for subject, template, expected in cases:
+        match = pattern.fullmatch(subject)
+        assert match is not None
+        assert match.expand(template) == expected
+
+    literal_match = pattern.match("A")
+    assert literal_match is not None
+    assert literal_match.expand("\ud800\\1") == "\ud800A"
+    unmatched = source_re.compile("(?P<missing>x)?a").match("a")
+    assert unmatched is not None
+    assert unmatched.expand("[\\g<missing>|\\1]") == "[|]"
+    assert source_re.sub("a", "\ud800", "a") == "\ud800"
+
+    invalid_name = pattern.match("A")
+    assert invalid_name is not None
+    with pytest.raises(source_re.error) as exc_info:
+        invalid_name.expand("\\g<unknown\ud800>")
+    assert str(exc_info.value) == "bad character in group name 'unknown\\ud800' at position 3"
+
+
 def test_bytes_subclass_compile_subject_replacement_and_expand_authority(source_re):
     class ExportingBytes(bytes):
         def __new__(cls, raw, exported):

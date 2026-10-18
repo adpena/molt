@@ -355,7 +355,7 @@ fn percent_raise_char_type_error(_py: &PyToken<'_>, obj: MoltObject) -> Option<F
         .filter(|&ptr| unsafe { object_type_id(ptr) == TYPE_ID_STRING })
     {
         let bytes = unsafe { std::slice::from_raw_parts(string_bytes(ptr), string_len(ptr)) };
-        let length = crate::object::ops_string::wtf8_from_bytes(bytes)
+        let length = unsafe { molt_stdlib_text::wtf8::from_validated_bytes(bytes) }
             .code_points()
             .count();
         format!("%c requires an int or a unicode character, not a string of length {length}")

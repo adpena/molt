@@ -1,5 +1,4 @@
 use super::*;
-use std::collections::HashMap;
 use std::sync::Arc;
 
 /// Python's match-count convention: zero is unlimited, negative is no work.
@@ -197,7 +196,7 @@ pub extern "C" fn molt_re_sub(
             return molt_re_sub_bytes(_py, repl_bits, text_bits, count, &compiled);
         }
 
-        let Some(repl) = string_obj_to_owned(obj_from_bits(repl_bits)) else {
+        let Some(repl_units) = super::functions_re::string_codepoints(_py, repl_bits) else {
             return raise_exception::<_>(_py, "TypeError", "replacement must be str");
         };
         let Some(text) = string_obj_to_owned(obj_from_bits(text_bits)) else {
@@ -213,9 +212,7 @@ pub extern "C" fn molt_re_sub(
         let limit = match_limit(count);
 
         // Check if repl contains backreferences (backslash).
-        let repl_units: Vec<u32> = repl.chars().map(u32::from).collect();
-
-        let mut out = String::with_capacity(text.len());
+        let mut out = Vec::with_capacity(text.len());
         let mut last: usize = 0;
         let mut replaced: usize = 0;
         let mut scanner = ScannerHandle::new(Arc::clone(&compiled), 0, text_len, None);
@@ -232,7 +229,7 @@ pub extern "C" fn molt_re_sub(
 
             // Append text[last..m_start].
             let segment: String = chars[last..m_start].iter().collect();
-            out.push_str(&segment);
+            out.extend_from_slice(segment.as_bytes());
 
             // Expand the replacement template.
             let expanded = match expand_match_replacement(
@@ -242,25 +239,14 @@ pub extern "C" fn molt_re_sub(
                 group_count,
                 &compiled.compiled.group_names,
             ) {
-                Ok(units) => match units
-                    .into_iter()
-                    .map(char::from_u32)
-                    .collect::<Option<String>>()
-                {
-                    Some(value) => value,
-                    None => {
-                        return raise_exception::<_>(
-                            _py,
-                            "ValueError",
-                            "invalid Unicode replacement",
-                        );
-                    }
-                },
+                Ok(units) => units,
                 Err(error) => {
                     return super::functions_re::replacement_error_result(_py, error);
                 }
             };
-            out.push_str(&expanded);
+            for unit in expanded {
+                molt_stdlib_text::wtf8::push_wtf8_codepoint(&mut out, unit);
+            }
 
             last = m_end;
             replaced += 1;
@@ -268,10 +254,10 @@ pub extern "C" fn molt_re_sub(
 
         // Append the remaining text.
         let tail: String = chars[last..].iter().collect();
-        out.push_str(&tail);
+        out.extend_from_slice(tail.as_bytes());
 
         // Build result tuple: (result_string, num_replacements).
-        let result_str_ptr = alloc_string(_py, out.as_bytes());
+        let result_str_ptr = alloc_string(_py, &out);
         if result_str_ptr.is_null() {
             return MoltObject::none().bits();
         }
@@ -369,7 +355,7 @@ pub(super) fn expand_match_replacement(
     subject: SubjectStorage<'_>,
     result: &MatchResult,
     group_count: u32,
-    names: &HashMap<String, u32>,
+    names: &NamedGroups,
 ) -> Result<Vec<u32>, super::functions_re::ReplacementError> {
     let mut groups = Vec::with_capacity(group_count as usize + 1);
     let spans = std::iter::once(Some((result.start, result.end)))

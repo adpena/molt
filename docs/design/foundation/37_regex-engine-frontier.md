@@ -177,6 +177,30 @@ slice crosses an allocation/callback and no GREEN regex handle contains a lease.
 The public memoryview `_from_flags` clone semantics remain owned by memoryview;
 regex's `molt_re_subject_view` owns its stricter SRE buffer admission.
 
+Capture and replacement text must preserve Python code points, including
+isolated surrogates and adjacent explicit surrogate code points. They borrow
+validated physical storage through the existing runtime owner and use the
+shared `molt-stdlib-text::wtf8` codec authority; Rust `String` and scalar-only
+`char` reconstruction cannot represent that contract. Output encoding must not
+normalize an explicit surrogate pair into one scalar. The shared validated-byte
+view has an unsafe precondition, and every consumer must establish it from
+runtime string storage; it is not an arbitrary-byte decoder. The text crate's
+heavy stdlib feature is unnecessary for this primitive. General matcher Unicode
+semantics remain an independent HF-329 obligation.
+
+Named-group ordinals and declaration order originate together at group opening
+in [CPython's parser](https://github.com/python/cpython/blob/v3.12.13/Lib/re/_parser.py#L79-L96).
+One `NamedGroups` insertion-ordered hash catalog carries those facts through
+parsing, compiled patterns, replacement lookup and public dictionary publication.
+The existing pinned [IndexMap 2.14.2](https://docs.rs/indexmap/2.14.2/indexmap/)
+provides hash-independent iteration order and average constant-time lookup;
+publication is linear in named groups. Its ordinary randomized hasher is retained.
+There is no second ordering registry, dense scratch proportional to unnamed
+captures, or per-Match sort. The ordered catalog's code-size and lookup constants
+remain to be measured; using an existing workspace dependency does not make its
+runtime cost free. Native/WASM and text/bytes qualification must distinguish
+opening order from lexical order, closing order and contiguous capture numbering.
+
 ### 0.3 Refused designs (stated up front, with why)
 
 - **REFUSED-A: "keep the homegrown backtracker, just add a recursion-budget /

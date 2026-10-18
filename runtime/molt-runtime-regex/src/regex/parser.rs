@@ -9,7 +9,7 @@ pub(super) struct ReParser {
     pub(super) chars: Vec<char>,
     pub(super) pos: usize,
     pub(super) group_count: u32,
-    pub(super) group_names: HashMap<String, u32>,
+    pub(super) group_names: NamedGroups,
     /// Fixed widths keyed by group index â€” used for look-behind validation.
     pub(super) group_widths: HashMap<u32, Option<u64>>,
     pub(super) open_group_names: std::collections::HashSet<String>,
@@ -26,7 +26,7 @@ impl ReParser {
             chars: pattern.chars().collect(),
             pos: 0,
             group_count: 0,
-            group_names: HashMap::new(),
+            group_names: NamedGroups::new(),
             group_widths: HashMap::new(),
             open_group_names: std::collections::HashSet::new(),
             flags,

@@ -130,7 +130,7 @@ use std::borrow::Cow;
 use std::sync::atomic::Ordering as AtomicOrdering;
 use std::sync::{Mutex, OnceLock};
 
-use super::ops_string::{push_wtf8_codepoint, utf8_char_to_byte_index_cached, wtf8_codepoint_at};
+use super::ops_string::utf8_char_to_byte_index_cached;
 use super::ops_sys::runtime_target_minor;
 use crate::runtime_profile_schema_generated::{
     PROFILE_EPOCH_KIND, PROFILE_EPOCH_SCHEMA_VERSION, RuntimeProfileMetricSemantic,
