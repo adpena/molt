@@ -90,14 +90,16 @@ def test_selected_content_capture_versions_content_and_rechecks_resolver_before_
 
     first = capture()
     assert first["version"] == "Python 3.15.1"
+    # The launcher is a custody coordinate; the content file is the path the
+    # resolver named, resolved as the OS spells it.
     assert first["path"] == custody_spelling(uv)
-    assert first["content_path"] == custody_spelling(first_python)
+    assert first["content_path"] == str(first_python.resolve())
     assert capture() == first
     assert [t["state"] for t in telemetry] == ["miss", "hit"]
     selected = second_python
     second = capture()
     assert second["version"] == "Python 3.15.2"
-    assert second["content_path"] == custody_spelling(second_python)
+    assert second["content_path"] == str(second_python.resolve())
     assert telemetry[-1]["state"] == "miss"
     assert len([argv for argv in calls if "find" in argv]) == 3
     assert [
