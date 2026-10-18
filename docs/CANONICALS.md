@@ -43,6 +43,7 @@ of truth when a claim drifts.
 - [design/backend_compile_daemon.md](design/backend_compile_daemon.md)
 - [design/host_capacity.md](design/host_capacity.md)
 - [design/landing_queue.md](design/landing_queue.md)
+- [design/process_environment.md](design/process_environment.md)
 - [architecture/compilation-model.md](architecture/compilation-model.md)
 - [architecture/gpu-primitive-stack.md](architecture/gpu-primitive-stack.md)
 - [spec/areas/perf/0513_GPU_PARALLELISM_AND_MLIR.md](spec/areas/perf/0513_GPU_PARALLELISM_AND_MLIR.md)
