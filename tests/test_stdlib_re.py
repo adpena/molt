@@ -10,22 +10,18 @@ from tests.stdlib_intrinsic_registry import intrinsic_registry
 
 @pytest.fixture
 def source_re():
-    compiled: dict[int, cpython_re.Pattern] = {}
-    next_handle = 1
+    compiled: list[cpython_re.Pattern] = []
 
     def compile_pattern(pattern, flags):
-        nonlocal next_handle
         try:
             compiled_pattern = cpython_re.compile(pattern, flags)
         except cpython_re.error as exc:
             return None, None, str(exc)
-        handle = next_handle
-        next_handle += 1
-        compiled[handle] = compiled_pattern
-        return handle
+        compiled.append(compiled_pattern)
+        return compiled_pattern
 
     def pattern_info(handle):
-        pattern = compiled[handle]
+        pattern = handle
         return pattern.groups, pattern.groupindex, pattern.flags, None
 
     def result(match):
@@ -38,12 +34,12 @@ def source_re():
         return match.start(), match.end(), spans
 
     def execute(handle, subject, pos, end, mode):
-        pattern = compiled[handle]
+        pattern = handle
         return result(getattr(pattern, mode)(subject, pos, end))
 
     class Scanner:
         def __init__(self, handle, subject, pos, end):
-            self.matches = iter(compiled[handle].finditer(subject, pos, end))
+            self.matches = iter(handle.finditer(subject, pos, end))
 
     def scanner_new(handle, subject, pos, end):
         return Scanner(handle, subject, pos, end)
@@ -52,11 +48,11 @@ def source_re():
         return result(next(scanner.matches, None))
 
     def split(handle, subject, maxsplit):
-        return compiled[handle].split(subject, maxsplit)
+        return handle.split(subject, maxsplit)
 
     def sub(handle, repl, subject, count):
         try:
-            return compiled[handle].subn(repl, subject, count)
+            return handle.subn(repl, subject, count)
         except cpython_re.error as exc:
             return None, None, str(exc)
 
@@ -67,7 +63,7 @@ def source_re():
         )
 
     def expand_replacement(repl, values, names):
-        for pattern in compiled.values():
+        for pattern in compiled:
             if pattern.groupindex != names:
                 continue
             match = pattern.match(values[0])

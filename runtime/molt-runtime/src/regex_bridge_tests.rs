@@ -17,19 +17,27 @@ fn regex_aggregates_retain_each_created_child_once() {
                     alloc_string(py, data)
                 };
                 assert!(!ptr.is_null());
-                unsafe { OwnedRuntimeValue::from_owned_bits(py, MoltObject::from_ptr(ptr).bits()) }
+                unsafe {
+                    OwnedRuntimeValue::from_owned_bits(
+                        py.core_token(),
+                        MoltObject::from_ptr(ptr).bits(),
+                    )
+                }
             };
             let source = make(b"left_owner::right_owner");
             let expression = make(b"::");
             let replacement = make(b"replacement_owner");
             let pattern = unsafe {
-                OwnedRuntimeValue::from_owned_bits(py, molt_re_compile(expression.bits(), zero))
+                OwnedRuntimeValue::from_owned_bits(
+                    py.core_token(),
+                    molt_re_compile(expression.bits(), zero),
+                )
             };
             assert!(!exception_pending(py));
 
             let split = unsafe {
                 OwnedRuntimeValue::from_owned_bits(
-                    py,
+                    py.core_token(),
                     molt_re_split(pattern.bits(), source.bits(), zero),
                 )
             };
@@ -45,7 +53,7 @@ fn regex_aggregates_retain_each_created_child_once() {
 
             let replaced = unsafe {
                 OwnedRuntimeValue::from_owned_bits(
-                    py,
+                    py.core_token(),
                     molt_re_sub(pattern.bits(), replacement.bits(), source.bits(), zero),
                 )
             };
@@ -60,13 +68,16 @@ fn regex_aggregates_retain_each_created_child_once() {
             let named_expression = make(b"(?P<retained_owner>item)");
             let named_pattern = unsafe {
                 OwnedRuntimeValue::from_owned_bits(
-                    py,
+                    py.core_token(),
                     molt_re_compile(named_expression.bits(), zero),
                 )
             };
             assert!(!exception_pending(py));
             let info = unsafe {
-                OwnedRuntimeValue::from_owned_bits(py, molt_re_pattern_info(named_pattern.bits()))
+                OwnedRuntimeValue::from_owned_bits(
+                    py.core_token(),
+                    molt_re_pattern_info(named_pattern.bits()),
+                )
             };
             assert!(!exception_pending(py));
             let children = unsafe { seq_snapshot(ptr_from_bits(info.bits())) };

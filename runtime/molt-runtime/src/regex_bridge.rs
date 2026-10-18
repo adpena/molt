@@ -50,14 +50,14 @@ pub extern "C" fn molt_re_subject_snapshot(subject_bits: u64) -> u64 {
         }
         // ByteInput uses the canonical PyBUF_SIMPLE custody and keeps the
         // exporter alive until the snapshot has been allocated.
-        let input = match unsafe { ByteInput::acquire(_py, subject_bits) } {
+        let input = match unsafe { ByteInput::acquire(_py.core_token(), subject_bits) } {
             Ok(input) => input,
             Err(_) => return MoltObject::none().bits(),
         };
         // Read the leased length, then allocate before borrowing the mutable
         // exporter again: allocation may run finalizers, so no buffer slice
         // may remain live across it.
-        let len = unsafe { input.bytes(_py).len() };
+        let len = unsafe { input.bytes(_py.core_token()).len() };
         let snapshot = if len == 0 {
             // Keep the runtime's canonical empty-bytes singleton.
             alloc_bytes(_py, &[])
@@ -72,7 +72,7 @@ pub extern "C" fn molt_re_subject_snapshot(subject_bits: u64) -> u64 {
             return MoltObject::none().bits();
         }
         if len != 0 {
-            let bytes = unsafe { input.bytes(_py) };
+            let bytes = unsafe { input.bytes(_py.core_token()) };
             unsafe {
                 std::ptr::copy_nonoverlapping(
                     bytes.as_ptr(),
@@ -94,11 +94,11 @@ pub extern "C" fn __molt_regex_subject_slice(subject_bits: u64, start: usize, en
         if start > end {
             return MoltObject::none().bits();
         }
-        let input = match unsafe { ByteInput::acquire(_py, subject_bits) } {
+        let input = match unsafe { ByteInput::acquire(_py.core_token(), subject_bits) } {
             Ok(input) => input,
             Err(_) => return MoltObject::none().bits(),
         };
-        let len = unsafe { input.bytes(_py).len() };
+        let len = unsafe { input.bytes(_py.core_token()).len() };
         if end > len {
             return MoltObject::none().bits();
         }
@@ -116,7 +116,7 @@ pub extern "C" fn __molt_regex_subject_slice(subject_bits: u64, start: usize, en
             return MoltObject::none().bits();
         }
         if size != 0 {
-            let bytes = unsafe { input.bytes(_py) };
+            let bytes = unsafe { input.bytes(_py.core_token()) };
             unsafe {
                 std::ptr::copy_nonoverlapping(
                     bytes.as_ptr().add(start),

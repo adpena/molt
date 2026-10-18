@@ -238,7 +238,7 @@ class Pattern:
         self,
         pattern: str | bytes,
         flags: int,
-        handle: int,
+        handle: object,
         groups: int,
         groupindex: Mapping[str, int],
     ) -> None:
