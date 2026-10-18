@@ -2132,7 +2132,12 @@ def test_wasm_host_export_applications_have_independent_cold_partitions() -> Non
     assert set(rows) == set(expected)
     for name, (test_name, runtime_dependencies) in expected.items():
         row = rows[name]
-        assert row.argv[6:] == (f"tests/test_wasm_split_runtime.py::{test_name}",)
+        assert row.argv[6] == f"tests/test_wasm_split_runtime.py::{test_name}"
+        assert row.argv[7:] == (
+            ("tests/test_falcon_driver_scaffold.py",)
+            if name == "wasm.integration.host-exports.falcon-driver"
+            else ()
+        )
         assert row.data["timeout_budget"] == "cold"
         assert {"node", "wasi-clang"}.issubset(PLAN.required_toolchains(row))
         # Each program retains its own import closure. The GPU/tinygrad cells
@@ -2185,6 +2190,22 @@ def test_wasm_host_export_applications_have_independent_cold_partitions() -> Non
     )
 
 
+def test_falcon_execution_contract_changes_select_existing_wasm_proof() -> None:
+    for path in (
+        "drivers/falcon/browser_webgpu/browser.js",
+        "drivers/falcon/browser_webgpu/deploy.py",
+        "drivers/cloudflare/thin_adapter/verify.py",
+        "tests/test_falcon_driver_scaffold.py",
+        "tests/test_falcon_ocr_prompt_contract.py",
+        "tests/fixtures/falcon_ocr/driver-manifest.base.json",
+    ):
+        assert "wasm" in {family.name for family in PLAN.select([path]).selected}, path
+    assert "wasm" not in {
+        family.name
+        for family in PLAN.select(["drivers/falcon/browser_webgpu/README.md"]).selected
+    }
+
+
 def test_wasm_lifecycle_consumers_are_enrolled_with_required_node() -> None:
     rows = {row.id: row for row in PLAN.commands}
     startup = rows["wasm.test.startup-lifecycle"]
@@ -2195,9 +2216,23 @@ def test_wasm_lifecycle_consumers_are_enrolled_with_required_node() -> None:
         "tests/test_wasm_reserved_callable_arity.py",
         "tests/test_wasm_split_runtime.py::test_split_failure_retains_distinct_bytes_and_publication",
         "tests/test_wasm_split_runtime.py::test_split_runtime_size_record_is_content_addressed_evidence",
+        "tests/test_wasm_browser_embed.py::test_all_hosts_bind_exact_runtime_exports_once",
+        "tests/test_driver_cloudflare_verify.py",
+        "tests/test_driver_cloudflare_worker.py",
+        "tests/test_falcon_ocr_prompt_contract.py",
     }
     assert {"pr", "main"} <= set(startup.data["tiers"])
-    assert "node" in PLAN.required_toolchains(startup)
+    assert {"node", "browser-acorn"} <= set(PLAN.required_toolchains(startup))
+    for receiver in (
+        "tests/test_driver_cloudflare_verify.py",
+        "tests/test_driver_cloudflare_worker.py",
+        "tests/test_falcon_ocr_prompt_contract.py",
+    ):
+        assert all(
+            receiver not in command.argv
+            for command in PLAN.commands
+            if command.id.startswith("python.unit.surface-contracts")
+        )
     assert not startup.dependencies
     runner = rows["wasm.host.runner-fixtures"]
     assert runner.dependencies == ("wasm.build.backend",)

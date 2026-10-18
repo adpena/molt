@@ -1,16 +1,27 @@
 {
   "target": "falcon.browser_webgpu",
   "artifacts": {
-    "app_wasm": { "url": "/output.wasm" },
-    "runtime_wasm": { "url": "/molt_runtime.wasm" },
-    "config_json": { "url": "/config.json" },
-    "tokenizer_json": { "url": "/tokenizer.json" }
+    "config_json": {
+      "url": "/config.json"
+    },
+    "tokenizer_json": {
+      "url": "/tokenizer.json"
+    },
+    "execution_manifest": {
+      "url": "/runtime/manifest.json"
+    }
   },
   "weights": {
     "base_url": "https://weights.example.invalid/falcon",
     "files": [
-      { "path": "config.json", "url": "config.json" },
-      { "path": "model.safetensors", "url": "model.safetensors" }
+      {
+        "path": "config.json",
+        "url": "config.json"
+      },
+      {
+        "path": "model.safetensors",
+        "url": "model.safetensors"
+      }
     ]
   },
   "exports": {

@@ -5,7 +5,7 @@ import hashlib
 import json
 import shutil
 import sys
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
@@ -22,6 +22,9 @@ from drivers._shared.cloudflare import (  # noqa: E402
     extract_r2_bucket_names,
     load_jsonc,
 )
+from tools.gen_browser_asset_graph import AssetSource, scan_resolved_sources  # noqa: E402
+from molt.exact_json import capture_exact  # noqa: E402
+from molt.wasm_artifact import WASM_RUNTIME_MANIFEST_NAME  # noqa: E402
 from molt.browser_asset_closure import (  # noqa: E402
     BROWSER_HOST_ENTRY_ASSETS,
     canonical_wasm_loader_asset_bytes,
@@ -64,15 +67,109 @@ def _write_text(path: Path, text: str) -> None:
     path.write_text(text, encoding="utf-8")
 
 
-def _browser_asset_record(path: Path, root: Path) -> dict[str, Any]:
-    payload = canonical_wasm_loader_asset_bytes(path)
-    return {
-        "kind": "browser_static_asset",
-        "path": str(path.resolve()),
-        "relative_path": path.resolve().relative_to(root.resolve()).as_posix(),
-        "size_bytes": len(payload),
-        "sha256": hashlib.sha256(payload).hexdigest(),
+def validate_browser_asset_records(root: Path, records: list[dict[str, Any]]) -> None:
+    """Validate retained loader references using the generator's checked scanner."""
+    sources = {}
+    for record in records:
+        name = record["relative_path"]
+        is_javascript = PurePosixPath(name).suffix in {".js", ".mjs"}
+        content = (root / name).read_bytes() if is_javascript else b""
+        if is_javascript and (
+            len(content) != record["size_bytes"]
+            or hashlib.sha256(content).hexdigest() != record["sha256"]
+        ):
+            raise ValueError(f"Falcon browser asset bytes changed before scan: {name}")
+        sources[name] = AssetSource(
+            path=name,
+            role="browser",
+            source_type="module" if is_javascript else "data",
+            authority="selected Falcon deployment",
+            content=content,
+        )
+    scan_resolved_sources(sources)
+
+
+def execution_artifact_records(root: Path) -> tuple[str, list[dict[str, Any]]]:
+    """Admit the build's execution manifest and its complete declared file closure."""
+    root = root.resolve()
+    manifest_path = root / WASM_RUNTIME_MANIFEST_NAME
+    identity, manifest = capture_exact(
+        manifest_path, max_bytes=16 * 1024 * 1024, label="Falcon execution manifest"
+    )
+    if (
+        not isinstance(manifest, dict)
+        or manifest.get("version") != 2
+        or manifest.get("mode") not in ("linked", "split-runtime")
+    ):
+        raise ValueError(
+            "Falcon requires a version 2 linked or split-runtime execution manifest"
+        )
+    mode = manifest["mode"]
+    modules = manifest.get("modules")
+    assets = manifest.get("assets", {})
+    required_modules = {"linked"} if mode == "linked" else {"app", "runtime"}
+    if (
+        not isinstance(modules, dict)
+        or set(modules) != required_modules
+        or not isinstance(assets, dict)
+    ):
+        raise ValueError(
+            f"Falcon execution manifest requires modules {sorted(required_modules)} and assets"
+        )
+    records = {
+        WASM_RUNTIME_MANIFEST_NAME: {
+            "kind": "execution_manifest",
+            "path": str(manifest_path),
+            "relative_path": WASM_RUNTIME_MANIFEST_NAME,
+            "size_bytes": identity.size,
+            "sha256": identity.sha256,
+        }
     }
+    asset_paths = set()
+    for section, descriptors in (("modules", modules), ("assets", assets)):
+        for role, descriptor in descriptors.items():
+            label = f"{section}.{role}"
+            if not isinstance(descriptor, dict):
+                raise ValueError(f"Falcon execution manifest malformed {label}")
+            name = descriptor.get("path")
+            relative = PurePosixPath(name) if isinstance(name, str) else None
+            if (
+                relative is None
+                or not name
+                or relative.is_absolute()
+                or ".." in relative.parts
+                or "\\" in name
+                or ":" in name
+                or relative.as_posix() != name
+            ):
+                raise ValueError(f"Falcon execution manifest invalid path for {label}")
+            path = root.joinpath(*relative.parts).resolve()
+            if not path.is_relative_to(root) or not path.is_file():
+                raise ValueError(
+                    f"Falcon execution manifest missing or escaped {label}: {name}"
+                )
+            record = artifact_record(kind=section, path=path, root=root)
+            record["relative_path"] = name
+            if (
+                type(descriptor.get("size")) is not int
+                or descriptor["size"] != record["size_bytes"]
+                or descriptor.get("sha256") != record["sha256"]
+            ):
+                raise ValueError(
+                    f"Falcon execution manifest bytes mismatch for {label}: {name}"
+                )
+            if name in records:
+                raise ValueError(f"Falcon execution manifest duplicate file: {name}")
+            records[name] = record
+            if section == "assets":
+                asset_paths.add(name)
+    if mode == "split-runtime" and "browser_host.js" not in asset_paths:
+        raise ValueError(
+            "Falcon split execution manifest missing browser_host.js asset"
+        )
+    if mode == "split-runtime":
+        validate_browser_asset_records(root, list(records.values()))
+    return mode, list(records.values())
 
 
 def discover_falcon_config_json(target_root: Path, *, weights_root: Path) -> Path:
@@ -99,17 +196,39 @@ def build_deploy_surface(
         raise FileNotFoundError(f"worker entrypoint not found: {entrypoint}")
 
     artifact_root = target_root / DEFAULT_ARTIFACT_SUBDIR
-    app_wasm = artifact_root / "app.wasm"
-    runtime_wasm = artifact_root / "molt_runtime.wasm"
+    mode, execution_artifacts = execution_artifact_records(artifact_root)
+    hosting_assets = []
+    if mode == "linked":
+        # Linked CLI output declares its executable, not a browser hosting kit.
+        # Select the kit once here; receivers verify these retained byte records.
+        declared_files = {item["relative_path"]: item for item in execution_artifacts}
+        for name in wasm_loader_asset_closure(
+            REPO_ROOT / "wasm", BROWSER_HOST_ENTRY_ASSETS
+        ):
+            path = REPO_ROOT / "wasm" / name
+            payload = canonical_wasm_loader_asset_bytes(path)
+            record = {
+                "kind": "browser_host",
+                "path": str(path),
+                "relative_path": name,
+                "size_bytes": len(payload),
+                "sha256": hashlib.sha256(payload).hexdigest(),
+            }
+            declared = declared_files.get(name)
+            if declared is not None and (
+                declared["sha256"],
+                declared["size_bytes"],
+            ) != (record["sha256"], record["size_bytes"]):
+                raise ValueError(
+                    f"Linked hosting asset conflicts with declared artifact: {name}"
+                )
+            hosting_assets.append(record)
+            del payload
     weights_dir = (
         (weights_root or (target_root / DEFAULT_WEIGHTS_SUBDIR)).expanduser().resolve()
     )
     config_json = discover_falcon_config_json(target_root, weights_root=weights_dir)
     tokenizer_json = weights_dir / DEFAULT_TOKENIZER_FILENAME
-    if not app_wasm.exists():
-        raise FileNotFoundError(f"missing Falcon app wasm: {app_wasm}")
-    if not runtime_wasm.exists():
-        raise FileNotFoundError(f"missing Falcon runtime wasm: {runtime_wasm}")
     if not weights_dir.exists():
         raise FileNotFoundError(f"missing Falcon weights dir: {weights_dir}")
 
@@ -122,28 +241,13 @@ def build_deploy_surface(
     browser_loader = (DRIVER_DIR / "browser.js").resolve()
     if not browser_loader.exists():
         raise FileNotFoundError(f"browser loader not found: {browser_loader}")
-    wasm_asset_root = REPO_ROOT / "wasm"
-    browser_static_assets = wasm_loader_asset_closure(
-        wasm_asset_root,
-        BROWSER_HOST_ENTRY_ASSETS,
-    )
-
     config_root = target_root.resolve()
     if not config_json.is_relative_to(config_root):
         config_root = weights_dir
 
     artifact_manifest = {
         "immutable": {
-            "app_wasm": artifact_record(
-                kind="wasm_module",
-                path=app_wasm,
-                root=target_root,
-            ),
-            "runtime_wasm": artifact_record(
-                kind="wasm_runtime",
-                path=runtime_wasm,
-                root=target_root,
-            ),
+            "execution_manifest": execution_artifacts[0],
             "config_json": artifact_record(
                 kind="config_json",
                 path=config_json,
@@ -176,12 +280,8 @@ def build_deploy_surface(
                 root=DRIVER_DIR,
             ),
         },
-        "browser_static_assets": [
-            _browser_asset_record(
-                wasm_asset_root.joinpath(*Path(name).parts), wasm_asset_root
-            )
-            for name in browser_static_assets
-        ],
+        "execution_artifacts": execution_artifacts,
+        "hosting_assets": hosting_assets,
         "weights": directory_records(kind="weights_blob", root=weights_dir),
     }
 
@@ -201,18 +301,16 @@ def build_deploy_surface(
             "observability": config.get("observability", {}),
         },
         "artifacts": {
-            "app_wasm": str(app_wasm),
-            "runtime_wasm": str(runtime_wasm),
+            "execution_manifest": str(artifact_root / WASM_RUNTIME_MANIFEST_NAME),
             "config_json": str(config_json),
             "tokenizer_json": str(tokenizer_json) if tokenizer_json.exists() else None,
             "weights_dir": str(weights_dir),
-            "browser_static_assets": list(browser_static_assets),
         },
         "artifact_manifest": artifact_manifest,
     }
 
 
-def _base_runtime_manifest(
+def _base_driver_manifest(
     surface: dict[str, Any],
     *,
     weights_base_url: str | None,
@@ -222,15 +320,10 @@ def _base_runtime_manifest(
         "version": 1,
         "target": surface["target"],
         "artifacts": {
-            "app_wasm": {
-                "url": "/app.wasm",
-                "sha256": immutable["app_wasm"]["sha256"],
-                "size_bytes": immutable["app_wasm"]["size_bytes"],
-            },
-            "runtime_wasm": {
-                "url": "/molt_runtime.wasm",
-                "sha256": immutable["runtime_wasm"]["sha256"],
-                "size_bytes": immutable["runtime_wasm"]["size_bytes"],
+            "execution_manifest": {
+                "url": "/runtime/manifest.json",
+                "sha256": immutable["execution_manifest"]["sha256"],
+                "size_bytes": immutable["execution_manifest"]["size_bytes"],
             },
             "config_json": {
                 "url": "/config.json",
@@ -254,6 +347,20 @@ def _base_runtime_manifest(
                 "size_bytes": immutable["browser_loader"]["size_bytes"],
             },
         },
+        **(
+            {
+                "hosting_assets": [
+                    {
+                        "relative_path": item["relative_path"],
+                        "size_bytes": item["size_bytes"],
+                        "sha256": item["sha256"],
+                    }
+                    for item in surface["artifact_manifest"]["hosting_assets"]
+                ]
+            }
+            if surface["artifact_manifest"]["hosting_assets"]
+            else {}
+        ),
         "weights": {
             "base_url": weights_base_url,
             "files": [
@@ -270,14 +377,6 @@ def _base_runtime_manifest(
             "init": "main_molt__init",
             "ocrTokens": "main_molt__ocr_tokens",
         },
-        "browser_static_assets": [
-            {
-                "url": f"/{record['relative_path']}",
-                "sha256": record["sha256"],
-                "size_bytes": record["size_bytes"],
-            }
-            for record in surface["artifact_manifest"]["browser_static_assets"]
-        ],
     }
 
 
@@ -330,40 +429,59 @@ def materialize_deploy_bundle(
     bundle_root.mkdir(parents=True, exist_ok=True)
     assets_root.mkdir(parents=True, exist_ok=True)
 
-    _copy_file(Path(surface["artifacts"]["app_wasm"]), assets_root / "app.wasm")
-    _copy_file(
-        Path(surface["artifacts"]["runtime_wasm"]), assets_root / "molt_runtime.wasm"
-    )
+    runtime_root = assets_root / "runtime"
+    for record in surface["artifact_manifest"]["execution_artifacts"]:
+        destination = runtime_root.joinpath(
+            *PurePosixPath(record["relative_path"]).parts
+        )
+        _copy_file(Path(record["path"]), destination)
+        if (
+            destination.stat().st_size != record["size_bytes"]
+            or artifact_record(kind=record["kind"], path=destination)["sha256"]
+            != record["sha256"]
+        ):
+            raise ValueError(
+                f"Falcon execution artifact changed during publication: {record['relative_path']}"
+            )
+    for record in surface["artifact_manifest"]["hosting_assets"]:
+        payload = canonical_wasm_loader_asset_bytes(Path(record["path"]))
+        if (
+            len(payload) != record["size_bytes"]
+            or hashlib.sha256(payload).hexdigest() != record["sha256"]
+        ):
+            raise ValueError(
+                f"Falcon hosting asset changed during publication: {record['relative_path']}"
+            )
+        destination = runtime_root.joinpath(
+            *PurePosixPath(record["relative_path"]).parts
+        )
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        destination.write_bytes(payload)
+        del payload
     _copy_file(Path(surface["artifacts"]["config_json"]), assets_root / "config.json")
     if surface["artifacts"]["tokenizer_json"]:
         _copy_file(
             Path(surface["artifacts"]["tokenizer_json"]), assets_root / "tokenizer.json"
-        )
-    wasm_asset_root = REPO_ROOT / "wasm"
-    for name in surface["artifacts"]["browser_static_assets"]:
-        destination = assets_root.joinpath(*Path(name).parts)
-        destination.parent.mkdir(parents=True, exist_ok=True)
-        destination.write_bytes(
-            canonical_wasm_loader_asset_bytes(
-                wasm_asset_root.joinpath(*Path(name).parts)
-            )
         )
     browser_loader_text = (
         (DRIVER_DIR / "browser.js")
         .read_text(encoding="utf-8")
         .replace(
             'import { loadMoltWasm } from "../../../wasm/browser_host.js";',
-            'import { loadMoltWasm } from "./browser_host.js";',
+            'import { loadMoltWasm } from "./runtime/browser_host.js";',
         )
     )
     _write_text(assets_root / "browser.js", browser_loader_text)
+    surface["artifact_manifest"]["immutable"]["browser_loader"] = artifact_record(
+        kind="browser_loader", path=assets_root / "browser.js", root=assets_root
+    )
     _copy_file(DRIVER_DIR / "worker.ts", falcon_worker_dst)
     _copy_file(
         REPO_ROOT / "drivers" / "cloudflare" / "thin_adapter" / "worker.ts",
         thin_worker_dst,
     )
 
-    manifest_base = _base_runtime_manifest(surface, weights_base_url=weights_base_url)
+    manifest_base = _base_driver_manifest(surface, weights_base_url=weights_base_url)
     manifest_path = assets_root / DEFAULT_MANIFEST_ASSET_NAME
     manifest_path.write_text(
         json.dumps(manifest_base, indent=2) + "\n", encoding="utf-8"

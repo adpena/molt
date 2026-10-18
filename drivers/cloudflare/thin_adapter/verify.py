@@ -1,20 +1,20 @@
 from __future__ import annotations
 
-import hashlib
 import json
 import subprocess
 import uuid
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 
 from tools import harness_memory_guard  # noqa: E402
 from molt.dx import scratch_dir  # noqa: E402
-from molt.browser_asset_closure import (  # noqa: E402
-    BROWSER_HOST_ENTRY_ASSETS,
-    wasm_loader_asset_closure,
+from drivers.falcon.browser_webgpu.deploy import (  # noqa: E402
+    execution_artifact_records,
+    validate_browser_asset_records,
 )
+from drivers._shared.artifacts import sha256_file  # noqa: E402
 
 
 def _logs_root(project_root: Path) -> Path:
@@ -71,18 +71,12 @@ def validate_bundle_contract(
     assets_root = bundle_root / "assets"
     manifest_asset = bundle_root / manifest_asset_path
     worker_entrypoint = bundle_root / worker_entrypoint_path
-    browser_assets = wasm_loader_asset_closure(
-        REPO_ROOT / "wasm",
-        BROWSER_HOST_ENTRY_ASSETS,
-    )
     required_assets = [
-        assets_root / "app.wasm",
-        assets_root / "molt_runtime.wasm",
+        assets_root / "runtime" / "manifest.json",
         assets_root / "browser.js",
         assets_root / "config.json",
         manifest_asset,
         worker_entrypoint,
-        *(assets_root.joinpath(*Path(name).parts) for name in browser_assets),
     ]
     missing = [
         str(path.relative_to(bundle_root))
@@ -123,36 +117,62 @@ def validate_bundle_contract(
     if not isinstance(artifacts, dict):
         raise RuntimeError("Cloudflare thin-adapter manifest is missing artifacts")
     for key, expected_url in {
-        "app_wasm": "/app.wasm",
-        "runtime_wasm": "/molt_runtime.wasm",
+        "execution_manifest": "/runtime/manifest.json",
         "config_json": "/config.json",
         "browser_loader": "/browser.js",
     }.items():
         entry = artifacts.get(key)
         if not isinstance(entry, dict) or entry.get("url") != expected_url:
             raise RuntimeError(f"Cloudflare thin-adapter manifest {key} url drifted")
-    browser_manifest_assets = manifest.get("browser_static_assets")
-    if not isinstance(browser_manifest_assets, list):
+    mode, execution_records = execution_artifact_records(assets_root / "runtime")
+    hosting_assets = manifest.get("hosting_assets")
+    if mode == "linked":
+        if not isinstance(hosting_assets, list):
+            raise RuntimeError("Linked Falcon deployment is missing hosting_assets")
+        seen = set()
+        runtime_root = (assets_root / "runtime").resolve()
+        for record in hosting_assets:
+            name = record.get("relative_path") if isinstance(record, dict) else None
+            relative = PurePosixPath(name) if isinstance(name, str) else None
+            if (
+                relative is None
+                or not name
+                or relative.is_absolute()
+                or ".." in relative.parts
+                or "\\" in name
+                or ":" in name
+                or relative.as_posix() != name
+                or name in seen
+            ):
+                raise RuntimeError(
+                    "Linked Falcon hosting asset has an invalid or duplicate path"
+                )
+            path = runtime_root.joinpath(*relative.parts).resolve()
+            if not path.is_relative_to(runtime_root) or not path.is_file():
+                raise RuntimeError(
+                    f"Linked Falcon hosting asset is missing or escaped: {name}"
+                )
+            if (
+                type(record.get("size_bytes")) is not int
+                or record["size_bytes"] != path.stat().st_size
+                or record.get("sha256") != sha256_file(path)
+            ):
+                raise RuntimeError(f"Linked Falcon hosting asset bytes drifted: {name}")
+            seen.add(name)
+        if "browser_host.js" not in seen:
+            raise RuntimeError("Linked Falcon hosting assets omit browser_host.js")
+        validate_browser_asset_records(runtime_root, execution_records + hosting_assets)
+    elif hosting_assets is not None:
         raise RuntimeError(
-            "Cloudflare thin-adapter manifest is missing browser_static_assets"
+            "Split Falcon deployment must use manifest-declared host assets"
         )
-    browser_manifest_by_url = {
-        entry.get("url"): entry
-        for entry in browser_manifest_assets
-        if isinstance(entry, dict) and isinstance(entry.get("url"), str)
-    }
-    expected_browser_urls = {f"/{name}" for name in browser_assets}
-    if set(browser_manifest_by_url) != expected_browser_urls:
-        raise RuntimeError(
-            "Cloudflare thin-adapter browser static asset manifest drifted from closure"
-        )
-    for name in browser_assets:
-        path = assets_root.joinpath(*Path(name).parts)
-        entry = browser_manifest_by_url[f"/{name}"]
-        if entry.get("size_bytes") != path.stat().st_size:
-            raise RuntimeError(f"Cloudflare browser static asset size drifted: {name}")
-        if entry.get("sha256") != hashlib.sha256(path.read_bytes()).hexdigest():
-            raise RuntimeError(f"Cloudflare browser static asset hash drifted: {name}")
+    for key in ("execution_manifest", "browser_loader", "config_json"):
+        entry = artifacts[key]
+        path = assets_root / entry["url"].removeprefix("/")
+        if entry.get("size_bytes") != path.stat().st_size or entry.get(
+            "sha256"
+        ) != sha256_file(path):
+            raise RuntimeError(f"Cloudflare artifact bytes drifted: {key}")
 
     return {
         "bundle_root": str(bundle_root),

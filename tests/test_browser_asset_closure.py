@@ -34,6 +34,7 @@ from tools.gen_browser_asset_graph import (
     AssetSource,
     generate,
     scan_sources,
+    scan_resolved_sources,
 )
 from tools.generator_io import stale_outputs
 
@@ -334,7 +335,7 @@ def test_scanner_uses_one_batch_process(monkeypatch: pytest.MonkeyPatch) -> None
         AssetSource(f"fixture-{idx}.js", "browser", "module", "test", b"export {};\n")
         for idx in range(32)
     )
-    results, telemetry = scan_sources(rows)
+    results, telemetry = scan_resolved_sources({row.path: row for row in rows})
 
     assert calls == 1
     assert len(results) == 32
@@ -606,3 +607,41 @@ def test_browser_generator_help_does_not_probe_prerequisites(monkeypatch):
     with pytest.raises(SystemExit) as caught:
         asset_graph_tool.main(["--help"])
     assert caught.value.code == 0
+
+
+def test_resolved_asset_scan_uses_selected_inventory_including_data() -> None:
+    assets = {
+        "entry.mjs": AssetSource(
+            "entry.mjs",
+            "browser",
+            "module",
+            "fixture",
+            b'import "./nested/child.js"; fetch(new URL("./payload.bin", import.meta.url));',
+        ),
+        "nested/child.js": AssetSource(
+            "nested/child.js",
+            "browser",
+            "module",
+            "fixture",
+            b'export { value } from "./leaf.mjs";',
+        ),
+        "nested/leaf.mjs": AssetSource(
+            "nested/leaf.mjs",
+            "browser",
+            "module",
+            "fixture",
+            b"export const value = 1;",
+        ),
+        "payload.bin": AssetSource("payload.bin", "browser", "data", "fixture", b""),
+    }
+    resolved, telemetry = scan_resolved_sources(assets)
+    assert resolved["entry.mjs"]["references"] == ["nested/child.js", "payload.bin"]
+    assert resolved["nested/child.js"]["references"] == ["nested/leaf.mjs"]
+    assert telemetry["source_count"] == 3
+    del assets["nested/leaf.mjs"]
+    with pytest.raises(ValueError, match="undeclared browser asset nested/leaf.mjs"):
+        scan_resolved_sources(assets)
+
+
+def test_shared_reference_scan_preserves_canonical_generated_bytes() -> None:
+    assert generate() == canonical_text_bytes(asset_graph_tool.OUTPUT)

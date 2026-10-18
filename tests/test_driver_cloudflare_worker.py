@@ -44,8 +44,7 @@ const response = await worker.fetch(
             version: 1,
             target: "falcon.browser_webgpu",
             artifacts: {{
-              app_wasm: {{ url: "/app.wasm" }},
-              runtime_wasm: {{ url: "/molt_runtime.wasm" }},
+              execution_manifest: {{ url: "/runtime/manifest.json" }},
               config_json: {{ url: "/config.json" }},
               browser_loader: {{ url: "/browser.js" }},
             }},
@@ -114,8 +113,7 @@ const response = await worker.fetch(
             version: 1,
             target: "falcon.browser_webgpu",
             artifacts: {{
-              app_wasm: {{ url: "/app.wasm" }},
-              runtime_wasm: {{ url: "/molt_runtime.wasm" }},
+              execution_manifest: {{ url: "/runtime/manifest.json" }},
               config_json: {{ url: "/config.json" }},
               browser_loader: {{ url: "/browser.js" }},
             }},
