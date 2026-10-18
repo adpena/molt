@@ -11,12 +11,16 @@ from __future__ import annotations
 
 import ast
 
+from molt.compiler_analysis.python_imports import normalize_stdlib_module_name
+from molt.compiler_analysis.python_lexical_scope import python_scope_declarations
 from molt.frontend._mixin_base import GeneratorMixinBase
 from molt.frontend._types import (
     _BUILTIN_FAST_METHODS,
+    OBJECT_CLASS,
     BoundMethodHint,
     BuiltinClass,
     ClassId,
+    MethodDescriptor,
     MoltOp,
     MoltValue,
     ReceiverKind,
@@ -26,6 +30,89 @@ from molt.frontend.lowering.op_kinds_generated import (
     SIMPLEIR_RUNTIME_PROTECTED_ATTRIBUTE_REQUIREMENTS,
     SIMPLEIR_RUNTIME_PROTECTED_ACQUISITION_REQUIREMENTS,
 )
+
+# Data descriptors every user class reaches through ``object`` and ``type``:
+# ``object.__class__`` and the per-class ``__dict__``/``__weakref__`` getsets.
+_OBJECT_DATA_DESCRIPTOR_ATTRS = frozenset({"__class__", "__dict__", "__weakref__"})
+# Functions, classmethods and staticmethods define no ``__set__``/``__delete__``.
+_NON_DATA_METHOD_DESCRIPTORS: frozenset[MethodDescriptor] = frozenset(
+    {"function", "classmethod", "staticmethod"}
+)
+# Builtin constructors whose results never define ``__set__``/``__delete__``.
+_NON_DESCRIPTOR_BUILTIN_CONSTRUCTORS = frozenset(
+    {
+        "bool",
+        "bytearray",
+        "bytes",
+        "classmethod",
+        "complex",
+        "dict",
+        "float",
+        "frozenset",
+        "int",
+        "list",
+        "object",
+        "set",
+        "staticmethod",
+        "str",
+        "tuple",
+    }
+)
+# Displays and literals evaluate to builtin values, never to descriptors.
+_NON_DESCRIPTOR_DISPLAYS = (
+    ast.Constant,
+    ast.JoinedStr,
+    ast.List,
+    ast.Tuple,
+    ast.Set,
+    ast.Dict,
+    ast.ListComp,
+    ast.SetComp,
+    ast.DictComp,
+    ast.GeneratorExp,
+    ast.Lambda,
+)
+
+
+def _class_body_unrecorded_bindings(body: list[ast.stmt]) -> frozenset[str]:
+    """Class-namespace names bound by a form ``class_attrs`` and methods omit.
+
+    ``class_attrs`` records ``name = value`` and ``name: T = value``; methods
+    record ``def name``. Tuple targets, imports, nested classes and named
+    expressions also bind class attributes, with values no proof has seen.
+    """
+    unrecorded: set[str] = set()
+    for statement in body:
+        bound = set(
+            python_scope_declarations([statement], eager_annotations=True).bound
+        )
+        if isinstance(statement, ast.Assign):
+            bound -= {
+                target.id
+                for target in statement.targets
+                if isinstance(target, ast.Name)
+            }
+        elif isinstance(statement, ast.AnnAssign):
+            # Without a value the annotation binds nothing.
+            if isinstance(statement.target, ast.Name):
+                bound.discard(statement.target.id)
+        elif isinstance(statement, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            bound.discard(statement.name)
+        unrecorded |= bound
+    return frozenset(unrecorded)
+
+
+def _is_non_descriptor_literal(expr: ast.expr) -> bool:
+    """A display, or arithmetic over constants such as ``-1`` or ``2 ** 10``."""
+    if isinstance(expr, _NON_DESCRIPTOR_DISPLAYS):
+        return True
+    if isinstance(expr, ast.UnaryOp):
+        return isinstance(expr.operand, ast.Constant)
+    if isinstance(expr, ast.BinOp):
+        return isinstance(expr.left, ast.Constant) and isinstance(
+            expr.right, ast.Constant
+        )
+    return False
 
 
 class AttributeAccessMixin(GeneratorMixinBase):
@@ -42,7 +129,9 @@ class AttributeAccessMixin(GeneratorMixinBase):
         if class_info is None or not class_info.get("dataclass"):
             return None
         offset = class_info.get("fields", {}).get(attr)
-        if not isinstance(offset, int):
+        if not isinstance(offset, int) or self._class_attr_may_be_data_descriptor(
+            class_id, attr
+        ):
             return None
         return class_id, offset
 
@@ -99,41 +188,108 @@ class AttributeAccessMixin(GeneratorMixinBase):
             self._emit_module_attr_set_on(self.module_obj, name, val)
             self.deferred_module_attrs.discard(name)
 
-    def _expr_is_data_descriptor(self, expr: ast.expr) -> bool:
-        """A class-body value the defining module proves is a data descriptor."""
-        if not isinstance(expr, ast.Call) or not isinstance(expr.func, ast.Name):
-            return False
-        descriptor_class = self._class_reference(expr.func)
-        if descriptor_class is None:
-            return expr.func.id == "property" and not self._name_has_source_binding(
-                expr.func
-            )
-        class_info = self.classes.get(descriptor_class)
-        if class_info is None:
-            return False
-        methods = class_info.get("methods", {})
-        return "__set__" in methods or "__delete__" in methods
+    def _expr_may_be_data_descriptor(self, expr: ast.expr) -> bool:
+        """False only for a class-body value proved not to be a data descriptor.
 
-    def _data_descriptor_attrs(
-        self, class_attrs: dict[str, ast.expr]
-    ) -> frozenset[str]:
-        return frozenset(
-            attr
-            for attr, expr in class_attrs.items()
-            if self._expr_is_data_descriptor(expr)
+        CPython stores ``obj.attr = value`` through ``type(obj).attr.__set__``
+        whenever the class attribute is a data descriptor, so a fixed instance
+        field is sound only after that proof. An unresolved name, a factory
+        call or an alias may produce one; each keeps the generic store.
+        """
+        if _is_non_descriptor_literal(expr):
+            return False
+        if not isinstance(expr, ast.Call) or not isinstance(expr.func, ast.Name):
+            return True
+        descriptor_class = self._class_reference(expr.func)
+        if descriptor_class is not None:
+            return self._class_instances_may_be_data_descriptors(descriptor_class)
+        if self._call_is_dataclasses_field(expr.func):
+            # ``@dataclass`` replaces the Field by its ``default=`` value or
+            # deletes it; an undecorated class keeps the Field, which defines
+            # no ``__set__``/``__delete__``.
+            return any(
+                keyword.arg == "default"
+                and self._expr_may_be_data_descriptor(keyword.value)
+                for keyword in expr.keywords
+            ) or any(keyword.arg is None for keyword in expr.keywords)
+        return expr.func.id not in _NON_DESCRIPTOR_BUILTIN_CONSTRUCTORS or (
+            self._name_has_source_binding(expr.func)
         )
 
-    def _class_attr_is_data_descriptor(self, class_id: ClassId, attr: str) -> bool:
-        if class_id not in self.classes:
+    def _call_is_dataclasses_field(self, func: ast.Name) -> bool:
+        """The read is the ``dataclasses.field`` an import binding supplied."""
+        index = self.python_binding_index
+        fact = index.expression_fact(func) if index is not None else None
+        if fact is None or len(fact.result.source_origins) != 1:
             return False
+        (origin,) = fact.result.source_origins
+        if origin[4] != "alias":
+            return False
+        module_name = self.imported_names.get(
+            func.id
+        ) or self.global_imported_names.get(func.id)
+        return (
+            module_name is not None
+            and (normalize_stdlib_module_name(module_name) or module_name)
+            == "dataclasses"
+            and self._imported_attr_name(func.id) == "field"
+        )
+
+    def _class_instances_may_be_data_descriptors(self, class_id: ClassId) -> bool:
+        """False only when calling the class makes plain instances of it."""
+        info = self.classes.get(class_id)
+        if (
+            info is None
+            or info.get("dynamic")
+            or info.get("custom_metaclass")
+            or class_id in self.class_definition_pending
+        ):
+            return True
         for owner in self._class_mro(class_id):
+            if owner == OBJECT_CLASS:
+                continue
+            owner_info = self.classes.get(owner) if isinstance(owner, ClassId) else None
+            if owner_info is None or owner_info.get("dynamic"):
+                return True
+            # ``__new__`` may return an object of another type.
+            for name in ("__set__", "__delete__", "__new__"):
+                if (
+                    name in owner_info.get("methods", {})
+                    or name in (owner_info.get("pending_methods") or ())
+                    or name in owner_info.get("class_attrs", {})
+                    or name in owner_info["possible_data_descriptor_attrs"]
+                ):
+                    return True
+        return False
+
+    def _possible_data_descriptor_attrs(
+        self, node: ast.ClassDef, class_attrs: dict[str, ast.expr]
+    ) -> frozenset[str]:
+        return _class_body_unrecorded_bindings(node.body) | frozenset(
+            attr
+            for attr, expr in class_attrs.items()
+            if self._expr_may_be_data_descriptor(expr)
+        )
+
+    def _class_attr_may_be_data_descriptor(self, class_id: ClassId, attr: str) -> bool:
+        """False only when no class on the MRO can bind ``attr`` to a data
+        descriptor, so an instance field may serve ``obj.attr``."""
+        if attr in _OBJECT_DATA_DESCRIPTOR_ATTRS or class_id not in self.classes:
+            return True
+        for owner in self._class_mro(class_id):
+            if owner == OBJECT_CLASS:
+                continue
             mro_info = self.classes.get(owner) if isinstance(owner, ClassId) else None
             if not mro_info:
-                continue
-            if attr in mro_info.get("data_descriptor_attrs", frozenset()):
+                return True
+            if attr in mro_info["possible_data_descriptor_attrs"]:
                 return True
             method_info = mro_info.get("methods", {}).get(attr)
-            if method_info and method_info["descriptor"] == "property":
+            if method_info is not None:
+                if method_info["descriptor"] not in _NON_DATA_METHOD_DESCRIPTORS:
+                    return True
+            elif attr in (mro_info.get("pending_methods") or ()):
+                # Not compiled yet: its decorators are still unclassified.
                 return True
         return False
 
@@ -1031,7 +1187,7 @@ class AttributeAccessMixin(GeneratorMixinBase):
                 field_map = class_info.get("fields", {})
                 if (
                     property_field in field_map
-                    and not self._class_attr_is_data_descriptor(
+                    and not self._class_attr_may_be_data_descriptor(
                         declared_class, property_field
                     )
                 ):
@@ -1108,7 +1264,7 @@ class AttributeAccessMixin(GeneratorMixinBase):
         if (
             receiver_is_class_object
             or node.attr not in field_map
-            or self._class_attr_is_data_descriptor(expected_class, node.attr)
+            or self._class_attr_may_be_data_descriptor(expected_class, node.attr)
         ):
             return self._emit_generic_attribute_load(
                 obj, node.attr, "GETATTR_GENERIC_PTR", method_load=method_load
@@ -1167,7 +1323,7 @@ class AttributeAccessMixin(GeneratorMixinBase):
                 and not exact_info.get("dataclass")
             ):
                 field_map = exact_info.get("fields", {})
-                if attr in field_map and not self._class_attr_is_data_descriptor(
+                if attr in field_map and not self._class_attr_may_be_data_descriptor(
                     exact_class, attr
                 ):
                     self._emit_guarded_setattr(
@@ -1210,7 +1366,7 @@ class AttributeAccessMixin(GeneratorMixinBase):
                 or attr not in class_info.get("fields", {})
                 or declared is not None
                 and declared.kind is ReceiverKind.CLASS_OBJECT
-                or self._class_attr_is_data_descriptor(declared_class, attr)
+                or self._class_attr_may_be_data_descriptor(declared_class, attr)
             ):
                 self.emit(
                     MoltOp(

@@ -993,7 +993,9 @@ class ClassDefVisitorMixin(ClassMethodCompilationMixin):
                 "field_order": field_order,
                 "field_hints": field_hints,
                 "class_attrs": class_attrs,
-                "data_descriptor_attrs": self._data_descriptor_attrs(class_attrs),
+                "possible_data_descriptor_attrs": self._possible_data_descriptor_attrs(
+                    node, class_attrs
+                ),
                 "bases": tuple(bases),
                 "mro": mro,
                 "dynamic": dynamic,
@@ -1168,7 +1170,9 @@ class ClassDefVisitorMixin(ClassMethodCompilationMixin):
                 defaults=field_defaults,
                 field_hints=field_hints,
                 class_attrs=class_attrs,
-                data_descriptor_attrs=self._data_descriptor_attrs(class_attrs),
+                possible_data_descriptor_attrs=self._possible_data_descriptor_attrs(
+                    node, class_attrs
+                ),
                 bases=tuple(bases),
                 mro=mro,
                 dynamic=dynamic,
