@@ -626,11 +626,15 @@ def test_run_gate_structured_arguments_use_selected_python(drv, tmp_path):
     script = (
         "import json,sys; from pathlib import Path; "
         "from molt_gate_selection_marker import TOKEN; "
-        "Path(sys.argv[1]).write_text(json.dumps([TOKEN,sys.prefix,sys.argv[2]]))"
+        "Path(sys.argv[1]).write_text(json.dumps([TOKEN,sys.prefix,sys.argv[2]]), encoding='utf-8')"
     )
     command = ("python", "-c", script, str(observed), literal)
     assert drv.run_gate(command, repo, _gate_caller_env(tmp_path / "absent")) == 0
-    assert json.loads(observed.read_text()) == ["selected", str(selected), literal]
+    assert json.loads(observed.read_text(encoding="utf-8")) == [
+        "selected",
+        str(selected),
+        literal,
+    ]
     with pytest.raises(drv.DriverError, match="virtualenv Python not found"):
         drv.run_gate(command, tmp_path, _gate_caller_env(tmp_path / "absent"))
 
