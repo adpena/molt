@@ -435,3 +435,271 @@ fn cpython_conditionals_read_current_start_and_previous_end_marks() {
         assert_cpython_case(pattern, text, mode, (0, text.len()), expected);
     }
 }
+
+// Projection of independently observed CPython 3.12.15 records.
+// Existing assert_cpython_case executes each literal against text and bytes.
+// Equal result tuples across modes share one vector; original records keep all modes.
+#[test]
+fn cpython_atomic_and_possessive_scope_contracts() {
+    let cases: &[CpythonCase<'_>] = &[
+        // ordinary-star-control; equivalent observed modes: fullmatch, match, search
+        ("a*a", "aa", "fullmatch", Some(((0, 2), &[], None))),
+        // possessive-star; equivalent observed modes: fullmatch, match, search
+        ("a*+a", "aa", "fullmatch", None),
+        // possessive-plus; equivalent observed modes: fullmatch, match, search
+        ("a++a", "aa", "fullmatch", None),
+        // possessive-optional; equivalent observed modes: fullmatch, match, search
+        ("a?+a", "a", "fullmatch", None),
+        // possessive-bounded; equivalent observed modes: fullmatch, match, search
+        ("a{1,2}+a", "aa", "fullmatch", None),
+        // possessive-tail-hit; equivalent observed modes: fullmatch, match, search
+        ("a{1,2}+b", "aab", "fullmatch", Some(((0, 3), &[], None))),
+        // possessive-zero-count; equivalent observed modes: fullmatch, match, search
+        ("(a){0}+a", "a", "fullmatch", Some(((0, 1), &[None], None))),
+        // ordinary-alternative-control; equivalent observed modes: fullmatch
+        ("(?:a|ab)b", "abb", "fullmatch", Some(((0, 3), &[], None))),
+        // ordinary-alternative-control; equivalent observed modes: match, search
+        ("(?:a|ab)b", "abb", "match", Some(((0, 2), &[], None))),
+        // atomic-alternative; equivalent observed modes: fullmatch
+        ("(?>a|ab)b", "abb", "fullmatch", None),
+        // atomic-alternative; equivalent observed modes: match, search
+        ("(?>a|ab)b", "abb", "match", Some(((0, 2), &[], None))),
+        // atomic-alternative-priority; equivalent observed modes: fullmatch, match, search
+        ("(?>ab|a)b", "abb", "fullmatch", Some(((0, 3), &[], None))),
+        // atomic-outer-rescue; equivalent observed modes: fullmatch, match, search
+        (
+            "(?:(?>a|ab)c|ab)",
+            "ab",
+            "fullmatch",
+            Some(((0, 2), &[], None)),
+        ),
+        // possessive-minimum; equivalent observed modes: fullmatch, match, search
+        ("(?:a|ab){2}+", "abab", "fullmatch", None),
+        // atomic-repeat-minimum; equivalent observed modes: fullmatch
+        ("(?>(?:a|ab){2})", "abab", "fullmatch", None),
+        // atomic-repeat-minimum; equivalent observed modes: match, search
+        (
+            "(?>(?:a|ab){2})",
+            "abab",
+            "match",
+            Some(((0, 3), &[], None)),
+        ),
+        // atomic-tail-inside; equivalent observed modes: fullmatch, match, search
+        (
+            "(?>(?:a|ab){2}b)",
+            "abab",
+            "fullmatch",
+            Some(((0, 4), &[], None)),
+        ),
+        // possessive-minimum-hit; equivalent observed modes: fullmatch, match, search
+        (
+            "(?:a|ab){2}+b",
+            "aab",
+            "fullmatch",
+            Some(((0, 3), &[], None)),
+        ),
+        // possessive-empty-star; equivalent observed modes: fullmatch, match, search
+        (
+            "()*+a",
+            "a",
+            "fullmatch",
+            Some(((0, 1), &[Some((0, 0))], Some(1))),
+        ),
+        // possessive-empty-counted; equivalent observed modes: fullmatch, match, search
+        (
+            "(){2,3}+a",
+            "a",
+            "fullmatch",
+            Some(((0, 1), &[Some((0, 0))], Some(1))),
+        ),
+        // possessive-empty-assertion; equivalent observed modes: fullmatch, match, search
+        (
+            "(?=(a)){2,3}+a",
+            "a",
+            "fullmatch",
+            Some(((0, 1), &[Some((0, 1))], Some(1))),
+        ),
+        // possessive-nullable-minimum; equivalent observed modes: fullmatch, match
+        ("(|a){1,2}+c", "ac", "fullmatch", None),
+        // possessive-nullable-minimum; equivalent observed modes: search
+        (
+            "(|a){1,2}+c",
+            "ac",
+            "search",
+            Some(((1, 2), &[Some((1, 1))], Some(1))),
+        ),
+        // atomic-nullable-tail-inside; equivalent observed modes: fullmatch, match, search
+        (
+            "(?>(|a){1,2}c)",
+            "ac",
+            "fullmatch",
+            Some(((0, 2), &[Some((0, 1))], Some(1))),
+        ),
+        // possessive-optional-capture-undo; equivalent observed modes: fullmatch, match, search
+        (
+            "(a(b)?){1,3}+c",
+            "abac",
+            "fullmatch",
+            Some(((0, 4), &[Some((2, 3)), Some((1, 2))], Some(1))),
+        ),
+        // possessive-closing-order; equivalent observed modes: fullmatch, match, search
+        (
+            "(?P<outer>(?P<inner>a))++b",
+            "aab",
+            "fullmatch",
+            Some(((0, 3), &[Some((1, 2)), Some((1, 2))], Some(1))),
+        ),
+        // atomic-failed-outer-branch; equivalent observed modes: fullmatch, match, search
+        (
+            "(?:(?>(a))c|(ab))",
+            "ab",
+            "fullmatch",
+            Some(((0, 2), &[None, Some((0, 2))], Some(2))),
+        ),
+        // atomic-positive-assertion; equivalent observed modes: fullmatch, match, search
+        ("(?=(?>(a|ab)))\\1c", "abc", "fullmatch", None),
+        // atomic-positive-priority; equivalent observed modes: fullmatch, match, search
+        (
+            "(?=(?>(ab|a)))\\1c",
+            "abc",
+            "fullmatch",
+            Some(((0, 3), &[Some((0, 2))], Some(1))),
+        ),
+        // negative-ordinary-control; equivalent observed modes: fullmatch, match, search
+        ("(?!(a|ab)c)(abc)", "abc", "fullmatch", None),
+        // negative-atomic-undo; equivalent observed modes: fullmatch, match, search
+        (
+            "(?!(?>(a|ab))c)(abc)",
+            "abc",
+            "fullmatch",
+            Some(((0, 3), &[None, Some((0, 3))], Some(2))),
+        ),
+        // atomic-conditional-undo; equivalent observed modes: fullmatch, match, search
+        (
+            "(?:(?>(a))c|a)(?(1)b|d)",
+            "ad",
+            "fullmatch",
+            Some(((0, 2), &[None], None)),
+        ),
+        // possessive-open-group-conditional; equivalent observed modes: fullmatch, match, search
+        (
+            "(?:(a(?(1)b|c))x){2}+",
+            "acxacx",
+            "fullmatch",
+            Some(((0, 6), &[Some((3, 5))], Some(1))),
+        ),
+        // possessive-failed-iteration-conditional; equivalent observed modes: fullmatch, match, search
+        (
+            "(?:(a)b)*+(?(1)c|d)",
+            "d",
+            "fullmatch",
+            Some(((0, 1), &[None], None)),
+        ),
+        // ordinary-backreference-control; equivalent observed modes: fullmatch, match, search
+        (
+            "(a|ab)\\1",
+            "abab",
+            "fullmatch",
+            Some(((0, 4), &[Some((0, 2))], Some(1))),
+        ),
+        // atomic-backreference; equivalent observed modes: fullmatch, match, search
+        ("(?>(a|ab))\\1", "abab", "fullmatch", None),
+        // atomic-backreference-priority; equivalent observed modes: fullmatch, match, search
+        (
+            "(?>(ab|a))\\1",
+            "abab",
+            "fullmatch",
+            Some(((0, 4), &[Some((0, 2))], Some(1))),
+        ),
+        // nested-atomic-first-branch; equivalent observed modes: fullmatch, match, search
+        ("(?>(?>(a|ab))b)c", "abbc", "fullmatch", None),
+        // nested-atomic-priority; equivalent observed modes: fullmatch, match, search
+        (
+            "(?>(?>(ab|a))b)c",
+            "abbc",
+            "fullmatch",
+            Some(((0, 4), &[Some((0, 2))], Some(1))),
+        ),
+        // atomic-lookbehind-width; equivalent observed modes: fullmatch, match
+        ("(?<=(?>ab))c", "abc", "fullmatch", None),
+        // atomic-lookbehind-width; equivalent observed modes: search
+        ("(?<=(?>ab))c", "abc", "search", Some(((2, 3), &[], None))),
+        // possessive-lookbehind-width; equivalent observed modes: fullmatch, match
+        ("(?<=a{2}+)b", "aab", "fullmatch", None),
+        // possessive-lookbehind-width; equivalent observed modes: search
+        ("(?<=a{2}+)b", "aab", "search", Some(((2, 3), &[], None))),
+        // atomic-inner-lazy; equivalent observed modes: fullmatch, match, search
+        (
+            "(?s:(?>.*?\\.).*)\\Z",
+            "a.txt",
+            "fullmatch",
+            Some(((0, 5), &[], None)),
+        ),
+        // possessive-partial-optional-undo; equivalent observed modes: fullmatch, match, search
+        (
+            "(?:(a)(b)){1,3}+ac",
+            "abac",
+            "fullmatch",
+            Some(((0, 4), &[Some((0, 1)), Some((1, 2))], Some(2))),
+        ),
+        // possessive-outer-choice-undo; equivalent observed modes: fullmatch, match, search
+        (
+            "(?:(?:(a)(b)){1,3}+x|(abac))",
+            "abac",
+            "fullmatch",
+            Some(((0, 4), &[None, None, Some((0, 4))], Some(3))),
+        ),
+        // atomic-possessive-outer-choice-undo; equivalent observed modes: fullmatch, match, search
+        (
+            "(?:(?>(?:(a)(b)){1,3}+)x|(abac))",
+            "abac",
+            "fullmatch",
+            Some(((0, 4), &[None, None, Some((0, 4))], Some(3))),
+        ),
+        // possessive-inside-ordinary-repeat; equivalent observed modes: fullmatch, match, search
+        (
+            "((a?)*+){1,2}b",
+            "aab",
+            "fullmatch",
+            Some(((0, 3), &[Some((2, 2)), Some((2, 2))], Some(1))),
+        ),
+        // possessive-inside-atomic; equivalent observed modes: fullmatch, match, search
+        (
+            "(?>(a?)*+)b",
+            "aab",
+            "fullmatch",
+            Some(((0, 3), &[Some((2, 2))], Some(1))),
+        ),
+        // possessive-inside-positive-assertion; equivalent observed modes: fullmatch, match, search
+        (
+            "(?=((a?)*+)b)aab",
+            "aab",
+            "fullmatch",
+            Some(((0, 3), &[Some((0, 2)), Some((2, 2))], Some(1))),
+        ),
+        // possessive-inside-negative-assertion; equivalent observed modes: fullmatch, match, search
+        (
+            "(?!(?:(a?)*+)c)(aab)",
+            "aab",
+            "fullmatch",
+            Some(((0, 3), &[None, Some((0, 3))], Some(2))),
+        ),
+        // possessive-first-optional-after-empty-minimum; equivalent observed modes: fullmatch, match, search
+        (
+            "(?:(?(1)a|())){1,2}+",
+            "a",
+            "fullmatch",
+            Some(((0, 1), &[Some((0, 0))], Some(1))),
+        ),
+        // possessive-first-optional-after-counted-minimum; equivalent observed modes: fullmatch, match, search
+        (
+            "(?:(?(1)a|())){2,3}+",
+            "aa",
+            "fullmatch",
+            Some(((0, 2), &[Some((0, 0))], Some(1))),
+        ),
+    ];
+    for &(pattern, text, mode, expected) in cases {
+        assert_cpython_case(pattern, text, mode, (0, text.len()), expected);
+    }
+}

@@ -1815,7 +1815,6 @@ INTRINSIC_SYMBOL_NAMES: dict[str, str] = {
     "molt_platform_system": "molt_platform_system",
     "molt_platform_uname": "molt_platform_uname",
     "molt_platform_version": "molt_platform_version",
-    "molt_re_strip_verbose": "molt_re_strip_verbose",
     "molt_re_compile": "molt_re_compile",
     "molt_re_execute": "molt_re_execute",
     "molt_re_scanner_new": "molt_re_scanner_new",

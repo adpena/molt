@@ -261,7 +261,6 @@ feature_prefixes = [
     "re_pattern_info",
     "re_scanner_new",
     "re_finditer_next",
-    "re_strip_verbose",
     "re_compile",
     "re_execute",
     "re_escape",

@@ -120,7 +120,6 @@ def source_re():
         "molt_re_expand_replacement": expand_replacement,
         "molt_re_subject_snapshot": subject_snapshot,
         "molt_re_subject_view": subject_view,
-        "molt_re_strip_verbose": lambda pattern, _flags: pattern,
     }
     with intrinsic_registry(behavior):
         from molt.stdlib import re as module

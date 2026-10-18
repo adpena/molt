@@ -11525,11 +11525,6 @@ pub(crate) const IMPORT_REGISTRY: &[RuntimeImportSpec] = &[
         type_idx: 0,
     },
     RuntimeImportSpec {
-        import: WasmRuntimeImport::ReStripVerbose,
-        name: "re_strip_verbose",
-        type_idx: 3,
-    },
-    RuntimeImportSpec {
         import: WasmRuntimeImport::ReCompile,
         name: "re_compile",
         type_idx: 3,
@@ -19056,8 +19051,6 @@ pub(crate) fn wasm_runtime_import(name: &str) -> Option<WasmRuntimeImport> {
         "molt_platform_uname" => Some(WasmRuntimeImport::PlatformUname),
         "platform_version" => Some(WasmRuntimeImport::PlatformVersion),
         "molt_platform_version" => Some(WasmRuntimeImport::PlatformVersion),
-        "re_strip_verbose" => Some(WasmRuntimeImport::ReStripVerbose),
-        "molt_re_strip_verbose" => Some(WasmRuntimeImport::ReStripVerbose),
         "re_compile" => Some(WasmRuntimeImport::ReCompile),
         "molt_re_compile" => Some(WasmRuntimeImport::ReCompile),
         "re_execute" => Some(WasmRuntimeImport::ReExecute),

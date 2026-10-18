@@ -47,7 +47,7 @@ pub(super) struct SingleRepeat {
 #[derive(Debug)]
 pub(super) enum Instruction {
     Accept,
-    AssertionAccept,
+    ScopeAccept,
     Consume {
         atom: Atom,
         next: usize,
@@ -85,6 +85,16 @@ pub(super) enum Instruction {
         positive: bool,
         next: usize,
     },
+    Atomic {
+        entry: usize,
+        next: usize,
+    },
+    Possessive {
+        entry: usize,
+        min: u64,
+        max: Option<u64>,
+        next: usize,
+    },
     RepeatEnter {
         id: usize,
         next: usize,
@@ -110,7 +120,7 @@ pub(super) enum Instruction {
         plan: usize,
         min: u64,
         max: Option<u64>,
-        greedy: bool,
+        mode: RepeatMode,
         next: usize,
     },
 }
@@ -247,7 +257,7 @@ impl Program {
                 positive,
                 width,
             } => {
-                let accept = self.emit(Instruction::AssertionAccept)?;
+                let accept = self.emit(Instruction::ScopeAccept)?;
                 let entry = self.lower(*node, flags, accept)?;
                 self.emit(Instruction::Assert {
                     entry,
@@ -256,11 +266,16 @@ impl Program {
                     next,
                 })?
             }
+            ReNode::Atomic(node) => {
+                let accept = self.emit(Instruction::ScopeAccept)?;
+                let entry = self.lower(*node, flags, accept)?;
+                self.emit(Instruction::Atomic { entry, next })?
+            }
             ReNode::Repeat {
                 node,
                 min_count,
                 max_count,
-                greedy,
+                mode,
             } => {
                 if let Some(plan) = single_repeat(&node, flags)? {
                     let index = self.singles.len();
@@ -269,7 +284,19 @@ impl Program {
                         plan: index,
                         min: min_count,
                         max: max_count,
-                        greedy,
+                        mode,
+                        next,
+                    })?
+                } else if mode == RepeatMode::Possessive {
+                    // CPython commits each body match separately, including
+                    // mandatory iterations. One atomic wrapper around a normal
+                    // repeat would wrongly reconsider prior iterations.
+                    let accept = self.emit(Instruction::ScopeAccept)?;
+                    let entry = self.lower(*node, flags, accept)?;
+                    self.emit(Instruction::Possessive {
+                        entry,
+                        min: min_count,
+                        max: max_count,
                         next,
                     })?
                 } else {
@@ -285,7 +312,7 @@ impl Program {
                         optional,
                         min: min_count,
                         max: max_count,
-                        greedy,
+                        greedy: mode == RepeatMode::Greedy,
                         next,
                     };
                     self.emit(Instruction::RepeatEnter { id, next: header })?
