@@ -11,12 +11,23 @@ STDLIB_ROOT = REPO_ROOT / "src" / "molt" / "stdlib"
 
 _PROBE = f"""
 import base64 as _host_base64
+import binascii as _host_binascii
 import bisect as _host_bisect
 import _contextvars as _context_oracle
 import importlib.util
 import sys
 import types
 from tests.stdlib_intrinsic_registry import install_registry
+
+
+_host_binascii_error = _host_binascii.Error
+
+
+def _native_decode_outcome(operation, *args, **kwargs):
+    try:
+        return operation(*args, **kwargs)
+    except _host_binascii_error:
+        return None
 
 
 def _load_module(name, path_text):
@@ -85,11 +96,11 @@ install_registry({{
     "molt_base64_urlsafe_b64encode": lambda s: _host_base64.urlsafe_b64encode(bytes(s)),
     "molt_base64_urlsafe_b64decode": lambda s: _host_base64.urlsafe_b64decode(s),
     "molt_base64_b32encode": lambda s: _host_base64.b32encode(bytes(s)),
-    "molt_base64_b32decode": lambda s, casefold=False, map01=None: _host_base64.b32decode(s, casefold=casefold, map01=map01),
+    "molt_base64_b32decode": lambda s, casefold=False: _native_decode_outcome(_host_base64.b32decode, s, casefold=casefold),
     "molt_base64_b32hexencode": lambda s: _host_base64.b32hexencode(bytes(s)),
-    "molt_base64_b32hexdecode": lambda s, casefold=False: _host_base64.b32hexdecode(s, casefold=casefold),
+    "molt_base64_b32hexdecode": lambda s, casefold=False: _native_decode_outcome(_host_base64.b32hexdecode, s, casefold=casefold),
     "molt_base64_b16encode": lambda s: _host_base64.b16encode(bytes(s)),
-    "molt_base64_b16decode": lambda s, casefold=False: _host_base64.b16decode(s, casefold=casefold),
+    "molt_base64_b16decode": lambda s, casefold=False: _native_decode_outcome(_host_base64.b16decode, s, casefold=casefold),
     "molt_base64_a85encode": lambda b, foldspaces=False, wrapcol=0, pad=False, adobe=False: _host_base64.a85encode(bytes(b), foldspaces=foldspaces, wrapcol=wrapcol, pad=pad, adobe=adobe),
     "molt_base64_a85decode": lambda b, foldspaces=False, adobe=False: _host_base64.a85decode(b, foldspaces=foldspaces, adobe=adobe),
     "molt_base64_b85encode": lambda b, pad=False: _host_base64.b85encode(bytes(b), pad=pad),

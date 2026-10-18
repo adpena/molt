@@ -140,6 +140,43 @@ pub(super) unsafe fn builtin_call_binding(
                 bind_builtin_object_constructor(py, args, ObjectConstructorCall::New)
             }));
         }
+        #[cfg(feature = "stdlib_serial")]
+        if matches_builtin!(molt_runtime_serial::binascii::molt_binascii_a2b_base64) {
+            return Some(BuiltinCallBinding::Arguments(|py, _, args, storage| {
+                use crate::builtins::native_arguments::{NativeKeywords, bind_named};
+                if args.pos.len() != 1 {
+                    return raise_exception(
+                        py,
+                        "TypeError",
+                        &format!(
+                            "a2b_base64() takes exactly 1 positional argument ({} given)",
+                            args.pos.len()
+                        ),
+                    );
+                }
+                let bound = bind_named(
+                    py,
+                    "a2b_base64",
+                    args.pos,
+                    NativeKeywords::vector(args.kw_names, args.kw_values),
+                    ["", "strict_mode"],
+                    1,
+                )?;
+                let (slots, owners) = bound.into_parts();
+                if storage.owners.try_reserve(owners.len()).is_err() {
+                    return raise_exception(
+                        py,
+                        "MemoryError",
+                        "binascii argument custody allocation failed",
+                    );
+                }
+                storage.owners.extend(owners);
+                Some(vec![
+                    slots[0]?,
+                    slots[1].unwrap_or_else(|| MoltObject::from_bool(false).bits()),
+                ])
+            }));
+        }
         if matches_builtin!(molt_int_to_bytes) {
             return Some(BuiltinCallBinding::Arguments(|_py, _, args, _storage| {
                 bind_builtin_int_bytes_codec(_py, args, "length", "byteorder")

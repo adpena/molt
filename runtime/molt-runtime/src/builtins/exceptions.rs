@@ -3193,6 +3193,98 @@ fn seed_builtin_exception_layout_root(class_ptr: *mut u8, name: &str) -> bool {
     unsafe { crate::object::class_set_exception_layout_root(class_ptr, root) }
 }
 
+/// Module declarations share the existing class cache and teardown owner with
+/// exception construction. They are not projected into the builtins namespace.
+#[cfg(feature = "stdlib_serial")]
+pub(crate) extern "C" fn binascii_exception_type(
+    kind: molt_runtime_core::BinasciiException,
+) -> u64 {
+    crate::with_gil_entry_nopanic!(py, {
+        let (name, cache_key, base_name) = match kind {
+            molt_runtime_core::BinasciiException::Error => {
+                ("Error", "binascii.Error", "ValueError")
+            }
+            molt_runtime_core::BinasciiException::Incomplete => {
+                ("Incomplete", "binascii.Incomplete", "Exception")
+            }
+        };
+        if let Some(bits) = exception_type_cache(py)
+            .lock()
+            .unwrap()
+            .get(cache_key)
+            .copied()
+        {
+            inc_ref_bits(py, bits);
+            return bits;
+        }
+        let base = exception_type_bits_from_name(py, base_name);
+        if base == 0 {
+            return MoltObject::none().bits();
+        }
+        let name_ptr = alloc_string(py, name.as_bytes());
+        if name_ptr.is_null() {
+            return MoltObject::none().bits();
+        }
+        let name = ExceptionValue::adopt(py, MoltObject::from_ptr(name_ptr).bits());
+        let bases_ptr = alloc_tuple(py, &[base]);
+        if bases_ptr.is_null() {
+            return MoltObject::none().bits();
+        }
+        let bases = ExceptionValue::adopt(py, MoltObject::from_ptr(bases_ptr).bits());
+        let module_ptr = alloc_string(py, b"binascii");
+        if module_ptr.is_null() {
+            return MoltObject::none().bits();
+        }
+        let module = ExceptionValue::adopt(py, MoltObject::from_ptr(module_ptr).bits());
+        let module_name = attr_name_bits_from_bytes(py, b"__module__");
+        let Some(module_name) = module_name else {
+            return MoltObject::none().bits();
+        };
+        let module_name = ExceptionValue::adopt(py, module_name);
+        let qualname = attr_name_bits_from_bytes(py, b"__qualname__");
+        let Some(qualname) = qualname else {
+            return MoltObject::none().bits();
+        };
+        let qualname = ExceptionValue::adopt(py, qualname);
+        let namespace_ptr = crate::alloc_dict_with_pairs(
+            py,
+            &[
+                module_name.bits(),
+                module.bits(),
+                qualname.bits(),
+                name.bits(),
+            ],
+        );
+        if namespace_ptr.is_null() {
+            return MoltObject::none().bits();
+        }
+        let namespace = ExceptionValue::adopt(py, MoltObject::from_ptr(namespace_ptr).bits());
+        let class = ExceptionValue::adopt(
+            py,
+            crate::builtins::types::molt_type_new(
+                builtin_classes(py).type_obj,
+                name.bits(),
+                bases.bits(),
+                namespace.bits(),
+                MoltObject::none().bits(),
+            ),
+        );
+        if exception_pending(py) {
+            return MoltObject::none().bits();
+        }
+        // The canonical cache consumes the constructor's owner and handles
+        // duplicate publication/failure disposal. Its seal is idempotent for
+        // the already-finished result of type.__new__.
+        let bits = cache_exception_type(py, cache_key, class.into_bits());
+        if bits == 0 {
+            return MoltObject::none().bits();
+        }
+        // Cache results are borrowed; this API returns an independent owner.
+        inc_ref_bits(py, bits);
+        bits
+    })
+}
+
 pub(crate) fn builtin_exception_type_bits_from_name(_py: &PyToken<'_>, name: &str) -> Option<u64> {
     builtin_exception_spec(name)?;
     let bits = exception_type_bits_from_name(_py, name);

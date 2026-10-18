@@ -7742,7 +7742,17 @@ pub(crate) const IMPORT_REGISTRY: &[RuntimeImportSpec] = &[
     RuntimeImportSpec {
         import: WasmRuntimeImport::BinasciiA2bBase64,
         name: "binascii_a2b_base64",
-        type_idx: 2,
+        type_idx: 3,
+    },
+    RuntimeImportSpec {
+        import: WasmRuntimeImport::BinasciiErrorType,
+        name: "binascii_error_type",
+        type_idx: 0,
+    },
+    RuntimeImportSpec {
+        import: WasmRuntimeImport::BinasciiIncompleteType,
+        name: "binascii_incomplete_type",
+        type_idx: 0,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::BinasciiB2aBase64,
@@ -12802,7 +12812,7 @@ pub(crate) const IMPORT_REGISTRY: &[RuntimeImportSpec] = &[
     RuntimeImportSpec {
         import: WasmRuntimeImport::Base64B32decode,
         name: "base64_b32decode",
-        type_idx: 5,
+        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::Base64B32hexencode,
@@ -17418,6 +17428,10 @@ pub(crate) fn wasm_runtime_import(name: &str) -> Option<WasmRuntimeImport> {
         "molt_encodings_aliases_map" => Some(WasmRuntimeImport::EncodingsAliasesMap),
         "binascii_a2b_base64" => Some(WasmRuntimeImport::BinasciiA2bBase64),
         "molt_binascii_a2b_base64" => Some(WasmRuntimeImport::BinasciiA2bBase64),
+        "binascii_error_type" => Some(WasmRuntimeImport::BinasciiErrorType),
+        "molt_binascii_error_type" => Some(WasmRuntimeImport::BinasciiErrorType),
+        "binascii_incomplete_type" => Some(WasmRuntimeImport::BinasciiIncompleteType),
+        "molt_binascii_incomplete_type" => Some(WasmRuntimeImport::BinasciiIncompleteType),
         "binascii_b2a_base64" => Some(WasmRuntimeImport::BinasciiB2aBase64),
         "molt_binascii_b2a_base64" => Some(WasmRuntimeImport::BinasciiB2aBase64),
         "binascii_a2b_hex" => Some(WasmRuntimeImport::BinasciiA2bHex),

@@ -369,7 +369,7 @@
     "tests/tools/test_win_job_contract.py",
     "tests/tools/test_windows_process_api.py"
   ],
-  "authority_sha256": "ac9f1054829733a8fb856a94782417dfe22cdf5078a1152627f4f87d3bcf4af2",
+  "authority_sha256": "e53fa906ec717960da1bcafd292b6316f6450fcac29625fb0d9e2876e953e014",
   "cargo_environment_policy": {
     "incident_command": "cargo metadata --locked --format-version 1",
     "incident_commit": "20b046b79bd4ca64a8c859f737f6e330377bcc4e",
@@ -5549,6 +5549,7 @@
         "tests/test_static_expression_result.py",
         "tests/test_statistics_private_module_surface.py",
         "tests/test_stdlib_base64.py",
+        "tests/test_stdlib_binascii.py",
         "tests/test_stdlib_importlib_machinery.py",
         "tests/test_stdlib_inspect_signature_binding.py",
         "tests/test_stdlib_package_bootstrap_surface.py",
@@ -5916,6 +5917,7 @@
         "tests/test_static_expression_result.py",
         "tests/test_statistics_private_module_surface.py",
         "tests/test_stdlib_base64.py",
+        "tests/test_stdlib_binascii.py",
         "tests/test_stdlib_importlib_machinery.py",
         "tests/test_stdlib_inspect_signature_binding.py",
         "tests/test_stdlib_package_bootstrap_surface.py",

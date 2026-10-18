@@ -704,6 +704,8 @@ INTRINSIC_SYMBOL_NAMES: dict[str, str] = {
     "molt_codecs_lookup_name": "molt_codecs_lookup_name",
     "molt_encodings_aliases_map": "molt_encodings_aliases_map",
     "molt_binascii_a2b_base64": "molt_binascii_a2b_base64",
+    "molt_binascii_error_type": "molt_binascii_error_type",
+    "molt_binascii_incomplete_type": "molt_binascii_incomplete_type",
     "molt_binascii_b2a_base64": "molt_binascii_b2a_base64",
     "molt_binascii_a2b_hex": "molt_binascii_a2b_hex",
     "molt_binascii_unhexlify": "molt_binascii_a2b_hex",

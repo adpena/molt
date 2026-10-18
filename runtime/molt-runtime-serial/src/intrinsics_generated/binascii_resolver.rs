@@ -10,6 +10,14 @@ pub fn resolve_symbol_with(
             "molt_runtime_serial::binascii::molt_binascii_a2b_base64",
             crate::binascii::molt_binascii_a2b_base64 as *const (),
         )),
+        "molt_binascii_error_type" => Some(runtime_fn_addr(
+            "molt_runtime_serial::binascii::molt_binascii_error_type",
+            crate::binascii::molt_binascii_error_type as *const (),
+        )),
+        "molt_binascii_incomplete_type" => Some(runtime_fn_addr(
+            "molt_runtime_serial::binascii::molt_binascii_incomplete_type",
+            crate::binascii::molt_binascii_incomplete_type as *const (),
+        )),
         "molt_binascii_b2a_base64" => Some(runtime_fn_addr(
             "molt_runtime_serial::binascii::molt_binascii_b2a_base64",
             crate::binascii::molt_binascii_b2a_base64 as *const (),

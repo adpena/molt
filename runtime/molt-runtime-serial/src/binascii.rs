@@ -13,199 +13,6 @@ fn alloc_bytes_or_oom(_py: &PyToken, data: &[u8], context: &str) -> u64 {
     MoltObject::from_ptr(ptr).bits()
 }
 
-/// SIMD-accelerated whitespace stripping: removes ASCII whitespace bytes
-/// (\t, \n, \r, \x0c, ' ') from input using NEON/SSE2 bulk classification.
-fn simd_strip_whitespace(input: &[u8]) -> Vec<u8> {
-    let mut out: Vec<u8> = Vec::with_capacity(input.len());
-    let mut i = 0usize;
-
-    #[cfg(target_arch = "aarch64")]
-    {
-        unsafe {
-            use std::arch::aarch64::*;
-            let space = vdupq_n_u8(b' ');
-            let tab = vdupq_n_u8(b'\t');
-            let nl = vdupq_n_u8(b'\n');
-            let cr = vdupq_n_u8(b'\r');
-            let ff = vdupq_n_u8(0x0C); // form feed
-            while i + 16 <= input.len() {
-                let chunk = vld1q_u8(input.as_ptr().add(i));
-                let is_ws = vorrq_u8(
-                    vorrq_u8(
-                        vorrq_u8(vceqq_u8(chunk, space), vceqq_u8(chunk, tab)),
-                        vceqq_u8(chunk, nl),
-                    ),
-                    vorrq_u8(vceqq_u8(chunk, cr), vceqq_u8(chunk, ff)),
-                );
-                // Fast path: if no whitespace in this chunk, copy all 16 bytes
-                if vmaxvq_u8(is_ws) == 0 {
-                    let len = out.len();
-                    out.set_len(len + 16);
-                    vst1q_u8(out.as_mut_ptr().add(len), chunk);
-                } else {
-                    // Slow path: copy non-whitespace bytes one by one
-                    for j in 0..16 {
-                        let b = input[i + j];
-                        if !b.is_ascii_whitespace() {
-                            out.push(b);
-                        }
-                    }
-                }
-                i += 16;
-            }
-        }
-    }
-
-    #[cfg(target_arch = "x86_64")]
-    {
-        unsafe {
-            use std::arch::x86_64::*;
-            let space = _mm_set1_epi8(b' ' as i8);
-            let tab = _mm_set1_epi8(b'\t' as i8);
-            let nl = _mm_set1_epi8(b'\n' as i8);
-            let cr = _mm_set1_epi8(b'\r' as i8);
-            let ff = _mm_set1_epi8(0x0C);
-            while i + 16 <= input.len() {
-                let chunk = _mm_loadu_si128(input.as_ptr().add(i) as *const __m128i);
-                let is_ws = _mm_or_si128(
-                    _mm_or_si128(
-                        _mm_or_si128(_mm_cmpeq_epi8(chunk, space), _mm_cmpeq_epi8(chunk, tab)),
-                        _mm_cmpeq_epi8(chunk, nl),
-                    ),
-                    _mm_or_si128(_mm_cmpeq_epi8(chunk, cr), _mm_cmpeq_epi8(chunk, ff)),
-                );
-                let mask = _mm_movemask_epi8(is_ws) as u32;
-                if mask == 0 {
-                    let len = out.len();
-                    out.set_len(len + 16);
-                    _mm_storeu_si128(out.as_mut_ptr().add(len) as *mut __m128i, chunk);
-                } else {
-                    for j in 0..16 {
-                        let b = input[i + j];
-                        if !b.is_ascii_whitespace() {
-                            out.push(b);
-                        }
-                    }
-                }
-                i += 16;
-            }
-        }
-    }
-
-    #[cfg(target_arch = "wasm32")]
-    {
-        if cfg!(target_feature = "simd128") {
-            unsafe {
-                use std::arch::wasm32::*;
-                let space = u8x16_splat(b' ');
-                let tab = u8x16_splat(b'\t');
-                let nl = u8x16_splat(b'\n');
-                let cr = u8x16_splat(b'\r');
-                let ff = u8x16_splat(0x0C);
-                while i + 16 <= input.len() {
-                    let chunk = v128_load(input.as_ptr().add(i) as *const v128);
-                    let is_ws = v128_or(
-                        v128_or(
-                            v128_or(u8x16_eq(chunk, space), u8x16_eq(chunk, tab)),
-                            u8x16_eq(chunk, nl),
-                        ),
-                        v128_or(u8x16_eq(chunk, cr), u8x16_eq(chunk, ff)),
-                    );
-                    let mask = u8x16_bitmask(is_ws) as u32;
-                    if mask == 0 {
-                        let len = out.len();
-                        out.set_len(len + 16);
-                        v128_store(out.as_mut_ptr().add(len) as *mut v128, chunk);
-                    } else {
-                        for j in 0..16 {
-                            let b = input[i + j];
-                            if !b.is_ascii_whitespace() {
-                                out.push(b);
-                            }
-                        }
-                    }
-                    i += 16;
-                }
-            }
-        }
-    }
-
-    // Scalar tail
-    while i < input.len() {
-        let b = input[i];
-        if !b.is_ascii_whitespace() {
-            out.push(b);
-        }
-        i += 1;
-    }
-    out
-}
-
-fn base64_value(byte: u8) -> Option<u8> {
-    match byte {
-        b'A'..=b'Z' => Some(byte - b'A'),
-        b'a'..=b'z' => Some(byte - b'a' + 26),
-        b'0'..=b'9' => Some(byte - b'0' + 52),
-        b'+' => Some(62),
-        b'/' => Some(63),
-        _ => None,
-    }
-}
-
-fn base64_decode(input: &[u8]) -> Result<Vec<u8>, &'static str> {
-    let compact = simd_strip_whitespace(input);
-    if compact.is_empty() {
-        return Ok(Vec::new());
-    }
-    if !compact.len().is_multiple_of(4) {
-        return Err("Incorrect padding");
-    }
-    let mut out = Vec::with_capacity(compact.len() / 4 * 3);
-    let mut idx = 0usize;
-    while idx < compact.len() {
-        let c0 = compact[idx];
-        let c1 = compact[idx + 1];
-        let c2 = compact[idx + 2];
-        let c3 = compact[idx + 3];
-
-        let Some(v0) = base64_value(c0) else {
-            return Err("Non-base64 digit found");
-        };
-        let Some(v1) = base64_value(c1) else {
-            return Err("Non-base64 digit found");
-        };
-        let pad2 = c2 == b'=';
-        let pad3 = c3 == b'=';
-        let v2 = if pad2 {
-            0
-        } else if let Some(v) = base64_value(c2) {
-            v
-        } else {
-            return Err("Non-base64 digit found");
-        };
-        let v3 = if pad3 {
-            0
-        } else if let Some(v) = base64_value(c3) {
-            v
-        } else {
-            return Err("Non-base64 digit found");
-        };
-        if pad2 && !pad3 {
-            return Err("Incorrect padding");
-        }
-
-        out.push((v0 << 2) | (v1 >> 4));
-        if !pad2 {
-            out.push(((v1 & 0x0F) << 4) | (v2 >> 2));
-        }
-        if !pad3 {
-            out.push(((v2 & 0x03) << 6) | v3);
-        }
-        idx += 4;
-    }
-    Ok(out)
-}
-
 fn base64_encode(input: &[u8]) -> Vec<u8> {
     let mut out: Vec<u8> = Vec::with_capacity(input.len().div_ceil(3) * 4 + 1);
     let mut idx = 0usize;
@@ -864,26 +671,62 @@ fn qp_encode(input: &[u8]) -> Vec<u8> {
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn molt_binascii_a2b_base64(data_bits: u64) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
+pub extern "C" fn molt_binascii_error_type() -> u64 {
+    molt_runtime_core::with_gil_entry!(py, {
+        binascii_exception_type(py, molt_runtime_core::BinasciiException::Error)
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_binascii_incomplete_type() -> u64 {
+    molt_runtime_core::with_gil_entry!(py, {
+        binascii_exception_type(py, molt_runtime_core::BinasciiException::Incomplete)
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_binascii_a2b_base64(data_bits: u64, strict_bits: u64) -> u64 {
+    molt_runtime_core::with_gil_entry!(py, {
+        // Argument Clinic consumes ascii_buffer before strict_mode.__bool__.
+        // Unlike base64._bytes_from_decode_data this C converter replaces every
+        // failed buffer export, without an implicit context for the raised slot.
         let text = string_obj_to_owned(obj_from_bits(data_bits));
+        if text.as_ref().is_some_and(|text| !text.is_ascii()) {
+            return raise_exception::<_>(
+                py,
+                "ValueError",
+                "string argument should contain only ASCII characters",
+            );
+        }
         let input_export = if text.is_some() {
             None
         } else {
-            match unsafe { ByteInput::acquire(_py, data_bits) } {
+            match unsafe { ByteInput::acquire(py, data_bits) } {
                 Ok(export) => Some(export),
-                Err(_) => return MoltObject::none().bits(),
+                Err(_) => {
+                    let label = type_name(py, obj_from_bits(data_bits));
+                    let label = String::from_utf8_lossy(&label.as_bytes()[..label.len().min(100)]);
+                    return raise_exception::<_>(
+                        py,
+                        "TypeError",
+                        &format!("argument should be bytes, buffer or ASCII string, not '{label}'"),
+                    );
+                }
             }
         };
+        let strict = is_truthy(py, obj_from_bits(strict_bits));
+        if exception_pending(py) {
+            return MoltObject::none().bits();
+        }
         let raw = text.as_ref().map_or_else(
-            || unsafe { input_export.as_ref().unwrap().bytes(_py) },
+            || unsafe { input_export.as_ref().unwrap().bytes(py) },
             |text| text.as_bytes(),
         );
-        let decoded = match base64_decode(raw) {
+        let decoded = match crate::base64_mod::b64_decode(raw, strict) {
             Ok(v) => v,
-            Err(msg) => return raise_exception::<_>(_py, "ValueError", msg),
+            Err(msg) => return raise_binascii_error(py, msg.as_ref()),
         };
-        alloc_bytes_or_oom(_py, &decoded, "a2b_base64")
+        alloc_bytes_or_oom(py, &decoded, "a2b_base64")
     })
 }
 
@@ -916,13 +759,13 @@ pub extern "C" fn molt_binascii_a2b_hex(data_bits: u64) -> u64 {
             |text| text.as_bytes(),
         );
         if !raw.len().is_multiple_of(2) {
-            return raise_exception::<_>(_py, "ValueError", "Odd-length string");
+            return raise_binascii_error(_py, "Odd-length string");
         }
         // Use SIMD-accelerated hex decode (NEON/SSE2)
         let out = match simd_hex_decode(raw) {
             Some(v) => v,
             None => {
-                return raise_exception::<_>(_py, "ValueError", "Non-hexadecimal digit found");
+                return raise_binascii_error(_py, "Non-hexadecimal digit found");
             }
         };
         alloc_bytes_or_oom(_py, &out, "a2b_hex")
@@ -993,7 +836,7 @@ pub extern "C" fn molt_binascii_a2b_uu(data_bits: u64) -> u64 {
         );
         let out = match uu_decode(raw) {
             Ok(v) => v,
-            Err(msg) => return raise_exception::<_>(_py, "ValueError", msg),
+            Err(msg) => return raise_binascii_error(_py, msg),
         };
         alloc_bytes_or_oom(_py, &out, "a2b_uu")
     })
@@ -1008,7 +851,7 @@ pub extern "C" fn molt_binascii_b2a_uu(data_bits: u64) -> u64 {
         };
         let out = match uu_encode(unsafe { input_export.bytes(_py) }) {
             Ok(v) => v,
-            Err(msg) => return raise_exception::<_>(_py, "ValueError", msg),
+            Err(msg) => return raise_binascii_error(_py, msg),
         };
         alloc_bytes_or_oom(_py, &out, "b2a_uu")
     })
