@@ -624,8 +624,7 @@ def test_falcon_ocr_manifest_fixture_matches_browser_driver_boundary() -> None:
 
     assert manifest["target"] == "falcon.browser_webgpu"
     assert manifest["artifacts"] == {
-        "app_wasm": {"url": "/output.wasm"},
-        "runtime_wasm": {"url": "/molt_runtime.wasm"},
+        "execution_manifest": {"url": "/runtime/manifest.json"},
         "config_json": {"url": "/config.json"},
         "tokenizer_json": {"url": "/tokenizer.json"},
     }

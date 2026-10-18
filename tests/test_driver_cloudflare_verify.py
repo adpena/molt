@@ -15,24 +15,46 @@ from molt.browser_asset_closure import (
 ROOT = Path(__file__).resolve().parents[1]
 
 
-def _write_browser_asset_closure(assets_root: Path) -> list[dict[str, object]]:
-    manifest: list[dict[str, object]] = []
-    for name in wasm_loader_asset_closure(
-        ROOT / "wasm",
-        BROWSER_HOST_ENTRY_ASSETS,
-    ):
-        source = ROOT / "wasm" / name
-        target = assets_root / name
+def _write_execution_closure(assets_root: Path) -> dict[str, object]:
+    runtime = assets_root / "runtime"
+    runtime.mkdir(parents=True)
+
+    def descriptor(name: str) -> dict[str, object]:
+        data = (runtime / name).read_bytes()
+        return {
+            "path": name,
+            "size": len(data),
+            "sha256": hashlib.sha256(data).hexdigest(),
+        }
+
+    assets = {}
+    for name in wasm_loader_asset_closure(ROOT / "wasm", BROWSER_HOST_ENTRY_ASSETS):
+        target = runtime / name
         target.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(source, target)
-        manifest.append(
+        shutil.copy2(ROOT / "wasm" / name, target)
+        assets[name] = descriptor(name)
+    for name in ("app.wasm", "molt_runtime.wasm"):
+        (runtime / name).write_bytes(b"\0asm\x01\0\0\0")
+    manifest = runtime / "manifest.json"
+    manifest.write_text(
+        json.dumps(
             {
-                "url": f"/{name}",
-                "sha256": hashlib.sha256(source.read_bytes()).hexdigest(),
-                "size_bytes": source.stat().st_size,
+                "version": 2,
+                "mode": "split-runtime",
+                "modules": {
+                    "app": descriptor("app.wasm"),
+                    "runtime": descriptor("molt_runtime.wasm"),
+                },
+                "assets": assets,
             }
-        )
-    return manifest
+        ),
+        encoding="utf-8",
+    )
+    return {
+        "url": "/runtime/manifest.json",
+        "size_bytes": manifest.stat().st_size,
+        "sha256": hashlib.sha256(manifest.read_bytes()).hexdigest(),
+    }
 
 
 def test_thin_adapter_run_wrangler_check_assembles_command(
@@ -135,24 +157,28 @@ def test_thin_adapter_validate_bundle_contract_accepts_materialized_layout(
     assets_root = bundle_root / "assets"
     assets_root.mkdir(parents=True)
     for name in [
-        "app.wasm",
-        "molt_runtime.wasm",
         "browser.js",
         "config.json",
     ]:
         (assets_root / name).write_text("x\n", encoding="utf-8")
-    browser_static_assets = _write_browser_asset_closure(assets_root)
+    execution_manifest = _write_execution_closure(assets_root)
     (assets_root / "driver-manifest.base.json").write_text(
         json.dumps(
             {
                 "target": "falcon.browser_webgpu",
                 "artifacts": {
-                    "app_wasm": {"url": "/app.wasm"},
-                    "runtime_wasm": {"url": "/molt_runtime.wasm"},
-                    "config_json": {"url": "/config.json"},
-                    "browser_loader": {"url": "/browser.js"},
+                    "execution_manifest": execution_manifest,
+                    "config_json": {
+                        "url": "/config.json",
+                        "size_bytes": 2,
+                        "sha256": hashlib.sha256(b"x\n").hexdigest(),
+                    },
+                    "browser_loader": {
+                        "url": "/browser.js",
+                        "size_bytes": 2,
+                        "sha256": hashlib.sha256(b"x\n").hexdigest(),
+                    },
                 },
-                "browser_static_assets": browser_static_assets,
             }
         )
         + "\n",
@@ -195,14 +221,12 @@ def test_thin_adapter_validate_bundle_contract_rejects_missing_manifest_route(
     assets_root = bundle_root / "assets"
     assets_root.mkdir(parents=True)
     for name in [
-        "app.wasm",
-        "molt_runtime.wasm",
         "browser.js",
         "config.json",
         "driver-manifest.base.json",
     ]:
         (assets_root / name).write_text("x\n", encoding="utf-8")
-    _write_browser_asset_closure(assets_root)
+    _write_execution_closure(assets_root)
     worker_entrypoint = (
         bundle_root / "drivers" / "falcon" / "browser_webgpu" / "worker.ts"
     )

@@ -292,14 +292,16 @@ def _reachable_assets(
     return reached
 
 
-def generate_with_telemetry(
-    manifest_path: Path = MANIFEST,
-    wasm_root: Path = WASM_ROOT,
-) -> tuple[bytes, dict[str, int]]:
-    groups, assets = _read_manifest(manifest_path, wasm_root)
+def scan_resolved_sources(
+    assets: Mapping[str, AssetSource],
+) -> tuple[dict[str, dict[str, object]], dict[str, int]]:
+    """Scan once and validate every resolved reference against the selected inventory.
+
+    Data assets participate in reference admission without being sent to Acorn.
+    No repository asset graph or filesystem lookup supplies missing dependencies.
+    """
     scanned, telemetry = scan_sources(assets.values())
     generated_assets: dict[str, dict[str, object]] = {}
-    graph: dict[str, tuple[str, ...]] = {}
     for name, source in assets.items():
         internal: set[str] = set()
         external: set[str] = set()
@@ -342,16 +344,31 @@ def generate_with_telemetry(
             else:
                 external.add(resolved)
         references = tuple(sorted(internal))
-        graph[name] = references
         generated_assets[name] = {
-            "authority": source.authority,
             "external_references": sorted(external),
             "reference_facts": facts,
             "references": list(references),
+        }
+    return generated_assets, telemetry
+
+
+def generate_with_telemetry(
+    manifest_path: Path = MANIFEST,
+    wasm_root: Path = WASM_ROOT,
+) -> tuple[bytes, dict[str, int]]:
+    groups, assets = _read_manifest(manifest_path, wasm_root)
+    resolved_assets, telemetry = scan_resolved_sources(assets)
+    generated_assets = {
+        name: {
+            "authority": source.authority,
+            **resolved_assets[name],
             "role": source.role,
             "sha256": hashlib.sha256(source.content).hexdigest(),
             "source_type": source.source_type,
         }
+        for name, source in assets.items()
+    }
+    graph = {name: tuple(row["references"]) for name, row in resolved_assets.items()}
     unreachable = sorted(set(assets) - _reachable_assets(groups, graph))
     if unreachable:
         raise ValueError(

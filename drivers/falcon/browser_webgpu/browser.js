@@ -171,8 +171,7 @@ export async function initFalconBrowserWebGpu({
   }
   const resolvedManifestUrl = normalizeManifestUrl(manifestUrl);
   const manifest = await fetchRequiredJson(resolvedManifestUrl);
-  const resolvedWasmUrl = manifestArtifactUrl(manifest, resolvedManifestUrl, "app_wasm");
-  const resolvedRuntimeUrl = manifestArtifactUrl(manifest, resolvedManifestUrl, "runtime_wasm");
+  const executionManifestUrl = manifestArtifactUrl(manifest, resolvedManifestUrl, "execution_manifest");
   const resolvedWeightsUrl = manifestWeightUrl(manifest, resolvedManifestUrl);
   const resolvedConfigUrl = manifestArtifactUrl(manifest, resolvedManifestUrl, "config_json");
   const resolvedTokenizerUrl = optionalManifestArtifactUrl(
@@ -181,23 +180,37 @@ export async function initFalconBrowserWebGpu({
     "tokenizer_json",
   );
   const resolvedInitExport = initExport ?? manifest?.exports?.init ?? "main_molt__init";
-  const [host, weightsBytes, configJson] = await Promise.all([
+  // Settle every acquisition before rollback: a late host must not escape a
+  // failed sibling fetch. Successful initialization transfers this owner.
+  const [hostResult, weightsResult, configResult] = await Promise.allSettled([
     loadMoltWasm({
-      wasmUrl: resolvedWasmUrl,
-      runtimeUrl: resolvedRuntimeUrl,
-      preferLinked: false,
-      env: { MOLT_GPU_BACKEND: "webgpu" },
       ...browserHostOptions,
+      manifest: undefined,
+      manifestUrl: executionManifestUrl,
+      runtimeImportAbi: undefined,
+      env: { MOLT_GPU_BACKEND: "webgpu", ...browserHostOptions.env },
     }),
     fetchImmutableArrayBuffer(resolvedWeightsUrl),
-    fetch(resolvedConfigUrl).then((r) => {
+    Promise.resolve().then(() => fetch(resolvedConfigUrl)).then((r) => {
       if (!r.ok) throw new Error(`Failed to load config: ${r.status}`);
       return r.text();
     }),
   ]);
 
-  host.run();
-  await host.invokeExport(resolvedInitExport, [new Uint8Array(weightsBytes), configJson]);
+  const failures = [hostResult, weightsResult, configResult]
+    .filter(result => result.status === "rejected").map(result => result.reason);
+  const host = hostResult.status === "fulfilled" ? hostResult.value : null;
+  try {
+    if (failures.length) throw globalThis.MoltRuntimeLifecycle.combinedError(failures);
+    host.run();
+    await host.invokeExport(resolvedInitExport, [new Uint8Array(weightsResult.value), configResult.value]);
+  } catch (error) {
+    const errors = [error];
+    if (host) {
+      try { host.dispose(); } catch (cleanup) { errors.push(cleanup); }
+    }
+    throw globalThis.MoltRuntimeLifecycle.combinedError(errors);
+  }
 
   return {
     host,

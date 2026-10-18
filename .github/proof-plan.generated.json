@@ -687,6 +687,11 @@
         "tools/gen_reconstructed_function_fixtures.py",
         "tests/fixtures/reconstructed_functions/**",
         "tests/reconstructed_function_test_support.py",
+        "drivers/falcon/browser_webgpu/*.py",
+        "drivers/falcon/browser_webgpu/*.js",
+        "drivers/cloudflare/thin_adapter/verify.py",
+        "tests/fixtures/falcon_ocr/**",
+        "tools/gen_browser_asset_graph.py",
         "tests/test_wasm_runner_table_base.py/**",
         "tests/cli/test_cli_import_collection.py/**",
         "tests/test_wasm_startup_failures.py/**",
@@ -694,12 +699,17 @@
         "tests/test_browser_asset_closure.py/**",
         "tests/test_wasm_reserved_callable_arity.py/**",
         "tests/test_wasm_split_runtime.py/**",
+        "tests/test_wasm_browser_embed.py/**",
+        "tests/test_driver_cloudflare_verify.py/**",
+        "tests/test_driver_cloudflare_worker.py/**",
+        "tests/test_falcon_ocr_prompt_contract.py/**",
         "tests/test_wasm_link_validation.py/**",
         "tests/test_wasm_control_flow.py/**",
         "tests/test_wasm_longdouble_printf_link.py/**",
         "tests/cli/test_native_symbol_authority.py/**",
         "tests/test_browser_vfs.py/**",
         "tests/test_wasm_runtime_heavy_regressions.py/**",
+        "tests/test_falcon_driver_scaffold.py/**",
         "tests/test_wasm_freestanding.py/**",
         "tests/test_finally_pending_observer_parity.py/**",
         "tests/molt_diff.py/**",
@@ -4246,7 +4256,11 @@
         "tests/test_browser_asset_closure.py",
         "tests/test_wasm_reserved_callable_arity.py",
         "tests/test_wasm_split_runtime.py::test_split_failure_retains_distinct_bytes_and_publication",
-        "tests/test_wasm_split_runtime.py::test_split_runtime_size_record_is_content_addressed_evidence"
+        "tests/test_wasm_split_runtime.py::test_split_runtime_size_record_is_content_addressed_evidence",
+        "tests/test_wasm_browser_embed.py::test_all_hosts_bind_exact_runtime_exports_once",
+        "tests/test_driver_cloudflare_verify.py",
+        "tests/test_driver_cloudflare_worker.py",
+        "tests/test_falcon_ocr_prompt_contract.py"
       ],
       "cache_domain": "pytest",
       "cell": "linux-x86_64-py312-wasm-dev",
@@ -4265,7 +4279,8 @@
       "toolchains": [
         "python",
         "uv",
-        "node"
+        "node",
+        "browser-acorn"
       ]
     },
     {
@@ -4666,7 +4681,8 @@
         "-m",
         "pytest",
         "-q",
-        "tests/test_wasm_split_runtime.py::test_linked_falcon_ocr_wasm_driver_runs_stub_generation"
+        "tests/test_wasm_split_runtime.py::test_linked_falcon_ocr_wasm_driver_runs_stub_generation",
+        "tests/test_falcon_driver_scaffold.py"
       ],
       "cache_domain": "cargo-workspace",
       "cargo_build_python": true,
@@ -4697,7 +4713,8 @@
         "wasm-ld",
         "wasm-tools",
         "wasi-clang",
-        "wasm-opt"
+        "wasm-opt",
+        "browser-acorn"
       ]
     },
     {
@@ -5858,8 +5875,6 @@
         "tests/test_debug_perf.py",
         "tests/test_debug_reduce.py",
         "tests/test_disk_capacity.py",
-        "tests/test_driver_cloudflare_verify.py",
-        "tests/test_driver_cloudflare_worker.py",
         "tests/test_driver_layout.py",
         "tests/test_dx_sccache_wrapper.py",
         "tests/test_exception_constructors.py",
@@ -6103,7 +6118,6 @@
         "tests/property/test_strings.py",
         "tests/test_cloudflare_ai_fallback_contract.py",
         "tests/test_cloudflare_ocr_response_contract.py",
-        "tests/test_falcon_ocr_prompt_contract.py",
         "tests/reference/falcon/test_reference_scaffold.py",
         "tests/mutation/test_mutation_smoke.py",
         "tests/mutation/test_mutation_extended.py",
@@ -6260,8 +6274,6 @@
         "tests/test_debug_perf.py",
         "tests/test_debug_reduce.py",
         "tests/test_disk_capacity.py",
-        "tests/test_driver_cloudflare_verify.py",
-        "tests/test_driver_cloudflare_worker.py",
         "tests/test_driver_layout.py",
         "tests/test_dx_sccache_wrapper.py",
         "tests/test_exception_constructors.py",
@@ -6505,7 +6517,6 @@
         "tests/property/test_strings.py",
         "tests/test_cloudflare_ai_fallback_contract.py",
         "tests/test_cloudflare_ocr_response_contract.py",
-        "tests/test_falcon_ocr_prompt_contract.py",
         "tests/reference/falcon/test_reference_scaffold.py",
         "tests/mutation/test_mutation_smoke.py",
         "tests/mutation/test_mutation_extended.py",
@@ -9169,6 +9180,8 @@
       "local.backend-llvm.0": "cargo test --locked --profile release-fast -p molt-backend-native -p molt-backend --features molt-backend/native-backend,molt-backend/llvm --lib --test ir_contract_validation --no-fail-fast",
       "local.backend-native.0": "cargo test --locked --profile release-fast -p molt-backend -p molt-backend-native -p molt-artifact-publish --features molt-backend/native-backend --lib --bins --no-fail-fast",
       "local.bootstrap-stdlib.0": "python tools/check_stdlib_intrinsics.py --critical-allowlist",
+      "local.browser-loader-deployment.pytest": "python -m pytest -q -n auto --molt-worker-memory-gb=2.5 tests/test_browser_asset_closure.py tests/test_driver_cloudflare_verify.py tests/test_driver_cloudflare_worker.py tests/test_falcon_ocr_prompt_contract.py",
+      "local.browser-loader-deployment.pytest-select-0": "python -m pytest -q -n auto --molt-worker-memory-gb=2.5 -k 'not (test_falcon_browser_driver_init_and_ocr_tokens_roundtrip or test_falcon_browser_driver_reuses_cached_weights_on_second_init or test_falcon_browser_driver_init_from_manifest_roundtrip)' tests/test_falcon_driver_scaffold.py",
       "local.build-output-identity.pytest": "python -m pytest -q -n auto --molt-worker-memory-gb=1.0 tests/cli/test_cli_build_identity.py tests/cli/test_cli_build_output_layout_authority.py tests/cli/test_cli_frontend_pipeline_authority.py",
       "local.builtin-binding-guard-authority.0": "python tools/gen_builtin_binding_guards.py --check",
       "local.builtin-binding-guard-authority.1": "cargo test --locked -p molt-runtime --lib binding_guards",
@@ -9259,6 +9272,47 @@
       "local.wasm-host.0": "cargo build --locked --profile release-fast -p molt-wasm-host"
     },
     "rules": [
+      {
+        "command_ids": [
+          "local.browser-loader-deployment.pytest",
+          "local.browser-loader-deployment.pytest-select-0"
+        ],
+        "description": "Retained browser asset closures, Falcon execution manifests and initialization ownership.",
+        "gates": [],
+        "globs": [
+          "tools/gen_browser_asset_graph.py",
+          "tests/test_browser_asset_closure.py",
+          "drivers/falcon/browser_webgpu/deploy.py",
+          "drivers/falcon/browser_webgpu/browser.js",
+          "drivers/cloudflare/thin_adapter/verify.py",
+          "tests/test_falcon_driver_scaffold.py",
+          "tests/test_driver_cloudflare_verify.py",
+          "tests/test_driver_cloudflare_worker.py",
+          "tests/test_falcon_ocr_prompt_contract.py",
+          "tests/fixtures/falcon_ocr/**"
+        ],
+        "name": "browser-loader-deployment",
+        "pytest": [
+          "tests/test_browser_asset_closure.py",
+          "tests/test_driver_cloudflare_verify.py",
+          "tests/test_driver_cloudflare_worker.py",
+          "tests/test_falcon_ocr_prompt_contract.py"
+        ],
+        "pytest_select": [
+          {
+            "k": "not (test_falcon_browser_driver_init_and_ocr_tokens_roundtrip or test_falcon_browser_driver_reuses_cached_weights_on_second_init or test_falcon_browser_driver_init_from_manifest_roundtrip)",
+            "targets": [
+              "tests/test_falcon_driver_scaffold.py"
+            ]
+          }
+        ],
+        "toolchains": [
+          "python",
+          "uv",
+          "node",
+          "browser-acorn"
+        ]
+      },
       {
         "command_ids": [
           "local.frontend-python.0",
@@ -11535,6 +11589,18 @@
       ],
       "local.bootstrap-stdlib.0": [
         "python"
+      ],
+      "local.browser-loader-deployment.pytest": [
+        "python",
+        "uv",
+        "node",
+        "browser-acorn"
+      ],
+      "local.browser-loader-deployment.pytest-select-0": [
+        "python",
+        "uv",
+        "node",
+        "browser-acorn"
       ],
       "local.build-output-identity.pytest": [
         "python",
