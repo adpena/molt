@@ -1200,7 +1200,7 @@ dependencies = []
 [[ci_family]]
 name = "native_integration"
 description = "Native compiler/linker and supervisor receipt integration isolated from pure Python proof."
-inputs = [".github/workflows/ci.yml", ".python-version", "pyproject.toml", "uv.lock", "src/**", "tests/test_bench_tool.py", "tests/test_bench_harness.py", "tests/test_manifest_pipeline_e2e.py", "tests/cli/test_cli_smoke.py", "tests/cli/test_traceback_carets.py", "tests/cli/test_native_link_*.py", "tests/cli/test_native_symbol_authority.py", "tests/cli/test_link_selection_admission.py", "tests/llvm_sdk_test_support.py", "tests/tools/test_proof_queue_native_receipts.py", "tests/proof_queue_custody_test_support.py", "tests/python_environment_test_support.py", "tools/proof_queue_pkg/**", "tools/proof_supervisor/**", "runtime/**", "tests/proof_queue_owned_roots.py", "vendor/rust/object/**", "vendor/rust/cranelift-object/**"]
+inputs = [".github/workflows/ci.yml", ".python-version", "pyproject.toml", "uv.lock", "src/**", "tests/test_bench_tool.py", "tests/test_bench_harness.py", "tests/test_manifest_pipeline_e2e.py", "tests/cli/test_cli_smoke.py", "tests/cli/test_traceback_carets.py", "tests/metamorphic/**", "tools/metamorphic_runner.py", "tests/cli/test_native_link_*.py", "tests/cli/test_native_symbol_authority.py", "tests/cli/test_link_selection_admission.py", "tests/llvm_sdk_test_support.py", "tests/tools/test_proof_queue_native_receipts.py", "tests/proof_queue_custody_test_support.py", "tests/python_environment_test_support.py", "tools/proof_queue_pkg/**", "tools/proof_supervisor/**", "runtime/**", "tests/proof_queue_owned_roots.py", "vendor/rust/object/**", "vendor/rust/cranelift-object/**"]
 executor = "github-job"
 workflow = ".github/workflows/ci.yml"
 job = "native-integration"
@@ -1210,7 +1210,8 @@ admission_needs = ["classify-changes"]
 tiers = ["pr", "main"]
 required = true
 # The two cold compiler rows serialize on main; the Python row runs beside them.
-timeout_minutes = 53
+# The main-only metamorphic row adds its 600 s integration budget.
+timeout_minutes = 63
 # Observed setup/post-proof total 126s, rounded up to whole minutes.
 job_reserve_seconds = 180
 resource_class = "compiler-build-resource"
@@ -3239,6 +3240,25 @@ cache_domain = "cargo-workspace"
 dependencies = ["native.integration.capability-manifest"]
 argv = ["uv", "run", "--python", "3.12", "pytest", "-q", "--durations=20", "tests/cli/test_cli_smoke.py", "tests/cli/test_cli_build_identity.py", "tests/cli/test_traceback_carets.py"]
 toolchains = ["python", "uv", "rustc", "cargo", "ld.lld", "llvm-strip"]
+cargo_build_python = true
+
+# Metamorphic compiler equivalence: each case compiles a program and a
+# semantics-preserving transformation of it (48 native builds in all), and
+# CPython is the oracle for both. It follows the capability-manifest build, so
+# its builds reuse that warm native runtime; the 24 cases took 102 s at -n 4
+# on an M-series Mac.
+[[command]]
+id = "native.integration.metamorphic"
+cargo_native_units = { target = ["c", "c++"] }
+family = "native_integration"
+cell = "linux-x86_64-py312-native-dev"
+tiers = ["main"]
+resource_class = "compiler-build-resource"
+timeout_budget = "integration"
+cache_domain = "cargo-workspace"
+dependencies = ["native.integration.capability-manifest"]
+argv = ["uv", "run", "--python", "3.12", "pytest", "-q", "-n", "2", "--durations=10", "tests/metamorphic"]
+toolchains = ["python", "uv", "rustc", "cargo", "ld.lld"]
 cargo_build_python = true
 
 [[command]]
