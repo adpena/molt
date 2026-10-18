@@ -478,57 +478,38 @@ unsafe fn hex_chars_to_nibbles_sse2(
     }
 }
 
-fn uu_val(ch: u8) -> Option<u8> {
-    if ch == b'`' {
-        return Some(0);
-    }
-    if !(b' '..=b'_').contains(&ch) {
-        return None;
-    }
-    Some((ch - b' ') & 0x3f)
-}
-
-fn uu_decode(input: &[u8]) -> Result<Vec<u8>, &'static str> {
-    let mut line = input;
-    while let Some(last) = line.last() {
-        if *last == b'\n' || *last == b'\r' {
-            line = &line[..line.len() - 1];
-        } else {
-            break;
+/// CPython's `binascii.a2b_uu` (Modules/binascii.c). The first byte gives the
+/// decoded length; a missing or line-ending byte decodes as zero, as CPython
+/// reads its buffer's NUL terminator for an empty input.
+fn uu_decode(ascii: &[u8]) -> Result<Vec<u8>, &'static str> {
+    let (&length_byte, mut rest) = ascii.split_first().unwrap_or((&0, &[]));
+    let mut remaining = usize::from(length_byte.wrapping_sub(b' ') & 0o77);
+    let mut out = Vec::with_capacity(remaining);
+    let mut leftchar = 0u32;
+    let mut leftbits = 0u32;
+    while remaining > 0 {
+        let value = match rest.split_first() {
+            None | Some((b'\n' | b'\r', _)) => 0,
+            // '`' (space + 64) also encodes zero.
+            Some((&byte, _)) if (b' '..=b' ' + 64).contains(&byte) => (byte - b' ') & 0o77,
+            Some(_) => return Err("Illegal char"),
+        };
+        rest = rest.get(1..).unwrap_or(&[]);
+        leftchar = (leftchar << 6) | u32::from(value);
+        leftbits += 6;
+        if leftbits >= 8 {
+            leftbits -= 8;
+            out.push((leftchar >> leftbits) as u8);
+            leftchar &= (1 << leftbits) - 1;
+            remaining -= 1;
         }
     }
-    if line.is_empty() {
-        return Ok(Vec::new());
+    if rest
+        .iter()
+        .any(|&byte| !matches!(byte, b' ' | b'`' | b'\n' | b'\r'))
+    {
+        return Err("Trailing garbage");
     }
-    let Some(want) = uu_val(line[0]) else {
-        return Err("Illegal char");
-    };
-    let want_len = usize::from(want);
-    let groups = want_len.div_ceil(3);
-    if line.len() < 1 + groups * 4 {
-        return Err("Truncated input");
-    }
-    let mut out = Vec::with_capacity(groups * 3);
-    let mut idx = 1usize;
-    for _ in 0..groups {
-        let Some(a) = uu_val(line[idx]) else {
-            return Err("Illegal char");
-        };
-        let Some(b) = uu_val(line[idx + 1]) else {
-            return Err("Illegal char");
-        };
-        let Some(c) = uu_val(line[idx + 2]) else {
-            return Err("Illegal char");
-        };
-        let Some(d) = uu_val(line[idx + 3]) else {
-            return Err("Illegal char");
-        };
-        out.push((a << 2) | (b >> 4));
-        out.push(((b & 0x0f) << 4) | (c >> 2));
-        out.push(((c & 0x03) << 6) | d);
-        idx += 4;
-    }
-    out.truncate(want_len);
     Ok(out)
 }
 
@@ -1048,4 +1029,24 @@ pub extern "C" fn molt_uu_codec_decode(data_bits: u64) -> u64 {
 
         alloc_bytes_or_oom(_py, &out, "uu_codec_decode")
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::uu_decode;
+
+    /// Expected values are CPython 3.12, 3.13 and 3.14 `binascii.a2b_uu`.
+    #[test]
+    fn a2b_uu_matches_cpython() {
+        assert_eq!(uu_decode(b""), Ok(vec![0; 32]));
+        assert_eq!(uu_decode(b"!"), Ok(vec![0]));
+        assert_eq!(uu_decode(b"!!!!"), Err("Trailing garbage"));
+        assert_eq!(uu_decode(b"#86)C\n"), Ok(b"abc".to_vec()));
+        assert_eq!(uu_decode(b"#86)C``"), Ok(b"abc".to_vec()));
+        assert_eq!(uu_decode(b"#86)Cxx"), Err("Trailing garbage"));
+        assert_eq!(uu_decode(b"#86"), Ok(b"a`\0".to_vec()));
+        assert_eq!(uu_decode(b"\x7f"), Ok(vec![0; 31]));
+        assert_eq!(uu_decode(b" "), Ok(Vec::new()));
+        assert_eq!(uu_decode(b"#8\x016)C"), Err("Illegal char"));
+    }
 }
