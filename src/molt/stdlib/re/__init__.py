@@ -289,13 +289,16 @@ class Pattern:
         self, string: Any, pos: int = 0, endpos: int | None = None
     ) -> list[Any]:
         results: list[Any] = []
+        group_count = self.groups
+        empty = b"" if isinstance(self.pattern, bytes) else ""
         for m in self.finditer(string, pos, endpos):
-            if self.groups == 0:
+            if group_count == 0:
                 results.append(m.group(0))
-            elif self.groups == 1:
-                results.append(m.group(1))
+            elif group_count == 1:
+                value = m.group(1)
+                results.append(empty if value is None else value)
             else:
-                results.append(m.groups())
+                results.append(m.groups(empty))
         return results
 
     def split(self, string: Any, maxsplit: int = 0) -> list[Any]:
@@ -307,8 +310,6 @@ class Pattern:
         return self.subn(repl, string, count=count)[0]
 
     def subn(self, repl: object, string: Any, count: int = 0) -> tuple[Any, int]:
-        if count < 0:
-            raise ValueError("count must be non-negative")
         if callable(repl):
             return _subn_callable(self, repl, string, count=count)
         text = _subject_for(self, string)
@@ -569,8 +570,6 @@ def _coerce_pattern(pattern: Any, flags: int) -> Pattern:
 def _subn_callable(
     pattern: Pattern, repl: object, string: Any, *, count: int = 0
 ) -> tuple[str | bytes, int]:
-    if count < 0:
-        raise ValueError("count must be non-negative")
     scanner = pattern.finditer(string)
     subject = scanner._subject
     byte_pattern = isinstance(pattern.pattern, bytes)
@@ -649,15 +648,7 @@ def subn(
 
 def escape(pattern: object) -> str | bytes:
     """Escape special characters in pattern."""
-    if isinstance(pattern, bytes):
-        special = b".\\^$*+?{}[]|()-#&~ \t\n\r\v\f"
-        out = bytearray()
-        for value in pattern:
-            if value in special:
-                out.append(92)
-            out.append(value)
-        return bytes(out)
     _molt_re_escape = _require_intrinsic("molt_re_escape")
     if not isinstance(pattern, str):
-        pattern = str(pattern)
+        pattern = _require_intrinsic("molt_re_subject_snapshot")(pattern)
     return _molt_re_escape(pattern)

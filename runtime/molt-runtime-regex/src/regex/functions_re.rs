@@ -11,54 +11,15 @@ use super::*;
 // parent `regex` module) — `RE_IGNORECASE`, `RE_DOTALL`, `RE_MULTILINE`,
 // `RE_ASCII` — so they are not redeclared here.
 
-pub(super) fn re_group_values_from_sequence(
-    _py: &CoreGilToken,
-    group_values_bits: u64,
-) -> Result<Vec<Option<String>>, u64> {
-    let group_values_obj = obj_from_bits(group_values_bits);
-    let Some(group_values_ptr) = group_values_obj.as_ptr() else {
-        return Err(raise_exception::<u64>(
-            _py,
-            "TypeError",
-            "group_values must be a sequence",
-        ));
-    };
-    let group_values_ty = unsafe { object_type_id(group_values_ptr) };
-    if group_values_ty != TYPE_ID_LIST && group_values_ty != TYPE_ID_TUPLE {
-        return Err(raise_exception::<u64>(
-            _py,
-            "TypeError",
-            "group_values must be a sequence",
-        ));
-    }
-    let mut out: Vec<Option<String>> = Vec::new();
-    let elems = unsafe { seq_snapshot(group_values_ptr) };
-    for &elem_bits in elems.iter() {
-        let elem_obj = obj_from_bits(elem_bits);
-        if elem_obj.is_none() {
-            out.push(None);
-            continue;
-        }
-        let Some(value) = string_obj_to_owned(elem_obj) else {
-            return Err(raise_exception::<u64>(
-                _py,
-                "TypeError",
-                "group_values must contain str or None",
-            ));
-        };
-        out.push(Some(value));
-    }
-    Ok(out)
-}
-
 /// Replacement expansion errors preserve the exception class selected by the
 /// canonical parser.
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum ReplacementErrorKind {
     Syntax,
     Index,
 }
 
+#[derive(Debug)]
 pub(super) struct ReplacementError {
     pub(super) kind: ReplacementErrorKind,
     pub(super) message: String,
@@ -104,8 +65,8 @@ pub(super) fn re_expand_typed(
             let index = if !name.is_empty() && name.bytes().all(|byte| byte.is_ascii_digit()) {
                 name.parse::<usize>().map_err(|_| {
                     replacement_error(
-                        ReplacementErrorKind::Index,
-                        format!("invalid group reference {name}"),
+                        ReplacementErrorKind::Syntax,
+                        format!("invalid group reference {name} at position {}", i + 3),
                     )
                 })?
             } else {
@@ -116,7 +77,7 @@ pub(super) fn re_expand_typed(
                     )
                 })? as usize
             };
-            append_group(&mut out, group_values, index)?;
+            append_group(&mut out, group_values, index, i + 3)?;
             i = end + 1;
             continue;
         }
@@ -142,6 +103,18 @@ pub(super) fn re_expand_typed(
                 for unit in &repl[i + 1..end] {
                     value = value * 8 + (*unit - u32::from(b'0'));
                 }
+                if value > 0o377 {
+                    let digits: String = repl[i + 1..end]
+                        .iter()
+                        .map(|unit| char::from_u32(*unit).unwrap())
+                        .collect();
+                    return Err(replacement_error(
+                        ReplacementErrorKind::Syntax,
+                        format!(
+                            "octal escape value \\{digits} outside of range 0-0o377 at position {i}"
+                        ),
+                    ));
+                }
                 out.push(value);
                 i = end;
                 continue;
@@ -156,11 +129,11 @@ pub(super) fn re_expand_typed(
                 .collect();
             let index = digits.parse::<usize>().map_err(|_| {
                 replacement_error(
-                    ReplacementErrorKind::Index,
-                    format!("invalid group reference {digits}"),
+                    ReplacementErrorKind::Syntax,
+                    format!("invalid group reference {digits} at position {}", i + 1),
                 )
             })?;
-            append_group(&mut out, group_values, index)?;
+            append_group(&mut out, group_values, index, i + 1)?;
             i = end;
             continue;
         }
@@ -181,7 +154,7 @@ pub(super) fn re_expand_typed(
             return Err(replacement_error(
                 ReplacementErrorKind::Syntax,
                 format!(
-                    "bad escape \\\\{} at position {i}",
+                    "bad escape \\{} at position {i}",
                     char::from_u32(ch).unwrap()
                 ),
             ));
@@ -238,11 +211,12 @@ fn append_group(
     out: &mut Vec<u32>,
     groups: &[Option<Vec<u32>>],
     index: usize,
+    position: usize,
 ) -> Result<(), ReplacementError> {
     let Some(value) = groups.get(index) else {
         return Err(replacement_error(
-            ReplacementErrorKind::Index,
-            format!("invalid group reference {index}"),
+            ReplacementErrorKind::Syntax,
+            format!("invalid group reference {index} at position {position}"),
         ));
     };
     if let Some(value) = value {

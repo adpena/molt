@@ -1,5 +1,4 @@
 use super::*;
-use std::collections::HashMap;
 use std::sync::Arc;
 
 /// Immutable compiled pattern payload stored by the runtime's green native

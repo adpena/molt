@@ -96,6 +96,7 @@ def source_re():
         return memoryview(value).tobytes()
 
     behavior = {
+        "molt_re_escape": cpython_re.escape,
         "molt_re_compile": compile_pattern,
         "molt_re_pattern_info": pattern_info,
         "molt_re_execute": execute,
@@ -153,6 +154,10 @@ def test_bytes_pattern_flag_and_mixed_subject_errors_match_cpython(source_re):
 
 def test_bytes_split_sub_expand_escape_and_callable_results(source_re):
     module = source_re
+    assert module.findall(b"(a)?b", b"b") == cpython_re.findall(b"(a)?b", b"b")
+    assert module.split(b"a", b"aa", maxsplit=-1) == [b"aa"]
+    assert module.subn(b"a", b"X", b"aa", count=-1) == (b"aa", 0)
+    assert module.subn(b"a", lambda match: b"X", b"aa", count=-1) == (b"aa", 0)
     pattern = module.compile(b"(?P<part>[A-Z]+)")
     assert pattern.split(b"1AB2CD3") == [b"1", b"AB", b"2", b"CD", b"3"]
     assert pattern.subn(b"<\\g<part>>", b"xAB") == (b"x<AB>", 1)

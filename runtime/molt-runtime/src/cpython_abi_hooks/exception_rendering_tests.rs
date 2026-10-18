@@ -4043,8 +4043,6 @@ fn dictionary_typed_lookup_distinguishes_prior_errors_from_native_hash_failures(
                 ("http", crate::http_bridge::__molt_http_dict_get_in_place),
                 #[cfg(feature = "stdlib_math")]
                 ("math", crate::math_bridge::__molt_math_dict_get_in_place),
-                #[cfg(feature = "stdlib_regex")]
-                ("regex", crate::regex_bridge::__molt_regex_dict_get_in_place),
                 #[cfg(feature = "stdlib_serial")]
                 (
                     "serial",

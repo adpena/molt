@@ -77,3 +77,13 @@ for operation in (
         operation()
     except Exception as exc:
         print(type(exc).__name__, str(exc))
+
+for value in ("a b", b"a b", bytearray(b"a b"), "a\x00b", b"a\x00b"):
+    print("escape", re.escape(value))
+for expression, value in (("(a)?b", "b"), (b"(a)?b", b"b")):
+    print("unmatched findall", re.findall(expression, value))
+for limit in (-1, 0, 1):
+    for expression, replacement, value in (("a", "X", "aa"), (b"a", b"X", b"aa")):
+        print("limits", limit, re.split(expression, value, maxsplit=limit))
+        print(re.subn(expression, replacement, value, count=limit))
+        print(re.subn(expression, lambda match: replacement, value, count=limit))
