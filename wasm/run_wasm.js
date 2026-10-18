@@ -7,7 +7,7 @@ const path = require('path');
 const crypto = require('crypto');
 const { spawn, execFileSync } = require('child_process');
 const wasmAbiGenerated = require('./wasm_abi_generated.json');
-const { createRuntimeLifetime, boxRuntimeInt, createRuntimeStream, withRuntimeOwnedValues, makeRuntimeIntList, combinedError, formatTraceError } = require('./runtime_lifecycle.js');
+const { createRuntimeLifetime, boxRuntimeInt, createRuntimeStream, withRuntimeOwnedValues, invokeAppExport, makeRuntimeIntList, combinedError, formatTraceError } = require('./runtime_lifecycle.js');
 const {
   WEBGPU_DISPATCH_HOST_IMPORT,
 } = require('./target_feature_manifest.json').constants;
@@ -989,27 +989,28 @@ const runHostExportCalls = () => {
       if (typeof fn !== 'function') {
         throw new Error(`app export missing: ${call.export}`);
       }
-      withRuntimeOwnedValues(runtimeInstance, Array.isArray(call.args) ? call.args : [], makeHostArgObject, (argBits) => {
-        let argReprs = null;
+      let started = 0;
+      const invoke = (...argBits) => {
         if (traceRun) {
-          argReprs = argBits.map((bits) => {
+          const argReprs = argBits.map((bits) => {
             try {
               return reprObjectBits(bits);
             } catch (err) {
               return `<repr failed: ${err instanceof Error ? err.message : String(err)}>`;
             }
           });
-        }
-        const started = Date.now();
-        if (traceRun) {
           console.error(
             `[molt wasm] host-call: invoking ${call.export} args=${argBits.map((x) => String(x)).join(',')} reprs=${JSON.stringify(argReprs)}`,
           );
         }
-        // Acquire the result inside the shared transaction. Decode failures and
-        // result-release failures remain primary/cleanup peers; neither can
-        // prevent the enclosing argument transaction from releasing its owners.
-        withRuntimeOwnedValues(runtimeInstance, [argBits], ownedArgs => fn(...ownedArgs), ([ownedResultBits]) => {
+        started = Date.now();
+        return fn(...argBits);
+      };
+      // The export adopts its arguments, so this transaction owns only the
+      // result. Decode and result-release failures remain primary/cleanup peers.
+      withRuntimeOwnedValues(runtimeInstance, [Array.isArray(call.args) ? call.args : []],
+        specs => invokeAppExport(runtimeInstance, invoke, specs, makeHostArgObject),
+        ([ownedResultBits]) => {
           const pending = pendingRuntimeExceptionMessage(runtimeInstance);
           if (pending) {
             throw new Error(pending);
@@ -1026,7 +1027,6 @@ const runHostExportCalls = () => {
             result_repr: resultRepr,
           });
         });
-      });
     }
     process.stdout.write(`${JSON.stringify(results)}\n`);
   });

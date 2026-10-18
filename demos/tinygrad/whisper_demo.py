@@ -25,10 +25,6 @@ ONNX weights: openai/whisper-tiny on HuggingFace (151 MB)
 
 from __future__ import annotations
 
-from _intrinsics import require_intrinsic as _require_intrinsic
-
-_gpu_device = _require_intrinsic("molt_gpu_prim_device")
-
 import math
 from tinygrad.tensor import Tensor
 from tinygrad.dtypes import dtypes

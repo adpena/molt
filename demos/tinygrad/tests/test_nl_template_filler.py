@@ -6,9 +6,6 @@ currency detection, and full end-to-end template filling.
 """
 
 from __future__ import annotations
-from _intrinsics import require_intrinsic as _require_intrinsic
-
-_gpu_device = _require_intrinsic("molt_gpu_prim_device")
 
 
 from datetime import date

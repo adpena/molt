@@ -16,7 +16,7 @@ import {
 } from './native_callable_abi_generated.js';
 
 const ENOSYS = 38;
-const { createRuntimeLifetime, createRuntimeDisposer, boxRuntimeInt, withRuntimeOwnedValues, makeRuntimeIntList, combinedError } = globalThis.MoltRuntimeLifecycle;
+const { createRuntimeLifetime, createRuntimeDisposer, boxRuntimeInt, withRuntimeOwnedValues, invokeAppExport, makeRuntimeIntList, combinedError } = globalThis.MoltRuntimeLifecycle;
 const EINVAL = 22;
 const ENOMEM = 12;
 const WASI_ERRNO_BADF = 8;
@@ -1229,13 +1229,14 @@ export const loadMoltBrowserKernel = async (options = {}) => {
     const callBytes = (...args) => embed.execute(() => {
       ensureInitialized();
       const fn = embed.appInstance.exports[resolvedExportName];
-      return withRuntimeOwnedValues(embed.runtimeInstance, args,
-        arg => makeHostArg(embed.runtimeInstance, embed.memory, arg), argBits =>
-          withRuntimeOwnedValues(embed.runtimeInstance, [argBits], ownedArgs => fn(...ownedArgs), ([resultBits]) => {
-            const pending = pendingRuntimeExceptionMessage(embed.runtimeInstance, embed.memory);
-            if (pending) throw new Error(pending);
-            return readBytesObject(embed.runtimeInstance, embed.memory, resultBits);
-          }));
+      // The export adopts its arguments; this transaction owns its result.
+      return withRuntimeOwnedValues(embed.runtimeInstance, [args],
+        values => invokeAppExport(embed.runtimeInstance, fn, values,
+          arg => makeHostArg(embed.runtimeInstance, embed.memory, arg)), ([resultBits]) => {
+          const pending = pendingRuntimeExceptionMessage(embed.runtimeInstance, embed.memory);
+          if (pending) throw new Error(pending);
+          return readBytesObject(embed.runtimeInstance, embed.memory, resultBits);
+        });
     });
     const forward = (input, ...extraArgs) => {
       const resultBytes = callBytes(bytesFromBufferSource(input), ...extraArgs);
