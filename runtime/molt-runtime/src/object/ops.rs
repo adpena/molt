@@ -518,18 +518,23 @@ pub(super) fn alloc_range_from_bigints(
     step: BigInt,
 ) -> u64 {
     use molt_runtime_core::OwnedRuntimeValue;
-    let start =
-        OwnedRuntimeValue::from_owned_bits(_py.core_token(), int_bits_from_bigint(_py, start));
+    // SAFETY: each conversion returns a fresh owned value (or the immediate
+    // failure sentinel), transferred exactly once into its runtime owner.
+    let start = unsafe {
+        OwnedRuntimeValue::from_owned_bits(_py.core_token(), int_bits_from_bigint(_py, start))
+    };
     if obj_from_bits(start.bits()).is_none() {
         return MoltObject::none().bits();
     }
-    let stop =
-        OwnedRuntimeValue::from_owned_bits(_py.core_token(), int_bits_from_bigint(_py, stop));
+    let stop = unsafe {
+        OwnedRuntimeValue::from_owned_bits(_py.core_token(), int_bits_from_bigint(_py, stop))
+    };
     if obj_from_bits(stop.bits()).is_none() {
         return MoltObject::none().bits();
     }
-    let step =
-        OwnedRuntimeValue::from_owned_bits(_py.core_token(), int_bits_from_bigint(_py, step));
+    let step = unsafe {
+        OwnedRuntimeValue::from_owned_bits(_py.core_token(), int_bits_from_bigint(_py, step))
+    };
     if obj_from_bits(step.bits()).is_none() {
         return MoltObject::none().bits();
     }
