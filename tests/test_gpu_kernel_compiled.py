@@ -620,10 +620,29 @@ def test_gpu_final_assembly_preserves_captured_symbol_origins_across_program_bin
     }
     # Both module cache tiers transport JSON; optional facts must survive that
     # boundary before final assembly consumes them, without new FunctionIR fields.
-    functions = json.loads(json.dumps([kernel, *bodies]))
+    borrowed = json.loads(json.dumps([kernel, *bodies]))
+    unchanged = {"name": "unchanged", "params": [], "ops": [{"kind": "ret_void"}]}
+    borrowed.append(unchanged)
+    before = json.loads(json.dumps(borrowed))
+    functions = list(borrowed)
     rebound_functions = json.loads(json.dumps(functions))
     slots = {function["name"]: index for index, function in enumerate(functions)}
     _finalize_gpu_descriptors(functions, target_python=target, global_code_ids=slots)
+    assert borrowed == before
+    assert functions[0] is not borrowed[0]
+    assert functions[0]["ops"] is not borrowed[0]["ops"]
+    assert functions[0]["ops"][0] is not borrowed[0]["ops"][0]
+    assert functions[0]["ops"][1] is borrowed[0]["ops"][1]
+    for original, finalized in zip(borrowed[1:-1], functions[1:-1], strict=True):
+        assert finalized is not original
+        assert finalized["ops"] is original["ops"]
+    assert functions[-1] is unchanged
+    if drift is None:
+        with pytest.raises(ValueError, match="no integrated code owner"):
+            _finalize_gpu_descriptors(
+                list(borrowed), target_python=target, global_code_ids={}
+            )
+        assert borrowed == before
     descriptor = json.loads(functions[0]["ops"][0]["s_value"])
     _finalize_gpu_descriptors(
         rebound_functions,
@@ -660,15 +679,19 @@ def test_plain_module_does_not_capture_gpu_reference_bodies(monkeypatch) -> None
     monkeypatch.setattr(
         cache_fingerprints, "_frontend_semantic_tooling_snapshot", forbidden
     )
-    functions = [
-        {"name": "plain", "ops": [], "gpu_body_origin": {"role": "buffer_get"}}
-    ]
+    borrowed = {"name": "plain", "ops": [], "gpu_body_origin": {"role": "buffer_get"}}
+    unchanged = {"name": "unrelated", "ops": []}
+    functions = [borrowed, unchanged]
     _finalize_gpu_descriptors(
         functions,
         target_python=_DEFAULT_TARGET_PYTHON_VERSION,
         global_code_ids={"plain": 0},
     )
-    assert functions == [{"name": "plain", "ops": []}]
+    assert functions == [{"name": "plain", "ops": []}, unchanged]
+    assert borrowed["gpu_body_origin"] == {"role": "buffer_get"}
+    assert functions[0] is not borrowed
+    assert functions[0]["ops"] is borrowed["ops"]
+    assert functions[1] is unchanged
 
 
 def test_native_support_pruning_preserves_only_unchanged_body_origins() -> None:

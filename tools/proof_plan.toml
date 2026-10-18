@@ -3978,6 +3978,43 @@ gates = [
   "python tools/check_dynamic_policy.py",
 ]
 
+# Lowered records are borrowed by assembly. Exercise their actual consumers
+# before compilation; these controls require neither Cargo nor a guest binary.
+[[rule]]
+name = "frontend-ir-assembly"
+toolchains = ["python"]
+description = "Prove borrowed lowering records, copy-on-write assembly and reusable module-cache results across native, WASM and GPU preparation."
+globs = [
+  "src/molt/cli/backend_ir.py",
+  "src/molt/cli/frontend_integration.py",
+  "src/molt/cli/module_cache.py",
+  "src/molt/frontend/module_publication.py",
+  "tests/cli/test_cli_frontend_integration_authority.py",
+  "tests/cli/test_cli_module_cache_authority.py",
+  "tests/cli/test_backend_initialization_contract.py",
+  "tests/test_module_registry_gates.py",
+  "tests/test_frontend_module_publication.py",
+  "tests/cli/test_cli_shared_stdlib_cache.py",
+  "tests/cli/test_cli_module_frontend_shared_cache.py",
+  "tests/cli/test_cli_import_collection.py",
+  "tests/test_gpu_kernel_compiled.py",
+]
+gates = []
+pytest = [
+  "tests/cli/test_cli_frontend_integration_authority.py",
+  "tests/cli/test_cli_module_cache_authority.py",
+  "tests/cli/test_backend_initialization_contract.py",
+  "tests/test_module_registry_gates.py",
+  "tests/test_frontend_module_publication.py",
+  "tests/cli/test_cli_shared_stdlib_cache.py",
+  "tests/cli/test_cli_module_frontend_shared_cache.py",
+  "tests/cli/test_cli_import_collection.py::test_native_callable_publication_augments_existing_source_init_once",
+  "tests/cli/test_cli_import_collection.py::test_compiled_source_init_publishes_before_capture_and_rebinding",
+  "tests/cli/test_cli_import_collection.py::test_entry_source_identity_survives_json_and_explicit_main_registry_alias",
+  "tests/test_gpu_kernel_compiled.py::test_gpu_final_assembly_preserves_captured_symbol_origins_across_program_bindings",
+  "tests/test_gpu_kernel_compiled.py::test_plain_module_does_not_capture_gpu_reference_bodies",
+]
+
 # Backend environment identity is one Python/Rust contract. These bounded
 # consumers catch selected-input and fixture migrations before expensive Cargo.
 [[rule]]
