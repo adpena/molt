@@ -69,20 +69,31 @@ from molt.toolchain_identity import (
 )
 
 
+def _environment_rule(values: Mapping[str, str], case_insensitive: bool | None) -> bool:
+    """Name rule for a copy: explicit, inherited from a Cargo map, or the host's."""
+    if case_insensitive is not None:
+        return case_insensitive
+    if isinstance(values, (_CargoEnvironment, CargoEnvironment)):
+        return values.case_insensitive
+    return os.name == "nt"
+
+
+def _environment_key(name: str, *, case_insensitive: bool) -> str:
+    return name.upper() if case_insensitive else name
+
+
 class _CargoEnvironment(MutableMapping[str, str]):
     """One platform-correct environment map, including Windows key overwrite."""
 
     def __init__(
         self, values: Mapping[str, str], *, case_insensitive: bool | None = None
     ) -> None:
-        self.case_insensitive = (
-            os.name == "nt" if case_insensitive is None else case_insensitive
-        )
+        self.case_insensitive = _environment_rule(values, case_insensitive)
         self._values: dict[str, str] = {}
         self.update(values)
 
     def canonical_key(self, name: str) -> str:
-        return name.upper() if self.case_insensitive else name
+        return _environment_key(name, case_insensitive=self.case_insensitive)
 
     def __getitem__(self, name: str) -> str:
         return self._values[self.canonical_key(name)]
@@ -98,6 +109,45 @@ class _CargoEnvironment(MutableMapping[str, str]):
 
     def __len__(self) -> int:
         return len(self._values)
+
+
+class CargoEnvironment(Mapping[str, str]):
+    """Cargo's immutable process environment under the host's name rule.
+
+    Windows names environment variables without regard to case, and Rust's
+    std::env, so cc-rs, follows it: ``CC_wasm32-wasip1`` selects the value
+    stored as ``CC_WASM32-WASIP1``. A plain dict copy drops that rule, so a
+    plan holds only this type and changes it only through ``updated``.
+    """
+
+    __slots__ = ("_values", "case_insensitive")
+
+    def __init__(
+        self, values: Mapping[str, str], *, case_insensitive: bool | None = None
+    ) -> None:
+        builder = _CargoEnvironment(values, case_insensitive=case_insensitive)
+        self.case_insensitive = builder.case_insensitive
+        self._values = builder._values
+
+    def canonical_key(self, name: str) -> str:
+        return _environment_key(name, case_insensitive=self.case_insensitive)
+
+    def updated(self, values: Mapping[str, str]) -> CargoEnvironment:
+        builder = _CargoEnvironment(self)
+        builder.update(values)
+        return CargoEnvironment(builder)
+
+    def __getitem__(self, name: str) -> str:
+        return self._values[self.canonical_key(name)]
+
+    def __iter__(self) -> Iterator[str]:
+        return iter(self._values)
+
+    def __len__(self) -> int:
+        return len(self._values)
+
+    def __repr__(self) -> str:
+        return f"CargoEnvironment({self._values!r})"
 
 
 @dataclass(frozen=True, slots=True)
@@ -925,12 +975,7 @@ def _apply_cargo_environment(
         _table(configuration.get("env", {}), label="env"),
         _table(cli.get("env", {}), label="CLI env"),
     )
-    result = _CargoEnvironment(
-        env,
-        case_insensitive=env.case_insensitive
-        if isinstance(env, _CargoEnvironment)
-        else None,
-    )
+    result = _CargoEnvironment(env)
     forced: list[str] = []
     resources: list[CargoResourceRoot] = []
     seen: dict[str, str] = {}
@@ -1281,7 +1326,7 @@ def _require_cargo_build_directory(
 class RuntimeCargoPlan:
     project_root: Path
     command: tuple[str, ...]
-    environment: Mapping[str, str]
+    environment: CargoEnvironment
     target: str
     host_target: str
     rustc: Path
@@ -1303,6 +1348,12 @@ class RuntimeCargoPlan:
     _build_directory: Path | None = field(
         default=None, init=False, repr=False, compare=False
     )
+
+    def __post_init__(self) -> None:
+        # A plain mapping looks the same on POSIX and loses cc-rs's
+        # target-suffixed selectors only on Windows.
+        if not isinstance(self.environment, CargoEnvironment):
+            raise TypeError("runtime Cargo plan environment must be a CargoEnvironment")
 
     @property
     def target_directory(self) -> Path | None:
@@ -1349,11 +1400,12 @@ class RuntimeCargoPlan:
 
     def with_build_directory(self) -> RuntimeCargoPlan:
         """Pin intermediates before identity capture, leases or execution."""
-        environment = dict(self.environment)
-        environment["CARGO_BUILD_BUILD_DIR"] = os.fspath(self.build_directory)
-        environment["MOLT_CARGO_BUILD_DIR_BASE"] = os.fspath(self.build_directory_base)
+        pinned = {
+            "CARGO_BUILD_BUILD_DIR": os.fspath(self.build_directory),
+            "MOLT_CARGO_BUILD_DIR_BASE": os.fspath(self.build_directory_base),
+        }
         if self.target_directory is not None:
-            environment["CARGO_TARGET_DIR"] = os.fspath(self.target_directory)
+            pinned["CARGO_TARGET_DIR"] = os.fspath(self.target_directory)
         return replace(
             self,
             command=cargo_argv._pin_cargo_command(
@@ -1365,7 +1417,7 @@ class RuntimeCargoPlan:
                 self.build_directory,
                 self.target_directory,
             ),
-            environment=MappingProxyType(environment),
+            environment=self.environment.updated(pinned),
         )
 
     def with_build_resources(self, resources: CargoResourceCustody) -> RuntimeCargoPlan:
@@ -2042,7 +2094,8 @@ def resolve_runtime_cargo_plan(
     )
     if environment_transform is not None:
         environment = _CargoEnvironment(
-            environment_transform(MappingProxyType(environment))
+            environment_transform(MappingProxyType(environment)),
+            case_insensitive=environment.case_insensitive,
         )
     rustc_selector = cargo_selected_value(
         configuration,
@@ -2463,7 +2516,7 @@ def resolve_runtime_cargo_plan(
     plan = RuntimeCargoPlan(
         root,
         command,
-        MappingProxyType(environment),
+        CargoEnvironment(environment),
         target,
         host_target,
         rustc,

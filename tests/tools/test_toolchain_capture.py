@@ -2492,7 +2492,7 @@ def _native_build_capture_fixture(
                 "cargo": tools["cargo"],
                 "rustc": tools["rustc"],
             }
-            projected_env = {**selected.environment, "RUSTC": str(tools["rustc"])}
+            projected_env = selected.environment.updated({"RUSTC": str(tools["rustc"])})
             custody = tuple(
                 CargoExecutableCustody.capture(
                     row.label, tool_paths[row.label.removeprefix("tool/")]
@@ -2506,7 +2506,7 @@ def _native_build_capture_fixture(
                 command=tuple(cargo_command),
                 tools=MappingProxyType(tool_paths),
                 rustc=tools["rustc"],
-                environment=MappingProxyType(projected_env),
+                environment=projected_env,
                 executable_custody=custody,
             ).with_build_directory()
             selected.verify()
