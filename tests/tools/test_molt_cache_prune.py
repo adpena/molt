@@ -1023,3 +1023,84 @@ def test_lockless_hit_never_refreshes_a_replaced_or_busy_entry(tmp_path: Path) -
     module.refresh_cache_entry_recency(path, cache_root=cache, observed=observed)
     assert path.stat().st_mtime_ns > observed.st_mtime_ns
     assert path.read_bytes() == b"replacement"
+
+
+@pytest.mark.parametrize("directory", [False, True])
+def test_recency_updates_only_admitted_entry_timestamp(
+    tmp_path: Path, directory: bool
+) -> None:
+    module = _load_molt_cache_prune()
+    cache = tmp_path / "cache"
+    path = cache / "module_lowering" / "entry"
+    path.parent.mkdir(parents=True)
+    if directory:
+        path.mkdir()
+        payload = path / "payload"
+    else:
+        payload = path
+    payload.write_bytes(b"preserve contents")
+    old = time.time_ns() - 86400 * 1_000_000_000
+    os.utime(path, ns=(old, old))
+    observed = path.lstat()
+    payload_before = payload.stat()
+    module.refresh_cache_entry_recency(path, cache_root=cache, observed=observed)
+    assert path.stat().st_mtime_ns > observed.st_mtime_ns
+    assert path.stat().st_atime_ns == observed.st_atime_ns
+    assert payload.read_bytes() == b"preserve contents"
+    if directory:
+        assert payload.stat().st_mtime_ns == payload_before.st_mtime_ns
+
+
+@pytest.mark.skipif(
+    os.name == "nt", reason="Windows pins replacement by handle sharing"
+)
+def test_recency_update_pins_generation_across_path_replacement(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    module = _load_molt_cache_prune()
+    cache = tmp_path / "cache"
+    path = cache / "module_lowering" / "entry"
+    path.parent.mkdir(parents=True)
+    path.write_bytes(b"admitted")
+    replacement = path.with_suffix(".replacement")
+    replacement.write_bytes(b"replacement")
+    old = time.time_ns() - 86400 * 1_000_000_000
+    os.utime(path, ns=(old, old))
+    os.utime(replacement, ns=(old, old))
+    observed = path.stat()
+    replacement_before = replacement.stat()
+    native_utime = os.utime
+
+    def replace_before_timestamp(target, *args, **kwargs):
+        replacement.replace(path)
+        return native_utime(target, *args, **kwargs)
+
+    install_module_view(monkeypatch, "os", os, module, utime=replace_before_timestamp)
+    module.refresh_cache_entry_recency(path, cache_root=cache, observed=observed)
+    assert path.read_bytes() == b"replacement"
+    assert path.stat().st_mtime_ns == replacement_before.st_mtime_ns
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows directory reparse-point boundary")
+def test_recency_never_refreshes_a_junction_target(tmp_path: Path) -> None:
+    from tests.process_guard_common import run_guarded_test_process
+
+    module = _load_molt_cache_prune()
+    cache = tmp_path / "cache"
+    cache.mkdir()
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    path = cache / "junction"
+    run_guarded_test_process(
+        ["cmd", "/c", "mklink", "/J", str(path), str(outside)],
+        prefix="MOLT_TEST_CACHE_RECENCY",
+        check=True,
+        capture_output=True,
+    )
+    old = time.time_ns() - 86400 * 1_000_000_000
+    os.utime(outside, ns=(old, old))
+    before = outside.stat()
+    # Even a stale caller observation of the previous direct directory cannot
+    # turn the no-follow handle into authority over the junction's target.
+    module.refresh_cache_entry_recency(path, observed=before)
+    assert outside.stat().st_mtime_ns == before.st_mtime_ns

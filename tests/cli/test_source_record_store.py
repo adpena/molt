@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 import multiprocessing
 import os
 import sqlite3
@@ -25,48 +24,66 @@ def _store(tmp_path: Path) -> records.SourceRecordStore:
 
 def test_records_round_trip_per_kind_and_key(tmp_path: Path) -> None:
     store = _store(tmp_path)
-    assert store.put("import-scan", "k1", {"imports": ["math"]}, generation="g")
-    assert store.put("intrinsic-facts", "k1", {"facts": 1}, generation="g")
+    assert store.put("import-scan", "k1", b"\x00\xffopaque\n", generation="g")
+    assert store.put("intrinsic-facts", "k1", b"[1,2]", generation="g")
 
-    assert store.get("import-scan", "k1", generation="g", max_bytes=_LIMIT) == {
-        "imports": ["math"]
-    }
-    assert store.get("intrinsic-facts", "k1", generation="g", max_bytes=_LIMIT) == {
-        "facts": 1
-    }
+    assert (
+        store.get("import-scan", "k1", generation="g", max_bytes=_LIMIT)
+        == b"\x00\xffopaque\n"
+    )
+    assert (
+        store.get("intrinsic-facts", "k1", generation="g", max_bytes=_LIMIT) == b"[1,2]"
+    )
     assert store.get("import-scan", "k2", generation="g", max_bytes=_LIMIT) is None
 
 
 def test_a_later_record_replaces_the_earlier_one(tmp_path: Path) -> None:
     store = _store(tmp_path)
-    store.put("import-scan", "k", {"source_sha256": "old"}, generation="g")
-    store.put("import-scan", "k", {"source_sha256": "new"}, generation="g")
+    store.put("import-scan", "k", b"old", generation="g")
+    store.put("import-scan", "k", b"new", generation="g")
 
-    assert store.get("import-scan", "k", generation="g", max_bytes=_LIMIT) == {
-        "source_sha256": "new"
-    }
+    assert store.get("import-scan", "k", generation="g", max_bytes=_LIMIT) == b"new"
     with sqlite3.connect(tmp_path / records.STORE_NAME) as connection:
         assert connection.execute("SELECT count(*) FROM records").fetchone() == (1,)
 
 
-def test_oversized_and_non_object_records_are_misses(tmp_path: Path) -> None:
+def test_size_limit_rejects_before_materializing_payload(tmp_path: Path) -> None:
     store = _store(tmp_path)
-    store.put("import-scan", "big", {"blob": "x" * 64}, generation="g")
-    store.put("import-scan", "list", {"a": 1}, generation="g")
-    with sqlite3.connect(tmp_path / records.STORE_NAME) as connection:
-        connection.execute(
-            "UPDATE records SET payload = ? WHERE key = 'list'", (b"[1, 2]",)
-        )
+    payload = b"x" * 64
+    assert store.put("import-scan", "big", payload, generation="g")
+    assert store.put("import-scan", "empty", b"", generation="g")
+    connection = store._connect()
+    assert connection is not None
+    materialized = []
 
-    assert store.get("import-scan", "big", generation="g", max_bytes=32) is None
-    assert store.get("import-scan", "list", generation="g", max_bytes=_LIMIT) is None
+    def observe_payload(cursor, row):
+        if cursor.description[0][0] == "payload":
+            materialized.append(row[0])
+        return row
+
+    connection.row_factory = observe_payload
+    assert store.get("import-scan", "big", generation="g", max_bytes=63) is None
+    assert materialized == []
+    assert store.get("import-scan", "big", generation="g", max_bytes=64) == payload
+    assert materialized == [payload]
+    assert store.get("import-scan", "empty", generation="g", max_bytes=0) == b""
+
+
+def test_non_blob_rows_are_misses_and_non_bytes_writes_refused(tmp_path: Path) -> None:
+    store = _store(tmp_path)
+    with pytest.raises(TypeError, match="payload must be bytes"):
+        store.put("import-scan", "text", "not bytes", generation="g")
+    assert store.put("import-scan", "text", b"original", generation="g")
+    with sqlite3.connect(store.path) as connection:
+        connection.execute("UPDATE records SET payload = ?", ("not a BLOB",))
+    assert store.get("import-scan", "text", generation="g", max_bytes=_LIMIT) is None
 
 
 def test_another_process_reads_what_this_process_wrote(tmp_path: Path) -> None:
-    _store(tmp_path).put("import-scan", "k", {"v": 7}, generation="g")
+    _store(tmp_path).put("import-scan", "k", b"\x00child\xff", generation="g")
     with multiprocessing.get_context("spawn").Pool(1) as pool:
         seen = pool.apply(_read_in_child, (str(tmp_path),))
-    assert seen == {"v": 7}
+    assert seen == b"\x00child\xff"
 
 
 def _read_in_child(root: str) -> object:
@@ -84,7 +101,7 @@ def test_retired_generations_lose_their_records(
     for index in range(6):
         clock[0] += 2 * _HOUR
         _store(tmp_path).put(
-            "import-scan", f"k{index}", {"i": index}, generation=f"g{index}"
+            "import-scan", f"k{index}", str(index).encode(), generation=f"g{index}"
         )
 
     kept = {
@@ -100,7 +117,7 @@ def test_retired_generations_lose_their_records(
 
     # A week without use retires even a recent generation.
     clock[0] += 8 * _DAY
-    _store(tmp_path).put("import-scan", "fresh", {"i": 9}, generation="g9")
+    _store(tmp_path).put("import-scan", "fresh", b"9", generation="g9")
     survivors = {
         key
         for (key,) in sqlite3.connect(tmp_path / records.STORE_NAME).execute(
@@ -116,11 +133,13 @@ def test_a_corrupt_store_is_recreated(tmp_path: Path) -> None:
 
     store = _store(tmp_path)
     assert store.get("import-scan", "k", generation="g", max_bytes=_LIMIT) is None
-    store.put("import-scan", "k", {"v": 1}, generation="g")
-    assert store.get("import-scan", "k", generation="g", max_bytes=_LIMIT) == {"v": 1}
-    assert json.loads(
-        sqlite3.connect(path).execute("SELECT payload FROM records").fetchone()[0]
-    ) == {"v": 1}
+    store.put("import-scan", "k", b"recovered", generation="g")
+    assert (
+        store.get("import-scan", "k", generation="g", max_bytes=_LIMIT) == b"recovered"
+    )
+    assert sqlite3.connect(path).execute(
+        "SELECT typeof(payload), payload FROM records"
+    ).fetchone() == ("blob", b"recovered")
 
 
 @pytest.mark.skipif(
@@ -133,7 +152,7 @@ def test_an_unwritable_state_root_refuses_records(tmp_path: Path) -> None:
     root.chmod(0o500)
     try:
         store = _store(root)
-        assert store.put("import-scan", "k", {"v": 1}, generation="g") is False
+        assert store.put("import-scan", "k", b"recovered", generation="g") is False
         assert store.get("import-scan", "k", generation="g", max_bytes=_LIMIT) is None
     finally:
         root.chmod(0o700)

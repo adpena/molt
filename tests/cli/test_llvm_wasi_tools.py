@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import os
+import re
 import subprocess
 from pathlib import Path
 
@@ -61,6 +62,7 @@ def _write_tool_family(directory: Path) -> dict[str, Path]:
     for role in _TOOL_FILE_NAMES:
         path = _tool_path(directory, role)
         path.write_bytes(b"tool")
+        path.chmod(0o755)
         paths[role] = path
     return paths
 
@@ -71,6 +73,7 @@ def _replace_wasm_ld_with_driver_alias(paths: dict[str, Path]) -> tuple[Path, Pa
     suffix = ".exe" if os.name == "nt" else ""
     driver = alias.parent / f"lld{suffix}"
     driver.write_bytes(b"generic lld driver")
+    driver.chmod(0o755)
     try:
         alias.symlink_to(driver.name)
     except OSError:
@@ -133,6 +136,7 @@ def test_archive_role_does_not_select_compiler_sibling_generic_ar(
     archive_directory.mkdir(parents=True)
     llvm_ar = _tool_path(archive_directory, "ar")
     llvm_ar.write_bytes(b"maintained LLVM archiver")
+    llvm_ar.chmod(0o755)
     monkeypatch.setattr(
         llvm_wasi_tools, "_tool_version", lambda _path, **_kwargs: "LLVM version 22.1.8"
     )
@@ -350,6 +354,7 @@ def test_every_linker_role_preserves_its_alias_and_rejects_generic_driver(
     suffix = ".exe" if os.name == "nt" else ""
     driver = directory / f"lld{suffix}"
     driver.write_bytes(b"shared generic driver")
+    driver.chmod(0o755)
     alias = directory / f"{role}{suffix}"
     try:
         alias.symlink_to(driver.name)
@@ -543,6 +548,140 @@ def test_sdk_file_alias_does_not_hide_later_native_path_compiler(
         )[0]
         == alias
     )
+
+
+@pytest.mark.parametrize("source", ["path", "sibling"])
+@pytest.mark.parametrize("position", ["before", "after"])
+@pytest.mark.parametrize(
+    "fault", ["resolve-untrusted", "resolve-denied", "stat-untrusted"]
+)
+def test_automatic_search_skips_unclassifiable_entries_without_crossing_families(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    source: str,
+    position: str,
+    fault: str,
+) -> None:
+    blocked = _write_tool_family(tmp_path / "blocked" / "bin")
+    sdk = _write_tool_family(tmp_path / "wasi-sdk" / "bin")
+    native = _write_tool_family(tmp_path / "native" / "bin")
+    blocked_directory = blocked["cc"].parent
+    directories = [sdk["cc"].parent, native["cc"].parent]
+    directories.insert(
+        0 if position == "before" else len(directories), blocked_directory
+    )
+    environment = {
+        "PATH": os.pathsep.join(map(str, directories)) if source == "path" else "",
+        "PATHEXT": ".EXE",
+        "NoDefaultCurrentDirectoryInExePath": "1",
+    }
+    before = dict(environment)
+    siblings = tuple(directories) if source == "sibling" else ()
+    monkeypatch.setattr(llvm_wasi_tools, "_source_checkout_roots", lambda: ())
+    resolve = Path.resolve
+    is_file = Path.is_file
+    failed_resolutions: list[Path] = []
+
+    def refused(path: Path) -> OSError:
+        if fault == "resolve-denied":
+            return PermissionError(13, "directory access denied", str(path))
+        error = OSError("untrusted mount point", str(path))
+        setattr(error, "winerror", 448)
+        return error
+
+    def observed_resolve(path, *args, **kwargs):
+        if fault.startswith("resolve-") and path.is_relative_to(blocked_directory):
+            failed_resolutions.append(path)
+            raise refused(path)
+        return resolve(path, *args, **kwargs)
+
+    def observed_is_file(path):
+        if fault == "stat-untrusted" and path.is_relative_to(blocked_directory):
+            raise refused(path)
+        return is_file(path)
+
+    monkeypatch.setattr(Path, "resolve", current_thread_only(observed_resolve, resolve))
+    monkeypatch.setattr(Path, "is_file", current_thread_only(observed_is_file, is_file))
+    for _ in range(2):
+        assert llvm_wasi_tools.llvm_tool_candidates(
+            "cc", sibling_directories=siblings, environment=environment
+        ) == (native["cc"],)
+        wasm = llvm_wasi_tools.llvm_tool_candidates(
+            "cc",
+            target_family="wasm",
+            sibling_directories=siblings,
+            environment=environment,
+        )
+        assert wasm[0] == sdk["cc"]
+        assert blocked["cc"] not in wasm
+        assert environment == before
+    # Failed provenance shares the same filesystem-identified memo as success;
+    # neither another role/family nor a warm query retries its resolution.
+    assert len(failed_resolutions) == len(set(failed_resolutions))
+
+
+@pytest.mark.parametrize("target_family", ["native", "wasm"])
+def test_explicit_tool_with_unknown_provenance_refuses_automatic_substitution(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    target_family: llvm_wasi_tools.LlvmTargetFamily,
+) -> None:
+    selected = _write_tool_family(tmp_path / "selected" / "bin")["cc"]
+    fallback = _write_tool_family(tmp_path / "fallback" / "bin")["cc"]
+    environment = {
+        "PATH": str(fallback.parent),
+        "PATHEXT": ".EXE",
+        "NoDefaultCurrentDirectoryInExePath": "1",
+    }
+    monkeypatch.setattr(llvm_wasi_tools, "_source_checkout_roots", lambda: ())
+    resolve = Path.resolve
+
+    def denied(path, *args, **kwargs):
+        if path == selected or path == selected.parent:
+            raise PermissionError(13, "selected tool access denied", str(path))
+        return resolve(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "resolve", current_thread_only(denied, resolve))
+    with pytest.raises(
+        llvm_toolchain.LlvmToolchainConfigError, match=re.escape(str(selected))
+    ):
+        llvm_wasi_tools.llvm_tool_candidates(
+            "cc",
+            target_family=target_family,
+            explicit_commands=((str(selected), "-DSELECTED=1"),),
+            environment=environment,
+        )
+    with pytest.raises(
+        llvm_toolchain.LlvmToolchainConfigError, match=re.escape(str(selected))
+    ):
+        llvm_wasi_tools.llvm_tool_is_wasi_sdk(selected, environment=environment)
+
+
+def test_explicit_sdk_access_failure_names_selection_instead_of_using_path(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    install = provisioned_wasi_sdk_fixture(RuntimeFixtureRoot(tmp_path))
+    fallback = _write_tool_family(tmp_path / "fallback" / "bin")["cc"]
+    resolve = Path.resolve
+
+    def denied(path, *args, **kwargs):
+        if path.is_relative_to(install.sdk):
+            raise PermissionError(13, "selected SDK access denied", str(path))
+        return resolve(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "resolve", current_thread_only(denied, resolve))
+    with pytest.raises(
+        llvm_toolchain.LlvmToolchainConfigError,
+        match=r"cannot (inspect selected WASI SDK|resolve selected WASI SDK tool directory)",
+    ):
+        llvm_wasi_tools.llvm_tool_candidates(
+            "cc",
+            target_family="wasm",
+            environment={
+                "WASI_SDK_PATH": str(install.sdk),
+                "PATH": str(fallback.parent),
+            },
+        )
 
 
 @pytest.mark.skipif(os.name != "nt", reason="Windows PATH and implicit cwd semantics")
@@ -906,6 +1045,7 @@ def test_candidate_cache_keys_path_and_directory_identity(
     managed_dir.mkdir()
     managed = _tool_path(managed_dir, "cc")
     managed.write_bytes(b"managed")
+    managed.chmod(0o755)
     assert llvm_wasi_tools.llvm_tool_candidates("cc")[0] == managed.resolve()
 
 
@@ -919,6 +1059,7 @@ def test_candidate_cache_revalidates_selected_path_removal(
     fallback = _tool_path(tmp_path / "fallback", "cc")
     fallback.parent.mkdir()
     managed.write_bytes(b"managed")
+    managed.chmod(0o755)
     fallback.write_bytes(b"fallback")
     monkeypatch.setattr(
         llvm_wasi_tools,

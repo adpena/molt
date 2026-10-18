@@ -15,6 +15,7 @@ generations unused for a week and of all but the newest four, as the build
 record and Go's build cache bound their entries. An edited source overwrites
 its record, whose key names the path, not the bytes.
 
+Payloads are opaque bytes; each consumer owns its encoding and admission.
 A record is a candidate: its consumer still qualifies its semantic inputs. A
 store that SQLite reports corrupt is deleted and recreated. A busy, full or
 read-only database makes ``get`` a miss and ``put`` return False.
@@ -22,12 +23,10 @@ read-only database makes ``get`` a miss and ``put`` return False.
 
 from __future__ import annotations
 
-import json
 import os
 import sqlite3
 import threading
 import time
-from collections.abc import Mapping
 from pathlib import Path
 from typing import Any, Literal
 
@@ -72,39 +71,35 @@ class SourceRecordStore:
 
     def get(
         self, kind: RecordKind, key: str, *, generation: str, max_bytes: int
-    ) -> Mapping[str, Any] | None:
-        """The stored object for ``(kind, key)``, or None for any miss."""
+    ) -> bytes | None:
+        """The stored bytes for ``(kind, key)``, bounded before materialization."""
         with self._lock:
             _stored, row = self._run(
                 lambda connection: connection.execute(
-                    "SELECT payload FROM records WHERE kind = ? AND key = ?",
-                    (kind, key),
+                    "SELECT payload FROM records WHERE kind = ? AND key = ?"
+                    " AND typeof(payload) = 'blob' AND length(payload) <= ?",
+                    (kind, key, max_bytes),
                 ).fetchone(),
                 generation,
             )
-        if row is None or len(row[0]) > max_bytes:
-            return None
-        try:
-            decoded = json.loads(row[0])
-        except (ValueError, RecursionError):
-            return None
-        return decoded if isinstance(decoded, dict) else None
+        return None if row is None else row[0]
 
     def put(
         self,
         kind: RecordKind,
         key: str,
-        payload: Mapping[str, Any],
+        payload: bytes,
         *,
         generation: str,
     ) -> bool:
         """Store ``payload`` for ``(kind, key)``; False when it was not stored."""
-        data = json.dumps(payload, separators=(",", ":")).encode()
+        if not isinstance(payload, bytes):
+            raise TypeError("source record payload must be bytes")
         with self._lock:
             stored, _result = self._run(
                 lambda connection: connection.execute(
                     "INSERT OR REPLACE INTO records VALUES (?, ?, ?, ?)",
-                    (kind, key, generation, data),
+                    (kind, key, generation, payload),
                 ),
                 generation,
             )

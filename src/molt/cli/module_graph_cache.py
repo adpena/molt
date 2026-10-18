@@ -10,6 +10,7 @@ from molt.compiler_analysis.python_binding_facts import (
 
 import functools
 import hashlib
+import json
 import os
 import sys
 from dataclasses import asdict, dataclass, field
@@ -627,7 +628,10 @@ def _stdlib_intrinsic_source_facts(
         stored = store.put(
             "intrinsic-facts",
             record_key,
-            {"identity": identity, "facts": _encode_intrinsic_source_facts(facts)},
+            json.dumps(
+                {"identity": identity, "facts": _encode_intrinsic_source_facts(facts)},
+                separators=(",", ":"),
+            ).encode(),
             generation=_frontend_semantic_tooling_fingerprint(),
         )
         failure = None if stored else f"{store.path} is unavailable"
@@ -826,28 +830,41 @@ def _import_scan_cache_key(
     return _resolved_module_cache_key(os.fspath(path), *key_parts)
 
 
+def _decode_source_record_json(payload: bytes | None) -> Mapping[str, Any] | None:
+    """Admit only JSON objects at the import/facts cache boundary."""
+    if payload is None:
+        return None
+    try:
+        decoded = json.loads(payload)
+    except (ValueError, RecursionError):
+        return None
+    return decoded if isinstance(decoded, Mapping) else None
+
+
 def _read_intrinsic_facts_payload(
     project_root: Path, path: Path, record_key: str
 ) -> Mapping[str, Any] | None:
     """The stored intrinsic facts for ``record_key``; its reader qualifies them."""
-    return _source_records(project_root, path).get(
+    payload = _source_records(project_root, path).get(
         "intrinsic-facts",
         record_key,
         generation=_frontend_semantic_tooling_fingerprint(),
         max_bytes=SOURCE_ANALYSIS_CACHE_MAX_BYTES,
     )
+    return _decode_source_record_json(payload)
 
 
 def _read_import_scan_payload(
     project_root: Path, path: Path, record_key: str
 ) -> Mapping[str, Any] | None:
     """The stored import-scan payload for ``record_key``; its reader qualifies it."""
-    return _source_records(project_root, path).get(
+    payload = _source_records(project_root, path).get(
         "import-scan",
         record_key,
         generation=_frontend_semantic_tooling_fingerprint(),
         max_bytes=SOURCE_ANALYSIS_CACHE_MAX_BYTES,
     )
+    return _decode_source_record_json(payload)
 
 
 def _encode_source_path(path: str | _StaticSourcePath) -> Any:
@@ -1381,6 +1398,6 @@ def _write_persisted_import_scan(
     _source_records(project_root, path).put(
         "import-scan",
         record_key,
-        payload,
+        json.dumps(payload, separators=(",", ":")).encode(),
         generation=_frontend_semantic_tooling_fingerprint(),
     )
