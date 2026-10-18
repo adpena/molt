@@ -19,8 +19,11 @@ Routing reviewed: 2026-10-06.
 
 ## Canonical paths (binding)
 
-The primary development host is macOS (from 2026-10-06). A Windows host stays
-available for platform testing.
+The primary development host is macOS (from 2026-10-06). The Windows x64
+development and proof host is `bat00`, reached over Tailscale through its
+configured SSH route. Dispatch independent development work and Windows
+qualification there with exact source, toolchain and target custody while
+other host lanes proceed.
 
 Both hosts use the same checkout-family layout. `src/molt/custody_layout.py` is
 the one rule: a checkout at `<root>/molt-src` and every worktree at
@@ -31,7 +34,7 @@ artifact root, and `scratch_root`, `scratch_dir` and `control_state_dir` give
 scratch, which never lands in a checkout. The structural audit rejects a new
 `<root>/tmp` derivation or direct `MOLT_EXT_ROOT` read.
 
-| purpose | macOS (primary) | Windows (test host) |
+| purpose | macOS (primary) | Windows (development and proof host) |
 |---|---|---|
 | custody root | `~/Molt` (internal NVMe) | `C:\Molt` (internal NVMe) |
 | checkout, git work, landings | `~/Molt/molt-src` (`~/Projects/molt` links to it) | `C:\Molt\molt-src` |
