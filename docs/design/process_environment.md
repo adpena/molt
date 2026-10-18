@@ -1,12 +1,12 @@
 # Process environment authority
 
-Status: design, 2026-10-18; migration not started. Owner: integrator
+Status: steps 1-2 implemented, 2026-10-18; steps 3-6 pending. Owner: integrator
 (coordination task `claude-winenv-process-environment`). Ledger: HF-355.
 
 ## Problem
 
-Molt models child-process environments in at least 35 places, and each place
-applies the Windows name rule its own way:
+Before this migration, Molt modeled child-process environments in at least 35
+places, and each place applied the Windows name rule its own way:
 
 - `_CargoEnvironment` and `CargoEnvironment` (`cli/runtime_cargo_plan.py`) fold
   names with `str.upper()` under a `case_insensitive` flag.
@@ -58,6 +58,9 @@ names.
   Lookup, `in`, `updated(values)` and `without(names)` all apply the rule.
   Iteration yields the stored spellings. `child_block()` returns the exact
   `dict` a spawn passes, in the rule's order.
+- Equality requires the same `NameRule` and compares canonical names and values,
+  independent of stored spelling or insertion order. A plain mapping has no
+  rule and is not an equal process environment.
 - `ProcessEnvironmentBuilder`: the one mutable form, for staged construction.
   It replaces `_CargoEnvironment`.
 - Spawn boundary: `molt.process_guard` spawn helpers take a

@@ -11,6 +11,7 @@ import sys
 
 import pytest
 
+from molt.process_environment import NameRule, ProcessEnvironment
 from tools.proof_queue_pkg import (
     command_admission,
     command_identity,
@@ -21,6 +22,7 @@ from tools.proof_queue_pkg import (
 )
 from tests.executable_test_support import custody_spelling
 from tests.process_guard_common import install_module_view
+from tests.rustc_test_support import rustc_target_metadata_output
 
 
 # An explicit selector (CLANG_PATH, LLVM_CONFIG_PATH, RUSTFMT, RUSTDOC) passes
@@ -46,6 +48,103 @@ def _outputs(command: list[str]) -> cargo_output_environment.CargoOutputEnvironm
     return cargo_output_environment.CargoOutputEnvironment.for_invocation(
         command_admission.parse_cargo_invocation(command)
     )
+
+
+@pytest.mark.parametrize("rule", list(NameRule))
+def test_cargo_flag_capture_preserves_rules_and_serializes_cargo_names(
+    tmp_path, monkeypatch, rule
+):
+    target = "x86_64-unknown-linux-gnu"
+    rustc = _tool(tmp_path, "rustc")
+    configuration = tmp_path / ".cargo"
+    configuration.mkdir()
+    (configuration / "config.toml").write_text(
+        '[env]\nRUSTFLAGS="-C opt-level=2"\n', encoding="utf-8"
+    )
+
+    def probe(command, **_kwargs):
+        stdout, stderr = rustc_target_metadata_output(tmp_path, target=target)
+        return subprocess.CompletedProcess(command, 0, stdout, stderr)
+
+    monkeypatch.setattr(toolchain_capture, "_run_rust_link_probe", probe)
+    cache = {}
+    other = NameRule.EXACT if rule is NameRule.WINDOWS else NameRule.WINDOWS
+    captured = {}
+    for selected_rule in (other, rule):
+        context, _env = toolchain_capture._cargo_flag_context(
+            command=("cargo", "rustc", "--target", target),
+            cwd=tmp_path,
+            env=ProcessEnvironment(
+                {"rustflags": "-C opt-level=1", "CARGO_HOME": str(tmp_path / "home")},
+                rule=selected_rule,
+            ),
+            target=target,
+            host_unit=False,
+            rustc=rustc,
+            probes=[],
+            capture_inputs=cache,
+        )
+        captured[selected_rule] = context
+        assert _env["rustflags"] == "-C opt-level=1"
+        if selected_rule is NameRule.EXACT:
+            assert _env["RUSTFLAGS"] == "-C opt-level=2"
+        else:
+            assert "RUSTFLAGS" not in _env
+    assert captured[NameRule.EXACT]["environment"] == {}
+    assert captured[NameRule.EXACT]["selected_flags"] == ["-C", "opt-level=2"]
+    assert captured[NameRule.WINDOWS]["environment"] == {"RUSTFLAGS": "-C opt-level=1"}
+    assert captured[NameRule.WINDOWS]["selected_flags"] == ["-C", "opt-level=1"]
+
+
+@pytest.mark.parametrize("rule", list(NameRule))
+def test_cargo_output_binding_obeys_the_caller_name_rule(tmp_path, rule):
+    outputs = _outputs(["cargo", "build"])
+    target = tmp_path.resolve()
+    env = ProcessEnvironment(
+        {"Cargo_Target_Dir": "/old", "Path": "tools", "PATH": "other"}, rule=rule
+    )
+    caller = outputs.caller_environment(env)
+    bound = outputs.bind(env, target=target)
+    if rule is NameRule.WINDOWS:
+        assert caller == {"Path": "other"}
+        assert bound == {
+            "Path": "other",
+            "CARGO_TARGET_DIR": str(target),
+            "CARGO_BUILD_BUILD_DIR": str(target),
+            "MOLT_CARGO_BUILD_DIR_BASE": str(target),
+        }
+    else:
+        assert caller == {"Cargo_Target_Dir": "/old", "Path": "tools", "PATH": "other"}
+        assert bound == {
+            **caller,
+            "CARGO_TARGET_DIR": str(target),
+            "CARGO_BUILD_BUILD_DIR": str(target),
+            "MOLT_CARGO_BUILD_DIR_BASE": str(target),
+        }
+    outputs.validate(ProcessEnvironment(bound, rule=rule), target=target)
+    assert env["Cargo_Target_Dir"] == "/old"
+
+
+@pytest.mark.parametrize("rule", list(NameRule))
+def test_cargo_output_validation_uses_consumer_spellings(tmp_path, rule):
+    outputs = _outputs(["cargo", "build"])
+    env = ProcessEnvironment(
+        {
+            "Cargo_Target_Dir": str(tmp_path),
+            "CARGO_BUILD_BUILD_DIR": str(tmp_path),
+            "MOLT_CARGO_BUILD_DIR_BASE": str(tmp_path),
+        },
+        rule=rule,
+    )
+    if rule is NameRule.WINDOWS:
+        outputs.validate(env, target=tmp_path)
+    else:
+        with pytest.raises(ValueError, match="differs from its leased generation"):
+            outputs.validate(env, target=tmp_path)
+    with pytest.raises(ValueError, match="differs from its leased generation"):
+        outputs.validate(
+            env.updated({"CARGO_BUILD_BUILD_DIR": "/wrong"}), target=tmp_path
+        )
 
 
 def test_explicit_bindgen_driver_wins_without_discovery(tmp_path, monkeypatch):

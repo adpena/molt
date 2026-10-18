@@ -12,7 +12,7 @@ import shlex
 import sys
 import tempfile
 import tomllib
-from collections.abc import Generator, Iterator, MutableMapping
+from collections.abc import Generator
 from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass, field, replace
 from enum import Enum
@@ -21,6 +21,11 @@ from types import MappingProxyType
 from typing import Callable, Mapping, Sequence, cast
 
 from molt import process_guard
+from molt.process_environment import (
+    NameRule,
+    ProcessEnvironment,
+    ProcessEnvironmentBuilder,
+)
 from molt.cli import cargo_command as cargo_argv
 from molt.cargo_execution_policy import validate_cargo_native_dependency_environment
 from molt.cli.cargo_target_cfg import (
@@ -67,87 +72,6 @@ from molt.toolchain_identity import (
     stable_executable_probe,
     verify_stable_regular_file_identity,
 )
-
-
-def _environment_rule(values: Mapping[str, str], case_insensitive: bool | None) -> bool:
-    """Name rule for a copy: explicit, inherited from a Cargo map, or the host's."""
-    if case_insensitive is not None:
-        return case_insensitive
-    if isinstance(values, (_CargoEnvironment, CargoEnvironment)):
-        return values.case_insensitive
-    return os.name == "nt"
-
-
-def _environment_key(name: str, *, case_insensitive: bool) -> str:
-    return name.upper() if case_insensitive else name
-
-
-class _CargoEnvironment(MutableMapping[str, str]):
-    """One platform-correct environment map, including Windows key overwrite."""
-
-    def __init__(
-        self, values: Mapping[str, str], *, case_insensitive: bool | None = None
-    ) -> None:
-        self.case_insensitive = _environment_rule(values, case_insensitive)
-        self._values: dict[str, str] = {}
-        self.update(values)
-
-    def canonical_key(self, name: str) -> str:
-        return _environment_key(name, case_insensitive=self.case_insensitive)
-
-    def __getitem__(self, name: str) -> str:
-        return self._values[self.canonical_key(name)]
-
-    def __setitem__(self, name: str, value: str) -> None:
-        self._values[self.canonical_key(name)] = value
-
-    def __delitem__(self, name: str) -> None:
-        del self._values[self.canonical_key(name)]
-
-    def __iter__(self) -> Iterator[str]:
-        return iter(self._values)
-
-    def __len__(self) -> int:
-        return len(self._values)
-
-
-class CargoEnvironment(Mapping[str, str]):
-    """Cargo's immutable process environment under the host's name rule.
-
-    Windows names environment variables without regard to case, and Rust's
-    std::env, so cc-rs, follows it: ``CC_wasm32-wasip1`` selects the value
-    stored as ``CC_WASM32-WASIP1``. A plain dict copy drops that rule, so a
-    plan holds only this type and changes it only through ``updated``.
-    """
-
-    __slots__ = ("_values", "case_insensitive")
-
-    def __init__(
-        self, values: Mapping[str, str], *, case_insensitive: bool | None = None
-    ) -> None:
-        builder = _CargoEnvironment(values, case_insensitive=case_insensitive)
-        self.case_insensitive = builder.case_insensitive
-        self._values = builder._values
-
-    def canonical_key(self, name: str) -> str:
-        return _environment_key(name, case_insensitive=self.case_insensitive)
-
-    def updated(self, values: Mapping[str, str]) -> CargoEnvironment:
-        builder = _CargoEnvironment(self)
-        builder.update(values)
-        return CargoEnvironment(builder)
-
-    def __getitem__(self, name: str) -> str:
-        return self._values[self.canonical_key(name)]
-
-    def __iter__(self) -> Iterator[str]:
-        return iter(self._values)
-
-    def __len__(self) -> int:
-        return len(self._values)
-
-    def __repr__(self) -> str:
-        return f"CargoEnvironment({self._values!r})"
 
 
 @dataclass(frozen=True, slots=True)
@@ -350,7 +274,10 @@ class RuntimeCResourcePlan:
 
 
 def _resolve_c_build_resources(
-    env: _CargoEnvironment, *, target: str, host_target: str | None = None
+    env: ProcessEnvironment | ProcessEnvironmentBuilder,
+    *,
+    target: str,
+    host_target: str | None = None,
 ) -> RuntimeCResourcePlan:
     """Fence C search inputs without changing the child compiler's semantics.
 
@@ -565,7 +492,7 @@ def _resolve_c_build_resources(
     # variable that two spellings select on Windows is projected once.
     selected: set[str] = set()
     for name in runtime_c_flag_environment_names(target, host_target):
-        key = env.canonical_key(name)
+        key = env.rule.key(name)
         if key not in env or key in selected:
             continue
         selected.add(key)
@@ -587,7 +514,7 @@ def _resolve_c_build_resources(
         if name == "SDKROOT" and not value:
             projection[name] = ()
             continue
-        separator = ";" if env.case_insensitive else ":"
+        separator = ";" if env.rule is NameRule.WINDOWS else ":"
         entries = (value,) if name == "SDKROOT" else value.split(separator)
         selected_entries = []
         for index, entry in enumerate(entries):
@@ -975,19 +902,19 @@ def _apply_cargo_environment(
     cli: Mapping[str, object],
     env: Mapping[str, str],
     origins: Mapping[str, Path],
-) -> tuple[_CargoEnvironment, tuple[str, ...], tuple[CargoResourceRoot, ...]]:
+) -> tuple[ProcessEnvironmentBuilder, tuple[str, ...], tuple[CargoResourceRoot, ...]]:
     definitions = _merge(
         _table(configuration.get("env", {}), label="env"),
         _table(cli.get("env", {}), label="CLI env"),
     )
-    result = _CargoEnvironment(env)
+    result = ProcessEnvironmentBuilder(env)
     forced: list[str] = []
     resources: list[CargoResourceRoot] = []
     seen: dict[str, str] = {}
     for name, raw in definitions.items():
         if not name or "=" in name or "\0" in name:
             raise ValueError(f"runtime Cargo environment key is invalid: {name!r}")
-        canonical = result.canonical_key(name)
+        canonical = result.rule.key(name)
         if canonical in seen:
             raise ValueError(
                 f"runtime Cargo environment keys are case-ambiguous: {seen[canonical]!r} and {name!r}"
@@ -1138,7 +1065,7 @@ def runtime_c_environment_name(name: str) -> bool:
 
 def _select_host_c_tools(
     tools: dict[str, Path],
-    environment: _CargoEnvironment,
+    environment: ProcessEnvironmentBuilder,
     *,
     root: Path,
     target: str,
@@ -1331,7 +1258,7 @@ def _require_cargo_build_directory(
 class RuntimeCargoPlan:
     project_root: Path
     command: tuple[str, ...]
-    environment: CargoEnvironment
+    environment: ProcessEnvironment
     target: str
     host_target: str
     rustc: Path
@@ -1357,8 +1284,10 @@ class RuntimeCargoPlan:
     def __post_init__(self) -> None:
         # A plain mapping looks the same on POSIX and loses cc-rs's
         # target-suffixed selectors only on Windows.
-        if not isinstance(self.environment, CargoEnvironment):
-            raise TypeError("runtime Cargo plan environment must be a CargoEnvironment")
+        if not isinstance(self.environment, ProcessEnvironment):
+            raise TypeError(
+                "runtime Cargo plan environment must be a ProcessEnvironment"
+            )
 
     @property
     def target_directory(self) -> Path | None:
@@ -1685,7 +1614,7 @@ class RuntimeCargoPlan:
                     f"runtime Cargo {role} execution differs from selected tool"
                 )
         c_resources = _resolve_c_build_resources(
-            _CargoEnvironment(self.environment),
+            self.environment,
             target=self.target,
             host_target=self.host_target,
         )
@@ -1835,7 +1764,8 @@ class RuntimeCargoPlan:
             prefix + control for prefix in selected_prefixes for control in controls
         }
         result: dict[str, str] = {}
-        for name, value in self.environment.items():
+        for spelling, value in self.environment.items():
+            name = self.environment.rule.key(spelling)
             # Cargo constructs a key for each profile field. A legal ancestor
             # control can also match a longer profile name (release-build-override
             # or release-debug); longest-prefix selection must not hide it.
@@ -1980,7 +1910,7 @@ def capture_cargo_configuration_inputs(
         isinstance(item, str) and item for item in cargo_command
     ):
         raise ValueError("runtime Cargo command is empty or malformed")
-    environment = _CargoEnvironment(env)
+    environment = ProcessEnvironmentBuilder(env)
     paths = (
         cargo_configuration_paths(root, environment)
         if captured_paths is None
@@ -2098,9 +2028,9 @@ def resolve_runtime_cargo_plan(
         project_root, env=env, cargo_command=cargo_command
     )
     if environment_transform is not None:
-        environment = _CargoEnvironment(
+        environment = ProcessEnvironmentBuilder(
             environment_transform(MappingProxyType(environment)),
-            case_insensitive=environment.case_insensitive,
+            rule=environment.rule,
         )
     rustc_selector = cargo_selected_value(
         configuration,
@@ -2214,7 +2144,7 @@ def resolve_runtime_cargo_plan(
     # rustc's answers describe the compiler, not the Cargo settings this plan
     # adds below (linkers, C tools, encoded flags); every query sees the
     # environment as it stands here, so equal queries share one answer.
-    probe_environment = MappingProxyType(dict(environment))
+    probe_environment = ProcessEnvironment(environment)
 
     metadata_answers: dict[
         tuple[str | None, tuple[str, ...], bool], RustcTargetMetadata
@@ -2521,7 +2451,7 @@ def resolve_runtime_cargo_plan(
     plan = RuntimeCargoPlan(
         root,
         command,
-        CargoEnvironment(environment),
+        ProcessEnvironment(environment),
         target,
         host_target,
         rustc,

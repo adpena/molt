@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from molt.process_environment import ProcessEnvironment, ProcessEnvironmentBuilder
+
 import hashlib
 import json
 import os
@@ -33,9 +35,7 @@ from molt.cli.cargo_resource_custody import (
     CargoResourceRoot,
 )
 from molt.cli.runtime_cargo_plan import (
-    CargoEnvironment,
     RuntimeCargoPlan,
-    _CargoEnvironment,
     _cargo_build_directory_base,
     _resolve_rust_flag_resources,
     _resolve_c_build_resources,
@@ -623,11 +623,11 @@ def runtime_cargo_plan(
     """Live plan with immutable source input and pytest-owned generated tools."""
     root = project_root.resolve()
     fixtures = _fixture_path(fixture_root)
-    environment = _CargoEnvironment(env)
+    environment = ProcessEnvironmentBuilder(env)
     environment["CARGO_HOME"] = str(fixtures / "test-cargo-home")
     if environment_transform is not None:
-        environment = _CargoEnvironment(
-            environment_transform(MappingProxyType(environment))
+        environment = ProcessEnvironmentBuilder(
+            environment_transform(MappingProxyType(environment)), rule=environment.rule
         )
     host = "x86_64-unknown-linux-gnu"
     executable = Path(sys.executable)
@@ -744,7 +744,7 @@ def runtime_cargo_plan(
     return RuntimeCargoPlan(
         root,
         command,
-        CargoEnvironment(environment),
+        ProcessEnvironment(environment),
         requested_target or host,
         host,
         executable,
