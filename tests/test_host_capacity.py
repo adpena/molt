@@ -281,9 +281,11 @@ def test_actual_darwin_vm_pages_match_vm_stat() -> None:
 
 
 @pytest.mark.skipif(sys.platform != "darwin", reason="Darwin Mach VM statistics")
-def test_darwin_memory_bytes_reports_live_available_memory() -> None:
+def test_darwin_memory_bytes_reports_live_available_memory(monkeypatch) -> None:
     """Available memory is vm_stat's free, inactive, speculative and purgeable
     pages, never the total alone (dx once read a sysctl macOS lacks)."""
+    # The machine's memory, not the slice the enclosing guard exports.
+    monkeypatch.delenv(host_capacity.MEMORY_SLICE_ENV, raising=False)
     text = str(
         check_output_guarded_test_process(
             ["vm_stat"], env={**os.environ, "LC_ALL": "C"}, timeout=30.0
@@ -303,3 +305,17 @@ def test_darwin_memory_bytes_reports_live_available_memory() -> None:
     assert total is not None and available is not None
     # Pages move between samples on a busy host; a wrong source is far off.
     assert abs(available - expected) <= total // 50, (available, expected, total)
+
+
+def test_a_parent_memory_slice_bounds_both_readings(monkeypatch) -> None:
+    gib = 1024**3
+    monkeypatch.setattr(
+        host_capacity, "_probe_memory_bytes", lambda: (64 * gib, 40 * gib)
+    )
+    monkeypatch.setenv(host_capacity.MEMORY_SLICE_ENV, str(8 * gib))
+    assert host_capacity.memory_bytes() == (8 * gib, 8 * gib)
+    monkeypatch.setenv(host_capacity.MEMORY_SLICE_ENV, str(128 * gib))
+    assert host_capacity.memory_bytes() == (64 * gib, 40 * gib)
+    monkeypatch.setenv(host_capacity.MEMORY_SLICE_ENV, "eight")
+    with pytest.raises(ValueError, match="must be a positive integer"):
+        host_capacity.memory_bytes()

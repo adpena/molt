@@ -2843,6 +2843,15 @@ owner = "src/molt/default_paths.py"
 summary = "Root of Molt's provisioned home for the compiler toolchain, the bin directory, and the default build root; a relative path resolves against the current directory, unset derives home under the Molt cache (MOLT_CACHE, else MOLT_EXT_ROOT/.molt_cache, else the platform cache directory), molt-embed also looks for MOLT_HOME/bin/molt, and CI workflows and the packaging bootstrap set it to a private root."
 
 [[variable]]
+name = "MOLT_HOST_MEMORY_SLICE_BYTES"
+audience = "internal"
+kind = "int"
+output_neutral = true
+default = ""
+owner = "src/molt/host_capacity.py"
+summary = "The memory, in bytes, a parent lets this process tree use: tools/memory_guard.py exports the total tree RSS cap it enforces (a nested guard only narrows it), and molt.host_capacity.memory_bytes() bounds total and available memory by it, so pytest-xdist workers, Cargo jobs and frontend workers inside a guarded run size against the enforced cap."
+
+[[variable]]
 name = "MOLT_HOST_ROOT"
 audience = "internal"
 kind = "path"
