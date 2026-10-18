@@ -18,7 +18,7 @@ Landing checks execute the generator and authority inputs captured from the exac
 | CI selection families | 5 | 12 |
 | Hashed executable authority inputs | 1 | 367 |
 | Local path rules | 35 | 55 |
-| Unique local commands | 73 | 89 |
+| Unique local commands | 73 | 87 |
 | Handwritten Python classifier rule tables | 5 | 0 |
 
 ## CI families
@@ -389,7 +389,7 @@ The wrapper conflict was reconfirmed by native CI run `30211145633` job `8981749
 | `python-effect-capability-authority` | 6 | 2 |
 | `python-identity-catalog-authority` | 7 | 1 |
 | `builtin-binding-guard-authority` | 9 | 2 |
-| `native-callable-abi` | 19 | 4 |
+| `native-callable-abi` | 19 | 2 |
 | `stringprep-leaf` | 2 | 1 |
 | `cpython-abi-authorities` | 2 | 1 |
 | `compression-stream-state` | 1 | 1 |
