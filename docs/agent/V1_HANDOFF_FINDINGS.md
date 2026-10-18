@@ -105,7 +105,13 @@ Fixed-width repeats retain bounded VM workspace, and literal assembly no longer
 copies the growing prefix. General backtracking/restart complexity, versioned
 Unicode and atomic/possessive semantics remain security, correctness and
 performance exit obligations under HF-329. The design records implementation
-separately from unqualified release capabilities.
+separately from unqualified release capabilities. Regex semantic carriers now
+share the canonical `re_parity.py` executable instead of paying for 27 separate
+native/WASM program builds. The consolidation preserves all prior scenario inputs,
+200 assertions and 447 CPython stdout lines; the owning storage/codec programs
+remain separate. This reduces the owning cohort from 58 to six product builds.
+Compiled qualification and actual phase costs remain required; reference agreement
+alone does not qualify the merged program or close HF-329.
 
 The shared text-storage migration removes regex's same-layer dependency on the
 stdlib text crate and the foreign WTF-8 view that cannot represent adjacent
