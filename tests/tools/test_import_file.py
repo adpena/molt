@@ -753,11 +753,13 @@ def test_neutral_authorities_declare_themselves() -> None:
         and _declares_neutral_authority(path)
     }
     # Each is selected by exact file before any ``molt`` import: package
-    # admission by name, the process guard (with its sibling) per checkout.
+    # admission by name, and the process guard and the Cargo policy, each with
+    # its sibling, per checkout.
     assert declared == {
         "package_import_custody.py",
         "process_guard.py",
         "cargo_execution_policy.py",
+        "process_environment.py",
     }
     assert importlib.util.spec_from_file_location(
         "_molt_package_import_custody", molt_root / "package_import_custody.py"

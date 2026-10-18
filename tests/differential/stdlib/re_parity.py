@@ -1622,6 +1622,263 @@ def test_verbose_tokens_and_scoped_lexing():
             print("verbose-lexing", kind, label, observed)
 
 
+def test_raw_codepoint_regex_contract():
+    """CPython raw code points stay distinct through patterns and consumers.
+
+    These are actual surrogate characters in the Python string values,
+    not regex Unicode-escape syntax. CPython v3.12.15 Modules/_sre/sre.c
+    getstring/state_init/STATE_OFFSET and PEP 393 own the index contract.
+    """
+    high = "\ud83d"
+    low = "\ude00"
+    pair = high + low
+    scalar = "\U0001f600"
+    replacement = "\ufffd"
+    assert len(pair) == 2
+    assert len(scalar) == 1
+    assert high != replacement
+    assert pair != scalar
+
+    def units(value):
+        if isinstance(value, bytes):
+            return tuple(value)
+        return tuple(ord(character) for character in value)
+
+    def snapshot(match):
+        if match is None:
+            return None
+        spans = tuple(match.span(group) for group in range(match.re.groups + 1))
+        return capture(match), spans, units(match.group()), match.pos, match.endpos
+
+    surrogate_range = "[" + "\ud800" + "-" + "\udfff" + "]"
+    cases = (
+        ("high-literal", high, high),
+        ("high-is-not-replacement", high, replacement),
+        ("replacement-is-not-high", replacement, high),
+        ("low-literal", low, low),
+        ("pair-literal", pair, pair),
+        ("pair-is-not-scalar", pair, scalar),
+        ("scalar-is-not-pair", scalar, pair),
+        ("scalar-literal", scalar, scalar),
+        ("class-high-is-not-replacement", "[" + high + "]", replacement),
+        ("class-high-search-offset", "[" + high + "]", replacement + high),
+        ("class-surrogate-range", surrogate_range + "+", high + low),
+        ("class-cross-surrogate-boundary", "[\ud7ff-\ud801]", "\ud800"),
+        ("class-boundary-excludes-replacement", "[\ud7ff-\ud801]", replacement),
+        ("negated-high-class", "[^" + high + "]+", high + low + replacement),
+        ("union-excludes-other-surrogate", "[" + high + replacement + "]", low),
+        ("dot-high", ".", high),
+        ("two-dots-pair", "..", pair),
+        ("two-dots-scalar", "..", scalar),
+        ("captured-pair-units", "(.)(.)", pair),
+        ("raw-backreference", "(" + high + r")\1", high + high),
+        ("raw-backreference-distinct", "(" + high + r")\1", high + replacement),
+        ("pair-backreference", "(" + pair + r")\1", pair + pair),
+        ("unit-lookbehind", "(?<=" + high + ")" + low, pair),
+        ("pair-lookbehind", "(?<=" + pair + ")x", pair + "x"),
+        ("pair-lookbehind-not-scalar", "(?<=" + pair + ")x", scalar + "x"),
+        ("scalar-lookbehind", "(?<=" + scalar + ")x", scalar + "x"),
+        ("scalar-lookbehind-not-pair", "(?<=" + scalar + ")x", pair + "x"),
+        ("captured-raw-repeat", "(" + high + "){1,2}", high + high),
+        ("captured-raw-possessive", "(" + high + ")++x", high + high + "x"),
+        (
+            "ordinary-raw-priority-control",
+            "(?:" + high + "|" + pair + ")" + low,
+            pair + low,
+        ),
+        ("atomic-raw-priority", "(?>" + high + "|" + pair + ")" + low, pair + low),
+        ("possessive-raw-minimum", "(?:" + high + "|" + pair + "){2}+", pair + pair),
+        ("atomic-raw-minimum", "(?>(?:" + high + "|" + pair + "){2})", pair + pair),
+        ("surrogate-word-category", r"\w", high),
+        ("surrogate-nonword-category", r"\W", high),
+        ("surrogate-digit-category", r"\d", low),
+        ("surrogate-nondigit-category", r"\D", low),
+        ("surrogate-space-category", r"\s", high),
+        ("surrogate-nonspace-category", r"\S", high),
+    )
+    for label, expression, subject in cases:
+        compiled = re.compile(expression)
+        print(
+            (
+                "codepoint-direct",
+                label,
+                units(expression),
+                units(subject),
+                units(compiled.pattern),
+                ("match", snapshot(compiled.match(subject))),
+                ("fullmatch", snapshot(compiled.fullmatch(subject))),
+                ("search", snapshot(compiled.search(subject))),
+            )
+        )
+
+    casefold_cases = (
+        ("literal-high-remains-distinct", high, low + replacement + high),
+        (
+            "raw-range-remains-distinct",
+            surrogate_range + "+",
+            replacement + high + low + replacement,
+        ),
+        (
+            "backreference-keeps-raw-equality",
+            "(" + high + r")\1",
+            high + low + high + high,
+        ),
+        ("ascii-casefold-positive-control", "A" + high, "a" + high),
+    )
+    for flags in (re.IGNORECASE, re.IGNORECASE | re.ASCII):
+        for label, expression, subject in casefold_cases:
+            compiled = re.compile(expression, flags)
+            print(
+                (
+                    "codepoint-casefold",
+                    label,
+                    int(flags),
+                    units(expression),
+                    units(subject),
+                    ("match", snapshot(compiled.match(subject))),
+                    ("fullmatch", snapshot(compiled.fullmatch(subject))),
+                    ("search", snapshot(compiled.search(subject))),
+                )
+            )
+
+    # Every bound counts Python code points; the pair occupies two positions,
+    # and the supplementary scalar occupies one, independently of byte width.
+    subject = high + low + scalar + replacement + "A"
+    compiled = re.compile("(?P<empty>)|(?P<unit>.)")
+    for pos, endpos in ((0, 5), (1, 3), (2, 3), (3, 5), (4, 2), (9, 9)):
+        iterator = compiled.finditer(subject, pos, endpos)
+        print(
+            (
+                "codepoint-window",
+                units(subject),
+                pos,
+                endpos,
+                snapshot(compiled.match(subject, pos, endpos)),
+                snapshot(compiled.fullmatch(subject, pos, endpos)),
+                snapshot(compiled.search(subject, pos, endpos)),
+                [snapshot(match) for match in iterator],
+                list(iterator),
+                compiled.findall(subject, pos, endpos),
+            )
+        )
+
+    consumers = (
+        ("every-unit", "(?P<unit>.)", high + low + scalar + replacement),
+        ("only-high", "(?P<unit>" + high + ")", replacement + high + low),
+        ("only-pair", "(?P<unit>" + pair + ")", pair + scalar + pair),
+        ("only-scalar", "(?P<unit>" + scalar + ")", pair + scalar + pair),
+        ("nullable-high", "(?P<unit>" + high + "*?)", high + high),
+        ("unmatched-high-group", "(?P<unit>" + high + ")?" + low, low + pair),
+    )
+    for label, expression, subject in consumers:
+        compiled = re.compile(expression)
+        template = high + r"<\g<unit>>" + low
+        iterator = compiled.finditer(subject)
+        found = []
+        for match in iterator:
+            found.append(
+                (
+                    snapshot(match),
+                    match[0],
+                    match["unit"],
+                    match.group(0, "unit"),
+                    match.groups(scalar),
+                    match.groupdict(scalar),
+                    match.expand(template),
+                )
+            )
+        calls = []
+
+        def replace(match):
+            before = snapshot(match)
+            nested = compiled.search(subject)
+            calls.append((before, snapshot(nested), snapshot(match) == before))
+            return match.group() + high
+
+        print(
+            (
+                "codepoint-consumers",
+                label,
+                units(expression),
+                units(subject),
+                found,
+                list(iterator),
+                compiled.findall(subject),
+                compiled.split(subject),
+                compiled.sub(template, subject),
+                compiled.subn(template, subject),
+                compiled.subn(replace, subject, count=2),
+                calls,
+            )
+        )
+
+    # Byte strings preserve bytes, including WTF-8-shaped sequences. They do
+    # not normalize or combine those sequences into text code points.
+    byte_high = b"\xed\xa0\xbd"
+    byte_pair = byte_high + b"\xed\xb8\x80"
+    byte_scalar = b"\xf0\x9f\x98\x80"
+    byte_replacement = b"\xef\xbf\xbd"
+    for label, expression, subject in (
+        ("literal-surrogate-bytes", byte_high, byte_high),
+        ("surrogate-bytes-not-replacement", byte_high, byte_replacement),
+        ("pair-bytes-not-scalar", byte_pair, byte_scalar),
+        ("one-dot-is-one-byte", b"(.)", byte_high),
+        ("three-dots-surrogate-bytes", b"(...)", byte_high),
+        ("scalar-is-four-bytes", b"(....)", byte_scalar),
+        ("byte-nonword-category", rb"\W+", byte_high),
+    ):
+        compiled = re.compile(expression)
+        print(
+            (
+                "codepoint-byte-control",
+                label,
+                units(expression),
+                units(subject),
+                snapshot(compiled.match(subject)),
+                snapshot(compiled.fullmatch(subject)),
+                [snapshot(match) for match in compiled.finditer(subject)],
+            )
+        )
+
+    for value in (
+        high,
+        low,
+        pair,
+        scalar,
+        replacement,
+        high + "." + low + "[x]",
+        byte_high + b".",
+    ):
+        escaped = re.escape(value)
+        print(
+            (
+                "codepoint-escape",
+                isinstance(value, bytes),
+                units(value),
+                units(escaped),
+                bool(re.fullmatch(escaped, value)),
+            )
+        )
+    for expression, subject in ((high, byte_high), (byte_high, high)):
+        try:
+            re.search(expression, subject)
+        except TypeError as exc:
+            print(
+                (
+                    "codepoint-kind-mismatch",
+                    units(expression),
+                    units(subject),
+                    type(exc).__name__,
+                    str(exc),
+                )
+            )
+        else:
+            raise AssertionError("text and byte regex subjects were mixed")
+
+    iteration_subject = "\0A\u00a2\u20ac" + pair + replacement + scalar
+    print(("codepoint-iteration", units(iteration_subject), units(reversed(iteration_subject))))
+
+
 def main():
     test_internal_module_imports()
     test_match_search_fullmatch()
@@ -1643,6 +1900,7 @@ def main():
     test_continuation_and_capture_restoration()
     test_atomic_groups_and_possessive_repeats()
     test_verbose_tokens_and_scoped_lexing()
+    test_raw_codepoint_regex_contract()
     test_alternation()
     test_backreferences()
     test_assertions_and_named_references()

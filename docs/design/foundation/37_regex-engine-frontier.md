@@ -96,6 +96,51 @@ backtracking elsewhere in the pattern, or shrink the peak Vec capacity needed
 by such a search. The shared inline scope stores the largest possessive state;
 assertion-frame bytes and throughput remain part of target performance acceptance.
 
+## Python code-point storage
+
+Pattern parsing, literal and class operands, fixed-width analysis, direct
+matching and scanner indexes use Python code points (`u32`), including lone and
+adjacent surrogates. Runtime-core's `text_storage::code_points` decodes admitted
+surrogatepass storage once; no Rust `String`, lossy UTF-8 conversion or surrogate
+pair normalization sits on that boundary. A supplementary scalar occupies one
+position; an adjacent high/low surrogate pair occupies two. Byte patterns map
+raw bytes directly to units and byte subjects remain borrowed. Effective flags
+and the compiled pattern's text/byte identity still determine semantics.
+
+The parser transfers owned literal/class buffers to the typed program. It no
+longer serializes units as strings for the compiler to decode and copy again.
+Single-unit predicates retain their allocation-free inline operand, including
+inside structural repeat plans. Text preparation reserves fallibly from the byte
+upper bound; each prepared unit has the same four-byte size as the former Rust
+`char`. Direct execution prepares once, and a scanner retains one index for its
+lifetime. Split, substitution, expansion and escape preserve the same raw units;
+substitution appends spans without allocating temporary segment strings.
+Validated group identifiers, exception messages and the ASCII mode protocol
+retain their strict UTF-8 boundaries. The two replaced owned-String FFI bridges
+and their generated test stubs are deleted.
+
+This follows CPython's code-point length and offset contract in
+[`sre.c` getstring/state_init](https://github.com/python/cpython/blob/v3.12.15/Modules/_sre/sre.c)
+and [PEP 393](https://peps.python.org/pep-0393/), while reusing Molt's existing
+storage owner rather than copying CPython's physical Unicode object layout.
+Representation correctness does not qualify Rust-derived category/case tables,
+locale behavior, parser escape admission or all target/version/profile cells.
+The existing CPython differential carrier owns the raw-unit identity, offsets,
+scanning and replacement regressions; the release board owns qualification.
+
+That carrier also exercises forward and reverse string iteration through a
+generator expression. Both iterator paths use the existing `wtf8_step` storage
+authority and copy at most four source bytes before allocating the returned
+character. Each step examines one code point rather than validating the entire
+remaining prefix or suffix, so traversal has linear decoding work and constant
+auxiliary storage. Raw surrogates remain distinct. CPython
+[`unicodeiter_next`](https://github.com/python/cpython/blob/v3.12.15/Objects/unicodeobject.c)
+and [`reversed_next`](https://github.com/python/cpython/blob/v3.12.15/Objects/enumobject.c)
+own the distinct failure transitions: forward character allocation consumes the
+position, while reverse item failure retires the iterator and retains the error.
+Runtime fault controls exercise those transitions; no frontend or second decoder
+is needed. Target throughput and allocation acceptance remain separate claims.
+
 ## Cost and failure contract
 
 Compilation costs scale with source/program size; numeric repetition bounds are
@@ -113,8 +158,8 @@ undo storage grow with live backtracking history; their allocation failure propa
 `MemoryError` through direct execution, iteration, split and substitution. A depth
 ceiling or allocation refusal must never return no-match. The matcher itself has
 no recursive execution calls. Parser/compiler recursion is a separate admission
-and failure obligation. This is a VM-workspace guarantee: some bridge subject
-copies and split/substitution buffers still allocate infallibly. Full operation
+and failure obligation. This is a VM-workspace guarantee: parser vectors and some split/substitution, group and replacement
+buffers still allocate infallibly. Full operation
 OOM handling remains required. The VM currently has no signal safepoint; adding
 CPython-compatible interruption must release borrowed byte views and scanner locks
 before handlers run, then resume the same execution if a handler returns. It
@@ -167,9 +212,10 @@ development side; emitted programs pay only for their required matching machiner
   Signal delivery, raising/nonraising handlers and scanner reentry are explicit
   acceptance cells. A second engine with an independently drifting parser/flag/capture model is not
   an acceptable shortcut.
-* Replace Rust-scalar/lossy pattern and subject preparation with canonical Python
-  code points from runtime-core text storage, including raw surrogates. Captured
-  slicing already uses that authority; this does not prove matcher/parser storage.
+* Qualify the canonical Python code-point pattern/subject migration across every
+  required target/version/profile cell, including raw-surrogate matching,
+  captured slicing, scanning and replacement consumers. The shared representation
+  alone does not prove those execution cells.
 * Generate version-pinned CPython Unicode category and case data, including special
   IGNORECASE equivalences, ASCII/bytes/locale rules and Python-version changes such
   as empty-subject `\B`. Ambient host Unicode tables cannot define target semantics.

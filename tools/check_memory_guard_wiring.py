@@ -595,11 +595,6 @@ SHELL_WRAPPER_CONTRACTS: tuple[TokenContract, ...] = (
         ),
         "compile-check shell wrapper must enter guarded_exec and run scratch",
     ),
-    TokenContract(
-        "tests/parity/run_parity.sh",
-        ("tools/parity_gate.py", "TMPDIR"),
-        "parity shell wrapper must enter the guarded parity gate",
-    ),
 )
 
 
