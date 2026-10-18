@@ -38,6 +38,7 @@ from molt import c_api_symbols as cli_c_api_symbols
 from molt._wasm_runtime_exports import wasm_static_link_runtime_symbols_for_imports
 from molt.capability_manifest import CapabilityManifest
 from molt.cli import backend_binary as cli_backend_binary
+from molt.cli.backend_generation import is_backend_generation
 from molt.cli import backend_cache_setup as cli_backend_cache_setup
 from molt.cli import backend_compile as cli_backend_compile
 from molt.cli import backend_output_pipeline as cli_backend_output_pipeline
@@ -273,9 +274,9 @@ def _set_stale_mtime(path: Path, *, ns_offset: int = 0) -> None:
     os.utime(path, ns=(stamp, stamp))
 
 
-def _fake_backend_ensure_success(*args: object, **kwargs: object):
+def _fake_backend_ensure_success(backend_bin: Path, *args: object, **kwargs: object):
     del args, kwargs
-    return cli_backend_binary._BackendBinaryEnsureResult(ok=True)
+    return cli_backend_binary._BackendBinaryEnsureResult(ok=True, binary=backend_bin)
 
 
 def _clear_molt_home_caches() -> None:
@@ -21922,7 +21923,9 @@ def _stub_backend_binary_ensure(
             order.append("backend_binary")
         backend_bin.parent.mkdir(parents=True, exist_ok=True)
         backend_bin.write_text("backend", encoding="utf-8")
-        return cli_backend_binary._BackendBinaryEnsureResult(ok=True)
+        return cli_backend_binary._BackendBinaryEnsureResult(
+            ok=True, binary=backend_bin
+        )
 
     monkeypatch.setattr(
         cli_backend_binary,
@@ -25499,7 +25502,10 @@ def test_ensure_backend_binary_uses_native_feature_for_native(
     stub_compiler_admission(monkeypatch)
     write_compiler_source(tmp_path)
     exe_suffix = ".exe" if os.name == "nt" else ""
-    backend_bin = tmp_path / "target" / "dev-fast" / f"molt-backend{exe_suffix}"
+    backend_bin = (
+        tmp_path / "target" / "dev-fast" / f"molt-backend.native_backend{exe_suffix}"
+    )
+    cargo_output = backend_bin.with_name(f"molt-backend{exe_suffix}")
     fingerprint = {"hash": "a" * 64, "rustc": "rustc", "inputs_digest": "b" * 64}
     seen_features: list[tuple[str, ...]] = []
     build_cmds: list[list[str]] = []
@@ -25517,7 +25523,7 @@ def test_ensure_backend_binary_uses_native_feature_for_native(
         cmd = list(plan.command)
         build_cmds.append(list(cmd))
         runtime_fixture_root.native_executable(
-            backend_bin.relative_to(tmp_path).as_posix()
+            cargo_output.relative_to(tmp_path).as_posix()
         )
         return subprocess.CompletedProcess(cmd, 0, "", "")
 
@@ -25566,7 +25572,7 @@ def test_ensure_backend_binary_rebuild_does_not_signal_verified_daemons(
 ) -> None:
     stub_compiler_admission(monkeypatch)
     write_compiler_source(tmp_path)
-    backend_bin = tmp_path / "target" / "dev-fast" / "molt-backend"
+    backend_bin = tmp_path / "target" / "dev-fast" / "molt-backend.native_backend"
     daemon_root = tmp_path / "target" / ".molt_state" / "backend_daemon"
     daemon_root.mkdir(parents=True)
     socket_path = tmp_path / "daemon.sock"
@@ -25696,7 +25702,7 @@ def test_ensure_backend_binary_enables_wasm_feature_for_wasm(
     ]
 
 
-def test_ensure_backend_binary_materializes_admitted_feature_alias_without_rebuild(
+def test_ensure_backend_binary_selects_admitted_cargo_output_without_rebuild(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -25758,7 +25764,7 @@ def test_ensure_backend_binary_materializes_admitted_feature_alias_without_rebui
         lambda cmd, **kwargs: subprocess.CompletedProcess(cmd, 0, b"", b""),
     )
 
-    assert cli_backend_binary._ensure_backend_binary(
+    result = cli_backend_binary._ensure_backend_binary(
         backend_bin,
         cargo_timeout=1.0,
         json_output=True,
@@ -25767,9 +25773,13 @@ def test_ensure_backend_binary_materializes_admitted_feature_alias_without_rebui
         backend_features=("wasm-backend",),
         rust_cpu=RustCpuPolicy.BASELINE,
     )
+    assert result, result.message
 
     assert build_cmds == []
-    assert backend_bin.exists()
+    assert result.binary is not None
+    assert is_backend_generation(backend_bin, result.binary)
+    assert result.binary.read_bytes() == cargo_output.read_bytes()
+    assert not backend_bin.exists()
     assert (
         RUNTIME_FINGERPRINTS._read_runtime_fingerprint(
             cli_backend_binary._backend_fingerprint_path(
@@ -25881,11 +25891,10 @@ def test_build_rust_target_uses_rust_backend_feature_and_skips_daemon(
         cmd = list(plan.command)
         build_cmds.append(list(cmd))
         runtime_fixture_root.native_executable(canonical_backend.name)
-        runtime_fixture_root.native_executable(backend_bin.name)
         return subprocess.CompletedProcess(cmd, 0, "", "")
 
     def fake_run(cmd: list[str], *args: object, **kwargs: object):  # type: ignore[no-untyped-def]
-        if cmd and str(cmd[0]) == str(backend_bin):
+        if cmd and is_backend_generation(backend_bin, Path(cmd[0])):
             output = Path(cmd[cmd.index("--output") + 1])
             if output.name.startswith("molt_backend_probe_"):
                 assert "--target" in cmd and cmd[cmd.index("--target") + 1] == "rust"
@@ -25904,7 +25913,7 @@ def test_build_rust_target_uses_rust_backend_feature_and_skips_daemon(
         cmd: list[str], **kwargs: object
     ) -> subprocess.CompletedProcess[bytes]:
         del kwargs
-        assert cmd[0] == str(backend_bin)
+        assert is_backend_generation(backend_bin, Path(cmd[0]))
         output = Path(cmd[cmd.index("--output") + 1])
         if output.name.startswith("molt_backend_probe_"):
             assert "--target" in cmd and cmd[cmd.index("--target") + 1] == "rust"
@@ -25970,7 +25979,7 @@ def test_build_rust_target_uses_rust_backend_feature_and_skips_daemon(
     assert set(tool_configs[::2]) == {"--config"}
     assert len(backend_cmds) == 1
     cmd = backend_cmds[0]
-    assert cmd[0] == str(backend_bin)
+    assert is_backend_generation(backend_bin, Path(cmd[0]))
     assert "--target" in cmd and cmd[cmd.index("--target") + 1] == "rust"
     assert "--output" in cmd
     assert backend_output.read_text(encoding="utf-8") == "fn main() {}\n"
@@ -26041,11 +26050,10 @@ def test_build_release_rust_target_uses_release_backend_profile_by_default(
         cmd = list(plan.command)
         build_cmds.append(list(cmd))
         runtime_fixture_root.native_executable(canonical_backend.name)
-        runtime_fixture_root.native_executable(backend_bin.name)
         return subprocess.CompletedProcess(cmd, 0, "", "")
 
     def fake_run(cmd: list[str], *args: object, **kwargs: object):  # type: ignore[no-untyped-def]
-        if cmd and str(cmd[0]) == str(backend_bin):
+        if cmd and is_backend_generation(backend_bin, Path(cmd[0])):
             # Backend cache probe: stdin-based call with no --output
             if "--output" not in cmd:
                 return subprocess.CompletedProcess(cmd, 0, b"", b"")
@@ -26059,7 +26067,7 @@ def test_build_release_rust_target_uses_release_backend_profile_by_default(
         cmd: list[str], **kwargs: object
     ) -> subprocess.CompletedProcess[bytes]:
         del kwargs
-        assert cmd[0] == str(backend_bin)
+        assert is_backend_generation(backend_bin, Path(cmd[0]))
         assert "--target" in cmd and cmd[cmd.index("--target") + 1] == "rust"
         assert "--output" in cmd
         output = Path(cmd[cmd.index("--output") + 1])
@@ -34598,8 +34606,12 @@ def _capture_hashseed_cli_builds(
         patch.setattr(
             cli_backend_binary,
             "_ensure_backend_binary",
-            lambda *args, **kwargs: cli_backend_binary._BackendBinaryEnsureResult(
-                ok=True, cache_compiler_fingerprint="same-admitted-compiler"
+            lambda backend_bin, *args, **kwargs: (
+                cli_backend_binary._BackendBinaryEnsureResult(
+                    ok=True,
+                    cache_compiler_fingerprint="same-admitted-compiler",
+                    binary=backend_bin,
+                )
             ),
         )
         stub_compiler_admission(patch)

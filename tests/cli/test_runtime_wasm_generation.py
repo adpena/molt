@@ -778,7 +778,7 @@ class _Clock:
 
 @pytest.fixture
 def store_clock(monkeypatch: pytest.MonkeyPatch) -> _Clock:
-    from molt.cli import runtime_wasm_generation as module
+    from molt.cli import generation_store as module
 
     clock = _Clock(1_000_000.0)
     monkeypatch.setattr(module, "time", clock)

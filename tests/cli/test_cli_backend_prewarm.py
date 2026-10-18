@@ -19,6 +19,7 @@ from typing import Any
 import pytest
 
 from molt.backend_environment import CodegenSelection
+from tests.cli.backend_generation_test_support import selected_backend
 from molt.cli import backend_binary as cli_backend_binary
 from molt.cli import backend_cache_setup as cli_backend_cache_setup
 from molt.cli import backend_compile as cli_backend_compile
@@ -562,7 +563,7 @@ def test_prewarm_receipts_let_the_next_build_skip_cargo_until_removed(
     root = _isolated_molt_root(tmp_path, monkeypatch, MOLT_SESSION_ID="wasm-ci")
     cargo_calls, probe_calls = _fake_backend_toolchain(monkeypatch)
     release_dir = root / "target" / "sessions" / "wasm-ci" / "release"
-    binary = release_dir / f"molt-backend.luau_backend{_EXE}"
+    coordinate = release_dir / f"molt-backend.luau_backend{_EXE}"
     cargo_output_receipt = cli_backend_binary._backend_fingerprint_path(
         root, release_dir / f"molt-backend{_EXE}", "release"
     )
@@ -574,7 +575,9 @@ def test_prewarm_receipts_let_the_next_build_skip_cargo_until_removed(
     data = payload["data"]
     compiler = data["compiler"]
     assert data["admission"] == "receipts"
-    assert compiler["path"] == os.fspath(binary)
+    binary = selected_backend(root, coordinate, "release")
+    assert compiler["coordinate"] == os.fspath(coordinate)
+    assert Path(compiler["path"]).samefile(binary)
     assert compiler["sha256"] == hashlib.sha256(binary.read_bytes()).hexdigest()
     assert (compiler["cargo_profile"], compiler["features"]) == (
         "release",
@@ -597,9 +600,9 @@ def test_prewarm_receipts_let_the_next_build_skip_cargo_until_removed(
     cache_inputs = _stub_backend_cache_setup(monkeypatch, "luau")
     prepared, error = _build_backend_setup("luau", tmp_path, "cranelift")
     assert error is None and prepared is not None
-    assert prepared.backend_bin == binary
+    assert prepared.backend_bin.samefile(binary)
     assert prepared.backend_compiler_fingerprint == compiler["fingerprint"]
-    assert cache_inputs[-1]["backend_bin"] == binary
+    assert cache_inputs[-1]["backend_bin"].samefile(binary)
     assert cache_inputs[-1]["backend_compiler_fingerprint"] == compiler["fingerprint"]
     assert (len(cargo_calls), len(probe_calls)) == (1, 1)
 
@@ -610,7 +613,9 @@ def test_prewarm_receipts_let_the_next_build_skip_cargo_until_removed(
     prepared, error = _build_backend_setup("luau", tmp_path, "cranelift")
     assert error is None and prepared is not None
     assert len(cargo_calls) == 2
-    assert binary.read_bytes() == b"backend build 2"
+    assert prepared.backend_bin.read_bytes() == b"backend build 2"
+    # The generation the first build ran is unchanged beside the new one.
+    assert binary.read_bytes() != b"backend build 2"
 
 
 def test_prewarm_fails_closed_when_admission_publishes_no_receipt(
@@ -746,8 +751,8 @@ def test_prewarm_rejects_compiler_bytes_changed_after_admission(
 
     def replaced(selection, **kwargs):
         result = original(selection, **kwargs)
-        assert result.ok
-        selection.binary.write_bytes(b"different compiler after admission")
+        assert result.ok and result.binary is not None
+        result.binary.write_bytes(b"different compiler after admission")
         return result
 
     monkeypatch.setattr(

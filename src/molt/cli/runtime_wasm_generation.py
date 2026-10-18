@@ -5,17 +5,21 @@ import json
 import os
 import re
 import shutil
-import time
-from contextlib import ExitStack, contextmanager
-from dataclasses import dataclass, field, replace
+from contextlib import AbstractContextManager, ExitStack
+from dataclasses import dataclass, replace
 from functools import cached_property
-from collections.abc import Generator, Mapping
+from collections.abc import Mapping
 from pathlib import Path
 from typing import TYPE_CHECKING
 
 from molt.cli.atomic_io import _atomic_write_json
+from molt.cli.generation_store import (
+    GENERATION_STORE_IDLE_SECONDS,
+    GenerationStore,
+    GenerationStoreLayout,
+    generation_store,
+)
 from molt.file_deletion import unlink_file
-from molt.file_locks import _acquire_file_lock, _release_file_lock
 from molt.file_publication import atomic_write_bytes, durable_replace, staged_file_path
 from molt.cli.runtime_identity_schema import RuntimeBuildIdentity
 from molt.exact_json import (
@@ -50,130 +54,31 @@ _MEMBER_SUFFIX = ".runtime-wasm-member"
 _SHARED_RUNTIME_NAME = "molt_runtime.wasm"
 _RELOC_RUNTIME_NAME = "molt_runtime_reloc.wasm"
 
-# One runtime WASM directory is a working set of immutable generations: every
-# build that publishes or binds a generation marks its files in the store
-# ledger, under the store lock, and each publication evicts the files that no
-# build used for RUNTIME_WASM_STORE_IDLE_SECONDS. The selected pair is never
-# evicted. Recency lives in the ledger, not in file times: a member's stat
-# identity includes its mtime and ctime, so touching one would invalidate every
-# holder's admission.
+# One runtime WASM directory is a working set of immutable generations, held
+# by the shared generation store owner (molt.cli.generation_store). The
+# selected pair is never evicted.
 _STORE_LOCK_NAME = ".runtime-wasm-store.lock"
 _STORE_LEDGER_NAME = ".runtime-wasm-store.json"
 _STORE_LEDGER_SCHEMA = "molt.runtime-wasm-store.v1"
-_STORE_LOCK_TIMEOUT_SECONDS = 300.0
 _STORE_FILE_RE = re.compile(
     r"^molt_runtime(?:"
     r"\.[0-9a-f]{64}\.generation\.json"
     r"|(?:_reloc)?\.wasm\.[0-9a-f]{64}" + re.escape(_MEMBER_SUFFIX) + r")$"
 )
-# A build finishes well inside this window, and the shared generation cache
-# under MOLT_CACHE, or a rebuild, restores an evicted generation on demand.
-RUNTIME_WASM_STORE_IDLE_SECONDS = 24 * 60 * 60
+_RUNTIME_WASM_STORE = GenerationStoreLayout(
+    label="runtime WASM",
+    lock_name=_STORE_LOCK_NAME,
+    ledger_name=_STORE_LEDGER_NAME,
+    ledger_schema=_STORE_LEDGER_SCHEMA,
+    entry=_STORE_FILE_RE,
+    remove=unlink_file,
+)
 
 
-@dataclass
-class _RuntimeWasmStore:
-    """The usage ledger of one runtime WASM directory, held under its lock."""
-
-    root: Path
-    now: float
-    selected: tuple[str, ...] = ()
-    last_used: dict[str, float] = field(default_factory=dict)
-
-    def use(self, *names: str) -> None:
-        for name in names:
-            self.last_used[name] = self.now
-
-    def select(self, shared_member: str, reloc_member: str) -> None:
-        # A reader may hold the pair this replaces; give it a full window.
-        self.use(*self.selected)
-        self.selected = (shared_member, reloc_member)
-        self.use(*self.selected)
-
-    def evict_idle(self, idle_seconds: float) -> tuple[str, ...]:
-        """Remove generation files no build used for ``idle_seconds``.
-
-        A file the ledger does not know starts its window now, so the first
-        pass over a directory written before this ledger evicts nothing. A
-        member that is open elsewhere (Windows refuses to delete it) stays
-        until a later publication.
-        """
-        evicted: list[str] = []
-        present: set[str] = set()
-        for path in sorted(self.root.iterdir()):
-            name = path.name
-            if not _STORE_FILE_RE.match(name):
-                continue
-            present.add(name)
-            last_used = self.last_used.setdefault(name, self.now)
-            if name in self.selected or self.now - last_used <= idle_seconds:
-                continue
-            try:
-                unlink_file(path)
-            except OSError:
-                continue
-            present.discard(name)
-            evicted.append(name)
-        self.last_used = {
-            name: used for name, used in self.last_used.items() if name in present
-        }
-        return tuple(evicted)
-
-    def ledger(self) -> dict[str, object]:
-        return {
-            "schema": _STORE_LEDGER_SCHEMA,
-            "selected": list(self.selected),
-            "last_used": dict(sorted(self.last_used.items())),
-        }
-
-
-def _read_store_ledger(root: Path, now: float) -> _RuntimeWasmStore:
-    """Load the ledger; an unreadable one restarts every file's window."""
-
-    store = _RuntimeWasmStore(root=root, now=now)
-    try:
-        payload = json.loads((root / _STORE_LEDGER_NAME).read_bytes())
-    except (OSError, ValueError):
-        return store
-    if not isinstance(payload, dict) or payload.get("schema") != _STORE_LEDGER_SCHEMA:
-        return store
-    selected = payload.get("selected")
-    last_used = payload.get("last_used")
-    if (
-        isinstance(selected, list)
-        and all(isinstance(name, str) for name in selected)
-        and isinstance(last_used, dict)
-        and all(
-            isinstance(name, str)
-            and isinstance(used, (int, float))
-            and not isinstance(used, bool)
-            for name, used in last_used.items()
-        )
-    ):
-        store.selected = tuple(selected)
-        store.last_used = {name: float(used) for name, used in last_used.items()}
-    return store
-
-
-@contextmanager
-def _runtime_wasm_store(root: Path) -> Generator[_RuntimeWasmStore]:
+def _runtime_wasm_store(root: Path) -> AbstractContextManager[GenerationStore]:
     """Hold one runtime WASM directory's store lock and persist its ledger."""
 
-    lock_path = root / _STORE_LOCK_NAME
-    handle = _acquire_file_lock(
-        lock_path,
-        timeout_s=_STORE_LOCK_TIMEOUT_SECONDS,
-        timeout_message=(
-            f"Timed out waiting for runtime WASM store lock {lock_path} after "
-            f"{_STORE_LOCK_TIMEOUT_SECONDS:.0f}s."
-        ),
-    )
-    try:
-        store = _read_store_ledger(root, time.time())
-        yield store
-        _atomic_write_json(root / _STORE_LEDGER_NAME, store.ledger(), sort_keys=True)
-    finally:
-        _release_file_lock(handle)
+    return generation_store(root, _RUNTIME_WASM_STORE)
 
 
 @dataclass(frozen=True)
@@ -632,7 +537,7 @@ def publish_runtime_wasm_generation(
                     )
                 _atomic_write_json(manifest, payload, sort_keys=True)
             store.select(shared_member.name, reloc_member.name)
-            store.evict_idle(RUNTIME_WASM_STORE_IDLE_SECONDS)
+            store.evict_idle(GENERATION_STORE_IDLE_SECONDS)
         return generation
     finally:
         staged_shared.unlink(missing_ok=True)

@@ -1863,7 +1863,10 @@ def test_ensure_backend_binary_preserves_repo_local_shared_stdlib_cache(
     fingerprint_sidecar.write_text("old-fingerprint\n", encoding="utf-8")
 
     exe_suffix = ".exe" if os.name == "nt" else ""
-    backend_bin = tmp_path / "target" / "dev-fast" / f"molt-backend{exe_suffix}"
+    backend_bin = (
+        tmp_path / "target" / "dev-fast" / f"molt-backend.native_backend{exe_suffix}"
+    )
+    cargo_output = backend_bin.with_name(f"molt-backend{exe_suffix}")
     fingerprint = {
         "hash": canonical_json_sha256("shared-stdlib-backend-source"),
         "rustc": "rustc",
@@ -1881,7 +1884,7 @@ def test_ensure_backend_binary_preserves_repo_local_shared_stdlib_cache(
         cmd = list(plan.command)
         build_cmds.append(cmd)
         runtime_fixture_root.native_executable(
-            backend_bin.relative_to(tmp_path).as_posix()
+            cargo_output.relative_to(tmp_path).as_posix()
         )
         return subprocess.CompletedProcess(cmd, 0, "", "")
 

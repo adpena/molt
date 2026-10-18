@@ -787,21 +787,36 @@ maintenance only provisions pinned auxiliary tools.
 The selected binary identity flows through cache keys, daemon/one-shot execution,
 native linking, build diagnostics, and the installed-consumer receipt.
 
-Source builds publish every backend feature variant, including native, to its
-own executable with a content-bound receipt. Cargo's unqualified output is only
-publication input; selecting it for native would let a WASM build replace the
-native compiler and force a rebuild on the next target switch. All variants use
-the same publication lock, atomic copy, and admission rules. Process discovery
-recognizes these variant names without treating a name as ownership evidence.
-After Cargo completes, a rejected compiler feature probe fails the build with
-its original diagnostic and publishes no new provenance. The CLI does not
-rerun the unchanged Cargo plan to conceal that failed outcome.
+Source builds publish every backend feature variant, including native, as
+immutable generations. A variant's coordinate
+`<target>/<profile>/molt-backend.<features>` names a selection, not an
+executable: each published executable lives at
+`<target>/<profile>/.molt-backend-generations/<variant>/<sha256>/<variant>`
+and never changes after publication (`molt.cli.backend_generation`). The
+variant's content-bound receipt is the selection; its byte identity names the
+selected generation, and a new selection replaces only that receipt. Identical
+bytes reuse their generation without a write. A build resolves its generation
+once and runs it for every later step (dispatch, daemon, WASM facts scanning,
+link admission), so a concurrent build's publication never changes the bytes or
+the path that an earlier build captured. Bazel and Nix publish outputs the same
+way. Cargo's unqualified output is only publication input; selecting it for
+native would let a WASM build replace the native compiler and force a rebuild
+on the next target switch. All variants use the same publication lock and
+admission rules. Process discovery recognizes these variant names without
+treating a name as ownership evidence. Retention uses the generation store
+owner the runtime WASM directory uses: each publication selects its
+generation and evicts the generations that no build used for 24 hours, and
+every build that admits a generation records its use. After Cargo completes,
+a rejected compiler feature probe fails the build with its original diagnostic
+and selects nothing. The CLI does not rerun the unchanged Cargo plan to conceal
+that failed outcome.
 
 Source builds publish the runtime WASM pair into one runtime directory: an
 explicit `MOLT_WASM_RUNTIME_DIR`, else `<MOLT_EXT_ROOT>/wasm`, else
 `molt-runtime-wasm` in the project's Cargo target beside the native runtime
 libraries. A build never writes runtime outputs into the source tree or the
-working directory. The directory is a working set of immutable generations.
+working directory. The directory is a working set of immutable generations
+held by the shared generation store owner (`molt.cli.generation_store`).
 Under the directory's store lock, each publication and each code-generation
 binding records the generation it uses in the store ledger, and each
 publication evicts the generation files that no build used for 24 hours. It
