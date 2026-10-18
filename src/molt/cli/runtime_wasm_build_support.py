@@ -8,7 +8,6 @@ from molt.cli.runtime_build_python import (
 
 import contextlib
 import json
-import shlex
 import subprocess
 from pathlib import Path
 from typing import (
@@ -235,7 +234,6 @@ def _ensure_wasm_cpython_abi_staticlib(
                     env=plan.environment,
                     cargo_profile=cargo_profile,
                     target_triple="wasm32-wasip1",
-                    rustflags=shlex.join(plan.rustflags),
                     cargo_command=plan.command,
                     cargo_plan=plan,
                     artifact_selection=RUNTIME_STATICLIB_ARTIFACTS,

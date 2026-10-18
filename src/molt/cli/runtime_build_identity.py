@@ -5,7 +5,6 @@ from __future__ import annotations
 import hashlib
 import os
 import re
-import shlex
 import stat as stat_module
 import threading
 from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
@@ -820,19 +819,11 @@ class _RuntimeFlagProjection:
             )
         return token
 
-    def rustflags(self, value: str | Sequence[str]) -> list[str]:
+    def rustflags(self, value: Sequence[str]) -> list[str]:
+        # A str is a Sequence[str] too; splitting one here would guess a grammar.
         if isinstance(value, str):
-            if os.name != "nt" and re.search(r"(?i)[a-z]:[\\/]", value):
-                raise ValueError(
-                    f"unknown absolute host path in canonical runtime flags: {value!r}"
-                )
-            try:
-                tokens = shlex.split(value, posix=os.name != "nt")
-            except ValueError as exc:
-                raise ValueError(f"invalid runtime flag plan: {value!r}") from exc
-        else:
-            tokens = value
-        return [self.token(token.strip('"')) for token in tokens]
+            raise TypeError("runtime flag vectors are token sequences, not strings")
+        return [self.token(token) for token in value]
 
     def link_args(self, args: Sequence[str]) -> list[str]:
         return [self.token(arg) for arg in args]
@@ -1242,8 +1233,6 @@ def _resolve_runtime_build_family_identities(
     for plan in members:
         if not plan.kind or plan.kind in member_payloads:
             raise ValueError("runtime build family member kinds are invalid")
-        if isinstance(plan.resolved_rustflags, str):
-            raise ValueError("runtime build family member flags are not canonical")
         member_payloads[plan.kind] = {
             "kind": plan.kind,
             "resolved_rustflags": list(plan.resolved_rustflags),
@@ -1291,7 +1280,6 @@ def resolve_wasm_cpython_abi_build_identity(
     env: Mapping[str, str],
     cargo_profile: str,
     target_triple: str,
-    rustflags: str,
     cargo_command: Sequence[str],
     artifact_selection: RuntimeArtifactSelection,
     wasi_sysroot: Path,
@@ -1355,7 +1343,7 @@ def resolve_wasm_cpython_abi_build_identity(
     )
     member = RuntimeBuildMemberPlan(
         kind="staticlib",
-        resolved_rustflags=tuple(flag_projection.rustflags(rustflags)),
+        resolved_rustflags=tuple(flag_projection.rustflags(plan.rustflags)),
         link_args=(),
         publication_transform="wasm-cpython-abi-staticlib-v1",
         preserve_debug=plan.preserve_debug_for_profile(cargo_profile),
@@ -1399,7 +1387,6 @@ def resolve_wasm_runtime_build_family_identities(
     cargo_profile: str,
     target_triple: str,
     runtime_features: tuple[str, ...],
-    base_rustflags: str,
     cargo_command: Sequence[str],
     producer_artifact_selection: RuntimeArtifactSelection,
     members: Sequence[RuntimeBuildMemberPlan],
