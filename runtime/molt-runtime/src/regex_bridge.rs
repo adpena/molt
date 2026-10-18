@@ -4,7 +4,6 @@
 //! internal `pub(crate)` function.  The regex crate declares matching
 //! `extern "C"` imports and they are resolved at link time.
 
-use crate::object::ops::string_obj_to_owned as _string_obj_to_owned;
 use crate::*;
 use molt_cpython_abi::native_custody::{BufferAcquireError, ByteInput};
 
@@ -173,7 +172,9 @@ pub extern "C" fn __molt_regex_subject_slice(subject_bits: u64, start: usize, en
                     (start, end)
                 })
             })
-            .expect("TYPE_ID_STRING must expose its physical WTF-8 storage under the GIL");
+            .expect(
+                "TYPE_ID_STRING must expose its physical UTF-8 surrogatepass storage under the GIL",
+            );
             let size = byte_end.saturating_sub(byte_start);
             let ptr = if size == 0 {
                 alloc_string(_py, &[])
@@ -320,46 +321,6 @@ pub extern "C" fn __molt_regex_alloc_dict_with_pairs(
 #[unsafe(no_mangle)]
 pub extern "C" fn __molt_regex_object_type_id(ptr: *mut u8) -> u32 {
     unsafe { object_type_id(ptr) }
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn __molt_regex_string_obj_to_owned(
-    bits: u64,
-    out_ptr: *mut *const u8,
-    out_len: *mut usize,
-) -> i32 {
-    let obj = obj_from_bits(bits);
-    match _string_obj_to_owned(obj) {
-        Some(s) => {
-            let bytes = s.into_bytes().into_boxed_slice();
-            unsafe { crate::resource::bridge_buffer::export_u8_box(bytes, out_ptr, out_len) }
-        }
-        None => 0,
-    }
-}
-
-/// Convert an exact bytes regex pattern to a temporary one-unit-per-byte text
-/// representation for the shared parser. This is compile-time-only; subject
-/// matching retains borrowed byte storage and never UTF-8-decodes bytes.
-#[unsafe(no_mangle)]
-pub extern "C" fn __molt_regex_bytes_pattern_to_string(
-    bits: u64,
-    out_ptr: *mut *const u8,
-    out_len: *mut usize,
-) -> i32 {
-    crate::with_gil_entry_nopanic!(_py, {
-        let obj = obj_from_bits(bits);
-        let Some(ptr) = obj.as_ptr() else {
-            return 0;
-        };
-        if unsafe { object_type_id(ptr) } != TYPE_ID_BYTES {
-            return 0;
-        }
-        let raw = unsafe { std::slice::from_raw_parts(bytes_data(ptr), bytes_len(ptr)) };
-        let pattern: String = raw.iter().map(|&byte| char::from(byte)).collect();
-        let bytes = pattern.into_bytes().into_boxed_slice();
-        unsafe { crate::resource::bridge_buffer::export_u8_box(bytes, out_ptr, out_len) }
-    })
 }
 
 /// Borrow bytes storage for one regex transition. For mutable exporters the

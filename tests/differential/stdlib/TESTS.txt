@@ -1549,6 +1549,9 @@ tests/differential/stdlib/os_system_shell.py
 tests/differential/stdlib/os_urandom_basic.py
 tests/differential/stdlib/os_utime_ns_only.py
 tests/differential/stdlib/os_walk_scandir.py
+tests/differential/stdlib/parity_dataclasses.py
+tests/differential/stdlib/parity_ffi_panic_contract.py
+tests/differential/stdlib/parity_typing.py
 tests/differential/stdlib/pathlib_basic_ops.py
 tests/differential/stdlib/pathlib_basic_str_and_parts.py
 tests/differential/stdlib/pathlib_compare_intrinsic.py

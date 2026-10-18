@@ -414,7 +414,7 @@ Run differential tests that compare Molt output against CPython.
 
 ```bash
 molt diff
-molt diff tests/parity/
+molt diff tests/differential/basic/
 molt diff --python-version 3.13
 ```
 

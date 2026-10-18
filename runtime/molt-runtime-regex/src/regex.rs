@@ -15,9 +15,9 @@ use molt_runtime_core::prelude::*;
 
 use crate::bridge::{
     alloc_bytes, alloc_dict_with_pairs, alloc_list, alloc_string, alloc_tuple,
-    bytes_obj_to_borrowed, bytes_pattern_to_string, dec_ref_bits, dict_snapshot, object_type_id,
-    pattern_handle_arc, pattern_handle_new, raise_exception, scanner_handle_arc,
-    scanner_handle_new, seq_snapshot, string_obj_to_owned, subject_slice_to_object, to_i64,
+    bytes_obj_to_borrowed, dec_ref_bits, dict_snapshot, object_type_id, pattern_handle_arc,
+    pattern_handle_new, raise_exception, scanner_handle_arc, scanner_handle_new, seq_snapshot,
+    subject_slice_to_object, to_i64,
 };
 
 #[path = "regex/common.rs"]

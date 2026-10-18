@@ -49,13 +49,13 @@ pub(crate) enum RepeatMode {
 #[derive(Debug)]
 pub(crate) enum ReNode {
     Empty,
-    Literal(String),
+    Literal(Vec<u32>),
     Any,
     Anchor(Anchor),
     CharClass {
         negated: bool,
-        ranges: Vec<(String, String)>,
-        chars: Vec<String>,
+        ranges: Vec<(u32, u32)>,
+        chars: Vec<u32>,
         categories: Vec<Category>,
     },
     Concat(Vec<ReNode>),
@@ -106,7 +106,8 @@ pub(crate) struct ParsedPattern {
     pub group_names: NamedGroups,
     pub flags: i64,
     /// Whether the parsed source was a bytes pattern. Pattern units are
-    /// represented one-to-one as Unicode scalar values in the range 0..=255.
+    /// represented one-to-one as code points in the range 0..=255. Text includes
+    /// the full Python range, including raw surrogates.
     pub is_bytes: bool,
     /// Position (char index) of a nested-set-in-charclass warning, or None.
     pub warn_pos: Option<i64>,

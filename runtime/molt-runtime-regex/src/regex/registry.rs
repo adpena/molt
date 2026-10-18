@@ -20,7 +20,7 @@ pub struct ScannerHandle {
     pub(super) pos: usize,
     pub(super) end: usize,
     pub(super) must_advance: bool,
-    pub(super) text_chars: Option<Vec<char>>,
+    pub(super) text_units: Option<Vec<u32>>,
     pub(super) finished: bool,
 }
 
@@ -29,14 +29,14 @@ impl ScannerHandle {
         pattern: Arc<PatternHandle>,
         pos: usize,
         end: usize,
-        text_chars: Option<Vec<char>>,
+        text_units: Option<Vec<u32>>,
     ) -> Self {
         Self {
             pattern,
             pos,
             end,
             must_advance: false,
-            text_chars,
+            text_units,
             finished: false,
         }
     }
