@@ -35,6 +35,8 @@ from tools.wasm_size_audit import DEFAULT_TOTAL_BUDGET_MB
 from tests.wasm_linked_runner import _run_wasm_test_process, wasm_test_build_env
 from tests.wasm_execution_manifest import write_wasm_execution_manifest
 from tests.runtime_profile_fixtures import process_profile_payload
+from molt._runtime_profile_schema import validate_process_profile
+from molt._runtime_profile_schema_generated import RSS_SOURCE_BY_TARGET
 
 # Measured transfer-size ratchet for the split runtime; see test_runtime_wasm_size.
 RUNTIME_GZIP_BUDGET_MIB = 3.25
@@ -1710,17 +1712,12 @@ def test_split_runtime_profile_json_emits_on_wasm(
         if line.startswith("molt_profile_json ")
     )
     payload = json.loads(profile_line.removeprefix("molt_profile_json "))
-    assert payload["schema_version"] == 2
-    assert payload["kind"] == "runtime_feedback"
-    assert {"profile", "aux", "gc", "memory"} <= payload.keys()
-    assert {
-        "dealloc_count",
-        "live_objects",
-        "alloc_bytes_exception",
-        "dealloc_bytes_exception",
-    } <= payload["profile"].keys()
-    assert "aux_sidecar_live_bytes" in payload["aux"]
-    assert "gc_registry_lock_contention_count" in payload["gc"]
+    # The generated schema authority checks the version, every section's exact
+    # counter set and the derived live counts. WASM has no RSS counters, so
+    # its snapshot names the WASM source and reports itself unavailable.
+    assert validate_process_profile(payload) is None, validate_process_profile(payload)
+    assert payload["memory"]["source"] == RSS_SOURCE_BY_TARGET["wasm"]
+    assert payload["memory"]["available"] is False
 
 
 @pytest.mark.slow
