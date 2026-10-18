@@ -374,7 +374,7 @@
     "tests/tools/test_win_job_contract.py",
     "tests/tools/test_windows_process_api.py"
   ],
-  "authority_sha256": "0c00cc6d7d37886ecda06ba51e1eee0e367b9ff06353a70a9c1ed615eeddca73",
+  "authority_sha256": "4039adf0a859a6df1a4b41c6f459e61e8906ca0311f8c538106e46f667b13e22",
   "cargo_environment_policy": {
     "incident_command": "cargo metadata --locked --format-version 1",
     "incident_commit": "20b046b79bd4ca64a8c859f737f6e330377bcc4e",
@@ -3764,7 +3764,8 @@
         "node",
         "wasm-tools",
         "rustc",
-        "cargo"
+        "cargo",
+        "hosted-clang"
       ]
     },
     {
@@ -5772,7 +5773,8 @@
         "python",
         "uv",
         "rustc",
-        "cargo"
+        "cargo",
+        "hosted-clang"
       ]
     },
     {
@@ -9342,7 +9344,9 @@
           }
         ],
         "toolchains": [
-          "python"
+          "python",
+          "rustc",
+          "hosted-clang"
         ]
       },
       {
@@ -11483,10 +11487,14 @@
         "python"
       ],
       "local.backend-environment-contract.pytest": [
-        "python"
+        "python",
+        "rustc",
+        "hosted-clang"
       ],
       "local.backend-environment-contract.pytest-select-0": [
-        "python"
+        "python",
+        "rustc",
+        "hosted-clang"
       ],
       "local.backend-ir-framing.0": [
         "python",
@@ -12734,6 +12742,19 @@
         "--version"
       ],
       "version_pattern": "clang version 22\\.1\\.8\\b"
+    },
+    {
+      "executable": "clang",
+      "name": "hosted-clang",
+      "projection": "llvm-sdk",
+      "setup_evidence": [
+        ".github/workflows/ci.yml::Native C object fixtures require the host image's clang."
+      ],
+      "setup_value": "host image C object compiler",
+      "version_args": [
+        "--version"
+      ],
+      "version_pattern": "clang version [0-9]+\\.[0-9]+\\.[0-9]+\\b"
     },
     {
       "executable": "clang-cl",

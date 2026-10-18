@@ -6983,6 +6983,65 @@ def test_selected_sdk_fingerprint_roundtrips_through_actual_receipt_receiver(
     )
 
 
+@pytest.mark.parametrize(
+    "owner",
+    [
+        "local.backend-environment-contract",
+        "python.unit.cli.import-collection",
+        "wasm.host.runner-fixtures",
+    ],
+)
+def test_native_import_collection_fixtures_declare_compilers_for_each_execution_owner(
+    owner: str,
+) -> None:
+    from tools import molt_dev
+
+    target = "tests/cli/test_cli_import_collection.py"
+    if owner.startswith("local."):
+        # Select this rule alone: an unrelated LLVM gate or the always gates
+        # must not supply the compilers these real native fixtures require.
+        config = molt_dev.GateConfig.load(PLAN.path)
+        rule = next(rule for rule in config.rules if rule.name == owner[6:])
+        isolated = replace(config, rules=[rule], always=[])
+        selected, matched = isolated.select(["src/molt/cli/backend_daemon_logs.py"])
+        assert [rule.name for rule in matched] == ["backend-environment-contract"]
+        selector = next(gate for gate in selected if "-k" in gate.command)
+        assert target in selector.command
+        assert "backend_daemon" in selector.command[selector.command.index("-k") + 1]
+        assert {"hosted-clang", "rustc"} <= set(
+            PLAN.toolchain_closure(selector.toolchains)
+        )
+    else:
+        command = next(command for command in PLAN.commands if command.id == owner)
+        if owner == "wasm.host.runner-fixtures":
+            # This relocated case compiles both empty and nonempty C objects.
+            assert (
+                target + "::test_cached_backend_artifact_validity_guard" in command.argv
+            )
+        else:
+            # The full-file owner retains the three native-reference controls;
+            # only the five cases executed by the WASM owner are deselected.
+            assert target in command.argv
+            assert not any(
+                "unresolved_user_module_chunks" in argument
+                or "unresolved_stdlib_module_reference" in argument
+                for argument in command.argv
+                if argument.startswith(target + "::")
+            )
+        assert {"hosted-clang", "rustc"} <= set(PLAN.required_toolchains(command))
+
+
+def test_native_fixture_compiler_capability_keeps_llvm_abi_pin_separate() -> None:
+    policies = {policy.name: policy for policy in PLAN.toolchain_policies}
+    fixture = policies["hosted-clang"]
+    abi = policies["clang"]
+    assert fixture.data["executable"] == abi.data["executable"] == "clang"
+    for version in ("Ubuntu clang version 18.1.8", "Apple clang version 17.0.0"):
+        assert re.search(fixture.data["version_pattern"], version)
+        assert not re.search(abi.data["version_pattern"], version)
+    assert not re.search(fixture.data["version_pattern"], "unidentified compiler")
+
+
 def test_wasm_runtime_and_host_prerequisites_follow_actual_consumers():
     commands = {command.id: command for command in PLAN.commands}
     for name in ("wasm.build.shared-runtime", "wasm.build.split-runtime-release"):

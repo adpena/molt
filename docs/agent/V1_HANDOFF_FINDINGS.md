@@ -149,9 +149,14 @@ environment. One aggregate prerequisite check still reports all missing
 capabilities before execution; repeated selections reuse their projection.
 Independent actual-child controls detect the old SDK link-setting leak into
 pure Rust consumers while retaining explicit user flags. Managed-runtime
-startup remains with its existing owner. This is development-only work; actual
-WASI provider and candidate integration qualification remain pending under
-V1-07 and the existing release obligations.
+startup remains with its existing owner. The pure Rust WASI provider passes
+its four counter cases on Linux aarch64 at `dev-fast`; this is distinct from
+Molt runtime or emitted-program acceptance. Native object-fixture cohorts must
+declare their actual compiler instead of inheriting it from another check.
+Other CLI C-API and extension cells that skip when a compiler is absent remain
+unqualified; their prerequisites and actual executions remain V1-07 obligations.
+This work is development-only. Candidate integration and release qualification
+remain pending.
 
 Linux process snapshots can legitimately report a zero boot-relative birth
 value. Development custody now retains those observations while preserving

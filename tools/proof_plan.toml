@@ -702,6 +702,17 @@ setup_value = "22.1.8"
 setup_evidence = ["config/llvm_toolchain_releases.toml::default_release = \"22.1.8\""]
 
 [[toolchain_policy]]
+name = "hosted-clang"
+# Reuse a verified SDK when installed; a matching host image on PATH is also
+# admitted. Native C fixture objects do not consume the LLVM library ABI.
+projection = "llvm-sdk"
+executable = "clang"
+version_args = ["--version"]
+version_pattern = 'clang version [0-9]+\.[0-9]+\.[0-9]+\b'
+setup_value = "host image C object compiler"
+setup_evidence = [".github/workflows/ci.yml::Native C object fixtures require the host image's clang."]
+
+[[toolchain_policy]]
 name = "hosted-clang-cl"
 executable = "clang-cl"
 version_args = ["--version"]
@@ -2551,7 +2562,7 @@ timeout_env = ["MOLT_WASM_TEST_TIMEOUT_SEC"]
 cache_domain = "pytest"
 dependencies = ["wasm.build.backend"]
 argv = ["python3", "tools/venv_exec.py", "python3", "-m", "pytest", "-q", "-n", "auto", "--molt-worker-memory-gb=0.75", "tests/test_wasm_runner_table_base.py", "tests/cli/test_cli_import_collection.py::test_backend_compile_stages_one_shot_output_into_cache[False-False-0]", "tests/cli/test_cli_import_collection.py::test_backend_compile_stages_one_shot_output_into_cache[False-True-0]", "tests/cli/test_cli_import_collection.py::test_backend_compile_stages_one_shot_output_into_cache[True-False-0]", "tests/cli/test_cli_import_collection.py::test_backend_compile_stages_one_shot_output_into_cache[True-True-0]", "tests/cli/test_cli_import_collection.py::test_cached_backend_artifact_validity_guard"]
-toolchains = ["python", "uv", "node", "wasm-tools", "rustc", "cargo"]
+toolchains = ["python", "uv", "node", "wasm-tools", "rustc", "cargo", "hosted-clang"]
 cargo_build_python = true
 
 [[command]]
@@ -3125,7 +3136,7 @@ timeout_seconds = 1320
 cache_domain = "pytest"
 dependencies = []
 argv = ["uv", "run", "--python", "3.12", "python", "-m", "pytest", "-q", "-n", "auto", "--molt-worker-memory-gb=6.25", "-m", "not slow", "tests/cli/test_cli_import_collection.py", "--deselect", "tests/cli/test_cli_import_collection.py::test_backend_compile_stages_one_shot_output_into_cache[False-False-0]", "--deselect", "tests/cli/test_cli_import_collection.py::test_backend_compile_stages_one_shot_output_into_cache[False-True-0]", "--deselect", "tests/cli/test_cli_import_collection.py::test_backend_compile_stages_one_shot_output_into_cache[True-False-0]", "--deselect", "tests/cli/test_cli_import_collection.py::test_backend_compile_stages_one_shot_output_into_cache[True-True-0]", "--deselect", "tests/cli/test_cli_import_collection.py::test_cached_backend_artifact_validity_guard"]
-toolchains = ["python", "uv", "rustc", "cargo"]
+toolchains = ["python", "uv", "rustc", "cargo", "hosted-clang"]
 cargo_build_python = true
 
 # Library and surface contracts that need only Python: public API and stub
@@ -3965,7 +3976,7 @@ pytest = [
 
 [[rule]]
 name = "backend-environment-contract"
-toolchains = ["python"]
+toolchains = ["python", "rustc", "hosted-clang"]
 description = "Prove selected operation settings, cache publication policy, runtime bindings and daemon/one-shot consumers."
 globs = [
   "src/molt/backend_environment.py",

@@ -134,6 +134,7 @@ Executable identities bind resolved path, version text, and the repository-relat
 | `git` | `executable` | — | `^git version 2\.` | `.` | `2.x` | 1 |
 | `rustfmt` | `executable` | — | `^rustfmt 1\.10\.0-stable\b` | `.` | `1.10.0` | 3 |
 | `clang` | `executable` | — | `clang version 22\.1\.8\b` | `.` | `22.1.8` | 1 |
+| `hosted-clang` | `executable` | — | `clang version [0-9]+\.[0-9]+\.[0-9]+\b` | `.` | `host image C object compiler` | 1 |
 | `hosted-clang-cl` | `executable` | — | `^clang version [0-9]+\.[0-9]+\.[0-9]+\b` | `.` | `windows-2022 image C11 compiler` | 1 |
 | `ninja` | `executable` | — | `^1\.13\.2(?:\.git(?:\.kitware\.jobserver-pipe-1)?)?$` | `.` | `1.13.2` | 2 |
 | `wasi-clang` | `executable` | — | `clang version 23\.1\.0\b` | `.` | `23.1.0` | 1 |
