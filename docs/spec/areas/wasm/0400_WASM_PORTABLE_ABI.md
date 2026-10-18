@@ -97,6 +97,31 @@ modules; product startup tests cover runtime/app initialization ordering.
 
 ---
 
+## 2.5 Host lifetime and buffered output
+
+`loadMoltWasm` returns one reusable runtime owner. `run` and `invokeExport`
+execute within that owner; neither ends its lifetime. Keep the owner while
+interactive calls are possible and call `dispose` when the owning scope ends.
+A complete-program consumer includes disposal before observing its final output:
+
+```js
+const host = await loadMoltWasm({ manifestUrl: "./manifest.json" });
+try {
+  host.run();
+} finally {
+  host.dispose();
+}
+```
+
+Python stream buffering remains effective between calls. CPython
+[`Py_FinalizeEx` flushes standard streams](https://github.com/python/cpython/blob/3.12/Python/pylifecycle.c#L1769-L1772)
+when its runtime ends; Molt's shared runtime lifetime shuts down and drains
+those streams before closing backing host services. An interactive Python
+program can request immediate delivery with its normal stream `flush` method
+or `print(..., flush=True)`. Hosts do not impose extra flushing on every call.
+
+---
+
 ## 3. Memory Model and Data Passing
 
 ### 3.1 Linear memory
