@@ -388,7 +388,7 @@ const host = await loadMoltWasm({{
   manifestUrl: `${{baseUrl}}/manifest.json`,
   preferLinked: false,
 }});
-host.run();
+try {{ host.run(); }} finally {{ host.dispose(); }}
 """.lstrip(),
             encoding="utf-8",
         )
@@ -493,7 +493,7 @@ const host = await loadMoltWasm({{
   manifestUrl: `${{baseUrl}}/manifest.json`,
   preferLinked: false,
 }});
-host.run();
+try {{ host.run(); }} finally {{ host.dispose(); }}
 """.lstrip(),
             encoding="utf-8",
         )
@@ -600,7 +600,7 @@ const host = await loadMoltWasm({{
   manifestUrl: `${{baseUrl}}/manifest.json`,
   preferLinked: false,
 }});
-host.run();
+try {{ host.run(); }} finally {{ host.dispose(); }}
 """.lstrip(),
             encoding="utf-8",
         )
@@ -729,34 +729,42 @@ const host = await loadMoltWasm({{
   manifestUrl: `${{baseUrl}}/manifest.json`,
   preferLinked: true,
 }});
-if (!host.linked) throw new Error('linked execution-boundary proof loaded split wasm');
-const runtime = host.__debugState.runtimeInstance;
-const manifest = await (await fetch(`${{baseUrl}}/manifest.json`)).json();
-const enterName = manifest?.abi?.runtime_imports?.export_names?.runtime_execution_enter;
-const leaveName = manifest?.abi?.runtime_imports?.export_names?.runtime_execution_leave;
-if (typeof runtime.exports[enterName] !== 'function') {{
-  throw new Error(`linked runtime missing mapped execution enter export: ${{enterName}}`);
-}}
-if (typeof runtime.exports[leaveName] !== 'function') {{
-  throw new Error(`linked runtime missing mapped execution leave export: ${{leaveName}}`);
-}}
-const outerToken = runtime.exports[enterName]();
-const result = await host.invokeExport('browser_export_probe__echo', [
-  896,
-  [257, 258],
-  new Uint8Array([1, 2, 3, 4]),
-  'falcon',
-]);
-let missingRejected = false;
+let result;
 try {{
-  await host.invokeExport('browser_export_probe__missing', []);
-}} catch (_err) {{
-  missingRejected = true;
+  if (!host.linked) throw new Error('linked execution-boundary proof loaded split wasm');
+  const runtime = host.__debugState.runtimeInstance;
+  const manifest = await (await fetch(`${{baseUrl}}/manifest.json`)).json();
+  const enterName = manifest?.abi?.runtime_imports?.export_names?.runtime_execution_enter;
+  const leaveName = manifest?.abi?.runtime_imports?.export_names?.runtime_execution_leave;
+  if (typeof runtime.exports[enterName] !== 'function') {{
+    throw new Error(`linked runtime missing mapped execution enter export: ${{enterName}}`);
+  }}
+  if (typeof runtime.exports[leaveName] !== 'function') {{
+    throw new Error(`linked runtime missing mapped execution leave export: ${{leaveName}}`);
+  }}
+  const outerToken = runtime.exports[enterName]();
+  try {{
+    result = await host.invokeExport('browser_export_probe__echo', [
+      896,
+      [257, 258],
+      new Uint8Array([1, 2, 3, 4]),
+      'falcon',
+    ]);
+    let missingRejected = false;
+    try {{
+      await host.invokeExport('browser_export_probe__missing', []);
+    }} catch (_err) {{
+      missingRejected = true;
+    }}
+    if (!missingRejected) throw new Error('missing export did not reject');
+  }} finally {{
+    runtime.exports[leaveName](outerToken);
+  }}
+  const postTrapToken = runtime.exports[enterName]();
+  runtime.exports[leaveName](postTrapToken);
+}} finally {{
+  host.dispose();
 }}
-if (!missingRejected) throw new Error('missing export did not reject');
-runtime.exports[leaveName](outerToken);
-const postTrapToken = runtime.exports[enterName]();
-runtime.exports[leaveName](postTrapToken);
 console.log(JSON.stringify(result));
 """.lstrip(),
             encoding="utf-8",
@@ -910,35 +918,43 @@ const host = await loadMoltWasm({{
   manifestUrl: `${{baseUrl}}/manifest.json`,
   preferLinked: false,
 }});
-if (host.linked) throw new Error('split execution-boundary proof loaded linked wasm');
-const runtime = host.__debugState.runtimeInstance;
-const manifest = await (await fetch(`${{baseUrl}}/manifest.json`)).json();
-const enterName = manifest?.abi?.runtime_imports?.export_names?.runtime_execution_enter;
-const leaveName = manifest?.abi?.runtime_imports?.export_names?.runtime_execution_leave;
-if (typeof runtime.exports[enterName] !== 'function') {{
-  throw new Error(`split runtime missing mapped execution enter export: ${{enterName}}`);
-}}
-if (typeof runtime.exports[leaveName] !== 'function') {{
-  throw new Error(`split runtime missing mapped execution leave export: ${{leaveName}}`);
-}}
-const outerToken = runtime.exports[enterName]();
-host.run();
-const result = await host.invokeExport('browser_export_probe_split__echo', [
-  896,
-  [257, 258],
-  new Uint8Array([1, 2, 3, 4]),
-  'falcon',
-]);
-let missingRejected = false;
+let result;
 try {{
-  await host.invokeExport('browser_export_probe_split__missing', []);
-}} catch (_err) {{
-  missingRejected = true;
+  if (host.linked) throw new Error('split execution-boundary proof loaded linked wasm');
+  const runtime = host.__debugState.runtimeInstance;
+  const manifest = await (await fetch(`${{baseUrl}}/manifest.json`)).json();
+  const enterName = manifest?.abi?.runtime_imports?.export_names?.runtime_execution_enter;
+  const leaveName = manifest?.abi?.runtime_imports?.export_names?.runtime_execution_leave;
+  if (typeof runtime.exports[enterName] !== 'function') {{
+    throw new Error(`split runtime missing mapped execution enter export: ${{enterName}}`);
+  }}
+  if (typeof runtime.exports[leaveName] !== 'function') {{
+    throw new Error(`split runtime missing mapped execution leave export: ${{leaveName}}`);
+  }}
+  const outerToken = runtime.exports[enterName]();
+  try {{
+    host.run();
+    result = await host.invokeExport('browser_export_probe_split__echo', [
+      896,
+      [257, 258],
+      new Uint8Array([1, 2, 3, 4]),
+      'falcon',
+    ]);
+    let missingRejected = false;
+    try {{
+      await host.invokeExport('browser_export_probe_split__missing', []);
+    }} catch (_err) {{
+      missingRejected = true;
+    }}
+    if (!missingRejected) throw new Error('missing export did not reject');
+  }} finally {{
+    runtime.exports[leaveName](outerToken);
+  }}
+  const postTrapToken = runtime.exports[enterName]();
+  runtime.exports[leaveName](postTrapToken);
+}} finally {{
+  host.dispose();
 }}
-if (!missingRejected) throw new Error('missing export did not reject');
-runtime.exports[leaveName](outerToken);
-const postTrapToken = runtime.exports[enterName]();
-runtime.exports[leaveName](postTrapToken);
 console.log(JSON.stringify(result));
 """.lstrip(),
             encoding="utf-8",
@@ -1053,14 +1069,18 @@ const host = await loadMoltWasm({{
   manifestUrl: `${{baseUrl}}/manifest.json`,
   preferLinked: false,
 }});
-const noneResult = await host.invokeExport('browser_export_results_probe__ret_none', []);
-const intResult = await host.invokeExport('browser_export_results_probe__ret_int', [7]);
-const listResult = await host.invokeExport('browser_export_results_probe__ret_list', [7, 8]);
-console.log(JSON.stringify({{
-  noneResult,
-  intResult,
-  listResult,
-}}));
+try {{
+  const noneResult = await host.invokeExport('browser_export_results_probe__ret_none', []);
+  const intResult = await host.invokeExport('browser_export_results_probe__ret_int', [7]);
+  const listResult = await host.invokeExport('browser_export_results_probe__ret_list', [7, 8]);
+  console.log(JSON.stringify({{
+    noneResult,
+    intResult,
+    listResult,
+  }}));
+}} finally {{
+  host.dispose();
+}}
 """.lstrip(),
             encoding="utf-8",
         )
@@ -1165,7 +1185,7 @@ const host = await loadMoltWasm({{
   manifestUrl: `${{baseUrl}}/manifest.json`,
   preferLinked: false,
 }});
-host.run();
+try {{ host.run(); }} finally {{ host.dispose(); }}
 """.lstrip(),
             encoding="utf-8",
         )
@@ -1817,7 +1837,7 @@ const host = await loadMoltWasm({{
   preferLinked: false,
   dbEndpoint,
 }});
-host.run();
+try {{ host.run(); }} finally {{ host.dispose(); }}
 """.lstrip(),
             encoding="utf-8",
         )

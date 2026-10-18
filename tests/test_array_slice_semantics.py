@@ -157,7 +157,7 @@ const host = await loadMoltWasm({{
   manifestUrl: `${{baseUrl}}/manifest.json`,
   preferLinked: false,
 }});
-host.run();
+try {{ host.run(); }} finally {{ host.dispose(); }}
 """.lstrip(),
             encoding="utf-8",
         )

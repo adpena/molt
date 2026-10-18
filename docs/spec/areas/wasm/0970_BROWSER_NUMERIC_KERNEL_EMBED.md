@@ -81,8 +81,13 @@ const kernel = await loadMoltBrowserKernel({
   resultType: "float32",
 });
 
-const input = new Float32Array([1.25, -2.5, 0, 4.75]);
-const output = await kernel.forward(input, input.length);
+try {
+  const input = new Float32Array([1.25, -2.5, 0, 4.75]);
+  const output = await kernel.forward(input, input.length);
+  console.log(output);
+} finally {
+  kernel.dispose();
+}
 ```
 
 `resultType` accepts `bytes`, `uint8`, `int8`, `uint16`, `int16`, `uint32`,
@@ -108,11 +113,15 @@ a host capability rather than the pure numeric embed surface:
 import { loadMoltWasm } from "./browser_host.js";
 
 const host = await loadMoltWasm({
-  wasmUrl: "./output.wasm",
-  runtimeUrl: "./molt_runtime.wasm",
+  manifestUrl: "./manifest.json",
   preferLinked: false,
   env: { MOLT_GPU_BACKEND: "webgpu" },
 });
+try {
+  host.run();
+} finally {
+  host.dispose();
+}
 ```
 
 The full browser host and split-runtime embed both route
