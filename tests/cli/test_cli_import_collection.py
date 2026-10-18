@@ -34556,7 +34556,7 @@ def test_failed_wasm_link_evidence_survives_private_deployment_cleanup(
 
 
 def _capture_hashseed_cli_builds(
-    project: Path, cache_root: Path, parse_codec: str, workers: int
+    project: Path, cache_root: Path, parse_codec: str, workers: int, output: str
 ) -> dict[str, object]:
     """Real CLI/frontend/cache inputs; replace only native artifact production."""
     from tests.determinism.test_ir_determinism import _production_ir_record
@@ -34624,7 +34624,7 @@ def _capture_hashseed_cli_builds(
                 result = cli_build_command.build(
                     str(project / "main.py"),
                     emit="obj",
-                    output=str(project / "output.o"),
+                    output=str(project / output),
                     parse_codec=parse_codec,
                     profile="dev",
                     deterministic=False,
@@ -34688,9 +34688,9 @@ def test_cli_cold_warm_production_bytes_and_cache_keys_ignore_hashseed(
         "def compute(limit):\n    return sum([value := item * 2 for item in range(limit)])\n",
         encoding="utf-8",
     )
-    records = []
-    closure_rows: Path | None = None
-    for index, (parse_codec, workers, seed) in enumerate(_HASHSEED_BUILDS):
+
+    def build(index: int, closure_rows: Path | None) -> tuple[object, ...]:
+        parse_codec, workers, seed = _HASHSEED_BUILDS[index]
         cache = tmp_path / f"cache-{index}"
         if closure_rows is not None:
             # The compiler's own source closure is analyzed cold once, under the
@@ -34698,12 +34698,14 @@ def test_cli_cold_warm_production_bytes_and_cache_keys_ignore_hashseed(
             # read, and test_compiler_source_closure_ignores_hashseed proves the
             # analysis is seed-independent. Every other cache starts cold.
             shutil.copytree(closure_rows, cache / "python_source_closure")
+        # Each build owns its cache, Cargo target and output; they share only
+        # the project's sources, so the builds after the first run together.
         script = f"""
 import json, sys
 from pathlib import Path
 sys.path[:0] = [{str(ROOT / "src")!r}, {str(ROOT)!r}]
 from tests.cli.test_cli_import_collection import _capture_hashseed_cli_builds
-print(json.dumps(_capture_hashseed_cli_builds(Path({str(project)!r}), Path({str(cache)!r}), {parse_codec!r}, {workers})))
+print(json.dumps(_capture_hashseed_cli_builds(Path({str(project)!r}), Path({str(cache)!r}), {parse_codec!r}, {workers}, "output-{index}.o")))
 """
         completed = run_cli_test_process(
             [sys.executable, "-c", script],
@@ -34711,18 +34713,26 @@ print(json.dumps(_capture_hashseed_cli_builds(Path({str(project)!r}), Path({str(
             env={**os.environ, "PYTHONHASHSEED": seed},
             capture_output=True,
             text=True,
-            timeout=90,
+            timeout=180,
         )
         assert completed.returncode == 0, completed.stderr
         assert completed.stdout.strip()
         result = json.loads(completed.stdout)
         assert result["warm_hits"] > 0
-        records.append((parse_codec, workers, seed, result["records"]))
-        if closure_rows is None:
-            closure_rows = cache / "python_source_closure"
-            assert any(closure_rows.glob("*.json"))
-    differing = [build[:3] for build in records[1:] if build[3] != records[0][3]]
-    assert not differing, f"builds differ from {records[0][:3]}: {differing}"
+        return (parse_codec, workers, seed, result["records"])
+
+    first = build(0, None)
+    closure_rows = tmp_path / "cache-0" / "python_source_closure"
+    assert any(closure_rows.glob("*.json"))
+    with ThreadPoolExecutor(max_workers=3) as executor:
+        rest = list(
+            executor.map(
+                lambda index: build(index, closure_rows),
+                range(1, len(_HASHSEED_BUILDS)),
+            )
+        )
+    differing = [record[:3] for record in rest if record[3] != first[3]]
+    assert not differing, f"builds differ from {first[:3]}: {differing}"
 
 
 def test_compiler_source_closure_ignores_hashseed(tmp_path: Path) -> None:
