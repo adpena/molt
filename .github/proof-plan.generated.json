@@ -374,7 +374,7 @@
     "tests/tools/test_win_job_contract.py",
     "tests/tools/test_windows_process_api.py"
   ],
-  "authority_sha256": "f7442191904120b1a4cc5228d6e017825069ecc44046539547b575ce123f7641",
+  "authority_sha256": "dc6ad187e601dfa2fdb99259bbae5c2245bc53bc07034674385d9142003cc3e1",
   "cargo_environment_policy": {
     "incident_command": "cargo metadata --locked --format-version 1",
     "incident_commit": "20b046b79bd4ca64a8c859f737f6e330377bcc4e",
@@ -602,6 +602,8 @@
         "tests/test_manifest_pipeline_e2e.py",
         "tests/cli/test_cli_smoke.py",
         "tests/cli/test_traceback_carets.py",
+        "tests/metamorphic/**",
+        "tools/metamorphic_runner.py",
         "tests/cli/test_native_link_*.py",
         "tests/cli/test_native_symbol_authority.py",
         "tests/cli/test_link_selection_admission.py",
@@ -625,7 +627,7 @@
         "pr",
         "main"
       ],
-      "timeout_minutes": 53,
+      "timeout_minutes": 63,
       "workflow": ".github/workflows/ci.yml"
     },
     {
@@ -6549,6 +6551,47 @@
     },
     {
       "argv": [
+        "uv",
+        "run",
+        "--python",
+        "3.12",
+        "pytest",
+        "-q",
+        "-n",
+        "2",
+        "--durations=10",
+        "tests/metamorphic"
+      ],
+      "cache_domain": "cargo-workspace",
+      "cargo_build_python": true,
+      "cargo_native_units": {
+        "target": [
+          "c",
+          "c++"
+        ]
+      },
+      "cell": "linux-x86_64-py312-native-dev",
+      "dependencies": [
+        "native.integration.capability-manifest"
+      ],
+      "family": "native_integration",
+      "id": "native.integration.metamorphic",
+      "resource_class": "compiler-build-resource",
+      "tiers": [
+        "main"
+      ],
+      "timeout_budget": "integration",
+      "timeout_seconds": 600,
+      "toolchains": [
+        "python",
+        "uv",
+        "rustc",
+        "cargo",
+        "ld.lld"
+      ]
+    },
+    {
+      "argv": [
         "cargo",
         "clippy",
         "--locked",
@@ -8223,14 +8266,14 @@
         }
       },
       "native_integration": {
-        "budget_seconds": 3180,
+        "budget_seconds": 3780,
         "critical_path_seconds": 1800,
         "headroom_seconds": 0,
         "job_reserve_seconds": 180,
-        "projected_makespan_seconds": 3000,
-        "required_job_seconds": 3180,
+        "projected_makespan_seconds": 3600,
+        "required_job_seconds": 3780,
         "resource_capacity_floor_seconds": {
-          "compiler-build-resource": 3000,
+          "compiler-build-resource": 3600,
           "python-tests": 150
         }
       },

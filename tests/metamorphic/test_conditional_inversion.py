@@ -9,10 +9,8 @@ If the compiler produces different output for the inverted version,
 it has a conditional codegen or boolean logic bug.
 """
 
-import sys
 import pytest
 
-sys.path.insert(0, ".")
 from tools.metamorphic_runner import MetamorphicRunner
 
 
@@ -119,7 +117,5 @@ def test_conditional_inversion_equivalence(pair: tuple[str, str]):
         pytest.fail(f"Build/run error: {result.error}")
 
     assert result.equivalent, (
-        f"Output differs after conditional inversion!\n"
-        f"Original stdout: {result.original_stdout!r}\n"
-        f"Inverted stdout: {result.transformed_stdout!r}"
+        f"Output differs after conditional inversion!\n{result.describe()}"
     )
