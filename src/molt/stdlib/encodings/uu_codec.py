@@ -8,6 +8,9 @@ modified by Jack Jansen and Fredrik Lundh.
 """
 
 import codecs
+# CPython's module binds these two names; its public namespace includes them.
+import binascii
+from io import BytesIO
 
 from _intrinsics import require_intrinsic as _require_intrinsic
 
