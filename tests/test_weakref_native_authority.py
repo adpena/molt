@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import ast
+import re
 from pathlib import Path
 
 from molt.stdlib_intrinsic_policy import (
@@ -150,10 +151,11 @@ def test_class_shaped_attribute_authority_is_generated_not_type_listed() -> None
     # object.__getattribute__; the retired result IC and the classed-default
     # shim (whose coroutine members are now type-dictionary descriptors) must
     # not duplicate it.
-    assert (
-        "if crate::object::heap_kind_has_class_shape(type_id) {\n"
-        "            return crate::builtins::attr::object_attr_lookup_with_policy("
-    ) in attributes
+    assert re.search(
+        r"if crate::object::heap_kind_has_class_shape\(type_id\) \{\s*"
+        r"return crate::builtins::attr::object_attr_lookup_with_mode\(",
+        attributes,
+    )
     assert "object_attr_lookup_with_policy(_py, obj_ptr, attr_bits, false)" in attr
     assert "classed_default_attr_lookup" not in attributes
     assert "class_instance_layout_attr_allowed" not in attributes

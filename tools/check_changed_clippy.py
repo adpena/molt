@@ -53,7 +53,7 @@ from molt.cargo_workspace import (  # noqa: E402
     workspace_member_packages,
 )
 from tools.command_execution import CommandExecutor  # noqa: E402
-from tools.git_identity import changed_paths as committed_changed_paths  # noqa: E402
+from tools.git_identity import branch_changed_paths  # noqa: E402
 from tools.proof_plan import (  # noqa: E402
     ProofCommand,
     ProofPlan,
@@ -298,15 +298,7 @@ def _git(arguments: list[str]) -> str:
 
 def changed_paths(base: str) -> tuple[str, ...]:
     """Committed changes since the merge base with `base`, plus the worktree."""
-    merge_base = _git(["merge-base", base, "HEAD"]).strip()
-    head = _git(["rev-parse", "HEAD"]).strip()
-    paths = set(committed_changed_paths(merge_base, head, run_git=_git))
-    for arguments in (
-        ["diff", "--name-only", "-z", "HEAD"],
-        ["ls-files", "--others", "--exclude-standard", "-z"],
-    ):
-        paths.update(path for path in _git(arguments).split("\0") if path)
-    return tuple(sorted(paths))
+    return tuple(branch_changed_paths(base, run_git=_git))
 
 
 def run(command: ProofCommand, plan: ProofPlan) -> int:
