@@ -1696,6 +1696,34 @@ gates = ["echo build-started > build-started.txt"]
     assert origin_main == seed  # still just the seed commit
 
 
+def test_integrate_gates_never_write_bytecode_into_the_checkout(
+    drv, origin_and_clone, monkeypatch
+):
+    # Bytecode a gate writes under src/ changes the checkout's import topology
+    # while later gates read it: a fresh worktree's first landing failed with
+    # "Python import topology changed during operation: <worktree>/src/molt".
+    # The caller's shell may already set the policy; integrate must not rely on it.
+    monkeypatch.delenv("PYTHONDONTWRITEBYTECODE", raising=False)
+    origin, work = origin_and_clone
+    _commit_file(work, "src/probe_import.py", "VALUE = 1\n", "feat: probe")
+    _commit_file(
+        work,
+        "tools/proof_plan.toml",
+        """
+always = []
+
+[[rule]]
+name = "imports-source"
+globs = ["src/*.py"]
+gates = ["env python3 -c \\"import sys; sys.path.insert(0, 'src'); import probe_import\\""]
+""",
+        "a gate that imports checkout source",
+    )
+    ns = _integrate_ns(drv, repo=str(work), no_push=True)
+    drv.cmd_integrate(ns)
+    assert not list((work / "src").rglob("__pycache__"))
+
+
 @pytest.mark.parametrize("pin_upstream", [False, True])
 def test_integrate_full_push_and_confirm(
     drv, origin_and_clone, monkeypatch, pin_upstream
