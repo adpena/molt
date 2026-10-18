@@ -41,12 +41,14 @@ def _run_ty_check(path: Path) -> tuple[bool, str]:
     """Validate only when explicitly requested, using Molt's installed dependency.
 
     Isolated Python excludes a caller's cwd/PYTHONPATH from module resolution.
+    Explicit -B keeps site startup read-only when isolation ignores cache env vars.
     ty still reads the target project's configuration and dependency environment;
     validation is consequently never cached as a compiler proof.
     """
     target = path.resolve()
     cmd = [
         sys.executable,
+        "-B",
         "-I",
         "-m",
         "ty",
