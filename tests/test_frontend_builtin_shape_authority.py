@@ -21,6 +21,17 @@ def _raw_ops(source: str) -> list[MoltOp]:
     return generator.funcs_map["molt_main"]["ops"]
 
 
+def _live_method_call(ops: list[MoltOp], method: str) -> MoltOp:
+    """The one call whose callable is the method-form load of ``method``.
+
+    CPython loads ``receiver.method`` as a pair before the arguments and calls
+    that live callable; nothing else may stand in for the lookup.
+    """
+    (load,) = [op for op in ops if op.kind == "LOAD_METHOD" and op.args[1] == method]
+    (call,) = [op for op in ops if op.args and op.args[0] is load.result]
+    return call
+
+
 @pytest.mark.parametrize("alias", [False, True])
 @pytest.mark.parametrize(
     ("name", "arguments", "opcode"),
@@ -143,22 +154,32 @@ def test_callable_body_uses_its_activation_builtin_namespace(
 
 
 @pytest.mark.parametrize(
-    "source",
+    ("source", "method"),
     [
-        "alias = float\ndef value():\n    return alias(1)\n",
-        "from builtins import float as alias\ndef value():\n    return alias(1)\n",
-        "import builtins as core\ndef value():\n    return core.float(1)\n",
-        "def value():\n    from builtins import float as alias\n    return alias(1)\n",
+        ("alias = float\ndef value():\n    return alias(1)\n", None),
+        (
+            "from builtins import float as alias\ndef value():\n    return alias(1)\n",
+            None,
+        ),
+        ("import builtins as core\ndef value():\n    return core.float(1)\n", "float"),
+        (
+            "def value():\n    from builtins import float as alias\n    return alias(1)\n",
+            None,
+        ),
     ],
 )
 def test_rebound_global_or_import_alias_cannot_bypass_live_dispatch(
-    source: str,
+    source: str, method: str | None
 ) -> None:
     generator = SimpleTIRGenerator()
     generator.visit(ast.parse(source))
     ops = generator.funcs_map["__main____value"]["ops"]
     assert not any(op.kind == "FLOAT_FROM_OBJ" for op in ops)
-    assert any(op.kind == "CALL_FUNC" for op in ops)
+    if method is None:
+        assert any(op.kind == "CALL_FUNC" for op in ops)
+    else:
+        # An attribute callee is CPython's method-form load of the live object.
+        assert _live_method_call(ops, method).kind == "CALL_LOADED_METHOD"
 
 
 def test_alias_acquisition_reads_live_builtin_object() -> None:
@@ -185,8 +206,12 @@ def test_deferred_namespace_receiver_keeps_subclass_method_dispatch() -> None:
     ir = compile_to_tir("def owner():\n    return globals().pop('key', None)\n")
     ops = next(fn["ops"] for fn in ir["functions"] if fn["name"] == "__main____owner")
     assert not any(op["kind"] == "dict_pop" for op in ops)
+    # The live lookup is CPython's method-form load: the callable in `var`.
+    (load,) = [
+        op for op in ops if op["kind"] == "load_method" and op.get("s_value") == "pop"
+    ]
     assert any(
-        op["kind"] == "get_attr_generic_obj" and op.get("s_value") == "pop"
+        op["kind"] == "call_loaded_method" and op["args"][0] == load["var"]
         for op in ops
     )
 
@@ -229,18 +254,25 @@ def test_stale_receiver_hints_cannot_authorize_any_builtin_method_family(
     source = f"value.{method}({arguments})"
     generator = SimpleTIRGenerator()
     generator.python_binding_index = analyze_python_source_bindings(source)
+    # Call lowering reads the module's call-form facts from sema.
+    generator._populate_sema_state(ast.parse(source))
     generator.locals["value"] = MoltValue("value", type_hint=hint)
     generator.visit(ast.parse(source, mode="eval").body)
     ops = generator.funcs_map["molt_main"]["ops"]
-    assert any(op.kind == "CALL_FUNC" for op in ops)
     if method == "split":
         # Stale hints admit only an exact runtime guard, never direct lowering.
+        assert any(op.kind == "CALL_FUNC" for op in ops)
         assert any(op.kind == specialized for op in ops)
         assert sum(op.kind == "IS" for op in ops) == 3
         assert any(op.kind == "GETATTR_GENERIC_OBJ" for op in ops)
         assert next(op for op in ops if op.kind == "TYPE_OF").args[0].type_hint == "Any"
     else:
         assert not any(op.kind == specialized for op in ops)
+        # The hinted local stays the receiver of CPython's generic method call.
+        call = _live_method_call(ops, method)
+        assert call.kind == "CALL_LOADED_METHOD"
+        load = next(op for op in ops if op.result is call.args[0])
+        assert load.args[0].name == "value"
 
     reference = SimpleTIRGenerator()
     reference.python_binding_index = analyze_python_source_bindings(f"value.{method}")
@@ -390,14 +422,19 @@ def test_context_constructor_spelling_never_manufactures_a_context(
     source += f"manager = {callee.format(name=name)}(argument(), custom=1)\n"
     ops = _raw_ops(source)
     assert not any(op.kind in {"CONTEXT_NULL", "CONTEXT_CLOSING"} for op in ops)
-    assert any(op.kind == "CALL_INDIRECT" for op in ops)
+    # The runtime binds the keyword against the live callable.
+    if callee.startswith("contextlib."):
+        assert _live_method_call(ops, name).kind == "CALL_BIND"
+    else:
+        assert any(op.kind == "CALL_INDIRECT" for op in ops)
 
 
 @pytest.mark.parametrize("prefix", ["", "math = replacement\n"])
 def test_math_spelling_does_not_authorize_truncation(prefix: str) -> None:
     ops = _raw_ops(f"{prefix}value = math.trunc(argument(), custom=1)\n")
     assert not any(op.kind == "TRUNC" for op in ops)
-    assert any(op.kind == "CALL_INDIRECT" for op in ops)
+    # The runtime binds the keyword against the live method-form load.
+    assert _live_method_call(ops, "trunc").kind == "CALL_BIND"
 
 
 @pytest.mark.parametrize("is_call", [False, True])
@@ -428,9 +465,10 @@ def test_file_result_kind_does_not_authorize_method_substitution(
     assert not any(
         op.kind in {"FILE_READ", "FILE_WRITE", "FILE_CLOSE", "FILE_FLUSH"} for op in ops
     )
-    calls = [op for op in ops if op.kind in {"CALL_FUNC", "CALL_INDIRECT"}]
-    assert calls[-1].kind == "CALL_INDIRECT"
-    assert calls[-1].result.type_hint == "Any"
+    # The runtime binds the keyword against the live method, whatever it is.
+    call = _live_method_call(ops, method)
+    assert call.kind == "CALL_BIND"
+    assert call.result.type_hint == "Any"
 
 
 @pytest.mark.parametrize(

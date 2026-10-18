@@ -10,6 +10,26 @@ from molt.compiler_analysis.python_function_kind import FunctionKind
 
 OPS_ERROR = ClassId("nativepkg.ops", "OpsError")
 
+# Wire kinds that invoke a callable operand. A method-shaped call lowers to
+# load_method and then call_loaded_method or, with keywords, call_bind.
+CALL_KINDS = frozenset(
+    {"call_func", "call_bind", "call_indirect", "call_guarded", "call_loaded_method"}
+)
+
+
+def callable_definition(operations: list[dict], callable_name: str) -> int:
+    """Index of the op that defines a call's callable operand.
+
+    load_method defines the callable in `var` and self_or_null in `out`;
+    every other producer defines its value in `out`.
+    """
+    return next(
+        i
+        for i, op in enumerate(operations)
+        if op.get("out") == callable_name
+        or (op["kind"] == "load_method" and op.get("var") == callable_name)
+    )
+
 
 @pytest.mark.parametrize(
     "roots,expected",
@@ -68,15 +88,7 @@ def assert_bound(source: str, name: str = "run") -> None:
     assert not any("nativepkg_ops__" in str(op) for op in operations)
     call_line = len(source.splitlines())
     assert any(
-        op["kind"]
-        in {
-            "call_bind",
-            "call_func",
-            "call_indirect",
-            "call_guarded",
-            "call_loaded_method",
-        }
-        and op.get("source_line") == call_line
+        op["kind"] in CALL_KINDS and op.get("source_line") == call_line
         for op in operations
     ), "the source call must dispatch an actual callable, not only import helpers"
 
@@ -433,19 +445,12 @@ def _assert_callback_and_callee_once(operations: list[dict], source: str) -> Non
     )
     callback = callback_argument(outer)
     assert callback is not None
-    call_kinds = {
-        "call_func",
-        "call_bind",
-        "call_indirect",
-        "call_guarded",
-        "call_loaded_method",
-    }
 
     def emitted_calls(node: ast.Call) -> list[int]:
         return [
             i
             for i, op in enumerate(operations)
-            if op["kind"] in call_kinds
+            if op["kind"] in CALL_KINDS
             and op.get("col_offset") == node.col_offset
             and op.get("end_col_offset") == node.end_col_offset
         ]
@@ -456,13 +461,7 @@ def _assert_callback_and_callee_once(operations: list[dict], source: str) -> Non
         "each source call executes once; import initialization is a different operation"
     )
     call = operations[outer_calls[0]]
-    # load_method defines the callable in `var` and self_or_null in `out`.
-    callee = next(
-        i
-        for i, op in enumerate(operations)
-        if op.get("out") == call["args"][0]
-        or (op["kind"] == "load_method" and op.get("var") == call["args"][0])
-    )
+    callee = callable_definition(operations, call["args"][0])
     assert operations[callee]["kind"] not in {"func_ref", "const_str"}
     assert callee < callback_calls[0] < outer_calls[0], (
         "descriptor/callee captured before effectful arguments"
@@ -520,18 +519,7 @@ def test_untyped_receiver_is_retained_and_argument_evaluated_once(
         for f in generator.to_json()["functions"]
         if f["name"] == "__main____invoke"
     )
-    calls = [
-        i
-        for i, op in enumerate(operations)
-        if op["kind"]
-        in {
-            "call_func",
-            "call_bind",
-            "call_indirect",
-            "call_guarded",
-            "call_loaded_method",
-        }
-    ]
+    calls = [i for i, op in enumerate(operations) if op["kind"] in CALL_KINDS]
     assert len(calls) == 2 + int(factory)
     assert operations[calls[-1]]["kind"] == "call_loaded_method"
     loads = [
@@ -693,11 +681,7 @@ def test_receiver_fast_paths_never_drop_keyword_or_expansion_effects(
         for f in generator.to_json()["functions"]
         if f["name"] == "__main____invoke"
     )
-    calls = [
-        i
-        for i, op in enumerate(operations)
-        if op["kind"] in {"call_func", "call_bind", "call_indirect", "call_guarded"}
-    ]
+    calls = [i for i, op in enumerate(operations) if op["kind"] in CALL_KINDS]
     # CALL_FUNCTION_EX also calls the builtin tuple materializer. Count the
     # actual source callback by its AST span, not legitimate protocol calls.
     source_callbacks = []
@@ -711,12 +695,9 @@ def test_receiver_fast_paths_never_drop_keyword_or_expansion_effects(
         assert len(matches) == 1
         source_callbacks.extend(matches)
     outer = calls[-1]
+    # Keywords and expansions bind at run time against the captured callee.
     assert operations[outer]["kind"] in {"call_bind", "call_indirect"}
-    callee = next(
-        i
-        for i, op in enumerate(operations)
-        if op.get("out") == operations[outer]["args"][0]
-    )
+    callee = callable_definition(operations, operations[outer]["args"][0])
     assert callee < min(source_callbacks) <= max(source_callbacks) < outer
 
 
