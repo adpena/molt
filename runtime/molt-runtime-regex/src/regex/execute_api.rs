@@ -20,10 +20,16 @@ pub extern "C" fn molt_re_execute(
         let Some(end) = to_i64(obj_from_bits(end_bits)) else {
             return raise_exception::<_>(_py, "TypeError", "end must be int");
         };
-        let Some(mode) = string_obj_to_owned(obj_from_bits(mode_bits)) else {
-            return raise_exception::<_>(_py, "TypeError", "mode must be str");
+        // The mode protocol is strict UTF-8; arbitrary regex text is not.
+        // SAFETY: the argument owns this immutable string under the core GIL.
+        let mode_bytes = match unsafe { string_storage(_py, mode_bits, "mode must be str") } {
+            Ok(bytes) => bytes,
+            Err(bits) => return bits,
         };
-        let mode = match MatchMode::try_from(mode.as_str()) {
+        let mode = match std::str::from_utf8(mode_bytes)
+            .map_err(|_| MatchError::InvalidMode)
+            .and_then(MatchMode::try_from)
+        {
             Ok(mode) => mode,
             Err(error) => return match_error_result(_py, error),
         };
@@ -40,14 +46,18 @@ pub extern "C" fn molt_re_execute(
             };
             execute_match_bytes(&compiled.compiled, bytes, pos, end, mode)
         } else {
-            let Some(text) = string_obj_to_owned(subject_obj) else {
-                return raise_exception::<_>(
+            // SAFETY: the retained argument owns immutable surrogatepass storage.
+            let text = match unsafe {
+                string_storage(
                     _py,
-                    "TypeError",
+                    subject_obj.bits(),
                     "cannot use a string pattern on a bytes-like object",
-                );
+                )
+            } {
+                Ok(bytes) => bytes,
+                Err(bits) => return bits,
             };
-            execute_match(&compiled.compiled, &text, pos, end, mode)
+            execute_match(&compiled.compiled, text, pos, end, mode)
         };
         match matched {
             Ok(Some(result)) => {
@@ -81,7 +91,7 @@ pub extern "C" fn molt_re_scanner_new(
         let pos = usize::try_from(pos.max(0)).unwrap_or(usize::MAX);
         let end = usize::try_from(end.max(0)).unwrap_or(usize::MAX);
         let subject = obj_from_bits(subject_bits);
-        let (text_chars, subject_len) = if pattern.compiled.is_bytes {
+        let (text_units, subject_len) = if pattern.compiled.is_bytes {
             let Some(bytes) = (unsafe { bytes_obj_to_borrowed(subject) }) else {
                 return raise_exception::<_>(
                     _py,
@@ -91,23 +101,19 @@ pub extern "C" fn molt_re_scanner_new(
             };
             (None, bytes.len())
         } else {
-            let Some(text) = string_obj_to_owned(subject) else {
-                return raise_exception::<_>(
-                    _py,
-                    "TypeError",
-                    "cannot use a string pattern on a bytes-like object",
-                );
+            let units = match string_codepoints(
+                _py,
+                subject_bits,
+                "cannot use a string pattern on a bytes-like object",
+            ) {
+                Ok(units) => units,
+                Err(bits) => return bits,
             };
-            let mut chars = Vec::new();
-            if let Err(error) = chars.try_reserve_exact(text.len()) {
-                return match_error_result(_py, error.into());
-            }
-            chars.extend(text.chars());
-            let len = chars.len();
-            (Some(chars), len)
+            let len = units.len();
+            (Some(units), len)
         };
         let end = end.min(subject_len);
-        let scanner = ScannerHandle::new(pattern, pos.min(subject_len), end, text_chars);
+        let scanner = ScannerHandle::new(pattern, pos.min(subject_len), end, text_units);
         match scanner_handle_new(Arc::new(Mutex::new(scanner))) {
             Some(bits) => bits,
             None => MoltObject::none().bits(),
@@ -144,7 +150,7 @@ pub extern "C" fn molt_re_finditer_next(scanner_bits: u64, subject_bits: u64) ->
             };
             advance_scanner(&mut scanner, SubjectStorage::Bytes(bytes))
         } else {
-            let Some(chars) = scanner.text_chars.take() else {
+            let Some(units) = scanner.text_units.take() else {
                 drop(scanner);
                 return raise_exception::<_>(
                     _py,
@@ -152,8 +158,8 @@ pub extern "C" fn molt_re_finditer_next(scanner_bits: u64, subject_bits: u64) ->
                     "text scanner has no prepared subject",
                 );
             };
-            let result = advance_scanner(&mut scanner, SubjectStorage::Text(&chars));
-            scanner.text_chars = Some(chars);
+            let result = advance_scanner(&mut scanner, SubjectStorage::Text(&units));
+            scanner.text_units = Some(units);
             result
         };
         drop(scanner);

@@ -160,13 +160,38 @@ pub(super) fn re_expand_typed(
     Ok(out)
 }
 
-pub(super) fn string_codepoints(_py: &CoreGilToken, bits: u64) -> Option<Vec<u32>> {
-    // SAFETY: the caller holds the core GIL and the original runtime string is
-    // retained by the argument/sequence snapshot for this entire operation.
-    let bytes = unsafe { rt_string_as_bytes(bits) }?;
-    // Runtime string producers establish surrogatepass storage; parsing the
-    // borrowed bytes does not create a foreign string view.
-    Some(molt_runtime_core::text_storage::code_points(bytes).collect())
+/// Borrow a text argument only after regex has admitted its physical type.
+/// The generic runtime getter has its own TypeError, so callers cannot repair
+/// their diagnostic after invoking it on a value of the wrong kind.
+///
+/// # Safety
+/// The core GIL must be held and `bits` must remain alive for the selected
+/// lifetime. No callback, finalizer or GIL release may cross the returned borrow.
+pub(super) unsafe fn string_storage<'a>(
+    py: &CoreGilToken,
+    bits: u64,
+    type_error: &str,
+) -> Result<&'a [u8], u64> {
+    let object = obj_from_bits(bits);
+    if !object
+        .as_ptr()
+        .is_some_and(|ptr| unsafe { object_type_id(ptr) } == TYPE_ID_STRING)
+    {
+        return Err(raise_exception::<u64>(py, "TypeError", type_error));
+    }
+    // A genuine provider failure retains its pending exception.
+    unsafe { rt_string_as_bytes(bits) }.ok_or(MoltObject::none().bits())
+}
+
+pub(super) fn string_codepoints(
+    py: &CoreGilToken,
+    bits: u64,
+    type_error: &str,
+) -> Result<Vec<u32>, u64> {
+    // SAFETY: the argument or sequence snapshot retains this string while
+    // canonical preparation allocates only Rust storage, without callbacks.
+    let bytes = unsafe { string_storage(py, bits, type_error) }?;
+    prepare_text(bytes).map_err(|error| match_error_result(py, error))
 }
 
 fn string_name(_py: &CoreGilToken, bits: u64) -> Option<String> {
@@ -386,10 +411,10 @@ pub extern "C" fn molt_re_expand_replacement(
             };
             bytes.iter().map(|byte| u32::from(*byte)).collect()
         } else {
-            let Some(units) = string_codepoints(_py, repl_bits) else {
-                return raise_exception::<_>(_py, "TypeError", "replacement must be str or bytes");
-            };
-            units
+            match string_codepoints(_py, repl_bits, "replacement must be str or bytes") {
+                Ok(units) => units,
+                Err(bits) => return bits,
+            }
         };
         let values_obj = obj_from_bits(group_values_bits);
         let Some(values_ptr) = values_obj.as_ptr() else {
@@ -414,12 +439,13 @@ pub extern "C" fn molt_re_expand_replacement(
                 };
                 group_values.push(Some(bytes.iter().map(|byte| u32::from(*byte)).collect()));
             } else {
-                let Some(units) = string_codepoints(_py, value_bits) else {
-                    return raise_exception::<_>(
-                        _py,
-                        "TypeError",
-                        "group_values must match replacement type",
-                    );
+                let units = match string_codepoints(
+                    _py,
+                    value_bits,
+                    "group_values must match replacement type",
+                ) {
+                    Ok(units) => units,
+                    Err(bits) => return bits,
                 };
                 group_values.push(Some(units));
             }

@@ -12,13 +12,13 @@ pub(super) struct Program {
 
 #[derive(Debug)]
 pub(super) enum Predicate {
-    Unit(char),
-    Literal(Vec<char>),
+    Unit(u32),
+    Literal(Vec<u32>),
     Any,
     Class {
         negated: bool,
-        ranges: Vec<(char, char)>,
-        chars: Vec<char>,
+        ranges: Vec<(u32, u32)>,
+        chars: Vec<u32>,
         categories: Vec<Category>,
     },
 }
@@ -180,7 +180,7 @@ impl Program {
             ReNode::Empty => next,
             ReNode::Literal(text) => self.emit(Instruction::Consume {
                 atom: Atom {
-                    predicate: literal_predicate(&text)?,
+                    predicate: literal_predicate(text),
                     flags,
                 },
                 next,
@@ -199,7 +199,12 @@ impl Program {
                 categories,
             } => self.emit(Instruction::Consume {
                 atom: Atom {
-                    predicate: class_predicate(negated, &ranges, &chars, &categories)?,
+                    predicate: Predicate::Class {
+                        negated,
+                        ranges,
+                        chars,
+                        categories,
+                    },
                     flags,
                 },
                 next,
@@ -322,52 +327,19 @@ impl Program {
     }
 }
 
-fn literal_predicate(text: &str) -> Result<Predicate, MatchError> {
-    let mut units = text.chars();
-    if let Some(unit) = units.next()
-        && units.next().is_none()
-    {
-        return Ok(Predicate::Unit(unit));
+fn literal_predicate(text: Vec<u32>) -> Predicate {
+    if text.len() == 1 {
+        Predicate::Unit(text[0])
+    } else {
+        Predicate::Literal(text)
     }
-    let mut chars = Vec::new();
-    chars.try_reserve_exact(text.chars().count())?;
-    chars.extend(text.chars());
-    Ok(Predicate::Literal(chars))
 }
 
-fn class_predicate(
-    negated: bool,
-    ranges: &[(String, String)],
-    chars: &[String],
-    categories: &[Category],
-) -> Result<Predicate, MatchError> {
-    fn unit(text: &str) -> Result<char, MatchError> {
-        let mut chars = text.chars();
-        let unit = chars.next().ok_or(MatchError::Internal)?;
-        if chars.next().is_some() {
-            return Err(MatchError::Internal);
-        }
-        Ok(unit)
-    }
-    let mut decoded_ranges = Vec::new();
-    decoded_ranges.try_reserve_exact(ranges.len())?;
-    for (lo, hi) in ranges {
-        decoded_ranges.push((unit(lo)?, unit(hi)?));
-    }
-    let mut decoded_chars = Vec::new();
-    decoded_chars.try_reserve_exact(chars.len())?;
-    for ch in chars {
-        decoded_chars.push(unit(ch)?);
-    }
-    let mut decoded_categories = Vec::new();
-    decoded_categories.try_reserve_exact(categories.len())?;
-    decoded_categories.extend_from_slice(categories);
-    Ok(Predicate::Class {
-        negated,
-        ranges: decoded_ranges,
-        chars: decoded_chars,
-        categories: decoded_categories,
-    })
+fn copy_units<T: Copy>(units: &[T]) -> Result<Vec<T>, MatchError> {
+    let mut copy = Vec::new();
+    copy.try_reserve_exact(units.len())?;
+    copy.extend_from_slice(units);
+    Ok(copy)
 }
 
 /// Structural specialization: every iteration consumes a fixed positive number
@@ -377,11 +349,14 @@ fn single_repeat(node: &ReNode, flags: i64) -> Result<Option<SingleRepeat>, Matc
         match node {
             ReNode::Empty => {}
             ReNode::Literal(text) => {
-                plan.width += text.chars().count();
+                plan.width += text.len();
                 checked_push(
                     &mut plan.atoms,
                     Atom {
-                        predicate: literal_predicate(text)?,
+                        predicate: match text.as_slice() {
+                            [unit] => Predicate::Unit(*unit),
+                            units => Predicate::Literal(copy_units(units)?),
+                        },
                         flags,
                     },
                 )?;
@@ -405,7 +380,12 @@ fn single_repeat(node: &ReNode, flags: i64) -> Result<Option<SingleRepeat>, Matc
                 checked_push(
                     &mut plan.atoms,
                     Atom {
-                        predicate: class_predicate(*negated, ranges, chars, categories)?,
+                        predicate: Predicate::Class {
+                            negated: *negated,
+                            ranges: copy_units(ranges)?,
+                            chars: copy_units(chars)?,
+                            categories: copy_units(categories)?,
+                        },
                         flags,
                     },
                 )?;
