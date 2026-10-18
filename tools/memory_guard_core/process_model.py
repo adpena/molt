@@ -958,6 +958,8 @@ _DARWIN_KERN_PROC = 14
 _DARWIN_KERN_PROC_ALL = 0
 _DARWIN_KERN_PROC_PID = 1
 _DARWIN_KERN_PROCARGS2 = 49
+# <sys/proc_info.h>: ``proc_listpids`` selector for the children of one pid.
+_DARWIN_PROC_PPID_ONLY = 6
 _DARWIN_ENOMEM = 12
 _DARWIN_TABLE_READ_ATTEMPTS = 8
 
@@ -1035,6 +1037,7 @@ class _DarwinProcessAuthority:
     proc_task_info_type: type[Any]
     kinfo: _DarwinKinfoLayout
     proc_pidinfo: Callable[..., int]
+    proc_listpids: Callable[..., int]
     sysctl: Callable[..., int]
 
     def kernel_table(self) -> dict[int, _DarwinKernelProcRow]:
@@ -1076,6 +1079,26 @@ class _DarwinProcessAuthority:
             if parsed is not None:
                 table[parsed[0]] = parsed[1]
         return table
+
+    def child_pids(self, ppid: int) -> tuple[int, ...]:
+        """The pids whose parent is ``ppid``; ``proc_listpids`` filters in the kernel."""
+        ctypes = self.ctypes
+        for _attempt in range(_DARWIN_TABLE_READ_ATTEMPTS):
+            needed = self.proc_listpids(_DARWIN_PROC_PPID_ONLY, ppid, None, 0)
+            if needed < 0:
+                raise OSError(ctypes.get_errno(), "proc_listpids size query failed")
+            # Headroom for children born between the size query and the read.
+            count = needed // ctypes.sizeof(ctypes.c_int) + 16
+            buffer = (ctypes.c_int * count)()
+            filled = self.proc_listpids(
+                _DARWIN_PROC_PPID_ONLY, ppid, buffer, ctypes.sizeof(buffer)
+            )
+            if filled < 0:
+                raise OSError(ctypes.get_errno(), "proc_listpids read failed")
+            if filled < ctypes.sizeof(buffer):
+                found = filled // ctypes.sizeof(ctypes.c_int)
+                return tuple(pid for pid in buffer[:found] if pid > 0)
+        raise OSError(_DARWIN_ENOMEM, "proc_listpids kept outgrowing its buffer")
 
     def kernel_row(self, pid: int) -> _DarwinKernelProcRow | None:
         """Read one ``kern.proc.pid`` row; None once the pid has been reaped.
@@ -1314,6 +1337,14 @@ def _load_darwin_process_authority() -> _DarwinProcessAuthority:
         ctypes.c_int,
     ]
     proc_pidinfo.restype = ctypes.c_int
+    proc_listpids = libproc.proc_listpids
+    proc_listpids.argtypes = [
+        ctypes.c_uint32,
+        ctypes.c_uint32,
+        ctypes.c_void_p,
+        ctypes.c_int,
+    ]
+    proc_listpids.restype = ctypes.c_int
 
     libsystem = ctypes.CDLL("/usr/lib/libSystem.B.dylib", use_errno=True)
     sysctl = libsystem.sysctl
@@ -1333,6 +1364,7 @@ def _load_darwin_process_authority() -> _DarwinProcessAuthority:
         proc_task_info_type=ProcTaskInfo,
         kinfo=kinfo,
         proc_pidinfo=proc_pidinfo,
+        proc_listpids=proc_listpids,
         sysctl=sysctl,
     )
 
@@ -1489,6 +1521,51 @@ def parse_windows_process_snapshot_rows(
     return samples
 
 
+def posix_custody_reads_partial_rows() -> bool:
+    """Whether ``sample_processes_posix_custody`` omits rows outside the interest."""
+    return sys.platform == "darwin"
+
+
+def posix_custody_lineage(pid: int) -> frozenset[int]:
+    """``pid`` and its ancestors, read row by row, for a custody interest.
+
+    Protection walks a tree member's ancestry through the guard to launchd, so
+    custody rows that hold this lineage judge every tree member as the host
+    table does.
+    """
+    if not posix_custody_reads_partial_rows():
+        return frozenset()
+    lineage: set[int] = set()
+    current = pid
+    while current > 0 and current not in lineage:
+        lineage.add(current)
+        row = _darwin_proc_kernel_row(current)
+        if row is None or row.ppid <= 0 or row.ppid == current:
+            break
+        current = row.ppid
+    return frozenset(lineage)
+
+
+def posix_custody_source() -> str:
+    """The telemetry name of the rows ``sample_processes_posix_custody`` reads."""
+    if posix_custody_reads_partial_rows():
+        return "darwin_custody_rows"
+    return "posix_process_table"
+
+
+def sample_processes_posix_custody(
+    interest: CustodyInterest,
+) -> dict[int, ProcessSample]:
+    """The rows one guard poll needs (docs/design/memory_guard_custody_sampling.md).
+
+    Darwin filters in the kernel. Linux still reads the host table, a superset
+    of the interest set, until its children-file reader lands.
+    """
+    if sys.platform == "darwin":
+        return _sample_processes_darwin_custody(interest)
+    return sample_processes_posix()
+
+
 def sample_processes_posix() -> dict[int, ProcessSample]:
     if sys.platform.startswith("linux"):
         return sample_processes_linux_proc()
@@ -1577,9 +1654,73 @@ def _sample_processes_darwin() -> dict[int, ProcessSample]:
     later reads of that sample reuse the bound value.
     """
 
+    return _darwin_samples(_darwin_proc_table())
+
+
+@dataclass(frozen=True, slots=True)
+class CustodyInterest:
+    """The rows one guard poll needs, instead of the host table.
+
+    ``tree_pids`` are live tracked processes: each yields its row and the rows
+    of its descendants. ``exact_pids`` yield their own row only (a suite
+    lease's owner and guardian, which sit outside the tree).
+    """
+
+    tree_pids: frozenset[int]
+    exact_pids: frozenset[int] = frozenset()
+
+
+def _darwin_custody_rows(interest: CustodyInterest) -> dict[int, _DarwinKernelProcRow]:
+    """Kernel rows of the interest set: tens of filtered reads, not the table.
+
+    A child is kept only while its row still names that parent, so a pid the
+    kernel reused between the two reads is not admitted. Descendants born
+    between two polls are found by walking each newly found child in turn.
+    """
+
+    authority = _darwin_process_authority()
+    if authority is None:
+        raise ProcessSnapshotError("Darwin process authority is unavailable")
+    rows: dict[int, _DarwinKernelProcRow] = {}
+    try:
+        for pid in sorted(interest.exact_pids | interest.tree_pids):
+            row = authority.kernel_row(pid)
+            if row is not None:
+                rows[pid] = row
+        pending = sorted(pid for pid in interest.tree_pids if pid in rows)
+        walked: set[int] = set()
+        while pending:
+            parent = pending.pop()
+            if parent in walked:
+                continue
+            walked.add(parent)
+            for child in authority.child_pids(parent):
+                row = rows.get(child)
+                if row is None:
+                    row = authority.kernel_row(child)
+                    if row is None or row.ppid != parent:
+                        continue
+                    rows[child] = row
+                pending.append(child)
+    except (AttributeError, OSError, TypeError, ValueError) as exc:
+        raise ProcessSnapshotError(f"Darwin custody sampling failed: {exc}") from exc
+    return rows
+
+
+def _sample_processes_darwin_custody(
+    interest: CustodyInterest,
+) -> dict[int, ProcessSample]:
+    """Darwin samples of one interest set, bound exactly as the table's are."""
+
+    return _darwin_samples(_darwin_custody_rows(interest))
+
+
+def _darwin_samples(
+    rows: Mapping[int, _DarwinKernelProcRow],
+) -> dict[int, ProcessSample]:
     now_ns = time.time_ns()
     samples: dict[int, ProcessSample] = {}
-    for pid, row in _darwin_proc_table().items():
+    for pid, row in rows.items():
         if row.status == _DARWIN_SZOMB:
             continue
         if _darwin_row_withholds_detail(row):

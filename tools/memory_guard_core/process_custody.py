@@ -431,6 +431,15 @@ def sample_processes() -> dict[int, ProcessSample]:
     return sample_processes_posix()
 
 
+def sample_processes_custody(
+    interest: _process_model.CustodyInterest,
+) -> dict[int, ProcessSample]:
+    """The rows one guard poll needs; a superset where no kernel filter exists."""
+    if _is_windows_process_model():
+        return sample_processes_windows()
+    return _process_model.sample_processes_posix_custody(interest)
+
+
 def _sample_pgid(sample: ProcessSample) -> int:
     return _process_model.sample_pgid_or_pid(sample)
 
