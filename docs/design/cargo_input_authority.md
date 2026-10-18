@@ -67,10 +67,13 @@ JSON messages:
 
 1. For each local `compiler-artifact` unit, the rustc dep-info beside its
    outputs (`<crate>-<metadata>.d`): its files and its `# env-dep:` variables.
-   A build script's unit lives in `build/<package>-<metadata>/`. A root artifact
-   that Cargo reports only uplifted has one candidate per feature lane; the one
-   this build used records this build's `OUT_DIR`. An ambiguous or missing
-   dep-info is refused.
+   A build script's unit lives in `build/<package>-<metadata>/`. For a root
+   artifact reported only uplifted, the reader binds a candidate's populated
+   rustc output rules to the primary outputs in Cargo's
+   [`compiler-artifact` message](https://doc.rust-lang.org/cargo/reference/external-tools.html#compiler-artifact).
+   Several feature or profile units can share `OUT_DIR`; its recorded value
+   narrows candidates when present. Actual output identity establishes the
+   binding, including units that do not read `OUT_DIR`.
 2. For each `build-script-executed` message, the script's `output` file beside
    its `out_dir`: the `rerun-if-changed` paths (relative to the package root)
    and the `rerun-if-env-changed` names. A script that declares neither counts
@@ -115,14 +118,39 @@ Coverage failure cannot reach generation publication. Publication retains its
 existing input-stability fence and atomic generation owner. Adoption validates
 the current source/tooling identity; there is no second cache registry or new
 guest check. The guard runs only after Cargo and reads bounded dep-info and
-build-script outputs. It hashes nothing; directory declarations also enumerate
-their current files. Its cost scales with reported unit output bytes and
-watched directory contents, not sample count or guest operation count.
+build-script outputs under the existing stable direct-file reader. Populated
+rules must agree on their source reads. Directory declarations also enumerate
+their current files.
 
-Uplifted units require exactly one inspectable per-unit candidate recording the
-reported `OUT_DIR`. Missing, malformed, unreadable or ambiguous evidence refuses
-publication. Uplifted units with no recorded `OUT_DIR` are not resolved by a
-guessed lane. This guard covers native runtime publication only; it does not
+For uplifted outputs, owned open handles establish same-file identity without
+hashing. Copied outputs first require equal size, then the existing streamed
+SHA-256 identity; Cargo's final output stays open throughout selection, and its
+digest is computed at most once per selection. Every primary Cargo filename must
+have a populated rustc output rule of its role with matching identity. An absent
+linked-output rule cannot bind through matching metadata alone. External debug
+and DLL import/export files follow
+[Cargo's auxiliary/debug classifications](https://doc.rust-lang.org/stable/nightly-rustc/src/cargo/compiler/build_context/target_info.rs.html#428-553);
+dep-info itself cannot bind a unit. Binary targets use Cargo's explicit
+`executable` field, so dotted executable names keep their primary role. These
+reads use the shared POSIX change-time fences and Windows write/delete exclusion.
+Missing retired candidate outputs do not
+match; unreadable, indirect or changing evidence refuses publication.
+
+Several output-equivalent candidates are safe only when their normalized source
+path sets and exact environment facts agree. The sorted dep-info pathname then
+selects deterministic evidence for that single read closure. Different closures
+remain ambiguous even when their output bytes happen to be equal. A lone
+`OUT_DIR` match still needs positive output identity.
+
+The cold copied-output cost is one final-artifact hash plus one hash for each
+same-size candidate output, with bounded streaming buffers and no persistent
+artifact digest cache. Different-size candidates cost metadata reads only. Direct
+per-unit paths and same-file outputs need no content hash. This runs during Cargo
+materialization; adoption of an already published generation and emitted guest
+programs acquire no additional work. Its cost scales with inspected records,
+compared artifact bytes and watched directory contents.
+
+This guard covers native runtime publication only; it does not
 establish environment completeness, actual used bytes or release acceptance.
 The canonical tree identity includes directory names from its existing traversal,
 so even an empty subdirectory addition invalidates the recorded source tree.

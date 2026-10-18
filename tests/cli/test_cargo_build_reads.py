@@ -338,6 +338,7 @@ def test_uplifted_units_resolve_to_the_dep_info_this_build_used(workspace) -> No
         ("f092e115d9c64469", lane_out, "runtime/crate/src/lib.rs"),
         ("0987fd8fa999fa1f", other_out, "runtime/crate/src/data file.json"),
     ):
+        _write(deps / f"libcrate-{metadata}.a")
         _write(
             deps / f"crate-{metadata}.d",
             f"{_escape(os.fspath(deps / f'libcrate-{metadata}.a'))}: {_escape(source)}\n"
@@ -374,10 +375,16 @@ def test_an_ambiguous_uplifted_unit_is_refused(workspace) -> None:
     root, crate, target = workspace
     deps = target / "deps"
     out_dir = os.fspath(target / "build" / "crate-1" / "out")
-    for metadata in ("aaaaaaaaaaaaaaaa", "bbbbbbbbbbbbbbbb"):
+    for metadata, source in (
+        ("aaaaaaaaaaaaaaaa", "runtime/crate/src/lib.rs"),
+        ("bbbbbbbbbbbbbbbb", "runtime/crate/src/data file.json"),
+    ):
+        output = _write(deps / f"libcrate-{metadata}.a")
         _write(
             deps / f"crate-{metadata}.d",
-            "x: runtime/crate/src/lib.rs\n\n" + _env_line("OUT_DIR", out_dir) + "\n",
+            f"{_escape(os.fspath(output))}: {_escape(source)}\n\n"
+            + _env_line("OUT_DIR", out_dir)
+            + "\n",
         )
     helper = _unit(deps, root / "vendor" / "zlib", "zlib", ["vendor/zlib/src/lib.rs"])
     _write(Path(out_dir).parent / "output", "cargo:rerun-if-changed=build.rs\n")
@@ -399,6 +406,236 @@ def test_an_ambiguous_uplifted_unit_is_refused(workspace) -> None:
     )
     with pytest.raises(reads.CargoBuildReadsError, match="several dep-info"):
         _read(workspace, helper, executed, root_unit)
+
+
+def _uplifted_candidate(
+    deps: Path,
+    metadata: str,
+    entries: list[str],
+    outputs: dict[str, str],
+    *,
+    environment: dict[str, str] | None = None,
+) -> Path:
+    """Actual rustc shape: dep-info and each emitted output name the reads."""
+    dep_info = deps / f"crate-{metadata}.d"
+    targets = [dep_info]
+    for suffix, contents in outputs.items():
+        targets.append(_write(deps / f"libcrate-{metadata}{suffix}", contents))
+    sources = " ".join(map(_escape, entries))
+    lines = [f"{_escape(os.fspath(target))}: {sources}" for target in targets]
+    lines.extend(_env_line(name, value) for name, value in (environment or {}).items())
+    return _write(dep_info, "\n".join(lines) + "\n")
+
+
+def _uplifted_message(outputs: list[Path], kind: str = "staticlib"):
+    return {
+        "target": {"kind": [kind], "name": "crate"},
+        "filenames": list(map(os.fspath, outputs)),
+    }
+
+
+def test_copied_output_selects_actual_unit_despite_equal_out_dir_and_size(workspace):
+    root, crate, target = workspace
+    deps = target / "dev-fast" / "deps"
+    out_dir = os.fspath(target / "build" / "crate-1" / "out")
+    _uplifted_candidate(
+        deps,
+        "old",
+        ["runtime/crate/src/data file.json"],
+        {".a": "old bytes"},
+        environment={"OUT_DIR": out_dir},
+    )
+    _uplifted_candidate(
+        deps,
+        "new",
+        ["runtime/crate/src/lib.rs"],
+        {".a": "new bytes"},
+        environment={"OUT_DIR": out_dir},
+    )
+    uplifted = _write(target / "dev-fast" / "libcrate.a", "new bytes")
+    helper = _unit(deps, root / "vendor" / "zlib", "zlib", ["vendor/zlib/src/lib.rs"])
+    executed = _script(
+        target / "build", crate, "crate", ["cargo:rerun-if-changed=build.rs"]
+    )
+    root_unit = {
+        **_uplifted_message([uplifted]),
+        "reason": "compiler-artifact",
+        "package_id": f"path+{crate.as_uri()}#crate@0.1.0",
+    }
+
+    # A newer competing output must not win; nor may equal file sizes bind it.
+    os.utime(deps / "libcrate-old.a", ns=(2_000_000_000_000_000_000,) * 2)
+    result = _read(workspace, helper, executed, json.dumps(root_unit))
+    assert _relative(root, result.files) == [
+        "runtime/crate/build.rs",
+        "runtime/crate/src/lib.rs",
+        "vendor/zlib/src/lib.rs",
+    ]
+
+
+@pytest.mark.parametrize("difference", ["files", "environment"])
+def test_identical_output_with_different_read_closures_refuses(tmp_path, difference):
+    deps = tmp_path / "deps"
+    _uplifted_candidate(deps, "a", ["src/lib.rs"], {".a": "same bytes"})
+    _uplifted_candidate(
+        deps,
+        "b",
+        ["src/other.rs"] if difference == "files" else ["src/lib.rs"],
+        {".a": "same bytes"},
+        environment={"FEATURE": "1"} if difference == "environment" else {},
+    )
+    output = _write(tmp_path / "libcrate.a", "same bytes")
+    with pytest.raises(reads.CargoBuildReadsError, match="different reads"):
+        reads._unit_dep_info(
+            _uplifted_message([output]), (deps,), None, workspace_root=tmp_path
+        )
+
+
+def test_identical_output_and_normalized_reads_coalesce_deterministically(tmp_path):
+    deps = tmp_path / "deps"
+    expected = _uplifted_candidate(
+        deps,
+        "a",
+        ["src/lib.rs", "src/other.rs"],
+        {".a": "same bytes"},
+        environment={"MODE": "1"},
+    )
+    _uplifted_candidate(
+        deps,
+        "b",
+        [os.fspath(tmp_path / "src/other.rs"), "src/lib.rs", "src/lib.rs"],
+        {".a": "same bytes"},
+        environment={"MODE": "1"},
+    )
+    output = _write(tmp_path / "libcrate.a", "same bytes")
+    record = reads._unit_dep_info(
+        _uplifted_message([output]), (deps,), None, workspace_root=tmp_path
+    )
+    assert record is not None
+    assert record.path == expected
+
+
+@pytest.mark.parametrize(
+    "suffix,kind",
+    [
+        (".a", "staticlib"),
+        (".lib", "staticlib"),
+        (".dll", "cdylib"),
+        (".dylib", "cdylib"),
+        (".so", "cdylib"),
+        (".exe", "bin"),
+        ("", "bin"),
+    ],
+)
+def test_actual_output_binding_is_independent_of_host_format(tmp_path, suffix, kind):
+    deps = tmp_path / "deps"
+    expected = _uplifted_candidate(
+        deps, "one", ["src/lib.rs"], {suffix: "format bytes"}
+    )
+    output = _write(tmp_path / ("crate" + suffix), "format bytes")
+    record = reads._unit_dep_info(
+        _uplifted_message([output], kind), (deps,), None, workspace_root=tmp_path
+    )
+    assert record is not None
+    assert record.path == expected
+
+
+def test_every_represented_primary_output_must_match(tmp_path):
+    deps = tmp_path / "deps"
+    expected = _uplifted_candidate(
+        deps, "new", ["src/lib.rs"], {".rlib": "new library", ".rmeta": "metadata"}
+    )
+    _uplifted_candidate(
+        deps, "old", ["src/other.rs"], {".rlib": "old library", ".rmeta": "metadata"}
+    )
+    library = _write(tmp_path / "libcrate.rlib", "new library")
+    metadata = _write(tmp_path / "libcrate.rmeta", "metadata")
+    pdb = _write(tmp_path / "crate.pdb", "debug")
+    record = reads._unit_dep_info(
+        _uplifted_message([library, metadata, pdb], "lib"),
+        (deps,),
+        None,
+        workspace_root=tmp_path,
+    )
+    assert record is not None
+    assert record.path == expected
+
+
+def test_unique_out_dir_does_not_bind_different_output_bytes(tmp_path):
+    deps = tmp_path / "deps"
+    _uplifted_candidate(
+        deps, "one", ["src/lib.rs"], {".a": "wrong"}, environment={"OUT_DIR": "/out"}
+    )
+    output = _write(tmp_path / "libcrate.a", "right")
+    with pytest.raises(reads.CargoBuildReadsError, match="no dep-info output matches"):
+        reads._unit_dep_info(
+            _uplifted_message([output]), (deps,), "/out", workspace_root=tmp_path
+        )
+
+
+def test_hardlinked_output_uses_owned_file_identity_without_hashing(
+    tmp_path, monkeypatch
+):
+    deps = tmp_path / "deps"
+    expected = _uplifted_candidate(deps, "one", ["src/lib.rs"], {".a": "same inode"})
+    output = tmp_path / "libcrate.a"
+    try:
+        output.hardlink_to(deps / "libcrate-one.a")
+    except OSError as exc:
+        pytest.skip(f"host cannot create a hard link: {exc}")
+
+    def forbidden_hash(*_args, **_kwargs):
+        raise AssertionError("same owned file must not require a content hash")
+
+    monkeypatch.setattr(reads, "stable_regular_file_handle_identity", forbidden_hash)
+    record = reads._unit_dep_info(
+        _uplifted_message([output]), (deps,), None, workspace_root=tmp_path
+    )
+    assert record is not None
+    assert record.path == expected
+
+
+def test_copy_hashes_final_once_and_skips_different_sizes(tmp_path, monkeypatch):
+    deps = tmp_path / "deps"
+    _uplifted_candidate(deps, "a", ["src/lib.rs"], {".a": "same bytes"})
+    _uplifted_candidate(deps, "b", ["src/lib.rs"], {".a": "same bytes"})
+    _uplifted_candidate(deps, "c", ["src/other.rs"], {".a": "different size"})
+    output = _write(tmp_path / "libcrate.a", "same bytes")
+    hashed = []
+    original = reads.stable_regular_file_handle_identity
+
+    def observe(opened, **kwargs):
+        hashed.append(opened.path)
+        return original(opened, **kwargs)
+
+    monkeypatch.setattr(reads, "stable_regular_file_handle_identity", observe)
+    record = reads._unit_dep_info(
+        _uplifted_message([output]), (deps,), None, workspace_root=tmp_path
+    )
+    assert record is not None
+    assert hashed.count(output) == 1
+    assert set(hashed) == {output, deps / "libcrate-a.a", deps / "libcrate-b.a"}
+
+
+@pytest.mark.parametrize("changed", ["final", "candidate"])
+def test_mutation_during_output_identity_refuses(tmp_path, monkeypatch, changed):
+    deps = tmp_path / "deps"
+    _uplifted_candidate(deps, "one", ["src/lib.rs"], {".a": "same bytes"})
+    output = _write(tmp_path / "libcrate.a", "same bytes")
+    target = output if changed == "final" else deps / "libcrate-one.a"
+    original = reads.stable_regular_file_handle_identity
+
+    def mutate(opened, **kwargs):
+        result = original(opened, **kwargs)
+        if opened.path == target:
+            target.write_text("evil bytes")
+        return result
+
+    monkeypatch.setattr(reads, "stable_regular_file_handle_identity", mutate)
+    with pytest.raises(reads.CargoBuildReadsError, match="changed"):
+        reads._unit_dep_info(
+            _uplifted_message([output]), (deps,), None, workspace_root=tmp_path
+        )
 
 
 @pytest.mark.parametrize("declaration", ["directory", "package"])
@@ -470,17 +707,22 @@ def test_publication_requires_the_watched_root_not_only_present_files(
 
 
 def test_uplifted_candidate_decodes_literal_windows_out_dir(tmp_path: Path) -> None:
+    output = _write(tmp_path / "libcrate-1.a")
     dep_info = _write(
         tmp_path / "crate-1.d",
-        "crate: src/lib.rs\n# env-dep:OUT_DIR=C:\\\\build\\\\target\\\\out\n",
+        f"{_escape(os.fspath(output))}: src/lib.rs\n"
+        r"# env-dep:OUT_DIR=C:\\build\\target\\out" + "\n",
     )
+    uplifted = _write(tmp_path / "release" / "libcrate.a")
     message = {
         "target": {"kind": ["staticlib"], "name": "crate"},
-        "filenames": [os.fspath(tmp_path / "release" / "libcrate.a")],
+        "filenames": [os.fspath(uplifted)],
     }
-    assert (
-        reads._unit_dep_info(message, (tmp_path,), r"C:\build\target\out") == dep_info
+    record = reads._unit_dep_info(
+        message, (tmp_path,), r"C:\build\target\out", workspace_root=tmp_path
     )
+    assert record is not None
+    assert record.path == dep_info
 
 
 def test_dep_info_decodes_environment_names_and_values(tmp_path: Path) -> None:
@@ -488,9 +730,9 @@ def test_dep_info_decodes_environment_names_and_values(tmp_path: Path) -> None:
         tmp_path / "unit.d",
         "out: src/lib.rs\tinclude.h\n# env-dep:LINE\\nNAME=line1\\nline2\\r\\\\\n",
     )
-    files, environment = reads._read_dep_info(dep_info)
-    assert files == ("src/lib.rs", "include.h")
-    assert environment == {"LINE\nNAME": "line1\nline2\r\\"}
+    record = reads._read_dep_info(dep_info)
+    assert record.files == ("src/lib.rs", "include.h")
+    assert record.environment == {"LINE\nNAME": "line1\nline2\r\\"}
 
 
 @pytest.mark.parametrize(
@@ -534,7 +776,7 @@ def test_uninspectable_candidate_cannot_establish_uplifted_uniqueness(tmp_path) 
         "filenames": [os.fspath(tmp_path / "release" / "libcrate.a")],
     }
     with pytest.raises(reads.CargoBuildReadsError):
-        reads._unit_dep_info(message, (tmp_path,), "/out")
+        reads._unit_dep_info(message, (tmp_path,), "/out", workspace_root=tmp_path)
 
 
 def test_build_script_trimming_retains_every_declared_input(workspace) -> None:
@@ -551,3 +793,100 @@ def test_build_script_trimming_retains_every_declared_input(workspace) -> None:
     )
     result = _read(workspace, message, script)
     assert root.resolve() / "include/api.h" in result.files
+
+
+def test_populated_output_rules_decode_windows_drives_and_spaces(tmp_path):
+    record_path = _write(
+        tmp_path / "crate.d",
+        "C:\\build\\ lane\\crate-x.d: C:\\src\\ tree\\lib.rs\n"
+        "C:\\build\\ lane\\crate-x.lib: C:\\src\\ tree\\lib.rs\n"
+        "C:\\src\\ tree\\lib.rs:\n",
+    )
+    record = reads._read_dep_info(record_path)
+    assert record.outputs == (r"C:\build lane\crate-x.d", r"C:\build lane\crate-x.lib")
+    assert record.files == (r"C:\src tree\lib.rs",)
+
+
+def test_populated_output_rules_with_different_sources_refuse(tmp_path):
+    dep_info = _write(
+        tmp_path / "crate.d",
+        "crate.d: src/lib.rs\nlibcrate.a: src/other.rs\n",
+    )
+    with pytest.raises(
+        reads.CargoBuildReadsError, match="output rules have different reads"
+    ):
+        reads._read_dep_info(dep_info)
+
+
+@pytest.mark.parametrize("suffix", [".pdb", ".d"])
+def test_binary_primary_is_cargo_executable_not_extension(tmp_path, suffix):
+    deps = tmp_path / "deps"
+    expected = _uplifted_candidate(
+        deps, "one", ["src/main.rs"], {suffix: "program bytes"}
+    )
+    executable = _write(tmp_path / ("tool" + suffix), "program bytes")
+    debug = _write(tmp_path / "tool.debug.pdb", "ancillary bytes")
+    message = {
+        **_uplifted_message([executable, debug], "bin"),
+        "executable": str(executable),
+    }
+    record = reads._unit_dep_info(message, (deps,), None, workspace_root=tmp_path)
+    assert record is not None
+    assert record.path == expected
+
+
+@pytest.mark.parametrize("with_complete_candidate", [False, True])
+def test_missing_linked_output_rule_cannot_bind_metadata_only_candidate(
+    tmp_path, with_complete_candidate
+):
+    deps = tmp_path / "deps"
+    _uplifted_candidate(deps, "old", ["src/old.rs"], {".rlib": "shared rlib bytes"})
+    expected = None
+    if with_complete_candidate:
+        expected = _uplifted_candidate(
+            deps,
+            "new",
+            ["src/lib.rs"],
+            {".rlib": "shared rlib bytes", ".dylib": "actual linked bytes"},
+        )
+    library = _write(tmp_path / "libcrate.rlib", "shared rlib bytes")
+    linked = _write(tmp_path / "libcrate.dylib", "actual linked bytes")
+    message = {
+        **_uplifted_message([library, linked]),
+        "target": {"kind": ["rlib", "cdylib"], "name": "crate"},
+    }
+    if expected is None:
+        with pytest.raises(
+            reads.CargoBuildReadsError, match="no dep-info output matches"
+        ):
+            reads._unit_dep_info(message, (deps,), None, workspace_root=tmp_path)
+    else:
+        record = reads._unit_dep_info(message, (deps,), None, workspace_root=tmp_path)
+        assert record is not None
+        assert record.path == expected
+
+
+@pytest.mark.parametrize(
+    "suffix", [".pdb", ".dSYM", ".dwp", ".dll.lib", ".dll.exp", ".dll.a", ".wasm.map"]
+)
+def test_library_primary_does_not_require_cargo_auxiliary_output_rules(
+    tmp_path, suffix
+):
+    deps = tmp_path / "deps"
+    expected = _uplifted_candidate(
+        deps, "one", ["src/lib.rs"], {".dll": "linked bytes"}
+    )
+    linked = _write(tmp_path / "crate.dll", "linked bytes")
+    auxiliary = tmp_path / ("crate" + suffix)
+    if suffix == ".dSYM":
+        auxiliary.mkdir()
+    else:
+        _write(auxiliary, "auxiliary bytes")
+    record = reads._unit_dep_info(
+        _uplifted_message([linked, auxiliary], "cdylib"),
+        (deps,),
+        None,
+        workspace_root=tmp_path,
+    )
+    assert record is not None
+    assert record.path == expected
