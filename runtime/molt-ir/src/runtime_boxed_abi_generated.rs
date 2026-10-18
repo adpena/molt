@@ -7359,11 +7359,6 @@ pub const RUNTIME_BOXED_ABIS: &[RuntimeBoxedAbi] = &[
         result: RuntimeBoxedReturn::OwnedValue,
     },
     RuntimeBoxedAbi {
-        symbol: "molt_memoryview_from_simple_buffer",
-        arity: 1,
-        result: RuntimeBoxedReturn::OwnedValue,
-    },
-    RuntimeBoxedAbi {
         symbol: "molt_memoryview_hex",
         arity: 3,
         result: RuntimeBoxedReturn::OwnedValue,
@@ -9245,6 +9240,11 @@ pub const RUNTIME_BOXED_ABIS: &[RuntimeBoxedAbi] = &[
     },
     RuntimeBoxedAbi {
         symbol: "molt_re_subject_snapshot",
+        arity: 1,
+        result: RuntimeBoxedReturn::OwnedValue,
+    },
+    RuntimeBoxedAbi {
+        symbol: "molt_re_subject_view",
         arity: 1,
         result: RuntimeBoxedReturn::OwnedValue,
     },

@@ -445,6 +445,8 @@ def test_refusal_reports_complete_independent_target_and_profile_requirements(
             "molt_re_finditer_next",
             "molt_re_group_values",
             "molt_re_scanner_new",
+            "molt_re_subject_snapshot",
+            "molt_re_subject_view",
         ),
     }
     symbols = (*sqlite_symbols, *feature_symbols["stdlib_regex"])
@@ -563,6 +565,8 @@ def test_real_re_module_intrinsics_are_link_affecting_regex() -> None:
         "molt_re_scanner_new",
         "molt_re_finditer_next",
         "molt_re_escape",
+        "molt_re_subject_snapshot",
+        "molt_re_subject_view",
     ):
         assert link_affecting_feature_gate_for_symbol(symbol) == "stdlib_regex"
 

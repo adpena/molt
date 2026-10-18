@@ -84,12 +84,28 @@ def source_re():
             return str.__getitem__(subject, slice(start, end))
         if type(subject) is bytes:
             return bytes.__getitem__(subject, slice(start, end))
-        return memoryview(subject)[start:end].tobytes()
+        return subject_view(subject)[start:end].tobytes()
 
     def subject_snapshot(value):
         if isinstance(value, str) or type(value) is bytes:
             return value
-        return memoryview(value).tobytes()
+        return subject_view(value).tobytes()
+
+    def subject_view(value):
+        if isinstance(value, str) or type(value) is bytes:
+            return value
+        try:
+            view = memoryview(value)
+            if view.c_contiguous:
+                return view
+            view.release()
+        except Exception:
+            pass
+        # Mirror only the fixture boundary. The independent differential
+        # fixture exercises CPython's real SRE exporter/error/lease behavior.
+        raise TypeError(
+            f"expected string or bytes-like object, got '{type(value).__name__}'"
+        )
 
     behavior = {
         "molt_re_escape": cpython_re.escape,
@@ -103,7 +119,7 @@ def source_re():
         "molt_re_group_values": group_values,
         "molt_re_expand_replacement": expand_replacement,
         "molt_re_subject_snapshot": subject_snapshot,
-        "molt_memoryview_from_simple_buffer": lambda value: memoryview(value),
+        "molt_re_subject_view": subject_view,
         "molt_re_strip_verbose": lambda pattern, _flags: pattern,
     }
     with intrinsic_registry(behavior):
@@ -230,3 +246,90 @@ def test_bytes_subclass_compile_subject_replacement_and_expand_authority(source_
     calls = template.buffer_calls
     assert match.expand(template) == b"A"
     assert template.buffer_calls == calls
+
+
+@pytest.mark.parametrize("expression", [b"a", "a"])
+@pytest.mark.parametrize("operation", ["search", "finditer", "split", "sub"])
+@pytest.mark.parametrize(
+    "subject_kind", ["none", "int", "list", TypeError, ValueError, BufferError, MemoryError, "strided"]
+)
+def test_subject_admission_matches_real_sre_error_and_handler_context(
+    source_re, expression, operation, subject_kind
+):
+    class RejectingBuffer:
+        def __init__(self, error_type):
+            self.error = error_type("exporter failure")
+            self.flags = []
+
+        def __buffer__(self, flags):
+            self.flags.append(flags)
+            raise self.error
+
+    def observe(module):
+        if subject_kind == "none":
+            subject = None
+        elif subject_kind == "int":
+            subject = 7
+        elif subject_kind == "list":
+            subject = []
+        elif subject_kind == "strided":
+            subject = memoryview(b"axax")[::2]
+        else:
+            subject = RejectingBuffer(subject_kind)
+        compiled = module.compile(expression)
+        try:
+            raise LookupError("outer admission handler")
+        except LookupError as outer:
+            try:
+                if operation == "sub":
+                    compiled.sub(b"X" if isinstance(expression, bytes) else "X", subject)
+                else:
+                    getattr(compiled, operation)(subject)
+            except Exception as error:
+                return (
+                    type(error), str(error), error.__context__ is outer,
+                    len(subject.flags) if isinstance(subject, RejectingBuffer) else None,
+                )
+        raise AssertionError("invalid subject unexpectedly admitted")
+
+    expected = observe(cpython_re)
+    assert expected[0] is TypeError
+    assert expected[2] is True
+    assert observe(source_re) == expected
+
+
+@pytest.mark.parametrize("failure_type", [TypeError, ValueError, BufferError, MemoryError])
+def test_capture_read_reuses_sre_admission_error_policy(source_re, failure_type):
+    class CaptureBuffer:
+        def __init__(self):
+            self.failure = None
+            self.flags = []
+
+        def __buffer__(self, flags):
+            self.flags.append(flags)
+            if self.failure is not None:
+                raise self.failure
+            return memoryview(b"a")
+
+    def observe(module):
+        subject = CaptureBuffer()
+        match = module.search(b"a", subject)
+        subject.failure = failure_type("capture exporter failure")
+        try:
+            raise LookupError("outer capture handler")
+        except LookupError as outer:
+            try:
+                match.group()
+            except Exception as error:
+                return type(error), str(error), error.__context__ is outer, subject.flags
+        raise AssertionError("capture exporter failure unexpectedly ignored")
+
+    expected = observe(cpython_re)
+    assert expected[0] is TypeError
+    assert expected[2] is True
+    assert expected[3] == [0, 0]
+    actual = observe(source_re)
+    assert actual[:3] == expected[:3]
+    # The facade fixture's host memoryview() asks FULL_RO. The actual target
+    # SIMPLE flags and lease lifetime are owned by re_bytes_admission.py.
+    assert len(actual[3]) == len(expected[3])

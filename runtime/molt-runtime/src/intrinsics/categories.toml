@@ -268,7 +268,8 @@ feature_prefixes = [
     "re_split",
     "re_sub",
     "re_group_values",
-    "memoryview_from_simple_buffer",
+    "re_subject_snapshot",
+    "re_subject_view",
     "re_expand_replacement",
 ]
 [stdlib.ipaddress]

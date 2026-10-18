@@ -165,6 +165,18 @@ owns buffer admission, physical subject length/slicing, capture extraction and t
 native scanner transition. The byte-subject and mutable-buffer differential cases
 are independent of the facade's host-CPython-backed unit fixture.
 
+Subject snapshot, capture read and scanner admission share SRE's `getstring`
+buffer role: request `PyBUF_SIMPLE` and replace every exporter failure (including
+a missing slot) with `TypeError` and the canonical 200-byte type-name diagnostic.
+Projection and allocation preparation precede exporter dispatch and preserve their
+original error. Replacement uses the existing raised-exception transaction, so an
+active outer handler remains the exception context. Text and exact immutable
+bytes keep their direct path; arbitrary exporters are acquired once, and scanner
+leases move into the existing traced memoryview owner until exhaustion. No Rust
+slice crosses an allocation/callback and no GREEN regex handle contains a lease.
+The public memoryview `_from_flags` clone semantics remain owned by memoryview;
+regex's `molt_re_subject_view` owns its stricter SRE buffer admission.
+
 ### 0.3 Refused designs (stated up front, with why)
 
 - **REFUSED-A: "keep the homegrown backtracker, just add a recursion-budget /

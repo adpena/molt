@@ -360,24 +360,16 @@ class _RegexScanner(Iterator[Match]):
     ) -> None:
         self._pattern = pattern
         self._string = string
-        if isinstance(pattern.pattern, bytes):
-            if isinstance(string, str):
-                raise TypeError("cannot use a bytes pattern on a string-like object")
-            if type(string) is bytes:
-                subject: str | bytes | memoryview = string
-            else:
-                make_view = _require_intrinsic("molt_memoryview_from_simple_buffer")
-                subject = make_view(string)
-            length = _subject_length(subject)
-        else:
-            if not isinstance(string, str):
-                if isinstance(string, (bytes, bytearray, memoryview)):
-                    raise TypeError("cannot use a string pattern on a bytes-like object")
-                raise TypeError(
-                    f"expected string or bytes-like object, got '{type(string).__name__}'"
-                )
+        if isinstance(string, str) or type(string) is bytes:
             subject = string
-            length = str.__len__(string)
+        else:
+            subject = _require_intrinsic("molt_re_subject_view")(string)
+        if isinstance(pattern.pattern, bytes):
+            if isinstance(subject, str):
+                raise TypeError("cannot use a bytes pattern on a string-like object")
+        elif not isinstance(subject, str):
+            raise TypeError("cannot use a string pattern on a bytes-like object")
+        length = _subject_length(subject)
         self._subject = subject
         self._start, self._end = _clamp_span(length, pos, endpos)
         create_scanner = _require_intrinsic("molt_re_scanner_new")
@@ -424,18 +416,21 @@ def _ensure_text(string: Any) -> str:
 
 
 def _subject_for(pattern: Pattern, string: Any) -> str | bytes:
-    if isinstance(pattern.pattern, bytes):
-        if isinstance(string, str):
-            raise TypeError("cannot use a bytes pattern on a string-like object")
+    bytes_pattern = isinstance(pattern.pattern, bytes)
+    if isinstance(string, str) or type(string) is bytes:
+        snapshot = string
+    elif bytes_pattern:
         snapshot = _require_intrinsic("molt_re_subject_snapshot")(string)
-        if not isinstance(snapshot, bytes):
+    else:
+        # Admit the real exporter before the kind mismatch, without copying
+        # a potentially large byte subject that this text pattern cannot use.
+        snapshot = _require_intrinsic("molt_re_subject_view")(string)
+    if bytes_pattern:
+        if isinstance(snapshot, str):
             raise TypeError("cannot use a bytes pattern on a string-like object")
-        return snapshot
-    if not isinstance(string, str):
-        if isinstance(string, (bytes, bytearray, memoryview)):
-            raise TypeError("cannot use a string pattern on a bytes-like object")
-        raise TypeError(f"expected string or bytes-like object, got '{type(string).__name__}'")
-    return string
+    elif not isinstance(snapshot, str):
+        raise TypeError("cannot use a string pattern on a bytes-like object")
+    return snapshot
 
 
 def _clamp_span(length: int, pos: int, endpos: int | None) -> tuple[int, int]:

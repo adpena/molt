@@ -19,6 +19,11 @@ pub(super) fn resolve_symbol(symbol: &str) -> Option<u64> {
             crate::molt_re_subject_snapshot as *const (),
         )),
         #[cfg(feature = "stdlib_regex")]
+        "molt_re_subject_view" => Some(crate::builtins::functions::runtime_fn_addr(
+            "crate::molt_re_subject_view",
+            crate::molt_re_subject_view as *const (),
+        )),
+        #[cfg(feature = "stdlib_regex")]
         "molt_re_strip_verbose" => Some(crate::builtins::functions::runtime_fn_addr(
             "crate::molt_re_strip_verbose",
             crate::molt_re_strip_verbose as *const (),
