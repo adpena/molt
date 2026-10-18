@@ -100,10 +100,14 @@ AMBIENT_GUARD_CAP_KEYS = (
 def no_ambient_guard_caps(monkeypatch: pytest.MonkeyPatch) -> None:
     """Resolve guard limits as if no CI plan or outer guard had set caps.
 
-    CI exports plan-derived caps for every guarded child, so a test of how
-    limits resolve must not inherit them; it sets the caps it means to test.
+    CI exports plan-derived caps for every guarded child, and a guard or the
+    proof executor exports a memory slice that bounds nested budgets, so a
+    test of how limits resolve must not inherit them; it sets the caps it
+    means to test.
     """
-    for key in AMBIENT_GUARD_CAP_KEYS:
+    from molt import host_capacity
+
+    for key in (*AMBIENT_GUARD_CAP_KEYS, host_capacity.MEMORY_SLICE_ENV):
         monkeypatch.delenv(key, raising=False)
 
 
