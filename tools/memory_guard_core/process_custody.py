@@ -15,6 +15,7 @@ import threading
 from typing import TYPE_CHECKING, Any, Literal, Self, TypeAlias, get_args
 
 if TYPE_CHECKING:
+    from tools.memory_guard_core.worker_peaks import WorkerPeakSummary
     from tools.win_job import WindowsJobCleanup
 
 from tools.memory_guard_core import process_model as _process_model
@@ -164,6 +165,8 @@ class GuardResult:
     infrastructure_failure: GuardInfrastructureFailure | None = None
     cancelled: bool = False
     descendants_closed: bool = False
+    # The largest pytest worker subtree and per-test peaks (worker_peaks.py).
+    worker_peaks: WorkerPeakSummary | None = None
 
 
 ChildExitResourceUsage = _process_model.ChildExitResourceUsage

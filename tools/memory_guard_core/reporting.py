@@ -407,6 +407,9 @@ def write_summary_json(
         "violation": _rss_record_payload(result.violation),
         "peak": _rss_record_payload(result.peak),
         "peak_total": _rss_record_payload(result.peak_total),
+        "worker_peaks": (
+            None if result.worker_peaks is None else result.worker_peaks.json_payload()
+        ),
         "peak_job_commit_bytes": result.peak_job_commit_bytes,
         "windows_job_cleanup": windows_job_cleanup_payload(result.windows_job_cleanup),
         "temporary_artifacts": result.temporary_artifacts,
