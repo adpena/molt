@@ -36,7 +36,7 @@ def test_artifact_needs_rebuild_for_invalid_static_library_even_with_matching_fi
         "hash": canonical_json_sha256("artifact-format"),
         "rustc": "rustc-test",
     }
-    stored = {"version": 4, **fingerprint}
+    stored = {"version": 3, **fingerprint}
     runtime_lib.write_bytes(static_archive_bytes(b"object"))
     assert (
         cli_runtime_fingerprints._artifact_needs_rebuild(

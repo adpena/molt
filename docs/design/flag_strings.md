@@ -101,10 +101,9 @@ combined Cargo producer pass those operands through
 environment strings still use `FlagStringRule` at their boundary. No shell
 quoting or splitting occurs on the export vectors.
 
-Runtime family identities continue to serialize flag tuples as JSON lists.
-Artifact fingerprint sidecars use version 4, invalidating earlier sidecars
-for this completed contract migration; the family/member identity wire
-schemas retain their existing list representation. Tools that carry export
+Runtime family identities serialize flag tuples as JSON lists, with the same
+tokens the old string split into, so fingerprint sidecars keep version 3 and
+no artifact rebuilds. Tools that carry export
 symbol sets rather than flag vectors keep those sets.
 
 This removes string construction and shell parsing over the export surface
