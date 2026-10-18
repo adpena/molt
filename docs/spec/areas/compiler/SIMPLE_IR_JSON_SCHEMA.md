@@ -200,10 +200,18 @@ CLI assembly validates every function before registering code IDs or inserting
 publication operations, including functions without matching native exports.
 
 CLI assembly borrows the lowered function records and their operation lists.
+The serializer emits two explicit artifact scopes. A standalone `program`
+owns `molt_main` and code-slot allocation. A `module` record emits its canonical
+`module_init_symbol`, symbolic code owners, and no `code_slots_init`; both
+worker and serial lowering persist that form. Assembly rejects the old
+program-shaped module form rather than repairing it. Parameter lists are
+detached from generator storage at emission. The cached lowering schema changes
+with this contract, so older records are misses.
+
 The assembly owns its outer function list: a changed function replaces that
 entry, and a changed operation replaces only its path through the function and
 operation list. Unchanged function, operation and parameter-list identities are
-retained. Code-owner projection, import-lane rewriting, native callable
+retained. Code-owner validation, import-lane rewriting, native callable
 publication, publication-envelope consumption and GPU descriptor finalization
 follow this rule, including their failure paths. Parameter-type completion
 copies a function only when its declared ABI needs completion.
@@ -215,6 +223,11 @@ owners required for function-digest reuse. As in
 cached result reuse requires that later consumers do not rewrite the result.
 There is no recursive frozen-container wrapper or whole-program deep copy:
 the existing traversals validate the records and allocate only changed paths.
+Serialization context belongs to one function walk, shared by its operation
+handlers. Its fields are immutable; its output list and analysis set are the
+same function-owned accumulators. Context construction therefore scales with
+functions rather than operation count. This follows the
+function's actual accumulator lifetime; it introduces no extra IR or optimizer.
 These ownership rules apply inside the compiler and add no emitted-program work.
 
 The verifier phase is explicit. `tools.check_ir_structure.verify_tir` accepts

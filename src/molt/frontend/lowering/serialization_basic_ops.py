@@ -427,7 +427,12 @@ class SerializationBasicOpsMixin(GeneratorMixinBase):
                 d["end_col_offset"] = op.end_col_offset
             ctx.json_ops.append(d)
         elif op.kind == "TRACE_ENTER_SLOT":
-            ctx.json_ops.append({"kind": "trace_enter_slot", "s_value": op.args[0]})
+            ctx.json_ops.append(
+                {
+                    "kind": "trace_enter_slot",
+                    "s_value": ctx.code_owner_symbol(op.args[0]),
+                }
+            )
         elif op.kind == "TRACE_EXIT":
             ctx.json_ops.append({"kind": "trace_exit"})
         elif op.kind in (
@@ -694,7 +699,7 @@ class SerializationBasicOpsMixin(GeneratorMixinBase):
             ctx.json_ops.append(
                 {
                     "kind": "code_slot_set",
-                    "s_value": code_symbol,
+                    "s_value": ctx.code_owner_symbol(code_symbol),
                     "args": [code_val.name, globals_dict.name],
                 }
             )

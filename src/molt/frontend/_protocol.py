@@ -2898,6 +2898,7 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
         *,
         function_name: str | None = ...,
         run_midend: bool = ...,
+        module_init_symbol: str | None = ...,
     ) -> list[dict[str, Any]]: ...
 
     @classmethod
@@ -2924,7 +2925,10 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
     ) -> None: ...
 
     def to_json(
-        self, *, midend_stage: Literal["pre-midend", "post-midend"] = ...
+        self,
+        *,
+        midend_stage: Literal["pre-midend", "post-midend"] = ...,
+        scope: Literal["program", "module"] = ...,
     ) -> dict[str, Any]: ...
 
     def visit(self, node: ast.AST) -> Any: ...

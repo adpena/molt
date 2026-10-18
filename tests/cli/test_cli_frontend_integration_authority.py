@@ -3,6 +3,9 @@ from __future__ import annotations
 import importlib
 import inspect
 from copy import deepcopy
+from typing import Any
+
+import pytest
 
 import molt.cli as cli
 from molt.cli import frontend_execution
@@ -45,7 +48,8 @@ def test_module_result_can_be_integrated_twice_without_mutating_cached_ir() -> N
 
     generator = SimpleTIRGenerator(module_name="cached_module")
     generator.visit(ast.parse("def answer(value):\n    return value + 1\n"))
-    functions = generator.to_json()["functions"]
+    document = generator.to_json(scope="module")
+    functions = document["functions"]
     before = deepcopy(functions)
     states = []
     for _ in range(2):
@@ -54,12 +58,16 @@ def test_module_result_can_be_integrated_twice_without_mutating_cached_ir() -> N
             state,
             "cached_module",
             ir_functions=functions,
-            func_code_ids=dict(generator.func_code_ids),
+            func_code_ids=document["code_slots"],
             local_classes={},
         )
         assert issue is None
         states.append(state)
         assert functions == before
+        for borrowed, integrated in zip(functions, state.functions, strict=True):
+            assert integrated is borrowed
+            assert integrated["ops"] is borrowed["ops"]
+            assert integrated["params"] is borrowed["params"]
     assert states[0].functions == states[1].functions
     assert states[0].global_code_ids == states[1].global_code_ids
     init_symbol = SimpleTIRGenerator.module_init_symbol("cached_module")
@@ -70,8 +78,9 @@ def test_module_result_can_be_integrated_twice_without_mutating_cached_ir() -> N
 def test_module_integration_retains_unmodified_function_and_operation_owners() -> None:
     untouched_op = {"kind": "ret_void"}
     untouched = {"name": "module__answer", "params": [], "ops": [untouched_op]}
-    main_op = {"kind": "trace_enter_slot", "s_value": "molt_main"}
-    main = {"name": "molt_main", "params": [], "ops": [main_op, untouched_op]}
+    init_symbol = SimpleTIRGenerator.module_init_symbol("module")
+    main_op = {"kind": "trace_enter_slot", "s_value": init_symbol}
+    main = {"name": init_symbol, "params": [], "ops": [main_op, untouched_op]}
     functions = [main, untouched]
     before = deepcopy(functions)
     state = _FrontendIntegrationState(functions=[], known_classes={})
@@ -79,7 +88,7 @@ def test_module_integration_retains_unmodified_function_and_operation_owners() -
         state,
         "module",
         ir_functions=functions,
-        func_code_ids={"molt_main": 0},
+        func_code_ids={init_symbol: 0},
         local_classes={},
     )
     assert issue is None
@@ -87,22 +96,21 @@ def test_module_integration_retains_unmodified_function_and_operation_owners() -
     assert state.functions[1] is untouched
     assert state.functions[1]["ops"] is untouched["ops"]
     projected = state.functions[0]
-    assert projected is not main and projected["ops"] is not main["ops"]
-    assert projected["name"] == SimpleTIRGenerator.module_init_symbol("module")
-    assert projected["ops"][0] == {
-        "kind": "trace_enter_slot",
-        "s_value": SimpleTIRGenerator.module_init_symbol("module"),
-    }
+    assert projected is main and projected["ops"] is main["ops"]
+    assert projected["params"] is main["params"]
+    assert projected["name"] == init_symbol
+    assert projected["ops"][0] is main_op
     assert projected["ops"][1] is untouched_op
 
 
 def test_failed_module_integration_does_not_change_borrowed_operations() -> None:
+    init_symbol = SimpleTIRGenerator.module_init_symbol("module")
     functions = [
         {
-            "name": "molt_main",
+            "name": init_symbol,
             "params": [],
             "ops": [
-                {"kind": "trace_enter_slot", "s_value": "molt_main"},
+                {"kind": "trace_enter_slot", "s_value": init_symbol},
                 {"kind": "class_set_definition", "class_definition": "foreign"},
             ],
         }
@@ -113,11 +121,80 @@ def test_failed_module_integration_does_not_change_borrowed_operations() -> None
         state,
         "module",
         ir_functions=functions,
-        func_code_ids={"molt_main": 0},
+        func_code_ids={init_symbol: 0},
         local_classes={},
     )
     assert (
         issue == "Class statement 'foreign' is stamped outside its owning module module"
     )
     assert functions == before
+    assert state.functions == []
+
+
+@pytest.mark.parametrize(
+    ("defect", "message"),
+    [
+        ("program-entry", "Legacy program entry"),
+        ("program-slots", "cannot initialize program code slots"),
+        ("program-owner", "Noncanonical module code owner"),
+        ("legacy-slot", "Missing canonical code owner"),
+        ("foreign-slot", "Missing canonical code owner"),
+        ("numeric-slot", "Missing canonical code owner"),
+    ],
+)
+def test_module_integration_rejects_stale_or_foreign_owners_without_rewriting(
+    defect: str, message: str
+) -> None:
+    symbol = SimpleTIRGenerator.module_init_symbol("module")
+    op: dict[str, Any] = {"kind": "trace_enter_slot", "s_value": symbol}
+    function: dict[str, Any] = {
+        "name": symbol,
+        "params": [],
+        "ops": [op, {"kind": "ret_void"}],
+    }
+    owners = {symbol: 0}
+    if defect == "program-entry":
+        function["name"] = "molt_main"
+    elif defect == "program-slots":
+        function["ops"].insert(0, {"kind": "code_slots_init", "value": 1})
+    elif defect == "program-owner":
+        owners["molt_main"] = 1
+    elif defect == "legacy-slot":
+        op["s_value"] = "molt_main"
+    elif defect == "foreign-slot":
+        op["s_value"] = "foreign"
+    else:
+        op["value"] = 0
+    before = deepcopy(function)
+    state = _FrontendIntegrationState(functions=[], known_classes={})
+    issue = frontend_integration._integrate_module_frontend_result_with_state(
+        state, "module", ir_functions=[function], func_code_ids=owners, local_classes={}
+    )
+    assert issue is not None and message in issue
+    assert function == before
+    assert function["ops"][-1]["kind"] == "ret_void"
+    assert state.functions == []
+
+
+def test_module_integration_keeps_class_statement_owner_refusal() -> None:
+    from molt.frontend import ClassId
+
+    symbol = SimpleTIRGenerator.module_init_symbol("module")
+    class_id = ClassId("module", "Owned", (1, 0))
+    state = _FrontendIntegrationState(functions=[], known_classes={})
+    state.class_definition_owners[class_id.definition_symbol] = "foreign"
+    function = {"name": symbol, "params": [], "ops": [{"kind": "ret_void"}]}
+    before = deepcopy(function)
+    issue = frontend_integration._integrate_module_frontend_result_with_state(
+        state,
+        "module",
+        ir_functions=[function],
+        func_code_ids={symbol: 0},
+        local_classes={class_id: {"dynamic": False}},
+    )
+    assert issue == (
+        f"Class statement {class_id.definition_symbol!r} is defined by both module "
+        "foreign and module module"
+    )
+    assert function == before
     assert state.functions == []

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import ast
+import copy
 import struct
 
 import pytest
@@ -13,6 +15,7 @@ from molt.frontend import MoltOp, MoltValue, SimpleTIRGenerator
 from molt.frontend._types import _SCCP_OVERDEFINED, _SCCP_UNKNOWN
 from molt.frontend.cfg_analysis import BasicBlock, CFGEdgeKind, CFGGraph, build_cfg
 from molt.frontend.lowering.midend_dataflow import _same_sccp_state
+from molt.frontend.lowering import serialization
 from molt.frontend.lowering.serialization_context import SerializationContext
 
 
@@ -33,6 +36,118 @@ def test_identity_serialization_never_invents_or_redefines_none_inputs(
         "out": "same",
     }
     assert sum(op.get("out") == "none_operand" for op in ctx.json_ops) == int(defined)
+
+
+def _serialization_generator() -> SimpleTIRGenerator:
+    gen = SimpleTIRGenerator(module_name="pkg.sample")
+    gen.visit(
+        ast.parse("def identity(value):\n    return value\nanswer = identity(7)\n")
+    )
+    return gen
+
+
+@pytest.mark.parametrize("first_scope", ["program", "module"])
+def test_serialization_scopes_preserve_canonical_owners_across_repeated_calls(
+    first_scope: str,
+) -> None:
+    gen = _serialization_generator()
+    original_slots = dict(gen.func_code_ids)
+    second_scope = "module" if first_scope == "program" else "program"
+    snapshots = {}
+    for scope in (first_scope, second_scope, first_scope, second_scope):
+        ir = gen.to_json(scope=scope, midend_stage="pre-midend")
+        owner = "molt_init_pkg_sample" if scope == "module" else "molt_main"
+        retired_owner = "molt_main" if scope == "module" else "molt_init_pkg_sample"
+        functions = {function["name"]: function for function in ir["functions"]}
+        assert owner in functions
+        assert retired_owner not in functions
+        assert ir["code_slots"][owner] == original_slots["molt_main"]
+        assert retired_owner not in ir["code_slots"]
+        assert {
+            name: slot for name, slot in ir["code_slots"].items() if name != owner
+        } == {
+            name: slot for name, slot in original_slots.items() if name != "molt_main"
+        }
+        all_ops = [op for function in functions.values() for op in function["ops"]]
+        assert sum(op["kind"] == "code_slots_init" for op in all_ops) == (
+            1 if scope == "program" else 0
+        )
+        for kind in ("trace_enter_slot", "code_slot_set"):
+            refs = [op["s_value"] for op in all_ops if op["kind"] == kind]
+            assert owner in refs
+            assert retired_owner not in refs
+            assert set(refs) <= ir["code_slots"].keys()
+        if scope in snapshots:
+            assert ir == snapshots[scope]
+        else:
+            snapshots[scope] = copy.deepcopy(ir)
+        if scope == "program":
+            assert gen.to_json(midend_stage="pre-midend") == ir
+        # Serialization never renames the generator's semantic function owners.
+        assert gen.func_code_ids == original_slots
+        assert "molt_main" in gen.funcs_map
+        assert "molt_init_pkg_sample" not in gen.funcs_map
+
+
+@pytest.mark.parametrize("scope", ["program", "module"])
+def test_serialization_parameters_are_detached_from_generator_and_other_results(
+    scope: str,
+) -> None:
+    gen = _serialization_generator()
+    first = gen.to_json(scope=scope, midend_stage="pre-midend")
+    second = gen.to_json(scope=scope, midend_stage="pre-midend")
+    first_functions = {function["name"]: function for function in first["functions"]}
+    second_functions = {function["name"]: function for function in second["functions"]}
+    for name, data in gen.funcs_map.items():
+        emitted_name = (
+            "molt_init_pkg_sample"
+            if name == "molt_main" and scope == "module"
+            else name
+        )
+        left = first_functions[emitted_name]["params"]
+        right = second_functions[emitted_name]["params"]
+        expected = list(data["params"])
+        assert left == right == expected
+        assert (
+            left is not right
+            and left is not data["params"]
+            and right is not data["params"]
+        )
+        left.append("result_only")
+        assert data["params"] == right == expected
+        data["params"].append("generator_only")
+        assert left == [*expected, "result_only"]
+        assert right == expected
+
+
+def test_serialization_context_allocation_is_per_function_not_per_operation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    gen = _serialization_generator()
+    constructed = []
+
+    def observe_context(*args, **kwargs):
+        context = SerializationContext(*args, **kwargs)
+        constructed.append(context)
+        return context
+
+    monkeypatch.setattr(serialization, "SerializationContext", observe_context)
+    ops = [MoltOp("CONST", [value], MoltValue(f"value_{value}")) for value in range(8)]
+    mapped = gen.map_ops_to_json(
+        ops, function_name="allocation_probe", run_midend=False
+    )
+    assert mapped == [
+        {"kind": "const", "value": value, "out": f"value_{value}"} for value in range(8)
+    ] + [{"kind": "ret_void"}]
+    assert len(constructed) == 1
+    assert constructed[0].json_ops == mapped
+    constructed.clear()
+    ir = gen.to_json(scope="module", midend_stage="pre-midend")
+    assert sum(len(function["ops"]) for function in ir["functions"]) > len(
+        ir["functions"]
+    )
+    assert len(constructed) == len(ir["functions"])
+    assert {context.function_name for context in constructed} == set(gen.funcs_map)
 
 
 def _float(bits: int) -> float:

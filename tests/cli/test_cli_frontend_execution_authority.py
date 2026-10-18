@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import ast
+from functools import partial
 import inspect
 from pathlib import Path
 
@@ -7,12 +9,16 @@ import pytest
 
 import molt.cli as cli
 from molt.cli import frontend_execution
+from molt.cli import frontend_integration
 from molt.cli import frontend_worker
 from molt.cli.models import (
     _FrontendModuleResultTimings,
     _FrontendParallelLayerState,
+    _FrontendIntegrationState,
+    _MidendDiagnosticsState,
 )
 from molt.cli.module_source import _ModuleSourceLease
+from molt.frontend import SimpleTIRGenerator
 
 _FRONTEND_EXECUTION_NAMES = (
     "_consume_frontend_module_result",
@@ -95,6 +101,62 @@ def test_serial_layer_result_records_cache_hits_as_cache_hits(tmp_path: Path) ->
             "worker_pid": None,
         }
     ]
+
+
+def test_module_result_consumer_keeps_canonical_records_and_diagnostic_names(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "m.py"
+    path.write_bytes(b"VALUE = 1\n")
+    lease = _ModuleSourceLease.path_backed(path)
+    generator = SimpleTIRGenerator(module_name="m")
+    generator.visit(ast.parse(path.read_bytes()))
+    document = generator.to_json(scope="module")
+    result = frontend_worker._module_frontend_payload(
+        generator,
+        document,
+        source_sha256=lease.source_sha256,
+        visit_s=0.0,
+        lower_s=0.0,
+        total_s=0.0,
+    )
+    # Diagnostics retain the frontend's internal function identity until their
+    # existing receiver projects a module-qualified display name.
+    result["midend_policy_outcomes_by_function"] = {"molt_main": {"degrade_events": []}}
+    result["midend_pass_stats_by_function"] = {"molt_main": {"fold": {"visited": 1}}}
+    state = _FrontendIntegrationState(functions=[], known_classes={})
+    diagnostics = _MidendDiagnosticsState(
+        policy_outcomes_by_function={}, pass_stats_by_function={}
+    )
+    error = frontend_execution._consume_frontend_module_result(
+        "m",
+        path,
+        result,
+        source_lease=lease,
+        record_frontend_timing=None,
+        integrate_module_frontend_result=partial(
+            frontend_integration._integrate_module_frontend_result_with_state, state
+        ),
+        accumulate_midend_diagnostics=partial(
+            frontend_integration._accumulate_midend_diagnostics_with_state, diagnostics
+        ),
+        fail=lambda *args, **kwargs: pytest.fail(
+            f"module consumption failed: {args!r}"
+        ),
+        json_output=True,
+    )
+    assert error is None
+    for borrowed, integrated in zip(
+        document["functions"], state.functions, strict=True
+    ):
+        assert integrated is borrowed
+        assert integrated["ops"] is borrowed["ops"]
+    symbol = SimpleTIRGenerator.module_init_symbol("m")
+    assert symbol in state.global_code_ids and "molt_main" not in state.global_code_ids
+    assert set(diagnostics.policy_outcomes_by_function) == {f"m::{symbol}"}
+    assert diagnostics.pass_stats_by_function == {
+        f"m::{symbol}": {"fold": {"visited": 1}}
+    }
 
 
 @pytest.mark.parametrize("defect", ["missing_stamp", "wrong_stamp", "wrong_path"])

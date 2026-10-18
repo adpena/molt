@@ -232,7 +232,7 @@ def test_module_initializers_solely_own_code_and_globals_publication(
             module_chunk_max_ops=1,
         )
         generator.visit(ast.parse("first = 1\nsecond = 2\nthird = 3\n"))
-        document = generator.to_json()
+        document = generator.to_json(scope="module")
         issue = _integrate_module_frontend_result_with_state(
             state,
             module,
@@ -360,7 +360,7 @@ def test_shared_module_code_payload_is_stable_when_an_earlier_module_is_added() 
                     else "def extra():\n    return 7\n"
                 )
             )
-            document = generator.to_json()
+            document = generator.to_json(scope="module")
             documents[module] = deepcopy(document)
             assert sorted(document["code_slots"].values()) == list(
                 range(len(document["code_slots"]))

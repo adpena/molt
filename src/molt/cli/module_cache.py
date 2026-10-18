@@ -742,7 +742,7 @@ def _module_lowering_execution_view(
 _MODULE_ANALYSIS_CACHE_SCHEMA_VERSION = 12
 
 
-_MODULE_LOWERING_CACHE_SCHEMA_VERSION = 6
+_MODULE_LOWERING_CACHE_SCHEMA_VERSION = 7
 
 
 _MODULE_ANALYSIS_FUNC_KINDS = frozenset({"sync", "async", "gen", "asyncgen"})
@@ -1777,17 +1777,25 @@ def _validate_persisted_module_lowering_payload(
     if not isinstance(result, dict):
         return None
     raw_functions = result.get("functions")
-    if isinstance(raw_functions, list):
-        result["functions"] = _normalize_backend_ir_functions(
-            [func for func in raw_functions if isinstance(func, dict)]
-        )
-        if (
-            _module_lowering_local_reference_issue(
-                module_name, result["functions"], known_modules=known_modules
-            )
-            is not None
+    if not isinstance(raw_functions, list):
+        return None
+    for function in raw_functions:
+        if not isinstance(function, dict):
+            return None
+        params = function.get("params")
+        param_types = function.get("param_types")
+        if not isinstance(params, list) or (
+            params
+            and (not isinstance(param_types, list) or len(param_types) < len(params))
         ):
             return None
+    if (
+        _module_lowering_local_reference_issue(
+            module_name, raw_functions, known_modules=known_modules
+        )
+        is not None
+    ):
+        return None
     source_lease.validate()
     return result
 
