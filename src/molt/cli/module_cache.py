@@ -842,15 +842,15 @@ def _module_lowering_cache_key(
     """Stable slot identity; the context owns captured source-byte identity.
 
     Locating a cache slot must neither reopen nor replace the admitted source.
-    The shared slot additionally includes the full content-addressed context;
-    the local slot may replace its previous context without retaining history.
+    The key names no path, so a toolchain module has one shared slot in every
+    project and working directory. The shared slot additionally includes the
+    full content-addressed context; the local slot may replace its previous
+    context without retaining history.
     """
-    return _resolved_module_cache_key(
-        "lowering",
-        module_name,
-        "pkg" if is_package else "mod",
-        target_python.tag,
+    identity = "|".join(
+        ("lowering", module_name, "pkg" if is_package else "mod", target_python.tag)
     )
+    return hashlib.sha256(identity.encode("utf-8")).hexdigest()[:24]
 
 
 def _module_lowering_cache_path(
@@ -1604,7 +1604,7 @@ def _trace_lowering_context_digest(payload: dict[str, Any], digest: str) -> None
     identical to the one a prior session wrote, so diffing two runs' traces
     localizes any run-varying context input to a specific field. No-op (a single
     ``os.environ`` read) unless the env var is set, so it never affects a build.
-    See docs/agent/FAST_WITNESS_ITER.md for the reproduce recipe.
+    ``tools/witness_iter.py`` sets it for the warm witness attestation.
     """
     dump_path = os.environ.get("MOLT_TRACE_LOWERING_CTX")
     if not dump_path:
