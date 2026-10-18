@@ -85,6 +85,14 @@ controls pass, including source-generation, target and namespace separation;
 the uncached-body control fails the repeated-work oracle. Broader repeated
 namespace scanning remains open under HF-285.
 
+A source-frozen ten-build native/WASM consumer cohort on Darwin arm64
+(logical `dev`, physical `dev-fast`, with changed runtime inputs) spent 551.7
+seconds in recorded build phases: WASM linking used 231.0 seconds (41.9%),
+backend preparation 164.2 seconds (29.8%), and module graphs 7.3 seconds (1.3%).
+The existing build-phase reporter owns this breakdown. It identifies where to
+measure and remove the remaining compilation cost under V1-07; it establishes
+neither a no-change rebuild result nor comparative performance acceptance.
+
 The bytes-regex consumer migration in HF-322 is bounded by
 [the regex authority](../design/foundation/37_regex-engine-frontier.md).
 Owned patterns, incremental scanner state and correct buffer custody do not
@@ -101,6 +109,25 @@ exporter exception classes and enclosing-handler context. These are emitted
 runtime changes. The 838-line consumer oracle passes actual native and WASM
 execution for Python 3.12; regex consumers, runtime fault controls and the other
 admitted Python-version cells remain under qualification.
+
+Builtin sequence descriptors now use the existing declaration and subscription
+authorities, including exact arbitrary-precision range slicing through the same
+normalizer as `slice.indices`. Integer indexing retains its fast path; range
+slicing does no work proportional to the number of elements. The descriptor
+and large-range consumer programs pass native and WASM execution against
+Python 3.12; allocation-failure controls and other guest-version cells remain
+under qualification.
+
+Capture extraction now shares one physical text/bytes slice authority and the
+existing aggregate owner. It preserves root errors and lossless WTF-8, clamps
+saved spans to the current mutable buffer, and retires partial captures on every
+failure. The copied whole-text/`Vec<char>` lane and its separate tuple builder
+are removed. The actual prior consumers exposed four overwritten diagnostics;
+the expanded consumer and native rollback controls still require execution
+under HF-322. Shared UTF-8 indexing still scans for ASCII before cache lookup;
+that residual classification cost remains a V1-07 obligation. Normal regex
+buffer execution exits cleanly, but does not independently qualify the earlier
+exceptional-shutdown observation.
 
 Local landing policy merges plain pytest targets into one parallel invocation;
 selector-bearing gates retain their declared scope. The driver and policy share

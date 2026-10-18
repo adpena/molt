@@ -410,7 +410,7 @@ fn utf8_char_to_byte_index_scan(bytes: &[u8], target: usize) -> usize {
     idx.min(bytes.len())
 }
 
-pub(in crate::object) fn utf8_char_to_byte_index_cached(
+pub(crate) fn utf8_char_to_byte_index_cached(
     _py: &PyToken<'_>,
     bytes: &[u8],
     char_idx: i64,

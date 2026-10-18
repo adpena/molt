@@ -295,94 +295,15 @@ pub(super) fn re_group_spans_from_sequence(
     Ok(out)
 }
 
-pub(super) fn re_slice_char_bounds(index: i64, text_len: i64) -> i64 {
-    if index < 0 {
-        let shifted = text_len + index;
-        if shifted < 0 { 0 } else { shifted }
-    } else if index > text_len {
-        text_len
-    } else {
-        index
-    }
-}
-
-pub(super) fn re_group_values_from_spans(
-    text: &str,
-    spans: &[Option<(i64, i64)>],
-) -> Vec<Option<String>> {
-    let text_chars: Vec<char> = text.chars().collect();
-    let text_len = i64::try_from(text_chars.len()).unwrap_or(i64::MAX);
-    let mut out: Vec<Option<String>> = Vec::with_capacity(spans.len());
-    for span in spans {
-        let Some((start, end)) = span else {
-            out.push(None);
-            continue;
-        };
-        let start_idx = re_slice_char_bounds(*start, text_len);
-        let end_idx = re_slice_char_bounds(*end, text_len);
-        let slice = if end_idx <= start_idx {
-            String::new()
-        } else {
-            let s = usize::try_from(start_idx).unwrap_or(0);
-            let e = usize::try_from(end_idx).unwrap_or(s);
-            text_chars[s..e].iter().collect()
-        };
-        out.push(Some(slice));
-    }
-    out
-}
-
-pub(super) fn re_alloc_group_values(
-    _py: &CoreGilToken,
-    values: &[Option<String>],
-) -> Result<u64, u64> {
-    let mut elem_bits: Vec<u64> = Vec::with_capacity(values.len());
-    let mut owned_bits: Vec<u64> = Vec::new();
-    for value in values {
-        if let Some(text) = value {
-            let ptr = alloc_string(_py, text.as_bytes());
-            if ptr.is_null() {
-                for bits in owned_bits {
-                    dec_ref_bits(_py, bits);
-                }
-                return Err(MoltObject::none().bits());
-            }
-            let bits = MoltObject::from_ptr(ptr).bits();
-            elem_bits.push(bits);
-            owned_bits.push(bits);
-        } else {
-            elem_bits.push(MoltObject::none().bits());
-        }
-    }
-    let out_ptr = alloc_tuple(_py, &elem_bits);
-    for bits in owned_bits {
-        dec_ref_bits(_py, bits);
-    }
-    if out_ptr.is_null() {
-        Err(MoltObject::none().bits())
-    } else {
-        Ok(MoltObject::from_ptr(out_ptr).bits())
-    }
-}
-
 // Runtime regex ABI entrypoints.
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_re_group_values(text_bits: u64, groups_bits: u64) -> u64 {
     molt_runtime_core::with_core_gil!(_py, {
-        let text_obj = obj_from_bits(text_bits);
         let spans = match re_group_spans_from_sequence(_py, groups_bits) {
             Ok(value) => value,
             Err(err_bits) => return err_bits,
         };
-        if let Some(text) = string_obj_to_owned(text_obj) {
-            let values = re_group_values_from_spans(text.as_str(), spans.as_slice());
-            return match re_alloc_group_values(_py, values.as_slice()) {
-                Ok(bits) => bits,
-                Err(err_bits) => err_bits,
-            };
-        }
         let mut values = Vec::with_capacity(spans.len());
-        let mut owned_bits = Vec::new();
         for span in spans {
             let value_bits = if let Some((start, end)) = span {
                 if start < 0 || end < start {
@@ -390,22 +311,25 @@ pub extern "C" fn molt_re_group_values(text_bits: u64, groups_bits: u64) -> u64 
                 }
                 let bits = subject_slice_to_object(text_bits, start as usize, end as usize);
                 if obj_from_bits(bits).is_none() {
-                    for bits in owned_bits {
-                        dec_ref_bits(_py, bits);
-                    }
-                    return raise_exception::<_>(_py, "TypeError", "text must be bytes-like");
+                    // The root bridge owns the admission/error authority.
+                    // Preserve exporter and allocation failures unchanged.
+                    return bits;
                 }
-                owned_bits.push(bits);
-                bits
+                unsafe { molt_runtime_core::OwnedRuntimeValue::from_owned_bits(_py, bits) }
             } else {
-                MoltObject::none().bits()
+                unsafe {
+                    molt_runtime_core::OwnedRuntimeValue::from_owned_bits(
+                        _py,
+                        MoltObject::none().bits(),
+                    )
+                }
             };
             values.push(value_bits);
         }
-        let ptr = alloc_tuple(_py, &values);
-        for bits in owned_bits {
-            dec_ref_bits(_py, bits);
-        }
+        let ptr = alloc_tuple(
+            _py,
+            molt_runtime_core::OwnedRuntimeValue::as_bits_slice(&values),
+        );
         if ptr.is_null() {
             MoltObject::none().bits()
         } else {

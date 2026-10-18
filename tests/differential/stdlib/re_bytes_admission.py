@@ -35,6 +35,18 @@ print(match.string is subject, match.group("hex"))
 subject[1:3] = b"B2"
 print(match.group(0), match.groups(), match.groupdict())
 
+# Saved spans remain valid after the mutable subject shrinks. Capture reads
+# clamp both endpoints to the current storage, including replacement expansion.
+shrinking = bytearray(b"ab")
+shrunk_match = re.search(b"(?P<first>a)(?P<second>b)", shrinking)
+shrinking.clear()
+print("cleared captures", shrunk_match.span(), shrunk_match.group(), shrunk_match.groups(), shrunk_match.groupdict(), shrunk_match.expand(b"<\\1|\\2>"))
+shrinking.extend(b"x")
+print("short captures", shrunk_match.group(), shrunk_match.groups(), shrunk_match.groupdict(), shrunk_match.expand(b"<\\1|\\2>"))
+
+surrogate_match = re.search("(?P<surrogate>.)", "\ud800A")
+print("surrogate capture", repr(surrogate_match.group()), repr(surrogate_match.groups()), repr(surrogate_match.groupdict()), repr(surrogate_match.expand("<\\g<surrogate>>")))
+
 
 class TrappingBytes(bytes):
     def __len__(self):
@@ -54,6 +66,8 @@ class TrappingStr(str):
 
 print(re.search(b"a", TrappingBytes(b"ba")).span())
 print(re.search("a", TrappingStr("ba")).span())
+text_match = re.search("(?P<letter>a)", TrappingStr("ba"))
+print(text_match.group(), text_match.groups(), text_match.groupdict(), text_match.expand("[\\g<letter>]"))
 print([match.span() for match in re.finditer(b"|a", b"a")])
 print([match.span() for match in re.finditer("|a", "a")])
 print([match.span() for match in re.finditer(b"", b"a")])
@@ -115,16 +129,17 @@ for expression in (b"a", "a"):
 
 
 class SREBuffer:
-    def __init__(self, failure=None):
+    def __init__(self, failure=None, fail_on_call=None):
         self.data = bytearray(b"aa")
         self.failure = failure
         self.flags = []
         self.releases = 0
+        self.fail_on_call = fail_on_call
 
     def __buffer__(self, flags):
         self.flags.append(flags)
-        if self.failure is not None:
-            raise self.failure
+        if self.failure is not None or len(self.flags) == self.fail_on_call:
+            raise self.failure or TypeError("later capture exporter failure")
         return memoryview(self.data)
 
     def __release_buffer__(self, view):
@@ -147,6 +162,12 @@ for failure_type in (TypeError, ValueError, BufferError, MemoryError):
     source.failure = failure_type("capture exporter failure")
     admission_result(("capture", failure_type.__name__), lambda: match.group())
     print("capture export custody", source.flags, source.releases)
+
+source = SREBuffer()
+match = re.search(b"(?P<first>a)(?P<second>a)", source)
+source.fail_on_call = len(source.flags) + 2
+admission_result("later capture exporter", lambda: match.groups())
+print("later capture export custody", source.flags, source.releases)
 
 for expression in (b"a", "a"):
     for name in ("search", "finditer"):

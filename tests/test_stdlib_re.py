@@ -212,7 +212,30 @@ def test_text_match_expand_and_subject_subclass_hooks_are_bypassed(source_re):
     match = pattern.search(TrappingStr("ba"))
     assert match is not None
     assert match.span() == (1, 2)
+    assert match.group() == "a"
+    assert match.groups() == ("a",)
+    assert match.groupdict() == {"part": "a"}
     assert match.expand("[\\g<part>]") == "[a]"
+
+
+def test_capture_reads_clamp_mutable_subjects_and_preserve_wtf8(source_re):
+    subject = bytearray(b"ab")
+    match = source_re.search(b"(?P<first>a)(?P<second>b)", subject)
+    assert match is not None
+    subject.clear()
+    assert match.span() == (0, 2)
+    assert match.group() == b""
+    assert match.groups() == (b"", b"")
+    assert match.groupdict() == {"first": b"", "second": b""}
+    subject.extend(b"x")
+    assert match.groups() == (b"x", b"")
+
+    text_match = source_re.search("(?P<surrogate>.)", "\ud800A")
+    assert text_match is not None
+    assert text_match.group() == "\ud800"
+    assert text_match.groups() == ("\ud800",)
+    assert text_match.groupdict() == {"surrogate": "\ud800"}
+    assert text_match.expand("<\\g<surrogate>>") == "<\ud800>"
 
 
 def test_bytes_subclass_compile_subject_replacement_and_expand_authority(source_re):
