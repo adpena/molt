@@ -43,6 +43,26 @@ extern "C" fn bridge_exception_pending() -> i32 {
     crate::with_gil_entry_nopanic!(_py, { if exception_pending(_py) { 1 } else { 0 } })
 }
 
+extern "C" fn bridge_replace_exception(
+    type_ptr: *const u8,
+    type_len: usize,
+    msg_ptr: *const u8,
+    msg_len: usize,
+) -> u64 {
+    crate::with_gil_entry_nopanic!(py, {
+        let kind = unsafe {
+            std::str::from_utf8_unchecked(std::slice::from_raw_parts(type_ptr, type_len))
+        };
+        let message =
+            unsafe { std::str::from_utf8_unchecked(std::slice::from_raw_parts(msg_ptr, msg_len)) };
+        crate::builtins::exceptions::with_saved_raised_exception(py, || {
+            raise_exception::<()>(py, kind, message);
+            false
+        });
+        MoltObject::none().bits()
+    })
+}
+
 extern "C" fn bridge_decode_ascii_input(bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(py, {
         let Some(ptr) = obj_from_bits(bits).as_ptr() else {
@@ -871,6 +891,7 @@ static RUNTIME_VTABLE: RuntimeVtable = RuntimeVtable {
     },
     runtime_state_get_or_init: bridge_runtime_state_get_or_init,
     raise_exception: bridge_raise_exception,
+    replace_exception: bridge_replace_exception,
     exception_pending: bridge_exception_pending,
     exception_new_from_class: crate::builtins::exceptions::molt_exception_new_from_class,
     decode_ascii_input: bridge_decode_ascii_input,

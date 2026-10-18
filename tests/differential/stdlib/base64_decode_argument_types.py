@@ -14,6 +14,15 @@ import base64
 import binascii
 
 
+# Memoryview distinguishes a missing buffer slot from a real exporter failure.
+# The same diagnostic must hold for inline and heap-represented non-exporters.
+for value in ([], {}, 5, 2**100, "text", 1.5, None):
+    try:
+        memoryview(value)
+    except TypeError as exc:
+        print("memoryview admission", type(value).__name__, str(exc), exc.__context__)
+
+
 class TypeErrorBuffer:
     def __init__(self):
         self.error = TypeError("buffer export refused")
@@ -48,6 +57,31 @@ class Buffer:
 
     def __buffer__(self, flags):
         return memoryview(self.data)
+
+
+# All a2b consumers share Clinic's ascii_buffer policy. Failed exports are
+# replaced, while an enclosing handled exception remains the implicit context.
+for decode in (
+    binascii.a2b_base64,
+    binascii.a2b_hex,
+    binascii.unhexlify,
+    binascii.a2b_qp,
+    binascii.a2b_uu,
+):
+    for value in ([], "hé", TypeErrorBuffer(), ValueErrorBuffer(), memoryview(b"aXbX")[::2]):
+        try:
+            decode(value)
+        except Exception as exc:
+            print("ascii buffer", decode.__name__, type(value).__name__, type(exc).__name__, str(exc), exc.__context__)
+    outer = LookupError("outer handler")
+    try:
+        raise outer
+    except LookupError:
+        refused = ValueErrorBuffer()
+        try:
+            decode(refused)
+        except TypeError as exc:
+            print("ascii buffer context", decode.__name__, exc is refused.error, exc.__context__ is outer, exc.__cause__, exc.__suppress_context__)
 
 
 def show(label, operation, argument):

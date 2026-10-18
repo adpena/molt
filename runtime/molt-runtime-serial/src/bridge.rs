@@ -84,6 +84,12 @@ pub fn exception_pending(_py: &PyToken) -> bool {
     unsafe { (vt().exception_pending)() != 0 }
 }
 
+/// Replace a failed converter's raised owner without handling it. The current
+/// handled exception still supplies the new error's implicit context.
+pub fn replace_exception(_py: &PyToken, kind: &str, message: &str) -> u64 {
+    unsafe { (vt().replace_exception)(kind.as_ptr(), kind.len(), message.as_ptr(), message.len()) }
+}
+
 pub fn decode_ascii_input(_py: &PyToken, bits: u64) -> u64 {
     unsafe { (vt().decode_ascii_input)(bits) }
 }

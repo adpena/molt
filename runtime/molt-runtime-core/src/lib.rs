@@ -1254,9 +1254,9 @@ pub type RuntimeExtensionStateDrop = unsafe extern "C" fn(*mut u8);
 
 /// `MOLTVTAB` encoded as a little-endian `u64`.
 pub const RUNTIME_VTABLE_ABI_MAGIC: u64 = 0x4241_5456_544c_4f4d;
-// Version 8 replaces pending match/clear with owned ASCII codec error conversion
-// and publishes typed binascii exception identities through the canonical cache.
-pub const RUNTIME_VTABLE_ABI_VERSION: u32 = 8;
+// Version 9 adds atomic replacement through the existing raised-exception owner
+// for consumers whose Argument Clinic converter replaces exporter failures.
+pub const RUNTIME_VTABLE_ABI_VERSION: u32 = 9;
 
 /// Native binascii module exception identities; exported names are metadata.
 #[repr(u32)]
@@ -1289,6 +1289,7 @@ pub struct RuntimeVtable {
 
     // --- Exception handling ---
     pub raise_exception: unsafe extern "C" fn(*const u8, usize, *const u8, usize) -> u64,
+    pub replace_exception: unsafe extern "C" fn(*const u8, usize, *const u8, usize) -> u64,
     pub exception_pending: unsafe extern "C" fn() -> i32,
     pub exception_new_from_class: unsafe extern "C" fn(u64, u64) -> u64,
     /// Run the actual strict ASCII codec and translate its UnicodeEncodeError.

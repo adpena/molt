@@ -1,8 +1,62 @@
 use crate::bridge::*;
-use molt_cpython_abi::native_custody::ByteInput;
+use molt_cpython_abi::native_custody::{BufferAcquireError, ByteInput};
 use molt_runtime_core::prelude::*;
 
 const BASE64_TABLE: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+
+/// Argument Clinic's shared ascii_buffer converter, used by every a2b decoder.
+/// Exact immutable bytes reuse their owner; mutable exporters retain one lease.
+enum AsciiInput<'py> {
+    Text(String),
+    Buffer(ByteInput<'py>),
+}
+
+impl<'py> AsciiInput<'py> {
+    fn acquire(py: &'py PyToken, bits: u64) -> Result<Self, u64> {
+        if let Some(text) = string_obj_to_owned(obj_from_bits(bits)) {
+            if !text.is_ascii() {
+                return Err(raise_exception::<_>(
+                    py,
+                    "ValueError",
+                    "string argument should contain only ASCII characters",
+                ));
+            }
+            return Ok(Self::Text(text));
+        }
+        let input = match unsafe { ByteInput::acquire(py, bits) } {
+            Ok(input) => input,
+            // Projection/allocation failures precede the CPython converter's
+            // exporter call and must retain their selected exception.
+            Err(BufferAcquireError::Preparation) => return Err(MoltObject::none().bits()),
+            Err(BufferAcquireError::Exporter) => {
+                return Err(Self::invalid(py, bits, "bytes, buffer or ASCII string"));
+            }
+        };
+        if !input.is_c_contiguous() {
+            return Err(Self::invalid(py, bits, "a contiguous buffer"));
+        }
+        Ok(Self::Buffer(input))
+    }
+
+    fn invalid(py: &PyToken, bits: u64, expected: &str) -> u64 {
+        let label = type_name(py, obj_from_bits(bits));
+        let label = String::from_utf8_lossy(&label.as_bytes()[..label.len().min(100)]);
+        replace_exception(
+            py,
+            "TypeError",
+            &format!("argument should be {expected}, not '{label}'"),
+        )
+    }
+
+    // Borrow only after all Python conversions have completed. A mutable
+    // exporter may change bytes during a later argument's truth conversion.
+    unsafe fn bytes<'a>(&'a self, py: &'a PyToken) -> &'a [u8] {
+        match self {
+            Self::Text(text) => text.as_bytes(),
+            Self::Buffer(input) => unsafe { input.bytes(py) },
+        }
+    }
+}
 
 fn alloc_bytes_or_oom(_py: &PyToken, data: &[u8], context: &str) -> u64 {
     let ptr = alloc_bytes(_py, data);
@@ -688,40 +742,15 @@ pub extern "C" fn molt_binascii_incomplete_type() -> u64 {
 pub extern "C" fn molt_binascii_a2b_base64(data_bits: u64, strict_bits: u64) -> u64 {
     molt_runtime_core::with_gil_entry!(py, {
         // Argument Clinic consumes ascii_buffer before strict_mode.__bool__.
-        // Unlike base64._bytes_from_decode_data this C converter replaces every
-        // failed buffer export, without an implicit context for the raised slot.
-        let text = string_obj_to_owned(obj_from_bits(data_bits));
-        if text.as_ref().is_some_and(|text| !text.is_ascii()) {
-            return raise_exception::<_>(
-                py,
-                "ValueError",
-                "string argument should contain only ASCII characters",
-            );
-        }
-        let input_export = if text.is_some() {
-            None
-        } else {
-            match unsafe { ByteInput::acquire(py, data_bits) } {
-                Ok(export) => Some(export),
-                Err(_) => {
-                    let label = type_name(py, obj_from_bits(data_bits));
-                    let label = String::from_utf8_lossy(&label.as_bytes()[..label.len().min(100)]);
-                    return raise_exception::<_>(
-                        py,
-                        "TypeError",
-                        &format!("argument should be bytes, buffer or ASCII string, not '{label}'"),
-                    );
-                }
-            }
+        let input = match AsciiInput::acquire(py, data_bits) {
+            Ok(input) => input,
+            Err(error) => return error,
         };
         let strict = is_truthy(py, obj_from_bits(strict_bits));
         if exception_pending(py) {
             return MoltObject::none().bits();
         }
-        let raw = text.as_ref().map_or_else(
-            || unsafe { input_export.as_ref().unwrap().bytes(py) },
-            |text| text.as_bytes(),
-        );
+        let raw = unsafe { input.bytes(py) };
         let decoded = match crate::base64_mod::b64_decode(raw, strict) {
             Ok(v) => v,
             Err(msg) => return raise_binascii_error(py, msg.as_ref()),
@@ -745,19 +774,11 @@ pub extern "C" fn molt_binascii_b2a_base64(data_bits: u64) -> u64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_binascii_a2b_hex(data_bits: u64) -> u64 {
     molt_runtime_core::with_gil_entry!(_py, {
-        let text = string_obj_to_owned(obj_from_bits(data_bits));
-        let input_export = if text.is_some() {
-            None
-        } else {
-            match unsafe { ByteInput::acquire(_py, data_bits) } {
-                Ok(export) => Some(export),
-                Err(_) => return MoltObject::none().bits(),
-            }
+        let input = match AsciiInput::acquire(_py, data_bits) {
+            Ok(input) => input,
+            Err(error) => return error,
         };
-        let raw = text.as_ref().map_or_else(
-            || unsafe { input_export.as_ref().unwrap().bytes(_py) },
-            |text| text.as_bytes(),
-        );
+        let raw = unsafe { input.bytes(_py) };
         if !raw.len().is_multiple_of(2) {
             return raise_binascii_error(_py, "Odd-length string");
         }
@@ -788,19 +809,11 @@ pub extern "C" fn molt_binascii_b2a_hex(data_bits: u64) -> u64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_binascii_a2b_qp(data_bits: u64) -> u64 {
     molt_runtime_core::with_gil_entry!(_py, {
-        let text = string_obj_to_owned(obj_from_bits(data_bits));
-        let input_export = if text.is_some() {
-            None
-        } else {
-            match unsafe { ByteInput::acquire(_py, data_bits) } {
-                Ok(export) => Some(export),
-                Err(_) => return MoltObject::none().bits(),
-            }
+        let input = match AsciiInput::acquire(_py, data_bits) {
+            Ok(input) => input,
+            Err(error) => return error,
         };
-        let raw = text.as_ref().map_or_else(
-            || unsafe { input_export.as_ref().unwrap().bytes(_py) },
-            |text| text.as_bytes(),
-        );
+        let raw = unsafe { input.bytes(_py) };
         let out = qp_decode(raw);
         alloc_bytes_or_oom(_py, &out, "a2b_qp")
     })
@@ -821,19 +834,11 @@ pub extern "C" fn molt_binascii_b2a_qp(data_bits: u64) -> u64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_binascii_a2b_uu(data_bits: u64) -> u64 {
     molt_runtime_core::with_gil_entry!(_py, {
-        let text = string_obj_to_owned(obj_from_bits(data_bits));
-        let input_export = if text.is_some() {
-            None
-        } else {
-            match unsafe { ByteInput::acquire(_py, data_bits) } {
-                Ok(export) => Some(export),
-                Err(_) => return MoltObject::none().bits(),
-            }
+        let input = match AsciiInput::acquire(_py, data_bits) {
+            Ok(input) => input,
+            Err(error) => return error,
         };
-        let raw = text.as_ref().map_or_else(
-            || unsafe { input_export.as_ref().unwrap().bytes(_py) },
-            |text| text.as_bytes(),
-        );
+        let raw = unsafe { input.bytes(_py) };
         let out = match uu_decode(raw) {
             Ok(v) => v,
             Err(msg) => return raise_binascii_error(_py, msg),
