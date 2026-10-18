@@ -37,11 +37,14 @@ Measured on macOS arm64 (18 CPUs, 128 GiB), 2026-10-17:
   Test `size` sets a default resource set and timeout.
 - **Buck2** schedules a DAG against a host resource model and re-estimates
   from observed action costs.
-- **Ninja** defaults `-j` to the CPU count and bounds heavy actions with pools.
+- **[Ninja](https://ninja-build.org/manual.html)** bounds heavy actions with
+  pools as well as the global job ceiling; neither permits the other to be
+  exceeded. Its generator moves policy decisions ahead of incremental execution.
 - **GNU make and Cargo** share CPU across nested tools through the jobserver:
   one token pool, inherited by every child build.
-- **pytest-xdist** resolves `-n auto` through the
-  `pytest_xdist_auto_num_workers` hook, and `--dist worksteal` rebalances
+- **[pytest-xdist](https://pytest-xdist.readthedocs.io/en/stable/distribution.html)**
+  exposes `pytest_xdist_auto_num_workers` to size `-n auto` from project policy,
+  and `--dist worksteal` rebalances
   uneven tests.
 - **Rust's `available_parallelism`** honors CPU affinity and Linux cgroup
   quotas; **Python 3.13's `os.process_cpu_count`** honors affinity only.
@@ -151,8 +154,40 @@ sequentially. Volume choice is measured per machine, not a fixed path.
    measures the unit: each sample sums the RSS under each xdist worker (found
    from the current-test records the workers publish), and every receipt
    carries `worker_peaks`, the largest worker subtree and the tests with the
-   largest peaks. Next: the pytest auto-workers hook and every fixed count
-   moved to declared units sized from those peaks.
+   largest peaks. `molt.pytest_capacity_plugin` resolves `-n auto`; every
+   plan command that runs xdist declares `--molt-worker-memory-gb`, its
+   measured worker peak times 1.25 (the guard samples about every 2 s and can
+   miss a short peak), rounded up to a quarter GiB. Measured units on macOS
+   arm64 run from 0.22 GiB to 4.94 GiB, so no single default fits. The proof
+   executor divides the memory beyond the reserve by the maximum simultaneous
+   commands allowed by the selected resource classes and the executor ceiling,
+   then exports each share as the slice its `-n auto` sizes within. A serialized
+   Cargo-only cohort receives one share regardless of its command count. This
+   static upper bound takes linear work in the selected commands and resource
+   policies; dependency ordering can leave some shares idle. This bound is our
+   inference from the already enforced pool/global limits, not a claim that
+   Ninja implements these memory slices. It does not claim
+   elastic reallocation or a host-wide jobserver. A slice already holds the
+   reserve, so nothing inside subtracts it again. One typed memory snapshot owns
+   both the live readings and reserve decision.
+   Landing cohorts use `-n auto` with the largest envelope owned by their
+   selected test paths or nodes. One prefix index derives those envelopes from
+   the existing command argv; directories include descendant envelopes, and
+   uncovered targets retain the shared ad hoc default. Selectors keep their
+   file envelope until a narrower measurement exists. Index construction and
+   lookup take work proportional to the declared and requested path/node
+   components, with no filesystem scan or pytest collection. The plugin and
+   projection share the default in the lightweight capacity authority; parsing
+   policy does not import pytest. A bounded macOS arm64 observation over 161
+   commands and 827 index nodes measures a 3.85 ms median construction and
+   0.30 ms warmed selection for 33 gates; the first cold selection takes
+   15.63 ms including pattern compilation. Python-traced peak index allocation
+   is 186,330 bytes. This is accepted development-side metadata cost for
+   preserving declared allocations, not an emitted-program cost or a general
+   wall-clock performance claim. CI no longer exports a runner-wide worker
+   count. On the 7 GB macOS runner the
+   suites with units above 1.1 GiB now run one worker; their CI budgets at
+   one worker are unverified.
 2. Split the tests that alone bound a suite's wall time.
 3. Landing gates through the proof executor, with declared timeouts and
    resource classes, longest first; the first step of the

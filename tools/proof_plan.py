@@ -7,6 +7,7 @@ local gate commands live only in ``tools/proof_plan.toml``.
 
 from __future__ import annotations
 
+from collections import Counter
 from concurrent.futures import ThreadPoolExecutor
 import datetime as dt
 import fnmatch
@@ -15,12 +16,13 @@ import hashlib
 import heapq
 import json
 import os
+import math
 import platform
 import re
 import shlex
 import shutil
-from dataclasses import dataclass
-from pathlib import Path
+from dataclasses import dataclass, field as dataclass_field
+from pathlib import Path, PurePosixPath
 import subprocess
 import sys
 import threading
@@ -48,6 +50,7 @@ from tools.command_execution import (  # noqa: E402
     GUARD_CANCELLATION_OBSERVATION_SECONDS,
 )
 from tools import proof_receipts, toolchain_probe  # noqa: E402
+from molt import host_capacity  # noqa: E402
 from molt.portable_paths import portable_relative_path  # noqa: E402
 from molt.process_guard import run_completed_command  # noqa: E402
 from tools.git_identity import (  # noqa: E402
@@ -534,24 +537,128 @@ _LOCAL_PYTEST_PREFIX = ("python", "-m", "pytest", "-q")
 _LOCAL_PYTEST_SELECTORS = {"k": "-k", "m": "-m"}
 
 
+def _pytest_target_parts(target: str) -> tuple[str, ...]:
+    path, separator, nodes = target.rstrip("/").partition("::")
+    parts = PurePosixPath(path).parts
+    if not separator:
+        return parts
+    names, parameter, value = nodes.partition("[")
+    return (
+        *parts,
+        *("::" + name for name in names.split("::")),
+        *(("[" + value,) if parameter else ()),
+    )
+
+
+@dataclass(slots=True)
+class _PytestMemoryNode:
+    children: dict[str, _PytestMemoryNode] = dataclass_field(default_factory=dict)
+    owned_gb: float | None = None
+    maximum_gb: float = 0.0
+
+
+class PytestMemoryUnits:
+    """Derived command-target envelopes, indexed once without test collection.
+
+    Whole-file/directory owners cover descendants; a node owner covers only
+    that node. A broader request includes its known descendants and the ad hoc
+    default for uncovered members. Selectors keep their declared file envelope;
+    no finer memory measurement is inferred from a -k or -m expression.
+    """
+
+    def __init__(self, commands: Iterable[Mapping[str, Any]]) -> None:
+        self._root = _PytestMemoryNode()
+        option = "--molt-worker-memory-gb"
+        for command in commands:
+            argv = command.get("argv", ())
+            unit = None
+            for index, argument in enumerate(argv):
+                if argument == option:
+                    if index + 1 == len(argv):
+                        raise ValueError(f"{option} requires a value")
+                    raw = argv[index + 1]
+                elif argument.startswith(option + "="):
+                    raw = argument[len(option) + 1 :]
+                else:
+                    continue
+                unit = float(raw)
+                size = unit * 1024**3
+                if not math.isfinite(size) or size < 1:
+                    raise ValueError(
+                        f"{option} must describe a positive finite byte count"
+                    )
+            if unit is None:
+                continue
+            # The plan's existing ownership relation is its canonical tests/
+            # argv paths. Do not inspect the filesystem or collect pytest.
+            for target in argv:
+                if target != "tests" and not target.startswith("tests/"):
+                    continue
+                node = self._root
+                node.maximum_gb = max(node.maximum_gb, unit)
+                for component in _pytest_target_parts(target):
+                    child = node.children.get(component)
+                    if child is None:
+                        child = node.children[component] = _PytestMemoryNode()
+                    node = child
+                    node.maximum_gb = max(node.maximum_gb, unit)
+                node.owned_gb = max(node.owned_gb or 0.0, unit)
+
+    def memory_gb(self, targets: Iterable[str]) -> float:
+        maximum = 0.0
+        default = host_capacity.DEFAULT_PYTEST_WORKER_MEMORY_GB
+        for target in targets:
+            node = self._root
+            owned = node.owned_gb
+            for component in _pytest_target_parts(target):
+                child = node.children.get(component)
+                if child is None:
+                    maximum = max(maximum, default if owned is None else owned)
+                    break
+                node = child
+                if node.owned_gb is not None:
+                    owned = max(owned or 0.0, node.owned_gb)
+            else:
+                maximum = max(
+                    maximum, default if owned is None else owned, node.maximum_gb
+                )
+        return maximum or default
+
+
 def local_pytest_argv(
-    targets: Iterable[str], workers: int, select: tuple[str, ...] = ()
+    targets: Iterable[str],
+    select: tuple[str, ...] = (),
+    *,
+    memory_units: PytestMemoryUnits,
 ) -> tuple[str, ...]:
     """The one pytest invocation for local gate test targets.
 
     Integration merges every selected rule's targets into one run, so the
-    interpreter, guard and collection costs are paid once and the tests run
-    on ``workers`` processes. A selection (``-k`` or ``-m``) applies to every
-    target of its run, so each one runs on its own.
+    interpreter, guard and collection costs are paid once. ``-n auto`` sizes
+    the workers from the host using the largest owning target envelope. A
+    selection (``-k`` or ``-m``) applies
+    to every target of its run, so each one runs on its own.
     """
-    return (*_LOCAL_PYTEST_PREFIX, "-n", str(workers), *select, *targets)
+    targets = tuple(targets)
+    unit = memory_units.memory_gb(targets)
+    return (
+        *_LOCAL_PYTEST_PREFIX,
+        "-n",
+        "auto",
+        f"--molt-worker-memory-gb={unit}",
+        *select,
+        *targets,
+    )
 
 
 def local_pytest_command(
-    targets: Iterable[str], workers: int, select: tuple[str, ...] = ()
+    targets: Iterable[str],
+    select: tuple[str, ...] = (),
+    *,
+    memory_units: PytestMemoryUnits,
 ) -> str:
     """Display/projection of the argv executed directly by the local driver."""
-    return shlex.join(local_pytest_argv(targets, workers, select))
+    return shlex.join(local_pytest_argv(targets, select, memory_units=memory_units))
 
 
 def local_pytest_selections(
@@ -606,36 +713,34 @@ def local_rule_field_error(rule: Mapping[str, Any]) -> str | None:
 
 def local_gate_commands(
     data: Mapping[str, Any],
+    *,
+    memory_units: PytestMemoryUnits,
 ) -> dict[str, tuple[str, tuple[str, ...]]]:
     """The existing generated local IDs and their declared prerequisites."""
-    commands = {
-        f"local.always.{index}": (command, tuple(data.get("always_toolchains", [])))
-        for index, command in enumerate(data.get("always", []))
-    }
-    workers = int(data.get("local_pytest_workers", 1))
+    commands = {}
+
+    def add_shell(identifier: str, command: str, tools: Iterable[str]) -> None:
+        if error := local_gate_template_error(command):
+            raise ValueError(f"{identifier}: {error}")
+        commands[identifier] = command, tuple(tools)
+
+    for index, command in enumerate(data.get("always", [])):
+        add_shell(f"local.always.{index}", command, data.get("always_toolchains", []))
     for rule in data.get("rule", []):
-        commands.update(
-            {
-                f"local.{rule['name']}.{index}": (
-                    command,
-                    tuple(rule.get("toolchains", [])),
-                )
-                for index, command in enumerate(rule.get("gates", []))
-            }
-        )
+        for index, command in enumerate(rule.get("gates", [])):
+            add_shell(
+                f"local.{rule['name']}.{index}", command, rule.get("toolchains", [])
+            )
         if rule.get("pytest"):
             commands[f"local.{rule['name']}.pytest"] = (
-                local_pytest_command(rule["pytest"], workers),
+                local_pytest_command(rule["pytest"], memory_units=memory_units),
                 tuple(rule.get("toolchains", [])),
             )
         for index, (select, targets) in enumerate(local_pytest_selections(rule)):
             commands[f"local.{rule['name']}.pytest-select-{index}"] = (
-                local_pytest_command(targets, workers, select),
+                local_pytest_command(targets, select, memory_units=memory_units),
                 tuple(rule.get("toolchains", [])),
             )
-    for identifier, (command, _tools) in commands.items():
-        if error := local_gate_template_error(command):
-            raise ValueError(f"{identifier}: {error}")
     return commands
 
 
@@ -737,7 +842,6 @@ class ProofPlan:
     local_rules: tuple[dict[str, Any], ...]
     always: tuple[str, ...]
     always_toolchains: tuple[str, ...] = ()
-    local_pytest_workers: int = 0
 
     def toolchain_closure(self, names: Iterable[str]) -> tuple[str, ...]:
         """Expand declared toolchains through the canonical dependency graph."""
@@ -939,7 +1043,6 @@ class ProofPlan:
             local_rules=tuple(dict(entry) for entry in data.get("rule", [])),
             always=tuple(data.get("always", [])),
             always_toolchains=tuple(data.get("always_toolchains", [])),
-            local_pytest_workers=int(data.get("local_pytest_workers", 0)),
         )
         errors = plan.validate()
         if errors:
@@ -1055,8 +1158,6 @@ class ProofPlan:
         if self.receipt_schema != proof_receipts.RECEIPT_SCHEMA:
             errors.append(f"receipt_schema must be {proof_receipts.RECEIPT_SCHEMA!r}")
         self._validate_named_lanes(errors)
-        if self.local_pytest_workers <= 0:
-            errors.append("local_pytest_workers must be positive")
         if self.executor_max_workers <= 0:
             errors.append("executor_max_workers must be positive")
         if not 1 <= self.inventory_hash_workers <= 32:
@@ -3604,13 +3705,44 @@ def _topological_commands(
     return tuple(ordered)
 
 
+def _command_memory_share(
+    plan: ProofPlan, commands: Iterable[ProofCommand]
+) -> int | None:
+    """The memory each command may claim while the executor runs others beside it.
+
+    Count the selected resource classes within their existing parallel limits,
+    capped by ``executor_max_workers``. This static upper bound preserves room
+    for every possible concurrent command without dividing serialized compiler
+    work by unused executor slots. Dependencies may reduce actual concurrency;
+    this does not redistribute memory as commands finish.
+    """
+    selected = Counter(str(command.data["resource_class"]) for command in commands)
+    if not selected:
+        return None
+    capacity = host_capacity.memory_capacity(os.environ)
+    _total, available = capacity.bounded_bytes
+    if available is None:
+        return None
+    resource_slots = sum(
+        min(selected[policy.name], policy.max_parallel)
+        for policy in plan.resource_policies
+    )
+    concurrency = max(1, min(plan.executor_max_workers, resource_slots))
+    usable = max(0, available - host_capacity.headroom_bytes(capacity))
+    return max(1, usable // concurrency)
+
+
 def _command_environment(
     plan: ProofPlan,
     command: ProofCommand,
     timeout: int,
+    *,
+    memory_share: int | None,
 ) -> tuple[dict[str, str], tuple[str, ...]]:
     """Resolve one command environment through shared Cargo invariants."""
     child_env = dict(os.environ)
+    if memory_share is not None:
+        child_env[host_capacity.MEMORY_SLICE_ENV] = str(memory_share)
     existing_pythonpath = child_env.get("PYTHONPATH", "")
     child_env["PYTHONPATH"] = os.pathsep.join(
         part for part in (str(ROOT / "src"), existing_pythonpath) if part
@@ -3733,13 +3865,15 @@ def _run_command(
     plan: ProofPlan,
     command: ProofCommand,
     cancel_event: threading.Event | None = None,
+    *,
+    memory_share: int | None,
 ) -> dict[str, Any]:
     relative_cwd = str(command.data.get("cwd", "."))
     cache = _cache_disposition(command)
     started_at = dt.datetime.now(dt.UTC).isoformat()
     timeout = int(command.data["timeout_seconds"])
     child_env, applied_environment_policies = _command_environment(
-        plan, command, timeout
+        plan, command, timeout, memory_share=memory_share
     )
     if cancel_event is not None and cancel_event.is_set():
         return {
@@ -3969,6 +4103,8 @@ def execute_commands(
     commands: Iterable[ProofCommand],
     receipt_path: Path,
 ) -> int:
+    commands = tuple(commands)
+    memory_share = _command_memory_share(plan, commands)
     return _execute_commands(
         plan,
         commands,
@@ -3982,7 +4118,9 @@ def execute_commands(
         _normalized_os=_normalized_os,
         _normalized_arch=_normalized_arch,
         _required_toolchains=lambda command: _required_toolchains(plan, command),
-        _run_command=_run_command,
+        _run_command=lambda plan, command, event: _run_command(
+            plan, command, event, memory_share=memory_share
+        ),
         _cache_disposition=_cache_disposition,
     )
 

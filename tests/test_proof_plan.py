@@ -370,7 +370,8 @@ def test_generated_local_dx_projection_has_stable_command_ids() -> None:
         f"local.{first['name']}.pytest-select-{index}"
         for index, _ in enumerate(first.get("pytest_select", []))
     ]
-    assert local["pytest_workers"] == PLAN.local_pytest_workers > 0
+    # Landing pytest sizes its workers per host (-n auto); no count is projected.
+    assert "pytest_workers" not in local
 
 
 def test_local_change_gates_use_one_captured_integration_upstream() -> None:
@@ -383,7 +384,8 @@ def test_local_change_gates_use_one_captured_integration_upstream() -> None:
     commands = {
         command
         for command, _tools in proof_plan.local_gate_commands(
-            {"always": PLAN.always, "rule": PLAN.local_rules}
+            {"always": PLAN.always, "rule": PLAN.local_rules},
+            memory_units=proof_plan.PytestMemoryUnits(c.data for c in PLAN.commands),
         ).values()
     }
     assert expected <= commands
@@ -437,7 +439,9 @@ def test_local_gate_binding_has_a_closed_template_contract(command) -> None:
     from tools import molt_dev
 
     with pytest.raises(ValueError, match="placeholder"):
-        proof_plan.local_gate_commands({"always": [command]})
+        proof_plan.local_gate_commands(
+            {"always": [command]}, memory_units=proof_plan.PytestMemoryUnits(())
+        )
     with pytest.raises(molt_dev.DriverError, match="placeholder"):
         molt_dev.GateConfig.parse(
             "always = " + json.dumps([command]), "invalid fixture"
@@ -488,7 +492,7 @@ def test_local_pytest_targets_are_existing_test_paths(target, message) -> None:
 def test_local_pytest_targets_project_one_command_per_rule() -> None:
     rule = next(rule for rule in PLAN.local_rules if rule.get("pytest"))
     commands = proof_plan.local_gate_commands(
-        {"rule": [rule], "local_pytest_workers": PLAN.local_pytest_workers}
+        {"rule": [rule]}, memory_units=proof_plan.PytestMemoryUnits(())
     )
     command, tools = commands[f"local.{rule['name']}.pytest"]
     assert shlex.split(command) == [
@@ -497,7 +501,8 @@ def test_local_pytest_targets_project_one_command_per_rule() -> None:
         "pytest",
         "-q",
         "-n",
-        str(PLAN.local_pytest_workers),
+        "auto",
+        "--molt-worker-memory-gb=2.5",
         *rule["pytest"],
     ]
     assert tools == tuple(rule["toolchains"])
@@ -523,10 +528,10 @@ def test_local_pytest_selections_name_one_selection_and_tests(entry, message) ->
     )
 
 
-def test_local_pytest_selections_run_on_the_plan_workers() -> None:
+def test_local_pytest_selections_size_workers_per_host() -> None:
     rule = next(rule for rule in PLAN.local_rules if rule.get("pytest_select"))
     commands = proof_plan.local_gate_commands(
-        {"rule": [rule], "local_pytest_workers": PLAN.local_pytest_workers}
+        {"rule": [rule]}, memory_units=proof_plan.PytestMemoryUnits(())
     )
     for index, entry in enumerate(rule["pytest_select"]):
         (key,) = set(entry) - {"targets"}
@@ -537,12 +542,159 @@ def test_local_pytest_selections_run_on_the_plan_workers() -> None:
             "pytest",
             "-q",
             "-n",
-            str(PLAN.local_pytest_workers),
+            "auto",
+            "--molt-worker-memory-gb=2.5",
             f"-{key}",
             entry[key],
             *entry["targets"],
         ]
         assert tools == tuple(rule["toolchains"])
+
+
+def test_local_pytest_units_preserve_path_and_node_ownership_boundaries() -> None:
+    commands = [
+        {
+            "argv": [
+                "python",
+                "-m",
+                "pytest",
+                "--molt-worker-memory-gb=0.5",
+                "tests/light/",
+            ]
+        },
+        {
+            "argv": [
+                "python",
+                "-m",
+                "pytest",
+                "--molt-worker-memory-gb",
+                "0.75",
+                "tests/nodes.py",
+            ]
+        },
+        {
+            "argv": [
+                "python",
+                "-m",
+                "pytest",
+                "--molt-worker-memory-gb=6.25",
+                "tests/nodes.py::Case::test_heavy",
+            ]
+        },
+        {
+            "argv": [
+                "python",
+                "-m",
+                "pytest",
+                "--molt-worker-memory-gb=4",
+                "tests/nodes.py::test_special[x::y & 'quotes' {value} [nested]]",
+            ]
+        },
+        {
+            "argv": [
+                "python",
+                "-m",
+                "pytest",
+                "--molt-worker-memory-gb=1",
+                "tests/sibling.py",
+            ]
+        },
+        {
+            "argv": [
+                "python",
+                "-m",
+                "pytest",
+                "--molt-worker-memory-gb=0.5",
+                "tests/sibling.py",
+            ]
+        },
+        {
+            "argv": [
+                "python",
+                "-m",
+                "pytest",
+                "--molt-worker-memory-gb=0.5",
+                "tests/partial.py::test_one",
+            ]
+        },
+    ]
+    units = proof_plan.PytestMemoryUnits(iter(commands))
+    cases = [
+        (["tests/light/child.py::test_one"], 0.5),
+        (["tests/lightly/child.py"], 2.5),
+        (["tests/nodes.py::Case::test_heavy[param::with brackets[]]"], 6.25),
+        (["tests/nodes.py::Case::test_heavy_sibling"], 0.75),
+        (["tests/nodes.py::test_special[x::y & 'quotes' {value} [nested]]"], 4),
+        (["tests/nodes.py::test_special[another]"], 0.75),
+        (["tests/nodes.py"], 6.25),
+        (["tests/nodes.py::Case"], 6.25),
+        (["tests/sibling.py"], 1),
+        (["tests/sibling.py.extra"], 2.5),
+        (["tests/partial.py::test_one"], 0.5),
+        (["tests/partial.py"], 2.5),
+        (["tests/light/", "tests/unowned.py"], 2.5),
+        (["tests"], 6.25),
+    ]
+    # The index owns its derived observation; queries never rescan command argv.
+    commands.clear()
+    for targets, expected in cases:
+        assert units.memory_gb(iter(targets)) == expected
+
+
+def test_local_pytest_cohort_keeps_literal_selection_and_parameter_argv() -> None:
+    target = "tests/nodes.py::test_literal[x::y & 'quotes' {value} [nested]]"
+    units = proof_plan.PytestMemoryUnits(
+        [
+            {
+                "argv": [
+                    "python",
+                    "-m",
+                    "pytest",
+                    "--molt-worker-memory-gb=4",
+                    "tests/nodes.py",
+                ]
+            }
+        ]
+    )
+    argv = proof_plan.local_pytest_argv(
+        iter([target]), ("-k", "literal or 'other'"), memory_units=units
+    )
+    assert argv == (
+        "python",
+        "-m",
+        "pytest",
+        "-q",
+        "-n",
+        "auto",
+        "--molt-worker-memory-gb=4.0",
+        "-k",
+        "literal or 'other'",
+        target,
+    )
+    projected = proof_plan.local_gate_commands(
+        {"rule": [{"name": "literal", "gates": [], "pytest": [target]}]},
+        memory_units=units,
+    )
+    assert shlex.split(projected["local.literal.pytest"][0])[-1] == target
+    assert proof_plan.bind_local_gate_command(argv, upstream_commit="a" * 40) is argv
+
+
+def test_local_pytest_unit_projection_does_not_round_down_its_envelope() -> None:
+    units = proof_plan.PytestMemoryUnits(
+        [
+            {
+                "argv": [
+                    "python",
+                    "-m",
+                    "pytest",
+                    "--molt-worker-memory-gb=1.0000004",
+                    "tests/precise.py",
+                ]
+            }
+        ]
+    )
+    argv = proof_plan.local_pytest_argv(["tests/precise.py"], memory_units=units)
+    assert "--molt-worker-memory-gb=1.0000004" in argv
 
 
 @pytest.mark.parametrize(
@@ -1790,7 +1942,7 @@ def test_wasm_backend_prewarm_admits_the_consumer_compiler(
     monkeypatch.setenv("MOLT_BACKEND_DAEMON", "1")
     for command in (prewarm, consumer):
         environment, _policies = proof_plan._command_environment(
-            PLAN, command, command.data["timeout_seconds"]
+            PLAN, command, command.data["timeout_seconds"], memory_share=None
         )
         assert {name: environment[name] for name in inherited} == inherited
         assert environment["RUSTC_WRAPPER"] == "/opt/cache/sccache"
@@ -1850,7 +2002,7 @@ def test_wasm_python_consumers_share_prebuild_entrypoint_and_wrapper_selection(
     monkeypatch.setenv("MOLT_BUILD_PYTHON", "/selected/build-python")
     for row in rows.values():
         environment, _policies = proof_plan._command_environment(
-            PLAN, row, row.data["timeout_seconds"]
+            PLAN, row, row.data["timeout_seconds"], memory_share=None
         )
         assert environment["RUSTC_WRAPPER"] == "/selected/sccache"
         assert environment["CARGO_INCREMENTAL"] == (
@@ -2550,7 +2702,9 @@ def test_sccache_environment_policy_covers_every_rust_proof_family(
         "wasm",
     }
     for command in rust_commands:
-        environment, applied = proof_plan._command_environment(PLAN, command, 30)
+        environment, applied = proof_plan._command_environment(
+            PLAN, command, 30, memory_share=None
+        )
         assert environment["CARGO_INCREMENTAL"] == "0", command.id
         assert applied == (
             "sccache-disables-incremental",
@@ -2594,7 +2748,7 @@ def test_compiler_build_commands_use_shared_timeout_budgets() -> None:
     }
     for command in compiler_commands:
         environment, _applied = proof_plan._command_environment(
-            PLAN, command, int(command.data["timeout_seconds"])
+            PLAN, command, int(command.data["timeout_seconds"]), memory_share=None
         )
         assert environment[PROOF_COMMAND_TIMEOUT_ENV] == str(
             command.data["timeout_seconds"]
@@ -2657,7 +2811,9 @@ def test_command_direct_rustc_override_does_not_apply_sccache_policy(
         data={**template.data, "env": {wrapper_env: ""}},
     )
 
-    environment, applied = proof_plan._command_environment(PLAN, command, 30)
+    environment, applied = proof_plan._command_environment(
+        PLAN, command, 30, memory_share=None
+    )
 
     assert environment[wrapper_env] == ""
     assert environment["CARGO_INCREMENTAL"] == "1"
@@ -4256,7 +4412,9 @@ def test_provisioned_lean_fingerprint_admits_formal_build_receipt(
     monkeypatch.setattr(
         proof_plan,
         "_run_command",
-        lambda _plan, current, _cancel: _successful_synthetic_record(current),
+        lambda _plan, current, _cancel, *, memory_share: _successful_synthetic_record(
+            current
+        ),
     )
     receipt_path = tmp_path / "formal-lean-receipt.json"
 
@@ -4567,6 +4725,8 @@ def test_executor_schedules_dependencies_and_resources_with_deterministic_receip
         _plan: proof_plan.ProofPlan,
         command: proof_plan.ProofCommand,
         _cancel: threading.Event,
+        *,
+        memory_share: int | None,
     ) -> dict[str, object]:
         resource = str(command.data["resource_class"])
         with lock:
@@ -4630,7 +4790,7 @@ def test_executor_partition_failure_preserves_independent_work_and_blocks_depend
     )
     live_started = threading.Event()
 
-    def fake_run(_plan, command, cancel):
+    def fake_run(_plan, command, cancel, *, memory_share):
         if command.id == "synthetic.fail":
             assert live_started.wait(timeout=1)
             return {
@@ -4778,6 +4938,8 @@ def test_executor_does_not_convert_control_plane_interrupts_into_records(
         _plan: proof_plan.ProofPlan,
         _command: proof_plan.ProofCommand,
         _cancel: threading.Event,
+        *,
+        memory_share: int | None,
     ) -> dict[str, object]:
         raise KeyboardInterrupt
 
@@ -4959,7 +5121,7 @@ def test_executor_rejects_source_mutation_during_partition(
     monkeypatch.setattr(
         proof_plan,
         "_run_command",
-        lambda _plan, command, _cancel: {
+        lambda _plan, command, _cancel, *, memory_share: {
             "id": command.id,
             "status": "success",
             "returncode": 0,
@@ -5412,7 +5574,7 @@ def test_executor_stops_on_candidate_change_even_when_checkout_is_clean(
     )
     plan = _synthetic_executor_plan(commands, limits={"resource-a": 1})
 
-    def run(_plan, command, _cancel):
+    def run(_plan, command, _cancel, *, memory_share):
         current[field] = "c" * 40
         return _successful_synthetic_record(command)
 
@@ -5447,7 +5609,7 @@ def test_executor_control_plane_interrupt_cancels_siblings_before_join(
     live_started = threading.Event()
     closed = threading.Event()
 
-    def run(_plan, command, cancel):
+    def run(_plan, command, cancel, *, memory_share):
         if command.id == "interrupt":
             assert live_started.wait(1)
             raise KeyboardInterrupt
@@ -5539,7 +5701,7 @@ def test_executor_real_cargo_test_timeout_retains_completed_incremental_cache(
         },
     )
     plan = _synthetic_executor_plan((command,), limits={"resource-a": 1})
-    record = proof_plan._run_command(plan, command)
+    record = proof_plan._run_command(plan, command, memory_share=None)
     assert started.read_bytes() == b"started", record
     assert record["status"] == "timeout"
     assert record["returncode"] == 124
@@ -5769,7 +5931,9 @@ def test_python_rust_consumers_admit_tools_before_any_partition(
     monkeypatch.setattr(
         proof_plan,
         "_run_command",
-        lambda *_args: pytest.fail("payload scheduled before toolchain admission"),
+        lambda *_args, **_kwargs: pytest.fail(
+            "payload scheduled before toolchain admission"
+        ),
     )
     receipt_path = tmp_path / "unprovisioned.json"
     assert proof_plan.execute_commands(PLAN, commands, receipt_path) == 2
@@ -5901,11 +6065,11 @@ def test_executor_cancellation_requires_exact_terminal_closure(
     monkeypatch.setattr(proof_plan, "_COMMANDS", SimpleNamespace(start_guarded=start))
     if defect in {"missing", "unclosed", "startup"}:
         with pytest.raises(RuntimeError) as caught:
-            proof_plan._run_command(plan, command, event)
+            proof_plan._run_command(plan, command, event, memory_share=None)
         assert caught.value.guard_command is owned
         record = caught.value.proof_record
     else:
-        record = proof_plan._run_command(plan, command, event)
+        record = proof_plan._run_command(plan, command, event, memory_share=None)
     assert record["guard_returncode"] == (130 if defect == "noncanonical-code" else 137)
     assert record["failure_scope"] == "global"
     assert record["status"] == ("cancelled" if defect is None else "failure")
@@ -5958,7 +6122,7 @@ def test_executor_retains_owner_in_failure_receipt_and_library_exception(
     }
     error.proof_record = record
 
-    def run(*_args):
+    def run(*_args, **_kwargs):
         raise error
 
     monkeypatch.setattr(proof_plan, "_run_command", run)
@@ -7458,3 +7622,85 @@ def test_selected_runtime_fingerprint_and_receipt_bind_consumed_unicode(
             "runtime fingerprint is invalid" in error
             for error in _verify_receipts(PLAN, [command.family], receipt_root)
         )
+
+
+def test_executor_divides_memory_among_the_commands_it_runs_at_once(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Each concurrent command sizes `-n auto` within its own share; four
+    # commands sizing from the whole host would overcommit it fourfold.
+    gib = 1024**3
+    monkeypatch.setattr(
+        proof_plan.host_capacity,
+        "memory_capacity",
+        lambda environment: proof_plan.host_capacity.MemoryCapacity(64 * gib, 40 * gib),
+    )
+    monkeypatch.setattr(
+        proof_plan.host_capacity, "headroom_bytes", lambda capacity: 4 * gib
+    )
+    plan = replace(
+        PLAN,
+        executor_max_workers=4,
+        resource_policies=(proof_plan.ResourcePolicy("parallel", 4),),
+    )
+    commands = tuple(
+        proof_plan.ProofCommand(str(index), {"resource_class": "parallel"})
+        for index in range(9)
+    )
+    assert proof_plan._command_memory_share(plan, commands) == 9 * gib
+    assert proof_plan._command_memory_share(plan, commands[:2]) == 18 * gib
+    assert proof_plan._command_memory_share(plan, commands[:1]) == 36 * gib
+    command = next(c for c in PLAN.commands if "pytest" in c.data["argv"])
+    environment, _applied = proof_plan._command_environment(
+        PLAN, command, 30, memory_share=9 * gib
+    )
+    assert environment[proof_plan.host_capacity.MEMORY_SLICE_ENV] == str(9 * gib)
+
+
+@pytest.mark.parametrize(
+    ("classes", "workers", "expected_divisor"),
+    [
+        (("compiler",) * 9, 4, 1),
+        (("compiler",) * 9 + ("python",) * 5, 4, 3),
+        (("compiler",) * 9 + ("python",) * 5, 2, 2),
+        (("python",), 4, 1),
+    ],
+)
+def test_executor_memory_share_uses_selected_resource_parallelism(
+    monkeypatch, classes, workers, expected_divisor
+):
+    gib = 1024**3
+    probes = []
+
+    def observe():
+        probes.append(None)
+        assert len(probes) == 1
+        return 64 * gib, 40 * gib
+
+    monkeypatch.setattr(proof_plan.host_capacity, "_probe_memory_bytes", observe)
+    monkeypatch.setenv(proof_plan.host_capacity.MEMORY_SLICE_ENV, str(12 * gib))
+    plan = replace(
+        PLAN,
+        executor_max_workers=workers,
+        resource_policies=(
+            proof_plan.ResourcePolicy("compiler", 1),
+            proof_plan.ResourcePolicy("python", 2),
+        ),
+    )
+    commands = tuple(
+        proof_plan.ProofCommand(str(index), {"resource_class": resource})
+        for index, resource in enumerate(classes)
+    )
+    assert proof_plan._command_memory_share(plan, commands) == (
+        12 * gib // expected_divisor
+    )
+    assert len(probes) == 1
+
+
+def test_executor_empty_selection_does_not_sample_memory(monkeypatch):
+    monkeypatch.setattr(
+        proof_plan.host_capacity,
+        "memory_capacity",
+        lambda environment: pytest.fail("no commands need no allocation"),
+    )
+    assert proof_plan._command_memory_share(PLAN, ()) is None
