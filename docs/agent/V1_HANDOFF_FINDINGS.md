@@ -198,7 +198,9 @@ request-key set instead of a duplicated four-key subset. An isolated self-image
 replay poisons native-partition and common codegen settings before running the
 complete owning cache modules. Sixteen old tests fail with an invalid
 native-partition setting; poisoning the common codegen setting as well exposes
-24 failures. Compiled qualification of the correction is pending.
+24 failures. The corrected native library/binary gate and the compiler-authorities
+daemon feature graph pass on Linux aarch64, including the isolated replay.
+Other platform cells remain unverified.
 These are development-only fixture changes, with no emitted-program lock or
 environment lookup.
 
