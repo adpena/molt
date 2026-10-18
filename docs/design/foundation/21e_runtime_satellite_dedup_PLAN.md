@@ -48,6 +48,32 @@ scalar transitions. The parser never invents padding or builds a filtered copy.
 `binascii.a2b_base64` admits its data before truth-evaluating `strict_mode`, using
 the existing native buffer and argument-binding authorities.
 
+All four `binascii.a2b_*` decoders and `unhexlify` share the same `ascii_buffer`
+converter. It admits ASCII string storage or one contiguous buffer lease,
+retains preparation failures, and replaces exporter failures with Clinic's
+TypeError. Replacement uses the runtime's existing raised-owner transaction:
+the new exception is selected before the former owner retires, while the
+enclosing handled exception remains available as implicit context. The serial
+vtable publishes that single cold replacement operation; satellites own no
+parallel clear/restore protocol. Exact bytes retain their existing no-export
+path, and mutable bytes are read after subsequent argument conversions.
+
+Memoryview admission similarly follows pinned
+[`Objects/memoryobject.c`](https://github.com/python/cpython/blob/3bb231a6a5dc02b95658877318bf61501a7209e9/Objects/memoryobject.c):
+an absent buffer slot selects memoryview's diagnostic; a present slot's failure
+propagates unchanged. One projected native object serves both the callback-free
+slot check and acquisition. This adds neither a second projection nor a second
+exporter call, and exact builtin storage keeps its direct path.
+
+Runtime buffer eligibility is fallible. A supported slot, an absent slot and
+failed object/class or lease preparation are distinct outcomes. The same native
+custody owner prepares the semantic class before a pure C-API slot query.
+Construction, assignment, search, containment and comparison propagate failed
+preparation; they must not select iterable/index fallback, `NotImplemented`, or
+an unsupported-buffer diagnostic. Real exporter failures retain each consumer's
+CPython normalization policy. The exact builtin storage path still needs no
+native projection, and successful generic admission invokes one exporter.
+
 The existing runtime exception owner publishes the actual `binascii.Error`
 (`ValueError` base) and `binascii.Incomplete` (`Exception` base). A closed
 `BinasciiException` identity selects their declarations, and the existing strong

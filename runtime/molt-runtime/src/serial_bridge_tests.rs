@@ -3,6 +3,64 @@ use crate::{clear_exception, exception_pending, runtime_state};
 use std::sync::atomic::Ordering;
 
 #[test]
+fn converter_replacement_retires_raised_owner_and_keeps_handled_context() {
+    let _guard = crate::test_support::RuntimeTestTransaction::new();
+    crate::with_gil_entry_nopanic!(py, {
+        use crate::builtins::exceptions::{
+            ExceptionFieldSlot, ExceptionStackScope, ExceptionValue, alloc_exception,
+            exception_context_active_bits, exception_context_set, exception_field,
+            exception_matches_builtin_name, molt_exception_last_pending,
+        };
+        let outer = alloc_exception(py, "LookupError", "outer handler");
+        assert!(!outer.is_null());
+        let outer = ExceptionValue::adopt(py, crate::MoltObject::from_ptr(outer).bits());
+        let handler = ExceptionStackScope::push(py);
+        exception_context_set(py, outer.bits());
+        let old = alloc_exception(py, "ValueError", "exporter refused");
+        assert!(!old.is_null());
+        let old = ExceptionValue::adopt(py, crate::MoltObject::from_ptr(old).bits());
+        let refs = unsafe {
+            (*crate::header_from_obj_ptr(crate::ptr_from_bits(old.bits()))).ref_count_snapshot()
+        };
+        crate::builtins::exceptions::molt_raise(old.bits());
+        let kind = b"TypeError";
+        let message = b"converter rejected input";
+        let returned = unsafe {
+            (super::RUNTIME_VTABLE.replace_exception)(
+                kind.as_ptr(),
+                kind.len(),
+                message.as_ptr(),
+                message.len(),
+            )
+        };
+        assert_eq!(returned, crate::MoltObject::none().bits());
+        assert!(exception_pending(py));
+        let selected = ExceptionValue::adopt(py, molt_exception_last_pending());
+        assert!(exception_matches_builtin_name(
+            py,
+            selected.bits(),
+            "TypeError"
+        ));
+        assert_ne!(selected.bits(), old.bits());
+        assert_eq!(
+            exception_field(py, selected.bits(), ExceptionFieldSlot::Context)
+                .unwrap()
+                .bits(),
+            outer.bits()
+        );
+        assert_eq!(exception_context_active_bits(), Some(outer.bits()));
+        assert_eq!(
+            unsafe {
+                (*crate::header_from_obj_ptr(crate::ptr_from_bits(old.bits()))).ref_count_snapshot()
+            },
+            refs
+        );
+        clear_exception(py);
+        drop(handler);
+    });
+}
+
+#[test]
 fn binascii_exception_declarations_survive_runtime_rebootstrap() {
     for _ in 0..2 {
         crate::test_support::RuntimeTestTransaction::with_trusted_fresh_runtime(|| {
