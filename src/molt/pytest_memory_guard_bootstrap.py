@@ -14,6 +14,7 @@ from typing import Any
 
 from molt._host_exit import process_returncode_for_direct_os_exit
 from molt.dx import (
+    PROOF_SCRATCH_ROOT_ENV,
     RunContext,
     checkout_component,
     control_state_dir,
@@ -317,11 +318,13 @@ def _pytest_args_have_cache_dir(args: Sequence[str]) -> bool:
 
 
 def guarded_pytest_cache_dir() -> Path:
-    """Return this checkout's pytest cache: control state, never in the tree.
+    """Keep queue caches in run scratch and direct caches in checkout control state.
 
-    Each worktree keeps its own cache, so concurrent runs in sibling
-    worktrees never overwrite each other's ``lastfailed``.
+    The queue owns each run's outputs. Direct worktrees keep separate caches,
+    so sibling worktrees never overwrite each other's ``lastfailed``.
     """
+    if os.environ.get(PROOF_SCRATCH_ROOT_ENV, "").strip():
+        return execution_scratch(os.environ) / "pytest-cache"
     return control_state_dir(
         ROOT, f"pytest-cache/{checkout_component(ROOT)}", os.environ
     )

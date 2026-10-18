@@ -967,7 +967,9 @@ def _inject_guard_memory_contract_env(
     if child_rlimit_kb is not None and child_rlimit_kb > 0:
         limit_candidates.append(child_rlimit_kb)
     limit_kb = min(limit_candidates)
-    _set_env_gb_ceiling(env, "MOLT_BACKEND_MEMORY_AVAILABLE_GB", limit_kb)
+    # Availability is a raw host observation/override. Publishing this already
+    # reserved process cap as availability makes a backend-prefixed child
+    # reserve the same headroom again. The backend consumes the cap separately.
     _set_env_gb_ceiling(env, "MOLT_BACKEND_MAX_PROCESS_RSS_GB", limit_kb)
 
 

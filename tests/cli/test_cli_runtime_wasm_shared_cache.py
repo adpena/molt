@@ -169,8 +169,9 @@ def test_pair_cache_rejects_excessive_receipt_nesting(tmp_path: Path) -> None:
 def test_memory_bounded_cargo_jobs_fits_small_box(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    monkeypatch.delenv(host_capacity.MEMORY_SLICE_ENV, raising=False)
     monkeypatch.setattr(
-        host_capacity, "memory_bytes", lambda: (8 * 1024**3, 8 * 1024**3)
+        host_capacity, "_probe_memory_bytes", lambda: (8 * 1024**3, 8 * 1024**3)
     )
     monkeypatch.setattr(host_capacity, "cpu_count", lambda: 16)
     jobs = CARGO_EXEC._memory_bounded_cargo_jobs()
@@ -182,8 +183,9 @@ def test_memory_bounded_cargo_jobs_fits_small_box(
 def test_memory_bounded_cargo_jobs_capped_by_cpu(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    monkeypatch.delenv(host_capacity.MEMORY_SLICE_ENV, raising=False)
     monkeypatch.setattr(
-        host_capacity, "memory_bytes", lambda: (128 * 1024**3, 128 * 1024**3)
+        host_capacity, "_probe_memory_bytes", lambda: (128 * 1024**3, 128 * 1024**3)
     )
     monkeypatch.setattr(host_capacity, "cpu_count", lambda: 4)
     assert CARGO_EXEC._memory_bounded_cargo_jobs() == 4

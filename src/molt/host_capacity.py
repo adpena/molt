@@ -126,24 +126,41 @@ def _ratio(quota: str, period: str) -> float | None:
 # --------------------------------------------------------------------------
 
 
-def memory_bytes() -> tuple[int | None, int | None]:
-    """Total and live available physical memory, one host snapshot.
+@dataclass(frozen=True, slots=True)
+class MemoryCapacity:
+    """One host observation and its separately delegated allocation ceiling."""
+
+    total_bytes: int | None
+    available_bytes: int | None
+    tree_limit_bytes: int | None = None
+
+    @property
+    def bounded_bytes(self) -> tuple[int | None, int | None]:
+        """Capacity within the allocation, for worker scheduling."""
+        limit = self.tree_limit_bytes
+        if limit is None:
+            return self.total_bytes, self.available_bytes
+        return (
+            limit if self.total_bytes is None else min(self.total_bytes, limit),
+            limit if self.available_bytes is None else min(self.available_bytes, limit),
+        )
+
+
+def memory_capacity(environ: Mapping[str, str] | None = None) -> MemoryCapacity:
+    """Raw total/live host memory and the parent's allocation, one snapshot.
 
     Linux bounds both by the active cgroup; macOS reads the Mach VM counters
-    vm_stat prints; Windows asks GlobalMemoryStatusEx. The memory slice the
-    parent exported bounds both.
+    vm_stat prints; Windows asks GlobalMemoryStatusEx. Keep the exported tree
+    limit separate: a nested guard must not reserve host memory again from it.
     """
     total, available = _probe_memory_bytes()
-    raw = os.environ.get(MEMORY_SLICE_ENV, "").strip()
+    source = os.environ if environ is None else environ
+    raw = source.get(MEMORY_SLICE_ENV, "").strip()
     if not raw:
-        return total, available
+        return MemoryCapacity(total, available)
     if not raw.isdigit() or int(raw) <= 0:
         raise ValueError(f"{MEMORY_SLICE_ENV} must be a positive integer, got {raw!r}")
-    memory_slice = int(raw)
-    return (
-        memory_slice if total is None else min(total, memory_slice),
-        memory_slice if available is None else min(available, memory_slice),
-    )
+    return MemoryCapacity(total, available, int(raw))
 
 
 def _probe_memory_bytes() -> tuple[int | None, int | None]:
@@ -189,7 +206,7 @@ def worker_count(
     bounded by this process's CPUs and live memory."""
     if bytes_per_worker <= 0 or headroom_bytes < 0:
         raise ValueError("worker memory policy must be positive")
-    total_memory_bytes, available_memory_bytes = memory_bytes()
+    total_memory_bytes, available_memory_bytes = memory_capacity().bounded_bytes
     return worker_count_from_samples(
         bytes_per_worker=bytes_per_worker,
         headroom_bytes=headroom_bytes,

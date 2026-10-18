@@ -1007,6 +1007,26 @@ def _prepare_frontend_pipeline(
     tree_shake: bool,
     stdlib_profile: str,
 ) -> tuple[_PreparedFrontendPipelineBundle | None, _CliFailure | None]:
+    if target in {"wasm", "wasm-freestanding"} and split_runtime:
+        from molt.browser_asset_closure import (
+            BROWSER_WASM_ENTRY_ASSETS,
+            wasm_loader_asset_closure,
+        )
+
+        # Split deployment publishes these loaders. Refuse stale generated
+        # assets before module discovery, runtime Cargo or backend startup.
+        # This names-only projection retains no payloads. Deployment still
+        # captures its own generation later, preserving mutation custody.
+        try:
+            wasm_loader_asset_closure(
+                prepared_build_roots.molt_root / "wasm", BROWSER_WASM_ENTRY_ASSETS
+            )
+        except (OSError, ValueError) as exc:
+            return None, _fail(
+                f"Invalid split-runtime browser asset closure: {exc}",
+                json_output,
+                command="build",
+            )
     prepared_frontend_stage_bundle, prepared_frontend_stage_state_error = (
         _prepare_frontend_stage_state(
             prepared_build_preamble=prepared_build_preamble,

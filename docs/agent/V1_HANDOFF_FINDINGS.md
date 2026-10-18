@@ -195,6 +195,31 @@ macOS evidence, including real generator fingerprints and a real integration
 gate; two additional executor/provider controls pass. This is bounded consumer
 qualification, with Linux/Windows and full integration still required.
 
+The first compiled Linux/aarch64 host-boundaries cohort at `c5451e1af` fails
+all nine parametrized cases before semantic qualification. Split builds reject
+a stale browser-asset projection of the generated WASM ABI; linked builds hit
+an optimizer process cap near 0.69 GiB at about 0.8 GiB RSS. Nested guards have
+reinterpreted an inherited allocation as a new machine and repeatedly applied
+the host reserve and allocation fractions. The existing generator DAG and host
+capacity authorities own these corrections; the warmed Cargo workspace is
+retained. A separate queue pytest warning also exposes a disabled cache plugin
+beside active cache configuration. No consumer pass or performance acceptance
+is inferred from this failed cohort.
+
+The owning corrections now preserve raw host facts and delegated allocations
+in one typed snapshot, stop exporting an admitted process cap as raw available
+memory, and intersect the backend budget with that cap after the raw reserve.
+Independent same/rotating-prefix nesting and pressure regressions pass; the
+unknown-host fallback, scheduling consumers and explicit raw override transport
+have focused controls. Targeted generator writes now traverse the existing
+downstream dependency graph, and ABI generation repairs its browser consumer
+together. Split builds also validate that existing closure before discovery or
+Cargo work, retaining late publication mutation checks; the added names-only
+admission measured 2.41 ms in one local sample. Queue pytest keeps its cache
+plugin and writes into admitted scratch.
+These are development/compiler changes with no emitted-runtime work. Actual
+compiled WASM qualification and canonical integration remain required.
+
 Local landing policy merges plain pytest targets into one parallel invocation;
 selector-bearing gates retain their declared scope. The driver and policy share
 one test-path/node-ID validator, including root containment. Generated batches

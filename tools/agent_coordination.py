@@ -355,7 +355,7 @@ PROOF_LANE_RULES = (
             "AGENTS.md",
         ),
         commands=(
-            "uv run --python 3.12 python -m pytest -q tests/test_agent_coordination.py -p no:cacheprovider",
+            "uv run --python 3.12 python -m pytest -q tests/test_agent_coordination.py",
             "uv run --python 3.12 python tools/check_subprocess_guard_coverage.py",
         ),
         reason="coordination changes need focused protocol coverage plus subprocess-custody audit",
@@ -394,7 +394,7 @@ PROOF_LANE_RULES = (
             "docs/spec/areas/compiler/luau_support_matrix.generated.md",
         ),
         commands=(
-            "uv run --python 3.12 python -m pytest -q tests/tools/test_gen_luau_support_matrix.py -p no:cacheprovider",
+            "uv run --python 3.12 python -m pytest -q tests/tools/test_gen_luau_support_matrix.py",
             "cargo test -p molt-backend-luau --features luau-backend test_compile_checked_lowers_call_async_poll_target_directly -- --nocapture",
         ),
         reason="Luau support claims need generated matrix coverage plus feature-enabled backend tests",
@@ -415,7 +415,7 @@ PROOF_LANE_RULES = (
         priority="P2",
         path_prefixes=("src/molt/frontend/",),
         commands=(
-            "uv run --python 3.12 python -m pytest -q tests/test_frontend_midend_passes.py -p no:cacheprovider",
+            "uv run --python 3.12 python -m pytest -q tests/test_frontend_midend_passes.py",
         ),
         reason="frontend lowering changes should prove midend/frontend pass contracts",
     ),
