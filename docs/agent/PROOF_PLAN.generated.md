@@ -48,7 +48,7 @@ GitHub job budgets cover the deterministic command-deadline DAG projection plus 
 | `repository_policy` | pre-push, pr, main | yes | `github-job` | 60 min | 2820 s | 120 s | 660 s | `repository-policy` | none | `docs-gates` needs none | 1 |
 | `wasm` | pr, main | yes | `github-job` | 293 min | 17400 s | 180 s | 0 s | `compiler-build-resource` | none | `wasm-validation` needs `classify-changes` | 28 |
 | `python_static` | pre-push, pr, main | yes | `github-job` | 16 min | 900 s | 60 s | 0 s | `python-static` | none | `python-static` needs `classify-changes` | 10 |
-| `python_unit` | pre-push, pr, main | yes | `github-matrix` | 41 min | 2400 s per cell | 60 s | 0 s | `python-tests` | none | `python-unit` needs `classify-changes` | 11 |
+| `python_unit` | pre-push, pr, main | yes | `github-matrix` | 43 min | 2520 s per cell | 60 s | 0 s | `python-tests` | none | `python-unit` needs `classify-changes` | 11 |
 | `python_unit_collection` | pr, main | yes | `github-matrix` | 24 min | 1320 s per cell | 60 s | 60 s | `python-tests` | none | `python-unit-collection` needs `classify-changes` | 11 |
 | `native_integration` | pr, main | yes | `github-job` | 63 min | 3600 s | 180 s | 0 s | `compiler-build-resource` | none | `native-integration` needs `classify-changes` | 25 |
 | `rust` | pre-push, pr, main | yes | `github-job` | 346 min | 20520 s | 240 s | 0 s | `compiler-build-resource` | none | `rust-build-unit-smoke` needs `classify-changes` | 22 |
@@ -282,7 +282,9 @@ The wrapper conflict was reconfirmed by native CI run `30211145633` job `8981749
 | `python.unit.cli.macos` | `python_unit` | `macos-arm64-py312-unit` | `explicit` | 900 s | `python-tests` | 0 |
 | `python.unit.cli.import-collection` | `python_unit_collection` | `linux-x86_64-py312-unit-collection` | `explicit` | 1320 s | `python-tests` | 0 |
 | `python.unit.surface-contracts` | `python_unit` | `linux-x86_64-py312-unit` | `explicit` | 600 s | `python-tests` | 0 |
+| `python.unit.compiled-contracts` | `python_unit` | `linux-x86_64-py312-unit` | `explicit` | 600 s | `python-tests` | 0 |
 | `python.unit.surface-contracts.macos` | `python_unit` | `macos-arm64-py312-unit` | `explicit` | 600 s | `python-tests` | 0 |
+| `python.unit.compiled-contracts.macos` | `python_unit` | `macos-arm64-py312-unit` | `explicit` | 600 s | `python-tests` | 0 |
 | `python.unit.runtime-artifacts` | `python_unit` | `linux-x86_64-py312-unit` | `explicit` | 600 s | `python-tests` | 0 |
 | `python.unit.runtime-artifacts.macos` | `python_unit` | `macos-arm64-py312-unit` | `explicit` | 600 s | `python-tests` | 0 |
 | `python.unit.runtime-library-boundary` | `python_unit` | `linux-x86_64-py312-unit` | `explicit` | 120 s | `python-tests` | 0 |

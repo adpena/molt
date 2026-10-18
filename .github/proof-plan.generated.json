@@ -374,7 +374,7 @@
     "tests/tools/test_win_job_contract.py",
     "tests/tools/test_windows_process_api.py"
   ],
-  "authority_sha256": "5d80f5eb890a28263989fb84332b742ce9d904cb4ee7cb7095e38dd035689203",
+  "authority_sha256": "4b33f6ba61f4545c1448933d10f9f4844b65b1c9fbbd71a072b7a56852db4406",
   "cargo_environment_policy": {
     "incident_command": "cargo metadata --locked --format-version 1",
     "incident_commit": "20b046b79bd4ca64a8c859f737f6e330377bcc4e",
@@ -545,7 +545,7 @@
         "pr",
         "main"
       ],
-      "timeout_minutes": 41,
+      "timeout_minutes": 43,
       "workflow": ".github/workflows/ci.yml"
     },
     {
@@ -5422,7 +5422,7 @@
         "-q",
         "-n",
         "auto",
-        "--molt-worker-memory-gb=4.0",
+        "--molt-worker-memory-gb=0.5",
         "-m",
         "not slow",
         "tests/test_abc_private_module_surface.py",
@@ -5611,7 +5611,6 @@
         "tests/test_queue_public_module_surface.py",
         "tests/test_random_private_module_surface.py",
         "tests/test_repl_process_guard.py",
-        "tests/test_resource_enforcement_e2e.py",
         "tests/test_runpy_public_module_surface.py",
         "tests/test_runtime_feature_gates.py",
         "tests/test_runtime_profile_schema.py",
@@ -5699,7 +5698,6 @@
         "tests/test_wasm_reserved_callable_arity.py",
         "tests/test_wasm_runtime_call_signature_authority.py",
         "tests/test_wasm_runtime_export_no_mangle.py",
-        "tests/test_wasm_runtime_heavy_regressions.py",
         "tests/test_wasm_set_ops.py",
         "tests/test_wasm_size_tracking.py",
         "tests/test_wasm_snapshot.py",
@@ -5794,6 +5792,41 @@
         "--molt-worker-memory-gb=4.0",
         "-m",
         "not slow",
+        "tests/test_resource_enforcement_e2e.py",
+        "tests/test_wasm_runtime_heavy_regressions.py"
+      ],
+      "cache_domain": "pytest",
+      "cell": "linux-x86_64-py312-unit",
+      "dependencies": [],
+      "family": "python_unit",
+      "id": "python.unit.compiled-contracts",
+      "resource_class": "python-tests",
+      "tiers": [
+        "pre-push",
+        "pr",
+        "main"
+      ],
+      "timeout_seconds": 600,
+      "toolchains": [
+        "python",
+        "uv"
+      ]
+    },
+    {
+      "argv": [
+        "uv",
+        "run",
+        "--python",
+        "3.12",
+        "python",
+        "-m",
+        "pytest",
+        "-q",
+        "-n",
+        "auto",
+        "--molt-worker-memory-gb=0.5",
+        "-m",
+        "not slow",
         "tests/test_abc_private_module_surface.py",
         "tests/test_abc_public_module_surface.py",
         "tests/test_agent_contract_budget.py",
@@ -5980,7 +6013,6 @@
         "tests/test_queue_public_module_surface.py",
         "tests/test_random_private_module_surface.py",
         "tests/test_repl_process_guard.py",
-        "tests/test_resource_enforcement_e2e.py",
         "tests/test_runpy_public_module_surface.py",
         "tests/test_runtime_feature_gates.py",
         "tests/test_runtime_profile_schema.py",
@@ -6068,7 +6100,6 @@
         "tests/test_wasm_reserved_callable_arity.py",
         "tests/test_wasm_runtime_call_signature_authority.py",
         "tests/test_wasm_runtime_export_no_mangle.py",
-        "tests/test_wasm_runtime_heavy_regressions.py",
         "tests/test_wasm_set_ops.py",
         "tests/test_wasm_size_tracking.py",
         "tests/test_wasm_snapshot.py",
@@ -6136,6 +6167,41 @@
       "dependencies": [],
       "family": "python_unit",
       "id": "python.unit.surface-contracts.macos",
+      "resource_class": "python-tests",
+      "tiers": [
+        "pre-push",
+        "pr",
+        "main"
+      ],
+      "timeout_seconds": 600,
+      "toolchains": [
+        "python",
+        "uv"
+      ]
+    },
+    {
+      "argv": [
+        "uv",
+        "run",
+        "--python",
+        "3.12",
+        "python",
+        "-m",
+        "pytest",
+        "-q",
+        "-n",
+        "auto",
+        "--molt-worker-memory-gb=4.0",
+        "-m",
+        "not slow",
+        "tests/test_resource_enforcement_e2e.py",
+        "tests/test_wasm_runtime_heavy_regressions.py"
+      ],
+      "cache_domain": "pytest",
+      "cell": "macos-arm64-py312-unit",
+      "dependencies": [],
+      "family": "python_unit",
+      "id": "python.unit.compiled-contracts.macos",
       "resource_class": "python-tests",
       "tiers": [
         "pre-push",
@@ -8449,25 +8515,25 @@
       },
       "python_unit": {
         "linux-x86_64-py312-unit": {
-          "budget_seconds": 2460,
+          "budget_seconds": 2580,
           "critical_path_seconds": 900,
           "headroom_seconds": 0,
           "job_reserve_seconds": 60,
-          "projected_makespan_seconds": 2400,
-          "required_job_seconds": 2460,
+          "projected_makespan_seconds": 2520,
+          "required_job_seconds": 2580,
           "resource_capacity_floor_seconds": {
-            "python-tests": 2160
+            "python-tests": 2460
           }
         },
         "macos-arm64-py312-unit": {
-          "budget_seconds": 2460,
+          "budget_seconds": 2580,
           "critical_path_seconds": 900,
           "headroom_seconds": 0,
           "job_reserve_seconds": 60,
-          "projected_makespan_seconds": 2400,
-          "required_job_seconds": 2460,
+          "projected_makespan_seconds": 2520,
+          "required_job_seconds": 2580,
           "resource_capacity_floor_seconds": {
-            "python-tests": 2160
+            "python-tests": 2460
           }
         }
       },
