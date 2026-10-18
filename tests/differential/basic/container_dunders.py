@@ -440,3 +440,118 @@ class BytesList(list):
 
 print("list join override", "|".join(JoinList(["storage"])))
 print("list bytes overrides", bytes(BytesList([0])), bytearray(BytesList([0])))
+
+
+# CPython 3.12.13 Objects/typeobject.c publishes mp_subscript wrappers;
+# list additionally declares a METH_O __getitem__. Unbound base descriptors
+# admit their own receivers and bypass a subclass's Python override.
+def report_getitem(label, call, message=False):
+    try:
+        value = call()
+        if isinstance(value, memoryview):
+            value = value.tobytes()
+        print(label, value)
+    except Exception as exc:
+        if message:
+            print(label, type(exc).__name__, str(exc))
+        else:
+            print(label, type(exc).__name__)
+
+
+class SequenceIndex:
+    def __init__(self, value):
+        self.value = value
+        self.calls = 0
+
+    def __index__(self):
+        self.calls += 1
+        return self.value
+
+
+class SequenceIntIndex(int):
+    def __index__(self):
+        raise AssertionError("integer subclass __index__ override must be bypassed")
+
+
+class RaisingSequenceIndex:
+    def __init__(self, error):
+        self.error = error
+
+    def __index__(self):
+        raise self.error
+
+
+for owner, value in (
+    (bytes, b"abc"),
+    (bytearray, bytearray(b"abc")),
+    (list, [11, 22, 33]),
+    (tuple, (11, 22, 33)),
+    (range, range(11, 44, 11)),
+    (str, "a\u03b2c"),
+    (memoryview, memoryview(b"abc")),
+):
+    getitem = owner.__getitem__
+    name = owner.__name__
+    print(
+        "getitem declaration", name, type(getitem).__name__,
+        getitem.__objclass__ is owner, owner.__dict__["__getitem__"] is getitem,
+        getitem.__text_signature__,
+    )
+    for key in (0, -1, True, SequenceIntIndex(1), slice(1, None), slice(None, None, -1)):
+        report_getitem((name, "unbound", type(key).__name__), lambda: getitem(value, key))
+    index = SequenceIndex(-1)
+    report_getitem((name, "index protocol"), lambda: getitem(value, index))
+    print("getitem index calls", name, index.calls)
+    report_getitem((name, "bound"), lambda: value.__getitem__(1))
+    for key in (99, "bad", 1.5, SequenceIndex("bad"), slice(None, None, 0)):
+        report_getitem((name, "bad key", type(key).__name__), lambda: getitem(value, key), True)
+    index_error = ValueError("getitem index failure")
+    try:
+        getitem(value, RaisingSequenceIndex(index_error))
+    except ValueError as exc:
+        print("getitem index error identity", name, exc is index_error)
+    report_getitem((name, "wrong receiver"), lambda: getitem(None, 0), True)
+    for call in (
+        lambda: getitem(),
+        lambda: getitem(value),
+        lambda: getitem(value, 0, 1),
+        lambda: getitem(value, key=0),
+    ):
+        report_getitem((name, "argument error"), call)
+
+
+class OverrideBytes(bytes):
+    def __getitem__(self, key):
+        return "bytes override"
+
+
+class OverrideBytearray(bytearray):
+    def __getitem__(self, key):
+        return "bytearray override"
+
+
+class OverrideTuple(tuple):
+    def __getitem__(self, key):
+        return "tuple override"
+
+
+class OverrideString(str):
+    def __getitem__(self, key):
+        return "str override"
+
+
+class OverrideList(list):
+    def __getitem__(self, key):
+        return "list override"
+
+
+for owner, value in (
+    (bytes, OverrideBytes(b"abc")),
+    (bytearray, OverrideBytearray(b"abc")),
+    (tuple, OverrideTuple((11, 22, 33))),
+    (str, OverrideString("a\u03b2c")),
+    (list, OverrideList([11, 22, 33])),
+):
+    print("getitem subclass dispatch", owner.__name__, value[1], value.__getitem__(1))
+    print("getitem base payload", owner.__name__, owner.__getitem__(value, 1))
+    print("getitem base slice", owner.__name__, owner.__getitem__(value, slice(None, None, -1)))
