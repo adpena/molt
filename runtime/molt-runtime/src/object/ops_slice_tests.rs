@@ -943,14 +943,6 @@ fn assert_owned_tuple_parts(
     operation: impl Fn() -> u64,
     inspect: impl Fn(&[u64]),
 ) {
-    use crate::resource::{LimitedTracker, ResourceLimits, UnlimitedTracker, set_tracker};
-    struct Reset;
-    impl Drop for Reset {
-        fn drop(&mut self) {
-            set_tracker(Box::new(UnlimitedTracker));
-        }
-    }
-
     let result = operation();
     assert!(!exception_pending(py), "{label}: successful preparation");
     let ptr = obj_from_bits(result).as_ptr().expect("tuple result");
@@ -964,7 +956,22 @@ fn assert_owned_tuple_parts(
         .expect("exact tuple");
     }
     dec_ref_bits(py, result);
+    assert_owned_construction_refusal(py, label, allocations, operation);
+}
 
+fn assert_owned_construction_refusal(
+    py: &PyToken<'_>,
+    label: &str,
+    allocations: usize,
+    operation: impl Fn() -> u64,
+) {
+    use crate::resource::{LimitedTracker, ResourceLimits, UnlimitedTracker, set_tracker};
+    struct Reset;
+    impl Drop for Reset {
+        fn drop(&mut self) {
+            set_tracker(Box::new(UnlimitedTracker));
+        }
+    }
     for budget in 0..allocations {
         let reset = Reset;
         set_tracker(Box::new(LimitedTracker::new(&ResourceLimits {
@@ -993,6 +1000,82 @@ fn assert_owned_tuple_parts(
         }
         drop(reset);
     }
+}
+
+#[test]
+fn owned_range_parts_constructor_and_subscription_transfer_and_retire() {
+    let _transaction = crate::test_support::RuntimeTestTransaction::new();
+    crate::with_gil_entry_nopanic!(py, {
+        let start: BigInt = (BigInt::from(1u8) << 80) + 3;
+        let stop: BigInt = (BigInt::from(1u8) << 150) + 7;
+        let step: BigInt = (BigInt::from(1u8) << 70) + 11;
+        let construct = || {
+            crate::object::ops::alloc_range_from_bigints(
+                py,
+                start.clone(),
+                stop.clone(),
+                step.clone(),
+            )
+        };
+        let range = construct();
+        assert!(!exception_pending(py));
+        let range_ptr = obj_from_bits(range).as_ptr().expect("range result");
+        assert_eq!(
+            crate::object::ops::range_components_bigint(range_ptr),
+            Some((start.clone(), stop.clone(), step.clone()))
+        );
+        for field in unsafe {
+            [
+                range_start_bits(range_ptr),
+                range_stop_bits(range_ptr),
+                range_step_bits(range_ptr),
+            ]
+        } {
+            assert_eq!(heap_refcount(field), 1, "range owns each boxed part once");
+        }
+        assert_owned_construction_refusal(py, "range constructor", 4, construct);
+
+        let slice_stop = int_bits_from_bigint(py, BigInt::from(1u8) << 40);
+        let slice_step = int_bits_from_bigint(py, (BigInt::from(1u8) << 70) + 5);
+        let slice = molt_slice_new(MoltObject::from_int(2).bits(), slice_stop, slice_step);
+        assert!(!exception_pending(py));
+        let expected = (
+            &start + &step * 2,
+            &start + &step * (BigInt::from(1u8) << 40),
+            &step * ((BigInt::from(1u8) << 70) + 5),
+        );
+        for builtin in [false, true] {
+            let subscribe = || {
+                if builtin {
+                    crate::object::ops::molt_getitem_builtin(range, slice)
+                } else {
+                    crate::object::ops::molt_index(range, slice)
+                }
+            };
+            let result = subscribe();
+            assert!(!exception_pending(py));
+            let result_ptr = obj_from_bits(result).as_ptr().expect("sliced range");
+            assert_eq!(
+                crate::object::ops::range_components_bigint(result_ptr),
+                Some(expected.clone())
+            );
+            for field in unsafe {
+                [
+                    range_start_bits(result_ptr),
+                    range_stop_bits(result_ptr),
+                    range_step_bits(result_ptr),
+                ]
+            } {
+                assert_eq!(heap_refcount(field), 1);
+            }
+            dec_ref_bits(py, result);
+            assert_owned_construction_refusal(py, "range subscription", 4, subscribe);
+        }
+        for bits in [slice, slice_step, slice_stop, range] {
+            dec_ref_bits(py, bits);
+        }
+        assert!(!exception_pending(py));
+    });
 }
 
 #[test]

@@ -786,6 +786,31 @@ pub(crate) fn index_impl(
                         raise_exception::<()>(_py, "IndexError", "range object index out of range");
                         return Err(());
                     }
+                    if let Some(slice_ptr) = key.as_ptr()
+                        && object_type_id(slice_ptr) == TYPE_ID_SLICE
+                    {
+                        let Some((start, stop, step)) = range_components_bigint(ptr) else {
+                            return Err(());
+                        };
+                        let len = range_len_bigint(&start, &stop, &step);
+                        let Some((slice_start, slice_stop, slice_step)) =
+                            crate::object::ops_slice::slice_indices_bigint(_py, slice_ptr, &len)
+                        else {
+                            return Err(());
+                        };
+                        // Preserve exact range parameters, including empty
+                        // results and steps wider than the host word. Work is
+                        // bounded by integer bit widths, never element count.
+                        let substart = &start + &step * slice_start;
+                        let substop = start + &step * slice_stop;
+                        let substep = step * slice_step;
+                        let result = alloc_range_from_bigints(_py, substart, substop, substep);
+                        return if obj_from_bits(result).is_none() {
+                            Err(())
+                        } else {
+                            Ok(result)
+                        };
+                    }
                     let Some(mut idx) = sequence_index_bigint(_py, key_bits, "range") else {
                         return Err(());
                     };
