@@ -336,18 +336,22 @@ the runner temp short: the backend daemon socket path derives from it.
 
 The plan also admits each command's pinned toolchains (LLVM, the wasi-sdk,
 wasm-tools, Binaryen, Node, Lune), which CI's setup actions put first on
-`PATH`; a developer shell often has other versions first, and the preflight
-refuses them. Project the same toolchains, scoped to what the command declares,
-before the hosted state (that state moves the toolchain root, and the
-projection emits absolute paths):
+`PATH`. The proof runner, `molt_dev.py integrate` and the generators check
+put the installed pinned providers first themselves (`admit_toolchains` in
+`tools/proof_plan.py`), so a developer shell with other versions first needs
+no preparation. A tool the version contract admits still passes when its
+pinned provider is not installed; a refusal names the install command, and
+nothing downloads.
+
+The hosted state moves the toolchain root, so under it the runner finds no
+provider. Project the toolchains before entering it, and for any command you
+run outside these executors:
 
 ```bash
 eval "$(python3 tools/toolchain_env.py --command <command-id>)"
 ```
 
-`--family` and `--toolchain` select by family or by policy name; a refusal
-prints the exact line. The command never downloads: it names the install
-command for a provider that is missing.
+`--family` and `--toolchain` select by family or by policy name.
 
 A unit test that builds a synthetic project or asserts developer-host roots or
 guard limits must not inherit that state: it uses the shared
