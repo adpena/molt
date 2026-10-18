@@ -374,7 +374,7 @@
     "tests/tools/test_win_job_contract.py",
     "tests/tools/test_windows_process_api.py"
   ],
-  "authority_sha256": "09a6a326abe294eee99304e1061b8c7ddddd8a05d6565658db8be5a4df86d975",
+  "authority_sha256": "faabcdc9788acca109ab3ccc45af7d787d33ef40aa2c9c10dce1493e83e93bbf",
   "cargo_environment_policy": {
     "incident_command": "cargo metadata --locked --format-version 1",
     "incident_commit": "20b046b79bd4ca64a8c859f737f6e330377bcc4e",
@@ -5026,6 +5026,7 @@
         "tests/cli/test_backend_admission_receipt_consistency.py",
         "tests/cli/test_backend_environment_contract.py",
         "tests/cli/test_backend_initialization_contract.py",
+        "tests/cli/test_cli_build_identity.py",
         "tests/cli/test_binary_image_analysis_projection.py",
         "tests/cli/test_cargo_target_cfg.py",
         "tests/cli/test_cli_backend_binary_authority.py",
@@ -5180,6 +5181,7 @@
         "tests/cli/test_backend_admission_receipt_consistency.py",
         "tests/cli/test_backend_environment_contract.py",
         "tests/cli/test_backend_initialization_contract.py",
+        "tests/cli/test_cli_build_identity.py",
         "tests/cli/test_binary_image_analysis_projection.py",
         "tests/cli/test_cargo_target_cfg.py",
         "tests/cli/test_cli_backend_binary_authority.py",
@@ -6506,6 +6508,7 @@
         "-q",
         "--durations=20",
         "tests/cli/test_cli_smoke.py",
+        "tests/cli/test_cli_build_identity.py",
         "tests/cli/test_traceback_carets.py"
       ],
       "cache_domain": "cargo-workspace",
