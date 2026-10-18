@@ -889,7 +889,7 @@ pub const RUNTIME_CALLABLE_ABIS: &[RuntimeCallableAbi] = &[
     },
     RuntimeCallableAbi {
         symbol: "molt_base64_b16decode",
-        arity: 3,
+        arity: 2,
         trampoline_abi: RuntimeCallableTrampolineAbi::UnpackArgs,
     },
     RuntimeCallableAbi {
@@ -899,7 +899,7 @@ pub const RUNTIME_CALLABLE_ABIS: &[RuntimeCallableAbi] = &[
     },
     RuntimeCallableAbi {
         symbol: "molt_base64_b32decode",
-        arity: 4,
+        arity: 2,
         trampoline_abi: RuntimeCallableTrampolineAbi::UnpackArgs,
     },
     RuntimeCallableAbi {
@@ -909,7 +909,7 @@ pub const RUNTIME_CALLABLE_ABIS: &[RuntimeCallableAbi] = &[
     },
     RuntimeCallableAbi {
         symbol: "molt_base64_b32hexdecode",
-        arity: 3,
+        arity: 2,
         trampoline_abi: RuntimeCallableTrampolineAbi::UnpackArgs,
     },
     RuntimeCallableAbi {
@@ -919,7 +919,7 @@ pub const RUNTIME_CALLABLE_ABIS: &[RuntimeCallableAbi] = &[
     },
     RuntimeCallableAbi {
         symbol: "molt_base64_b64decode",
-        arity: 4,
+        arity: 3,
         trampoline_abi: RuntimeCallableTrampolineAbi::UnpackArgs,
     },
     RuntimeCallableAbi {
@@ -939,7 +939,7 @@ pub const RUNTIME_CALLABLE_ABIS: &[RuntimeCallableAbi] = &[
     },
     RuntimeCallableAbi {
         symbol: "molt_base64_decodebytes",
-        arity: 2,
+        arity: 1,
         trampoline_abi: RuntimeCallableTrampolineAbi::UnpackArgs,
     },
     RuntimeCallableAbi {
@@ -949,7 +949,7 @@ pub const RUNTIME_CALLABLE_ABIS: &[RuntimeCallableAbi] = &[
     },
     RuntimeCallableAbi {
         symbol: "molt_base64_standard_b64decode",
-        arity: 2,
+        arity: 1,
         trampoline_abi: RuntimeCallableTrampolineAbi::UnpackArgs,
     },
     RuntimeCallableAbi {
@@ -959,7 +959,7 @@ pub const RUNTIME_CALLABLE_ABIS: &[RuntimeCallableAbi] = &[
     },
     RuntimeCallableAbi {
         symbol: "molt_base64_urlsafe_b64decode",
-        arity: 2,
+        arity: 1,
         trampoline_abi: RuntimeCallableTrampolineAbi::UnpackArgs,
     },
     RuntimeCallableAbi {
@@ -974,12 +974,12 @@ pub const RUNTIME_CALLABLE_ABIS: &[RuntimeCallableAbi] = &[
     },
     RuntimeCallableAbi {
         symbol: "molt_binascii_a2b_base64",
-        arity: 3,
+        arity: 2,
         trampoline_abi: RuntimeCallableTrampolineAbi::UnpackArgs,
     },
     RuntimeCallableAbi {
         symbol: "molt_binascii_a2b_hex",
-        arity: 2,
+        arity: 1,
         trampoline_abi: RuntimeCallableTrampolineAbi::UnpackArgs,
     },
     RuntimeCallableAbi {
@@ -989,7 +989,7 @@ pub const RUNTIME_CALLABLE_ABIS: &[RuntimeCallableAbi] = &[
     },
     RuntimeCallableAbi {
         symbol: "molt_binascii_a2b_uu",
-        arity: 2,
+        arity: 1,
         trampoline_abi: RuntimeCallableTrampolineAbi::UnpackArgs,
     },
     RuntimeCallableAbi {
@@ -1009,7 +1009,7 @@ pub const RUNTIME_CALLABLE_ABIS: &[RuntimeCallableAbi] = &[
     },
     RuntimeCallableAbi {
         symbol: "molt_binascii_b2a_uu",
-        arity: 2,
+        arity: 1,
         trampoline_abi: RuntimeCallableTrampolineAbi::UnpackArgs,
     },
     RuntimeCallableAbi {
@@ -1020,6 +1020,16 @@ pub const RUNTIME_CALLABLE_ABIS: &[RuntimeCallableAbi] = &[
     RuntimeCallableAbi {
         symbol: "molt_binascii_crc_hqx",
         arity: 2,
+        trampoline_abi: RuntimeCallableTrampolineAbi::UnpackArgs,
+    },
+    RuntimeCallableAbi {
+        symbol: "molt_binascii_error_type",
+        arity: 0,
+        trampoline_abi: RuntimeCallableTrampolineAbi::UnpackArgs,
+    },
+    RuntimeCallableAbi {
+        symbol: "molt_binascii_incomplete_type",
+        arity: 0,
         trampoline_abi: RuntimeCallableTrampolineAbi::UnpackArgs,
     },
     RuntimeCallableAbi {
@@ -8404,12 +8414,12 @@ pub const RUNTIME_CALLABLE_ABIS: &[RuntimeCallableAbi] = &[
     },
     RuntimeCallableAbi {
         symbol: "molt_re_expand_replacement",
-        arity: 2,
+        arity: 3,
         trampoline_abi: RuntimeCallableTrampolineAbi::UnpackArgs,
     },
     RuntimeCallableAbi {
-        symbol: "molt_re_finditer_collect",
-        arity: 4,
+        symbol: "molt_re_finditer_next",
+        arity: 2,
         trampoline_abi: RuntimeCallableTrampolineAbi::UnpackArgs,
     },
     RuntimeCallableAbi {
@@ -8418,23 +8428,13 @@ pub const RUNTIME_CALLABLE_ABIS: &[RuntimeCallableAbi] = &[
         trampoline_abi: RuntimeCallableTrampolineAbi::UnpackArgs,
     },
     RuntimeCallableAbi {
-        symbol: "molt_re_match_group",
-        arity: 4,
-        trampoline_abi: RuntimeCallableTrampolineAbi::UnpackArgs,
-    },
-    RuntimeCallableAbi {
-        symbol: "molt_re_match_groupdict",
-        arity: 4,
-        trampoline_abi: RuntimeCallableTrampolineAbi::UnpackArgs,
-    },
-    RuntimeCallableAbi {
-        symbol: "molt_re_match_groups",
-        arity: 3,
-        trampoline_abi: RuntimeCallableTrampolineAbi::UnpackArgs,
-    },
-    RuntimeCallableAbi {
         symbol: "molt_re_pattern_info",
         arity: 1,
+        trampoline_abi: RuntimeCallableTrampolineAbi::UnpackArgs,
+    },
+    RuntimeCallableAbi {
+        symbol: "molt_re_scanner_new",
+        arity: 4,
         trampoline_abi: RuntimeCallableTrampolineAbi::UnpackArgs,
     },
     RuntimeCallableAbi {
@@ -8450,6 +8450,16 @@ pub const RUNTIME_CALLABLE_ABIS: &[RuntimeCallableAbi] = &[
     RuntimeCallableAbi {
         symbol: "molt_re_sub",
         arity: 4,
+        trampoline_abi: RuntimeCallableTrampolineAbi::UnpackArgs,
+    },
+    RuntimeCallableAbi {
+        symbol: "molt_re_subject_snapshot",
+        arity: 1,
+        trampoline_abi: RuntimeCallableTrampolineAbi::UnpackArgs,
+    },
+    RuntimeCallableAbi {
+        symbol: "molt_re_subject_view",
+        arity: 1,
         trampoline_abi: RuntimeCallableTrampolineAbi::UnpackArgs,
     },
     RuntimeCallableAbi {

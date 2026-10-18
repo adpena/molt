@@ -33,6 +33,7 @@ from tools import proof_plan
 from molt.cargo_execution_policy import normalize_cargo_environment
 from molt.file_hashing import _sha256_file
 from molt import python_environment_identity
+from molt import llvm_toolchain
 from molt import rust_toolchain
 from molt import tool_releases
 from molt.exact_json import ExactJsonError, canonical_json_sha256
@@ -82,6 +83,7 @@ from tools.proof_queue_pkg import (
     cli,
     command_admission,
     command_identity,
+    cargo_output_environment,
     cargo_output_layout,
     execution_environment,
     execution_receipt_details,
@@ -1305,6 +1307,17 @@ def test_native_toolchain_inference_and_declared_sdk_policy_coexist() -> None:
     command_admission._proof_command_registry.cache_clear()
     native = command_admission.envelope_for_command(["clang", "--version"])
     assert native["toolchains"] == ["clang"]
+    plan = proof_plan.ProofPlan.load()
+    fixture = next(
+        command
+        for command in plan.commands
+        if command.id == "python.unit.cli.import-collection"
+    )
+    declared = command_admission.envelope_for_command(list(fixture.argv))
+    assert declared["kind"] == "proof-plan"
+    assert declared["proof_plan_command_ids"] == [fixture.id]
+    assert "hosted-clang" in declared["toolchains"]
+    assert "clang" not in declared["toolchains"]
     scalar = command_admission.envelope_for_command(["llvm-config", "--version"])
     assert scalar["toolchains"] == ["llvm-config"]
     plan = proof_plan.ProofPlan.load()
@@ -2463,6 +2476,91 @@ def test_execution_environment_authority_covers_path_rust_and_wrapper_family() -
         contract=contract,
     )
     assert changed["identity_sha256"] != authority["identity_sha256"]
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        "MOLT_LLVM_PREFIX",
+        "LLVM_CONFIG_PATH",
+        "LLVM_SYS_221_PREFIX",
+        "MLIR_SYS_220_PREFIX",
+        "TABLEGEN_220_PREFIX",
+        "MLIR_SYS_350_PREFIX",
+        "TABLEGEN_350_PREFIX",
+    ],
+)
+def test_llvm_sdk_environment_is_admitted_retained_and_bound(name: str) -> None:
+    inherited = {name: "/selected SDK with spaces"}
+    assert execution_environment.environment_override_policy_error(inherited) is None
+    selected, contract = execution_environment._deterministic_execution_environment(
+        inherited, override_names=[name]
+    )
+    assert selected == inherited
+    assert contract["omitted_names"] == []
+    authority = execution_environment._execution_environment_authority(
+        selected,
+        applied_cargo_policies=(),
+        fingerprint_key=b"llvm-test",
+        contract=contract,
+    )
+    assert authority["variables"][name]["class"] == "build-toolchain"
+    assert inherited[name] not in json.dumps(authority)
+    changed = execution_environment._execution_environment_authority(
+        {name: "/different SDK"},
+        applied_cargo_policies=(),
+        fingerprint_key=b"llvm-test",
+        contract=contract,
+    )
+    assert changed["identity_sha256"] != authority["identity_sha256"]
+
+
+@pytest.mark.parametrize("major,minor", [(1, 0), (19, 0), (22, 1), (35, 9)])
+def test_llvm_sdk_environment_grammar_tracks_binding_constructors(major, minor):
+    for name in (
+        llvm_toolchain.llvm_sys_prefix_env_var(major, minor),
+        llvm_toolchain.mlir_sys_prefix_env_var(major),
+        llvm_toolchain.tablegen_prefix_env_var(major),
+    ):
+        assert llvm_toolchain.llvm_toolchain_environment_name(name)
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        "MLIR_SYS_220_PREFIX_EXTRA",
+        "MLIR_SYS_221_PREFIX",
+        "MLIR_SYS_0220_PREFIX",
+        "MLIR_SYS__PREFIX",
+        "MLIR_UNKNOWN_SETTING",
+        "TABLEGEN_220_PREFIX_EXTRA",
+        "TABLEGEN_221_PREFIX",
+        "TABLEGEN_0220_PREFIX",
+        "TABLEGEN_UNKNOWN_SETTING",
+        "LLVM_SYS_0221_PREFIX",
+        "LLVM_SYS_221_PREFIX_EXTRA",
+    ],
+)
+def test_llvm_sdk_environment_grammar_rejects_lookalikes(name: str) -> None:
+    assert not llvm_toolchain.llvm_toolchain_environment_name(name)
+    assert name not in command_identity.compile_environment_selection({name: "1"})
+    if not name.startswith("LLVM_"):
+        # Existing generic LLVM inputs retain their separate semantic-prefix
+        # policy; the new MLIR/TableGen grammar must not admit unrelated names.
+        assert execution_environment.environment_override_policy_error({name: "1"})
+
+
+@pytest.mark.skipif(
+    os.name == "nt", reason="POSIX environment names are case-sensitive"
+)
+@pytest.mark.parametrize("name", ["mlir_sys_220_prefix", "tablegen_220_prefix"])
+def test_llvm_sdk_environment_does_not_admit_posix_case_aliases(name: str) -> None:
+    assert execution_environment.environment_override_policy_error({name: "1"})
+    selected, contract = execution_environment._deterministic_execution_environment(
+        {name: "1"}, override_names=[]
+    )
+    assert selected == {}
+    assert contract["omitted_names"] == [name]
 
 
 @pytest.mark.parametrize(
@@ -4539,27 +4637,50 @@ def test_python_bootstrap_honors_canonical_bytecode_policy_under_isolated_startu
     assert payload["adapter"] is True
 
 
-def test_python_bootstrap_pytest_disables_source_cache_exactly_once(
+def test_python_bootstrap_pytest_keeps_cacheprovider_in_admitted_scratch(
     tmp_path: Path,
 ) -> None:
+    scratch = tmp_path / "proof-scratch"
     test_file = tmp_path / "test_owned.py"
-    test_file.write_text("def test_owned():\n    assert True\n", encoding="utf-8")
+    test_file.write_text(
+        "def test_owned(cache):\n    cache.set('custody/value', {'retained': True})\n",
+        encoding="utf-8",
+    )
     envelope = {"python": {"kind": "direct"}}
+    declared = [
+        sys.executable,
+        "-m",
+        "pytest",
+        "-q",
+        "--strict-config",
+        "-W",
+        "error",
+        "-c",
+        str(state.ROOT / "pyproject.toml"),
+        str(test_file),
+    ]
     rewritten = command_admission._python_bootstrap_command(
         envelope,
-        [sys.executable, "-m", "pytest", "-q", str(test_file)],
+        declared,
     )
-    assert rewritten.count("no:cacheprovider") == 1
+    assert rewritten[-len(declared[3:]) :] == declared[3:]
     completed = run_custody_subject_process(
         rewritten,
         cwd=tmp_path,
-        env={**os.environ, "PYTEST_DISABLE_PLUGIN_AUTOLOAD": "1"},
+        env={
+            **os.environ,
+            "PYTEST_DISABLE_PLUGIN_AUTOLOAD": "1",
+            "MOLT_PROOF_SCRATCH_ROOT": str(scratch),
+        },
         check=False,
         text=True,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
     )
-    assert completed.returncode == 0, completed.stderr
+    assert completed.returncode == 0, completed.stdout + completed.stderr
+    assert json.loads(
+        (scratch / "pytest-cache" / "v/custody/value").read_text(encoding="utf-8")
+    ) == {"retained": True}
     assert not (tmp_path / ".pytest_cache").exists()
     already_disabled = command_admission._python_bootstrap_command(
         envelope,
@@ -18741,6 +18862,48 @@ def test_clippy_configured_selectors_require_bound_cargo_context(
     )
 
 
+@pytest.mark.parametrize(
+    "name",
+    [
+        "MOLT_LLVM_PREFIX",
+        "LLVM_CONFIG_PATH",
+        "LLVM_SYS_221_PREFIX",
+        "MLIR_SYS_220_PREFIX",
+        "TABLEGEN_220_PREFIX",
+    ],
+)
+@pytest.mark.parametrize(
+    "forced,inherited", [(False, False), (False, True), (True, True)]
+)
+def test_llvm_sdk_configured_selectors_require_bound_cargo_context(
+    tmp_path, name, forced, inherited
+):
+    config = tmp_path / "selected.toml"
+    config.write_text(
+        f'env.{name} = {{ value = "replacement SDK", force = {str(forced).lower()} }}',
+        encoding="utf-8",
+    )
+    command = ["cargo", "--config", str(config), "check"]
+    envelope = command_admission.envelope_for_command(command)
+    environment = {"CARGO_HOME": str(tmp_path / "cargo-home")}
+    if inherited:
+        environment[name] = "captured SDK"
+    kwargs = dict(
+        outputs=cargo_output_environment.CargoOutputEnvironment.for_envelope(envelope),
+        cwd=tmp_path,
+        env=environment,
+    )
+    if forced or not inherited:
+        with pytest.raises(ValueError, match=f"defines env.{name}"):
+            execution_environment._require_cargo_build_tool_environment_context(
+                envelope, **kwargs
+            )
+    else:
+        execution_environment._require_cargo_build_tool_environment_context(
+            envelope, **kwargs
+        )
+
+
 def test_selected_runtime_watch_capture_compact_and_cas_receivers(
     tmp_path, monkeypatch
 ):
@@ -18759,14 +18922,43 @@ def test_selected_runtime_watch_capture_compact_and_cas_receivers(
         reuse_root=tmp_path / "reuse",
     )
     library, unicode_file = fixture.installations[str(fixture.selected[0])]
-    assert library in roots
-    assert any(unicode_file.is_relative_to(root) for root in roots)
-    assert any(
-        Path(row["lexical"]).parent in roots
-        for row in located[fixture.policy.name]["python_runtime"]["startup_selection"][
-            "startup_configuration"
-        ]
+    # The fixture declares one directory tree. Executables, native images and
+    # startup configuration must not recursively admit their parent trees.
+    assert roots == [library]
+    source = tmp_path / "source"
+    source.mkdir()
+    startup = located[fixture.policy.name]["python_runtime"]["startup_selection"]
+    specs = execution_custody.watch_specs(
+        source_root=source, tracked_paths=[], identities=[located], broad_roots=roots
     )
+    for row in startup["startup_configuration"]:
+        for spelling in ("lexical", "resolved"):
+            path = Path(row[spelling])
+            assert any(
+                path.is_relative_to(spec.root) and spec.owns(path) for spec in specs
+            )
+
+    # CPython's absent ZIP landmark is an exact negative input. Its appearance
+    # must invalidate custody without admitting unrelated system resources.
+    selected = copy.deepcopy(located)
+    missing = tmp_path / "system" / "lib" / "python312.zip"
+    missing.parent.mkdir(parents=True)
+    private = missing.parent / "ssl" / "private"
+    private.mkdir(parents=True)
+    selected[fixture.policy.name]["python_runtime"]["startup_selection"][
+        "import_paths"
+    ].append({"lexical": str(missing), "resolved": str(missing), "present": False})
+    assert execution_environment._broad_toolchain_roots(selected) == roots
+    specs = execution_custody.watch_specs(
+        source_root=source, tracked_paths=[], identities=[selected], broad_roots=roots
+    )
+    finite = next(spec for spec in specs if spec.root == missing.parent)
+    assert finite.paths == frozenset({str(missing)})
+    assert not finite.owns(private)
+    missing.write_bytes(b"new startup selector")
+    assert finite.owns(missing)
+    missing.unlink()
+    assert finite.owns(missing), "restore must not erase the selected creation/deletion"
 
     def capture(value):
         return execution_environment._capture_toolchains(

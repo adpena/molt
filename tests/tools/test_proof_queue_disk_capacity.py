@@ -13,6 +13,8 @@ from types import SimpleNamespace
 import pytest
 
 from molt import disk_capacity
+from molt import dx
+from molt.cargo_execution_policy import CARGO_WRAPPER_ENV_NAMES
 from tools import disk_guard
 from tools.proof_queue_pkg import (
     command_admission,
@@ -120,6 +122,194 @@ def test_queue_refuses_low_capacity_before_provisioning_and_retains_receipt(
     assert not summary.exists()
     diagnostics = diagnostic_engine._run_diagnostics(row)
     assert [item["signal_id"] for item in diagnostics] == ["build-disk-capacity"]
+    conn.close()
+
+
+def test_run_one_derives_dx_environment_from_requested_overrides_before_launch(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo_root = Path(__file__).resolve().parents[2]
+    ambient_root = tmp_path / "ambient-artifacts"
+    requested_root = tmp_path / "requested-artifacts"
+    requested_tools = requested_root / "toolchains"
+    resource_family = "cargo"
+    contention_key = "compiler-build"
+    session_id = state._proof_session_id(resource_family, contention_key)
+
+    for name in (
+        *dx.DX_ENV_KEYS,
+        *CARGO_WRAPPER_ENV_NAMES,
+        "MOLT_SESSION_ID_GENERATED",
+        "VIRTUAL_ENV",
+        "MOLT_VENV",
+        "MOLT_UV_PROJECT_PURPOSE",
+        "MOLT_UV_PROJECT_PYTHON",
+    ):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv("MOLT_EXT_ROOT", str(ambient_root))
+    monkeypatch.setenv("MOLT_TARGET_ROOT", str(ambient_root / "toolchains"))
+    monkeypatch.setenv("MOLT_SESSION_ID", "ambient-session")
+    monkeypatch.setenv("MOLT_USE_SCCACHE", "1")
+
+    overrides = {
+        "MOLT_EXT_ROOT": str(requested_root),
+        "MOLT_TARGET_ROOT": str(requested_tools),
+        "MOLT_SESSION_ID": session_id,
+        "MOLT_USE_SCCACHE": "0",
+    }
+    observed: dict[str, object] = {}
+    original_resolver = runner.development_artifact_env
+    original_validate_environment = (
+        runner.cargo_output_layout.CargoOutputLayout.validate_environment
+    )
+    original_require_build_capacity = disk_capacity.require_build_capacity
+
+    def observe_output_validation(layout, env):
+        observed["validation_environment"] = dict(env)
+        return original_validate_environment(layout, env)
+
+    def observe_capacity(paths, *, env=None, **kwargs):
+        observed["capacity_environment"] = dict(env or {})
+        return original_require_build_capacity(paths, env=env, **kwargs)
+
+    def observe_resolver(base_root, base_env, **kwargs):
+        observed["derivation_input"] = dict(base_env)
+        observed["session_id_argument"] = kwargs.get("session_id")
+        derived = original_resolver(base_root, base_env, **kwargs)
+        observed["derived"] = dict(derived)
+        return derived
+
+    monkeypatch.setattr(runner, "development_artifact_env", observe_resolver)
+    monkeypatch.setattr(
+        runner.cargo_output_layout.CargoOutputLayout,
+        "validate_environment",
+        observe_output_validation,
+    )
+    monkeypatch.setattr(disk_capacity, "require_build_capacity", observe_capacity)
+    discoveries: list[dict[str, str]] = []
+
+    def observe_sccache_discovery(env):
+        discoveries.append(dict(env))
+        return str(tmp_path / "tools" / "sccache")
+
+    monkeypatch.setattr(dx, "pinned_sccache", observe_sccache_discovery)
+    monkeypatch.setenv(disk_capacity.DISK_GUARD_HIGH_WATER_ENV, "0.000000001")
+
+    args = argparse.Namespace(
+        db=str(requested_root / "queue.sqlite3"),
+        logs_root=str(requested_root / "runs"),
+        repo_root=str(repo_root),
+    )
+    envelope = {"toolchains": ["cargo"]}
+    monkeypatch.setattr(
+        command_admission, "admission_envelope", lambda command, **kwargs: envelope
+    )
+    monkeypatch.setattr(
+        command_admission, "envelope_for_command", lambda command, **kwargs: envelope
+    )
+    monkeypatch.setattr(policy, "_proof_command_policy_error", lambda command: None)
+    monkeypatch.setattr(
+        scheduling,
+        "_lane_maturity_admission",
+        lambda **kwargs: SimpleNamespace(allow=True),
+    )
+    monkeypatch.setattr(
+        evidence, "_try_write_marimo_notebook", lambda *args, **kwargs: None
+    )
+
+    launch_observations: list[dict[str, str]] = []
+
+    def stop_before_child(command, *, cwd, env, stdout):
+        launch_observations.append(dict(env))
+        raise RuntimeError("test stopped before child launch")
+
+    monkeypatch.setattr(runner.custody, "_launch_queued_command", stop_before_child)
+
+    command = ["cargo", "test"]
+    log = Path(args.logs_root) / "requested-env.log"
+    summary = Path(args.logs_root) / "requested-env.memory_guard.json"
+    conn = state._connect(Path(args.db))
+    scheduling._insert_run(
+        conn,
+        run_id="requested-env-unit",
+        logical_id="requested-env-unit",
+        reason="unit-test requested execution environment",
+        command=command,
+        cwd=repo_root,
+        resource_family=resource_family,
+        contention_key=contention_key,
+        scopes=[],
+        env_overrides=overrides,
+        git_snapshot={},
+        log_path=log,
+        summary_json=summary,
+    )
+    rc = runner._run_one(
+        args,
+        logical_id="requested-env-unit",
+        reason="unit-test requested execution environment",
+        command=command,
+        resource_family=resource_family,
+        contention_key=contention_key,
+        scopes=[],
+        env_overrides=overrides,
+        timeout=30,
+        existing_run_id="requested-env-unit",
+        existing_log_path=log,
+        existing_summary_json=summary,
+    )
+
+    assert rc == 2
+    assert len(launch_observations) == 1
+    derivation_input = observed["derivation_input"]
+    assert isinstance(derivation_input, dict)
+    assert {name: derivation_input.get(name) for name in overrides} == overrides
+    for phase in ("validation_environment", "capacity_environment"):
+        phase_environment = observed[phase]
+        assert isinstance(phase_environment, dict)
+        assert {name: phase_environment.get(name) for name in overrides} == overrides
+    assert observed["session_id_argument"] == session_id
+    assert discoveries == []
+
+    derived = observed["derived"]
+    assert isinstance(derived, dict)
+    assert derived["MOLT_EXT_ROOT"] == str(requested_root)
+    assert derived["MOLT_TARGET_ROOT"] == str(requested_tools)
+    assert derived["MOLT_SESSION_ID"] == session_id
+    assert "RUSTC_WRAPPER" not in derived
+    output_names = (
+        "CARGO_TARGET_DIR",
+        "MOLT_DIFF_CARGO_TARGET_DIR",
+        "MOLT_CACHE",
+        "UV_CACHE_DIR",
+        "UV_PROJECT_ENVIRONMENT",
+        "PIP_CACHE_DIR",
+        "RUFF_CACHE_DIR",
+        "SCCACHE_DIR",
+        "MOLT_DIFF_ROOT",
+        "MOLT_DIFF_TMPDIR",
+        "MOLT_BACKEND_DAEMON_SOCKET_DIR",
+        "PYTHONPYCACHEPREFIX",
+        "TMPDIR",
+        "TMP",
+        "TEMP",
+    )
+    for name in output_names:
+        assert Path(derived[name]).is_relative_to(requested_root), (name, derived[name])
+
+    launch_env = launch_observations[0]
+    assert launch_env["MOLT_EXT_ROOT"] == str(requested_root)
+    assert launch_env["MOLT_TARGET_ROOT"] == str(requested_tools)
+    assert launch_env["MOLT_SESSION_ID"] == session_id
+    assert launch_env["MOLT_USE_SCCACHE"] == "0"
+    assert "RUSTC_WRAPPER" not in launch_env
+    for name in output_names:
+        assert Path(launch_env[name]).is_relative_to(requested_root), (
+            name,
+            launch_env[name],
+        )
+    row = state._row_by_run_id(conn, "requested-env-unit")
+    assert row is not None and row["status"] == "failed" and row["guard_pid"] is None
     conn.close()
 
 

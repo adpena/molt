@@ -214,8 +214,8 @@ def test_cargo_mutation_rejected_before_any_alias_probe_or_receipt(
     )
     monkeypatch.setattr(
         backend_binary,
-        "_maybe_hydrate_artifact_from_canonical_target",
-        lambda **kw: False,
+        "_hydrate_canonical_backend_generation",
+        lambda *_a, **_k: None,
     )
     monkeypatch.delenv("MOLT_SKIP_RUNTIME_REBUILD", raising=False)
 
@@ -253,7 +253,7 @@ def test_cargo_mutation_rejected_before_any_alias_probe_or_receipt(
         raise AssertionError("unstable build must not publish or probe")
 
     for name in (
-        "_atomic_copy_file",
+        "publish_backend_generation",
         "_run_subprocess_captured_to_tempfiles",
         "_write_runtime_fingerprint",
         "_atomic_write_json",

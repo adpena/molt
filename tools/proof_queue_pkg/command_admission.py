@@ -2005,18 +2005,6 @@ def _python_bootstrap_command(
     if not _interpreter_flag_present(interpreter_options, "B"):
         interpreter_options.insert(0, "-B")
     arguments = list(invocation.arguments)
-    if invocation.mode == "module" and invocation.target == "pytest":
-        cache_disabled = any(
-            argument == "-pno:cacheprovider"
-            or (
-                argument == "-p"
-                and index + 1 < len(arguments)
-                and arguments[index + 1] == "no:cacheprovider"
-            )
-            for index, argument in enumerate(arguments)
-        )
-        if not cache_disabled:
-            arguments[:0] = ["-p", "no:cacheprovider"]
     payload = [str(bootstrap), invocation.mode, "1" if skip_first_line else "0"]
     if invocation.target is not None:
         payload.append(invocation.target)

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import sys
 from types import FunctionType, SimpleNamespace
 from typing import Any
@@ -1040,25 +1041,31 @@ def test_mapped_file_lookup_names_the_file_backing_an_address() -> None:
 def test_runtime_library_does_not_depend_on_the_invocation_name(tmp_path) -> None:
     # A PATH launch names the interpreter "python3" in argv[0]; glibc reports
     # a statically linked runtime by that name, which the cwd cannot resolve.
-    import sys
-
     probe = (
-        "import json; from molt import python_runtime_identity as r; "
+        "import json, sys; from molt import python_runtime_identity as r; "
         "library = r._runtime_library(); "
-        "print(json.dumps(None if library is None else str(library)))"
+        "print(json.dumps({'library': None if library is None else str(library), "
+        "'prefix': sys.prefix, 'executable': sys.executable}))"
     )
+    # CPython Modules/getpath.py resolves a bare argv[0] against PATH on
+    # POSIX. Bind that selector to this installation as well as execve's image;
+    # otherwise standalone Python can select a different prefix before import.
     result = run_custody_subject_process(
-        ["python3", "-c", probe],
+        [Path(sys.executable).name, "-c", probe],
         executable=sys.executable,
+        env={**os.environ, "PATH": str(Path(sys.executable).parent)},
         cwd=tmp_path,
         capture_output=True,
         text=True,
         check=False,
     )
     assert result.returncode == 0, result.stderr
+    observed = json.loads(result.stdout)
+    assert Path(observed["prefix"]).resolve() == Path(sys.prefix).resolve()
+    assert Path(observed["executable"]).resolve() == Path(sys.executable).resolve()
     library = runtime._runtime_library()
     expected = None if library is None else str(library)
-    assert result.stdout.strip() == json.dumps(expected)
+    assert observed["library"] == expected
 
 
 @pytest.mark.parametrize("enable_shared", ["0", "1"])

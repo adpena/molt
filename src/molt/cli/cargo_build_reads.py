@@ -19,6 +19,7 @@ every environment input.
 from __future__ import annotations
 
 from collections.abc import Iterable, Iterator, Mapping, Sequence
+from contextlib import ExitStack
 from dataclasses import dataclass
 import json
 import os
@@ -27,8 +28,14 @@ import stat
 from urllib.parse import urlparse
 from urllib.request import url2pathname
 
-# The largest dep-info or build-script output Molt reads; the runtime's
-# largest unit dep-info is 76 KB.
+from molt.file_publication import metadata_is_link_like
+from molt.toolchain_identity import (
+    StableRegularFileHandle,
+    open_stable_regular_file,
+    stable_regular_file_handle_identity,
+)
+
+# Bound metadata reads separately from the streamed artifact comparisons.
 _MAX_BYTES = 16 * 1024 * 1024
 _ENV_DEP = "# env-dep:"
 _RERUN_IF_CHANGED = ("cargo:rerun-if-changed=", "cargo::rerun-if-changed=")
@@ -39,6 +46,17 @@ _OUTPUT_SUFFIXES = frozenset(
 )
 _LIBRARY_KINDS = frozenset(
     {"lib", "rlib", "staticlib", "cdylib", "dylib", "proc-macro"}
+)
+# Cargo target_info::file_types labels these import/export and external-debug
+# outputs Auxiliary/DebugInfo; none can establish a library's primary identity.
+_AUXILIARY_SUFFIXES = (
+    ".pdb",
+    ".dsym",
+    ".dwp",
+    ".dll.lib",
+    ".dll.exp",
+    ".dll.a",
+    ".wasm.map",
 )
 
 
@@ -58,6 +76,14 @@ class CargoBuildReads:
     # Variables rustc or a build script read, with rustc's recorded value
     # (None when only a build script declared the name).
     environment: tuple[tuple[str, str | None], ...]
+
+
+@dataclass(frozen=True, slots=True)
+class _RustcDepInfo:
+    path: Path
+    outputs: tuple[str, ...]
+    files: tuple[str, ...]
+    environment: dict[str, str | None]
 
 
 def cargo_build_reads(
@@ -128,22 +154,23 @@ def cargo_build_reads(
         package = _local_package_root(message.get("package_id"))
         if reason == "compiler-artifact":
             dep_info = _unit_dep_info(
-                message, deps_dirs, out_dirs.get(message.get("package_id"))
+                message,
+                deps_dirs,
+                out_dirs.get(message.get("package_id")),
+                workspace_root=root,
             )
             if package is None:
                 # A registry or git unit: Cargo.lock identifies its sources,
                 # but the variables it read still decide its bytes.
                 if dep_info is not None:
-                    _, unit_environment = _read_dep_info(dep_info)
-                    environment.update(unit_environment)
+                    environment.update(dep_info.environment)
                 continue
             if dep_info is None:
                 raise CargoBuildReadsError(
                     f"Cargo reported no dep-info for {message.get('package_id')}"
                 )
-            entries, unit_environment = _read_dep_info(dep_info)
-            environment.update(unit_environment)
-            for entry in entries:
+            environment.update(dep_info.environment)
+            for entry in dep_info.files:
                 path = Path(entry)
                 admit(path if path.is_absolute() else root / path)
             units += 1
@@ -198,8 +225,12 @@ def _messages(cargo_stdout: str) -> Iterator[Mapping[str, object]]:
 
 
 def _unit_dep_info(
-    message: Mapping[str, object], deps_dirs: Iterable[Path], out_dir: object
-) -> Path | None:
+    message: Mapping[str, object],
+    deps_dirs: Iterable[Path],
+    out_dir: object,
+    *,
+    workspace_root: Path,
+) -> _RustcDepInfo | None:
     """The rustc dep-info of one unit: ``<crate>-<metadata>.d``.
 
     A library's outputs in ``deps`` carry the ``<crate>-<metadata>`` stem, with
@@ -208,8 +239,8 @@ def _unit_dep_info(
     Cargo reports its uplifted copy ``build-script-build``. A root artifact
     Cargo reports only uplifted (a staticlib or binary in the profile
     directory) has several ``<crate>-<metadata>.d`` candidates, one per feature
-    and profile lane; the one this build used records this build's
-    ``OUT_DIR``.
+    and profile lane. Bind its populated output rules to Cargo's actual
+    output bytes; several units can share the same ``OUT_DIR``.
     """
     filenames = _strings(message.get("filenames"))
     target = message.get("target")
@@ -217,6 +248,9 @@ def _unit_dep_info(
         return None
     kinds = [kind for kind in _strings(target.get("kind")) if isinstance(kind, str)]
     library = any(kind in _LIBRARY_KINDS for kind in kinds)
+    executable = message.get("executable")
+    if not library and isinstance(executable, str):
+        filenames = [executable]
     name = target.get("name")
     crate = name.replace("-", "_") if isinstance(name, str) else None
     for filename in filenames:
@@ -231,32 +265,145 @@ def _unit_dep_info(
             candidate = output.with_name(stem + ".d")
         if output.parent.name in {"deps", "build"} or "custom-build" in kinds:
             if candidate.is_file():
-                return candidate
+                return _read_dep_info(candidate)
     if crate is None:
         return None
-    matches = [
-        candidate
-        for directory in deps_dirs
-        for candidate in directory.glob(f"{crate}-*.d")
-        if _records_out_dir(candidate, out_dir)
-    ]
-    if len(matches) > 1:
+    candidates = []
+    for path in sorted(
+        {path for directory in deps_dirs for path in directory.glob(f"{crate}-*.d")}
+    ):
+        # Inspect all records before selection; an unreadable candidate cannot
+        # establish uniqueness. OUT_DIR narrows candidates only when recorded.
+        candidate = _read_dep_info(path)
+        if (
+            isinstance(out_dir, str)
+            and "OUT_DIR" in candidate.environment
+            and candidate.environment["OUT_DIR"] != out_dir
+        ):
+            continue
+        candidates.append(candidate)
+    if not candidates:
+        return None
+    return _uplifted_dep_info(candidates, filenames, workspace_root, library, crate)
+
+
+def _output_role(path: Path, library: bool) -> str | None:
+    # Binary names may contain dots; their executable role does not depend on
+    # an extension. Cargo's executable field excludes ancillary debug outputs.
+    if not library:
+        return "executable"
+    suffix = path.suffix.lower()
+    return (
+        None
+        if suffix == ".d" or path.name.lower().endswith(_AUXILIARY_SUFFIXES)
+        else suffix
+    )
+
+
+def _uplifted_dep_info(
+    candidates: Sequence[_RustcDepInfo],
+    filenames: Sequence[str],
+    root: Path,
+    library: bool,
+    crate: str,
+) -> _RustcDepInfo:
+    def absolute(value: str) -> Path:
+        path = Path(value)
+        return path if path.is_absolute() else root / path
+
+    try:
+        with ExitStack() as custody:
+            outputs = [
+                (
+                    role,
+                    custody.enter_context(
+                        open_stable_regular_file(absolute(name), label="Cargo output")
+                    ),
+                )
+                for name in filenames
+                if (role := _output_role(Path(name), library)) is not None
+            ]
+            digests: dict[Path, str] = {}
+
+            def matches_output(path: Path, output: StableRegularFileHandle) -> bool:
+                try:
+                    metadata = path.lstat()
+                except FileNotFoundError:
+                    # Cargo can retain dep-info after retiring an old output.
+                    return False
+                if not stat.S_ISREG(metadata.st_mode) or metadata_is_link_like(
+                    metadata
+                ):
+                    raise CargoBuildReadsError(
+                        f"dep-info output is not a direct file: {path}"
+                    )
+                if metadata.st_size != output.stat.st_size:
+                    return False
+                with open_stable_regular_file(
+                    path, label="dep-info output", expected_path_stat=metadata
+                ) as candidate:
+                    if candidate.stat.st_ino and os.path.samestat(
+                        candidate.stat, output.stat
+                    ):
+                        return True
+                    if output.path not in digests:
+                        digests[output.path] = stable_regular_file_handle_identity(
+                            output, label="Cargo output"
+                        ).sha256
+                    return (
+                        stable_regular_file_handle_identity(
+                            candidate, label="dep-info output"
+                        ).sha256
+                        == digests[output.path]
+                    )
+
+            matches = []
+            for candidate in candidates:
+                targets: dict[str, list[Path]] = {}
+                for name in candidate.outputs:
+                    path = absolute(name)
+                    if os.path.normcase(os.path.abspath(path)) == os.path.normcase(
+                        os.path.abspath(candidate.path)
+                    ):
+                        continue
+                    role = _output_role(path, library)
+                    if role is not None:
+                        targets.setdefault(role, []).append(path)
+                if outputs and all(
+                    any(matches_output(path, output) for path in targets.get(role, ()))
+                    for role, output in outputs
+                ):
+                    matches.append(candidate)
+            if not matches:
+                raise CargoBuildReadsError(
+                    f"no dep-info output matches Cargo's {crate} outputs: "
+                    + ", ".join(filenames)
+                )
+            selected = matches[0]
+            if len(matches) == 1:
+                return selected
+            closure = (
+                frozenset(os.path.realpath(absolute(name)) for name in selected.files),
+                selected.environment,
+            )
+            for candidate in matches[1:]:
+                if (
+                    frozenset(
+                        os.path.realpath(absolute(name)) for name in candidate.files
+                    ),
+                    candidate.environment,
+                ) != closure:
+                    raise CargoBuildReadsError(
+                        f"several dep-info files match {crate} output bytes with different reads: "
+                        + ", ".join(os.fspath(item.path) for item in matches)
+                    )
+            return selected
+    except (OSError, ValueError) as exc:
+        if isinstance(exc, CargoBuildReadsError):
+            raise
         raise CargoBuildReadsError(
-            f"several dep-info files match {crate}: "
-            + ", ".join(os.fspath(path) for path in sorted(matches))
-        )
-    return matches[0] if matches else None
-
-
-def _records_out_dir(dep_info: Path, out_dir: object) -> bool:
-    # A unit without a build script has no OUT_DIR; it is the lane's only
-    # candidate only if Cargo kept one, which the caller cannot prove.
-    if not isinstance(out_dir, str):
-        return False
-    # Every candidate must be inspectable before uniqueness is established.
-    # Ignoring an unreadable candidate could select an older feature lane.
-    _, environment = _read_dep_info(dep_info)
-    return environment.get("OUT_DIR") == out_dir
+            f"cannot bind Cargo's {crate} output: {exc}"
+        ) from exc
 
 
 def _strings(value: object) -> list[str]:
@@ -269,23 +416,40 @@ def _strings(value: object) -> list[str]:
 
 def _read_bounded(path: Path) -> str:
     try:
-        with path.open("rb") as handle:
-            raw = handle.read(_MAX_BYTES + 1)
-    except OSError as exc:
+        with open_stable_regular_file(path, label="Cargo input record") as opened:
+            raw = opened.stream.read(_MAX_BYTES + 1)
+    except (OSError, ValueError) as exc:
         raise CargoBuildReadsError(f"cannot read {path}: {exc}") from exc
     if len(raw) > _MAX_BYTES:
         raise CargoBuildReadsError(f"{path} is larger than {_MAX_BYTES} bytes")
     return raw.decode("utf-8", "surrogateescape")
 
 
-def _read_dep_info(path: Path) -> tuple[tuple[str, ...], dict[str, str | None]]:
+def _dep_words(value: str, path: Path) -> tuple[str, ...]:
+    words = []
+    tokens = iter(value.split())
+    for token in tokens:
+        while token.endswith("\\"):
+            following = next(tokens, None)
+            if following is None:
+                raise CargoBuildReadsError(
+                    f"rustc dep-info has a trailing backslash: {path}"
+                )
+            token = token[:-1] + " " + following
+        words.append(token)
+    return tuple(words)
+
+
+def _read_dep_info(path: Path) -> _RustcDepInfo:
     """Parse a rustc dep-info file with Cargo's grammar.
 
     Only a space is escaped (``\\ ``); a token that ends in a backslash joins
     the next one, as Cargo's ``parse_rustc_dep_info`` reads it. The first rule
-    lists the inputs; the empty rules after it repeat them.
+    lists the inputs. Other populated rules name the same reads for each
+    emitted output; the empty rules after them repeat the source names.
     """
     entries: list[str] = []
+    outputs: list[str] = []
     environment: dict[str, str | None] = {}
     first_rule = True
     for line in _read_bounded(path).splitlines():
@@ -296,22 +460,22 @@ def _read_dep_info(path: Path) -> tuple[tuple[str, ...], dict[str, str | None]]:
             )
             continue
         target, separator, deps = line.partition(": ")
-        if not separator or not first_rule:
+        if not separator:
             continue
-        first_rule = False
-        tokens = iter(deps.split())
-        for token in tokens:
-            while token.endswith("\\"):
-                following = next(tokens, None)
-                if following is None:
-                    raise CargoBuildReadsError(
-                        f"rustc dep-info has a trailing backslash: {path}"
-                    )
-                token = token[:-1] + " " + following
-            entries.append(token)
+        files = _dep_words(deps, path)
+        if not files:
+            continue
+        if first_rule:
+            entries.extend(files)
+            first_rule = False
+        elif set(entries) != set(files):
+            raise CargoBuildReadsError(
+                f"rustc dep-info output rules have different reads: {path}"
+            )
+        outputs.extend(_dep_words(target, path))
     if first_rule:
         raise CargoBuildReadsError(f"rustc dep-info names no target: {path}")
-    return tuple(entries), environment
+    return _RustcDepInfo(path, tuple(outputs), tuple(entries), environment)
 
 
 def _unescape_env(value: str) -> str:

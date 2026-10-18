@@ -295,6 +295,10 @@ def _positive_int(value: object) -> bool:
     return type(value) is int and value > 0
 
 
+def _nonnegative_int(value: object) -> bool:
+    return type(value) is int and value >= 0
+
+
 def _process_identity(value: object) -> MarkerProcessIdentity:
     if not isinstance(value, dict) or not _positive_int(value.get("pid")):
         raise ActiveCustodyError("process_pid_invalid")
@@ -430,8 +434,8 @@ def _validate_reconciliation(record: MarkerRecord) -> None:
             # Only an operator attestation may release inconclusive evidence.
             valid = (
                 reason == OPERATOR_REASON
-                and (observed is None or _positive_int(observed))
-                and (expected is None or observed is None)
+                and (observed is None or _nonnegative_int(observed))
+                and (expected is None or observed is None or observed == 0)
             )
         else:
             valid = False
@@ -606,7 +610,10 @@ def _process_evidence(
         "absent"
         if sample is None
         else "identity_unavailable"
-        if observed is None or expected is None
+        # Linux processes born before the first boot-clock tick have a zero
+        # birth. Preserve that native fact: zero is not a comparable positive
+        # birth under the marker protocol.
+        if observed is None or observed == 0 or expected is None
         else "identity_match"
         if observed == expected
         else "identity_mismatch"
@@ -989,7 +996,7 @@ def _validated_snapshot(
             or sample.pid != pid
             or (
                 sample.started_at_ns is not None
-                and not _positive_int(sample.started_at_ns)
+                and not _nonnegative_int(sample.started_at_ns)
             )
             or (
                 sample.pgid is not None

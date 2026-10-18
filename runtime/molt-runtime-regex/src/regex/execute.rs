@@ -22,11 +22,41 @@ pub(super) fn execute_match(
     end: usize,
     mode: &str,
 ) -> Option<MatchResult> {
+    // Prepare the indexed subject once per public operation. Search attempts
+    // borrow it, so work scales with the subject size plus attempted starts,
+    // instead of copying the full subject at every start position.
+    let chars: Vec<char> = text.chars().collect();
+    execute_match_subject(compiled, SubjectStorage::Text(&chars), pos, end, mode)
+}
+
+pub(super) fn execute_match_bytes(
+    compiled: &CompiledPattern,
+    bytes: &[u8],
+    pos: usize,
+    end: usize,
+    mode: &str,
+) -> Option<MatchResult> {
+    execute_match_subject(compiled, SubjectStorage::Bytes(bytes), pos, end, mode)
+}
+
+pub(super) fn execute_match_subject<'a>(
+    compiled: &CompiledPattern,
+    subject: SubjectStorage<'a>,
+    pos: usize,
+    end: usize,
+    mode: &str,
+) -> Option<MatchResult> {
     match mode {
         "match" => {
             // Anchored at start (pos), match from pos.
-            let mut state = MatchState::new(text, compiled.flags, compiled.group_count, end);
-            if pos > state.chars.len() || end > state.chars.len() {
+            let mut state = MatchState::new(
+                subject,
+                compiled.flags,
+                compiled.is_bytes,
+                compiled.group_count,
+                end,
+            );
+            if pos > state.subject.len() || end > state.subject.len() {
                 return None;
             }
             let result = try_match(&compiled.root, pos, &[], &mut state);
@@ -38,8 +68,14 @@ pub(super) fn execute_match(
         }
         "fullmatch" => {
             // Must match the entire text[pos..end].
-            let mut state = MatchState::new(text, compiled.flags, compiled.group_count, end);
-            if pos > state.chars.len() || end > state.chars.len() {
+            let mut state = MatchState::new(
+                subject,
+                compiled.flags,
+                compiled.is_bytes,
+                compiled.group_count,
+                end,
+            );
+            if pos > state.subject.len() || end > state.subject.len() {
                 return None;
             }
             let result = try_match(&compiled.root, pos, &[], &mut state);
@@ -52,16 +88,33 @@ pub(super) fn execute_match(
                 _ => None,
             }
         }
-        "search" => {
+        "search" | "search_nonempty" => {
             // Search: try matching at each position from pos to end.
-            let chars: Vec<char> = text.chars().collect();
-            let text_len = chars.len();
+            let text_len = subject.len();
             if pos > text_len || end > text_len {
                 return None;
             }
+            // The trailing assertion is part of the same matcher continuation,
+            // so an empty first alternative can backtrack to a non-empty
+            // alternative at the same position (CPython scanner must_advance).
+            let require_advance = [ReNode::RequireAdvance];
             for start in pos..=end {
-                let mut state = MatchState::new(text, compiled.flags, compiled.group_count, end);
-                if let Some(end_pos) = try_match(&compiled.root, start, &[], &mut state) {
+                let mut state = MatchState::new(
+                    subject,
+                    compiled.flags,
+                    compiled.is_bytes,
+                    compiled.group_count,
+                    end,
+                );
+                if mode == "search_nonempty" {
+                    state.require_advance_from = Some(pos);
+                }
+                let rest = if mode == "search_nonempty" {
+                    &require_advance[..]
+                } else {
+                    &[][..]
+                };
+                if let Some(end_pos) = try_match(&compiled.root, start, rest, &mut state) {
                     return Some(MatchResult {
                         start,
                         end: end_pos,
@@ -72,57 +125,5 @@ pub(super) fn execute_match(
             None
         }
         _ => None,
-    }
-}
-
-/// Build a MoltObject tuple representing the match result for the intrinsic
-/// return value.
-///
-/// Format: `(match_start, match_end, groups_tuple)`
-/// where `groups_tuple` is a tuple of `(start, end) | None` for each group.
-pub(super) fn build_match_result_bits(
-    _py: &CoreGilToken,
-    result: &MatchResult,
-    group_count: u32,
-) -> u64 {
-    let start_bits = MoltObject::from_int(result.start as i64).bits();
-    let end_bits = MoltObject::from_int(result.end as i64).bits();
-
-    // Build group spans tuple.
-    let mut group_elems: Vec<u64> = Vec::with_capacity(group_count as usize);
-    for i in 1..=(group_count as usize) {
-        if i < result.groups.len() {
-            match result.groups[i] {
-                Some((gs, ge)) => {
-                    let gs_bits = MoltObject::from_int(gs as i64).bits();
-                    let ge_bits = MoltObject::from_int(ge as i64).bits();
-                    let pair_ptr = alloc_tuple(_py, &[gs_bits, ge_bits]);
-                    if pair_ptr.is_null() {
-                        group_elems.push(MoltObject::none().bits());
-                    } else {
-                        group_elems.push(MoltObject::from_ptr(pair_ptr).bits());
-                    }
-                }
-                None => {
-                    group_elems.push(MoltObject::none().bits());
-                }
-            }
-        } else {
-            group_elems.push(MoltObject::none().bits());
-        }
-    }
-
-    let groups_ptr = alloc_tuple(_py, &group_elems);
-    let groups_bits = if groups_ptr.is_null() {
-        MoltObject::none().bits()
-    } else {
-        MoltObject::from_ptr(groups_ptr).bits()
-    };
-
-    let result_ptr = alloc_tuple(_py, &[start_bits, end_bits, groups_bits]);
-    if result_ptr.is_null() {
-        MoltObject::none().bits()
-    } else {
-        MoltObject::from_ptr(result_ptr).bits()
     }
 }

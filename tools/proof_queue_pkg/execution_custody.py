@@ -27,6 +27,10 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from molt.exact_json import canonical_json_sha256, loads_exact
+from molt.python_runtime_identity import (
+    PYTHON_RUNTIME_SELECTION_SCHEMA,
+    python_runtime_selection_locations,
+)
 from molt.toolchain_identity import (
     StableRegularFileVersion,
     stable_regular_file_version,
@@ -831,7 +835,11 @@ class LiveCustodyMonitor:
                 spec, directory = owner
                 candidate = directory / name if name else directory
                 self._record_event(spec, f"inotify:{event_mask:#x}", candidate)
-                if event_mask & 0x40000000 and event_mask & (0x00000100 | 0x00000080):
+                if (
+                    event_mask & 0x40000000
+                    and event_mask & (0x00000100 | 0x00000080)
+                    and spec.owns(candidate)
+                ):
                     if candidate.is_dir():
                         new_wd = add(fd, os.fsencode(candidate), mask)
                         if new_wd < 0:
@@ -848,9 +856,24 @@ class LiveCustodyMonitor:
                 # an event on the already-live parent watch; there is no gap in
                 # which an extant subtree can enter the ARMED set unwatched.
                 add_directory(spec, spec.root)
-                for candidate in spec.root.rglob("*"):
-                    if candidate.is_dir():
-                        add_directory(spec, candidate)
+                if spec.paths is None:
+                    for candidate in spec.root.rglob("*"):
+                        if candidate.is_dir():
+                            add_directory(spec, candidate)
+                else:
+                    # Finite selectors need only their existing ancestors.
+                    # Never enumerate unrelated siblings of an exact input.
+                    ancestors = {
+                        parent
+                        for path in spec.paths
+                        for parent in Path(path).parents
+                        if parent != spec.root and parent.is_relative_to(spec.root)
+                    }
+                    for directory in sorted(
+                        ancestors, key=lambda path: len(path.parts)
+                    ):
+                        if directory.is_dir():
+                            add_directory(spec, directory)
             self._ready.set()
             while not self._stop.is_set():
                 readable, _, _ = select.select([fd], [], [], 0.25)
@@ -1027,6 +1050,13 @@ def _identity_paths(payload: object, *, broad_roots: Sequence[Path] = ()) -> lis
 
     def visit(value: object, key: str | None = None) -> None:
         if isinstance(value, Mapping):
+            if value.get("schema") == PYTHON_RUNTIME_SELECTION_SCHEMA:
+                for location, _directory_role in python_runtime_selection_locations(
+                    value
+                ):
+                    for spelling in ("lexical", "resolved"):
+                        add_path(Path(str(location[spelling])), selected=True)
+                return
             owner_root = value.get("owner_root")
             if isinstance(owner_root, str):
                 owner = Path(owner_root)
@@ -1048,24 +1078,32 @@ def _identity_paths(payload: object, *, broad_roots: Sequence[Path] = ()) -> lis
         elif isinstance(value, list):
             for nested in value:
                 visit(nested, key)
+        elif key == "resource_roots" and isinstance(value, str):
+            # Native compiler resources may be files, trees, or aliases. The
+            # broad projection admits only real directory content; retain the
+            # exact selected coordinate and every retargetable alias here.
+            add_path(Path(value), selected=True)
         elif key in path_keys and isinstance(value, str):
             candidate = process_image_capture.custody_path(Path(value))
             try:
                 if candidate.is_file():
-                    paths.append(candidate)
-                    resolved = candidate.resolve(strict=True)
-                    if _norm(resolved) != _norm(candidate):
-                        paths.append(resolved)
-                    # Keep every retargetable lexical ancestor, as well as the
-                    # content coordinate; resolving alone loses alias events.
-                    for entry in (candidate, *candidate.parents):
-                        if entry.is_symlink() or entry.is_junction():
-                            paths.append(entry)
+                    add_path(candidate, selected=False)
             except OSError:
                 pass
 
+    def add_path(candidate: Path, *, selected: bool) -> None:
+        paths.append(candidate)
+        resolved = candidate.resolve(strict=not selected)
+        if _event_key(resolved) != _event_key(candidate):
+            paths.append(resolved)
+        # Keep every retargetable lexical ancestor, as well as the content
+        # coordinate. Absent startup selectors also need creation events.
+        for entry in (candidate, *candidate.parents):
+            if entry.is_symlink() or entry.is_junction():
+                paths.append(entry)
+
     visit(payload)
-    return list({_norm(path): path for path in paths}.values())
+    return list({_event_key(path): path for path in paths}.values())
 
 
 def watch_specs(
@@ -1089,14 +1127,21 @@ def watch_specs(
     by_parent: dict[str, tuple[Path, set[str]]] = {}
     source_key = _norm(source_root)
     for path in _identity_paths(list(identities), broad_roots=broad_roots):
-        key = _norm(path)
+        key = _event_key(path)
         if key == source_key or key.startswith(source_key.rstrip(os.sep) + os.sep):
             continue
-        parent = path.parent.resolve(strict=True)
+        parent = path.parent
+        while not parent.is_dir():
+            if parent.parent == parent:
+                raise ValueError(
+                    f"selected watch input has no directory ancestor: {path}"
+                )
+            parent = parent.parent
+        parent = parent.resolve(strict=True)
         key = _norm(parent)
         if key not in by_parent:
             by_parent[key] = (parent, set())
-        by_parent[key][1].add(_norm(path))
+        by_parent[key][1].add(_event_key(path))
     specs.extend(
         WatchSpec(parent, frozenset(paths)) for parent, paths in by_parent.values()
     )

@@ -321,7 +321,9 @@ def _memory_bounded_cargo_jobs() -> int | None:
     """
     from molt import host_capacity
 
-    total_memory_bytes, available_memory_bytes = host_capacity.memory_bytes()
+    total_memory_bytes, available_memory_bytes = (
+        host_capacity.memory_capacity().bounded_bytes
+    )
     if total_memory_bytes is None and available_memory_bytes is None:
         return None
     return host_capacity.worker_count_from_samples(

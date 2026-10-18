@@ -451,6 +451,7 @@ stdlib:
       - tests/differential/stdlib/random_state_basic.py
   re:
     tests:
+      - tests/differential/stdlib/re_bytes_admission.py
       - tests/differential/stdlib/re_split_maxsplit.py
       - tests/differential/stdlib/re_unicode_flags.py
   select:
@@ -1607,6 +1608,7 @@ stdlib:
       - tests/differential/stdlib/base64_decode_argument_types.py
   binascii:
     tests:
+      - tests/differential/stdlib/base64_decode_argument_types.py
       - tests/differential/stdlib/cpython312plus_api_gap_top_level_binascii_e18849f6.py
   bz2:
     tests:

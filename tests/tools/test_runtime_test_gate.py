@@ -824,6 +824,9 @@ OBSERVER_WITNESSES = {
         "object::gc::tests::repeated_reachable_collection_workspace_allocations",
         "cpython_abi_hooks::exception_rendering_tests::decimal_output_limits::rejected_decimal_magnitude_does_not_allocate_decimal_storage",
         "object::ops::unpack_transaction_tests::exact_builtin_unpack_hot_path_performs_zero_allocator_calls",
+        "object::ops_slice::tests::owned_range_parts_constructor_and_subscription_transfer_and_retire",
+        "regex_bridge::tests::regex_aggregates_retain_each_created_child_once",
+        "regex_bridge::tests::regex_capture_aggregate_owns_children_and_rolls_back_every_failure",
         "state::runtime_state::tests::encoded_core_gil_entry_is_allocation_free_after_warmup",
     },
     "l7_numeric_runtime_perf_attestation": {

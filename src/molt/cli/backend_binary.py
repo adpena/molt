@@ -20,9 +20,13 @@ from molt.cli.artifact_state import (
     _artifact_state_path_for_build_state_root,
     _canonical_build_state_root,
     _canonical_target_root,
-    _maybe_hydrate_artifact_from_canonical_target,
 )
-from molt.cli.atomic_io import _atomic_copy_file, _atomic_write_json
+from molt.cli.atomic_io import _atomic_write_json
+from molt.cli.backend_generation import (
+    publish_backend_generation,
+    record_backend_generation_use,
+    selected_backend_generation,
+)
 from molt.cli.build_locks import _build_lock
 from molt.cli.cache_fingerprints import (
     _backend_source_identity_inputs,
@@ -42,6 +46,7 @@ from molt.cli.compiler_identity import (
     installed_compiler_admission,
 )
 from molt.cli.runtime_fingerprints import (
+    _artifact_needs_rebuild,
     _artifact_semantic_identity,
     _admitted_runtime_fingerprint,
     _read_runtime_fingerprint,
@@ -71,19 +76,32 @@ from molt.toolchain_identity import (
 )
 
 
-_BACKEND_PROBE_VALIDATION_SCHEMA_VERSION = 3
+# Version 4: the probed executable is the immutable generation, not an alias.
+_BACKEND_PROBE_VALIDATION_SCHEMA_VERSION = 4
 _BACKEND_PROBE_VALIDATION_MAX_BYTES = 64 * 1024
 _BACKEND_COMPILER_CACHE_FINGERPRINT_SCHEMA_VERSION = 3
 
 
 @dataclass(frozen=True)
 class _BackendBinaryEnsureResult:
+    """One admission outcome; success names the executable the build runs.
+
+    ``binary`` is an immutable generation (or the installed compiler). A build
+    resolves it once and runs it for every later step, so a concurrent
+    publication of another generation never changes what this build holds.
+    """
+
     ok: bool
     detail: str | None = None
     returncode: int | None = None
     phase: str | None = None
     command: tuple[str, ...] = ()
     cache_compiler_fingerprint: str | None = None
+    binary: Path | None = None
+
+    def __post_init__(self) -> None:
+        if self.ok and self.binary is None:
+            raise ValueError("an admitted backend names the executable it admitted")
 
     def __bool__(self) -> bool:
         return self.ok
@@ -149,6 +167,7 @@ def _structured_backend_lock_failure(operation):
 
 def _backend_ensure_success(
     *,
+    coordinate: Path,
     binary_path: Path,
     fingerprint: Mapping[str, Any] | None = None,
 ) -> _BackendBinaryEnsureResult:
@@ -156,11 +175,16 @@ def _backend_ensure_success(
         identity = executable_content_identity(binary_path, label="backend executable")
     except (OSError, ValueError) as exc:
         return _backend_ensure_failure("backend_binary_identity", str(exc))
+    try:
+        record_backend_generation_use(coordinate, binary_path)
+    except (OSError, RuntimeError, ValueError) as exc:
+        return _backend_ensure_failure("backend_generation_store", str(exc))
     return _BackendBinaryEnsureResult(
         ok=True,
         cache_compiler_fingerprint=_backend_compiler_cache_fingerprint(
             fingerprint, identity
         ),
+        binary=binary_path,
     )
 
 
@@ -243,7 +267,7 @@ def _backend_fingerprint_path(
 def _canonical_backend_candidate(
     project_root: Path, backend_bin: Path, cargo_profile: str
 ) -> tuple[Path, Path]:
-    """The canonical target's backend and receipt, which every session consults."""
+    """The canonical target's backend coordinate and its selecting receipt."""
     binary = (
         _canonical_target_root(project_root)
         / _cargo_profile_dir(cargo_profile)
@@ -261,12 +285,12 @@ def _canonical_backend_candidate(
 
 def _backend_probe_validation_path(
     project_root: Path,
-    artifact: Path,
+    coordinate: Path,
     cargo_profile: str,
 ) -> Path:
     return _artifact_state_path(
         project_root,
-        artifact,
+        coordinate,
         subdir="backend_probe_validations",
         stem_suffix=f"{cargo_profile}",
         extension="json",
@@ -437,6 +461,27 @@ def _current_backend_fingerprint(
     )
 
 
+def _selected_backend_generation_matches(
+    coordinate: Path,
+    fingerprint: dict[str, Any] | None,
+    receipt: Path,
+) -> Path | None:
+    """The generation ``receipt`` selects for ``coordinate`` when it is admitted.
+
+    A match needs the receipt's source identity and the generation's bytes. The
+    receipt can name a newer selection by the time the bytes are compared; the
+    comparison then fails, and the generation this returned stays unchanged.
+    """
+    generation = selected_backend_generation(
+        coordinate, _read_runtime_fingerprint(receipt)
+    )
+    if generation is None or not _runtime_artifact_fingerprint_matches(
+        generation, fingerprint, receipt, require_artifact_digest=True
+    ):
+        return None
+    return generation
+
+
 def admitted_backend_binary(
     project_root: Path,
     *,
@@ -445,11 +490,11 @@ def admitted_backend_binary(
     backend_features: tuple[str, ...],
     rust_cpu: RustCpuPolicy,
 ) -> tuple[Path, Path]:
-    """The backend executable and receipt a build of this checkout reuses.
+    """The backend generation and receipt a build of this checkout reuses.
 
-    Candidates are the selected binary and the canonical one, in the order a
-    build consults them. A candidate counts only when its receipt matches this
-    checkout's backend identity and binds the executable's content.
+    Candidates are the selected coordinate and the canonical one, in the order
+    a build consults them. A candidate counts only when its receipt matches this
+    checkout's backend identity and binds the selected generation's content.
     """
     fingerprint = _current_backend_fingerprint(
         project_root,
@@ -457,15 +502,60 @@ def admitted_backend_binary(
         backend_features=backend_features,
         rust_cpu=rust_cpu,
     )
-    for candidate, receipt in (
+    for coordinate, receipt in (
         (binary, _backend_fingerprint_path(project_root, binary, cargo_profile)),
         _canonical_backend_candidate(project_root, binary, cargo_profile),
     ):
-        if _runtime_artifact_fingerprint_matches(
-            candidate, fingerprint, receipt, require_artifact_digest=True
-        ):
-            return candidate, receipt
+        generation = _selected_backend_generation_matches(
+            coordinate, fingerprint, receipt
+        )
+        if generation is not None:
+            return generation, receipt
     raise ValueError(f"no backend compiler admitted for this checkout: {binary}")
+
+
+def _publish_backend_generation_from(
+    coordinate: Path,
+    source: Path,
+    *,
+    label: str,
+    expected_identity: StableRegularFileIdentity | None = None,
+) -> tuple[StableRegularFileIdentity, StableRegularFileIdentity]:
+    """Publish an executable's bytes as a generation of ``coordinate``.
+
+    Returns the source identity the copy was bound to and the generation.
+    A generation is the exact source bytes: a copy keeps the linker signature
+    valid, and re-signing would only rewrite the bytes (and the compiler
+    identity) on every build.
+    """
+    with stable_executable_probe(source, label=label, identity=expected_identity) as (
+        _entrypoint,
+        identity,
+    ):
+        generation = publish_backend_generation(
+            coordinate, identity.path, observed=identity
+        )
+    return identity, generation
+
+
+def _select_backend_generation(
+    receipt: Path,
+    generation: StableRegularFileIdentity,
+    *,
+    fingerprint: dict[str, Any],
+) -> None:
+    """Point a coordinate's ``receipt`` at ``generation``: the selection switch.
+
+    The receipt names the source identity and the generation's bytes. Only
+    this file changes; the generation, and every other one, stays as it was.
+    """
+    verify_stable_regular_file_identity(generation, label="backend selection")
+    content_identity = artifact_content_identity(generation.path, observed=generation)
+    _write_runtime_fingerprint(
+        receipt,
+        {**fingerprint, "artifact_content_identity": content_identity},
+    )
+    verify_stable_regular_file_identity(generation, label="backend selection")
 
 
 def import_backend_binary(
@@ -481,8 +571,9 @@ def import_backend_binary(
     """Admit another checkout's backend as this checkout's canonical candidate.
 
     The transported receipt must carry this checkout's freshly hashed backend
-    identity and bind the executable's content. A build then hydrates the
-    canonical candidate exactly as it hydrates one built locally.
+    identity and bind the executable's content. The executable becomes one
+    generation of the canonical coordinate, which a build then hydrates
+    exactly as it hydrates one built locally.
     """
     transported = _read_runtime_fingerprint(receipt)
     if transported is None or "artifact_content_identity" not in transported:
@@ -509,26 +600,22 @@ def import_backend_binary(
             identity,
         ):
             if (
-                artifact_content_identity(executable)
+                artifact_content_identity(identity.path, observed=identity)
                 != transported["artifact_content_identity"]
             ):
                 raise ValueError("transported backend differs from its receipt")
-            canonical_binary.parent.mkdir(parents=True, exist_ok=True)
-            _atomic_copy_file(
-                executable, canonical_binary, expected_sha256=identity.sha256
+            generation = publish_backend_generation(
+                canonical_binary, identity.path, observed=identity
             )
-        canonical_receipt.parent.mkdir(parents=True, exist_ok=True)
-        _write_runtime_fingerprint(
-            canonical_receipt, fingerprint, artifact=canonical_binary
+        _select_backend_generation(
+            canonical_receipt, generation, fingerprint=fingerprint
         )
-        if not _runtime_artifact_fingerprint_matches(
-            canonical_binary,
-            fingerprint,
-            canonical_receipt,
-            require_artifact_digest=True,
-        ):
+        admitted = _selected_backend_generation_matches(
+            canonical_binary, fingerprint, canonical_receipt
+        )
+        if admitted is None or admitted.resolve() != generation.path.resolve():
             raise ValueError("imported backend failed its own admission")
-    return canonical_binary
+    return generation.path
 
 
 def _backend_probe_target(backend_features: tuple[str, ...]) -> str:
@@ -539,6 +626,10 @@ def _backend_probe_target(backend_features: tuple[str, ...]) -> str:
     if "rust-backend" in backend_features:
         return "rust"
     return "native"
+
+
+def _is_cargo_output_coordinate(coordinate: Path) -> bool:
+    return coordinate == coordinate.parent / backend_executable_name(os_name=os.name)
 
 
 def _admit_published_backend(
@@ -555,15 +646,12 @@ def _admit_published_backend(
 
     The build lock serializes Cargo's shared output and publication, which
     only a build or a republication needs. Every check here binds content: the
-    receipt names the source identity and the executable's bytes, and the probe
-    evidence names those bytes. A concurrent publication can make a check fail
-    but never pass for other bytes, and any failure takes the locked path,
-    which repairs it. So reusing one lane never waits out another lane's
-    cold build.
+    receipt names the source identity and the selected generation's bytes, and
+    the probe evidence names those bytes. A concurrent publication can make a
+    check fail but never pass for other bytes, and any failure takes the
+    locked path, which repairs it. So reusing one lane never waits out another
+    lane's cold build.
     """
-    if backend_bin == backend_bin.parent / backend_executable_name(os_name=os.name):
-        # Cargo's shared output belongs to whichever lane built last.
-        return None
     try:
         build_admission.verify()
         stored_fingerprint = _read_runtime_fingerprint(fingerprint_path)
@@ -576,9 +664,10 @@ def _admit_published_backend(
             backend_features=backend_features,
             stored_fingerprint=stored_fingerprint,
         )
-        if not _runtime_artifact_fingerprint_matches(
-            backend_bin, fingerprint, fingerprint_path, require_artifact_digest=True
-        ):
+        generation = _selected_backend_generation_matches(
+            backend_bin, fingerprint, fingerprint_path
+        )
+        if generation is None:
             return None
         fingerprint = _admitted_runtime_fingerprint(
             fingerprint, _read_runtime_fingerprint(fingerprint_path)
@@ -587,7 +676,7 @@ def _admit_published_backend(
             return None
         if not _backend_probe_validation_matches(
             probe_validation_path,
-            binary_path=backend_bin,
+            binary_path=generation,
             probe_target=_backend_probe_target(backend_features),
             backend_features=backend_features,
             fingerprint=fingerprint,
@@ -595,7 +684,9 @@ def _admit_published_backend(
             return None
     except (CompilerIdentityError, OSError, ValueError):
         return None
-    return _backend_ensure_success(binary_path=backend_bin, fingerprint=fingerprint)
+    return _backend_ensure_success(
+        coordinate=backend_bin, binary_path=generation, fingerprint=fingerprint
+    )
 
 
 @_structured_backend_lock_failure
@@ -610,6 +701,11 @@ def _ensure_backend_binary(
     rust_cpu: RustCpuPolicy,
     stage_timings_ms: dict[str, float] | None = None,
 ) -> _BackendBinaryEnsureResult:
+    """Admit ``backend_bin``'s selected generation, publishing one if needed.
+
+    ``backend_bin`` is the variant's coordinate. Success names the immutable
+    generation the build runs; the coordinate itself is never an executable.
+    """
     # Installed compilers are immutable release inputs, never Cargo outputs.
     # Admit before every developer skip/hydration/rebuild path.
     try:
@@ -629,9 +725,17 @@ def _ensure_backend_binary(
             return _BackendBinaryEnsureResult(
                 ok=True,
                 cache_compiler_fingerprint=installed.fingerprint,
+                binary=installed.compiler.binary,
             )
     except (OSError, ValueError) as exc:
         return _backend_ensure_failure("installed_compiler", str(exc))
+    if _is_cargo_output_coordinate(backend_bin):
+        # Cargo's shared output belongs to whichever lane built last; only a
+        # feature variant names a selection.
+        return _backend_ensure_failure(
+            "backend_artifact",
+            f"Backend coordinate names Cargo's shared output, not a variant: {backend_bin}",
+        )
     try:
         build_admission = backend_build_admission(
             project_root, backend_features, cargo_profile, os.environ, rust_cpu=rust_cpu
@@ -659,7 +763,7 @@ def _ensure_backend_binary(
             stage_timings_ms, "backend_binary_published_admission", stage_start
         )
         return published
-    # Every feature lane publishes the same Cargo output before its alias.
+    # Every feature lane publishes from the same Cargo output under this lock.
     with _backend_admission_lock(
         project_root, cargo_profile, cargo_timeout=cargo_timeout
     ):
@@ -690,69 +794,28 @@ def _ensure_backend_binary(
             "backend_binary_compute_fingerprint",
             stage_start,
         )
-        rebuilt_source_identity: StableRegularFileIdentity | None = None
-        rebuilt_alias_identity: StableRegularFileIdentity | None = None
+        cargo_output = backend_bin.parent / backend_executable_name(os_name=os.name)
 
-        def _canonical_cargo_backend_output() -> Path:
-            return backend_bin.parent / backend_executable_name(os_name=os.name)
-
-        def _materialize_backend_binary_from(
-            source: Path,
-            *,
-            expected_identity: StableRegularFileIdentity | None = None,
-        ) -> tuple[StableRegularFileIdentity, StableRegularFileIdentity] | None:
-            if not source.exists():
-                return None
-            # The alias is the exact Cargo bytes. The source already passed an
-            # executable probe, and publication replaces the inode, so its
-            # linker signature stays valid; re-signing would only rewrite the
-            # bytes (and the compiler identity) on every build.
-            with stable_executable_probe(
-                source, label="backend alias source", identity=expected_identity
-            ) as (
-                _entrypoint,
-                identity,
-            ):
-                if source != backend_bin:
-                    _atomic_copy_file(source, backend_bin)
-                with stable_executable_probe(
-                    backend_bin, label="materialized backend alias"
-                ) as (_alias_entrypoint, alias_identity):
-                    pass
-            return identity, alias_identity
-
-        def _publish_backend_artifact(
-            artifact: Path, identity: StableRegularFileIdentity
+        def _publish_cargo_output_receipt(
+            identity: StableRegularFileIdentity,
         ) -> None:
             assert fingerprint is not None
             verify_stable_regular_file_identity(identity, label="backend publication")
-            content_identity = artifact_content_identity(artifact)
+            content_identity = artifact_content_identity(
+                identity.path, observed=identity
+            )
             verify_stable_regular_file_identity(identity, label="backend publication")
             _write_runtime_fingerprint(
-                _backend_fingerprint_path(project_root, artifact, cargo_profile),
+                _backend_fingerprint_path(project_root, cargo_output, cargo_profile),
                 {**fingerprint, "artifact_content_identity": content_identity},
             )
             verify_stable_regular_file_identity(identity, label="backend publication")
 
-        def _materialize_rebuilt_backend_binary() -> _BackendBinaryEnsureResult:
-            nonlocal rebuilt_source_identity, rebuilt_alias_identity
-            source = _canonical_cargo_backend_output()
-            try:
-                materialized = _materialize_backend_binary_from(source)
-            except (OSError, ValueError) as exc:
-                return _backend_ensure_failure("backend_artifact", str(exc))
-            if materialized is None:
-                return _backend_ensure_failure(
-                    "backend_artifact", "Backend binary missing after rebuild."
-                )
-            rebuilt_source_identity, rebuilt_alias_identity = materialized
-            return _BackendBinaryEnsureResult(ok=True)
-
         def _probe_backend_binary_support(
             probe_target: str,
             *,
-            binary_path: Path | None = None,
-            expected_identity: StableRegularFileIdentity | None = None,
+            binary: Path,
+            identity: StableRegularFileIdentity | None = None,
         ) -> _BackendBinaryEnsureResult:
             stage_start = time.perf_counter()
             probe_ir = json.dumps(
@@ -777,7 +840,7 @@ def _ensure_backend_binary(
             )
             probe_path = Path(probe_tmp.name)
             probe_tmp.close()
-            probe_cmd = [str(binary_path or backend_bin), "--output", str(probe_path)]
+            probe_cmd = [str(binary), "--output", str(probe_path)]
             if probe_target == "wasm":
                 probe_cmd.extend(["--target", "wasm"])
             elif probe_target == "luau":
@@ -786,12 +849,12 @@ def _ensure_backend_binary(
                 probe_cmd.extend(["--target", "rust"])
             try:
                 with stable_executable_probe(
-                    binary_path or backend_bin,
+                    binary,
                     label="backend probe executable",
-                    identity=expected_identity,
-                ) as (_entrypoint, identity):
+                    identity=identity,
+                ) as (_entrypoint, probed):
                     payload = _backend_probe_validation_payload(
-                        binary_identity=identity,
+                        binary_identity=probed,
                         probe_target=probe_target,
                         backend_features=backend_features,
                         fingerprint=fingerprint,
@@ -843,13 +906,7 @@ def _ensure_backend_binary(
             stdout = probe.stdout.decode(errors="replace")
             if probe.returncode == 0 and payload is not None:
                 try:
-                    _atomic_write_json(
-                        _backend_probe_validation_path(
-                            project_root, binary_path or backend_bin, cargo_profile
-                        ),
-                        payload,
-                        indent=2,
-                    )
+                    _atomic_write_json(probe_validation_path, payload, indent=2)
                 except (OSError, ValueError) as exc:
                     _record_backend_binary_stage_ms(
                         stage_timings_ms,
@@ -871,14 +928,15 @@ def _ensure_backend_binary(
                 detail=(stderr or stdout).strip(),
                 returncode=probe.returncode,
                 command=tuple(probe_cmd),
+                binary=binary,
             )
 
-        def _refresh_feature_tagged_backend_alias(
+        def _select_admitted_cargo_output(
             probe_target: str,
         ) -> _BackendBinaryEnsureResult | None:
+            """Select an admitted Cargo output that the selection does not name."""
             nonlocal fingerprint
-            cargo_output = _canonical_cargo_backend_output()
-            if cargo_output == backend_bin or not cargo_output.exists():
+            if not cargo_output.exists():
                 return None
             candidate_fingerprint_path = _backend_fingerprint_path(
                 project_root, cargo_output, cargo_profile
@@ -900,66 +958,39 @@ def _ensure_backend_binary(
                         fingerprint,
                         _read_runtime_fingerprint(candidate_fingerprint_path),
                     )
-                    if backend_bin.exists():
-                        alias_identity = executable_content_identity(
-                            backend_bin, label="backend feature alias"
-                        )
-                        if (
-                            alias_identity["sha256"] == cargo_identity.sha256
-                            and alias_identity["size"] == cargo_identity.size
-                            and _runtime_artifact_fingerprint_matches(
-                                backend_bin,
-                                fingerprint,
-                                fingerprint_path,
-                                require_artifact_digest=True,
-                            )
-                        ):
-                            return None
-                    probe_result = _probe_backend_binary_support(
-                        probe_target,
-                        binary_path=cargo_output,
+                    selected = _selected_backend_generation_matches(
+                        backend_bin, fingerprint, fingerprint_path
+                    )
+                    if (
+                        selected is not None
+                        and selected.parent.name == cargo_identity.sha256
+                    ):
+                        return None
+                    _source, generation = _publish_backend_generation_from(
+                        backend_bin,
+                        cargo_output,
+                        label="admitted Cargo backend output",
                         expected_identity=cargo_identity,
                     )
-                    if not probe_result:
-                        # A rejected capability probe is not source admission.
-                        # Let the normal receipt/hydration/Cargo paths repair it;
-                        # publication failures remain terminal.
-                        return (
-                            probe_result
-                            if probe_result.phase == "backend_probe_publication"
-                            else None
-                        )
-                    materialized = _materialize_backend_binary_from(
-                        cargo_output, expected_identity=cargo_identity
+                probe_result = _probe_backend_binary_support(
+                    probe_target, binary=generation.path, identity=generation
+                )
+                if not probe_result:
+                    # A rejected capability probe is not source admission.
+                    # Let the normal receipt/hydration/Cargo paths repair it;
+                    # publication failures remain terminal.
+                    return (
+                        probe_result
+                        if probe_result.phase == "backend_probe_publication"
+                        else None
                     )
-                    if materialized is None:
-                        return _backend_ensure_failure(
-                            "backend_artifact", "Backend alias materialization failed."
-                        )
-                    _publish_backend_artifact(backend_bin, materialized[1])
-                    # Transfer successful probe evidence only when publication
-                    # preserved the exact probed bytes. Codesigning or any
-                    # mutation requires the normal alias probe below instead.
-                    if (
-                        materialized[0].sha256 == materialized[1].sha256
-                        and materialized[0].size == materialized[1].size
-                    ):
-                        payload = _backend_probe_validation_payload(
-                            binary_identity=materialized[1],
-                            probe_target=probe_target,
-                            backend_features=backend_features,
-                            fingerprint=fingerprint,
-                        )
-                        if payload is not None:
-                            verify_stable_regular_file_identity(
-                                materialized[1], label="backend probe transfer"
-                            )
-                            _atomic_write_json(probe_validation_path, payload, indent=2)
-                            verify_stable_regular_file_identity(
-                                materialized[1], label="backend probe transfer"
-                            )
-            except (OSError, ValueError) as exc:
-                return _backend_ensure_failure("backend_alias_publication", str(exc))
+                _select_backend_generation(
+                    fingerprint_path, generation, fingerprint=fingerprint
+                )
+            except (OSError, RuntimeError, ValueError) as exc:
+                return _backend_ensure_failure(
+                    "backend_selection_publication", str(exc)
+                )
             return None
 
         if stored_fingerprint is None:
@@ -972,13 +1003,14 @@ def _ensure_backend_binary(
             )
         _quick_target = _backend_probe_target(backend_features)
         probe_failure: _BackendBinaryEnsureResult | None = None
-        alias_failure = _refresh_feature_tagged_backend_alias(_quick_target)
-        if alias_failure is not None:
-            return alias_failure
+        selection_failure = _select_admitted_cargo_output(_quick_target)
+        if selection_failure is not None:
+            return selection_failure
         stage_start = time.perf_counter()
-        if _runtime_artifact_fingerprint_matches(
-            backend_bin, fingerprint, fingerprint_path, require_artifact_digest=True
-        ):
+        selected_generation = _selected_backend_generation_matches(
+            backend_bin, fingerprint, fingerprint_path
+        )
+        if selected_generation is not None:
             # A temporarily unavailable rustc must not rename an admitted
             # compiler. Fill only unknown semantic coordinates from the receipt
             # whose source and artifact bytes just matched under this lock.
@@ -1019,7 +1051,7 @@ def _ensure_backend_binary(
             stage_start = time.perf_counter()
             if _backend_probe_validation_matches(
                 probe_validation_path,
-                binary_path=backend_bin,
+                binary_path=selected_generation,
                 probe_target=_quick_target,
                 backend_features=backend_features,
                 fingerprint=fingerprint,
@@ -1030,17 +1062,23 @@ def _ensure_backend_binary(
                     stage_start,
                 )
                 return _backend_ensure_success(
-                    binary_path=backend_bin, fingerprint=fingerprint
+                    coordinate=backend_bin,
+                    binary_path=selected_generation,
+                    fingerprint=fingerprint,
                 )
             _record_backend_binary_stage_ms(
                 stage_timings_ms,
                 "backend_binary_probe_validation",
                 stage_start,
             )
-            _probe_result = _probe_backend_binary_support(_quick_target)
+            _probe_result = _probe_backend_binary_support(
+                _quick_target, binary=selected_generation
+            )
             if _probe_result:
                 return _backend_ensure_success(
-                    binary_path=backend_bin, fingerprint=fingerprint
+                    coordinate=backend_bin,
+                    binary_path=selected_generation,
+                    fingerprint=fingerprint,
                 )
             if _probe_result.phase in _PROBE_TERMINAL_PHASES:
                 return _probe_result
@@ -1055,41 +1093,35 @@ def _ensure_backend_binary(
             _canonical_backend_candidate(project_root, backend_bin, cargo_profile)
         )
         stage_start = time.perf_counter()
-        if _maybe_hydrate_artifact_from_canonical_target(
-            artifact=backend_bin,
+        hydrated = _hydrate_canonical_backend_generation(
+            backend_bin,
+            fingerprint_path,
+            canonical_backend_bin,
+            canonical_fingerprint_path,
             fingerprint=fingerprint,
-            fingerprint_path=fingerprint_path,
-            candidate_artifact=canonical_backend_bin,
-            candidate_fingerprint_path=canonical_fingerprint_path,
-            require_artifact_digest=True,
-        ):
-            _record_backend_binary_stage_ms(
-                stage_timings_ms,
-                "backend_binary_canonical_hydrate",
-                stage_start,
-            )
-            try:
-                assert fingerprint is not None
-                fingerprint = _admitted_runtime_fingerprint(
-                    fingerprint, _read_runtime_fingerprint(fingerprint_path)
-                )
-            except ValueError as exc:
-                return _backend_ensure_failure("backend_receipt_identity", str(exc))
+        )
+        _record_backend_binary_stage_ms(
+            stage_timings_ms,
+            "backend_binary_canonical_hydrate",
+            stage_start,
+        )
+        if hydrated is not None:
+            hydrated_generation, fingerprint = hydrated
             _probe_target = _backend_probe_target(backend_features)
-            _probe_result = _probe_backend_binary_support(_probe_target)
+            _probe_result = _probe_backend_binary_support(
+                _probe_target,
+                binary=hydrated_generation.path,
+                identity=hydrated_generation,
+            )
             if _probe_result:
                 return _backend_ensure_success(
-                    binary_path=backend_bin, fingerprint=fingerprint
+                    coordinate=backend_bin,
+                    binary_path=hydrated_generation.path,
+                    fingerprint=fingerprint,
                 )
             if _probe_result.phase in _PROBE_TERMINAL_PHASES:
                 return _probe_result
             probe_failure = _probe_result
-        else:
-            _record_backend_binary_stage_ms(
-                stage_timings_ms,
-                "backend_binary_canonical_hydrate",
-                stage_start,
-            )
         if reason := source_build_disabled_reason("Backend compiler"):
             if probe_failure is not None and probe_failure.detail:
                 reason += f"\nBackend feature probe failed: {probe_failure.detail}"
@@ -1189,18 +1221,31 @@ def _ensure_backend_binary(
                 "backend_source_identity", str(exc), command=cmd
             )
         # Cargo always produces target/<profile>/molt-backend regardless of
-        # features. For every selected feature set, including native, copy
-        # the freshly-built binary to the feature-tagged path so that
-        # concurrent or sequential builds with different feature sets
-        # (native vs wasm vs rust) do not overwrite each other.
-        _materialization = _materialize_rebuilt_backend_binary()
-        if not _materialization:
-            return _materialization
+        # features. Every selected feature set, including native, publishes the
+        # freshly built bytes as a generation of its own variant, so builds
+        # with different feature sets (native vs wasm vs rust) never replace
+        # each other's compiler, and no build replaces one that another holds.
+        if not cargo_output.exists():
+            return _backend_ensure_failure(
+                "backend_artifact", "Backend binary missing after rebuild."
+            )
+        try:
+            rebuilt_source_identity, rebuilt_generation = (
+                _publish_backend_generation_from(
+                    backend_bin, cargo_output, label="rebuilt Cargo backend output"
+                )
+            )
+        except (OSError, RuntimeError, ValueError) as exc:
+            return _backend_ensure_failure("backend_artifact", str(exc))
         # Admit the built compiler before publishing provenance. A failed probe
         # is a failed build outcome: rerunning the same Cargo plan changes no
         # input and cannot establish why that compiler was unusable.
         _probe_target = _backend_probe_target(backend_features)
-        _probe_result = _probe_backend_binary_support(_probe_target)
+        _probe_result = _probe_backend_binary_support(
+            _probe_target,
+            binary=rebuilt_generation.path,
+            identity=rebuilt_generation,
+        )
         if _probe_result.phase in _PROBE_TERMINAL_PHASES and not _probe_result:
             return _probe_result
         if not _probe_result:
@@ -1215,16 +1260,61 @@ def _ensure_backend_binary(
             )
         if fingerprint is not None:
             try:
-                cargo_output = _canonical_cargo_backend_output()
-                assert rebuilt_source_identity is not None
-                assert rebuilt_alias_identity is not None
-                _publish_backend_artifact(cargo_output, rebuilt_source_identity)
-                if cargo_output != backend_bin:
-                    _publish_backend_artifact(backend_bin, rebuilt_alias_identity)
+                _publish_cargo_output_receipt(rebuilt_source_identity)
+                _select_backend_generation(
+                    fingerprint_path, rebuilt_generation, fingerprint=fingerprint
+                )
             except (OSError, ValueError) as exc:
                 return _backend_ensure_failure(
                     "backend_artifact_publication",
                     f"Backend artifact provenance publication failed: {exc}",
                     command=cmd,
                 )
-        return _backend_ensure_success(binary_path=backend_bin, fingerprint=fingerprint)
+        return _backend_ensure_success(
+            coordinate=backend_bin,
+            binary_path=rebuilt_generation.path,
+            fingerprint=fingerprint,
+        )
+
+
+def _hydrate_canonical_backend_generation(
+    backend_bin: Path,
+    fingerprint_path: Path,
+    canonical_backend_bin: Path,
+    canonical_fingerprint_path: Path,
+    *,
+    fingerprint: dict[str, Any] | None,
+) -> tuple[StableRegularFileIdentity, dict[str, Any]] | None:
+    """Publish the canonical target's admitted generation into this target.
+
+    The canonical selection must match this checkout's source identity and
+    bind its generation's bytes. The copy becomes this coordinate's own
+    generation and selection; the canonical one is only read. Returns the
+    generation and the admitted fingerprint, or None when nothing matches.
+    """
+    if fingerprint is None or backend_bin.resolve() == canonical_backend_bin.resolve():
+        return None
+    stored = _read_runtime_fingerprint(canonical_fingerprint_path)
+    candidate = selected_backend_generation(canonical_backend_bin, stored)
+    if (
+        stored is None
+        or candidate is None
+        or _artifact_needs_rebuild(candidate, fingerprint, stored)
+    ):
+        return None
+    try:
+        admitted = _admitted_runtime_fingerprint(fingerprint, stored)
+        _source, generation = _publish_backend_generation_from(
+            backend_bin, candidate, label="canonical backend generation"
+        )
+        # The copy binds the bytes it read; they must be the bytes the
+        # canonical receipt selected, or nothing is selected here.
+        if (
+            artifact_content_identity(generation.path, observed=generation)
+            != stored["artifact_content_identity"]
+        ):
+            return None
+        _select_backend_generation(fingerprint_path, generation, fingerprint=admitted)
+    except (OSError, RuntimeError, ValueError):
+        return None
+    return generation, admitted

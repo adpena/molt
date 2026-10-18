@@ -8,7 +8,7 @@ records each asset's role, content hash, and resolved references.
 
 Usage::
 
-    python3 tools/gen_browser_asset_graph.py --write
+    python3 tools/generators.py write --only tools/gen_browser_asset_graph.py
     python3 tools/gen_browser_asset_graph.py --check
 """
 

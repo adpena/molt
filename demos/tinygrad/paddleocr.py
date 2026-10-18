@@ -35,9 +35,6 @@ Usage:
 from __future__ import annotations
 
 import struct
-from _intrinsics import require_intrinsic as _require_intrinsic
-
-_gpu_device = _require_intrinsic("molt_gpu_prim_device")
 
 from tinygrad.tensor import Tensor
 from tinygrad.dtypes import dtypes

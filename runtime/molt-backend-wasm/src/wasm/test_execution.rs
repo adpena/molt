@@ -46,36 +46,6 @@ pub(in crate::wasm) fn wasm_test_temp_dir() -> (PathBuf, WasmTestTempGuard) {
     (path.clone(), WasmTestTempGuard(path))
 }
 
-pub(in crate::wasm) fn real_execution_tool(
-    tool: PathBuf,
-    required_env: &str,
-    purpose: &str,
-) -> Option<PathBuf> {
-    let available = execution_output(
-        Command::new(&tool).arg("--version"),
-        &format!("probe {purpose}: {}", tool.display()),
-        Duration::from_secs(5),
-    )
-    .is_ok_and(|output| output.status.success());
-    if available {
-        return Some(tool);
-    }
-    if std::env::var_os("CI").is_some()
-        || std::env::var_os(required_env).is_some()
-        || std::env::var_os("MOLT_REQUIRE_REAL_NATIVE_CALLABLE_EXECUTION_TESTS").is_some()
-    {
-        panic!(
-            "real {purpose} is required but `{}` is unavailable",
-            tool.display()
-        );
-    }
-    eprintln!(
-        "SKIP real {purpose}: `{}` is unavailable; set {required_env}=1 to make this a hard failure",
-        tool.display()
-    );
-    None
-}
-
 pub(in crate::wasm) fn run_execution_command(command: &mut Command, purpose: &str) {
     let output = execution_output(command, purpose, Duration::from_secs(30))
         .unwrap_or_else(|error| panic!("{purpose}: failed to start: {error}"));
@@ -194,14 +164,25 @@ fn execution_output(
 }
 
 #[test]
+#[should_panic(expected = "missing execution tool: failed to start:")]
+fn missing_execution_tool_fails_instead_of_skipping() {
+    let tool = std::env::current_exe()
+        .expect("current test executable")
+        .with_file_name(format!(
+            "molt-missing-execution-tool-{}{}",
+            std::process::id(),
+            std::env::consts::EXE_SUFFIX
+        ));
+    assert!(
+        !tool.exists(),
+        "missing-tool fixture must name an absent executable"
+    );
+    run_execution_command(&mut Command::new(tool), "missing execution tool");
+}
+
+#[test]
 fn node_guest_deadline_interrupts_emitted_wasm_loop() {
-    let Some(node) = real_execution_tool(
-        PathBuf::from("node"),
-        "MOLT_REQUIRE_REAL_NODE_TESTS",
-        "WASM execution deadline",
-    ) else {
-        return;
-    };
+    let node = PathBuf::from("node");
     // (module (func (export "run") (loop br 0)))
     let script = r#"
 const bytes = [0,97,115,109,1,0,0,0,1,4,1,96,0,0,3,2,1,0,

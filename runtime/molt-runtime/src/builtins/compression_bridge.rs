@@ -208,48 +208,48 @@ pub extern "C" fn molt_bridge_release_ptr(ptr: *mut u8) {
 crate::object::native_handle::native_handle_bridge!(
     __molt_compression_zlib_compressor_owner_new,
     __molt_compression_zlib_compressor_owner_clone,
-    molt_runtime_compression::zlib::CompressorHandle
+    std::sync::Mutex<molt_runtime_compression::zlib::CompressorHandle>
 );
 crate::object::native_handle::native_handle_bridge!(
     __molt_compression_zlib_decompressor_owner_new,
     __molt_compression_zlib_decompressor_owner_clone,
-    molt_runtime_compression::zlib::DecompressorHandle
+    std::sync::Mutex<molt_runtime_compression::zlib::DecompressorHandle>
 );
 crate::object::native_handle::native_handle_bridge!(
     __molt_compression_bz2_compressor_owner_new,
     __molt_compression_bz2_compressor_owner_clone,
-    molt_runtime_compression::bz2::Bz2CompressorHandle
+    std::sync::Mutex<molt_runtime_compression::bz2::Bz2CompressorHandle>
 );
 crate::object::native_handle::native_handle_bridge!(
     __molt_compression_bz2_decompressor_owner_new,
     __molt_compression_bz2_decompressor_owner_clone,
-    molt_runtime_compression::bz2::Bz2DecompressorHandle
+    std::sync::Mutex<molt_runtime_compression::bz2::Bz2DecompressorHandle>
 );
 crate::object::native_handle::native_handle_bridge!(
     __molt_compression_bz2_file_owner_new,
     __molt_compression_bz2_file_owner_clone,
-    molt_runtime_compression::bz2::Bz2FileHandle
+    std::sync::Mutex<molt_runtime_compression::bz2::Bz2FileHandle>
 );
 #[cfg(not(target_arch = "wasm32"))]
 crate::object::native_handle::native_handle_bridge!(
     __molt_compression_lzma_compressor_owner_new,
     __molt_compression_lzma_compressor_owner_clone,
-    molt_runtime_compression::lzma::LzmaCompressorHandle
+    std::sync::Mutex<molt_runtime_compression::lzma::LzmaCompressorHandle>
 );
 #[cfg(not(target_arch = "wasm32"))]
 crate::object::native_handle::native_handle_bridge!(
     __molt_compression_lzma_decompressor_owner_new,
     __molt_compression_lzma_decompressor_owner_clone,
-    molt_runtime_compression::lzma::LzmaDecompressorHandle
+    std::sync::Mutex<molt_runtime_compression::lzma::LzmaDecompressorHandle>
 );
 #[cfg(not(target_arch = "wasm32"))]
 crate::object::native_handle::native_handle_bridge!(
     __molt_compression_lzma_file_owner_new,
     __molt_compression_lzma_file_owner_clone,
-    molt_runtime_compression::lzma::LzmaFileHandle
+    std::sync::Mutex<molt_runtime_compression::lzma::LzmaFileHandle>
 );
 crate::object::native_handle::native_handle_bridge!(
     __molt_compression_gzip_file_owner_new,
     __molt_compression_gzip_file_owner_clone,
-    molt_runtime_compression::gzip::GzipFileHandle
+    std::sync::Mutex<molt_runtime_compression::gzip::GzipFileHandle>
 );

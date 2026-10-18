@@ -18,10 +18,58 @@ from tests.process_guard_common import (
     install_module_os_view,
     install_module_view,
     run_custody_subject_process,
+    run_guarded_test_process,
 )
 
 # These tests fake process data the session sentinel also reads.
 pytestmark = pytest.mark.usefixtures("session_sentinel_paused")
+
+
+@pytest.mark.skipif(os.name != "posix", reason="backend daemon uses POSIX sockets")
+def test_xdist_workers_inherit_one_live_controller_lease(tmp_path: Path) -> None:
+    root = Path(__file__).resolve().parents[1]
+    project = tmp_path / "project"
+    project.mkdir()
+    (project / "pyproject.toml").write_text(
+        '[tool.pytest.ini_options]\naddopts = ""\n', encoding="utf-8"
+    )
+    # Exercise the real session hooks, without copying their implementation.
+    (project / "conftest.py").write_text(
+        "from tests.conftest import *\n", encoding="utf-8"
+    )
+    receipt = tmp_path / "worker-lease.json"
+    (project / "test_worker.py").write_text(
+        "import json, os\n"
+        "from pathlib import Path\n"
+        "from molt import backend_daemon_suite_custody as suite\n"
+        "from tools import memory_guard\n"
+        "def test_worker(request):\n"
+        "    assert hasattr(request.config, 'workerinput')\n"
+        "    path = Path(os.environ[suite.LEASE_ENV])\n"
+        f"    lease = suite.live_lease(path, project_root=Path({str(root)!r}), "
+        "samples=memory_guard.sample_processes())\n"
+        "    assert lease is not None\n"
+        "    assert lease['owner_pid'] != os.getpid()\n"
+        f"    Path({str(receipt)!r}).write_text(json.dumps({{'path':str(path), "
+        "'owner_pid':lease['owner_pid']}))\n",
+        encoding="utf-8",
+    )
+    env = dict(os.environ)
+    # The nested controller must own its lease, independently of this suite.
+    for key in (suite.LEASE_ENV, "PYTEST_XDIST_WORKER", "PYTEST_XDIST_WORKER_COUNT"):
+        env.pop(key, None)
+    env["PYTHONPATH"] = os.pathsep.join((str(root / "src"), str(root)))
+    result = run_guarded_test_process(
+        [sys.executable, "-B", "-m", "pytest", "-q", "-n", "1"],
+        cwd=project,
+        env=env,
+        timeout=120.0,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    observed = json.loads(receipt.read_text(encoding="utf-8"))
+    terminal = suite.read_lease(Path(observed["path"]))
+    assert terminal is not None and terminal["state"] == "closed"
+    assert terminal["owner_pid"] == observed["owner_pid"]
 
 
 def sample(pid, parent, group, born, command="owned worker"):
@@ -90,6 +138,65 @@ def lease_samples(record):
             record["guardian_pid"], 10, record["guardian_pid"], 200
         ),
     }
+
+
+def test_daemon_scope_borrows_live_receiver_without_another_guardian(
+    lease, tmp_path, monkeypatch
+):
+    from tools.memory_guard_core import process_model
+
+    path, record, _handle = lease
+    install_module_os_view(monkeypatch, suite, name="posix")
+    monkeypatch.setattr(
+        process_model, "sample_processes", lambda: lease_samples(record)
+    )
+    monkeypatch.setattr(
+        suite.SuiteDaemonLease,
+        "start",
+        lambda **kwargs: pytest.fail("live inherited receiver was replaced"),
+    )
+    env = {suite.LEASE_ENV: str(path)}
+    with suite.daemon_suite_scope(project_root=tmp_path, environ=env) as owned:
+        assert owned is None
+        assert env == {suite.LEASE_ENV: str(path)}
+    assert env == {suite.LEASE_ENV: str(path)}
+    assert suite.live_lease(path, project_root=tmp_path, samples=lease_samples(record))
+
+
+@pytest.mark.parametrize("previous", [None, "stale-receiver"])
+def test_daemon_scope_restores_prior_environment_after_body_failure(
+    tmp_path, monkeypatch, previous
+):
+    from types import SimpleNamespace
+
+    install_module_os_view(monkeypatch, suite, name="posix")
+    closed = []
+    owned = SimpleNamespace(
+        path=tmp_path / "new-lease", close=lambda **kwargs: closed.append(kwargs)
+    )
+    monkeypatch.setattr(suite.SuiteDaemonLease, "start", lambda **kwargs: owned)
+    env = {} if previous is None else {suite.LEASE_ENV: previous}
+    before = dict(env)
+    with pytest.raises(ValueError, match="body failure"):
+        with suite.daemon_suite_scope(project_root=tmp_path, environ=env) as receiver:
+            assert receiver is owned
+            assert env[suite.LEASE_ENV] == str(owned.path)
+            raise ValueError("body failure")
+    assert env == before
+    assert len(closed) == 1
+
+
+def test_windows_daemon_scope_retains_job_ownership(tmp_path, monkeypatch):
+    install_module_os_view(monkeypatch, suite, name="nt")
+    monkeypatch.setattr(
+        suite.SuiteDaemonLease,
+        "start",
+        lambda **kwargs: pytest.fail("Windows started a POSIX guardian"),
+    )
+    env = {suite.LEASE_ENV: "inherited"}
+    with suite.daemon_suite_scope(project_root=tmp_path, environ=env) as owned:
+        assert owned is None
+    assert env == {suite.LEASE_ENV: "inherited"}
 
 
 def identity(tmp_path, lease_path):
@@ -541,7 +648,13 @@ def test_guardian_failure_still_runs_bounded_suite_fallback(tmp_path, monkeypatc
     def fail(**kwargs):
         raise RuntimeError("guardian failed")
 
-    sentinel._daemon_suite_lease = SimpleNamespace(close=fail)
+    install_module_os_view(monkeypatch, suite, name="posix")
+    owned = SimpleNamespace(path=tmp_path / "owned-lease", close=fail)
+    monkeypatch.setattr(suite.SuiteDaemonLease, "start", lambda **kwargs: owned)
+    env = {}
+    sentinel._daemon_suite_lease = sentinel._daemon_suite_scope.enter_context(
+        suite.daemon_suite_scope(project_root=tmp_path, environ=env)
+    )
     monkeypatch.setattr(
         sentinel,
         "drain_new_processes",
@@ -550,6 +663,7 @@ def test_guardian_failure_still_runs_bounded_suite_fallback(tmp_path, monkeypatc
     with pytest.raises(RuntimeError, match="guardian failed"):
         sentinel.__exit__(None, None, None)
     assert calls == ["bounded receiver drain"]
+    assert env == {}
 
 
 @pytest.mark.skipif(os.name != "posix", reason="real fork ownership requires POSIX")

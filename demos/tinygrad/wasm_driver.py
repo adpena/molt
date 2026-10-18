@@ -1,7 +1,8 @@
 """
 WASM entry point for Falcon-OCR inference.
 
-Compiled with: molt build wasm_driver.py --target wasm
+Compiled from the repository root with:
+    molt build --module demos.tinygrad.wasm_driver --target wasm
 
 Exports two functions consumed by the browser-side loader and the
 Cloudflare Worker:
@@ -17,9 +18,6 @@ to falcon_ocr.py and exists solely as the WASM compilation target.
 """
 
 from __future__ import annotations
-from _intrinsics import require_intrinsic as _require_intrinsic
-
-_gpu_device = _require_intrinsic("molt_gpu_prim_device")
 
 from .examples.falcon_ocr import init as _falcon_init
 from .examples.falcon_ocr import ocr_tokens as _falcon_ocr_tokens

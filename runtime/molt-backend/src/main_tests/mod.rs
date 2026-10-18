@@ -3,6 +3,8 @@ mod contract_pipeline;
 mod daemon_cache;
 #[cfg(molt_backend_daemon)]
 mod daemon_env;
+#[cfg(all(molt_backend_daemon, any(unix, windows)))]
+mod daemon_environment_isolation;
 #[cfg(molt_backend_daemon)]
 mod daemon_request_io;
 #[cfg(feature = "native-backend")]

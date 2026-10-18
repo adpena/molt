@@ -1,24 +1,7 @@
 use super::*;
-use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
 
-// ---------------------------------------------------------------------------
-// molt_re_execute â€” Phase-1b match engine
-// ---------------------------------------------------------------------------
-
-/// `molt_re_execute(handle, text, pos, end, mode) -> match_result | None`
-///
-/// Execute a compiled regex pattern against the given text.
-///
-/// Arguments:
-///   handle â€” integer handle from `molt_re_compile`
-///   text   â€” subject string
-///   pos    â€” start position (char index)
-///   end    â€” end position (char index, exclusive)
-///   mode   â€” "match", "search", or "fullmatch"
-///
-/// Returns:
-///   None on no match, or a tuple `(start, end, groups_tuple)` where
-///   groups_tuple is a tuple of `(start, end) | None` for each group.
+/// `molt_re_execute(handle, text, pos, end, mode) -> match_result | None`.
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_re_execute(
     handle_bits: u64,
@@ -28,11 +11,8 @@ pub extern "C" fn molt_re_execute(
     mode_bits: u64,
 ) -> u64 {
     molt_runtime_core::with_core_gil!(_py, {
-        let Some(handle) = to_i64(obj_from_bits(handle_bits)) else {
-            return raise_exception::<_>(_py, "TypeError", "handle must be int");
-        };
-        let Some(text) = string_obj_to_owned(obj_from_bits(text_bits)) else {
-            return raise_exception::<_>(_py, "TypeError", "text must be str");
+        let Some(compiled) = pattern_handle_arc(handle_bits) else {
+            return raise_exception::<_>(_py, "ValueError", "invalid regex handle");
         };
         let Some(pos) = to_i64(obj_from_bits(pos_bits)) else {
             return raise_exception::<_>(_py, "TypeError", "pos must be int");
@@ -43,63 +23,47 @@ pub extern "C" fn molt_re_execute(
         let Some(mode) = string_obj_to_owned(obj_from_bits(mode_bits)) else {
             return raise_exception::<_>(_py, "TypeError", "mode must be str");
         };
-
-        let pos_usize = if pos < 0 { 0usize } else { pos as usize };
-        let end_usize = if end < 0 { 0usize } else { end as usize };
-
-        // Look up the compiled pattern.
-        let guard = regex_state(_py)
-            .patterns
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
-        let Some(compiled) = guard.get(&handle) else {
-            return raise_exception::<_>(_py, "ValueError", "invalid regex handle");
+        let pos = pos.max(0) as usize;
+        let end = end.max(0) as usize;
+        let subject_obj = obj_from_bits(text_bits);
+        let matched = if compiled.compiled.is_bytes {
+            let Some(bytes) = (unsafe { bytes_obj_to_borrowed(subject_obj) }) else {
+                return raise_exception::<_>(
+                    _py,
+                    "TypeError",
+                    "cannot use a bytes pattern on a string-like object",
+                );
+            };
+            execute_match_bytes(&compiled.compiled, bytes, pos, end, &mode)
+        } else {
+            let Some(text) = string_obj_to_owned(subject_obj) else {
+                return raise_exception::<_>(
+                    _py,
+                    "TypeError",
+                    "cannot use a string pattern on a bytes-like object",
+                );
+            };
+            execute_match(&compiled.compiled, &text, pos, end, &mode)
         };
-
-        // Clone the parts we need so we can drop the lock.
-        let root = compiled.root.clone();
-        let group_count = compiled.group_count;
-        let flags = compiled.flags;
-        drop(guard);
-
-        let local_compiled = CompiledPattern {
-            root,
-            group_count,
-            group_names: HashMap::new(), // not needed for matching
-            flags,
-            warn_pos: None,
-        };
-
-        match execute_match(&local_compiled, &text, pos_usize, end_usize, &mode) {
-            Some(result) => build_match_result_bits(_py, &result, group_count),
+        match matched {
+            Some(result) => build_match_result_bits(_py, &result, compiled.compiled.group_count),
             None => MoltObject::none().bits(),
         }
     })
 }
 
-// ---------------------------------------------------------------------------
-// molt_re_finditer_collect â€” Phase-1b find-all engine
-// ---------------------------------------------------------------------------
-
-/// `molt_re_finditer_collect(handle, text, pos, end) -> list | None`
-///
-/// Find all non-overlapping matches of a compiled pattern in the text.
-///
-/// Returns a list of match result tuples `[(start, end, groups), ...]`
-/// or None if the pattern handle is invalid.
+/// Create a GREEN scanner state for one Pattern.finditer call. The Python
+/// iterator owns the original subject and the memoryview lease for byte input.
 #[unsafe(no_mangle)]
-pub extern "C" fn molt_re_finditer_collect(
+pub extern "C" fn molt_re_scanner_new(
     handle_bits: u64,
-    text_bits: u64,
+    subject_bits: u64,
     pos_bits: u64,
     end_bits: u64,
 ) -> u64 {
     molt_runtime_core::with_core_gil!(_py, {
-        let Some(handle) = to_i64(obj_from_bits(handle_bits)) else {
-            return raise_exception::<_>(_py, "TypeError", "handle must be int");
-        };
-        let Some(text) = string_obj_to_owned(obj_from_bits(text_bits)) else {
-            return raise_exception::<_>(_py, "TypeError", "text must be str");
+        let Some(pattern) = pattern_handle_arc(handle_bits) else {
+            return raise_exception::<_>(_py, "ValueError", "invalid regex handle");
         };
         let Some(pos) = to_i64(obj_from_bits(pos_bits)) else {
             return raise_exception::<_>(_py, "TypeError", "pos must be int");
@@ -107,85 +71,184 @@ pub extern "C" fn molt_re_finditer_collect(
         let Some(end) = to_i64(obj_from_bits(end_bits)) else {
             return raise_exception::<_>(_py, "TypeError", "end must be int");
         };
-
-        let pos_usize = if pos < 0 { 0usize } else { pos as usize };
-        let end_usize = if end < 0 { 0usize } else { end as usize };
-
-        // Look up the compiled pattern.
-        let guard = regex_state(_py)
-            .patterns
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
-        let Some(compiled) = guard.get(&handle) else {
-            return raise_exception::<_>(_py, "ValueError", "invalid regex handle");
-        };
-
-        let root = compiled.root.clone();
-        let group_count = compiled.group_count;
-        let flags = compiled.flags;
-        drop(guard);
-
-        let local_compiled = CompiledPattern {
-            root,
-            group_count,
-            group_names: HashMap::new(),
-            flags,
-            warn_pos: None,
-        };
-
-        let chars: Vec<char> = text.chars().collect();
-        let text_len = chars.len();
-        let end_clamp = end_usize.min(text_len);
-
-        let mut results: Vec<u64> = Vec::new();
-        let mut cur = pos_usize;
-        let mut prev_empty_match_at: Option<usize> = None;
-
-        while cur <= end_clamp {
-            match execute_match(&local_compiled, &text, cur, end_clamp, "search") {
-                Some(result) => {
-                    let match_start = result.start;
-                    let match_end = result.end;
-
-                    // Avoid infinite loop on zero-width matches at the same position.
-                    if match_start == match_end {
-                        if prev_empty_match_at == Some(match_start) {
-                            // Already yielded an empty match here â€” advance.
-                            if cur < end_clamp {
-                                cur += 1;
-                            } else {
-                                break;
-                            }
-                            continue;
-                        }
-                        prev_empty_match_at = Some(match_start);
-                    } else {
-                        prev_empty_match_at = None;
-                    }
-
-                    let bits = build_match_result_bits(_py, &result, group_count);
-                    results.push(bits);
-
-                    if match_end == match_start {
-                        // Zero-width match â€” advance by one to avoid infinite loop.
-                        if cur < end_clamp {
-                            cur = match_start + 1;
-                        } else {
-                            break;
-                        }
-                    } else {
-                        cur = match_end;
-                    }
-                }
-                None => break,
+        let pos = pos.max(0) as usize;
+        let end = end.max(0) as usize;
+        let subject = obj_from_bits(subject_bits);
+        let (text_chars, subject_len) = if pattern.compiled.is_bytes {
+            let Some(bytes) = (unsafe { bytes_obj_to_borrowed(subject) }) else {
+                return raise_exception::<_>(
+                    _py,
+                    "TypeError",
+                    "cannot use a bytes pattern on a string-like object",
+                );
+            };
+            if pos > bytes.len() {
+                return raise_exception::<_>(_py, "ValueError", "pos out of range");
             }
-        }
-
-        let list_ptr = alloc_list(_py, &results);
-        if list_ptr.is_null() {
-            MoltObject::none().bits()
+            (None, bytes.len())
         } else {
-            MoltObject::from_ptr(list_ptr).bits()
+            let Some(text) = string_obj_to_owned(subject) else {
+                return raise_exception::<_>(
+                    _py,
+                    "TypeError",
+                    "cannot use a string pattern on a bytes-like object",
+                );
+            };
+            let chars: Vec<char> = text.chars().collect();
+            if pos > chars.len() {
+                return raise_exception::<_>(_py, "ValueError", "pos out of range");
+            }
+            let len = chars.len();
+            (Some(chars), len)
+        };
+        let end = end.min(subject_len);
+        let scanner = ScannerHandle::new(pattern, pos.min(end), end, text_chars);
+        match scanner_handle_new(Arc::new(Mutex::new(scanner))) {
+            Some(bits) => bits,
+            None => MoltObject::none().bits(),
         }
     })
+}
+
+/// Advance the scanner once and return one ordinary match-result tuple, or
+/// None on exhaustion. The live memoryview is borrowed only during matching.
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_re_finditer_next(scanner_bits: u64, subject_bits: u64) -> u64 {
+    molt_runtime_core::with_core_gil!(_py, {
+        let Some(scanner) = scanner_handle_arc(scanner_bits) else {
+            return raise_exception::<_>(_py, "ValueError", "invalid regex scanner");
+        };
+        let mut scanner = match scanner.lock() {
+            Ok(state) => state,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        if scanner.finished {
+            return MoltObject::none().bits();
+        }
+        let pattern = Arc::clone(&scanner.pattern);
+        let group_count = pattern.compiled.group_count;
+        let subject_obj = obj_from_bits(subject_bits);
+        let next = if pattern.compiled.is_bytes {
+            let Some(bytes) = (unsafe { bytes_obj_to_borrowed(subject_obj) }) else {
+                drop(scanner);
+                return raise_exception::<_>(
+                    _py,
+                    "TypeError",
+                    "expected a contiguous bytes-like memoryview",
+                );
+            };
+            advance_scanner(
+                &pattern.compiled,
+                &mut scanner,
+                SubjectStorage::Bytes(bytes),
+            )
+        } else {
+            let Some(chars) = scanner.text_chars.take() else {
+                drop(scanner);
+                return raise_exception::<_>(
+                    _py,
+                    "SystemError",
+                    "text scanner has no prepared subject",
+                );
+            };
+            let result = advance_scanner(
+                &pattern.compiled,
+                &mut scanner,
+                SubjectStorage::Text(&chars),
+            );
+            scanner.text_chars = Some(chars);
+            result
+        };
+        drop(scanner);
+        match next {
+            Some(result) => build_match_result_bits(_py, &result, group_count),
+            None => MoltObject::none().bits(),
+        }
+    })
+}
+
+pub(super) fn advance_scanner(
+    compiled: &CompiledPattern,
+    scanner: &mut ScannerHandle,
+    subject: SubjectStorage<'_>,
+) -> Option<MatchResult> {
+    while scanner.pos <= scanner.end {
+        let mode = if scanner.must_advance {
+            "search_nonempty"
+        } else {
+            "search"
+        };
+        let result = execute_match_subject(compiled, subject, scanner.pos, scanner.end, mode);
+        let Some(result) = result else {
+            if scanner.must_advance && scanner.pos < scanner.end {
+                scanner.pos += 1;
+                scanner.must_advance = false;
+                continue;
+            }
+            scanner.finished = true;
+            return None;
+        };
+        scanner.must_advance = result.start == result.end;
+        scanner.pos = if result.start == result.end {
+            result.start
+        } else {
+            result.end
+        };
+        return Some(result);
+    }
+    scanner.finished = true;
+    None
+}
+
+pub(super) fn build_match_result_bits(
+    _py: &CoreGilToken,
+    result: &MatchResult,
+    group_count: u32,
+) -> u64 {
+    let start_bits = MoltObject::from_int(result.start as i64).bits();
+    let end_bits = MoltObject::from_int(result.end as i64).bits();
+    let mut group_elems: Vec<u64> = Vec::with_capacity(group_count as usize);
+    let mut owned_pairs = Vec::with_capacity(group_count as usize);
+    for i in 1..=(group_count as usize) {
+        if i < result.groups.len() {
+            match result.groups[i] {
+                Some((gs, ge)) => {
+                    let pair_ptr = alloc_tuple(
+                        _py,
+                        &[
+                            MoltObject::from_int(gs as i64).bits(),
+                            MoltObject::from_int(ge as i64).bits(),
+                        ],
+                    );
+                    if pair_ptr.is_null() {
+                        for bits in owned_pairs {
+                            dec_ref_bits(_py, bits);
+                        }
+                        return MoltObject::none().bits();
+                    }
+                    let bits = MoltObject::from_ptr(pair_ptr).bits();
+                    group_elems.push(bits);
+                    owned_pairs.push(bits);
+                }
+                None => group_elems.push(MoltObject::none().bits()),
+            }
+        } else {
+            group_elems.push(MoltObject::none().bits());
+        }
+    }
+    let groups_ptr = alloc_tuple(_py, &group_elems);
+    for bits in owned_pairs {
+        dec_ref_bits(_py, bits);
+    }
+    if groups_ptr.is_null() {
+        return MoltObject::none().bits();
+    }
+    let groups_bits = MoltObject::from_ptr(groups_ptr).bits();
+    let result_ptr = alloc_tuple(_py, &[start_bits, end_bits, groups_bits]);
+    dec_ref_bits(_py, groups_bits);
+    if result_ptr.is_null() {
+        MoltObject::none().bits()
+    } else {
+        MoltObject::from_ptr(result_ptr).bits()
+    }
 }

@@ -103,6 +103,26 @@
     return result;
   };
 
+  // molt.wasm.app-call (src/molt/cli/app_export_contract.py): an app export
+  // adopts every argument and returns one owned result. The invocation owns
+  // each materialized argument only until the call moves it, so a failed
+  // conversion releases just the arguments the export never received, and no
+  // argument is released after the call. The caller releases the result.
+  const invokeAppExport = (instance, fn, values, materialize) => {
+    const exports = requireExports(instance, ['molt_dec_ref_obj']);
+    const args = [];
+    try {
+      for (const value of values) args.push(materialize(value));
+    } catch (error) {
+      const errors = [error];
+      for (let i = args.length - 1; i >= 0; i--) {
+        try { exports.molt_dec_ref_obj(args[i]); } catch (cleanup) { errors.push(cleanup); }
+      }
+      throw combinedError(errors);
+    }
+    return fn(...args);
+  };
+
   // The constructor takes a borrowed Python integer. Its result is an opaque
   // stream handle with explicit drop custody, not a generic object owner.
   const createRuntimeStream = (instance, capacity) => {
@@ -329,5 +349,5 @@
     return { execute, initialize, dispose, assertLive, admit: resolve };
   };
   return { createRuntimeLifetime, createRuntimeDisposer, boxRuntimeInt, createRuntimeStream,
-    withRuntimeOwnedValues, makeRuntimeIntList, combinedError, formatTraceError };
+    withRuntimeOwnedValues, invokeAppExport, makeRuntimeIntList, combinedError, formatTraceError };
 });

@@ -21,9 +21,6 @@ import math
 import os
 from _intrinsics import require_intrinsic as _require_intrinsic
 
-# GPU primitive intrinsic — required for WASM stdlib enforcement
-_gpu_device = _require_intrinsic("molt_gpu_prim_device")
-
 from molt.gpu import Buffer, alloc
 from molt.gpu.tensor import Tensor
 from molt.gpu.interop import load_safetensors_bytes

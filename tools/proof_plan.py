@@ -7,6 +7,7 @@ local gate commands live only in ``tools/proof_plan.toml``.
 
 from __future__ import annotations
 
+from collections import Counter
 from concurrent.futures import ThreadPoolExecutor
 import datetime as dt
 import fnmatch
@@ -15,18 +16,20 @@ import hashlib
 import heapq
 import json
 import os
+import math
 import platform
 import re
 import shlex
 import shutil
-from dataclasses import dataclass
-from pathlib import Path
+from dataclasses import dataclass, field as dataclass_field
+from pathlib import Path, PurePosixPath
 import subprocess
 import sys
 import threading
 import time
 import tomllib
 import traceback
+from types import MappingProxyType
 from typing import TYPE_CHECKING, Any, Collection, Iterable, Literal, Mapping
 
 if TYPE_CHECKING:
@@ -76,6 +79,9 @@ NULL_SHA = "0" * 40
 # the exact revision the proof ran on without a hand-supplied object ID.
 PROOF_SOURCE_COMMIT_PLACEHOLDER = "{proof_source_commit}"
 _ARGV_PLACEHOLDER = re.compile(r"\{[A-Za-z_][A-Za-z0-9_]*\}")
+# Local integration gates bind the fetched upstream once, never a mutable ref
+# name or an ambient environment value. Standalone tools retain their defaults.
+INTEGRATION_UPSTREAM_COMMIT_PLACEHOLDER = "{integration_upstream_commit}"
 REQUIRED_FAMILY_FIELDS = (
     "description",
     "inputs",
@@ -532,23 +538,128 @@ _LOCAL_PYTEST_PREFIX = ("python", "-m", "pytest", "-q")
 _LOCAL_PYTEST_SELECTORS = {"k": "-k", "m": "-m"}
 
 
+def _pytest_target_parts(target: str) -> tuple[str, ...]:
+    path, separator, nodes = target.rstrip("/").partition("::")
+    parts = PurePosixPath(path).parts
+    if not separator:
+        return parts
+    names, parameter, value = nodes.partition("[")
+    return (
+        *parts,
+        *("::" + name for name in names.split("::")),
+        *(("[" + value,) if parameter else ()),
+    )
+
+
+@dataclass(slots=True)
+class _PytestMemoryNode:
+    children: dict[str, _PytestMemoryNode] = dataclass_field(default_factory=dict)
+    owned_gb: float | None = None
+    maximum_gb: float = 0.0
+
+
+class PytestMemoryUnits:
+    """Derived command-target envelopes, indexed once without test collection.
+
+    Whole-file/directory owners cover descendants; a node owner covers only
+    that node. A broader request includes its known descendants and the ad hoc
+    default for uncovered members. Selectors keep their declared file envelope;
+    no finer memory measurement is inferred from a -k or -m expression.
+    """
+
+    def __init__(self, commands: Iterable[Mapping[str, Any]]) -> None:
+        self._root = _PytestMemoryNode()
+        option = "--molt-worker-memory-gb"
+        for command in commands:
+            argv = command.get("argv", ())
+            unit = None
+            for index, argument in enumerate(argv):
+                if argument == option:
+                    if index + 1 == len(argv):
+                        raise ValueError(f"{option} requires a value")
+                    raw = argv[index + 1]
+                elif argument.startswith(option + "="):
+                    raw = argument[len(option) + 1 :]
+                else:
+                    continue
+                unit = float(raw)
+                size = unit * 1024**3
+                if not math.isfinite(size) or size < 1:
+                    raise ValueError(
+                        f"{option} must describe a positive finite byte count"
+                    )
+            if unit is None:
+                continue
+            # The plan's existing ownership relation is its canonical tests/
+            # argv paths. Do not inspect the filesystem or collect pytest.
+            for target in argv:
+                if target != "tests" and not target.startswith("tests/"):
+                    continue
+                node = self._root
+                node.maximum_gb = max(node.maximum_gb, unit)
+                for component in _pytest_target_parts(target):
+                    child = node.children.get(component)
+                    if child is None:
+                        child = node.children[component] = _PytestMemoryNode()
+                    node = child
+                    node.maximum_gb = max(node.maximum_gb, unit)
+                node.owned_gb = max(node.owned_gb or 0.0, unit)
+
+    def memory_gb(self, targets: Iterable[str]) -> float:
+        maximum = 0.0
+        default = host_capacity.DEFAULT_PYTEST_WORKER_MEMORY_GB
+        for target in targets:
+            node = self._root
+            owned = node.owned_gb
+            for component in _pytest_target_parts(target):
+                child = node.children.get(component)
+                if child is None:
+                    maximum = max(maximum, default if owned is None else owned)
+                    break
+                node = child
+                if node.owned_gb is not None:
+                    owned = max(owned or 0.0, node.owned_gb)
+            else:
+                maximum = max(
+                    maximum, default if owned is None else owned, node.maximum_gb
+                )
+        return maximum or default
+
+
 def local_pytest_argv(
-    targets: Iterable[str], select: tuple[str, ...] = ()
+    targets: Iterable[str],
+    select: tuple[str, ...] = (),
+    *,
+    memory_units: PytestMemoryUnits,
 ) -> tuple[str, ...]:
     """The one pytest invocation for local gate test targets.
 
     Integration merges every selected rule's targets into one run, so the
     interpreter, guard and collection costs are paid once. ``-n auto`` sizes
-    the workers from the host (molt.pytest_capacity_plugin) with the default
-    unit, since the run mixes suites. A selection (``-k`` or ``-m``) applies
+    the workers from the host using the largest owning target envelope. A
+    selection (``-k`` or ``-m``) applies
     to every target of its run, so each one runs on its own.
     """
-    return (*_LOCAL_PYTEST_PREFIX, "-n", "auto", *select, *targets)
+    targets = tuple(targets)
+    unit = memory_units.memory_gb(targets)
+    return (
+        *_LOCAL_PYTEST_PREFIX,
+        "-n",
+        "auto",
+        f"--molt-worker-memory-gb={unit}",
+        *select,
+        *targets,
+    )
 
 
-def local_pytest_command(targets: Iterable[str], select: tuple[str, ...] = ()) -> str:
+def local_pytest_command(
+    targets: Iterable[str],
+    select: tuple[str, ...] = (),
+    *,
+    memory_units: PytestMemoryUnits,
+) -> str:
     """Display/projection of the argv executed directly by the local driver."""
-    return shlex.join(local_pytest_argv(targets, select))
+    return shlex.join(local_pytest_argv(targets, select, memory_units=memory_units))
 
 
 def local_pytest_selections(
@@ -603,33 +714,71 @@ def local_rule_field_error(rule: Mapping[str, Any]) -> str | None:
 
 def local_gate_commands(
     data: Mapping[str, Any],
+    *,
+    memory_units: PytestMemoryUnits,
 ) -> dict[str, tuple[str, tuple[str, ...]]]:
     """The existing generated local IDs and their declared prerequisites."""
-    commands = {
-        f"local.always.{index}": (command, tuple(data.get("always_toolchains", [])))
-        for index, command in enumerate(data.get("always", []))
-    }
+    commands = {}
+
+    def add_shell(identifier: str, command: str, tools: Iterable[str]) -> None:
+        if error := local_gate_template_error(command):
+            raise ValueError(f"{identifier}: {error}")
+        commands[identifier] = command, tuple(tools)
+
+    for index, command in enumerate(data.get("always", [])):
+        add_shell(f"local.always.{index}", command, data.get("always_toolchains", []))
     for rule in data.get("rule", []):
-        commands.update(
-            {
-                f"local.{rule['name']}.{index}": (
-                    command,
-                    tuple(rule.get("toolchains", [])),
-                )
-                for index, command in enumerate(rule.get("gates", []))
-            }
-        )
+        for index, command in enumerate(rule.get("gates", [])):
+            add_shell(
+                f"local.{rule['name']}.{index}", command, rule.get("toolchains", [])
+            )
         if rule.get("pytest"):
             commands[f"local.{rule['name']}.pytest"] = (
-                local_pytest_command(rule["pytest"]),
+                local_pytest_command(rule["pytest"], memory_units=memory_units),
                 tuple(rule.get("toolchains", [])),
             )
         for index, (select, targets) in enumerate(local_pytest_selections(rule)):
             commands[f"local.{rule['name']}.pytest-select-{index}"] = (
-                local_pytest_command(targets, select),
+                local_pytest_command(targets, select, memory_units=memory_units),
                 tuple(rule.get("toolchains", [])),
             )
     return commands
+
+
+def local_gate_template_error(command: str) -> str | None:
+    """Admit the one closed integration binding as a commit or commit range."""
+    for token in _ARGV_PLACEHOLDER.findall(command):
+        if token != INTEGRATION_UPSTREAM_COMMIT_PLACEHOLDER:
+            return f"unknown local gate placeholder {token!r}"
+    remainder = command.replace(INTEGRATION_UPSTREAM_COMMIT_PLACEHOLDER, "")
+    if "{integration_" in remainder or "integration_upstream_commit}" in remainder:
+        return "malformed integration upstream placeholder"
+    if INTEGRATION_UPSTREAM_COMMIT_PLACEHOLDER not in command:
+        return None
+    try:
+        arguments = shlex.split(command)
+    except ValueError as exc:
+        return f"invalid local gate template: {exc}"
+    for argument in arguments:
+        if INTEGRATION_UPSTREAM_COMMIT_PLACEHOLDER in argument and argument not in {
+            INTEGRATION_UPSTREAM_COMMIT_PLACEHOLDER,
+            INTEGRATION_UPSTREAM_COMMIT_PLACEHOLDER + "..HEAD",
+        }:
+            return "integration upstream placeholder must be a whole commit or BASE..HEAD argument"
+    return None
+
+
+def bind_local_gate_command(
+    command: str | tuple[str, ...], *, upstream_commit: str
+) -> str | tuple[str, ...]:
+    """Bind an execution copy; selection and prerequisite IDs keep raw policy."""
+    require_git_object_id(upstream_commit, label="integration gate upstream")
+    # Structured pytest selections contain literal argv, not shell templates.
+    if not isinstance(command, str):
+        return command
+    if error := local_gate_template_error(command):
+        raise ValueError(error)
+    return command.replace(INTEGRATION_UPSTREAM_COMMIT_PLACEHOLDER, upstream_commit)
 
 
 def local_pytest_target_errors(
@@ -675,6 +824,45 @@ class Selection:
     selected: tuple[ProofFamily, ...]
     reasons: dict[str, tuple[str, ...]]
     fail_closed_reason: str | None = None
+
+
+def _resolve_ci_command_test_inputs(
+    families: tuple[ProofFamily, ...], commands: tuple[ProofCommand, ...]
+) -> None:
+    """Project validated command targets into their change-selected owners.
+
+    A literal ``tests`` target owns itself and its descendants, whether it is
+    a file or directory. The existing ``path/**`` matcher expresses that
+    without stat calls, collection, extension guesses or glob interpretation
+    of a target's spelling. Scheduled families have no changed-path owner.
+    Resolve once at load time; selection and generated projections read the
+    same family data. Work is linear in declared argv, inputs and path parts.
+    """
+    targets: dict[str, dict[str, None]] = {family.name: {} for family in families}
+    for command in commands:
+        owner = targets.get(command.family)
+        if owner is None:
+            continue
+        for argument in command.argv:
+            path = argument.split("::", 1)[0].rstrip("/")
+            if path == "tests" or path.startswith("tests/"):
+                owner[path] = None
+
+    for family in families:
+        owned = targets[family.name]
+        # Exact copies of command targets are not another source of ownership.
+        inputs = [pattern for pattern in family.inputs if pattern not in owned]
+        subtrees = {
+            pattern[:-3].rstrip("/") for pattern in inputs if pattern.endswith("/**")
+        }
+        for target in owned:
+            parents = tuple(str(parent) for parent in PurePosixPath(target).parents)
+            if target in subtrees or any(
+                parent in subtrees or parent in owned for parent in parents
+            ):
+                continue
+            inputs.append(target + "/**")
+        family.data["inputs"] = inputs
 
 
 @dataclass(frozen=True, slots=True)
@@ -899,6 +1087,7 @@ class ProofPlan:
         errors = plan.validate()
         if errors:
             raise ValueError("invalid proof plan:\n- " + "\n- ".join(errors))
+        _resolve_ci_command_test_inputs(plan.families, plan.commands)
         return plan
 
     def named_lane(self, lane_id: str) -> NamedLane:
@@ -1215,14 +1404,11 @@ class ProofPlan:
                 )
             package = policy.data.get("node_package")
             explicit_selection = policy.data.get("selection_only", False)
-            if type(explicit_selection) is not bool or (
-                explicit_selection
-                and content_path_command is None
-                and selector != "build-python"
-            ):
-                errors.append(
-                    f"{policy.name}: explicit prerequisite requires a typed content resolver"
-                )
+            # Selection controls bare-launcher inference, not image identity.
+            # Ordinary executables already resolve/hash their selected PATH image;
+            # runtime views and selected versions keep their own resolver checks.
+            if type(explicit_selection) is not bool:
+                errors.append(f"{policy.name}: selection_only must be a boolean")
             if package is not None and (
                 not isinstance(package, str)
                 or not package
@@ -2252,6 +2438,9 @@ class ProofPlan:
                             f"{sorted(expected_verdict_needs)!r}"
                         )
         local_names: set[str] = set()
+        for index, command in enumerate(self.always):
+            if error := local_gate_template_error(command):
+                errors.append(f"local.always.{index}: {error}")
         try:
             toolchain_closure(self.toolchain_policies, self.always_toolchains)
         except ValueError as exc:
@@ -2282,6 +2471,10 @@ class ProofPlan:
                     isinstance(item, str) for item in value
                 ):
                     errors.append(f"{name}: {field} must be a list of strings")
+                elif field == "gates":
+                    for index, command in enumerate(value):
+                        if error := local_gate_template_error(command):
+                            errors.append(f"local.{name}.{index}: {error}")
             errors.extend(local_pytest_target_errors(name, rule.get("pytest", [])))
             errors.extend(
                 local_pytest_select_errors(name, rule.get("pytest_select", []))
@@ -3246,7 +3439,11 @@ def project_toolchains(
                 "python3 tools/provision_wasi_sdk.py"
             )
         else:
-            apply(wasm_toolchain_environment_delta(installation, environ=env))
+            apply(
+                wasm_toolchain_environment_delta(
+                    installation, environ=env, rust_target="wasm32-wasip1"
+                )
+            )
     for name in kinds.get("tool-release", ()):
         tool = str(policies[name].data["executable"])
         discovery = discover_pinned_tool(tool, root, environ=env)
@@ -3296,15 +3493,17 @@ def admit_toolchains(
     *,
     owners: Mapping[str, Iterable[str]] | None = None,
     python_admissions: Mapping[str, BuildPythonAdmission] | None = None,
-    root: Path = ROOT,
+    root: Path,
 ) -> AdmittedToolchains:
     """Put the installed pinned providers first in this process's environment,
     then admit each selected tool by its version contract, as CI's setup
     actions do.
 
     Every executor admits its toolchains here, so no shell needs projecting
-    by hand. The probes and the commands this process starts read
-    ``os.environ``; a caller that copied it earlier applies ``environment``.
+    by hand. Probes read the aggregate projection in ``os.environ``. Execution
+    callers preserve their pre-admission environment and project each command's
+    declared tool closure from that baseline, so unrelated commands do not
+    inherit another command's compiler or target selection.
     A tool the contract admits on PATH still passes when its pinned provider
     is not installed; a refusal names what to install.
     """
@@ -3550,19 +3749,30 @@ def _topological_commands(
     return tuple(ordered)
 
 
-def _command_memory_share(plan: ProofPlan, command_count: int) -> int | None:
+def _command_memory_share(
+    plan: ProofPlan, commands: Iterable[ProofCommand]
+) -> int | None:
     """The memory each command may claim while the executor runs others beside it.
 
-    The executor admits up to ``executor_max_workers`` commands at once, so it
-    divides the memory beyond the reserve among them; each command's
-    ``-n auto`` then sizes its workers within its own share
-    (docs/design/host_capacity.md).
+    Count the selected resource classes within their existing parallel limits,
+    capped by ``executor_max_workers``. This static upper bound preserves room
+    for every possible concurrent command without dividing serialized compiler
+    work by unused executor slots. Dependencies may reduce actual concurrency;
+    this does not redistribute memory as commands finish.
     """
-    _total, available = host_capacity.memory_bytes()
+    selected = Counter(str(command.data["resource_class"]) for command in commands)
+    if not selected:
+        return None
+    capacity = host_capacity.memory_capacity(os.environ)
+    _total, available = capacity.bounded_bytes
     if available is None:
         return None
-    concurrency = max(1, min(plan.executor_max_workers, command_count))
-    usable = max(0, available - host_capacity.headroom_bytes())
+    resource_slots = sum(
+        min(selected[policy.name], policy.max_parallel)
+        for policy in plan.resource_policies
+    )
+    concurrency = max(1, min(plan.executor_max_workers, resource_slots))
+    usable = max(0, available - host_capacity.headroom_bytes(capacity))
     return max(1, usable // concurrency)
 
 
@@ -3571,10 +3781,11 @@ def _command_environment(
     command: ProofCommand,
     timeout: int,
     *,
+    environment: Mapping[str, str],
     memory_share: int | None,
 ) -> tuple[dict[str, str], tuple[str, ...]]:
     """Resolve one command environment through shared Cargo invariants."""
-    child_env = dict(os.environ)
+    child_env = dict(environment)
     if memory_share is not None:
         child_env[host_capacity.MEMORY_SLICE_ENV] = str(memory_share)
     existing_pythonpath = child_env.get("PYTHONPATH", "")
@@ -3700,6 +3911,7 @@ def _run_command(
     command: ProofCommand,
     cancel_event: threading.Event | None = None,
     *,
+    environment: Mapping[str, str],
     memory_share: int | None,
 ) -> dict[str, Any]:
     relative_cwd = str(command.data.get("cwd", "."))
@@ -3707,7 +3919,7 @@ def _run_command(
     started_at = dt.datetime.now(dt.UTC).isoformat()
     timeout = int(command.data["timeout_seconds"])
     child_env, applied_environment_policies = _command_environment(
-        plan, command, timeout, memory_share=memory_share
+        plan, command, timeout, environment=environment, memory_share=memory_share
     )
     if cancel_event is not None and cancel_event.is_set():
         return {
@@ -3938,22 +4150,48 @@ def execute_commands(
     receipt_path: Path,
 ) -> int:
     commands = tuple(commands)
-    memory_share = _command_memory_share(plan, len(commands))
+    baseline = MappingProxyType(dict(os.environ))
+    memory_share = _command_memory_share(plan, commands)
+    closures = {command.id: plan.required_toolchains(command) for command in commands}
+    environments: dict[tuple[str, ...], Mapping[str, str]] = {}
+
+    def admit(
+        policies: Iterable[ToolchainPolicy], names: tuple[str, ...]
+    ) -> dict[str, dict[str, Any]]:
+        policies = tuple(policies)
+        fingerprints = admit_toolchains(
+            policies, names, root=plan.path.parent.parent
+        ).fingerprints
+        # Admission reports every selected prerequisite before any execution.
+        # Its process-wide union serves probes, never a child's target policy.
+        # Reuse one immutable projection per distinct declared closure.
+        for closure in dict.fromkeys(closures.values()):
+            if closure not in environments:
+                projection = project_toolchains(
+                    policies, closure, environ=baseline, root=plan.path.parent.parent
+                )
+                environments[closure] = MappingProxyType(
+                    {**baseline, **projection.delta}
+                )
+        return fingerprints
+
     return _execute_commands(
         plan,
         commands,
         receipt_path,
         _source_tree_changes=_source_tree_changes,
-        toolchain_fingerprints=lambda policies, names: (
-            admit_toolchains(policies, names).fingerprints
-        ),
+        toolchain_fingerprints=admit,
         _authority_sha256=_authority_sha256,
         _source_identity=_source_identity,
         _normalized_os=_normalized_os,
         _normalized_arch=_normalized_arch,
-        _required_toolchains=lambda command: _required_toolchains(plan, command),
+        _required_toolchains=lambda command: closures[command.id],
         _run_command=lambda plan, command, event: _run_command(
-            plan, command, event, memory_share=memory_share
+            plan,
+            command,
+            event,
+            environment=environments[closures[command.id]],
+            memory_share=memory_share,
         ),
         _cache_disposition=_cache_disposition,
     )

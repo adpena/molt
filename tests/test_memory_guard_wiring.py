@@ -18,6 +18,7 @@ from molt import pytest_memory_guard_config_plugin
 from molt import memory_guard_paths
 from molt import temporary_artifacts
 from tests.process_guard_common import (
+    current_thread_only,
     guarded_temporary_directory,
     install_module_os_view,
     install_module_view,
@@ -314,6 +315,7 @@ def test_installation_has_no_global_pytest_hook_but_repository_loads_guard():
 )
 def test_nontest_startup_preserves_package_only_import_boundary(monkeypatch, relative):
     import builtins
+    from concurrent.futures import ThreadPoolExecutor
 
     original_import = builtins.__import__
 
@@ -336,7 +338,20 @@ def test_nontest_startup_preserves_package_only_import_boundary(monkeypatch, rel
         orig_argv=[sys.executable, "-I", "-c", "pass"],
     )
     monkeypatch.setattr(sys, "argv", ["-c"])
-    monkeypatch.setattr(builtins, "__import__", no_repository_tooling)
+    monkeypatch.setattr(
+        builtins,
+        "__import__",
+        current_thread_only(no_repository_tooling, original_import),
+    )
+    with pytest.raises(pytest.fail.Exception, match="non-test startup imported"):
+        builtins.__import__("tools")
+    # Unrelated custody threads must retain their real import boundary while
+    # this thread observes the complete transitive startup import path.
+    with ThreadPoolExecutor(max_workers=1) as custody_thread:
+        imported = custody_thread.submit(
+            builtins.__import__, "tools.memory_guard_core.process_model"
+        ).result()
+    assert imported is sys.modules["tools"]
     surface = REPO_ROOT / relative
     # Startup imports preserve interpreter argv; runpy would replace argv[0]
     # with the adapter path and falsely simulate a direct test invocation.
@@ -1325,6 +1340,7 @@ def test_windows_pytest_tempdir_patch_keeps_xdist_given_basetemp_readable(
 def test_pytest_cache_dir_arg_uses_the_artifact_root_control_state(
     monkeypatch, tmp_path
 ) -> None:
+    monkeypatch.delenv(dx.PROOF_SCRATCH_ROOT_ENV, raising=False)
     monkeypatch.setenv("MOLT_EXT_ROOT", str(tmp_path / "artifact-root"))
     args = ["tests/test_one.py", "-q"]
 
@@ -1343,6 +1359,7 @@ def test_pytest_cache_dir_arg_uses_the_artifact_root_control_state(
 def test_pytest_cache_dir_never_lands_in_the_checkout(monkeypatch) -> None:
     # A plain clone's artifact root is the clone itself; its cache must move
     # out of the tree on every platform.
+    monkeypatch.delenv(dx.PROOF_SCRATCH_ROOT_ENV, raising=False)
     monkeypatch.setenv("MOLT_EXT_ROOT", str(pytest_memory_guard_bootstrap.ROOT))
 
     cache = pytest_memory_guard_bootstrap.guarded_pytest_cache_dir()
@@ -1377,6 +1394,7 @@ def test_pytest_cache_dir_arg_preserves_explicit_cache_policy() -> None:
 def test_pytest_cache_dir_config_uses_the_artifact_root_control_state(
     monkeypatch, tmp_path
 ) -> None:
+    monkeypatch.delenv(dx.PROOF_SCRATCH_ROOT_ENV, raising=False)
     monkeypatch.setenv("MOLT_EXT_ROOT", str(tmp_path / "artifact-root"))
 
     class Config:
@@ -1393,6 +1411,20 @@ def test_pytest_cache_dir_config_uses_the_artifact_root_control_state(
     )
     assert value.origin == "override"
     assert "cache_dir" not in Config._inicache
+
+
+def test_pytest_cache_dir_follows_the_admitted_proof_scratch(monkeypatch, tmp_path):
+    scratch = tmp_path / "queue-output" / "scratch"
+    monkeypatch.setenv(dx.PROOF_SCRATCH_ROOT_ENV, str(scratch))
+    monkeypatch.setenv("MOLT_GUARD_SCRATCH_ROOT", str(tmp_path / "nested-guard"))
+    monkeypatch.setenv("MOLT_EXT_ROOT", str(tmp_path / "artifact-root"))
+    args = ["tests/test_one.py", "-q"]
+
+    assert pytest_memory_guard_bootstrap.guarded_pytest_cache_dir() == (
+        scratch / "pytest-cache"
+    )
+    assert pytest_memory_guard_bootstrap.install_pytest_cache_dir_arg(args)
+    assert args[-2:] == ["-o", f"cache_dir={scratch / 'pytest-cache'}"]
 
 
 def test_pytest_user_temp_root_matches_pytest_tmpdir_authority(tmp_path) -> None:

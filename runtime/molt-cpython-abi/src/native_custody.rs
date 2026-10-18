@@ -75,6 +75,18 @@ pub unsafe fn project_buffer_object(bits: u64) -> Result<NativeObjectOwner, Buff
             __molt_native_reference_complete();
             return Err(BufferAcquireError::Preparation);
         }
+        // Publishing an ordinary instance view need not publish its semantic
+        // class. Resolve it fallibly here: the public CheckBuffer query is pure
+        // and intentionally discards errors from its internal type projection.
+        // No exporter is invoked until both instance and class are prepared.
+        let Some(resolved) = crate::bridge::observe_pyobject(object.as_ptr()) else {
+            __molt_native_reference_complete();
+            return Err(BufferAcquireError::Preparation);
+        };
+        if crate::bridge::semantic_type_for_resolved(object.as_ptr(), resolved).is_null() {
+            __molt_native_reference_complete();
+            return Err(BufferAcquireError::Preparation);
+        }
         Ok(object)
     }
 }

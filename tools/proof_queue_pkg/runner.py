@@ -1634,7 +1634,8 @@ def _run_one(
             if admitted_envelope.get("cargo_output_root") is not None
             else None,
         )
-        output_layout.validate_environment({**os.environ, **env_overrides})
+        requested_environment = {**os.environ, **env_overrides}
+        output_layout.validate_environment(requested_environment)
         if uses_cargo:
             # The queue owns Cargo and derived output below the result root.
             # Reject before environment provisioning, capture, or child launch.
@@ -1643,11 +1644,11 @@ def _run_one(
                 output_layout.capacity_paths()
                 if output_layout.declaration is not None
                 else (logs_root,),
-                env={**os.environ, **env_overrides},
+                env=requested_environment,
             ).as_dict()
         env = development_artifact_env(
             repo_root,
-            os.environ,
+            requested_environment,
             session_prefix=f"proof-{resource_family}",
             session_id=session_id,
             create_dirs=uses_cargo and output_layout.declaration is None,

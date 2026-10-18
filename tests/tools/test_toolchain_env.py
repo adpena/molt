@@ -38,7 +38,8 @@ def _fake_providers(monkeypatch: pytest.MonkeyPatch, *, installed: bool) -> None
     def llvm_delta(_root, _verification, *, environ):
         return {"MOLT_LLVM_PREFIX": "/llvm", "PATH": f"/llvm/bin:{environ['PATH']}"}
 
-    def wasm_delta(_installation, *, environ):
+    def wasm_delta(_installation, *, environ, rust_target):
+        assert rust_target == "wasm32-wasip1"
         del environ
         return {"WASI_SDK_PATH": "/wasi/sdk", "CC_wasm32_wasip1": "/wasi/bin/clang"}
 
@@ -151,7 +152,9 @@ def test_admission_puts_pinned_providers_ahead_of_the_ambient_shell(
     # ... and every executor admits through the projection CI uses, so no
     # shell needs projecting by hand.
     with mock.patch.dict(os.environ):
-        admitted = proof_plan.admit_toolchains(PLAN.toolchain_policies, names)
+        admitted = proof_plan.admit_toolchains(
+            PLAN.toolchain_policies, names, root=ROOT
+        )
         assert set(names) <= set(admitted.fingerprints)
         assert not [key for key in admitted.environment if WASI_KEY.search(key)]
         assert {

@@ -752,9 +752,7 @@ fn main() {
 
 #[test]
 fn constructor_operands_execute_identity_failures_and_discarded_results() {
-    let Some(rustc) = native_object_execution::real_rustc() else {
-        return;
-    };
+    let rustc = native_object_execution::rustc_path();
     let ctx = Context::create();
     let backend = make_constructor_backend(&ctx);
     for (name, constructor, bound) in [
@@ -2213,9 +2211,7 @@ fn adopted_call_loop() -> TirFunction {
 
 #[test]
 fn borrowed_operand_consumers_execute_custody_identity_and_failures() {
-    let Some(rustc) = native_object_execution::real_rustc() else {
-        return;
-    };
+    let rustc = native_object_execution::rustc_path();
     let ctx = Context::create();
     let mut backend = make_backend(&ctx);
     for symbol in [

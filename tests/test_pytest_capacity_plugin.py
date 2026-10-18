@@ -5,10 +5,11 @@ from __future__ import annotations
 import os
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
-from molt import host_capacity
+from molt import host_capacity, pytest_capacity_plugin
 from tests.process_guard_common import run_guarded_test_process
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -77,7 +78,7 @@ def test_auto_workers_fill_the_slice_their_parent_exported(tmp_path: Path) -> No
     # 1 GiB workers fit a 3 GiB share; subtracting the reserve again gave two.
     if host_capacity.cpu_count() < 3:
         pytest.skip("needs three CPUs for the memory term to bind")
-    if (host_capacity.memory_bytes()[1] or 0) < 3 * 1024**3:
+    if (host_capacity.memory_capacity().bounded_bytes[1] or 0) < 3 * 1024**3:
         pytest.skip("needs 3 GiB of live memory")
     env = dict(os.environ, **{host_capacity.MEMORY_SLICE_ENV: str(3 * 1024**3)})
     assert _workers(tmp_path, "--molt-worker-memory-gb=1", env=env) == 3
@@ -86,6 +87,34 @@ def test_auto_workers_fill_the_slice_their_parent_exported(tmp_path: Path) -> No
 def test_xdists_explicit_count_still_wins(tmp_path: Path) -> None:
     env = dict(os.environ, PYTEST_XDIST_AUTO_NUM_WORKERS="3")
     assert _workers(tmp_path, "--molt-worker-memory-gb=1000000", env=env) == 3
+
+
+@pytest.mark.parametrize(("available", "expected"), [(40, 3), (2, 2), (None, 3)])
+def test_auto_worker_sizing_uses_one_snapshot_and_its_delegated_headroom(
+    monkeypatch, available, expected
+):
+    gib = 1024**3
+    probes = []
+
+    def observe():
+        probes.append(None)
+        assert len(probes) == 1
+        return 64 * gib, None if available is None else available * gib
+
+    monkeypatch.delenv("PYTEST_XDIST_AUTO_NUM_WORKERS", raising=False)
+    monkeypatch.setenv(host_capacity.MEMORY_SLICE_ENV, str(3 * gib))
+    monkeypatch.setattr(host_capacity, "_probe_memory_bytes", observe)
+    monkeypatch.setattr(host_capacity, "cpu_count", lambda: 8)
+    config = SimpleNamespace(getoption=lambda name: 1.0)
+    assert pytest_capacity_plugin.pytest_xdist_auto_num_workers(config) == expected
+    assert len(probes) == 1
+
+
+@pytest.mark.parametrize("unit", [0, -1, float("nan"), float("inf"), 1e-100, 1e308])
+def test_worker_memory_unit_requires_a_positive_finite_byte_count(unit):
+    config = SimpleNamespace(getoption=lambda name: unit)
+    with pytest.raises(pytest.UsageError, match="--molt-worker-memory-gb"):
+        pytest_capacity_plugin._worker_bytes(config)
 
 
 @pytest.mark.parametrize(

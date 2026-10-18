@@ -43,26 +43,68 @@ extern "C" fn bridge_exception_pending() -> i32 {
     crate::with_gil_entry_nopanic!(_py, { if exception_pending(_py) { 1 } else { 0 } })
 }
 
-/// Observe the raised slot by class inheritance without taking or replacing it.
-/// A name that resolves to no builtin exception class matches nothing.
-extern "C" fn bridge_pending_exception_matches_builtin(
-    name_ptr: *const u8,
-    name_len: usize,
-) -> i32 {
+extern "C" fn bridge_replace_exception(
+    type_ptr: *const u8,
+    type_len: usize,
+    msg_ptr: *const u8,
+    msg_len: usize,
+) -> u64 {
     crate::with_gil_entry_nopanic!(py, {
-        let name = unsafe {
-            std::str::from_utf8_unchecked(std::slice::from_raw_parts(name_ptr, name_len))
+        let kind = unsafe {
+            std::str::from_utf8_unchecked(std::slice::from_raw_parts(type_ptr, type_len))
         };
-        let target = crate::builtins::exceptions::exception_type_bits_from_name(py, name);
-        i32::from(
-            target != 0 && crate::builtins::exceptions::pending_exception_matches_type(py, target),
-        )
+        let message =
+            unsafe { std::str::from_utf8_unchecked(std::slice::from_raw_parts(msg_ptr, msg_len)) };
+        crate::builtins::exceptions::with_saved_raised_exception(py, || {
+            raise_exception::<()>(py, kind, message);
+            false
+        });
+        MoltObject::none().bits()
     })
 }
 
-extern "C" fn bridge_clear_exception() {
+extern "C" fn bridge_decode_ascii_input(bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(py, {
-        clear_exception(py);
+        let Some(ptr) = obj_from_bits(bits).as_ptr() else {
+            return MoltObject::none().bits();
+        };
+        let text = unsafe { std::slice::from_raw_parts(string_bytes(ptr), string_len(ptr)) };
+        match crate::object::ops_encoding::encode_string_with_errors(text, "ascii", Some("strict"))
+        {
+            Ok(encoded) => {
+                let ptr = alloc_bytes(py, &encoded);
+                if ptr.is_null() {
+                    MoltObject::none().bits()
+                } else {
+                    MoltObject::from_ptr(ptr).bits()
+                }
+            }
+            Err(error) => {
+                error.raise::<()>(py, bits);
+                use crate::builtins::exceptions::{
+                    ExceptionStackScope, ExceptionValue, exception_context_set,
+                    exception_type_bits_from_name, molt_exception_last_pending,
+                    pending_exception_matches_type, with_saved_raised_exception,
+                };
+                let target = exception_type_bits_from_name(py, "UnicodeEncodeError");
+                if target == 0 || !pending_exception_matches_type(py, target) {
+                    return MoltObject::none().bits();
+                }
+                let pending = ExceptionValue::adopt(py, molt_exception_last_pending());
+                with_saved_raised_exception(py, || {
+                    let handler = ExceptionStackScope::push(py);
+                    exception_context_set(py, pending.bits());
+                    raise_exception::<()>(
+                        py,
+                        "ValueError",
+                        "string argument should contain only ASCII characters",
+                    );
+                    molt_cpython_abi::api::errors::with_preserved_error(|| drop(handler));
+                    false
+                });
+                MoltObject::none().bits()
+            }
+        }
     })
 }
 
@@ -849,10 +891,11 @@ static RUNTIME_VTABLE: RuntimeVtable = RuntimeVtable {
     },
     runtime_state_get_or_init: bridge_runtime_state_get_or_init,
     raise_exception: bridge_raise_exception,
+    replace_exception: bridge_replace_exception,
     exception_pending: bridge_exception_pending,
     exception_new_from_class: crate::builtins::exceptions::molt_exception_new_from_class,
-    pending_exception_matches_builtin: bridge_pending_exception_matches_builtin,
-    clear_exception: bridge_clear_exception,
+    decode_ascii_input: bridge_decode_ascii_input,
+    binascii_exception_type: crate::builtins::exceptions::binascii_exception_type,
     alloc_tuple: bridge_alloc_tuple,
     alloc_list: bridge_alloc_list,
     alloc_string: bridge_alloc_string,
@@ -928,170 +971,5 @@ pub extern "C" fn __molt_serial_get_vtable() -> *const RuntimeVtable {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::bridge_intern_static_name;
-    use crate::{clear_exception, exception_pending, runtime_state};
-    use std::sync::atomic::Ordering;
-
-    #[test]
-    #[cfg(feature = "stdlib_csv")]
-    fn csv_domain_errors_use_supplied_class_and_borrow_constructor_arguments() {
-        let _guard = crate::test_support::RuntimeTestTransaction::new();
-        crate::with_gil_entry_nopanic!(py, {
-            use crate::builtins::exceptions::{ExceptionValue, exception_type_bits_from_name};
-            let class = exception_type_bits_from_name(py, "RuntimeError");
-            let message_ptr = crate::alloc_string(py, b"csv owned message");
-            assert!(!message_ptr.is_null());
-            let message =
-                ExceptionValue::adopt(py, crate::MoltObject::from_ptr(message_ptr).bits());
-            let tuple_ptr = crate::alloc_tuple(py, &[message.bits()]);
-            assert!(!tuple_ptr.is_null());
-            let tuple = ExceptionValue::adopt(py, crate::MoltObject::from_ptr(tuple_ptr).bits());
-            let refs = unsafe { (*crate::header_from_obj_ptr(tuple_ptr)).ref_count_snapshot() };
-            {
-                let exception = ExceptionValue::adopt(py, unsafe {
-                    (super::RUNTIME_VTABLE.exception_new_from_class)(class, tuple.bits())
-                });
-                assert!(!crate::exception_pending(py));
-                assert_eq!(crate::type_of_bits(py, exception.bits()), class);
-                assert!(
-                    unsafe { (*crate::header_from_obj_ptr(tuple_ptr)).ref_count_snapshot() } > refs
-                );
-            }
-            assert_eq!(
-                unsafe { (*crate::header_from_obj_ptr(tuple_ptr)).ref_count_snapshot() },
-                refs
-            );
-            let missing_ptr = crate::alloc_string(py, b"molt_missing_csv_domain_test");
-            assert!(!missing_ptr.is_null());
-            let missing =
-                ExceptionValue::adopt(py, crate::MoltObject::from_ptr(missing_ptr).bits());
-            let result = molt_runtime_serial::csv::molt_csv_get_dialect(missing.bits(), class);
-            assert_eq!(result, crate::MoltObject::none().bits());
-            assert!(crate::exception_pending(py));
-            let raised = crate::builtins::exceptions::thread_last_exception_bits_noinc(py).unwrap();
-            assert_eq!(crate::type_of_bits(py, raised), class);
-            crate::clear_exception(py);
-        });
-    }
-
-    #[test]
-    fn serial_bridge_interns_protocol_names_in_runtime_state() {
-        let _guard = crate::test_support::RuntimeTestTransaction::new();
-        crate::with_gil_entry_nopanic!(_py, {
-            clear_exception(_py);
-            let key = b"__abs__";
-            let bits = bridge_intern_static_name(key.as_ptr(), key.len());
-            assert!(!exception_pending(_py));
-            assert_eq!(
-                runtime_state(_py).interned.abs_name.load(Ordering::Acquire),
-                bits
-            );
-        });
-    }
-
-    #[test]
-    fn serial_bridge_rejects_unknown_intern_name() {
-        let _guard = crate::test_support::RuntimeTestTransaction::new();
-        crate::with_gil_entry_nopanic!(_py, {
-            clear_exception(_py);
-            let key = b"__molt_unknown__";
-            let _ = bridge_intern_static_name(key.as_ptr(), key.len());
-            assert!(exception_pending(_py));
-            clear_exception(_py);
-        });
-    }
-
-    #[test]
-    fn serial_identity_returns_keep_independent_owners() {
-        use crate::*;
-        use molt_runtime_serial::{configparser, csv};
-
-        let _transaction = crate::test_support::RuntimeTestTransaction::new();
-        crate::concurrency::gil::with_gil(|py| {
-            let py = &py;
-            // Keep the child independently owned so final container retirement
-            // can be observed without reading a freed container header.
-            let child = alloc_list(py, &[]);
-            assert!(!child.is_null());
-            let child_bits = MoltObject::from_ptr(child).bits();
-            let child_refs = unsafe { (*header_from_obj_ptr(child)).ref_count_snapshot() };
-            for tuple in [false, true] {
-                for release_input_first in [false, true] {
-                    let row = if tuple {
-                        alloc_tuple(py, &[child_bits])
-                    } else {
-                        alloc_list(py, &[child_bits])
-                    };
-                    assert!(!row.is_null());
-                    let bits = MoltObject::from_ptr(row).bits();
-                    let before = unsafe { (*header_from_obj_ptr(row)).ref_count_snapshot() };
-                    let result = csv::molt_csv_normalize_row(bits);
-                    assert!(!exception_pending(py));
-                    assert_eq!(result, bits);
-                    assert_eq!(
-                        unsafe { (*header_from_obj_ptr(row)).ref_count_snapshot() },
-                        before + 1,
-                    );
-                    let (first, survivor) = if release_input_first {
-                        (bits, result)
-                    } else {
-                        (result, bits)
-                    };
-                    dec_ref_bits(py, first);
-                    assert_eq!(
-                        unsafe { (*header_from_obj_ptr(row)).ref_count_snapshot() },
-                        before,
-                    );
-                    dec_ref_bits(py, survivor);
-                    assert_eq!(
-                        unsafe { (*header_from_obj_ptr(child)).ref_count_snapshot() },
-                        child_refs,
-                    );
-                }
-            }
-            let none = MoltObject::none().bits();
-            assert_eq!(
-                csv::molt_csv_normalize_row(MoltObject::from_int(7).bits()),
-                none
-            );
-            assert!(!exception_pending(py));
-            let handle = configparser::molt_configparser_new(none, none);
-            assert!(!exception_pending(py));
-            let section = alloc_string(py, b"missing-section");
-            let option = alloc_string(py, b"missing-option");
-            assert!(!section.is_null() && !option.is_null());
-            let section = MoltObject::from_ptr(section).bits();
-            let option = MoltObject::from_ptr(option).bits();
-            let getters: [extern "C" fn(u64, u64, u64, u64) -> u64; 4] = [
-                configparser::molt_configparser_get,
-                configparser::molt_configparser_getint,
-                configparser::molt_configparser_getfloat,
-                configparser::molt_configparser_getboolean,
-            ];
-            for get in getters {
-                let result = get(handle, section, option, child_bits);
-                assert!(!exception_pending(py));
-                assert_eq!(result, child_bits);
-                assert_eq!(
-                    unsafe { (*header_from_obj_ptr(child)).ref_count_snapshot() },
-                    child_refs + 1,
-                );
-                dec_ref_bits(py, result);
-                assert_eq!(
-                    unsafe { (*header_from_obj_ptr(child)).ref_count_snapshot() },
-                    child_refs,
-                );
-                let missing = get(handle, section, option, none);
-                assert!(exception_pending(py));
-                clear_exception(py);
-                dec_ref_bits(py, missing);
-            }
-            configparser::molt_configparser_drop(handle);
-            dec_ref_bits(py, handle);
-            dec_ref_bits(py, section);
-            dec_ref_bits(py, option);
-            dec_ref_bits(py, child_bits);
-        });
-    }
-}
+#[path = "serial_bridge_tests.rs"]
+mod tests;

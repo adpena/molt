@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import json
 import hashlib
+import errno
 import os
 import runpy
+import struct
 import sys
 import threading
 import time
@@ -11,7 +13,10 @@ from pathlib import Path
 
 import pytest
 
-from tests.process_guard_common import install_module_view, run_custody_subject_process
+from tests.process_guard_common import (
+    install_module_view,
+    run_custody_subject_process,
+)
 
 from tools.proof_queue_pkg import (
     execution_custody,
@@ -1020,14 +1025,8 @@ def test_source_watch_records_create_execute_delete_transient(
     )
 
 
-def test_linux_root_watch_is_installed_before_recursive_enumeration(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    root = tmp_path / "root"
-    root.mkdir()
-    monitor = execution_custody.LiveCustodyMonitor(
-        [execution_custody.WatchSpec(root, None)]
-    )
+def _install_linux_inotify(monkeypatch, *, denied=(), read_next=None):
+    """Observe real path selection at the existing native inotify boundary."""
     add_calls: list[Path] = []
 
     class FakeFunction:
@@ -1042,20 +1041,27 @@ def test_linux_root_watch_is_installed_before_recursive_enumeration(
 
         @staticmethod
         def _add(_fd, raw_path, _mask):
-            add_calls.append(Path(os.fsdecode(raw_path)))
+            path = Path(os.fsdecode(raw_path))
+            add_calls.append(path)
+            if path in denied:
+                return -1
             return len(add_calls)
 
         inotify_add_watch = FakeFunction(_add)
 
-    original_rglob = Path.rglob
+    def read(_fd, _length):
+        if read_next is not None:
+            return read_next()
+        raise BlockingIOError()
 
-    def asserting_rglob(path: Path, pattern: str):
-        assert path == root
-        assert add_calls == [root]
-        return original_rglob(path, pattern)
-
-    monkeypatch.setattr(execution_custody.ctypes, "CDLL", lambda *_a, **_k: FakeLibc())
-    monkeypatch.setattr(Path, "rglob", asserting_rglob)
+    install_module_view(
+        monkeypatch,
+        "ctypes",
+        execution_custody.ctypes,
+        execution_custody,
+        CDLL=lambda *_a, **_k: FakeLibc(),
+        get_errno=lambda: errno.EACCES,
+    )
     install_module_view(
         monkeypatch,
         "os",
@@ -1063,14 +1069,174 @@ def test_linux_root_watch_is_installed_before_recursive_enumeration(
         execution_custody,
         O_NONBLOCK=0x800,
         O_CLOEXEC=0x80000,
-        read=lambda *_a, **_k: (_ for _ in ()).throw(BlockingIOError()),
+        read=read,
     )
+    return add_calls
+
+
+def test_linux_root_watch_is_installed_before_recursive_enumeration(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = tmp_path / "root"
+    root.mkdir()
+    monitor = execution_custody.LiveCustodyMonitor(
+        [execution_custody.WatchSpec(root, None)]
+    )
+    add_calls = _install_linux_inotify(monkeypatch)
+    original_rglob = Path.rglob
+
+    def asserting_rglob(path: Path, pattern: str):
+        assert path == root
+        assert add_calls == [root]
+        return original_rglob(path, pattern)
+
+    monkeypatch.setattr(Path, "rglob", asserting_rglob)
     monitor._stop.set()
 
     monitor._run_linux()
 
     assert add_calls == [root]
     assert monitor._ready.is_set()
+    assert monitor._errors == []
+
+
+@pytest.mark.parametrize("nested", [False, True])
+def test_linux_finite_watch_visits_only_selected_ancestors(
+    tmp_path: Path, nested: bool
+) -> None:
+    root = tmp_path / "system-lib"
+    parent = root / "selected" / "nested" if nested else root
+    parent.mkdir(parents=True)
+    selected = parent / "input.py"
+    selected.write_bytes(b"selected input")
+    unrelated = root / "ssl"
+    private = unrelated / "private"
+    private.mkdir(parents=True)
+    (private / "unrelated-secret").write_bytes(b"not a proof input")
+    # Observe traversal through every filesystem API, including pathlib and
+    # os.walk, in a disposable process. A module view would miss those APIs'
+    # internal scandir calls; a process-wide patch would affect pytest custody.
+    script = """
+import json
+import os
+import sys
+from pathlib import Path
+import pytest
+from tests.tools.test_proof_queue_execution_custody_p0 import _install_linux_inotify
+from tools.proof_queue_pkg import execution_custody
+
+root, selected, private = map(Path, sys.argv[1:])
+monitor = execution_custody.LiveCustodyMonitor([
+    execution_custody.WatchSpec(
+        root, frozenset({execution_custody._event_key(selected)})
+    )
+])
+scanned = []
+real_scandir = os.scandir
+def observe_scandir(path):
+    scanned.append(str(path))
+    return real_scandir(path)
+
+with pytest.MonkeyPatch.context() as patch:
+    add_calls = _install_linux_inotify(patch, denied=(private,))
+    os.scandir = observe_scandir
+    try:
+        # Independent controls prove indirect traversal reaches the observer.
+        for traversal in (lambda: private.rglob("*"), lambda: os.walk(private)):
+            list(traversal())
+            assert str(private) in scanned
+            scanned.clear()
+        monitor._stop.set()
+        monitor._run_linux()
+    finally:
+        os.scandir = real_scandir
+print(json.dumps({
+    "errors": monitor._errors,
+    "added": [str(path) for path in add_calls],
+    "scanned": scanned,
+}))
+"""
+    result = run_custody_subject_process(
+        [sys.executable, "-B", "-c", script, str(root), str(selected), str(private)],
+        check=True,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        timeout=20,
+    )
+    observed = json.loads(result.stdout)
+    assert observed["errors"] == []
+    expected = {root, root / "selected", parent} if nested else {root}
+    assert set(map(Path, observed["added"])) == expected
+    assert len(observed["added"]) == len(expected)
+    assert not any(Path(path).is_relative_to(unrelated) for path in observed["scanned"])
+
+
+@pytest.mark.parametrize("action", [0x00000100, 0x00000080], ids=["create", "move-in"])
+def test_linux_finite_watch_extends_only_for_selected_ancestor(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, action: int
+) -> None:
+    root = tmp_path / "root"
+    root.mkdir()
+    selected = root / "owned" / "input.py"
+    monitor = execution_custody.LiveCustodyMonitor(
+        [
+            execution_custody.WatchSpec(
+                root, frozenset({execution_custody._event_key(selected)})
+            )
+        ]
+    )
+    delivered = False
+
+    def read_next():
+        nonlocal delivered
+        if delivered:
+            raise BlockingIOError()
+        delivered = True
+        payload = []
+        for name in ("unowned", "owned"):
+            (root / name).mkdir()
+            encoded = os.fsencode(name) + b"\0"
+            payload.append(
+                struct.pack("iIII", 1, 0x40000000 | action, 0, len(encoded)) + encoded
+            )
+        return b"".join(payload)
+
+    add_calls = _install_linux_inotify(
+        monkeypatch, denied=(root / "unowned",), read_next=read_next
+    )
+    monitor._stop.set()
+
+    monitor._run_linux()
+
+    assert monitor._errors == []
+    assert add_calls == [root, root / "owned"]
+    assert [Path(event["path"]) for event in monitor._events] == [root / "owned"]
+
+
+@pytest.mark.parametrize("finite", [False, True], ids=["broad-root", "finite-ancestor"])
+def test_linux_required_watch_permission_error_remains_fatal(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, finite: bool
+) -> None:
+    root = tmp_path / "root"
+    required = root / "required" if finite else root
+    required.mkdir(parents=True)
+    selected = required / "input.py"
+    selected.write_bytes(b"required input")
+    paths = frozenset({execution_custody._event_key(selected)}) if finite else None
+    monitor = execution_custody.LiveCustodyMonitor(
+        [execution_custody.WatchSpec(root, paths)]
+    )
+    add_calls = _install_linux_inotify(monkeypatch, denied=(required,))
+    monitor._stop.set()
+
+    monitor._run_linux()
+
+    assert required in add_calls
+    assert monitor._ready.is_set()
+    assert len(monitor._errors) == 1
+    assert "PermissionError" in monitor._errors[0]
+    assert str(required) in monitor._errors[0]
 
 
 @pytest.mark.skipif(os.name == "nt", reason="POSIX native interpreter alias execution")

@@ -100,7 +100,8 @@ The only change is that the backend factory should instantiate
 1. **Upload artifacts to R2:**
    ```bash
    # Compile WASM module
-   molt build src/molt/stdlib/tinygrad/wasm_driver.py --target wasm
+   # Run from the Molt repository root to retain the driver's package imports.
+   molt build --module demos.tinygrad.wasm_driver --target wasm
 
    # Upload to R2 (via wrangler or dashboard)
    wrangler r2 object put falcon-ocr-weights/models/falcon-ocr/falcon-ocr.wasm --file falcon-ocr.wasm

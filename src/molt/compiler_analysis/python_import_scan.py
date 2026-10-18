@@ -1922,6 +1922,32 @@ def _static_module_all_exports(
     target_python: TargetPythonVersion,
     ast_digest_admission: _PythonAstDigestAdmission | None = None,
 ) -> SourceAllExports:
+    """One module export fact per admitted AST, target and namespace premise.
+
+    Body-owner and argument projections share this module-level fact. Its
+    storage belongs to the read-only source generation, never a global cache.
+    """
+    admission = _PythonAstDigestAdmission.for_tree(tree, ast_digest_admission)
+    context = (target_python, namespace_premise)
+    cached = admission.module_all_exports.get(context)
+    if cached is None:
+        cached = _compute_static_module_all_exports(
+            tree,
+            target_python=target_python,
+            namespace_premise=namespace_premise,
+            ast_digest_admission=admission,
+        )
+        admission.module_all_exports[context] = cached
+    return cached
+
+
+def _compute_static_module_all_exports(
+    tree: ast.AST,
+    *,
+    namespace_premise: PythonNamespacePremise | None,
+    target_python: TargetPythonVersion,
+    ast_digest_admission: _PythonAstDigestAdmission,
+) -> SourceAllExports:
     """Prove a literal export set only while its source owner stays sealed.
 
     The existing binding authority decides whether executed code can observe

@@ -75,7 +75,9 @@ def _resolve_frontend_parallel_worker_resources() -> _FrontendWorkerResourceDeci
         requested_workers = parsed
         selection_source = "environment_explicit"
     cpu_count = host_capacity.cpu_count()
-    total_memory_bytes, available_memory_bytes = host_capacity.memory_bytes()
+    total_memory_bytes, available_memory_bytes = (
+        host_capacity.memory_capacity().bounded_bytes
+    )
     memory_ceiling = host_capacity.worker_count_from_samples(
         bytes_per_worker=_FRONTEND_WORKER_MEMORY_BYTES,
         headroom_bytes=_FRONTEND_WORKER_MEMORY_HEADROOM_BYTES,

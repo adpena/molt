@@ -1138,7 +1138,7 @@ _REGISTRY_JSON = r"""{
     {
       "audience": "internal",
       "default": "",
-      "kind": "int",
+      "kind": "float",
       "name": "MOLT_BACKEND_MAX_PROCESS_RSS_GB",
       "output_neutral": true,
       "owner": "runtime/molt-backend/src/backend_process/memory_guard.rs",
@@ -1152,7 +1152,7 @@ _REGISTRY_JSON = r"""{
       "name": "MOLT_BACKEND_MEMORY_AVAILABLE_GB",
       "output_neutral": true,
       "owner": "runtime/molt-passes/src/memory_budget.rs",
-      "summary": "The memory guard sets it to the child's memory ceiling in GB (non-negative finite float); molt-backend and the TIR pipeline subtract MOLT_BACKEND_MEMORY_RESERVE_GB from it to size the in-memory TIR cache and the optimisation resource plan, reading MOLT_CLI_MEMORY_AVAILABLE_GB, MOLT_CLI_MEM_AVAILABLE_GB, MOLT_MEMORY_AVAILABLE_GB, and MOLT_MEM_AVAILABLE_GB as fallbacks when it is unset.",
+      "summary": "Raw available host memory override in GB (non-negative finite float); the backend subtracts MOLT_BACKEND_MEMORY_RESERVE_GB, then intersects the result with MOLT_BACKEND_MAX_PROCESS_RSS_GB to size TIR caches and optimisation work. Unset reads MOLT_CLI_MEMORY_AVAILABLE_GB then MOLT_MEMORY_AVAILABLE_GB; guards export only the separately admitted process cap, whose reserve is already deducted.",
       "values": []
     },
     {
@@ -4376,7 +4376,7 @@ _REGISTRY_JSON = r"""{
       "name": "MOLT_HOST_MEMORY_SLICE_BYTES",
       "output_neutral": true,
       "owner": "src/molt/host_capacity.py",
-      "summary": "The memory, in bytes, a parent lets this process tree use: tools/memory_guard.py exports the total tree RSS cap it enforces (a nested guard only narrows it), and molt.host_capacity.memory_bytes() bounds total and available memory by it, so pytest-xdist workers, Cargo jobs and frontend workers inside a guarded run size against the enforced cap.",
+      "summary": "The memory, in bytes, a parent lets this process tree use: tools/memory_guard.py exports the total tree RSS cap it enforces (a nested guard only narrows it), and molt.host_capacity.memory_capacity() keeps it separate from raw host/cgroup total and live availability. Its bounded scheduling view sizes pytest-xdist workers, Cargo jobs and frontend workers against the cap; nested guard admission intersects it with current host pressure without reserving host headroom or allocating the root share again.",
       "values": []
     },
     {

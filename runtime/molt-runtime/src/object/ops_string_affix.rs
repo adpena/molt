@@ -37,12 +37,7 @@ fn string_strip_impl(
             };
             let chars_bytes =
                 std::slice::from_raw_parts(string_bytes(chars_ptr), string_len(chars_ptr));
-            Some(
-                wtf8_from_bytes(chars_bytes)
-                    .code_points()
-                    .map(|code| code.to_u32())
-                    .collect(),
-            )
+            Some(molt_runtime_core::text_storage::code_points(chars_bytes).collect())
         };
         let contains = |code| match &strip_chars {
             Some(chars) => chars.contains(&code),

@@ -927,12 +927,12 @@ def apply_provisioned_wasm_toolchain(
     env: MutableMapping[str, str],
     *,
     installation: WasiSdkInstallation | None = None,
-    rust_target: str = "wasm32-wasip1",
+    rust_target: str | None = None,
 ) -> tuple[str, ...]:
     """Project one selected SDK; refuse conflicting C-runtime/tool selectors.
 
-    Missing installation is a readiness result. Execution callers must require
-    the complete C ABI plan before compiling or linking.
+    Missing installation is a readiness result. Rust C-ABI consumers select
+    their target explicitly; generic setup does not select a Rust link mode.
     """
     installation = installation or selected_wasi_sdk_installation(root, environ=env)
     if installation is None:
@@ -1151,6 +1151,25 @@ def tablegen_prefix_env_var(major: int) -> str:
     """Return the environment authority consumed by ``tblgen``."""
 
     return f"TABLEGEN_{major * 10}_PREFIX"
+
+
+_LLVM_TOOLCHAIN_PREFIX_ENVIRONMENT_NAME = re.compile(
+    r"(?:LLVM_SYS_[1-9][0-9]+|(?:MLIR_SYS|TABLEGEN)_[1-9][0-9]*0)_PREFIX"
+)
+
+
+def llvm_toolchain_environment_name(name: str) -> bool:
+    """Recognize SDK selectors, including the binding crates' versioned names.
+
+    LLVM encodes major/minor in its binding prefix; MLIR and TableGen encode
+    the major followed by zero. Keep that closed grammar alongside the naming
+    constructors so development capture and reuse preserve future SDK pins.
+    Names are case-sensitive; callers with case-insensitive environments must
+    normalize them before using this predicate.
+    """
+    return name in {"MOLT_LLVM_PREFIX", "LLVM_CONFIG_PATH"} or (
+        _LLVM_TOOLCHAIN_PREFIX_ENVIRONMENT_NAME.fullmatch(name) is not None
+    )
 
 
 def managed_llvm_prefix(
@@ -2770,17 +2789,18 @@ def project_wasm_toolchain_environment(
     installation: WasiSdkInstallation,
     *,
     environ: Mapping[str, str] | None = None,
-    rust_target: str = "wasm32-wasip1",
+    rust_target: str | None = None,
 ) -> dict[str, str]:
     """Project one admitted SDK to every shared WASM resolver.
 
     Local builds, CI, and the proof queue all select WebAssembly tools through
     this projection. Tools execute in place with their adjacent resources and
-    libraries intact. Only WASM selectors change; native PATH and compiler
-    policy remain intact.
+    libraries intact. Rust linker and C-runtime flags require an explicit target;
+    tool availability alone must not change an unrelated Rust command's ABI.
+    Native PATH and compiler policy remain intact.
     """
 
-    if rust_target not in SDK_CARGO_TARGETS:
+    if rust_target is not None and rust_target not in SDK_CARGO_TARGETS:
         raise LlvmToolchainConfigError(
             "WASI C-runtime projection requires a supported explicit Rust target"
         )
@@ -2793,12 +2813,13 @@ def project_wasm_toolchain_environment(
     result["MOLT_LLVM_NM"] = str(installation.llvm_nm)
     plan = wasi_c_abi_plan(installation)
     result[WASI_C_ABI_PLAN_ENV] = plan.encode()
-    # The Rust target defaults to a different bundled libc/CRT. Explicit
-    # external-libc mode keeps the raw linker on the selected SDK C runtime.
-    cargo_target = rust_target.upper().replace("-", "_")
-    result[f"CARGO_TARGET_{cargo_target}_LINKER"] = str(installation.wasm_ld)
-    key = f"CARGO_TARGET_{cargo_target}_RUSTFLAGS"
-    result[key] = shlex.join(plan.rustflags(shlex.split(result.get(key, ""))))
+    if rust_target is not None:
+        # An explicit C-ABI consumer replaces Rust's bundled libc/CRT with
+        # the selected SDK; pure Rust commands retain their own startup.
+        cargo_target = rust_target.upper().replace("-", "_")
+        result[f"CARGO_TARGET_{cargo_target}_LINKER"] = str(installation.wasm_ld)
+        key = f"CARGO_TARGET_{cargo_target}_RUSTFLAGS"
+        result[key] = shlex.join(plan.rustflags(shlex.split(result.get(key, ""))))
     for target in SDK_CARGO_TARGETS:
         for spelling in (target, target.replace("-", "_")):
             for role, name in SDK_CARGO_TOOLS:
@@ -2947,7 +2968,7 @@ def wasm_toolchain_environment_delta(
     installation: WasiSdkInstallation,
     *,
     environ: Mapping[str, str],
-    rust_target: str = "wasm32-wasip1",
+    rust_target: str | None = None,
 ) -> dict[str, str]:
     """The variables the WASM projection sets, at their projected values."""
 
@@ -3009,8 +3030,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--wasi-rust-target",
         choices=SDK_CARGO_TARGETS,
-        default="wasm32-wasip1",
-        help="Rust target receiving the verified SDK C-runtime environment; unknown explicitly selects its C provider.",
+        default=None,
+        help="Explicitly select the Rust target receiving the SDK C-runtime linker and flags; default exports tools and ABI receipt only.",
     )
     args = parser.parse_args(argv)
 

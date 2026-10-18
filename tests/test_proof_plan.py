@@ -374,6 +374,107 @@ def test_generated_local_dx_projection_has_stable_command_ids() -> None:
     assert "pytest_workers" not in local
 
 
+def test_local_change_gates_use_one_captured_integration_upstream() -> None:
+    upstream = "{integration_upstream_commit}"
+    expected = {
+        f"python tools/check_rustfmt.py --changed --base {upstream}",
+        f"python tools/check_commit_attribution.py --range {upstream}..HEAD",
+        f"python tools/check_changed_clippy.py --base {upstream}",
+    }
+    commands = {
+        command
+        for command, _tools in proof_plan.local_gate_commands(
+            {"always": PLAN.always, "rule": PLAN.local_rules},
+            memory_units=proof_plan.PytestMemoryUnits(c.data for c in PLAN.commands),
+        ).values()
+    }
+    assert expected <= commands
+    assert not any("origin/main" in command for command in commands)
+    projection = json.loads(gen_proof_plan._json_projection(PLAN))["local"]["commands"]
+    assert expected <= set(projection.values())
+
+
+def test_local_gate_binding_keeps_raw_prerequisite_and_projection_identity() -> None:
+    from tools import molt_dev
+
+    upstream = "a" * 40
+    raw = "echo {integration_upstream_commit}..HEAD"
+    cfg = molt_dev.GateConfig.parse(
+        "always = " + json.dumps([raw]) + "\n", "selected fixture"
+    )
+    commands, matched = cfg.select(["feature.rs"])
+    bound = proof_plan.bind_local_gate_command(
+        commands[0].command, upstream_commit=upstream
+    )
+    assert bound == f"echo {upstream}..HEAD"
+    assert [gate.command for gate in commands] == [raw]
+    assert cfg.prerequisites == {"local.always.0": (raw, ())}
+    assert cfg.admit(["feature.rs"], matched, [raw]) is None
+    with pytest.raises(
+        molt_dev.DriverError, match="lack declared prerequisite custody"
+    ):
+        cfg.admit(["feature.rs"], matched, [bound])
+    literal = ("python", "-m", "pytest", "tests/test_proof_plan.py")
+    assert (
+        proof_plan.bind_local_gate_command(literal, upstream_commit=upstream) is literal
+    )
+    assert (
+        proof_plan.bind_local_gate_command("echo origin/main", upstream_commit=upstream)
+        == "echo origin/main"
+    )
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "echo {integration_upstream_ref}",
+        "echo {other_upstream}",
+        "echo {proof_source_commit}",
+        "echo {integration_upstream_commit",
+        "echo {{integration_upstream_commit}}",
+        "echo --base={integration_upstream_commit}",
+        "echo prefix{integration_upstream_commit}",
+        "echo {integration_upstream_commit}..other",
+    ],
+)
+def test_local_gate_binding_has_a_closed_template_contract(command) -> None:
+    from tools import molt_dev
+
+    with pytest.raises(ValueError, match="placeholder"):
+        proof_plan.local_gate_commands(
+            {"always": [command]}, memory_units=proof_plan.PytestMemoryUnits(())
+        )
+    with pytest.raises(molt_dev.DriverError, match="placeholder"):
+        molt_dev.GateConfig.parse(
+            "always = " + json.dumps([command]), "invalid fixture"
+        )
+
+
+@pytest.mark.parametrize("scope", ["always", "rule"])
+def test_proof_plan_validation_rejects_unknown_local_bindings(scope) -> None:
+    command = "echo {integration_upstream_ref}"
+    plan = (
+        replace(PLAN, always=(command,))
+        if scope == "always"
+        else replace(
+            PLAN,
+            local_rules=(
+                {**PLAN.local_rules[0], "gates": [command]},
+                *PLAN.local_rules[1:],
+            ),
+        )
+    )
+    assert any("unknown local gate placeholder" in error for error in plan.validate())
+
+
+@pytest.mark.parametrize("upstream", ["origin/main", "HEAD", "a997561d", "A" * 40])
+def test_local_gate_binding_requires_a_canonical_full_commit(upstream) -> None:
+    with pytest.raises(ValueError, match="integration gate upstream must be lowercase"):
+        proof_plan.bind_local_gate_command(
+            "echo {integration_upstream_commit}", upstream_commit=upstream
+        )
+
+
 @pytest.mark.parametrize(
     "target,message",
     [
@@ -392,7 +493,9 @@ def test_local_pytest_targets_are_existing_test_paths(target, message) -> None:
 
 def test_local_pytest_targets_project_one_command_per_rule() -> None:
     rule = next(rule for rule in PLAN.local_rules if rule.get("pytest"))
-    commands = proof_plan.local_gate_commands({"rule": [rule]})
+    commands = proof_plan.local_gate_commands(
+        {"rule": [rule]}, memory_units=proof_plan.PytestMemoryUnits(())
+    )
     command, tools = commands[f"local.{rule['name']}.pytest"]
     assert shlex.split(command) == [
         "python",
@@ -401,6 +504,7 @@ def test_local_pytest_targets_project_one_command_per_rule() -> None:
         "-q",
         "-n",
         "auto",
+        "--molt-worker-memory-gb=2.5",
         *rule["pytest"],
     ]
     assert tools == tuple(rule["toolchains"])
@@ -428,7 +532,9 @@ def test_local_pytest_selections_name_one_selection_and_tests(entry, message) ->
 
 def test_local_pytest_selections_size_workers_per_host() -> None:
     rule = next(rule for rule in PLAN.local_rules if rule.get("pytest_select"))
-    commands = proof_plan.local_gate_commands({"rule": [rule]})
+    commands = proof_plan.local_gate_commands(
+        {"rule": [rule]}, memory_units=proof_plan.PytestMemoryUnits(())
+    )
     for index, entry in enumerate(rule["pytest_select"]):
         (key,) = set(entry) - {"targets"}
         command, tools = commands[f"local.{rule['name']}.pytest-select-{index}"]
@@ -439,11 +545,158 @@ def test_local_pytest_selections_size_workers_per_host() -> None:
             "-q",
             "-n",
             "auto",
+            "--molt-worker-memory-gb=2.5",
             f"-{key}",
             entry[key],
             *entry["targets"],
         ]
         assert tools == tuple(rule["toolchains"])
+
+
+def test_local_pytest_units_preserve_path_and_node_ownership_boundaries() -> None:
+    commands = [
+        {
+            "argv": [
+                "python",
+                "-m",
+                "pytest",
+                "--molt-worker-memory-gb=0.5",
+                "tests/light/",
+            ]
+        },
+        {
+            "argv": [
+                "python",
+                "-m",
+                "pytest",
+                "--molt-worker-memory-gb",
+                "0.75",
+                "tests/nodes.py",
+            ]
+        },
+        {
+            "argv": [
+                "python",
+                "-m",
+                "pytest",
+                "--molt-worker-memory-gb=6.25",
+                "tests/nodes.py::Case::test_heavy",
+            ]
+        },
+        {
+            "argv": [
+                "python",
+                "-m",
+                "pytest",
+                "--molt-worker-memory-gb=4",
+                "tests/nodes.py::test_special[x::y & 'quotes' {value} [nested]]",
+            ]
+        },
+        {
+            "argv": [
+                "python",
+                "-m",
+                "pytest",
+                "--molt-worker-memory-gb=1",
+                "tests/sibling.py",
+            ]
+        },
+        {
+            "argv": [
+                "python",
+                "-m",
+                "pytest",
+                "--molt-worker-memory-gb=0.5",
+                "tests/sibling.py",
+            ]
+        },
+        {
+            "argv": [
+                "python",
+                "-m",
+                "pytest",
+                "--molt-worker-memory-gb=0.5",
+                "tests/partial.py::test_one",
+            ]
+        },
+    ]
+    units = proof_plan.PytestMemoryUnits(iter(commands))
+    cases = [
+        (["tests/light/child.py::test_one"], 0.5),
+        (["tests/lightly/child.py"], 2.5),
+        (["tests/nodes.py::Case::test_heavy[param::with brackets[]]"], 6.25),
+        (["tests/nodes.py::Case::test_heavy_sibling"], 0.75),
+        (["tests/nodes.py::test_special[x::y & 'quotes' {value} [nested]]"], 4),
+        (["tests/nodes.py::test_special[another]"], 0.75),
+        (["tests/nodes.py"], 6.25),
+        (["tests/nodes.py::Case"], 6.25),
+        (["tests/sibling.py"], 1),
+        (["tests/sibling.py.extra"], 2.5),
+        (["tests/partial.py::test_one"], 0.5),
+        (["tests/partial.py"], 2.5),
+        (["tests/light/", "tests/unowned.py"], 2.5),
+        (["tests"], 6.25),
+    ]
+    # The index owns its derived observation; queries never rescan command argv.
+    commands.clear()
+    for targets, expected in cases:
+        assert units.memory_gb(iter(targets)) == expected
+
+
+def test_local_pytest_cohort_keeps_literal_selection_and_parameter_argv() -> None:
+    target = "tests/nodes.py::test_literal[x::y & 'quotes' {value} [nested]]"
+    units = proof_plan.PytestMemoryUnits(
+        [
+            {
+                "argv": [
+                    "python",
+                    "-m",
+                    "pytest",
+                    "--molt-worker-memory-gb=4",
+                    "tests/nodes.py",
+                ]
+            }
+        ]
+    )
+    argv = proof_plan.local_pytest_argv(
+        iter([target]), ("-k", "literal or 'other'"), memory_units=units
+    )
+    assert argv == (
+        "python",
+        "-m",
+        "pytest",
+        "-q",
+        "-n",
+        "auto",
+        "--molt-worker-memory-gb=4.0",
+        "-k",
+        "literal or 'other'",
+        target,
+    )
+    projected = proof_plan.local_gate_commands(
+        {"rule": [{"name": "literal", "gates": [], "pytest": [target]}]},
+        memory_units=units,
+    )
+    assert shlex.split(projected["local.literal.pytest"][0])[-1] == target
+    assert proof_plan.bind_local_gate_command(argv, upstream_commit="a" * 40) is argv
+
+
+def test_local_pytest_unit_projection_does_not_round_down_its_envelope() -> None:
+    units = proof_plan.PytestMemoryUnits(
+        [
+            {
+                "argv": [
+                    "python",
+                    "-m",
+                    "pytest",
+                    "--molt-worker-memory-gb=1.0000004",
+                    "tests/precise.py",
+                ]
+            }
+        ]
+    )
+    argv = proof_plan.local_pytest_argv(["tests/precise.py"], memory_units=units)
+    assert "--molt-worker-memory-gb=1.0000004" in argv
 
 
 @pytest.mark.parametrize(
@@ -509,6 +762,7 @@ def test_compiler_runtime_partition_preserves_disjoint_test_and_tool_ownership()
     commands = {command.id: command for command in PLAN.commands}
     core = commands["rust.test.ir-wasm-runtime-authorities"]
     complement = commands["rust.test.compiler-authorities"]
+    assert "memory_budget::" in core.argv[core.argv.index("--") + 1 :]
 
     def test_packages(command: proof_plan.ProofCommand) -> set[str]:
         argv = command.argv
@@ -518,12 +772,16 @@ def test_compiler_runtime_partition_preserves_disjoint_test_and_tool_ownership()
         "molt-passes",
         "molt-backend-wasm",
         "molt-runtime",
+        "molt-runtime-regex",
+        "molt-runtime-core",
+        "molt-stdlib-text",
         "molt-runtime-platform",
         "molt-gpu-runtime",
         "zlib-rs@0.6.8",
     }
     assert not test_packages(core) & test_packages(complement)
     assert core.dependencies == complement.dependencies == ()
+    assert {"regex::", "text_storage::"} <= set(core.argv[core.argv.index("--") + 1 :])
     assert set(core.toolchains) == {"rustc", "cargo", "node", "wasm-ld"}
     assert proof_plan.cargo_native_units(core.data) == {"target": ["c"]}
     assert "seq_snapshot_bridge::" in core.argv[core.argv.index("--") + 1 :]
@@ -986,6 +1244,60 @@ def test_native_receipt_contract_selects_existing_integration_batch(path: str) -
     assert command.data["timeout_budget"] == "cold"
 
 
+@pytest.mark.parametrize(
+    "changed",
+    [
+        "runtime/molt-runtime-core/src/text_storage.rs",
+        "tests/differential/basic/unicode_surrogate_handling.py",
+    ],
+)
+def test_shared_string_storage_exercises_both_real_backends(changed: str) -> None:
+    from tools import molt_dev
+
+    gates, _ = molt_dev.GateConfig.load(PLAN.path).select([changed])
+    differential = [
+        shlex.split(gate.command)
+        for gate in gates
+        if isinstance(gate.command, str)
+        and "tests/molt_diff.py" in shlex.split(gate.command)
+    ]
+    assert len(differential) == 1
+    argv = differential[0]
+    assert argv[argv.index("--target") + 1] == "native,wasm"
+    assert argv[argv.index("--build-profile") + 1] == "dev"
+    assert {
+        "tests/differential/basic/unicode_surrogate_handling.py",
+        "tests/differential/stdlib/re_bytes_admission.py",
+        "tests/differential/stdlib/codecs_error_handlers_basic.py",
+    } <= set(argv)
+
+
+@pytest.mark.parametrize(
+    "changed,consumer",
+    [
+        (
+            "src/molt/cli/backend_daemon_logs.py",
+            "tests/cli/test_cli_import_collection.py",
+        ),
+        ("tests/conftest.py", "tests/test_backend_daemon_suite_custody.py"),
+        ("tools/harness_memory_guard.py", "tests/test_backend_daemon_suite_custody.py"),
+    ],
+)
+def test_daemon_lifetime_and_diagnostics_select_their_consumers(
+    changed: str, consumer: str
+) -> None:
+    from tools import molt_dev
+
+    gates, _ = molt_dev.GateConfig.load(PLAN.path).select([changed])
+    assert any(
+        consumer
+        in (
+            shlex.split(gate.command) if isinstance(gate.command, str) else gate.command
+        )
+        for gate in gates
+    )
+
+
 def test_runtime_leaf_change_runs_rust_without_llvm_or_formal() -> None:
     classes = _classes("runtime/molt-stdlib-text/src/tokenize.rs")
     assert classes["rust"] is True
@@ -1001,9 +1313,10 @@ def test_docs_architecture_local_gate_uses_project_python() -> None:
     # The driver activates the project environment for every local gate. The
     # Markdown parser is a project dependency; this needs no per-gate wrapper.
     assert [
-        gate.split()
+        gate.command.split()
         for gate in gates
-        if "tools/check_docs_architecture.py" in gate.split()
+        if isinstance(gate.command, str)
+        and "tools/check_docs_architecture.py" in gate.command.split()
     ] == [
         [
             "python",
@@ -1030,7 +1343,7 @@ def test_maintained_object_sources_select_owning_and_actual_consumers(path):
     assert classes["llvm"] is False
     gates, matched = molt_dev.GateConfig.load(PLAN.path).select([path])
     rule = next(r for r in matched if r.name == "native-object-emission")
-    assert set(rule.gates) <= set(gates)
+    assert set(rule.gates) <= {gate.command for gate in gates}
     for argv in (
         next(c.argv for c in PLAN.commands if c.id == "rust.test.compiler-authorities"),
         tuple(rule.gates[0].split()),
@@ -1059,9 +1372,9 @@ def test_maintained_zlib_changes_prove_real_provider_and_consumer_custody(
     gates, matched = molt_dev.GateConfig.load(PLAN.path).select([path])
     rule = next(rule for rule in matched if rule.name == "maintained-zlib-counters")
     assert _classes(path)["rust"] is True
-    assert set(rule.gates) <= set(gates)
+    assert set(rule.gates) <= {gate.command for gate in gates}
     assert "tests/cli/test_runtime_source_closure.py" in rule.pytest
-    merged = next(gate for gate in gates if isinstance(gate, tuple))
+    merged = next(gate.command for gate in gates if isinstance(gate.command, tuple))
     assert "tests/cli/test_runtime_source_closure.py" in merged
     local = tuple(next(g for g in rule.gates if g.startswith("cargo test")).split())
     ci = next(
@@ -1689,7 +2002,11 @@ def test_wasm_backend_prewarm_admits_the_consumer_compiler(
     monkeypatch.setenv("MOLT_BACKEND_DAEMON", "1")
     for command in (prewarm, consumer):
         environment, _policies = proof_plan._command_environment(
-            PLAN, command, command.data["timeout_seconds"], memory_share=None
+            PLAN,
+            command,
+            command.data["timeout_seconds"],
+            environment=dict(os.environ),
+            memory_share=None,
         )
         assert {name: environment[name] for name in inherited} == inherited
         assert environment["RUSTC_WRAPPER"] == "/opt/cache/sccache"
@@ -1712,6 +2029,8 @@ def test_wasm_python_consumers_share_prebuild_entrypoint_and_wrapper_selection(
         "wasm.integration.host-exports.tinygrad-dtype",
         "wasm.integration.host-exports.tinygrad-tensor",
         "wasm.integration.host-exports.tensor-row-ops",
+        "wasm.integration.host-exports.gpu-bytes-ownership",
+        "wasm.integration.host-exports.falcon-driver",
         "wasm.test.freestanding-e2e",
         "wasm.test.finally-pending-observer-parity.native",
         "wasm.test.finally-pending-observer-parity.wasm",
@@ -1747,7 +2066,11 @@ def test_wasm_python_consumers_share_prebuild_entrypoint_and_wrapper_selection(
     monkeypatch.setenv("MOLT_BUILD_PYTHON", "/selected/build-python")
     for row in rows.values():
         environment, _policies = proof_plan._command_environment(
-            PLAN, row, row.data["timeout_seconds"], memory_share=None
+            PLAN,
+            row,
+            row.data["timeout_seconds"],
+            environment=dict(os.environ),
+            memory_share=None,
         )
         assert environment["RUSTC_WRAPPER"] == "/selected/sccache"
         assert environment["CARGO_INCREMENTAL"] == (
@@ -1772,6 +2095,14 @@ def test_wasm_host_export_applications_have_independent_cold_partitions() -> Non
         ),
         "wasm.integration.host-exports.tensor-row-ops": (
             "test_linked_host_export_tensor_row_ops_accept_equivalent_float_dtype",
+            set(),
+        ),
+        "wasm.integration.host-exports.gpu-bytes-ownership": (
+            "test_split_runtime_host_export_bytes_survive_raw_temp_cleanup",
+            set(),
+        ),
+        "wasm.integration.host-exports.falcon-driver": (
+            "test_linked_falcon_ocr_wasm_driver_runs_stub_generation",
             set(),
         ),
     }
@@ -1802,6 +2133,9 @@ def test_wasm_host_export_applications_have_independent_cold_partitions() -> Non
     )
     assert boundaries.argv[6:] == (
         "tests/test_wasm_split_runtime.py::test_linked_host_export_attribute_error_does_not_return_none",
+        "tests/test_wasm_split_runtime.py::test_split_runtime_host_export_calls_preserve_owned_results",
+        "tests/test_wasm_split_runtime.py::test_split_runtime_host_export_struct_unpack_from_reads_u64",
+        "tests/test_wasm_split_runtime.py::test_split_runtime_profile_json_emits_on_wasm",
         "tests/test_wasm_runtime_heavy_regressions.py::test_wasm_open_reports_all_missing_grants_before_mutation",
         "tests/test_wasm_runtime_heavy_regressions.py::test_wasm_compiled_finder_describes_module_before_initialization",
         "tests/test_wasm_runtime_heavy_regressions.py::test_wasm_final_tir_preserves_effects_scalar_proofs_and_escaped_calls",
@@ -2037,8 +2371,6 @@ def test_runtime_import_conformance_receivers_execute_both_targets() -> None:
     assert {"pr", "main"} <= set(row.data["tiers"])
     assert row.data["resource_class"] == "compiler-build-resource"
     assert row.data["timeout_budget"] == "cold"
-    family = next(family for family in PLAN.families if family.name == "wasm")
-    assert {*receivers, json_receiver} <= set(family.inputs)
     assert "wasm" in {family.name for family in PLAN.select([fixture_list]).selected}
     for receiver in (*receivers, json_receiver, *fixture_receivers):
         assert "wasm" in {family.name for family in PLAN.select([receiver]).selected}
@@ -2354,16 +2686,21 @@ def test_explicit_selection_is_independent_of_version_image_choice():
     assert selected.inferred_executable is None
 
 
-@pytest.mark.parametrize("selector", [True, "yes", 1])
-def test_explicit_selection_requires_typed_resolver_contract(selector):
+@pytest.mark.parametrize("selector", [True, False, "yes", 1])
+def test_explicit_selection_controls_inference_without_changing_executable_identity(
+    selector,
+):
     policies = tuple(
         replace(p, data={**p.data, "selection_only": selector}) if p.name == "uv" else p
         for p in PLAN.toolchain_policies
     )
-    assert (
-        "uv: explicit prerequisite requires a typed content resolver"
-        in replace(PLAN, toolchain_policies=policies).validate()
-    )
+    errors = replace(PLAN, toolchain_policies=policies).validate()
+    if type(selector) is bool:
+        assert errors == []
+        selected = next(policy for policy in policies if policy.name == "uv")
+        assert selected.inferred_executable == (None if selector else "uv")
+    else:
+        assert "uv: selection_only must be a boolean" in errors
 
 
 def test_static_command_rejects_target_derived_toolchain() -> None:
@@ -2437,7 +2774,7 @@ def test_sccache_environment_policy_covers_every_rust_proof_family(
     }
     for command in rust_commands:
         environment, applied = proof_plan._command_environment(
-            PLAN, command, 30, memory_share=None
+            PLAN, command, 30, environment=dict(os.environ), memory_share=None
         )
         assert environment["CARGO_INCREMENTAL"] == "0", command.id
         assert applied == (
@@ -2482,7 +2819,11 @@ def test_compiler_build_commands_use_shared_timeout_budgets() -> None:
     }
     for command in compiler_commands:
         environment, _applied = proof_plan._command_environment(
-            PLAN, command, int(command.data["timeout_seconds"]), memory_share=None
+            PLAN,
+            command,
+            int(command.data["timeout_seconds"]),
+            environment=dict(os.environ),
+            memory_share=None,
         )
         assert environment[PROOF_COMMAND_TIMEOUT_ENV] == str(
             command.data["timeout_seconds"]
@@ -2546,7 +2887,7 @@ def test_command_direct_rustc_override_does_not_apply_sccache_policy(
     )
 
     environment, applied = proof_plan._command_environment(
-        PLAN, command, 30, memory_share=None
+        PLAN, command, 30, environment=dict(os.environ), memory_share=None
     )
 
     assert environment[wrapper_env] == ""
@@ -3024,6 +3365,174 @@ def test_toolchain_path_probe_has_one_shared_exact_decoder(tmp_path: Path) -> No
         )
     with pytest.raises(ValueError, match="did not name a file"):
         toolchain_probe.resolve_single_file_path("bin\n", probe_cwd=tmp_path)
+
+
+@pytest.mark.parametrize(
+    ("family", "path"),
+    [
+        ("platform_portability", "tests/cli/test_source_package_seal.py"),
+        ("platform_portability", "tests/test_exact_json.py"),
+        ("platform_portability", "tests/tools/test_fs_delete.py"),
+        ("platform_portability", "tests/test_temporary_artifacts.py"),
+        ("platform_portability", "tests/tools/test_cargo_bindgen_toolchain.py"),
+        (
+            "platform_portability",
+            "tests/tools/test_proof_queue_execution_custody_p0.py",
+        ),
+        ("platform_portability", "tests/tools/test_proof_supervisor_generation.py"),
+        ("platform_portability", "tests/test_wasm_linked_runner_node_flags.py"),
+        ("platform_portability", "tests/test_bench_wasm_node_resolver.py"),
+        ("platform_portability", "tests/test_exception_diagnostics.py"),
+        ("platform_portability", "tests/tools/test_memory_guard_windows_sampling.py"),
+        ("wasm", "tests/cli/test_cli_import_collection.py"),
+        ("wasm", "tests/test_browser_vfs.py"),
+        ("wasm", "tests/test_finally_pending_observer_parity.py"),
+        ("wasm", "tests/molt_diff.py"),
+        ("native_integration", "tests/cli/test_runtime_build_identity.py"),
+        ("native_integration", "tests/test_runtime_build_python.py"),
+        ("native_integration", "tests/cli/test_cli_python_source_closure.py"),
+        ("native_integration", "tests/cli/test_c_api_headers.py"),
+        ("native_integration", "tests/cli/test_cli_native_main_stub_authority.py"),
+        ("native_integration", "tests/test_native_importlib_public_api_regressions.py"),
+        ("native_integration", "tests/cli/test_backend_daemon_sequential.py"),
+        ("native_integration", "tests/cli/test_cli_build_identity.py"),
+        ("llvm", "tests/cli/test_cli_native_link_command_authority.py"),
+        ("llvm", "tests/test_native_lir_loop_join_semantics.py"),
+    ],
+)
+def test_declared_command_test_changes_select_their_ci_owner(family, path) -> None:
+    # These real receivers were absent from hand-maintained family inputs.
+    # Owning a command must suffice, including commands that select one node.
+    # Global authority changes already select every family; they cannot stand
+    # in for this command's direct ownership edge.
+    selection = replace(PLAN, authority_inputs=()).select([path])
+    assert family in {row.name for row in selection.selected}
+    assert selection.reasons[family] == (path,)
+    resolved = next(row for row in PLAN.families if row.name == family)
+    assert resolved.data["inputs"] == list(resolved.inputs)
+
+
+def test_command_target_subtrees_are_literal_and_resolved_without_scanning(
+    monkeypatch,
+) -> None:
+    family = proof_plan.ProofFamily(
+        "owner",
+        {
+            "inputs": [
+                "src/dependency.py",
+                "tests/additional*.py",
+                "tests/probes/case.py",
+            ],
+            "dependencies": [],
+        },
+    )
+    argv = [
+        "python",
+        "-m",
+        "pytest",
+        "tests/probes/",
+        "tests/probes/case.py::test[a::b]",
+        "tests/literal[0].py::test[quoted::parameter]",
+        "tests/whole_file.py::test_case",
+        "tests/whole_file.py::test_other",
+    ]
+    commands = tuple(
+        proof_plan.ProofCommand(str(index), {"family": owner, "argv": targets})
+        for index, (owner, targets) in enumerate(
+            (
+                ("owner", argv),
+                ("scheduled", ["pytest", "tests/scheduled.py"]),
+                ("unknown", ["pytest", "tests/unknown.py"]),
+            )
+        )
+    )
+    with monkeypatch.context() as scope:
+        scope.setattr(
+            proof_plan, "Path", lambda *_a, **_k: pytest.fail("no path probes")
+        )
+        proof_plan._resolve_ci_command_test_inputs((family,), commands)
+    assert family.inputs == (
+        "src/dependency.py",
+        "tests/additional*.py",
+        "tests/probes/**",
+        "tests/literal[0].py/**",
+        "tests/whole_file.py/**",
+    )
+    # Selection reads the resolved authority, without walking command argv.
+    argv.clear()
+    plan = replace(PLAN, authority_inputs=(), families=(family,), commands=())
+    for path in (
+        "tests/probes",
+        "tests/probes/deeper/new_test.py",
+        "tests/literal[0].py",
+        "tests/whole_file.py",
+        "src/dependency.py",
+        "tests/additional_future.py",
+    ):
+        assert plan.select([path]).selected == (family,)
+    for path in (
+        "tests/probes_adjacent/test.py",
+        "tests/literal0.py",
+        "tests/whole_file.py_adjacent",
+        "tests/scheduled.py",
+        "tests/unknown.py",
+    ):
+        assert not plan.select([path]).selected
+
+
+def test_command_directory_ownership_and_dependency_globs_select_ci() -> None:
+    assert _classes("tests/differential/basic/augassign_inplace_builtin_sanity.py")[
+        "platform_portability"
+    ]
+    assert not _classes("tests/differential/basic_adjacent/probe.py")[
+        "platform_portability"
+    ]
+    for family, path in (
+        ("native_integration", "tests/proof_queue_custody_test_support.py"),
+        ("native_integration", "tests/cli/test_native_link_future.py"),
+        ("wasm", "tests/wasm_linked_runner.py"),
+        ("wasm", "tests/test_wasm_future.py"),
+        ("llvm", "vendor/llvm/LICENSE.TXT"),
+    ):
+        assert _classes(path)[family]
+    projection = json.loads(gen_proof_plan._json_projection(PLAN))
+    assert projection["ci_families"] == [family.data for family in PLAN.families]
+    assert projection["scheduled_families"] == [
+        family.data for family in PLAN.scheduled_families
+    ]
+    assert all("inputs" not in family.data for family in PLAN.scheduled_families)
+
+
+@pytest.mark.parametrize(
+    ("replacement", "message"),
+    [
+        ('family = "not-a-family"', "unknown family 'not-a-family'"),
+        (
+            'argv = ["pytest", "tests/no_such_receiver.py"]',
+            "repository input does not exist",
+        ),
+        ('argv = "tests/test_exact_json.py"', "argv must be a non-empty string list"),
+    ],
+)
+def test_command_input_resolution_keeps_load_validation(replacement, message) -> None:
+    source = PLAN.path.read_text(encoding="utf-8")
+    block = re.search(
+        r'(?ms)^\[\[command\]\]\nid = "python.unit.harness"\n.*?(?=^\[\[|\Z)',
+        source,
+    )
+    assert block is not None
+    field = replacement.split(" = ", 1)[0]
+    changed = re.sub(rf"(?m)^{field} = .*?$", lambda _: replacement, block.group())
+    source = source[: block.start()] + changed + source[block.end() :]
+
+    class ManifestPath(type(PLAN.path)):
+        def read_text(self, *args, **kwargs):
+            if self == PLAN.path:
+                return source
+            return super().read_text(*args, **kwargs)
+
+    with pytest.raises(ValueError, match=re.escape(message)):
+        proof_plan.ProofPlan.load(ManifestPath(PLAN.path))
 
 
 def test_manifest_rejects_missing_repository_command_inputs() -> None:
@@ -4036,6 +4545,191 @@ def test_toolchain_fingerprint_domains_serialize_shared_provisioners(
 _REAL_CHILD_DEADLINE_SECONDS = 300
 
 
+def test_executor_admits_toolchains_from_the_selected_plan_root(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    selected_root = tmp_path / "selected checkout"
+    selected_root.mkdir()
+    (selected_root / "sdk-selector").write_text("selected SDK", encoding="utf-8")
+    plan = replace(PLAN, path=selected_root / "tools" / "proof_plan.toml")
+    monkeypatch.setenv("MOLT_LLVM_PREFIX", "unrelated driver SDK")
+
+    def project(_policies, _names, *, environ, root):
+        assert environ["MOLT_LLVM_PREFIX"] == "unrelated driver SDK"
+        return proof_plan.ToolchainProjection(
+            {"MOLT_LLVM_PREFIX": (root / "sdk-selector").read_text(encoding="utf-8")},
+            (),
+        )
+
+    def receive(_plan, _commands, _receipt, *, toolchain_fingerprints, **_kwargs):
+        assert toolchain_fingerprints((), ()) == {}
+        assert os.environ["MOLT_LLVM_PREFIX"] == "selected SDK"
+        return 0
+
+    monkeypatch.setattr(proof_plan, "project_toolchains", project)
+    monkeypatch.setattr(proof_plan, "_execute_commands", receive)
+    assert proof_plan.execute_commands(plan, (), tmp_path / "receipt.json") == 0
+
+
+@pytest.mark.parametrize("explicit_target_flags", [False, True])
+def test_executor_projects_each_command_from_immutable_pre_admission_environment(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, explicit_target_flags: bool
+) -> None:
+    from molt import llvm_toolchain
+
+    target_flags = "CARGO_TARGET_WASM32_WASIP1_RUSTFLAGS"
+    target_linker = "CARGO_TARGET_WASM32_WASIP1_LINKER"
+    observed_keys = (
+        target_flags,
+        target_linker,
+        "MOLT_WASI_SYSROOT",
+        "RUSTFLAGS",
+        "MOLT_PROJECTION_ORDER",
+        "MOLT_ADMISSION_ONLY",
+    )
+    for key in observed_keys:
+        monkeypatch.delenv(key, raising=False)
+    monkeypatch.setenv("RUSTFLAGS", "--cfg explicit_user_flags")
+    monkeypatch.setenv("MOLT_PROJECTION_ORDER", "baseline")
+    if explicit_target_flags:
+        monkeypatch.setenv(target_flags, "--cfg explicit_target_flags")
+        monkeypatch.setenv(target_linker, "/explicit/user/linker")
+    baseline = dict(os.environ)
+    selected_root = tmp_path / "selected checkout"
+    selected_root.mkdir()
+    (selected_root / "sdk-selector").write_text("selected SDK", encoding="utf-8")
+    admissions = []
+    projections = []
+    real_project = proof_plan.project_toolchains
+
+    def selected_sdk(root, *, environ):
+        assert root == selected_root
+        assert environ["RUSTFLAGS"] == baseline["RUSTFLAGS"]
+        return (root / "sdk-selector").read_text(encoding="utf-8")
+
+    def sdk_delta(installation, *, environ, rust_target):
+        assert rust_target == "wasm32-wasip1"
+        assert installation == "selected SDK"
+        return {
+            target_flags: (
+                environ.get(target_flags, "") + " -C link-self-contained=no"
+            ).strip(),
+            target_linker: "/selected/sdk/wasm-ld",
+            "MOLT_WASI_SYSROOT": "/selected/sdk/sysroot",
+            "MOLT_PROJECTION_ORDER": "projection",
+        }
+
+    def project(policies, names, *, environ, root):
+        if admissions:
+            assert dict(environ) == baseline
+            with pytest.raises(TypeError):
+                environ["MOLT_PROJECTION_ORDER"] = "mutated"
+        projections.append(names)
+        return real_project(policies, names, environ=environ, root=root)
+
+    def fingerprints(_policies, names, **_admission):
+        admissions.append(names)
+        # The aggregate is really published for admission. A child reading it
+        # instead of the retained baseline will expose both injected facts.
+        assert os.environ[target_flags].endswith("-C link-self-contained=no")
+        monkeypatch.setenv("MOLT_ADMISSION_ONLY", "probe-only")
+        return {name: {"identity_sha256": "0" * 64} for name in names}
+
+    monkeypatch.setattr(llvm_toolchain, "selected_wasi_sdk_installation", selected_sdk)
+    monkeypatch.setattr(llvm_toolchain, "wasm_toolchain_environment_delta", sdk_delta)
+    monkeypatch.setattr(proof_plan, "project_toolchains", project)
+    monkeypatch.setattr(proof_plan, "toolchain_fingerprints", fingerprints)
+    monkeypatch.setattr(proof_plan, "_source_tree_changes", lambda: ())
+    policies = (
+        proof_plan.ToolchainPolicy("python", {}),
+        proof_plan.ToolchainPolicy("cargo", {}),
+        proof_plan.ToolchainPolicy("sdk-image", {"projection": "wasi-sdk"}),
+        proof_plan.ToolchainPolicy("sdk-group", {"members": ["sdk-image"]}),
+    )
+    commands = []
+    outputs = {}
+    for name in ("pure-rust", "sdk", "sdk-sibling"):
+        output = tmp_path / f"{name}.json"
+        outputs[name] = output
+        command = _synthetic_executor_command(name)
+        commands.append(
+            replace(
+                command,
+                data={
+                    **command.data,
+                    "timeout_seconds": _REAL_CHILD_DEADLINE_SECONDS,
+                    "toolchains": ["python", "cargo"]
+                    + ([] if name == "pure-rust" else ["sdk-group"]),
+                    "env": {}
+                    if name == "pure-rust"
+                    else {
+                        "MOLT_PROJECTION_ORDER": "command",
+                        "RUSTFLAGS": "--cfg ordered_command_override",
+                    },
+                    "argv": [
+                        sys.executable,
+                        "-c",
+                        "import json,os,pathlib; "
+                        f"pathlib.Path({str(output)!r}).write_text("
+                        f"json.dumps({{key: os.environ.get(key) for key in {observed_keys!r}}}), "
+                        "encoding='utf-8')",
+                    ],
+                },
+            )
+        )
+    plan = replace(
+        _synthetic_executor_plan(tuple(commands), limits={"resource-a": 1}),
+        path=selected_root / "tools" / "proof_plan.toml",
+        toolchain_policies=policies,
+    )
+    assert proof_plan.execute_commands(plan, commands, tmp_path / "receipt.json") == 0
+    pure = json.loads(outputs["pure-rust"].read_text(encoding="utf-8"))
+    assert pure == {key: baseline.get(key) for key in observed_keys}
+    for name in ("sdk", "sdk-sibling"):
+        assert json.loads(outputs[name].read_text(encoding="utf-8")) == {
+            target_flags: (
+                baseline.get(target_flags, "") + " -C link-self-contained=no"
+            ).strip(),
+            target_linker: "/selected/sdk/wasm-ld",
+            "MOLT_WASI_SYSROOT": "/selected/sdk/sysroot",
+            "RUSTFLAGS": "--cfg ordered_command_override",
+            "MOLT_PROJECTION_ORDER": "command",
+            "MOLT_ADMISSION_ONLY": None,
+        }
+    assert admissions == [("python", "cargo", "sdk-image")]
+    assert projections == [
+        ("python", "cargo", "sdk-image"),  # aggregate admission
+        ("python", "cargo"),
+        ("python", "cargo", "sdk-image"),  # one shared SDK execution projection
+    ]
+
+
+def test_executor_preserves_admitted_path_provider_when_managed_projection_is_missing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    command = _synthetic_executor_command("admitted-path")
+    plan = _synthetic_executor_plan((command,), limits={"resource-a": 1})
+    baseline_path = os.environ["PATH"]
+    monkeypatch.setattr(proof_plan, "_source_tree_changes", lambda: ())
+    monkeypatch.setattr(proof_plan, "toolchain_fingerprints", _admit_synthetic_python)
+    monkeypatch.setattr(
+        proof_plan,
+        "project_toolchains",
+        lambda *_args, **_kwargs: proof_plan.ToolchainProjection(
+            {}, ("managed SDK is not installed; admitted PATH image is available",)
+        ),
+    )
+
+    def run(_plan, current, _cancel, *, environment, memory_share):
+        assert environment["PATH"] == baseline_path
+        with pytest.raises(TypeError):
+            environment["PATH"] = "/mutated"
+        return _successful_synthetic_record(current)
+
+    monkeypatch.setattr(proof_plan, "_run_command", run)
+    assert proof_plan.execute_commands(plan, (command,), tmp_path / "receipt.json") == 0
+
+
 def test_executor_emits_measured_receipt(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setattr(proof_plan, "_source_tree_changes", lambda: ())
     cell = proof_plan.MatrixCell(
@@ -4120,8 +4814,8 @@ def test_provisioned_lean_fingerprint_admits_formal_build_receipt(
     monkeypatch.setattr(
         proof_plan,
         "_run_command",
-        lambda _plan, current, _cancel, *, memory_share: _successful_synthetic_record(
-            current
+        lambda _plan, current, _cancel, *, environment, memory_share: (
+            _successful_synthetic_record(current)
         ),
     )
     receipt_path = tmp_path / "formal-lean-receipt.json"
@@ -4434,6 +5128,7 @@ def test_executor_schedules_dependencies_and_resources_with_deterministic_receip
         command: proof_plan.ProofCommand,
         _cancel: threading.Event,
         *,
+        environment: Any,
         memory_share: int | None,
     ) -> dict[str, object]:
         resource = str(command.data["resource_class"])
@@ -4498,7 +5193,7 @@ def test_executor_partition_failure_preserves_independent_work_and_blocks_depend
     )
     live_started = threading.Event()
 
-    def fake_run(_plan, command, cancel, *, memory_share):
+    def fake_run(_plan, command, cancel, *, environment, memory_share):
         if command.id == "synthetic.fail":
             assert live_started.wait(timeout=1)
             return {
@@ -4647,6 +5342,7 @@ def test_executor_does_not_convert_control_plane_interrupts_into_records(
         _command: proof_plan.ProofCommand,
         _cancel: threading.Event,
         *,
+        environment: Any,
         memory_share: int | None,
     ) -> dict[str, object]:
         raise KeyboardInterrupt
@@ -4829,7 +5525,7 @@ def test_executor_rejects_source_mutation_during_partition(
     monkeypatch.setattr(
         proof_plan,
         "_run_command",
-        lambda _plan, command, _cancel, *, memory_share: {
+        lambda _plan, command, _cancel, *, environment, memory_share: {
             "id": command.id,
             "status": "success",
             "returncode": 0,
@@ -5282,7 +5978,7 @@ def test_executor_stops_on_candidate_change_even_when_checkout_is_clean(
     )
     plan = _synthetic_executor_plan(commands, limits={"resource-a": 1})
 
-    def run(_plan, command, _cancel, *, memory_share):
+    def run(_plan, command, _cancel, *, environment, memory_share):
         current[field] = "c" * 40
         return _successful_synthetic_record(command)
 
@@ -5317,7 +6013,7 @@ def test_executor_control_plane_interrupt_cancels_siblings_before_join(
     live_started = threading.Event()
     closed = threading.Event()
 
-    def run(_plan, command, cancel, *, memory_share):
+    def run(_plan, command, cancel, *, environment, memory_share):
         if command.id == "interrupt":
             assert live_started.wait(1)
             raise KeyboardInterrupt
@@ -5409,7 +6105,9 @@ def test_executor_real_cargo_test_timeout_retains_completed_incremental_cache(
         },
     )
     plan = _synthetic_executor_plan((command,), limits={"resource-a": 1})
-    record = proof_plan._run_command(plan, command, memory_share=None)
+    record = proof_plan._run_command(
+        plan, command, environment=dict(os.environ), memory_share=None
+    )
     assert started.read_bytes() == b"started", record
     assert record["status"] == "timeout"
     assert record["returncode"] == 124
@@ -5773,11 +6471,15 @@ def test_executor_cancellation_requires_exact_terminal_closure(
     monkeypatch.setattr(proof_plan, "_COMMANDS", SimpleNamespace(start_guarded=start))
     if defect in {"missing", "unclosed", "startup"}:
         with pytest.raises(RuntimeError) as caught:
-            proof_plan._run_command(plan, command, event, memory_share=None)
+            proof_plan._run_command(
+                plan, command, event, environment=dict(os.environ), memory_share=None
+            )
         assert caught.value.guard_command is owned
         record = caught.value.proof_record
     else:
-        record = proof_plan._run_command(plan, command, event, memory_share=None)
+        record = proof_plan._run_command(
+            plan, command, event, environment=dict(os.environ), memory_share=None
+        )
     assert record["guard_returncode"] == (130 if defect == "noncanonical-code" else 137)
     assert record["failure_scope"] == "global"
     assert record["status"] == ("cancelled" if defect is None else "failure")
@@ -6284,6 +6986,155 @@ def test_selected_sdk_fingerprint_roundtrips_through_actual_receipt_receiver(
         f"invalid {native_name} toolchain identity" in error
         for error in _verify_receipts(PLAN, ["python_static"], receipt_root)
     )
+
+
+@pytest.mark.parametrize(
+    "owner",
+    [
+        "local.backend-environment-contract",
+        "python.unit.cli.import-collection",
+        "wasm.host.runner-fixtures",
+    ],
+)
+def test_native_import_collection_fixtures_declare_compilers_for_each_execution_owner(
+    owner: str,
+) -> None:
+    from tools import molt_dev
+
+    target = "tests/cli/test_cli_import_collection.py"
+    if owner.startswith("local."):
+        # Select this rule alone: an unrelated LLVM gate or the always gates
+        # must not supply the compilers these real native fixtures require.
+        config = molt_dev.GateConfig.load(PLAN.path)
+        rule = next(rule for rule in config.rules if rule.name == owner[6:])
+        isolated = replace(config, rules=[rule], always=[])
+        selected, matched = isolated.select(["src/molt/cli/backend_daemon_logs.py"])
+        assert [rule.name for rule in matched] == ["backend-environment-contract"]
+        selector = next(gate for gate in selected if "-k" in gate.command)
+        assert target in selector.command
+        assert "backend_daemon" in selector.command[selector.command.index("-k") + 1]
+        assert {"hosted-clang", "rustc"} <= set(
+            PLAN.toolchain_closure(selector.toolchains)
+        )
+    else:
+        command = next(command for command in PLAN.commands if command.id == owner)
+        if owner == "wasm.host.runner-fixtures":
+            # This relocated case compiles both empty and nonempty C objects.
+            assert (
+                target + "::test_cached_backend_artifact_validity_guard" in command.argv
+            )
+        else:
+            # The full-file owner retains the three native-reference controls;
+            # only the five cases executed by the WASM owner are deselected.
+            assert target in command.argv
+            assert not any(
+                "unresolved_user_module_chunks" in argument
+                or "unresolved_stdlib_module_reference" in argument
+                for argument in command.argv
+                if argument.startswith(target + "::")
+            )
+        assert {"hosted-clang", "rustc"} <= set(PLAN.required_toolchains(command))
+
+
+def test_native_fixture_compiler_capability_keeps_llvm_abi_pin_separate() -> None:
+    policies = {policy.name: policy for policy in PLAN.toolchain_policies}
+    fixture = policies["hosted-clang"]
+    abi = policies["clang"]
+    assert fixture.data["executable"] == abi.data["executable"] == "clang"
+    assert fixture.inferred_executable is None
+    assert abi.inferred_executable == "clang"
+    for version in ("Ubuntu clang version 18.1.8", "Apple clang version 17.0.0"):
+        assert re.search(fixture.data["version_pattern"], version)
+        assert not re.search(abi.data["version_pattern"], version)
+    assert not re.search(fixture.data["version_pattern"], "unidentified compiler")
+
+
+@pytest.mark.parametrize("rule_name", ["tir-midend", "native-callable-abi"])
+def test_local_wasm_libtest_declares_its_actual_guest_tools(rule_name: str) -> None:
+    from tools import molt_dev
+
+    config = molt_dev.GateConfig.load(PLAN.path)
+    rule = next(rule for rule in config.rules if rule.name == rule_name)
+    isolated = replace(config, rules=[rule], always=[])
+    gates, matched = isolated.select(
+        ["runtime/molt-backend-wasm/src/wasm/tests/native_callable.rs"]
+    )
+    assert [rule.name for rule in matched] == [rule_name]
+    (test_gate,) = [
+        gate
+        for gate in gates
+        if isinstance(gate.command, str) and gate.command.startswith("cargo test ")
+    ]
+    assert "-p molt-backend-wasm" in test_gate.command
+    assert {"node", "wasm-ld"} <= set(PLAN.toolchain_closure(test_gate.toolchains))
+    for command_id in (
+        "rust.test.ir-wasm-runtime-authorities",
+        "rust.test.default-truth",
+    ):
+        ci = next(command for command in PLAN.commands if command.id == command_id)
+        assert {"node", "wasm-ld"} <= set(PLAN.required_toolchains(ci))
+
+
+@pytest.mark.parametrize(
+    "rule_name", ["backend-native", "backend-llvm", "native-callable-abi"]
+)
+def test_native_execution_helper_selects_all_compiled_consumers(rule_name: str) -> None:
+    from tools import molt_dev
+
+    config = molt_dev.GateConfig.load(PLAN.path)
+    rule = next(rule for rule in config.rules if rule.name == rule_name)
+    gates, matched = replace(config, rules=[rule], always=[]).select(
+        ["runtime/test_support/native_object_execution.rs"]
+    )
+    assert [rule.name for rule in matched] == [rule_name]
+    test_gates = [
+        gate
+        for gate in gates
+        if isinstance(gate.command, str) and gate.command.startswith("cargo test ")
+    ]
+    assert test_gates
+    assert all(
+        "rustc" in PLAN.toolchain_closure(gate.toolchains) for gate in test_gates
+    )
+
+
+def test_shared_native_execution_helper_selects_rust_and_llvm_ci() -> None:
+    selected = PLAN.select(["runtime/test_support/native_object_execution.rs"])
+    assert {"rust", "llvm"} <= {family.name for family in selected.selected}
+
+
+def test_differential_proofs_select_their_host_compiler_profile_explicitly() -> None:
+    import shlex
+
+    expected = {
+        "wasm.test.runtime-import-conformance": "dev",
+        "runtime.public-consumers.native": "release",
+        "runtime.public-consumers.wasm": "release",
+    }
+    expected.update(
+        (lane.id, "dev")
+        for lane in PLAN.named_lanes
+        if lane.id.startswith("r6.target-version-parity.")
+    )
+    actual = {}
+    for command in (*PLAN.commands, *PLAN.named_lanes):
+        if "tests/molt_diff.py" not in command.argv:
+            continue
+        actual[command.id] = command.argv[command.argv.index("--compiler-profile") + 1]
+        assert "MOLT_BACKEND_PROFILE" not in command.data.get("env", {})
+    assert actual == expected
+    from tools import molt_dev
+
+    rule = next(
+        rule
+        for rule in molt_dev.GateConfig.load(PLAN.path).rules
+        if rule.name == "runtime-regex"
+    )
+    (differential,) = [
+        shlex.split(gate) for gate in rule.gates if "tests/molt_diff.py" in gate
+    ]
+    assert differential[differential.index("--compiler-profile") + 1] == "dev"
+    assert differential[differential.index("--build-profile") + 1] == "dev"
 
 
 def test_wasm_runtime_and_host_prerequisites_follow_actual_consumers():
@@ -7341,15 +8192,76 @@ def test_executor_divides_memory_among_the_commands_it_runs_at_once(
     # commands sizing from the whole host would overcommit it fourfold.
     gib = 1024**3
     monkeypatch.setattr(
-        proof_plan.host_capacity, "memory_bytes", lambda: (64 * gib, 40 * gib)
+        proof_plan.host_capacity,
+        "memory_capacity",
+        lambda environment: proof_plan.host_capacity.MemoryCapacity(64 * gib, 40 * gib),
     )
-    monkeypatch.setattr(proof_plan.host_capacity, "headroom_bytes", lambda: 4 * gib)
-    plan = replace(PLAN, executor_max_workers=4)
-    assert proof_plan._command_memory_share(plan, 9) == 9 * gib
-    assert proof_plan._command_memory_share(plan, 2) == 18 * gib
-    assert proof_plan._command_memory_share(plan, 1) == 36 * gib
+    monkeypatch.setattr(
+        proof_plan.host_capacity, "headroom_bytes", lambda capacity: 4 * gib
+    )
+    plan = replace(
+        PLAN,
+        executor_max_workers=4,
+        resource_policies=(proof_plan.ResourcePolicy("parallel", 4),),
+    )
+    commands = tuple(
+        proof_plan.ProofCommand(str(index), {"resource_class": "parallel"})
+        for index in range(9)
+    )
+    assert proof_plan._command_memory_share(plan, commands) == 9 * gib
+    assert proof_plan._command_memory_share(plan, commands[:2]) == 18 * gib
+    assert proof_plan._command_memory_share(plan, commands[:1]) == 36 * gib
     command = next(c for c in PLAN.commands if "pytest" in c.data["argv"])
     environment, _applied = proof_plan._command_environment(
-        PLAN, command, 30, memory_share=9 * gib
+        PLAN, command, 30, environment=dict(os.environ), memory_share=9 * gib
     )
     assert environment[proof_plan.host_capacity.MEMORY_SLICE_ENV] == str(9 * gib)
+
+
+@pytest.mark.parametrize(
+    ("classes", "workers", "expected_divisor"),
+    [
+        (("compiler",) * 9, 4, 1),
+        (("compiler",) * 9 + ("python",) * 5, 4, 3),
+        (("compiler",) * 9 + ("python",) * 5, 2, 2),
+        (("python",), 4, 1),
+    ],
+)
+def test_executor_memory_share_uses_selected_resource_parallelism(
+    monkeypatch, classes, workers, expected_divisor
+):
+    gib = 1024**3
+    probes = []
+
+    def observe():
+        probes.append(None)
+        assert len(probes) == 1
+        return 64 * gib, 40 * gib
+
+    monkeypatch.setattr(proof_plan.host_capacity, "_probe_memory_bytes", observe)
+    monkeypatch.setenv(proof_plan.host_capacity.MEMORY_SLICE_ENV, str(12 * gib))
+    plan = replace(
+        PLAN,
+        executor_max_workers=workers,
+        resource_policies=(
+            proof_plan.ResourcePolicy("compiler", 1),
+            proof_plan.ResourcePolicy("python", 2),
+        ),
+    )
+    commands = tuple(
+        proof_plan.ProofCommand(str(index), {"resource_class": resource})
+        for index, resource in enumerate(classes)
+    )
+    assert proof_plan._command_memory_share(plan, commands) == (
+        12 * gib // expected_divisor
+    )
+    assert len(probes) == 1
+
+
+def test_executor_empty_selection_does_not_sample_memory(monkeypatch):
+    monkeypatch.setattr(
+        proof_plan.host_capacity,
+        "memory_capacity",
+        lambda environment: pytest.fail("no commands need no allocation"),
+    )
+    assert proof_plan._command_memory_share(PLAN, ()) is None

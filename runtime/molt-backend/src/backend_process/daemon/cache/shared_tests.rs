@@ -25,6 +25,7 @@ fn await_waiters(flight: &InFlight, count: usize) {
 
 #[test]
 fn one_caller_compiles_and_concurrent_callers_reuse_its_output() {
+    let _scope = molt_backend::backend_environment::enter(Arc::default());
     let cache = Arc::new(DaemonCache::new(None));
     let key = key("module");
     let Flight::Leader(guard) = cache.begin(&key) else {
@@ -55,6 +56,7 @@ fn one_caller_compiles_and_concurrent_callers_reuse_its_output() {
 
 #[test]
 fn a_leader_without_output_releases_its_followers() {
+    let _scope = molt_backend::backend_environment::enter(Arc::default());
     let cache = Arc::new(DaemonCache::new(None));
     let key = key("module");
     let Flight::Leader(guard) = cache.begin(&key) else {
@@ -76,6 +78,7 @@ fn a_leader_without_output_releases_its_followers() {
 
 #[test]
 fn flights_for_different_keys_do_not_block_each_other() {
+    let _scope = molt_backend::backend_environment::enter(Arc::default());
     let cache = DaemonCache::new(None);
     let first = cache.begin(&key("first"));
     let second = cache.begin(&key("second"));
@@ -85,6 +88,7 @@ fn flights_for_different_keys_do_not_block_each_other() {
 
 #[test]
 fn same_source_different_target_has_independent_flight_state() {
+    let _scope = molt_backend::backend_environment::enter(Arc::default());
     let cache = DaemonCache::new(None);
     let first = key("same");
     let mut changed = DaemonJobRequest::from_json_value(

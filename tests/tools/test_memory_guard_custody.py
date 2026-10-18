@@ -125,9 +125,15 @@ def test_dry_run_then_apply_records_exact_births_and_retires_the_record(tmp_path
     [
         ((_sample(10, 100),), "guard_process_identity_match"),
         ((_sample(10, None),), "guard_process_identity_unavailable"),
+        ((_sample(10, 0),), "guard_process_identity_unavailable"),
         ((_sample(20, 200),), "child_process_identity_match"),
         ((_sample(20, None),), "child_process_identity_unavailable"),
+        ((_sample(20, 0),), "child_process_identity_unavailable"),
         ((_sample(21, 210, pgid=20),), "child_process_group_still_present"),
+        (
+            (_sample(20, 0, pgid=20), _sample(21, 210, pgid=20)),
+            "child_process_group_still_present",
+        ),
     ],
 )
 def test_live_or_uncomparable_custody_remains_protective(tmp_path, samples, reason):
@@ -287,6 +293,7 @@ def test_group_of_a_non_leader_child_stays_protective_after_reuse(tmp_path):
         lambda p: p.update(token="wrong"),
         lambda p: p["guard_process"].update(pid=11),
         lambda p: p["guard_process"].update(started_at_ns=True),
+        lambda p: p["guard_process"].update(started_at_ns=0),
         lambda p: p["child_process"].update(started_at_ns=2.0),
         lambda p: p["child_process"].update(pgid=False),
         lambda p: p["child_process"].update(pid=10),
@@ -330,6 +337,9 @@ def test_inexact_or_unreadable_json_is_protective(tmp_path, content):
     [
         lambda r: r["evidence"][0].update(expected_started_at_ns=999),
         lambda r: r["evidence"][0].update(state="identity_unavailable"),
+        lambda r: r["evidence"][0].update(
+            state="identity_mismatch", observed_started_at_ns=0
+        ),
         lambda r: r["evidence"][0].update(state="identity_match"),
         lambda r: r.update(reason="age"),
         lambda r: r.update(previous_status="custody_reconciled"),
@@ -445,14 +455,21 @@ def test_snapshot_failure_or_empty_result_never_changes_markers(
         assert marker.read_bytes() == original
 
 
-def test_invalid_snapshot_identity_rejected_before_any_apply(tmp_path):
+@pytest.mark.parametrize(
+    "samples",
+    [
+        {99: _sample(100)},
+        {99: _sample(birth=-1)},
+        {99: _sample(birth=True)},
+        {99: _sample(birth=1.0)},
+    ],
+)
+def test_invalid_snapshot_identity_rejected_before_any_apply(tmp_path, samples):
     active = _active(tmp_path)
     marker = _marker(active)
     original = marker.read_bytes()
     with pytest.raises(custody.ActiveCustodyError, match="invalid identity"):
-        custody.reconcile_active_guard_markers(
-            active, lambda: {99: _sample(100)}, apply=True
-        )
+        custody.reconcile_active_guard_markers(active, lambda: samples, apply=True)
     assert marker.read_bytes() == original
 
 
@@ -743,7 +760,10 @@ def test_producer_retires_only_its_own_resolved_record(tmp_path):
 # --- operator release ------------------------------------------------------
 
 
-def test_release_resolves_inconclusive_evidence_with_an_attested_receipt(tmp_path):
+@pytest.mark.parametrize("child_birth,observed_birth", [(None, 2100), (200, 0)])
+def test_release_resolves_inconclusive_evidence_with_an_attested_receipt(
+    tmp_path, child_birth, observed_birth
+):
     active = _active(tmp_path)
     pending = _marker(active, pid=10, status="guard_starting", child=False)
     custody.update_active_guard_marker(
@@ -752,8 +772,8 @@ def test_release_resolves_inconclusive_evidence_with_an_attested_receipt(tmp_pat
         status="guard_exception",
         child_launch_state="pending",
     )
-    unknown = _marker(active, pid=11, child_birth=None)
-    samples = _snapshot(_sample(21, 2100))
+    unknown = _marker(active, pid=11, child_birth=child_birth)
+    samples = _snapshot(_sample(21, observed_birth))
     plan = custody.reconcile_active_guard_markers(active, samples)
     assert [item.reason for item in plan.decisions] == [
         "child_launch_identity_unpublished",
@@ -769,6 +789,9 @@ def test_release_resolves_inconclusive_evidence_with_an_attested_receipt(tmp_pat
         assert receipt["reason"] == "operator_attested"
     states = _payload(_retired(tmp_path) / unknown.name)["reconciliation"]["evidence"]
     assert [item["state"] for item in states] == ["absent", "identity_unavailable"]
+    assert states[1]["expected_started_at_ns"] == child_birth
+    assert states[1]["observed_started_at_ns"] == observed_birth
+    assert custody.read_marker_record(_retired(tmp_path) / unknown.name).terminal
     assert not custody.has_active_guard_marker(active)
 
 
@@ -1022,6 +1045,30 @@ def test_exit_sweep_runs_only_when_records_gathered(tmp_path, monkeypatch):
     assert custody.sweep_active_guard_markers(active, live).remaining == 2
     _marker(active, pid=14)
     assert custody.sweep_active_guard_markers(active, live) is None
+
+
+def test_exit_sweep_keeps_live_custody_with_boot_tick_zero_rows(tmp_path, monkeypatch):
+    monkeypatch.setattr(custody, "AUTO_SWEEP_GROWTH", 0)
+    active = _active(tmp_path)
+    dead = _marker(active, pid=10, status="launch_prepared", child=False)
+    live = _marker(active, pid=11, birth=110, status="launch_prepared", child=False)
+    original = live.read_bytes()
+    samples = _snapshot(
+        _sample(os.getpid(), 1),
+        _sample(1, 0, pgid=1),
+        _sample(2, 0, pgid=0),
+        _sample(11, 110),
+    )
+    report = custody.sweep_active_guard_markers(active, samples)
+    assert report is not None
+    assert report.snapshot_processes == len(samples())
+    assert report.retired == 1 and report.remaining == 1 and report.preserved == 1
+    assert not dead.exists() and not dead.with_suffix(".lock").exists()
+    assert custody.read_marker_record(_retired(tmp_path) / dead.name).terminal
+    assert set(active.glob("guard-*.json")) == {live}
+    assert live.read_bytes() == original
+    receipt = read_exact(active.parent / "sweep.json", max_bytes=65536, label="test")
+    assert receipt["remaining"] == 1
 
 
 def test_exit_sweep_refuses_a_table_without_its_reader(tmp_path, monkeypatch):

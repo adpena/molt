@@ -43,13 +43,21 @@ def test_bound_archive_is_consumed_without_rediscovery(tmp_path, monkeypatch):
     assert [(row.path, row.sha256, row.size) for row in frozen] == [
         (str(archive), captured.sha256, captured.size)
     ]
-    assert execution_environment._broad_toolchain_roots(
-        {"source-extension": {"link_inputs": payload}}
-    ) == [archive.parent]
+    assert (
+        execution_environment._broad_toolchain_roots(
+            {"source-extension": {"link_inputs": payload}}
+        )
+        == []
+    )
     cas = tmp_path / "cas"
     _, reference, _ = toolchain_capture.publish_capture(
         cas, {"fixture": {"link_inputs": payload}}
     )
+    # Only the bound archive is an input, rather than every sibling in the SDK.
+    (archive.parent / "unselected-neighbor.a").write_bytes(b"!<arch>\nunselected")
+    assert toolchain_capture.verify_capture(reference, workers=1, cas_root=cas)[
+        "stable"
+    ]
     archive.write_bytes(b"!<arch>\nmutated!")
     assert (
         link_inputs_resolver.resolve_source_extension_link_inputs(

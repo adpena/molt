@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from functools import partial
+from tests.cli.backend_generation_test_support import publish_backend
 from tests.compiler_identity_helper import stub_compiler_admission
 
 import contextlib
@@ -718,10 +719,9 @@ def test_ensure_backend_binary_hydrates_from_canonical_target(
     project_root = tmp_path
     canonical_target = project_root / "target"
     isolated_target = project_root / "isolated-target"
-    canonical_backend = canonical_target / "dev-fast" / "molt-backend"
-    isolated_backend = isolated_target / "dev-fast" / "molt-backend"
-    canonical_backend.parent.mkdir(parents=True, exist_ok=True)
-    canonical_backend.write_text(
+    canonical_backend = canonical_target / "dev-fast" / "molt-backend.native_backend"
+    isolated_backend = isolated_target / "dev-fast" / "molt-backend.native_backend"
+    image = (
         "#!/bin/sh\n"
         'out=""\n'
         "while [ $# -gt 0 ]; do\n"
@@ -731,10 +731,8 @@ def test_ensure_backend_binary_hydrates_from_canonical_target(
         "  fi\n"
         "  shift\n"
         "done\n"
-        "printf 'ok' > \"$out\"\n",
-        encoding="utf-8",
-    )
-    canonical_backend.chmod(0o755)
+        "printf 'ok' > \"$out\"\n"
+    ).encode()
 
     fingerprint = {
         "hash": _TEST_RUNTIME_HASH_DIGEST,
@@ -749,9 +747,8 @@ def test_ensure_backend_binary_hydrates_from_canonical_target(
         stem_suffix="dev-fast",
         extension="fingerprint",
     )
-    canonical_fp.parent.mkdir(parents=True, exist_ok=True)
-    cli_runtime_fingerprints._write_runtime_fingerprint(
-        canonical_fp, fingerprint, artifact=canonical_backend
+    canonical_generation = publish_backend(
+        canonical_backend, image, receipt=canonical_fp, fingerprint=fingerprint
     )
 
     monkeypatch.setenv("CARGO_TARGET_DIR", str(isolated_target))
@@ -773,7 +770,7 @@ def test_ensure_backend_binary_hydrates_from_canonical_target(
         lambda cmd, **kwargs: subprocess.CompletedProcess(cmd, 0, b"", b""),
     )
 
-    assert cli_backend_binary._ensure_backend_binary(
+    result = cli_backend_binary._ensure_backend_binary(
         isolated_backend,
         cargo_timeout=1.0,
         json_output=True,
@@ -782,10 +779,13 @@ def test_ensure_backend_binary_hydrates_from_canonical_target(
         backend_features=("native-backend",),
         rust_cpu=RustCpuPolicy.BASELINE,
     )
-    assert isolated_backend.read_text(encoding="utf-8") == canonical_backend.read_text(
-        encoding="utf-8"
-    )
-    assert os.access(isolated_backend, os.X_OK)
+    assert result, result.message
+    assert result.binary is not None
+    # The isolated target publishes its own generation of the canonical bytes.
+    assert result.binary.is_relative_to(isolated_target.resolve())
+    assert result.binary.read_bytes() == canonical_generation.read_bytes() == image
+    assert os.access(result.binary, os.X_OK)
+    assert not isolated_backend.exists()
 
 
 def test_canonical_native_generation_keeps_portable_dependency_custody(

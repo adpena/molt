@@ -6,12 +6,7 @@
 //! receiver protocol, and ASCII paths keep their existing SIMD kernels.
 
 use super::*;
-
-fn code_points(bytes: &[u8]) -> impl Iterator<Item = u32> + '_ {
-    wtf8_from_bytes(bytes)
-        .code_points()
-        .map(|code| code.to_u32())
-}
+use molt_runtime_core::text_storage::code_points;
 
 fn all_nonempty(bytes: &[u8], predicate: impl FnMut(u32) -> bool) -> bool {
     !bytes.is_empty() && code_points(bytes).all(predicate)

@@ -37,11 +37,14 @@ Measured on macOS arm64 (18 CPUs, 128 GiB), 2026-10-17:
   Test `size` sets a default resource set and timeout.
 - **Buck2** schedules a DAG against a host resource model and re-estimates
   from observed action costs.
-- **Ninja** defaults `-j` to the CPU count and bounds heavy actions with pools.
+- **[Ninja](https://ninja-build.org/manual.html)** bounds heavy actions with
+  pools as well as the global job ceiling; neither permits the other to be
+  exceeded. Its generator moves policy decisions ahead of incremental execution.
 - **GNU make and Cargo** share CPU across nested tools through the jobserver:
   one token pool, inherited by every child build.
-- **pytest-xdist** resolves `-n auto` through the
-  `pytest_xdist_auto_num_workers` hook, and `--dist worksteal` rebalances
+- **[pytest-xdist](https://pytest-xdist.readthedocs.io/en/stable/distribution.html)**
+  exposes `pytest_xdist_auto_num_workers` to size `-n auto` from project policy,
+  and `--dist worksteal` rebalances
   uneven tests.
 - **Rust's `available_parallelism`** honors CPU affinity and Linux cgroup
   quotas; **Python 3.13's `os.process_cpu_count`** honors affinity only.
@@ -92,6 +95,43 @@ An independent audit (2026-10-17) found more:
    parent divides its memory slice among the units it admits and exports it;
    a child sizes itself against the smaller of its slice and live memory.
 
+### Guard delegation
+
+An inherited tree limit is an allocation ceiling, not a new machine. Keep the
+host/cgroup total and live availability distinct from the parent's delegated
+tree limit in one typed capacity snapshot. Scheduling uses the bounded view;
+guard policy uses the raw host facts for the one host reserve and global
+margin, then caps its tree by the inherited ceiling. A serial nested guard
+does not allocate a new peer share merely by adding another process wrapper.
+Applying the root reserve and tree fraction at every nesting level previously
+reduced a 9.54 GiB admitted proof tree to a roughly 0.69 GiB optimizer process
+limit on a 12 GiB VM, rejecting actual Binaryen work at about 0.8 GiB.
+
+The invariant follows the [Linux cgroup v2 delegation model](https://www.kernel.org/doc/html/latest/admin-guide/cgroup-v2.html#model-of-delegation):
+descendants remain inside their ancestor's restriction. Our inference for
+serial tooling is that an unchanged allocation remains unchanged across
+wrappers. Explicit smaller allocations and live host pressure may tighten it;
+nesting depth alone may not. This does not implement the separate peer
+allocation and host-wide jobserver work above.
+
+One capacity sample replaces the guard's separate total/available probes.
+The snapshot adds a small fixed-size Python value in development tooling; it
+removes a repeated host probe and preserves the delegated-limit fact. Guard
+exports carry the admitted backend process cap separately from raw availability:
+the backend intersects that cap with any explicit availability minus reserve,
+and never deducts a reserve from the already admitted cap. Loss of host
+telemetry preserves an inherited tree allocation within the hard guard ceiling
+and retains the conservative fallback process ceiling; zero available bytes
+remain observed pressure. The guest runtime and its memory policy are
+unaffected. Known-host nesting, pressure, explicit environment selection, RSS
+accounting and scheduler consumers have focused Python coverage. The corrected
+Linux/aarch64 Python 3.12 pipeline passes all nine host-boundary/final-TIR/finder
+cases and the separate GPU retained-bytes and Falcon package-entry cases with
+accepted source custody. The largest observed process tree is 4.14 GiB. These
+are scoped correctness and resource observations; the Falcon fixture uses a
+stub model. The owning Rust budget/cache controls, other matrix cells and
+comparative performance acceptance remain separate obligations.
+
 ## Storage
 
 Capacity includes where state lives. The frontend's source record store
@@ -123,11 +163,33 @@ sequentially. Volume choice is measured per machine, not a fixed path.
    measured worker peak times 1.25 (the guard samples about every 2 s and can
    miss a short peak), rounded up to a quarter GiB. Measured units on macOS
    arm64 run from 0.22 GiB to 4.94 GiB, so no single default fits. The proof
-   executor divides the memory beyond the reserve among the commands it runs
-   at once and exports each share as the slice its `-n auto` sizes within; a
-   slice already holds the reserve, so nothing inside subtracts it again.
-   The landing's merged run uses `-n auto` with the default unit, and CI no
-   longer exports a runner-wide worker count. On the 7 GB macOS runner the
+   executor divides the memory beyond the reserve by the maximum simultaneous
+   commands allowed by the selected resource classes and the executor ceiling,
+   then exports each share as the slice its `-n auto` sizes within. A serialized
+   Cargo-only cohort receives one share regardless of its command count. This
+   static upper bound takes linear work in the selected commands and resource
+   policies; dependency ordering can leave some shares idle. This bound is our
+   inference from the already enforced pool/global limits, not a claim that
+   Ninja implements these memory slices. It does not claim
+   elastic reallocation or a host-wide jobserver. A slice already holds the
+   reserve, so nothing inside subtracts it again. One typed memory snapshot owns
+   both the live readings and reserve decision.
+   Landing cohorts use `-n auto` with the largest envelope owned by their
+   selected test paths or nodes. One prefix index derives those envelopes from
+   the existing command argv; directories include descendant envelopes, and
+   uncovered targets retain the shared ad hoc default. Selectors keep their
+   file envelope until a narrower measurement exists. Index construction and
+   lookup take work proportional to the declared and requested path/node
+   components, with no filesystem scan or pytest collection. The plugin and
+   projection share the default in the lightweight capacity authority; parsing
+   policy does not import pytest. A bounded macOS arm64 observation over 161
+   commands and 827 index nodes measures a 3.85 ms median construction and
+   0.30 ms warmed selection for 33 gates; the first cold selection takes
+   15.63 ms including pattern compilation. Python-traced peak index allocation
+   is 186,330 bytes. This is accepted development-side metadata cost for
+   preserving declared allocations, not an emitted-program cost or a general
+   wall-clock performance claim. CI no longer exports a runner-wide worker
+   count. On the 7 GB macOS runner the
    suites with units above 1.1 GiB now run one worker; their CI budgets at
    one worker are unverified.
 2. Split the tests that alone bound a suite's wall time.

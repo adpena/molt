@@ -88,6 +88,17 @@ For strings:
 
 v0.1 recommendation: **host copies results** for simplicity and safety.
 
+Application callable exports (`molt.wasm.app-call`, declared in
+`src/molt/cli/app_export_contract.py` and published as
+`manifest.abi.app_exports`) pass tagged-i64 object references. An export adopts
+each argument, as every Python frame entry does: the host materializes one owned
+reference per parameter and moves it into the call. The host never releases an
+argument after the call; it releases only the arguments it built before a
+conversion failed. The result is one owned reference, which the host releases
+after decoding it. The contract refuses an exported entry whose FunctionIR
+`parameter_custody` does not transfer every parameter. `invokeAppExport` in
+`wasm/runtime_lifecycle.js` is the one host implementation.
+
 ---
 
 ## 4. Error Model (Required for Cross-Platform Consistency)

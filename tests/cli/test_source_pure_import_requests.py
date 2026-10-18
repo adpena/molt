@@ -2043,3 +2043,121 @@ def test_one_operation_resolves_the_record_store_roots_once(tmp_path, monkeypatc
     with _source_tree_fingerprint_transaction():
         records._source_records(tmp_path, sources[0])
     assert len(resolved) == 2
+
+
+def test_module_export_fact_is_shared_by_owner_arguments_and_star_consumer(
+    tmp_path, monkeypatch
+):
+    from molt.compiler_analysis.python_source_keys import python_node_source_key
+
+    source = (
+        "__all__ = ['visible']\n"
+        "def first(name):\n    return name\n"
+        "def second(name):\n    return name\n"
+    )
+    package = write(tmp_path / "pkg/__init__.py", source)
+    visible = write(tmp_path / "pkg/visible.py")
+    namespace = {}
+    exec(compile(source, str(package), "exec", dont_inherit=True), namespace)
+    expected = tuple(namespace["__all__"])
+    target = TargetPythonVersion(3, 12, 0)
+    cache = _ModuleResolutionCache()
+    parsed = cache.parse_module_ast(
+        package, source, filename=str(package), target_python=target
+    )
+    original = _source_import_scan.python_scope_declarations
+    declarations = []
+
+    def observe(*args, **kwargs):
+        declarations.append(args[0])
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(_source_import_scan, "python_scope_declarations", observe)
+    owners = [python_node_source_key(node) for node in parsed.tree.body[1:]]
+    projections = [
+        _source_import_scan._collect_imports_for_graph(
+            parsed.tree,
+            "pkg",
+            is_package=True,
+            import_scan_mode="module_init",
+            source_owner=owner,
+            source_arguments=arguments,
+            target_python=target,
+            ast_digest_admission=parsed.admission,
+        )
+        for owner, arguments in (
+            (None, ()),
+            (owners[0], ("one",)),
+            (owners[0], ("two",)),
+            (owners[1], ("one",)),
+        )
+    ]
+    children, exports = scanner._expand_static_package_all_star_children(
+        ("pkg",),
+        roots=[tmp_path],
+        stdlib_root=tmp_path / "stdlib",
+        stdlib_allowlist=set(),
+        resolution_cache=cache,
+        target_python=target,
+        module_graph={"pkg": package, "pkg.visible": visible},
+    )
+    assert all(projection.all_exports.names == expected for projection in projections)
+    assert exports["pkg"].names == expected
+    assert children == {"pkg": ("pkg.visible",)}
+    # Only the two function declarations need the module-level export check;
+    # changing an activated owner or its arguments must not repeat that walk.
+    assert len(declarations) == 2
+
+
+def test_module_export_fact_qualifies_target_and_namespace_premise():
+    from molt.compiler_analysis.python_namespace_graph import PythonNamespacePremise
+    from molt.compiler_analysis.python_source_keys import _PythonAstDigestAdmission
+
+    source = "__all__ = ['visible']\nmarker: __all__\n"
+    tree = ast.parse(source)
+    admission = _PythonAstDigestAdmission(tree)
+    closed = PythonNamespacePremise((), 0)
+
+    def exports(minor, premise):
+        return _source_import_scan._static_module_all_exports(
+            tree,
+            target_python=TargetPythonVersion(3, minor, 0),
+            namespace_premise=premise,
+            ast_digest_admission=admission,
+        )
+
+    # Before PEP 649's deferred annotations the mutable export list escapes
+    # through __annotations__. From 3.14 that annotation has not executed.
+    namespace = {}
+    exec(compile(source, "exports.py", "exec", dont_inherit=True), namespace)
+    if sys.version_info < (3, 14):
+        assert namespace["__annotations__"]["marker"] is namespace["__all__"]
+    assert exports(13, closed).status == "unknown"
+    assert exports(14, closed).names == ("visible",)
+    assert exports(14, PythonNamespacePremise(("__all__",), 0)).status == "unknown"
+    assert exports(14, PythonNamespacePremise(None, 0)).status == "unknown"
+    assert exports(14, closed).names == ("visible",)
+    with pytest.raises(ValueError, match="different tree"):
+        _source_import_scan._static_module_all_exports(
+            ast.parse(source),
+            target_python=TargetPythonVersion(3, 14, 0),
+            ast_digest_admission=admission,
+        )
+
+
+def test_module_export_fact_does_not_outlive_source_generation(tmp_path):
+    source = write(tmp_path / "entry.py", "__all__ = ['before']\n")
+    cache = _ModuleResolutionCache()
+    before = load(source, resolution_cache=cache)
+    write(source, "__all__ = ['after_']\n")
+    namespace = {}
+    exec(
+        compile(
+            source.read_text(encoding="utf-8"), str(source), "exec", dont_inherit=True
+        ),
+        namespace,
+    )
+    after = load(source, resolution_cache=cache)
+    assert before.scan.source_requests.all_exports.names == ("before",)
+    assert after.scan.source_requests.all_exports.names == tuple(namespace["__all__"])
+    assert not after.cache_hit

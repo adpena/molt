@@ -1,7 +1,6 @@
 use crate::bridge::*;
 use molt_cpython_abi::native_custody::{ByteInput, PyBUF_FULL_RO, PyBUF_SIMPLE};
 use molt_runtime_core::prelude::*;
-use molt_runtime_core::rt_raise_class;
 
 // ─── Standard base64 alphabet ───────────────────────────────────────────────
 
@@ -22,9 +21,8 @@ const MAXBINSIZE: usize = (MAXLINESIZE / 4) * 3;
 
 // ─── helpers ────────────────────────────────────────────────────────────────
 
-/// CPython `base64._bytes_from_decode_data`: an ASCII `str` or any buffer.
-/// The buffer path is `memoryview(s).tobytes()`, and only its TypeError
-/// becomes the base64 message; any other error propagates unchanged.
+/// Decode a facade-proven exact bytes, bytearray or str operand. Generic source
+/// coercion and subtype protocol dispatch remain in the Python facade.
 fn bytes_from_decode_data(py: &PyToken, bits: u64) -> Result<Vec<u8>, u64> {
     let obj = obj_from_bits(bits);
     if let Some(ptr) = obj.as_ptr() {
@@ -33,11 +31,7 @@ fn bytes_from_decode_data(py: &PyToken, bits: u64) -> Result<Vec<u8>, u64> {
                 TYPE_ID_STRING => {
                     let text = string_bytes(ptr);
                     if !text.is_ascii() {
-                        return Err(raise_exception::<_>(
-                            py,
-                            "ValueError",
-                            "string argument should contain only ASCII characters",
-                        ));
+                        return Err(decode_ascii_input(py, bits));
                     }
                     return Ok(text.to_vec());
                 }
@@ -48,16 +42,9 @@ fn bytes_from_decode_data(py: &PyToken, bits: u64) -> Result<Vec<u8>, u64> {
             }
         }
     }
-    snapshot_decode_buffer(py, bits).map_err(|error| {
-        if !pending_exception_matches_builtin(py, "TypeError") {
-            return error;
-        }
-        clear_exception(py);
-        let type_label = type_name(py, obj);
-        let msg =
-            format!("argument should be a bytes-like object or ASCII string, not '{type_label}'");
-        raise_exception::<_>(py, "TypeError", &msg)
-    })
+    // Generic Python coercion, including exception chaining, belongs to the
+    // facade. Native specialization reaches this helper with exact inputs.
+    snapshot_decode_buffer(py, bits)
 }
 
 // Python base64 takes a memoryview snapshot for its non-bytes decode and
@@ -183,6 +170,124 @@ fn b64_encode(input: &[u8], alphabet: &[u8; 64]) -> Vec<u8> {
     out
 }
 
+/// CPython 3.12–3.14 Modules/binascii.c::binascii_a2b_base64_impl.
+/// One pass and one output allocation; no filtered-input copy or invented pad.
+pub(crate) fn b64_decode(
+    input: &[u8],
+    strict: bool,
+) -> Result<Vec<u8>, std::borrow::Cow<'static, str>> {
+    const VALUES: [u8; 256] = {
+        let mut values = [u8::MAX; 256];
+        let mut index = 0;
+        while index < 64 {
+            values[B64_STD[index] as usize] = index as u8;
+            index += 1;
+        }
+        values
+    };
+    let mut output = Vec::with_capacity(input.len().div_ceil(4) * 3);
+    if strict && input.first() == Some(&b'=') {
+        return Err("Leading padding not allowed".into());
+    }
+    let mut quad = 0u8;
+    let mut left = 0u8;
+    let mut pads = 0u8;
+    let mut padding_started = false;
+    let mut index = 0;
+    while index < input.len() {
+        // A whole valid quantum is one transition of the same state machine.
+        // The invalid sentinel keeps padding/junk on its ordered scalar path.
+        if quad == 0 && input.len() - index >= 4 {
+            let chunk = &input[index..index + 4];
+            let a = VALUES[chunk[0] as usize];
+            let b = VALUES[chunk[1] as usize];
+            let c = VALUES[chunk[2] as usize];
+            let d = VALUES[chunk[3] as usize];
+            if (a | b | c | d) < 64 {
+                output.extend_from_slice(&[(a << 2) | (b >> 4), (b << 4) | (c >> 2), (c << 6) | d]);
+                index += 4;
+                pads = 0;
+                continue;
+            }
+        }
+        let byte = input[index];
+        index += 1;
+        if byte == b'=' {
+            padding_started = true;
+            if strict && quad == 0 {
+                return Err("Excess padding not allowed".into());
+            }
+            if quad >= 2 {
+                pads += 1;
+                if quad + pads >= 4 {
+                    if strict && index < input.len() {
+                        return Err("Excess data after padding".into());
+                    }
+                    return Ok(output);
+                }
+            }
+            continue;
+        }
+        let value = VALUES[byte as usize];
+        if value >= 64 {
+            if strict {
+                return Err("Only base64 data is allowed".into());
+            }
+            // Ignored bytes leave every parser state unchanged. Reduce whole
+            // chunks without a short-circuit branch so LLVM can vectorize the
+            // alphabet/padding predicate; no filtered-input buffer is needed.
+            while input.len() - index >= 16 {
+                let retained = input[index..index + 16].iter().fold(0u8, |mask, &byte| {
+                    mask | u8::from(
+                        (byte.wrapping_sub(b'A') <= 25)
+                            | (byte.wrapping_sub(b'a') <= 25)
+                            | (byte.wrapping_sub(b'0') <= 9)
+                            | (byte == b'+')
+                            | (byte == b'/')
+                            | (byte == b'='),
+                    )
+                });
+                if retained != 0 {
+                    break;
+                }
+                index += 16;
+            }
+            continue;
+        }
+        if strict && padding_started {
+            return Err("Discontinuous padding not allowed".into());
+        }
+        pads = 0;
+        match quad {
+            0 => {
+                left = value;
+                quad = 1;
+            }
+            1 => {
+                output.push((left << 2) | (value >> 4));
+                left = value & 0x0f;
+                quad = 2;
+            }
+            2 => {
+                output.push((left << 4) | (value >> 2));
+                left = value & 0x03;
+                quad = 3;
+            }
+            3 => {
+                output.push((left << 6) | value);
+                left = 0;
+                quad = 0;
+            }
+            _ => unreachable!("base64 quantum has four states"),
+        }
+    }
+    match quad {
+        0 => Ok(output),
+        1 => Err(format!("Invalid base64-encoded string: number of data characters ({}) cannot be 1 more than a multiple of 4", output.len() / 3 * 4 + 1).into()),
+        _ => Err("Incorrect padding".into()),
+    }
+}
+
 // ─── base32 core ────────────────────────────────────────────────────────────
 
 fn b32_encode(input: &[u8], alphabet: &[u8; 32]) -> Vec<u8> {
@@ -241,36 +346,27 @@ fn b32_decode_table(alphabet: &[u8; 32]) -> [Option<u8>; 256] {
     table
 }
 
-fn b32_decode(
-    input: &[u8],
-    alphabet: &[u8; 32],
-    casefold: bool,
-    map01: Option<u8>,
-) -> Result<Vec<u8>, &'static str> {
+// Success-only specialization: a decline publishes no error. The compiled
+// Python suffix owns failure precedence, mutable Error calls and KeyError context.
+fn b32_decode(input: &[u8], alphabet: &[u8; 32], casefold: bool) -> Option<Vec<u8>> {
     let mut data = input.to_vec();
-
-    // Apply map01 transformation: 0 -> O, 1 -> map01_char
-    if let Some(map_byte) = map01 {
-        for b in &mut data {
-            if *b == b'0' {
-                *b = b'O';
-            } else if *b == b'1' {
-                *b = map_byte;
-            }
-        }
-    }
 
     if casefold {
         data.make_ascii_uppercase();
     }
 
     if !data.len().is_multiple_of(8) {
-        return Err("Incorrect padding");
+        return None;
     }
 
     let table = b32_decode_table(alphabet);
     let stripped_len = data.iter().rposition(|&b| b != b'=').map_or(0, |p| p + 1);
     let padchars = data.len() - stripped_len;
+
+    if padchars != 0 && padchars != 1 && padchars != 3 && padchars != 4 && padchars != 6 {
+        return None;
+    }
+
     let stripped = &data[..stripped_len];
 
     let mut out = Vec::with_capacity(stripped.len() * 5 / 8 + 5);
@@ -279,9 +375,7 @@ fn b32_decode(
         let chunk_len = chunk.len().min(8);
         let mut acc: u64 = 0;
         for i in 0..chunk_len {
-            let Some(val) = table[chunk[i] as usize] else {
-                return Err("Non-base32 digit found");
-            };
+            let val = table[chunk[i] as usize]?;
             acc = (acc << 5) | (val as u64);
         }
         // Pad remaining bits if chunk < 8
@@ -293,10 +387,6 @@ fn b32_decode(
         out.push(((acc >> 16) & 0xFF) as u8);
         out.push(((acc >> 8) & 0xFF) as u8);
         out.push((acc & 0xFF) as u8);
-    }
-    // CPython checks the digits of every quantum before the padding count.
-    if !matches!(padchars, 0 | 1 | 3 | 4 | 6) {
-        return Err("Incorrect padding");
     }
 
     // Trim output based on padding
@@ -311,7 +401,7 @@ fn b32_decode(
         out.truncate(out.len() - trim);
     }
 
-    Ok(out)
+    Some(out)
 }
 
 // ─── base16 / hex ───────────────────────────────────────────────────────────
@@ -435,21 +525,36 @@ fn b16_encode(input: &[u8]) -> Vec<u8> {
     out
 }
 
-/// CPython's `base64.b16decode`: uppercase digits only (unless `casefold`),
-/// checked before `binascii.unhexlify` reports an odd length.
-fn b16_decode(input: &[u8], casefold: bool) -> Result<Vec<u8>, &'static str> {
-    let data = if casefold {
-        input.to_ascii_uppercase()
+fn hex_nibble(b: u8) -> Option<u8> {
+    match b {
+        b'0'..=b'9' => Some(b - b'0'),
+        b'A'..=b'F' => Some(b - b'A' + 10),
+        _ => None,
+    }
+}
+
+// The Python suffix distinguishes its own alphabet error from unhexlify's
+// native odd-length error. A decline keeps that distinction at its source.
+fn b16_decode(input: &[u8], casefold: bool) -> Option<Vec<u8>> {
+    let data: Vec<u8> = if casefold {
+        input.iter().map(|b| b.to_ascii_uppercase()).collect()
     } else {
         input.to_vec()
     };
-    if data
-        .iter()
-        .any(|byte| !matches!(byte, b'0'..=b'9' | b'A'..=b'F'))
-    {
-        return Err("Non-base16 digit found");
+
+    if !data.len().is_multiple_of(2) {
+        return None;
     }
-    crate::binascii::a2b_hex(&data)
+
+    let mut out = Vec::with_capacity(data.len() / 2);
+    let mut idx = 0usize;
+    while idx < data.len() {
+        let hi = hex_nibble(data[idx])?;
+        let lo = hex_nibble(data[idx + 1])?;
+        out.push((hi << 4) | lo);
+        idx += 2;
+    }
+    Some(out)
 }
 
 // ─── Ascii85 (a85) ─────────────────────────────────────────────────────────
@@ -700,7 +805,7 @@ pub extern "C" fn molt_base64_b64encode(data_bits: u64, altchars_bits: u64) -> u
         let mut alphabet = *B64_STD;
         let altchars_obj = obj_from_bits(altchars_bits);
         if !altchars_obj.is_none() {
-            let alt = match bytes_from_decode_data(_py, altchars_bits) {
+            let alt = match encode_bytes_like_arg(_py, altchars_bits, PyBUF_SIMPLE) {
                 Ok(v) => v,
                 Err(bits) => return bits,
             };
@@ -725,18 +830,8 @@ pub extern "C" fn molt_base64_b64encode(data_bits: u64, altchars_bits: u64) -> u
     })
 }
 
-/// `binascii.a2b_base64(data, strict_mode=strict)`: CPython's base64 decoders
-/// all delegate to it, and so do these. `error_type` is `binascii.Error`.
-fn a2b_base64_result(py: &PyToken, error_type: u64, data: &[u8], strict: bool) -> u64 {
-    match crate::binascii::a2b_base64(data, strict) {
-        Ok(decoded) => alloc_bytes_result(py, &decoded),
-        Err(error) => rt_raise_class(py, error_type, &error.message()),
-    }
-}
-
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_base64_b64decode(
-    error_type: u64,
     data_bits: u64,
     altchars_bits: u64,
     validate_bits: u64,
@@ -771,7 +866,13 @@ pub extern "C" fn molt_base64_b64decode(
             }
         }
 
-        a2b_base64_result(_py, error_type, &raw, validate)
+        let decoded = match b64_decode(&raw, validate) {
+            Ok(v) => v,
+            Err(msg) => {
+                return raise_binascii_error(_py, msg.as_ref());
+            }
+        };
+        alloc_bytes_result(_py, &decoded)
     })
 }
 
@@ -788,13 +889,17 @@ pub extern "C" fn molt_base64_standard_b64encode(data_bits: u64) -> u64 {
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn molt_base64_standard_b64decode(error_type: u64, data_bits: u64) -> u64 {
+pub extern "C" fn molt_base64_standard_b64decode(data_bits: u64) -> u64 {
     molt_runtime_core::with_gil_entry!(_py, {
         let raw = match bytes_from_decode_data(_py, data_bits) {
             Ok(v) => v,
             Err(bits) => return bits,
         };
-        a2b_base64_result(_py, error_type, &raw, false)
+        let decoded = match b64_decode(&raw, false) {
+            Ok(v) => v,
+            Err(msg) => return raise_binascii_error(_py, msg.as_ref()),
+        };
+        alloc_bytes_result(_py, &decoded)
     })
 }
 
@@ -811,7 +916,7 @@ pub extern "C" fn molt_base64_urlsafe_b64encode(data_bits: u64) -> u64 {
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn molt_base64_urlsafe_b64decode(error_type: u64, data_bits: u64) -> u64 {
+pub extern "C" fn molt_base64_urlsafe_b64decode(data_bits: u64) -> u64 {
     molt_runtime_core::with_gil_entry!(_py, {
         let mut raw = match bytes_from_decode_data(_py, data_bits) {
             Ok(v) => v,
@@ -825,7 +930,11 @@ pub extern "C" fn molt_base64_urlsafe_b64decode(error_type: u64, data_bits: u64)
                 *b = b'/';
             }
         }
-        a2b_base64_result(_py, error_type, &raw, false)
+        let decoded = match b64_decode(&raw, false) {
+            Ok(v) => v,
+            Err(msg) => return raise_binascii_error(_py, msg.as_ref()),
+        };
+        alloc_bytes_result(_py, &decoded)
     })
 }
 
@@ -842,35 +951,16 @@ pub extern "C" fn molt_base64_b32encode(data_bits: u64) -> u64 {
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn molt_base64_b32decode(
-    error_type: u64,
-    data_bits: u64,
-    casefold_bits: u64,
-    map01_bits: u64,
-) -> u64 {
+pub extern "C" fn molt_base64_b32decode(data_bits: u64, casefold_bits: u64) -> u64 {
     molt_runtime_core::with_gil_entry!(_py, {
         let raw = match bytes_from_decode_data(_py, data_bits) {
             Ok(v) => v,
             Err(bits) => return bits,
         };
         let casefold = bool_from_bits(casefold_bits);
-        let map01_obj = obj_from_bits(map01_bits);
-        let map01 = if map01_obj.is_none() {
-            None
-        } else {
-            // Extract the first byte of the map01 argument
-            let m = match bytes_from_decode_data(_py, map01_bits) {
-                Ok(v) => v,
-                Err(bits) => return bits,
-            };
-            if m.len() != 1 {
-                return raise_exception::<_>(_py, "ValueError", "map01 must be length 1");
-            }
-            Some(m[0])
-        };
-        let decoded = match b32_decode(&raw, B32_STD, casefold, map01) {
-            Ok(v) => v,
-            Err(message) => return rt_raise_class(_py, error_type, message),
+        let decoded = match b32_decode(&raw, B32_STD, casefold) {
+            Some(v) => v,
+            None => return MoltObject::none().bits(),
         };
         alloc_bytes_result(_py, &decoded)
     })
@@ -889,20 +979,16 @@ pub extern "C" fn molt_base64_b32hexencode(data_bits: u64) -> u64 {
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn molt_base64_b32hexdecode(
-    error_type: u64,
-    data_bits: u64,
-    casefold_bits: u64,
-) -> u64 {
+pub extern "C" fn molt_base64_b32hexdecode(data_bits: u64, casefold_bits: u64) -> u64 {
     molt_runtime_core::with_gil_entry!(_py, {
         let raw = match bytes_from_decode_data(_py, data_bits) {
             Ok(v) => v,
             Err(bits) => return bits,
         };
         let casefold = bool_from_bits(casefold_bits);
-        let decoded = match b32_decode(&raw, B32_HEX, casefold, None) {
-            Ok(v) => v,
-            Err(message) => return rt_raise_class(_py, error_type, message),
+        let decoded = match b32_decode(&raw, B32_HEX, casefold) {
+            Some(v) => v,
+            None => return MoltObject::none().bits(),
         };
         alloc_bytes_result(_py, &decoded)
     })
@@ -921,11 +1007,7 @@ pub extern "C" fn molt_base64_b16encode(data_bits: u64) -> u64 {
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn molt_base64_b16decode(
-    error_type: u64,
-    data_bits: u64,
-    casefold_bits: u64,
-) -> u64 {
+pub extern "C" fn molt_base64_b16decode(data_bits: u64, casefold_bits: u64) -> u64 {
     molt_runtime_core::with_gil_entry!(_py, {
         let raw = match bytes_from_decode_data(_py, data_bits) {
             Ok(v) => v,
@@ -933,8 +1015,8 @@ pub extern "C" fn molt_base64_b16decode(
         };
         let casefold = bool_from_bits(casefold_bits);
         let decoded = match b16_decode(&raw, casefold) {
-            Ok(v) => v,
-            Err(message) => return rt_raise_class(_py, error_type, message),
+            Some(v) => v,
+            None => return MoltObject::none().bits(),
         };
         alloc_bytes_result(_py, &decoded)
     })
@@ -1034,12 +1116,12 @@ pub extern "C" fn molt_base64_encodebytes(data_bits: u64) -> u64 {
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn molt_base64_decodebytes(error_type: u64, data_bits: u64) -> u64 {
+pub extern "C" fn molt_base64_decodebytes(data_bits: u64) -> u64 {
     molt_runtime_core::with_gil_entry!(_py, {
-        let raw = match bytes_from_decode_data(_py, data_bits) {
-            Ok(v) => v,
-            Err(bits) => return bits,
-        };
-        a2b_base64_result(_py, error_type, &raw, false)
+        crate::binascii::a2b_base64(
+            _py,
+            data_bits,
+            crate::binascii::Base64Strictness::Permissive,
+        )
     })
 }

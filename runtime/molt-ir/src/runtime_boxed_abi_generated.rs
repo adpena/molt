@@ -900,7 +900,7 @@ pub const RUNTIME_BOXED_ABIS: &[RuntimeBoxedAbi] = &[
     },
     RuntimeBoxedAbi {
         symbol: "molt_base64_b16decode",
-        arity: 3,
+        arity: 2,
         result: RuntimeBoxedReturn::OwnedValue,
     },
     RuntimeBoxedAbi {
@@ -910,7 +910,7 @@ pub const RUNTIME_BOXED_ABIS: &[RuntimeBoxedAbi] = &[
     },
     RuntimeBoxedAbi {
         symbol: "molt_base64_b32decode",
-        arity: 4,
+        arity: 2,
         result: RuntimeBoxedReturn::OwnedValue,
     },
     RuntimeBoxedAbi {
@@ -920,7 +920,7 @@ pub const RUNTIME_BOXED_ABIS: &[RuntimeBoxedAbi] = &[
     },
     RuntimeBoxedAbi {
         symbol: "molt_base64_b32hexdecode",
-        arity: 3,
+        arity: 2,
         result: RuntimeBoxedReturn::OwnedValue,
     },
     RuntimeBoxedAbi {
@@ -930,7 +930,7 @@ pub const RUNTIME_BOXED_ABIS: &[RuntimeBoxedAbi] = &[
     },
     RuntimeBoxedAbi {
         symbol: "molt_base64_b64decode",
-        arity: 4,
+        arity: 3,
         result: RuntimeBoxedReturn::OwnedValue,
     },
     RuntimeBoxedAbi {
@@ -950,7 +950,7 @@ pub const RUNTIME_BOXED_ABIS: &[RuntimeBoxedAbi] = &[
     },
     RuntimeBoxedAbi {
         symbol: "molt_base64_decodebytes",
-        arity: 2,
+        arity: 1,
         result: RuntimeBoxedReturn::OwnedValue,
     },
     RuntimeBoxedAbi {
@@ -960,7 +960,7 @@ pub const RUNTIME_BOXED_ABIS: &[RuntimeBoxedAbi] = &[
     },
     RuntimeBoxedAbi {
         symbol: "molt_base64_standard_b64decode",
-        arity: 2,
+        arity: 1,
         result: RuntimeBoxedReturn::OwnedValue,
     },
     RuntimeBoxedAbi {
@@ -970,7 +970,7 @@ pub const RUNTIME_BOXED_ABIS: &[RuntimeBoxedAbi] = &[
     },
     RuntimeBoxedAbi {
         symbol: "molt_base64_urlsafe_b64decode",
-        arity: 2,
+        arity: 1,
         result: RuntimeBoxedReturn::OwnedValue,
     },
     RuntimeBoxedAbi {
@@ -985,12 +985,12 @@ pub const RUNTIME_BOXED_ABIS: &[RuntimeBoxedAbi] = &[
     },
     RuntimeBoxedAbi {
         symbol: "molt_binascii_a2b_base64",
-        arity: 3,
+        arity: 2,
         result: RuntimeBoxedReturn::OwnedValue,
     },
     RuntimeBoxedAbi {
         symbol: "molt_binascii_a2b_hex",
-        arity: 2,
+        arity: 1,
         result: RuntimeBoxedReturn::OwnedValue,
     },
     RuntimeBoxedAbi {
@@ -1000,7 +1000,7 @@ pub const RUNTIME_BOXED_ABIS: &[RuntimeBoxedAbi] = &[
     },
     RuntimeBoxedAbi {
         symbol: "molt_binascii_a2b_uu",
-        arity: 2,
+        arity: 1,
         result: RuntimeBoxedReturn::OwnedValue,
     },
     RuntimeBoxedAbi {
@@ -1020,7 +1020,7 @@ pub const RUNTIME_BOXED_ABIS: &[RuntimeBoxedAbi] = &[
     },
     RuntimeBoxedAbi {
         symbol: "molt_binascii_b2a_uu",
-        arity: 2,
+        arity: 1,
         result: RuntimeBoxedReturn::OwnedValue,
     },
     RuntimeBoxedAbi {
@@ -1031,6 +1031,16 @@ pub const RUNTIME_BOXED_ABIS: &[RuntimeBoxedAbi] = &[
     RuntimeBoxedAbi {
         symbol: "molt_binascii_crc_hqx",
         arity: 2,
+        result: RuntimeBoxedReturn::OwnedValue,
+    },
+    RuntimeBoxedAbi {
+        symbol: "molt_binascii_error_type",
+        arity: 0,
+        result: RuntimeBoxedReturn::OwnedValue,
+    },
+    RuntimeBoxedAbi {
+        symbol: "molt_binascii_incomplete_type",
+        arity: 0,
         result: RuntimeBoxedReturn::OwnedValue,
     },
     RuntimeBoxedAbi {
@@ -9190,12 +9200,12 @@ pub const RUNTIME_BOXED_ABIS: &[RuntimeBoxedAbi] = &[
     },
     RuntimeBoxedAbi {
         symbol: "molt_re_expand_replacement",
-        arity: 2,
+        arity: 3,
         result: RuntimeBoxedReturn::OwnedValue,
     },
     RuntimeBoxedAbi {
-        symbol: "molt_re_finditer_collect",
-        arity: 4,
+        symbol: "molt_re_finditer_next",
+        arity: 2,
         result: RuntimeBoxedReturn::OwnedValue,
     },
     RuntimeBoxedAbi {
@@ -9204,23 +9214,13 @@ pub const RUNTIME_BOXED_ABIS: &[RuntimeBoxedAbi] = &[
         result: RuntimeBoxedReturn::OwnedValue,
     },
     RuntimeBoxedAbi {
-        symbol: "molt_re_match_group",
-        arity: 4,
-        result: RuntimeBoxedReturn::OwnedValue,
-    },
-    RuntimeBoxedAbi {
-        symbol: "molt_re_match_groupdict",
-        arity: 4,
-        result: RuntimeBoxedReturn::OwnedValue,
-    },
-    RuntimeBoxedAbi {
-        symbol: "molt_re_match_groups",
-        arity: 3,
-        result: RuntimeBoxedReturn::OwnedValue,
-    },
-    RuntimeBoxedAbi {
         symbol: "molt_re_pattern_info",
         arity: 1,
+        result: RuntimeBoxedReturn::OwnedValue,
+    },
+    RuntimeBoxedAbi {
+        symbol: "molt_re_scanner_new",
+        arity: 4,
         result: RuntimeBoxedReturn::OwnedValue,
     },
     RuntimeBoxedAbi {
@@ -9236,6 +9236,16 @@ pub const RUNTIME_BOXED_ABIS: &[RuntimeBoxedAbi] = &[
     RuntimeBoxedAbi {
         symbol: "molt_re_sub",
         arity: 4,
+        result: RuntimeBoxedReturn::OwnedValue,
+    },
+    RuntimeBoxedAbi {
+        symbol: "molt_re_subject_snapshot",
+        arity: 1,
+        result: RuntimeBoxedReturn::OwnedValue,
+    },
+    RuntimeBoxedAbi {
+        symbol: "molt_re_subject_view",
+        arity: 1,
         result: RuntimeBoxedReturn::OwnedValue,
     },
     RuntimeBoxedAbi {
@@ -13058,30 +13068,30 @@ pub const RUNTIME_BOXED_OP_KINDS: &[&str] = &[
 
 pub fn runtime_boxed_op_abi(kind: &str) -> Option<&'static RuntimeBoxedAbi> {
     match kind {
-        "bytearray_count" => Some(&RUNTIME_BOXED_ABIS[221]),
-        "bytearray_count_slice" => Some(&RUNTIME_BOXED_ABIS[222]),
-        "bytearray_endswith" => Some(&RUNTIME_BOXED_ABIS[223]),
-        "bytearray_endswith_slice" => Some(&RUNTIME_BOXED_ABIS[224]),
-        "bytearray_find" => Some(&RUNTIME_BOXED_ABIS[226]),
-        "bytearray_find_slice" => Some(&RUNTIME_BOXED_ABIS[227]),
-        "bytearray_startswith" => Some(&RUNTIME_BOXED_ABIS[233]),
-        "bytearray_startswith_slice" => Some(&RUNTIME_BOXED_ABIS[234]),
-        "bytes_count" => Some(&RUNTIME_BOXED_ABIS[235]),
-        "bytes_count_slice" => Some(&RUNTIME_BOXED_ABIS[236]),
-        "bytes_endswith" => Some(&RUNTIME_BOXED_ABIS[237]),
-        "bytes_endswith_slice" => Some(&RUNTIME_BOXED_ABIS[238]),
-        "bytes_find" => Some(&RUNTIME_BOXED_ABIS[239]),
-        "bytes_find_slice" => Some(&RUNTIME_BOXED_ABIS[240]),
-        "bytes_startswith" => Some(&RUNTIME_BOXED_ABIS[246]),
-        "bytes_startswith_slice" => Some(&RUNTIME_BOXED_ABIS[247]),
-        "string_count" => Some(&RUNTIME_BOXED_ABIS[2164]),
-        "string_count_slice" => Some(&RUNTIME_BOXED_ABIS[2165]),
-        "string_endswith" => Some(&RUNTIME_BOXED_ABIS[2166]),
-        "string_endswith_slice" => Some(&RUNTIME_BOXED_ABIS[2167]),
-        "string_find" => Some(&RUNTIME_BOXED_ABIS[2169]),
-        "string_find_slice" => Some(&RUNTIME_BOXED_ABIS[2170]),
-        "string_startswith" => Some(&RUNTIME_BOXED_ABIS[2192]),
-        "string_startswith_slice" => Some(&RUNTIME_BOXED_ABIS[2193]),
+        "bytearray_count" => Some(&RUNTIME_BOXED_ABIS[223]),
+        "bytearray_count_slice" => Some(&RUNTIME_BOXED_ABIS[224]),
+        "bytearray_endswith" => Some(&RUNTIME_BOXED_ABIS[225]),
+        "bytearray_endswith_slice" => Some(&RUNTIME_BOXED_ABIS[226]),
+        "bytearray_find" => Some(&RUNTIME_BOXED_ABIS[228]),
+        "bytearray_find_slice" => Some(&RUNTIME_BOXED_ABIS[229]),
+        "bytearray_startswith" => Some(&RUNTIME_BOXED_ABIS[235]),
+        "bytearray_startswith_slice" => Some(&RUNTIME_BOXED_ABIS[236]),
+        "bytes_count" => Some(&RUNTIME_BOXED_ABIS[237]),
+        "bytes_count_slice" => Some(&RUNTIME_BOXED_ABIS[238]),
+        "bytes_endswith" => Some(&RUNTIME_BOXED_ABIS[239]),
+        "bytes_endswith_slice" => Some(&RUNTIME_BOXED_ABIS[240]),
+        "bytes_find" => Some(&RUNTIME_BOXED_ABIS[241]),
+        "bytes_find_slice" => Some(&RUNTIME_BOXED_ABIS[242]),
+        "bytes_startswith" => Some(&RUNTIME_BOXED_ABIS[248]),
+        "bytes_startswith_slice" => Some(&RUNTIME_BOXED_ABIS[249]),
+        "string_count" => Some(&RUNTIME_BOXED_ABIS[2166]),
+        "string_count_slice" => Some(&RUNTIME_BOXED_ABIS[2167]),
+        "string_endswith" => Some(&RUNTIME_BOXED_ABIS[2168]),
+        "string_endswith_slice" => Some(&RUNTIME_BOXED_ABIS[2169]),
+        "string_find" => Some(&RUNTIME_BOXED_ABIS[2171]),
+        "string_find_slice" => Some(&RUNTIME_BOXED_ABIS[2172]),
+        "string_startswith" => Some(&RUNTIME_BOXED_ABIS[2194]),
+        "string_startswith_slice" => Some(&RUNTIME_BOXED_ABIS[2195]),
         _ => None,
     }
 }

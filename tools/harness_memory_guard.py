@@ -1704,7 +1704,7 @@ class RepoProcessMemorySentinel:
 
         self._suite_custody: ModuleType = backend_daemon_suite_custody
         self._daemon_suite_lease = None
-        self._daemon_suite_lease_previous = None
+        self._daemon_suite_scope = contextlib.ExitStack()
         self._tree_tracker = memory_guard.ProcessTreeTracker(os.getpid())
         self._sample_observed_at_ns: int | None = None
         self._suite_adopted_pids: set[int] = set()
@@ -1726,27 +1726,14 @@ class RepoProcessMemorySentinel:
         try:
             self._started_monotonic = time.monotonic()
             self._started_at = _utc_timestamp()
-            if os.name == "posix" and self._drain_on_exit and self._suppress_auto_guard:
-                suite_custody = self._suite_custody
-                self._daemon_suite_lease_previous = os.environ.get(
-                    suite_custody.LEASE_ENV
+            if self._drain_on_exit and self._suppress_auto_guard:
+                self._daemon_suite_lease = self._daemon_suite_scope.enter_context(
+                    self._suite_custody.daemon_suite_scope(
+                        project_root=self._repo_root,
+                        environ=os.environ,
+                        close_timeout=max(7.0, self._drain_max_runtime_sec),
+                    )
                 )
-                inherited = self._daemon_suite_lease_previous
-                samples = memory_guard.sample_processes()
-                if (
-                    not inherited
-                    or suite_custody.live_lease(
-                        Path(inherited), project_root=self._repo_root, samples=samples
-                    )
-                    is None
-                ):
-                    self._daemon_suite_lease = suite_custody.SuiteDaemonLease.start(
-                        project_root=self._repo_root, environ=os.environ
-                    )
-                    if self._daemon_suite_lease is not None:
-                        os.environ[suite_custody.LEASE_ENV] = str(
-                            self._daemon_suite_lease.path
-                        )
             if self._drain_on_exit:
                 # Only the exit drain reads the baseline. A sentinel that does
                 # not drain takes no census until its first scan.
@@ -1760,17 +1747,7 @@ class RepoProcessMemorySentinel:
             return self
         except Exception:
             try:
-                if self._daemon_suite_lease is not None:
-                    suite_custody = self._suite_custody
-                    try:
-                        self._daemon_suite_lease.close()
-                    finally:
-                        if self._daemon_suite_lease_previous is None:
-                            os.environ.pop(suite_custody.LEASE_ENV, None)
-                        else:
-                            os.environ[suite_custody.LEASE_ENV] = (
-                                self._daemon_suite_lease_previous
-                            )
+                self._daemon_suite_scope.close()
             finally:
                 if self._suppress_auto_guard:
                     _note_auto_sentinel_suppressor_exited()
@@ -1787,23 +1764,12 @@ class RepoProcessMemorySentinel:
             if self._thread is not None:
                 self._thread.join(timeout=max(0.5, self._limits.poll_interval * 2))
             try:
-                if self._daemon_suite_lease is not None:
-                    self._daemon_suite_lease.close(
-                        timeout=max(7.0, self._drain_max_runtime_sec)
-                    )
+                self._daemon_suite_scope.close()
             finally:
                 # A failed guardian must not bypass the suite's bounded drain.
                 if self._drain_on_exit:
                     self.drain_new_processes()
         finally:
-            if self._daemon_suite_lease is not None:
-                suite_custody = self._suite_custody
-                if self._daemon_suite_lease_previous is None:
-                    os.environ.pop(suite_custody.LEASE_ENV, None)
-                else:
-                    os.environ[suite_custody.LEASE_ENV] = (
-                        self._daemon_suite_lease_previous
-                    )
             if self._suppress_auto_guard:
                 _note_auto_sentinel_suppressor_exited()
 
@@ -1835,7 +1801,12 @@ class RepoProcessMemorySentinel:
         self._suite_adopted_pids = set()
         if not self._scope_to_current_tree:
             return set()
-        if os.name != "posix" or not os.environ.get("MOLT_BACKEND_DAEMON_SUITE_LEASE"):
+        # An owned receiver remains explicit custody through the fallback
+        # drain, even after its scope restored the previous environment.
+        if os.name != "posix" or (
+            self._daemon_suite_lease is None
+            and not os.environ.get("MOLT_BACKEND_DAEMON_SUITE_LEASE")
+        ):
             self._tree_tracker.update(
                 samples, observed_at_ns=self._sample_observed_at_ns
             )

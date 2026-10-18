@@ -20,6 +20,9 @@ _CGROUP_MEMBERSHIP = Path("/proc/self/cgroup")
 # The memory a parent lets this process tree use: the memory guard exports
 # the tree cap it enforces.
 MEMORY_SLICE_ENV = "MOLT_HOST_MEMORY_SLICE_BYTES"
+# Ad hoc or unowned pytest targets use this unit; registered commands and
+# local cohorts project their measured owning envelopes from the proof plan.
+DEFAULT_PYTEST_WORKER_MEMORY_GB = 2.5
 _GIB = 1024**3
 # What the operating system and its supervisors keep of physical memory: a
 # fraction, at least the minimum and at most the maximum.
@@ -126,24 +129,41 @@ def _ratio(quota: str, period: str) -> float | None:
 # --------------------------------------------------------------------------
 
 
-def memory_bytes() -> tuple[int | None, int | None]:
-    """Total and live available physical memory, one host snapshot.
+@dataclass(frozen=True, slots=True)
+class MemoryCapacity:
+    """One host observation and its separately delegated allocation ceiling."""
+
+    total_bytes: int | None
+    available_bytes: int | None
+    tree_limit_bytes: int | None = None
+
+    @property
+    def bounded_bytes(self) -> tuple[int | None, int | None]:
+        """Capacity within the allocation, for worker scheduling."""
+        limit = self.tree_limit_bytes
+        if limit is None:
+            return self.total_bytes, self.available_bytes
+        return (
+            limit if self.total_bytes is None else min(self.total_bytes, limit),
+            limit if self.available_bytes is None else min(self.available_bytes, limit),
+        )
+
+
+def memory_capacity(environ: Mapping[str, str] | None = None) -> MemoryCapacity:
+    """Raw total/live host memory and the parent's allocation, one snapshot.
 
     Linux bounds both by the active cgroup; macOS reads the Mach VM counters
-    vm_stat prints; Windows asks GlobalMemoryStatusEx. The memory slice the
-    parent exported bounds both.
+    vm_stat prints; Windows asks GlobalMemoryStatusEx. Keep the exported tree
+    limit separate: a nested guard must not reserve host memory again from it.
     """
     total, available = _probe_memory_bytes()
-    raw = os.environ.get(MEMORY_SLICE_ENV, "").strip()
+    source = os.environ if environ is None else environ
+    raw = source.get(MEMORY_SLICE_ENV, "").strip()
     if not raw:
-        return total, available
+        return MemoryCapacity(total, available)
     if not raw.isdigit() or int(raw) <= 0:
         raise ValueError(f"{MEMORY_SLICE_ENV} must be a positive integer, got {raw!r}")
-    memory_slice = int(raw)
-    return (
-        memory_slice if total is None else min(total, memory_slice),
-        memory_slice if available is None else min(available, memory_slice),
-    )
+    return MemoryCapacity(total, available, int(raw))
 
 
 def _probe_memory_bytes() -> tuple[int | None, int | None]:
@@ -170,17 +190,16 @@ def _probe_memory_bytes() -> tuple[int | None, int | None]:
     return total, available
 
 
-def headroom_bytes() -> int:
+def headroom_bytes(capacity: MemoryCapacity) -> int:
     """Memory a unit of work must leave free in this process's context.
 
     The machine's reserve, unless a parent exported a memory slice: every
     slice (a guard's tree cap, an executor's per-command share) is cut from
     memory beyond that reserve, so it already holds it.
     """
-    if os.environ.get(MEMORY_SLICE_ENV, "").strip():
+    if capacity.tree_limit_bytes is not None:
         return 0
-    total, _available = memory_bytes()
-    return reserve_bytes(total)
+    return reserve_bytes(capacity.total_bytes)
 
 
 def reserve_bytes(total_bytes: int | None) -> int:
@@ -202,7 +221,7 @@ def worker_count(
     bounded by this process's CPUs and live memory."""
     if bytes_per_worker <= 0 or headroom_bytes < 0:
         raise ValueError("worker memory policy must be positive")
-    total_memory_bytes, available_memory_bytes = memory_bytes()
+    total_memory_bytes, available_memory_bytes = memory_capacity().bounded_bytes
     return worker_count_from_samples(
         bytes_per_worker=bytes_per_worker,
         headroom_bytes=headroom_bytes,

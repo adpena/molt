@@ -14,6 +14,7 @@ pub mod float_repr;
 pub mod host_capabilities_generated;
 pub mod integer_decimal;
 pub mod numeric_error_policy_generated;
+pub mod text_storage;
 
 // ---------------------------------------------------------------------------
 // Convenience helpers (mirror the signatures in molt-runtime/src/object/mod.rs)
@@ -1254,8 +1255,17 @@ pub type RuntimeExtensionStateDrop = unsafe extern "C" fn(*mut u8);
 
 /// `MOLTVTAB` encoded as a little-endian `u64`.
 pub const RUNTIME_VTABLE_ABI_MAGIC: u64 = 0x4241_5456_544c_4f4d;
-// Version 7 adds the pending-exception match and clear transport.
-pub const RUNTIME_VTABLE_ABI_VERSION: u32 = 7;
+// Version 9 adds atomic replacement through the existing raised-exception owner
+// for consumers whose Argument Clinic converter replaces exporter failures.
+pub const RUNTIME_VTABLE_ABI_VERSION: u32 = 9;
+
+/// Native binascii module exception identities; exported names are metadata.
+#[repr(u32)]
+#[derive(Clone, Copy)]
+pub enum BinasciiException {
+    Error,
+    Incomplete,
+}
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1280,14 +1290,13 @@ pub struct RuntimeVtable {
 
     // --- Exception handling ---
     pub raise_exception: unsafe extern "C" fn(*const u8, usize, *const u8, usize) -> u64,
+    pub replace_exception: unsafe extern "C" fn(*const u8, usize, *const u8, usize) -> u64,
     pub exception_pending: unsafe extern "C" fn() -> i32,
     pub exception_new_from_class: unsafe extern "C" fn(u64, u64) -> u64,
-    /// 1 when the pending exception is an instance of the named builtin
-    /// exception class, subclasses included (`PyErr_ExceptionMatches`);
-    /// otherwise 0. The exception stays pending.
-    pub pending_exception_matches_builtin: unsafe extern "C" fn(*const u8, usize) -> i32,
-    /// Discard the pending exception (`PyErr_Clear`).
-    pub clear_exception: unsafe extern "C" fn(),
+    /// Run the actual strict ASCII codec and translate its UnicodeEncodeError.
+    pub decode_ascii_input: unsafe extern "C" fn(u64) -> u64,
+    /// Return an owned canonical binascii module exception class.
+    pub binascii_exception_type: unsafe extern "C" fn(BinasciiException) -> u64,
 
     // --- Allocation ---
     pub alloc_tuple: unsafe extern "C" fn(*const u64, usize) -> *mut u8,

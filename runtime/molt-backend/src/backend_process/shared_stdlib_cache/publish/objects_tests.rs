@@ -33,8 +33,10 @@ fn job() -> NativeBatchObjectJob {
             profile: None,
         },
         module_context: NativeBackendModuleContext::default(),
-        codegen_environment: molt_ir::backend_environment::NativeCodegenEnvironment::capture()
-            .unwrap(),
+        codegen_environment: molt_ir::backend_environment::NativeCodegenEnvironment::from_lookup(
+            |_| Ok(None),
+        )
+        .unwrap(),
         target_triple: None,
         emit_app_callable_resolver: false,
         app_callable_manifest: None,

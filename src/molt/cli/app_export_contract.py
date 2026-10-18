@@ -20,7 +20,7 @@ from molt.exact_json import string_keyed_object
 
 
 APP_EXPORT_CONTRACT_SCHEMA = 2
-APP_EXPORT_CALL_ABI_SCHEMA = 2
+APP_EXPORT_CALL_ABI_SCHEMA = 3
 
 AppBindingKind = Literal["sync", "async", "gen", "asyncgen"]
 AppBindingDisposition = Literal["export", "excluded"]
@@ -52,9 +52,13 @@ _APP_BINDING_FIELDS: frozenset[str] = frozenset(
 def _canonical_call_abi() -> dict[str, object]:
     """Return the one browser/WASM app-call boundary ABI.
 
+    An exported binding is a synchronous Python frame, whose entry adopts every
+    argument (FunctionIR ``parameter_custody``): the host moves one owned
+    reference per parameter into the call and never releases it afterwards.
     Compiled functions publish one owned result under the canonical call ABI.
-    The public adapter therefore forwards that result unchanged; retaining it
-    again would leak fresh results and double-retain already-owned aliases.
+    The public adapter therefore forwards arguments and result unchanged;
+    retaining the result again would leak fresh results and double-retain
+    already-owned aliases.
     """
 
     return {
@@ -62,7 +66,7 @@ def _canonical_call_abi() -> dict[str, object]:
         "name": "molt.wasm.app-call",
         "parameters": {
             "representation": "tagged-i64",
-            "ownership": "borrowed",
+            "ownership": "transferred",
         },
         "result": {
             "representation": "tagged-i64",
@@ -113,7 +117,43 @@ def _frontend_resolved_bindings(
     names = [binding["name"] for binding in bindings]
     if names != sorted(names):
         raise ValueError("frontend app callable bindings must be sorted by name")
+    _require_adopting_export_entries(raw_functions, bindings)
     return bindings
+
+
+def _require_adopting_export_entries(
+    functions: Sequence[object], bindings: Sequence[AppCallableBinding]
+) -> None:
+    """Check each exported entry's declared custody against the call ABI.
+
+    The call ABI publishes transferred parameters. FunctionIR declares that
+    fact per entry: every parameter ``transferred``, and no declaration for a
+    zero-parameter entry. An exported entry that borrowed any parameter would
+    have every host release a reference twice, so the contract refuses it.
+    """
+
+    entries: dict[str, Mapping[str, object]] = {}
+    for function in functions:
+        if isinstance(function, Mapping) and isinstance(function.get("name"), str):
+            entries[function["name"]] = function
+    for binding in bindings:
+        symbol = binding["symbol"]
+        if binding["disposition"] != "export" or symbol is None:
+            continue
+        entry = entries.get(symbol)
+        if entry is None:
+            raise ValueError(
+                f"exported app binding {binding['name']!r} has no IR entry {symbol!r}"
+            )
+        params = entry.get("params")
+        if not isinstance(params, list):
+            raise ValueError(f"app export entry {symbol!r} has no parameter list")
+        expected = ["transferred"] * len(params) if params else None
+        if entry.get("parameter_custody") != expected:
+            raise ValueError(
+                f"app export entry {symbol!r} must adopt every parameter under "
+                f"molt.wasm.app-call schema {APP_EXPORT_CALL_ABI_SCHEMA}"
+            )
 
 
 def _validated_binding_rows(
