@@ -79,8 +79,10 @@ a ledger finding is open.
    without landing is POISON (CODEX_CENTURY_GOAL.md continuous-ownership contract).
 2. **VERIFY THE FULL SURFACE.** "Landed + verified" means you ran the whole
    relevant test surface, not one file. An unrun RED test elsewhere = not verified.
-3. **BUILD HYGIENE.** `git fetch && rebase origin/main` before every arc. Do NOT
-   set `MOLT_SESSION_ID` for ordinary `molt build`/`cargo build` (that opts back
+3. **BUILD HYGIENE.** Reconcile live upstream through
+   `tools/molt_dev.py integrate --expected-upstream FULLSHA`, preserving existing
+   commits with normal merges. Ownership claims forbid rebase/reset and direct
+   pushes outside that driver. Do NOT set `MOLT_SESSION_ID` for ordinary `molt build`/`cargo build` (that opts back
    into a cold per-session target dir); leave it unset to reuse the persistent
    target under the host's artifact root (see Canonical paths). Set it ONLY for
    perf/bench/test-shard isolation. Do NOT hand-clean artifacts; use the owning
