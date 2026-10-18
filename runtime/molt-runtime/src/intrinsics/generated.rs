@@ -12713,13 +12713,6 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         python_name: None,
     },
     IntrinsicSpec {
-        name: "molt_re_strip_verbose",
-        symbol: "molt_re_strip_verbose",
-        arity: 2,
-        defaults: &[],
-        python_name: None,
-    },
-    IntrinsicSpec {
         name: "molt_re_compile",
         symbol: "molt_re_compile",
         arity: 2,

@@ -521,12 +521,8 @@ def _compile(pattern: str | bytes, flags: int) -> Pattern:
         flags |= UNICODE
     if is_bytes and flags & UNICODE:
         raise ValueError("cannot use UNICODE flag with a bytes pattern")
-    effective_pattern = pattern
-    if flags & VERBOSE and not is_bytes:
-        _molt_re_strip_verbose = _require_intrinsic("molt_re_strip_verbose")
-        effective_pattern = _molt_re_strip_verbose(pattern, flags)
     _molt_re_compile = _require_intrinsic("molt_re_compile")
-    handle = _molt_re_compile(effective_pattern, flags)
+    handle = _molt_re_compile(pattern, flags)
     if _is_regex_syntax_error(handle):
         _raise_regex_syntax_error(handle)
     _molt_re_pattern_info = _require_intrinsic("molt_re_pattern_info")
