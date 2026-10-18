@@ -14,7 +14,6 @@ from pathlib import Path
 import pytest
 
 from tests.process_guard_common import (
-    current_thread_only,
     install_module_view,
     run_custody_subject_process,
 )
@@ -1103,7 +1102,7 @@ def test_linux_root_watch_is_installed_before_recursive_enumeration(
 
 @pytest.mark.parametrize("nested", [False, True])
 def test_linux_finite_watch_visits_only_selected_ancestors(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, nested: bool
+    tmp_path: Path, nested: bool
 ) -> None:
     root = tmp_path / "system-lib"
     parent = root / "selected" / "nested" if nested else root
@@ -1114,33 +1113,62 @@ def test_linux_finite_watch_visits_only_selected_ancestors(
     private = unrelated / "private"
     private.mkdir(parents=True)
     (private / "unrelated-secret").write_bytes(b"not a proof input")
-    monitor = execution_custody.LiveCustodyMonitor(
-        [
-            execution_custody.WatchSpec(
-                root, frozenset({execution_custody._event_key(selected)})
-            )
-        ]
+    # Observe traversal through every filesystem API, including pathlib and
+    # os.walk, in a disposable process. A module view would miss those APIs'
+    # internal scandir calls; a process-wide patch would affect pytest custody.
+    script = """
+import json
+import os
+import sys
+from pathlib import Path
+import pytest
+from tests.tools.test_proof_queue_execution_custody_p0 import _install_linux_inotify
+from tools.proof_queue_pkg import execution_custody
+
+root, selected, private = map(Path, sys.argv[1:])
+monitor = execution_custody.LiveCustodyMonitor([
+    execution_custody.WatchSpec(
+        root, frozenset({execution_custody._event_key(selected)})
     )
-    add_calls = _install_linux_inotify(monkeypatch, denied=(private,))
-    scanned: list[Path] = []
-    real_scandir = os.scandir
+])
+scanned = []
+real_scandir = os.scandir
+def observe_scandir(path):
+    scanned.append(str(path))
+    return real_scandir(path)
 
-    def observe_scandir(path):
-        scanned.append(Path(path))
-        return real_scandir(path)
-
-    monkeypatch.setattr(
-        os, "scandir", current_thread_only(observe_scandir, real_scandir)
+with pytest.MonkeyPatch.context() as patch:
+    add_calls = _install_linux_inotify(patch, denied=(private,))
+    os.scandir = observe_scandir
+    try:
+        # Independent controls prove indirect traversal reaches the observer.
+        for traversal in (lambda: private.rglob("*"), lambda: os.walk(private)):
+            list(traversal())
+            assert str(private) in scanned
+            scanned.clear()
+        monitor._stop.set()
+        monitor._run_linux()
+    finally:
+        os.scandir = real_scandir
+print(json.dumps({
+    "errors": monitor._errors,
+    "added": [str(path) for path in add_calls],
+    "scanned": scanned,
+}))
+"""
+    result = run_custody_subject_process(
+        [sys.executable, "-B", "-c", script, str(root), str(selected), str(private)],
+        check=True,
+        capture_output=True,
+        text=True,
+        timeout=20,
     )
-    monitor._stop.set()
-
-    monitor._run_linux()
-
-    assert monitor._errors == []
+    observed = json.loads(result.stdout)
+    assert observed["errors"] == []
     expected = {root, root / "selected", parent} if nested else {root}
-    assert set(add_calls) == expected
-    assert len(add_calls) == len(expected)
-    assert not any(path.is_relative_to(unrelated) for path in scanned)
+    assert set(map(Path, observed["added"])) == expected
+    assert len(observed["added"]) == len(expected)
+    assert not any(Path(path).is_relative_to(unrelated) for path in observed["scanned"])
 
 
 @pytest.mark.parametrize("action", [0x00000100, 0x00000080], ids=["create", "move-in"])

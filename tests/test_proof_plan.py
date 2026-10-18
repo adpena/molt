@@ -3438,9 +3438,7 @@ def test_command_directory_ownership_and_dependency_globs_select_ci() -> None:
         ('argv = "tests/test_exact_json.py"', "argv must be a non-empty string list"),
     ],
 )
-def test_command_input_resolution_keeps_load_validation(
-    monkeypatch, replacement, message
-) -> None:
+def test_command_input_resolution_keeps_load_validation(replacement, message) -> None:
     source = PLAN.path.read_text(encoding="utf-8")
     block = re.search(
         r'(?ms)^\[\[command\]\]\nid = "python.unit.harness"\n.*?(?=^\[\[|\Z)',
@@ -3450,16 +3448,15 @@ def test_command_input_resolution_keeps_load_validation(
     field = replacement.split(" = ", 1)[0]
     changed = re.sub(rf"(?m)^{field} = .*?$", lambda _: replacement, block.group())
     source = source[: block.start()] + changed + source[block.end() :]
-    original_read = Path.read_text
-    monkeypatch.setattr(
-        Path,
-        "read_text",
-        lambda path, *a, **k: (
-            source if path == PLAN.path else original_read(path, *a, **k)
-        ),
-    )
+
+    class ManifestPath(type(PLAN.path)):
+        def read_text(self, *args, **kwargs):
+            if self == PLAN.path:
+                return source
+            return super().read_text(*args, **kwargs)
+
     with pytest.raises(ValueError, match=re.escape(message)):
-        proof_plan.ProofPlan.load(PLAN.path)
+        proof_plan.ProofPlan.load(ManifestPath(PLAN.path))
 
 
 def test_manifest_rejects_missing_repository_command_inputs() -> None:
