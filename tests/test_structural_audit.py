@@ -19,6 +19,7 @@ from __future__ import annotations
 import ast
 import json
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -2856,6 +2857,52 @@ def test_process_wide_patch_probe_does_not_extend_a_view_to_other_modules(
         "    monkeypatch.setattr(mod.os, 'kill', fake)\n"
     )
     assert _process_wide_patch_count(tmp_path, body) == 2
+
+
+@pytest.mark.parametrize(
+    "declaration",
+    [
+        "def unused():",
+        "async def unused():",
+        "class Helper:\n        def unused(self):",
+    ],
+)
+def test_process_wide_patch_probe_does_not_execute_a_nested_installer(
+    tmp_path: Path, declaration: str
+):
+    indent = "            " if declaration.startswith("class") else "        "
+    body = (
+        "def test_outer(monkeypatch):\n"
+        f"    {declaration}\n"
+        f"{indent}install_module_view(monkeypatch, 'os', os, mod, getpid=fake)\n"
+        "    monkeypatch.setattr(mod.os, 'getpid', fake)\n"
+    )
+    shared = SimpleNamespace(getpid=object())
+    fake = object()
+    installed = []
+    namespace = {
+        "mod": SimpleNamespace(os=shared),
+        "os": shared,
+        "fake": fake,
+        "install_module_view": lambda *args, **kwargs: installed.append(args),
+    }
+    exec(body, namespace)
+    namespace["test_outer"](SimpleNamespace(setattr=setattr))
+    assert not installed
+    assert shared.getpid is fake
+    # CPython executes the outer patch without invoking the nested installer.
+    assert _process_wide_patch_count(tmp_path, body) == 1
+
+
+def test_process_wide_patch_probe_keeps_a_view_in_its_own_function(tmp_path: Path):
+    body = (
+        "def test_outer(monkeypatch):\n"
+        "    def nested():\n"
+        "        install_module_view(monkeypatch, 'os', os, mod, getpid=fake)\n"
+        "        monkeypatch.setattr(mod.os, 'getpid', fake)\n"
+        "    monkeypatch.setattr(mod.os, 'getpid', fake)\n"
+    )
+    assert _process_wide_patch_count(tmp_path, body) == 1
 
 
 def test_process_wide_patch_probe_ignores_process_wide_by_nature(tmp_path: Path):
