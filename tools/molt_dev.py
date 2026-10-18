@@ -411,7 +411,6 @@ class GateConfig:
     prerequisites: dict[str, tuple[str, tuple[str, ...]]] = field(default_factory=dict)
     prerequisite_policy: dict = field(default_factory=dict)
     root: Path = field(default_factory=lambda: Path(__file__).resolve().parents[1])
-    pytest_workers: int = 1
 
     @staticmethod
     def load(path: Path) -> "GateConfig":
@@ -484,7 +483,6 @@ class GateConfig:
             prerequisites=commands,
             prerequisite_policy={"toolchain_policy": data.get("toolchain_policy", [])},
             root=root,
-            pytest_workers=int(data.get("local_pytest_workers", 1)),
         )
 
     def admit(
@@ -569,7 +567,7 @@ class GateConfig:
                     pytest_index = len(selected)
                 _add(
                     [
-                        local_pytest_argv(targets, self.pytest_workers, select)
+                        local_pytest_argv(targets, select)
                         for select, targets in rule.pytest_select
                     ]
                 )
@@ -578,9 +576,7 @@ class GateConfig:
                         seen_pytest.add(target)
                         pytest_targets.append(target)
         if pytest_index is not None:
-            selected.insert(
-                pytest_index, local_pytest_argv(pytest_targets, self.pytest_workers)
-            )
+            selected.insert(pytest_index, local_pytest_argv(pytest_targets))
         return selected, matched_rules
 
 

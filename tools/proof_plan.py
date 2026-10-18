@@ -48,6 +48,7 @@ from tools.command_execution import (  # noqa: E402
     GUARD_CANCELLATION_OBSERVATION_SECONDS,
 )
 from tools import proof_receipts, toolchain_probe  # noqa: E402
+from molt import host_capacity  # noqa: E402
 from molt.portable_paths import portable_relative_path  # noqa: E402
 from molt.process_guard import run_completed_command  # noqa: E402
 from tools.git_identity import (  # noqa: E402
@@ -532,23 +533,22 @@ _LOCAL_PYTEST_SELECTORS = {"k": "-k", "m": "-m"}
 
 
 def local_pytest_argv(
-    targets: Iterable[str], workers: int, select: tuple[str, ...] = ()
+    targets: Iterable[str], select: tuple[str, ...] = ()
 ) -> tuple[str, ...]:
     """The one pytest invocation for local gate test targets.
 
     Integration merges every selected rule's targets into one run, so the
-    interpreter, guard and collection costs are paid once and the tests run
-    on ``workers`` processes. A selection (``-k`` or ``-m``) applies to every
-    target of its run, so each one runs on its own.
+    interpreter, guard and collection costs are paid once. ``-n auto`` sizes
+    the workers from the host (molt.pytest_capacity_plugin) with the default
+    unit, since the run mixes suites. A selection (``-k`` or ``-m``) applies
+    to every target of its run, so each one runs on its own.
     """
-    return (*_LOCAL_PYTEST_PREFIX, "-n", str(workers), *select, *targets)
+    return (*_LOCAL_PYTEST_PREFIX, "-n", "auto", *select, *targets)
 
 
-def local_pytest_command(
-    targets: Iterable[str], workers: int, select: tuple[str, ...] = ()
-) -> str:
+def local_pytest_command(targets: Iterable[str], select: tuple[str, ...] = ()) -> str:
     """Display/projection of the argv executed directly by the local driver."""
-    return shlex.join(local_pytest_argv(targets, workers, select))
+    return shlex.join(local_pytest_argv(targets, select))
 
 
 def local_pytest_selections(
@@ -609,7 +609,6 @@ def local_gate_commands(
         f"local.always.{index}": (command, tuple(data.get("always_toolchains", [])))
         for index, command in enumerate(data.get("always", []))
     }
-    workers = int(data.get("local_pytest_workers", 1))
     for rule in data.get("rule", []):
         commands.update(
             {
@@ -622,12 +621,12 @@ def local_gate_commands(
         )
         if rule.get("pytest"):
             commands[f"local.{rule['name']}.pytest"] = (
-                local_pytest_command(rule["pytest"], workers),
+                local_pytest_command(rule["pytest"]),
                 tuple(rule.get("toolchains", [])),
             )
         for index, (select, targets) in enumerate(local_pytest_selections(rule)):
             commands[f"local.{rule['name']}.pytest-select-{index}"] = (
-                local_pytest_command(targets, workers, select),
+                local_pytest_command(targets, select),
                 tuple(rule.get("toolchains", [])),
             )
     return commands
@@ -695,7 +694,6 @@ class ProofPlan:
     local_rules: tuple[dict[str, Any], ...]
     always: tuple[str, ...]
     always_toolchains: tuple[str, ...] = ()
-    local_pytest_workers: int = 0
 
     def toolchain_closure(self, names: Iterable[str]) -> tuple[str, ...]:
         """Expand declared toolchains through the canonical dependency graph."""
@@ -897,7 +895,6 @@ class ProofPlan:
             local_rules=tuple(dict(entry) for entry in data.get("rule", [])),
             always=tuple(data.get("always", [])),
             always_toolchains=tuple(data.get("always_toolchains", [])),
-            local_pytest_workers=int(data.get("local_pytest_workers", 0)),
         )
         errors = plan.validate()
         if errors:
@@ -1013,8 +1010,6 @@ class ProofPlan:
         if self.receipt_schema != proof_receipts.RECEIPT_SCHEMA:
             errors.append(f"receipt_schema must be {proof_receipts.RECEIPT_SCHEMA!r}")
         self._validate_named_lanes(errors)
-        if self.local_pytest_workers <= 0:
-            errors.append("local_pytest_workers must be positive")
         if self.executor_max_workers <= 0:
             errors.append("executor_max_workers must be positive")
         if not 1 <= self.inventory_hash_workers <= 32:
@@ -3555,13 +3550,33 @@ def _topological_commands(
     return tuple(ordered)
 
 
+def _command_memory_share(plan: ProofPlan, command_count: int) -> int | None:
+    """The memory each command may claim while the executor runs others beside it.
+
+    The executor admits up to ``executor_max_workers`` commands at once, so it
+    divides the memory beyond the reserve among them; each command's
+    ``-n auto`` then sizes its workers within its own share
+    (docs/design/host_capacity.md).
+    """
+    _total, available = host_capacity.memory_bytes()
+    if available is None:
+        return None
+    concurrency = max(1, min(plan.executor_max_workers, command_count))
+    usable = max(0, available - host_capacity.headroom_bytes())
+    return max(1, usable // concurrency)
+
+
 def _command_environment(
     plan: ProofPlan,
     command: ProofCommand,
     timeout: int,
+    *,
+    memory_share: int | None,
 ) -> tuple[dict[str, str], tuple[str, ...]]:
     """Resolve one command environment through shared Cargo invariants."""
     child_env = dict(os.environ)
+    if memory_share is not None:
+        child_env[host_capacity.MEMORY_SLICE_ENV] = str(memory_share)
     existing_pythonpath = child_env.get("PYTHONPATH", "")
     child_env["PYTHONPATH"] = os.pathsep.join(
         part for part in (str(ROOT / "src"), existing_pythonpath) if part
@@ -3684,13 +3699,15 @@ def _run_command(
     plan: ProofPlan,
     command: ProofCommand,
     cancel_event: threading.Event | None = None,
+    *,
+    memory_share: int | None,
 ) -> dict[str, Any]:
     relative_cwd = str(command.data.get("cwd", "."))
     cache = _cache_disposition(command)
     started_at = dt.datetime.now(dt.UTC).isoformat()
     timeout = int(command.data["timeout_seconds"])
     child_env, applied_environment_policies = _command_environment(
-        plan, command, timeout
+        plan, command, timeout, memory_share=memory_share
     )
     if cancel_event is not None and cancel_event.is_set():
         return {
@@ -3920,6 +3937,8 @@ def execute_commands(
     commands: Iterable[ProofCommand],
     receipt_path: Path,
 ) -> int:
+    commands = tuple(commands)
+    memory_share = _command_memory_share(plan, len(commands))
     return _execute_commands(
         plan,
         commands,
@@ -3933,7 +3952,9 @@ def execute_commands(
         _normalized_os=_normalized_os,
         _normalized_arch=_normalized_arch,
         _required_toolchains=lambda command: _required_toolchains(plan, command),
-        _run_command=_run_command,
+        _run_command=lambda plan, command, event: _run_command(
+            plan, command, event, memory_share=memory_share
+        ),
         _cache_disposition=_cache_disposition,
     )
 

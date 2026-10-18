@@ -100,6 +100,8 @@ addopts = [
     # Repository custody is explicit; installing Molt must not hook user pytest.
     "-p",
     "molt.pytest_memory_guard_config_plugin",
+    "-p",
+    "molt.pytest_capacity_plugin",
     "--ignore=tests/differential",
     "--ignore=tests/compliance",
 ]

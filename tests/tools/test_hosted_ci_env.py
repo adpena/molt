@@ -59,7 +59,7 @@ def test_cli_adds_the_setup_action_resource_plan(
 
     exported = _parse_posix(capsys.readouterr().out)
     assert int(exported["CARGO_BUILD_JOBS"]) >= 1
-    assert int(exported["PYTEST_XDIST_AUTO_NUM_WORKERS"]) >= 1
+    assert "PYTEST_XDIST_AUTO_NUM_WORKERS" not in exported
     assert isinstance(json.loads(exported["MOLT_CI_RESOURCE_PLAN_JSON"]), dict)
 
 

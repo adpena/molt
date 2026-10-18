@@ -65,7 +65,6 @@ class CiResourcePlan:
     resource_plan: resource_pressure.ResourcePressurePlan
     guard_max_process_rss_gb: float | None
     guard_max_total_rss_gb: float | None
-    python_test_workers: int
 
 
 def _positive_int(raw: str | None, *, default: int) -> int:
@@ -158,19 +157,6 @@ def plan_ci_resources(
         resource_plan=pressure_plan,
         guard_max_process_rss_gb=process_cap,
         guard_max_total_rss_gb=total_cap,
-        # `pytest -n auto` reads this count from the exported variable. Workers
-        # use the differential scheduler's per-job estimate within the global
-        # budget, the count the queue suites' budgets were calibrated against
-        # (be612afe9: 2 on the 7 GB macOS runner, 4 on Linux). Differential
-        # jobs, which build and run compiled programs, are bounded by the tree
-        # budget instead (diff_max_jobs, HF-105).
-        python_test_workers=max(
-            1,
-            int(
-                pressure_plan.diff_global_gb
-                // max(0.001, pressure_plan.diff_scheduler_per_job_gb)
-            ),
-        ),
     )
 
 
@@ -213,7 +199,6 @@ def github_env_lines(plan: CiResourcePlan) -> list[str]:
         f"MOLT_CI_RESOURCE_CPU_COUNT={plan.cpu_count}",
         f"MOLT_CI_RESOURCE_REASON={plan.reason}",
         f"MOLT_CI_RESOURCE_PLAN_JSON={plan_json}",
-        f"PYTEST_XDIST_AUTO_NUM_WORKERS={plan.python_test_workers}",
     ]
     if plan.guard_max_process_rss_gb is not None:
         lines.append(f"MOLT_MAX_PROCESS_RSS_GB={plan.guard_max_process_rss_gb:.6f}")

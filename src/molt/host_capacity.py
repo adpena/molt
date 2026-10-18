@@ -170,6 +170,19 @@ def _probe_memory_bytes() -> tuple[int | None, int | None]:
     return total, available
 
 
+def headroom_bytes() -> int:
+    """Memory a unit of work must leave free in this process's context.
+
+    The machine's reserve, unless a parent exported a memory slice: every
+    slice (a guard's tree cap, an executor's per-command share) is cut from
+    memory beyond that reserve, so it already holds it.
+    """
+    if os.environ.get(MEMORY_SLICE_ENV, "").strip():
+        return 0
+    total, _available = memory_bytes()
+    return reserve_bytes(total)
+
+
 def reserve_bytes(total_bytes: int | None) -> int:
     """Memory no unit of work may claim on a machine with ``total_bytes``."""
     if total_bytes is None:

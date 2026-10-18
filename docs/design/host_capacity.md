@@ -118,8 +118,18 @@ sequentially. Volume choice is measured per machine, not a fixed path.
    measures the unit: each sample sums the RSS under each xdist worker (found
    from the current-test records the workers publish), and every receipt
    carries `worker_peaks`, the largest worker subtree and the tests with the
-   largest peaks. Next: the pytest auto-workers hook and every fixed count
-   moved to declared units sized from those peaks.
+   largest peaks. `molt.pytest_capacity_plugin` resolves `-n auto`; every
+   plan command that runs xdist declares `--molt-worker-memory-gb`, its
+   measured worker peak times 1.25 (the guard samples about every 2 s and can
+   miss a short peak), rounded up to a quarter GiB. Measured units on macOS
+   arm64 run from 0.22 GiB to 4.94 GiB, so no single default fits. The proof
+   executor divides the memory beyond the reserve among the commands it runs
+   at once and exports each share as the slice its `-n auto` sizes within; a
+   slice already holds the reserve, so nothing inside subtracts it again.
+   The landing's merged run uses `-n auto` with the default unit, and CI no
+   longer exports a runner-wide worker count. On the 7 GB macOS runner the
+   suites with units above 1.1 GiB now run one worker; their CI budgets at
+   one worker are unverified.
 2. Split the tests that alone bound a suite's wall time.
 3. Landing gates through the proof executor, with declared timeouts and
    resource classes, longest first; the first step of the
