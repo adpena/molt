@@ -4532,12 +4532,15 @@ globs = [
   "docs/cross_platform/windows.md",
   "tools/check_rust_toolchain.py",
   "tests/tools/test_rust_toolchain_contract.py",
+  "tests/cli/test_backend_manifest_contract.py",
 ]
 gates = [
   "python tools/check_rust_toolchain.py",
 ]
 pytest = [
   "tests/tools/test_rust_toolchain_contract.py",
+  # Workspace profiles, members and dependency policy.
+  "tests/cli/test_backend_manifest_contract.py",
 ]
 
 # --- Cross-language duplicate-authority tables ---------------------------

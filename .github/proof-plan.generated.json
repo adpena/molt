@@ -369,7 +369,7 @@
     "tests/tools/test_win_job_contract.py",
     "tests/tools/test_windows_process_api.py"
   ],
-  "authority_sha256": "1570fc3a95dc4cd96e0d5288fad17d4eaa4d91cfbf7015d47f6967f11c95d4f4",
+  "authority_sha256": "1044e852eb45a9a8fc7c5adc6593195d02fabff5fa43710de4b9fb3fa0772468",
   "cargo_environment_policy": {
     "incident_command": "cargo metadata --locked --format-version 1",
     "incident_commit": "20b046b79bd4ca64a8c859f737f6e330377bcc4e",
@@ -8650,7 +8650,7 @@
       "local.runtime-vfs.pytest": "python -m pytest -q -n 4 tests/test_browser_vfs.py",
       "local.rust-clippy-changed.0": "python tools/check_changed_clippy.py --base origin/main",
       "local.rust-toolchain.0": "python tools/check_rust_toolchain.py",
-      "local.rust-toolchain.pytest": "python -m pytest -q -n 4 tests/tools/test_rust_toolchain_contract.py",
+      "local.rust-toolchain.pytest": "python -m pytest -q -n 4 tests/tools/test_rust_toolchain_contract.py tests/cli/test_backend_manifest_contract.py",
       "local.source-extension-package-sets.pytest": "python -m pytest -q -n 4 tests/cli/test_source_extension_set_registry.py tests/cli/test_source_extension_manifest_authority.py tests/cli/test_source_extension_link_requirements.py tests/cli/test_source_extension_producer.py tests/cli/test_source_build_environment_probe.py tests/cli/test_source_extension_candidate_attestation.py tests/cli/test_source_extension_candidate_transaction.py tests/cli/test_source_package_seal.py tests/test_exact_json.py tests/cli/test_external_native_scipy_package_seal.py tests/cli/test_atomic_io_authority.py tests/cli/test_python_module_names.py tests/cli/test_source_extension_runtime_imports.py tests/cli/test_source_extension_input_custody.py tests/cli/test_source_extension_target.py tests/cli/test_source_extension_language.py tests/cli/test_source_extension_compiler_target.py tests/cli/test_extension_wheel_retained_inputs.py tests/tools/test_native_link_benchmark.py tests/cli/test_cli_extension_commands.py::test_direct_build_audits_and_reseals_extracted_wheel tests/cli/test_source_extension_invocation.py tests/cli/test_source_extension_compiler_inputs.py",
       "local.source-extension-proof-policy.pytest": "python -m pytest -q -n 4 tests/cli/test_source_extension_link_inputs.py tests/tools/test_source_extension_proof_family.py tests/tools/test_target_derived_toolchains.py tests/tools/test_python_custody_bootstrap.py tests/tools/test_scientific_stack_versions.py",
       "local.source-extension-proof-policy.pytest-select-0": "python -m pytest -q -n 4 -k 'proof_queue_pact_witness or proof_queue_rejects_scipy or proof_queue_requires_explicit_scipy or rejects_expected_extension_identity_drift' tests/tools/test_proof_queue.py",
@@ -9498,11 +9498,13 @@
           ".github/workflows/**",
           "docs/cross_platform/windows.md",
           "tools/check_rust_toolchain.py",
-          "tests/tools/test_rust_toolchain_contract.py"
+          "tests/tools/test_rust_toolchain_contract.py",
+          "tests/cli/test_backend_manifest_contract.py"
         ],
         "name": "rust-toolchain",
         "pytest": [
-          "tests/tools/test_rust_toolchain_contract.py"
+          "tests/tools/test_rust_toolchain_contract.py",
+          "tests/cli/test_backend_manifest_contract.py"
         ],
         "toolchains": [
           "python"

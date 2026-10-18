@@ -177,6 +177,7 @@ def test_workspace_dev_dependency_symbols_have_one_wildcard_authority() -> None:
         } == {
             "cranelift-codegen": {"opt-level": 1},
             "regalloc2": {"opt-level": 1},
+            "sha2": {"opt-level": 1},
         }
 
 
