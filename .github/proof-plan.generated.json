@@ -8673,7 +8673,7 @@
         "cargo",
         "hosted-clang-cl",
         "hosted-cmake",
-        "hosted-ninja"
+        "ninja"
       ]
     },
     {
@@ -12789,7 +12789,7 @@
       "executable": "clang-cl",
       "name": "hosted-clang-cl",
       "setup_evidence": [
-        ".github/workflows/ci.yml::The Windows image supplies clang-cl, MSVC, CMake and Ninja for compiler-boundary probes."
+        ".github/workflows/ci.yml::The Windows image supplies clang-cl, MSVC and CMake for compiler-boundary probes."
       ],
       "setup_value": "windows-2022 image C11 compiler",
       "version_args": [
@@ -12801,25 +12801,13 @@
       "executable": "cmake",
       "name": "hosted-cmake",
       "setup_evidence": [
-        ".github/workflows/ci.yml::The Windows image supplies clang-cl, MSVC, CMake and Ninja for compiler-boundary probes."
+        ".github/workflows/ci.yml::The Windows image supplies clang-cl, MSVC and CMake for compiler-boundary probes."
       ],
       "setup_value": "Windows image CMake",
       "version_args": [
         "--version"
       ],
       "version_pattern": "^cmake version [34]\\.[0-9]+\\.[0-9]+"
-    },
-    {
-      "executable": "ninja",
-      "name": "hosted-ninja",
-      "setup_evidence": [
-        ".github/workflows/ci.yml::The Windows image supplies clang-cl, MSVC, CMake and Ninja for compiler-boundary probes."
-      ],
-      "setup_value": "Windows image Ninja",
-      "version_args": [
-        "--version"
-      ],
-      "version_pattern": "^1\\.[0-9]+\\.[0-9]+"
     },
     {
       "executable": "ninja",

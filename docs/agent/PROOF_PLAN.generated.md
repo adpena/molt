@@ -137,7 +137,6 @@ Executable identities bind resolved path, version text, and the repository-relat
 | `hosted-clang` | `executable` | — | `clang version [0-9]+\.[0-9]+\.[0-9]+\b` | `.` | `host image C object compiler` | 1 |
 | `hosted-clang-cl` | `executable` | — | `^clang version [0-9]+\.[0-9]+\.[0-9]+\b` | `.` | `windows-2022 image C11 compiler` | 1 |
 | `hosted-cmake` | `executable` | — | `^cmake version [34]\.[0-9]+\.[0-9]+` | `.` | `Windows image CMake` | 1 |
-| `hosted-ninja` | `executable` | — | `^1\.[0-9]+\.[0-9]+` | `.` | `Windows image Ninja` | 1 |
 | `ninja` | `executable` | — | `^1\.13\.2(?:\.git(?:\.kitware\.jobserver-pipe-1)?)?$` | `.` | `1.13.2` | 2 |
 | `wasi-clang` | `executable` | — | `clang version 23\.1\.0\b` | `.` | `23.1.0` | 1 |
 | `llvm-config` | `executable` | — | `^22\.1\.8$` | `.` | `22.1.8` | 1 |
