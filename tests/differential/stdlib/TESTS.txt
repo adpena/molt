@@ -1608,6 +1608,7 @@ tests/differential/stdlib/re_ascii_locale_flags.py
 tests/differential/stdlib/re_backref_flags.py
 tests/differential/stdlib/re_backtracking_edge.py
 tests/differential/stdlib/re_basic.py
+tests/differential/stdlib/re_bytes_admission.py
 tests/differential/stdlib/re_compile_flags_errors.py
 tests/differential/stdlib/re_conditional_groups.py
 tests/differential/stdlib/re_flags_basic.py
