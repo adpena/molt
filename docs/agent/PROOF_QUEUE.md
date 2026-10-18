@@ -156,6 +156,13 @@ Source, sysroot, SDK compiler-rt and executable inputs enter live custody
 before execution. Native requests preserve host CC/CXX selection separately
 from their recorded effective target triple.
 
+Admitted environment overrides participate in output validation, capacity
+admission and DX environment resolution before tool capture. Applying them only
+to the resolved child environment is too late: cache opt-outs must prevent
+wrapper selection, and artifact/toolchain roots must own their derived paths.
+Queue-owned source, temporary and execution-custody values remain protected by
+the existing override policy.
+
 Linux writable-close notifications remain input events: they can be the only
 notification of a closed writable mapping, including a write followed by a
 restore. A selected uv environment's pre-existing empty regular lock has one

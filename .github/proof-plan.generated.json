@@ -371,7 +371,7 @@
     "tests/tools/test_win_job_contract.py",
     "tests/tools/test_windows_process_api.py"
   ],
-  "authority_sha256": "b3771258805ef3eba092d0aba544d4837addac439368e3e46d2f3abe8521d7d9",
+  "authority_sha256": "009f95f4dc9ef7db99809142b23247537d50ce74086af2ce07a3e565b33ee951",
   "cargo_environment_policy": {
     "incident_command": "cargo metadata --locked --format-version 1",
     "incident_commit": "20b046b79bd4ca64a8c859f737f6e330377bcc4e",
@@ -8671,7 +8671,7 @@
       "local.apparatus-a11.pytest": "python -m pytest -q -n 4 tests/tools/test_claims_status.py tests/tools/test_check_sister_landed.py tests/tools/test_commit_serializer.py",
       "local.apparatus-a8-a12-disk-reclaim.0": "python tools/check_gate_liveness.py --check",
       "local.apparatus-a8-a12-disk-reclaim.1": "python tools/apparatus_agent_safety.py --check",
-      "local.apparatus-a8-a12-disk-reclaim.pytest": "python -m pytest -q -n 4 tests/tools/test_lane_maturity.py tests/tools/test_powerplay_acceptance.py tests/tools/test_proof_queue_lane_maturity.py tests/tools/test_disk_guard.py tests/tools/test_check_gate_liveness.py",
+      "local.apparatus-a8-a12-disk-reclaim.pytest": "python -m pytest -q -n 4 tests/tools/test_lane_maturity.py tests/tools/test_powerplay_acceptance.py tests/tools/test_proof_queue_lane_maturity.py tests/tools/test_proof_queue_disk_capacity.py tests/tools/test_disk_guard.py tests/tools/test_check_gate_liveness.py",
       "local.apparatus-hooks.0": "python tools/check_gate_liveness.py --check",
       "local.apparatus-hooks.1": "python tools/check_gate_flips.py --check",
       "local.apparatus-hooks.pytest": "python -m pytest -q -n 4 tests/tools/test_hooks_bash_guard.py tests/tools/test_hooks_landing_gate.py tests/tools/test_hooks_session_digest.py tests/tools/test_hooks_fail_open.py tests/tools/test_hooks_waivers.py tests/tools/test_check_gate_flips.py tests/tools/test_check_gate_liveness.py",
@@ -10029,6 +10029,7 @@
           "tests/tools/test_lane_maturity.py",
           "tests/tools/test_powerplay_acceptance.py",
           "tests/tools/test_proof_queue_lane_maturity.py",
+          "tests/tools/test_proof_queue_disk_capacity.py",
           "tests/tools/test_disk_guard.py"
         ],
         "name": "apparatus-a8-a12-disk-reclaim",
@@ -10036,6 +10037,7 @@
           "tests/tools/test_lane_maturity.py",
           "tests/tools/test_powerplay_acceptance.py",
           "tests/tools/test_proof_queue_lane_maturity.py",
+          "tests/tools/test_proof_queue_disk_capacity.py",
           "tests/tools/test_disk_guard.py",
           "tests/tools/test_check_gate_liveness.py"
         ],
