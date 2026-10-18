@@ -516,19 +516,6 @@ fn missing_callable_table_relocation_owner_fails_closed() {
 #[test]
 fn wasm_ld_applies_shifted_table_relocations_to_indirect_calls() {
     let wasm_ld = wasm_ld_path();
-    let wasm_ld_probe = Command::new(&wasm_ld).arg("--version").output();
-    if !matches!(wasm_ld_probe, Ok(output) if output.status.success()) {
-        if std::env::var_os("CI").is_some()
-            || std::env::var_os("MOLT_REQUIRE_REAL_WASM_LD_TESTS").is_some()
-        {
-            panic!("real wasm-ld integration proof is required but wasm-ld is unavailable");
-        }
-        eprintln!(
-            "SKIP real wasm-ld integration proof: wasm-ld is unavailable; set \
-             MOLT_REQUIRE_REAL_WASM_LD_TESTS=1 to make this a hard failure"
-        );
-        return;
-    }
 
     const FIXED_RUNTIME_SLOT: u32 = 3;
     const FINALIZED_APP_BASE: u32 = 8;

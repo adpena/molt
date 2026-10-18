@@ -1,7 +1,6 @@
 use super::support::*;
 use crate::wasm::test_execution::{
-    real_execution_tool, run_execution_command, run_node_test_script, wasm_ld_path,
-    wasm_test_temp_dir,
+    run_execution_command, run_node_test_script, wasm_ld_path, wasm_test_temp_dir,
 };
 use std::fs;
 use std::path::PathBuf;
@@ -316,20 +315,8 @@ fn native_callable_direct_symbol_object_call_imports_and_directly_calls_symbol()
 fn relocatable_native_callable_links_provider_object_and_executes_in_node() {
     const SYMBOL: &str = "molt_nativepkg_ndimage_distance_transform_edt";
     const SENTINEL: i64 = 0x45A1_7E57_D15C_A11E;
-    let Some(wasm_ld) = real_execution_tool(
-        wasm_ld_path(),
-        "MOLT_REQUIRE_REAL_WASM_LD_TESTS",
-        "wasm-ld native callable final-link proof",
-    ) else {
-        return;
-    };
-    let Some(node) = real_execution_tool(
-        PathBuf::from("node"),
-        "MOLT_REQUIRE_REAL_NODE_TESTS",
-        "Node native callable execution proof",
-    ) else {
-        return;
-    };
+    let wasm_ld = wasm_ld_path();
+    let node = PathBuf::from("node");
     let mut execution_ir = wasm_native_callable_ir("molt.object_call_v1");
     execution_ir.functions[0].params.clear();
     let mut payload = wasm_test_op("const", Some("arg"), vec![]);
@@ -735,20 +722,8 @@ fn native_callable_pyinit_passes_app_owned_table_address_to_runtime_transaction(
 fn relocatable_pyinit_links_provider_initializer_into_runtime_transaction_table_slot() {
     const RAW_MODULE_POINTER: i32 = 0x5EED_0040;
     const OWNED_MODULE: i64 = 0x45A1_7E57_D15C_A11E;
-    let Some(wasm_ld) = real_execution_tool(
-        wasm_ld_path(),
-        "MOLT_REQUIRE_REAL_WASM_LD_TESTS",
-        "wasm-ld PyInit table-address final-link proof",
-    ) else {
-        return;
-    };
-    let Some(node) = real_execution_tool(
-        PathBuf::from("node"),
-        "MOLT_REQUIRE_REAL_NODE_TESTS",
-        "Node PyInit runtime-transaction execution proof",
-    ) else {
-        return;
-    };
+    let wasm_ld = wasm_ld_path();
+    let node = PathBuf::from("node");
     let mut execution_ir = wasm_pyinit_ir();
     execution_ir.functions[0].params.clear();
     let mut payload = wasm_test_op("const", Some("module_name"), vec![]);

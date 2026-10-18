@@ -325,9 +325,7 @@ fn method_receiver_prefix_fixture() -> FunctionIR {
 
 #[test]
 fn native_call_operands_execute_identity_custody_and_mint_failure() {
-    let Some(rustc) = native_object_execution::real_rustc() else {
-        return;
-    };
+    let rustc = native_object_execution::rustc_path();
     let cases = [
         ("custody_direct", "call"),
         ("custody_internal", "call_internal"),

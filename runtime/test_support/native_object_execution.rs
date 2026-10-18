@@ -8,30 +8,11 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-/// The fixture compiler, or `None` (with a visible skip) when rustc is
-/// unavailable and no environment requires the real link.
-pub fn real_rustc() -> Option<PathBuf> {
-    let rustc = std::env::var_os("RUSTC")
+/// Resolve the fixture compiler; actual compilation must fail if it is unavailable.
+pub fn rustc_path() -> PathBuf {
+    std::env::var_os("RUSTC")
         .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from("rustc"));
-    let available = Command::new(&rustc)
-        .arg("--version")
-        .output()
-        .is_ok_and(|output| output.status.success());
-    if available {
-        return Some(rustc);
-    }
-    if std::env::var_os("CI").is_some()
-        || std::env::var_os("MOLT_REQUIRE_REAL_NATIVE_LINK_TESTS").is_some()
-        || std::env::var_os("MOLT_REQUIRE_REAL_NATIVE_CALLABLE_EXECUTION_TESTS").is_some()
-    {
-        panic!("real native final-link proof is required but rustc is unavailable");
-    }
-    eprintln!(
-        "SKIP real native final-link proof: rustc is unavailable; set \
-         MOLT_REQUIRE_REAL_NATIVE_LINK_TESTS=1 to make this a hard failure"
-    );
-    None
+        .unwrap_or_else(|| PathBuf::from("rustc"))
 }
 
 fn run_checked(command: &mut Command, purpose: &str) {

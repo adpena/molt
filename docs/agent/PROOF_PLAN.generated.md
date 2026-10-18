@@ -52,7 +52,7 @@ GitHub job budgets cover the deterministic command-deadline DAG projection plus 
 | `python_unit_collection` | pr, main | yes | `github-matrix` | 24 min | 1320 s per cell | 60 s | 60 s | `python-tests` | none | `python-unit-collection` needs `classify-changes` | 11 |
 | `native_integration` | pr, main | yes | `github-job` | 63 min | 3600 s | 180 s | 0 s | `compiler-build-resource` | none | `native-integration` needs `classify-changes` | 36 |
 | `rust` | pre-push, pr, main | yes | `github-job` | 346 min | 20520 s | 240 s | 0 s | `compiler-build-resource` | none | `rust-build-unit-smoke` needs `classify-changes` | 22 |
-| `llvm` | pre-push, pr, main, scheduled | yes | `github-job` | 75 min | 4200 s | 120 s | 180 s | `compiler-build-resource` | none | `llvm-backend` needs `classify-changes` | 42 |
+| `llvm` | pre-push, pr, main, scheduled | yes | `github-job` | 75 min | 4200 s | 120 s | 180 s | `compiler-build-resource` | none | `llvm-backend` needs `classify-changes` | 43 |
 | `python_security` | pr, main, scheduled | yes | `github-job` | 20 min | 900 s | 60 s | 240 s | `network-audit` | none | `security-hardening` needs `classify-changes` | 4 |
 | `rust_security` | pr, main, scheduled | yes | `github-job` | 21 min | 900 s | 360 s | 0 s | `network-audit` | none | `security-hardening` needs `classify-changes` | 9 |
 | `formal` | pr, main, scheduled | yes | `github-workflow` | 45 min | n/a | n/a | n/a | `formal-tools` | none | `formal-verification` needs `classify-changes` | 8 |
@@ -386,12 +386,12 @@ The wrapper conflict was reconfirmed by native CI run `30211145633` job `8981749
 | `phase-exit-manifest` | 7 | 1 |
 | `public-contract` | 19 | 1 |
 | `rust-clippy-changed` | 8 | 1 |
-| `backend-native` | 8 | 1 |
+| `backend-native` | 9 | 1 |
 | `backend-daemon-cache` | 5 | 1 |
 | `backend-ir-framing` | 4 | 1 |
 | `native-object-emission` | 5 | 1 |
 | `maintained-zlib-counters` | 14 | 2 |
-| `backend-llvm` | 2 | 1 |
+| `backend-llvm` | 3 | 1 |
 | `tir-midend` | 11 | 2 |
 | `wasm-host` | 5 | 1 |
 | `gpu-runtime` | 3 | 1 |
@@ -400,7 +400,7 @@ The wrapper conflict was reconfirmed by native CI run `30211145633` job `8981749
 | `python-effect-capability-authority` | 6 | 2 |
 | `python-identity-catalog-authority` | 7 | 1 |
 | `builtin-binding-guard-authority` | 9 | 2 |
-| `native-callable-abi` | 19 | 2 |
+| `native-callable-abi` | 20 | 2 |
 | `runtime-regex` | 11 | 2 |
 | `stringprep-leaf` | 2 | 1 |
 | `cpython-abi-authorities` | 2 | 1 |

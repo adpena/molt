@@ -153,6 +153,11 @@ startup remains with its existing owner. The pure Rust WASI provider passes
 its four counter cases on Linux aarch64 at `dev-fast`; this is distinct from
 Molt runtime or emitted-program acceptance. Native object-fixture cohorts must
 declare their actual compiler instead of inheriting it from another check.
+Native and WASM final-link tests also require their declared compilers, linkers
+and execution hosts locally: the optional tool probes and successful early
+returns are removed across both backends. Actual compilation and execution own
+failure diagnostics; no per-test version subprocess is needed. Shared fixture
+changes select all compiled consumers. Compiled qualification remains pending.
 Other CLI C-API and extension cells that skip when a compiler is absent remain
 unqualified; their prerequisites and actual executions remain V1-07 obligations.
 This work is development-only. Candidate integration and release qualification

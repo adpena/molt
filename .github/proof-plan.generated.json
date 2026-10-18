@@ -374,7 +374,7 @@
     "tests/tools/test_win_job_contract.py",
     "tests/tools/test_windows_process_api.py"
   ],
-  "authority_sha256": "db29b7cd12a13068d924baa197b9d3ec10dc1daf55fa630b1023ff79adec039a",
+  "authority_sha256": "25892414bd02f7e4357aa685613e476cc1c54a7a1cca51782e2687644449fa94",
   "cargo_environment_policy": {
     "incident_command": "cargo metadata --locked --format-version 1",
     "incident_commit": "20b046b79bd4ca64a8c859f737f6e330377bcc4e",
@@ -937,6 +937,7 @@
       "description": "LLVM, MLIR, and linker executable build/lowering/link/differential proof.",
       "executor": "github-job",
       "inputs": [
+        "runtime/test_support/native_object_execution.rs",
         ".github/workflows/ci.yml",
         "Cargo.lock",
         "Cargo.toml",
@@ -7328,6 +7329,7 @@
         "uv",
         "rustc",
         "cargo",
+        "node",
         "wasm-ld"
       ]
     },
@@ -10677,6 +10679,7 @@
           "cargo test --locked --profile release-fast -p molt-backend -p molt-backend-native -p molt-artifact-publish --features molt-backend/native-backend --lib --bins --no-fail-fast"
         ],
         "globs": [
+          "runtime/test_support/native_object_execution.rs",
           "runtime/molt-backend/**/*.rs",
           "runtime/molt-backend/**/Cargo.toml",
           "runtime/molt-backend-native/Cargo.toml",
@@ -10806,6 +10809,7 @@
           "cargo test --locked --profile release-fast -p molt-backend-native -p molt-backend --features molt-backend/native-backend,molt-backend/llvm --lib --test ir_contract_validation --no-fail-fast"
         ],
         "globs": [
+          "runtime/test_support/native_object_execution.rs",
           "runtime/molt-backend-native/Cargo.toml",
           "runtime/molt-backend-native/src/llvm_backend/**/*.rs"
         ],
@@ -10844,7 +10848,9 @@
         "toolchains": [
           "python",
           "rustc",
-          "cargo"
+          "cargo",
+          "node",
+          "wasm-ld"
         ]
       },
       {
@@ -11040,6 +11046,7 @@
           "cargo test --locked --profile dev-fast -p molt-ir -p molt-backend-native -p molt-backend-wasm --features molt-backend-wasm/test-util --lib native_callable --no-fail-fast"
         ],
         "globs": [
+          "runtime/test_support/native_object_execution.rs",
           "runtime/native_callable_abi.toml",
           "tools/gen_native_callable_abi.py",
           "src/molt/native_callable_abi.py",
@@ -11068,7 +11075,9 @@
           "python",
           "rustc",
           "cargo",
-          "rustfmt"
+          "rustfmt",
+          "node",
+          "wasm-ld"
         ]
       },
       {
@@ -11698,21 +11707,27 @@
         "rustc",
         "cargo",
         "git",
-        "rustfmt"
+        "rustfmt",
+        "node",
+        "wasm-ld"
       ],
       "local.native-callable-abi.1": [
         "python",
         "rustc",
         "cargo",
         "git",
-        "rustfmt"
+        "rustfmt",
+        "node",
+        "wasm-ld"
       ],
       "local.native-callable-abi.pytest": [
         "python",
         "rustc",
         "cargo",
         "git",
-        "rustfmt"
+        "rustfmt",
+        "node",
+        "wasm-ld"
       ],
       "local.native-object-emission.0": [
         "python",
@@ -11922,13 +11937,17 @@
         "python",
         "rustc",
         "cargo",
-        "git"
+        "git",
+        "node",
+        "wasm-ld"
       ],
       "local.tir-midend.1": [
         "python",
         "rustc",
         "cargo",
-        "git"
+        "git",
+        "node",
+        "wasm-ld"
       ],
       "local.wasm-abi-registry.0": [
         "python",
