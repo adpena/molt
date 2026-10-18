@@ -4,7 +4,7 @@ use crate::*;
 use memchr::memmem;
 use molt_obj_model::MoltObject;
 
-use super::ops_string_utf8::{utf8_codepoint_count_cached, wtf8_codepoint_at};
+use super::ops_string_utf8::utf8_codepoint_count_cached;
 use super::validate_string_receiver;
 fn partition_string(py: &PyToken<'_>, hay_bits: u64, sep_bits: u64, right: bool) -> u64 {
     let Some(hay_ptr) = obj_from_bits(hay_bits).as_ptr() else {
@@ -440,7 +440,7 @@ pub extern "C" fn molt_string_split_field_len_from_bounds(
 /// `(start, end, is_ascii)` values produced by the field-property ops. ASCII
 /// fields: the codepoint at codepoint index `idx` IS the byte `hay[start + idx]`
 /// (O(1), no decode). Non-ASCII: decode the `idx`-th codepoint of
-/// `hay[start..end]` via `wtf8_codepoint_at` (O(idx) within the bounded field,
+/// `hay[start..end]` via the shared WTF-8 code-point iterator (O(idx) within the bounded field,
 /// NOT a split re-scan), byte-identical to `ord(field[idx])` on the materialized
 /// field — same negative-index handling and same
 /// `IndexError("string index out of range")`. `start`/`end`/`is_ascii`/`idx`
@@ -489,7 +489,10 @@ pub extern "C" fn molt_string_split_field_ord_at_bounds(
             if i < 0 || i >= len {
                 return raise_exception::<_>(_py, "IndexError", "string index out of range");
             }
-            let Some(code) = wtf8_codepoint_at(field, i as usize) else {
+            let Some(code) = unsafe { molt_stdlib_text::wtf8::from_validated_bytes(field) }
+                .code_points()
+                .nth(i as usize)
+            else {
                 return raise_exception::<_>(_py, "IndexError", "string index out of range");
             };
             MoltObject::from_int(code.to_u32() as i64).bits()

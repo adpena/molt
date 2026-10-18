@@ -3,7 +3,6 @@
 // ---------------------------------------------------------------------------
 
 use super::*;
-use std::collections::HashMap;
 
 fn parse_pattern(pattern: &str, flags: i64) -> Result<CompiledPattern, String> {
     parse_pattern_typed(pattern, flags, false)
@@ -1279,7 +1278,7 @@ fn expand_repl_with_groups(
     chars: &[char],
     result: &MatchResult,
     group_count: u32,
-    names: &HashMap<String, u32>,
+    names: &NamedGroups,
 ) -> String {
     let units: Vec<u32> = repl.chars().map(u32::from).collect();
     expand_match_replacement(
@@ -1354,7 +1353,7 @@ fn test_expand_repl_numbered_group() {
         groups: vec![None, Some((0, 5))],
     };
     let chars: Vec<char> = "hello".chars().collect();
-    let names = HashMap::new();
+    let names = NamedGroups::new();
     let expanded = expand_repl_with_groups("<<\\1>>", &chars, &result, 1, &names);
     assert_eq!(expanded, "<<hello>>");
 }
@@ -1367,7 +1366,7 @@ fn test_expand_repl_named_group() {
         groups: vec![None, Some((0, 5))],
     };
     let chars: Vec<char> = "hello".chars().collect();
-    let mut names = HashMap::new();
+    let mut names = NamedGroups::new();
     names.insert("word".to_string(), 1u32);
     let expanded = expand_repl_with_groups("<<\\g<word>>>", &chars, &result, 1, &names);
     assert_eq!(expanded, "<<hello>>");
@@ -1381,7 +1380,7 @@ fn test_expand_repl_group_zero() {
         groups: vec![None],
     };
     let chars: Vec<char> = "hello".chars().collect();
-    let names = HashMap::new();
+    let names = NamedGroups::new();
     let expanded = expand_repl_with_groups("<<\\g<0>>>", &chars, &result, 0, &names);
     assert_eq!(expanded, "<<hello>>");
 }
@@ -1394,7 +1393,7 @@ fn test_expand_repl_escape_sequences() {
         groups: vec![None],
     };
     let chars: Vec<char> = "".chars().collect();
-    let names = HashMap::new();
+    let names = NamedGroups::new();
     let expanded = expand_repl_with_groups("a\\nb\\tc\\\\d", &chars, &result, 0, &names);
     assert_eq!(expanded, "a\nb\tc\\d");
 }
@@ -1445,34 +1444,95 @@ fn test_escape_nul() {
 
 #[test]
 fn replacement_failure_roles_and_positions_match_cpython() {
-    use super::functions_re::{ReplacementErrorKind, re_expand_typed};
+    use super::functions_re::{ReplacementError, re_expand_typed};
     let groups = vec![Some(vec![u32::from(b'a')]), Some(vec![u32::from(b'a')])];
     // Independent CPython 3.12 parser oracles, shared by text and byte templates.
-    for (template, kind, message) in [
+    for (template, expected) in [
         (
             r"\z",
-            ReplacementErrorKind::Syntax,
-            r"bad escape \z at position 0",
+            ReplacementError::Syntax(r"bad escape \z at position 0".to_owned()),
         ),
         (
             r"\9",
-            ReplacementErrorKind::Syntax,
-            "invalid group reference 9 at position 1",
+            ReplacementError::Syntax("invalid group reference 9 at position 1".to_owned()),
         ),
         (
             r"\g<missing>",
-            ReplacementErrorKind::Index,
-            "unknown group name 'missing'",
+            ReplacementError::Index("unknown group name 'missing'".to_owned()),
         ),
         (
             r"\777",
-            ReplacementErrorKind::Syntax,
-            r"octal escape value \777 outside of range 0-0o377 at position 0",
+            ReplacementError::Syntax(
+                r"octal escape value \777 outside of range 0-0o377 at position 0".to_owned(),
+            ),
         ),
     ] {
         let units: Vec<u32> = template.chars().map(u32::from).collect();
-        let error = re_expand_typed(&units, &groups, &HashMap::new()).unwrap_err();
-        assert_eq!(error.kind, kind);
-        assert_eq!(error.message, message);
+        let error = re_expand_typed(&units, &groups, &NamedGroups::new()).unwrap_err();
+        assert_eq!(error, expected);
     }
+}
+
+#[test]
+fn replacement_units_keep_surrogates_and_reject_surrogate_group_names() {
+    use super::functions_re::{ReplacementError, re_expand_typed};
+
+    // CPython: (?P<value>.+)(x)? has equal whole-match/group-1 values
+    // and an unmatched group 2. Keep ordinal 0 distinct from the named group.
+    let value = vec![0xD800, 0xDFFF, 0xD83D, 0xDE00, 0x1F600];
+    let groups = vec![Some(value.clone()), Some(value), None];
+    let mut names = NamedGroups::new();
+    names.insert("value".to_owned(), 1);
+    let template: Vec<u32> = r"<\g<value>|\1|\2>".chars().map(u32::from).collect();
+    assert_eq!(
+        re_expand_typed(&template, &groups, &names).unwrap(),
+        vec![
+            b'<' as u32,
+            0xD800,
+            0xDFFF,
+            0xD83D,
+            0xDE00,
+            0x1F600,
+            b'|' as u32,
+            0xD800,
+            0xDFFF,
+            0xD83D,
+            0xDE00,
+            0x1F600,
+            b'|' as u32,
+            b'>' as u32,
+        ]
+    );
+
+    let invalid_name = vec![
+        u32::from(b'\\'),
+        u32::from(b'g'),
+        u32::from(b'<'),
+        u32::from(b'u'),
+        u32::from(b'n'),
+        u32::from(b'k'),
+        u32::from(b'n'),
+        u32::from(b'o'),
+        u32::from(b'w'),
+        u32::from(b'n'),
+        0xD800,
+        u32::from(b'>'),
+    ];
+    let error = re_expand_typed(&invalid_name, &groups, &names).unwrap_err();
+    assert_eq!(
+        error,
+        ReplacementError::InvalidGroupName {
+            name: vec![
+                u32::from(b'u'),
+                u32::from(b'n'),
+                u32::from(b'k'),
+                u32::from(b'n'),
+                u32::from(b'o'),
+                u32::from(b'w'),
+                u32::from(b'n'),
+                0xD800,
+            ],
+            position: 3,
+        }
+    );
 }

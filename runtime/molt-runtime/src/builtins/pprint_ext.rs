@@ -9,7 +9,7 @@ fn text(parts: &[&[u8]]) -> Vec<u8> {
     parts.concat()
 }
 fn text_len(bytes: &[u8]) -> usize {
-    crate::object::ops_string::wtf8_from_bytes(bytes)
+    unsafe { molt_stdlib_text::wtf8::from_validated_bytes(bytes) }
         .code_points()
         .count()
 }

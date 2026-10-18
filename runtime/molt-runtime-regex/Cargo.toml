@@ -11,3 +11,5 @@ description = "Regex intrinsics for the Molt runtime (compile, execute, match gr
 # Core runtime types used by the regex implementations
 molt-runtime-core = { path = "../molt-runtime-core" }
 molt-obj-model = { package = "molt-lang-obj-model", path = "../molt-obj-model" }
+molt-stdlib-text = { path = "../molt-stdlib-text", default-features = false }
+indexmap = "2.14.2"

@@ -24,7 +24,7 @@ use crate::object::ops_encoding::{
     unicode_name_escape,
 };
 use crate::*;
-use molt_stdlib_text::wtf8::{push_backslash_bytes_vec, push_wtf8_codepoint};
+use molt_stdlib_text::wtf8::push_backslash_bytes_vec;
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicI64, Ordering};
@@ -918,7 +918,7 @@ fn charmap_decode_undefined(
     match errors {
         "ignore" => Ok(()),
         "replace" => {
-            push_wtf8_codepoint(out, 0xFFFD);
+            molt_stdlib_text::wtf8::push_wtf8_codepoint(out, 0xFFFD);
             Ok(())
         }
         "backslashreplace" => {
@@ -931,7 +931,7 @@ fn charmap_decode_undefined(
                 end: pos + 1,
                 reason: "character maps to <undefined>",
             });
-            push_wtf8_codepoint(out, 0xDC00 + byte as u32);
+            molt_stdlib_text::wtf8::push_wtf8_codepoint(out, 0xDC00 + byte as u32);
             Ok(())
         }
         "xmlcharrefreplace" | "namereplace" => Err(raise_exception::<_>(
@@ -983,7 +983,7 @@ pub extern "C" fn molt_codecs_charmap_decode(
         if mapping_obj.is_none() {
             let mut decoded = Vec::with_capacity(input_vec.len());
             for &byte in &input_vec {
-                push_wtf8_codepoint(&mut decoded, byte as u32);
+                molt_stdlib_text::wtf8::push_wtf8_codepoint(&mut decoded, byte as u32);
             }
             return charmap_decode_tuple(_py, &decoded, input_vec.len());
         }
@@ -1006,7 +1006,7 @@ pub extern "C" fn molt_codecs_charmap_decode(
                             return bits;
                         }
                     }
-                    Some(ch) => push_wtf8_codepoint(&mut out, ch as u32),
+                    Some(ch) => molt_stdlib_text::wtf8::push_wtf8_codepoint(&mut out, ch as u32),
                 }
             }
             return charmap_decode_tuple(_py, &out, input_vec.len());
@@ -1028,7 +1028,9 @@ pub extern "C" fn molt_codecs_charmap_decode(
             let mut out = Vec::with_capacity(input_vec.len());
             for (pos, &byte) in input_vec.iter().enumerate() {
                 match mapping_vec.get(byte as usize).copied() {
-                    Some(mapped) => push_wtf8_codepoint(&mut out, mapped as u32),
+                    Some(mapped) => {
+                        molt_stdlib_text::wtf8::push_wtf8_codepoint(&mut out, mapped as u32)
+                    }
                     None => {
                         if let Err(bits) = charmap_decode_undefined(
                             _py,
@@ -1107,7 +1109,7 @@ pub extern "C" fn molt_codecs_charmap_decode(
                                 "character mapping must be in range(0x110000)",
                             );
                         }
-                        push_wtf8_codepoint(&mut out, i as u32);
+                        molt_stdlib_text::wtf8::push_wtf8_codepoint(&mut out, i as u32);
                     } else {
                         return raise_exception::<_>(
                             _py,
@@ -1263,9 +1265,10 @@ pub extern "C" fn molt_codecs_charmap_encode(
             let Some(result) = (unsafe {
                 crate::object::ops_format::with_string_bytes(input_obj, |bytes| {
                     encode_string_with_errors(bytes, "latin-1", Some(&errors)).map(|encoded| {
-                        let consumed = crate::object::ops_string::wtf8_from_bytes(bytes)
-                            .code_points()
-                            .count();
+                        let consumed =
+                            unsafe { molt_stdlib_text::wtf8::from_validated_bytes(bytes) }
+                                .code_points()
+                                .count();
                         (encoded, consumed)
                     })
                 })

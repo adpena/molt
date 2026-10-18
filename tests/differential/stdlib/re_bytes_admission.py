@@ -47,6 +47,25 @@ print("short captures", shrunk_match.group(), shrunk_match.groups(), shrunk_matc
 surrogate_match = re.search("(?P<surrogate>.)", "\ud800A")
 print("surrogate capture", repr(surrogate_match.group()), repr(surrogate_match.groups()), repr(surrogate_match.groupdict()), repr(surrogate_match.expand("<\\g<surrogate>>")))
 
+for label, value in (
+    ("high", "\ud800"),
+    ("low", "\udfff"),
+    ("adjacent-pair", "\ud83d\ude00"),
+    ("scalar", "\U0001f600"),
+):
+    match = re.fullmatch("(?P<value>.+)", value)
+    print("expand codepoints", label, repr(match.expand("<\\g<value>>")))
+    print("expand literal", label, repr(match.expand("\ud800\\1")))
+
+print("sub literal surrogate", repr(re.sub("a", "\ud800", "a")))
+print("sub captured group with surrogate literal", repr(re.sub("(a)", "<\\1>\ud800", "a")))
+unmatched_text = re.match("(?P<missing>x)?a", "a")
+print("expand unmatched text", repr(unmatched_text.expand("[\\g<missing>|\\1]")))
+try:
+    re.match("a", "a").expand("\\g<unknown\ud800>")
+except Exception as exc:
+    print("malformed surrogate group name", type(exc).__name__, str(exc))
+
 
 class TrappingBytes(bytes):
     def __len__(self):

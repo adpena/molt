@@ -514,12 +514,15 @@ def test_compiler_runtime_partition_preserves_disjoint_test_and_tool_ownership()
         "molt-passes",
         "molt-backend-wasm",
         "molt-runtime",
+        "molt-runtime-regex",
+        "molt-stdlib-text",
         "molt-runtime-platform",
         "molt-gpu-runtime",
         "zlib-rs@0.6.8",
     }
     assert not test_packages(core) & test_packages(complement)
     assert core.dependencies == complement.dependencies == ()
+    assert {"regex::", "wtf8::"} <= set(core.argv[core.argv.index("--") + 1 :])
     assert set(core.toolchains) == {"rustc", "cargo", "node", "wasm-ld"}
     assert proof_plan.cargo_native_units(core.data) == {"target": ["c"]}
     assert "seq_snapshot_bridge::" in core.argv[core.argv.index("--") + 1 :]

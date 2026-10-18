@@ -38,7 +38,7 @@ pub(crate) fn require_strict_utf8(py: &PyToken<'_>, bits: u64) -> bool {
     if std::str::from_utf8(value).is_ok() {
         return true;
     }
-    let text = wtf8_from_bytes(value);
+    let text = unsafe { molt_stdlib_text::wtf8::from_validated_bytes(value) };
     let mut points = text.code_points().enumerate().peekable();
     while let Some((start, code)) = points.next() {
         if (0xd800..=0xdfff).contains(&code.to_u32()) {
@@ -1291,14 +1291,11 @@ pub use ops_string_format::{
 #[path = "ops_string_utf8.rs"]
 mod ops_string_utf8;
 pub(crate) use ops_string_utf8::utf8_char_to_byte_index_cached;
-pub(super) use ops_string_utf8::{push_wtf8_codepoint, wtf8_codepoint_at, wtf8_has_surrogates};
 use ops_string_utf8::{
     utf8_byte_to_char_index_cached, utf8_count_cache_count_slice, utf8_count_cache_lookup,
     utf8_count_cache_store, utf8_count_cache_upgrade_prefix,
 };
-pub(crate) use ops_string_utf8::{
-    utf8_cache_remove, utf8_codepoint_count_cached, wtf8_from_bytes, wtf8_step,
-};
+pub(crate) use ops_string_utf8::{utf8_cache_remove, utf8_codepoint_count_cached, wtf8_step};
 
 #[path = "ops_string_split.rs"]
 mod ops_string_split;

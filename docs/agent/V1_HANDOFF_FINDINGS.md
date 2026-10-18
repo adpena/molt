@@ -122,9 +122,15 @@ Capture extraction now shares one physical text/bytes slice authority and the
 existing aggregate owner. It preserves root errors and lossless WTF-8, clamps
 saved spans to the current mutable buffer, and retires partial captures on every
 failure. The copied whole-text/`Vec<char>` lane and its separate tuple builder
-are removed. The actual prior consumers exposed four overwritten diagnostics;
-the expanded consumer and native rollback controls still require execution
-under HF-322. Shared UTF-8 indexing still scans for ASCII before cache lookup;
+are removed. Actual native and WASM consumers now preserve the four previously
+overwritten diagnostics and mutable-buffer clamping. The expanded consumer
+exposed a scalar-only replacement conversion and unordered named-group
+publication; their source migration now uses the shared lossless text codec and
+one insertion-ordered name catalog, with closed replacement-error variants.
+The codec's former runtime-local facades and direct dependency are removed,
+and its primitive tests join the existing regex proof cohort. Compiled
+qualification of that migration and native rollback controls remains under
+HF-322. Shared UTF-8 indexing still scans for ASCII before cache lookup;
 that residual classification cost remains a V1-07 obligation. Normal regex
 buffer execution exits cleanly, but does not independently qualify the earlier
 exceptional-shutdown observation.

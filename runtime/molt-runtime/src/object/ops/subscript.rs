@@ -482,8 +482,16 @@ pub(crate) fn index_impl(
                             let mut out = Vec::with_capacity(indices.len());
                             if type_id == TYPE_ID_STRING {
                                 for idx in indices {
-                                    if let Some(code) = wtf8_codepoint_at(bytes, idx) {
-                                        push_wtf8_codepoint(&mut out, code.to_u32());
+                                    if let Some(code) = unsafe {
+                                        molt_stdlib_text::wtf8::from_validated_bytes(bytes)
+                                    }
+                                    .code_points()
+                                    .nth(idx)
+                                    {
+                                        molt_stdlib_text::wtf8::push_wtf8_codepoint(
+                                            &mut out,
+                                            code.to_u32(),
+                                        );
                                     }
                                 }
                             } else {
@@ -534,12 +542,16 @@ pub(crate) fn index_impl(
                             raise_exception::<()>(_py, "IndexError", "string index out of range");
                             return Err(());
                         }
-                        let Some(code) = wtf8_codepoint_at(bytes, i as usize) else {
+                        let Some(code) =
+                            unsafe { molt_stdlib_text::wtf8::from_validated_bytes(bytes) }
+                                .code_points()
+                                .nth(i as usize)
+                        else {
                             raise_exception::<()>(_py, "IndexError", "string index out of range");
                             return Err(());
                         };
                         let mut out = Vec::with_capacity(4);
-                        push_wtf8_codepoint(&mut out, code.to_u32());
+                        molt_stdlib_text::wtf8::push_wtf8_codepoint(&mut out, code.to_u32());
                         let out_ptr = alloc_string(_py, &out);
                         if out_ptr.is_null() {
                             return Err(());
@@ -1046,7 +1058,10 @@ pub extern "C" fn molt_ord_at(obj_bits: u64, key_bits: u64) -> u64 {
                             "string index out of range",
                         );
                     }
-                    let Some(code) = wtf8_codepoint_at(bytes, i as usize) else {
+                    let Some(code) = unsafe { molt_stdlib_text::wtf8::from_validated_bytes(bytes) }
+                        .code_points()
+                        .nth(i as usize)
+                    else {
                         return raise_exception::<_>(
                             _py,
                             "IndexError",

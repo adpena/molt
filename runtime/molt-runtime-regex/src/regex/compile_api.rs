@@ -73,7 +73,8 @@ pub extern "C" fn molt_re_pattern_info(handle_bits: u64) -> u64 {
         let Some(compiled) = pattern_handle_arc(handle_bits) else {
             return raise_exception::<_>(_py, "ValueError", "invalid regex handle");
         };
-        // Build group_names dict.
+        // Project the canonical group-open order directly. Match/groupdict
+        // consumers retain this declaration order without sorting per match.
         let mut pairs = Vec::with_capacity(compiled.compiled.group_names.len() * 2);
         for (name, &idx) in &compiled.compiled.group_names {
             let name_ptr = alloc_string(_py, name.as_bytes());

@@ -425,7 +425,7 @@ impl<'a, 'py> ExceptionRenderContext for ManagedRender<'a, 'py> {
                 crate::object::ops_format::with_string_bytes(obj_from_bits(value), |bytes| {
                     index
                         .and_then(|index| {
-                            crate::object::ops_string::wtf8_from_bytes(bytes)
+                            unsafe { molt_stdlib_text::wtf8::from_validated_bytes(bytes) }
                                 .code_points()
                                 .nth(index)
                         })

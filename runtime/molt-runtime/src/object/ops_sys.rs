@@ -8,9 +8,7 @@ use crate::builtins::numbers::{
     index_integral_payload_bits, integral_payload_to_bytes,
 };
 use crate::object::ops::{range_components_bigint, range_len_bigint};
-use crate::object::ops_string::{
-    push_wtf8_codepoint, utf8_codepoint_count_cached, wtf8_codepoint_at,
-};
+use crate::object::ops_string::utf8_codepoint_count_cached;
 use crate::runtime_flags::{self, RuntimeFlag};
 use crate::state::runtime_state::PythonVersionInfo;
 use crate::*;
@@ -221,7 +219,10 @@ pub extern "C" fn molt_ord(val: u64) -> u64 {
                     if char_count != 1 {
                         return ord_length_error(_py, char_count as usize);
                     }
-                    let Some(code) = wtf8_codepoint_at(bytes, 0) else {
+                    let Some(code) = unsafe { molt_stdlib_text::wtf8::from_validated_bytes(bytes) }
+                        .code_points()
+                        .next()
+                    else {
                         return MoltObject::none().bits();
                     };
                     return MoltObject::from_int(code.to_u32() as i64).bits();
@@ -1368,7 +1369,7 @@ pub extern "C" fn molt_chr(val: u64) -> u64 {
             }
             let code = i as u32;
             let mut out_bytes = Vec::with_capacity(4);
-            push_wtf8_codepoint(&mut out_bytes, code);
+            molt_stdlib_text::wtf8::push_wtf8_codepoint(&mut out_bytes, code);
             let out = alloc_string(_py, &out_bytes);
             if out.is_null() {
                 return MoltObject::none().bits();
@@ -1389,7 +1390,7 @@ pub extern "C" fn molt_chr(val: u64) -> u64 {
             return raise_exception::<_>(_py, "ValueError", "chr() arg not in range(0x110000)");
         };
         let mut out_bytes = Vec::with_capacity(4);
-        push_wtf8_codepoint(&mut out_bytes, code);
+        molt_stdlib_text::wtf8::push_wtf8_codepoint(&mut out_bytes, code);
         let out = alloc_string(_py, &out_bytes);
         if out.is_null() {
             return MoltObject::none().bits();

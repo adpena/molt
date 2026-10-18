@@ -105,7 +105,10 @@ fn regex_aggregates_retain_each_created_child_once() {
                 1
             );
 
-            let named_expression = make(b"(?P<retained_owner>item)");
+            // Independent CPython oracle: opening order z, a, m differs from
+            // lexical order and nested-group closing order. The unnamed group
+            // leaves an ordinal hole, so names cannot be assigned dense ranks.
+            let named_expression = make(b"(?P<z>(a)(?P<a>b))(?P<m>c)?");
             let named_pattern = unsafe {
                 OwnedRuntimeValue::from_owned_bits(
                     py.core_token(),
@@ -122,10 +125,28 @@ fn regex_aggregates_retain_each_created_child_once() {
             assert!(!exception_pending(py));
             let children = unsafe { seq_snapshot(ptr_from_bits(info.bits())) };
             assert_eq!(children.len(), 4);
+            assert_eq!(obj_from_bits(children[0]).as_int(), Some(4));
             assert_eq!(
                 unsafe { (*header_from_obj_ptr(ptr_from_bits(children[1]))).ref_count_snapshot() },
                 1
             );
+            let names = unsafe {
+                crate::object::ops_dict::dict_snapshot(
+                    py,
+                    ptr_from_bits(children[1]),
+                    crate::object::ops_dict::DictSnapshotKind::Entries,
+                )
+            }
+            .expect("published named-group dictionary");
+            assert_eq!(names.len(), 6);
+            for (pair, (name, ordinal)) in names.chunks_exact(2).zip([("z", 1), ("a", 3), ("m", 4)])
+            {
+                assert_eq!(
+                    string_obj_to_owned(obj_from_bits(pair[0])).as_deref(),
+                    Some(name)
+                );
+                assert_eq!(obj_from_bits(pair[1]).as_int(), Some(ordinal));
+            }
         }
     });
 }

@@ -2835,7 +2835,6 @@ dependencies = [
  "unicode_names2 4.0.0",
  "webpki-roots 1.0.9",
  "windows-sys 0.61.2",
- "wtf8",
  "zip",
 ]
 
@@ -3019,8 +3018,10 @@ dependencies = [
 name = "molt-runtime-regex"
 version = "0.1.0"
 dependencies = [
+ "indexmap",
  "molt-lang-obj-model",
  "molt-runtime-core",
+ "molt-stdlib-text",
 ]
 
 [[package]]
@@ -3103,6 +3104,7 @@ dependencies = [
  "molt-lang-obj-model",
  "molt-runtime-core",
  "unicode_names2 4.0.0",
+ "wtf8",
 ]
 
 [[package]]

@@ -263,7 +263,7 @@ fn json_encode_basestring_impl(value: &str, ensure_ascii: bool) -> String {
 fn json_string_line_col(text: &[u8], pos: usize) -> (usize, usize) {
     let mut lineno = 1;
     let mut last_newline = None;
-    for (idx, code) in crate::object::ops_string::wtf8_from_bytes(text)
+    for (idx, code) in unsafe { molt_stdlib_text::wtf8::from_validated_bytes(text) }
         .code_points()
         .enumerate()
     {

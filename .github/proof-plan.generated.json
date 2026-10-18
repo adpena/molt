@@ -371,7 +371,7 @@
     "tests/tools/test_win_job_contract.py",
     "tests/tools/test_windows_process_api.py"
   ],
-  "authority_sha256": "11d25278ab6241d5f82358f01bb493f056044e16517de0cdbcf991ffdf2004d2",
+  "authority_sha256": "cd9dd5a46d99d12528a7d6c15e4c1237611e4ebb394404cd19092d3ae4c8c627",
   "cargo_environment_policy": {
     "incident_command": "cargo metadata --locked --format-version 1",
     "incident_commit": "20b046b79bd4ca64a8c859f737f6e330377bcc4e",
@@ -6901,6 +6901,10 @@
         "-p",
         "molt-runtime",
         "-p",
+        "molt-runtime-regex",
+        "-p",
+        "molt-stdlib-text",
+        "-p",
         "molt-runtime-platform",
         "-p",
         "molt-gpu-runtime",
@@ -6935,6 +6939,8 @@
         "test_raw_compression_c_exports_are_linkable",
         "gpu_runtime_tests::",
         "kernel_storage::",
+        "regex::",
+        "wtf8::",
         "--nocapture",
         "--test-threads=1"
       ],
@@ -8652,7 +8658,7 @@
       "local.runtime-lib.0": "python tools/run_runtime_test_gate.py --profile release-output --build-timeout-seconds 6300 --child-timeout-seconds 120 --parallel-threads 8",
       "local.runtime-profile-schema-authority.0": "python tools/gen_runtime_profile_schema.py --check",
       "local.runtime-profile-schema-authority.pytest": "python -m pytest -q -n 4 tests/test_gen_runtime_profile_schema.py tests/test_runtime_profile_schema.py",
-      "local.runtime-regex.0": "cargo test --locked --profile dev-fast -p molt-runtime-regex --lib",
+      "local.runtime-regex.0": "cargo test --locked --profile dev-fast -p molt-runtime-regex -p molt-stdlib-text --no-default-features --lib -- regex:: wtf8::",
       "local.runtime-regex.pytest": "python -m pytest -q -n 4 tests/test_stdlib_re.py",
       "local.runtime-vfs.0": "cargo clippy --locked -p molt-runtime-vfs --all-targets --all-features -- -D warnings",
       "local.runtime-vfs.1": "cargo test --locked -p molt-runtime-vfs --all-features --no-fail-fast",
@@ -10469,13 +10475,15 @@
           "local.runtime-regex.0",
           "local.runtime-regex.pytest"
         ],
-        "description": "Typed text/bytes regex parser and matcher: execute the shared pure engine controls and facade contracts.",
+        "description": "Typed regex parser/matcher and shared lossless text codec: one fast-profile pure Rust cohort plus facade contracts.",
         "gates": [
-          "cargo test --locked --profile dev-fast -p molt-runtime-regex --lib"
+          "cargo test --locked --profile dev-fast -p molt-runtime-regex -p molt-stdlib-text --no-default-features --lib -- regex:: wtf8::"
         ],
         "globs": [
           "runtime/molt-runtime-regex/**/*.rs",
           "runtime/molt-runtime-regex/Cargo.toml",
+          "runtime/molt-stdlib-text/src/wtf8.rs",
+          "runtime/molt-stdlib-text/Cargo.toml",
           "runtime/molt-runtime/src/regex_bridge.rs",
           "src/molt/stdlib/re/**/*.py",
           "tests/test_stdlib_re.py"

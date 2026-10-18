@@ -11,26 +11,21 @@ use super::*;
 // parent `regex` module) — `RE_IGNORECASE`, `RE_DOTALL`, `RE_MULTILINE`,
 // `RE_ASCII` — so they are not redeclared here.
 
-/// Replacement expansion errors preserve the exception class selected by the
-/// canonical parser.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(super) enum ReplacementErrorKind {
-    Syntax,
-    Index,
-}
-
-#[derive(Debug)]
-pub(super) struct ReplacementError {
-    pub(super) kind: ReplacementErrorKind,
-    pub(super) message: String,
+/// Replacement errors carry exactly the data required by their exception role.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) enum ReplacementError {
+    Syntax(String),
+    Index(String),
+    InvalidGroupName { name: Vec<u32>, position: usize },
 }
 
 /// Expand both text and byte replacement templates through one parser. Units
-/// are Unicode scalar values for text and byte values for byte patterns.
+/// are Unicode code points (including surrogates) for text and byte values for
+/// byte patterns.
 pub(super) fn re_expand_typed(
     repl: &[u32],
     group_values: &[Option<Vec<u32>>],
-    group_names: &std::collections::HashMap<String, u32>,
+    group_names: &NamedGroups,
 ) -> Result<Vec<u32>, ReplacementError> {
     let mut out = Vec::with_capacity(repl.len());
     let mut i = 0;
@@ -41,10 +36,9 @@ pub(super) fn re_expand_typed(
             continue;
         }
         if i + 1 >= repl.len() {
-            return Err(replacement_error(
-                ReplacementErrorKind::Syntax,
-                format!("bad escape (end of pattern) at position {i}"),
-            ));
+            return Err(ReplacementError::Syntax(format!(
+                "bad escape (end of pattern) at position {i}"
+            )));
         }
         let ch = repl[i + 1];
         if ch == u32::from(b'g') && repl.get(i + 2) == Some(&u32::from(b'<')) {
@@ -52,29 +46,35 @@ pub(super) fn re_expand_typed(
                 .iter()
                 .position(|unit| *unit == u32::from(b'>'))
             else {
-                return Err(replacement_error(
-                    ReplacementErrorKind::Syntax,
-                    format!("missing >, unterminated name at position {i}"),
-                ));
+                return Err(ReplacementError::Syntax(format!(
+                    "missing >, unterminated name at position {i}"
+                )));
             };
             let end = i + 3 + end_rel;
-            let name: String = repl[i + 3..end]
+            let name_units = &repl[i + 3..end];
+            if name_units
                 .iter()
-                .map(|unit| char::from_u32(*unit).unwrap_or('\u{fffd}'))
+                .any(|unit| (0xD800..=0xDFFF).contains(unit))
+            {
+                return Err(ReplacementError::InvalidGroupName {
+                    name: name_units.to_vec(),
+                    position: i + 3,
+                });
+            }
+            let name: String = name_units
+                .iter()
+                .map(|unit| char::from_u32(*unit).expect("validated replacement code point"))
                 .collect();
             let index = if !name.is_empty() && name.bytes().all(|byte| byte.is_ascii_digit()) {
                 name.parse::<usize>().map_err(|_| {
-                    replacement_error(
-                        ReplacementErrorKind::Syntax,
-                        format!("invalid group reference {name} at position {}", i + 3),
-                    )
+                    ReplacementError::Syntax(format!(
+                        "invalid group reference {name} at position {}",
+                        i + 3
+                    ))
                 })?
             } else {
                 *group_names.get(&name).ok_or_else(|| {
-                    replacement_error(
-                        ReplacementErrorKind::Index,
-                        format!("unknown group name '{name}'"),
-                    )
+                    ReplacementError::Index(format!("unknown group name '{name}'"))
                 })? as usize
             };
             append_group(&mut out, group_values, index, i + 3)?;
@@ -108,12 +108,9 @@ pub(super) fn re_expand_typed(
                         .iter()
                         .map(|unit| char::from_u32(*unit).unwrap())
                         .collect();
-                    return Err(replacement_error(
-                        ReplacementErrorKind::Syntax,
-                        format!(
-                            "octal escape value \\{digits} outside of range 0-0o377 at position {i}"
-                        ),
-                    ));
+                    return Err(ReplacementError::Syntax(format!(
+                        "octal escape value \\{digits} outside of range 0-0o377 at position {i}"
+                    )));
                 }
                 out.push(value);
                 i = end;
@@ -128,10 +125,10 @@ pub(super) fn re_expand_typed(
                 .map(|unit| char::from_u32(*unit).unwrap_or('\u{fffd}'))
                 .collect();
             let index = digits.parse::<usize>().map_err(|_| {
-                replacement_error(
-                    ReplacementErrorKind::Syntax,
-                    format!("invalid group reference {digits} at position {}", i + 1),
-                )
+                ReplacementError::Syntax(format!(
+                    "invalid group reference {digits} at position {}",
+                    i + 1
+                ))
             })?;
             append_group(&mut out, group_values, index, i + 1)?;
             i = end;
@@ -151,13 +148,10 @@ pub(super) fn re_expand_typed(
         if let Some(value) = escaped {
             out.push(value);
         } else if char::from_u32(ch).is_some_and(|c| c.is_ascii_alphabetic()) {
-            return Err(replacement_error(
-                ReplacementErrorKind::Syntax,
-                format!(
-                    "bad escape \\{} at position {i}",
-                    char::from_u32(ch).unwrap()
-                ),
-            ));
+            return Err(ReplacementError::Syntax(format!(
+                "bad escape \\{} at position {i}",
+                char::from_u32(ch).unwrap()
+            )));
         } else {
             out.extend([u32::from(b'\\'), ch]);
         }
@@ -166,17 +160,68 @@ pub(super) fn re_expand_typed(
     Ok(out)
 }
 
-fn replacement_error(kind: ReplacementErrorKind, message: String) -> ReplacementError {
-    ReplacementError { kind, message }
+pub(super) fn string_codepoints(_py: &CoreGilToken, bits: u64) -> Option<Vec<u32>> {
+    // SAFETY: the caller holds the core GIL and the original runtime string is
+    // retained by the argument/sequence snapshot for this entire operation.
+    let bytes = unsafe { rt_string_as_bytes(bits) }?;
+    // SAFETY: runtime strings are admitted only after Molt string storage has
+    // validated its UTF-8/WTF-8 encoding.
+    Some(
+        unsafe { molt_stdlib_text::wtf8::from_validated_bytes(bytes) }
+            .code_points()
+            .map(|point| point.to_u32())
+            .collect(),
+    )
+}
+
+fn string_name(_py: &CoreGilToken, bits: u64) -> Option<String> {
+    // Group names are parser-validated identifiers and therefore have a strict
+    // UTF-8 view even though ordinary runtime strings can contain surrogates.
+    // SAFETY: the caller holds the core GIL and the dictionary snapshot keeps
+    // each key live during this read.
+    let bytes = unsafe { rt_string_as_bytes(bits) }?;
+    // SAFETY: these bytes are runtime string storage; group-name validation
+    // additionally guarantees there are no surrogate code points.
+    unsafe { molt_stdlib_text::wtf8::from_validated_bytes(bytes) }
+        .as_str()
+        .map(str::to_owned)
 }
 
 /// Return a private `(None, None, message)` marker so the Python facade raises
 /// its actual `re.error` class. Builtin IndexError remains in Rust's authority.
 pub(super) fn replacement_error_result(py: &CoreGilToken, error: ReplacementError) -> u64 {
-    if matches!(error.kind, ReplacementErrorKind::Index) {
-        return raise_exception::<u64>(py, "IndexError", &error.message);
-    }
-    let message_ptr = alloc_string(py, error.message.as_bytes());
+    let message = match error {
+        ReplacementError::Index(message) => {
+            return raise_exception::<u64>(py, "IndexError", &message);
+        }
+        ReplacementError::InvalidGroupName { name, position } => {
+            let mut encoded_name = Vec::with_capacity(name.len().saturating_mul(3));
+            for unit in name {
+                molt_stdlib_text::wtf8::push_wtf8_codepoint(&mut encoded_name, unit);
+            }
+            let name_ptr = alloc_string(py, &encoded_name);
+            if name_ptr.is_null() {
+                return MoltObject::none().bits();
+            }
+            let name = unsafe {
+                OwnedRuntimeValue::from_owned_bits(py, MoltObject::from_ptr(name_ptr).bits())
+            };
+            let repr_bits = rt_repr(name.bits());
+            if exception_pending(py) {
+                return MoltObject::none().bits();
+            }
+            let repr = unsafe { OwnedRuntimeValue::from_owned_bits(py, repr_bits) };
+            let Some(repr_bytes) = repr.string_bytes(py) else {
+                return raise_exception::<u64>(py, "SystemError", "repr returned a non-string");
+            };
+            let Ok(repr_text) = std::str::from_utf8(repr_bytes) else {
+                return raise_exception::<u64>(py, "SystemError", "repr returned invalid UTF-8");
+            };
+            format!("bad character in group name {repr_text} at position {position}")
+        }
+        ReplacementError::Syntax(message) => message,
+    };
+    let message_ptr = alloc_string(py, message.as_bytes());
     if message_ptr.is_null() {
         return MoltObject::none().bits();
     }
@@ -198,13 +243,7 @@ pub(super) fn replacement_error_result(py: &CoreGilToken, error: ReplacementErro
 }
 
 pub(super) fn syntax_error_result(py: &CoreGilToken, message: &str) -> u64 {
-    replacement_error_result(
-        py,
-        ReplacementError {
-            kind: ReplacementErrorKind::Syntax,
-            message: message.to_owned(),
-        },
-    )
+    replacement_error_result(py, ReplacementError::Syntax(message.to_owned()))
 }
 
 fn append_group(
@@ -214,10 +253,9 @@ fn append_group(
     position: usize,
 ) -> Result<(), ReplacementError> {
     let Some(value) = groups.get(index) else {
-        return Err(replacement_error(
-            ReplacementErrorKind::Syntax,
-            format!("invalid group reference {index} at position {position}"),
-        ));
+        return Err(ReplacementError::Syntax(format!(
+            "invalid group reference {index} at position {position}"
+        )));
     };
     if let Some(value) = value {
         out.extend_from_slice(value);
@@ -356,10 +394,10 @@ pub extern "C" fn molt_re_expand_replacement(
             };
             bytes.iter().map(|byte| u32::from(*byte)).collect()
         } else {
-            let Some(text) = string_obj_to_owned(repl_obj) else {
+            let Some(units) = string_codepoints(_py, repl_bits) else {
                 return raise_exception::<_>(_py, "TypeError", "replacement must be str or bytes");
             };
-            text.chars().map(u32::from).collect()
+            units
         };
         let values_obj = obj_from_bits(group_values_bits);
         let Some(values_ptr) = values_obj.as_ptr() else {
@@ -384,17 +422,17 @@ pub extern "C" fn molt_re_expand_replacement(
                 };
                 group_values.push(Some(bytes.iter().map(|byte| u32::from(*byte)).collect()));
             } else {
-                let Some(text) = string_obj_to_owned(value) else {
+                let Some(units) = string_codepoints(_py, value_bits) else {
                     return raise_exception::<_>(
                         _py,
                         "TypeError",
                         "group_values must match replacement type",
                     );
                 };
-                group_values.push(Some(text.chars().map(u32::from).collect()));
+                group_values.push(Some(units));
             }
         }
-        let mut group_names = std::collections::HashMap::new();
+        let mut group_names = NamedGroups::new();
         if let Some(names_ptr) = obj_from_bits(group_names_bits).as_ptr() {
             if unsafe { object_type_id(names_ptr) } == TYPE_ID_DICT {
                 if let Some(pairs) = unsafe { dict_snapshot(_py, names_ptr) } {
@@ -402,7 +440,7 @@ pub extern "C" fn molt_re_expand_replacement(
                         if pair.len() != 2 {
                             continue;
                         }
-                        let Some(name) = string_obj_to_owned(obj_from_bits(pair[0])) else {
+                        let Some(name) = string_name(_py, pair[0]) else {
                             continue;
                         };
                         let Some(index) = to_i64(obj_from_bits(pair[1])) else {
@@ -430,14 +468,11 @@ pub extern "C" fn molt_re_expand_replacement(
             let bytes: Vec<u8> = expanded.into_iter().map(|unit| unit as u8).collect();
             alloc_bytes(_py, &bytes)
         } else {
-            let Some(text) = expanded
-                .into_iter()
-                .map(char::from_u32)
-                .collect::<Option<String>>()
-            else {
-                return raise_exception::<_>(_py, "ValueError", "invalid Unicode replacement");
-            };
-            alloc_string(_py, text.as_bytes())
+            let mut bytes = Vec::with_capacity(expanded.len().saturating_mul(2));
+            for unit in expanded {
+                molt_stdlib_text::wtf8::push_wtf8_codepoint(&mut bytes, unit);
+            }
+            alloc_string(_py, &bytes)
         };
         if out_ptr.is_null() {
             MoltObject::none().bits()
