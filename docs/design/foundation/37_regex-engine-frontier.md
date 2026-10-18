@@ -128,6 +128,19 @@ locale behavior, parser escape admission or all target/version/profile cells.
 The existing CPython differential carrier owns the raw-unit identity, offsets,
 scanning and replacement regressions; the release board owns qualification.
 
+That carrier also exercises forward and reverse string iteration through a
+generator expression. Both iterator paths use the existing `wtf8_step` storage
+authority and copy at most four source bytes before allocating the returned
+character. Each step examines one code point rather than validating the entire
+remaining prefix or suffix, so traversal has linear decoding work and constant
+auxiliary storage. Raw surrogates remain distinct. CPython
+[`unicodeiter_next`](https://github.com/python/cpython/blob/v3.12.15/Objects/unicodeobject.c)
+and [`reversed_next`](https://github.com/python/cpython/blob/v3.12.15/Objects/enumobject.c)
+own the distinct failure transitions: forward character allocation consumes the
+position, while reverse item failure retires the iterator and retains the error.
+Runtime fault controls exercise those transitions; no frontend or second decoder
+is needed. Target throughput and allocation acceptance remain separate claims.
+
 ## Cost and failure contract
 
 Compilation costs scale with source/program size; numeric repetition bounds are
