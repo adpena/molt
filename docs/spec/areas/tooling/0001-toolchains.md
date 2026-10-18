@@ -235,6 +235,15 @@ is owned by `molt.rust_toolchain`; runtime plans, queued proofs, and standalone
 fingerprints consume it without importing the CLI. The core SDK/LLVM authorities
 likewise own finite receipt selection and helper-byte capture; guarded proofs
 project those facts into their process-image schema and armed resource custody.
+Native C object-fixture proofs declare `hosted-clang`, separately from the
+LLVM ABI's exact `clang` pin. They reuse a verified installed SDK when present,
+or admit the host compiler already on PATH and retain its actual image and
+version. These fixtures require native C/object behavior, not LLVM library ABI
+compatibility, so Python CI jobs do not install the full LLVM/MLIR SDK for them.
+Missing compilers fail prerequisite admission instead of being supplied by an
+unrelated proof's environment. The existing `hosted-clang-cl` role keeps the
+same distinction for Windows C11/DLL ABI probes.
+
 This developer setup has no
 emitted guest runtime cost. Archive availability, aliases, native binaries,
 and target libraries still require real cold-provision validation on each
