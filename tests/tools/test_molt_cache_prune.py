@@ -235,12 +235,27 @@ def test_pruner_accepts_entries_vanished_after_directory_listing(tmp_path, monke
 
 
 def _snapshot_tree(root: Path):
+    from molt.default_paths import cache_control_root
+    from molt.file_hashing import content_change_time_ns
+
+    control_root = cache_control_root(root)
     result = {}
     for path in [root, *sorted(root.rglob("*"))]:
         info = path.lstat()
+        # Windows byte-range locks prevent data reads, including by this
+        # observer. The control owner is observed through native metadata;
+        # logical cache payloads retain the independent byte-content oracle.
+        control_file = (
+            os.name == "nt" and path.is_relative_to(control_root) and path.is_file()
+        )
+        if control_file:
+            change_time = content_change_time_ns(path, info)
+            assert change_time is not None, f"cannot observe cache control: {path}"
         payload = (
             ("symlink", os.readlink(path))
             if path.is_symlink()
+            else ("control", (info.st_size, change_time))
+            if control_file
             else ("file", path.read_bytes())
             if path.is_file()
             else ("directory", None)
