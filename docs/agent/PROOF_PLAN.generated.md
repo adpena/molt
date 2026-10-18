@@ -362,7 +362,7 @@ The wrapper conflict was reconfirmed by native CI run `30211145633` job `8981749
 | `host-entrypoint-imports` | 13 | 0 |
 | `encoding-diagnostics` | 2 | 0 |
 | `runtime-cargo-input-custody` | 37 | 0 |
-| `rust-toolchain` | 10 | 1 |
+| `rust-toolchain` | 11 | 1 |
 | `table-drift` | 12 | 1 |
 | `findings-registry` | 4 | 0 |
 | `memory-graph` | 5 | 1 |
