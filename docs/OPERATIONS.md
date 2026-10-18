@@ -4,8 +4,10 @@ This document consolidates remote access, logging, progress reporting, and
 multi-agent workflow rules.
 
 ## Version Policy
-Molt targets **Python 3.12+** semantics only. Do not spend effort on <=3.11
-compatibility. If 3.12/3.13/3.14 differ, document the chosen target in specs/tests.
+The [versioned Python contract](spec/areas/compat/contracts/verified_subset_contract.md)
+owns supported versions and Python 3.15 release obligations. Target-version
+differences belong in their owning specifications and tests; host behavior does
+not choose guest semantics.
 
 ## Platform Pitfalls
 - **macOS SDK/versioning**: Xcode CLT must be installed; if linking fails, confirm `xcrun --show-sdk-version` works and set `MACOSX_DEPLOYMENT_TARGET` for cross-linking.
@@ -104,8 +106,11 @@ compatibility. If 3.12/3.13/3.14 differ, document the chosen target in specs/tes
   no-follow descriptor and `os.utime`; Windows uses an attribute-only no-follow
   handle and [SetFileTime](https://learn.microsoft.com/en-us/windows/win32/api/fileapi/nf-fileapi-setfiletime).
   [CPython 3.12](https://github.com/python/cpython/blob/3.12/Modules/posixmodule.c)
-  exposes neither descriptor nor no-follow `utime` on Windows. This is platform
-  selection before I/O, with no failed-call retry or link-following fallback.
+  exposes neither descriptor nor no-follow `utime` on Windows. Windows generation
+  comparison uses native birth time: CPython pathname stat and handle stat can
+  expose different clocks as legacy `ctime`. POSIX retains its change-time check.
+  This is platform selection before I/O, with no failed-call retry or
+  link-following fallback.
   A cold refresh adds one open, descriptor identity check and close; the existing
   five-minute throttle keeps hot hits free of those operations.
 - **Ignored artifact cleanup**: use `molt clean`, `python3 tools/artifact_cleanup.py`, or `python3 tools/dev.py clean-artifacts` for a dry-run of canonical ignored build/cache/tmp/log/result cleanup, including friend-suite checkout caches under `bench/friends/repos/`. Add `--apply` to delete and `--kill-processes` to run the process sentinel before deletion; that sentinel pass may drain only live-proved Molt-owned workers and is never Codex, Claude, app-server, renderer, node-repl, shell, Git, MCP/plugin, or host-control-plane cleanup. In JSON mode, cleanup runs the sentinel with `--json` and embeds parsed `sentinel_events` in the cleanup report; raw sentinel stdout/stderr are included only with `--verbose`. All three entrypoints route through `tools/artifact_cleanup.py`, and both the optional sentinel pass and the `git clean -X` pass run through the default-on `MOLT_DEV_CLEANUP` memory guard. The cleanup pathspec is allowlisted, so tracked files, dirty partner work, `.venv/`, `.omx/`, `third_party/`, fuzz corpora, and test corpora are not default cleanup targets, and `--extra-path` refuses those paths and their ancestors. Checkout cache roots (`.molt_cache/`, `.molt_cache-*/`, `runtime/molt-backend/.molt_cache/`) hold live locks and, in a plain clone, the default Molt home, so `git clean` never touches them: after `git clean`, cleanup runs `tools/molt_cache_prune.py` on each root with a zero budget, which evicts cache entries and keeps held locks, the Molt home and its bin directory; Cargo incremental quarantine receipts under `target/.molt_state/quarantine/cargo_incremental/` are target artifacts and are intentionally removed by explicit apply-mode cleanup.
