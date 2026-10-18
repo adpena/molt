@@ -401,7 +401,7 @@ The wrapper conflict was reconfirmed by native CI run `30211145633` job `8981749
 | `python-identity-catalog-authority` | 7 | 1 |
 | `builtin-binding-guard-authority` | 9 | 2 |
 | `native-callable-abi` | 20 | 2 |
-| `runtime-regex` | 11 | 2 |
+| `runtime-regex` | 13 | 2 |
 | `stringprep-leaf` | 2 | 1 |
 | `cpython-abi-authorities` | 2 | 1 |
 | `compression-stream-state` | 1 | 1 |

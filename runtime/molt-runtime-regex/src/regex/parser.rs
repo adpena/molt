@@ -141,8 +141,7 @@ impl ReParser {
             if let ReNode::Literal(ref new_text) = node
                 && let Some(ReNode::Literal(prev_text)) = nodes.last_mut()
             {
-                let combined = prev_text.clone() + new_text;
-                *prev_text = combined;
+                prev_text.push_str(new_text);
                 continue;
             }
             nodes.push(node);
@@ -268,8 +267,8 @@ impl ReParser {
         let ch = self.next_ch()?;
         match ch {
             '.' => Ok(ReNode::Any),
-            '^' => Ok(ReNode::Anchor("start".to_string())),
-            '$' => Ok(ReNode::Anchor("end".to_string())),
+            '^' => Ok(ReNode::Anchor(Anchor::Start)),
+            '$' => Ok(ReNode::Anchor(Anchor::End)),
             '(' => self.parse_group(),
             '[' => self.parse_class(),
             '\\' => self.parse_escape(),
@@ -602,20 +601,12 @@ impl ReParser {
             return Err(format!("bad escape \\{ch} at position {}", self.pos - 2));
         }
         match ch {
-            'd' | 'D' | 's' | 'S' | 'w' | 'W' => {
-                let negated = ch.is_ascii_uppercase();
-                let category = if negated {
-                    ((ch as u8) + 32) as char
-                } else {
-                    ch
-                };
-                Ok(ReNode::CharClass {
-                    negated,
-                    ranges: vec![],
-                    chars: vec![],
-                    categories: vec![category.to_string()],
-                })
-            }
+            'd' | 'D' | 's' | 'S' | 'w' | 'W' => Ok(ReNode::CharClass {
+                negated: false,
+                ranges: vec![],
+                chars: vec![],
+                categories: vec![Category::from_escape(ch)],
+            }),
             'n' => Ok(ReNode::Literal("\n".to_string())),
             't' => Ok(ReNode::Literal("\t".to_string())),
             'r' => Ok(ReNode::Literal("\r".to_string())),
@@ -637,10 +628,10 @@ impl ReParser {
                     .map_err(|_| "backref index overflow".to_string())?;
                 Ok(ReNode::Backref(idx))
             }
-            'A' => Ok(ReNode::Anchor("start_abs".to_string())),
-            'Z' => Ok(ReNode::Anchor("end_abs".to_string())),
-            'b' => Ok(ReNode::Anchor("word_boundary".to_string())),
-            'B' => Ok(ReNode::Anchor("word_boundary_not".to_string())),
+            'A' => Ok(ReNode::Anchor(Anchor::StartAbsolute)),
+            'Z' => Ok(ReNode::Anchor(Anchor::EndAbsolute)),
+            'b' => Ok(ReNode::Anchor(Anchor::Boundary)),
+            'B' => Ok(ReNode::Anchor(Anchor::NotBoundary)),
             other => Ok(ReNode::Literal(other.to_string())),
         }
     }
@@ -654,8 +645,12 @@ impl ReParser {
         let mut negated = false;
         let mut chars: Vec<String> = Vec::new();
         let mut ranges: Vec<(String, String)> = Vec::new();
-        let mut categories: Vec<String> = Vec::new();
+        let mut categories: Vec<Category> = Vec::new();
 
+        // CPython warns about an initial nested '[' but parses it literally.
+        if self.raw_peek() == Some('[') && self.nested_set_warning_pos.is_none() {
+            self.nested_set_warning_pos = Some(self.pos as i64);
+        }
         if self.raw_peek() == Some('^') {
             self.raw_next()?;
             negated = true;
@@ -713,12 +708,7 @@ impl ReParser {
                 }
                 match esc {
                     'd' | 'D' | 's' | 'S' | 'w' | 'W' => {
-                        let category = if esc.is_ascii_uppercase() {
-                            ((esc as u8) + 32) as char
-                        } else {
-                            esc
-                        };
-                        Ok(ClassItem::Category(category.to_string()))
+                        Ok(ClassItem::Category(Category::from_escape(esc)))
                     }
                     'n' => Ok(ClassItem::Char("\n".to_string())),
                     't' => Ok(ClassItem::Char("\t".to_string())),
@@ -745,32 +735,6 @@ impl ReParser {
                     other => Ok(ClassItem::Char(other.to_string())),
                 }
             }
-            '[' if self.raw_peek() == Some(':') => {
-                // POSIX class: [:alpha:]
-                if self.nested_set_warning_pos.is_none() {
-                    self.nested_set_warning_pos = Some((self.pos as i64) - 1);
-                }
-                self.raw_next()?; // consume ':'
-                let mut name = String::new();
-                loop {
-                    match self.raw_peek() {
-                        None => return Err("unterminated character class".to_string()),
-                        Some(':') => {
-                            self.raw_next()?;
-                            if self.raw_peek() == Some(']') {
-                                self.raw_next()?;
-                                break;
-                            }
-                            name.push(':');
-                        }
-                        Some(c) => {
-                            self.raw_next()?;
-                            name.push(c);
-                        }
-                    }
-                }
-                Ok(ClassItem::Category(format!("posix:{name}")))
-            }
             _ => Ok(ClassItem::Char(ch.to_string())),
         }
     }
@@ -782,7 +746,7 @@ impl ReParser {
 
 pub(super) enum ClassItem {
     Char(String),
-    Category(String),
+    Category(Category),
 }
 
 // ---------------------------------------------------------------------------
@@ -817,7 +781,6 @@ pub(super) fn fixed_width(
 ) -> Option<u64> {
     match node {
         ReNode::Empty => Some(0),
-        ReNode::RequireAdvance => Some(0),
         ReNode::Literal(s) => Some(s.chars().count() as u64),
         ReNode::Any => Some(1),
         ReNode::Anchor(_) => Some(0),
@@ -875,7 +838,7 @@ pub(super) fn parse_pattern_typed(
     pattern: &str,
     flags: i64,
     is_bytes: bool,
-) -> Result<CompiledPattern, String> {
+) -> Result<ParsedPattern, String> {
     let mut parser = ReParser::new(pattern, flags);
     parser.is_bytes = is_bytes;
     let root = parser.parse()?;
@@ -883,7 +846,7 @@ pub(super) fn parse_pattern_typed(
     let group_names = parser.group_names;
     let inline_flags = parser.inline_flags;
     let warn_pos = parser.nested_set_warning_pos;
-    Ok(CompiledPattern {
+    Ok(ParsedPattern {
         root,
         group_count,
         group_names,
