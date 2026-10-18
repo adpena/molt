@@ -33,6 +33,7 @@ from tools import proof_plan
 from molt.cargo_execution_policy import normalize_cargo_environment
 from molt.file_hashing import _sha256_file
 from molt import python_environment_identity
+from molt import llvm_toolchain
 from molt import rust_toolchain
 from molt import tool_releases
 from molt.exact_json import ExactJsonError, canonical_json_sha256
@@ -82,6 +83,7 @@ from tools.proof_queue_pkg import (
     cli,
     command_admission,
     command_identity,
+    cargo_output_environment,
     cargo_output_layout,
     execution_environment,
     execution_receipt_details,
@@ -2463,6 +2465,91 @@ def test_execution_environment_authority_covers_path_rust_and_wrapper_family() -
         contract=contract,
     )
     assert changed["identity_sha256"] != authority["identity_sha256"]
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        "MOLT_LLVM_PREFIX",
+        "LLVM_CONFIG_PATH",
+        "LLVM_SYS_221_PREFIX",
+        "MLIR_SYS_220_PREFIX",
+        "TABLEGEN_220_PREFIX",
+        "MLIR_SYS_350_PREFIX",
+        "TABLEGEN_350_PREFIX",
+    ],
+)
+def test_llvm_sdk_environment_is_admitted_retained_and_bound(name: str) -> None:
+    inherited = {name: "/selected SDK with spaces"}
+    assert execution_environment.environment_override_policy_error(inherited) is None
+    selected, contract = execution_environment._deterministic_execution_environment(
+        inherited, override_names=[name]
+    )
+    assert selected == inherited
+    assert contract["omitted_names"] == []
+    authority = execution_environment._execution_environment_authority(
+        selected,
+        applied_cargo_policies=(),
+        fingerprint_key=b"llvm-test",
+        contract=contract,
+    )
+    assert authority["variables"][name]["class"] == "build-toolchain"
+    assert inherited[name] not in json.dumps(authority)
+    changed = execution_environment._execution_environment_authority(
+        {name: "/different SDK"},
+        applied_cargo_policies=(),
+        fingerprint_key=b"llvm-test",
+        contract=contract,
+    )
+    assert changed["identity_sha256"] != authority["identity_sha256"]
+
+
+@pytest.mark.parametrize("major,minor", [(1, 0), (19, 0), (22, 1), (35, 9)])
+def test_llvm_sdk_environment_grammar_tracks_binding_constructors(major, minor):
+    for name in (
+        llvm_toolchain.llvm_sys_prefix_env_var(major, minor),
+        llvm_toolchain.mlir_sys_prefix_env_var(major),
+        llvm_toolchain.tablegen_prefix_env_var(major),
+    ):
+        assert llvm_toolchain.llvm_toolchain_environment_name(name)
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        "MLIR_SYS_220_PREFIX_EXTRA",
+        "MLIR_SYS_221_PREFIX",
+        "MLIR_SYS_0220_PREFIX",
+        "MLIR_SYS__PREFIX",
+        "MLIR_UNKNOWN_SETTING",
+        "TABLEGEN_220_PREFIX_EXTRA",
+        "TABLEGEN_221_PREFIX",
+        "TABLEGEN_0220_PREFIX",
+        "TABLEGEN_UNKNOWN_SETTING",
+        "LLVM_SYS_0221_PREFIX",
+        "LLVM_SYS_221_PREFIX_EXTRA",
+    ],
+)
+def test_llvm_sdk_environment_grammar_rejects_lookalikes(name: str) -> None:
+    assert not llvm_toolchain.llvm_toolchain_environment_name(name)
+    assert name not in command_identity.compile_environment_selection({name: "1"})
+    if not name.startswith("LLVM_"):
+        # Existing generic LLVM inputs retain their separate semantic-prefix
+        # policy; the new MLIR/TableGen grammar must not admit unrelated names.
+        assert execution_environment.environment_override_policy_error({name: "1"})
+
+
+@pytest.mark.skipif(
+    os.name == "nt", reason="POSIX environment names are case-sensitive"
+)
+@pytest.mark.parametrize("name", ["mlir_sys_220_prefix", "tablegen_220_prefix"])
+def test_llvm_sdk_environment_does_not_admit_posix_case_aliases(name: str) -> None:
+    assert execution_environment.environment_override_policy_error({name: "1"})
+    selected, contract = execution_environment._deterministic_execution_environment(
+        {name: "1"}, override_names=[]
+    )
+    assert selected == {}
+    assert contract["omitted_names"] == [name]
 
 
 @pytest.mark.parametrize(
@@ -18738,6 +18825,48 @@ def test_clippy_configured_selectors_require_bound_cargo_context(
     execution_environment._require_cargo_build_tool_environment_context(
         ordinary, **kwargs
     )
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        "MOLT_LLVM_PREFIX",
+        "LLVM_CONFIG_PATH",
+        "LLVM_SYS_221_PREFIX",
+        "MLIR_SYS_220_PREFIX",
+        "TABLEGEN_220_PREFIX",
+    ],
+)
+@pytest.mark.parametrize(
+    "forced,inherited", [(False, False), (False, True), (True, True)]
+)
+def test_llvm_sdk_configured_selectors_require_bound_cargo_context(
+    tmp_path, name, forced, inherited
+):
+    config = tmp_path / "selected.toml"
+    config.write_text(
+        f'env.{name} = {{ value = "replacement SDK", force = {str(forced).lower()} }}',
+        encoding="utf-8",
+    )
+    command = ["cargo", "--config", str(config), "check"]
+    envelope = command_admission.envelope_for_command(command)
+    environment = {"CARGO_HOME": str(tmp_path / "cargo-home")}
+    if inherited:
+        environment[name] = "captured SDK"
+    kwargs = dict(
+        outputs=cargo_output_environment.CargoOutputEnvironment.for_envelope(envelope),
+        cwd=tmp_path,
+        env=environment,
+    )
+    if forced or not inherited:
+        with pytest.raises(ValueError, match=f"defines env.{name}"):
+            execution_environment._require_cargo_build_tool_environment_context(
+                envelope, **kwargs
+            )
+    else:
+        execution_environment._require_cargo_build_tool_environment_context(
+            envelope, **kwargs
+        )
 
 
 def test_selected_runtime_watch_capture_compact_and_cas_receivers(

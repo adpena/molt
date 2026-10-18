@@ -60,6 +60,9 @@ def _environment_name_class(name: str) -> str | None:
         return "host-runtime"
     if (
         upper in command_identity._ENVIRONMENT_BUILD_NAMES
+        or command_identity.llvm_toolchain_environment_name(
+            upper if os.name == "nt" else name
+        )
         or command_identity._runtime_c_environment_name(upper)
         or cargo_native_dependency_environment_name(upper)
     ):
@@ -484,8 +487,13 @@ def _require_cargo_build_tool_environment_context(
             continue
         for name, value in environment.items():
             key = str(name).upper() if os.name == "nt" else str(name)
-            if key not in protected_environment and not (
-                native_required and command_identity._runtime_c_environment_name(key)
+            if (
+                key not in protected_environment
+                and not command_identity.llvm_toolchain_environment_name(key)
+                and not (
+                    native_required
+                    and command_identity._runtime_c_environment_name(key)
+                )
             ):
                 continue
             if key in inherited_keys and not (

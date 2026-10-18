@@ -164,12 +164,28 @@ Linux build then succeeds: twelve controls pass, including capture rollback and
 the public ABI allocation controls. The remaining ordinary-aggregate test used
 identifier-only fragments and observed immortal intern-pool entries, rather
 than newly allocated children. Its data now selects ordinary computed strings
-while retaining the exact ownership assertions; rerun remains required. The environment locator still arms base
-installation prefixes to cover startup selectors not represented in its
+while retaining the exact ownership assertions. At `c45880998`, the optimized
+Linux/aarch64 observer build and all thirteen fresh-process controls pass
+(eleven runtime, two public ABI), reusing the existing Cargo workspace. This
+qualifies the selected ownership and allocation-refusal boundaries, not timed
+performance, the complete ordinary runtime suite, or unexecuted platforms.
+Computed identifier retention remains open under V1-20. The environment locator
+still arms base installation prefixes to cover startup selectors not represented in its
 location schema; that broader development cost remains under V1-07 and must be
 reconciled with the existing startup-selection authority. These changes
 add nothing to emitted programs. The bounded target results above do not
 qualify unexecuted consumers or authorize release acceptance.
+
+The canonical LLVM setup also exposed two rejected SDK binding selectors before
+the compiled WASM consumers could launch. The existing LLVM naming authority
+now owns their closed grammar; queue admission, compile identity, supervisor
+generation, Cargo workspace and tool-probe reuse share it. Exact SDK selectors
+are bound too, and Cargo configuration cannot silently substitute an uncaptured
+default or forced value. All 95 focused controls pass on macOS, including actual
+Git probe reuse and filesystem-backed workspace partitioning. Prior-source
+controls reproduce unchanged identities after five SDK selector changes; the
+corrected identities distinguish them. Linux execution and compiled consumer
+qualification remain required. This adds no cost to emitted programs.
 
 Local landing policy merges plain pytest targets into one parallel invocation;
 selector-bearing gates retain their declared scope. The driver and policy share

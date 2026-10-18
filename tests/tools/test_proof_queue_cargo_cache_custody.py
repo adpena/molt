@@ -2836,6 +2836,11 @@ def test_actual_guard_memory_changes_reuse_only_development_workspace(tmp_path, 
         ("CARGO_PROFILE_RELEASE_LTO", "true"),
         ("CC", "/selected-other-compiler"),
         ("MOLT_SESSION_ID", "explicit-other-session"),
+        ("MOLT_LLVM_PREFIX", "/different SDK"),
+        ("LLVM_CONFIG_PATH", "/different SDK/bin/llvm-config"),
+        ("LLVM_SYS_221_PREFIX", "/different llvm-sys search"),
+        ("MLIR_SYS_220_PREFIX", "/different MLIR SDK"),
+        ("TABLEGEN_220_PREFIX", "/different TableGen SDK"),
     ],
 )
 def test_workspace_compile_environment_and_pinned_session_still_partition(

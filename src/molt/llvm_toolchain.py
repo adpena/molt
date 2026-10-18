@@ -1153,6 +1153,25 @@ def tablegen_prefix_env_var(major: int) -> str:
     return f"TABLEGEN_{major * 10}_PREFIX"
 
 
+_LLVM_TOOLCHAIN_PREFIX_ENVIRONMENT_NAME = re.compile(
+    r"(?:LLVM_SYS_[1-9][0-9]+|(?:MLIR_SYS|TABLEGEN)_[1-9][0-9]*0)_PREFIX"
+)
+
+
+def llvm_toolchain_environment_name(name: str) -> bool:
+    """Recognize SDK selectors, including the binding crates' versioned names.
+
+    LLVM encodes major/minor in its binding prefix; MLIR and TableGen encode
+    the major followed by zero. Keep that closed grammar alongside the naming
+    constructors so development capture and reuse preserve future SDK pins.
+    Names are case-sensitive; callers with case-insensitive environments must
+    normalize them before using this predicate.
+    """
+    return name in {"MOLT_LLVM_PREFIX", "LLVM_CONFIG_PATH"} or (
+        _LLVM_TOOLCHAIN_PREFIX_ENVIRONMENT_NAME.fullmatch(name) is not None
+    )
+
+
 def managed_llvm_prefix(
     root: Path,
     pin: LlvmBackendPin | None = None,
