@@ -2,11 +2,11 @@ use super::*;
 use std::collections::HashMap;
 
 // ---------------------------------------------------------------------------
-// Parser state â€” mirrors _Parser in re/__init__.py
+// Compile-only parser state for the shared typed regex program.
 // ---------------------------------------------------------------------------
 
 pub(super) struct ReParser {
-    pub(super) chars: Vec<char>,
+    pub(super) chars: Vec<u32>,
     pub(super) pos: usize,
     pub(super) group_count: u32,
     pub(super) group_names: NamedGroups,
@@ -21,9 +21,9 @@ pub(super) struct ReParser {
 }
 
 impl ReParser {
-    pub(super) fn new(pattern: &str, flags: i64) -> Self {
+    pub(super) fn new(pattern: Vec<u32>, flags: i64) -> Self {
         Self {
-            chars: pattern.chars().collect(),
+            chars: pattern,
             pos: 0,
             group_count: 0,
             group_names: NamedGroups::new(),
@@ -51,15 +51,15 @@ impl ReParser {
         }
         while self.pos < self.len() {
             let ch = self.chars[self.pos];
-            if ch == '#' {
+            if ch == u32::from(b'#') {
                 self.pos += 1;
-                while self.pos < self.len() && self.chars[self.pos] != '\n' {
+                while self.pos < self.len() && self.chars[self.pos] != u32::from(b'\n') {
                     self.pos += 1;
                 }
                 if self.pos < self.len() {
                     self.pos += 1; // consume '\n'
                 }
-            } else if matches!(ch, ' ' | '\t' | '\n' | '\r' | '\x0C' | '\x0B') {
+            } else if matches!(ch, 0x20 | 0x09..=0x0d) {
                 self.pos += 1;
             } else {
                 break;
@@ -67,12 +67,12 @@ impl ReParser {
         }
     }
 
-    pub(super) fn peek(&mut self) -> Option<char> {
+    pub(super) fn peek(&mut self) -> Option<u32> {
         self.skip_verbose_whitespace();
         self.chars.get(self.pos).copied()
     }
 
-    pub(super) fn next_ch(&mut self) -> Result<char, String> {
+    pub(super) fn next_ch(&mut self) -> Result<u32, String> {
         self.skip_verbose_whitespace();
         if self.pos >= self.len() {
             return Err("unexpected end of pattern".to_string());
@@ -82,11 +82,11 @@ impl ReParser {
         Ok(ch)
     }
 
-    pub(super) fn raw_peek(&self) -> Option<char> {
+    pub(super) fn raw_peek(&self) -> Option<u32> {
         self.chars.get(self.pos).copied()
     }
 
-    pub(super) fn raw_next(&mut self) -> Result<char, String> {
+    pub(super) fn raw_next(&mut self) -> Result<u32, String> {
         if self.pos >= self.len() {
             return Err("unexpected end of pattern".to_string());
         }
@@ -114,7 +114,7 @@ impl ReParser {
 
     pub(super) fn parse_expr(&mut self) -> Result<ReNode, String> {
         let mut terms = vec![self.parse_term()?];
-        while self.peek() == Some('|') {
+        while self.peek() == Some(u32::from('|')) {
             self.next_ch()?;
             terms.push(self.parse_term()?);
         }
@@ -133,7 +133,7 @@ impl ReParser {
         let mut nodes: Vec<ReNode> = Vec::new();
         loop {
             let ch = self.peek();
-            if ch.is_none() || ch == Some(')') || ch == Some('|') {
+            if ch.is_none() || ch == Some(u32::from(')')) || ch == Some(u32::from('|')) {
                 break;
             }
             let node = self.parse_factor()?;
@@ -141,7 +141,7 @@ impl ReParser {
             if let ReNode::Literal(ref new_text) = node
                 && let Some(ReNode::Literal(prev_text)) = nodes.last_mut()
             {
-                prev_text.push_str(new_text);
+                prev_text.extend_from_slice(new_text);
                 continue;
             }
             nodes.push(node);
@@ -161,7 +161,7 @@ impl ReParser {
 
     pub(super) fn parse_factor(&mut self) -> Result<ReNode, String> {
         let node = self.parse_atom()?;
-        let bounds = match self.peek() {
+        let bounds = match self.peek().and_then(char::from_u32) {
             Some('*') => {
                 self.raw_next()?;
                 Some((0, None))
@@ -195,17 +195,17 @@ impl ReParser {
         let start = self.pos;
         self.raw_next()?;
         let min_start = self.pos;
-        while self.raw_peek().is_some_and(|c| c.is_ascii_digit()) {
+        while self.raw_peek().is_some_and(|c| (0x30..=0x39).contains(&c)) {
             self.pos += 1;
         }
         let min_end = self.pos;
-        let comma = self.raw_peek() == Some(',');
+        let comma = self.raw_peek() == Some(u32::from(','));
         let max_start;
         let max_end;
         if comma {
             self.pos += 1;
             max_start = self.pos;
-            while self.raw_peek().is_some_and(|c| c.is_ascii_digit()) {
+            while self.raw_peek().is_some_and(|c| (0x30..=0x39).contains(&c)) {
                 self.pos += 1;
             }
             max_end = self.pos;
@@ -213,7 +213,7 @@ impl ReParser {
             max_start = min_start;
             max_end = min_end;
         }
-        if self.raw_peek() != Some('}') || (!comma && min_start == min_end) {
+        if self.raw_peek() != Some(u32::from('}')) || (!comma && min_start == min_end) {
             self.pos = start;
             return Ok(None);
         }
@@ -241,7 +241,7 @@ impl ReParser {
     }
 
     fn parse_repeat_mode(&mut self) -> Result<RepeatMode, String> {
-        Ok(match self.raw_peek() {
+        Ok(match self.raw_peek().and_then(char::from_u32) {
             Some('?') => {
                 self.raw_next()?;
                 RepeatMode::Lazy
@@ -260,23 +260,23 @@ impl ReParser {
 
     pub(super) fn parse_atom(&mut self) -> Result<ReNode, String> {
         let ch = self.next_ch()?;
-        match ch {
-            '.' => Ok(ReNode::Any),
-            '^' => Ok(ReNode::Anchor(Anchor::Start)),
-            '$' => Ok(ReNode::Anchor(Anchor::End)),
-            '(' => self.parse_group(),
-            '[' => self.parse_class(),
-            '{' => {
+        match char::from_u32(ch) {
+            Some('.') => Ok(ReNode::Any),
+            Some('^') => Ok(ReNode::Anchor(Anchor::Start)),
+            Some('$') => Ok(ReNode::Anchor(Anchor::End)),
+            Some('(') => self.parse_group(),
+            Some('[') => self.parse_class(),
+            Some('{') => {
                 self.pos -= 1;
                 if self.parse_braced_repeat()?.is_some() {
                     return Err("nothing to repeat".to_string());
                 }
                 self.raw_next()?;
-                Ok(ReNode::Literal("{".to_string()))
+                Ok(ReNode::Literal(vec![u32::from(b'{')]))
             }
-            '\\' => self.parse_escape(),
-            c if ")*+?|".contains(c) => Err(format!("unexpected character '{c}'")),
-            c => Ok(ReNode::Literal(c.to_string())),
+            Some('\\') => self.parse_escape(),
+            Some(c) if ")*+?|".contains(c) => Err(format!("unexpected character '{c}'")),
+            _ => Ok(ReNode::Literal(vec![ch])),
         }
     }
 
@@ -285,7 +285,7 @@ impl ReParser {
     // -----------------------------------------------------------------------
 
     pub(super) fn parse_group(&mut self) -> Result<ReNode, String> {
-        if self.raw_peek() == Some('?') {
+        if self.raw_peek() == Some(u32::from('?')) {
             self.raw_next()?; // consume '?'
             return self.parse_extension_group();
         }
@@ -293,7 +293,7 @@ impl ReParser {
         self.group_count += 1;
         let idx = self.group_count;
         let node = self.parse_expr()?;
-        if self.peek() != Some(')') {
+        if self.peek() != Some(u32::from(')')) {
             return Err("missing )".to_string());
         }
         self.next_ch()?;
@@ -306,12 +306,12 @@ impl ReParser {
     }
 
     pub(super) fn parse_extension_group(&mut self) -> Result<ReNode, String> {
-        let marker = self.raw_peek();
+        let marker = self.raw_peek().and_then(char::from_u32);
         match marker {
             Some('>') => {
                 self.raw_next()?;
                 let node = self.parse_expr()?;
-                if self.raw_peek() != Some(')') {
+                if self.raw_peek() != Some(u32::from(')')) {
                     return Err("missing )".to_string());
                 }
                 self.raw_next()?;
@@ -320,7 +320,7 @@ impl ReParser {
             Some('=') => {
                 self.raw_next()?;
                 let node = self.parse_expr()?;
-                if self.raw_peek() != Some(')') {
+                if self.raw_peek() != Some(u32::from(')')) {
                     return Err("missing )".to_string());
                 }
                 self.raw_next()?;
@@ -334,7 +334,7 @@ impl ReParser {
             Some('!') => {
                 self.raw_next()?;
                 let node = self.parse_expr()?;
-                if self.raw_peek() != Some(')') {
+                if self.raw_peek() != Some(u32::from(')')) {
                     return Err("missing )".to_string());
                 }
                 self.raw_next()?;
@@ -347,12 +347,12 @@ impl ReParser {
             }
             Some('<') => {
                 self.raw_next()?; // consume '<'
-                let look_kind = self.raw_peek();
+                let look_kind = self.raw_peek().and_then(char::from_u32);
                 match look_kind {
                     Some('=') => {
                         self.raw_next()?;
                         let node = self.parse_expr()?;
-                        if self.raw_peek() != Some(')') {
+                        if self.raw_peek() != Some(u32::from(')')) {
                             return Err("missing )".to_string());
                         }
                         self.raw_next()?;
@@ -370,7 +370,7 @@ impl ReParser {
                     Some('!') => {
                         self.raw_next()?;
                         let node = self.parse_expr()?;
-                        if self.raw_peek() != Some(')') {
+                        if self.raw_peek() != Some(u32::from(')')) {
                             return Err("missing )".to_string());
                         }
                         self.raw_next()?;
@@ -393,7 +393,7 @@ impl ReParser {
                 self.raw_next()?; // consume '('
                 let mut digits = String::new();
                 loop {
-                    match self.raw_peek() {
+                    match self.raw_peek().and_then(char::from_u32) {
                         Some(c) if c.is_ascii_digit() => {
                             self.raw_next()?;
                             digits.push(c);
@@ -401,7 +401,7 @@ impl ReParser {
                         _ => break,
                     }
                 }
-                if digits.is_empty() || self.raw_peek() != Some(')') {
+                if digits.is_empty() || self.raw_peek() != Some(u32::from(')')) {
                     return Err("bad character in group name".to_string());
                 }
                 self.raw_next()?; // consume ')'
@@ -409,13 +409,13 @@ impl ReParser {
                     .parse::<u32>()
                     .map_err(|_| "group index overflow".to_string())?;
                 let yes_node = self.parse_term()?;
-                let no_node = if self.raw_peek() == Some('|') {
+                let no_node = if self.raw_peek() == Some(u32::from('|')) {
                     self.raw_next()?;
                     self.parse_term()?
                 } else {
                     ReNode::Empty
                 };
-                if self.raw_peek() != Some(')') {
+                if self.raw_peek() != Some(u32::from(')')) {
                     return Err("missing )".to_string());
                 }
                 self.raw_next()?;
@@ -429,7 +429,7 @@ impl ReParser {
                 // Non-capturing group.
                 self.raw_next()?;
                 let node = self.parse_expr()?;
-                if self.raw_peek() != Some(')') {
+                if self.raw_peek() != Some(u32::from(')')) {
                     return Err("missing )".to_string());
                 }
                 self.raw_next()?;
@@ -437,7 +437,7 @@ impl ReParser {
             }
             Some('P') => {
                 self.raw_next()?; // consume 'P'
-                let name_marker = self.raw_peek();
+                let name_marker = self.raw_peek().and_then(char::from_u32);
                 match name_marker {
                     Some('=') => {
                         // Named back-reference: (?P=name)
@@ -474,7 +474,14 @@ impl ReParser {
     pub(super) fn read_until_close_paren(&mut self) -> Result<String, String> {
         let mut name = String::new();
         loop {
-            match self.raw_peek() {
+            let scalar = match self.raw_peek() {
+                Some(unit) => Some(
+                    char::from_u32(unit)
+                        .ok_or_else(|| "bad character in group name".to_string())?,
+                ),
+                None => None,
+            };
+            match scalar {
                 None => return Err("missing )".to_string()),
                 Some(')') => {
                     self.raw_next()?;
@@ -496,7 +503,14 @@ impl ReParser {
     pub(super) fn parse_named_group_body(&mut self) -> Result<ReNode, String> {
         let mut name = String::new();
         loop {
-            match self.raw_peek() {
+            let scalar = match self.raw_peek() {
+                Some(unit) => Some(
+                    char::from_u32(unit)
+                        .ok_or_else(|| "bad character in group name".to_string())?,
+                ),
+                None => None,
+            };
+            match scalar {
                 None => return Err("unterminated group name".to_string()),
                 Some('>') => {
                     self.raw_next()?;
@@ -533,7 +547,7 @@ impl ReParser {
                 return Err(e);
             }
         };
-        if self.peek() != Some(')') {
+        if self.peek() != Some(u32::from(')')) {
             return Err("missing )".to_string());
         }
         self.next_ch()?;
@@ -551,7 +565,7 @@ impl ReParser {
         let mut clear_flags: i64 = 0;
         let mut seen_minus = false;
         loop {
-            match self.raw_peek() {
+            match self.raw_peek().and_then(char::from_u32) {
                 None => return Err("unterminated inline flag".to_string()),
                 Some('-') => {
                     self.raw_next()?;
@@ -572,7 +586,7 @@ impl ReParser {
                 _ => break,
             }
         }
-        match self.raw_peek() {
+        match self.raw_peek().and_then(char::from_u32) {
             Some(')') => {
                 self.raw_next()?;
                 self.inline_flags |= add_flags;
@@ -587,7 +601,7 @@ impl ReParser {
                 let result = self.parse_expr();
                 self.flags = saved_flags;
                 let node = result?;
-                if self.raw_peek() != Some(')') {
+                if self.raw_peek() != Some(u32::from(')')) {
                     return Err("missing )".to_string());
                 }
                 self.raw_next()?;
@@ -607,25 +621,29 @@ impl ReParser {
 
     pub(super) fn parse_escape(&mut self) -> Result<ReNode, String> {
         let ch = self.raw_next()?;
-        if self.is_bytes && matches!(ch, 'u' | 'U' | 'N') {
-            return Err(format!("bad escape \\{ch} at position {}", self.pos - 2));
+        if self.is_bytes && matches!(char::from_u32(ch), Some('u' | 'U' | 'N')) {
+            return Err(format!(
+                "bad escape \\{} at position {}",
+                char::from_u32(ch).unwrap(),
+                self.pos - 2
+            ));
         }
-        match ch {
-            'd' | 'D' | 's' | 'S' | 'w' | 'W' => Ok(ReNode::CharClass {
+        match char::from_u32(ch) {
+            Some('d' | 'D' | 's' | 'S' | 'w' | 'W') => Ok(ReNode::CharClass {
                 negated: false,
                 ranges: vec![],
                 chars: vec![],
-                categories: vec![Category::from_escape(ch)],
+                categories: vec![Category::from_escape(char::from_u32(ch).unwrap())],
             }),
-            'n' => Ok(ReNode::Literal("\n".to_string())),
-            't' => Ok(ReNode::Literal("\t".to_string())),
-            'r' => Ok(ReNode::Literal("\r".to_string())),
-            'f' => Ok(ReNode::Literal("\x0C".to_string())),
-            'v' => Ok(ReNode::Literal("\x0B".to_string())),
-            c @ '0'..='9' => {
+            Some('n') => Ok(ReNode::Literal(vec![u32::from('\n')])),
+            Some('t') => Ok(ReNode::Literal(vec![u32::from('\t')])),
+            Some('r') => Ok(ReNode::Literal(vec![u32::from('\r')])),
+            Some('f') => Ok(ReNode::Literal(vec![u32::from('\x0C')])),
+            Some('v') => Ok(ReNode::Literal(vec![u32::from('\x0B')])),
+            Some(c @ '0'..='9') => {
                 let mut digits = String::from(c);
                 loop {
-                    match self.raw_peek() {
+                    match self.raw_peek().and_then(char::from_u32) {
                         Some(d) if d.is_ascii_digit() => {
                             self.raw_next()?;
                             digits.push(d);
@@ -638,11 +656,11 @@ impl ReParser {
                     .map_err(|_| "backref index overflow".to_string())?;
                 Ok(ReNode::Backref(idx))
             }
-            'A' => Ok(ReNode::Anchor(Anchor::StartAbsolute)),
-            'Z' => Ok(ReNode::Anchor(Anchor::EndAbsolute)),
-            'b' => Ok(ReNode::Anchor(Anchor::Boundary)),
-            'B' => Ok(ReNode::Anchor(Anchor::NotBoundary)),
-            other => Ok(ReNode::Literal(other.to_string())),
+            Some('A') => Ok(ReNode::Anchor(Anchor::StartAbsolute)),
+            Some('Z') => Ok(ReNode::Anchor(Anchor::EndAbsolute)),
+            Some('b') => Ok(ReNode::Anchor(Anchor::Boundary)),
+            Some('B') => Ok(ReNode::Anchor(Anchor::NotBoundary)),
+            _ => Ok(ReNode::Literal(vec![ch])),
         }
     }
 
@@ -653,37 +671,36 @@ impl ReParser {
     pub(super) fn parse_class(&mut self) -> Result<ReNode, String> {
         self.in_class = true;
         let mut negated = false;
-        let mut chars: Vec<String> = Vec::new();
-        let mut ranges: Vec<(String, String)> = Vec::new();
+        let mut chars: Vec<u32> = Vec::new();
+        let mut ranges: Vec<(u32, u32)> = Vec::new();
         let mut categories: Vec<Category> = Vec::new();
 
         // CPython warns about an initial nested '[' but parses it literally.
-        if self.raw_peek() == Some('[') && self.nested_set_warning_pos.is_none() {
+        if self.raw_peek() == Some(u32::from('[')) && self.nested_set_warning_pos.is_none() {
             self.nested_set_warning_pos = Some(self.pos as i64);
         }
-        if self.raw_peek() == Some('^') {
+        if self.raw_peek() == Some(u32::from('^')) {
             self.raw_next()?;
             negated = true;
         }
         let mut first = true;
         loop {
-            match self.raw_peek() {
-                None => {
-                    self.in_class = false;
-                    return Err("unterminated character class".to_string());
-                }
-                Some(']') if !first => {
-                    self.raw_next()?;
-                    break;
-                }
-                _ => {}
+            if self.raw_peek().is_none() {
+                self.in_class = false;
+                return Err("unterminated character class".to_string());
+            }
+            if self.raw_peek() == Some(u32::from(b']')) && !first {
+                self.raw_next()?;
+                break;
             }
             first = false;
             // Decode each endpoint before composing a range. Escaped literals
             // participate exactly like ordinary literals; the upper endpoint
             // must not recursively consume another range (e.g. [a-b-c]).
             let item = self.class_atom()?;
-            if self.raw_peek() == Some('-') && self.chars.get(self.pos + 1) != Some(&']') {
+            if self.raw_peek() == Some(u32::from('-'))
+                && self.chars.get(self.pos + 1) != Some(&u32::from(b']'))
+            {
                 self.raw_next()?;
                 let end = self.class_atom()?;
                 match (item, end) {
@@ -710,26 +727,30 @@ impl ReParser {
 
     pub(super) fn class_atom(&mut self) -> Result<ClassItem, String> {
         let ch = self.raw_next()?;
-        match ch {
-            '\\' => {
+        match char::from_u32(ch) {
+            Some('\\') => {
                 let esc = self.raw_next()?;
-                if self.is_bytes && matches!(esc, 'u' | 'U' | 'N') {
-                    return Err(format!("bad escape \\{esc} at position {}", self.pos - 2));
+                if self.is_bytes && matches!(char::from_u32(esc), Some('u' | 'U' | 'N')) {
+                    return Err(format!(
+                        "bad escape \\{} at position {}",
+                        char::from_u32(esc).unwrap(),
+                        self.pos - 2
+                    ));
                 }
-                match esc {
-                    'd' | 'D' | 's' | 'S' | 'w' | 'W' => {
-                        Ok(ClassItem::Category(Category::from_escape(esc)))
-                    }
-                    'n' => Ok(ClassItem::Char("\n".to_string())),
-                    't' => Ok(ClassItem::Char("\t".to_string())),
-                    'r' => Ok(ClassItem::Char("\r".to_string())),
-                    'f' => Ok(ClassItem::Char("\x0C".to_string())),
-                    'v' => Ok(ClassItem::Char("\x0B".to_string())),
-                    c if c.is_ascii_digit() => {
+                match char::from_u32(esc) {
+                    Some('d' | 'D' | 's' | 'S' | 'w' | 'W') => Ok(ClassItem::Category(
+                        Category::from_escape(char::from_u32(esc).unwrap()),
+                    )),
+                    Some('n') => Ok(ClassItem::Char(u32::from('\n'))),
+                    Some('t') => Ok(ClassItem::Char(u32::from('\t'))),
+                    Some('r') => Ok(ClassItem::Char(u32::from('\r'))),
+                    Some('f') => Ok(ClassItem::Char(u32::from('\x0C'))),
+                    Some('v') => Ok(ClassItem::Char(u32::from('\x0B'))),
+                    Some(c) if c.is_ascii_digit() => {
                         // Octal escape inside character classes.
                         let mut oct = String::from(c);
                         while oct.len() < 3 {
-                            match self.raw_peek() {
+                            match self.raw_peek().and_then(char::from_u32) {
                                 Some(d) if ('0'..='7').contains(&d) => {
                                     self.raw_next()?;
                                     oct.push(d);
@@ -739,13 +760,12 @@ impl ReParser {
                         }
                         let code = u32::from_str_radix(&oct, 8)
                             .map_err(|_| "invalid octal escape".to_string())?;
-                        let c = char::from_u32(code).unwrap_or('\u{FFFD}');
-                        Ok(ClassItem::Char(c.to_string()))
+                        Ok(ClassItem::Char(code))
                     }
-                    other => Ok(ClassItem::Char(other.to_string())),
+                    _ => Ok(ClassItem::Char(esc)),
                 }
             }
-            _ => Ok(ClassItem::Char(ch.to_string())),
+            _ => Ok(ClassItem::Char(ch)),
         }
     }
 }
@@ -755,7 +775,7 @@ impl ReParser {
 // ---------------------------------------------------------------------------
 
 pub(super) enum ClassItem {
-    Char(String),
+    Char(u32),
     Category(Category),
 }
 
@@ -791,7 +811,7 @@ pub(super) fn fixed_width(
 ) -> Option<u64> {
     match node {
         ReNode::Empty => Some(0),
-        ReNode::Literal(s) => Some(s.chars().count() as u64),
+        ReNode::Literal(s) => Some(s.len() as u64),
         ReNode::Any => Some(1),
         ReNode::Anchor(_) => Some(0),
         ReNode::CharClass { .. } => Some(1),
@@ -845,7 +865,7 @@ pub(super) fn fixed_width(
 // ---------------------------------------------------------------------------
 
 pub(super) fn parse_pattern_typed(
-    pattern: &str,
+    pattern: Vec<u32>,
     flags: i64,
     is_bytes: bool,
 ) -> Result<ParsedPattern, String> {

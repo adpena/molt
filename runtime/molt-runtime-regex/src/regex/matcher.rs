@@ -3,7 +3,7 @@ use std::num::NonZeroUsize;
 
 #[derive(Clone, Copy)]
 pub(super) enum SubjectStorage<'a> {
-    Text(&'a [char]),
+    Text(&'a [u32]),
     Bytes(&'a [u8]),
 }
 impl SubjectStorage<'_> {
@@ -15,10 +15,10 @@ impl SubjectStorage<'_> {
         }
     }
     #[inline]
-    pub(super) fn unit(self, index: usize) -> char {
+    pub(super) fn unit(self, index: usize) -> u32 {
         match self {
             Self::Text(text) => text[index],
-            Self::Bytes(bytes) => char::from(bytes[index]),
+            Self::Bytes(bytes) => u32::from(bytes[index]),
         }
     }
 }
@@ -651,31 +651,52 @@ fn ascii(flags: i64, is_bytes: bool) -> bool {
     is_bytes || flags & RE_ASCII != 0
 }
 #[inline]
-fn word(ch: char, flags: i64, is_bytes: bool) -> bool {
-    ch == '_'
-        || if ascii(flags, is_bytes) {
-            ch.is_ascii_alphanumeric()
-        } else {
-            ch.is_alphanumeric()
-        }
+fn word(ch: u32, flags: i64, is_bytes: bool) -> bool {
+    ch == u32::from(b'_')
+        || char::from_u32(ch).is_some_and(|ch| {
+            if ascii(flags, is_bytes) {
+                ch.is_ascii_alphanumeric()
+            } else {
+                ch.is_alphanumeric()
+            }
+        })
 }
+
 #[inline]
-pub(super) fn char_eq(a: char, b: char, flags: i64, is_bytes: bool) -> bool {
-    if flags & RE_IGNORECASE == 0 {
-        a == b
-    } else if ascii(flags, is_bytes) {
-        a.eq_ignore_ascii_case(&b)
+fn ascii_lower(ch: u32) -> u32 {
+    if (u32::from(b'A')..=u32::from(b'Z')).contains(&ch) {
+        ch + u32::from(b'a' - b'A')
     } else {
-        a.to_lowercase().eq(b.to_lowercase())
+        ch
     }
 }
 
-fn category_matches(category: Category, ch: char, flags: i64, is_bytes: bool) -> bool {
+#[inline]
+pub(super) fn char_eq(a: u32, b: u32, flags: i64, is_bytes: bool) -> bool {
+    if a == b {
+        true
+    } else if flags & RE_IGNORECASE == 0 {
+        false
+    } else if ascii(flags, is_bytes) {
+        ascii_lower(a) == ascii_lower(b)
+    } else {
+        match (char::from_u32(a), char::from_u32(b)) {
+            (Some(a), Some(b)) => a.to_lowercase().eq(b.to_lowercase()),
+            // Python surrogates are unchanged by case operations. Distinct
+            // code points cannot become equal through a lossy replacement.
+            _ => false,
+        }
+    }
+}
+
+fn category_matches(category: Category, ch: u32, flags: i64, is_bytes: bool) -> bool {
+    let digit = (u32::from(b'0')..=u32::from(b'9')).contains(&ch);
+    let space = matches!(ch, 0x20 | 0x09..=0x0d);
     match category {
-        Category::Digit => ch.is_ascii_digit(),
-        Category::NotDigit => !ch.is_ascii_digit(),
-        Category::Space => matches!(ch, ' ' | '\t' | '\n' | '\r' | '\u{000C}' | '\u{000B}'),
-        Category::NotSpace => !matches!(ch, ' ' | '\t' | '\n' | '\r' | '\u{000C}' | '\u{000B}'),
+        Category::Digit => digit,
+        Category::NotDigit => !digit,
+        Category::Space => space,
+        Category::NotSpace => !space,
         Category::Word => word(ch, flags, is_bytes),
         Category::NotWord => !word(ch, flags, is_bytes),
     }
@@ -705,7 +726,7 @@ fn atom_matches(
     let matched = match &atom.predicate {
         Predicate::Unit(expected) => char_eq(ch, *expected, flags, is_bytes),
         Predicate::Literal(_) => unreachable!("literal handled before subject unit access"),
-        Predicate::Any => flags & RE_DOTALL != 0 || ch != '\n',
+        Predicate::Any => flags & RE_DOTALL != 0 || ch != u32::from(b'\n'),
         Predicate::Class {
             negated,
             ranges,
@@ -719,11 +740,20 @@ fn atom_matches(
                     if flags & RE_IGNORECASE == 0 {
                         (lo..=hi).contains(&ch)
                     } else if ascii(flags, is_bytes) {
-                        (lo.to_ascii_lowercase()..=hi.to_ascii_lowercase())
-                            .contains(&ch.to_ascii_lowercase())
+                        (ascii_lower(lo)..=ascii_lower(hi)).contains(&ascii_lower(ch))
                     } else {
-                        let lower = |ch: char| ch.to_lowercase().next().unwrap_or(ch);
-                        let upper = |ch: char| ch.to_uppercase().next().unwrap_or(ch);
+                        let lower = |ch: u32| {
+                            char::from_u32(ch)
+                                .and_then(|c| c.to_lowercase().next())
+                                .map(u32::from)
+                                .unwrap_or(ch)
+                        };
+                        let upper = |ch: u32| {
+                            char::from_u32(ch)
+                                .and_then(|c| c.to_uppercase().next())
+                                .map(u32::from)
+                                .unwrap_or(ch)
+                        };
                         (lower(lo)..=lower(hi)).contains(&lower(ch))
                             || (upper(lo)..=upper(hi)).contains(&upper(ch))
                     }
@@ -747,12 +777,15 @@ fn anchor_matches(
 ) -> bool {
     match kind {
         Anchor::Start => {
-            pos == 0 || (flags & RE_MULTILINE != 0 && pos > 0 && subject.unit(pos - 1) == '\n')
+            pos == 0
+                || (flags & RE_MULTILINE != 0
+                    && pos > 0
+                    && subject.unit(pos - 1) == u32::from(b'\n'))
         }
         Anchor::End => {
             pos == end
                 || (pos < end
-                    && subject.unit(pos) == '\n'
+                    && subject.unit(pos) == u32::from(b'\n')
                     && (flags & RE_MULTILINE != 0 || pos + 1 == end))
         }
         Anchor::StartAbsolute => pos == 0,
@@ -785,8 +818,8 @@ mod workspace_tests {
     #[test]
     fn possessive_commits_bound_history_and_preserve_outer_capture_rollback() {
         for len in [20_000, 200_000] {
-            let mut text = vec!['a'; len];
-            text.push('z');
+            let mut text = vec![u32::from(b'a'); len];
+            text.push(u32::from(b'z'));
             for (pattern, expected_groups, expected_lastindex) in [
                 (
                     "((a|ab))++z",
@@ -799,10 +832,11 @@ mod workspace_tests {
                     Some(3),
                 ),
             ] {
-                let compiled = parse_pattern_typed(pattern, 0, false)
-                    .unwrap()
-                    .compile()
-                    .unwrap();
+                let compiled =
+                    parse_pattern_typed(pattern.chars().map(u32::from).collect(), 0, false)
+                        .unwrap()
+                        .compile()
+                        .unwrap();
                 let mut matcher =
                     Matcher::new(&compiled, SubjectStorage::Text(&text), text.len()).unwrap();
                 assert_eq!(
@@ -824,12 +858,12 @@ mod workspace_tests {
 
     #[test]
     fn fixed_width_repeat_workspace_is_independent_of_subject_length() {
-        let compiled = parse_pattern_typed("((a)())+a", 0, false)
+        let compiled = parse_pattern_typed("((a)())+a".chars().map(u32::from).collect(), 0, false)
             .unwrap()
             .compile()
             .unwrap();
         for len in [20_000, 200_000] {
-            let text = vec!['a'; len];
+            let text = vec![u32::from(b'a'); len];
             let mut matcher = Matcher::new(&compiled, SubjectStorage::Text(&text), len).unwrap();
             assert_eq!(matcher.run(0, true, None).unwrap(), Some(len));
             // Capacities retain peak allocations. This budget excludes the
@@ -863,7 +897,7 @@ mod workspace_tests {
     #[test]
     fn long_literals_keep_one_program_block() {
         let text = "a".repeat(20_000);
-        let compiled = parse_pattern_typed(&text, 0, false)
+        let compiled = parse_pattern_typed(text.chars().map(u32::from).collect(), 0, false)
             .unwrap()
             .compile()
             .unwrap();
@@ -872,9 +906,15 @@ mod workspace_tests {
             2,
             "literal length must not expand VM dispatch storage"
         );
-        let matched = execute_match(&compiled, &text, 0, text.len(), MatchMode::FullMatch)
-            .unwrap()
-            .unwrap();
+        let matched = execute_match(
+            &compiled,
+            text.as_bytes(),
+            0,
+            text.len(),
+            MatchMode::FullMatch,
+        )
+        .unwrap()
+        .unwrap();
         assert_eq!(
             (matched.start, matched.end, matched.lastindex),
             (0, text.len(), None)

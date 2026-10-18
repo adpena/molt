@@ -328,3 +328,88 @@ fn regex_capture_aggregate_owns_children_and_rolls_back_every_failure() {
         }
     });
 }
+
+/// The borrowed runtime getter must not replace regex's own admission errors.
+/// These calls bypass the Python facade and exercise the real linked bridge.
+#[test]
+fn regex_text_admission_keeps_contextual_errors_at_every_entry() {
+    use molt_runtime_regex::regex::{molt_re_escape, molt_re_execute, molt_re_scanner_new};
+    let _transaction = crate::test_support::RuntimeTestTransaction::new();
+    crate::with_gil_entry_nopanic!(py, {
+        let make = |data: &[u8]| {
+            let ptr = alloc_string(py, data);
+            assert!(!ptr.is_null());
+            unsafe {
+                OwnedRuntimeValue::from_owned_bits(
+                    py.core_token(),
+                    MoltObject::from_ptr(ptr).bits(),
+                )
+            }
+        };
+        let source = make(b"a");
+        let mode = make(b"search");
+        let zero = MoltObject::from_int(0).bits();
+        let one = MoltObject::from_int(1).bits();
+        let invalid = MoltObject::from_int(7).bits();
+        let pattern = unsafe {
+            OwnedRuntimeValue::from_owned_bits(
+                py.core_token(),
+                molt_re_compile(source.bits(), zero),
+            )
+        };
+        assert!(!exception_pending(py));
+        let check = |result, expected| {
+            assert!(obj_from_bits(result).is_none());
+            assert!(exception_pending(py));
+            let error = unsafe {
+                OwnedRuntimeValue::from_owned_bits(
+                    py.core_token(),
+                    crate::builtins::exceptions::molt_exception_last_pending(),
+                )
+            };
+            crate::clear_exception(py);
+            assert!(crate::builtins::exceptions::exception_matches_builtin_name(
+                py,
+                error.bits(),
+                "TypeError"
+            ));
+            assert_eq!(
+                crate::builtins::exceptions::format_exception_message(
+                    py,
+                    ptr_from_bits(error.bits())
+                ),
+                expected
+            );
+        };
+        check(
+            molt_re_compile(invalid, zero),
+            "first argument must be string or compiled pattern",
+        );
+        check(
+            molt_re_execute(pattern.bits(), invalid, zero, one, mode.bits()),
+            "cannot use a string pattern on a bytes-like object",
+        );
+        check(
+            molt_re_execute(pattern.bits(), source.bits(), zero, one, invalid),
+            "mode must be str",
+        );
+        check(
+            molt_re_scanner_new(pattern.bits(), invalid, zero, one),
+            "cannot use a string pattern on a bytes-like object",
+        );
+        check(
+            molt_re_split(pattern.bits(), invalid, zero),
+            "expected string or bytes-like object",
+        );
+        check(
+            molt_re_sub(pattern.bits(), invalid, source.bits(), zero),
+            "replacement must be str",
+        );
+        check(
+            molt_re_sub(pattern.bits(), source.bits(), invalid, zero),
+            "cannot use a string pattern on a bytes-like object",
+        );
+        check(molt_re_escape(invalid), "pattern must be str or bytes");
+        assert!(!exception_pending(py));
+    });
+}

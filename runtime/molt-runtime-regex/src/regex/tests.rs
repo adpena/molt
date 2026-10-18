@@ -5,14 +5,14 @@
 use super::*;
 
 fn parse_pattern(pattern: &str, flags: i64) -> Result<ParsedPattern, String> {
-    parse_pattern_typed(pattern, flags, false)
+    parse_pattern_typed(pattern.chars().map(u32::from).collect(), flags, false)
 }
 use std::sync::Arc;
 
 fn scanner_spans_text(pattern: &str, text: &str) -> Vec<(usize, usize)> {
-    let chars: Vec<char> = text.chars().collect();
+    let chars: Vec<u32> = text.chars().map(u32::from).collect();
     let compiled = Arc::new(PatternHandle::new(
-        parse_pattern_typed(pattern, 0, false)
+        parse_pattern_typed(pattern.chars().map(u32::from).collect(), 0, false)
             .unwrap()
             .compile()
             .unwrap(),
@@ -27,7 +27,7 @@ fn scanner_spans_text(pattern: &str, text: &str) -> Vec<(usize, usize)> {
 
 fn scanner_spans_bytes(pattern: &str, subject: &[u8]) -> Vec<(usize, usize)> {
     let compiled = Arc::new(PatternHandle::new(
-        parse_pattern_typed(pattern, 0, true)
+        parse_pattern_typed(pattern.chars().map(u32::from).collect(), 0, true)
             .unwrap()
             .compile()
             .unwrap(),
@@ -51,7 +51,7 @@ fn test_parse_empty_pattern() {
 fn test_parse_literal() {
     let cp = parse_pattern("hello", 0).unwrap();
     match &cp.root {
-        ReNode::Literal(s) => assert_eq!(s, "hello"),
+        ReNode::Literal(s) => assert_eq!(*s, "hello".chars().map(u32::from).collect::<Vec<_>>()),
         other => panic!("expected Literal, got {other:?}"),
     }
 }
@@ -111,7 +111,7 @@ fn test_parse_non_capturing_group() {
     let cp = parse_pattern("(?:abc)", 0).unwrap();
     assert_eq!(cp.group_count, 0);
     match &cp.root {
-        ReNode::Literal(s) => assert_eq!(s, "abc"),
+        ReNode::Literal(s) => assert_eq!(*s, "abc".chars().map(u32::from).collect::<Vec<_>>()),
         other => panic!("expected Literal (collapsed non-capturing group), got {other:?}"),
     }
 }
@@ -174,7 +174,7 @@ fn test_parse_charclass() {
     match &cp.root {
         ReNode::CharClass { negated, chars, .. } => {
             assert!(!negated);
-            assert!(chars.contains(&"a".to_string()));
+            assert!(chars.contains(&u32::from(b'a')));
         }
         other => panic!("expected CharClass, got {other:?}"),
     }
@@ -198,8 +198,8 @@ fn test_parse_charclass_range() {
         ReNode::CharClass { ranges, .. } => {
             assert!(!ranges.is_empty());
             let (s, e) = &ranges[0];
-            assert_eq!(s, "a");
-            assert_eq!(e, "z");
+            assert_eq!(*s, u32::from(b'a'));
+            assert_eq!(*e, u32::from(b'z'));
         }
         other => panic!("expected CharClass with range, got {other:?}"),
     }
@@ -374,7 +374,7 @@ fn test_parse_verbose_whitespace_stripped() {
     // In verbose mode, whitespace between atoms is ignored.
     let cp = parse_pattern("a b c", RE_VERBOSE).unwrap();
     match &cp.root {
-        ReNode::Literal(s) => assert_eq!(s, "abc"),
+        ReNode::Literal(s) => assert_eq!(*s, "abc".chars().map(u32::from).collect::<Vec<_>>()),
         other => panic!("expected Literal 'abc', got {other:?}"),
     }
 }
@@ -406,7 +406,10 @@ fn test_parse_word_boundary() {
 #[test]
 fn test_fixed_width_literal() {
     assert_eq!(
-        fixed_width(&ReNode::Literal("hello".to_string()), None),
+        fixed_width(
+            &ReNode::Literal("hello".chars().map(u32::from).collect()),
+            None
+        ),
         Some(5)
     );
 }
@@ -446,7 +449,7 @@ fn test_parse_octal_escape_in_class() {
     match &cp.root {
         ReNode::CharClass { chars, .. } => {
             assert!(
-                chars.contains(&"A".to_string()),
+                chars.contains(&u32::from(b'A')),
                 "expected 'A' in chars, got {chars:?}"
             );
         }
@@ -462,7 +465,7 @@ fn test_parse_octal_escape_in_class() {
 fn do_execute(pattern: &str, flags: i64, text: &str, mode: MatchMode) -> Option<MatchResult> {
     let compiled = parse_pattern(pattern, flags).unwrap().compile().unwrap();
     let text_len = text.chars().count();
-    execute_match(&compiled, text, 0, text_len, mode).unwrap()
+    execute_match(&compiled, text.as_bytes(), 0, text_len, mode).unwrap()
 }
 
 /// Helper: compile + execute "match" mode.
@@ -575,7 +578,7 @@ fn test_match_charclass_literal_and_escaped_range_endpoints() {
             let ch = char::from(code);
             let text = ch.to_string();
             assert_eq!(
-                execute_match(&compiled, &text, 0, 1, MatchMode::FullMatch)
+                execute_match(&compiled, text.as_bytes(), 0, 1, MatchMode::FullMatch)
                     .unwrap()
                     .is_some(),
                 expected.contains(ch),
@@ -696,7 +699,7 @@ fn test_match_multiline_anchor() {
         .unwrap();
     let text = "hello\nworld";
     let text_len = text.chars().count();
-    let m = execute_match(&compiled, text, 0, text_len, MatchMode::Search)
+    let m = execute_match(&compiled, text.as_bytes(), 0, text_len, MatchMode::Search)
         .unwrap()
         .unwrap();
     assert_eq!(m.start, 6);
@@ -892,7 +895,7 @@ fn test_match_positive_lookbehind() {
     let compiled = parse_pattern("(?<=a)b", 0).unwrap().compile().unwrap();
     let text = "ab";
     let text_len = text.chars().count();
-    let m = execute_match(&compiled, text, 0, text_len, MatchMode::Search)
+    let m = execute_match(&compiled, text.as_bytes(), 0, text_len, MatchMode::Search)
         .unwrap()
         .unwrap();
     assert_eq!(m.start, 1);
@@ -904,7 +907,7 @@ fn test_match_negative_lookbehind() {
     let compiled = parse_pattern("(?<!a)b", 0).unwrap().compile().unwrap();
     let text = "cb";
     let text_len = text.chars().count();
-    let m = execute_match(&compiled, text, 0, text_len, MatchMode::Search)
+    let m = execute_match(&compiled, text.as_bytes(), 0, text_len, MatchMode::Search)
         .unwrap()
         .unwrap();
     assert_eq!(m.start, 1);
@@ -916,7 +919,7 @@ fn test_match_negative_lookbehind_fail() {
     let compiled = parse_pattern("(?<!a)b", 0).unwrap().compile().unwrap();
     let text = "ab";
     let text_len = text.chars().count();
-    let m = execute_match(&compiled, text, 0, text_len, MatchMode::Search).unwrap();
+    let m = execute_match(&compiled, text.as_bytes(), 0, text_len, MatchMode::Search).unwrap();
     assert!(m.is_none());
 }
 
@@ -991,7 +994,7 @@ fn scanner_preserves_lazy_repeat_and_unicode_character_offsets() {
 #[test]
 fn scanner_observes_mutated_bytes_between_transitions() {
     let pattern = Arc::new(PatternHandle::new(
-        parse_pattern_typed("a", 0, true)
+        parse_pattern_typed("a".chars().map(u32::from).collect(), 0, true)
             .unwrap()
             .compile()
             .unwrap(),
@@ -1023,7 +1026,7 @@ fn test_finditer_collect_basic() {
     let mut cur = 0;
     let end = text_len;
     while cur <= end {
-        match execute_match(&compiled, text, cur, end, MatchMode::Search).unwrap() {
+        match execute_match(&compiled, text.as_bytes(), cur, end, MatchMode::Search).unwrap() {
             Some(result) => {
                 let match_end = result.end;
                 results.push((result.start, result.end));
@@ -1110,7 +1113,7 @@ fn test_match_named_group() {
         .unwrap();
     let text = "hello";
     let text_len = text.chars().count();
-    let m = execute_match(&compiled, text, 0, text_len, MatchMode::Match)
+    let m = execute_match(&compiled, text.as_bytes(), 0, text_len, MatchMode::Match)
         .unwrap()
         .unwrap();
     assert_eq!(m.groups[1], Some((0, 5)));
@@ -1126,7 +1129,7 @@ fn test_match_named_backref() {
         .unwrap();
     let text = "abc abc";
     let text_len = text.chars().count();
-    let m = execute_match(&compiled, text, 0, text_len, MatchMode::Match)
+    let m = execute_match(&compiled, text.as_bytes(), 0, text_len, MatchMode::Match)
         .unwrap()
         .unwrap();
     assert_eq!(m.start, 0);
@@ -1142,7 +1145,7 @@ fn test_match_named_backref_fail() {
         .unwrap();
     let text = "abc def";
     let text_len = text.chars().count();
-    let m = execute_match(&compiled, text, 0, text_len, MatchMode::Match).unwrap();
+    let m = execute_match(&compiled, text.as_bytes(), 0, text_len, MatchMode::Match).unwrap();
     assert!(m.is_none());
 }
 
@@ -1183,7 +1186,7 @@ fn test_search_empty_string() {
 #[test]
 fn test_match_pos_beyond_text() {
     let compiled = parse_pattern("a", 0).unwrap().compile().unwrap();
-    let m = execute_match(&compiled, "a", 5, 5, MatchMode::Match).unwrap();
+    let m = execute_match(&compiled, "a".as_bytes(), 5, 5, MatchMode::Match).unwrap();
     assert!(m.is_none());
 }
 
@@ -1192,11 +1195,11 @@ fn test_match_and_search_keep_independently_clamped_bounds() {
     // CPython's anchored match can accept the empty alternative beyond endpos;
     // search, fullmatch and scanner instead exhaust the inverted window.
     for is_bytes in [false, true] {
-        let compiled = parse_pattern_typed("(|a)", 0, is_bytes)
+        let compiled = parse_pattern_typed("(|a)".chars().map(u32::from).collect(), 0, is_bytes)
             .unwrap()
             .compile()
             .unwrap();
-        let chars: Vec<char> = "zaaz".chars().collect();
+        let chars: Vec<u32> = "zaaz".chars().map(u32::from).collect();
         let subject = if is_bytes {
             SubjectStorage::Bytes(b"zaaz")
         } else {
@@ -1248,7 +1251,7 @@ fn do_split(pattern: &str, text: &str, maxsplit: usize) -> Vec<String> {
     let pattern = std::sync::Arc::new(PatternHandle::new(
         parse_pattern(pattern, 0).unwrap().compile().unwrap(),
     ));
-    let chars: Vec<char> = text.chars().collect();
+    let chars: Vec<u32> = text.chars().map(u32::from).collect();
     let mut scanner = ScannerHandle::new(std::sync::Arc::clone(&pattern), 0, chars.len(), None);
     let mut parts = Vec::new();
     let mut last = 0;
@@ -1258,16 +1261,29 @@ fn do_split(pattern: &str, text: &str, maxsplit: usize) -> Vec<String> {
         else {
             break;
         };
-        parts.push(chars[last..result.start].iter().collect());
+        parts.push(
+            chars[last..result.start]
+                .iter()
+                .map(|&u| char::from_u32(u).unwrap())
+                .collect(),
+        );
         for span in result.groups.iter().skip(1) {
             parts.push(span.map_or_else(String::new, |(start, end)| {
-                chars[start..end].iter().collect()
+                chars[start..end]
+                    .iter()
+                    .map(|&u| char::from_u32(u).unwrap())
+                    .collect()
             }));
         }
         last = result.end;
         count += 1;
     }
-    parts.push(chars[last..].iter().collect());
+    parts.push(
+        chars[last..]
+            .iter()
+            .map(|&u| char::from_u32(u).unwrap())
+            .collect(),
+    );
     parts
 }
 
@@ -1275,7 +1291,7 @@ fn do_sub(pattern: &str, repl: &str, text: &str, count: usize) -> (String, usize
     let pattern = std::sync::Arc::new(PatternHandle::new(
         parse_pattern(pattern, 0).unwrap().compile().unwrap(),
     ));
-    let chars: Vec<char> = text.chars().collect();
+    let chars: Vec<u32> = text.chars().map(u32::from).collect();
     let mut scanner = ScannerHandle::new(std::sync::Arc::clone(&pattern), 0, chars.len(), None);
     let mut out = String::new();
     let mut last = 0;
@@ -1285,7 +1301,11 @@ fn do_sub(pattern: &str, repl: &str, text: &str, count: usize) -> (String, usize
         else {
             break;
         };
-        out.extend(chars[last..result.start].iter());
+        out.extend(
+            chars[last..result.start]
+                .iter()
+                .map(|&u| char::from_u32(u).unwrap()),
+        );
         out.push_str(&expand_repl_with_groups(
             repl,
             &chars,
@@ -1296,13 +1316,13 @@ fn do_sub(pattern: &str, repl: &str, text: &str, count: usize) -> (String, usize
         last = result.end;
         replaced += 1;
     }
-    out.extend(chars[last..].iter());
+    out.extend(chars[last..].iter().map(|&u| char::from_u32(u).unwrap()));
     (out, replaced)
 }
 
 fn expand_repl_with_groups(
     repl: &str,
-    chars: &[char],
+    chars: &[u32],
     result: &MatchResult,
     group_count: u32,
     names: &NamedGroups,
@@ -1380,7 +1400,7 @@ fn test_expand_repl_numbered_group() {
         groups: vec![None, Some((0, 5))],
         lastindex: Some(1),
     };
-    let chars: Vec<char> = "hello".chars().collect();
+    let chars: Vec<u32> = "hello".chars().map(u32::from).collect();
     let names = NamedGroups::new();
     let expanded = expand_repl_with_groups("<<\\1>>", &chars, &result, 1, &names);
     assert_eq!(expanded, "<<hello>>");
@@ -1394,7 +1414,7 @@ fn test_expand_repl_named_group() {
         groups: vec![None, Some((0, 5))],
         lastindex: Some(1),
     };
-    let chars: Vec<char> = "hello".chars().collect();
+    let chars: Vec<u32> = "hello".chars().map(u32::from).collect();
     let mut names = NamedGroups::new();
     names.insert("word".to_string(), 1u32);
     let expanded = expand_repl_with_groups("<<\\g<word>>>", &chars, &result, 1, &names);
@@ -1409,7 +1429,7 @@ fn test_expand_repl_group_zero() {
         groups: vec![None],
         lastindex: None,
     };
-    let chars: Vec<char> = "hello".chars().collect();
+    let chars: Vec<u32> = "hello".chars().map(u32::from).collect();
     let names = NamedGroups::new();
     let expanded = expand_repl_with_groups("<<\\g<0>>>", &chars, &result, 0, &names);
     assert_eq!(expanded, "<<hello>>");
@@ -1423,7 +1443,7 @@ fn test_expand_repl_escape_sequences() {
         groups: vec![None],
         lastindex: None,
     };
-    let chars: Vec<char> = "".chars().collect();
+    let chars: Vec<u32> = "".chars().map(u32::from).collect();
     let names = NamedGroups::new();
     let expanded = expand_repl_with_groups("a\\nb\\tc\\\\d", &chars, &result, 0, &names);
     assert_eq!(expanded, "a\nb\tc\\d");
@@ -1584,7 +1604,7 @@ fn verbose_lexing_preserves_token_adjacency_and_scoped_source() {
             "(?<name>a)",
         ] {
             assert!(
-                parse_pattern_typed(pattern, 0, is_bytes).is_err(),
+                parse_pattern_typed(pattern.chars().map(u32::from).collect(), 0, is_bytes).is_err(),
                 "{pattern}"
             );
         }
@@ -1606,10 +1626,11 @@ fn verbose_lexing_preserves_token_adjacency_and_scoped_source() {
             ("a{1, 2}", "a{1,2}", RE_VERBOSE),
             ("a{1, 2}", "a{1, 2}", 0),
         ] {
-            let compiled = parse_pattern_typed(pattern, flags, is_bytes)
-                .unwrap()
-                .compile()
-                .unwrap();
+            let compiled =
+                parse_pattern_typed(pattern.chars().map(u32::from).collect(), flags, is_bytes)
+                    .unwrap()
+                    .compile()
+                    .unwrap();
             let found = if is_bytes {
                 execute_match_bytes(
                     &compiled,
@@ -1619,7 +1640,13 @@ fn verbose_lexing_preserves_token_adjacency_and_scoped_source() {
                     MatchMode::FullMatch,
                 )
             } else {
-                execute_match(&compiled, text, 0, text.len(), MatchMode::FullMatch)
+                execute_match(
+                    &compiled,
+                    text.as_bytes(),
+                    0,
+                    text.len(),
+                    MatchMode::FullMatch,
+                )
             }
             .unwrap();
             let found = found.unwrap_or_else(|| panic!("missing {pattern:?} {text:?}"));
