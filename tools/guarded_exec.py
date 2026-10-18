@@ -247,6 +247,11 @@ def main(argv: list[str] | None = None) -> int:
                 "peak_job_commit_bytes",
                 None,
             ),
+            "worker_peaks": (
+                None
+                if getattr(result, "worker_peaks", None) is None
+                else result.worker_peaks.json_payload()
+            ),
             "windows_job_cleanup": harness_memory_guard.memory_guard.windows_job_cleanup_payload(
                 getattr(result, "windows_job_cleanup", None)
             ),

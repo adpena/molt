@@ -221,8 +221,17 @@ def _safe_current_test_record_part(value: str, default: str) -> str:
     return cleaned or default
 
 
+# This process's xdist worker id, from xdist's own `config.workerinput`. A
+# pytest that a test starts inherits PYTEST_XDIST_WORKER from its worker, so
+# the environment would make that nested controller publish as a worker.
+_XDIST_WORKER_ID: str | None = None
+# Whether this process is an xdist controller: it distributes tests and runs
+# none, so its aggregate record never stands for a process running tests.
+_XDIST_CONTROLLER = False
+
+
 def _pytest_current_test_worker_record_path(root_path: Path) -> Path:
-    worker = os.environ.get("PYTEST_XDIST_WORKER", "").strip()
+    worker = _XDIST_WORKER_ID
     if not worker:
         return root_path
     safe_worker = _safe_current_test_record_part(worker, "worker")
@@ -1012,8 +1021,16 @@ def pytest_configure(config: object) -> None:
     Workers send reports to the xdist controller; only that controller writes
     diagnostics. Keep this pytest-only object out of ordinary package startup.
     """
+    global _XDIST_WORKER_ID, _XDIST_CONTROLLER
     _bind_current_test_lock()
-    if hasattr(config, "workerinput"):
+    workerinput = getattr(config, "workerinput", None)
+    _XDIST_WORKER_ID = None if workerinput is None else str(workerinput["workerid"])
+    # xdist sets --dist (load by default) on the controller whenever -n starts
+    # workers; a serial run keeps "no".
+    _XDIST_CONTROLLER = workerinput is None and (
+        getattr(getattr(config, "option", None), "dist", "no") != "no"
+    )
+    if workerinput is not None:
         return
     manager = getattr(config, "pluginmanager")
     plugin_name = "molt-immediate-pytest-failures"
@@ -1068,7 +1085,8 @@ def _write_pytest_current_test(
         "phase": _bounded_text(phase),
         "nodeid": _bounded_text(nodeid),
         "pytest_current_test": _bounded_text(os.environ.get("PYTEST_CURRENT_TEST", "")),
-        "xdist_worker": _bounded_text(os.environ.get("PYTEST_XDIST_WORKER", "")),
+        "xdist_worker": _bounded_text(_XDIST_WORKER_ID or ""),
+        "xdist_controller": _XDIST_CONTROLLER,
     }
     if location is not None:
         payload["location"] = _bounded_text(location)

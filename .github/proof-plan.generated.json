@@ -28,6 +28,7 @@
     "tools/memory_guard_core/memory_limits.py",
     "tools/memory_guard_core/repro_context.py",
     "tools/memory_guard_core/sample_records.py",
+    "tools/memory_guard_core/worker_peaks.py",
     "tools/memory_guard_core/active_custody.py",
     "src/molt/backend_daemon_custody.py",
     "src/molt/backend_executable_names.py",
@@ -371,7 +372,7 @@
     "tests/tools/test_win_job_contract.py",
     "tests/tools/test_windows_process_api.py"
   ],
-  "authority_sha256": "c797cef1e3d42b029b22c65bf86646eb7f606413d9433abbb72520f27292df95",
+  "authority_sha256": "a01c1a9c3df79db9e12613aafce35ccc8a51f22ca30dc6964b5079813f1b1f78",
   "cargo_environment_policy": {
     "incident_command": "cargo metadata --locked --format-version 1",
     "incident_commit": "20b046b79bd4ca64a8c859f737f6e330377bcc4e",
@@ -3140,6 +3141,7 @@
         "tests/tools/test_lane_maturity.py",
         "tests/tools/test_memory_graph.py",
         "tests/tools/test_memory_guard_custody.py",
+        "tests/tools/test_memory_guard_worker_peaks.py",
         "tests/tools/test_memory_guard_spawn_callback.py",
         "tests/tools/test_memory_guard_stream.py",
         "tests/tools/test_molt_cache_prune.py",
