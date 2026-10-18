@@ -1569,7 +1569,8 @@ description = "Heavy Tier 3 reproducibility, fuzzing, mutation, translation, and
 workflow = ".github/workflows/nightly.yml"
 job = "verification-gate-t3"
 tiers = ["scheduled"]
-timeout_minutes = 90
+# 105 minutes: the 5400 s envelope plus the fuzz-tests command (HF-73).
+timeout_minutes = 105
 # Declared allowance retained from the existing job slack; not measured.
 job_reserve_seconds = 600
 resource_class = "scheduled-suite"
@@ -1742,7 +1743,7 @@ toolchains = ["python", "uv", "rustc", "cargo", "clang"]
 cargo_build_python = true
 
 # Nightly run 37947710312 built and ran about one program per 55 s beside the
-# other Tier 3 suites; 40 programs fit 2700 s, and the 90-minute job leaves no
+# other Tier 3 suites; 40 programs fit 2700 s, and the job budget leaves no
 # room for 100 after the cold prewarm.
 [[command]]
 id = "nightly.verification-t3.fuzz-compiler"
@@ -1756,6 +1757,25 @@ cache_domain = "cargo-workspace"
 dependencies = ["nightly.verification-t3.compiler-prewarm"]
 evidence_outputs = ["proof-results/fuzz-compiler-extended.json"]
 argv = ["uv", "run", "python3", "tools/fuzz_compiler.py", "--count", "40", "--timeout", "300", "--json-out", "proof-results/fuzz-compiler-extended.json"]
+toolchains = ["python", "uv", "rustc", "cargo"]
+cargo_build_python = true
+
+# The fuzz test files: the safe generator's contract (about 350 CPython runs)
+# and 20 targeted arithmetic and dead-code programs that Molt compiles and
+# runs against CPython. On a warm M-series Mac at -n 4 they took 131 s and
+# 72 s; at the fuzzer's CI rate of about 55 s per program build and run, the
+# 20 builds alone take about 550 s at -n 2.
+[[command]]
+id = "nightly.verification-t3.fuzz-tests"
+cargo_native_units = { target = ["c", "c++"] }
+family = "nightly_verification_t3"
+cell = "linux-x86_64-py312-native-dev"
+tiers = ["scheduled"]
+resource_class = "scheduled-suite"
+timeout_seconds = 1200
+cache_domain = "cargo-workspace"
+dependencies = ["nightly.verification-t3.compiler-prewarm"]
+argv = ["uv", "run", "python3", "-m", "pytest", "-q", "-n", "2", "tests/fuzz/test_fuzz_differential.py", "tests/fuzz/test_fuzz_extended.py"]
 toolchains = ["python", "uv", "rustc", "cargo"]
 cargo_build_python = true
 

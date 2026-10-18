@@ -70,7 +70,7 @@ Scheduled workflows consume the same typed command DAG and receipt executor with
 | `nightly_regrtest` | `regrtest-aggregate` | 900 s | 600 s | 300 s | 0 s | `scheduled-suite` | 1 |
 | `nightly_shard_profile_feedback` | `shard-profile-feedback` | 600 s | 300 s | 300 s | 0 s | `scheduled-suite` | 1 |
 | `nightly_determinism` | `determinism-sweep` | 5700 s | 5400 s | 300 s | 0 s | `scheduled-suite` | 4 |
-| `nightly_verification_t3` | `verification-gate-t3` | 5400 s | 4800 s | 600 s | 0 s | `scheduled-suite` | 6 |
+| `nightly_verification_t3` | `verification-gate-t3` | 6300 s | 5700 s | 600 s | 0 s | `scheduled-suite` | 7 |
 | `runtime_candidate_costs` | `candidate-runtime-costs` | 10800 s | 9000 s | 1800 s | 0 s | `compiler-build-resource` | 1 |
 
 ## Matrix cells
@@ -186,6 +186,7 @@ The wrapper conflict was reconfirmed by native CI run `30211145633` job `8981749
 | `nightly.verification-t3.compiler-prewarm` | `nightly_verification_t3` | `linux-x86_64-py312-native-dev` | `cold` | 1200 s | `compiler-build-resource` | 0 |
 | `nightly.verification-t3.reproducibility` | `nightly_verification_t3` | `linux-x86_64-py312-native-dev` | `explicit` | 3300 s | `scheduled-suite` | 1 |
 | `nightly.verification-t3.fuzz-compiler` | `nightly_verification_t3` | `linux-x86_64-py312-native-dev` | `explicit` | 2700 s | `scheduled-suite` | 1 |
+| `nightly.verification-t3.fuzz-tests` | `nightly_verification_t3` | `linux-x86_64-py312-native-dev` | `explicit` | 1200 s | `scheduled-suite` | 1 |
 | `nightly.verification-t3.mutation` | `nightly_verification_t3` | `linux-x86_64-py312-native-dev` | `explicit` | 3600 s | `scheduled-suite` | 1 |
 | `nightly.verification-t3.translation` | `nightly_verification_t3` | `linux-x86_64-py312-native-dev` | `explicit` | 3300 s | `scheduled-suite` | 1 |
 | `nightly.verification-t3.model-based` | `nightly_verification_t3` | `linux-x86_64-py312-native-dev` | `explicit` | 600 s | `scheduled-suite` | 1 |
