@@ -212,6 +212,15 @@ and pinned CPython surrogate-vector controls belong to development tests, with
 native and WASM consumer qualification required separately. General matcher
 Unicode semantics remain an independent HF-329 obligation.
 
+Text ignorecase equality streams the existing lowercase sequences. A bounded
+native allocation probe records zero intermediate allocations for 60,000 such
+comparisons; the preceding vector materialization records 120,000. The six
+reference pairs agree with CPython 3.12. This removes temporary allocation from
+the shared literal, backreference and character-class comparison authority;
+it does not establish complete CPython Unicode case-fold semantics or an
+end-to-end speedup. Those remain under HF-329 and the performance acceptance
+authorities.
+
 Named-group ordinals and declaration order originate together at group opening
 in [CPython's parser](https://github.com/python/cpython/blob/v3.12.13/Lib/re/_parser.py#L79-L96).
 One `NamedGroups` insertion-ordered hash catalog carries those facts through

@@ -375,9 +375,7 @@ fn b32_decode(input: &[u8], alphabet: &[u8; 32], casefold: bool) -> Option<Vec<u
         let chunk_len = chunk.len().min(8);
         let mut acc: u64 = 0;
         for i in 0..chunk_len {
-            let Some(val) = table[chunk[i] as usize] else {
-                return None;
-            };
+            let val = table[chunk[i] as usize]?;
             acc = (acc << 5) | (val as u64);
         }
         // Pad remaining bits if chunk < 8
@@ -551,12 +549,8 @@ fn b16_decode(input: &[u8], casefold: bool) -> Option<Vec<u8>> {
     let mut out = Vec::with_capacity(data.len() / 2);
     let mut idx = 0usize;
     while idx < data.len() {
-        let Some(hi) = hex_nibble(data[idx]) else {
-            return None;
-        };
-        let Some(lo) = hex_nibble(data[idx + 1]) else {
-            return None;
-        };
+        let hi = hex_nibble(data[idx])?;
+        let lo = hex_nibble(data[idx + 1])?;
         out.push((hi << 4) | lo);
         idx += 2;
     }

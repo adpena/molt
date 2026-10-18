@@ -79,10 +79,7 @@ pub(super) unsafe fn slice_indices_bigint(
     let step = if step_obj.is_none() {
         BigInt::from(1)
     } else {
-        let Some(step_val) = index_bigint_from_obj(_py, step_obj.bits(), msg) else {
-            return None;
-        };
-        step_val
+        index_bigint_from_obj(_py, step_obj.bits(), msg)?
     };
     if step.is_zero() {
         raise_exception::<()>(_py, "ValueError", "slice step cannot be zero");
@@ -102,9 +99,7 @@ pub(super) unsafe fn slice_indices_bigint(
             lower.clone()
         }
     } else {
-        let Some(idx) = index_bigint_from_obj(_py, start_obj.bits(), msg) else {
-            return None;
-        };
+        let idx = index_bigint_from_obj(_py, start_obj.bits(), msg)?;
         slice_indices_adjust(idx, len, &lower, &upper)
     };
     let stop = if stop_obj.is_none() {
@@ -114,9 +109,7 @@ pub(super) unsafe fn slice_indices_bigint(
             upper.clone()
         }
     } else {
-        let Some(idx) = index_bigint_from_obj(_py, stop_obj.bits(), msg) else {
-            return None;
-        };
+        let idx = index_bigint_from_obj(_py, stop_obj.bits(), msg)?;
         slice_indices_adjust(idx, len, &lower, &upper)
     };
     Some((start, stop, step))

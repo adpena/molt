@@ -302,7 +302,7 @@ fn molt_re_sub_bytes(
     let mut last = 0usize;
     let mut replaced = 0usize;
     let text_len = text.len();
-    let mut scanner = ScannerHandle::new(Arc::clone(&compiled), 0, text_len, None);
+    let mut scanner = ScannerHandle::new(Arc::clone(compiled), 0, text_len, None);
     while limit.is_none_or(|n| replaced < n) {
         let Some(result) = super::execute_api::advance_scanner(
             &compiled.compiled,

@@ -425,23 +425,22 @@ pub extern "C" fn molt_re_expand_replacement(
             }
         }
         let mut group_names = NamedGroups::new();
-        if let Some(names_ptr) = obj_from_bits(group_names_bits).as_ptr() {
-            if unsafe { object_type_id(names_ptr) } == TYPE_ID_DICT {
-                if let Some(pairs) = unsafe { dict_snapshot(_py, names_ptr) } {
-                    for pair in pairs.chunks(2) {
-                        if pair.len() != 2 {
-                            continue;
-                        }
-                        let Some(name) = string_name(_py, pair[0]) else {
-                            continue;
-                        };
-                        let Some(index) = to_i64(obj_from_bits(pair[1])) else {
-                            continue;
-                        };
-                        if let Ok(index) = u32::try_from(index) {
-                            group_names.insert(name, index);
-                        }
-                    }
+        if let Some(names_ptr) = obj_from_bits(group_names_bits).as_ptr()
+            && unsafe { object_type_id(names_ptr) } == TYPE_ID_DICT
+            && let Some(pairs) = unsafe { dict_snapshot(_py, names_ptr) }
+        {
+            for pair in pairs.chunks(2) {
+                if pair.len() != 2 {
+                    continue;
+                }
+                let Some(name) = string_name(_py, pair[0]) else {
+                    continue;
+                };
+                let Some(index) = to_i64(obj_from_bits(pair[1])) else {
+                    continue;
+                };
+                if let Ok(index) = u32::try_from(index) {
+                    group_names.insert(name, index);
                 }
             }
         }
