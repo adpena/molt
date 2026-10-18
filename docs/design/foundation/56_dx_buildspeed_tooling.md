@@ -173,6 +173,31 @@ contract. Parsed-tree scaling controls distinguish traversal cost from parsing,
 filesystem access, process startup and the complete gate. The live release
 ledger records accepted scope and outstanding audit-cost work.
 
+### 2.3 Policy projections and execution freshness
+
+The generated proof-plan JSON describes policy: commands, dependencies, resource
+budgets, toolchains and declared authority input paths. Its v8 schema omits the
+execution-source digest. Source edits that leave the represented policy unchanged
+cannot change that projection; editing the represented policy still does. The generator
+therefore avoids reading and hashing the authority closure just to render JSON.
+No replacement stamp, cache or artifact is introduced.
+
+Execution receipts retain the complete live authority digest, source commit,
+source tree, toolchain identity and evidence checks. Receipt production and
+verification compute their identities from the canonical authority, independently
+of the projection. A regression control mutates an actual declared input file,
+requires the old receipt to fail, and requires the policy projection to remain
+byte-identical. A policy-change control requires a different projection.
+
+This applies the distinction between a generated command graph and execution
+freshness visible in [CMake's compilation database](https://cmake.org/cmake/help/latest/variable/CMAKE_EXPORT_COMPILE_COMMANDS.html)
+and [Ninja's build graph and log](https://ninja-build.org/manual.html#ref_log).
+Molt keeps its existing execution-attestation contract. Removing the redundant
+stamp prevents source-only edits outside explicit metadata inputs from selecting
+metadata proofs merely by rewriting the generated JSON. Explicit `ci-wiring`
+inputs still select those checks; this is no universal proof-selection exemption.
+These are development-only costs and add no work to emitted programs.
+
 ---
 
 ## 3. The structural facts/mechanisms to build (each tied to the class it retires)
