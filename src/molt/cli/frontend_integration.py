@@ -6,6 +6,12 @@ from typing import Any
 from molt.frontend import SimpleTIRGenerator
 from molt.frontend import ClassId, ClassInfo, layout_definition_symbol
 from molt.cli.models import _FrontendIntegrationState, _MidendDiagnosticsState
+from molt.frontend.module_publication import (
+    inspect_source_module_publication,
+    parse_function_metadata,
+    reject_embedded_function_metadata,
+    reject_embedded_operation_metadata,
+)
 
 
 def _register_global_code_id_with_state(
@@ -28,24 +34,32 @@ def _module_class_definitions(local_classes: Mapping[ClassId, ClassInfo]) -> set
     }
 
 
-def _integrate_module_code_slots_with_state(
-    integration_state: _FrontendIntegrationState,
+def _plan_module_code_slots(
     module_name: str,
     funcs: list[dict[str, Any]],
     local_symbols: set[str],
     class_definitions: Collection[str],
-) -> None:
-    """Validate and register canonical module owners, borrowing every record."""
+) -> tuple[dict[str, dict[str, Any]], dict[str, None], dict[str, str]]:
+    """Validate one module and stage its ordered additions without mutation."""
     if "molt_main" in local_symbols:
         raise ValueError(
             f"Noncanonical module code owner 'molt_main' in module {module_name}"
         )
+    owned_functions: dict[str, dict[str, Any]] = {}
+    code_symbols: dict[str, None] = {}
+    class_references: dict[str, str] = {}
     for func in funcs:
+        reject_embedded_function_metadata(func)
+        name = func.get("name")
+        if not isinstance(name, str) or name in owned_functions:
+            raise ValueError(f"Invalid or duplicate executable function owner {name!r}")
+        owned_functions[name] = func
         if func.get("name") == "molt_main":
             raise ValueError(
                 f"Legacy program entry 'molt_main' in module {module_name}"
             )
         for op in func.get("ops", []):
+            reject_embedded_operation_metadata(op)
             kind = op.get("kind")
             if kind == "code_slots_init":
                 raise ValueError(
@@ -57,7 +71,7 @@ def _integrate_module_code_slots_with_state(
                     raise ValueError(
                         f"Missing canonical code owner {symbol!r} in module {module_name}"
                     )
-                _register_global_code_id_with_state(integration_state, symbol)
+                code_symbols.setdefault(symbol, None)
             definition = op.get("class_definition")
             if definition is not None:
                 # A stamp names its own module's statement; a layout guard may
@@ -71,10 +85,9 @@ def _integrate_module_code_slots_with_state(
                         f"Class statement {definition!r} is stamped outside its "
                         f"owning module {module_name}"
                     )
-                integration_state.class_definition_references.setdefault(
-                    definition, module_name
-                )
-                _register_global_code_id_with_state(integration_state, definition)
+                class_references.setdefault(definition, module_name)
+                code_symbols.setdefault(definition, None)
+    return owned_functions, code_symbols, class_references
 
 
 def _validate_class_definition_references_with_state(
@@ -134,30 +147,44 @@ def _integrate_module_frontend_result_with_state(
     module_name: str,
     *,
     ir_functions: list[dict[str, Any]],
+    function_metadata: object,
     func_code_ids: dict[str, int],
     local_classes: dict[ClassId, ClassInfo],
 ) -> str | None:
     class_definitions = _module_class_definitions(local_classes)
     for symbol in sorted(class_definitions):
-        owner = integration_state.class_definition_owners.setdefault(
-            symbol, module_name
-        )
-        if owner != module_name:
+        owner = integration_state.class_definition_owners.get(symbol)
+        if owner is not None and owner != module_name:
             return (
                 f"Class statement {symbol!r} is defined by both module {owner} "
                 f"and module {module_name}"
             )
     try:
-        _integrate_module_code_slots_with_state(
-            integration_state,
+        owned_functions, code_symbols, class_references = _plan_module_code_slots(
             module_name,
             ir_functions,
             set(func_code_ids),
             class_definitions,
         )
+        metadata = parse_function_metadata(
+            function_metadata, function_symbols=owned_functions.keys()
+        )
+        for symbol, row in metadata.items():
+            if symbol in integration_state.function_metadata:
+                raise ValueError(f"Duplicate function metadata owner {symbol!r}")
+            inspect_source_module_publication(owned_functions[symbol], row)
     except ValueError as exc:
         return str(exc)
+    # Admission succeeded. Commit only this module's staged additions; copying
+    # accumulated program state here would grow quadratically with modules.
+    for symbol in code_symbols:
+        _register_global_code_id_with_state(integration_state, symbol)
+    for symbol in sorted(class_definitions):
+        integration_state.class_definition_owners.setdefault(symbol, module_name)
+    for symbol, owner in class_references.items():
+        integration_state.class_definition_references.setdefault(symbol, owner)
     integration_state.functions.extend(ir_functions)
+    integration_state.function_metadata.update(metadata)
     # ClassIds are program-wide identities: one module's classes never
     # replace another module's same-named classes.
     integration_state.known_classes.update(local_classes)

@@ -157,7 +157,10 @@ def test_symbol_reader_failure_is_a_build_error_and_releases_ir_lease(
     monkeypatch.setattr(
         backend_pipeline._backend_ir,
         "_prepare_backend_ir",
-        lambda **kwargs: (_PreparedBackendIR(ir={"functions": []}), None),
+        lambda **kwargs: (
+            _PreparedBackendIR(ir={"functions": []}, function_metadata={}),
+            None,
+        ),
     )
 
     def unexpected_output(**kwargs: Any) -> None:

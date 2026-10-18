@@ -16,7 +16,11 @@ from typing import (
 )
 
 from molt.frontend._types import _MOLT_CLOSURE_PARAM, ClassId, MoltOp, MoltValue
-from molt.frontend.module_publication import inspect_source_module_publication
+from molt.frontend.module_publication import (
+    FunctionAssemblyMetadata,
+    inspect_source_module_publication,
+    parse_source_module_publication,
+)
 from molt.frontend.lowering.serialization_basic_ops import SerializationBasicOpsMixin
 from molt.frontend.lowering.serialization_collection_ops import (
     SerializationCollectionOpsMixin,
@@ -542,6 +546,15 @@ class SerializationMixin(
                     f"function {diagnostic_function!r}: no serializer for registered op kind {op.kind!r}"
                 )
             if op.metadata and "source_module_publication_boundary" in op.metadata:
+                if op.metadata["source_module_publication_boundary"] is not True:
+                    raise ValueError(
+                        "source module publication boundary marker must be true"
+                    )
+                if (
+                    function_name in self.funcs_map
+                    and "source_module_publication" not in self.funcs_map[function_name]
+                ):
+                    raise ValueError("unowned source module publication boundary")
                 if (
                     len(json_ops) != serialized_start + 1
                     or json_ops[-1].get("kind") != "frame_locals_set"
@@ -625,6 +638,7 @@ class SerializationMixin(
         if scope == "program":
             self._ensure_code_slots_init()
         funcs_json: list[dict[str, Any]] = []
+        function_metadata: dict[str, FunctionAssemblyMetadata] = {}
         # DETERMINISM: sort to ensure stable output regardless of dict insertion order
         for name, data in sorted(self.funcs_map.items()):
             json_ops = self.map_ops_to_json(
@@ -655,23 +669,35 @@ class SerializationMixin(
                 # homes still own local bindings, but entry transfers none.
                 if "transferred" in custody:
                     func_entry["parameter_custody"] = custody
+            metadata: FunctionAssemblyMetadata = {}
             if "gpu_body_origin" in data:
-                func_entry["gpu_body_origin"] = dict(data["gpu_body_origin"])
+                metadata["gpu_body_origin"] = dict(data["gpu_body_origin"])
             if "source_module_publication" in data:
-                func_entry["source_module_publication"] = data[
-                    "source_module_publication"
-                ]
-            publication_envelope = inspect_source_module_publication(func_entry)
-            if publication_envelope is not None:
-                func_entry["source_module_publication"] = dict(
-                    publication_envelope.publication
-                )
+                boundaries = []
+                for index, op in enumerate(json_ops):
+                    if "source_module_publication_boundary" in op:
+                        if op.pop("source_module_publication_boundary") is not True:
+                            raise ValueError(
+                                "source module publication boundary marker must be true"
+                            )
+                        boundaries.append(index)
+                if len(boundaries) != 1:
+                    raise ValueError(
+                        "source module init must retain exactly one native publication boundary"
+                    )
+                metadata["source_module_publication"] = {
+                    "publication": parse_source_module_publication(
+                        data["source_module_publication"]
+                    ),
+                    "boundary_index": boundaries[0],
+                }
+                inspect_source_module_publication(func_entry, metadata)
             if name in self.module_chunk_symbols:
                 func_entry["execution_context"] = "inherited"
             elif any(op.get("kind") == "trace_enter_slot" for op in json_ops):
                 func_entry["execution_context"] = "local"
             if name == "molt_main" and self.is_entry_module:
-                func_entry["app_callable_bindings"] = [
+                metadata["app_callable_bindings"] = [
                     dict(self.app_callable_bindings[binding_name])
                     for binding_name in sorted(self.app_callable_bindings)
                 ]
@@ -688,9 +714,12 @@ class SerializationMixin(
             if self.source_path:
                 func_entry["source_file"] = self.source_path
             funcs_json.append(func_entry)
+            if metadata:
+                function_metadata[func_entry["name"]] = metadata
         self._maybe_report_midend_stats()
         return {
             "functions": funcs_json,
+            "function_metadata": function_metadata,
             "code_slots": {
                 module_init_symbol
                 if symbol == "molt_main" and module_init_symbol is not None

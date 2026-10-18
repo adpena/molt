@@ -3,6 +3,10 @@ from __future__ import annotations
 from collections import deque
 from typing import Iterable, Mapping, NamedTuple, Sequence
 
+from molt.frontend.module_publication import (
+    reject_embedded_function_metadata,
+    reject_embedded_operation_metadata,
+)
 from molt.frontend.lowering.op_kinds_generated import (
     SIMPLEIR_DEFINED_FUNCTION_REFERENCE_S_VALUE_KINDS,
 )
@@ -37,8 +41,8 @@ def emitted_name_matches_any_module_symbol(
     """`emitted_name_matches_module_symbol` for any of ``module_symbols``.
 
     A symbol matches a name exactly when the name continues it with ``__``, so
-    checking each ``__`` position of the name costs O(len(name)), not one
-    prefix test per module.
+    checking the candidate name prefixes avoids one prefix test per module.
+    Prefix slicing and hashing still cost their actual lengths.
     """
     if name.startswith("molt_init_"):
         return name[len("molt_init_") :] in module_symbols
@@ -47,38 +51,6 @@ def emitted_name_matches_any_module_symbol(
         if name[:index] in module_symbols:
             return True
         index = name.find("__", index + 1)
-    return False
-
-
-def name_owned_by_other_module_symbol(
-    name: str,
-    module_symbol: str,
-    other_module_symbols: Iterable[str],
-) -> bool:
-    """Return True when *name* is owned by a longer known module symbol.
-
-    Molt mangles ``module.submodule``'s function ``fn`` as
-    ``module__submodule__fn``. A parent module symbol (``module``) is therefore a
-    lexical prefix of every child module symbol (``module__submodule``), so the
-    bare ``startswith(f"{module_symbol}__")`` prefix test cannot tell a genuine
-    same-module reference apart from a cross-module call into a submodule whose
-    symbol shares the parent's prefix (e.g. ``asyncio`` vs ``asyncio._debug``).
-
-    This mirrors the backend's longest-symbol-wins ownership rule
-    (``_module_owned_symbol_map``): a name belongs to ``module_symbol`` only if no
-    strictly longer known module symbol also claims it. When a longer symbol
-    matches, the name is owned by that other module and must not be treated as a
-    missing local reference of ``module_symbol``.
-    """
-    for other in other_module_symbols:
-        if other == module_symbol:
-            continue
-        if len(other) <= len(module_symbol):
-            continue
-        if not other.startswith(f"{module_symbol}__"):
-            continue
-        if emitted_name_matches_module_symbol(name, other):
-            return True
     return False
 
 
@@ -168,12 +140,12 @@ def missing_local_function_references(
     known_modules: Iterable[str] = (),
 ) -> tuple[FunctionReferenceEdge, ...]:
     module_symbol = module_symbol_name(module_name)
-    other_module_symbols = tuple(
+    descendant_module_symbols = frozenset(
         symbol
         for name in known_modules
         if isinstance(name, str)
         and name
-        and (symbol := module_symbol_name(name)) != module_symbol
+        and (symbol := module_symbol_name(name)).startswith(f"{module_symbol}__")
     )
     defined = {
         name
@@ -184,12 +156,13 @@ def missing_local_function_references(
     def _owned_locally(target: str) -> bool:
         if not emitted_name_matches_module_symbol(target, module_symbol):
             return False
-        return not name_owned_by_other_module_symbol(
-            target, module_symbol, other_module_symbols
+        return not emitted_name_matches_any_module_symbol(
+            target, descendant_module_symbols
         )
 
     missing: list[FunctionReferenceEdge] = []
     for func in functions:
+        reject_embedded_function_metadata(func)
         owner = func.get("name")
         if not isinstance(owner, str):
             continue
@@ -199,6 +172,7 @@ def missing_local_function_references(
         for op_index, op in enumerate(ops):
             if not isinstance(op, Mapping):
                 continue
+            reject_embedded_operation_metadata(op)
             kind = op.get("kind")
             if not isinstance(kind, str):
                 continue

@@ -40,10 +40,11 @@ def _frontend_ir_and_contract(
         direct_call_modules={"helpers"},
     )
     generator.visit(tree)
-    ir = generator.to_json()
+    ir = generator.to_json(scope="module")
     return ir, build_app_export_contract(
         entry_module="probe",
         ir=ir,
+        function_metadata=ir["function_metadata"],
         registry_digest="a" * 64,
     )
 
@@ -93,9 +94,9 @@ del gone
     )
 
     carrier = next(
-        function["app_callable_bindings"]
-        for function in ir["functions"]
-        if "app_callable_bindings" in function
+        metadata["app_callable_bindings"]
+        for metadata in ir["function_metadata"].values()
+        if "app_callable_bindings" in metadata
     )
     assert carrier == contract["bindings"]
     bindings = {binding["name"]: binding for binding in contract["bindings"]}
@@ -180,15 +181,31 @@ def test_app_export_contract_requires_entries_that_adopt_their_arguments() -> No
     # host release each argument a second time.
     entries["probe__alpha"]["parameter_custody"] = ["transferred", "borrowed"]
     with pytest.raises(ValueError, match="must adopt every parameter"):
-        build_app_export_contract(entry_module="probe", ir=ir, registry_digest="a" * 64)
+        build_app_export_contract(
+            entry_module="probe",
+            ir=ir,
+            function_metadata=ir["function_metadata"],
+            registry_digest="a" * 64,
+        )
     del entries["probe__alpha"]["parameter_custody"]
     with pytest.raises(ValueError, match="must adopt every parameter"):
-        build_app_export_contract(entry_module="probe", ir=ir, registry_digest="a" * 64)
+        build_app_export_contract(
+            entry_module="probe",
+            ir=ir,
+            function_metadata=ir["function_metadata"],
+            registry_digest="a" * 64,
+        )
 
 
 def test_contract_builder_only_projects_frontend_resolved_metadata() -> None:
     parameters = inspect.signature(build_app_export_contract).parameters
-    assert tuple(parameters) == ("entry_module", "ir", "registry_digest")
+    assert set(parameters) == {
+        "entry_module",
+        "ir",
+        "function_metadata",
+        "registry_digest",
+    }
+    assert parameters["function_metadata"].default is inspect.Parameter.empty
     source = inspect.getsource(app_export_contract)
     assert "import ast" not in source
     assert "NodeVisitor" not in source
@@ -196,5 +213,34 @@ def test_contract_builder_only_projects_frontend_resolved_metadata() -> None:
         build_app_export_contract(
             entry_module="probe",
             ir={"functions": []},
+            function_metadata={},
             registry_digest="a" * 64,
         )
+
+
+@pytest.mark.parametrize("defect", ["missing", "orphan", "duplicate-table", "embedded"])
+def test_app_contract_requires_one_owned_sidecar_table(defect: str) -> None:
+    from copy import deepcopy
+
+    ir, _ = _frontend_ir_and_contract("def alpha(value):\n    return value\n")
+    metadata = ir["function_metadata"]
+    owner = next(
+        name for name, row in metadata.items() if "app_callable_bindings" in row
+    )
+    if defect == "missing":
+        del metadata[owner]["app_callable_bindings"]
+    elif defect == "orphan":
+        metadata["absent"] = metadata.pop(owner)
+    elif defect == "duplicate-table":
+        metadata["probe__alpha"] = {"app_callable_bindings": []}
+    else:
+        ir["functions"][0]["app_callable_bindings"] = []
+    before = deepcopy(ir)
+    with pytest.raises(ValueError):
+        build_app_export_contract(
+            entry_module="probe",
+            ir=ir,
+            function_metadata=metadata,
+            registry_digest="a" * 64,
+        )
+    assert ir == before

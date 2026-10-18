@@ -370,3 +370,36 @@ def test_sccp_is_never_uses_host_interning(
     ]
     result = SimpleTIRGenerator()._compute_sccp(ops, build_cfg(ops))
     assert result.out_values[0]["identity"] is expected
+
+
+@pytest.mark.parametrize("scope", ["program", "module"])
+def test_serialization_separates_assembly_metadata_from_executable_records(
+    scope: str,
+) -> None:
+    gen = _serialization_generator()
+    document = gen.to_json(scope=scope, midend_stage="pre-midend")
+    owner = "molt_main" if scope == "program" else "molt_init_pkg_sample"
+    assert "function_metadata" in document
+    assert owner in document["function_metadata"]
+    functions = {function["name"]: function for function in document["functions"]}
+    for function in functions.values():
+        assert {
+            "source_module_publication",
+            "gpu_body_origin",
+            "app_callable_bindings",
+        }.isdisjoint(function)
+        assert all(
+            "source_module_publication_boundary" not in op for op in function["ops"]
+        )
+    envelope = document["function_metadata"][owner]["source_module_publication"]
+    assert envelope["publication"]["module_name"] == "pkg.sample"
+    assert (
+        functions[owner]["ops"][envelope["boundary_index"]]["kind"]
+        == "frame_locals_set"
+    )
+    before = copy.deepcopy(document)
+    # Detach the emitted publication facts from the still-live generator.
+    gen.funcs_map["molt_main"]["source_module_publication"]["module_value"] = (
+        "changed_generator"
+    )
+    assert document == before

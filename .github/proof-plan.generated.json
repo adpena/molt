@@ -9201,7 +9201,9 @@
       "local.findings-registry.pytest": "python -m pytest -q -n auto --molt-worker-memory-gb=0.75 tests/tools/test_findings_registry.py",
       "local.frontend-diagnostics.0": "python tools/gen_frontend_diagnostics.py --check",
       "local.frontend-diagnostics.pytest": "python -m pytest -q -n auto --molt-worker-memory-gb=0.75 tests/test_frontend_diagnostics.py",
-      "local.frontend-ir-assembly.pytest": "python -m pytest -q -n auto --molt-worker-memory-gb=6.25 tests/cli/test_cli_frontend_integration_authority.py tests/cli/test_cli_frontend_worker_authority.py tests/cli/test_cli_frontend_execution_authority.py tests/test_frontend_literal_identity.py tests/cli/test_cli_module_cache_authority.py tests/cli/test_backend_initialization_contract.py tests/test_module_registry_gates.py tests/test_frontend_module_publication.py tests/cli/test_cli_shared_stdlib_cache.py tests/cli/test_cli_module_frontend_shared_cache.py tests/cli/test_cli_module_graph_cache_authority.py tests/cli/test_source_record_store.py tests/cli/test_frontend_source_snapshot_authority.py tests/tools/test_molt_cache_prune.py tests/cli/test_cli_import_collection.py::test_native_callable_publication_augments_existing_source_init_once tests/cli/test_cli_import_collection.py::test_compiled_source_init_publishes_before_capture_and_rebinding tests/cli/test_cli_import_collection.py::test_entry_source_identity_survives_json_and_explicit_main_registry_alias tests/cli/test_cli_import_collection.py::test_persisted_module_lowering_rejects_incomplete_parameter_declarations tests/cli/test_cli_import_collection.py::test_persisted_module_lowering_returns_isolated_mutable_results tests/test_gpu_kernel_compiled.py::test_gpu_final_assembly_preserves_captured_symbol_origins_across_program_bindings tests/test_gpu_kernel_compiled.py::test_plain_module_does_not_capture_gpu_reference_bodies",
+      "local.frontend-ir-assembly.0": "python -m pytest -q tests/tools/test_check_ir_structure.py::test_strict_verifier_rejects_frontend_publication_envelope tests/tools/test_check_ir_structure.py::test_frontend_verifier_projects_publication_envelope_without_mutation tests/tools/test_check_ir_structure.py::test_source_runner_real_frontend_to_strict_verifier",
+      "local.frontend-ir-assembly.pytest": "python -m pytest -q -n auto --molt-worker-memory-gb=6.25 tests/cli/test_cli_frontend_integration_authority.py tests/cli/test_cli_frontend_worker_authority.py tests/cli/test_cli_frontend_execution_authority.py tests/test_frontend_literal_identity.py tests/cli/test_cli_module_cache_authority.py tests/cli/test_backend_initialization_contract.py tests/test_module_registry_gates.py tests/test_frontend_module_publication.py tests/cli/test_cli_shared_stdlib_cache.py tests/cli/test_cli_module_frontend_shared_cache.py tests/cli/test_cli_module_graph_cache_authority.py tests/cli/test_source_record_store.py tests/cli/test_frontend_source_snapshot_authority.py tests/tools/test_molt_cache_prune.py tests/cli/test_cli_import_collection.py::test_native_callable_publication_augments_existing_source_init_once tests/cli/test_cli_import_collection.py::test_compiled_source_init_publishes_before_capture_and_rebinding tests/cli/test_cli_import_collection.py::test_entry_source_identity_survives_json_and_explicit_main_registry_alias tests/cli/test_cli_import_collection.py::test_persisted_module_lowering_rejects_incomplete_parameter_declarations tests/cli/test_cli_import_collection.py::test_persisted_module_lowering_returns_isolated_mutable_results tests/cli/test_app_export_contract.py tests/cli/test_runtime_wasm_single_compile.py::test_app_path_default_routes_through_combined_ensure tests/cli/test_runtime_wasm_single_compile.py::test_app_path_fails_closed_when_combined_authority_is_absent tests/cli/test_runtime_wasm_single_compile.py::test_app_path_freestanding_also_requires_atomic_pair tests/cli/test_runtime_wasm_single_compile.py::test_wasm_deployment_fences_source_after_private_link tests/cli/test_runtime_wasm_single_compile.py::test_plain_wasm_deployment_and_reuse_never_select_a_precompile_host tests/cli/test_runtime_wasm_single_compile.py::test_precompile_build_routes_linked_manifest_to_host_and_consumes_receipt tests/cli/test_runtime_wasm_single_compile.py::test_precompile_deployment_cache_covers_host_outputs_without_rewriting tests/cli/test_runtime_wasm_single_compile.py::test_precompile_build_failures_reach_exact_routing_boundary tests/test_wasm_link_validation.py::test_app_export_adapters_sweep_arity_and_forward_owned_result_boundary tests/test_wasm_link_validation.py::test_app_export_adapter_validator_replaces_raw_target_identity tests/test_wasm_link_validation.py::test_app_export_adapter_identity_survives_metadata_strip_and_rejects_wrong_call tests/test_wasm_link_validation.py::test_app_export_adapters_have_no_ownership_import_dependency tests/test_wasm_link_validation.py::test_app_export_adapters_fail_closed_on_noncanonical_target_signature tests/test_wasm_link_validation.py::test_run_wasm_ld_split_runtime_uses_explicit_deploy_runtime_over_stale_env tests/test_wasm_link_validation.py::test_run_wasm_ld_admits_relocatable_member_independent_of_filename tests/test_wasm_link_validation.py::test_run_wasm_ld_rejects_shared_primary_before_publication tests/test_wasm_link_validation.py::test_native_provider_planning_uses_primary_linking_definitions tests/test_wasm_link_validation.py::test_run_wasm_ld_links_staged_native_objects tests/test_wasm_link_validation.py::test_run_wasm_ld_rejects_signature_mismatch_warning tests/test_wasm_link_validation.py::test_run_wasm_ld_links_rewritten_native_runtime_imports tests/test_wasm_link_validation.py::test_run_wasm_ld_rejects_missing_native_object tests/test_wasm_link_validation.py::test_split_native_app_uses_unique_molt_main_restoration_alias tests/test_wasm_link_validation.py::test_run_wasm_ld_split_runtime_links_native_objects_into_app tests/test_wasm_link_validation.py::test_run_wasm_ld_split_runtime_forces_native_direct_symbols tests/test_wasm_link_validation.py::test_run_wasm_ld_split_runtime_uses_linked_and_deploy_import_namespaces tests/test_wasm_link_validation.py::test_run_wasm_ld_preserves_runtime_entrypoint_without_prelink_alias_object tests/test_wasm_link_validation.py::test_run_wasm_ld_force_exports_user_module_exports tests/test_wasm_link_validation.py::test_run_wasm_ld_repairs_linked_host_init_export tests/test_wasm_link_validation.py::test_run_wasm_ld_split_runtime_preserves_old_outputs_if_linked_validation_fails tests/test_wasm_link_validation.py::test_run_wasm_ld_preserves_old_output_if_linked_validation_fails tests/test_wasm_link_validation.py::test_run_wasm_ld_enabled_then_disabled_retires_optimizer_attestation tests/test_wasm_link_validation.py::test_run_wasm_ld_split_runtime_reuses_one_optimizer_identity_and_publishes_atomically tests/test_wasm_link_validation.py::test_relocatable_input_has_one_admission_and_retains_failure_timings tests/test_wasm_link_validation.py::test_run_wasm_ld_preserves_ordered_staged_native_plan tests/test_wasm_link_validation.py::test_run_wasm_ld_rejects_native_plan_for_wrong_wasm_target tests/test_wasm_link_validation.py::test_run_wasm_ld_rejects_conflicting_repeated_input_digests tests/test_wasm_link_validation.py::test_run_wasm_ld_publishes_receipt_with_validated_candidates tests/test_wasm_link_validation.py::test_wasm_scanner_copy_uses_owned_scratch_not_cached_platform_temp tests/cli/test_required_features_reachability.py tests/cli/test_native_object_publication.py tests/cli/test_native_symbol_build_errors.py tests/tools/test_representation_report.py tests/determinism/test_ir_determinism.py::test_determinism_child_failure_cannot_be_a_stable_outcome tests/determinism/test_ir_determinism.py::test_production_serializers_and_cache_payloads_ignore_host_seed",
+      "local.frontend-ir-assembly.pytest-select-0": "python -m pytest -q -n auto --molt-worker-memory-gb=2.5 -k 'not compiled_gpu_kernel_vector_add' tests/test_gpu_kernel_compiled.py",
       "local.frontend-python.0": "python -m ty check src",
       "local.frontend-python.1": "python tools/verified_subset.py check",
       "local.frontend-python.2": "python tools/check_dynamic_policy.py",
@@ -9342,10 +9344,14 @@
       },
       {
         "command_ids": [
-          "local.frontend-ir-assembly.pytest"
+          "local.frontend-ir-assembly.0",
+          "local.frontend-ir-assembly.pytest",
+          "local.frontend-ir-assembly.pytest-select-0"
         ],
         "description": "Prove source-record admission, borrowed lowering records, copy-on-write assembly and reusable module-cache results across native, WASM and GPU preparation.",
-        "gates": [],
+        "gates": [
+          "python -m pytest -q tests/tools/test_check_ir_structure.py::test_strict_verifier_rejects_frontend_publication_envelope tests/tools/test_check_ir_structure.py::test_frontend_verifier_projects_publication_envelope_without_mutation tests/tools/test_check_ir_structure.py::test_source_runner_real_frontend_to_strict_verifier"
+        ],
         "globs": [
           "src/molt/cli/backend_ir.py",
           "src/molt/cli/frontend_integration.py",
@@ -9374,7 +9380,25 @@
           "tests/cli/test_frontend_source_snapshot_authority.py",
           "tests/tools/test_molt_cache_prune.py",
           "tests/cli/test_cli_import_collection.py",
-          "tests/test_gpu_kernel_compiled.py"
+          "tests/test_gpu_kernel_compiled.py",
+          "src/molt/cli/frontend_parallel.py",
+          "src/molt/cli/frontend_execution.py",
+          "src/molt/cli/models.py",
+          "src/molt/cli/backend_pipeline.py",
+          "src/molt/cli/app_export_contract.py",
+          "tools/check_ir_structure.py",
+          "tests/cli/test_app_export_contract.py",
+          "tests/cli/test_runtime_wasm_single_compile.py",
+          "tests/tools/test_check_ir_structure.py",
+          "src/molt/cli/function_references.py",
+          "tools/representation_report.py",
+          "tests/tools/test_representation_report.py",
+          "tests/cli/test_required_features_reachability.py",
+          "tests/cli/test_native_object_publication.py",
+          "tests/cli/test_native_symbol_build_errors.py",
+          "tests/fixtures/gpu_vector_add_ir.json",
+          "tests/determinism/test_ir_determinism.py",
+          "tests/luau/test_luau_differential.py"
         ],
         "name": "frontend-ir-assembly",
         "pytest": [
@@ -9397,11 +9421,64 @@
           "tests/cli/test_cli_import_collection.py::test_entry_source_identity_survives_json_and_explicit_main_registry_alias",
           "tests/cli/test_cli_import_collection.py::test_persisted_module_lowering_rejects_incomplete_parameter_declarations",
           "tests/cli/test_cli_import_collection.py::test_persisted_module_lowering_returns_isolated_mutable_results",
-          "tests/test_gpu_kernel_compiled.py::test_gpu_final_assembly_preserves_captured_symbol_origins_across_program_bindings",
-          "tests/test_gpu_kernel_compiled.py::test_plain_module_does_not_capture_gpu_reference_bodies"
+          "tests/cli/test_app_export_contract.py",
+          "tests/cli/test_runtime_wasm_single_compile.py::test_app_path_default_routes_through_combined_ensure",
+          "tests/cli/test_runtime_wasm_single_compile.py::test_app_path_fails_closed_when_combined_authority_is_absent",
+          "tests/cli/test_runtime_wasm_single_compile.py::test_app_path_freestanding_also_requires_atomic_pair",
+          "tests/cli/test_runtime_wasm_single_compile.py::test_wasm_deployment_fences_source_after_private_link",
+          "tests/cli/test_runtime_wasm_single_compile.py::test_plain_wasm_deployment_and_reuse_never_select_a_precompile_host",
+          "tests/cli/test_runtime_wasm_single_compile.py::test_precompile_build_routes_linked_manifest_to_host_and_consumes_receipt",
+          "tests/cli/test_runtime_wasm_single_compile.py::test_precompile_deployment_cache_covers_host_outputs_without_rewriting",
+          "tests/cli/test_runtime_wasm_single_compile.py::test_precompile_build_failures_reach_exact_routing_boundary",
+          "tests/test_wasm_link_validation.py::test_app_export_adapters_sweep_arity_and_forward_owned_result_boundary",
+          "tests/test_wasm_link_validation.py::test_app_export_adapter_validator_replaces_raw_target_identity",
+          "tests/test_wasm_link_validation.py::test_app_export_adapter_identity_survives_metadata_strip_and_rejects_wrong_call",
+          "tests/test_wasm_link_validation.py::test_app_export_adapters_have_no_ownership_import_dependency",
+          "tests/test_wasm_link_validation.py::test_app_export_adapters_fail_closed_on_noncanonical_target_signature",
+          "tests/test_wasm_link_validation.py::test_run_wasm_ld_split_runtime_uses_explicit_deploy_runtime_over_stale_env",
+          "tests/test_wasm_link_validation.py::test_run_wasm_ld_admits_relocatable_member_independent_of_filename",
+          "tests/test_wasm_link_validation.py::test_run_wasm_ld_rejects_shared_primary_before_publication",
+          "tests/test_wasm_link_validation.py::test_native_provider_planning_uses_primary_linking_definitions",
+          "tests/test_wasm_link_validation.py::test_run_wasm_ld_links_staged_native_objects",
+          "tests/test_wasm_link_validation.py::test_run_wasm_ld_rejects_signature_mismatch_warning",
+          "tests/test_wasm_link_validation.py::test_run_wasm_ld_links_rewritten_native_runtime_imports",
+          "tests/test_wasm_link_validation.py::test_run_wasm_ld_rejects_missing_native_object",
+          "tests/test_wasm_link_validation.py::test_split_native_app_uses_unique_molt_main_restoration_alias",
+          "tests/test_wasm_link_validation.py::test_run_wasm_ld_split_runtime_links_native_objects_into_app",
+          "tests/test_wasm_link_validation.py::test_run_wasm_ld_split_runtime_forces_native_direct_symbols",
+          "tests/test_wasm_link_validation.py::test_run_wasm_ld_split_runtime_uses_linked_and_deploy_import_namespaces",
+          "tests/test_wasm_link_validation.py::test_run_wasm_ld_preserves_runtime_entrypoint_without_prelink_alias_object",
+          "tests/test_wasm_link_validation.py::test_run_wasm_ld_force_exports_user_module_exports",
+          "tests/test_wasm_link_validation.py::test_run_wasm_ld_repairs_linked_host_init_export",
+          "tests/test_wasm_link_validation.py::test_run_wasm_ld_split_runtime_preserves_old_outputs_if_linked_validation_fails",
+          "tests/test_wasm_link_validation.py::test_run_wasm_ld_preserves_old_output_if_linked_validation_fails",
+          "tests/test_wasm_link_validation.py::test_run_wasm_ld_enabled_then_disabled_retires_optimizer_attestation",
+          "tests/test_wasm_link_validation.py::test_run_wasm_ld_split_runtime_reuses_one_optimizer_identity_and_publishes_atomically",
+          "tests/test_wasm_link_validation.py::test_relocatable_input_has_one_admission_and_retains_failure_timings",
+          "tests/test_wasm_link_validation.py::test_run_wasm_ld_preserves_ordered_staged_native_plan",
+          "tests/test_wasm_link_validation.py::test_run_wasm_ld_rejects_native_plan_for_wrong_wasm_target",
+          "tests/test_wasm_link_validation.py::test_run_wasm_ld_rejects_conflicting_repeated_input_digests",
+          "tests/test_wasm_link_validation.py::test_run_wasm_ld_publishes_receipt_with_validated_candidates",
+          "tests/test_wasm_link_validation.py::test_wasm_scanner_copy_uses_owned_scratch_not_cached_platform_temp",
+          "tests/cli/test_required_features_reachability.py",
+          "tests/cli/test_native_object_publication.py",
+          "tests/cli/test_native_symbol_build_errors.py",
+          "tests/tools/test_representation_report.py",
+          "tests/determinism/test_ir_determinism.py::test_determinism_child_failure_cannot_be_a_stable_outcome",
+          "tests/determinism/test_ir_determinism.py::test_production_serializers_and_cache_payloads_ignore_host_seed"
+        ],
+        "pytest_select": [
+          {
+            "k": "not compiled_gpu_kernel_vector_add",
+            "targets": [
+              "tests/test_gpu_kernel_compiled.py"
+            ]
+          }
         ],
         "toolchains": [
-          "python"
+          "python",
+          "rustc",
+          "cargo"
         ]
       },
       {
@@ -11802,8 +11879,23 @@
       "local.frontend-diagnostics.pytest": [
         "python"
       ],
+      "local.frontend-ir-assembly.0": [
+        "python",
+        "rustc",
+        "cargo",
+        "git"
+      ],
       "local.frontend-ir-assembly.pytest": [
-        "python"
+        "python",
+        "rustc",
+        "cargo",
+        "git"
+      ],
+      "local.frontend-ir-assembly.pytest-select-0": [
+        "python",
+        "rustc",
+        "cargo",
+        "git"
       ],
       "local.frontend-python.0": [
         "python",

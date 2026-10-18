@@ -19,7 +19,7 @@ _FRONTEND_INTEGRATION_NAMES = (
     "_accumulate_midend_diagnostics_with_state",
     "_integrate_module_frontend_result_with_state",
     "_register_global_code_id_with_state",
-    "_integrate_module_code_slots_with_state",
+    "_plan_module_code_slots",
 )
 
 _FRONTEND_INTEGRATION_DEFINITIONS = tuple(
@@ -59,11 +59,14 @@ def test_module_result_can_be_integrated_twice_without_mutating_cached_ir() -> N
             "cached_module",
             ir_functions=functions,
             func_code_ids=document["code_slots"],
+            function_metadata=document["function_metadata"],
             local_classes={},
         )
         assert issue is None
         states.append(state)
         assert functions == before
+        for symbol, row in document["function_metadata"].items():
+            assert state.function_metadata[symbol] is row
         for borrowed, integrated in zip(functions, state.functions, strict=True):
             assert integrated is borrowed
             assert integrated["ops"] is borrowed["ops"]
@@ -89,6 +92,7 @@ def test_module_integration_retains_unmodified_function_and_operation_owners() -
         "module",
         ir_functions=functions,
         func_code_ids={init_symbol: 0},
+        function_metadata={},
         local_classes={},
     )
     assert issue is None
@@ -122,6 +126,7 @@ def test_failed_module_integration_does_not_change_borrowed_operations() -> None
         "module",
         ir_functions=functions,
         func_code_ids={init_symbol: 0},
+        function_metadata={},
         local_classes={},
     )
     assert (
@@ -168,7 +173,12 @@ def test_module_integration_rejects_stale_or_foreign_owners_without_rewriting(
     before = deepcopy(function)
     state = _FrontendIntegrationState(functions=[], known_classes={})
     issue = frontend_integration._integrate_module_frontend_result_with_state(
-        state, "module", ir_functions=[function], func_code_ids=owners, local_classes={}
+        state,
+        "module",
+        ir_functions=[function],
+        func_code_ids=owners,
+        function_metadata={},
+        local_classes={},
     )
     assert issue is not None and message in issue
     assert function == before
@@ -190,6 +200,7 @@ def test_module_integration_keeps_class_statement_owner_refusal() -> None:
         "module",
         ir_functions=[function],
         func_code_ids={symbol: 0},
+        function_metadata={},
         local_classes={class_id: {"dynamic": False}},
     )
     assert issue == (
@@ -198,3 +209,136 @@ def test_module_integration_keeps_class_statement_owner_refusal() -> None:
     )
     assert function == before
     assert state.functions == []
+
+
+@pytest.mark.parametrize(
+    "defect",
+    ["missing", "orphan", "duplicate", "bad-boundary", "legacy-body", "legacy-op"],
+)
+def test_module_integration_refuses_invalid_sidecar_before_publishing_functions(
+    defect: str,
+) -> None:
+    import ast
+
+    generator = SimpleTIRGenerator(module_name="sidecar")
+    generator.visit(ast.parse("VALUE = 1\n"))
+    document = generator.to_json(scope="module")
+    functions = document["functions"]
+    metadata = document["function_metadata"]
+    state = _FrontendIntegrationState(functions=[], known_classes={})
+    if defect == "missing":
+        metadata = None
+    elif defect == "orphan":
+        metadata["absent"] = metadata.pop("molt_init_sidecar")
+    elif defect == "duplicate":
+        state.function_metadata["molt_init_sidecar"] = metadata["molt_init_sidecar"]
+    elif defect == "bad-boundary":
+        metadata["molt_init_sidecar"]["source_module_publication"][
+            "boundary_index"
+        ] = -1
+    elif defect == "legacy-body":
+        functions[0]["gpu_body_origin"] = {}
+    else:
+        functions[0]["ops"][0]["source_module_publication_boundary"] = True
+    before = deepcopy(functions)
+    before_metadata = deepcopy(metadata)
+    existing_metadata = dict(state.function_metadata)
+    issue = frontend_integration._integrate_module_frontend_result_with_state(
+        state,
+        "sidecar",
+        ir_functions=functions,
+        function_metadata=metadata,
+        func_code_ids=document["code_slots"],
+        local_classes={},
+    )
+    assert issue is not None
+    assert functions == before
+    assert metadata == before_metadata
+    assert state.functions == []
+    assert state.function_metadata == existing_metadata
+
+
+@pytest.mark.parametrize(
+    "defect",
+    [None, "invalid-sidecar", "orphan-sidecar", "late-code-owner", "class-conflict"],
+)
+def test_module_admission_commits_all_state_only_after_complete_validation(
+    defect: str | None,
+) -> None:
+    from dataclasses import fields
+    from molt.frontend import ClassId
+
+    symbol = "molt_init_incoming"
+    earlier = ClassId("incoming", "A", (1, 0))
+    later = ClassId("incoming", "Z", (2, 0))
+    seeded_class = ClassId("seed", "Preserved", (1, 0))
+    retained_function = {
+        "name": "seed__body",
+        "params": [],
+        "ops": [{"kind": "ret_void"}],
+    }
+    retained_class = {"dynamic": False}
+    retained_row = {"app_callable_bindings": []}
+    state = _FrontendIntegrationState(
+        functions=[retained_function],
+        known_classes={seeded_class: retained_class},
+        global_code_ids={"seed__body": 0},
+        function_metadata={"seed__body": retained_row},
+        class_definition_owners={seeded_class.definition_symbol: "seed"},
+        class_definition_references={seeded_class.definition_symbol: "seed"},
+    )
+    function = {
+        "name": symbol,
+        "params": [],
+        "ops": [
+            {"kind": "trace_enter_slot", "s_value": symbol},
+            {
+                "kind": "class_set_definition",
+                "class_definition": earlier.definition_symbol,
+            },
+            {
+                "kind": "class_set_definition",
+                "class_definition": later.definition_symbol,
+            },
+            {"kind": "ret_void"},
+        ],
+    }
+    metadata = {symbol: {"app_callable_bindings": []}}
+    if defect == "invalid-sidecar":
+        metadata[symbol]["unknown"] = True
+    elif defect == "orphan-sidecar":
+        metadata["absent"] = metadata.pop(symbol)
+    elif defect == "late-code-owner":
+        function["ops"].insert(-1, {"kind": "trace_enter_slot", "s_value": "absent"})
+    elif defect == "class-conflict":
+        state.class_definition_owners[later.definition_symbol] = "other"
+    before = deepcopy(state)
+    owners = {field.name: getattr(state, field.name) for field in fields(state)}
+    incoming = deepcopy((function, metadata))
+    issue = frontend_integration._integrate_module_frontend_result_with_state(
+        state,
+        "incoming",
+        ir_functions=[function],
+        function_metadata=metadata,
+        func_code_ids={symbol: 0},
+        local_classes={earlier: {"dynamic": False}, later: {"dynamic": False}},
+    )
+    assert (function, metadata) == incoming
+    for field, owner in owners.items():
+        assert getattr(state, field) is owner
+    assert state.functions[0] is retained_function
+    assert state.known_classes[seeded_class] is retained_class
+    assert state.function_metadata["seed__body"] is retained_row
+    if defect is not None:
+        assert issue is not None
+        assert state == before
+    else:
+        assert issue is None
+        assert state.functions[-1] is function
+        assert state.function_metadata[symbol] is metadata[symbol]
+        assert list(state.global_code_ids) == [
+            "seed__body",
+            symbol,
+            earlier.definition_symbol,
+            later.definition_symbol,
+        ]

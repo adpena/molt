@@ -58,9 +58,9 @@ def _compile_and_run_luau(source: str) -> str:
             f"""
 import sys, json; sys.path.insert(0, {str(MOLT_DIR / "src")!r})
 from molt.frontend import compile_to_tir
-tir = compile_to_tir({source!r})
-data = tir if isinstance(tir, dict) else json.loads(tir)
-json.dump(data, sys.stdout)
+from molt.frontend.module_publication import project_frontend_tir_to_executable
+tir = project_frontend_tir_to_executable(compile_to_tir({source!r}))
+json.dump(tir, sys.stdout)
 """,
         ],
         capture_output=True,

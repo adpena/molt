@@ -248,6 +248,7 @@ def _frontend_lower_module_worker(payload: dict[str, Any]) -> dict[str, Any]:
         "ok": True,
         "source_sha256": source_lease.source_sha256,
         "functions": ir["functions"],
+        "function_metadata": ir["function_metadata"],
         "func_code_ids": ir["code_slots"],
         "local_classes": {
             class_id: gen.classes[class_id] for class_id in gen.local_class_ids
@@ -281,6 +282,7 @@ def _module_frontend_payload(
     return {
         "source_sha256": source_sha256,
         "functions": ir["functions"],
+        "function_metadata": ir["function_metadata"],
         "func_code_ids": ir["code_slots"],
         "local_classes": {
             class_id: gen.classes[class_id] for class_id in gen.local_class_ids

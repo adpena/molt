@@ -199,6 +199,7 @@ def _run_backend_pipeline(
                 app_export_contract = build_app_export_contract(
                     entry_module=resolved_build_entry.entry_module,
                     ir=ir,
+                    function_metadata=prepared_backend_ir.function_metadata,
                     registry_digest=prepared_backend_ir.module_registry.digest,
                 )
             except ValueError as exc:

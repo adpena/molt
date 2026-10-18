@@ -84,9 +84,12 @@ def test_analyze_file_delegates_to_backend_lir_reporter(
     ) -> dict[str, Any]:
         captured["source"] = source_text
         captured["type_hint_policy"] = type_hint_policy
-        return {
-            "functions": [{"name": "f", "ops": [{"kind": "add", "type_hint": "int"}]}]
+        document = {
+            "functions": [{"name": "f", "ops": [{"kind": "add", "type_hint": "int"}]}],
+            "function_metadata": {"f": {"gpu_body_origin": {"role": "buffer_get"}}},
         }
+        captured["frontend_ir"] = document
+        return document
 
     def fake_run_backend_report(ir: dict[str, Any]) -> dict[str, Any]:
         captured["ir"] = ir
@@ -100,6 +103,9 @@ def test_analyze_file_delegates_to_backend_lir_reporter(
     assert report.path == source
     assert captured["type_hint_policy"] == "check"
     assert captured["ir"]["functions"][0]["ops"][0]["type_hint"] == "int"
+    assert "function_metadata" not in captured["ir"]
+    assert "function_metadata" in captured["frontend_ir"]
+    assert captured["ir"]["functions"] is captured["frontend_ir"]["functions"]
     assert report.report["aggregate"]["values_by_repr"]["i64"] == 3
 
 

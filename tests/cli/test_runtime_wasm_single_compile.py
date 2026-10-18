@@ -1589,11 +1589,13 @@ def _empty_app_export_contract(tmp_path: Path) -> Path:
                 ir={
                     "functions": [
                         {
-                            "name": "app_out__module_init",
-                            "app_callable_bindings": [],
+                            "name": "molt_init_app_out",
+                            "params": [],
+                            "ops": [],
                         }
                     ]
                 },
+                function_metadata={"molt_init_app_out": {"app_callable_bindings": []}},
                 registry_digest="c" * 64,
             )
         ),

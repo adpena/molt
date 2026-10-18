@@ -5,7 +5,7 @@
     "ops": [
       {
         "kind": "trace_enter_slot",
-        "value": 1
+        "s_value": "__main____vector_add"
       },
       {
         "kind": "check_exception",

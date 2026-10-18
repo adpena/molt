@@ -304,7 +304,10 @@ def test_native_object_publication_is_one_admitted_transaction(
     monkeypatch.setattr(
         backend_pipeline._backend_ir,
         "_prepare_backend_ir",
-        lambda **kwargs: (_PreparedBackendIR(ir={"functions": []}), None),
+        lambda **kwargs: (
+            _PreparedBackendIR(ir={"functions": []}, function_metadata={}),
+            None,
+        ),
     )
     layout = _BuildOutputLayout(
         is_wasm=False,

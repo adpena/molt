@@ -30,9 +30,12 @@ FRONTEND_INIT = ROOT / "src" / "molt" / "frontend" / "__init__.py"
 
 
 def _production_ir_record(ir: dict) -> dict:
-    """Transport actual serializer bytes; never normalize the IR in the test."""
+    """Retain frontend determinism and transport the canonical executable view."""
     from molt.cli import cache_keys
+    from molt.frontend.module_publication import project_frontend_tir_to_executable
 
+    frontend_bytes = cache_keys._backend_ir_bytes(ir)
+    ir = project_frontend_tir_to_executable(ir)
     functions = ir.get("functions")
     assert isinstance(functions, list) and functions, "compiler returned no functions"
     assert any(isinstance(fn, dict) and fn.get("ops") for fn in functions), (
@@ -52,6 +55,7 @@ def _production_ir_record(ir: dict) -> dict:
     assert cache_keys._cache_payload_digest(copy.deepcopy(payload)) == digest
     return {
         "kind": "ir",
+        "frontend_json": base64.b64encode(frontend_bytes).decode("ascii"),
         "json": base64.b64encode(json_bytes).decode("ascii"),
         "streamed_json": base64.b64encode(streamed_bytes).decode("ascii"),
         "msgpack": base64.b64encode(msgpack_bytes).decode("ascii"),
@@ -87,6 +91,7 @@ def _decode_compilation_result(result, *, allow_unsupported: bool) -> str:
     else:
         assert set(record) == {
             "kind",
+            "frontend_json",
             "json",
             "streamed_json",
             "msgpack",
@@ -97,11 +102,21 @@ def _decode_compilation_result(result, *, allow_unsupported: bool) -> str:
         assert record["kind"] == "ir"
         decoded = {
             name: base64.b64decode(record[name], validate=True)
-            for name in ("json", "streamed_json", "msgpack", "cache_payload")
+            for name in (
+                "frontend_json",
+                "json",
+                "streamed_json",
+                "msgpack",
+                "cache_payload",
+            )
         }
         assert all(decoded.values())
         assert decoded["json"] == decoded["streamed_json"]
         ir = json.loads(decoded["json"])
+        frontend_ir = json.loads(decoded["frontend_json"])
+        assert isinstance(frontend_ir["function_metadata"], dict)
+        assert "function_metadata" not in ir
+        assert frontend_ir["functions"] == ir["functions"]
         assert isinstance(ir, dict) and ir.get("functions")
         assert any(isinstance(fn, dict) and fn.get("ops") for fn in ir["functions"])
         import msgpack

@@ -277,6 +277,10 @@ def test_gpu_descriptor_projects_captured_body_aliases_and_binding_obligations()
             encoding="utf-8"
         )
     )[0]
+    assert captured["ops"][0] == {
+        "kind": "trace_enter_slot",
+        "s_value": captured["symbol"],
+    }
     result = project_kernel_ops(captured["params"], captured["ops"])
     assert "unsupported" not in result
     assert result["buffers"] == ["a", "b", "c"]
@@ -572,6 +576,7 @@ def test_gpu_final_assembly_preserves_captured_symbol_origins_across_program_bin
         lambda: SimpleNamespace(reference_source=captured.__getitem__),
     )
     bodies = []
+    function_metadata = {}
     for module, (relative, _) in GPU_PYTHON_BODY_REFERENCES.items():
         source = captured[relative]
         tree = resolve_python_private_names(
@@ -587,20 +592,24 @@ def test_gpu_final_assembly_preserves_captured_symbol_origins_across_program_bin
                     "name": "selected_" + evidence["role"],
                     "params": ["self"],
                     "ops": [],
-                    "gpu_body_origin": evidence,
                 }
             )
+            function_metadata["selected_" + evidence["role"]] = {
+                "gpu_body_origin": evidence
+            }
     changed = bodies[0]
+    changed_metadata = function_metadata[changed["name"]]
     if drift == "body":
-        changed["gpu_body_origin"]["body_ast"] = "0" * 64
+        changed_metadata["gpu_body_origin"]["body_ast"] = "0" * 64
     elif drift == "defaults":
-        changed["gpu_body_origin"]["defaults"] = [91]
+        changed_metadata["gpu_body_origin"]["defaults"] = [91]
     elif drift == "target":
-        changed["gpu_body_origin"]["target_python"] = [3, 14]
+        changed_metadata["gpu_body_origin"]["target_python"] = [3, 14]
     elif drift == "duplicate":
         duplicate = json.loads(json.dumps(changed))
         duplicate["name"] += "_duplicate"
         bodies.append(duplicate)
+        function_metadata[duplicate["name"]] = json.loads(json.dumps(changed_metadata))
     literal = {
         "kind": "const_str",
         "out": "metadata",
@@ -620,32 +629,48 @@ def test_gpu_final_assembly_preserves_captured_symbol_origins_across_program_bin
     }
     # Both module cache tiers transport JSON; optional facts must survive that
     # boundary before final assembly consumes them, without new FunctionIR fields.
-    borrowed = json.loads(json.dumps([kernel, *bodies]))
+    transported = json.loads(
+        json.dumps(
+            {"functions": [kernel, *bodies], "function_metadata": function_metadata}
+        )
+    )
+    borrowed = transported["functions"]
+    function_metadata = transported["function_metadata"]
+    metadata_before = json.loads(json.dumps(function_metadata))
     unchanged = {"name": "unchanged", "params": [], "ops": [{"kind": "ret_void"}]}
     borrowed.append(unchanged)
     before = json.loads(json.dumps(borrowed))
     functions = list(borrowed)
     rebound_functions = json.loads(json.dumps(functions))
     slots = {function["name"]: index for index, function in enumerate(functions)}
-    _finalize_gpu_descriptors(functions, target_python=target, global_code_ids=slots)
+    _finalize_gpu_descriptors(
+        functions,
+        function_metadata=function_metadata,
+        target_python=target,
+        global_code_ids=slots,
+    )
     assert borrowed == before
     assert functions[0] is not borrowed[0]
     assert functions[0]["ops"] is not borrowed[0]["ops"]
     assert functions[0]["ops"][0] is not borrowed[0]["ops"][0]
     assert functions[0]["ops"][1] is borrowed[0]["ops"][1]
     for original, finalized in zip(borrowed[1:-1], functions[1:-1], strict=True):
-        assert finalized is not original
+        assert finalized is original
         assert finalized["ops"] is original["ops"]
     assert functions[-1] is unchanged
     if drift is None:
         with pytest.raises(ValueError, match="no integrated code owner"):
             _finalize_gpu_descriptors(
-                list(borrowed), target_python=target, global_code_ids={}
+                list(borrowed),
+                function_metadata=function_metadata,
+                target_python=target,
+                global_code_ids={},
             )
         assert borrowed == before
     descriptor = json.loads(functions[0]["ops"][0]["s_value"])
     _finalize_gpu_descriptors(
         rebound_functions,
+        function_metadata=function_metadata,
         target_python=target,
         global_code_ids={
             "earlier_module": 0,
@@ -653,6 +678,7 @@ def test_gpu_final_assembly_preserves_captured_symbol_origins_across_program_bin
         },
     )
     assert functions == rebound_functions
+    assert function_metadata == metadata_before
     assert descriptor["schema_version"] == 4
     assert "code_slot" not in descriptor
     assert all("gpu_body_origin" not in function for function in functions)
@@ -679,17 +705,19 @@ def test_plain_module_does_not_capture_gpu_reference_bodies(monkeypatch) -> None
     monkeypatch.setattr(
         cache_fingerprints, "_frontend_semantic_tooling_snapshot", forbidden
     )
-    borrowed = {"name": "plain", "ops": [], "gpu_body_origin": {"role": "buffer_get"}}
+    borrowed = {"name": "plain", "ops": []}
+    function_metadata = {"plain": {"gpu_body_origin": {"role": "buffer_get"}}}
     unchanged = {"name": "unrelated", "ops": []}
     functions = [borrowed, unchanged]
     _finalize_gpu_descriptors(
         functions,
+        function_metadata=function_metadata,
         target_python=_DEFAULT_TARGET_PYTHON_VERSION,
         global_code_ids={"plain": 0},
     )
     assert functions == [{"name": "plain", "ops": []}, unchanged]
-    assert borrowed["gpu_body_origin"] == {"role": "buffer_get"}
-    assert functions[0] is not borrowed
+    assert function_metadata == {"plain": {"gpu_body_origin": {"role": "buffer_get"}}}
+    assert functions[0] is borrowed
     assert functions[0]["ops"] is borrowed["ops"]
     assert functions[1] is unchanged
 

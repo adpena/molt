@@ -242,11 +242,8 @@ def _empty_app_export_contract(tmp_path: Path) -> Path:
         json.dumps(
             build_app_export_contract(
                 entry_module="app",
-                ir={
-                    "functions": [
-                        {"name": "app__module_init", "app_callable_bindings": []}
-                    ]
-                },
+                ir={"functions": [{"name": "molt_init_app", "params": [], "ops": []}]},
+                function_metadata={"molt_init_app": {"app_callable_bindings": []}},
                 registry_digest="d" * 64,
             )
         ),
@@ -8932,11 +8929,6 @@ def _source_init_for_native_callable_publication(
         "name": SimpleTIRGenerator.module_init_symbol(module_name),
         "params": [],
         "return_abi": "void",
-        "source_module_publication": {
-            "module_name": module_name,
-            "module_value": "v1",
-            "failure_label": 7,
-        },
         "ops": [
             {
                 "kind": "const_str",
@@ -8956,7 +8948,6 @@ def _source_init_for_native_callable_publication(
             {
                 "kind": "frame_locals_set",
                 "args": ["v1"],
-                "source_module_publication_boundary": True,
             },
             {
                 "kind": "check_exception",
@@ -8980,6 +8971,21 @@ def _source_init_for_native_callable_publication(
             {"kind": "trace_exit"},
             {"kind": "ret_void"},
         ],
+    }
+
+
+def _source_publication_metadata(module_name: str = "nativepkg") -> dict[str, Any]:
+    return {
+        SimpleTIRGenerator.module_init_symbol(module_name): {
+            "source_module_publication": {
+                "publication": {
+                    "module_name": module_name,
+                    "module_value": "v1",
+                    "failure_label": 7,
+                },
+                "boundary_index": 4,
+            }
+        }
     }
 
 
@@ -9017,12 +9023,11 @@ def test_native_callable_publication_augments_existing_source_init_once(
         direct_symbol_exports=direct_exports,
     )
     source_init = _source_init_for_native_callable_publication()
+    function_metadata = _source_publication_metadata()
     publication_insert_index = (
-        next(
-            index
-            for index, op in enumerate(source_init["ops"])
-            if op.get("source_module_publication_boundary") is True
-        )
+        function_metadata[source_init["name"]]["source_module_publication"][
+            "boundary_index"
+        ]
         + 1
     )
     if not existing_prologue_check:
@@ -9044,6 +9049,7 @@ def test_native_callable_publication_augments_existing_source_init_once(
     )
     generated = BACKEND_IR._append_static_native_module_init_functions(
         functions,
+        function_metadata=function_metadata,
         specs=(spec,),
         register_global_code_id=register,
         registry_lane=registry_lane,
@@ -9061,8 +9067,7 @@ def test_native_callable_publication_augments_existing_source_init_once(
     assert functions[1] is unchanged
     retained_op_ids = {id(op) for op in source_init["ops"]}
     for op in borrowed_ops:
-        if "source_module_publication_boundary" not in op:
-            assert id(op) in retained_op_ids
+        assert id(op) in retained_op_ids
     assert {
         function["name"]
         for function in functions
@@ -9195,21 +9200,19 @@ def test_compiled_source_init_publishes_before_capture_and_rebinding(
             "run = replacement\n"
         )
     )
-    functions = generator.to_json(scope="module")["functions"]
+    document = generator.to_json(scope="module")
+    functions = document["functions"]
+    function_metadata = document["function_metadata"]
     source_init = next(
         function for function in functions if function["name"] == "molt_init_nativepkg"
     )
-    assert source_init["source_module_publication"]["module_name"] == "nativepkg"
-    assert source_init["source_module_publication"]["module_value"]
-    publication_failure_label = source_init["source_module_publication"][
-        "failure_label"
-    ]
-    assert (
-        sum(
-            op.get("source_module_publication_boundary") is True
-            for op in source_init["ops"]
-        )
-        == 1
+    envelope = function_metadata[source_init["name"]]["source_module_publication"]
+    assert envelope["publication"]["module_name"] == "nativepkg"
+    assert envelope["publication"]["module_value"]
+    publication_failure_label = envelope["publication"]["failure_label"]
+    assert source_init["ops"][envelope["boundary_index"]]["kind"] == "frame_locals_set"
+    assert all(
+        "source_module_publication_boundary" not in op for op in source_init["ops"]
     )
 
     code_ids: dict[str, int] = {}
@@ -9236,6 +9239,7 @@ def test_compiled_source_init_publishes_before_capture_and_rebinding(
     before = json.loads(json.dumps(borrowed))
     generated = BACKEND_IR._append_static_native_module_init_functions(
         functions,
+        function_metadata=function_metadata,
         specs=(spec,),
         register_global_code_id=register,
         registry_lane=True,
@@ -9362,6 +9366,7 @@ def test_native_callable_publication_fails_closed_on_unstructured_init_collision
     ):
         BACKEND_IR._append_static_native_module_init_functions(
             functions,
+            function_metadata={},
             specs=(
                 _ExternalNativeModuleInitSpec(
                     module="nativepkg",
@@ -9397,11 +9402,15 @@ def test_native_callable_publication_rejects_invalid_source_metadata(
         arity=1,
     )
     source_init = _source_init_for_native_callable_publication()
-    source_init["source_module_publication"] = publication
+    function_metadata = _source_publication_metadata()
+    function_metadata[source_init["name"]]["source_module_publication"][
+        "publication"
+    ] = publication
 
     with pytest.raises(ValueError):
         BACKEND_IR._append_static_native_module_init_functions(
             [source_init],
+            function_metadata=function_metadata,
             specs=(
                 _ExternalNativeModuleInitSpec(
                     module="nativepkg",
@@ -9414,58 +9423,44 @@ def test_native_callable_publication_rejects_invalid_source_metadata(
 
 
 @pytest.mark.parametrize(
-    ("malformation", "message"),
-    [
-        ("metadata", "missing canonical source-module publication metadata"),
-        ("orphan", "has an unowned publication boundary"),
-        ("false-marker", "publication boundary marker must be true"),
-        ("missing-marker", "must retain exactly one native publication boundary"),
-        ("multiple-markers", "must retain exactly one native publication boundary"),
-        ("wrong-kind", "publication boundary lost its frame-locals anchor"),
-    ],
+    "malformation",
+    ["metadata", "orphan", "bool-index", "missing-index", "past-end", "wrong-kind"],
 )
 @pytest.mark.parametrize("named", [False, True])
 def test_source_publication_envelope_is_preflighted_without_native_specs(
-    named: bool,
-    malformation: str,
-    message: str,
+    named: bool, malformation: str
 ) -> None:
     source_init = _source_init_for_native_callable_publication()
+    function_metadata = _source_publication_metadata()
+    envelope = function_metadata[source_init["name"]]["source_module_publication"]
     if not named:
         del source_init["name"]
-    boundary = source_init["ops"][4]
     if malformation == "metadata":
-        del source_init["source_module_publication"]["failure_label"]
+        del envelope["publication"]["failure_label"]
     elif malformation == "orphan":
-        del source_init["source_module_publication"]
-    elif malformation == "false-marker":
-        boundary["source_module_publication_boundary"] = False
-    elif malformation == "missing-marker":
-        del boundary["source_module_publication_boundary"]
-    elif malformation == "multiple-markers":
-        source_init["ops"].insert(
-            5,
-            {
-                "kind": "frame_locals_set",
-                "args": ["v1"],
-                "source_module_publication_boundary": True,
-            },
-        )
+        function_metadata["absent"] = function_metadata.pop("molt_init_nativepkg")
+    elif malformation == "bool-index":
+        envelope["boundary_index"] = False
+    elif malformation == "missing-index":
+        del envelope["boundary_index"]
+    elif malformation == "past-end":
+        envelope["boundary_index"] = len(source_init["ops"])
     else:
-        boundary["kind"] = "const"
+        source_init["ops"][4]["kind"] = "const"
     functions = [source_init]
     before = json.loads(json.dumps(functions))
+    metadata_before = json.loads(json.dumps(function_metadata))
     registered: list[str] = []
-
-    with pytest.raises(ValueError, match=message):
+    with pytest.raises(ValueError):
         BACKEND_IR._append_static_native_module_init_functions(
             functions,
+            function_metadata=function_metadata,
             specs=(),
             register_global_code_id=lambda symbol: registered.append(symbol) or 1,
             registry_lane=True,
         )
-
     assert functions == before
+    assert function_metadata == metadata_before
     assert registered == []
 
 
@@ -9476,6 +9471,7 @@ def test_native_extension_init_collision_with_source_init_fails_closed(
     registry_lane: bool,
 ) -> None:
     functions = [_source_init_for_native_callable_publication()]
+    function_metadata = _source_publication_metadata()
 
     with pytest.raises(
         ValueError,
@@ -9483,6 +9479,7 @@ def test_native_extension_init_collision_with_source_init_fails_closed(
     ):
         BACKEND_IR._append_static_native_module_init_functions(
             functions,
+            function_metadata=function_metadata,
             specs=(
                 _ExternalNativeModuleInitSpec(
                     module="nativepkg",
@@ -9518,6 +9515,9 @@ def test_native_publication_preflights_complete_body_identity_without_mutation(
         SimpleTIRGenerator.module_init_symbol(native_name)
     )
     functions: list[dict[str, Any]] = []
+    function_metadata = (
+        {} if owners == "native-native" else _source_publication_metadata(source_name)
+    )
     specs: tuple[_ExternalNativeModuleInitSpec, ...] = ()
     if owners in {"source-source", "duplicate-source"}:
         functions = [
@@ -9529,6 +9529,9 @@ def test_native_publication_preflights_complete_body_identity_without_mutation(
     elif owners == "source-identity-mismatch":
         source = _source_init_for_native_callable_publication(source_name)
         source["name"] = SimpleTIRGenerator.module_init_symbol("unrelated")
+        function_metadata[source["name"]] = function_metadata.pop(
+            SimpleTIRGenerator.module_init_symbol(source_name)
+        )
         functions = [source]
     elif owners in {"source-native", "source-direct"}:
         functions = [_source_init_for_native_callable_publication(source_name)]
@@ -9568,6 +9571,7 @@ def test_native_publication_preflights_complete_body_identity_without_mutation(
     with pytest.raises(ValueError):
         BACKEND_IR._append_static_native_module_init_functions(
             functions,
+            function_metadata=function_metadata,
             specs=specs,
             register_global_code_id=register,
             registry_lane=registry_lane,
@@ -9588,6 +9592,7 @@ def test_registry_alias_has_no_body_symbol_to_collide_with(
         if source_owner
         else []
     )
+    function_metadata = _source_publication_metadata(body_name) if source_owner else {}
     alias = _ExternalNativeModuleInitSpec(module=alias_name, alias_of=body_name)
     specs = [alias]
     if not source_owner:
@@ -9595,6 +9600,7 @@ def test_registry_alias_has_no_body_symbol_to_collide_with(
         specs = [alias, body] if alias_first else [body, alias]
     generated = BACKEND_IR._append_static_native_module_init_functions(
         functions,
+        function_metadata=function_metadata,
         specs=tuple(specs),
         register_global_code_id=lambda _symbol: 1,
         registry_lane=True,
@@ -9607,10 +9613,12 @@ def test_registry_alias_has_no_body_symbol_to_collide_with(
 
 def test_nonregistry_alias_body_cannot_share_another_module_body_symbol() -> None:
     functions = [_source_init_for_native_callable_publication("nativepkg_tools")]
+    function_metadata = _source_publication_metadata("nativepkg_tools")
     before = json.loads(json.dumps(functions))
     with pytest.raises(ValueError):
         BACKEND_IR._append_static_native_module_init_functions(
             functions,
+            function_metadata=function_metadata,
             specs=(
                 _ExternalNativeModuleInitSpec(
                     module="nativepkg.tools",
@@ -9628,6 +9636,7 @@ def test_native_publication_rejects_export_for_a_different_containing_module(
     source_owner: bool,
 ) -> None:
     functions = [_source_init_for_native_callable_publication()] if source_owner else []
+    function_metadata = _source_publication_metadata() if source_owner else {}
     export = _ExternalNativeCallableExport(
         module="otherpkg",
         name="run",
@@ -9640,6 +9649,7 @@ def test_native_publication_rejects_export_for_a_different_containing_module(
     with pytest.raises(ValueError):
         BACKEND_IR._append_static_native_module_init_functions(
             functions,
+            function_metadata=function_metadata,
             specs=(
                 _ExternalNativeModuleInitSpec(
                     module="nativepkg",
@@ -9659,18 +9669,26 @@ def test_entry_source_identity_survives_json_and_explicit_main_registry_alias() 
         source_path="/virtual/application.py",
     )
     generator.visit(ast.parse("pass\n"))
-    functions = json.loads(json.dumps(generator.to_json(scope="module")["functions"]))
+    document = json.loads(json.dumps(generator.to_json(scope="module")))
+    functions = document["functions"]
+    function_metadata = document["function_metadata"]
     source_init = next(
         function
         for function in functions
         if function["name"] == SimpleTIRGenerator.module_init_symbol("application")
     )
-    assert source_init["source_module_publication"]["module_name"] == "application"
+    assert (
+        function_metadata[source_init["name"]]["source_module_publication"][
+            "publication"
+        ]["module_name"]
+        == "application"
+    )
     before = json.loads(json.dumps(source_init))
     borrowed_ops = source_init["ops"]
     assert (
         BACKEND_IR._append_static_native_module_init_functions(
             functions,
+            function_metadata=function_metadata,
             specs=(),
             register_global_code_id=lambda _symbol: 1,
             registry_lane=True,
@@ -9681,13 +9699,10 @@ def test_entry_source_identity_survives_json_and_explicit_main_registry_alias() 
     replacement = next(
         function for function in functions if function["name"] == source_init["name"]
     )
-    assert replacement is not source_init
-    assert replacement["ops"] is not borrowed_ops
+    assert replacement is source_init
+    assert replacement["ops"] is borrowed_ops
     for old, new in zip(borrowed_ops, replacement["ops"], strict=True):
-        if "source_module_publication_boundary" in old:
-            assert new is not old
-        else:
-            assert new is old
+        assert new is old
     assert all("source_module_publication" not in function for function in functions)
     assert all(
         "source_module_publication_boundary" not in op
@@ -16474,6 +16489,7 @@ def test_persisted_module_lowering_roundtrip_respects_context_digest(
     )
     assert context_digest is not None
     result = {
+        "function_metadata": {},
         "functions": [],
         "func_code_ids": {},
         "local_classes": {},
@@ -16555,6 +16571,7 @@ def test_persisted_module_lowering_rejects_missing_local_function_reference(
     )
     assert context_digest is not None
     result = {
+        "function_metadata": {},
         "functions": [
             {
                 "name": "molt_init_pkg",
@@ -16720,6 +16737,7 @@ def test_persisted_module_lowering_tracks_source_content(
         is_package=False,
         context_digest=context_digest,
         result={
+            "function_metadata": {},
             "functions": [],
             "func_code_ids": {},
             "local_classes": {},
@@ -16763,6 +16781,7 @@ def test_persisted_module_lowering_reuses_process_cache(
         is_package=False,
         context_digest=context_digest,
         result={
+            "function_metadata": {},
             "functions": [],
             "func_code_ids": {},
             "local_classes": {},
@@ -16817,6 +16836,7 @@ def test_persisted_module_lowering_returns_isolated_mutable_results(
         is_package=False,
         context_digest=context_digest,
         result={
+            "function_metadata": {},
             "functions": [
                 {
                     "name": "molt_init_pkg",
@@ -16909,6 +16929,7 @@ def test_persisted_module_lowering_rejects_incomplete_parameter_declarations(
         is_package=False,
         context_digest=context_digest,
         result={
+            "function_metadata": {},
             "functions": [
                 {
                     "name": "pkg__f",
@@ -17198,6 +17219,7 @@ def test_load_cached_module_lowering_result_needs_no_module_stat(
         is_package=False,
         context_digest=context_digest,
         result={
+            "function_metadata": {},
             "functions": [],
             "func_code_ids": {},
             "local_classes": {},
@@ -18379,6 +18401,7 @@ def test_load_cached_module_lowering_result_reuses_precomputed_views(
         is_package=False,
         context_digest=context_digest,
         result={
+            "function_metadata": {},
             "functions": [],
             "func_code_ids": {},
             "local_classes": {},
@@ -25344,7 +25367,8 @@ def test_run_backend_pipeline_defers_native_runtime_readiness_until_after_codege
         BACKEND_IR,
         "_prepare_backend_ir",
         lambda **kwargs: (
-            call_order.append("backend_ir") or cli_models._PreparedBackendIR(ir={}),
+            call_order.append("backend_ir")
+            or cli_models._PreparedBackendIR(ir={}, function_metadata={}),
             None,
         ),
     )

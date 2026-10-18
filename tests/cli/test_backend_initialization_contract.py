@@ -238,6 +238,7 @@ def test_module_initializers_solely_own_code_and_globals_publication(
             module,
             ir_functions=document["functions"],
             func_code_ids=document["code_slots"],
+            function_metadata=document["function_metadata"],
             local_classes={},
         )
         assert issue is None
@@ -371,6 +372,7 @@ def test_shared_module_code_payload_is_stable_when_an_earlier_module_is_added() 
                     module,
                     ir_functions=document["functions"],
                     func_code_ids=document["code_slots"],
+                    function_metadata=document["function_metadata"],
                     local_classes={},
                 )
                 is None
