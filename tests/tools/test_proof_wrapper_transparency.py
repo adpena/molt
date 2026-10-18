@@ -293,9 +293,9 @@ def test_wrapped_pytest_runs_selected_venv_under_real_audit_and_requires_counts(
     )
     assert completed.returncode == 0, completed.stdout + completed.stderr
     assert "no:cacheprovider" not in launch
-    assert json.loads((scratch / "pytest-cache" / "v/custody/wrapper").read_text()) == {
-        "retained": True
-    }
+    assert json.loads(
+        (scratch / "pytest-cache" / "v/custody/wrapper").read_text(encoding="utf-8")
+    ) == {"retained": True}
     assert transcript["test_counts"] == {"passed": 1}
     assert not any(event["event"] == "policy-violation" for event in events)
     assert any(event["event"] == "hook-start" for event in events)

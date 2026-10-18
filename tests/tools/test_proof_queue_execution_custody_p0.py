@@ -1161,6 +1161,7 @@ print(json.dumps({
         check=True,
         capture_output=True,
         text=True,
+        encoding="utf-8",
         timeout=20,
     )
     observed = json.loads(result.stdout)
