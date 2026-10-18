@@ -106,8 +106,8 @@ class _RuntimeWasmBuildSpec(NamedTuple):
     artifact_selection: RuntimeArtifactSelection
     runtime_exports: str
     link_flags: str
-    cargo_rustflags: str
-    fingerprint_rustflags: str
+    cargo_rustflags: tuple[str, ...]
+    fingerprint_rustflags: tuple[str, ...]
     no_default_features: bool
     wasm_cargo_features: tuple[str, ...]
     fingerprint_features: tuple[str, ...]
@@ -122,10 +122,8 @@ class _RuntimeWasmBuildSpec(NamedTuple):
         return self._replace(
             cargo_plan=plan,
             env=dict(plan.environment),
-            cargo_rustflags=shlex.join(plan.rustflags),
-            fingerprint_rustflags=shlex.join(
-                (*plan.rustflags, *shlex.split(self.link_flags))
-            ),
+            cargo_rustflags=plan.rustflags,
+            fingerprint_rustflags=(*plan.rustflags, *shlex.split(self.link_flags)),
         )
 
 
@@ -216,7 +214,6 @@ def _resolved_runtime_wasm_family_identities(
         cargo_profile=shared_spec.cargo_profile,
         target_triple="wasm32-wasip1",
         runtime_features=shared_spec.fingerprint_features,
-        base_rustflags=shared_spec.cargo_rustflags,
         cargo_command=shared_spec.cargo_plan.command,
         producer_artifact_selection=RUNTIME_WASM_COMBINED_ARTIFACTS,
         members=(
@@ -456,8 +453,8 @@ def _compute_runtime_wasm_build_spec(
         artifact_selection=artifact_selection,
         runtime_exports=runtime_exports,
         link_flags=link_flags,
-        cargo_rustflags="",
-        fingerprint_rustflags=link_flags,
+        cargo_rustflags=(),
+        fingerprint_rustflags=tuple(shlex.split(link_flags)),
         no_default_features=no_default_features,
         wasm_cargo_features=tuple(wasm_cargo_features),
         fingerprint_features=tuple(fingerprint_features),

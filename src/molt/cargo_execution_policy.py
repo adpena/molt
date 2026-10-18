@@ -21,6 +21,7 @@ from .disk_capacity import (
     require_build_capacity,
 )
 from .source_root import compiler_source_root
+from .process_environment import NameRule, ProcessEnvironment, ProcessEnvironmentBuilder
 
 
 CI_CARGO_POLICY_SCHEMA = "molt.ci-resource-policy.v2"
@@ -62,7 +63,7 @@ NESTED_PROCESS_BUDGET_BY_ROLE = {
 
 def cargo_native_dependency_environment_name(name: str) -> bool:
     """Output-bearing upstream native dependency controls, including targets."""
-    return name.upper().startswith(CARGO_NATIVE_DEPENDENCY_ENV_PREFIXES)
+    return NameRule.host().key(name).startswith(CARGO_NATIVE_DEPENDENCY_ENV_PREFIXES)
 
 
 def validate_cargo_native_dependency_environment(
@@ -83,10 +84,7 @@ def validate_cargo_native_dependency_environment(
         raise ValueError(
             "bound native dependency validation requires captured Rust target and host"
         )
-    env = {
-        name.upper() if os.name == "nt" else name: value
-        for name, value in environ.items()
-    }
+    env = ProcessEnvironment(environ)
     prefix = AWS_LC_SYS_ENV_PREFIX
     suffix = "_" + target.lower().replace("-", "_") if target else None
 
@@ -94,10 +92,9 @@ def validate_cargo_native_dependency_environment(
         name = (prefix if crate else "") + control
         specific = name + suffix if suffix else None
         if specific is not None:
-            key = specific.upper() if os.name == "nt" else specific
-            if key in env:
-                return key, env[key]
-        elif any(key.startswith(name + "_") for key in env):
+            if specific in env:
+                return specific, env[specific]
+        elif any(env.rule.key(key).startswith(env.rule.key(name + "_")) for key in env):
             # An implicit Rust target is not known until captured compiler
             # metadata arrives. Do not mistake a possibly shadowed generic
             # value for the selected control; validate again with that target.
@@ -142,8 +139,6 @@ def validate_cargo_native_dependency_environment(
                 continue
             raw = f"{control}_{target}"
             rewritten = f"{control}_{normalized_target}"
-            if os.name == "nt":
-                raw, rewritten = raw.upper(), rewritten.upper()
             # AWS-LC rewrites only the normalized selector. Published raw-target
             # CC/CXX remains first in cc-rs, so an ignored private driver is not
             # an additional capability. Flags accumulate every form, however;
@@ -156,7 +151,10 @@ def validate_cargo_native_dependency_environment(
                         "rewrites CFLAGS outside the captured ordered native flag projection"
                     )
             elif item[0].startswith(prefix) and (
-                not env.get(raw) or (raw == rewritten and item[1] != env[raw])
+                not env.get(raw)
+                or (
+                    env.rule.key(raw) == env.rule.key(rewritten) and item[1] != env[raw]
+                )
             ):
                 errors[item[0]] = (
                     "compiler override has no pinned raw-target native driver"
@@ -331,18 +329,21 @@ def sccache_client_environment(
     private server. The second value names the policies applied.
     """
 
-    child = dict(environ)
+    child = ProcessEnvironmentBuilder(environ)
     temporary = sccache_server_temp_dir(child)
     if temporary is None:
-        return child, ()
+        return ProcessEnvironment(child).child_block(), ()
     temporary.mkdir(parents=True, exist_ok=True)
     for name in TEMPORARY_DIRECTORY_ENV_NAMES:
         child[name] = str(temporary)
     endpoint = sccache_server_endpoint(child)
     if endpoint is None:
-        return child, (SCCACHE_SERVER_TEMP_POLICY,)
+        return ProcessEnvironment(child).child_block(), (SCCACHE_SERVER_TEMP_POLICY,)
     child[endpoint[0]] = endpoint[1]
-    return child, (SCCACHE_SERVER_TEMP_POLICY, SCCACHE_SERVER_ENDPOINT_POLICY)
+    return ProcessEnvironment(child).child_block(), (
+        SCCACHE_SERVER_TEMP_POLICY,
+        SCCACHE_SERVER_ENDPOINT_POLICY,
+    )
 
 
 def normalize_cargo_environment(
@@ -362,24 +363,26 @@ def normalize_cargo_environment(
     directory through ``sccache_client_environment``; it starts no process.
     """
 
-    child = dict(os.environ) if environ is None else dict(environ)
+    child = ProcessEnvironmentBuilder(os.environ if environ is None else environ)
     if sccache_compiler_wrappers(child):
         child["CARGO_INCREMENTAL"] = "0"
-        child, pinned = sccache_client_environment(child)
-        return child, (SCCACHE_INCREMENTAL_POLICY, *pinned)
+        selected, pinned = sccache_client_environment(child)
+        return selected, (SCCACHE_INCREMENTAL_POLICY, *pinned)
     if default_incremental is not None and "CARGO_INCREMENTAL" not in child:
         child["CARGO_INCREMENTAL"] = default_incremental
-        return child, (DIRECT_RUSTC_INCREMENTAL_POLICY,)
-    return child, ()
+        return ProcessEnvironment(child).child_block(), (
+            DIRECT_RUSTC_INCREMENTAL_POLICY,
+        )
+    return ProcessEnvironment(child).child_block(), ()
 
 
 def without_sccache_compiler_wrappers(
     environ: Mapping[str, str],
 ) -> dict[str, str]:
-    child = dict(environ)
+    child = ProcessEnvironmentBuilder(environ)
     for name, _value in sccache_compiler_wrappers(child):
         child.pop(name, None)
-    return child
+    return ProcessEnvironment(child).child_block()
 
 
 def _executable_name(value: str) -> str:

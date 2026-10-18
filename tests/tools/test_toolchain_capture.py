@@ -2492,7 +2492,7 @@ def _native_build_capture_fixture(
                 "cargo": tools["cargo"],
                 "rustc": tools["rustc"],
             }
-            projected_env = {**selected.environment, "RUSTC": str(tools["rustc"])}
+            projected_env = selected.environment.updated({"RUSTC": str(tools["rustc"])})
             custody = tuple(
                 CargoExecutableCustody.capture(
                     row.label, tool_paths[row.label.removeprefix("tool/")]
@@ -2506,7 +2506,7 @@ def _native_build_capture_fixture(
                 command=tuple(cargo_command),
                 tools=MappingProxyType(tool_paths),
                 rustc=tools["rustc"],
-                environment=MappingProxyType(projected_env),
+                environment=projected_env,
                 executable_custody=custody,
             ).with_build_directory()
             selected.verify()
@@ -5061,7 +5061,11 @@ def test_build_python_cargo_selection_signature_and_unicode_custody(
     plan = replace(fixture.plan, toolchain_policies=(policy,))
     monkeypatch.setattr(proof_plan.ProofPlan, "load", lambda *a, **kw: plan)
     selected = fixture.selected[0]
-    other = next(Path(path) for path in fixture.installations if path != str(selected))
+    other = next(
+        Path(path)
+        for path in fixture.installations
+        if path != custody_spelling(selected)
+    )
     config = tmp_path / "selected.toml"
     config.write_text(
         "[env]\nMOLT_BUILD_PYTHON = { value = "
@@ -5125,7 +5129,7 @@ def test_build_python_cargo_selection_signature_and_unicode_custody(
         full[policy.name]["python_runtime"]["runtime"]
         == first["python_runtime"]["runtime"]
     )
-    _, unicode_file = fixture.installations[str(selected)]
+    _, unicode_file = fixture.installations[custody_spelling(selected)]
     before = unicode_file.stat()
     changed_bytes = bytearray(unicode_file.read_bytes())
     changed_bytes[-1] ^= 1

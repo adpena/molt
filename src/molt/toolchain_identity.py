@@ -267,6 +267,28 @@ def executable_search_directories(
     return tuple(dict.fromkeys(roots))
 
 
+# Windows error for a path through a junction or symlink the process may not
+# follow (redirection trust; for example any user-created junction under SSH).
+_ERROR_UNTRUSTED_MOUNT_POINT = 448
+
+
+def _searchable_executable(candidate: Path) -> bool:
+    """Whether the OS executable search could select ``candidate``.
+
+    The OS search skips a directory it cannot traverse and goes on: execvp
+    skips EACCES, and Windows SearchPathW skips an untrusted mount point. So
+    does this search; any other error still raises.
+    """
+    try:
+        return candidate.is_file() and os.access(candidate, os.F_OK | os.X_OK)
+    except PermissionError:
+        return False
+    except OSError as error:
+        if getattr(error, "winerror", None) == _ERROR_UNTRUSTED_MOUNT_POINT:
+            return False
+        raise
+
+
 def executable_candidates(
     command: str, *, environment: Mapping[str, str], cwd: Path | None = None
 ) -> Iterator[Path]:
@@ -295,7 +317,7 @@ def executable_candidates(
             input_report.report_directory(directory)
         for name in names:
             candidate = directory / name
-            if candidate.is_file() and os.access(candidate, os.F_OK | os.X_OK):
+            if _searchable_executable(candidate):
                 selected = lexical_executable_path(candidate)
                 if recording:
                     input_report.report_data_file(selected)

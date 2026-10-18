@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from molt.process_environment import NameRule, ProcessEnvironmentBuilder
+
 import hashlib
 import json
 import os
@@ -12,7 +14,6 @@ import pytest
 
 from molt.cli.cargo_resource_custody import CargoResourceCustody, CargoResourceRoot
 from molt.cli.runtime_cargo_plan import (
-    _CargoEnvironment,
     _resolve_c_build_resources,
     _c_tool_environment_names,
     runtime_c_flag_environment_names,
@@ -124,7 +125,7 @@ def test_c_search_paths_have_content_and_lifetime_custody(
     directory.mkdir()
     header = directory / "value.h"
     header.write_bytes(b"#define VALUE 1\n")
-    env = _CargoEnvironment({name: str(directory)})
+    env = ProcessEnvironmentBuilder({name: str(directory)})
     before = dict(env)
     plan = _resolve_c_build_resources(env, target=TARGET)
     assert dict(env) == before
@@ -145,7 +146,9 @@ def test_c_search_order_and_windows_case_are_preserved(tmp_path: Path) -> None:
     two.mkdir()
     (one / "selected.h").write_bytes(b"one")
     (two / "selected.h").write_bytes(b"two")
-    env = _CargoEnvironment({"Include": f"{one};;{two};"}, case_insensitive=True)
+    env = ProcessEnvironmentBuilder(
+        {"Include": f"{one};;{two};"}, rule=NameRule.WINDOWS
+    )
     plan = _resolve_c_build_resources(env, target=TARGET)
     assert plan.environment["INCLUDE"] == (
         "${c/INCLUDE/search/0}",
@@ -155,7 +158,7 @@ def test_c_search_order_and_windows_case_are_preserved(tmp_path: Path) -> None:
     )
     assert tuple(root.path for root in plan.roots) == (one, two)
     reversed_plan = _resolve_c_build_resources(
-        _CargoEnvironment({"INCLUDE": f"{two};;{one};"}, case_insensitive=True),
+        ProcessEnvironmentBuilder({"INCLUDE": f"{two};;{one};"}, rule=NameRule.WINDOWS),
         target=TARGET,
     )
     assert (
@@ -168,7 +171,8 @@ def test_c_search_order_and_windows_case_are_preserved(tmp_path: Path) -> None:
 def test_c_search_rejects_unbound_build_script_cwd(value: str) -> None:
     with pytest.raises(ValueError, match="unbound build-script cwd"):
         _resolve_c_build_resources(
-            _CargoEnvironment({"CPATH": value}, case_insensitive=False), target=TARGET
+            ProcessEnvironmentBuilder({"CPATH": value}, rule=NameRule.EXACT),
+            target=TARGET,
         )
 
 
@@ -184,9 +188,11 @@ def test_c_search_rejects_unbound_build_script_cwd(value: str) -> None:
 )
 def test_c_deployment_controls_preserve_output_selection(name: str) -> None:
     before = _resolve_c_build_resources(
-        _CargoEnvironment({name: "12.0"}), target=TARGET
+        ProcessEnvironmentBuilder({name: "12.0"}), target=TARGET
     )
-    after = _resolve_c_build_resources(_CargoEnvironment({name: "15.0"}), target=TARGET)
+    after = _resolve_c_build_resources(
+        ProcessEnvironmentBuilder({name: "15.0"}), target=TARGET
+    )
     assert dict(before.environment) == {name: ("12.0",)}
     assert dict(after.environment) == {name: ("15.0",)}
     assert not before.roots and not after.roots
@@ -225,7 +231,7 @@ def test_c_flag_resource_family_is_captured(
     else:
         path.write_bytes(b"input")
     value = shlex.join((option, str(path)))
-    env = _CargoEnvironment({"CFLAGS": value, "CC_SHELL_ESCAPED_FLAGS": "1"})
+    env = ProcessEnvironmentBuilder({"CFLAGS": value, "CC_SHELL_ESCAPED_FLAGS": "1"})
     plan = _resolve_c_build_resources(env, target=TARGET)
     assert plan.environment["CFLAGS"] == (option, "${c/CFLAGS/flags/0}")
     assert plan.roots[0].path == path
@@ -238,7 +244,7 @@ def test_c_flag_resource_family_is_captured(
 @pytest.mark.parametrize("option", ["-I", "-isystem", "/I", "/external:I", "/LIBPATH:"])
 def test_c_joined_search_paths_are_captured(tmp_path: Path, option: str) -> None:
     plan = _resolve_c_build_resources(
-        _CargoEnvironment(
+        ProcessEnvironmentBuilder(
             {
                 "CFLAGS": shlex.quote(option + str(tmp_path)),
                 "CC_SHELL_ESCAPED_FLAGS": "1",
@@ -254,7 +260,7 @@ def test_c_linker_forwarding_captures_script_and_search_inputs(tmp_path: Path) -
     script = tmp_path / "exports.map"
     script.write_bytes(b"{ global: entry; local: *; };")
     plan = _resolve_c_build_resources(
-        _CargoEnvironment(
+        ProcessEnvironmentBuilder(
             {
                 "LDFLAGS": shlex.quote(
                     f"-Wl,-Bsymbolic,-L,{tmp_path},--version-script={script}"
@@ -271,7 +277,7 @@ def test_c_linker_forwarding_captures_script_and_search_inputs(tmp_path: Path) -
 @pytest.mark.parametrize("control", ["", "0", "false", "no"])
 def test_c_flags_default_to_cc_rs_ascii_whitespace(control: str) -> None:
     plan = _resolve_c_build_resources(
-        _CargoEnvironment(
+        ProcessEnvironmentBuilder(
             {"CFLAGS": "-O2\t-DTEXT=a\u00a0b", "CC_SHELL_ESCAPED_FLAGS": control}
         ),
         target=TARGET,
@@ -282,7 +288,7 @@ def test_c_flags_default_to_cc_rs_ascii_whitespace(control: str) -> None:
 def test_c_optional_search_directory_creation_is_fenced(tmp_path: Path) -> None:
     directory = tmp_path / "not-yet-present"
     plan = _resolve_c_build_resources(
-        _CargoEnvironment({"CPATH": str(directory)}), target=TARGET
+        ProcessEnvironmentBuilder({"CPATH": str(directory)}), target=TARGET
     )
     custody = CargoResourceCustody.capture(plan.roots)
     directory.mkdir()
@@ -551,7 +557,9 @@ def test_real_cargo_reuses_only_matching_external_resource_generation(
 )
 def test_unbound_c_resource_grammar_fails_closed(flags: str) -> None:
     with pytest.raises(ValueError):
-        _resolve_c_build_resources(_CargoEnvironment({"CFLAGS": flags}), target=TARGET)
+        _resolve_c_build_resources(
+            ProcessEnvironmentBuilder({"CFLAGS": flags}), target=TARGET
+        )
 
 
 @pytest.mark.parametrize("role", ["cc", "cxx", "ar", "ranlib"])
@@ -601,20 +609,29 @@ def test_host_triple_selector_wins_over_host_generic_tool(
     plan.verify()
 
 
-def test_host_triple_c_flag_inputs_are_captured(tmp_path: Path) -> None:
+@pytest.mark.parametrize("rule", list(NameRule))
+def test_host_triple_c_flag_inputs_are_captured(tmp_path: Path, rule: NameRule) -> None:
     header = tmp_path / "host-header.h"
     header.write_bytes(b"host-specific header")
-    env = _CargoEnvironment(
+    env = ProcessEnvironmentBuilder(
         {
             "CFLAGS_x86_64-unknown-linux-gnu": shlex.join(("-include", str(header))),
             "CC_SHELL_ESCAPED_FLAGS": "1",
-        }
+        },
+        rule=rule,
     )
     plan = _resolve_c_build_resources(
         env, target=TARGET, host_target="x86_64-unknown-linux-gnu"
     )
-    key = env.canonical_key("CFLAGS_x86_64-unknown-linux-gnu")
-    assert key in plan.environment
+    # The projection names the variable as cc-rs does under both name rules.
+    assert set(plan.environment) == {
+        "CC_SHELL_ESCAPED_FLAGS",
+        "CFLAGS_x86_64-unknown-linux-gnu",
+    }
+    assert plan.environment["CFLAGS_x86_64-unknown-linux-gnu"] == (
+        "-include",
+        "${c/CFLAGS_x86_64-unknown-linux-gnu/flags/0}",
+    )
     assert plan.roots[0].path == header
 
 
@@ -628,7 +645,7 @@ def test_msvc_linker_flags_do_not_collide_with_include_prefix(tmp_path: Path) ->
         )
     )
     plan = _resolve_c_build_resources(
-        _CargoEnvironment({"LDFLAGS": flags, "CC_SHELL_ESCAPED_FLAGS": "1"}),
+        ProcessEnvironmentBuilder({"LDFLAGS": flags, "CC_SHELL_ESCAPED_FLAGS": "1"}),
         target="x86_64-pc-windows-msvc",
     )
     assert len(plan.roots) == 1
@@ -641,7 +658,7 @@ def test_c_output_and_runtime_search_arguments_are_not_build_inputs(
 ) -> None:
     flags = shlex.join(("-o", str(tmp_path / "output.o"), "-Wl,-rpath,/runtime/lib"))
     plan = _resolve_c_build_resources(
-        _CargoEnvironment({"CFLAGS": flags, "CC_SHELL_ESCAPED_FLAGS": "1"}),
+        ProcessEnvironmentBuilder({"CFLAGS": flags, "CC_SHELL_ESCAPED_FLAGS": "1"}),
         target=TARGET,
     )
     assert not plan.roots
@@ -657,7 +674,7 @@ def test_c_sysroot_relative_search_never_captures_host_suffix(
 ) -> None:
     operand = marker + str(tmp_path)
     tokens = (option + operand,) if joined else (option, operand)
-    env = _CargoEnvironment(
+    env = ProcessEnvironmentBuilder(
         {
             "CFLAGS": shlex.join(tokens),
             "CC_SHELL_ESCAPED_FLAGS": "1",
@@ -669,7 +686,7 @@ def test_c_sysroot_relative_search_never_captures_host_suffix(
 
 
 def test_forwarded_linker_sysroot_relative_search_fails_closed(tmp_path: Path) -> None:
-    env = _CargoEnvironment(
+    env = ProcessEnvironmentBuilder(
         {
             "LDFLAGS": shlex.quote(f"-Wl,-L={tmp_path}"),
             "CC_SHELL_ESCAPED_FLAGS": "1",
@@ -683,7 +700,7 @@ def test_forwarded_linker_sysroot_relative_search_fails_closed(tmp_path: Path) -
 def test_c_directory_option_equals_separator_is_not_a_sysroot_marker(
     tmp_path: Path, option: str
 ) -> None:
-    env = _CargoEnvironment(
+    env = ProcessEnvironmentBuilder(
         {
             "CFLAGS": shlex.quote(f"{option}={tmp_path}"),
             "CC_SHELL_ESCAPED_FLAGS": "1",
@@ -700,7 +717,7 @@ def test_c_file_option_equals_separator_is_not_a_sysroot_marker(
 ) -> None:
     resource = tmp_path / "selected.input"
     resource.write_bytes(b"content")
-    env = _CargoEnvironment(
+    env = ProcessEnvironmentBuilder(
         {
             "CFLAGS": shlex.quote(f"{option}={resource}"),
             "CC_SHELL_ESCAPED_FLAGS": "1",
@@ -719,7 +736,7 @@ def test_c_implicit_prefix_options_require_their_own_selection_authority(
     tmp_path: Path, option: str, joined: bool
 ) -> None:
     tokens = (option + str(tmp_path),) if joined else (option, str(tmp_path))
-    env = _CargoEnvironment(
+    env = ProcessEnvironmentBuilder(
         {"CFLAGS": shlex.join(tokens), "CC_SHELL_ESCAPED_FLAGS": "1"}
     )
     with pytest.raises(
@@ -878,7 +895,7 @@ def test_an_apple_sdk_root_is_identified_by_its_settings(
     (sdk / "usr/include/stdio.h").write_bytes(b"int printf(const char *, ...);\n")
     time.sleep(0.01)
     plan = _resolve_c_build_resources(
-        _CargoEnvironment({"SDKROOT": str(sdk)}), target=TARGET
+        ProcessEnvironmentBuilder({"SDKROOT": str(sdk)}), target=TARGET
     )
     custody = CargoResourceCustody.capture(plan.roots)
     assert [item.entrypoint for item in custody.files] == [settings]

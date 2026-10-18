@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from molt.process_environment import ProcessEnvironmentBuilder
+
 import os
 import hashlib
 import json
@@ -140,7 +142,7 @@ def _resolve(
     wasi_sdk: WasiSdkInstallation | None = None,
 ) -> schema.RuntimeBuildIdentity:
     target = None if kind == "native" else "wasm32-wasip1"
-    ambient = cargo_plans._CargoEnvironment(os.environ)
+    ambient = ProcessEnvironmentBuilder(os.environ)
     # Ambient cc-rs inputs (the RunContext exports CFLAGS_<wasm target>, and
     # Xcode shells export SDKROOT) would enter every identity resolved here.
     # Each test supplies the exact C environment it asserts through extra_env.
@@ -193,7 +195,6 @@ def _resolve(
             cargo_plan=plan,
             cargo_profile=profile,
             target_triple="wasm32-wasip1",
-            rustflags=base_rustflags,
             cargo_command=plan.command,
             artifact_selection=RUNTIME_STATICLIB_ARTIFACTS,
             wasi_sysroot=plan.wasi_c_abi.sysroot,
@@ -205,15 +206,17 @@ def _resolve(
         cargo_profile=profile,
         target_triple="wasm32-wasip1",
         runtime_features=runtime_features,
-        base_rustflags=base_rustflags,
         cargo_command=plan.command,
         producer_artifact_selection=artifact_selection,
         members=(
             schema.RuntimeBuildMemberPlan(
                 kind="shared",
                 resolved_rustflags=(
-                    "-C panic=abort --cfg shared"
-                    + (f" -C link-arg=@{response_path}" if response_path else "")
+                    "-C",
+                    "panic=abort",
+                    "--cfg",
+                    "shared",
+                    *((("-C", f"link-arg=@{response_path}")) if response_path else ()),
                 ),
                 publication_transform=(
                     publication if kind == "shared" else "strip-final-link-metadata-v1"
@@ -223,7 +226,7 @@ def _resolve(
             ),
             schema.RuntimeBuildMemberPlan(
                 kind="reloc",
-                resolved_rustflags="-C panic=abort --cfg reloc",
+                resolved_rustflags=("-C", "panic=abort", "--cfg", "reloc"),
                 publication_transform=(
                     publication
                     if kind == "reloc"
@@ -794,7 +797,7 @@ def test_ambient_c_and_cxx_flags_are_family_identity_inputs(
         "CXXFLAGS_wasm32-wasip1",
         "CXXFLAGS_wasm32_wasip1",
     ):
-        expected[cargo_plans._CargoEnvironment({}).canonical_key(name)] = (
+        expected[name] = (
             ("-O1", "--no-default-config")
             if name == "CFLAGS_wasm32-wasip1"
             else ("--no-default-config",)
@@ -1264,6 +1267,25 @@ def test_identity_rejects_unknown_absolute_flag_path(identity_root: Path) -> Non
             kind="shared",
             publication="strip-final-link-metadata-v1",
             base_rustflags=r"-L D:\poison\runtime",
+        )
+
+
+def test_identity_records_flag_tokens_exactly() -> None:
+    # The projection once split flag strings with a host-dependent shlex and
+    # stripped '"' from every token, so `--cfg feature="std"` was recorded as
+    # `feature="std` and a quoted Windows path kept its quotes.
+    projection = identity._RuntimeFlagProjection.capture(())
+    tokens = ("--cfg", 'feature="std"', "-C", "opt-level=3")
+    assert projection.rustflags(tokens) == list(tokens)
+    with pytest.raises(TypeError, match="token sequences"):
+        projection.rustflags("--cfg feature=std")
+    with pytest.raises(TypeError, match="tuple of tokens"):
+        schema.RuntimeBuildMemberPlan(
+            kind="shared",
+            resolved_rustflags="-C panic=abort",  # type: ignore[arg-type]
+            link_args=(),
+            publication_transform="shared-runtime-publication-v3",
+            preserve_debug=False,
         )
 
 
@@ -2409,7 +2431,10 @@ def test_native_executable_fixture_preserves_independent_images(
         assert not image.is_symlink()
         assert not image.samefile(source)
         assert hashlib.sha256(image.read_bytes()).hexdigest() == original
-        assert image.stat().st_mode & 0o111 == source.stat().st_mode & 0o111
+        # Windows has no execute bits: os.stat derives them from the name's
+        # extension, and these fixture names have none.
+        if os.name != "nt":
+            assert image.stat().st_mode & 0o111 == source.stat().st_mode & 0o111
     assert not first.samefile(second)
     with first.open("r+b") as stream:
         stream.write(b"changed fixture")
