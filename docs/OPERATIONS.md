@@ -54,9 +54,14 @@ compatibility. If 3.12/3.13/3.14 differ, document the chosen target in specs/tes
   directory entries and never sweeps above 1,024 records, so it never pays for
   history. `python tools/memory_guard_custody.py` does the same full pass on
   demand: dry run by default, `--apply` to write. One native snapshot decides
-  each record. A pid absent from the snapshot is dead, whatever its recorded
-  birth. A pid that now names another birth was reused, and a reused child
-  leader proves its recorded group closed (a kernel never gives a new process a
+  each record. Native Linux tables can contain processes with a zero boot-tick
+  birth. Keep those rows and their observed zero; they must not abort the
+  complete census. Zero cannot establish the positive birth comparison required
+  by the marker protocol, so a same-pid observation remains protective. An
+  operator-only release preserves that zero in its attested receipt. Marker
+  identities still require positive births. A pid absent from the snapshot is
+  dead, whatever its recorded birth. A pid that now names another birth was
+  reused, and a reused child leader proves its recorded group closed (a kernel never gives a new process a
   pid that still names a live group). A record whose guard and child are dead
   or reused, with no recorded child-group member left, becomes
   `custody_reconciled` and leaves `active/`. Its leased or indeterminate scratch
