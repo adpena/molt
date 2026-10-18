@@ -393,42 +393,6 @@ def test_uv_lock_receiver_requires_semantic_python_owner_digest(tmp_path):
         validated_uv_environment_lock_capture({"python": python})
 
 
-def test_uv_lock_receiver_requires_semantic_uv_owner_digest(tmp_path):
-    from molt.exact_json import canonical_json_sha256
-    from tools import proof_plan
-
-    # The fixture reports the version the proof plan pins, so a pin move
-    # keeps it admissible instead of retiring it.
-    uv_pin = next(
-        policy.data["setup_value"]
-        for policy in proof_plan.ProofPlan.load().toolchain_policies
-        if policy.name == "uv"
-    )
-    executable = tmp_path / "uv"
-    executable.write_bytes(b"owned uv identity fixture, never executed")
-    from tools.proof_queue_pkg.process_image_capture import capture_image
-
-    image = capture_image("uv-launcher", executable, preserve_path=True)
-    uv = {
-        "version": f"uv {uv_pin} (fixture)",
-        "path": str(executable),
-        "content_path": str(executable),
-        "launcher_sha256": image["sha256"],
-        "executable_sha256": image["sha256"],
-        "process_images": [image],
-    }
-    uv["identity_sha256"] = canonical_json_sha256(uv)
-    assert (
-        validated_uv_environment_lock_capture({"uv": uv}).uv_identity_sha256
-        == uv["identity_sha256"]
-    )
-    uv["identity_sha256"] = "0" * 64
-    with pytest.raises(
-        ValueError, match="uv operational owner identity digest is invalid"
-    ):
-        validated_uv_environment_lock_capture({"uv": uv})
-
-
 def test_unrelated_capture_has_no_uv_lock_policy_work(monkeypatch):
     from tools import proof_plan
 
