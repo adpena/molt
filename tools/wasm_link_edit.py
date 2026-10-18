@@ -153,10 +153,11 @@ def _inject_app_export_adapters(
 ) -> tuple[Path, dict[str, str]]:
     """Add exact contract-selected host adapters to a relocatable app object.
 
-    Compiled functions publish one owned result under the canonical call ABI.
-    Each public adapter therefore forwards the target result unchanged.  The
-    digest-bound contract selects the public symbols; this function never
-    infers them from source names or export spelling.
+    Under the canonical call ABI the target entry adopts every argument and
+    publishes one owned result. Each public adapter therefore forwards the
+    arguments and the target result unchanged.  The digest-bound contract
+    selects the public symbols; this function never infers them from source
+    names or export spelling.
     """
 
     names = tuple(dict.fromkeys(public_export_names))
@@ -177,7 +178,7 @@ def _inject_app_export_adapters(
         raise ValueError("canonical app-call ABI is incomplete") from exc
     if (
         parameters.get("representation") != "tagged-i64"
-        or parameters.get("ownership") != "borrowed"
+        or parameters.get("ownership") != "transferred"
         or result.get("representation") != "tagged-i64"
         or result.get("ownership") != "owned"
         or adapter.get("strategy") != "forward-owned-result"
