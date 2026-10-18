@@ -59,6 +59,9 @@
 #   toolchains      list  — non-Python executables consumed by the generator;
 #                           the meta-gate requires its proof command to declare
 #                           every entry for receipt fingerprinting/provisioning.
+#   upstream_generators list — registered producers read by this generator.
+#                           The runner orders producers first; targeted writes
+#                           include their transitive declared consumers.
 #   sync_test       str   — the pytest pinning the output, or
 #   sync_test_reason str  — why byte-identity is not the gate.
 

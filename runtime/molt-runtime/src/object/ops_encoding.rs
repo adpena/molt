@@ -1,6 +1,6 @@
 //! String encoding and decoding — extracted from ops.rs for maintainability.
 
-use super::ops_string::{push_wtf8_codepoint, wtf8_from_bytes, wtf8_has_surrogates};
+use molt_runtime_core::text_storage::push_backslash_bytes;
 use molt_stdlib_text::charmap_codecs_generated::{
     decode_single_byte_charmap_with_errors, encode_single_byte_charmap_byte, single_byte_charmap,
 };
@@ -8,7 +8,6 @@ pub(crate) use molt_stdlib_text::codec_errors::DecodeFailure;
 pub(crate) use molt_stdlib_text::codec_registry::{
     CodecRuntimeClass, EncodingKind, normalize_encoding,
 };
-use molt_stdlib_text::wtf8::push_backslash_bytes_vec;
 
 pub(crate) fn encoding_kind_name(kind: EncodingKind) -> &'static str {
     kind.name()
@@ -204,9 +203,10 @@ pub(crate) fn encode_string_with_errors(
             unreachable!("single-byte charmap encoder called for non-charmap encoding");
         };
         let mut out = Vec::new();
-        let mut points = wtf8_from_bytes(bytes).code_points().enumerate().peekable();
-        while let Some((idx, cp)) = points.next() {
-            let code = cp.to_u32();
+        let mut points = molt_runtime_core::text_storage::code_points(bytes)
+            .enumerate()
+            .peekable();
+        while let Some((idx, code)) = points.next() {
             if code <= 0x7F {
                 out.push(code as u8);
                 continue;
@@ -234,7 +234,7 @@ pub(crate) fn encode_string_with_errors(
                         out.push((code - 0xDC00) as u8);
                     }
                     while let Some((_, next)) = points.peek() {
-                        let next = next.to_u32();
+                        let next = *next;
                         if encode_single_byte_charmap_byte(table, next).is_some() {
                             break;
                         }
@@ -259,74 +259,65 @@ pub(crate) fn encode_string_with_errors(
         Ok(out)
     };
     let mut out = Vec::new();
-    let encode_utf8 =
-        |handler: &str, bytes: &[u8], out: &mut Vec<u8>| -> Result<Vec<u8>, EncodeError> {
-            match handler {
-                "surrogatepass" => Ok(bytes.to_vec()),
-                "strict" => {
-                    if !wtf8_has_surrogates(bytes) {
-                        return Ok(bytes.to_vec());
-                    }
-                    let mut points = wtf8_from_bytes(bytes).code_points().enumerate();
-                    while let Some((idx, cp)) = points.next() {
-                        let code = cp.to_u32();
-                        if is_surrogate(code) {
-                            let end = idx
-                                + 1
-                                + points
-                                    .take_while(|(_, cp)| is_surrogate(cp.to_u32()))
-                                    .count();
-                            return Err(invalid_sequence(idx, end));
-                        }
-                    }
-                    Ok(bytes.to_vec())
+    let encode_utf8 = |handler: &str,
+                       bytes: &[u8],
+                       out: &mut Vec<u8>|
+     -> Result<Vec<u8>, EncodeError> {
+        match handler {
+            "surrogatepass" => Ok(bytes.to_vec()),
+            "strict" => {
+                if std::str::from_utf8(bytes).is_ok() {
+                    return Ok(bytes.to_vec());
                 }
-                "surrogateescape" => {
-                    let mut points = wtf8_from_bytes(bytes).code_points().enumerate();
-                    while let Some((idx, cp)) = points.next() {
-                        let code = cp.to_u32();
-                        if (0xDC80..=0xDCFF).contains(&code) {
-                            out.push((code - 0xDC00) as u8);
-                        } else if is_surrogate(code) {
-                            let end = idx
-                                + 1
-                                + points
-                                    .take_while(|(_, cp)| is_surrogate(cp.to_u32()))
-                                    .count();
-                            return Err(invalid_sequence(idx, end));
-                        } else {
-                            push_wtf8_codepoint(out, code);
-                        }
+                let mut points = molt_runtime_core::text_storage::code_points(bytes).enumerate();
+                while let Some((idx, code)) = points.next() {
+                    if is_surrogate(code) {
+                        let end = idx + 1 + points.take_while(|(_, cp)| is_surrogate(*cp)).count();
+                        return Err(invalid_sequence(idx, end));
                     }
-                    Ok(std::mem::take(out))
                 }
-                "ignore" | "replace" | "backslashreplace" | "namereplace" | "xmlcharrefreplace" => {
-                    for cp in wtf8_from_bytes(bytes).code_points() {
-                        let code = cp.to_u32();
-                        if is_surrogate(code) {
-                            match handler {
-                                "ignore" => {}
-                                "replace" => out.push(b'?'),
-                                "backslashreplace" => {
-                                    out.extend_from_slice(unicode_escape_codepoint(code).as_bytes())
-                                }
-                                "namereplace" => {
-                                    out.extend_from_slice(unicode_name_escape(code).as_bytes())
-                                }
-                                "xmlcharrefreplace" => {
-                                    push_xmlcharref_ascii(out, code);
-                                }
-                                _ => {}
-                            }
-                            continue;
-                        }
-                        push_wtf8_codepoint(out, code);
-                    }
-                    Ok(std::mem::take(out))
-                }
-                other => Err(EncodeError::UnknownErrorHandler(other.to_string())),
+                Ok(bytes.to_vec())
             }
-        };
+            "surrogateescape" => {
+                let mut points = molt_runtime_core::text_storage::code_points(bytes).enumerate();
+                while let Some((idx, code)) = points.next() {
+                    if (0xDC80..=0xDCFF).contains(&code) {
+                        out.push((code - 0xDC00) as u8);
+                    } else if is_surrogate(code) {
+                        let end = idx + 1 + points.take_while(|(_, cp)| is_surrogate(*cp)).count();
+                        return Err(invalid_sequence(idx, end));
+                    } else {
+                        molt_runtime_core::text_storage::push_code_point(out, code);
+                    }
+                }
+                Ok(std::mem::take(out))
+            }
+            "ignore" | "replace" | "backslashreplace" | "namereplace" | "xmlcharrefreplace" => {
+                for code in molt_runtime_core::text_storage::code_points(bytes) {
+                    if is_surrogate(code) {
+                        match handler {
+                            "ignore" => {}
+                            "replace" => out.push(b'?'),
+                            "backslashreplace" => {
+                                out.extend_from_slice(unicode_escape_codepoint(code).as_bytes())
+                            }
+                            "namereplace" => {
+                                out.extend_from_slice(unicode_name_escape(code).as_bytes())
+                            }
+                            "xmlcharrefreplace" => {
+                                push_xmlcharref_ascii(out, code);
+                            }
+                            _ => {}
+                        }
+                        continue;
+                    }
+                    molt_runtime_core::text_storage::push_code_point(out, code);
+                }
+                Ok(std::mem::take(out))
+            }
+            other => Err(EncodeError::UnknownErrorHandler(other.to_string())),
+        }
+    };
     match kind.runtime_class() {
         CodecRuntimeClass::Utf8 => encode_utf8(handler, bytes, &mut out),
         CodecRuntimeClass::Utf8Sig => {
@@ -339,9 +330,8 @@ pub(crate) fn encode_string_with_errors(
         CodecRuntimeClass::Charmap => encode_charmap(kind),
         CodecRuntimeClass::Latin1 | CodecRuntimeClass::Ascii => {
             let limit = kind.ordinal_limit();
-            let mut points = wtf8_from_bytes(bytes).code_points().enumerate();
-            while let Some((idx, cp)) = points.next() {
-                let code = cp.to_u32();
+            let mut points = molt_runtime_core::text_storage::code_points(bytes).enumerate();
+            while let Some((idx, code)) = points.next() {
                 if code < limit {
                     out.push(code as u8);
                     continue;
@@ -362,14 +352,12 @@ pub(crate) fn encode_string_with_errors(
                         if (0xDC80..=0xDCFF).contains(&code) {
                             out.push((code - 0xDC00) as u8);
                         } else {
-                            let end =
-                                idx + 1 + points.take_while(|(_, cp)| cp.to_u32() >= limit).count();
+                            let end = idx + 1 + points.take_while(|(_, cp)| *cp >= limit).count();
                             return Err(invalid_sequence(idx, end));
                         }
                     }
                     "surrogatepass" | "strict" => {
-                        let end =
-                            idx + 1 + points.take_while(|(_, cp)| cp.to_u32() >= limit).count();
+                        let end = idx + 1 + points.take_while(|(_, cp)| *cp >= limit).count();
                         return Err(invalid_sequence(idx, end));
                     }
                     other => {
@@ -380,8 +368,7 @@ pub(crate) fn encode_string_with_errors(
             Ok(out)
         }
         CodecRuntimeClass::UnicodeEscape => {
-            for cp in wtf8_from_bytes(bytes).code_points() {
-                let code = cp.to_u32();
+            for code in molt_runtime_core::text_storage::code_points(bytes) {
                 match code {
                     0x5C => out.extend_from_slice(b"\\\\"),
                     0x09 => out.extend_from_slice(b"\\t"),
@@ -405,8 +392,7 @@ pub(crate) fn encode_string_with_errors(
             if with_bom {
                 push_u16(&mut out, 0xFEFF, endian);
             }
-            for (idx, cp) in wtf8_from_bytes(bytes).code_points().enumerate() {
-                let code = cp.to_u32();
+            for (idx, code) in molt_runtime_core::text_storage::code_points(bytes).enumerate() {
                 if is_surrogate(code) {
                     match handler {
                         "surrogatepass" => {
@@ -464,8 +450,7 @@ pub(crate) fn encode_string_with_errors(
             if with_bom {
                 push_u32(&mut out, 0x0000_FEFF, endian);
             }
-            for (idx, cp) in wtf8_from_bytes(bytes).code_points().enumerate() {
-                let code = cp.to_u32();
+            for (idx, code) in molt_runtime_core::text_storage::code_points(bytes).enumerate() {
                 if is_surrogate(code) {
                     match handler {
                         "surrogatepass" => {
@@ -535,9 +520,11 @@ fn decode_ascii_with_errors(bytes: &[u8], errors: &str) -> Result<Vec<u8>, Decod
         }
         match errors {
             "ignore" => {}
-            "replace" => push_wtf8_codepoint(&mut out, 0xFFFD),
-            "backslashreplace" => push_backslash_bytes_vec(&mut out, &[byte]),
-            "surrogateescape" => push_wtf8_codepoint(&mut out, 0xDC00 + byte as u32),
+            "replace" => molt_runtime_core::text_storage::push_code_point(&mut out, 0xFFFD),
+            "backslashreplace" => push_backslash_bytes(&mut out, &[byte]),
+            "surrogateescape" => {
+                molt_runtime_core::text_storage::push_code_point(&mut out, 0xDC00 + byte as u32)
+            }
             "strict" | "surrogatepass" => {
                 return Err(DecodeFailure::Byte {
                     pos: idx,
@@ -622,7 +609,7 @@ fn decode_utf8_bytes_with_errors(
                     end: idx + 1,
                     reason: "invalid continuation byte",
                 });
-                push_wtf8_codepoint(&mut out, code);
+                molt_runtime_core::text_storage::push_code_point(&mut out, code);
                 idx += 3;
                 continue;
             }
@@ -667,7 +654,7 @@ fn decode_utf8_bytes_with_errors(
             )?;
             continue;
         }
-        push_wtf8_codepoint(&mut out, code);
+        molt_runtime_core::text_storage::push_code_point(&mut out, code);
         idx += needed + 1;
     }
     Ok((out, idx))
@@ -707,11 +694,11 @@ fn handle_decode_failure(
     match errors {
         "ignore" => Ok(end),
         "replace" => {
-            push_wtf8_codepoint(out, 0xfffd);
+            molt_runtime_core::text_storage::push_code_point(out, 0xfffd);
             Ok(end)
         }
         "backslashreplace" => {
-            push_backslash_bytes_vec(out, &bytes[start..end]);
+            push_backslash_bytes(out, &bytes[start..end]);
             Ok(end)
         }
         "surrogatepass" => {
@@ -719,7 +706,7 @@ fn handle_decode_failure(
                 if let Some(initial_error) = initial_error {
                     initial_error.get_or_insert(span);
                 }
-                push_wtf8_codepoint(out, code);
+                molt_runtime_core::text_storage::push_code_point(out, code);
                 Ok(start + width)
             } else {
                 Err(failure())
@@ -728,7 +715,10 @@ fn handle_decode_failure(
         "surrogateescape" => {
             let mut next = start;
             while next < end && next - start < 4 && bytes[next] >= 0x80 {
-                push_wtf8_codepoint(out, 0xdc00 + u32::from(bytes[next]));
+                molt_runtime_core::text_storage::push_code_point(
+                    out,
+                    0xdc00 + u32::from(bytes[next]),
+                );
                 next += 1;
             }
             if next == start {
@@ -804,12 +794,12 @@ fn handle_unicode_escape_failure(
     match errors {
         "ignore" => Ok(end + 1),
         "replace" => {
-            push_wtf8_codepoint(out, 0xFFFD);
+            molt_runtime_core::text_storage::push_code_point(out, 0xFFFD);
             Ok(end + 1)
         }
         "backslashreplace" => {
             if start <= end && end < bytes.len() {
-                push_backslash_bytes_vec(out, &bytes[start..=end]);
+                push_backslash_bytes(out, &bytes[start..=end]);
             }
             Ok(end + 1)
         }
@@ -832,7 +822,7 @@ fn decode_unicode_escape_with_errors(bytes: &[u8], errors: &str) -> Result<Vec<u
     while idx < bytes.len() {
         let byte = bytes[idx];
         if byte != b'\\' {
-            push_wtf8_codepoint(&mut out, byte as u32);
+            molt_runtime_core::text_storage::push_code_point(&mut out, byte as u32);
             idx += 1;
             continue;
         }
@@ -848,43 +838,43 @@ fn decode_unicode_escape_with_errors(bytes: &[u8], errors: &str) -> Result<Vec<u
         let esc = bytes[idx + 1];
         match esc {
             b'\\' => {
-                push_wtf8_codepoint(&mut out, b'\\' as u32);
+                molt_runtime_core::text_storage::push_code_point(&mut out, b'\\' as u32);
                 idx += 2;
             }
             b'\'' => {
-                push_wtf8_codepoint(&mut out, b'\'' as u32);
+                molt_runtime_core::text_storage::push_code_point(&mut out, b'\'' as u32);
                 idx += 2;
             }
             b'"' => {
-                push_wtf8_codepoint(&mut out, b'"' as u32);
+                molt_runtime_core::text_storage::push_code_point(&mut out, b'"' as u32);
                 idx += 2;
             }
             b'a' => {
-                push_wtf8_codepoint(&mut out, 0x07);
+                molt_runtime_core::text_storage::push_code_point(&mut out, 0x07);
                 idx += 2;
             }
             b'b' => {
-                push_wtf8_codepoint(&mut out, 0x08);
+                molt_runtime_core::text_storage::push_code_point(&mut out, 0x08);
                 idx += 2;
             }
             b't' => {
-                push_wtf8_codepoint(&mut out, 0x09);
+                molt_runtime_core::text_storage::push_code_point(&mut out, 0x09);
                 idx += 2;
             }
             b'n' => {
-                push_wtf8_codepoint(&mut out, 0x0A);
+                molt_runtime_core::text_storage::push_code_point(&mut out, 0x0A);
                 idx += 2;
             }
             b'v' => {
-                push_wtf8_codepoint(&mut out, 0x0B);
+                molt_runtime_core::text_storage::push_code_point(&mut out, 0x0B);
                 idx += 2;
             }
             b'f' => {
-                push_wtf8_codepoint(&mut out, 0x0C);
+                molt_runtime_core::text_storage::push_code_point(&mut out, 0x0C);
                 idx += 2;
             }
             b'r' => {
-                push_wtf8_codepoint(&mut out, 0x0D);
+                molt_runtime_core::text_storage::push_code_point(&mut out, 0x0D);
                 idx += 2;
             }
             b'\n' => {
@@ -903,7 +893,7 @@ fn decode_unicode_escape_with_errors(bytes: &[u8], errors: &str) -> Result<Vec<u
                         handle_unicode_escape_failure(errors, &mut out, bytes, idx, end, failure)?;
                     continue;
                 }
-                push_wtf8_codepoint(&mut out, value);
+                molt_runtime_core::text_storage::push_code_point(&mut out, value);
                 idx += 4;
             }
             b'u' => {
@@ -919,7 +909,7 @@ fn decode_unicode_escape_with_errors(bytes: &[u8], errors: &str) -> Result<Vec<u
                         handle_unicode_escape_failure(errors, &mut out, bytes, idx, end, failure)?;
                     continue;
                 }
-                push_wtf8_codepoint(&mut out, value);
+                molt_runtime_core::text_storage::push_code_point(&mut out, value);
                 idx += 6;
             }
             b'U' => {
@@ -946,7 +936,7 @@ fn decode_unicode_escape_with_errors(bytes: &[u8], errors: &str) -> Result<Vec<u
                         handle_unicode_escape_failure(errors, &mut out, bytes, idx, end, failure)?;
                     continue;
                 }
-                push_wtf8_codepoint(&mut out, value);
+                molt_runtime_core::text_storage::push_code_point(&mut out, value);
                 idx += 10;
             }
             b'N' => {
@@ -985,7 +975,7 @@ fn decode_unicode_escape_with_errors(bytes: &[u8], errors: &str) -> Result<Vec<u
                 #[cfg(not(feature = "stdlib_unicode_names"))]
                 let resolved: Option<char> = None;
                 if let Some(ch) = resolved {
-                    push_wtf8_codepoint(&mut out, ch as u32);
+                    molt_runtime_core::text_storage::push_code_point(&mut out, ch as u32);
                     idx = close_idx + 1;
                 } else {
                     let failure = DecodeFailure::Range {
@@ -1000,12 +990,12 @@ fn decode_unicode_escape_with_errors(bytes: &[u8], errors: &str) -> Result<Vec<u
             }
             b'0'..=b'7' => {
                 let (value, count) = parse_octal_prefix(&bytes[idx + 1..], 3);
-                push_wtf8_codepoint(&mut out, value);
+                molt_runtime_core::text_storage::push_code_point(&mut out, value);
                 idx += 1 + count;
             }
             _ => {
-                push_wtf8_codepoint(&mut out, b'\\' as u32);
-                push_wtf8_codepoint(&mut out, esc as u32);
+                molt_runtime_core::text_storage::push_code_point(&mut out, b'\\' as u32);
+                molt_runtime_core::text_storage::push_code_point(&mut out, esc as u32);
                 idx += 2;
             }
         }
@@ -1081,7 +1071,7 @@ fn decode_utf16_with_errors(
             } else {
                 let next = read_u16(bytes, idx + 2, endian);
                 if (0xdc00..=0xdfff).contains(&next) {
-                    push_wtf8_codepoint(
+                    molt_runtime_core::text_storage::push_code_point(
                         &mut out,
                         0x10000 + ((u32::from(unit) - 0xd800) << 10) + u32::from(next) - 0xdc00,
                     );
@@ -1115,7 +1105,7 @@ fn decode_utf16_with_errors(
                 Some(&mut *initial_error),
             )?;
         } else {
-            push_wtf8_codepoint(&mut out, u32::from(unit));
+            molt_runtime_core::text_storage::push_code_point(&mut out, u32::from(unit));
             idx += 2;
         }
     }
@@ -1199,7 +1189,7 @@ fn decode_utf32_with_errors(
                 Some(&mut *initial_error),
             )?;
         } else {
-            push_wtf8_codepoint(&mut out, code);
+            molt_runtime_core::text_storage::push_code_point(&mut out, code);
             idx += 4;
         }
     }
@@ -1244,7 +1234,7 @@ fn decode_bytes_with_errors(
         CodecRuntimeClass::Latin1 => {
             let mut out = Vec::with_capacity(bytes.len());
             for &byte in bytes {
-                push_wtf8_codepoint(&mut out, byte as u32);
+                molt_runtime_core::text_storage::push_code_point(&mut out, byte as u32);
             }
             Ok((out, "latin-1".to_string()))
         }
@@ -1887,7 +1877,7 @@ mod encode_tests {
         for &(points, codec, policy, expected_start, expected_end, label) in cases {
             let mut bytes = Vec::new();
             for &point in points {
-                push_wtf8_codepoint(&mut bytes, point);
+                molt_runtime_core::text_storage::push_code_point(&mut bytes, point);
             }
             let EncodeError::InvalidSequence {
                 encoding,

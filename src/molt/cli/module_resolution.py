@@ -364,21 +364,6 @@ class _ParsedModuleAst:
     def admission(self) -> _PythonAstDigestAdmission:
         return _PythonAstDigestAdmission(self.tree)
 
-    @functools.cached_property
-    def _all_exports_by_target(self):
-        return {}
-
-    def all_exports(self, target_python):
-        from molt.compiler_analysis.python_import_scan import _static_module_all_exports
-
-        if target_python.tag not in self._all_exports_by_target:
-            self._all_exports_by_target[target_python.tag] = _static_module_all_exports(
-                self.tree,
-                target_python=target_python,
-                ast_digest_admission=self.admission,
-            )
-        return self._all_exports_by_target[target_python.tag]
-
 
 # Source text digest, target tag and native roots -> pruned AST digest. The key
 # names the content, so entries stay valid across builds; FIFO bounds it.

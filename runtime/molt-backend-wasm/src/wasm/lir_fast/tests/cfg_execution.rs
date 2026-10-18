@@ -3,7 +3,7 @@ use super::execution_support::executable_module;
 use super::*;
 use crate::tir::blocks::BlockId;
 use crate::tir::lir::{LirBlock, LirFunction, LirOp, LirRepr, LirTerminator, LirValue};
-use crate::wasm::test_execution::{real_execution_tool, run_node_test_script, wasm_test_temp_dir};
+use crate::wasm::test_execution::{run_node_test_script, wasm_test_temp_dir};
 use serde_json::json;
 use std::{fs, path::PathBuf};
 
@@ -258,13 +258,7 @@ fn inner_to_outer() -> LirFunction {
 
 #[test]
 fn reducible_cfg_executes_loop_scopes_and_selected_parallel_edges() {
-    let Some(node) = real_execution_tool(
-        PathBuf::from("node"),
-        "MOLT_REQUIRE_REAL_NODE_TESTS",
-        "LIR CFG execution",
-    ) else {
-        return;
-    };
+    let node = PathBuf::from("node");
     let (directory, _cleanup) = wasm_test_temp_dir();
     let infinite = cfg(
         "single_self",

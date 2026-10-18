@@ -14,6 +14,16 @@ pub(super) fn resolve_symbol(symbol: &str) -> Option<u64> {
             crate::molt_re_expand_replacement as *const (),
         )),
         #[cfg(feature = "stdlib_regex")]
+        "molt_re_subject_snapshot" => Some(crate::builtins::functions::runtime_fn_addr(
+            "crate::molt_re_subject_snapshot",
+            crate::molt_re_subject_snapshot as *const (),
+        )),
+        #[cfg(feature = "stdlib_regex")]
+        "molt_re_subject_view" => Some(crate::builtins::functions::runtime_fn_addr(
+            "crate::molt_re_subject_view",
+            crate::molt_re_subject_view as *const (),
+        )),
+        #[cfg(feature = "stdlib_regex")]
         "molt_re_strip_verbose" => Some(crate::builtins::functions::runtime_fn_addr(
             "crate::molt_re_strip_verbose",
             crate::molt_re_strip_verbose as *const (),
@@ -29,9 +39,14 @@ pub(super) fn resolve_symbol(symbol: &str) -> Option<u64> {
             crate::molt_re_execute as *const (),
         )),
         #[cfg(feature = "stdlib_regex")]
-        "molt_re_finditer_collect" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_re_finditer_collect",
-            crate::molt_re_finditer_collect as *const (),
+        "molt_re_scanner_new" => Some(crate::builtins::functions::runtime_fn_addr(
+            "crate::molt_re_scanner_new",
+            crate::molt_re_scanner_new as *const (),
+        )),
+        #[cfg(feature = "stdlib_regex")]
+        "molt_re_finditer_next" => Some(crate::builtins::functions::runtime_fn_addr(
+            "crate::molt_re_finditer_next",
+            crate::molt_re_finditer_next as *const (),
         )),
         #[cfg(feature = "stdlib_regex")]
         "molt_re_pattern_info" => Some(crate::builtins::functions::runtime_fn_addr(
@@ -42,21 +57,6 @@ pub(super) fn resolve_symbol(symbol: &str) -> Option<u64> {
         "molt_re_escape" => Some(crate::builtins::functions::runtime_fn_addr(
             "crate::molt_re_escape",
             crate::molt_re_escape as *const (),
-        )),
-        #[cfg(feature = "stdlib_regex")]
-        "molt_re_match_group" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_re_match_group",
-            crate::molt_re_match_group as *const (),
-        )),
-        #[cfg(feature = "stdlib_regex")]
-        "molt_re_match_groups" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_re_match_groups",
-            crate::molt_re_match_groups as *const (),
-        )),
-        #[cfg(feature = "stdlib_regex")]
-        "molt_re_match_groupdict" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_re_match_groupdict",
-            crate::molt_re_match_groupdict as *const (),
         )),
         #[cfg(feature = "stdlib_regex")]
         "molt_re_split" => Some(crate::builtins::functions::runtime_fn_addr(

@@ -130,7 +130,7 @@ use std::borrow::Cow;
 use std::sync::atomic::Ordering as AtomicOrdering;
 use std::sync::{Mutex, OnceLock};
 
-use super::ops_string::{push_wtf8_codepoint, utf8_char_to_byte_index_cached, wtf8_codepoint_at};
+use super::ops_string::utf8_char_to_byte_index_cached;
 use super::ops_sys::runtime_target_minor;
 use crate::runtime_profile_schema_generated::{
     PROFILE_EPOCH_KIND, PROFILE_EPOCH_SCHEMA_VERSION, RuntimeProfileMetricSemantic,
@@ -517,19 +517,33 @@ pub(super) fn alloc_range_from_bigints(
     stop: BigInt,
     step: BigInt,
 ) -> u64 {
-    let start_bits = int_bits_from_bigint(_py, start);
-    let stop_bits = int_bits_from_bigint(_py, stop);
-    let step_bits = int_bits_from_bigint(_py, step);
-    let ptr = alloc_range(_py, start_bits, stop_bits, step_bits);
-    let range_bits = if ptr.is_null() {
+    use molt_runtime_core::OwnedRuntimeValue;
+    // SAFETY: each conversion returns a fresh owned value (or the immediate
+    // failure sentinel), transferred exactly once into its runtime owner.
+    let start = unsafe {
+        OwnedRuntimeValue::from_owned_bits(_py.core_token(), int_bits_from_bigint(_py, start))
+    };
+    if obj_from_bits(start.bits()).is_none() {
+        return MoltObject::none().bits();
+    }
+    let stop = unsafe {
+        OwnedRuntimeValue::from_owned_bits(_py.core_token(), int_bits_from_bigint(_py, stop))
+    };
+    if obj_from_bits(stop.bits()).is_none() {
+        return MoltObject::none().bits();
+    }
+    let step = unsafe {
+        OwnedRuntimeValue::from_owned_bits(_py.core_token(), int_bits_from_bigint(_py, step))
+    };
+    if obj_from_bits(step.bits()).is_none() {
+        return MoltObject::none().bits();
+    }
+    let ptr = alloc_range(_py, start.bits(), stop.bits(), step.bits());
+    if ptr.is_null() {
         MoltObject::none().bits()
     } else {
         MoltObject::from_ptr(ptr).bits()
-    };
-    dec_ref_bits(_py, start_bits);
-    dec_ref_bits(_py, stop_bits);
-    dec_ref_bits(_py, step_bits);
-    range_bits
+    }
 }
 
 // ---------------------------------------------------------------------------

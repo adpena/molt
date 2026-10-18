@@ -810,7 +810,21 @@ struct StructPlan {
 }
 
 fn struct_error(py: &PyToken, class: u64, message: &str) -> u64 {
-    molt_runtime_core::rt_raise_class(py, class, message)
+    let text = unsafe { OwnedRuntimeValue::from_owned_bits(py, rt_string_from(message)) };
+    if exception_pending(py) {
+        return MoltObject::none().bits();
+    }
+    let args = unsafe { OwnedRuntimeValue::from_owned_bits(py, rt_tuple(&[text.bits()])) };
+    if exception_pending(py) {
+        return MoltObject::none().bits();
+    }
+    let error = unsafe {
+        OwnedRuntimeValue::from_owned_bits(py, exception_new_from_class(py, class, args.bits()))
+    };
+    if exception_pending(py) {
+        return MoltObject::none().bits();
+    }
+    rt_raise(error.bits())
 }
 
 fn plan(py: &PyToken, error: u64, format: u64) -> Result<StructPlan, u64> {

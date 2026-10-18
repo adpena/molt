@@ -210,6 +210,33 @@ def test_reuse_key_binds_resolution_environment_and_probe_cwd(
     assert len(list(reuse_root.glob("*.json"))) == 3
 
 
+@pytest.mark.parametrize(
+    "name",
+    [
+        "MOLT_LLVM_PREFIX",
+        "LLVM_CONFIG_PATH",
+        "LLVM_SYS_221_PREFIX",
+        "MLIR_SYS_220_PREFIX",
+        "TABLEGEN_220_PREFIX",
+    ],
+)
+def test_llvm_sdk_environment_changes_invalidate_actual_tool_probe_reuse(
+    tmp_path, name
+):
+    reuse_root = tmp_path / "tool-identity"
+    first, cold = _identity(tmp_path, reuse_root, env_overrides={name: "/first SDK"})
+    warm, reused = _identity(tmp_path, reuse_root, env_overrides={name: "/first SDK"})
+    assert warm == first
+    assert cold[0]["state"] == "miss"
+    assert reused[0]["state"] == "hit"
+    _changed, recaptured = _identity(
+        tmp_path, reuse_root, env_overrides={name: "/second SDK"}
+    )
+    assert recaptured[0]["state"] == "miss"
+    assert recaptured[0]["key_sha256"] != cold[0]["key_sha256"]
+    assert name in command_identity.compile_environment_selection({name: "/first SDK"})
+
+
 def test_malformed_or_oversized_records_degrade_to_a_fresh_capture(
     tmp_path: Path,
 ) -> None:

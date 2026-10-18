@@ -156,6 +156,13 @@ Source, sysroot, SDK compiler-rt and executable inputs enter live custody
 before execution. Native requests preserve host CC/CXX selection separately
 from their recorded effective target triple.
 
+Admitted environment overrides participate in output validation, capacity
+admission and DX environment resolution before tool capture. Applying them only
+to the resolved child environment is too late: cache opt-outs must prevent
+wrapper selection, and artifact/toolchain roots must own their derived paths.
+Queue-owned source, temporary and execution-custody values remain protected by
+the existing override policy.
+
 Linux writable-close notifications remain input events: they can be the only
 notification of a closed writable mapping, including a write followed by a
 restore. A selected uv environment's pre-existing empty regular lock has one
@@ -198,8 +205,12 @@ execute. Native stripping and WASM optimization reuse the compiler's existing
 selectors. Their identities bind both the selected entrypoint and resolved
 executable bytes; changing or omitting either invalidates reuse. SDK capture
 includes its symbol reader.
-Compiler-selected dependency roles do not replace direct executable commands or
-make ordinary duplicate executable policies unambiguous.
+Explicit `selection_only` dependency roles do not infer a bare executable name.
+They still resolve, admit and capture the declared executable normally; only
+roles whose version or runtime identity comes from another image require a
+content resolver. Thus native C fixture commands can declare `hosted-clang`
+while a bare `clang` command retains its canonical LLVM ABI policy. Ordinary
+duplicate executable policies remain ambiguous and are refused.
 
 Cargo proofs bind the captured physical Rust compiler and Cargo executable
 before launch. Only commands declaring native C compilation acquire its
@@ -1411,6 +1422,32 @@ original bytes before completion, so mutate-execute-restore cannot produce
 eligible evidence. Platforms without a lossless implemented watcher reject
 execution rather than falling back to sampling.
 
+Python's startup selection owns each lexical/resolved location and whether its
+role admits a directory tree. Only actual import and standard-library
+directories become recursive roots. Executables, native images, archives,
+prefix selectors and startup configuration remain finite inputs, including
+absent ZIP/configuration candidates and retargetable aliases. Their parent is
+an event anchor, never an additional recursive resource authority. A missing
+parent anchors at its nearest existing directory; creation of a selected
+ancestor is itself an input mutation.
+The environment locator likewise keeps import archives in its existing exact
+file list, and native compiler resources keep file/alias selectors finite.
+The active environment's installation prefix and declared SDK/resource
+directories remain tree owners. The environment locator also retains its
+broader base-installation prefix watches for startup selectors absent from that
+location schema. Replacing those watches requires migrating that selector
+coverage to the existing startup-selection authority; it is not covered by the
+finite runtime/native resource correction.
+
+Linux installs each root watch before enumerating owned directories, following
+the [inotify directory-watch and recursion contract](https://man7.org/linux/man-pages/man7/inotify.7.html).
+Finite inputs visit only their explicit directory ancestors and extend watches
+only for owned directory events. This costs at most one watch per selected
+ancestor, rather than scanning every subtree beside a selected file. Recursive
+source/package/resource trees retain their complete mutation coverage, and an
+unreadable required root still rejects execution. These operations belong to
+development evidence custody and add no checks to emitted programs.
+
 The proof command receives only classified host/runtime, compiler, and Molt
 environment names. Ambient pytest injection, package-index controls,
 unclassified overrides, URL credentials, and secret-bearing names are rejected
@@ -1425,6 +1462,26 @@ row into `toolchain-frozen-manifest-changed` non-evidence. Receipts store
 names, classes, and keyed fingerprints for every
 passed value, never plaintext values; queued logs and notebooks expose override
 names only.
+
+The frozen input tree also constrains neighboring control-plane commands. A
+Python `--dry-run` can write import bytecode before its command body runs.
+When inspecting a checkout held by a proof, invoke every Python entrypoint
+with `-B` before the script or `-m` (for example,
+`python -B tools/molt_dev.py integrate --dry-run`), and preserve the canonical
+external cache environment in its children. `-I`/`-E` ignore Python environment
+settings, so an environment variable alone does not establish a no-write
+launch. Keep source generation and other writes outside the held tree. The
+input journal rejects incidental bytecode writes too; do not ignore those
+events or promote the rejected receipt because the tests passed.
+
+LLVM SDK environment names come from the same authority as their exporters.
+The exact SDK selectors and versioned llvm-sys, mlir-sys and TableGen prefixes
+remain classified inputs through command admission, supervisor compilation,
+Cargo workspace selection and tool-probe reuse. Changing a selected prefix
+changes those compile identities. Cargo configuration cannot replace a
+captured selector through an unbound `[env]` default or forced value. Unrelated
+MLIR/TableGen names remain unclassified; no broad prefix exception is implied.
+This is development input custody and adds no emitted-program work.
 
 Receipts bind run ID, a fresh execution nonce, row and effective cwd, Git root,
 commit and tree, cleanliness/status digest, environment,

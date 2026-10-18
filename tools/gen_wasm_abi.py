@@ -3,8 +3,12 @@
 
 Usage::
 
-    python tools/gen_wasm_abi.py --write
+    python tools/generators.py write --only tools/gen_wasm_abi.py
     python tools/gen_wasm_abi.py --check
+
+Use the manifest runner for writes so declared consumers, including the browser
+asset graph, are synchronized. This module's ``generated_outputs()`` and
+low-level ``--write`` operate on the ABI projection alone.
 """
 
 from __future__ import annotations

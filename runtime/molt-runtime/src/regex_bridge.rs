@@ -6,28 +6,242 @@
 
 use crate::object::ops::string_obj_to_owned as _string_obj_to_owned;
 use crate::*;
+use molt_cpython_abi::native_custody::{BufferAcquireError, ByteInput};
 
-type RuntimeExtensionStateInit = unsafe extern "C" fn() -> *mut u8;
-type RuntimeExtensionStateClear = unsafe extern "C" fn(*mut u8);
-type RuntimeExtensionStateDrop = unsafe extern "C" fn(*mut u8);
+#[cfg(feature = "stdlib_regex")]
+crate::object::native_handle::native_handle_bridge!(
+    __molt_regex_pattern_handle_new,
+    __molt_regex_pattern_handle_clone,
+    molt_runtime_regex::PatternHandle
+);
+#[cfg(feature = "stdlib_regex")]
+crate::object::native_handle::native_handle_bridge!(
+    __molt_regex_scanner_handle_new,
+    __molt_regex_scanner_handle_clone,
+    std::sync::Mutex<molt_runtime_regex::ScannerHandle>
+);
 
+/// SRE's getstring role replaces every failed buffer export, including a
+/// missing slot, with its own type diagnostic. Runtime projection/allocation
+/// preparation happens before that protocol and retains its original error.
+fn regex_subject_buffer<T>(
+    py: &PyToken<'_>,
+    subject_bits: u64,
+    result: Result<T, BufferAcquireError>,
+) -> Option<T> {
+    match result {
+        Ok(input) => Some(input),
+        Err(BufferAcquireError::Preparation) => None,
+        Err(BufferAcquireError::Exporter) => {
+            crate::builtins::exceptions::with_saved_raised_exception(py, || {
+                let name = crate::object::ops::protocol_type_name(py, subject_bits, 200);
+                raise_exception::<()>(
+                    py,
+                    "TypeError",
+                    &format!("expected string or bytes-like object, got '{name}'"),
+                );
+                false
+            });
+            None
+        }
+    }
+}
+
+fn immutable_regex_subject(py: &PyToken<'_>, bits: u64) -> bool {
+    let Some(ptr) = obj_from_bits(bits).as_ptr() else {
+        return false;
+    };
+    let type_id = unsafe { object_type_id(ptr) };
+    type_id == TYPE_ID_STRING
+        || (type_id == TYPE_ID_BYTES
+            && crate::object::buffer_exports::is_exact_builtin_storage(py, bits))
+}
+
+/// Admit a regex subject once at the Python buffer boundary. Text and exact
+/// immutable bytes retain their existing object; mutable and arbitrary
+/// exporters become an immutable byte snapshot for the matching operation.
 #[unsafe(no_mangle)]
-pub extern "C" fn __molt_regex_runtime_state_get_or_init(
-    key_ptr: *const u8,
-    key_len: usize,
-    init: RuntimeExtensionStateInit,
-    clear: RuntimeExtensionStateClear,
-    drop: RuntimeExtensionStateDrop,
-) -> *mut u8 {
+pub extern "C" fn molt_re_subject_snapshot(subject_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
-        let key = unsafe { std::slice::from_raw_parts(key_ptr, key_len) };
-        crate::state::runtime_extension_state_get_or_init(
-            crate::state::runtime_state::runtime_state(_py),
-            key,
-            init,
-            clear,
-            drop,
-        )
+        if immutable_regex_subject(_py, subject_bits) {
+            inc_ref_bits(_py, subject_bits);
+            return subject_bits;
+        }
+        // ByteInput uses the canonical PyBUF_SIMPLE custody and keeps the
+        // exporter alive until the snapshot has been allocated.
+        let Some(input) = regex_subject_buffer(_py, subject_bits, unsafe {
+            ByteInput::acquire(_py.core_token(), subject_bits)
+        }) else {
+            return MoltObject::none().bits();
+        };
+        // Read the leased length, then allocate before borrowing the mutable
+        // exporter again: allocation may run finalizers, so no buffer slice
+        // may remain live across it.
+        let len = unsafe { input.bytes(_py.core_token()).len() };
+        let snapshot = if len == 0 {
+            // Keep the runtime's canonical empty-bytes singleton.
+            alloc_bytes(_py, &[])
+        } else {
+            crate::object::builders::alloc_inline_bytes_with_len(
+                _py,
+                len,
+                crate::object::builders::InlineBytesKind::Bytes,
+            )
+        };
+        if snapshot.is_null() {
+            return MoltObject::none().bits();
+        }
+        if len != 0 {
+            let bytes = unsafe { input.bytes(_py.core_token()) };
+            unsafe {
+                std::ptr::copy_nonoverlapping(
+                    bytes.as_ptr(),
+                    crate::object::layout::InlineBytesStorage::data(snapshot),
+                    len,
+                );
+            }
+        }
+        MoltObject::from_ptr(snapshot).bits()
+    })
+}
+
+/// Retain immutable subjects directly; otherwise acquire exactly one SIMPLE
+/// export and transfer it to the ordinary traced memoryview storage owner.
+/// The Python scanner owns this view until exhaustion, never a GREEN handle.
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_re_subject_view(subject_bits: u64) -> u64 {
+    crate::with_gil_entry_nopanic!(_py, {
+        if immutable_regex_subject(_py, subject_bits) {
+            inc_ref_bits(_py, subject_bits);
+            return subject_bits;
+        }
+        let Some(lease) = regex_subject_buffer(_py, subject_bits, unsafe {
+            molt_cpython_abi::native_custody::acquire_buffer(
+                subject_bits,
+                molt_cpython_abi::native_custody::PyBUF_SIMPLE,
+            )
+        }) else {
+            return MoltObject::none().bits();
+        };
+        let descriptor = match unsafe {
+            molt_cpython_abi::api::buffer::descriptor_from_pybuffer(lease.descriptor())
+        } {
+            Ok(descriptor) => descriptor,
+            Err(molt_cpython_abi::api::buffer::InvalidBufferDescriptor) => {
+                return raise_exception(
+                    _py,
+                    "BufferError",
+                    "invalid or indirect memoryview buffer descriptor",
+                );
+            }
+        };
+        let format = unsafe { (*lease.descriptor()).format };
+        unsafe {
+            crate::object::memoryview::from_native_descriptor(_py, &descriptor, format, Some(lease))
+        }
+    })
+}
+
+/// Copy one requested byte capture from the original subject. Allocate the
+/// destination before borrowing exporter memory so no live slice crosses a
+/// possible GC/finalizer boundary; only the capture bytes are copied.
+#[unsafe(no_mangle)]
+pub extern "C" fn __molt_regex_subject_slice(subject_bits: u64, start: usize, end: usize) -> u64 {
+    crate::with_gil_entry_nopanic!(_py, {
+        if start > end {
+            return raise_exception::<u64>(_py, "IndexError", "invalid group span");
+        }
+        if let Some(subject_ptr) = obj_from_bits(subject_bits).as_ptr()
+            && unsafe { object_type_id(subject_ptr) } == TYPE_ID_STRING
+        {
+            let subject = obj_from_bits(subject_bits);
+            let (byte_start, byte_end) = (unsafe {
+                crate::object::ops_format::with_string_bytes(subject, |bytes| {
+                    let key = Some(subject_ptr as usize);
+                    let start = crate::object::ops_string::utf8_char_to_byte_index_cached(
+                        _py,
+                        bytes,
+                        i64::try_from(start).unwrap_or(i64::MAX),
+                        key,
+                    );
+                    let end = crate::object::ops_string::utf8_char_to_byte_index_cached(
+                        _py,
+                        bytes,
+                        i64::try_from(end).unwrap_or(i64::MAX),
+                        key,
+                    );
+                    (start, end)
+                })
+            })
+            .expect("TYPE_ID_STRING must expose its physical WTF-8 storage under the GIL");
+            let size = byte_end.saturating_sub(byte_start);
+            let ptr = if size == 0 {
+                alloc_string(_py, &[])
+            } else {
+                crate::object::builders::alloc_inline_bytes_with_len(
+                    _py,
+                    size,
+                    crate::object::builders::InlineBytesKind::String,
+                )
+            };
+            if ptr.is_null() {
+                return MoltObject::none().bits();
+            }
+            if size != 0 {
+                // Allocation may run finalizers. Reacquire the immutable string
+                // storage only after it has completed, and never retain this
+                // borrow across another runtime call.
+                (unsafe {
+                    crate::object::ops_format::with_string_bytes(
+                        obj_from_bits(subject_bits),
+                        |bytes| {
+                            std::ptr::copy_nonoverlapping(
+                                bytes.as_ptr().add(byte_start),
+                                crate::object::layout::InlineBytesStorage::data(ptr),
+                                size,
+                            );
+                        },
+                    )
+                })
+                .expect("retained TYPE_ID_STRING must keep its physical storage");
+            }
+            return MoltObject::from_ptr(ptr).bits();
+        }
+        let Some(input) = regex_subject_buffer(_py, subject_bits, unsafe {
+            ByteInput::acquire(_py.core_token(), subject_bits)
+        }) else {
+            return MoltObject::none().bits();
+        };
+        let len = unsafe { input.bytes(_py.core_token()).len() };
+        // Match marks belong to the earlier search operation. The source may
+        // have shrunk since then; CPython clamps both marks to its current
+        // buffer length when each capture is read.
+        let start = start.min(len);
+        let end = end.min(len);
+        let size = end.saturating_sub(start);
+        let ptr = if size == 0 {
+            alloc_bytes(_py, &[])
+        } else {
+            crate::object::builders::alloc_inline_bytes_with_len(
+                _py,
+                size,
+                crate::object::builders::InlineBytesKind::Bytes,
+            )
+        };
+        if ptr.is_null() {
+            return MoltObject::none().bits();
+        }
+        if size != 0 {
+            let bytes = unsafe { input.bytes(_py.core_token()) };
+            unsafe {
+                std::ptr::copy_nonoverlapping(
+                    bytes.as_ptr().add(start),
+                    crate::object::layout::InlineBytesStorage::data(ptr),
+                    size,
+                );
+            }
+        }
+        MoltObject::from_ptr(ptr).bits()
     })
 }
 
@@ -50,11 +264,6 @@ pub extern "C" fn __molt_regex_raise_exception(
             unsafe { std::str::from_utf8_unchecked(std::slice::from_raw_parts(msg_ptr, msg_len)) };
         raise_exception::<u64>(_py, type_name, msg)
     })
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn __molt_regex_exception_pending() -> i32 {
-    crate::with_gil_entry_nopanic!(_py, { if exception_pending(_py) { 1 } else { 0 } })
 }
 
 // ---------------------------------------------------------------------------
@@ -82,6 +291,14 @@ pub extern "C" fn __molt_regex_alloc_string(data_ptr: *const u8, data_len: usize
     crate::with_gil_entry_nopanic!(_py, {
         let data = unsafe { std::slice::from_raw_parts(data_ptr, data_len) };
         alloc_string(_py, data)
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn __molt_regex_alloc_bytes(data_ptr: *const u8, data_len: usize) -> *mut u8 {
+    crate::with_gil_entry_nopanic!(_py, {
+        let data = unsafe { std::slice::from_raw_parts(data_ptr, data_len) };
+        alloc_bytes(_py, data)
     })
 }
 
@@ -121,12 +338,62 @@ pub extern "C" fn __molt_regex_string_obj_to_owned(
     }
 }
 
+/// Convert an exact bytes regex pattern to a temporary one-unit-per-byte text
+/// representation for the shared parser. This is compile-time-only; subject
+/// matching retains borrowed byte storage and never UTF-8-decodes bytes.
 #[unsafe(no_mangle)]
-pub extern "C" fn __molt_regex_is_truthy(bits: u64) -> i32 {
+pub extern "C" fn __molt_regex_bytes_pattern_to_string(
+    bits: u64,
+    out_ptr: *mut *const u8,
+    out_len: *mut usize,
+) -> i32 {
     crate::with_gil_entry_nopanic!(_py, {
         let obj = obj_from_bits(bits);
-        if is_truthy(_py, obj) { 1 } else { 0 }
+        let Some(ptr) = obj.as_ptr() else {
+            return 0;
+        };
+        if unsafe { object_type_id(ptr) } != TYPE_ID_BYTES {
+            return 0;
+        }
+        let raw = unsafe { std::slice::from_raw_parts(bytes_data(ptr), bytes_len(ptr)) };
+        let pattern: String = raw.iter().map(|&byte| char::from(byte)).collect();
+        let bytes = pattern.into_bytes().into_boxed_slice();
+        unsafe { crate::resource::bridge_buffer::export_u8_box(bytes, out_ptr, out_len) }
     })
+}
+
+/// Borrow bytes storage for one regex transition. For mutable exporters the
+/// argument is the iterator-owned memoryview, which pins the PyBUF_SIMPLE
+/// lease; the slice never outlives this call.
+#[unsafe(no_mangle)]
+pub extern "C" fn __molt_regex_bytes_view(
+    bits: u64,
+    out_ptr: *mut *const u8,
+    out_len: *mut usize,
+) -> i32 {
+    let obj = obj_from_bits(bits);
+    let Some(ptr) = obj.as_ptr() else {
+        return 0;
+    };
+    match unsafe { object_type_id(ptr) } {
+        TYPE_ID_BYTES => unsafe {
+            *out_ptr = bytes_data(ptr);
+            *out_len = bytes_len(ptr);
+        },
+        TYPE_ID_MEMORYVIEW => {
+            let Some(bytes) =
+                (unsafe { crate::object::memoryview::bytes_like_slice_checked(ptr).ok() })
+            else {
+                return 0;
+            };
+            unsafe {
+                *out_ptr = bytes.as_ptr();
+                *out_len = bytes.len();
+            }
+        }
+        _ => return 0,
+    }
+    1
 }
 
 // ---------------------------------------------------------------------------
@@ -137,13 +404,6 @@ pub extern "C" fn __molt_regex_is_truthy(bits: u64) -> i32 {
 pub extern "C" fn __molt_regex_dec_ref_bits(bits: u64) {
     crate::with_gil_entry_nopanic!(_py, {
         dec_ref_bits(_py, bits);
-    })
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn __molt_regex_inc_ref_bits(bits: u64) {
-    crate::with_gil_entry_nopanic!(_py, {
-        inc_ref_bits(_py, bits);
     })
 }
 
@@ -165,40 +425,13 @@ pub extern "C" fn __molt_regex_to_i64(bits: u64, out: *mut i64) -> i32 {
     }
 }
 
+#[cfg(test)]
+#[path = "regex_bridge_tests.rs"]
+mod tests;
+
 // ---------------------------------------------------------------------------
 // Container helpers
 // ---------------------------------------------------------------------------
-
-#[unsafe(no_mangle)]
-pub extern "C" fn __molt_regex_dict_get_in_place(
-    dict_ptr: *mut u8,
-    key_bits: u64,
-    out: *mut u64,
-) -> i32 {
-    crate::with_gil_entry_nopanic!(_py, {
-        match unsafe { dict_get_in_place(_py, dict_ptr, key_bits) } {
-            Ok(Some(bits)) => {
-                unsafe {
-                    *out = bits;
-                }
-                1
-            }
-            Ok(None) => 0,
-            Err(()) => -1,
-        }
-    })
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn __molt_regex_dict_set_in_place(
-    dict_ptr: *mut u8,
-    key_bits: u64,
-    val_bits: u64,
-) -> i32 {
-    crate::with_gil_entry_nopanic!(_py, {
-        i32::from(unsafe { dict_set_in_place(_py, dict_ptr, key_bits, val_bits) })
-    })
-}
 
 #[unsafe(no_mangle)]
 pub extern "C" fn __molt_regex_seq_snapshot(
@@ -219,60 +452,5 @@ pub extern "C" fn __molt_regex_dict_snapshot(
 ) -> i32 {
     crate::with_gil_entry_nopanic!(_py, {
         unsafe { crate::seq_snapshot_bridge::export_dict(_py, ptr, out_ptr, out_len) }
-    })
-}
-
-// ---------------------------------------------------------------------------
-// Iteration helpers
-// ---------------------------------------------------------------------------
-
-#[unsafe(no_mangle)]
-pub extern "C" fn __molt_regex_molt_iter(bits: u64) -> u64 {
-    crate::object::ops_iter::molt_iter(bits)
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn __molt_regex_molt_iter_next(iter_bits: u64, out: *mut u64) -> i32 {
-    let result = crate::object::ops_iter::molt_iter_next(iter_bits);
-    let none_bits = MoltObject::none().bits();
-    if result == none_bits {
-        crate::with_gil_entry_nopanic!(_py, {
-            if exception_pending(_py) {
-                0 // StopIteration or error
-            } else {
-                // Actual None value — return it.
-                unsafe {
-                    *out = result;
-                }
-                1
-            }
-        })
-    } else {
-        unsafe {
-            *out = result;
-        }
-        1
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Attribute / callable helpers
-// ---------------------------------------------------------------------------
-
-#[unsafe(no_mangle)]
-pub extern "C" fn __molt_regex_attr_name_bits_from_bytes(
-    key_ptr: *const u8,
-    key_len: usize,
-) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
-        let key = unsafe { std::slice::from_raw_parts(key_ptr, key_len) };
-        crate::builtins::attr::attr_name_bits_from_bytes(_py, key).unwrap_or_default()
-    })
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn __molt_regex_call_callable1(call_bits: u64, arg0: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
-        unsafe { crate::call::dispatch::call_callable1(_py, call_bits, arg0) }
     })
 }

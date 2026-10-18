@@ -2814,10 +2814,7 @@ def test_actual_guard_memory_changes_reuse_only_development_workspace(tmp_path, 
         lease = cache.acquire(**inputs)
         leases.append(lease)
         _finish_workspace(lease, inputs)
-    assert (
-        selected_envs[0]["MOLT_BACKEND_MEMORY_AVAILABLE_GB"]
-        != selected_envs[1]["MOLT_BACKEND_MEMORY_AVAILABLE_GB"]
-    )
+    assert all("MOLT_BACKEND_MEMORY_AVAILABLE_GB" not in env for env in selected_envs)
     assert (
         selected_envs[0]["MOLT_BACKEND_MAX_PROCESS_RSS_GB"]
         != selected_envs[1]["MOLT_BACKEND_MAX_PROCESS_RSS_GB"]
@@ -2836,6 +2833,11 @@ def test_actual_guard_memory_changes_reuse_only_development_workspace(tmp_path, 
         ("CARGO_PROFILE_RELEASE_LTO", "true"),
         ("CC", "/selected-other-compiler"),
         ("MOLT_SESSION_ID", "explicit-other-session"),
+        ("MOLT_LLVM_PREFIX", "/different SDK"),
+        ("LLVM_CONFIG_PATH", "/different SDK/bin/llvm-config"),
+        ("LLVM_SYS_221_PREFIX", "/different llvm-sys search"),
+        ("MLIR_SYS_220_PREFIX", "/different MLIR SDK"),
+        ("TABLEGEN_220_PREFIX", "/different TableGen SDK"),
     ],
 )
 def test_workspace_compile_environment_and_pinned_session_still_partition(

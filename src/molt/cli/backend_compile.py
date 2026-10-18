@@ -271,7 +271,6 @@ def _prepare_backend_setup(
         codegen_backend=codegen.backend,
         rust_cpu=rust_cpu,
     )
-    backend_bin = backend_selection.binary
     backend_binary_start = time.perf_counter()
     backend_ensure_result = _ensure_selected_backend_binary(
         backend_selection,
@@ -287,8 +286,10 @@ def _prepare_backend_setup(
     )
     if not backend_ensure_result:
         return None, _fail(backend_ensure_result.message, json_output, command="build")
-    if not backend_bin.exists():
-        return None, _fail("Backend binary missing", json_output, command="build")
+    # The admitted generation, resolved once: every later step of this build
+    # runs these bytes, whatever another build publishes meanwhile.
+    backend_bin = backend_ensure_result.binary
+    assert backend_bin is not None
     runtime_wasm_codegen_digest = ""
     wasm_layout = None
     if is_wasm:
@@ -604,7 +605,6 @@ def _prepare_backend_dispatch(
             codegen_backend=codegen.backend,
             rust_cpu=rust_cpu,
         )
-        backend_bin = backend_selection.binary
         backend_ensure_result = _ensure_selected_backend_binary(
             backend_selection,
             molt_root=molt_root,
@@ -615,11 +615,11 @@ def _prepare_backend_dispatch(
             return None, _fail(
                 backend_ensure_result.message, json_output, command="build"
             )
+        backend_bin = backend_ensure_result.binary
+        assert backend_bin is not None
         backend_env = _backend_environment_with_compiler_fingerprint(
             backend_env, backend_ensure_result.cache_compiler_fingerprint
         )
-    if not backend_bin.exists():
-        return None, _fail("Backend binary missing", json_output, command="build")
 
     daemon_socket: Path | None = None
     daemon_ready = False
@@ -887,9 +887,9 @@ def _execute_backend_compile(
             backend_output_written = daemon_compile.output_written
             daemon_error = daemon_compile.error
             backend_output_exists = daemon_compile.output_exists
-            # Show only the daemon output produced by this request. Printing
-            # a rolling tail replays previous builds and makes warm user-code
-            # compiles look like they recompiled stdlib batches.
+            # Show output in this request's observed daemon-log interval.
+            # Concurrent requests can contribute to the same interval. A
+            # rolling tail would also replay output from previous builds.
             if daemon_log_path is not None and daemon_log_offset is not None:
                 daemon_log_delta = _backend_daemon_log_since(
                     daemon_log_path, daemon_log_offset

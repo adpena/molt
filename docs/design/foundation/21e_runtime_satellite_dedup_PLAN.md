@@ -22,6 +22,101 @@ dual-path pairs with a zero residual ceiling. -->
 5. **The recovery baton `memory/recovery/baton_move_R_satellite_drift.md` does not exist** (only genthrow_51/, takeover_20260609/). Every cross-ref to it dangles. 21e supersedes it.
 6. **The historical sections below are an archive, not a live work queue.** Use the checked-in source and current generated artifacts before deriving new work from old residual counts.
 
+## Serialization semantic and primitive ownership
+
+The Python `base64` facade owns observable operand protocols. Exact builtin
+operands and flags may enter native kernels; subclasses and arbitrary protocol
+results retain the operation order of the selected CPython source. Converting
+an arbitrary `.encode("ascii")` result to a byte vector before its consumer
+would erase `.translate`, length, indexing and exception behavior. Generic
+algorithm tables initialize only when that algorithm is used. The selected
+**guest** Python version owns version-specific semantics, including the Python
+3.14 Base16 deletion operation; the development interpreter does not select it.
+
+The source authorities are pinned CPython
+[`Lib/base64.py`](https://github.com/python/cpython/blob/3bb231a6a5dc02b95658877318bf61501a7209e9/Lib/base64.py)
+and [`Modules/binascii.c`](https://github.com/python/cpython/blob/3bb231a6a5dc02b95658877318bf61501a7209e9/Modules/binascii.c),
+with the other version pins in `config/cpython_regrtest_sources.toml`.
+`src/molt/target_python.py` owns target admission; a pending source pin, including
+Python 3.15, is not a support or release-qualification claim.
+
+`molt-runtime-serial::base64_mod::b64_decode` is the shared Base64 primitive for
+both public module families. Its state tracks the partial quantum, carried bits
+and padding. Valid four-byte quanta and permissive ignored runs are bulk
+transitions of that same state; padding and malformed input retain ordered
+scalar transitions. The parser never invents padding or builds a filtered copy.
+`binascii.a2b_base64` admits its data before truth-evaluating `strict_mode`, using
+the existing native buffer and argument-binding authorities.
+
+All four `binascii.a2b_*` decoders and `unhexlify` share the same `ascii_buffer`
+converter. It admits ASCII string storage or one contiguous buffer lease,
+retains preparation failures, and replaces exporter failures with Clinic's
+TypeError. Replacement uses the runtime's existing raised-owner transaction:
+the new exception is selected before the former owner retires, while the
+enclosing handled exception remains available as implicit context. The serial
+vtable publishes that single cold replacement operation; satellites own no
+parallel clear/restore protocol. Exact bytes retain their existing no-export
+path, and mutable bytes are read after subsequent argument conversions.
+
+Memoryview admission similarly follows pinned
+[`Objects/memoryobject.c`](https://github.com/python/cpython/blob/3bb231a6a5dc02b95658877318bf61501a7209e9/Objects/memoryobject.c):
+an absent buffer slot selects memoryview's diagnostic; a present slot's failure
+propagates unchanged. One projected native object serves both the callback-free
+slot check and acquisition. This adds neither a second projection nor a second
+exporter call, and exact builtin storage keeps its direct path.
+
+Runtime buffer eligibility is fallible. A supported slot, an absent slot and
+failed object/class or lease preparation are distinct outcomes. The same native
+custody owner prepares the semantic class before a pure C-API slot query.
+Construction, assignment, search, containment and comparison propagate failed
+preparation; they must not select iterable/index fallback, `NotImplemented`, or
+an unsupported-buffer diagnostic. Real exporter failures retain each consumer's
+CPython normalization policy. The exact builtin storage path still needs no
+native projection, and successful generic admission invokes one exporter.
+
+The existing runtime exception owner publishes the actual `binascii.Error`
+(`ValueError` base) and `binascii.Incomplete` (`Exception` base). A closed
+`BinasciiException` identity selects their declarations, and the existing strong
+class cache owns their storage and teardown. The native `binascii` primitives
+retain those identities after public rebinding, as CPython's C module does.
+Module exception names are metadata; those primitives do not synthesize a
+class from its spelling or consult mutable module bindings.
+
+Python's Base32 and Base16 algorithms own different failure operations: Base32
+catches an actual invalid-digit `KeyError`, while Base16 distinguishes its
+Python nonalphabet raise from the C primitive's odd-length error. Their three
+native success specializations therefore publish one explicit `bytes | None`
+result contract. Bytes are the decoded result; `None` declines specialization
+without publishing a result or raising a pending exception. One identity guard
+returns success or enters the existing compiled Python suffix. Real admission,
+codec and allocation exceptions still propagate normally. The unused native
+Base32 mapping parameter is removed with its last producer.
+
+The accepted trade is repeated computation for malformed exact input, keeping
+the native successful path while the canonical suffix owns actual error
+operations, context and mutable `binascii.Error` calls. This avoids an eager
+error lookup, synthetic context, message allocation or parallel error table.
+The generic suffix is compiled into the standalone binary; it requires no host
+Python. This is a guard decline before an exception, with no post-failure retry.
+All primitive consumers and fixture projections implement that same result
+contract; the former native algorithm-error raising lane is removed.
+
+The cold non-ASCII input path uses the canonical codec error
+and raised/handled exception owners to preserve its Unicode context. No
+match-and-clear exception protocol remains alongside facade conversion.
+
+The kernel is linear, with one decoded-output vector and a constant 256-byte
+alphabet table. It adds no process, syscall or lock to its normal loop. Kernel
+measurements exclude input conversion, the final immutable-object allocation,
+runtime entry and the Python facade; those costs still belong to product
+performance acceptance. Native fast paths must beat the replaced implementations
+on their valid, padded, line-folded and ignored-run workloads before deletion.
+These are end-user runtime semantics and costs. Test generation, pinned-oracle
+comparison, independent state enumeration and performance qualification run on
+the development side and add no guest checks. Current execution qualification
+and remaining release obligations live only in the
+[v1.0 findings board](../../agent/V1_HANDOFF_FINDINGS.md).
+
 ## 1. CURRENT-STATE MAP (verified)
 ### 1.1 Live remaining pairs after R.3 deletions
 

@@ -1,13 +1,16 @@
 from __future__ import annotations
-from tests.process_guard_common import run_guarded_test_process
+from tests.process_guard_common import install_module_view, run_guarded_test_process
 
 from concurrent.futures import ThreadPoolExecutor
+from functools import partial
+import threading
 import hashlib
 import io
 import json
 from pathlib import Path
 import subprocess
 import sys
+import tempfile
 from types import SimpleNamespace
 import zipfile
 
@@ -84,7 +87,7 @@ def test_bootstrap_rejects_bad_archive_checksum(tmp_path: Path, monkeypatch) -> 
     )
     monkeypatch.setattr(bootstrap, "_install_root", lambda *_args: tmp_path / "tool")
     monkeypatch.setattr(
-        bootstrap.urllib.request,
+        bootstrap,
         "urlopen",
         lambda *_args, **_kwargs: io.BytesIO(archive),
     )
@@ -114,7 +117,7 @@ def test_concurrent_bootstrap_publishes_once(tmp_path: Path, monkeypatch) -> Non
         ),
     )
     monkeypatch.setattr(bootstrap, "_install_root", lambda *_args: tmp_path / "tool")
-    monkeypatch.setattr(bootstrap.urllib.request, "urlopen", urlopen)
+    monkeypatch.setattr(bootstrap, "urlopen", urlopen)
     monkeypatch.setattr(
         bootstrap,
         "_valid",
@@ -133,7 +136,31 @@ def test_concurrent_bootstrap_publishes_once(tmp_path: Path, monkeypatch) -> Non
     assert downloads == 1
 
 
-def test_bootstrap_stages_beside_install_root(tmp_path: Path, monkeypatch) -> None:
+@pytest.fixture(params=[False, True], ids=["directory", "cross-volume-alias"])
+def tool_destination(tmp_path: Path, request):
+    destination = tmp_path / "tool"
+    if not request.param:
+        yield destination
+        return
+    # An existing installation root can itself name a different filesystem.
+    # The host home supplies an independent volume when pytest uses an external
+    # artifact root. No mount or privileged host change is needed.
+    with tempfile.TemporaryDirectory(
+        prefix="molt-actionlint-volume-", dir=Path.home()
+    ) as raw:
+        root = Path(raw)
+        if root.stat().st_dev == tmp_path.stat().st_dev:
+            pytest.skip("no second filesystem available for the alias control")
+        try:
+            destination.symlink_to(root, target_is_directory=True)
+        except (NotImplementedError, OSError) as exc:
+            pytest.skip(f"directory symlink unavailable: {exc}")
+        yield destination
+
+
+def test_bootstrap_stages_on_install_filesystem(
+    tmp_path: Path, tool_destination: Path, monkeypatch
+) -> None:
     # A rename across filesystems fails with EXDEV, so the download must not
     # stage in TMPDIR. An unusable temp root makes TMPDIR staging fail on
     # every host, whether or not TMPDIR shares a volume with the install root.
@@ -145,9 +172,9 @@ def test_bootstrap_stages_beside_install_root(tmp_path: Path, monkeypatch) -> No
         "_contract",
         lambda: ("1.7.12", "windows-amd64", archive_digest, executable_digest),
     )
-    monkeypatch.setattr(bootstrap, "_install_root", lambda *_args: tmp_path / "tool")
+    monkeypatch.setattr(bootstrap, "_install_root", lambda *_args: tool_destination)
     monkeypatch.setattr(
-        bootstrap.urllib.request,
+        bootstrap,
         "urlopen",
         lambda *_args, **_kwargs: io.BytesIO(archive),
     )
@@ -160,7 +187,17 @@ def test_bootstrap_stages_beside_install_root(tmp_path: Path, monkeypatch) -> No
             )
         ),
     )
-    monkeypatch.setattr(bootstrap.tempfile, "tempdir", str(tmp_path / "no-tmpdir"))
+    # Confine the unusable default to this bootstrap's factory. A process-wide
+    # tempfile.tempdir patch would affect guard and pytest worker threads.
+    install_module_view(
+        monkeypatch,
+        "tempfile",
+        bootstrap.tempfile,
+        bootstrap,
+        TemporaryDirectory=partial(
+            bootstrap.tempfile.TemporaryDirectory, dir=tmp_path / "no-tmpdir"
+        ),
+    )
 
     executable = bootstrap.ensure_actionlint()
 
@@ -194,3 +231,51 @@ def test_kernel_lock_recovers_after_owner_process_exit(tmp_path: Path) -> None:
     assert completed.returncode == 0
     with bootstrap._install_lock(lock, timeout=1):
         assert lock.exists()
+
+
+def test_different_versions_install_without_serializing_each_other(
+    tmp_path: Path, monkeypatch
+) -> None:
+    archive = _zip_asset(b"binary")
+    digest = hashlib.sha256(archive).hexdigest()
+    executable_digest = hashlib.sha256(b"binary").hexdigest()
+    request = threading.local()
+    downloads = threading.Barrier(2, timeout=5)
+
+    def download(*_args, **_kwargs):
+        # Independent version installs must reach the download boundary while
+        # holding their own locks. A shared lock breaks this rendezvous.
+        downloads.wait()
+        return io.BytesIO(archive)
+
+    monkeypatch.setattr(
+        bootstrap,
+        "_contract",
+        lambda: (request.version, "windows-amd64", digest, executable_digest),
+    )
+    monkeypatch.setattr(
+        bootstrap,
+        "_install_root",
+        lambda version, platform: tmp_path / f"actionlint-{version}-{platform}",
+    )
+    monkeypatch.setattr(bootstrap, "urlopen", download)
+    monkeypatch.setattr(
+        bootstrap,
+        "_COMMANDS",
+        SimpleNamespace(
+            run=lambda argv, **_kwargs: subprocess.CompletedProcess(
+                argv, 0, Path(argv[0]).parent.name.split("-")[1] + "\n", ""
+            )
+        ),
+    )
+
+    def install(version):
+        request.version = version
+        return bootstrap.ensure_actionlint()
+
+    versions = ("1.7.12", "1.7.13")
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        paths = list(executor.map(install, versions))
+    for path, version in zip(paths, versions):
+        assert path.read_bytes() == b"binary"
+        assert bootstrap._valid(path, version, digest, executable_digest)

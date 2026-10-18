@@ -467,6 +467,12 @@ crate::builtins::methods::native_method_table!(string_method_bits, publish_strin
 crate::builtins::methods::native_method_table!(bytes_method_bits, publish_bytes_methods, _py, name, [], comparison: crate::object::ops_compare::SequenceComparison::Bytes, {
 
 }, {
+        "__getitem__" => Some(builtin_func_bits(
+            _py,
+            NativeCallableSpec::declared(NativeCallableKind::WrapperDescriptor, builtin_classes(_py).bytes, "__getitem__").with_text_signature("($self, key, /)"),
+            fn_addr!(crate::object::ops::molt_getitem_builtin),
+            2,
+        )),
         "__mul__" => Some(builtin_func_bits(
             _py, NativeCallableSpec::declared(NativeCallableKind::WrapperDescriptor, builtin_classes(_py).bytes, "__mul__"),
             fn_addr!(crate::object::ops_arith::native_slots::sequence_repeat_slot), 2,
@@ -844,6 +850,12 @@ crate::builtins::methods::native_method_table!(bytes_method_bits, publish_bytes_
 crate::builtins::methods::native_method_table!(bytearray_method_bits, publish_bytearray_methods, _py, name, [], comparison: crate::object::ops_compare::SequenceComparison::Bytearray, {
 
 }, {
+        "__getitem__" => Some(builtin_func_bits(
+            _py,
+            NativeCallableSpec::declared(NativeCallableKind::WrapperDescriptor, builtin_classes(_py).bytearray, "__getitem__").with_text_signature("($self, key, /)"),
+            fn_addr!(crate::object::ops::molt_getitem_builtin),
+            2,
+        )),
         "__mul__" => Some(builtin_func_bits(
             _py, NativeCallableSpec::declared(NativeCallableKind::WrapperDescriptor, builtin_classes(_py).bytearray, "__mul__"),
             fn_addr!(crate::object::ops_arith::native_slots::sequence_repeat_slot), 2,

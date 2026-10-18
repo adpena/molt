@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import inspect
 import json
+import os
+import sys
 from pathlib import Path
 
 import pytest
@@ -9,6 +11,8 @@ import pytest
 import molt.cli as cli
 from molt.cli import frontend_pipeline, module_source, typecheck
 from molt.type_facts import collect_type_facts_from_paths
+from tests.process_guard_common import install_module_view, run_custody_subject_process
+from tests.python_environment_test_support import create_test_venv
 
 
 def test_cli_typecheck_authority_is_single_home() -> None:
@@ -165,3 +169,53 @@ def test_explicit_checker_cannot_import_a_project_shadow(tmp_path, monkeypatch):
     ok, diagnostics = typecheck._run_ty_check(source)
     assert ok, diagnostics
     assert not marker.exists()
+
+
+@pytest.mark.parametrize("remove_no_bytecode_flag", [False, True])
+def test_checker_startup_preserves_disposable_site_sources(
+    tmp_path, monkeypatch, remove_no_bytecode_flag
+):
+    """Observe real site imports; -I ignores both inherited cache controls."""
+    environment = tmp_path / "environment"
+    executable = create_test_venv(environment)
+    site = environment / (
+        "Lib/site-packages"
+        if os.name == "nt"
+        else f"lib/python{sys.version_info.major}.{sys.version_info.minor}/site-packages"
+    )
+    (site / "readonly_startup.py").write_text("value = 173\n", encoding="utf-8")
+    (site / "readonly_startup.pth").write_text(
+        "import readonly_startup\n", encoding="utf-8"
+    )
+    before = {
+        path.name: (path.read_bytes(), path.stat().st_mtime_ns)
+        for path in site.iterdir()
+    }
+    install_module_view(monkeypatch, "sys", sys, typecheck, executable=str(executable))
+    monkeypatch.setenv("PYTHONDONTWRITEBYTECODE", "1")
+    monkeypatch.setenv("PYTHONPYCACHEPREFIX", str(tmp_path / "external-cache"))
+
+    def run_startup(command, **_kwargs):
+        # Keep the production interpreter options; the checker payload is not
+        # installed in this disposable environment. Site runs before -c too.
+        prefix = command[: command.index("-m")]
+        if remove_no_bytecode_flag:
+            prefix = [argument for argument in prefix if argument != "-B"]
+        return run_custody_subject_process(
+            [*prefix, "-c", "import sys; print(sys.flags.isolated)"],
+            env=os.environ.copy(),
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=10,
+        )
+
+    monkeypatch.setattr(typecheck, "_run_completed_command", run_startup)
+    ok, output = typecheck._run_ty_check(tmp_path / "entry.py")
+    assert ok and output == "1"
+    assert bool(list(site.rglob("*.pyc"))) is remove_no_bytecode_flag
+    assert {
+        path.name: (path.read_bytes(), path.stat().st_mtime_ns)
+        for path in site.iterdir()
+        if path.is_file()
+    } == before

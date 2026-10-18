@@ -5375,6 +5375,15 @@ if __name__ == "__main__":
         ),
     )
     parser.add_argument(
+        "--compiler-profile",
+        choices=["dev", "release"],
+        default=None,
+        help=(
+            "Host compiler profile selected through MOLT_BACKEND_PROFILE, "
+            "independent of --build-profile (default: preserve the environment)."
+        ),
+    )
+    parser.add_argument(
         "--target",
         action="append",
         default=[],
@@ -5467,6 +5476,8 @@ if __name__ == "__main__":
 
     args = parser.parse_args()
 
+    if args.compiler_profile is not None:
+        os.environ["MOLT_BACKEND_PROFILE"] = args.compiler_profile
     python_exe = (sys.executable,)
     if args.stdlib_profile is not None:
         os.environ["MOLT_DIFF_STDLIB_PROFILE"] = args.stdlib_profile

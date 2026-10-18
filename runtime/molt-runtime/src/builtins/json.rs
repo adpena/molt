@@ -263,14 +263,11 @@ fn json_encode_basestring_impl(value: &str, ensure_ascii: bool) -> String {
 fn json_string_line_col(text: &[u8], pos: usize) -> (usize, usize) {
     let mut lineno = 1;
     let mut last_newline = None;
-    for (idx, code) in crate::object::ops_string::wtf8_from_bytes(text)
-        .code_points()
-        .enumerate()
-    {
+    for (idx, code) in molt_runtime_core::text_storage::code_points(text).enumerate() {
         if idx >= pos {
             break;
         }
-        if code.to_u32() == 10 {
+        if code == 10 {
             lineno += 1;
             last_newline = Some(idx);
         }
@@ -406,13 +403,13 @@ fn json_scanstring_decode_bytes<'a>(
                             && (0xDC00..=0xDFFF).contains(&low)
                         {
                             let combined = 0x10000 + ((code - 0xD800) << 10) + (low - 0xDC00);
-                            molt_stdlib_text::wtf8::push_wtf8_codepoint(decoded, combined);
+                            molt_runtime_core::text_storage::push_code_point(decoded, combined);
                             idx += 6;
                             segment_start = idx;
                             continue;
                         }
 
-                        molt_stdlib_text::wtf8::push_wtf8_codepoint(decoded, code);
+                        molt_runtime_core::text_storage::push_code_point(decoded, code);
                         segment_start = idx;
                         continue;
                     }

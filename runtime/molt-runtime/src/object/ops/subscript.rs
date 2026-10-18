@@ -4,6 +4,7 @@ use crate::object::memoryview::{
     memoryview_adjust_format, memoryview_assign_slice, memoryview_is_index_key,
     memoryview_read_item_at, memoryview_slice, memoryview_write_item_at,
 };
+use crate::object::ops_string::wtf8_step;
 
 #[cfg(test)]
 mod comparison_consumer_tests;
@@ -481,9 +482,34 @@ pub(crate) fn index_impl(
                             let indices = collect_slice_indices(start, stop, step);
                             let mut out = Vec::with_capacity(indices.len());
                             if type_id == TYPE_ID_STRING {
-                                for idx in indices {
-                                    if let Some(code) = wtf8_codepoint_at(bytes, idx) {
-                                        push_wtf8_codepoint(&mut out, code.to_u32());
+                                if let Some(&first) = indices.first() {
+                                    let mut character = first;
+                                    let mut byte = utf8_char_to_byte_index_cached(
+                                        _py,
+                                        bytes,
+                                        first as i64,
+                                        Some(ptr as usize),
+                                    );
+                                    // Adjusted slice indices are monotonic. Locate the
+                                    // first once, then visit each intervening code point
+                                    // at most once instead of restarting prefix walks.
+                                    for idx in indices {
+                                        while character < idx {
+                                            byte = wtf8_step(bytes, byte, false)
+                                                .expect("normalized string slice boundary")
+                                                .0;
+                                            character += 1;
+                                        }
+                                        while character > idx {
+                                            byte = wtf8_step(bytes, byte, true)
+                                                .expect("normalized string slice boundary")
+                                                .0;
+                                            character -= 1;
+                                        }
+                                        let end = wtf8_step(bytes, byte, false)
+                                            .expect("normalized string slice element")
+                                            .0;
+                                        out.extend_from_slice(&bytes[byte..end]);
                                     }
                                 }
                             } else {
@@ -534,13 +560,13 @@ pub(crate) fn index_impl(
                             raise_exception::<()>(_py, "IndexError", "string index out of range");
                             return Err(());
                         }
-                        let Some(code) = wtf8_codepoint_at(bytes, i as usize) else {
+                        let start =
+                            utf8_char_to_byte_index_cached(_py, bytes, i, Some(ptr as usize));
+                        let Some((end, _)) = wtf8_step(bytes, start, false) else {
                             raise_exception::<()>(_py, "IndexError", "string index out of range");
                             return Err(());
                         };
-                        let mut out = Vec::with_capacity(4);
-                        push_wtf8_codepoint(&mut out, code.to_u32());
-                        let out_ptr = alloc_string(_py, &out);
+                        let out_ptr = alloc_string(_py, &bytes[start..end]);
                         if out_ptr.is_null() {
                             return Err(());
                         }
@@ -786,6 +812,31 @@ pub(crate) fn index_impl(
                         raise_exception::<()>(_py, "IndexError", "range object index out of range");
                         return Err(());
                     }
+                    if let Some(slice_ptr) = key.as_ptr()
+                        && object_type_id(slice_ptr) == TYPE_ID_SLICE
+                    {
+                        let Some((start, stop, step)) = range_components_bigint(ptr) else {
+                            return Err(());
+                        };
+                        let len = range_len_bigint(&start, &stop, &step);
+                        let Some((slice_start, slice_stop, slice_step)) =
+                            crate::object::ops_slice::slice_indices_bigint(_py, slice_ptr, &len)
+                        else {
+                            return Err(());
+                        };
+                        // Preserve exact range parameters, including empty
+                        // results and steps wider than the host word. Work is
+                        // bounded by integer bit widths, never element count.
+                        let substart = &start + &step * slice_start;
+                        let substop = start + &step * slice_stop;
+                        let substep = step * slice_step;
+                        let result = alloc_range_from_bigints(_py, substart, substop, substep);
+                        return if obj_from_bits(result).is_none() {
+                            Err(())
+                        } else {
+                            Ok(result)
+                        };
+                    }
                     let Some(mut idx) = sequence_index_bigint(_py, key_bits, "range") else {
                         return Err(());
                     };
@@ -1021,14 +1072,15 @@ pub extern "C" fn molt_ord_at(obj_bits: u64, key_bits: u64) -> u64 {
                             "string index out of range",
                         );
                     }
-                    let Some(code) = wtf8_codepoint_at(bytes, i as usize) else {
+                    let start = utf8_char_to_byte_index_cached(_py, bytes, i, Some(ptr as usize));
+                    let Some((_, code)) = wtf8_step(bytes, start, false) else {
                         return raise_exception::<_>(
                             _py,
                             "IndexError",
                             "string index out of range",
                         );
                     };
-                    return MoltObject::from_int(code.to_u32() as i64).bits();
+                    return MoltObject::from_int(code as i64).bits();
                 }
             }
         }

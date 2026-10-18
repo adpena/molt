@@ -65,10 +65,14 @@ ordering; they do not introduce a second SDK search projection or global CRTs.
 The standalone unknown-target CPython ABI retains its own bundled libc obligation;
 it is not interchangeable with the runtime's unbundled downstream archive policy.
 
-The default DX environment exports WASI Rust flags only for `wasm32-wasip1`.
-An explicit unknown-target C-provider environment uses the existing
-`python -m molt.llvm_toolchain --verify-wasm --wasi-rust-target
-wasm32-unknown-unknown --github-env <path>` projection. Native flags are untouched.
+Generic DX and CI SDK setup publish tool availability and the C ABI receipt,
+without selecting a Rust target's libc, CRT or linker. The SDK projection takes
+an optional explicit Rust target; no target preserves caller settings without
+adding target link flags. Runtime Cargo plans select their actual target, and
+proof commands declaring the SDK select its WASI C ABI. Direct Cargo C-provider
+environments explicitly use `python -m molt.llvm_toolchain --verify-wasm
+--wasi-rust-target <target> --wasi-sdk <install> --github-env <path>`, with target
+`wasm32-wasip1` or `wasm32-unknown-unknown`. Native flags are untouched.
 For direct Cargo, global `RUSTFLAGS` or `CARGO_ENCODED_RUSTFLAGS` override Cargo's
 target-specific flags; callers selecting those lanes must carry the complete
 projected WASI context. The shared Rust decoder rejects an incomplete effective
@@ -205,11 +209,41 @@ partial installation cannot trigger competing repairs during proof fanout.
 Proof commands that build Rust declare both `rustc` and `cargo`, including the
 Python binding and runtime-artifact partitions. The existing proof executor
 fingerprints the union of declared tools before scheduling commands; Rust
-fingerprints share its serialized `rustup` domain. Cargo configuration precedence
+fingerprints share its serialized `rustup` domain. Admission of that union does
+not select every toolchain for every child. Local integration and CI capture
+the execution environment before admission, then project each command's declared
+tool closure from that baseline. Already admitted tools on PATH remain valid
+without requiring a managed installation. Identical selections reuse one projection
+per execution. Deduplicated local commands union their contributing owners; batched
+pytest receives only its contributing rules' tools, while selector cohorts keep
+their own. Upstream commit binding preserves this prerequisite identity. Explicit
+caller settings remain inputs; this is not isolation from user-selected flags.
+
+This follows the action-specific tools and environment boundary in
+[Bazel actions](https://bazel.build/rules/lib/builtins/actions.html#run).
+It matters because [Cargo's Rust flag precedence](https://doc.rust-lang.org/cargo/reference/config.html#buildrustflags)
+can make an unrelated injected target flag replace a command's linking mode.
+For example, admitting an SDK consumer beside the pure Rust zlib WASI proof
+must not disable the latter's Rust-owned libc/CRT. Managed runtime executables
+continue to own their selected SDK command startup. No CRT suppression, flag
+sanitization or provider-specific workaround is involved. Projection adds reads
+and small environment copies per distinct tool selection, rather than per test
+or build operation, and adds nothing to emitted programs.
+
+Cargo configuration precedence
 is owned by `molt.rust_toolchain`; runtime plans, queued proofs, and standalone
 fingerprints consume it without importing the CLI. The core SDK/LLVM authorities
 likewise own finite receipt selection and helper-byte capture; guarded proofs
 project those facts into their process-image schema and armed resource custody.
+Native C object-fixture proofs declare `hosted-clang`, separately from the
+LLVM ABI's exact `clang` pin. They reuse a verified installed SDK when present,
+or admit the host compiler already on PATH and retain its actual image and
+version. These fixtures require native C/object behavior, not LLVM library ABI
+compatibility, so Python CI jobs do not install the full LLVM/MLIR SDK for them.
+Missing compilers fail prerequisite admission instead of being supplied by an
+unrelated proof's environment. The existing `hosted-clang-cl` role keeps the
+same distinction for Windows C11/DLL ABI probes.
+
 This developer setup has no
 emitted guest runtime cost. Archive availability, aliases, native binaries,
 and target libraries still require real cold-provision validation on each
@@ -787,21 +821,36 @@ maintenance only provisions pinned auxiliary tools.
 The selected binary identity flows through cache keys, daemon/one-shot execution,
 native linking, build diagnostics, and the installed-consumer receipt.
 
-Source builds publish every backend feature variant, including native, to its
-own executable with a content-bound receipt. Cargo's unqualified output is only
-publication input; selecting it for native would let a WASM build replace the
-native compiler and force a rebuild on the next target switch. All variants use
-the same publication lock, atomic copy, and admission rules. Process discovery
-recognizes these variant names without treating a name as ownership evidence.
-After Cargo completes, a rejected compiler feature probe fails the build with
-its original diagnostic and publishes no new provenance. The CLI does not
-rerun the unchanged Cargo plan to conceal that failed outcome.
+Source builds publish every backend feature variant, including native, as
+immutable generations. A variant's coordinate
+`<target>/<profile>/molt-backend.<features>` names a selection, not an
+executable: each published executable lives at
+`<target>/<profile>/.molt-backend-generations/<variant>/<sha256>/<variant>`
+and never changes after publication (`molt.cli.backend_generation`). The
+variant's content-bound receipt is the selection; its byte identity names the
+selected generation, and a new selection replaces only that receipt. Identical
+bytes reuse their generation without a write. A build resolves its generation
+once and runs it for every later step (dispatch, daemon, WASM facts scanning,
+link admission), so a concurrent build's publication never changes the bytes or
+the path that an earlier build captured. Bazel and Nix publish outputs the same
+way. Cargo's unqualified output is only publication input; selecting it for
+native would let a WASM build replace the native compiler and force a rebuild
+on the next target switch. All variants use the same publication lock and
+admission rules. Process discovery recognizes these variant names without
+treating a name as ownership evidence. Retention uses the generation store
+owner the runtime WASM directory uses: each publication selects its
+generation and evicts the generations that no build used for 24 hours, and
+every build that admits a generation records its use. After Cargo completes,
+a rejected compiler feature probe fails the build with its original diagnostic
+and selects nothing. The CLI does not rerun the unchanged Cargo plan to conceal
+that failed outcome.
 
 Source builds publish the runtime WASM pair into one runtime directory: an
 explicit `MOLT_WASM_RUNTIME_DIR`, else `<MOLT_EXT_ROOT>/wasm`, else
 `molt-runtime-wasm` in the project's Cargo target beside the native runtime
 libraries. A build never writes runtime outputs into the source tree or the
-working directory. The directory is a working set of immutable generations.
+working directory. The directory is a working set of immutable generations
+held by the shared generation store owner (`molt.cli.generation_store`).
 Under the directory's store lock, each publication and each code-generation
 binding records the generation it uses in the store ledger, and each
 publication evicts the generation files that no build used for 24 hours. It

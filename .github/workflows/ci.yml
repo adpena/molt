@@ -305,6 +305,7 @@ jobs:
           if-no-files-found: error
 
   python-unit-collection:
+    # Native C object fixtures require the host image's clang.
     name: Python Unit Collection (${{ matrix.os }} / ${{ matrix.arch }})
     needs: classify-changes
     if: needs.classify-changes.outputs.python_unit_collection == 'true'

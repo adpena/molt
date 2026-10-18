@@ -128,9 +128,7 @@ fn peephole_applied_in_const_return() {
 fn floating_arithmetic_preserves_zero_signs_and_quiets_signaling_nans() {
     use super::execution_support::executable_module;
     use crate::wasm::body::WasmBody;
-    use crate::wasm::test_execution::{
-        real_execution_tool, run_node_test_script, wasm_test_temp_dir,
-    };
+    use crate::wasm::test_execution::{run_node_test_script, wasm_test_temp_dir};
     use std::{fs, path::PathBuf};
 
     let mut modules = Vec::new();
@@ -163,13 +161,7 @@ fn floating_arithmetic_preserves_zero_signs_and_quiets_signaling_nans() {
         };
         modules.push((name, executable_module(&body)));
     }
-    let Some(node) = real_execution_tool(
-        PathBuf::from("node"),
-        "MOLT_REQUIRE_REAL_NODE_TESTS",
-        "floating-point peephole execution",
-    ) else {
-        return;
-    };
+    let node = PathBuf::from("node");
     let (directory, _cleanup) = wasm_test_temp_dir();
     let mut paths = serde_json::Map::new();
     for (name, bytes) in modules {

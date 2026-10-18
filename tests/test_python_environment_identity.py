@@ -1478,6 +1478,55 @@ def test_location_exact_native_files_do_not_broaden_watch_roots(tmp_path):
         )
 
 
+def test_environment_locator_keeps_import_archive_as_exact_input(tmp_path, monkeypatch):
+    prefix = tmp_path / "environment"
+    prefix.mkdir()
+    executable = prefix / "python.exe"
+    executable.write_bytes(b"selected interpreter")
+    stdlib = prefix / "stdlib"
+    stdlib.mkdir()
+    archive = tmp_path / "system" / "python312.zip"
+    archive.parent.mkdir()
+    archive.write_bytes(b"selected import archive")
+    native = archive.parent / "native.dll"
+    native.write_bytes(b"selected native image")
+    install_module_view(
+        monkeypatch,
+        "sys",
+        sys,
+        location,
+        executable=str(executable),
+        _base_executable=str(executable),
+        base_prefix=str(prefix),
+        exec_prefix=str(prefix),
+        base_exec_prefix=str(prefix),
+        path=[str(archive)],
+    )
+    install_module_view(
+        monkeypatch,
+        "sysconfig",
+        location.sysconfig,
+        location,
+        get_path=lambda _name: str(stdlib),
+    )
+    install_module_view(
+        monkeypatch,
+        "metadata",
+        location.metadata,
+        location,
+        distributions=lambda **_kwargs: (),
+    )
+    monkeypatch.setattr(location, "_active_environment_prefix", lambda: prefix)
+    monkeypatch.setattr(location, "_site_roots", lambda _prefix: (stdlib,))
+    monkeypatch.setattr(location, "loaded_native_module_paths", lambda: (native,))
+
+    located = location.locate_current_python_environment()
+
+    assert located["roots"] == [str(prefix), str(stdlib)]
+    assert located["file_paths"] == sorted([str(native), str(archive)])
+    assert location.validate_python_environment_location(located) == located
+
+
 def _installed_fixture(root: Path):
     site = root / "site"
     metadata = site / "demo-1.0.dist-info"

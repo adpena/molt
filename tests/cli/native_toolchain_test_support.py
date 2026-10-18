@@ -1,8 +1,8 @@
 """Checkouts that a native toolchain build has populated, for transfer tests.
 
 Each checkout gets its own Cargo target and build-state root, a real native
-runtime generation published through the CLI, and a backend admitted the way
-``_ensure_backend_binary`` admits one. Only the identity captures and Cargo
+runtime generation published through the CLI, and a backend generation
+published and selected the way ``_ensure_backend_binary`` admits one. Only the identity captures and Cargo
 are substituted.
 """
 
@@ -20,9 +20,9 @@ from molt.cli import backend_binary
 from molt.cli import native_toolchain_transfer as transfer
 from molt.cli import runtime_native_generation as generations
 from molt.cli.backend_compile import _BackendSelection
-from molt.cli.runtime_fingerprints import _write_runtime_fingerprint
 from molt.cli.runtime_identity_schema import RuntimeBuildIdentity
 from molt.exact_json import canonical_json_sha256
+from tests.cli.backend_generation_test_support import publish_backend
 from tests.cli.native_link_test_support import write_test_static_archive
 from tests.compiler_identity_helper import (
     stub_compiler_admission,
@@ -110,15 +110,13 @@ class Checkout:
             inputs_are_current=lambda: True,
         )
         backend = selection.backend.binary
-        backend.parent.mkdir(parents=True, exist_ok=True)
-        backend.write_bytes(f"#!/bin/sh\nexit 0\n# {self.backend_seed}\n".encode())
-        backend.chmod(0o755)
-        _write_runtime_fingerprint(
-            backend_binary._backend_fingerprint_path(
+        publish_backend(
+            backend,
+            f"#!/bin/sh\nexit 0\n# {self.backend_seed}\n".encode(),
+            receipt=backend_binary._backend_fingerprint_path(
                 self.root, backend, BACKEND_PROFILE
             ),
-            backend_fingerprint(self.backend_seed),
-            artifact=backend,
+            fingerprint=backend_fingerprint(self.backend_seed),
         )
 
 

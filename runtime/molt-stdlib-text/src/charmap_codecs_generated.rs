@@ -3,7 +3,7 @@
 
 use crate::codec_errors::DecodeFailure;
 use crate::codec_registry::EncodingKind;
-use crate::wtf8::{push_backslash_bytes_vec, push_wtf8_codepoint};
+use molt_runtime_core::text_storage::{push_backslash_bytes, push_code_point};
 
 pub struct SingleByteCharmap {
     decode_table: &'static [u16; 128],
@@ -87,14 +87,14 @@ fn decode_charmap_with_errors(
         }
         let code = table[(byte - 0x80) as usize];
         if code != 0xFFFF {
-            push_wtf8_codepoint(&mut out, code as u32);
+            push_code_point(&mut out, code as u32);
             continue;
         }
         match errors {
             "ignore" => {}
-            "replace" => push_wtf8_codepoint(&mut out, 0xFFFD),
-            "backslashreplace" => push_backslash_bytes_vec(&mut out, &[byte]),
-            "surrogateescape" => push_wtf8_codepoint(&mut out, 0xDC00 + byte as u32),
+            "replace" => push_code_point(&mut out, 0xFFFD),
+            "backslashreplace" => push_backslash_bytes(&mut out, &[byte]),
+            "surrogateescape" => push_code_point(&mut out, 0xDC00 + byte as u32),
             "strict" | "surrogatepass" => {
                 return Err(DecodeFailure::Byte {
                     pos: idx,

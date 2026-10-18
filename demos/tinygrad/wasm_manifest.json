@@ -4,7 +4,7 @@
   "description": "Falcon-OCR WASM module compiled by molt",
   "compilation": {
     "source": "demos/tinygrad/wasm_driver.py",
-    "command": "molt build wasm_driver.py --target wasm",
+    "command": "molt build --module demos.tinygrad.wasm_driver --target wasm",
     "output": "falcon-ocr.wasm"
   },
   "exports": {

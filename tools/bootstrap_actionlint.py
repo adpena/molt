@@ -12,9 +12,8 @@ import shutil
 import sys
 import tarfile
 import tempfile
-import time
 import tomllib
-import urllib.request
+from urllib.request import urlopen
 import zipfile
 from contextlib import contextmanager
 from pathlib import Path
@@ -29,6 +28,7 @@ bind_repository_imports(__file__)
 
 from tools.command_execution import CommandExecutor  # type: ignore  # noqa: E402
 from molt.file_publication import atomic_write_bytes, durable_replace  # noqa: E402
+from molt.file_locks import _acquire_file_lock, _release_file_lock  # noqa: E402
 
 _COMMANDS = CommandExecutor.for_file(__file__)
 
@@ -145,45 +145,16 @@ def _valid(
 
 @contextmanager
 def _install_lock(path: Path, timeout: float = 60.0):
-    """Cross-platform kernel lock released automatically on process death."""
-    path.parent.mkdir(parents=True, exist_ok=True)
-    handle = path.open("a+b")
-    if handle.tell() == 0:
-        handle.write(b"0")
-        handle.flush()
-    deadline = time.monotonic() + timeout
-    while True:
-        try:
-            handle.seek(0)
-            if os.name == "nt":
-                import msvcrt
-
-                msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
-            else:
-                import fcntl
-
-                fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-            break
-        except OSError:
-            if time.monotonic() >= deadline:
-                handle.close()
-                raise RuntimeError(
-                    f"timed out waiting for actionlint install lock: {path}"
-                )
-            time.sleep(0.05)
+    """Own the install deadline; shared file locks own thread/process custody."""
+    handle = _acquire_file_lock(
+        path,
+        timeout_s=timeout,
+        timeout_message=f"timed out waiting for actionlint install lock: {path}",
+    )
     try:
         yield
     finally:
-        handle.seek(0)
-        if os.name == "nt":
-            import msvcrt
-
-            msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
-        else:
-            import fcntl
-
-            fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
-        handle.close()
+        _release_file_lock(handle)
 
 
 def ensure_actionlint(*, install: bool = True) -> Path:
@@ -202,20 +173,20 @@ def ensure_actionlint(*, install: bool = True) -> Path:
     asset = f"actionlint_{version}_{platform_key.replace('-', '_')}{suffix}"
     url = f"https://github.com/rhysd/actionlint/releases/download/v{version}/{asset}"
     destination.parent.mkdir(parents=True, exist_ok=True)
-    lock = destination.with_suffix(".lock")
+    lock = destination.with_name(destination.name + ".lock")
     with _install_lock(lock):
         if _valid(executable, version, expected, expected_executable):
             return executable
         destination.mkdir(parents=True, exist_ok=True)
-        # Stage beside the install root: a rename is atomic only within one
-        # filesystem, and TMPDIR may live on another volume (EXDEV).
+        # Stage with the executable: TMPDIR and even the install root's parent
+        # may be on another volume when the root is a mount point or alias.
         with tempfile.TemporaryDirectory(
-            prefix=".actionlint-bootstrap-", dir=destination.parent
+            prefix=".actionlint-bootstrap-", dir=destination
         ) as tmp:
             temp_root = Path(tmp)
             archive = temp_root / asset
             with (
-                urllib.request.urlopen(url, timeout=60) as response,
+                urlopen(url, timeout=60) as response,
                 archive.open("wb") as out,
             ):
                 shutil.copyfileobj(response, out)

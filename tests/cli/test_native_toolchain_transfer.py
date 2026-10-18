@@ -18,6 +18,7 @@ from molt.cli import backend_binary
 from molt.cli import native_toolchain_transfer as transfer
 from molt.cli import runtime_native_build
 from molt.cli.rust_cpu_policy import RustCpuPolicy
+from tests.cli.backend_generation_test_support import selected_backend
 from tests.cli.native_toolchain_test_support import (
     BACKEND_FEATURES,
     BACKEND_PROFILE,
@@ -103,7 +104,9 @@ def test_export_names_the_admitted_runtime_generation_and_backend(
         True,
         False,
     ]
-    assert members[3].path == producer.selection.backend.binary
+    assert members[3].path == selected_backend(
+        producer.root, producer.selection.backend.binary, BACKEND_PROFILE
+    )
 
 
 def test_imported_toolchain_is_admitted_by_the_next_build_without_cargo(
@@ -127,7 +130,7 @@ def test_imported_toolchain_is_admitted_by_the_next_build_without_cargo(
     ]
     assert candidates[0].runtime_lib.is_relative_to(consumer.root / "target")
     _forbid_cargo(monkeypatch)
-    assert backend_binary._ensure_backend_binary(
+    result = backend_binary._ensure_backend_binary(
         selection.backend.binary,
         cargo_timeout=1.0,
         json_output=True,
@@ -136,8 +139,10 @@ def test_imported_toolchain_is_admitted_by_the_next_build_without_cargo(
         backend_features=BACKEND_FEATURES,
         rust_cpu=RustCpuPolicy.BASELINE,
     )
+    assert result, result.message
+    assert result.binary is not None
     assert (
-        selection.backend.binary.read_bytes()
+        result.binary.read_bytes()
         == files[transfer.BACKEND_EXECUTABLE_ROLE].read_bytes()
     )
 

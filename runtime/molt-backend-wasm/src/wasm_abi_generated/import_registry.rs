@@ -5492,7 +5492,17 @@ pub(crate) const IMPORT_REGISTRY: &[RuntimeImportSpec] = &[
     RuntimeImportSpec {
         import: WasmRuntimeImport::ReExpandReplacement,
         name: "re_expand_replacement",
-        type_idx: 3,
+        type_idx: 5,
+    },
+    RuntimeImportSpec {
+        import: WasmRuntimeImport::ReSubjectSnapshot,
+        name: "re_subject_snapshot",
+        type_idx: 2,
+    },
+    RuntimeImportSpec {
+        import: WasmRuntimeImport::ReSubjectView,
+        name: "re_subject_view",
+        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ShlexQuote,
@@ -7742,7 +7752,17 @@ pub(crate) const IMPORT_REGISTRY: &[RuntimeImportSpec] = &[
     RuntimeImportSpec {
         import: WasmRuntimeImport::BinasciiA2bBase64,
         name: "binascii_a2b_base64",
-        type_idx: 5,
+        type_idx: 3,
+    },
+    RuntimeImportSpec {
+        import: WasmRuntimeImport::BinasciiErrorType,
+        name: "binascii_error_type",
+        type_idx: 0,
+    },
+    RuntimeImportSpec {
+        import: WasmRuntimeImport::BinasciiIncompleteType,
+        name: "binascii_incomplete_type",
+        type_idx: 0,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::BinasciiB2aBase64,
@@ -7752,7 +7772,7 @@ pub(crate) const IMPORT_REGISTRY: &[RuntimeImportSpec] = &[
     RuntimeImportSpec {
         import: WasmRuntimeImport::BinasciiA2bHex,
         name: "binascii_a2b_hex",
-        type_idx: 3,
+        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::BinasciiB2aHex,
@@ -7772,12 +7792,12 @@ pub(crate) const IMPORT_REGISTRY: &[RuntimeImportSpec] = &[
     RuntimeImportSpec {
         import: WasmRuntimeImport::BinasciiA2bUu,
         name: "binascii_a2b_uu",
-        type_idx: 3,
+        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::BinasciiB2aUu,
         name: "binascii_b2a_uu",
-        type_idx: 3,
+        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::BinasciiCrc32,
@@ -11520,9 +11540,14 @@ pub(crate) const IMPORT_REGISTRY: &[RuntimeImportSpec] = &[
         type_idx: 12,
     },
     RuntimeImportSpec {
-        import: WasmRuntimeImport::ReFinditerCollect,
-        name: "re_finditer_collect",
+        import: WasmRuntimeImport::ReScannerNew,
+        name: "re_scanner_new",
         type_idx: 7,
+    },
+    RuntimeImportSpec {
+        import: WasmRuntimeImport::ReFinditerNext,
+        name: "re_finditer_next",
+        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::RePatternInfo,
@@ -12772,7 +12797,7 @@ pub(crate) const IMPORT_REGISTRY: &[RuntimeImportSpec] = &[
     RuntimeImportSpec {
         import: WasmRuntimeImport::Base64B64decode,
         name: "base64_b64decode",
-        type_idx: 7,
+        type_idx: 5,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::Base64StandardB64encode,
@@ -12782,7 +12807,7 @@ pub(crate) const IMPORT_REGISTRY: &[RuntimeImportSpec] = &[
     RuntimeImportSpec {
         import: WasmRuntimeImport::Base64StandardB64decode,
         name: "base64_standard_b64decode",
-        type_idx: 3,
+        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::Base64UrlsafeB64encode,
@@ -12792,7 +12817,7 @@ pub(crate) const IMPORT_REGISTRY: &[RuntimeImportSpec] = &[
     RuntimeImportSpec {
         import: WasmRuntimeImport::Base64UrlsafeB64decode,
         name: "base64_urlsafe_b64decode",
-        type_idx: 3,
+        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::Base64B32encode,
@@ -12802,7 +12827,7 @@ pub(crate) const IMPORT_REGISTRY: &[RuntimeImportSpec] = &[
     RuntimeImportSpec {
         import: WasmRuntimeImport::Base64B32decode,
         name: "base64_b32decode",
-        type_idx: 7,
+        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::Base64B32hexencode,
@@ -12812,7 +12837,7 @@ pub(crate) const IMPORT_REGISTRY: &[RuntimeImportSpec] = &[
     RuntimeImportSpec {
         import: WasmRuntimeImport::Base64B32hexdecode,
         name: "base64_b32hexdecode",
-        type_idx: 5,
+        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::Base64B16encode,
@@ -12822,7 +12847,7 @@ pub(crate) const IMPORT_REGISTRY: &[RuntimeImportSpec] = &[
     RuntimeImportSpec {
         import: WasmRuntimeImport::Base64B16decode,
         name: "base64_b16decode",
-        type_idx: 5,
+        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::Base64A85encode,
@@ -12852,7 +12877,7 @@ pub(crate) const IMPORT_REGISTRY: &[RuntimeImportSpec] = &[
     RuntimeImportSpec {
         import: WasmRuntimeImport::Base64Decodebytes,
         name: "base64_decodebytes",
-        type_idx: 3,
+        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::CopyCopy,
@@ -13573,21 +13598,6 @@ pub(crate) const IMPORT_REGISTRY: &[RuntimeImportSpec] = &[
         import: WasmRuntimeImport::ReEscape,
         name: "re_escape",
         type_idx: 2,
-    },
-    RuntimeImportSpec {
-        import: WasmRuntimeImport::ReMatchGroup,
-        name: "re_match_group",
-        type_idx: 7,
-    },
-    RuntimeImportSpec {
-        import: WasmRuntimeImport::ReMatchGroups,
-        name: "re_match_groups",
-        type_idx: 5,
-    },
-    RuntimeImportSpec {
-        import: WasmRuntimeImport::ReMatchGroupdict,
-        name: "re_match_groupdict",
-        type_idx: 7,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ReSplit,
@@ -16316,6 +16326,10 @@ pub(crate) fn wasm_runtime_import(name: &str) -> Option<WasmRuntimeImport> {
         "molt_re_group_values" => Some(WasmRuntimeImport::ReGroupValues),
         "re_expand_replacement" => Some(WasmRuntimeImport::ReExpandReplacement),
         "molt_re_expand_replacement" => Some(WasmRuntimeImport::ReExpandReplacement),
+        "re_subject_snapshot" => Some(WasmRuntimeImport::ReSubjectSnapshot),
+        "molt_re_subject_snapshot" => Some(WasmRuntimeImport::ReSubjectSnapshot),
+        "re_subject_view" => Some(WasmRuntimeImport::ReSubjectView),
+        "molt_re_subject_view" => Some(WasmRuntimeImport::ReSubjectView),
         "shlex_quote" => Some(WasmRuntimeImport::ShlexQuote),
         "molt_shlex_quote" => Some(WasmRuntimeImport::ShlexQuote),
         "shlex_split_ex" => Some(WasmRuntimeImport::ShlexSplitEx),
@@ -17418,6 +17432,10 @@ pub(crate) fn wasm_runtime_import(name: &str) -> Option<WasmRuntimeImport> {
         "molt_encodings_aliases_map" => Some(WasmRuntimeImport::EncodingsAliasesMap),
         "binascii_a2b_base64" => Some(WasmRuntimeImport::BinasciiA2bBase64),
         "molt_binascii_a2b_base64" => Some(WasmRuntimeImport::BinasciiA2bBase64),
+        "binascii_error_type" => Some(WasmRuntimeImport::BinasciiErrorType),
+        "molt_binascii_error_type" => Some(WasmRuntimeImport::BinasciiErrorType),
+        "binascii_incomplete_type" => Some(WasmRuntimeImport::BinasciiIncompleteType),
+        "molt_binascii_incomplete_type" => Some(WasmRuntimeImport::BinasciiIncompleteType),
         "binascii_b2a_base64" => Some(WasmRuntimeImport::BinasciiB2aBase64),
         "molt_binascii_b2a_base64" => Some(WasmRuntimeImport::BinasciiB2aBase64),
         "binascii_a2b_hex" => Some(WasmRuntimeImport::BinasciiA2bHex),
@@ -19044,8 +19062,10 @@ pub(crate) fn wasm_runtime_import(name: &str) -> Option<WasmRuntimeImport> {
         "molt_re_compile" => Some(WasmRuntimeImport::ReCompile),
         "re_execute" => Some(WasmRuntimeImport::ReExecute),
         "molt_re_execute" => Some(WasmRuntimeImport::ReExecute),
-        "re_finditer_collect" => Some(WasmRuntimeImport::ReFinditerCollect),
-        "molt_re_finditer_collect" => Some(WasmRuntimeImport::ReFinditerCollect),
+        "re_scanner_new" => Some(WasmRuntimeImport::ReScannerNew),
+        "molt_re_scanner_new" => Some(WasmRuntimeImport::ReScannerNew),
+        "re_finditer_next" => Some(WasmRuntimeImport::ReFinditerNext),
+        "molt_re_finditer_next" => Some(WasmRuntimeImport::ReFinditerNext),
         "re_pattern_info" => Some(WasmRuntimeImport::RePatternInfo),
         "molt_re_pattern_info" => Some(WasmRuntimeImport::RePatternInfo),
         "secrets_below" => Some(WasmRuntimeImport::SecretsBelow),
@@ -19930,12 +19950,6 @@ pub(crate) fn wasm_runtime_import(name: &str) -> Option<WasmRuntimeImport> {
         "molt_random_randrange" => Some(WasmRuntimeImport::RandomRandrange),
         "re_escape" => Some(WasmRuntimeImport::ReEscape),
         "molt_re_escape" => Some(WasmRuntimeImport::ReEscape),
-        "re_match_group" => Some(WasmRuntimeImport::ReMatchGroup),
-        "molt_re_match_group" => Some(WasmRuntimeImport::ReMatchGroup),
-        "re_match_groups" => Some(WasmRuntimeImport::ReMatchGroups),
-        "molt_re_match_groups" => Some(WasmRuntimeImport::ReMatchGroups),
-        "re_match_groupdict" => Some(WasmRuntimeImport::ReMatchGroupdict),
-        "molt_re_match_groupdict" => Some(WasmRuntimeImport::ReMatchGroupdict),
         "re_split" => Some(WasmRuntimeImport::ReSplit),
         "molt_re_split" => Some(WasmRuntimeImport::ReSplit),
         "re_sub" => Some(WasmRuntimeImport::ReSub),

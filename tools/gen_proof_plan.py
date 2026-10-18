@@ -21,6 +21,7 @@ bind_repository_imports(__file__)
 from tools.proof_plan import (  # noqa: E402
     DEFAULT_MANIFEST,
     ProofPlan,
+    PytestMemoryUnits,
     _authority_sha256,
     local_gate_commands,
 )
@@ -222,7 +223,8 @@ def _json_projection(plan: ProofPlan) -> str:
             "always": plan.always,
             "always_toolchains": plan.always_toolchains,
             "rule": plan.local_rules,
-        }
+        },
+        memory_units=PytestMemoryUnits(command.data for command in plan.commands),
     )
     local_commands = {
         identifier: command for identifier, (command, _) in local_rows.items()

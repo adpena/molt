@@ -25,7 +25,7 @@ use crate::native_backend::simple_backend::tests::{
     compile_selected_functions_direct, emit_direct_object,
 };
 use crate::{FunctionIR, OpIR, SimpleBackend, SimpleIR};
-use native_object_execution::{link_and_run_native_object, real_rustc};
+use native_object_execution::{link_and_run_native_object, rustc_path};
 
 mod cargo_test_artifacts {
     include!(concat!(
@@ -197,9 +197,7 @@ fn native_direct_symbol_object_call_emits_relocation() {
 fn native_direct_symbol_object_call_links_provider_archive_and_executes() {
     const SYMBOL: &str = "molt_native_object_call_execution_probe";
     const SENTINEL: u64 = 0x45A1_7E57_D15C_A11E;
-    let Some(rustc) = real_rustc() else {
-        return;
-    };
+    let rustc = rustc_path();
     let ir = native_callable_program(
         "native_probe.execute",
         "direct_symbol",
@@ -343,9 +341,7 @@ fn scalarized_tuple_index_never_retains_a_word_after_failed_construction() {
         );
     }
 
-    let Some(rustc) = real_rustc() else {
-        return;
-    };
+    let rustc = rustc_path();
     let provider_source = r#"#![no_std]
 use core::sync::atomic::{AtomicU64, Ordering};
 
@@ -803,9 +799,7 @@ fn native_value_tracking_cleanup_matrix_links_and_executes_once() {
         "cleanup_list_int_store_discard",
         "cleanup_del_index_metadata",
     ];
-    let Some(rustc) = real_rustc() else {
-        return;
-    };
+    let rustc = rustc_path();
 
     let mut functions = vec![
         cleanup_oracle_function(
@@ -2554,9 +2548,7 @@ fn native_pyinit_transfers_initializer_address_and_module_name_to_runtime_transa
     const SYMBOL: &str = "PyInit__native_execution_probe";
     const RAW_MODULE_POINTER: usize = 0x5EED_0040;
     const OWNED_MODULE: u64 = 0x45A1_7E57_D15C_A11E;
-    let Some(rustc) = real_rustc() else {
-        return;
-    };
+    let rustc = rustc_path();
     let ir = native_callable_program(
         "native_probe._native_execution_probe",
         "direct_symbol",
@@ -2681,9 +2673,7 @@ fn native_direct_symbol_rejects_empty_symbol() {
 
 #[test]
 fn native_fixed_aggregates_execute_aliases_and_box_failure_cleanup() {
-    let Some(rustc) = real_rustc() else {
-        return;
-    };
+    let rustc = rustc_path();
     let names = [
         "fixed_tuple",
         "fixed_list",

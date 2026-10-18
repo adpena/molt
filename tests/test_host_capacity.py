@@ -102,7 +102,10 @@ def test_cpu_count_is_at_least_one_under_a_fractional_quota(
 
 def test_shared_worker_policy_caps_cpu_by_total_and_live_memory(monkeypatch) -> None:
     gib = 1024**3
-    monkeypatch.setattr(host_capacity, "memory_bytes", lambda: (64 * gib, 5 * gib))
+    monkeypatch.delenv(host_capacity.MEMORY_SLICE_ENV, raising=False)
+    monkeypatch.setattr(
+        host_capacity, "_probe_memory_bytes", lambda: (64 * gib, 5 * gib)
+    )
 
     assert (
         host_capacity.worker_count(
@@ -301,24 +304,28 @@ def test_darwin_memory_bytes_reports_live_available_memory(monkeypatch) -> None:
     expected = page_size * sum(
         rows[name] for name in host_capacity.DARWIN_AVAILABLE_PAGE_ROWS
     )
-    total, available = host_capacity.memory_bytes()
+    total, available = host_capacity.memory_capacity().bounded_bytes
     assert total is not None and available is not None
     # Pages move between samples on a busy host; a wrong source is far off.
     assert abs(available - expected) <= total // 50, (available, expected, total)
 
 
-def test_a_parent_memory_slice_bounds_both_readings(monkeypatch) -> None:
+def test_a_parent_memory_slice_keeps_raw_and_bounded_readings(monkeypatch) -> None:
     gib = 1024**3
     monkeypatch.setattr(
         host_capacity, "_probe_memory_bytes", lambda: (64 * gib, 40 * gib)
     )
     monkeypatch.setenv(host_capacity.MEMORY_SLICE_ENV, str(8 * gib))
-    assert host_capacity.memory_bytes() == (8 * gib, 8 * gib)
+    capacity = host_capacity.memory_capacity()
+    assert capacity.total_bytes == 64 * gib
+    assert capacity.available_bytes == 40 * gib
+    assert capacity.tree_limit_bytes == 8 * gib
+    assert capacity.bounded_bytes == (8 * gib, 8 * gib)
     monkeypatch.setenv(host_capacity.MEMORY_SLICE_ENV, str(128 * gib))
-    assert host_capacity.memory_bytes() == (64 * gib, 40 * gib)
+    assert host_capacity.memory_capacity().bounded_bytes == (64 * gib, 40 * gib)
     monkeypatch.setenv(host_capacity.MEMORY_SLICE_ENV, "eight")
     with pytest.raises(ValueError, match="must be a positive integer"):
-        host_capacity.memory_bytes()
+        host_capacity.memory_capacity().bounded_bytes
 
 
 def test_a_slice_already_holds_the_machine_reserve(monkeypatch) -> None:
@@ -327,8 +334,24 @@ def test_a_slice_already_holds_the_machine_reserve(monkeypatch) -> None:
         host_capacity, "_probe_memory_bytes", lambda: (64 * gib, 40 * gib)
     )
     monkeypatch.delenv(host_capacity.MEMORY_SLICE_ENV, raising=False)
-    assert host_capacity.headroom_bytes() == host_capacity.reserve_bytes(64 * gib)
+    capacity = host_capacity.memory_capacity()
+    assert host_capacity.headroom_bytes(capacity) == host_capacity.reserve_bytes(
+        64 * gib
+    )
     # A parent cut the slice from memory beyond the reserve.
     monkeypatch.setenv(host_capacity.MEMORY_SLICE_ENV, str(3 * gib))
-    assert host_capacity.headroom_bytes() == 0
-    assert host_capacity.memory_bytes() == (3 * gib, 3 * gib)
+    delegated = host_capacity.memory_capacity()
+    assert host_capacity.headroom_bytes(delegated) == 0
+    assert delegated.bounded_bytes == (3 * gib, 3 * gib)
+    # Headroom belongs to this captured allocation, not a later environment
+    # or a second native observation of a different host state.
+    monkeypatch.setenv(host_capacity.MEMORY_SLICE_ENV, "later-invalid-selection")
+    monkeypatch.setattr(
+        host_capacity,
+        "_probe_memory_bytes",
+        lambda: pytest.fail("headroom must not observe memory a second time"),
+    )
+    assert host_capacity.headroom_bytes(capacity) == host_capacity.reserve_bytes(
+        64 * gib
+    )
+    assert host_capacity.headroom_bytes(delegated) == 0

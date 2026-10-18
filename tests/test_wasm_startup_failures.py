@@ -249,6 +249,68 @@ for (const missing of ['molt_int_from_i64', 'molt_exception_pending_fast', 'molt
     )
 
 
+def test_app_export_invocation_moves_arguments_into_the_export(
+    tmp_path: Path,
+) -> None:
+    _run_node(
+        "const lifecyclePath = "
+        + json.dumps(str(ROOT / "wasm/runtime_lifecycle.js"))
+        + ";\n"
+        + r"""
+const assert = require('node:assert/strict');
+const {invokeAppExport, withRuntimeOwnedValues} = require(lifecyclePath);
+// Reference-counted fake runtime: a second release of a dead owner fails.
+const live = new Map();
+let next = 1n;
+const allocate = value => { const bits = next++; live.set(bits, {value, refs: 1}); return bits; };
+const retain = bits => { live.get(bits).refs++; };
+const release = bits => {
+  const object = live.get(bits);
+  assert.ok(object, `owner ${bits} released twice`);
+  if (--object.refs === 0) live.delete(bits);
+};
+const instance = {exports: {molt_dec_ref_obj: release}};
+const stored = [];
+// A compiled app export adopts every argument: it releases each at its frame
+// boundary, on normal and exceptional exit alike, and returns an owned result.
+const adopting = (behavior) => (...args) => {
+  try {
+    if (behavior === 'store') { retain(args[1]); stored.push(args[1]); }
+    if (behavior === 'trap') throw new Error('export trapped');
+    return allocate(args.map(bits => live.get(bits).value).join('+'));
+  } finally {
+    for (const bits of args) release(bits);
+  }
+};
+const call = (behavior, values, materialize = allocate) =>
+  withRuntimeOwnedValues(instance, [values],
+    specs => invokeAppExport(instance, adopting(behavior), specs, materialize),
+    ([result]) => live.get(result).value);
+
+assert.equal(call('plain', ['a', 'b', 'c']), 'a+b+c');
+assert.equal(live.size, 0, 'arguments or result outlived the call');
+
+assert.equal(call('store', ['a', 'b']), 'a+b');
+assert.deepEqual([...live.values()], [{value: 'b', refs: 1}],
+  'the export, not the host, owns the argument it stored');
+release(stored.pop());
+
+assert.throws(() => call('trap', ['a', 'b']), /export trapped/);
+assert.equal(live.size, 0, 'a trapping export still owns its arguments');
+
+const failure = new Error('conversion failed');
+let calls = 0;
+assert.throws(() => withRuntimeOwnedValues(instance, [['a', 'b', 'bad']],
+  specs => invokeAppExport(instance, () => { calls++; }, specs,
+    value => { if (value === 'bad') throw failure; return allocate(value); }),
+  () => assert.fail('consumed')), error => error === failure);
+assert.equal(calls, 0);
+assert.equal(live.size, 0, 'unsent arguments must be released by the invocation');
+""",
+        tmp_path,
+    )
+
+
 @pytest.mark.parametrize(
     ("host", "binding", "next_binding"),
     [
@@ -313,9 +375,12 @@ if (binding !== 'makeHostArgObject') {
 
 def test_node_runner_rejects_startup_error_before_host_exports(tmp_path: Path) -> None:
     source = (ROOT / "wasm/run_wasm.js").read_text(encoding="utf-8")
+    # runMain admits its argv through the real runner-argument resolver.
+    resolver_start = source.index("const resolveRunnerArguments = (argv) => {")
+    resolver_end = source.index("\nconst openGuestStderr =", resolver_start)
     start = source.index("const runMain = async () => {")
     end = source.index("\nlet terminationHandlersInstalled", start)
-    run_main = source[start:end]
+    run_main = source[resolver_start:resolver_end] + "\n" + source[start:end]
     _run_node(
         "const runMainSource = "
         + json.dumps(run_main)
@@ -334,7 +399,10 @@ async function exercise(primary, split, fails, cleanupErrors = []) {
   const runtime = {};
   const context = {
     appInstanceForHostCalls: null, appInstanceForExceptions: null,
-    runtimeInstance: runtime, initWasmAssets() {}, traceMark: mark => traces.push(mark), traceRun: false,
+    process: {argv: ['node', 'run_wasm.js', 'manifest.json']},
+    runnerGuestArgs: [], guestStderrCapture: null,
+    runtimeInstance: runtime, traceMark: mark => traces.push(mark), traceRun: false,
+    initWasmAssets(manifestPath) { assert.equal(manifestPath, 'manifest.json'); },
     formatTraceError,
     wasmBuffer: {}, linkedBuffer: split ? null : {}, runtimeBuffer: {},
     runtimeManifest: {mode: split ? 'split-runtime' : 'linked'},
@@ -428,6 +496,7 @@ const runtimeFailure = new Error('runtime shutdown');
 const hostFailure = new Error('host close');
 const context = {
   hostLifecycleState: 'live',
+  guestStderrCapture: null,
   runtimeInstance: {},
   runtimeLifetime: () => ({dispose() {
     assert.equal(context.hostLifecycleState, 'runtime-shutdown');
@@ -1910,7 +1979,7 @@ def test_browser_host_reusable_api_disposes_only_at_owner_end(tmp_path: Path) ->
         + r"""
 const vm = require('node:vm');
 const assert = require('node:assert/strict');
-const {createRuntimeLifetime, createRuntimeDisposer, withRuntimeOwnedValues, combinedError} = require(lifetimePath);
+const {createRuntimeLifetime, createRuntimeDisposer, withRuntimeOwnedValues, invokeAppExport, combinedError} = require(lifetimePath);
 const events = [];
 const names = {runtime_execution_enter: 'enter', runtime_execution_leave: 'leave', runtime_shutdown: 'shutdown'};
 const instance = {exports: {
@@ -1924,7 +1993,7 @@ const instance = {exports: {
 }};
 const context = {
   instance, state: {runtimeInstance: instance, memory: {}}, runtimeImportAbi: {export_names: names},
-  createRuntimeLifetime, createRuntimeDisposer, withRuntimeOwnedValues, combinedError, runtimeExceptionPending: () => false,
+  createRuntimeLifetime, createRuntimeDisposer, withRuntimeOwnedValues, invokeAppExport, combinedError, runtimeExceptionPending: () => false,
   pendingRuntimeExceptionMessage: () => null, memoryExport: {}, memory: {}, env: {}, linkedTable: {},
   makeBrowserHostArgObject: () => 0n, decRefMaybeWithRuntime() {},
   decodeOwnedExportResult: (_runtime, _memory, value) => value,

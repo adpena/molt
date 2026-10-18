@@ -343,6 +343,25 @@ no preparation. A tool the version contract admits still passes when its
 pinned provider is not installed; a refusal names the install command, and
 nothing downloads.
 
+Execution proofs declare every required compiler, linker and guest host in the
+owning local and CI command. Missing tools must fail admission or the actual
+execution; a passing test cannot hide an unavailable tool behind an early return.
+Do not spawn a redundant version probe inside each test. Shared fixture helpers
+select every compiled consumer when changed. These are development prerequisites
+and add no work to emitted programs.
+
+Differential proof commands select the host compiler with `--compiler-profile`
+independently of the emitted program's `--build-profile`. Development conformance
+uses the existing `dev-fast` compiler cohort; release consumers explicitly select
+the release compiler. Omitting the host option preserves the caller's existing
+compiler selection. A development guest request alone does not select a
+development compiler or justify a claim that an existing build will be reused.
+
+Admission requires the caller's explicit repository root. The proof runner
+uses its selected plan root, integration its selected checkout, and generators
+their selected source root. Provider discovery and version admission therefore
+use the same source context; the driver's repository is not a default selector.
+
 The hosted state moves the toolchain root, so under it the runner finds no
 provider. Project the toolchains before entering it, and for any command you
 run outside these executors:

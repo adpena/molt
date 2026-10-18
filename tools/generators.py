@@ -8,8 +8,10 @@ it and compares or publishes the result, so the repository pays one
 interpreter start for all generators instead of one per generator.
 
 ``write`` follows ``upstream_generators``, so a generator renders only after
-the generators it reads from have published; the proof plan, which hashes
-every authority input, always runs last. Generators with
+the generators it reads from have published. Targeted writes also include
+every declared downstream consumer; targeted checks examine only the named
+generators. The proof plan, which hashes every authority input, is last in the
+default full run. Generators with
 ``ci_checkable = false`` read inputs a checkout cannot reproduce (gitignored
 corpora, external checkouts, live interpreters); they run only when named
 with ``--only``.
@@ -141,7 +143,7 @@ def admit_generators(
         if policy.python_identity_role == "runtime"
     }
     fingerprints = admit_toolchains(
-        policies, names, owners=owners, python_admissions=admissions or None
+        policies, names, owners=owners, python_admissions=admissions or None, root=root
     ).fingerprints
     bindings: dict[str, dict[str, tuple[dict[str, Any], BuildPythonAdmission]]] = {
         row.tool: {} for row in selected
@@ -166,7 +168,8 @@ def main(argv: list[str] | None = None) -> int:
         action="append",
         default=[],
         metavar="TOOL",
-        help="limit to this manifest tool (repeatable); includes host-input ones",
+        help="check only named tools; write named tools and declared consumers "
+        "(repeatable); host-input tools must be named explicitly",
     )
     args = parser.parse_args(argv)
 
@@ -175,7 +178,32 @@ def main(argv: list[str] | None = None) -> int:
     if unknown:
         parser.error("not check-mode manifest generators: " + ", ".join(unknown))
     if args.only:
-        selected = [g for g in generators if g.tool in args.only]
+        pending = list(dict.fromkeys(args.only))
+        requested = set(pending)
+        selected_names = requested.copy()
+        if args.action == "write":
+            consumers: dict[str, list[str]] = {}
+            for generator in generators:
+                for upstream in generator.upstream:
+                    consumers.setdefault(upstream, []).append(generator.tool)
+            for tool in pending:
+                for consumer in consumers.get(tool, ()):
+                    if consumer not in selected_names:
+                        selected_names.add(consumer)
+                        pending.append(consumer)
+            host_inputs = [
+                generator.tool
+                for generator in generators
+                if generator.tool in selected_names
+                and not generator.reproducible
+                and generator.tool not in requested
+            ]
+            if host_inputs:
+                parser.error(
+                    "downstream host-input generators require explicit --only: "
+                    + ", ".join(host_inputs)
+                )
+        selected = [g for g in generators if g.tool in selected_names]
     else:
         selected = [g for g in generators if g.reproducible]
         skipped = [g.tool for g in generators if not g.reproducible]

@@ -62,7 +62,11 @@ pub(crate) fn bytes_contains_builtin(py: &PyToken<'_>, container: u64, needle: u
     if exception_pending(py) {
         clear_exception(py);
     }
-    if !crate::object::buffer_exports::supports_buffer(py, needle) {
+    let supported = match crate::object::buffer_exports::supports_buffer(py, needle) {
+        Ok(supported) => supported,
+        Err(_) => return MoltObject::none().bits(),
+    };
+    if !supported {
         return raise_exception(
             py,
             "TypeError",
@@ -109,7 +113,9 @@ where
     F: FnOnce() -> String,
 {
     let source = MoltObject::from_ptr(ptr).bits();
-    if !crate::object::buffer_exports::supports_buffer(py, source) {
+    if !crate::object::buffer_exports::supports_buffer(py, source)
+        .map_err(|error| error.raise(py, "invalid buffer preparation"))?
+    {
         return Err(raise_exception(py, "TypeError", &make_type_error()));
     }
     crate::object::buffer_exports::ScopedBuffer::simple(py, source)
@@ -146,7 +152,7 @@ pub(super) fn collect_bytearray_assign_bytes(_py: &PyToken<'_>, bits: u64) -> Op
             }
         }
     }
-    if crate::object::buffer_exports::supports_buffer(_py, bits) {
+    if crate::object::buffer_exports::supports_buffer(_py, bits).ok()? {
         return byte_buffer(_py, bits).map(|(bytes, _owner)| bytes);
     }
     let mut iter = crate::object::iterable::OwnedIterator::new(_py, bits)?;
@@ -171,11 +177,20 @@ pub extern "C" fn molt_bytearray_extend(bytearray_bits: u64, other_bits: u64) ->
         }
         // CPython's setslice keeps the source export until after destination
         // mutation. Self-extension first snapshots itself and takes no export.
-        let source = if other_bits != bytearray_bits
-            && crate::object::buffer_exports::supports_buffer(_py, other_bits)
-        {
+        let supported = if other_bits == bytearray_bits {
+            false
+        } else {
+            match crate::object::buffer_exports::supports_buffer(_py, other_bits) {
+                Ok(supported) => supported,
+                Err(_) => return MoltObject::none().bits(),
+            }
+        };
+        let source = if supported {
             match crate::object::buffer_exports::ScopedBuffer::simple(_py, other_bits) {
                 Ok(source) => Some(source),
+                Err(crate::object::buffer_exports::BufferAccessError::Preparation) => {
+                    return MoltObject::none().bits();
+                }
                 Err(_) => {
                     clear_exception(_py);
                     return raise_exception::<_>(
@@ -1662,7 +1677,11 @@ fn bytes_from_obj_impl(
             Err(()) => return MoltObject::none().bits(),
         }
     }
-    let bytes = if crate::object::buffer_exports::supports_buffer(py, bits) {
+    let supported = match crate::object::buffer_exports::supports_buffer(py, bits) {
+        Ok(supported) => supported,
+        Err(_) => return MoltObject::none().bits(),
+    };
+    let bytes = if supported {
         let Some((bytes, _export)) = byte_buffer(py, bits) else {
             return MoltObject::none().bits();
         };
@@ -1784,7 +1803,11 @@ pub(crate) fn bytearray_init_from_arguments(
         Ok(None) => {}
         Err(()) => return MoltObject::none().bits(),
     }
-    if crate::object::buffer_exports::supports_buffer(py, source) {
+    let supported = match crate::object::buffer_exports::supports_buffer(py, source) {
+        Ok(supported) => supported,
+        Err(_) => return MoltObject::none().bits(),
+    };
+    if supported {
         let Some((bytes, _export)) = byte_buffer(py, source) else {
             return MoltObject::none().bits();
         };

@@ -253,6 +253,7 @@ def test_ty_check_uses_cli_memory_guard(monkeypatch, tmp_path: Path) -> None:
     assert output == "ok"
     assert captured["cmd"] == [
         sys.executable,
+        "-B",
         "-I",
         "-m",
         "ty",

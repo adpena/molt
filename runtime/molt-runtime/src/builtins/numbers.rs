@@ -452,6 +452,14 @@ pub(crate) const INT_BYTES_OVERFLOW: i32 = 1;
 pub(crate) const INT_BYTES_NEGATIVE_UNSIGNED: i32 = 2;
 pub(crate) const INT_BYTES_INVALID: i32 = -1;
 
+/// CPython 3.13 requires a sign bit for an empty signed -1 export. The
+/// explicitly published five-argument 3.12 C ABI keeps its earlier behavior.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum EmptySignedBytes {
+    AllowMinusOne,
+    RequireSignBit,
+}
+
 /// Shared arbitrary-width two's-complement decoder for Python `int.from_bytes`
 /// and the CPython ABI `_PyLong_FromByteArray` hook.
 pub(crate) fn bigint_from_bytes(data: &[u8], little_endian: bool, signed: bool) -> BigInt {
@@ -473,13 +481,15 @@ fn magnitude_to_bytes(
     out: &mut [u8],
     little_endian: bool,
     signed: bool,
+    empty_signed: EmptySignedBytes,
 ) -> i32 {
     if negative && !signed {
         return INT_BYTES_NEGATIVE_UNSIGNED;
     }
-    // CPython has no significant two's-complement byte for either 0 or -1.
     if out.is_empty() {
-        return if bit_len == 0 || negative && bit_len == 1 {
+        return if bit_len == 0
+            || negative && bit_len == 1 && empty_signed == EmptySignedBytes::AllowMinusOne
+        {
             INT_BYTES_OK
         } else {
             INT_BYTES_OVERFLOW
@@ -535,6 +545,7 @@ pub(crate) fn bigint_to_bytes(
     out: &mut [u8],
     little_endian: bool,
     signed: bool,
+    empty_signed: EmptySignedBytes,
 ) -> i32 {
     magnitude_to_bytes(
         value.sign() == Sign::Minus,
@@ -543,6 +554,7 @@ pub(crate) fn bigint_to_bytes(
         out,
         little_endian,
         signed,
+        empty_signed,
     )
 }
 
@@ -553,6 +565,7 @@ pub(crate) fn integral_payload_to_bytes(
     out: &mut [u8],
     little_endian: bool,
     signed: bool,
+    empty_signed: EmptySignedBytes,
 ) -> i32 {
     let obj = obj_from_bits(bits);
     if let Some(value) = obj.as_int().or_else(|| obj.as_bool().map(i64::from)) {
@@ -564,12 +577,19 @@ pub(crate) fn integral_payload_to_bytes(
             out,
             little_endian,
             signed,
+            empty_signed,
         );
     }
     let Some(ptr) = bigint_ptr_from_bits(bits) else {
         return INT_BYTES_INVALID;
     };
-    bigint_to_bytes(unsafe { bigint_ref(ptr) }, out, little_endian, signed)
+    bigint_to_bytes(
+        unsafe { bigint_ref(ptr) },
+        out,
+        little_endian,
+        signed,
+        empty_signed,
+    )
 }
 
 pub(crate) fn bigint_num_bits(value: &BigInt) -> Option<usize> {
@@ -3526,12 +3546,21 @@ mod integer_byte_emission_tests {
             let raw = value.to_le_bytes();
             for len in 0..=20 {
                 for little in [false, true] {
-                    for signed in [false, true] {
+                    for (signed, empty_signed) in [
+                        (false, EmptySignedBytes::AllowMinusOne),
+                        (true, EmptySignedBytes::AllowMinusOne),
+                        (false, EmptySignedBytes::RequireSignBit),
+                        (true, EmptySignedBytes::RequireSignBit),
+                    ] {
                         let mut out = [0xa5; 20];
                         let expected_status = if value < 0 && !signed {
                             INT_BYTES_NEGATIVE_UNSIGNED
                         } else if len == 0 {
-                            if value == 0 || signed && value == -1 {
+                            if value == 0
+                                || signed
+                                    && value == -1
+                                    && empty_signed == EmptySignedBytes::AllowMinusOne
+                            {
                                 INT_BYTES_OK
                             } else {
                                 INT_BYTES_OVERFLOW
@@ -3549,7 +3578,7 @@ mod integer_byte_emission_tests {
                             INT_BYTES_OVERFLOW
                         };
                         assert_eq!(
-                            bigint_to_bytes(&big, &mut out[..len], little, signed),
+                            bigint_to_bytes(&big, &mut out[..len], little, signed, empty_signed),
                             expected_status
                         );
                         for (index, actual) in out.iter().copied().enumerate() {
@@ -3579,12 +3608,24 @@ mod integer_byte_emission_tests {
         let negative = -&positive;
         let mut out = [0xa5; 17];
         assert_eq!(
-            bigint_to_bytes(&negative, &mut out, true, true),
+            bigint_to_bytes(
+                &negative,
+                &mut out,
+                true,
+                true,
+                EmptySignedBytes::RequireSignBit
+            ),
             INT_BYTES_OK
         );
         assert_eq!(out, [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 255]);
         assert_eq!(
-            bigint_to_bytes(&positive, &mut out, false, false),
+            bigint_to_bytes(
+                &positive,
+                &mut out,
+                false,
+                false,
+                EmptySignedBytes::RequireSignBit
+            ),
             INT_BYTES_OK
         );
         assert_eq!(out, [1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]);

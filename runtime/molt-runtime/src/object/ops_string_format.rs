@@ -141,10 +141,7 @@ pub(crate) fn next_format_markup<'a>(
 }
 
 fn format_name_index(text: &[u8]) -> Result<Option<usize>, &'static str> {
-    let mut codes = wtf8_from_bytes(text)
-        .code_points()
-        .map(|code| code.to_u32())
-        .peekable();
+    let mut codes = molt_runtime_core::text_storage::code_points(text).peekable();
     // Consume the decimal prefix before deciding whether this is a name:
     // overflow is an error even when a nondecimal suffix follows it.
     let index = parse_format_integer(&mut codes).map_err(|error| match error {

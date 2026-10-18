@@ -20,6 +20,7 @@ if TYPE_CHECKING:
 ROOT = Path(__file__).resolve().parents[1]
 MOLT_STDLIB_ROOT = str(ROOT / "src" / "molt" / "stdlib")
 _PYTEST_SENTINEL_ATTR = "_molt_repo_process_sentinel"
+_PYTEST_DAEMON_SCOPE_ATTR = "_molt_daemon_suite_scope"
 _CHECKOUT_TARGET_SNAPSHOT_ATTR = "_molt_checkout_target_snapshot"
 # The CLI's default Cargo target for a project; the compiler's own checkout
 # must never get one from a test session (HF-114).
@@ -526,10 +527,10 @@ def pytest_configure() -> None:
 def _is_xdist_run(session) -> bool:  # type: ignore[no-untyped-def]
     """True when this pytest invocation runs under pytest-xdist (parallel).
 
-    Detected in workers via ``PYTEST_XDIST_WORKER`` and in the controller via
+    Detected in workers via pytest's ``workerinput`` and in the controller via
     the resolved ``-n`` value (``numprocesses``).
     """
-    if os.environ.get("PYTEST_XDIST_WORKER"):
+    if hasattr(session.config, "workerinput"):
         return True
     try:
         return bool(session.config.option.numprocesses)
@@ -661,6 +662,7 @@ def _report_checkout_target_leaks(session) -> None:  # type: ignore[no-untyped-d
         reporter.write_line(line, red=True)
 
 
+@pytest.hookimpl(tryfirst=True)
 def pytest_sessionstart(session) -> None:  # type: ignore[no-untyped-def]
     _ensure_src_on_path()
     _ensure_pytest_process_scope()
@@ -670,13 +672,17 @@ def pytest_sessionstart(session) -> None:  # type: ignore[no-untyped-def]
         setattr(
             session.config, _CHECKOUT_TARGET_SNAPSHOT_ATTR, checkout_target_entries()
         )
-    # Automatic repo sentinels now scope violation/drain kills to the current
-    # process tree, but xdist still has many independent worker controllers and
-    # its own channel teardown. Keep the session sentinel serial-only: each xdist
-    # compliance build is already bounded by the per-build memory guard in
-    # tests/compliance/process_guard.run_compliance_process, and the worker count
-    # caps aggregate concurrency. Serial runs keep the full sentinel.
+    # xdist's trylast hook starts workers after this hook. One controller lease
+    # is inherited by every worker; individual build guards transfer shared
+    # daemons to it instead of killing them while peer requests are in flight.
+    # Per-build guards retain RSS admission; no additional xdist scanner runs.
     if _is_xdist_run(session):
+        if not hasattr(session.config, "workerinput"):
+            from molt.backend_daemon_suite_custody import daemon_suite_scope
+
+            scope = daemon_suite_scope(project_root=ROOT, environ=os.environ)
+            scope.__enter__()
+            setattr(session.config, _PYTEST_DAEMON_SCOPE_ATTR, scope)
         return
     from tools import harness_memory_guard
     from molt.pytest_memory_guard_bootstrap import outer_guard_summary_dir
@@ -692,11 +698,20 @@ def pytest_sessionstart(session) -> None:  # type: ignore[no-untyped-def]
     sentinel.__enter__()
 
 
+@pytest.hookimpl(trylast=True)
 def pytest_sessionfinish(session, exitstatus) -> None:  # type: ignore[no-untyped-def]
     sentinel = getattr(session.config, _PYTEST_SENTINEL_ATTR, None)
-    if sentinel is not None:
-        sentinel.__exit__(None, None, None)
-    _report_checkout_target_leaks(session)
+    try:
+        if sentinel is not None:
+            sentinel.__exit__(None, None, None)
+    finally:
+        # xdist's normal finish hook has already joined its workers.
+        scope = getattr(session.config, _PYTEST_DAEMON_SCOPE_ATTR, None)
+        try:
+            if scope is not None:
+                scope.__exit__(None, None, None)
+        finally:
+            _report_checkout_target_leaks(session)
 
 
 @pytest.hookimpl(wrapper=True)

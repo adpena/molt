@@ -144,7 +144,7 @@ def test_app_export_contract_seals_owned_result_boundary() -> None:
         "name": "molt.wasm.app-call",
         "parameters": {
             "representation": "tagged-i64",
-            "ownership": "borrowed",
+            "ownership": "transferred",
         },
         "result": {
             "representation": "tagged-i64",
@@ -159,6 +159,31 @@ def test_app_export_contract_seals_owned_result_boundary() -> None:
     contract["call_abi"]["result"]["ownership"] = "borrowed"
     with pytest.raises(ValueError, match="canonical molt.wasm.app-call"):
         validate_app_export_contract(contract)
+
+
+def test_app_export_contract_requires_entries_that_adopt_their_arguments() -> None:
+    source = "def alpha(value, other):\n    return value\n\ndef zero():\n    return 1\n"
+    ir, contract = _frontend_ir_and_contract(source)
+    functions = ir["functions"]
+    assert isinstance(functions, list)
+    entries = {function["name"]: function for function in functions}
+    # A synchronous frame's entry adopts every argument; a zero-parameter
+    # entry declares nothing. Both satisfy transferred-parameter app calls.
+    assert entries["probe__alpha"]["parameter_custody"] == [
+        "transferred",
+        "transferred",
+    ]
+    assert "parameter_custody" not in entries["probe__zero"]
+    assert exported_app_symbols(contract) == ("probe__alpha", "probe__zero")
+
+    # A borrowing entry under the transferred-parameter ABI would have every
+    # host release each argument a second time.
+    entries["probe__alpha"]["parameter_custody"] = ["transferred", "borrowed"]
+    with pytest.raises(ValueError, match="must adopt every parameter"):
+        build_app_export_contract(entry_module="probe", ir=ir, registry_digest="a" * 64)
+    del entries["probe__alpha"]["parameter_custody"]
+    with pytest.raises(ValueError, match="must adopt every parameter"):
+        build_app_export_contract(entry_module="probe", ir=ir, registry_digest="a" * 64)
 
 
 def test_contract_builder_only_projects_frontend_resolved_metadata() -> None:

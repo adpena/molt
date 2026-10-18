@@ -139,6 +139,7 @@ def test_concurrent_builds_of_same_named_programs_run_their_own_code(
                 "build",
                 "--profile",
                 "dev",
+                "--json",
                 "--output",
                 str(binary),
                 str(source),
@@ -147,12 +148,24 @@ def test_concurrent_builds_of_same_named_programs_run_their_own_code(
             text=True,
             timeout=900.0,
         )
-        assert build.returncode == 0, build.stdout[-2000:] + build.stderr[-2000:]
+        # The daemon can append peer-request log lines to a failure. Retain
+        # the complete structured diagnostic instead of losing its cause to
+        # a successful peer's trailing output.
+        assert build.returncode == 0, (
+            f"build {job} exited {build.returncode}\n{build.stdout}\n{build.stderr}"
+        )
+        # A build must transfer its shared compiler daemon to the suite. Even
+        # when all programs finish first, command cleanup must not kill it.
+        assert not build.orphaned_process_groups, build.termination_reports
         expected = run_guarded_test_process(
-            [sys.executable, str(source)], capture_output=True, text=True, timeout=60.0
+            [sys.executable, str(source)],
+            capture_output=True,
+            text=True,
+            timeout=60.0,
+            check=True,
         ).stdout
         actual = run_guarded_test_process(
-            [str(binary)], capture_output=True, text=True, timeout=60.0
+            [str(binary)], capture_output=True, text=True, timeout=60.0, check=True
         ).stdout
         return expected, actual
 

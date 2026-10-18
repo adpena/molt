@@ -423,13 +423,9 @@ impl<'a, 'py> ExceptionRenderContext for ManagedRender<'a, 'py> {
             };
             unsafe {
                 crate::object::ops_format::with_string_bytes(obj_from_bits(value), |bytes| {
-                    index
-                        .and_then(|index| {
-                            crate::object::ops_string::wtf8_from_bytes(bytes)
-                                .code_points()
-                                .nth(index)
-                        })
-                        .map(|point| point.to_u32())
+                    index.and_then(|index| {
+                        molt_runtime_core::text_storage::code_points(bytes).nth(index)
+                    })
                 })
             }
             .or_else(|| self.invalid())

@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import shutil
 import subprocess
+import sys
 from dataclasses import replace
 from pathlib import Path
 
@@ -12,12 +14,63 @@ import pytest
 from molt import verified_subset as authority
 from tools import verified_subset
 from tools.compat import comparison, test_policy
-from tests.process_guard_common import current_thread_only
+from tests.process_guard_common import current_thread_only, install_module_view
+from tests.python_environment_test_support import create_test_venv
 from tests.tools.verified_subset_fixtures import synthetic_validation
 
 
 SOURCE_SHA = "1" * 40
 SHA256 = "2" * 64
+
+
+@pytest.mark.parametrize("remove_no_bytecode_flag", [False, True])
+def test_reference_identity_startup_preserves_disposable_site_sources(
+    tmp_path, monkeypatch, remove_no_bytecode_flag
+):
+    """An actual isolated probe must not rewrite its admitted site inputs."""
+    environment = tmp_path / "environment"
+    executable = create_test_venv(environment)
+    site = environment / (
+        "Lib/site-packages"
+        if os.name == "nt"
+        else f"lib/python{sys.version_info.major}.{sys.version_info.minor}/site-packages"
+    )
+    (site / "readonly_startup.py").write_text("value = 271\n", encoding="utf-8")
+    (site / "readonly_startup.pth").write_text(
+        "import readonly_startup\n", encoding="utf-8"
+    )
+    before = {
+        path.name: (path.read_bytes(), path.stat().st_mtime_ns)
+        for path in site.iterdir()
+    }
+    install_module_view(
+        monkeypatch, "sys", sys, verified_subset, executable=str(executable)
+    )
+    monkeypatch.setenv("PYTHONDONTWRITEBYTECODE", "1")
+    monkeypatch.setenv("PYTHONPYCACHEPREFIX", str(tmp_path / "external-cache"))
+    original = verified_subset.harness_memory_guard.guarded_completed_process
+
+    def run_probe(command, **kwargs):
+        if remove_no_bytecode_flag:
+            command = [argument for argument in command if argument != "-B"]
+        return original(command, **kwargs)
+
+    monkeypatch.setattr(
+        verified_subset.harness_memory_guard, "guarded_completed_process", run_probe
+    )
+    coordinate = replace(
+        authority.verified_subset_coordinates()[0],
+        python=f"{sys.version_info.major}.{sys.version_info.minor}",
+        reference_python=f"{sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}",
+    )
+    identity = verified_subset._reference_python_identity(coordinate)
+    assert identity["version"] == coordinate.reference_python
+    assert bool(list(site.rglob("*.pyc"))) is remove_no_bytecode_flag
+    assert {
+        path.name: (path.read_bytes(), path.stat().st_mtime_ns)
+        for path in site.iterdir()
+        if path.is_file()
+    } == before
 
 
 def _one_test_projection(

@@ -463,6 +463,16 @@ def test_cargo_content_inputs_exclude_transport_but_bind_compile_environment(tmp
     for changed in (
         {"RUSTFLAGS": "-C opt-level=3", "COMPILED_VALUE": "one"},
         {"RUSTFLAGS": "-C opt-level=2", "COMPILED_VALUE": "two"},
+        *(
+            {"RUSTFLAGS": "-C opt-level=2", "COMPILED_VALUE": "one", name: "/new SDK"}
+            for name in (
+                "MOLT_LLVM_PREFIX",
+                "LLVM_CONFIG_PATH",
+                "LLVM_SYS_221_PREFIX",
+                "MLIR_SYS_220_PREFIX",
+                "TABLEGEN_220_PREFIX",
+            )
+        ),
     ):
         assert all(value != capture(changed)[key] for key, value in first.items())
 

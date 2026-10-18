@@ -180,7 +180,8 @@ def _verified_closure(
         if facts.sha256 != actual_hash:
             raise ValueError(
                 f"browser asset graph hash drift for {name}: "
-                f"expected {facts.sha256}, got {actual_hash}; run tools/gen_browser_asset_graph.py --write"
+                f"expected {facts.sha256}, got {actual_hash}; "
+                "run tools/generators.py write --only tools/gen_browser_asset_graph.py"
             )
         if retain_payloads and name in seen:
             retained[name] = data

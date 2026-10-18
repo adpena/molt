@@ -104,16 +104,18 @@ install_registry({{
     "molt_uuid_uuid3_bytes": lambda ns, name: bytes.fromhex("33333333123412348123abcdef123456"),
     "molt_uuid_uuid4_bytes": lambda: bytes.fromhex("44444444123442348123abcdef123456"),
     "molt_uuid_uuid5_bytes": lambda ns, name: bytes.fromhex("55555555123452348123abcdef123456"),
-    "molt_binascii_a2b_base64": lambda error_type, s, strict_mode: _host_binascii.a2b_base64(s, strict_mode=strict_mode),
+    "molt_binascii_error_type": lambda: _host_binascii.Error,
+    "molt_binascii_incomplete_type": lambda: _host_binascii.Incomplete,
+    "molt_binascii_a2b_base64": _host_binascii.a2b_base64,
     "molt_binascii_b2a_base64": lambda b, newline=True: _host_base64.b64encode(bytes(b)) + (b"\\n" if newline else b""),
-    "molt_binascii_a2b_hex": lambda error_type, s: _host_binascii.a2b_hex(s),
-    "molt_binascii_unhexlify": lambda error_type, s: _host_binascii.unhexlify(s),
+    "molt_binascii_a2b_hex": _host_binascii.a2b_hex,
+    "molt_binascii_unhexlify": _host_binascii.unhexlify,
     "molt_binascii_b2a_hex": _host_binascii.b2a_hex,
     "molt_binascii_hexlify": _host_binascii.hexlify,
     "molt_binascii_a2b_qp": lambda s, header=False: bytes(s),
     "molt_binascii_b2a_qp": lambda b, quotetabs=False, istext=True, header=False: bytes(b),
-    "molt_binascii_a2b_uu": lambda error_type, s: bytes(s),
-    "molt_binascii_b2a_uu": lambda error_type, b: bytes(b),
+    "molt_binascii_a2b_uu": lambda s: bytes(s),
+    "molt_binascii_b2a_uu": lambda b, backtick=False: bytes(b),
     "molt_binascii_crc32": lambda data, value=0: 123,
     "molt_binascii_crc_hqx": lambda data, value: 321,
     "molt_copy_copy": lambda obj: obj.copy() if hasattr(obj, "copy") else obj,
@@ -156,7 +158,11 @@ checks = {{
         and "molt_uuid_getnode" not in uuid_mod.__dict__
     ),
     "binascii": (
-        binascii_mod.hexlify(b"ab") == b"6162"
+        binascii_mod.Error is _host_binascii.Error
+        and binascii_mod.Incomplete is _host_binascii.Incomplete
+        and binascii_mod.Error.__bases__ == (ValueError,)
+        and binascii_mod.Incomplete.__bases__ == (Exception,)
+        and binascii_mod.hexlify(b"ab") == b"6162"
         and binascii_mod.unhexlify("6162") == b"ab"
         and binascii_mod.hexlify is not binascii_mod.b2a_hex
         and binascii_mod.unhexlify is not binascii_mod.a2b_hex

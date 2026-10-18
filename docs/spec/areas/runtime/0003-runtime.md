@@ -32,6 +32,41 @@ Rejected index results and callback exceptions retain the
 canonical conversion diagnostics. Signed ties-to-even decimal multiples share
 one decision across integer carriers and negative float digit counts.
 
+Integer byte conversion publishes its defaults once in the native callable's
+owned default tuple: `int.to_bytes(length=1, byteorder='big', *, signed=False)`
+and `int.from_bytes(bytes, byteorder='big', *, signed=False)`. The common codec
+binder reads that tuple, rejects positional `signed`, and reuses the shared
+Clinic keyword admission. Omission uses the internal missing sentinel for big
+endian order; it does not allocate a default string or consult host byte order.
+Both operations admit byteorder as Unicode before evaluating signed truth,
+then validate the exact case-sensitive contents. Converter failures preserve
+the original exception and prevent later conversion callbacks.
+
+`from_bytes` follows `PyObject_Bytes`, including subclass `__bytes__`, buffer and
+iterable conversion. Exact immutable bytes decode directly; exact bytearray
+storage uses the existing counted export owner. Normalized conversion storage
+retires before the requested integer subclass constructor, and the intermediate
+integer retires after that borrowed constructor call. This uses the ordinary
+runtime conversion and ownership mechanisms in standalone native and WASM
+binaries; no host interpreter is involved.
+
+The common integer encoder has an explicit empty-signed-output policy. A Python
+3.12 target permits `(-1).to_bytes(0, signed=True)`; Python 3.13/3.14 targets
+raise `OverflowError` because an empty output cannot hold its sign bit. Only
+that zero-width negative case consults the guest version; ordinary nonempty
+conversions perform no version query. The explicitly published five-argument
+3.12 `_PyLong_AsByteArray` C ABI and its physical integer-layout projection keep
+the 3.12 policy independently of the guest Python version. This distinguishes
+guest language semantics from the admitted extension ABI; it adds no Python
+3.15 support claim. The existing bigint differential owns Python call semantics,
+and the common encoder's byte/status controls exercise both empty-output
+policies. Actual verified cells remain defined by their target proof receipts.
+
+These rules follow pinned CPython's [3.12.13 Clinic argument converters](https://github.com/python/cpython/blob/3bb231a6a5dc02b95658877318bf61501a7209e9/Objects/clinic/longobject.c.h),
+[3.12.13 integer codec bodies](https://github.com/python/cpython/blob/3bb231a6a5dc02b95658877318bf61501a7209e9/Objects/longobject.c),
+and the sign-bit validation in [3.13.16](https://github.com/python/cpython/blob/cbc944f4bc59639a444dd971c737788ba2283a91/Objects/longobject.c)
+and [3.14.8](https://github.com/python/cpython/blob/8e6e75d9102e39bed2a2b279203a396741180f12/Objects/longobject.c).
+
 Heap objects are referenced directly via tagged 48-bit canonical pointers.
 Typed native handles are managed heap objects whose declared owner operations
 retain and retire the Rust payload. The payload's Arc or raw Rust allocation
@@ -177,12 +212,23 @@ struct MoltHeader {
   the peer. Both exports remain live through comparison and release in that
   order. Buffer acquisition, contiguous-span admission and writable admission
   share one scoped owner; capability checks never acquire an export.
-- **Strings**: WTF-8 buffers use the same inline length/data/NUL storage as
+- **Strings**: UTF-8 surrogatepass buffers use the same inline length/data/NUL storage as
   bytes. Embedded NULs remain ordinary content. Allocation and unique-owner
   append initialize the trailing NUL through `InlineBytesStorage`; native
   subclass slots and dictionaries start after the terminator and alignment.
   `find/split/replace/startswith/endswith/count/join` use ASCII fast paths with
   codepoint indexing for non-ASCII.
+  Runtime core's `text_storage` owns code-point iteration and encoding; adjacent
+  explicit surrogates remain distinct, as required by
+  [CPython's codec contract](https://github.com/python/cpython/blob/v3.12.13/Doc/library/codecs.rst).
+  Strided slices seek once through the existing UTF-8 index authority and walk
+  one monotonic byte cursor, copying original code-point spans. Traversal plus
+  output is linear in input and selected bytes; normalized index storage remains
+  proportional to selected elements. Single-character reads copy their span
+  without a temporary encoding buffer. Index cache hits still include ASCII
+  probes, synchronization and bounded local scans; they do not promise constant
+  time. The independent native/WASM differential carrier covers empty, reverse,
+  extreme-step and long cached strings, including surrogates and embedded NULs.
 - **Dicts**: `MoltDict` - Insertion-ordered key/value pairs plus a deterministic, open-addressing hash table for lookups.
     - Table hashing follows the runtime hash secret and capability policy;
       `PYTHONHASHSEED=0` selects deterministic string and bytes hashes.

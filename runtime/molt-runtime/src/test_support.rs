@@ -75,8 +75,14 @@ pub(crate) fn declared_array_buffer_instance(py: &crate::PyToken<'_>, handle: u6
     dec_ref_bits(py, class);
     // Raw storage is still admitted by the internal physical C transport, but
     // public eligibility comes from the declared facade's semantic slots.
-    assert!(!crate::object::buffer_exports::supports_buffer(py, handle));
-    assert!(crate::object::buffer_exports::supports_buffer(py, instance));
+    assert_eq!(
+        crate::object::buffer_exports::supports_buffer(py, handle),
+        Ok(false)
+    );
+    assert_eq!(
+        crate::object::buffer_exports::supports_buffer(py, instance),
+        Ok(true)
+    );
     instance
 }
 

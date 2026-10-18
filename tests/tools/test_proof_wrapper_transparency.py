@@ -234,15 +234,17 @@ def test_wrapped_pytest_runs_selected_venv_under_real_audit_and_requires_counts(
     monkeypatch,
 ):
     import copy
+    import json
     import os
     import sys
     from pathlib import Path
     from tools.proof_queue_pkg import command_identity, execution_environment
 
     venv = Path(sys.executable).parent.parent
+    scratch = tmp_path / "proof-scratch"
     payload = tmp_path / "test_payload.py"
     payload.write_text(
-        f"import sys\nfrom pathlib import Path\ndef test_selected_runtime():\n    assert Path(sys.prefix).resolve() == Path({str(venv)!r}).resolve()\n",
+        f"import sys\nfrom pathlib import Path\ndef test_selected_runtime(cache):\n    assert Path(sys.prefix).resolve() == Path({str(venv)!r}).resolve()\n    cache.set('custody/wrapper', {{'retained': True}})\n",
         encoding="utf-8",
     )
     submitted = [
@@ -255,6 +257,11 @@ def test_wrapped_pytest_runs_selected_venv_under_real_audit_and_requires_counts(
         "-m",
         "pytest",
         "-q",
+        "--strict-config",
+        "-W",
+        "error",
+        "-c",
+        str(Path(__file__).resolve().parents[2] / "pyproject.toml"),
         str(payload),
     ]
     # Pytest is a registered spawning entrypoint. Admit only this fixture's
@@ -277,15 +284,18 @@ def test_wrapped_pytest_runs_selected_venv_under_real_audit_and_requires_counts(
     assert command_admission.command_proof_kind(envelope) == "test-execution"
     command_admission.validate_envelope(envelope, submitted)
     environment = execution_environment._wrapper_execution_environment(
-        envelope, os.environ
+        envelope, {**os.environ, "MOLT_PROOF_SCRATCH_ROOT": str(scratch)}
     )
     exact = command_identity._exact_command(envelope, cwd=tmp_path, env=environment)
     assert Path(exact[0]).resolve() == venv_exec.venv_python(venv).resolve()
     completed, events, launch, transcript = _run_under_real_child_audit(
         envelope, exact, environment, tmp_path
     )
-    assert completed.returncode == 0, completed.stderr
-    assert "no:cacheprovider" in launch
+    assert completed.returncode == 0, completed.stdout + completed.stderr
+    assert "no:cacheprovider" not in launch
+    assert json.loads(
+        (scratch / "pytest-cache" / "v/custody/wrapper").read_text(encoding="utf-8")
+    ) == {"retained": True}
     assert transcript["test_counts"] == {"passed": 1}
     assert not any(event["event"] == "policy-violation" for event in events)
     assert any(event["event"] == "hook-start" for event in events)

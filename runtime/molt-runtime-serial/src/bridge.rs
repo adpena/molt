@@ -84,15 +84,31 @@ pub fn exception_pending(_py: &PyToken) -> bool {
     unsafe { (vt().exception_pending)() != 0 }
 }
 
-/// Match the pending exception against a builtin exception class, subclasses
-/// included, like `PyErr_ExceptionMatches`. The exception stays pending.
-pub fn pending_exception_matches_builtin(_py: &PyToken, name: &str) -> bool {
-    unsafe { (vt().pending_exception_matches_builtin)(name.as_ptr(), name.len()) != 0 }
+/// Replace a failed converter's raised owner without handling it. The current
+/// handled exception still supplies the new error's implicit context.
+pub fn replace_exception(_py: &PyToken, kind: &str, message: &str) -> u64 {
+    unsafe { (vt().replace_exception)(kind.as_ptr(), kind.len(), message.as_ptr(), message.len()) }
 }
 
-/// Discard the pending exception, like `PyErr_Clear`.
-pub fn clear_exception(_py: &PyToken) {
-    unsafe { (vt().clear_exception)() }
+pub fn decode_ascii_input(_py: &PyToken, bits: u64) -> u64 {
+    unsafe { (vt().decode_ascii_input)(bits) }
+}
+
+pub fn binascii_exception_type(_py: &PyToken, kind: molt_runtime_core::BinasciiException) -> u64 {
+    unsafe { (vt().binascii_exception_type)(kind) }
+}
+
+pub fn raise_binascii_error(py: &PyToken, message: &str) -> u64 {
+    let class = unsafe {
+        molt_runtime_core::OwnedRuntimeValue::from_owned_bits(
+            py,
+            binascii_exception_type(py, molt_runtime_core::BinasciiException::Error),
+        )
+    };
+    if exception_pending(py) {
+        return MoltObject::none().bits();
+    }
+    molt_runtime_core::rt_raise_class(py, class.bits(), message)
 }
 
 /// Borrow the class and argument tuple; return an independently owned exception.

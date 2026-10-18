@@ -60,6 +60,61 @@ fn slice_reduce_tuple(_py: &PyToken<'_>, slice_ptr: *mut u8) -> u64 {
     }
 }
 
+/// Exact arbitrary-precision slice normalization shared by slice.indices and
+/// range subscription. Sequence storage's isize-clamped decoder is a distinct
+/// contract; range lengths and steps must never truncate to host word size.
+///
+/// # Safety
+/// `slice_ptr` must be a live exact slice; `len` must be nonnegative.
+pub(super) unsafe fn slice_indices_bigint(
+    _py: &PyToken<'_>,
+    slice_ptr: *mut u8,
+    len: &BigInt,
+) -> Option<(BigInt, BigInt, BigInt)> {
+    debug_assert!(!len.is_negative());
+    let msg = "slice indices must be integers or None or have an __index__ method";
+    let start_obj = obj_from_bits(unsafe { slice_start_bits(slice_ptr) });
+    let stop_obj = obj_from_bits(unsafe { slice_stop_bits(slice_ptr) });
+    let step_obj = obj_from_bits(unsafe { slice_step_bits(slice_ptr) });
+    let step = if step_obj.is_none() {
+        BigInt::from(1)
+    } else {
+        index_bigint_from_obj(_py, step_obj.bits(), msg)?
+    };
+    if step.is_zero() {
+        raise_exception::<()>(_py, "ValueError", "slice step cannot be zero");
+        return None;
+    }
+    let step_neg = step.is_negative();
+    let lower = if step_neg {
+        BigInt::from(-1)
+    } else {
+        BigInt::from(0)
+    };
+    let upper = if step_neg { len - 1 } else { len.clone() };
+    let start = if start_obj.is_none() {
+        if step_neg {
+            upper.clone()
+        } else {
+            lower.clone()
+        }
+    } else {
+        let idx = index_bigint_from_obj(_py, start_obj.bits(), msg)?;
+        slice_indices_adjust(idx, len, &lower, &upper)
+    };
+    let stop = if stop_obj.is_none() {
+        if step_neg {
+            lower.clone()
+        } else {
+            upper.clone()
+        }
+    } else {
+        let idx = index_bigint_from_obj(_py, stop_obj.bits(), msg)?;
+        slice_indices_adjust(idx, len, &lower, &upper)
+    };
+    Some((start, stop, step))
+}
+
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_slice_indices(slice_bits: u64, length_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
@@ -77,50 +132,8 @@ pub extern "C" fn molt_slice_indices(slice_bits: u64, length_bits: u64) -> u64 {
             if len.is_negative() {
                 return raise_exception::<_>(_py, "ValueError", "length should not be negative");
             }
-            let start_obj = obj_from_bits(slice_start_bits(slice_ptr));
-            let stop_obj = obj_from_bits(slice_stop_bits(slice_ptr));
-            let step_obj = obj_from_bits(slice_step_bits(slice_ptr));
-            let step = if step_obj.is_none() {
-                BigInt::from(1)
-            } else {
-                let Some(step_val) = index_bigint_from_obj(_py, step_obj.bits(), msg) else {
-                    return MoltObject::none().bits();
-                };
-                step_val
-            };
-            if step.is_zero() {
-                return raise_exception::<_>(_py, "ValueError", "slice step cannot be zero");
-            }
-            let step_neg = step.is_negative();
-            let lower = if step_neg {
-                BigInt::from(-1)
-            } else {
-                BigInt::from(0)
-            };
-            let upper = if step_neg { &len - 1 } else { len.clone() };
-            let start = if start_obj.is_none() {
-                if step_neg {
-                    upper.clone()
-                } else {
-                    lower.clone()
-                }
-            } else {
-                let Some(idx) = index_bigint_from_obj(_py, start_obj.bits(), msg) else {
-                    return MoltObject::none().bits();
-                };
-                slice_indices_adjust(idx, &len, &lower, &upper)
-            };
-            let stop = if stop_obj.is_none() {
-                if step_neg {
-                    lower.clone()
-                } else {
-                    upper.clone()
-                }
-            } else {
-                let Some(idx) = index_bigint_from_obj(_py, stop_obj.bits(), msg) else {
-                    return MoltObject::none().bits();
-                };
-                slice_indices_adjust(idx, &len, &lower, &upper)
+            let Some((start, stop, step)) = slice_indices_bigint(_py, slice_ptr, &len) else {
+                return MoltObject::none().bits();
             };
             let start_bits = int_bits_from_bigint(_py, start);
             if exception_pending(_py) {

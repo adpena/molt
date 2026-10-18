@@ -27,6 +27,7 @@ from molt.python_environment_identity import (
     PythonEnvironmentIdentityError,
     validate_python_environment_location,
 )
+from molt.python_runtime_identity import python_runtime_selection_locations
 from tools import proof_plan
 from tools.git_identity import repository_source_paths
 from tools.proof_queue_pkg import command_admission as admission
@@ -59,6 +60,9 @@ def _environment_name_class(name: str) -> str | None:
         return "host-runtime"
     if (
         upper in command_identity._ENVIRONMENT_BUILD_NAMES
+        or command_identity.llvm_toolchain_environment_name(
+            upper if os.name == "nt" else name
+        )
         or command_identity._runtime_c_environment_name(upper)
         or cargo_native_dependency_environment_name(upper)
     ):
@@ -483,8 +487,13 @@ def _require_cargo_build_tool_environment_context(
             continue
         for name, value in environment.items():
             key = str(name).upper() if os.name == "nt" else str(name)
-            if key not in protected_environment and not (
-                native_required and command_identity._runtime_c_environment_name(key)
+            if (
+                key not in protected_environment
+                and not command_identity.llvm_toolchain_environment_name(key)
+                and not (
+                    native_required
+                    and command_identity._runtime_c_environment_name(key)
+                )
             ):
                 continue
             if key in inherited_keys and not (
@@ -1234,25 +1243,13 @@ def _broad_toolchain_roots(toolchains: Mapping[str, object]) -> list[Path]:
             continue
         selected_runtime = identity.get("python_runtime")
         if isinstance(selected_runtime, Mapping):
-            startup = selected_runtime["startup_selection"]
-            locations = [
-                *startup["base_paths"].values(),
-                *startup["import_paths"],
-                *startup["startup_configuration"],
-                startup["selected_executable"],
-                startup["base_executable"],
-            ]
-            if startup["runtime_library"] is not None:
-                locations.append(startup["runtime_library"])
-            for location in locations:
-                lexical = Path(location["lexical"])
-                # Include parents of absent startup selectors and archives too.
-                roots.append(lexical if lexical.is_dir() else lexical.parent)
-                resolved = Path(location["resolved"])
-                roots.append(resolved if resolved.is_dir() else resolved.parent)
-            roots.extend(
-                Path(row["path"]).parent for row in selected_runtime["file_custody"]
-            )
+            startup = cast(Mapping[str, object], selected_runtime["startup_selection"])
+            for location, directory_role in python_runtime_selection_locations(startup):
+                if directory_role:
+                    for spelling in ("lexical", "resolved"):
+                        path = Path(str(location[spelling]))
+                        if path.is_dir():
+                            roots.append(path)
         sdk = identity.get("wasi_sdk")
         if isinstance(sdk, Mapping):
             from molt.wasi_sdk_identity import SDK_RESOURCE_ROOTS
@@ -1275,19 +1272,6 @@ def _broad_toolchain_roots(toolchains: Mapping[str, object]) -> list[Path]:
             for unit in selection.get("native_build", []):
                 for selected_root in unit["selection"]["resource_roots"]:
                     lexical = Path(selected_root)
-                    roots.append(
-                        lexical.resolve(strict=True)
-                        if lexical.is_dir()
-                        else lexical.parent
-                    )
-                    if lexical.resolve(strict=False) != lexical:
-                        roots.append(lexical.parent)
-        link_inputs = identity.get("link_inputs")
-        if isinstance(link_inputs, Mapping):
-            archive = link_inputs.get("compiler_rt")
-            if isinstance(archive, Mapping):
-                path = Path(str(archive["path"]))
-                if not path.is_absolute() or not path.is_file():
-                    raise ValueError("captured compiler-rt watch root is unavailable")
-                roots.append(path.resolve(strict=True).parent)
+                    if lexical.is_dir():
+                        roots.append(lexical.resolve(strict=True))
     return list(dict.fromkeys(roots))

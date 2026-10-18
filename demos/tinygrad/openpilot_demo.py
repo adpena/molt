@@ -45,10 +45,6 @@ Full inference requires trained weights from comma.ai's openpilot repository:
 
 from __future__ import annotations
 
-from _intrinsics import require_intrinsic as _require_intrinsic
-
-_gpu_device = _require_intrinsic("molt_gpu_prim_device")
-
 import math
 from tinygrad.tensor import Tensor
 from tinygrad.dtypes import dtypes

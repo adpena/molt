@@ -3511,7 +3511,17 @@ pub(crate) const RUNTIME_CALLABLE_IMPORTS: &[RuntimeCallableImportSpec] = &[
     RuntimeCallableImportSpec {
         runtime_name: "molt_re_expand_replacement",
         import: WasmRuntimeImport::ReExpandReplacement,
-        arity: 2,
+        arity: 3,
+    },
+    RuntimeCallableImportSpec {
+        runtime_name: "molt_re_subject_snapshot",
+        import: WasmRuntimeImport::ReSubjectSnapshot,
+        arity: 1,
+    },
+    RuntimeCallableImportSpec {
+        runtime_name: "molt_re_subject_view",
+        import: WasmRuntimeImport::ReSubjectView,
+        arity: 1,
     },
     RuntimeCallableImportSpec {
         runtime_name: "molt_shlex_quote",
@@ -5761,7 +5771,17 @@ pub(crate) const RUNTIME_CALLABLE_IMPORTS: &[RuntimeCallableImportSpec] = &[
     RuntimeCallableImportSpec {
         runtime_name: "molt_binascii_a2b_base64",
         import: WasmRuntimeImport::BinasciiA2bBase64,
-        arity: 3,
+        arity: 2,
+    },
+    RuntimeCallableImportSpec {
+        runtime_name: "molt_binascii_error_type",
+        import: WasmRuntimeImport::BinasciiErrorType,
+        arity: 0,
+    },
+    RuntimeCallableImportSpec {
+        runtime_name: "molt_binascii_incomplete_type",
+        import: WasmRuntimeImport::BinasciiIncompleteType,
+        arity: 0,
     },
     RuntimeCallableImportSpec {
         runtime_name: "molt_binascii_b2a_base64",
@@ -5771,7 +5791,7 @@ pub(crate) const RUNTIME_CALLABLE_IMPORTS: &[RuntimeCallableImportSpec] = &[
     RuntimeCallableImportSpec {
         runtime_name: "molt_binascii_a2b_hex",
         import: WasmRuntimeImport::BinasciiA2bHex,
-        arity: 2,
+        arity: 1,
     },
     RuntimeCallableImportSpec {
         runtime_name: "molt_binascii_b2a_hex",
@@ -5791,12 +5811,12 @@ pub(crate) const RUNTIME_CALLABLE_IMPORTS: &[RuntimeCallableImportSpec] = &[
     RuntimeCallableImportSpec {
         runtime_name: "molt_binascii_a2b_uu",
         import: WasmRuntimeImport::BinasciiA2bUu,
-        arity: 2,
+        arity: 1,
     },
     RuntimeCallableImportSpec {
         runtime_name: "molt_binascii_b2a_uu",
         import: WasmRuntimeImport::BinasciiB2aUu,
-        arity: 2,
+        arity: 1,
     },
     RuntimeCallableImportSpec {
         runtime_name: "molt_binascii_crc32",
@@ -9539,9 +9559,14 @@ pub(crate) const RUNTIME_CALLABLE_IMPORTS: &[RuntimeCallableImportSpec] = &[
         arity: 5,
     },
     RuntimeCallableImportSpec {
-        runtime_name: "molt_re_finditer_collect",
-        import: WasmRuntimeImport::ReFinditerCollect,
+        runtime_name: "molt_re_scanner_new",
+        import: WasmRuntimeImport::ReScannerNew,
         arity: 4,
+    },
+    RuntimeCallableImportSpec {
+        runtime_name: "molt_re_finditer_next",
+        import: WasmRuntimeImport::ReFinditerNext,
+        arity: 2,
     },
     RuntimeCallableImportSpec {
         runtime_name: "molt_re_pattern_info",
@@ -10791,7 +10816,7 @@ pub(crate) const RUNTIME_CALLABLE_IMPORTS: &[RuntimeCallableImportSpec] = &[
     RuntimeCallableImportSpec {
         runtime_name: "molt_base64_b64decode",
         import: WasmRuntimeImport::Base64B64decode,
-        arity: 4,
+        arity: 3,
     },
     RuntimeCallableImportSpec {
         runtime_name: "molt_base64_standard_b64encode",
@@ -10801,7 +10826,7 @@ pub(crate) const RUNTIME_CALLABLE_IMPORTS: &[RuntimeCallableImportSpec] = &[
     RuntimeCallableImportSpec {
         runtime_name: "molt_base64_standard_b64decode",
         import: WasmRuntimeImport::Base64StandardB64decode,
-        arity: 2,
+        arity: 1,
     },
     RuntimeCallableImportSpec {
         runtime_name: "molt_base64_urlsafe_b64encode",
@@ -10811,7 +10836,7 @@ pub(crate) const RUNTIME_CALLABLE_IMPORTS: &[RuntimeCallableImportSpec] = &[
     RuntimeCallableImportSpec {
         runtime_name: "molt_base64_urlsafe_b64decode",
         import: WasmRuntimeImport::Base64UrlsafeB64decode,
-        arity: 2,
+        arity: 1,
     },
     RuntimeCallableImportSpec {
         runtime_name: "molt_base64_b32encode",
@@ -10821,7 +10846,7 @@ pub(crate) const RUNTIME_CALLABLE_IMPORTS: &[RuntimeCallableImportSpec] = &[
     RuntimeCallableImportSpec {
         runtime_name: "molt_base64_b32decode",
         import: WasmRuntimeImport::Base64B32decode,
-        arity: 4,
+        arity: 2,
     },
     RuntimeCallableImportSpec {
         runtime_name: "molt_base64_b32hexencode",
@@ -10831,7 +10856,7 @@ pub(crate) const RUNTIME_CALLABLE_IMPORTS: &[RuntimeCallableImportSpec] = &[
     RuntimeCallableImportSpec {
         runtime_name: "molt_base64_b32hexdecode",
         import: WasmRuntimeImport::Base64B32hexdecode,
-        arity: 3,
+        arity: 2,
     },
     RuntimeCallableImportSpec {
         runtime_name: "molt_base64_b16encode",
@@ -10841,7 +10866,7 @@ pub(crate) const RUNTIME_CALLABLE_IMPORTS: &[RuntimeCallableImportSpec] = &[
     RuntimeCallableImportSpec {
         runtime_name: "molt_base64_b16decode",
         import: WasmRuntimeImport::Base64B16decode,
-        arity: 3,
+        arity: 2,
     },
     RuntimeCallableImportSpec {
         runtime_name: "molt_base64_a85encode",
@@ -10871,7 +10896,7 @@ pub(crate) const RUNTIME_CALLABLE_IMPORTS: &[RuntimeCallableImportSpec] = &[
     RuntimeCallableImportSpec {
         runtime_name: "molt_base64_decodebytes",
         import: WasmRuntimeImport::Base64Decodebytes,
-        arity: 2,
+        arity: 1,
     },
     RuntimeCallableImportSpec {
         runtime_name: "molt_copy_copy",
@@ -11592,21 +11617,6 @@ pub(crate) const RUNTIME_CALLABLE_IMPORTS: &[RuntimeCallableImportSpec] = &[
         runtime_name: "molt_re_escape",
         import: WasmRuntimeImport::ReEscape,
         arity: 1,
-    },
-    RuntimeCallableImportSpec {
-        runtime_name: "molt_re_match_group",
-        import: WasmRuntimeImport::ReMatchGroup,
-        arity: 4,
-    },
-    RuntimeCallableImportSpec {
-        runtime_name: "molt_re_match_groups",
-        import: WasmRuntimeImport::ReMatchGroups,
-        arity: 3,
-    },
-    RuntimeCallableImportSpec {
-        runtime_name: "molt_re_match_groupdict",
-        import: WasmRuntimeImport::ReMatchGroupdict,
-        arity: 4,
     },
     RuntimeCallableImportSpec {
         runtime_name: "molt_re_split",
@@ -13336,6 +13346,8 @@ pub(crate) fn runtime_callable_import(runtime_name: &str) -> Option<WasmRuntimeI
         "molt_enum_init_member" => Some(WasmRuntimeImport::EnumInitMember),
         "molt_re_group_values" => Some(WasmRuntimeImport::ReGroupValues),
         "molt_re_expand_replacement" => Some(WasmRuntimeImport::ReExpandReplacement),
+        "molt_re_subject_snapshot" => Some(WasmRuntimeImport::ReSubjectSnapshot),
+        "molt_re_subject_view" => Some(WasmRuntimeImport::ReSubjectView),
         "molt_shlex_quote" => Some(WasmRuntimeImport::ShlexQuote),
         "molt_shlex_split_ex" => Some(WasmRuntimeImport::ShlexSplitEx),
         "molt_shlex_join" => Some(WasmRuntimeImport::ShlexJoin),
@@ -13916,6 +13928,8 @@ pub(crate) fn runtime_callable_import(runtime_name: &str) -> Option<WasmRuntimeI
         "molt_codecs_lookup_name" => Some(WasmRuntimeImport::CodecsLookupName),
         "molt_encodings_aliases_map" => Some(WasmRuntimeImport::EncodingsAliasesMap),
         "molt_binascii_a2b_base64" => Some(WasmRuntimeImport::BinasciiA2bBase64),
+        "molt_binascii_error_type" => Some(WasmRuntimeImport::BinasciiErrorType),
+        "molt_binascii_incomplete_type" => Some(WasmRuntimeImport::BinasciiIncompleteType),
         "molt_binascii_b2a_base64" => Some(WasmRuntimeImport::BinasciiB2aBase64),
         "molt_binascii_a2b_hex" => Some(WasmRuntimeImport::BinasciiA2bHex),
         "molt_binascii_b2a_hex" => Some(WasmRuntimeImport::BinasciiB2aHex),
@@ -14751,7 +14765,8 @@ pub(crate) fn runtime_callable_import(runtime_name: &str) -> Option<WasmRuntimeI
         "molt_re_strip_verbose" => Some(WasmRuntimeImport::ReStripVerbose),
         "molt_re_compile" => Some(WasmRuntimeImport::ReCompile),
         "molt_re_execute" => Some(WasmRuntimeImport::ReExecute),
-        "molt_re_finditer_collect" => Some(WasmRuntimeImport::ReFinditerCollect),
+        "molt_re_scanner_new" => Some(WasmRuntimeImport::ReScannerNew),
+        "molt_re_finditer_next" => Some(WasmRuntimeImport::ReFinditerNext),
         "molt_re_pattern_info" => Some(WasmRuntimeImport::RePatternInfo),
         "molt_secrets_below" => Some(WasmRuntimeImport::SecretsBelow),
         "molt_secrets_choice" => Some(WasmRuntimeImport::SecretsChoice),
@@ -15208,9 +15223,6 @@ pub(crate) fn runtime_callable_import(runtime_name: &str) -> Option<WasmRuntimeI
         "molt_random_randbytes" => Some(WasmRuntimeImport::RandomRandbytes),
         "molt_random_randrange" => Some(WasmRuntimeImport::RandomRandrange),
         "molt_re_escape" => Some(WasmRuntimeImport::ReEscape),
-        "molt_re_match_group" => Some(WasmRuntimeImport::ReMatchGroup),
-        "molt_re_match_groups" => Some(WasmRuntimeImport::ReMatchGroups),
-        "molt_re_match_groupdict" => Some(WasmRuntimeImport::ReMatchGroupdict),
         "molt_re_split" => Some(WasmRuntimeImport::ReSplit),
         "molt_re_sub" => Some(WasmRuntimeImport::ReSub),
         "molt_timedelta_repr" => Some(WasmRuntimeImport::TimedeltaRepr),

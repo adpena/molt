@@ -340,34 +340,45 @@ impl SequenceComparison {
             };
         }
         if matches!(self, Self::Bytearray) {
-            use crate::object::buffer_exports::{ScopedBuffer, supports_buffer};
-            if !supports_buffer(py, MoltObject::from_ptr(lhs).bits()) || !supports_buffer(py, right)
-            {
-                return CompareValueOutcome::NotComparable;
+            use crate::object::buffer_exports::{BufferAccessError, ScopedBuffer, supports_buffer};
+            for operand in [MoltObject::from_ptr(lhs).bits(), right] {
+                match supports_buffer(py, operand) {
+                    Ok(true) => {}
+                    Ok(false) => return CompareValueOutcome::NotComparable,
+                    Err(_) => return CompareValueOutcome::Error,
+                }
             }
             let mut compared = None;
-            crate::builtins::exceptions::with_saved_raised_exception(py, || {
+            let completed = crate::builtins::exceptions::with_saved_raised_exception(py, || {
                 // Self is exported before the peer can allocate or re-enter.
                 // This pins the compared span and rejects callback resizing.
                 // CPython's bytearray slot explicitly clears failed simple-
                 // buffer acquisition and declines that pair.
                 let acquire = |bits| {
-                    let buffer = ScopedBuffer::new(py, bits).ok()?;
-                    let len = buffer.contiguous_len().ok()?;
-                    Some((buffer, len))
+                    let buffer = ScopedBuffer::new(py, bits)?;
+                    let len = buffer.contiguous_len()?;
+                    Ok((buffer, len))
                 };
-                let Some((left, left_len)) = acquire(MoltObject::from_ptr(lhs).bits()) else {
-                    if exception_pending(py) {
-                        crate::clear_exception(py);
+                let (left, left_len) = match acquire(MoltObject::from_ptr(lhs).bits()) {
+                    Ok(acquired) => acquired,
+                    Err(BufferAccessError::Preparation) => return false,
+                    Err(_) => {
+                        if exception_pending(py) {
+                            crate::clear_exception(py);
+                        }
+                        return true;
                     }
-                    return true;
                 };
-                let Some((right, right_len)) = acquire(right) else {
-                    if exception_pending(py) {
-                        crate::clear_exception(py);
+                let (right, right_len) = match acquire(right) {
+                    Ok(acquired) => acquired,
+                    Err(BufferAccessError::Preparation) => return false,
+                    Err(_) => {
+                        if exception_pending(py) {
+                            crate::clear_exception(py);
+                        }
+                        drop(left);
+                        return true;
                     }
-                    drop(left);
-                    return true;
                 };
                 let order = unsafe {
                     let left_bytes = if left_len == 0 {
@@ -388,7 +399,11 @@ impl SequenceComparison {
                 compared = Some(comparison_order_to_value(order, op));
                 true
             });
-            return compared.unwrap_or(CompareValueOutcome::NotComparable);
+            return if completed {
+                compared.unwrap_or(CompareValueOutcome::NotComparable)
+            } else {
+                CompareValueOutcome::Error
+            };
         }
         let Some(rhs) = self.storage(right) else {
             return CompareValueOutcome::NotComparable;

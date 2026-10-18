@@ -3,7 +3,44 @@
 // ---------------------------------------------------------------------------
 
 use super::*;
-use std::collections::HashMap;
+
+fn parse_pattern(pattern: &str, flags: i64) -> Result<CompiledPattern, String> {
+    parse_pattern_typed(pattern, flags, false)
+}
+use std::sync::Arc;
+
+fn scanner_spans_text(pattern: &str, text: &str) -> Vec<(usize, usize)> {
+    let chars: Vec<char> = text.chars().collect();
+    let compiled = Arc::new(PatternHandle::new(
+        parse_pattern_typed(pattern, 0, false).unwrap(),
+    ));
+    let mut scanner = ScannerHandle::new(Arc::clone(&compiled), 0, chars.len(), None);
+    let mut spans = Vec::new();
+    while let Some(found) = advance_scanner(
+        &compiled.compiled,
+        &mut scanner,
+        SubjectStorage::Text(&chars),
+    ) {
+        spans.push((found.start, found.end));
+    }
+    spans
+}
+
+fn scanner_spans_bytes(pattern: &str, subject: &[u8]) -> Vec<(usize, usize)> {
+    let compiled = Arc::new(PatternHandle::new(
+        parse_pattern_typed(pattern, 0, true).unwrap(),
+    ));
+    let mut scanner = ScannerHandle::new(Arc::clone(&compiled), 0, subject.len(), None);
+    let mut spans = Vec::new();
+    while let Some(found) = advance_scanner(
+        &compiled.compiled,
+        &mut scanner,
+        SubjectStorage::Bytes(subject),
+    ) {
+        spans.push((found.start, found.end));
+    }
+    spans
+}
 
 #[test]
 fn test_strip_verbose_empty() {
@@ -935,6 +972,22 @@ fn test_match_negative_lookbehind_fail() {
 fn test_match_ignorecase() {
     let m = do_execute("hello", RE_IGNORECASE, "HELLO", "match").unwrap();
     assert_eq!(m.end, 5);
+    // CPython 3.12 fullmatch oracle, including non-ASCII and a character
+    // whose Rust lowercase iterator contains multiple code points.
+    for (pattern, text, expected) in [
+        ("A", "a", true),
+        ("É", "é", true),
+        ("Σ", "σ", true),
+        ("İ", "İ", true),
+        ("🦀", "🦀", true),
+        ("x", "z", false),
+    ] {
+        let matched = do_execute(pattern, RE_IGNORECASE, text, "fullmatch");
+        assert_eq!(matched.is_some(), expected, "{pattern:?} / {text:?}");
+        if let Some(matched) = matched {
+            assert_eq!((matched.start, matched.end), (0, 1));
+        }
+    }
 }
 
 #[test]
@@ -961,6 +1014,57 @@ fn test_match_digits_in_parens() {
 }
 
 // --- finditer_collect ---
+
+#[test]
+fn scanner_retries_nonempty_alternative_at_same_position() {
+    let expected = [(0, 0), (0, 1), (1, 1)];
+    assert_eq!(scanner_spans_text("|a", "a"), expected);
+    assert_eq!(scanner_spans_bytes("|a", b"a"), expected);
+}
+
+#[test]
+fn scanner_empty_match_advances_and_allows_end_empty() {
+    assert_eq!(scanner_spans_bytes("", b"a"), [(0, 0), (1, 1)]);
+    assert_eq!(scanner_spans_text("", "a"), [(0, 0), (1, 1)]);
+}
+
+#[test]
+fn scanner_preserves_lazy_repeat_and_unicode_character_offsets() {
+    assert_eq!(scanner_spans_text("a+?", "aa"), [(0, 1), (1, 2)]);
+    assert_eq!(scanner_spans_text(".", "éx"), [(0, 1), (1, 2)]);
+}
+
+#[test]
+fn scanner_observes_mutated_bytes_between_transitions() {
+    let pattern = Arc::new(PatternHandle::new(
+        parse_pattern_typed("a", 0, true).unwrap(),
+    ));
+    let mut scanner = ScannerHandle::new(Arc::clone(&pattern), 0, 2, None);
+    let mut subject = *b"ab";
+    let first = advance_scanner(
+        &pattern.compiled,
+        &mut scanner,
+        SubjectStorage::Bytes(&subject),
+    )
+    .unwrap();
+    assert_eq!((first.start, first.end), (0, 1));
+    subject[1] = b'a';
+    let second = advance_scanner(
+        &pattern.compiled,
+        &mut scanner,
+        SubjectStorage::Bytes(&subject),
+    )
+    .unwrap();
+    assert_eq!((second.start, second.end), (1, 2));
+    assert!(
+        advance_scanner(
+            &pattern.compiled,
+            &mut scanner,
+            SubjectStorage::Bytes(&subject),
+        )
+        .is_none()
+    );
+}
 
 #[test]
 fn test_finditer_collect_basic() {
@@ -1126,164 +1230,84 @@ fn test_match_pos_beyond_text() {
 // split / sub helper tests (internal logic)
 // -----------------------------------------------------------------------
 
-/// Helper: split a string by a compiled pattern.
+/// Test projection of the production scanner and replacement transitions.
 fn do_split(pattern: &str, text: &str, maxsplit: usize) -> Vec<String> {
-    let compiled = parse_pattern(pattern, 0).unwrap();
+    let pattern = std::sync::Arc::new(PatternHandle::new(parse_pattern(pattern, 0).unwrap()));
     let chars: Vec<char> = text.chars().collect();
-    let text_len = chars.len();
-    let limit = if maxsplit == 0 { None } else { Some(maxsplit) };
-
-    let mut result_parts: Vec<String> = Vec::new();
-    let mut last: usize = 0;
-    let mut splits: usize = 0;
-    let mut cur: usize = 0;
-    let mut prev_empty_at: Option<usize> = None;
-
-    while cur <= text_len {
-        if let Some(lim) = limit
-            && splits >= lim
-        {
+    let mut scanner = ScannerHandle::new(std::sync::Arc::clone(&pattern), 0, chars.len(), None);
+    let mut parts = Vec::new();
+    let mut last = 0;
+    let mut count = 0;
+    while maxsplit == 0 || count < maxsplit {
+        let Some(result) = advance_scanner(
+            &pattern.compiled,
+            &mut scanner,
+            SubjectStorage::Text(&chars),
+        ) else {
             break;
+        };
+        parts.push(chars[last..result.start].iter().collect());
+        for span in result.groups.iter().skip(1) {
+            parts.push(span.map_or_else(String::new, |(start, end)| {
+                chars[start..end].iter().collect()
+            }));
         }
-
-        match execute_match(&compiled, text, cur, text_len, "search") {
-            Some(result) => {
-                let m_start = result.start;
-                let m_end = result.end;
-
-                if m_start == m_end {
-                    if prev_empty_at == Some(m_start) {
-                        if cur < text_len {
-                            cur += 1;
-                        } else {
-                            break;
-                        }
-                        continue;
-                    }
-                    prev_empty_at = Some(m_start);
-                } else {
-                    prev_empty_at = None;
-                }
-
-                let segment: String = chars[last..m_start].iter().collect();
-                result_parts.push(segment);
-
-                // Include capturing groups.
-                for i in 1..=(compiled.group_count as usize) {
-                    if i < result.groups.len() {
-                        match result.groups[i] {
-                            Some((gs, ge)) => {
-                                let group_text: String = chars[gs..ge].iter().collect();
-                                result_parts.push(group_text);
-                            }
-                            None => {
-                                result_parts.push(String::new());
-                            }
-                        }
-                    } else {
-                        result_parts.push(String::new());
-                    }
-                }
-
-                last = m_end;
-                splits += 1;
-
-                if m_end == m_start {
-                    if cur < text_len {
-                        cur = m_start + 1;
-                    } else {
-                        break;
-                    }
-                } else {
-                    cur = m_end;
-                }
-            }
-            None => break,
-        }
+        last = result.end;
+        count += 1;
     }
-
-    let tail: String = chars[last..].iter().collect();
-    result_parts.push(tail);
-    result_parts
+    parts.push(chars[last..].iter().collect());
+    parts
 }
 
-/// Helper: sub with string replacement.
 fn do_sub(pattern: &str, repl: &str, text: &str, count: usize) -> (String, usize) {
-    let compiled = parse_pattern(pattern, 0).unwrap();
+    let pattern = std::sync::Arc::new(PatternHandle::new(parse_pattern(pattern, 0).unwrap()));
     let chars: Vec<char> = text.chars().collect();
-    let text_len = chars.len();
-    let limit = if count == 0 { None } else { Some(count) };
-    let repl_has_backref = repl.contains('\\');
-
-    let mut out = String::with_capacity(text.len());
-    let mut last: usize = 0;
-    let mut replaced: usize = 0;
-    let mut cur: usize = 0;
-    let mut prev_empty_at: Option<usize> = None;
-
-    while cur <= text_len {
-        if let Some(lim) = limit
-            && replaced >= lim
-        {
+    let mut scanner = ScannerHandle::new(std::sync::Arc::clone(&pattern), 0, chars.len(), None);
+    let mut out = String::new();
+    let mut last = 0;
+    let mut replaced = 0;
+    while count == 0 || replaced < count {
+        let Some(result) = advance_scanner(
+            &pattern.compiled,
+            &mut scanner,
+            SubjectStorage::Text(&chars),
+        ) else {
             break;
-        }
-
-        match execute_match(&compiled, text, cur, text_len, "search") {
-            Some(result) => {
-                let m_start = result.start;
-                let m_end = result.end;
-
-                if m_start == m_end {
-                    if prev_empty_at == Some(m_start) {
-                        if cur < text_len {
-                            cur += 1;
-                        } else {
-                            break;
-                        }
-                        continue;
-                    }
-                    prev_empty_at = Some(m_start);
-                } else {
-                    prev_empty_at = None;
-                }
-
-                let segment: String = chars[last..m_start].iter().collect();
-                out.push_str(&segment);
-
-                if repl_has_backref {
-                    let expanded = expand_repl_with_groups(
-                        repl,
-                        text,
-                        &chars,
-                        &result,
-                        compiled.group_count,
-                        &compiled.group_names,
-                    );
-                    out.push_str(&expanded);
-                } else {
-                    out.push_str(repl);
-                }
-
-                last = m_end;
-                replaced += 1;
-
-                if m_end == m_start {
-                    if cur < text_len {
-                        cur = m_start + 1;
-                    } else {
-                        break;
-                    }
-                } else {
-                    cur = m_end;
-                }
-            }
-            None => break,
-        }
+        };
+        out.extend(chars[last..result.start].iter());
+        out.push_str(&expand_repl_with_groups(
+            repl,
+            &chars,
+            &result,
+            pattern.compiled.group_count,
+            &pattern.compiled.group_names,
+        ));
+        last = result.end;
+        replaced += 1;
     }
-
-    let tail: String = chars[last..].iter().collect();
-    out.push_str(&tail);
+    out.extend(chars[last..].iter());
     (out, replaced)
+}
+
+fn expand_repl_with_groups(
+    repl: &str,
+    chars: &[char],
+    result: &MatchResult,
+    group_count: u32,
+    names: &NamedGroups,
+) -> String {
+    let units: Vec<u32> = repl.chars().map(u32::from).collect();
+    expand_match_replacement(
+        &units,
+        SubjectStorage::Text(chars),
+        result,
+        group_count,
+        names,
+    )
+    .unwrap()
+    .into_iter()
+    .map(|unit| char::from_u32(unit).unwrap())
+    .collect()
 }
 
 #[test]
@@ -1345,8 +1369,8 @@ fn test_expand_repl_numbered_group() {
         groups: vec![None, Some((0, 5))],
     };
     let chars: Vec<char> = "hello".chars().collect();
-    let names = HashMap::new();
-    let expanded = expand_repl_with_groups("<<\\1>>", "hello", &chars, &result, 1, &names);
+    let names = NamedGroups::new();
+    let expanded = expand_repl_with_groups("<<\\1>>", &chars, &result, 1, &names);
     assert_eq!(expanded, "<<hello>>");
 }
 
@@ -1358,9 +1382,9 @@ fn test_expand_repl_named_group() {
         groups: vec![None, Some((0, 5))],
     };
     let chars: Vec<char> = "hello".chars().collect();
-    let mut names = HashMap::new();
+    let mut names = NamedGroups::new();
     names.insert("word".to_string(), 1u32);
-    let expanded = expand_repl_with_groups("<<\\g<word>>>", "hello", &chars, &result, 1, &names);
+    let expanded = expand_repl_with_groups("<<\\g<word>>>", &chars, &result, 1, &names);
     assert_eq!(expanded, "<<hello>>");
 }
 
@@ -1372,8 +1396,8 @@ fn test_expand_repl_group_zero() {
         groups: vec![None],
     };
     let chars: Vec<char> = "hello".chars().collect();
-    let names = HashMap::new();
-    let expanded = expand_repl_with_groups("<<\\g<0>>>", "hello", &chars, &result, 0, &names);
+    let names = NamedGroups::new();
+    let expanded = expand_repl_with_groups("<<\\g<0>>>", &chars, &result, 0, &names);
     assert_eq!(expanded, "<<hello>>");
 }
 
@@ -1385,8 +1409,8 @@ fn test_expand_repl_escape_sequences() {
         groups: vec![None],
     };
     let chars: Vec<char> = "".chars().collect();
-    let names = HashMap::new();
-    let expanded = expand_repl_with_groups("a\\nb\\tc\\\\d", "", &chars, &result, 0, &names);
+    let names = NamedGroups::new();
+    let expanded = expand_repl_with_groups("a\\nb\\tc\\\\d", &chars, &result, 0, &names);
     assert_eq!(expanded, "a\nb\tc\\d");
 }
 
@@ -1396,40 +1420,135 @@ fn test_expand_repl_escape_sequences() {
 
 #[test]
 fn test_escape_no_special() {
-    assert_eq!(re_escape_impl("hello world"), "hello world");
+    assert_eq!(re_escape_impl(b"hello world"), b"hello\\ world");
 }
 
 #[test]
 fn test_escape_all_special() {
-    assert_eq!(re_escape_impl("a.b*c?d+e"), "a\\.b\\*c\\?d\\+e");
+    assert_eq!(re_escape_impl(b"a.b*c?d+e"), b"a\\.b\\*c\\?d\\+e");
 }
 
 #[test]
 fn test_escape_brackets_parens() {
-    assert_eq!(re_escape_impl("[foo](bar)"), "\\[foo\\]\\(bar\\)");
+    assert_eq!(re_escape_impl(b"[foo](bar)"), b"\\[foo\\]\\(bar\\)");
 }
 
 #[test]
 fn test_escape_backslash() {
-    assert_eq!(re_escape_impl("a\\b"), "a\\\\b");
+    assert_eq!(re_escape_impl(b"a\\b"), b"a\\\\b");
 }
 
 #[test]
 fn test_escape_pipe_caret_dollar() {
-    assert_eq!(re_escape_impl("^a|b$"), "\\^a\\|b\\$");
+    assert_eq!(re_escape_impl(b"^a|b$"), b"\\^a\\|b\\$");
 }
 
 #[test]
 fn test_escape_braces() {
-    assert_eq!(re_escape_impl("a{1,2}"), "a\\{1,2\\}");
+    assert_eq!(re_escape_impl(b"a{1,2}"), b"a\\{1,2\\}");
 }
 
 #[test]
 fn test_escape_empty() {
-    assert_eq!(re_escape_impl(""), "");
+    assert_eq!(re_escape_impl(b""), b"");
 }
 
 #[test]
 fn test_escape_nul() {
-    assert_eq!(re_escape_impl("a\0b"), "a\\000b");
+    assert_eq!(re_escape_impl(b"a\0b"), b"a\0b");
+}
+
+#[test]
+fn replacement_failure_roles_and_positions_match_cpython() {
+    use super::functions_re::{ReplacementError, re_expand_typed};
+    let groups = vec![Some(vec![u32::from(b'a')]), Some(vec![u32::from(b'a')])];
+    // Independent CPython 3.12 parser oracles, shared by text and byte templates.
+    for (template, expected) in [
+        (
+            r"\z",
+            ReplacementError::Syntax(r"bad escape \z at position 0".to_owned()),
+        ),
+        (
+            r"\9",
+            ReplacementError::Syntax("invalid group reference 9 at position 1".to_owned()),
+        ),
+        (
+            r"\g<missing>",
+            ReplacementError::Index("unknown group name 'missing'".to_owned()),
+        ),
+        (
+            r"\777",
+            ReplacementError::Syntax(
+                r"octal escape value \777 outside of range 0-0o377 at position 0".to_owned(),
+            ),
+        ),
+    ] {
+        let units: Vec<u32> = template.chars().map(u32::from).collect();
+        let error = re_expand_typed(&units, &groups, &NamedGroups::new()).unwrap_err();
+        assert_eq!(error, expected);
+    }
+}
+
+#[test]
+fn replacement_units_keep_surrogates_and_reject_surrogate_group_names() {
+    use super::functions_re::{ReplacementError, re_expand_typed};
+
+    // CPython: (?P<value>.+)(x)? has equal whole-match/group-1 values
+    // and an unmatched group 2. Keep ordinal 0 distinct from the named group.
+    let value = vec![0xD800, 0xDFFF, 0xD83D, 0xDE00, 0x1F600];
+    let groups = vec![Some(value.clone()), Some(value), None];
+    let mut names = NamedGroups::new();
+    names.insert("value".to_owned(), 1);
+    let template: Vec<u32> = r"<\g<value>|\1|\2>".chars().map(u32::from).collect();
+    assert_eq!(
+        re_expand_typed(&template, &groups, &names).unwrap(),
+        vec![
+            b'<' as u32,
+            0xD800,
+            0xDFFF,
+            0xD83D,
+            0xDE00,
+            0x1F600,
+            b'|' as u32,
+            0xD800,
+            0xDFFF,
+            0xD83D,
+            0xDE00,
+            0x1F600,
+            b'|' as u32,
+            b'>' as u32,
+        ]
+    );
+
+    let invalid_name = vec![
+        u32::from(b'\\'),
+        u32::from(b'g'),
+        u32::from(b'<'),
+        u32::from(b'u'),
+        u32::from(b'n'),
+        u32::from(b'k'),
+        u32::from(b'n'),
+        u32::from(b'o'),
+        u32::from(b'w'),
+        u32::from(b'n'),
+        0xD800,
+        u32::from(b'>'),
+    ];
+    let error = re_expand_typed(&invalid_name, &groups, &names).unwrap_err();
+    assert_eq!(
+        error,
+        ReplacementError::InvalidGroupName {
+            name: vec![
+                u32::from(b'u'),
+                u32::from(b'n'),
+                u32::from(b'k'),
+                u32::from(b'n'),
+                u32::from(b'o'),
+                u32::from(b'w'),
+                u32::from(b'n'),
+                0xD800,
+            ],
+            position: 3,
+        }
+    );
 }

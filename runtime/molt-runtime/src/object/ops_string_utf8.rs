@@ -7,7 +7,6 @@ use crate::object::utf8_cache::{
 use crate::*;
 use memchr::memmem;
 use std::sync::Arc;
-use wtf8::{CodePoint, Wtf8};
 
 use super::bytes_count_impl;
 
@@ -334,11 +333,6 @@ pub(super) fn utf8_byte_to_char_index_cached(
     utf8_count_prefix_blocked(bytes, prefix_len)
 }
 
-pub(crate) fn wtf8_from_bytes(bytes: &[u8]) -> &Wtf8 {
-    // SAFETY: Molt string bytes are constructed as well-formed WTF-8.
-    unsafe { &*(bytes as *const [u8] as *const Wtf8) }
-}
-
 /// Step over one code point at a known WTF-8 boundary in either direction.
 pub(crate) fn wtf8_step(bytes: &[u8], cursor: usize, from_right: bool) -> Option<(usize, u32)> {
     let start = if from_right {
@@ -359,11 +353,9 @@ pub(crate) fn wtf8_step(bytes: &[u8], cursor: usize, from_right: bool) -> Option
     let code = if bytes[start].is_ascii() {
         u32::from(bytes[start])
     } else {
-        wtf8_from_bytes(&bytes[start..])
-            .code_points()
+        molt_runtime_core::text_storage::code_points(&bytes[start..])
             .next()
             .unwrap()
-            .to_u32()
     };
     let next = if from_right {
         start
@@ -371,18 +363,6 @@ pub(crate) fn wtf8_step(bytes: &[u8], cursor: usize, from_right: bool) -> Option
         start + utf8_char_width(bytes[start])
     };
     Some((next, code))
-}
-
-pub(in crate::object) fn wtf8_codepoint_at(bytes: &[u8], idx: usize) -> Option<CodePoint> {
-    wtf8_from_bytes(bytes).code_points().nth(idx)
-}
-
-pub(in crate::object) fn wtf8_has_surrogates(bytes: &[u8]) -> bool {
-    wtf8_from_bytes(bytes).as_str().is_none()
-}
-
-pub(in crate::object) fn push_wtf8_codepoint(out: &mut Vec<u8>, code: u32) {
-    molt_stdlib_text::wtf8::push_wtf8_codepoint(out, code);
 }
 
 fn utf8_char_width(first: u8) -> usize {
@@ -410,7 +390,7 @@ fn utf8_char_to_byte_index_scan(bytes: &[u8], target: usize) -> usize {
     idx.min(bytes.len())
 }
 
-pub(in crate::object) fn utf8_char_to_byte_index_cached(
+pub(crate) fn utf8_char_to_byte_index_cached(
     _py: &PyToken<'_>,
     bytes: &[u8],
     char_idx: i64,

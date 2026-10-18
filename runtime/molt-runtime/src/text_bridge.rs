@@ -19,7 +19,7 @@ pub extern "C" fn __molt_text_east_asian_width(bits: u64) -> u64 {
             return raise_exception::<u64>(_py, "TypeError", "argument must be str");
         };
         let bytes = unsafe { std::slice::from_raw_parts(string_bytes(ptr), string_len(ptr)) };
-        let mut codes = crate::object::ops_string::wtf8_from_bytes(bytes).code_points();
+        let mut codes = molt_runtime_core::text_storage::code_points(bytes);
         let Some(code) = codes.next().filter(|_| codes.next().is_none()) else {
             return raise_exception::<u64>(
                 _py,
@@ -28,7 +28,7 @@ pub extern "C" fn __molt_text_east_asian_width(bits: u64) -> u64 {
             );
         };
         let width = crate::object::ops::unicode_east_asian_width_table::width(
-            code.to_u32(),
+            code,
             runtime_target_minor(_py),
         );
         let ptr = alloc_string(_py, width.as_bytes());

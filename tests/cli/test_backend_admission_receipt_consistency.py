@@ -8,6 +8,7 @@ import pytest
 
 from molt.cli import backend_binary, build_locks, runtime_fingerprints
 from molt.cli.static_archive_identity import artifact_content_identity
+from tests.cli.backend_generation_test_support import publish_backend
 from tests.cli.test_cli_backend_prewarm import (
     _dispatch,
     _fake_backend_toolchain,
@@ -254,48 +255,56 @@ def test_refresh_write_failure_is_nonfatal_but_invalid_identity_is_not(
         runtime_fingerprints._refresh_runtime_fingerprint_metadata(receipt, source)
 
 
-@pytest.mark.parametrize("suffix", [".exe", ".wasm", ".a"])
-def test_hydration_preserves_matched_toolchain_coordinates(suffix, tmp_path):
-    from molt.cli.artifact_state import _maybe_hydrate_artifact_from_canonical_target
-    from tests.cli.native_link_test_support import static_archive_bytes
-    from tests.native_artifact_fixtures import native_relocatable_object
+def _canonical_and_session_coordinates(tmp_path):
+    name = "molt-backend.native_backend"
+    canonical = tmp_path / "canonical-target" / "release" / name
+    session = tmp_path / "session-target" / "release" / name
+    return canonical, session
 
-    image = b"\0asm\x01\0\0\0" if suffix == ".wasm" else b"compiler"
-    if suffix == ".a":
-        image = static_archive_bytes(native_relocatable_object())
-    candidate = tmp_path / ("canonical" + suffix)
-    candidate.write_bytes(image)
+
+def test_hydration_preserves_matched_toolchain_coordinates(tmp_path):
+    canonical, session = _canonical_and_session_coordinates(tmp_path)
     receipt = tmp_path / "canonical.json"
     fingerprint = {
         "hash": "a" * 64,
         "rustc": "known-toolchain",
         "inputs_digest": "b" * 64,
     }
-    runtime_fingerprints._write_runtime_fingerprint(
-        receipt, fingerprint, artifact=candidate
+    image = b"#!/bin/sh\nexit 0\n"
+    canonical_generation = publish_backend(
+        canonical, image, receipt=receipt, fingerprint=fingerprint
     )
-    hydrated = tmp_path / ("session" + suffix)
-    hydrated_receipt = tmp_path / "session.json"
-    assert _maybe_hydrate_artifact_from_canonical_target(
-        artifact=hydrated,
+    session_receipt = tmp_path / "session.json"
+    hydrated = backend_binary._hydrate_canonical_backend_generation(
+        session,
+        session_receipt,
+        canonical,
+        receipt,
         fingerprint={**fingerprint, "rustc": None},
-        fingerprint_path=hydrated_receipt,
-        candidate_artifact=candidate,
-        candidate_fingerprint_path=receipt,
-        require_artifact_digest=True,
     )
+    assert hydrated is not None
+    generation, admitted = hydrated
+    assert admitted["rustc"] == "known-toolchain"
     assert (
-        runtime_fingerprints._read_runtime_fingerprint(hydrated_receipt)["rustc"]
+        runtime_fingerprints._read_runtime_fingerprint(session_receipt)["rustc"]
         == "known-toolchain"
     )
-    assert hydrated.read_bytes() == image
-    assert not _maybe_hydrate_artifact_from_canonical_target(
-        artifact=hydrated,
-        fingerprint={**fingerprint, "rustc": "different-toolchain"},
-        fingerprint_path=hydrated_receipt,
-        candidate_artifact=candidate,
-        candidate_fingerprint_path=receipt,
-        require_artifact_digest=True,
+    assert generation.path.read_bytes() == image
+    # The session publishes its own generation; the canonical one is only read.
+    assert (
+        generation.path.parent.parent
+        == (session.parent / ".molt-backend-generations" / session.name).resolve()
+    )
+    assert canonical_generation.read_bytes() == image
+    assert (
+        backend_binary._hydrate_canonical_backend_generation(
+            session,
+            session_receipt,
+            canonical,
+            receipt,
+            fingerprint={**fingerprint, "rustc": "different-toolchain"},
+        )
+        is None
     )
 
 
@@ -374,29 +383,32 @@ def test_feature_probe_failure_does_not_retry_a_different_build_environment(
     assert len(external_calls) == 1
 
 
-def test_alias_copy_rejects_bytes_changed_after_successful_probe(
+def test_generation_copy_rejects_bytes_changed_after_admission(
     tmp_path, monkeypatch, capsys
 ):
+    from molt.cli import backend_generation
+
     _isolated_molt_root(tmp_path, monkeypatch)
     cargo, probes = _fake_backend_toolchain(monkeypatch)
     argv = ["internal-backend-build", "--target", "wasm", "--json"]
     assert _dispatch(argv) == 0
     initial = json.loads(capsys.readouterr().out)["data"]
-    alias = Path(initial["compiler"]["path"])
-    alias_receipt = Path(initial["receipts"]["source_content"]["path"])
-    alias.unlink()
-    alias_receipt.unlink()
-    original = backend_binary._atomic_copy_file
+    generation = Path(initial["compiler"]["path"])
+    selection_receipt = Path(initial["receipts"]["source_content"]["path"])
+    generation.unlink()
+    selection_receipt.unlink()
+    original = backend_generation._staged_copy_file
 
     def changed_copy(source, destination, **kwargs):
-        source.write_bytes(b"not the compiler that was probed")
+        source.write_bytes(b"not the compiler that was admitted")
         return original(source, destination, **kwargs)
 
-    monkeypatch.setattr(backend_binary, "_atomic_copy_file", changed_copy)
+    monkeypatch.setattr(backend_generation, "_staged_copy_file", changed_copy)
     assert _dispatch(argv) == 2
     payload = json.loads(capsys.readouterr().out)
-    assert payload["data"]["failure"]["phase"] == "backend_alias_publication"
-    assert not alias_receipt.exists()
+    assert payload["data"]["failure"]["phase"] == "backend_selection_publication"
+    assert not selection_receipt.exists()
+    assert not generation.exists()
     assert len(cargo) == 1
 
 
@@ -453,34 +465,35 @@ def test_daemon_lock_failures_share_framing_and_timing(
     assert payload["data"]["stage_timings_ms"][phase] >= 0
 
 
-def test_shared_hydration_copy_race_cannot_publish_receipt(tmp_path, monkeypatch):
-    from molt.cli import artifact_state
+def test_hydration_copy_race_cannot_publish_receipt(tmp_path, monkeypatch):
+    from molt.cli import backend_generation
 
-    artifact = tmp_path / "canonical.wasm"
-    artifact.write_bytes(b"\0asm\x01\0\0\0")
+    canonical, session = _canonical_and_session_coordinates(tmp_path)
     fingerprint = {"hash": "a" * 64, "rustc": "rustc", "inputs_digest": "b" * 64}
     receipt = tmp_path / "canonical.json"
-    runtime_fingerprints._write_runtime_fingerprint(
-        receipt, fingerprint, artifact=artifact
+    canonical_generation = publish_backend(
+        canonical, b"#!/bin/sh\nexit 0\n", receipt=receipt, fingerprint=fingerprint
     )
-    destination = tmp_path / "session.wasm"
-    destination_receipt = tmp_path / "session.json"
-    original = artifact_state._atomic_copy_file
+    session_receipt = tmp_path / "session.json"
+    original = backend_generation._staged_copy_file
 
     def mutate(source, target, **kwargs):
-        source.write_bytes(b"\0asm\x01\0\0\0\x00\x02\x01x")
+        source.write_bytes(b"#!/bin/sh\nexit 1\n")
         return original(source, target, **kwargs)
 
-    monkeypatch.setattr(artifact_state, "_atomic_copy_file", mutate)
-    assert not artifact_state._maybe_hydrate_artifact_from_canonical_target(
-        artifact=destination,
-        fingerprint=fingerprint,
-        fingerprint_path=destination_receipt,
-        candidate_artifact=artifact,
-        candidate_fingerprint_path=receipt,
-        require_artifact_digest=True,
+    monkeypatch.setattr(backend_generation, "_staged_copy_file", mutate)
+    assert (
+        backend_binary._hydrate_canonical_backend_generation(
+            session,
+            session_receipt,
+            canonical,
+            receipt,
+            fingerprint=fingerprint,
+        )
+        is None
     )
-    assert not destination_receipt.exists()
+    assert canonical_generation.exists()
+    assert not session_receipt.exists()
 
 
 @pytest.mark.parametrize("inside_work", [False, True])
