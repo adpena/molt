@@ -117,25 +117,6 @@ class SampleBatch:
 # ---------------------------------------------------------------------------
 
 
-class BackendDaemonProcess:
-    __slots__ = ("argv", "command", "elapsed_sec", "pid", "socket_path")
-
-    def __init__(
-        self,
-        *,
-        pid: int,
-        elapsed_sec: int | None,
-        socket_path: Path,
-        command: str,
-        argv: tuple[str, ...] | None = None,
-    ) -> None:
-        self.pid = pid
-        self.elapsed_sec = elapsed_sec
-        self.socket_path = socket_path
-        self.command = command
-        self.argv = argv
-
-
 class BackendDaemonKill:
     __slots__ = ("command", "elapsed_sec", "pid", "reason", "socket_path")
 
@@ -215,17 +196,8 @@ def _current_session_identity_files(
     }
 
 
-def _list_backend_daemon_processes() -> list[BackendDaemonProcess]:
-    return [
-        BackendDaemonProcess(
-            pid=sample.pid,
-            elapsed_sec=sample.elapsed_sec,
-            socket_path=socket_path,
-            command=sample.command,
-            argv=sample.argv,
-        )
-        for sample, socket_path in daemon_custody.backend_daemon_process_observations()
-    ]
+def _list_backend_daemon_processes() -> list[daemon_custody.BackendDaemonObservation]:
+    return list(daemon_custody.backend_daemon_process_observations())
 
 
 def _daemon_cleanup_artifact_path() -> Path:

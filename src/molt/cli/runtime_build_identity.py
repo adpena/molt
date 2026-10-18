@@ -32,7 +32,7 @@ from molt.cli.runtime_identity_schema import (
     _freeze_json,
     _runtime_toolchain_build_python,
 )
-from molt.dx import _memory_bounded_worker_count
+from molt import host_capacity
 from molt.cargo_execution_policy import cargo_native_dependency_environment_name
 from molt.file_publication import metadata_is_link_like
 from molt.python_environment_identity import (
@@ -199,7 +199,7 @@ class _TreeInputFile(_TreeInputCandidate):
 def _tree_hash_worker_count(file_count: int) -> int:
     if file_count <= 0:
         return 1
-    resource_ceiling = _memory_bounded_worker_count(
+    resource_ceiling = host_capacity.worker_count(
         bytes_per_worker=_TREE_HASH_BYTES_PER_WORKER,
         headroom_bytes=_TREE_HASH_MEMORY_HEADROOM_BYTES,
     )

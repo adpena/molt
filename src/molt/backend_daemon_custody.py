@@ -334,7 +334,35 @@ def backend_daemon_command_matches_identity(
     return "--daemon" in tokens and _command_has_socket(tokens, socket_path)
 
 
-def backend_daemon_process_observations():
+@dataclass(frozen=True, slots=True)
+class BackendDaemonObservation:
+    """One live backend daemon: its birth-fenced process sample and socket.
+
+    ``sample`` is the memory guard's ``ProcessSample``; every daemon lister
+    reads the process facts through it.
+    """
+
+    sample: Any
+    socket_path: Path
+
+    @property
+    def pid(self) -> int:
+        return self.sample.pid
+
+    @property
+    def argv(self) -> tuple[str, ...] | None:
+        return self.sample.argv
+
+    @property
+    def command(self) -> str:
+        return self.sample.command
+
+    @property
+    def elapsed_sec(self) -> int | None:
+        return self.sample.elapsed_sec
+
+
+def backend_daemon_process_observations() -> tuple[BackendDaemonObservation, ...]:
     """Observe daemon argv from native birth-fenced samples, never ps text."""
     if os.name != "posix":
         return ()
@@ -356,7 +384,9 @@ def backend_daemon_process_observations():
             continue
         for index, arg in enumerate(argv[:-1]):
             if arg == "--socket" and argv[index + 1]:
-                observations.append((sample, Path(argv[index + 1])))
+                observations.append(
+                    BackendDaemonObservation(sample, Path(argv[index + 1]))
+                )
                 break
     return tuple(observations)
 

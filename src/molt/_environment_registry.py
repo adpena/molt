@@ -4372,6 +4372,16 @@ _REGISTRY_JSON = r"""{
     {
       "audience": "internal",
       "default": "",
+      "kind": "int",
+      "name": "MOLT_HOST_MEMORY_SLICE_BYTES",
+      "output_neutral": true,
+      "owner": "src/molt/host_capacity.py",
+      "summary": "The memory, in bytes, a parent lets this process tree use: tools/memory_guard.py exports the total tree RSS cap it enforces (a nested guard only narrows it), and molt.host_capacity.memory_bytes() bounds total and available memory by it, so pytest-xdist workers, Cargo jobs and frontend workers inside a guarded run size against the enforced cap.",
+      "values": []
+    },
+    {
+      "audience": "internal",
+      "default": "",
       "kind": "path",
       "name": "MOLT_HOST_ROOT",
       "output_neutral": false,

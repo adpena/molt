@@ -91,7 +91,6 @@ from concurrent.futures import ProcessPoolExecutor
 from dataclasses import asdict, dataclass
 import io
 import json
-import os
 from pathlib import Path
 import re
 import sys
@@ -105,6 +104,7 @@ if str(_REPO_ROOT) not in sys.path:
 from tools.import_file import bind_repository_imports  # noqa: E402
 
 bind_repository_imports(__file__)
+from molt import host_capacity  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -2575,7 +2575,7 @@ def scan_repository(*, workers: int | None = None, root: Path = ROOT) -> Scan:
         if _rel(path, root) != RUNTIME_FLAG_PROJECTION
     ]
     worker_count = (
-        workers if workers is not None else max(1, min(8, os.cpu_count() or 1))
+        workers if workers is not None else max(1, min(8, host_capacity.cpu_count()))
     )
     results: list[_ModuleResult] = []
     if worker_count == 1:

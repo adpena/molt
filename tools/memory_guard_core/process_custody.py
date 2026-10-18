@@ -25,6 +25,8 @@ from tools.memory_guard_core.windows_snapshot import (
     _windows_process_snapshot_rows_hard_timeout,
 )
 
+from molt import host_capacity
+
 ROOT = Path(__file__).resolve().parents[2]
 MAX_TERMINATION_PID_FANOUT = 128
 
@@ -948,7 +950,16 @@ def _inject_guard_memory_contract_env(
     *,
     max_rss_kb: int,
     child_rlimit_kb: int | None,
+    max_total_rss_kb: int | None = None,
 ) -> None:
+    if max_total_rss_kb is not None and max_total_rss_kb > 0:
+        # The guarded tree's cap is the memory everything inside it may use;
+        # a nested guard can only narrow its parent's slice.
+        slice_bytes = max_total_rss_kb * 1024
+        inherited = env.get(host_capacity.MEMORY_SLICE_ENV, "").strip()
+        if inherited.isdigit() and int(inherited) > 0:
+            slice_bytes = min(slice_bytes, int(inherited))
+        env[host_capacity.MEMORY_SLICE_ENV] = str(slice_bytes)
     limit_candidates = [max_rss_kb]
     if child_rlimit_kb is not None and child_rlimit_kb > 0:
         limit_candidates.append(child_rlimit_kb)

@@ -28,6 +28,7 @@ if str(_REPO_ROOT) not in sys.path:
 from tools.import_file import bind_repository_imports  # noqa: E402
 
 bind_repository_imports(__file__)
+from molt import host_capacity  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[1]
 SRC_ROOT = ROOT / "src"
@@ -210,7 +211,7 @@ def _default_llvm_targets(machine: str | None = None) -> str:
 def _default_llvm_jobs() -> int:
     plan = plan_resource_pressure(
         prefix="MOLT_LLVM",
-        max_compile_slots=os.cpu_count() or 1,
+        max_compile_slots=host_capacity.cpu_count(),
         compile_gb_per_slot=2.0,
     )
     return plan.compile_max_slots
