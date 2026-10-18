@@ -131,3 +131,26 @@ def changed_paths(
                 paths.append(path)
         index += path_count
     return paths
+
+
+def branch_changed_paths(
+    base_ref: str, *, run_git: Callable[[list[str]], str]
+) -> list[str]:
+    """Return every path the checked-out branch changes against *base_ref*.
+
+    That is the committed changes since the merge base with *base_ref*, plus
+    staged, unstaged and untracked paths. *base_ref* is the integration
+    target, never the branch's upstream: a pushed branch's upstream is its
+    own tip, so a diff against it is empty.
+    """
+    merge_base = run_git(["merge-base", base_ref, "HEAD"]).strip()
+    head = run_git(["rev-parse", "HEAD"]).strip()
+    paths = dict.fromkeys(changed_paths(merge_base, head, run_git=run_git))
+    for arguments in (
+        ["diff", "--name-only", "-z", "HEAD"],
+        ["ls-files", "--others", "--exclude-standard", "-z"],
+    ):
+        paths.update(
+            dict.fromkeys(path for path in run_git(arguments).split("\0") if path)
+        )
+    return sorted(paths)

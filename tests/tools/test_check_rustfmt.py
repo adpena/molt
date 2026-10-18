@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from tests.process_guard_common import run_guarded_test_process
 from tools import check_rustfmt, proof_plan
 
 PLAN = proof_plan.ProofPlan.load()
@@ -159,4 +160,48 @@ def test_plan_runs_the_rustfmt_gate_without_cargo() -> None:
     # A static check reads sources; it must never wait for a Cargo build slot.
     assert not {"cargo", "rustc"} & _plan_gate_toolchains(
         "python tools/check_rustfmt.py --changed"
+    )
+
+
+def _git(root: Path, *args: str) -> None:
+    run_guarded_test_process(
+        ["git", *args], cwd=str(root), capture_output=True, text=True, check=True
+    )
+
+
+def test_changed_mode_checks_a_pushed_branch_against_the_integration_target(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """A pushed branch's upstream is its own tip; the gate must still see the
+    branch's committed Rust changes (fe30fd315 landed unformatted)."""
+    _git(tmp_path, "init", "-q", "-b", "main")
+    _git(tmp_path, "config", "user.email", "a@b.c")
+    _git(tmp_path, "config", "user.name", "t")
+    _git(tmp_path, "config", "commit.gpgsign", "false")
+    _git(tmp_path, "config", "core.hooksPath", "/dev/null")
+    for name in ("kept.rs", "deleted.rs", "edited.rs"):
+        (tmp_path / name).write_text("fn f() {}\n", encoding="utf-8")
+    _git(tmp_path, "add", ".")
+    _git(tmp_path, "commit", "-q", "-m", "base")
+    _git(tmp_path, "remote", "add", "origin", str(tmp_path / "remote.git"))
+    _git(tmp_path, "update-ref", "refs/remotes/origin/main", "HEAD")
+    _git(tmp_path, "switch", "-q", "-c", "lane")
+    (tmp_path / "committed.rs").write_text("fn g() {}\n", encoding="utf-8")
+    _git(tmp_path, "rm", "-q", "deleted.rs")
+    _git(tmp_path, "add", "committed.rs")
+    _git(tmp_path, "commit", "-q", "-m", "lane")
+    _git(tmp_path, "update-ref", "refs/remotes/origin/lane", "HEAD")
+    _git(tmp_path, "branch", "-q", "--set-upstream-to=origin/lane")
+    (tmp_path / "staged.rs").write_text("fn h() {}\n", encoding="utf-8")
+    _git(tmp_path, "add", "staged.rs")
+    (tmp_path / "untracked.rs").write_text("fn i() {}\n", encoding="utf-8")
+    (tmp_path / "edited.rs").write_text("fn f2() {}\n", encoding="utf-8")
+    (tmp_path / "notes.txt").write_text("not Rust\n", encoding="utf-8")
+    monkeypatch.setattr(check_rustfmt, "ROOT", tmp_path)
+
+    assert check_rustfmt._changed_rust_paths("origin/main") == (
+        Path("committed.rs"),
+        Path("edited.rs"),
+        Path("staged.rs"),
+        Path("untracked.rs"),
     )

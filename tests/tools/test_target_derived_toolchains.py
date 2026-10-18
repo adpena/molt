@@ -36,6 +36,7 @@ from tools.proof_queue_pkg import process_image_capture, toolchain_capture
 from tools.proof_queue_pkg import target_derived_toolchains as provider
 from tests.executable_test_support import custody_spelling
 from tests.process_guard_common import install_module_view
+from tests.cli.native_link_test_support import write_test_darwin_sdk
 
 
 def _policy(**updates):
@@ -726,9 +727,7 @@ def test_canonical_native_resolver_uses_only_selected_environment(
         cxx_key: '"' + str(resolved.tools.cxx.path) + '"',
     }
     if resolved.target_plan.native_target.os == "macos":
-        sdk = tmp_path / "SDK"
-        sdk.mkdir()
-        (sdk / "SDKSettings.json").write_text('{"Version":"15.4"}', encoding="utf-8")
+        sdk = write_test_darwin_sdk(tmp_path / "SDK")
         selected["SDKROOT"] = str(sdk)
     monkeypatch.setenv(cc_key, "ambient-must-not-be-selected")
     monkeypatch.setenv(cxx_key, "ambient-must-not-be-selected")

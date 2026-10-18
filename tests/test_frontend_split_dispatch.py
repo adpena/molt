@@ -207,14 +207,26 @@ def test_set_arguments_precede_all_iteration_and_mutation(method: str) -> None:
 
 @pytest.mark.parametrize("method", ["append", "extend", "insert", "remove"])
 @pytest.mark.parametrize(
-    "arguments", ["", "1, 2, 3", "unexpected=callback()", "*values"]
+    ("arguments", "load_kind", "call_kind"),
+    [
+        # CPython's CALL form: the method-form load, then the loaded call.
+        ("", "LOAD_METHOD", "CALL_LOADED_METHOD"),
+        ("1, 2, 3", "LOAD_METHOD", "CALL_LOADED_METHOD"),
+        # Keywords push self_or_null into the builder before the arguments.
+        ("unexpected=callback()", "LOAD_METHOD", "CALL_BIND"),
+        # CALL_FUNCTION_EX calls an ordinary bound attribute.
+        ("*values", "GETATTR_GENERIC_OBJ", "CALL_INDIRECT"),
+    ],
 )
 def test_list_mutator_signature_errors_use_runtime_binding(
-    method: str, arguments: str
+    method: str, arguments: str, load_kind: str, call_kind: str
 ) -> None:
     ops = _generate(f"[].{method}({arguments})\n").funcs_map["molt_main"]["ops"]
     assert not any(op.kind == "LIST_" + method.upper() for op in ops)
-    assert any(op.kind in {"CALL_FUNC", "CALL_INDIRECT"} for op in ops)
+    # The runtime binds the live method, so it raises the signature error.
+    (load,) = [op for op in ops if op.kind == load_kind and op.args[1] == method]
+    (call,) = [op for op in ops if op.args and op.args[0] is load.result]
+    assert call.kind == call_kind
 
 
 @pytest.mark.parametrize("expression", ["f(*items)", "f(**items)", "f(1)"])

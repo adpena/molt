@@ -397,18 +397,6 @@ ALLOWLIST: tuple[AllowedRawSubprocessUse, ...] = (
     ),
     AllowedRawSubprocessUse(
         "tools/check_rustfmt.py",
-        "_merge_base",
-        "run",
-        "bounded git merge-base probe for committed-ahead changed Rust formatting",
-    ),
-    AllowedRawSubprocessUse(
-        "tools/check_rustfmt.py",
-        "_upstream_ref",
-        "run",
-        "bounded git upstream probe for committed-ahead changed Rust formatting",
-    ),
-    AllowedRawSubprocessUse(
-        "tools/check_rustfmt.py",
         "_rustfmt_stdout",
         "run",
         "bounded rustfmt stdout child for no-op-safe Rust formatting writes",
