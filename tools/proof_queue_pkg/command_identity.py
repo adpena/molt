@@ -2352,7 +2352,9 @@ _NONDETERMINISTIC_ENV_NAMES = frozenset(
         "UV_INDEX_URL",
     }
 )
-_CANONICAL_EXECUTION_ENV = {
+# Every proof execution, queued or an integrate gate, runs with these: no
+# bytecode written into the checkout, and no user site-packages.
+CANONICAL_EXECUTION_ENV = {
     "PYTHONDONTWRITEBYTECODE": "1",
     "PYTHONNOUSERSITE": "1",
 }

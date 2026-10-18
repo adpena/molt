@@ -90,16 +90,6 @@ pub fn alloc_dict_with_pairs(_py: &CoreGilToken, pairs: &[u64]) -> *mut u8 {
 
 unsafe extern "C" {
     fn __molt_regex_object_type_id(ptr: *mut u8) -> u32;
-    fn __molt_regex_string_obj_to_owned(
-        bits: u64,
-        out_ptr: *mut *const u8,
-        out_len: *mut usize,
-    ) -> i32;
-    fn __molt_regex_bytes_pattern_to_string(
-        bits: u64,
-        out_ptr: *mut *const u8,
-        out_len: *mut usize,
-    ) -> i32;
     fn __molt_regex_bytes_view(bits: u64, out_ptr: *mut *const u8, out_len: *mut usize) -> i32;
     fn __molt_regex_subject_slice(subject_bits: u64, start: usize, end: usize) -> u64;
     fn __molt_regex_pattern_handle_new(pointer: *const std::ffi::c_void) -> u64;
@@ -144,31 +134,6 @@ pub fn scanner_handle_arc(bits: u64) -> Option<Arc<Mutex<crate::ScannerHandle>>>
 /// call.
 pub unsafe fn object_type_id(ptr: *mut u8) -> u32 {
     unsafe { __molt_regex_object_type_id(ptr) }
-}
-
-pub fn string_obj_to_owned(obj: MoltObject) -> Option<String> {
-    let mut out_ptr: *const u8 = std::ptr::null();
-    let mut out_len: usize = 0;
-    let ok = unsafe { __molt_regex_string_obj_to_owned(obj.bits(), &mut out_ptr, &mut out_len) };
-    if ok != 0 {
-        let boxed = unsafe { bridge_owned_u8_buffer(out_ptr, out_len) };
-        Some(String::from_utf8_lossy(&boxed).into_owned())
-    } else {
-        None
-    }
-}
-
-pub fn bytes_pattern_to_string(obj: MoltObject) -> Option<String> {
-    let mut out_ptr: *const u8 = std::ptr::null();
-    let mut out_len: usize = 0;
-    let ok =
-        unsafe { __molt_regex_bytes_pattern_to_string(obj.bits(), &mut out_ptr, &mut out_len) };
-    if ok != 0 {
-        let boxed = unsafe { bridge_owned_u8_buffer(out_ptr, out_len) };
-        Some(String::from_utf8_lossy(&boxed).into_owned())
-    } else {
-        None
-    }
 }
 
 /// Borrow bytes storage for the current intrinsic call.

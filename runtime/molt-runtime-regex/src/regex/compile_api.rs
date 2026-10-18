@@ -16,16 +16,31 @@ pub extern "C" fn molt_re_compile(pattern_bits: u64, flags_bits: u64) -> u64 {
             .as_ptr()
             .is_some_and(|ptr| unsafe { object_type_id(ptr) } == TYPE_ID_BYTES);
         let pattern = if is_bytes {
-            bytes_pattern_to_string(pattern_obj)
+            let Some(bytes) = (unsafe { bytes_obj_to_borrowed(pattern_obj) }) else {
+                if rt_exception_pending() {
+                    return MoltObject::none().bits();
+                }
+                return raise_exception::<_>(
+                    _py,
+                    "TypeError",
+                    "first argument must be string or compiled pattern",
+                );
+            };
+            let mut units = Vec::new();
+            if let Err(error) = units.try_reserve_exact(bytes.len()) {
+                return match_error_result(_py, error.into());
+            }
+            units.extend(bytes.iter().copied().map(u32::from));
+            units
         } else {
-            string_obj_to_owned(pattern_obj)
-        };
-        let Some(pattern) = pattern else {
-            return raise_exception::<_>(
+            match string_codepoints(
                 _py,
-                "TypeError",
+                pattern_bits,
                 "first argument must be string or compiled pattern",
-            );
+            ) {
+                Ok(units) => units,
+                Err(bits) => return bits,
+            }
         };
         let Some(flags) = to_i64(obj_from_bits(flags_bits)) else {
             return raise_exception::<_>(_py, "TypeError", "flags must be int");
@@ -44,7 +59,7 @@ pub extern "C" fn molt_re_compile(pattern_bits: u64, flags_bits: u64) -> u64 {
                 "cannot use LOCALE flag with a str pattern",
             );
         }
-        match parse_pattern_typed(&pattern, flags, is_bytes) {
+        match parse_pattern_typed(pattern, flags, is_bytes) {
             Ok(parsed) => {
                 let compiled = match parsed.compile() {
                     Ok(compiled) => compiled,

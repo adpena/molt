@@ -1438,7 +1438,7 @@ def _build_entrypoint_parser() -> argparse.ArgumentParser:
         epilog=(
             "Examples:\n"
             "  molt diff                              Run all diff tests\n"
-            "  molt diff tests/parity/               Run diff tests in a directory\n"
+            "  molt diff tests/differential/basic/   Run diff tests in a directory\n"
             "  molt diff --python-version 3.13        Test against Python 3.13\n"
         ),
     )

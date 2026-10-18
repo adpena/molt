@@ -32,18 +32,25 @@ pub(super) struct MatchResult {
     pub(super) lastindex: Option<u32>,
 }
 
+/// Prepare Python code points once from admitted runtime string storage.
+/// This is the same four-byte index as Rust char, but retains surrogates and
+/// never passes through a replacement-producing UTF-8 String conversion.
+pub(super) fn prepare_text(bytes: &[u8]) -> Result<Vec<u32>, MatchError> {
+    let mut units = Vec::new();
+    units.try_reserve_exact(bytes.len())?;
+    units.extend(molt_runtime_core::text_storage::code_points(bytes));
+    Ok(units)
+}
+
 pub(super) fn execute_match(
     compiled: &CompiledPattern,
-    text: &str,
+    text: &[u8],
     pos: usize,
     end: usize,
     mode: MatchMode,
 ) -> Result<Option<MatchResult>, MatchError> {
-    let mut chars = Vec::new();
-    // Reserve from the byte bound once; per-start work borrows this index.
-    chars.try_reserve_exact(text.len())?;
-    chars.extend(text.chars());
-    execute_match_subject(compiled, SubjectStorage::Text(&chars), pos, end, mode)
+    let units = prepare_text(text)?;
+    execute_match_subject(compiled, SubjectStorage::Text(&units), pos, end, mode)
 }
 
 pub(super) fn execute_match_bytes(

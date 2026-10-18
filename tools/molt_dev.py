@@ -1122,7 +1122,13 @@ def _integrate_exclusive(args: argparse.Namespace) -> int:
         f"gates ({len(gate_cmds)} selected for {len(touched)} touched path(s); "
         f"matched rules: {', '.join(r.name for r in matched_rules) or 'none'})"
     )
+    from tools.proof_queue_pkg.command_identity import CANONICAL_EXECUTION_ENV
+
     env = immutable_git_environment(os.environ)
+    # Gates are proof executions: bytecode a gate writes under src/ changes the
+    # checkout's import topology while later gates read it (a fresh worktree's
+    # first landing failed that way).
+    env.update(CANONICAL_EXECUTION_ENV)
     env["MOLT_SESSION_ID"] = args.session_id
     env["PYTHONPATH"] = os.pathsep.join((str(repo / "src"), str(repo)))
     # Cargo gates build into the target Molt's own builds of this checkout use.
