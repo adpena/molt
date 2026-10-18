@@ -3832,7 +3832,10 @@ def test_release_flag_changes_execute_real_windows_compilers(path: str) -> None:
         in command.argv
     )
     assert set(command.data["tiers"]) == {"pr", "main"}
-    assert {"hosted-cmake", "hosted-ninja"} <= set(PLAN.required_toolchains(command))
+    assert {"hosted-cmake", "ninja"} <= set(PLAN.required_toolchains(command))
+    envelope = command_admission.envelope_for_command(command.argv)
+    assert envelope["proof_plan_command_ids"] == [command.id]
+    assert {"hosted-cmake", "ninja"} <= set(envelope["toolchains"])
 
 
 @pytest.mark.parametrize(
@@ -3967,7 +3970,6 @@ def _receipt_for(
         {
             "hosted-clang-cl": "clang version 22.1.8",
             "hosted-cmake": "cmake version 3.31.6",
-            "hosted-ninja": "1.12.1",
         }
     )
     toolchains: dict[str, dict[str, str]] = {}

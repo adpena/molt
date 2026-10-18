@@ -723,7 +723,7 @@ setup_value = "windows-2022 image C11 compiler"
 # C11/DLL ABI probes exercise the image compiler, not the pinned LLVM/MLIR ABI.
 # Exact compiler bytes and version output are captured by the toolchain owner.
 version_pattern = '^clang version [0-9]+\.[0-9]+\.[0-9]+\b'
-setup_evidence = [".github/workflows/ci.yml::The Windows image supplies clang-cl, MSVC, CMake and Ninja for compiler-boundary probes."]
+setup_evidence = [".github/workflows/ci.yml::The Windows image supplies clang-cl, MSVC and CMake for compiler-boundary probes."]
 
 [[toolchain_policy]]
 name = "hosted-cmake"
@@ -731,15 +731,7 @@ executable = "cmake"
 version_args = ["--version"]
 version_pattern = '^cmake version [34]\.[0-9]+\.[0-9]+'
 setup_value = "Windows image CMake"
-setup_evidence = [".github/workflows/ci.yml::The Windows image supplies clang-cl, MSVC, CMake and Ninja for compiler-boundary probes."]
-
-[[toolchain_policy]]
-name = "hosted-ninja"
-executable = "ninja"
-version_args = ["--version"]
-version_pattern = '^1\.[0-9]+\.[0-9]+'
-setup_value = "Windows image Ninja"
-setup_evidence = [".github/workflows/ci.yml::The Windows image supplies clang-cl, MSVC, CMake and Ninja for compiler-boundary probes."]
+setup_evidence = [".github/workflows/ci.yml::The Windows image supplies clang-cl, MSVC and CMake for compiler-boundary probes."]
 
 [[toolchain_policy]]
 name = "ninja"
@@ -5865,7 +5857,7 @@ timeout_seconds = 300
 cache_domain = "pytest"
 dependencies = []
 argv = ["uv", "run", "--active", "--project", ".", "--no-sync", "python", "-u", "-m", "pytest", "-q", "tests/cli/test_c_api_headers.py::test_optimize_flag_headers_share_data_across_translation_units", "tests/tools/test_release_native_build.py::test_msvc_release_path_maps_are_effective_across_build_roots"]
-toolchains = ["python", "uv", "rustc", "cargo", "hosted-clang-cl", "hosted-cmake", "hosted-ninja"]
+toolchains = ["python", "uv", "rustc", "cargo", "hosted-clang-cl", "hosted-cmake", "ninja"]
 cargo_build_python = true
 
 [[command]]

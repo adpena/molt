@@ -101,9 +101,10 @@ CMake/Ninja encoding pair is required: older ANSI-generating CMake versions can
 corrupt Unicode paths when paired with a UTF-8 Ninja. The retained qualification
 uses the already installed Visual Studio CMake, explicitly selected in the proof
 environment; it does not modify machine-wide tool selection.
-The proof captures the image CMake and Ninja identities through their hosted
-tool policies; it does not demand the separately pinned scientific-package
-Ninja distribution or install that package group just to run this control.
+The proof captures image CMake and the existing pinned Ninja identities. The
+development dependency group installs that same Ninja pin without installing
+the scientific-package build groups. There is one executable-policy authority
+for Ninja; queue admission is part of the regression's control surface.
 
 ## Exceptions and open questions
 

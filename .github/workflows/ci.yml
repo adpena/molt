@@ -151,7 +151,8 @@ jobs:
           "MOLT_PROOF_TEST_METADATA_ROOT=$metadataRoot" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
 
       - name: Setup portability toolchains
-        # The Windows image supplies clang-cl, MSVC, CMake and Ninja for compiler-boundary probes.
+        # The Windows image supplies clang-cl, MSVC and CMake for compiler-boundary probes.
+        # The dev group supplies the existing pinned Ninja.
         # The proof command captures its selected image tools before execution.
         uses: ./.github/actions/setup-project
         with:
