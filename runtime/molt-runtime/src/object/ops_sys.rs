@@ -4,8 +4,8 @@
 use crate::audit::{AuditArgs, audit_capability_decision};
 use crate::builtins::exceptions::{ExceptionValue, with_saved_raised_exception};
 use crate::builtins::numbers::{
-    INT_BYTES_NEGATIVE_UNSIGNED, INT_BYTES_OK, bigint_from_bytes, index_integral_payload_bits,
-    integral_payload_to_bytes,
+    EmptySignedBytes, INT_BYTES_NEGATIVE_UNSIGNED, INT_BYTES_OK, bigint_from_bytes,
+    index_integral_payload_bits, integral_payload_to_bytes,
 };
 use crate::object::ops::{range_components_bigint, range_len_bigint};
 use crate::object::ops_string::{
@@ -3121,6 +3121,34 @@ pub(crate) fn parse_codec_arg(
     Some(text)
 }
 
+/// Clinic admits the Unicode object before signed truth; the native body then
+/// validates its contents. Missing byteorder denotes the declared "big" default
+/// without allocating a temporary string or consulting host byte order.
+fn int_bytes_byteorder(py: &PyToken<'_>, bits: u64, label: &str) -> Option<Option<bool>> {
+    if bits == missing_bits(py) {
+        return Some(Some(false));
+    }
+    let order = unsafe {
+        crate::object::ops_format::with_string_bytes(obj_from_bits(bits), |bytes| match bytes {
+            b"little" => Some(true),
+            b"big" => Some(false),
+            _ => None,
+        })
+    };
+    order.or_else(|| {
+        let type_name = if obj_from_bits(bits).is_none() {
+            "None".to_owned()
+        } else {
+            class_name_for_error(type_of_bits(py, bits))
+        };
+        raise_exception(
+            py,
+            "TypeError",
+            &format!("{label}() argument 'byteorder' must be str, not {type_name}"),
+        )
+    })
+}
+
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_int_to_bytes(
     int_bits: u64,
@@ -3159,26 +3187,8 @@ pub extern "C" fn molt_int_to_bytes(
                 "Python int too large to convert to C ssize_t",
             );
         }
-        let byteorder = unsafe {
-            crate::object::ops_format::with_string_bytes(obj_from_bits(byteorder_bits), |bytes| {
-                match bytes {
-                    b"little" => Some(true),
-                    b"big" => Some(false),
-                    _ => None,
-                }
-            })
-        };
-        // Type admission precedes signed truth; content validation follows it.
-        let byteorder = match byteorder {
-            Some(order) => order,
-            None => {
-                let type_name = class_name_for_error(type_of_bits(_py, byteorder_bits));
-                let msg = format!(
-                    "to_bytes() argument 'byteorder' must be str, not {}",
-                    type_name
-                );
-                return raise_exception::<_>(_py, "TypeError", &msg);
-            }
+        let Some(byteorder) = int_bytes_byteorder(_py, byteorder_bits, "to_bytes") else {
+            return MoltObject::none().bits();
         };
         let signed = is_truthy(_py, obj_from_bits(signed_bits));
         if exception_pending(_py) {
@@ -3217,7 +3227,20 @@ pub extern "C" fn molt_int_to_bytes(
                 )
             }
         };
-        let status = integral_payload_to_bytes(payload, out, is_little, signed);
+        let empty_signed = if len == 0
+            && signed
+            && (obj_from_bits(payload).as_int() == Some(-1)
+                || bigint_ptr_from_bits(payload).is_some_and(|ptr| unsafe {
+                    let value = bigint_ref(ptr);
+                    value.sign() == num_bigint::Sign::Minus && value.bits() == 1
+                }))
+            && runtime_target_at_least(_py, 3, 13)
+        {
+            EmptySignedBytes::RequireSignBit
+        } else {
+            EmptySignedBytes::AllowMinusOne
+        };
+        let status = integral_payload_to_bytes(payload, out, is_little, signed, empty_signed);
         if status == INT_BYTES_NEGATIVE_UNSIGNED {
             return raise_exception::<_>(
                 _py,
@@ -3240,45 +3263,94 @@ pub extern "C" fn molt_int_from_bytes(
     signed_bits: u64,
 ) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
-        let byteorder_obj = obj_from_bits(byteorder_bits);
-        let Some(byteorder) = string_obj_to_owned(byteorder_obj) else {
-            let type_name = class_name_for_error(type_of_bits(_py, byteorder_bits));
-            let msg = format!(
-                "from_bytes() argument 'byteorder' must be str, not {}",
-                type_name
-            );
-            return raise_exception::<_>(_py, "TypeError", &msg);
-        };
-        let byteorder_norm = byteorder.to_ascii_lowercase();
-        let is_little = match byteorder_norm.as_str() {
-            "little" => true,
-            "big" => false,
-            _ => {
-                return raise_exception::<_>(
-                    _py,
-                    "ValueError",
-                    "byteorder must be either 'little' or 'big'",
-                );
-            }
+        let Some(byteorder) = int_bytes_byteorder(_py, byteorder_bits, "from_bytes") else {
+            return MoltObject::none().bits();
         };
         let signed = is_truthy(_py, obj_from_bits(signed_bits));
-        let bytes_obj = obj_from_bits(bytes_bits);
-        let Some(bytes_ptr) = bytes_obj.as_ptr() else {
-            let type_name = class_name_for_error(type_of_bits(_py, bytes_bits));
-            let msg = format!("cannot convert '{}' object to bytes", type_name);
-            return raise_exception::<_>(_py, "TypeError", &msg);
-        };
-        let Some(slice) = (unsafe { bytes_like_slice(bytes_ptr) }) else {
-            let type_name = class_name_for_error(type_of_bits(_py, bytes_bits));
-            let msg = format!("cannot convert '{}' object to bytes", type_name);
-            return raise_exception::<_>(_py, "TypeError", &msg);
-        };
-        let value = bigint_from_bytes(slice, is_little, signed);
-        let int_bits = int_bits_from_bigint(_py, value);
-        let builtins = builtin_classes(_py);
-        if class_bits == builtins.int {
-            return int_bits;
+        if exception_pending(_py) {
+            return MoltObject::none().bits();
         }
-        unsafe { call_callable1(_py, class_bits, int_bits) }
+        let Some(is_little) = byteorder else {
+            return raise_exception::<_>(
+                _py,
+                "ValueError",
+                "byteorder must be either 'little' or 'big'",
+            );
+        };
+        let builtins = builtin_classes(_py);
+        let bytes_class = type_of_bits(_py, bytes_bits);
+        let value = if bytes_class == builtins.bytes
+            && let Some(ptr) = obj_from_bits(bytes_bits).as_ptr()
+            && let Some(bytes) = unsafe { bytes_like_slice(ptr) }
+        {
+            // Exact builtin storage cannot invoke Python here. Decode directly;
+            // subclass __bytes__, buffer and iterable dispatch belongs below.
+            bigint_from_bytes(bytes, is_little, signed)
+        } else if bytes_class == builtins.bytearray {
+            let buffer = match crate::object::buffer_exports::ScopedBuffer::simple(_py, bytes_bits)
+            {
+                Ok(buffer) => buffer,
+                Err(error) => return error.raise(_py, "invalid bytearray storage"),
+            };
+            bigint_from_bytes(buffer.as_slice(), is_little, signed)
+        } else {
+            let converted = ExceptionValue::adopt(
+                _py,
+                crate::object::ops_bytes::bytes_from_object(_py, bytes_bits, true),
+            );
+            if exception_pending(_py) {
+                return MoltObject::none().bits();
+            }
+            let bytes = if let Some(ptr) = obj_from_bits(converted.bits()).as_ptr()
+                && unsafe { object_type_id(ptr) == crate::TYPE_ID_FOREIGN }
+            {
+                // A foreign __bytes__ result is already a checked PyBytes.
+                // Read its physical bytes, never dispatch its __buffer__ hook.
+                let native = std::ptr::with_exposed_provenance_mut(unsafe {
+                    crate::object::foreign::foreign_ptr_from_obj(ptr)
+                });
+                let mut data = std::ptr::null_mut();
+                let mut len = 0;
+                if unsafe {
+                    molt_cpython_abi::api::strings::PyBytes_AsStringAndSize(
+                        native,
+                        &raw mut data,
+                        &raw mut len,
+                    )
+                } != 0
+                {
+                    crate::cpython_abi_hooks::propagate_native_failure(_py, "integer byte input");
+                    return MoltObject::none().bits();
+                }
+                if len == 0 {
+                    &[]
+                } else {
+                    unsafe { std::slice::from_raw_parts(data.cast::<u8>(), len as usize) }
+                }
+            } else {
+                let Some(bytes) = obj_from_bits(converted.bits())
+                    .as_ptr()
+                    .and_then(|ptr| unsafe { bytes_like_slice(ptr) })
+                else {
+                    return raise_exception::<_>(
+                        _py,
+                        "SystemError",
+                        "bytes conversion returned non-bytes storage",
+                    );
+                };
+                bytes
+            };
+            // The conversion owner retires before the subclass constructor,
+            // exactly as PyObject_Bytes does in CPython's from_bytes body.
+            bigint_from_bytes(bytes, is_little, signed)
+        };
+        let integer = ExceptionValue::adopt(_py, int_bits_from_bigint(_py, value));
+        if exception_pending(_py) {
+            return MoltObject::none().bits();
+        }
+        if class_bits == builtins.int {
+            return integer.into_bits();
+        }
+        unsafe { call_callable1(_py, class_bits, integer.bits()) }
     })
 }

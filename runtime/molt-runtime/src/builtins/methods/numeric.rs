@@ -215,13 +215,16 @@ crate::builtins::methods::native_method_table!(int_method_bits, publish_int_meth
             1,
         )),
         "to_bytes" => {
-            let zero = MoltObject::from_int(0).bits();
             Some(builtin_func_bits_with_defaults_tuple(
                 _py,
             NativeCallableSpec::declared(NativeCallableKind::MethodDescriptor, builtin_classes(_py).int, "to_bytes").with_text_signature("($self, /, length=1, byteorder='big', *, signed=False)"),
                 fn_addr!(molt_int_to_bytes),
                 4,
-                &[zero],
+                &[
+                    MoltObject::from_int(1).bits(),
+                    missing_bits(_py),
+                    MoltObject::from_bool(false).bits(),
+                ],
             ))
         },
 });
@@ -230,13 +233,12 @@ crate::builtins::methods::native_method_table!(int_class_method_bits, publish_in
 
 }, {
         "from_bytes" => {
-            let zero = MoltObject::from_int(0).bits();
             Some(builtin_func_bits_with_defaults_tuple(
                 _py,
             NativeCallableSpec::declared(NativeCallableKind::ClassMethodDescriptor, builtin_classes(_py).int, "from_bytes").with_text_signature("($type, /, bytes, byteorder='big', *, signed=False)"),
                 fn_addr!(molt_int_from_bytes),
                 4,
-                &[zero],
+                &[missing_bits(_py), MoltObject::from_bool(false).bits()],
             ))
         },
 });

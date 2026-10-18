@@ -178,14 +178,18 @@ pub(super) unsafe fn builtin_call_binding(
             }));
         }
         if matches_builtin!(molt_int_to_bytes) {
-            return Some(BuiltinCallBinding::Arguments(|_py, _, args, _storage| {
-                bind_builtin_int_bytes_codec(_py, args, "length", "byteorder")
-            }));
+            return Some(BuiltinCallBinding::Arguments(
+                |py, function, args, storage| {
+                    bind_builtin_int_bytes_codec(py, function, args, storage, IntBytesCodec::To)
+                },
+            ));
         }
         if matches_builtin!(molt_int_from_bytes) {
-            return Some(BuiltinCallBinding::Arguments(|_py, _, args, _storage| {
-                bind_builtin_int_bytes_codec(_py, args, "bytes", "byteorder")
-            }));
+            return Some(BuiltinCallBinding::Arguments(
+                |py, function, args, storage| {
+                    bind_builtin_int_bytes_codec(py, function, args, storage, IntBytesCodec::From)
+                },
+            ));
         }
         if matches_builtin!(crate::object::ops_builtins::molt_print_builtin) {
             return Some(BuiltinCallBinding::Arguments(|_py, _, args, _storage| {
@@ -955,67 +959,119 @@ unsafe fn bind_builtin_keywords(
     Some(out)
 }
 
+#[derive(Clone, Copy)]
+enum IntBytesCodec {
+    To,
+    From,
+}
+
 unsafe fn bind_builtin_int_bytes_codec(
-    _py: &PyToken<'_>,
+    py: &PyToken<'_>,
+    function: *mut u8,
     args: &CallArgumentView<'_>,
-    required_0: &str,
-    required_1: &str,
+    storage: &mut BuiltinArgumentStorage,
+    codec: IntBytesCodec,
 ) -> Option<Vec<u64>> {
-    if args.pos.is_empty() {
-        return raise_exception::<_>(_py, "TypeError", "missing required argument 'self'");
+    use crate::builtins::native_arguments::{NativeKeywords, bind_named};
+    let (label, first_name) = match codec {
+        IntBytesCodec::To => ("to_bytes", "length"),
+        IntBytesCodec::From => ("from_bytes", "bytes"),
+    };
+    let Some(&receiver) = args.pos.first() else {
+        return raise_exception(py, "TypeError", "missing required argument 'self'");
+    };
+    let positional = &args.pos[1..];
+    let given = positional.len() + args.kw_names.len();
+    // Clinic checks total count before the keyword-only positional boundary.
+    if given > 3 {
+        return raise_exception(
+            py,
+            "TypeError",
+            &format!(
+                "{label}() takes at most 3 {}arguments ({given} given)",
+                if positional.is_empty() {
+                    "keyword "
+                } else {
+                    ""
+                },
+            ),
+        );
     }
-    if args.pos.len() > 4 {
-        return raise_exception::<_>(_py, "TypeError", "too many positional arguments");
+    if positional.len() > 2 {
+        return raise_exception(
+            py,
+            "TypeError",
+            &format!(
+                "{label}() takes at most 2 positional arguments ({} given)",
+                positional.len(),
+            ),
+        );
     }
-    let mut first_bits = args.pos.get(1).copied();
-    let mut second_bits = args.pos.get(2).copied();
-    let mut signed_bits = args.pos.get(3).copied();
-    for (name_bits, val_bits) in args
-        .kw_names
-        .iter()
-        .copied()
-        .zip(args.kw_values.iter().copied())
-    {
-        let name_obj = obj_from_bits(name_bits);
-        let name_str = string_obj_to_owned(name_obj).unwrap_or_else(|| "?".to_string());
-        match name_str.as_str() {
-            _ if name_str == required_0 => {
-                if first_bits.is_some() {
-                    let msg = format!("got multiple values for argument '{name_str}'");
-                    return raise_exception::<_>(_py, "TypeError", &msg);
-                }
-                first_bits = Some(val_bits);
-            }
-            _ if name_str == required_1 => {
-                if second_bits.is_some() {
-                    let msg = format!("got multiple values for argument '{name_str}'");
-                    return raise_exception::<_>(_py, "TypeError", &msg);
-                }
-                second_bits = Some(val_bits);
-            }
-            "signed" => {
-                if signed_bits.is_some() {
-                    let msg = format!("got multiple values for argument '{name_str}'");
-                    return raise_exception::<_>(_py, "TypeError", &msg);
-                }
-                signed_bits = Some(val_bits);
-            }
-            _ => {
-                let msg = format!("got an unexpected keyword '{name_str}'");
-                return raise_exception::<_>(_py, "TypeError", &msg);
-            }
+    // The published callable owns the only default tuple. Keep it through the
+    // native body: a keyword callback can retire other metadata owners.
+    let defaults_bits = function_binding_meta(py, function, FunctionBindingField::Defaults);
+    let Some(defaults_ptr) = obj_from_bits(defaults_bits)
+        .as_ptr()
+        .filter(|&ptr| object_type_id(ptr) == TYPE_ID_TUPLE)
+    else {
+        return raise_exception(py, "SystemError", "invalid integer bytes codec defaults");
+    };
+    let defaults = crate::object::seq_access::pin_tuple(py, defaults_ptr)?;
+    let expected_defaults = match codec {
+        IntBytesCodec::To => 3,
+        IntBytesCodec::From => 2,
+    };
+    if defaults.len() != expected_defaults {
+        return raise_exception(py, "SystemError", "invalid integer bytes codec defaults");
+    }
+    inc_ref_bits(py, defaults_bits);
+    storage.own(py, defaults_ptr)?;
+    let required = 3 - defaults.len();
+    let slots = if args.kw_names.is_empty() {
+        if positional.len() < required {
+            return raise_exception(
+                py,
+                "TypeError",
+                &format!("{label}() missing required argument '{first_name}' (pos 1)"),
+            );
         }
-    }
-    let Some(first_bits) = first_bits else {
-        let msg = format!("missing required argument '{required_0}'");
-        return raise_exception::<_>(_py, "TypeError", &msg);
+        [
+            positional.first().copied(),
+            positional.get(1).copied(),
+            None,
+        ]
+    } else {
+        let bound = bind_named(
+            py,
+            label,
+            positional,
+            NativeKeywords::vector(args.kw_names, args.kw_values),
+            [first_name, "byteorder", "signed"],
+            required,
+        )?;
+        let (slots, owners) = bound.into_parts();
+        if storage.owners.try_reserve(owners.len()).is_err() {
+            return raise_exception(
+                py,
+                "MemoryError",
+                "integer bytes codec custody allocation failed",
+            );
+        }
+        storage.owners.extend(owners);
+        slots
     };
-    let Some(second_bits) = second_bits else {
-        let msg = format!("missing required argument '{required_1}'");
-        return raise_exception::<_>(_py, "TypeError", &msg);
-    };
-    let signed_bits = signed_bits.unwrap_or_else(|| MoltObject::from_bool(false).bits());
-    Some(vec![args.pos[0], first_bits, second_bits, signed_bits])
+    Some(vec![
+        receiver,
+        match slots[0] {
+            Some(bits) => bits,
+            None if required == 0 => defaults[0],
+            None => {
+                return raise_exception(py, "SystemError", "missing bound integer bytes source");
+            }
+        },
+        slots[1].unwrap_or_else(|| defaults[1 - required]),
+        slots[2].unwrap_or_else(|| defaults[2 - required]),
+    ])
 }
 
 /// Bind `print(*args, sep=' ', end='\n', file=None, flush=False)`.
