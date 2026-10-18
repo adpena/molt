@@ -18,6 +18,7 @@ from molt import pytest_memory_guard_config_plugin
 from molt import memory_guard_paths
 from molt import temporary_artifacts
 from tests.process_guard_common import (
+    current_thread_only,
     guarded_temporary_directory,
     install_module_os_view,
     install_module_view,
@@ -314,6 +315,7 @@ def test_installation_has_no_global_pytest_hook_but_repository_loads_guard():
 )
 def test_nontest_startup_preserves_package_only_import_boundary(monkeypatch, relative):
     import builtins
+    from concurrent.futures import ThreadPoolExecutor
 
     original_import = builtins.__import__
 
@@ -336,7 +338,20 @@ def test_nontest_startup_preserves_package_only_import_boundary(monkeypatch, rel
         orig_argv=[sys.executable, "-I", "-c", "pass"],
     )
     monkeypatch.setattr(sys, "argv", ["-c"])
-    monkeypatch.setattr(builtins, "__import__", no_repository_tooling)
+    monkeypatch.setattr(
+        builtins,
+        "__import__",
+        current_thread_only(no_repository_tooling, original_import),
+    )
+    with pytest.raises(pytest.fail.Exception, match="non-test startup imported"):
+        builtins.__import__("tools")
+    # Unrelated custody threads must retain their real import boundary while
+    # this thread observes the complete transitive startup import path.
+    with ThreadPoolExecutor(max_workers=1) as custody_thread:
+        imported = custody_thread.submit(
+            builtins.__import__, "tools.memory_guard_core.process_model"
+        ).result()
+    assert imported is sys.modules["tools"]
     surface = REPO_ROOT / relative
     # Startup imports preserve interpreter argv; runpy would replace argv[0]
     # with the adapter path and falsely simulate a direct test invocation.
