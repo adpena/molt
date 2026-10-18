@@ -7,8 +7,8 @@ The inventory includes older and future Python 3 minor spellings, full eight-dig
 ## Counts
 
 - `authority-routed` files: 62
-- `operational-tooling` files: 56
-- `scattered-assumption` files: 339
+- `operational-tooling` files: 57
+- `scattered-assumption` files: 341
 
 ## Files
 
@@ -79,6 +79,7 @@ The inventory includes older and future Python 3 minor spellings, full eight-dig
 | `src/molt/stdlib/asyncio/tools.py` | 4 | scattered-assumption | `3.14` |
 | `src/molt/stdlib/asyncio/unix_events.py` | 2 | scattered-assumption | `version_info` |
 | `src/molt/stdlib/asyncio/windows_events.py` | 3 | scattered-assumption | `3.12` |
+| `src/molt/stdlib/base64.py` | 3 | operational-tooling | `3.12` |
 | `src/molt/stdlib/builtins.py` | 2 | operational-tooling | `3.13` |
 | `src/molt/stdlib/calendar.py` | 1 | scattered-assumption | `3.12` |
 | `src/molt/stdlib/codeop.py` | 2 | scattered-assumption | `3.12` |
@@ -289,7 +290,7 @@ The inventory includes older and future Python 3 minor spellings, full eight-dig
 | `runtime/molt-runtime/src/builtins/module_table.rs` | 1 | scattered-assumption | `version_info` |
 | `runtime/molt-runtime/src/builtins/modules/type_attributes.rs` | 2 | scattered-assumption | `3.13` |
 | `runtime/molt-runtime/src/builtins/modules.rs` | 7 | authority-routed | `version_info` |
-| `runtime/molt-runtime/src/builtins/numbers.rs` | 18 | authority-routed | `3.14` |
+| `runtime/molt-runtime/src/builtins/numbers.rs` | 20 | authority-routed | `3.14` |
 | `runtime/molt-runtime/src/builtins/platform_tests.rs` | 3 | scattered-assumption | `3.12` |
 | `runtime/molt-runtime/src/builtins/sys_ext.rs` | 2 | scattered-assumption | `3.12` |
 | `runtime/molt-runtime/src/builtins/types/class_construction.rs` | 1 | scattered-assumption | `3.12` |
@@ -315,7 +316,7 @@ The inventory includes older and future Python 3 minor spellings, full eight-dig
 | `runtime/molt-runtime/src/cpython_abi_hooks/native_lifecycle_tests.rs` | 4 | authority-routed | `3.12` |
 | `runtime/molt-runtime/src/cpython_abi_hooks/native_namespace_tests/readiness.rs` | 3 | scattered-assumption | `3.12` |
 | `runtime/molt-runtime/src/cpython_abi_hooks/semantic_retirement_tests.rs` | 2 | authority-routed | `3.14` |
-| `runtime/molt-runtime/src/cpython_abi_hooks.rs` | 1 | authority-routed | `3.0` |
+| `runtime/molt-runtime/src/cpython_abi_hooks.rs` | 2 | authority-routed | `3.12` |
 | `runtime/molt-runtime/src/gpu_runtime_tests.rs` | 30 | scattered-assumption | `3.0` |
 | `runtime/molt-runtime/src/math_bridge.rs` | 1 | scattered-assumption | `3.0` |
 | `runtime/molt-runtime/src/object/code_layout/tests.rs` | 1 | scattered-assumption | `3.12` |
@@ -364,7 +365,9 @@ The inventory includes older and future Python 3 minor spellings, full eight-dig
 | `runtime/molt-runtime-platform/src/env_support.rs` | 2 | scattered-assumption | `3.15` |
 | `runtime/molt-runtime-platform/src/path_text.rs` | 2 | scattered-assumption | `3.12` |
 | `runtime/molt-runtime-platform/src/windows_abi.rs` | 1 | scattered-assumption | `3.12` |
-| `runtime/molt-runtime-regex/src/regex/substitution.rs` | 2 | scattered-assumption | `3.7` |
+| `runtime/molt-runtime-regex/src/regex/substitution.rs` | 1 | scattered-assumption | `3.7` |
+| `runtime/molt-runtime-regex/src/regex/tests.rs` | 1 | scattered-assumption | `3.12` |
+| `runtime/molt-runtime-serial/src/base64_mod.rs` | 2 | scattered-assumption | `3.12` |
 | `runtime/molt-runtime-serial/src/csv.rs` | 8 | scattered-assumption | `3.12` |
 | `runtime/molt-runtime-serial/src/structs.rs` | 1 | scattered-assumption | `3.0` |
 | `runtime/molt-runtime-stringprep/src/stringprep.rs` | 1 | scattered-assumption | `3.2` |

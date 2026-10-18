@@ -75,6 +75,9 @@ NULL_SHA = "0" * 40
 # the exact revision the proof ran on without a hand-supplied object ID.
 PROOF_SOURCE_COMMIT_PLACEHOLDER = "{proof_source_commit}"
 _ARGV_PLACEHOLDER = re.compile(r"\{[A-Za-z_][A-Za-z0-9_]*\}")
+# Local integration gates bind the fetched upstream once, never a mutable ref
+# name or an ambient environment value. Standalone tools retain their defaults.
+INTEGRATION_UPSTREAM_COMMIT_PLACEHOLDER = "{integration_upstream_commit}"
 REQUIRED_FAMILY_FIELDS = (
     "description",
     "inputs",
@@ -630,7 +633,46 @@ def local_gate_commands(
                 local_pytest_command(targets, workers, select),
                 tuple(rule.get("toolchains", [])),
             )
+    for identifier, (command, _tools) in commands.items():
+        if error := local_gate_template_error(command):
+            raise ValueError(f"{identifier}: {error}")
     return commands
+
+
+def local_gate_template_error(command: str) -> str | None:
+    """Admit the one closed integration binding as a commit or commit range."""
+    for token in _ARGV_PLACEHOLDER.findall(command):
+        if token != INTEGRATION_UPSTREAM_COMMIT_PLACEHOLDER:
+            return f"unknown local gate placeholder {token!r}"
+    remainder = command.replace(INTEGRATION_UPSTREAM_COMMIT_PLACEHOLDER, "")
+    if "{integration_" in remainder or "integration_upstream_commit}" in remainder:
+        return "malformed integration upstream placeholder"
+    if INTEGRATION_UPSTREAM_COMMIT_PLACEHOLDER not in command:
+        return None
+    try:
+        arguments = shlex.split(command)
+    except ValueError as exc:
+        return f"invalid local gate template: {exc}"
+    for argument in arguments:
+        if INTEGRATION_UPSTREAM_COMMIT_PLACEHOLDER in argument and argument not in {
+            INTEGRATION_UPSTREAM_COMMIT_PLACEHOLDER,
+            INTEGRATION_UPSTREAM_COMMIT_PLACEHOLDER + "..HEAD",
+        }:
+            return "integration upstream placeholder must be a whole commit or BASE..HEAD argument"
+    return None
+
+
+def bind_local_gate_command(
+    command: str | tuple[str, ...], *, upstream_commit: str
+) -> str | tuple[str, ...]:
+    """Bind an execution copy; selection and prerequisite IDs keep raw policy."""
+    require_git_object_id(upstream_commit, label="integration gate upstream")
+    # Structured pytest selections contain literal argv, not shell templates.
+    if not isinstance(command, str):
+        return command
+    if error := local_gate_template_error(command):
+        raise ValueError(error)
+    return command.replace(INTEGRATION_UPSTREAM_COMMIT_PLACEHOLDER, upstream_commit)
 
 
 def local_pytest_target_errors(
@@ -2257,6 +2299,9 @@ class ProofPlan:
                             f"{sorted(expected_verdict_needs)!r}"
                         )
         local_names: set[str] = set()
+        for index, command in enumerate(self.always):
+            if error := local_gate_template_error(command):
+                errors.append(f"local.always.{index}: {error}")
         try:
             toolchain_closure(self.toolchain_policies, self.always_toolchains)
         except ValueError as exc:
@@ -2287,6 +2332,10 @@ class ProofPlan:
                     isinstance(item, str) for item in value
                 ):
                     errors.append(f"{name}: {field} must be a list of strings")
+                elif field == "gates":
+                    for index, command in enumerate(value):
+                        if error := local_gate_template_error(command):
+                            errors.append(f"local.{name}.{index}: {error}")
             errors.extend(local_pytest_target_errors(name, rule.get("pytest", [])))
             errors.extend(
                 local_pytest_select_errors(name, rule.get("pytest_select", []))

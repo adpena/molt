@@ -373,6 +373,102 @@ def test_generated_local_dx_projection_has_stable_command_ids() -> None:
     assert local["pytest_workers"] == PLAN.local_pytest_workers > 0
 
 
+def test_local_change_gates_use_one_captured_integration_upstream() -> None:
+    upstream = "{integration_upstream_commit}"
+    expected = {
+        f"python tools/check_rustfmt.py --changed --base {upstream}",
+        f"python tools/check_commit_attribution.py --range {upstream}..HEAD",
+        f"python tools/check_changed_clippy.py --base {upstream}",
+    }
+    commands = {
+        command
+        for command, _tools in proof_plan.local_gate_commands(
+            {"always": PLAN.always, "rule": PLAN.local_rules}
+        ).values()
+    }
+    assert expected <= commands
+    assert not any("origin/main" in command for command in commands)
+    projection = json.loads(gen_proof_plan._json_projection(PLAN))["local"]["commands"]
+    assert expected <= set(projection.values())
+
+
+def test_local_gate_binding_keeps_raw_prerequisite_and_projection_identity() -> None:
+    from tools import molt_dev
+
+    upstream = "a" * 40
+    raw = "echo {integration_upstream_commit}..HEAD"
+    cfg = molt_dev.GateConfig.parse(
+        "always = " + json.dumps([raw]) + "\n", "selected fixture"
+    )
+    commands, matched = cfg.select(["feature.rs"])
+    bound = proof_plan.bind_local_gate_command(commands[0], upstream_commit=upstream)
+    assert bound == f"echo {upstream}..HEAD"
+    assert commands == [raw]
+    assert cfg.prerequisites == {"local.always.0": (raw, ())}
+    assert cfg.admit(["feature.rs"], matched, [raw]) == {}
+    with pytest.raises(
+        molt_dev.DriverError, match="lack declared prerequisite custody"
+    ):
+        cfg.admit(["feature.rs"], matched, [bound])
+    literal = ("python", "-m", "pytest", "tests/test_proof_plan.py")
+    assert (
+        proof_plan.bind_local_gate_command(literal, upstream_commit=upstream) is literal
+    )
+    assert (
+        proof_plan.bind_local_gate_command("echo origin/main", upstream_commit=upstream)
+        == "echo origin/main"
+    )
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "echo {integration_upstream_ref}",
+        "echo {other_upstream}",
+        "echo {proof_source_commit}",
+        "echo {integration_upstream_commit",
+        "echo {{integration_upstream_commit}}",
+        "echo --base={integration_upstream_commit}",
+        "echo prefix{integration_upstream_commit}",
+        "echo {integration_upstream_commit}..other",
+    ],
+)
+def test_local_gate_binding_has_a_closed_template_contract(command) -> None:
+    from tools import molt_dev
+
+    with pytest.raises(ValueError, match="placeholder"):
+        proof_plan.local_gate_commands({"always": [command]})
+    with pytest.raises(molt_dev.DriverError, match="placeholder"):
+        molt_dev.GateConfig.parse(
+            "always = " + json.dumps([command]), "invalid fixture"
+        )
+
+
+@pytest.mark.parametrize("scope", ["always", "rule"])
+def test_proof_plan_validation_rejects_unknown_local_bindings(scope) -> None:
+    command = "echo {integration_upstream_ref}"
+    plan = (
+        replace(PLAN, always=(command,))
+        if scope == "always"
+        else replace(
+            PLAN,
+            local_rules=(
+                {**PLAN.local_rules[0], "gates": [command]},
+                *PLAN.local_rules[1:],
+            ),
+        )
+    )
+    assert any("unknown local gate placeholder" in error for error in plan.validate())
+
+
+@pytest.mark.parametrize("upstream", ["origin/main", "HEAD", "a997561d", "A" * 40])
+def test_local_gate_binding_requires_a_canonical_full_commit(upstream) -> None:
+    with pytest.raises(ValueError, match="integration gate upstream must be lowercase"):
+        proof_plan.bind_local_gate_command(
+            "echo {integration_upstream_commit}", upstream_commit=upstream
+        )
+
+
 @pytest.mark.parametrize(
     "target,message",
     [

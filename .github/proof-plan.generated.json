@@ -372,7 +372,7 @@
     "tests/tools/test_win_job_contract.py",
     "tests/tools/test_windows_process_api.py"
   ],
-  "authority_sha256": "1d59e027365d301f3da6dbe9f8365779a06aeef8923b0eb1dcc0c5e35046c44c",
+  "authority_sha256": "86e2f896b6559a175e5e5961876e539511cbeca0d789fac251712318e0044164",
   "cargo_environment_policy": {
     "incident_command": "cargo metadata --locked --format-version 1",
     "incident_commit": "20b046b79bd4ca64a8c859f737f6e330377bcc4e",
@@ -8596,7 +8596,7 @@
       "python -m ruff check .",
       "python -m ruff format --check .",
       "python tools/check_rust_toolchain.py",
-      "python tools/check_rustfmt.py --changed",
+      "python tools/check_rustfmt.py --changed --base {integration_upstream_commit}",
       "python tools/generators.py check",
       "python tools/check_environment_registry.py --check",
       "python tools/check_test_ownership.py --check",
@@ -8607,7 +8607,7 @@
       "python tools/encoding_gate.py --check",
       "python tools/check_cargo_test_truth.py",
       "python tools/check_github_actions.py",
-      "python tools/check_commit_attribution.py --range origin/main..HEAD",
+      "python tools/check_commit_attribution.py --range {integration_upstream_commit}..HEAD",
       "python tools/public_contract_gate.py --check",
       "python tools/check_stdlib_intrinsic_surface.py --check",
       "python tools/build_graph_audit.py --check",
@@ -8651,7 +8651,7 @@
       "local.always.11": "python tools/encoding_gate.py --check",
       "local.always.12": "python tools/check_cargo_test_truth.py",
       "local.always.13": "python tools/check_github_actions.py",
-      "local.always.14": "python tools/check_commit_attribution.py --range origin/main..HEAD",
+      "local.always.14": "python tools/check_commit_attribution.py --range {integration_upstream_commit}..HEAD",
       "local.always.15": "python tools/public_contract_gate.py --check",
       "local.always.16": "python tools/check_stdlib_intrinsic_surface.py --check",
       "local.always.17": "python tools/build_graph_audit.py --check",
@@ -8662,7 +8662,7 @@
       "local.always.21": "python tools/check_ratio_direction.py",
       "local.always.22": "python tools/check_subagent_contract.py",
       "local.always.23": "python tools/check_perf_plane_gate.py",
-      "local.always.3": "python tools/check_rustfmt.py --changed",
+      "local.always.3": "python tools/check_rustfmt.py --changed --base {integration_upstream_commit}",
       "local.always.4": "python tools/generators.py check",
       "local.always.5": "python tools/check_environment_registry.py --check",
       "local.always.6": "python tools/check_test_ownership.py --check",
@@ -8755,7 +8755,7 @@
       "local.runtime-vfs.0": "cargo clippy --locked -p molt-runtime-vfs --all-targets --all-features -- -D warnings",
       "local.runtime-vfs.1": "cargo test --locked -p molt-runtime-vfs --all-features --no-fail-fast",
       "local.runtime-vfs.pytest": "python -m pytest -q -n 4 tests/test_browser_vfs.py",
-      "local.rust-clippy-changed.0": "python tools/check_changed_clippy.py --base origin/main",
+      "local.rust-clippy-changed.0": "python tools/check_changed_clippy.py --base {integration_upstream_commit}",
       "local.rust-toolchain.0": "python tools/check_rust_toolchain.py",
       "local.rust-toolchain.pytest": "python -m pytest -q -n 4 tests/tools/test_rust_toolchain_contract.py tests/cli/test_backend_manifest_contract.py",
       "local.source-extension-package-sets.pytest": "python -m pytest -q -n 4 tests/cli/test_source_extension_set_registry.py tests/cli/test_source_extension_manifest_authority.py tests/cli/test_source_extension_link_requirements.py tests/cli/test_source_extension_producer.py tests/cli/test_source_build_environment_probe.py tests/cli/test_source_extension_candidate_attestation.py tests/cli/test_source_extension_candidate_transaction.py tests/cli/test_source_package_seal.py tests/test_exact_json.py tests/cli/test_external_native_scipy_package_seal.py tests/cli/test_atomic_io_authority.py tests/cli/test_python_module_names.py tests/cli/test_source_extension_runtime_imports.py tests/cli/test_source_extension_input_custody.py tests/cli/test_source_extension_target.py tests/cli/test_source_extension_language.py tests/cli/test_source_extension_compiler_target.py tests/cli/test_extension_wheel_retained_inputs.py tests/tools/test_native_link_benchmark.py tests/cli/test_cli_extension_commands.py::test_direct_build_audits_and_reseals_extracted_wheel tests/cli/test_source_extension_invocation.py tests/cli/test_source_extension_compiler_inputs.py",
@@ -10142,7 +10142,7 @@
         ],
         "description": "Clippy -D warnings with the proof plan's feature, target and profile cells for every Cargo package a change reaches.",
         "gates": [
-          "python tools/check_changed_clippy.py --base origin/main"
+          "python tools/check_changed_clippy.py --base {integration_upstream_commit}"
         ],
         "globs": [
           "runtime/**",
