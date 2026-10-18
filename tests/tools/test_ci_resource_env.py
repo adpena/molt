@@ -2,10 +2,10 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-import os
 
 import pytest
-from tests.process_guard_common import install_module_view
+
+from molt import host_capacity
 from tools import ci_resource_env
 
 
@@ -121,7 +121,7 @@ def test_main_json_dry_run_does_not_write_github_env(
     monkeypatch.setattr(
         module.memory_guard, "adaptive_memory_budget", lambda *a: budget
     )
-    install_module_view(monkeypatch, "os", os, module, cpu_count=lambda: 4)
+    monkeypatch.setattr(host_capacity, "cpu_count", lambda: 4)
 
     assert module.main(["--github-env", str(env_path), "--dry-run", "--json"]) == 0
 

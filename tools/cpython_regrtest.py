@@ -29,6 +29,7 @@ if str(_REPO_ROOT) not in sys.path:
 from tools.import_file import bind_repository_imports  # noqa: E402
 
 bind_repository_imports(__file__)
+from molt import host_capacity  # noqa: E402
 
 from tools.command_execution import CommandExecutor  # noqa: E402
 
@@ -299,7 +300,7 @@ def parse_args(argv: list[str]) -> RegrtestConfig:
     parser.add_argument(
         "--workers",
         type=int,
-        default=max(1, (os.cpu_count() or 1)),
+        default=host_capacity.cpu_count(),
         help="Number of parallel workers (-j).",
     )
     parser.add_argument(

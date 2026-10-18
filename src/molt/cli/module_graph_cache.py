@@ -678,7 +678,7 @@ def warm_stdlib_intrinsic_source_facts(
     may compute them in any order; the caller then classifies from the cache. A
     set too small to amortize worker start-up is left to the caller's serial pass.
     """
-    from molt.dx import _memory_bounded_worker_count
+    from molt import host_capacity
 
     work = [
         (
@@ -691,7 +691,7 @@ def warm_stdlib_intrinsic_source_facts(
     ]
     workers = min(
         len(work) // _INTRINSIC_FACTS_MODULES_PER_WORKER,
-        _memory_bounded_worker_count(
+        host_capacity.worker_count(
             bytes_per_worker=_INTRINSIC_FACTS_BYTES_PER_WORKER,
             headroom_bytes=_INTRINSIC_FACTS_MEMORY_HEADROOM_BYTES,
         ),
