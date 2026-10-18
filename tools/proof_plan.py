@@ -524,24 +524,70 @@ def toolchain_closure(
 
 
 _LOCAL_RULE_FIELDS = frozenset(
-    {"name", "description", "globs", "gates", "pytest", "toolchains"}
+    {"name", "description", "globs", "gates", "pytest", "pytest_select", "toolchains"}
 )
 _LOCAL_PYTEST_PREFIX = ("python", "-m", "pytest", "-q")
+# The selection options a `pytest_select` entry may name, by its table key.
+_LOCAL_PYTEST_SELECTORS = {"k": "-k", "m": "-m"}
 
 
-def local_pytest_argv(targets: Iterable[str], workers: int) -> tuple[str, ...]:
+def local_pytest_argv(
+    targets: Iterable[str], workers: int, select: tuple[str, ...] = ()
+) -> tuple[str, ...]:
     """The one pytest invocation for local gate test targets.
 
     Integration merges every selected rule's targets into one run, so the
     interpreter, guard and collection costs are paid once and the tests run
-    on ``workers`` processes.
+    on ``workers`` processes. A selection (``-k`` or ``-m``) applies to every
+    target of its run, so each one runs on its own.
     """
-    return (*_LOCAL_PYTEST_PREFIX, "-n", str(workers), *targets)
+    return (*_LOCAL_PYTEST_PREFIX, "-n", str(workers), *select, *targets)
 
 
-def local_pytest_command(targets: Iterable[str], workers: int) -> str:
+def local_pytest_command(
+    targets: Iterable[str], workers: int, select: tuple[str, ...] = ()
+) -> str:
     """Display/projection of the argv executed directly by the local driver."""
-    return shlex.join(local_pytest_argv(targets, workers))
+    return shlex.join(local_pytest_argv(targets, workers, select))
+
+
+def local_pytest_selections(
+    rule: Mapping[str, Any],
+) -> list[tuple[tuple[str, ...], tuple[str, ...]]]:
+    """A rule's `pytest_select` entries as (selection argv, targets)."""
+    selections = []
+    for entry in rule.get("pytest_select", []):
+        (key,) = set(entry) & set(_LOCAL_PYTEST_SELECTORS)
+        selections.append(
+            ((_LOCAL_PYTEST_SELECTORS[key], entry[key]), tuple(entry["targets"]))
+        )
+    return selections
+
+
+def local_pytest_select_errors(
+    name: str, entries: object, *, root: Path = ROOT
+) -> list[str]:
+    """Each `pytest_select` entry names one selection and its test targets."""
+    if not isinstance(entries, list):
+        return [f"{name}: pytest_select must be a list of tables"]
+    errors = []
+    for index, entry in enumerate(entries):
+        label = f"{name}: pytest_select[{index}]"
+        if not isinstance(entry, dict):
+            errors.append(f"{label} must be a table")
+            continue
+        keys = set(entry) & set(_LOCAL_PYTEST_SELECTORS)
+        unknown = set(entry) - set(_LOCAL_PYTEST_SELECTORS) - {"targets"}
+        if len(keys) != 1 or unknown:
+            errors.append(f"{label} must hold exactly one of k or m, and targets")
+            continue
+        (key,) = keys
+        if not isinstance(entry[key], str) or not entry[key].strip():
+            errors.append(f"{label}.{key} must be a non-empty expression")
+        errors.extend(
+            local_pytest_target_errors(label, entry.get("targets"), root=root)
+        )
+    return errors
 
 
 def local_rule_field_error(rule: Mapping[str, Any]) -> str | None:
@@ -577,6 +623,11 @@ def local_gate_commands(
         if rule.get("pytest"):
             commands[f"local.{rule['name']}.pytest"] = (
                 local_pytest_command(rule["pytest"], workers),
+                tuple(rule.get("toolchains", [])),
+            )
+        for index, (select, targets) in enumerate(local_pytest_selections(rule)):
+            commands[f"local.{rule['name']}.pytest-select-{index}"] = (
+                local_pytest_command(targets, workers, select),
                 tuple(rule.get("toolchains", [])),
             )
     return commands
@@ -2237,6 +2288,9 @@ class ProofPlan:
                 ):
                     errors.append(f"{name}: {field} must be a list of strings")
             errors.extend(local_pytest_target_errors(name, rule.get("pytest", [])))
+            errors.extend(
+                local_pytest_select_errors(name, rule.get("pytest_select", []))
+            )
         return errors
 
     def all_selected(self, *, reason: str, fail_closed: bool = True) -> Selection:

@@ -369,7 +369,7 @@
     "tests/tools/test_win_job_contract.py",
     "tests/tools/test_windows_process_api.py"
   ],
-  "authority_sha256": "ac9f1054829733a8fb856a94782417dfe22cdf5078a1152627f4f87d3bcf4af2",
+  "authority_sha256": "a8132745e458a3d2bcba4eb16b5f573d5e9b10346b27ca21494944b767f15360",
   "cargo_environment_policy": {
     "incident_command": "cargo metadata --locked --format-version 1",
     "incident_commit": "20b046b79bd4ca64a8c859f737f6e330377bcc4e",
@@ -8575,8 +8575,8 @@
       "local.apparatus-learning-protection.1": "python tools/anti_recurrence_gate.py --check",
       "local.apparatus-learning-protection.pytest": "python -m pytest -q -n 4 tests/tools/test_apparatus_agent_safety.py tests/tools/test_anti_recurrence_gate.py tests/tools/test_hooks_session_learning.py tests/tools/test_check_gate_liveness.py tests/tools/test_memory_graph.py",
       "local.backend-daemon-cache.0": "cargo test --locked --profile dev-fast --config profile.dev-fast.package.cranelift-codegen.opt-level=0 -p molt-backend --no-default-features --features molt-backend/native-backend,molt-backend/wasm-backend,molt-backend/luau-backend,molt-backend/rust-backend,molt-backend/cbor --bin molt-backend daemon -- --test-threads=1",
-      "local.backend-environment-contract.0": "python -m pytest -q tests/cli/test_cli_import_collection.py -k 'backend_codegen or backend_daemon or backend_cache_setup or backend_setup or backend_compile or backend_pipeline or backend_dispatch or codegen_selection or fingerprint_env'",
       "local.backend-environment-contract.pytest": "python -m pytest -q -n 4 tests/cli/test_backend_environment_contract.py tests/cli/test_cli_wasm_codegen_layout.py tests/cli/test_cli_shared_stdlib_cache.py tests/cli/test_cli_runtime_callable_symbols_authority.py tests/cli/test_native_codegen_identity.py tests/cli/test_cli_backend_prewarm.py",
+      "local.backend-environment-contract.pytest-select-0": "python -m pytest -q -n 4 -k 'backend_codegen or backend_daemon or backend_cache_setup or backend_setup or backend_compile or backend_pipeline or backend_dispatch or codegen_selection or fingerprint_env' tests/cli/test_cli_import_collection.py",
       "local.backend-ir-framing.0": "cargo test --locked --profile release-fast -p molt-backend --features native-backend,cbor --bin molt-backend backend_process::input::tests",
       "local.backend-llvm.0": "cargo test --locked --profile release-fast -p molt-backend-native -p molt-backend --features molt-backend/native-backend,molt-backend/llvm --lib --test ir_contract_validation --no-fail-fast",
       "local.backend-native.0": "cargo test --locked --profile release-fast -p molt-backend -p molt-backend-native -p molt-artifact-publish --features molt-backend/native-backend --lib --bins --no-fail-fast",
@@ -8626,7 +8626,7 @@
       "local.op-kind-registry.0": "python tools/gen_op_kinds.py --check",
       "local.op-kind-registry.1": "python tools/audit_op_kinds.py --check",
       "local.op-kind-registry.pytest": "python -m pytest -q -n 4 tests/test_frontend_op_kind_registry.py tests/test_gen_op_kinds.py",
-      "local.performance-measurement.0": "python -m pytest -q -m 'not slow' tests/test_node_runtime.py tests/test_bench_tool.py tests/test_bench_audit.py tests/test_bench_report.py tests/test_temporary_artifacts.py tests/tools/test_direct_run_process_custody.py tests/tools/test_cold_start_decompose.py tests/tools/test_perf_profile_selection.py tests/tools/test_perf_release_integrity.py tests/tools/test_perf_scoreboard.py tests/tools/test_perf_methodology.py tests/tools/test_perf_schema.py tests/tools/test_perf_history.py tests/tools/test_perf_board.py tests/tools/test_perf_authority.py",
+      "local.performance-measurement.pytest-select-0": "python -m pytest -q -n 4 -m 'not slow' tests/test_node_runtime.py tests/test_bench_tool.py tests/test_bench_audit.py tests/test_bench_report.py tests/test_temporary_artifacts.py tests/tools/test_direct_run_process_custody.py tests/tools/test_cold_start_decompose.py tests/tools/test_perf_profile_selection.py tests/tools/test_perf_release_integrity.py tests/tools/test_perf_scoreboard.py tests/tools/test_perf_methodology.py tests/tools/test_perf_schema.py tests/tools/test_perf_history.py tests/tools/test_perf_board.py tests/tools/test_perf_authority.py",
       "local.phase-exit-manifest.0": "python tools/legacy_inventory.py --check",
       "local.phase-exit-manifest.pytest": "python -m pytest -q -n 4 tests/tools/test_phase_exit_manifest.py tests/tools/test_legacy_inventory.py",
       "local.public-contract.0": "python tools/public_contract_gate.py --check",
@@ -8636,7 +8636,7 @@
       "local.python-effect-capability-authority.pytest": "python -m pytest -q -n 4 tests/test_gen_python_effects.py",
       "local.python-identity-catalog-authority.0": "python tools/gen_python_identity_catalog.py --check",
       "local.python-identity-catalog-authority.pytest": "python -m pytest -q -n 4 tests/test_gen_python_identity_catalog.py tests/test_python_binding_flow.py tests/test_python_builtin_shape_facts.py",
-      "local.runtime-cargo-input-custody.0": "python -m pytest -q -m 'not slow' tests/cli/test_cargo_build_reads.py tests/cli/test_runtime_source_identity.py tests/cli/test_runtime_c_resource_custody.py tests/cli/test_runtime_build_identity.py tests/cli/test_runtime_native_generation.py tests/cli/test_runtime_wasm_single_compile.py tests/cli/test_compiler_identity.py tests/cli/test_runtime_family_authority.py tests/cli/test_cargo_execution_failure_authority.py tests/test_toolchain_identity.py tests/test_runtime_build_python.py",
+      "local.runtime-cargo-input-custody.pytest-select-0": "python -m pytest -q -n 4 -m 'not slow' tests/cli/test_cargo_build_reads.py tests/cli/test_runtime_source_identity.py tests/cli/test_runtime_c_resource_custody.py tests/cli/test_runtime_build_identity.py tests/cli/test_runtime_native_generation.py tests/cli/test_runtime_wasm_single_compile.py tests/cli/test_compiler_identity.py tests/cli/test_runtime_family_authority.py tests/cli/test_cargo_execution_failure_authority.py tests/test_toolchain_identity.py tests/test_runtime_build_python.py",
       "local.runtime-lib.0": "python tools/run_runtime_test_gate.py --profile release-output --build-timeout-seconds 6300 --child-timeout-seconds 120 --parallel-threads 8",
       "local.runtime-profile-schema-authority.0": "python tools/gen_runtime_profile_schema.py --check",
       "local.runtime-profile-schema-authority.pytest": "python -m pytest -q -n 4 tests/test_gen_runtime_profile_schema.py tests/test_runtime_profile_schema.py",
@@ -8647,8 +8647,8 @@
       "local.rust-toolchain.0": "python tools/check_rust_toolchain.py",
       "local.rust-toolchain.pytest": "python -m pytest -q -n 4 tests/tools/test_rust_toolchain_contract.py",
       "local.source-extension-package-sets.pytest": "python -m pytest -q -n 4 tests/cli/test_source_extension_set_registry.py tests/cli/test_source_extension_manifest_authority.py tests/cli/test_source_extension_link_requirements.py tests/cli/test_source_extension_producer.py tests/cli/test_source_build_environment_probe.py tests/cli/test_source_extension_candidate_attestation.py tests/cli/test_source_extension_candidate_transaction.py tests/cli/test_source_package_seal.py tests/test_exact_json.py tests/cli/test_external_native_scipy_package_seal.py tests/cli/test_atomic_io_authority.py tests/cli/test_python_module_names.py tests/cli/test_source_extension_runtime_imports.py tests/cli/test_source_extension_input_custody.py tests/cli/test_source_extension_target.py tests/cli/test_source_extension_language.py tests/cli/test_source_extension_compiler_target.py tests/cli/test_extension_wheel_retained_inputs.py tests/tools/test_native_link_benchmark.py tests/cli/test_cli_extension_commands.py::test_direct_build_audits_and_reseals_extracted_wheel tests/cli/test_source_extension_invocation.py tests/cli/test_source_extension_compiler_inputs.py",
-      "local.source-extension-proof-policy.0": "python -m pytest -q tests/tools/test_proof_queue.py -k 'proof_queue_pact_witness or proof_queue_rejects_scipy or proof_queue_requires_explicit_scipy or rejects_expected_extension_identity_drift'",
       "local.source-extension-proof-policy.pytest": "python -m pytest -q -n 4 tests/cli/test_source_extension_link_inputs.py tests/tools/test_source_extension_proof_family.py tests/tools/test_target_derived_toolchains.py tests/tools/test_python_custody_bootstrap.py tests/tools/test_scientific_stack_versions.py",
+      "local.source-extension-proof-policy.pytest-select-0": "python -m pytest -q -n 4 -k 'proof_queue_pact_witness or proof_queue_rejects_scipy or proof_queue_requires_explicit_scipy or rejects_expected_extension_identity_drift' tests/tools/test_proof_queue.py",
       "local.stringprep-leaf.0": "cargo check --locked --manifest-path Cargo.toml -p molt-runtime-stringprep --lib",
       "local.stringprep-tables.0": "python tools/gen_stringprep_tables.py --check",
       "local.stringprep-tables.pytest": "python -m pytest -q -n 4 tests/test_gen_stringprep_tables.py",
@@ -8691,13 +8691,11 @@
       },
       {
         "command_ids": [
-          "local.backend-environment-contract.0",
-          "local.backend-environment-contract.pytest"
+          "local.backend-environment-contract.pytest",
+          "local.backend-environment-contract.pytest-select-0"
         ],
         "description": "Prove selected operation settings, cache publication policy, runtime bindings and daemon/one-shot consumers.",
-        "gates": [
-          "python -m pytest -q tests/cli/test_cli_import_collection.py -k 'backend_codegen or backend_daemon or backend_cache_setup or backend_setup or backend_compile or backend_pipeline or backend_dispatch or codegen_selection or fingerprint_env'"
-        ],
+        "gates": [],
         "globs": [
           "src/molt/backend_environment.py",
           "src/molt/backend_environment.json",
@@ -8724,6 +8722,14 @@
           "tests/cli/test_cli_runtime_callable_symbols_authority.py",
           "tests/cli/test_native_codegen_identity.py",
           "tests/cli/test_cli_backend_prewarm.py"
+        ],
+        "pytest_select": [
+          {
+            "k": "backend_codegen or backend_daemon or backend_cache_setup or backend_setup or backend_compile or backend_pipeline or backend_dispatch or codegen_selection or fingerprint_env",
+            "targets": [
+              "tests/cli/test_cli_import_collection.py"
+            ]
+          }
         ],
         "toolchains": [
           "python"
@@ -9150,13 +9156,11 @@
       },
       {
         "command_ids": [
-          "local.source-extension-proof-policy.0",
-          "local.source-extension-proof-policy.pytest"
+          "local.source-extension-proof-policy.pytest",
+          "local.source-extension-proof-policy.pytest-select-0"
         ],
         "description": "Source-extension typed invocation, target/toolchain custody and Pact receipt admission. Production inputs preserve this complete shared boundary.",
-        "gates": [
-          "python -m pytest -q tests/tools/test_proof_queue.py -k 'proof_queue_pact_witness or proof_queue_rejects_scipy or proof_queue_requires_explicit_scipy or rejects_expected_extension_identity_drift'"
-        ],
+        "gates": [],
         "globs": [
           "config/source_extension_package_sets.toml",
           "config/scientific_stack_versions.toml",
@@ -9226,6 +9230,14 @@
           "tests/tools/test_target_derived_toolchains.py",
           "tests/tools/test_python_custody_bootstrap.py",
           "tests/tools/test_scientific_stack_versions.py"
+        ],
+        "pytest_select": [
+          {
+            "k": "proof_queue_pact_witness or proof_queue_rejects_scipy or proof_queue_requires_explicit_scipy or rejects_expected_extension_identity_drift",
+            "targets": [
+              "tests/tools/test_proof_queue.py"
+            ]
+          }
         ],
         "toolchains": [
           "python",
@@ -9366,12 +9378,10 @@
       },
       {
         "command_ids": [
-          "local.runtime-cargo-input-custody.0"
+          "local.runtime-cargo-input-custody.pytest-select-0"
         ],
         "description": "Runtime/compiler Cargo inputs: external resource freshness, Python generator signatures, producer transport, and execution failure custody.",
-        "gates": [
-          "python -m pytest -q -m 'not slow' tests/cli/test_cargo_build_reads.py tests/cli/test_runtime_source_identity.py tests/cli/test_runtime_c_resource_custody.py tests/cli/test_runtime_build_identity.py tests/cli/test_runtime_native_generation.py tests/cli/test_runtime_wasm_single_compile.py tests/cli/test_compiler_identity.py tests/cli/test_runtime_family_authority.py tests/cli/test_cargo_execution_failure_authority.py tests/test_toolchain_identity.py tests/test_runtime_build_python.py"
-        ],
+        "gates": [],
         "globs": [
           "src/molt/cli/cargo_build_reads.py",
           "src/molt/cli/cargo_command.py",
@@ -9412,6 +9422,24 @@
           "tests/cli/test_cargo_execution_failure_authority.py"
         ],
         "name": "runtime-cargo-input-custody",
+        "pytest_select": [
+          {
+            "m": "not slow",
+            "targets": [
+              "tests/cli/test_cargo_build_reads.py",
+              "tests/cli/test_runtime_source_identity.py",
+              "tests/cli/test_runtime_c_resource_custody.py",
+              "tests/cli/test_runtime_build_identity.py",
+              "tests/cli/test_runtime_native_generation.py",
+              "tests/cli/test_runtime_wasm_single_compile.py",
+              "tests/cli/test_compiler_identity.py",
+              "tests/cli/test_runtime_family_authority.py",
+              "tests/cli/test_cargo_execution_failure_authority.py",
+              "tests/test_toolchain_identity.py",
+              "tests/test_runtime_build_python.py"
+            ]
+          }
+        ],
         "toolchains": [
           "python",
           "cargo"
@@ -9690,12 +9718,10 @@
       },
       {
         "command_ids": [
-          "local.performance-measurement.0"
+          "local.performance-measurement.pytest-select-0"
         ],
         "description": "Typed sample transport, deployment selection and complete benchmark artifact lifetimes.",
-        "gates": [
-          "python -m pytest -q -m 'not slow' tests/test_node_runtime.py tests/test_bench_tool.py tests/test_bench_audit.py tests/test_bench_report.py tests/test_temporary_artifacts.py tests/tools/test_direct_run_process_custody.py tests/tools/test_cold_start_decompose.py tests/tools/test_perf_profile_selection.py tests/tools/test_perf_release_integrity.py tests/tools/test_perf_scoreboard.py tests/tools/test_perf_methodology.py tests/tools/test_perf_schema.py tests/tools/test_perf_history.py tests/tools/test_perf_board.py tests/tools/test_perf_authority.py"
-        ],
+        "gates": [],
         "globs": [
           "tools/bench.py",
           "tools/bench_audit.py",
@@ -9724,6 +9750,28 @@
           "tests/tools/test_perf_methodology.py"
         ],
         "name": "performance-measurement",
+        "pytest_select": [
+          {
+            "m": "not slow",
+            "targets": [
+              "tests/test_node_runtime.py",
+              "tests/test_bench_tool.py",
+              "tests/test_bench_audit.py",
+              "tests/test_bench_report.py",
+              "tests/test_temporary_artifacts.py",
+              "tests/tools/test_direct_run_process_custody.py",
+              "tests/tools/test_cold_start_decompose.py",
+              "tests/tools/test_perf_profile_selection.py",
+              "tests/tools/test_perf_release_integrity.py",
+              "tests/tools/test_perf_scoreboard.py",
+              "tests/tools/test_perf_methodology.py",
+              "tests/tools/test_perf_schema.py",
+              "tests/tools/test_perf_history.py",
+              "tests/tools/test_perf_board.py",
+              "tests/tools/test_perf_authority.py"
+            ]
+          }
+        ],
         "toolchains": [
           "python",
           "uv"
@@ -10690,10 +10738,10 @@
         "cargo",
         "git"
       ],
-      "local.backend-environment-contract.0": [
+      "local.backend-environment-contract.pytest": [
         "python"
       ],
-      "local.backend-environment-contract.pytest": [
+      "local.backend-environment-contract.pytest-select-0": [
         "python"
       ],
       "local.backend-ir-framing.0": [
@@ -10931,7 +10979,7 @@
         "python",
         "rustfmt"
       ],
-      "local.performance-measurement.0": [
+      "local.performance-measurement.pytest-select-0": [
         "python",
         "uv"
       ],
@@ -10974,7 +11022,7 @@
       "local.python-identity-catalog-authority.pytest": [
         "python"
       ],
-      "local.runtime-cargo-input-custody.0": [
+      "local.runtime-cargo-input-custody.pytest-select-0": [
         "python",
         "cargo",
         "rustc",
@@ -11028,11 +11076,11 @@
         "python",
         "uv"
       ],
-      "local.source-extension-proof-policy.0": [
+      "local.source-extension-proof-policy.pytest": [
         "python",
         "uv"
       ],
-      "local.source-extension-proof-policy.pytest": [
+      "local.source-extension-proof-policy.pytest-select-0": [
         "python",
         "uv"
       ],
