@@ -19,6 +19,7 @@ from molt.native_artifact_header import (
     NativeFileKind,
     NativeHeader,
 )
+from molt.cli.backend_generation import backend_generation_path
 from molt.native_target_shape import NativeObjectFormat
 from tools import binary_size_analysis as size
 
@@ -390,10 +391,15 @@ def test_development_scanner_uses_published_byte_receipt(monkeypatch, tmp_path):
         "_artifact_needs_rebuild",
         lambda artifact, expected, actual: False,
     )
-    assert size._native_scanner(None) == (selected, ("c" * 64, 73))
+    # The receipt selects an immutable generation; that is the scanner.
+    generation = backend_generation_path(selected, "c" * 64)
+    assert size._native_scanner(None) == (generation, ("c" * 64, 73))
     assert seen == [receipt_path]
-    receipt.clear()
+    del content["size_bytes"]
     with pytest.raises(ValueError, match="byte identity"):
+        size._native_scanner(None)
+    receipt.clear()
+    with pytest.raises(ValueError, match="never builds"):
         size._native_scanner(None)
     monkeypatch.setattr(
         runtime_fingerprints, "_read_runtime_fingerprint", lambda path: None

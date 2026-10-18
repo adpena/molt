@@ -9,6 +9,7 @@ from tests.compiler_identity_helper import (
 from molt.backend_environment import CodegenSelection
 from molt.cli.native_link_manifest import read_native_link_flags
 
+from tests.cli.backend_generation_test_support import publish_backend
 from tests.cli.native_link_test_support import native_codegen_binding
 
 from functools import partial
@@ -99,10 +100,10 @@ def _stub_backend_binary_ensure(monkeypatch, tmp_path: Path) -> Path:
         stage_timings_ms = kwargs.get("stage_timings_ms")
         if isinstance(stage_timings_ms, dict):
             stage_timings_ms["backend_binary_probe"] = 4.0
-        backend_bin.parent.mkdir(parents=True, exist_ok=True)
-        backend_bin.write_text("backend", encoding="utf-8")
+        generation = publish_backend(backend_bin, b"backend")
         return cli_backend_binary._backend_ensure_success(
-            binary_path=backend_bin,
+            coordinate=backend_bin,
+            binary_path=generation,
             fingerprint=_source_fingerprint("backend"),
         )
 

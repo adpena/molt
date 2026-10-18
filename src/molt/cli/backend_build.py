@@ -20,6 +20,7 @@ from molt.backend_executable_names import CodegenBackend
 from molt.cli import backend_binary as _backend_binary
 from molt.cli import backend_compile as _backend_compile
 from molt.cli.backend_artifact_contract import resolve_backend_artifact_contract
+from molt.cli.backend_generation import selected_backend_generation
 from molt.cli.build_inputs import _resolve_backend_compiler_profile
 from molt.cli.command_runtime import _resolve_timeout_env
 from molt.cli.output import emit_json, fail, json_payload
@@ -52,6 +53,7 @@ def _fail_prebuild(
 def _admitted_probe_target(
     probe_path: Path,
     selection: _backend_compile._BackendSelection,
+    binary: Path,
     source_fingerprint: dict[str, Any],
 ) -> str | None:
     try:
@@ -69,7 +71,7 @@ def _admitted_probe_target(
     # lane, and source fingerprint must all match the selected compiler.
     if not _backend_binary._backend_probe_validation_matches(
         probe_path,
-        binary_path=selection.binary,
+        binary_path=binary,
         probe_target=probe_target,
         backend_features=selection.features,
         fingerprint=source_fingerprint,
@@ -81,21 +83,21 @@ def _admitted_probe_target(
 def _verified_backend_receipts(
     molt_root: Path,
     selection: _backend_compile._BackendSelection,
+    binary: Path,
     identity: dict[str, str | int],
     admitted_fingerprint: str | None,
 ) -> tuple[dict[str, Any] | None, str | None]:
     """Return the receipts binding exactly the compiler admission admitted.
 
-    ``identity`` is the selected binary's content identity, read under the
-    backend admission lock the caller holds for every read here.
+    ``binary`` is the generation admission admitted and ``identity`` its
+    content identity. The receipts are keyed by the selection's coordinate.
     """
     source_path = _backend_binary._backend_fingerprint_path(
         molt_root, selection.binary, selection.cargo_profile
     )
     missing = (
-        "Backend admission left no source/content receipt binding "
-        f"{selection.binary} at {source_path}; the next build would run "
-        "Cargo again."
+        "Backend admission left no source/content receipt selecting "
+        f"{binary} at {source_path}; the next build would run Cargo again."
     )
     source = _read_runtime_fingerprint(source_path)
     if source is None:
@@ -108,23 +110,28 @@ def _verified_backend_receipts(
     )
     if receipt_fingerprint != admitted_fingerprint:
         return None, (
-            f"Backend receipt {source_path} and the bytes of {selection.binary} "
+            f"Backend receipt {source_path} and the bytes of {binary} "
             "do not bind the compiler admission admitted (receipt fingerprint "
             f"{receipt_fingerprint}, admitted {admitted_fingerprint}); the next "
             "build would not reuse this compiler."
         )
-    if not _runtime_artifact_fingerprint_matches(
-        selection.binary, source, source_path, require_artifact_digest=True
+    selected = selected_backend_generation(selection.binary, source)
+    if (
+        selected is None
+        or selected.resolve() != binary.resolve()
+        or not _runtime_artifact_fingerprint_matches(
+            binary, source, source_path, require_artifact_digest=True
+        )
     ):
         return None, missing
     probe_path = _backend_binary._backend_probe_validation_path(
         molt_root, selection.binary, selection.cargo_profile
     )
-    probe_target = _admitted_probe_target(probe_path, selection, source)
+    probe_target = _admitted_probe_target(probe_path, selection, binary, source)
     if probe_target is None:
         return None, (
             "Backend admission left no feature-probe receipt for the current "
-            f"bytes of {selection.binary} at {probe_path}."
+            f"bytes of {binary} at {probe_path}."
         )
     receipts = {
         "source_content": {
@@ -210,7 +217,7 @@ def _prebuild_backend_binary(
         rust_cpu=rust_cpu,
     )
     compiler: dict[str, Any] = {
-        "path": os.fspath(selection.binary),
+        "coordinate": os.fspath(selection.binary),
         "backend_profile": backend_profile,
         "cargo_profile": selection.cargo_profile,
         "features": list(selection.features),
@@ -244,15 +251,19 @@ def _prebuild_backend_binary(
             },
         )
 
+    binary = result.binary
+    assert binary is not None
+    compiler["path"] = os.fspath(binary)
+
     def admitted_identity() -> tuple[dict[str, str | int], bool, dict[str, Any] | None]:
         identity = executable_content_identity(
-            selection.binary, label="prebuilt backend compiler"
+            binary, label="prebuilt backend compiler"
         )
         installed_manifest = installed_compiler_admission(
             molt_root, selection.features, selection.cargo_profile, fresh=True
         )
         if installed_manifest is not None:
-            if installed_manifest.compiler.binary != selection.binary:
+            if installed_manifest.compiler.binary != binary:
                 raise ValueError(
                     "Selected compiler differs from the installed compiler"
                 )
@@ -260,7 +271,7 @@ def _prebuild_backend_binary(
                 raise ValueError("Installed compiler changed after admission")
             return identity, True, None
         receipts, receipt_error = _verified_backend_receipts(
-            molt_root, selection, identity, result.cache_compiler_fingerprint
+            molt_root, selection, binary, identity, result.cache_compiler_fingerprint
         )
         if receipt_error is not None:
             if os.environ.get("MOLT_SKIP_RUNTIME_REBUILD") == "1":
@@ -273,9 +284,10 @@ def _prebuild_backend_binary(
 
     try:
         try:
-            # The receipts bind these exact bytes, so a read without the lock
-            # can only fail if another lane interleaves, never pass for other
-            # bytes. Only a failed read waits for the lock and reads again.
+            # The admitted generation is immutable and the receipts bind its
+            # bytes, so a read without the lock can only fail while another
+            # lane rewrites a receipt, never pass for other bytes. Only a
+            # failed read waits for the lock and reads again.
             identity, installed, receipts = admitted_identity()
         except (OSError, ValueError):
             with _backend_binary._backend_admission_lock(
@@ -313,7 +325,7 @@ def _prebuild_backend_binary(
     for warning in warnings:
         print(warning, file=sys.stderr)
     if verbose:
-        print(f"Backend compiler: {selection.binary}", file=sys.stderr)
+        print(f"Backend compiler: {binary}", file=sys.stderr)
         for label, receipt in (receipts or {}).items():
             print(f"Backend {label} receipt: {receipt['path']}", file=sys.stderr)
     return 0

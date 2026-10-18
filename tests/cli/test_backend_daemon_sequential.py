@@ -44,7 +44,7 @@ def _candidate_daemon_binaries() -> list[Path]:
     profile = "dev-fast"
     path = cli_backend_execution._backend_bin_path(ROOT, profile, ("native-backend",))
     try:
-        if cli_backend_binary._ensure_backend_binary(
+        result = cli_backend_binary._ensure_backend_binary(
             path,
             cargo_timeout=180.0,
             json_output=True,
@@ -52,11 +52,11 @@ def _candidate_daemon_binaries() -> list[Path]:
             project_root=ROOT,
             backend_features=("native-backend",),
             rust_cpu=RustCpuPolicy.BASELINE,
-        ):
-            return [path]
+        )
     except Exception:
         return []
-    return []
+    # The admitted generation is the executable; the coordinate names it.
+    return [result.binary] if result and result.binary is not None else []
 
 
 def _daemon_binary() -> Path | None:

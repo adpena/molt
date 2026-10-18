@@ -174,6 +174,7 @@ def _native_scanner(explicit: Path | None) -> tuple[Path, tuple[str, int] | None
     )
     from molt.cli.backend_execution import _backend_bin_path
     from molt.cli.backend_binary import _backend_fingerprint_path
+    from molt.cli.backend_generation import selected_backend_generation
     from molt.cli.runtime_fingerprints import (
         _read_runtime_fingerprint,
         _artifact_needs_rebuild,
@@ -186,10 +187,16 @@ def _native_scanner(explicit: Path | None) -> tuple[Path, tuple[str, int] | None
         is_rust_transpile=False,
         codegen_backend=DEFAULT_CODEGEN_BACKEND,
     )
-    selected = _backend_bin_path(REPO_ROOT, profile, features)
-    receipt_path = _backend_fingerprint_path(REPO_ROOT, selected, profile)
+    coordinate = _backend_bin_path(REPO_ROOT, profile, features)
+    receipt_path = _backend_fingerprint_path(REPO_ROOT, coordinate, profile)
     receipt = _read_runtime_fingerprint(receipt_path)
-    if receipt is None or _artifact_needs_rebuild(selected, receipt, receipt):
+    # The receipt selects one immutable generation; its bytes are the scanner.
+    selected = selected_backend_generation(coordinate, receipt)
+    if (
+        receipt is None
+        or selected is None
+        or _artifact_needs_rebuild(selected, receipt, receipt)
+    ):
         raise ValueError(
             "Native size analysis requires an admitted existing backend; prebuild it with molt internal-backend-build, or select --native-facts-scanner explicitly. Analysis never builds a compiler."
         )
