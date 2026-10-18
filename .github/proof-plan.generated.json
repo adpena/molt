@@ -372,7 +372,7 @@
     "tests/tools/test_win_job_contract.py",
     "tests/tools/test_windows_process_api.py"
   ],
-  "authority_sha256": "392c6fdcf61d8538ce5690d9b5ea3eb7d48000217aa6c8ce514542b8885ce084",
+  "authority_sha256": "68fa06f3e465f8f8add5a7f80242ec3d265072a7297b1697f62e780ec17b1cbb",
   "cargo_environment_policy": {
     "incident_command": "cargo metadata --locked --format-version 1",
     "incident_commit": "20b046b79bd4ca64a8c859f737f6e330377bcc4e",
@@ -4783,6 +4783,7 @@
         "tests/test_frontend_ir_alias_ops.py",
         "tests/test_frontend_package_composition.py",
         "tests/cli/test_cli_python_import_authority.py",
+        "tests/cli/test_python_import_topology_reads.py",
         "tests/tools/test_gen_protocol.py",
         "tests/test_python_execution_frame.py",
         "tests/test_class_function_lifecycle.py",
@@ -4837,6 +4838,7 @@
         "tests/test_frontend_ir_alias_ops.py",
         "tests/test_frontend_package_composition.py",
         "tests/cli/test_cli_python_import_authority.py",
+        "tests/cli/test_python_import_topology_reads.py",
         "tests/tools/test_gen_protocol.py",
         "tests/test_python_execution_frame.py",
         "tests/test_class_function_lifecycle.py",

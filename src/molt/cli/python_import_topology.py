@@ -7,7 +7,8 @@ import stat
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Literal, NamedTuple
+from collections.abc import Callable
+from typing import Literal, NamedTuple, TypeVar
 
 from molt import input_report as _input_report
 from molt.cli.module_source import PythonSourceChangedError
@@ -16,6 +17,9 @@ from molt.file_hashing import DIGEST_RACY_WINDOW_NS, content_change_time_ns
 
 class PythonImportTopologyChangedError(PythonSourceChangedError):
     """An import lookup no longer belongs to its captured filesystem facts."""
+
+
+_Read = TypeVar("_Read")
 
 
 class PythonImportPath(NamedTuple):
@@ -29,6 +33,10 @@ class _DirectoryState(NamedTuple):
 
 
 _NameQuery = Literal["package", "source", "directories"]
+# A read retries while its directory changes underneath it, as a seqlock
+# reader does: a shared temporary or project directory gains unrelated
+# entries at any moment, and only a changed import fact ends an operation.
+_STABLE_READ_ATTEMPTS = 64
 # The entry kind an import consumes under an exact spelling: a package or
 # namespace portion is a directory, a module or initializer is a file.
 ExactEntryKind = Literal["directory", "file"]
@@ -140,6 +148,26 @@ class PythonImportTopology:
         self._failure = f"Python import topology changed during operation: {path}"
         raise PythonImportTopologyChangedError(self._failure)
 
+    def _stable_read(
+        self, directory: Path, read: Callable[[], _Read]
+    ) -> tuple[_DirectoryState | None, _Read]:
+        """Read while ``directory`` holds still; return its state with the value.
+
+        A change between the two stats means the read may mix two states, so
+        it is retried. Facts derive only from a coherent read and are checked
+        against their capture at validation.
+        """
+        for _ in range(_STABLE_READ_ATTEMPTS):
+            before = _directory_state(directory)
+            value = read()
+            if before == _directory_state(directory):
+                return before, value
+        self._failure = (
+            "Python import directory never held still for "
+            f"{_STABLE_READ_ATTEMPTS} reads during operation: {directory}"
+        )
+        raise PythonImportTopologyChangedError(self._failure)
+
     def _directory(self, path: Path) -> _DirectoryObservation:
         self._check()
         cached = self._directories.get(path)
@@ -167,10 +195,7 @@ class PythonImportTopology:
         self, path: Path, observation: _DirectoryObservation
     ) -> tuple[os.DirEntry[str], ...]:
         if observation.entries is None:
-            before = _directory_state(path)
-            entries = _read_entries(path)
-            if before != _directory_state(path):
-                self._changed(path)
+            before, entries = self._stable_read(path, lambda: _read_entries(path))
             observation.entries = entries
             observation.entries_by_name = {entry.name: entry for entry in entries}
             observation.has_links = any(
@@ -185,10 +210,7 @@ class PythonImportTopology:
         path = _lexical_path(path)
         if path not in self._probes:
             parent = self._directory(path.parent)
-            before = _directory_state(path.parent)
-            value = _probe(path)
-            if before != _directory_state(path.parent):
-                self._changed(path)
+            _state, value = self._stable_read(path.parent, lambda: _probe(path))
             self._probes[path] = value
             _input_report.report_probe(path)
             parent.probes.add(path)
@@ -264,24 +286,38 @@ class PythonImportTopology:
                     and before == observation.state
                 ):
                     continue
-                if observation.exact_names or observation.name_queries:
-                    entries = _read_entries(path)
-                    by_name = {entry.name: entry for entry in entries}
-                    if any(
-                        _holds_exact(by_name, name, kind) != found
-                        for (name, kind), found in observation.exact_names.items()
-                    ):
-                        self._changed(path)
-                    if any(
-                        _names(entries, query) != expected
-                        for query, expected in observation.name_queries.items()
-                    ):
-                        self._changed(path)
-                for candidate in observation.probes:
-                    if _probe(candidate) != self._probes[candidate]:
-                        self._changed(candidate)
-                if before != _directory_state(path):
+                listed = bool(observation.exact_names or observation.name_queries)
+                state, (entries, probes) = self._stable_read(
+                    path,
+                    lambda: (
+                        _read_entries(path) if listed else (),
+                        {
+                            candidate: _probe(candidate)
+                            for candidate in observation.probes
+                        },
+                    ),
+                )
+                # The directory must still be the one captured, or still absent.
+                if (state is None) != (observation.state is None) or (
+                    state is not None
+                    and observation.state is not None
+                    and state.path != observation.state.path
+                ):
                     self._changed(path)
+                by_name = {entry.name: entry for entry in entries}
+                if any(
+                    _holds_exact(by_name, name, kind) != found
+                    for (name, kind), found in observation.exact_names.items()
+                ):
+                    self._changed(path)
+                if any(
+                    _names(entries, query) != expected
+                    for query, expected in observation.name_queries.items()
+                ):
+                    self._changed(path)
+                for candidate, value in probes.items():
+                    if value != self._probes[candidate]:
+                        self._changed(candidate)
         except OSError as exc:
             self._failure = (
                 f"Python import topology is unavailable during operation: {exc}"
