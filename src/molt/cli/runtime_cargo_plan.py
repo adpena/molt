@@ -8,11 +8,10 @@ from __future__ import annotations
 
 import os
 import re
-import shlex
 import sys
 import tempfile
 import tomllib
-from collections.abc import Generator, Iterator, MutableMapping
+from collections.abc import Generator
 from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass, field, replace
 from enum import Enum
@@ -21,6 +20,12 @@ from types import MappingProxyType
 from typing import Callable, Mapping, Sequence, cast
 
 from molt import process_guard
+from molt.flag_strings import FlagStringError, FlagStringRule
+from molt.process_environment import (
+    NameRule,
+    ProcessEnvironment,
+    ProcessEnvironmentBuilder,
+)
 from molt.cli import cargo_command as cargo_argv
 from molt.cargo_execution_policy import validate_cargo_native_dependency_environment
 from molt.cli.cargo_target_cfg import (
@@ -67,37 +72,6 @@ from molt.toolchain_identity import (
     stable_executable_probe,
     verify_stable_regular_file_identity,
 )
-
-
-class _CargoEnvironment(MutableMapping[str, str]):
-    """One platform-correct environment map, including Windows key overwrite."""
-
-    def __init__(
-        self, values: Mapping[str, str], *, case_insensitive: bool | None = None
-    ) -> None:
-        self.case_insensitive = (
-            os.name == "nt" if case_insensitive is None else case_insensitive
-        )
-        self._values: dict[str, str] = {}
-        self.update(values)
-
-    def canonical_key(self, name: str) -> str:
-        return name.upper() if self.case_insensitive else name
-
-    def __getitem__(self, name: str) -> str:
-        return self._values[self.canonical_key(name)]
-
-    def __setitem__(self, name: str, value: str) -> None:
-        self._values[self.canonical_key(name)] = value
-
-    def __delitem__(self, name: str) -> None:
-        del self._values[self.canonical_key(name)]
-
-    def __iter__(self) -> Iterator[str]:
-        return iter(self._values)
-
-    def __len__(self) -> int:
-        return len(self._values)
 
 
 @dataclass(frozen=True, slots=True)
@@ -286,12 +260,6 @@ def runtime_c_flag_environment_names(
     return tuple(sorted(names))
 
 
-def runtime_c_flag_tokens(value: str, *, shell_escaped: bool) -> tuple[str, ...]:
-    if shell_escaped:
-        return tuple(shlex.split(value, comments=True, posix=True))
-    return tuple(item for item in re.split(r"[ \t\n\r\v\f]+", value) if item)
-
-
 @dataclass(frozen=True, slots=True)
 class RuntimeCResourcePlan:
     roots: tuple[CargoResourceRoot, ...]
@@ -300,7 +268,10 @@ class RuntimeCResourcePlan:
 
 
 def _resolve_c_build_resources(
-    env: _CargoEnvironment, *, target: str, host_target: str | None = None
+    env: ProcessEnvironment | ProcessEnvironmentBuilder,
+    *,
+    target: str,
+    host_target: str | None = None,
 ) -> RuntimeCResourcePlan:
     """Fence C search inputs without changing the child compiler's semantics.
 
@@ -509,22 +480,27 @@ def _resolve_c_build_resources(
             result.extend((option, module + selected))
         return tuple(result)
 
-    shell_flags = env.get("CC_SHELL_ESCAPED_FLAGS", "") not in {"", "0", "false", "no"}
+    c_flag_rule = FlagStringRule.cc(env)
+    # The projection names each variable as cc-rs spells it, as the search
+    # entries below do, so readers and identities agree on every host. One
+    # variable that two spellings select on Windows is projected once.
+    selected: set[str] = set()
     for name in runtime_c_flag_environment_names(target, host_target):
-        key = env.canonical_key(name)
-        if key not in env or key in projection:
+        key = env.rule.key(name)
+        if key not in env or key in selected:
             continue
+        selected.add(key)
         value = env[key]
         if name in _C_FLAG_CONTROLS:
-            projection[key] = (value,)
+            projection[name] = (value,)
             continue
         try:
-            tokens = runtime_c_flag_tokens(value, shell_escaped=shell_flags)
-        except ValueError as exc:
+            tokens = c_flag_rule.decode(value)
+        except FlagStringError as exc:
             raise ValueError(
                 f"runtime C {name} has invalid shell-escaped flags: {exc}"
             ) from exc
-        projection[key] = flags(tokens, name=key)
+        projection[name] = flags(tokens, name=name)
     for name in _C_SEARCH_ENVIRONMENTS:
         if name not in env:
             continue
@@ -532,7 +508,7 @@ def _resolve_c_build_resources(
         if name == "SDKROOT" and not value:
             projection[name] = ()
             continue
-        separator = ";" if env.case_insensitive else ":"
+        separator = ";" if env.rule is NameRule.WINDOWS else ":"
         entries = (value,) if name == "SDKROOT" else value.split(separator)
         selected_entries = []
         for index, entry in enumerate(entries):
@@ -920,24 +896,19 @@ def _apply_cargo_environment(
     cli: Mapping[str, object],
     env: Mapping[str, str],
     origins: Mapping[str, Path],
-) -> tuple[_CargoEnvironment, tuple[str, ...], tuple[CargoResourceRoot, ...]]:
+) -> tuple[ProcessEnvironmentBuilder, tuple[str, ...], tuple[CargoResourceRoot, ...]]:
     definitions = _merge(
         _table(configuration.get("env", {}), label="env"),
         _table(cli.get("env", {}), label="CLI env"),
     )
-    result = _CargoEnvironment(
-        env,
-        case_insensitive=env.case_insensitive
-        if isinstance(env, _CargoEnvironment)
-        else None,
-    )
+    result = ProcessEnvironmentBuilder(env)
     forced: list[str] = []
     resources: list[CargoResourceRoot] = []
     seen: dict[str, str] = {}
     for name, raw in definitions.items():
         if not name or "=" in name or "\0" in name:
             raise ValueError(f"runtime Cargo environment key is invalid: {name!r}")
-        canonical = result.canonical_key(name)
+        canonical = result.rule.key(name)
         if canonical in seen:
             raise ValueError(
                 f"runtime Cargo environment keys are case-ambiguous: {seen[canonical]!r} and {name!r}"
@@ -1088,7 +1059,7 @@ def runtime_c_environment_name(name: str) -> bool:
 
 def _select_host_c_tools(
     tools: dict[str, Path],
-    environment: _CargoEnvironment,
+    environment: ProcessEnvironmentBuilder,
     *,
     root: Path,
     target: str,
@@ -1161,15 +1132,20 @@ def _target_tool_defaults(target: str) -> Mapping[str, tuple[str, ...]]:
     return {role: () for role in ("cc", "cxx", "ar", "ranlib", "linker")}
 
 
-def _flags(value: object, *, label: str) -> tuple[str, ...]:
+def _flags(value: object, *, label: str, rule: FlagStringRule) -> tuple[str, ...]:
     if isinstance(value, str):
-        # Cargo splits string flags at whitespace; it does not invoke a shell.
-        return tuple(value.split())
+        # Cargo splits string flags with its own rule; it does not invoke a shell.
+        return rule.decode(value)
     if isinstance(value, (tuple, list)) and all(
         isinstance(item, str) and item for item in value
     ):
         return cast(tuple[str, ...], tuple(value))
     raise ValueError(f"runtime {label} must be a flag string or string array")
+
+
+def cargo_cfg_flags(value: object) -> tuple[str, ...]:
+    """A ``target.'cfg(...)'`` flag value, read as Cargo's StringList."""
+    return _flags(value, label="cfg rustflags", rule=FlagStringRule.CARGO_LIST)
 
 
 def _cargo_string_list(
@@ -1182,9 +1158,17 @@ def _cargo_string_list(
     # Cargo StringList deserializes the merged file/CLI value, then appends
     # its config environment variable. This is not scalar selector precedence.
     value = cargo_configuration_value(_merge(configuration, cli), *keys)
-    configured = _flags(value if value is not None else (), label=".".join(keys))
+    configured = _flags(
+        value if value is not None else (),
+        label=".".join(keys),
+        rule=FlagStringRule.CARGO_LIST,
+    )
     return configured + (
-        _flags(env[environment_name], label=environment_name)
+        _flags(
+            env[environment_name],
+            label=environment_name,
+            rule=FlagStringRule.CARGO_LIST,
+        )
         if environment_name in env
         else ()
     )
@@ -1281,7 +1265,7 @@ def _require_cargo_build_directory(
 class RuntimeCargoPlan:
     project_root: Path
     command: tuple[str, ...]
-    environment: Mapping[str, str]
+    environment: ProcessEnvironment
     target: str
     host_target: str
     rustc: Path
@@ -1303,6 +1287,14 @@ class RuntimeCargoPlan:
     _build_directory: Path | None = field(
         default=None, init=False, repr=False, compare=False
     )
+
+    def __post_init__(self) -> None:
+        # A plain mapping looks the same on POSIX and loses cc-rs's
+        # target-suffixed selectors only on Windows.
+        if not isinstance(self.environment, ProcessEnvironment):
+            raise TypeError(
+                "runtime Cargo plan environment must be a ProcessEnvironment"
+            )
 
     @property
     def target_directory(self) -> Path | None:
@@ -1349,11 +1341,12 @@ class RuntimeCargoPlan:
 
     def with_build_directory(self) -> RuntimeCargoPlan:
         """Pin intermediates before identity capture, leases or execution."""
-        environment = dict(self.environment)
-        environment["CARGO_BUILD_BUILD_DIR"] = os.fspath(self.build_directory)
-        environment["MOLT_CARGO_BUILD_DIR_BASE"] = os.fspath(self.build_directory_base)
+        pinned = {
+            "CARGO_BUILD_BUILD_DIR": os.fspath(self.build_directory),
+            "MOLT_CARGO_BUILD_DIR_BASE": os.fspath(self.build_directory_base),
+        }
         if self.target_directory is not None:
-            environment["CARGO_TARGET_DIR"] = os.fspath(self.target_directory)
+            pinned["CARGO_TARGET_DIR"] = os.fspath(self.target_directory)
         return replace(
             self,
             command=cargo_argv._pin_cargo_command(
@@ -1365,7 +1358,7 @@ class RuntimeCargoPlan:
                 self.build_directory,
                 self.target_directory,
             ),
-            environment=MappingProxyType(environment),
+            environment=self.environment.updated(pinned),
         )
 
     def with_build_resources(self, resources: CargoResourceCustody) -> RuntimeCargoPlan:
@@ -1562,8 +1555,10 @@ class RuntimeCargoPlan:
             or self.environment.get("RUSTC") != os.fspath(self.rustc)
         ):
             raise ValueError("runtime Cargo execution differs from selected tools")
-        if self.environment.get("CARGO_ENCODED_RUSTFLAGS") != "\x1f".join(
-            self.rustflags
+        if self.environment.get(
+            "CARGO_ENCODED_RUSTFLAGS"
+        ) != FlagStringRule.CARGO_ENCODED.encode(
+            self.rustflags, variable="CARGO_ENCODED_RUSTFLAGS"
         ):
             raise ValueError("runtime Cargo execution differs from selected flags")
         for name in ("RUSTC_WRAPPER", "RUSTC_WORKSPACE_WRAPPER"):
@@ -1628,7 +1623,7 @@ class RuntimeCargoPlan:
                     f"runtime Cargo {role} execution differs from selected tool"
                 )
         c_resources = _resolve_c_build_resources(
-            _CargoEnvironment(self.environment),
+            self.environment,
             target=self.target,
             host_target=self.host_target,
         )
@@ -1778,7 +1773,8 @@ class RuntimeCargoPlan:
             prefix + control for prefix in selected_prefixes for control in controls
         }
         result: dict[str, str] = {}
-        for name, value in self.environment.items():
+        for spelling, value in self.environment.items():
+            name = self.environment.rule.key(spelling)
             # Cargo constructs a key for each profile field. A legal ancestor
             # control can also match a longer profile name (release-build-override
             # or release-debug); longest-prefix selection must not hide it.
@@ -1894,11 +1890,14 @@ def cargo_flag_inputs(
     )
     environment_flags = None
     if "CARGO_ENCODED_" + flag_kind.upper() in environment:
-        encoded = environment["CARGO_ENCODED_" + flag_kind.upper()]
-        environment_flags = tuple(encoded.split("\x1f")) if encoded else ()
+        environment_flags = FlagStringRule.CARGO_ENCODED.decode(
+            environment["CARGO_ENCODED_" + flag_kind.upper()]
+        )
     elif flag_kind.upper() in environment:
         environment_flags = _flags(
-            environment[flag_kind.upper()], label=flag_kind.upper()
+            environment[flag_kind.upper()],
+            label=flag_kind.upper(),
+            rule=FlagStringRule.CARGO_RUSTFLAGS,
         )
     return cfg_tables, target_flags, build_flags, environment_flags
 
@@ -1923,7 +1922,7 @@ def capture_cargo_configuration_inputs(
         isinstance(item, str) and item for item in cargo_command
     ):
         raise ValueError("runtime Cargo command is empty or malformed")
-    environment = _CargoEnvironment(env)
+    environment = ProcessEnvironmentBuilder(env)
     paths = (
         cargo_configuration_paths(root, environment)
         if captured_paths is None
@@ -2041,8 +2040,9 @@ def resolve_runtime_cargo_plan(
         project_root, env=env, cargo_command=cargo_command
     )
     if environment_transform is not None:
-        environment = _CargoEnvironment(
-            environment_transform(MappingProxyType(environment))
+        environment = ProcessEnvironmentBuilder(
+            environment_transform(MappingProxyType(environment)),
+            rule=environment.rule,
         )
     rustc_selector = cargo_selected_value(
         configuration,
@@ -2156,7 +2156,7 @@ def resolve_runtime_cargo_plan(
     # rustc's answers describe the compiler, not the Cargo settings this plan
     # adds below (linkers, C tools, encoded flags); every query sees the
     # environment as it stands here, so equal queries share one answer.
-    probe_environment = MappingProxyType(dict(environment))
+    probe_environment = ProcessEnvironment(environment)
 
     metadata_answers: dict[
         tuple[str | None, tuple[str, ...], bool], RustcTargetMetadata
@@ -2228,7 +2228,7 @@ def resolve_runtime_cargo_plan(
         target_flags=target_flags,
         build_flags=build_flags,
         environment_flags=environment_flags,
-        flags=lambda value: _flags(value, label="cfg rustflags"),
+        flags=cargo_cfg_flags,
         probe=lambda flags: metadata_for(target_argument, flags, True).cfg,
         transform=finalize_flags,
     )
@@ -2332,7 +2332,9 @@ def resolve_runtime_cargo_plan(
             raise ValueError(
                 "WASI runtime linker differs from the selected SDK raw linker"
             )
-    environment["CARGO_ENCODED_RUSTFLAGS"] = "\x1f".join(rustflags)
+    environment["CARGO_ENCODED_RUSTFLAGS"] = FlagStringRule.CARGO_ENCODED.encode(
+        rustflags, variable="CARGO_ENCODED_RUSTFLAGS"
+    )
     environment["RUSTC"] = os.fspath(rustc)
     # Final explicit selectors win over earlier --config operands as well as
     # environment/config defaults. In particular, CLI wrappers cannot silently
@@ -2463,7 +2465,7 @@ def resolve_runtime_cargo_plan(
     plan = RuntimeCargoPlan(
         root,
         command,
-        MappingProxyType(environment),
+        ProcessEnvironment(environment),
         target,
         host_target,
         rustc,

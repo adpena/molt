@@ -21,6 +21,7 @@ from collections.abc import Mapping, MutableMapping
 from typing import Any, Literal
 
 from molt.default_paths import expand_user_path
+from molt.flag_strings import FlagStringRule
 
 from molt.source_root import compiler_source_root, source_file_revision
 from molt.file_hashing import content_change_time_ns
@@ -941,13 +942,15 @@ def apply_provisioned_wasm_toolchain(
         installation, environ={}, rust_target=rust_target
     )
     updates: dict[str, str] = {}
+    c_flag_rule = FlagStringRule.cc(env)
     for key, value in projected.items():
         if key.startswith(("CFLAGS_", "CXXFLAGS_")):
-            prior = env.get(key, "").strip()
+            prior = env.get(key, "")
+            tokens = c_flag_rule.decode(prior)
             updates[key] = (
                 prior
-                if "--no-default-config" in shlex.split(prior)
-                else f"{prior} --no-default-config".lstrip()
+                if "--no-default-config" in tokens
+                else c_flag_rule.encode((*tokens, "--no-default-config"), variable=key)
             )
         elif (
             key
@@ -959,8 +962,10 @@ def apply_provisioned_wasm_toolchain(
         ):
             # Effective Cargo lanes are validated by runtime_cargo_plan. Keep
             # unrelated user codegen settings for that single flag authority.
-            updates[key] = shlex.join(
-                wasi_c_abi_plan(installation).rustflags(shlex.split(env[key]))
+            rule = FlagStringRule.CARGO_LIST
+            updates[key] = rule.encode(
+                wasi_c_abi_plan(installation).rustflags(rule.decode(env[key])),
+                variable=key,
             )
         else:
             if key in env and env[key] != value:
@@ -2819,7 +2824,10 @@ def project_wasm_toolchain_environment(
         cargo_target = rust_target.upper().replace("-", "_")
         result[f"CARGO_TARGET_{cargo_target}_LINKER"] = str(installation.wasm_ld)
         key = f"CARGO_TARGET_{cargo_target}_RUSTFLAGS"
-        result[key] = shlex.join(plan.rustflags(shlex.split(result.get(key, ""))))
+        rule = FlagStringRule.CARGO_LIST
+        result[key] = rule.encode(
+            plan.rustflags(rule.decode(result.get(key, ""))), variable=key
+        )
     for target in SDK_CARGO_TARGETS:
         for spelling in (target, target.replace("-", "_")):
             for role, name in SDK_CARGO_TOOLS:

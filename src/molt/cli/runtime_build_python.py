@@ -5,7 +5,6 @@ from __future__ import annotations
 from contextlib import contextmanager
 from dataclasses import replace
 from pathlib import Path
-from types import MappingProxyType
 from typing import Generator, Mapping, TYPE_CHECKING, cast
 
 if TYPE_CHECKING:
@@ -60,8 +59,9 @@ def bind_runtime_build_python(
         return plan
     if previous is not None:
         raise ValueError("runtime build Python signature differs from captured content")
-    environment = {**plan.environment, BUILD_PYTHON_SIGNATURE: signature}
-    return replace(plan, environment=MappingProxyType(environment))
+    return replace(
+        plan, environment=plan.environment.updated({BUILD_PYTHON_SIGNATURE: signature})
+    )
 
 
 @contextmanager

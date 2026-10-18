@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+from molt.flag_strings import FlagStringRule
+from molt.process_environment import ProcessEnvironment, ProcessEnvironmentBuilder
+
 from concurrent.futures import ThreadPoolExecutor
 from itertools import islice
 from dataclasses import dataclass
@@ -1308,10 +1311,8 @@ def select_cargo_native_units(
     """Resolve declared role/language pairs without compiler probes or hashing."""
     from tools.proof_plan import cargo_native_units
     from molt.cli.runtime_cargo_plan import (
-        _CargoEnvironment,
         _c_tool_environment_names,
         _resolve_c_build_resources,
-        runtime_c_flag_tokens,
         runtime_c_tool_selection,
     )
 
@@ -1328,7 +1329,7 @@ def select_cargo_native_units(
             raise ValueError("managed WASI tools are not native C/C++ build units")
         by_target.setdefault(triple, {})[unit] = languages
 
-    selected_env = _CargoEnvironment(env)
+    selected_env = ProcessEnvironmentBuilder(env)
     result: list[dict[str, object]] = []
     for triple, units in by_target.items():
         sdk_root = None
@@ -1400,12 +1401,7 @@ def select_cargo_native_units(
         resources = _resolve_c_build_resources(
             selected_env, target=triple, host_target=host
         )
-        shell = selected_env.get("CC_SHELL_ESCAPED_FLAGS", "") not in {
-            "",
-            "0",
-            "false",
-            "no",
-        }
+        c_flag_rule = FlagStringRule.cc(selected_env)
         compilers = {}
         for language in languages:
             role, flag_role = (
@@ -1418,9 +1414,7 @@ def select_cargo_native_units(
                         flag_role, target=triple, host_target=host
                     )
                 )
-                for token in runtime_c_flag_tokens(
-                    selected_env.get(name, ""), shell_escaped=shell
-                )
+                for token in c_flag_rule.decode(selected_env.get(name, ""))
             ]
             command = [tools[role], *flags]
             compilers[language] = (
@@ -2124,7 +2118,13 @@ def _cargo_flag_context(
         parse_rustc_target_metadata,
     )
 
-    key = (str(cwd), tuple(command), tuple(sorted(env.items())))
+    environment = ProcessEnvironment(env)
+    key = (
+        str(cwd),
+        tuple(command),
+        environment.rule,
+        tuple(sorted(environment.items())),
+    )
     cached = None if capture_inputs is None else capture_inputs.get(key)
     if cached is None:
         (
@@ -2138,7 +2138,9 @@ def _cargo_flag_context(
             cli,
             _forced,
             _resources,
-        ) = capture_cargo_configuration_inputs(cwd, env=env, cargo_command=command)
+        ) = capture_cargo_configuration_inputs(
+            cwd, env=environment, cargo_command=command
+        )
         sources = []
         for item in inputs:
             raw = item.identity.path.read_bytes()
@@ -2218,10 +2220,13 @@ def _cargo_flag_context(
         "sources": sources,
         "environment": {
             name: value
-            for name, value in env.items()
-            if name.upper().endswith(("RUSTFLAGS", "RUSTDOCFLAGS"))
-            or name.upper().startswith(("CARGO_PROFILE_", "CARGO_UNSTABLE_"))
-            or name.upper()
+            for name, value in (
+                (environment.rule.key(name), value)
+                for name, value in environment.items()
+            )
+            if name.endswith(("RUSTFLAGS", "RUSTDOCFLAGS"))
+            or name.startswith(("CARGO_PROFILE_", "CARGO_UNSTABLE_"))
+            or name
             in {
                 "CARGO_BUILD_TARGET",
                 "RUSTC_BOOTSTRAP",
@@ -2266,8 +2271,17 @@ def _cargo_flag_context(
             (root / "output").mkdir()
             safe = _proof_rust_probe_arguments(flags, root)
             argv = [*compiler_command, *cargo_target_query_arguments(target, safe)]
-            query_env = dict(configured_env)
-            query_env["CARGO_ENCODED_RUSTFLAGS"] = "\x1f".join(safe)
+            query_env = (
+                ProcessEnvironment(configured_env)
+                .updated(
+                    {
+                        "CARGO_ENCODED_RUSTFLAGS": FlagStringRule.CARGO_ENCODED.encode(
+                            safe, variable="CARGO_ENCODED_RUSTFLAGS"
+                        )
+                    }
+                )
+                .child_block()
+            )
             result = _run_rust_link_probe(
                 argv,
                 phase="flag-cfg",
@@ -2292,7 +2306,7 @@ def _cargo_flag_context(
             selected, Path(scratch), documenter=flag_kind == "rustdocflags"
         )
     context["selected_flags"] = list(selected)
-    return context, dict(configured_env)
+    return context, ProcessEnvironment(configured_env).child_block()
 
 
 def _resolve_cargo_flag_context(
@@ -2304,8 +2318,8 @@ def _resolve_cargo_flag_context(
         capture_cargo_configuration_inputs,
         cargo_configuration_document,
         cargo_flag_inputs,
+        cargo_cfg_flags,
         cargo_requested_target,
-        _flags,
     )
     from molt.cli.cargo_target_cfg import (
         parse_rustc_target_metadata,
@@ -2515,7 +2529,7 @@ def _resolve_cargo_flag_context(
                 target_flags=rust_target,
                 build_flags=rust_build,
                 environment_flags=rust_environment,
-                flags=lambda value: _flags(value, label="cfg rustflags"),
+                flags=cargo_cfg_flags,
                 probe=compiler_probe,
             )
         selected, _matched = select_cargo_target_flags(
@@ -2523,7 +2537,7 @@ def _resolve_cargo_flag_context(
             target_flags=target_flags,
             build_flags=build_flags,
             environment_flags=environment_flags,
-            flags=lambda value: _flags(value, label="cfg rustflags"),
+            flags=cargo_cfg_flags,
             probe=selected_probe,
             flag_kind=context["flag_kind"],
             cfg_facts=cfg_facts,
@@ -3283,7 +3297,9 @@ def _capture_rust_link_unit(
             )
         _proof_rust_probe_arguments(documenter_flags, root, documenter=True)
         if cargo is not None:
-            probe_env["CARGO_ENCODED_RUSTFLAGS"] = "\x1f".join(safe_flags)
+            probe_env["CARGO_ENCODED_RUSTFLAGS"] = FlagStringRule.CARGO_ENCODED.encode(
+                safe_flags, variable="CARGO_ENCODED_RUSTFLAGS"
+            )
         compiler_cwd = root if cargo is not None else cwd
         forwarded_context: dict[str, object] | None = None
         path_projections: list[dict[str, object]] = []

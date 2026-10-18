@@ -1,5 +1,11 @@
 from __future__ import annotations
 
+from molt.process_environment import (
+    NameRule,
+    ProcessEnvironment,
+    ProcessEnvironmentBuilder,
+)
+
 import json
 import os
 import subprocess
@@ -28,7 +34,10 @@ from molt.cli.runtime_identity_schema import (
     runtime_build_fingerprint,
 )
 from molt.exact_json import canonical_json_sha256
+from molt.flag_strings import FlagStringError, FlagStringRule
+from molt.llvm_toolchain import project_wasm_toolchain_environment
 from molt import rust_toolchain
+from molt import cargo_execution_policy
 from molt.cargo_execution_policy import validate_cargo_native_dependency_environment
 from tests.executable_test_support import write_mock_executable
 from tests.rustc_test_support import (
@@ -36,8 +45,10 @@ from tests.rustc_test_support import (
     rustc_target_metadata_stdout as _metadata_stdout,
 )
 from tests.runtime_build_identity_helper import (
+    RuntimeFixtureRoot,
     build_python_identity_fixture,
     native_runtime_staticlib_identity,
+    provisioned_wasi_sdk_fixture,
     runtime_build_identity,
 )
 
@@ -161,13 +172,17 @@ def test_native_dependency_target_precedence_preserves_shadowed_and_unused_value
     assert controls == before
 
 
-def test_native_dependency_target_suffix_matches_upstream_exact_spelling() -> None:
-    controls = {
-        "AWS_LC_SYS_USE_SYSTEM": "0",
-        "AWS_LC_SYS_USE_SYSTEM_AARCH64_UNKNOWN_LINUX_GNU": "1",
-        "AWS_LC_SYS_USE_SYSTEM_aarch64-unknown-linux-gnu": "1",
-    }
-    if os.name == "nt":
+@pytest.mark.parametrize("rule", list(NameRule))
+def test_native_dependency_target_suffix_matches_upstream_exact_spelling(rule) -> None:
+    controls = ProcessEnvironment(
+        {
+            "AWS_LC_SYS_USE_SYSTEM": "0",
+            "AWS_LC_SYS_USE_SYSTEM_AARCH64_UNKNOWN_LINUX_GNU": "1",
+            "AWS_LC_SYS_USE_SYSTEM_aarch64-unknown-linux-gnu": "1",
+        },
+        rule=rule,
+    )
+    if rule is NameRule.WINDOWS:
         # Windows folds case before upstream's exact environment lookup.
         with pytest.raises(ValueError, match="AWS-LC"):
             validate_cargo_native_dependency_environment(
@@ -433,7 +448,7 @@ def plan_root(
     original_plan = _plan
 
     def plan_with_sdk(root, *, target=None, env=None, **kwargs):
-        environment = dict(env or {})
+        environment = ProcessEnvironmentBuilder({} if env is None else env)
         uses_c_sdk = target == "wasm32-wasip1" or (
             target == "wasm32-unknown-unknown" and "MOLT_WASI_C_ABI_PLAN" in environment
         )
@@ -502,12 +517,13 @@ def _metadata(sysroot: Path, cfg: str = "unix\nselected\n"):
 def _plan(
     root: Path,
     *,
-    env: dict[str, str] | None = None,
+    env: Mapping[str, str] | None = None,
     args: tuple[str, ...] = (),
     target: str | None = None,
     **kwargs: object,
 ) -> plans.RuntimeCargoPlan:
-    environment = {"CARGO_HOME": str(root / "cargo-home"), **(env or {})}
+    environment = ProcessEnvironmentBuilder({} if env is None else env)
+    environment.setdefault("CARGO_HOME", str(root / "cargo-home"))
     return plans.resolve_runtime_cargo_plan(
         root,
         env=environment,
@@ -1079,24 +1095,71 @@ def test_nonforced_cargo_environment_does_not_capture_ignored_relative_path(
     )
 
 
-@pytest.mark.parametrize("case_insensitive", [False, True])
-def test_environment_key_semantics_are_platform_gated(case_insensitive: bool) -> None:
-    env = plans._CargoEnvironment(
-        {"cc": "lower", "CC": "upper"}, case_insensitive=case_insensitive
-    )
-    assert env["cc"] == ("upper" if case_insensitive else "lower")
-    assert len(env) == (1 if case_insensitive else 2)
+@pytest.mark.parametrize("rule", list(NameRule))
+def test_environment_key_semantics_are_platform_gated(rule: NameRule) -> None:
+    env = ProcessEnvironmentBuilder({"cc": "lower", "CC": "upper"}, rule=rule)
+    assert env["cc"] == ("upper" if rule is NameRule.WINDOWS else "lower")
+    assert len(env) == (1 if rule is NameRule.WINDOWS else 2)
     selected, forced, _roots = plans._apply_cargo_environment(
         {"env": {"cC": {"value": "configured", "force": True}}}, {}, env, {}
     )
-    assert selected["CC"] == ("configured" if case_insensitive else "upper")
+    assert selected["CC"] == ("configured" if rule is NameRule.WINDOWS else "upper")
     assert forced == ("cC",)
+
+
+@pytest.mark.parametrize("rule", list(NameRule))
+def test_cargo_wrapper_policy_and_removal_keep_the_name_rule(rule):
+    env = ProcessEnvironment(
+        {"rustc_wrapper": "sccache", "Cargo_Incremental": "1"}, rule=rule
+    )
+    selected, policies = cargo_execution_policy.normalize_cargo_environment(
+        env, default_incremental="1"
+    )
+    removed = cargo_execution_policy.without_sccache_compiler_wrappers(env)
+    if rule is NameRule.WINDOWS:
+        assert selected == {"rustc_wrapper": "sccache", "Cargo_Incremental": "0"}
+        assert policies == ("sccache-disables-incremental",)
+        assert removed == {"Cargo_Incremental": "1"}
+    else:
+        assert selected == {
+            "rustc_wrapper": "sccache",
+            "Cargo_Incremental": "1",
+            "CARGO_INCREMENTAL": "1",
+        }
+        assert policies == ("direct-rustc-enables-incremental",)
+        assert removed == dict(env)
+    assert dict(env) == {"rustc_wrapper": "sccache", "Cargo_Incremental": "1"}
+
+
+@pytest.mark.parametrize("rule", list(NameRule))
+def test_sccache_client_pins_case_preserving_temporary_names(
+    tmp_path, monkeypatch, rule
+):
+    monkeypatch.setattr(cargo_execution_policy, "_SCCACHE_SERVER_SOCKETS", False)
+    cache = tmp_path / "cache"
+    temporary = tmp_path / "cache-tmp"
+    env = ProcessEnvironment({"Sccache_Dir": str(cache), "Temp": "old"}, rule=rule)
+    selected, policies = cargo_execution_policy.sccache_client_environment(env)
+    if rule is NameRule.WINDOWS:
+        assert selected["Temp"] == str(temporary)
+        assert selected["TMP"] == selected["TMPDIR"] == str(temporary)
+        assert "TEMP" not in selected
+        assert policies == (
+            "sccache-server-temp-dir",
+            "sccache-server-private-endpoint",
+        )
+        assert temporary.is_dir()
+    else:
+        assert selected == dict(env)
+        assert policies == ()
+        assert not temporary.exists()
+    assert dict(env) == {"Sccache_Dir": str(cache), "Temp": "old"}
 
 
 def test_windows_cargo_environment_case_alias_cannot_bypass_ambient_precedence() -> (
     None
 ):
-    env = plans._CargoEnvironment({"CC": "ambient"}, case_insensitive=True)
+    env = ProcessEnvironmentBuilder({"CC": "ambient"}, rule=NameRule.WINDOWS)
     selected, forced, _roots = plans._apply_cargo_environment(
         {"env": {"cc": "configured"}}, {}, env, {}
     )
@@ -1517,6 +1580,28 @@ def test_profile_environment_aliases_share_cargo_key(
     assert plan.preserve_debug_for_profile(profile)
 
 
+@pytest.mark.parametrize("rule", list(NameRule))
+def test_profile_projection_keeps_cargo_names_under_both_rules(plan_root, rule):
+    environment = ProcessEnvironment({"cargo_profile_release_debug": "2"}, rule=rule)
+    plan = _plan(plan_root, env=environment)
+    assert plan.environment.rule is rule
+    assert plan.profile_environment("release") == (
+        {"CARGO_PROFILE_RELEASE_DEBUG": "2"} if rule is NameRule.WINDOWS else {}
+    )
+    assert plan.preserve_debug_for_profile("release") is (rule is NameRule.WINDOWS)
+    unknown = replace(
+        plan,
+        environment=plan.environment.updated(
+            {"cargo_profile_release_future_control": "1"}
+        ),
+    )
+    if rule is NameRule.WINDOWS:
+        with pytest.raises(ValueError, match="unsupported output-bearing"):
+            unknown.profile_environment("release")
+    else:
+        assert unknown.profile_environment("release") == {}
+
+
 @pytest.mark.parametrize(
     "control",
     [
@@ -1806,8 +1891,8 @@ def test_rust_linker_selector_must_reconcile_with_executable_custody(
         plan = replace(
             plan,
             rustflags=flags,
-            environment=MappingProxyType(
-                {**plan.environment, "CARGO_ENCODED_RUSTFLAGS": "\x1f".join(flags)}
+            environment=plan.environment.updated(
+                {"CARGO_ENCODED_RUSTFLAGS": "\x1f".join(flags)}
             ),
         )
     else:
@@ -2550,11 +2635,13 @@ def test_selected_sdk_search_context_precedes_user_roots_without_recapture(
     (foreign / "libc.a").write_bytes(b"foreign libc must not shadow selected SDK")
     flags = ("-L", "native=" + str(foreign), "--cfg", "user_preserved")
     key = "CARGO_TARGET_WASM32_WASIP1_RUSTFLAGS" if source == "target" else source
-    value = (
-        "\x1f".join(flags)
-        if source == "CARGO_ENCODED_RUSTFLAGS"
-        else __import__("shlex").join(flags)
-    )
+    # Each variable carries the flags as Cargo reads that variable.
+    rule = {
+        "target": FlagStringRule.CARGO_LIST,
+        "RUSTFLAGS": FlagStringRule.CARGO_RUSTFLAGS,
+        "CARGO_ENCODED_RUSTFLAGS": FlagStringRule.CARGO_ENCODED,
+    }[source]
+    value = rule.encode(flags, variable=key)
     installation = readonly_wasi_sdk()
     captured = []
     original = resource_custody.CargoResourceRoot.walk
@@ -2596,22 +2683,110 @@ def test_selected_sdk_search_context_precedes_user_roots_without_recapture(
 
 def test_sdk_search_context_cannot_be_removed_from_retained_plan(plan_root):
     from dataclasses import replace
-    from types import MappingProxyType
 
     plan = _plan(plan_root, target="wasm32-wasip1", args=("--target", "wasm32-wasip1"))
     flags = plan.rustflags[4:]
     damaged = replace(
         plan,
         rustflags=flags,
-        environment=MappingProxyType(
-            {
-                **plan.environment,
-                "CARGO_ENCODED_RUSTFLAGS": "\x1f".join(flags),
-            }
+        environment=plan.environment.updated(
+            {"CARGO_ENCODED_RUSTFLAGS": "\x1f".join(flags)}
         ),
     )
     with pytest.raises(ValueError, match="admitted target context"):
         damaged.verify()
+
+
+def test_windows_environment_names_keep_target_c_selectors_through_the_plan(
+    plan_root, readonly_wasi_sdk
+):
+    # Windows preserves CC_wasm32-wasip1 and selects every case variant.
+    # Hosted plans once lost that rule when pinning their build directory,
+    # and verify() refused their C tools.
+    windows = ProcessEnvironmentBuilder(
+        {
+            "CARGO_HOME": str(plan_root / "cargo-home"),
+            "WASI_SDK_PATH": str(readonly_wasi_sdk().sdk),
+        },
+        rule=NameRule.WINDOWS,
+    )
+    plan = plans.resolve_runtime_cargo_plan(
+        plan_root,
+        env=windows,
+        cargo_command=("cargo", "rustc", "--target", "wasm32-wasip1"),
+        requested_target="wasm32-wasip1",
+        host_target="x86_64-unknown-linux-gnu",
+    )
+    assert plan.environment.rule is NameRule.WINDOWS
+    assert "CC_wasm32-wasip1" in set(plan.environment)
+    assert "CC_WASM32-WASIP1" in plan.environment
+    for role in ("cc", "cxx", "ar", "ranlib"):
+        selector = f"{role.upper()}_wasm32-wasip1"
+        assert plan.environment[selector] == os.fspath(plan.tools[role])
+    assert plan.environment["CARGO_BUILD_BUILD_DIR"] == os.fspath(plan.build_directory)
+    plan.verify()
+
+
+def _private_sdk(root: Path):
+    root.mkdir()
+    return provisioned_wasi_sdk_fixture(RuntimeFixtureRoot(root))
+
+
+def test_sdk_paths_that_shell_quoting_changes_reach_rustc_unchanged(
+    plan_root, tmp_path
+):
+    # The SDK projection once shell-quoted CARGO_TARGET_*_RUSTFLAGS, which
+    # Cargo splits at whitespace and never unquotes: every Windows SDK path (a
+    # backslash) reached rustc as "'native=C:\...'" and the plan refused it.
+    name = "sdk'quote" if os.name == "nt" else "sdk'quote\\back"
+    root = (tmp_path / name).resolve(strict=False)
+    sdk = _private_sdk(root)
+    projected = project_wasm_toolchain_environment(
+        sdk, environ={}, rust_target="wasm32-wasip1"
+    )
+    flags = FlagStringRule.CARGO_LIST.decode(
+        projected["CARGO_TARGET_WASM32_WASIP1_RUSTFLAGS"]
+    )
+    plan = _plan(
+        plan_root,
+        target="wasm32-wasip1",
+        env={"WASI_SDK_PATH": str(sdk.sdk)},
+        args=("--target", "wasm32-wasip1"),
+    )
+    for vector in (flags, plan.rustflags):
+        searched = [
+            Path(operand.removeprefix("native="))
+            for option, operand in zip(vector, vector[1:], strict=False)
+            if option == "-L" and operand.startswith("native=")
+        ]
+        assert searched
+        assert all(path.is_dir() and path.is_relative_to(root) for path in searched)
+    plan.verify()
+
+
+def test_sdk_path_cargo_cannot_carry_fails_before_any_build(plan_root, tmp_path):
+    sdk = _private_sdk(tmp_path / "sdk with space")
+    with pytest.raises(
+        FlagStringError, match="CARGO_TARGET_WASM32_WASIP1_RUSTFLAGS cannot carry"
+    ):
+        project_wasm_toolchain_environment(sdk, environ={}, rust_target="wasm32-wasip1")
+
+
+def test_cargo_environment_updates_keep_their_name_rule_and_never_mutate():
+    windows = ProcessEnvironment({"Path": "a"}, rule=NameRule.WINDOWS)
+    updated = windows.updated({"cc_wasm32-wasip1": "clang"})
+    assert dict(updated) == {"Path": "a", "cc_wasm32-wasip1": "clang"}
+    assert updated["CC_wasm32-wasip1"] == "clang" and updated.rule is NameRule.WINDOWS
+    assert dict(windows) == {"Path": "a"}
+    posix = ProcessEnvironment({"CC": "gcc"}, rule=NameRule.EXACT)
+    assert dict(posix.updated({"cc": "lowercase"})) == {"CC": "gcc", "cc": "lowercase"}
+    assert posix.get("Cc") is None
+
+
+def test_a_plan_refuses_an_environment_without_its_name_rule(plan_root):
+    plan = _plan(plan_root)
+    with pytest.raises(TypeError, match="must be a ProcessEnvironment"):
+        replace(plan, environment=MappingProxyType(dict(plan.environment)))
 
 
 @pytest.mark.parametrize("simd,freestanding", [(True, False), (False, True)])
@@ -2647,8 +2822,8 @@ def test_combined_runtime_plan_applies_target_policy_after_cargo_features(
         artifact_selection=specs.RUNTIME_CDYLIB_ARTIFACTS,
         runtime_exports="",
         link_flags="",
-        cargo_rustflags="",
-        fingerprint_rustflags="",
+        cargo_rustflags=(),
+        fingerprint_rustflags=(),
         no_default_features=True,
         wasm_cargo_features=(),
         fingerprint_features=(),

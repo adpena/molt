@@ -458,11 +458,14 @@ def test_executable_selection_uses_operation_cwd(tmp_path, monkeypatch, selector
     assert Path.cwd() == ambient
 
 
-def test_executable_operation_cwd_preserves_symlink_parent_traversal(tmp_path):
+def test_executable_operation_cwd_follows_the_host_parent_rule(tmp_path):
+    # POSIX resolves ".." after it follows the symlink. Win32 collapses ".."
+    # lexically (GetFullPathNameW) before the file system sees the path, so
+    # CreateProcess runs operation\bin\compiler.exe.
     operation = tmp_path / "operation"
     actual = tmp_path / "actual"
     (actual / "nested").mkdir(parents=True)
-    for directory, content in ((operation, b"poison"), (actual, b"selected")):
+    for directory, content in ((operation, b"lexical"), (actual, b"physical")):
         executable = directory / "bin" / "compiler.exe"
         executable.parent.mkdir(parents=True)
         executable.write_bytes(content)
@@ -474,9 +477,10 @@ def test_executable_operation_cwd_preserves_symlink_parent_traversal(tmp_path):
     selected = identity.resolve_executable(
         "walk/../bin/compiler.exe", environment={}, cwd=operation, label="compiler"
     )
+    expected = operation if os.name == "nt" else actual
     assert selected.is_absolute()
-    assert selected.read_bytes() == b"selected"
-    assert selected.samefile(actual / "bin" / "compiler.exe")
+    assert selected.read_bytes() == (b"lexical" if os.name == "nt" else b"physical")
+    assert selected.samefile(expected / "bin" / "compiler.exe")
 
 
 @pytest.mark.skipif(os.name != "nt", reason="Windows executable name contract")
@@ -1455,3 +1459,32 @@ def test_digest_cache_prunes_rows_past_the_age_budget(
     with sqlite3.connect(store) as connection:
         paths = {row[0] for row in connection.execute("SELECT path FROM digests")}
     assert paths == {os.fspath(new)}
+
+
+@pytest.mark.skipif(
+    os.name == "nt" or os.geteuid() == 0,
+    reason="POSIX directory permissions; root traverses mode-000 directories",
+)
+def test_path_search_skips_a_directory_it_cannot_traverse(tmp_path):
+    # execvp skips a PATH directory that answers EACCES and keeps searching;
+    # an unreadable entry earlier on PATH must not end the search.
+    import shutil
+
+    blocked = tmp_path / "blocked"
+    blocked.mkdir()
+    selected = tmp_path / "selected"
+    selected.mkdir()
+    tool = selected / "molt-probe-tool"
+    tool.write_bytes(b"#!/bin/sh\n")
+    tool.chmod(0o755)
+    blocked.chmod(0)
+    try:
+        path = os.pathsep.join((str(blocked), str(selected)))
+        expected = shutil.which("molt-probe-tool", path=path)
+        assert expected == str(tool)
+        found = identity.find_executable(
+            "molt-probe-tool", environment={"PATH": path}, cwd=tmp_path
+        )
+        assert found == tool
+    finally:
+        blocked.chmod(0o755)

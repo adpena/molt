@@ -13,6 +13,7 @@ from dataclasses import replace
 
 import pytest
 
+from tests.executable_test_support import custody_spelling
 from tools import proof_plan
 from tools.proof_queue_pkg import (
     command_admission,
@@ -89,13 +90,16 @@ def test_selected_content_capture_versions_content_and_rechecks_resolver_before_
 
     first = capture()
     assert first["version"] == "Python 3.15.1"
-    assert first["path"] == str(uv) and first["content_path"] == str(first_python)
+    # The launcher is a custody coordinate; the content file is the path the
+    # resolver named, resolved as the OS spells it.
+    assert first["path"] == custody_spelling(uv)
+    assert first["content_path"] == str(first_python.resolve())
     assert capture() == first
     assert [t["state"] for t in telemetry] == ["miss", "hit"]
     selected = second_python
     second = capture()
     assert second["version"] == "Python 3.15.2"
-    assert second["content_path"] == str(second_python)
+    assert second["content_path"] == str(second_python.resolve())
     assert telemetry[-1]["state"] == "miss"
     assert len([argv for argv in calls if "find" in argv]) == 3
     assert [
@@ -1334,7 +1338,10 @@ def selected_runtime_fixture(tmp_path, monkeypatch):
     )
     uv = tmp_path / ("uv.exe" if os.name == "nt" else "uv")
     uv.write_bytes(b"unchanged fixture selector image")
+    # The product names an installation by its custody coordinate; callers
+    # select it with any spelling of the same entry.
     installations = {}
+    executables = []
     for name in ("first", "second"):
         root = tmp_path / name
         venv.EnvBuilder(with_pip=False, symlinks=os.name != "nt").create(root)
@@ -1350,8 +1357,9 @@ def selected_runtime_fixture(tmp_path, monkeypatch):
         ).resolve()
         unicode_file = library / ("unicodedata-provider" + native_source.suffix)
         shutil.copyfile(native_source, unicode_file)
-        installations[str(executable)] = (library, unicode_file)
-    selected = [Path(next(iter(installations)))]
+        installations[custody_spelling(executable)] = (library, unicode_file)
+        executables.append(executable)
+    selected = [executables[0]]
     real_sys = runtime.sys
     real_library = runtime._runtime_library()
     owners = []
@@ -1373,7 +1381,7 @@ def selected_runtime_fixture(tmp_path, monkeypatch):
 
         def capture(self, env):
             executable = env["MOLT_BUILD_PYTHON"]
-            library, unicode_file = installations[executable]
+            library, unicode_file = installations[custody_spelling(Path(executable))]
             proxy = types.SimpleNamespace(**vars(real_sys))
             proxy.executable = executable
             proxy._base_executable = str(Path(executable).resolve())
@@ -1462,7 +1470,6 @@ def selected_runtime_fixture(tmp_path, monkeypatch):
 def test_selected_runtime_reuse_preserves_canonical_entrypoint_from_probe_cwd(
     tmp_path, monkeypatch, spelling
 ):
-    from tests.executable_test_support import custody_spelling
 
     fixture = selected_runtime_fixture(tmp_path, monkeypatch)
     selected = fixture.selected[0]
@@ -1475,7 +1482,6 @@ def test_selected_runtime_reuse_preserves_canonical_entrypoint_from_probe_cwd(
     relative = os.path.relpath(selected, probe_directory)
     emitted = relative if spelling == "relative" else str(probe_directory / relative)
     expected = custody_spelling(selected)
-    fixture.installations[expected] = fixture.installations[str(selected)]
     policy = replace(
         fixture.policy,
         root=tmp_path,
@@ -1557,7 +1563,7 @@ def test_selected_runtime_reuse_binds_unicode_and_runtime_inputs(
     assert [row["state"] for row in telemetry] == ["miss", "hit"]
     uv_bytes = fixture.uv.read_bytes()
     interpreter_bytes = fixture.selected[0].read_bytes()
-    library, unicode_file = fixture.installations[str(fixture.selected[0])]
+    library, unicode_file = fixture.installations[custody_spelling(fixture.selected[0])]
     retained = fixture.admission_class(with_custody=True)
     environment = {"MOLT_BUILD_PYTHON": str(fixture.selected[0])}
     admitted = retained.capture(environment)
