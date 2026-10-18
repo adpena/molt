@@ -18758,14 +18758,43 @@ def test_selected_runtime_watch_capture_compact_and_cas_receivers(
         reuse_root=tmp_path / "reuse",
     )
     library, unicode_file = fixture.installations[str(fixture.selected[0])]
-    assert library in roots
-    assert any(unicode_file.is_relative_to(root) for root in roots)
-    assert any(
-        Path(row["lexical"]).parent in roots
-        for row in located[fixture.policy.name]["python_runtime"]["startup_selection"][
-            "startup_configuration"
-        ]
+    # The fixture declares one directory tree. Executables, native images and
+    # startup configuration must not recursively admit their parent trees.
+    assert roots == [library]
+    source = tmp_path / "source"
+    source.mkdir()
+    startup = located[fixture.policy.name]["python_runtime"]["startup_selection"]
+    specs = execution_custody.watch_specs(
+        source_root=source, tracked_paths=[], identities=[located], broad_roots=roots
     )
+    for row in startup["startup_configuration"]:
+        for spelling in ("lexical", "resolved"):
+            path = Path(row[spelling])
+            assert any(
+                path.is_relative_to(spec.root) and spec.owns(path) for spec in specs
+            )
+
+    # CPython's absent ZIP landmark is an exact negative input. Its appearance
+    # must invalidate custody without admitting unrelated system resources.
+    selected = copy.deepcopy(located)
+    missing = tmp_path / "system" / "lib" / "python312.zip"
+    missing.parent.mkdir(parents=True)
+    private = missing.parent / "ssl" / "private"
+    private.mkdir(parents=True)
+    selected[fixture.policy.name]["python_runtime"]["startup_selection"][
+        "import_paths"
+    ].append({"lexical": str(missing), "resolved": str(missing), "present": False})
+    assert execution_environment._broad_toolchain_roots(selected) == roots
+    specs = execution_custody.watch_specs(
+        source_root=source, tracked_paths=[], identities=[selected], broad_roots=roots
+    )
+    finite = next(spec for spec in specs if spec.root == missing.parent)
+    assert finite.paths == frozenset({str(missing)})
+    assert not finite.owns(private)
+    missing.write_bytes(b"new startup selector")
+    assert finite.owns(missing)
+    missing.unlink()
+    assert finite.owns(missing), "restore must not erase the selected creation/deletion"
 
     def capture(value):
         return execution_environment._capture_toolchains(

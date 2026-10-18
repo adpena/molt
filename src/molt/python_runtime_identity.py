@@ -8,7 +8,7 @@ import re
 import sys
 import sysconfig
 import unicodedata
-from collections.abc import Mapping
+from collections.abc import Iterator, Mapping
 from pathlib import Path
 from typing import cast
 
@@ -428,6 +428,36 @@ def startup_selection_difference(
     return changes + native_census_disagreement(
         old, new, operating_system=system, admit_new_images=admit_new_images
     )
+
+
+def python_runtime_selection_locations(
+    selection: Mapping[str, object],
+) -> Iterator[tuple[Mapping[str, object], bool]]:
+    """Project validated selectors and the roles that admit directory trees.
+
+    Executables, configuration files, archives and prefix selectors retain
+    exact location custody. Only import and standard-library directory roles
+    admit recursive custody; a file's parent never becomes a runtime tree.
+    """
+    for role in (
+        "selected_executable",
+        "base_executable",
+        "prefix",
+        "base_prefix",
+        "runtime_library",
+    ):
+        location = selection[role]
+        if location is not None:
+            yield cast(Mapping[str, object], location), False
+    base_paths = cast(Mapping[str, Mapping[str, object]], selection["base_paths"])
+    for location in base_paths.values():
+        yield location, True
+    for location in cast(list[Mapping[str, object]], selection["import_paths"]):
+        yield location, True
+    for location in cast(
+        list[Mapping[str, object]], selection["startup_configuration"]
+    ):
+        yield location, False
 
 
 def current_python_runtime_selection() -> dict[str, object]:

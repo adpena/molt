@@ -214,6 +214,7 @@ def locate_current_python_environment() -> dict[str, object]:
         )
 
     roots: dict[str, Path] = {}
+    exact_files: dict[str, Path] = {}
 
     def add_root(raw: object) -> None:
         if not isinstance(raw, (str, os.PathLike)):
@@ -225,8 +226,10 @@ def locate_current_python_environment() -> dict[str, object]:
             candidate = Path(raw_path).resolve(strict=True)
         except OSError:
             return
-        root = candidate if candidate.is_dir() else candidate.parent
-        roots[os.path.normcase(str(root))] = root
+        if candidate.is_dir():
+            roots[os.path.normcase(str(candidate))] = candidate
+        elif candidate.is_file():
+            exact_files[os.path.normcase(str(candidate))] = candidate
 
     site_roots = _site_roots(prefix)
     for raw in (
@@ -269,9 +272,14 @@ def locate_current_python_environment() -> dict[str, object]:
         "base_executable": str(base),
         "roots": [str(path) for path in ordered_roots],
         "external_roots": [str(path) for path in ordered_external],
-        # Path-only prearming does not close future loads. Content capture owns
-        # a fresh fenced native census and optional-declaration receipt.
-        "file_paths": [str(path) for path in loaded_native_module_paths()],
+        # Import archives and native images are finite inputs, not parent
+        # trees. Content capture still owns a fresh fenced native census and
+        # optional-declaration receipt; prearming does not close future loads.
+        "file_paths": sorted(
+            {str(path) for path in exact_files.values()}
+            | {str(path) for path in loaded_native_module_paths()},
+            key=lambda value: (os.path.normcase(value), value),
+        ),
     }
     return {**material, "identity_sha256": canonical_json_sha256(material)}
 
@@ -377,7 +385,7 @@ def validate_python_environment_location(payload: object) -> dict[str, object]:
         return values
 
     root_paths = validated_paths(roots, label="roots")
-    validated_paths(payload.get("file_paths"), label="native files", directory=False)
+    validated_paths(payload.get("file_paths"), label="exact files", directory=False)
     external_paths = (
         validated_paths(external, label="external roots") if external else []
     )
