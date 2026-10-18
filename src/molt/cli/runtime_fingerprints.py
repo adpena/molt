@@ -22,7 +22,7 @@ from molt.exact_json import read_exact
 from molt.python_identity_common import _valid_sha256
 from molt.wasm_artifact import is_valid_wasm_binary
 
-_RUNTIME_FINGERPRINT_SCHEMA_VERSION = 4
+_RUNTIME_FINGERPRINT_SCHEMA_VERSION = 3
 _FIELDS = frozenset(
     {
         "version",
