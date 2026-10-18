@@ -119,7 +119,6 @@ class _GeneratorProtocolAttrs(Protocol):
     direct_call_modules: Any
     eager_annotations: Any
     enable_phi: Any
-    entry_module: Any
     exact_class_token: int
     exact_locals: dict[str, ExactClassFact]
     exception_stack_depth_baseline: MoltValue | None
@@ -147,3 +146,4 @@ class _GeneratorProtocolAttrs(Protocol):
     global_imported_module_provenance: dict[str, frozenset[str]]
     global_imported_modules: dict[str, str]
     global_imported_names: dict[str, str]
+    globals: dict[str, MoltValue]
