@@ -11,8 +11,10 @@ import json
 import os
 import shutil
 import sys
+import weakref
 from concurrent.futures import ThreadPoolExecutor
-from pathlib import Path
+from contextlib import contextmanager
+from dataclasses import replace
 from threading import Event
 from types import SimpleNamespace
 
@@ -408,14 +410,14 @@ def test_indirect_marker_never_releases_or_rewrites_target(tmp_path):
 def test_unreadable_directory_fails_closed(tmp_path, monkeypatch):
     active = _active(tmp_path)
     active.mkdir(parents=True)
-    original_iterdir = Path.iterdir
+    original_scandir = os.scandir
 
     def unreadable(path):
         if path == active:
             raise PermissionError("denied")
-        return original_iterdir(path)
+        return original_scandir(path)
 
-    monkeypatch.setattr(Path, "iterdir", unreadable)
+    install_module_view(monkeypatch, "os", os, custody, scandir=unreadable)
     assert custody.has_active_guard_marker(active)
     with pytest.raises(PermissionError, match="denied"):
         custody.reconcile_active_guard_markers(active, _snapshot(), apply=True)
@@ -510,6 +512,32 @@ def test_markers_created_during_snapshot_are_not_judged_by_older_observation(tmp
     report = custody.reconcile_active_guard_markers(active, snapshot, apply=True)
     assert report.decisions == ()
     assert custody.has_active_guard_marker(active)
+
+
+def test_reconciliation_reads_all_generations_before_process_snapshot(
+    tmp_path, monkeypatch
+):
+    active = _active(tmp_path)
+    paths = [_marker(active, pid=pid) for pid in (30, 10, 20)]
+    observed = []
+    read = custody.read_marker_record
+
+    def recording_read(path):
+        record = read(path)
+        observed.append((path, record.identity))
+        return record
+
+    def snapshot():
+        assert {path for path, _identity in observed} == set(paths)
+        assert all(identity is not None for _path, identity in observed)
+        return {99: _sample()}
+
+    monkeypatch.setattr(custody, "read_marker_record", recording_read)
+    report = custody.reconcile_active_guard_markers(active, snapshot)
+    assert [item.marker for item in report.decisions] == [
+        str(path) for path in sorted(paths)
+    ]
+    assert len(observed) == len(paths)
 
 
 def test_same_bytes_in_new_file_generation_fail_compare_and_swap(tmp_path):
@@ -682,6 +710,119 @@ def test_failed_launch_cannot_claim_a_child(tmp_path):
 
 
 # --- retirement and bounded history ----------------------------------------
+
+
+def test_marker_iterator_streams_names_and_payloads_without_eager_inventory(
+    tmp_path, monkeypatch
+):
+    active = _active(tmp_path)
+    paths = [_marker(active, pid=pid) for pid in (30, 10, 20)]
+    enumerated = []
+    parsed = []
+    read = custody.read_marker_record
+
+    @contextmanager
+    def scandir(path):
+        assert path == active
+
+        def entries():
+            # Unrelated entries need no path materialization or file read.
+            yield SimpleNamespace(name="unrelated.json")
+            for candidate in paths:
+                enumerated.append(candidate)
+                yield SimpleNamespace(name=candidate.name, path=str(candidate))
+
+        yield entries()
+
+    def recording_read(path):
+        parsed.append(path)
+        return read(path)
+
+    install_module_view(monkeypatch, "os", os, custody, scandir=scandir)
+    monkeypatch.setattr(custody, "read_marker_record", recording_read)
+    records = custody.iter_marker_records(active)
+    assert enumerated == parsed == []
+    first = next(records)
+    assert first.path == paths[0]
+    assert enumerated == parsed == paths[:1]
+    assert [record.path for record in records] == paths[1:]
+    assert enumerated == parsed == paths
+    assert custody.active_guard_blockers(active) == tuple(
+        f"{path} (child_running)" for path in sorted(paths)
+    )
+
+
+@pytest.mark.parametrize("boolean_only", [False, True])
+def test_observers_release_full_payloads_and_boolean_stops_at_first_protection(
+    tmp_path, monkeypatch, boolean_only
+):
+    active = _active(tmp_path)
+    paths = [
+        _marker(active, pid=pid, status="completed" if pid < 40 else "child_running")
+        for pid in (30, 10, 20, 40, 50)
+    ]
+    payloads = []
+    parsed = []
+    closed = []
+    read = custody.read_marker_record
+
+    class Payload(dict):
+        pass
+
+    @contextmanager
+    def scandir(path):
+        assert path == active
+        try:
+            yield iter(
+                SimpleNamespace(name=item.name, path=str(item)) for item in paths
+            )
+        finally:
+            closed.append(path)
+
+    def tracked_read(path):
+        assert all(reference() is None for reference in payloads)
+        record = read(path)
+        assert record.payload is not None
+        payload = Payload(record.payload)
+        payloads.append(weakref.ref(payload))
+        parsed.append(path)
+        return replace(record, payload=payload)
+
+    install_module_view(monkeypatch, "os", os, custody, scandir=scandir)
+    monkeypatch.setattr(custody, "read_marker_record", tracked_read)
+    if boolean_only:
+        assert custody.has_active_guard_marker(active)
+        assert parsed == paths[:4]
+    else:
+        assert custody.active_guard_blockers(active) == tuple(
+            f"{path} (child_running)" for path in paths[3:]
+        )
+        assert parsed == paths
+    assert all(reference() is None for reference in payloads)
+    assert closed == [active]
+
+
+@pytest.mark.parametrize("terminal", [False, True])
+def test_observers_fail_closed_on_late_iteration_error(tmp_path, monkeypatch, terminal):
+    active = _active(tmp_path)
+    marker = _marker(active, status="completed" if terminal else "child_running")
+    iterate = custody.iter_marker_records
+    late_failures = []
+
+    def failing_records(directory):
+        yield from iterate(directory)
+        late_failures.append(directory)
+        raise PermissionError("late custody enumeration failure")
+
+    monkeypatch.setattr(custody, "iter_marker_records", failing_records)
+    blockers = [f"{active}: late custody enumeration failure"]
+    if not terminal:
+        blockers.append(f"{marker} (child_running)")
+    assert custody.active_guard_blockers(active) == tuple(sorted(blockers))
+    late_failures.clear()
+    assert custody.has_active_guard_marker(active)
+    assert late_failures == ([active] if terminal else [])
+    assert marker.exists()
 
 
 def test_active_readers_cost_live_records_not_history(tmp_path, monkeypatch):

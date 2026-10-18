@@ -44,8 +44,16 @@ not choose guest semantics.
 - **Guard-marker custody**: `tools/memory_guard_core/active_custody.py` owns the
   schema-v2 guard/direct-child birth identities, publication, reconciliation and
   retirement for the producer, disk guard, pytest bootstrap, proof-queue
-  diagnostics and final runtime-WASM preflight. `active/` holds only unresolved
-  custody, so every reader costs O(live guards), not O(history). A guard that
+  diagnostics and final runtime-WASM preflight. `active/` holds unresolved
+  custody, including interrupted historical runs; inspection costs O(active
+  entries), even when their processes have exited. Observation readers stream
+  one full payload at a time and retain only compact blocker diagnostics;
+  boolean protection checks stop at the first blocker. Diagnostics are sorted
+  after projection. Process-specific lookup filters names before sorting its
+  matches. Enumeration and read failures remain protective. Reconciliation
+  deliberately captures all generations before its native process snapshot,
+  retaining their full payloads until classification and publication. These
+  development checks add no work to emitted programs. A guard that
   finishes moves its own marker to `retired/` once its scratch is reclaimed,
   retained or blocked; `retired/` keeps the newest 256 records. A marker that
   stays in `active/` names a live run, a run that raised, a run whose closure or

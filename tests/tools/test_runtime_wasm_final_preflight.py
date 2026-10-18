@@ -1,18 +1,21 @@
 from __future__ import annotations
 
 from contextlib import closing
+from dataclasses import replace
 import json
 import os
 import sqlite3
 import subprocess
 from pathlib import Path
 from types import SimpleNamespace
+import weakref
 
 import pytest
 
 from molt.dx import CheckoutCustody
 from molt.path_custody import PathCustodyError, canonical_host_path
 from tests.process_guard_common import run_guarded_test_process
+from tools.memory_guard_core import active_custody as custody
 from tools import runtime_wasm_final_preflight as preflight
 from tools.proof_queue_pkg import state as proof_queue_state
 
@@ -185,29 +188,34 @@ def _context(tmp_path: Path) -> preflight.RuntimeWasmPreflightContext:
     )
 
 
-def test_active_build_guards_require_explicit_live_marker_custody(
-    tmp_path: Path,
-) -> None:
-    marker_dir = tmp_path / "active"
-    marker_dir.mkdir()
-    token = "a" * 32
-    marker = marker_dir / f"guard-123-{token}.json"
+def _build_guard_marker(marker_dir: Path, pid: int) -> Path:
+    marker_dir.mkdir(parents=True, exist_ok=True)
+    token = f"{pid:032x}"
+    marker = marker_dir / f"guard-{pid}-{token}.json"
     marker.write_text(
         json.dumps(
             {
-                "pid": 123,
+                "pid": pid,
                 "schema_version": 2,
                 "token": token,
-                "guard_process": {"pid": 123, "started_at_ns": 100},
-                "child_process": {"pid": 124, "started_at_ns": 200},
+                "guard_process": {"pid": pid, "started_at_ns": 100},
+                "child_process": {"pid": pid + 1, "started_at_ns": 200},
                 "child_launch_state": "recorded",
                 "status": "child_running",
                 "command": ["python", "-m", "molt.cli", "internal-runtime-wasm-build"],
-                "cwd": str(tmp_path),
+                "cwd": str(marker_dir.parent),
             }
         ),
         encoding="utf-8",
     )
+    return marker
+
+
+def test_active_build_guards_require_explicit_live_marker_custody(
+    tmp_path: Path,
+) -> None:
+    marker_dir = tmp_path / "active"
+    _build_guard_marker(marker_dir, 123)
 
     assert preflight._active_build_guards((marker_dir,), live_pids=frozenset({123}))
     assert (
@@ -216,6 +224,72 @@ def test_active_build_guards_require_explicit_live_marker_custody(
         )
         == []
     )
+
+
+def test_active_build_guards_releases_payloads_and_sorts_compact_conflicts(
+    tmp_path: Path, monkeypatch
+) -> None:
+    marker_dir = tmp_path / "active"
+    markers = [_build_guard_marker(marker_dir, pid) for pid in (30, 10, 20)]
+    payloads = []
+    read = custody.read_marker_record
+
+    class Payload(dict):
+        pass
+
+    def tracked_read(path):
+        assert all(reference() is None for reference in payloads)
+        record = read(path)
+        assert record.payload is not None
+        payload = Payload(record.payload)
+        payloads.append(weakref.ref(payload))
+        return replace(record, payload=payload)
+
+    monkeypatch.setattr(custody, "read_marker_record", tracked_read)
+    conflicts = preflight._active_build_guards(
+        (marker_dir,), live_pids=frozenset({10, 20, 30})
+    )
+    assert [item["marker"] for item in conflicts] == [
+        str(path) for path in sorted(markers)
+    ]
+    assert [item["pid"] for item in conflicts] == [10, 20, 30]
+    assert all(item["status"] == "child_running" for item in conflicts)
+    assert all(reference() is None for reference in payloads)
+    assert all(
+        item["command"] == ["python", "-m", "molt.cli", "internal-runtime-wasm-build"]
+        and item["cwd"] == str(tmp_path)
+        for item in conflicts
+    )
+
+
+def test_active_build_guards_keeps_conflicts_and_continues_after_late_failure(
+    tmp_path: Path, monkeypatch
+) -> None:
+    first_dir, second_dir = tmp_path / "first", tmp_path / "second"
+    first = _build_guard_marker(first_dir, 10)
+    second = _build_guard_marker(second_dir, 20)
+    iterate = preflight.iter_marker_records
+
+    def failing_records(directory):
+        yield from iterate(directory)
+        if directory == first_dir:
+            raise PermissionError("late custody enumeration failure")
+
+    monkeypatch.setattr(preflight, "iter_marker_records", failing_records)
+    conflicts = preflight._active_build_guards(
+        (second_dir, first_dir), live_pids=frozenset({10, 20})
+    )
+    assert [item["marker"] for item in conflicts] == [
+        str(first_dir),
+        str(first),
+        str(second),
+    ]
+    assert conflicts[0] == {
+        "marker": str(first_dir),
+        "error": "late custody enumeration failure",
+    }
+    assert [item["pid"] for item in conflicts[1:]] == [10, 20]
+    assert first.exists() and second.exists()
 
 
 def test_proof_queue_claim_is_typed_and_competing_claims_fail_closed(

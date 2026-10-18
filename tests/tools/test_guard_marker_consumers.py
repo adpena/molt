@@ -3,11 +3,12 @@
 from __future__ import annotations
 
 import json
-from pathlib import Path
+import os
 from types import SimpleNamespace
 
 import pytest
 
+from tests.process_guard_common import install_module_view
 from molt import pytest_memory_guard_bootstrap as bootstrap
 from tools import disk_guard, runtime_wasm_final_preflight as preflight
 from tools.memory_guard_core import active_custody as custody
@@ -100,14 +101,14 @@ def test_preflight_unreadable_marker_directory_remains_a_conflict(
     tmp_path, monkeypatch
 ):
     marker, _, _ = _launch(tmp_path)
-    original = Path.iterdir
+    original = os.scandir
 
     def unreadable(path):
         if path == marker.parent:
             raise PermissionError("unreadable custody")
         return original(path)
 
-    monkeypatch.setattr(Path, "iterdir", unreadable)
+    install_module_view(monkeypatch, "os", os, custody, scandir=unreadable)
     conflicts = preflight._active_build_guards((marker.parent,), live_pids=frozenset())
     assert len(conflicts) == 1
     assert "unreadable custody" in conflicts[0]["error"]

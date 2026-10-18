@@ -55,7 +55,7 @@ from molt.path_custody import (  # noqa: E402
     canonical_host_path,
     host_path_is_within,
 )
-from tools.memory_guard_core.active_custody import read_marker_records  # noqa: E402
+from tools.memory_guard_core.active_custody import iter_marker_records  # noqa: E402
 
 from tools.command_execution import CommandExecutor  # noqa: E402
 from tools.proof_queue_pkg import state as proof_queue_state  # noqa: E402
@@ -301,38 +301,44 @@ def _active_build_guards(
     conflicts: list[dict[str, object]] = []
     for marker_dir in marker_dirs:
         try:
-            records = read_marker_records(marker_dir)
+            for record in iter_marker_records(marker_dir):
+                try:
+                    marker = record.path
+                    if record.error is not None or record.payload is None:
+                        conflicts.append(
+                            {"marker": os.fspath(marker), "error": record.error}
+                        )
+                        continue
+                    status = record.status
+                    if record.terminal:
+                        continue
+                    command = record.payload.get("command")
+                    launch_command = record.payload.get("launch_command")
+                    if not (
+                        _is_build_command(command) or _is_build_command(launch_command)
+                    ):
+                        continue
+                    assert record.guard is not None
+                    pid = record.guard.pid
+                    if pid not in live_pids or pid in exclude_pids:
+                        continue
+                    conflicts.append(
+                        {
+                            "marker": os.fspath(marker),
+                            "pid": pid,
+                            "status": status,
+                            "cwd": record.payload.get("cwd"),
+                            "command": command,
+                            "launch_command": launch_command,
+                        }
+                    )
+                finally:
+                    # Keep compact conflict facts, never the previous JSON
+                    # payload while the iterator parses another generation.
+                    del record
         except (OSError, ValueError) as exc:
             conflicts.append({"marker": os.fspath(marker_dir), "error": str(exc)})
-            continue
-        for record in records:
-            marker = record.path
-            if record.error is not None or record.payload is None:
-                conflicts.append({"marker": os.fspath(marker), "error": record.error})
-                continue
-            payload = record.payload
-            status = record.status
-            if record.terminal:
-                continue
-            command = payload.get("command")
-            launch_command = payload.get("launch_command")
-            if not (_is_build_command(command) or _is_build_command(launch_command)):
-                continue
-            assert record.guard is not None
-            pid = record.guard.pid
-            if pid not in live_pids or pid in exclude_pids:
-                continue
-            conflicts.append(
-                {
-                    "marker": os.fspath(marker),
-                    "pid": pid,
-                    "status": status,
-                    "cwd": payload.get("cwd"),
-                    "command": command,
-                    "launch_command": launch_command,
-                }
-            )
-    return conflicts
+    return sorted(conflicts, key=lambda conflict: str(conflict["marker"]))
 
 
 def _proof_queue_claim(db: Path, run_id: str) -> RuntimeWasmBuildClaim:
