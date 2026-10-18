@@ -131,16 +131,26 @@ Coverage status and planned additions are tracked in `docs/spec/areas/compat/sur
 - **Constants**: `ConstInt`, `ConstFloat`, `ConstBool`, `ConstNone`, `ConstStr`, `ConstBytes`.
 - **Arithmetic/logic**: `Add`, `Sub`, `Mul`, `Div`, `Eq`, `Lt`, `Gt`, `Is`, `Contains`, `And`, `Or`, `Not`.
 - **Control**: `Phi` (TIR), `Jump`, `Branch`, `Return`, `Throw`, `TryStart`, `TryEnd`, `CheckException`, `LoopStart`, `LoopIndexStart`, `LoopIndexNext`, `LoopBreakIfTrue`, `LoopBreakIfFalse`, `LoopBreak`, `LoopContinue`, `LoopEnd`.
-- **Calls**: `Call`, `CallIndirect`, `InvokeFFI` (with declared effects).
+- **Calls**: `Call`, `CallIndirect`, `CallBind`, `InvokeFFI` (with declared effects),
+  `LoadMethod`, `LoadSuperMethod`, `CallLoadedMethod`, `CallargsPushMethodReceiver`.
+  An attribute call in CPython's stack form loads the method as a pair, as
+  CPython's method-form LOAD_ATTR does: the callable and `self_or_null`.
+  `LoadSuperMethod` loads the pair for zero-argument `super().name(...)`. A
+  positional call that cannot suspend passes both to `CallLoadedMethod`. A
+  call with keywords or a suspending argument pushes `self_or_null` into its
+  argument builder first and calls `CallBind`. A call in CPython's
+  CALL_FUNCTION_EX form (an `*` or `**` expansion, or more operands than
+  CPython keeps on its stack) loads an ordinary bound attribute and calls
+  `CallIndirect`.
 - **Imports/modules**: `Import`, `ImportFrom`, `ModuleCacheGet`,
   `ModuleCacheSet`, `ModuleCacheDel`, `ModuleGetAttr`, `ModuleGetGlobal`,
   `ModuleGetName`, `ModuleSetAttr`, `ModuleDelGlobal`. These are observable
   runtime operations, not structural SSA copies; passes must preserve their
   cache/module-dict mutation, raising, and reference-count behavior even when
   results appear dead.
-- **Object/layout**: `Alloc`, `LoadAttr`, `StoreAttr`, `GetAttrGenericPtr`, `SetAttrGenericPtr`, `GetAttrGenericObj`, `SetAttrGenericObj`, `LoadIndex`, `StoreIndex`, `Index`, `Iter`, `Enumerate`, `IterNext`, `ListNew`, `DictNew`, `Len`, `Slice`, `SliceNew`, `BytearrayFromObj`, `RangeNew`, `Buffer2DNew`, `Buffer2DGet`, `Buffer2DSet`, `Buffer2DMatmul`, `ClosureLoad`, `ClosureStore`.
+- **Object/layout**: `Alloc`, `LoadAttr`, `StoreAttr`, `GetAttrGenericPtr`, `SetAttrGenericPtr`, `GetAttrGenericObj`, `SetAttrGenericObj`, `LoadIndex`, `StoreIndex`, `Index`, `Iter`, `Enumerate`, `IterNext`, `ListNew`, `DictNew`, `Len`, `Slice`, `SliceNew`, `BytearrayFromObj`, `RangeNew`, `ClosureLoad`, `ClosureStore`.
 - **Bytes/Bytearray/String**: `BytesFind`, `BytesSplit`, `BytesReplace`, `BytearrayFind`, `BytearraySplit`, `BytearrayReplace`, `StringFind`, `StringFormat`, `StringSplit`, `StringCapitalize`, `StringStrip`, `StringReplace`, `StringStartswith`, `StringEndswith`, `StringCount`, `StringJoin`.
-- **Exceptions**: `ExceptionNew`, `ExceptionLast`, `ExceptionClear`, `ExceptionKind`, `ExceptionMessage`, `ExceptionContextSet`, `Raise`. Raise sets the implicit `__context__`. For `raise X from Y` the frontend evaluates both operands and passes them to the runtime call `molt_exception_prepare_raise`, which turns each class into an instance and sets the explicit `__cause__` and so suppresses the context. No IR op carries the cause.
+- **Exceptions**: `ExceptionNew`, `ExceptionLast`, `ExceptionClear`, `ExceptionContextSet`, `Raise`. Raise sets the implicit `__context__`. For `raise X from Y` the frontend evaluates both operands and passes them to the runtime call `molt_exception_prepare_raise`, which turns each class into an instance and sets the explicit `__cause__` and so suppresses the context. No IR op carries the cause.
 - **Generators/async**: `GenSend`, `GenThrow`, `GenClose`, `IsGenerator`, `AIter`, `ANext`, `CallAsync`, `StateSwitch`, `StateTransition`, `StateYield`, `StateSet`, `IsPending`, `TaskWait`.
   - Source `StateTransition`/`StateYield` become explicit activation exits before
     terminal ownership: state writes, a canonical poll call, exact pending test,
