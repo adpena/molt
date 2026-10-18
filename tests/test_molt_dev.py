@@ -3147,7 +3147,7 @@ def test_integrate_isolates_selected_toolchains_in_real_children(
         source = (
             "import json,os,sys; from pathlib import Path; "
             f"Path({str(output)!r}).write_text(json.dumps("
-            f'[os.environ.get({flag_key!r}), os.environ["RUSTFLAGS"], sys.argv[1:]]))'
+            f'[os.environ.get({flag_key!r}), os.environ["RUSTFLAGS"], sys.argv[1:]]), encoding="utf-8")'
         )
         commands.append(_integration_python(source) + " {integration_upstream_commit}")
     policy = f"""
@@ -3194,13 +3194,13 @@ toolchains = ["sdk"]
         drv.cmd_integrate(_integrate_ns(drv, repo=str(work), no_push=True))
         == drv.EXIT_OK
     )
-    assert json.loads(outputs[0].read_text()) == [
+    assert json.loads(outputs[0].read_text(encoding="utf-8")) == [
         user_flags if explicit_sdk_flags else None,
         "-C debuginfo=1",
         [upstream],
     ]
     for output in outputs[1:]:
-        assert json.loads(output.read_text()) == [
+        assert json.loads(output.read_text(encoding="utf-8")) == [
             "-C link-self-contained=no",
             "-C debuginfo=1",
             [upstream],
