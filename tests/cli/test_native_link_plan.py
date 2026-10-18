@@ -43,6 +43,7 @@ def _managed_tool(directory: Path, name: str) -> Path:
     suffix = ".exe" if sys.platform == "win32" else ""
     path = directory / f"{name}{suffix}"
     path.write_bytes(b"tool")
+    path.chmod(0o755)
     return path
 
 

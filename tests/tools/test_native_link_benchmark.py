@@ -534,6 +534,7 @@ def test_named_llvm_tool_uses_canonical_managed_resolution(
     suffix = ".exe" if llvm_wasi_tools.os.name == "nt" else ""
     readobj = managed / f"llvm-readobj{suffix}"
     readobj.write_bytes(b"readobj")
+    readobj.chmod(0o755)
     monkeypatch.setattr(
         llvm_wasi_tools, "find_executable", lambda _name, **_kwargs: None
     )
