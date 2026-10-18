@@ -1254,8 +1254,8 @@ pub type RuntimeExtensionStateDrop = unsafe extern "C" fn(*mut u8);
 
 /// `MOLTVTAB` encoded as a little-endian `u64`.
 pub const RUNTIME_VTABLE_ABI_MAGIC: u64 = 0x4241_5456_544c_4f4d;
-// Version 5 removes the unused optional-attribute lookup transport.
-pub const RUNTIME_VTABLE_ABI_VERSION: u32 = 6;
+// Version 7 adds the pending-exception match and clear transport.
+pub const RUNTIME_VTABLE_ABI_VERSION: u32 = 7;
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1282,6 +1282,12 @@ pub struct RuntimeVtable {
     pub raise_exception: unsafe extern "C" fn(*const u8, usize, *const u8, usize) -> u64,
     pub exception_pending: unsafe extern "C" fn() -> i32,
     pub exception_new_from_class: unsafe extern "C" fn(u64, u64) -> u64,
+    /// 1 when the pending exception is an instance of the named builtin
+    /// exception class, subclasses included (`PyErr_ExceptionMatches`);
+    /// otherwise 0. The exception stays pending.
+    pub pending_exception_matches_builtin: unsafe extern "C" fn(*const u8, usize) -> i32,
+    /// Discard the pending exception (`PyErr_Clear`).
+    pub clear_exception: unsafe extern "C" fn(),
 
     // --- Allocation ---
     pub alloc_tuple: unsafe extern "C" fn(*const u64, usize) -> *mut u8,
