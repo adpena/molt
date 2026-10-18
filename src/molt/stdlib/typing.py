@@ -11,6 +11,8 @@ from _intrinsics import require_intrinsic as _require_intrinsic
 import _collections_abc as _collections_abc_module
 import sys as _sys
 import builtins as _builtins
+from types import BuiltinFunctionType as _BuiltinFunctionType
+from types import FunctionType as _FunctionType
 from types import ModuleType
 
 
@@ -151,24 +153,32 @@ def _as_tuple(params: object) -> tuple[object, ...]:
     return params
 
 
+_TYPING_REPR_314 = tuple(_sys.version_info[:2]) >= (3, 14)
+
+
 def _type_repr(arg: object) -> str:
-    if isinstance(arg, _TypingBase):
-        return repr(arg)
+    """CPython's ``typing._type_repr`` (``annotationlib.type_repr`` on 3.14+)."""
+    if isinstance(arg, type) or (
+        _TYPING_REPR_314 and isinstance(arg, (_FunctionType, _BuiltinFunctionType))
+    ):
+        if arg.__module__ == "builtins":
+            return arg.__qualname__
+        return f"{arg.__module__}.{arg.__qualname__}"
     if arg is Ellipsis:
         return "..."
-    if arg is None:
-        return "None"
-    if arg is _NoneType:
-        return "NoneType"
-    if isinstance(arg, str):
-        return repr(arg)
-    name = getattr(arg, "__qualname__", None)
-    if isinstance(name, str) and name:
-        return name
-    name = getattr(arg, "__name__", None)
-    if isinstance(name, str) and name:
-        return name
+    if isinstance(arg, _FunctionType):
+        return arg.__name__
+    if isinstance(arg, tuple):
+        # ParamSpec substitutions keep their argument list.
+        return "[" + ", ".join([_type_repr(item) for item in arg]) + "]"
     return repr(arg)
+
+
+def _union_arg_repr(arg: object) -> str:
+    """One ``types.UnionType`` item, which spells ``NoneType`` as ``None``."""
+    if arg is _NoneType:
+        return "None"
+    return _type_repr(arg)
 
 
 def _format_args(args: tuple[object, ...]) -> str:
@@ -315,6 +325,14 @@ class _GenericAlias(_TypingBase):
             base = _type_repr(self.__origin__)
         return f"{base}[{_format_args(self.__args__)}]"
 
+    def __eq__(self, other: object) -> object:
+        if not isinstance(other, _GenericAlias):
+            return NotImplemented
+        return self.__origin__ == other.__origin__ and self.__args__ == other.__args__
+
+    def __hash__(self) -> int:
+        return hash((self.__origin__, self.__args__))
+
     def __mro_entries__(self, _bases: tuple[object, ...]) -> tuple[object, ...]:
         origin = self.__origin__
         if isinstance(origin, type):
@@ -446,10 +464,35 @@ class _UnionGenericAlias(_TypingBase):
 
     def __repr__(self) -> str:
         args = self.__args__
-        if len(args) == 2 and _NoneType in args:
-            other = args[0] if args[1] is _NoneType else args[1]
-            return f"{_type_repr(other)} | None"
+        if _TYPING_REPR_314:
+            # Python 3.14 makes typing.Union the ``types.UnionType`` repr.
+            return " | ".join([_union_arg_repr(arg) for arg in args])
+        if len(args) == 2:
+            if args[0] is _NoneType:
+                return f"typing.Optional[{_type_repr(args[1])}]"
+            if args[1] is _NoneType:
+                return f"typing.Optional[{_type_repr(args[0])}]"
         return f"typing.Union[{_format_args(args)}]"
+
+    def __eq__(self, other: object) -> object:
+        if not isinstance(other, _UnionGenericAlias) and not (
+            _UnionType is not None and isinstance(other, _UnionType)
+        ):
+            return NotImplemented
+        try:
+            return set(self.__args__) == set(other.__args__)
+        except TypeError:
+            # Unhashable arguments compare without order, as in CPython.
+            remaining = list(other.__args__)
+            for arg in self.__args__:
+                try:
+                    remaining.remove(arg)
+                except ValueError:
+                    return False
+            return not remaining
+
+    def __hash__(self) -> int:
+        return hash(frozenset(self.__args__))
 
     def __call__(self, *_args: object, **_kwargs: object) -> object:
         raise TypeError(f"Cannot instantiate {self!r}")
@@ -468,6 +511,17 @@ class _LiteralAlias(_TypingBase):
     def __repr__(self) -> str:
         return f"typing.Literal[{_format_args(self.__args__)}]"
 
+    def __eq__(self, other: object) -> object:
+        if not isinstance(other, _LiteralAlias):
+            return NotImplemented
+        # ``Literal[1] != Literal[True]``: CPython compares (value, type) pairs.
+        return {(arg, type(arg)) for arg in self.__args__} == {
+            (arg, type(arg)) for arg in other.__args__
+        }
+
+    def __hash__(self) -> int:
+        return hash(frozenset([(arg, type(arg)) for arg in self.__args__]))
+
 
 class _AnnotatedAlias(_TypingBase):
     __slots__ = ("__origin__", "__args__", "__metadata__")
@@ -481,6 +535,17 @@ class _AnnotatedAlias(_TypingBase):
         args = (self.__origin__,) + self.__metadata__
         return f"typing.Annotated[{_format_args(args)}]"
 
+    def __eq__(self, other: object) -> object:
+        if not isinstance(other, _AnnotatedAlias):
+            return NotImplemented
+        return (
+            self.__origin__ == other.__origin__
+            and self.__metadata__ == other.__metadata__
+        )
+
+    def __hash__(self) -> int:
+        return hash((self.__origin__, self.__metadata__))
+
 
 class _ConcatenateAlias(_TypingBase):
     __slots__ = ("__args__", "__origin__")
@@ -493,29 +558,39 @@ class _ConcatenateAlias(_TypingBase):
         return f"typing.Concatenate[{_format_args(self.__args__)}]"
 
 
+def _callable_args_are_param_expr(args: tuple[object, ...]) -> bool:
+    """CPython's ``_is_param_expr`` test on ``Callable`` arguments."""
+    return len(args) == 2 and (
+        args[0] is Ellipsis
+        or isinstance(args[0], (tuple, list, _ParamSpec, _ConcatenateAlias))
+    )
+
+
 class _CallableAlias(_TypingBase):
-    __slots__ = ("__args__", "__origin__", "_arglist", "_return")
+    __slots__ = ("__args__", "__origin__")
 
     def __init__(self, arglist: object, ret: object) -> None:
         self.__origin__ = getattr(_load_collections_abc(), "Callable")
-        self._arglist = arglist
-        self._return = ret
-        if arglist is Ellipsis:
-            self.__args__ = (Ellipsis, ret)
-        elif isinstance(arglist, _ConcatenateAlias):
-            self.__args__ = (arglist, ret)
+        # CPython flattens an argument list: Callable[[int], str].__args__ is
+        # (int, str). Ellipsis, a ParamSpec and Concatenate stay one argument.
+        if isinstance(arglist, list):
+            self.__args__ = tuple(arglist) + (ret,)
         else:
-            args = _as_tuple(arglist)
-            self.__args__ = args + (ret,)
+            self.__args__ = _as_tuple(arglist) + (ret,)
 
     def __repr__(self) -> str:
-        if self._arglist is Ellipsis:
-            args = (Ellipsis, self._return)
-        elif isinstance(self._arglist, _ConcatenateAlias):
-            args = (self._arglist, self._return)
-        else:
-            args = (list(_as_tuple(self._arglist)), self._return)
-        return f"typing.Callable[{_format_args(args)}]"
+        args = self.__args__
+        if _callable_args_are_param_expr(args):
+            return f"typing.Callable[{_format_args(args)}]"
+        return f"typing.Callable[[{_format_args(args[:-1])}], {_type_repr(args[-1])}]"
+
+    def __eq__(self, other: object) -> object:
+        if not isinstance(other, _CallableAlias):
+            return NotImplemented
+        return self.__origin__ == other.__origin__ and self.__args__ == other.__args__
+
+    def __hash__(self) -> int:
+        return hash((self.__origin__, self.__args__))
 
 
 def _normalize_union_args(args: tuple[object, ...]) -> tuple[object, ...]:
@@ -1409,11 +1484,10 @@ def get_args(tp: object) -> tuple[object, ...]:
     if isinstance(tp, _ConcatenateAlias):
         return tp.__args__
     if isinstance(tp, _CallableAlias):
-        if tp._arglist is Ellipsis:
-            return (Ellipsis, tp._return)
-        if isinstance(tp._arglist, _ConcatenateAlias):
-            return (tp._arglist, tp._return)
-        return (list(_as_tuple(tp._arglist)), tp._return)
+        args = tp.__args__
+        if _callable_args_are_param_expr(args):
+            return args
+        return (list(args[:-1]), args[-1])
     args = getattr(tp, "__args__", ())
     if isinstance(args, tuple):
         return args

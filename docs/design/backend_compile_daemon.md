@@ -84,7 +84,10 @@ optional cache publication paths are transported without fragmenting artifact
 identity; diagnostics force execution. A stdlib output path contributes presence,
 while entry module, module symbols and expected reuse constraints contribute
 actual values. The core frontend variant excludes reuse constraints derived
-from that variant, avoiding recursive stdlib keys.
+from that variant, avoiding recursive stdlib keys. Shared stdlib constituent
+objects bind only the native-worker projection: the entry module and module
+symbols describe the program, not one object's code
+(`docs/spec/areas/compiler/NATIVE_STDLIB_OBJECT_REUSE.md`).
 
 Cache setup resolves profile defaults, selected entry/stdlib context and the
 admitted WASM runtime layout before computing keys. It carries that environment

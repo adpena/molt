@@ -683,15 +683,37 @@ fn hash_generic_alias(_py: &PyToken<'_>, ptr: *mut u8) -> i64 {
     acc.finish_tuple(2)
 }
 
+/// CPython's `union_hash`: `hash(frozenset(self.__args__))`, so argument order
+/// never changes the hash and an equal `typing.Union` alias hashes the same.
 fn hash_union_type(_py: &PyToken<'_>, ptr: *mut u8) -> i64 {
     let args_bits = unsafe { union_type_args_bits(ptr) };
-    let lane = hash_bits_signed(_py, args_bits);
-    if lane == -1 {
-        return -1;
+    let Some(args_ptr) = obj_from_bits(args_bits).as_ptr() else {
+        return hash_bits_signed(_py, args_bits);
+    };
+    // The union owns its argument tuple, and construction keeps the
+    // arguments distinct, as the frozenset would.
+    let member_hashes = unsafe {
+        crate::object::seq_access::with_immutable_tuple_slice(args_ptr, |args| {
+            let mut hashes = Vec::with_capacity(args.len());
+            for &arg in args {
+                // -1 is never a hash; it reports a raised exception.
+                let hash = hash_bits_signed(_py, arg);
+                if hash == -1 {
+                    return None;
+                }
+                hashes.push(hash as Py_uhash_t);
+            }
+            Some(hashes)
+        })
+    };
+    match member_hashes {
+        Some(Some(hashes)) => {
+            let len = hashes.len();
+            frozenset_hash_from_member_hashes(hashes, len)
+        }
+        Some(None) => -1,
+        None => hash_bits_signed(_py, args_bits),
     }
-    let mut acc = TupleHashAccumulator::new();
-    acc.push(lane);
-    acc.finish_tuple(1)
 }
 
 pub(crate) fn hash_slice_bits(
@@ -716,28 +738,37 @@ fn shuffle_frozenset_hash(hash: Py_uhash_t) -> Py_uhash_t {
     mixed.wrapping_mul(3644798167)
 }
 
-fn hash_frozenset(_py: &PyToken<'_>, ptr: *mut u8) -> i64 {
-    let cached = super::object_state(ptr);
-    if cached != 0 {
-        return cached.wrapping_sub(1);
-    }
+/// CPython's `frozenset_hash` over the hashes of `len` distinct members.
+fn frozenset_hash_from_member_hashes(
+    member_hashes: impl IntoIterator<Item = Py_uhash_t>,
+    len: usize,
+) -> i64 {
     let mut hash: Py_uhash_t = 0;
-    // First hashing scans physical extent, including sparse holes, and never
-    // invokes element __hash__. Repeated hashing reads only the immutable cache.
-    for row in unsafe { set_entries(ptr) }.iter() {
-        if let Some(stored) = row.hash {
-            hash ^= shuffle_frozenset_hash(stored.get() as Py_uhash_t);
-        }
+    for member in member_hashes {
+        hash ^= shuffle_frozenset_hash(member);
     }
-    hash ^= (unsafe { set_len(ptr) } as Py_uhash_t)
-        .wrapping_add(1)
-        .wrapping_mul(1927868237);
+    hash ^= (len as Py_uhash_t).wrapping_add(1).wrapping_mul(1927868237);
     hash ^= (hash >> 11) ^ (hash >> 25);
     hash = hash.wrapping_mul(69069).wrapping_add(907133923);
     if hash == Py_uhash_t::MAX {
         hash = 590923713;
     }
-    let hash = fix_hash(hash as i64);
+    fix_hash(hash as i64)
+}
+
+fn hash_frozenset(_py: &PyToken<'_>, ptr: *mut u8) -> i64 {
+    let cached = super::object_state(ptr);
+    if cached != 0 {
+        return cached.wrapping_sub(1);
+    }
+    // First hashing scans physical extent, including sparse holes, and never
+    // invokes element __hash__. Repeated hashing reads only the immutable cache.
+    let hash = frozenset_hash_from_member_hashes(
+        unsafe { set_entries(ptr) }
+            .iter()
+            .filter_map(|row| row.hash.map(|stored| stored.get() as Py_uhash_t)),
+        unsafe { set_len(ptr) },
+    );
     super::object_set_state(ptr, hash.wrapping_add(1));
     hash
 }

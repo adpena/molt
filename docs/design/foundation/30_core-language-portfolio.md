@@ -206,9 +206,9 @@ operation is retired; ordinary class allocation preserves heap ownership.
 
 #### 3c. Descriptors (get/set/delete precedence)
 
-**UPSTREAM.** `_expr_is_data_descriptor` (frontend:3385–3392): checks if a class attr has `__set__` or `__delete__`. `_class_attr_is_data_descriptor` (`:3395–3405`). Used at multiple attribute access sites to decide whether to bypass field fast-path. Non-data descriptors (function → bound method): handled via `bound_method_new` in the runtime.
+**UPSTREAM.** `_expr_may_be_data_descriptor` (`frontend/lowering/attribute_access.py`) fails closed: a class-body value is a possible data descriptor unless it is a literal display, a builtin non-descriptor constructor, a `dataclasses.field()` without a descriptor `default=`, or an instance of a class whose MRO defines no `__set__`, `__delete__` or `__new__`. Names the class body binds by other forms (tuple targets, imports, nested classes) count as possible descriptors. `_class_attr_may_be_data_descriptor` walks the MRO, treats decorated and pending methods and `object`'s `__class__`/`__dict__`/`__weakref__` as possible descriptors, and gates every instance-field and dataclass-field fast path. Non-data descriptors (function → bound method): handled via `bound_method_new` in the runtime.
 
-**SEMANTICS.** Data descriptor precedence: instance dict lookup → data descriptor → instance dict → non-data descriptor → class dict. Molt's field fast-path emits `guarded_field_get` which reads directly from the instance layout offset, bypassing any descriptor. For non-descriptor fields this is correct and fast. For fields that ARE data descriptors (unlikely in normal Python but valid), the fast path silently skips the descriptor.
+**SEMANTICS.** Data descriptor precedence: instance dict lookup → data descriptor → instance dict → non-data descriptor → class dict. Molt's field fast-path emits `guarded_field_get` which reads directly from the instance layout offset, bypassing any descriptor. For non-descriptor fields this is correct and fast. A field whose class attribute may be a data descriptor never takes the fast path, so the runtime's generic store calls `__set__`.
 
 **Score.** IMPORTANCE=2, GAP=1.
 

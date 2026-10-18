@@ -37,8 +37,13 @@ mod ir;
 mod matcher;
 #[path = "regex/parser.rs"]
 mod parser;
+#[path = "regex/program.rs"]
+mod program;
 #[path = "regex/registry.rs"]
 mod registry;
+#[cfg(test)]
+#[path = "regex/state_machine_tests.rs"]
+mod state_machine_tests;
 #[path = "regex/substitution.rs"]
 mod substitution;
 #[cfg(test)]
@@ -65,6 +70,7 @@ use ir::*;
 use matcher::*;
 #[allow(unused_imports)]
 use parser::*;
+use program::*;
 #[allow(unused_imports)]
 use registry::*;
 #[allow(unused_imports)]

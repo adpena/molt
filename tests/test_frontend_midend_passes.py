@@ -3166,12 +3166,10 @@ else:
     generators = {
         "imported": SimpleTIRGenerator(
             module_name="numpy",
-            entry_module="main",
             known_modules={"main", "numpy"},
         ),
         "imported-chunked": SimpleTIRGenerator(
             module_name="numpy",
-            entry_module="main",
             known_modules={"main", "numpy"},
             module_chunking=True,
             module_chunk_max_ops=8,
@@ -3231,7 +3229,7 @@ value = len(globals())
 def test_module_chunks_share_the_enclosing_python_execution_frame() -> None:
     gen = SimpleTIRGenerator(
         module_name="hello",
-        entry_module="hello",
+        module_execution_kind="module",
         module_chunking=True,
         module_chunk_max_ops=1,
     )
@@ -3368,7 +3366,6 @@ def test_module_metadata_follows_builtin_capture_and_owns_attempt_cleanup(
 def test_importlib_machinery_owns_a_local_frame_and_threads_it_to_chunks() -> None:
     gen = SimpleTIRGenerator(
         module_name="importlib.machinery",
-        entry_module="app",
         module_chunking=True,
         module_chunk_max_ops=1,
     )

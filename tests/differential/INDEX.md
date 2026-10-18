@@ -44,7 +44,8 @@ UV_NO_SYNC=1 uv run --python 3.12 python3 -u tests/molt_diff.py \
     - `builtins_symbol_property_269fe373.py`
     - `builtins_symbol_compile_36d0981b.py`
   - focused regressions now pass:
-    - `tests/differential/stdlib/re_match_metadata.py`
+    - historical `re_match_metadata.py` (now the metadata group in
+      `tests/differential/stdlib/re_parity.py`)
     - `tests/differential/basic/dataclasses_frozen_instance_error.py`
   - original parity regressions now pass:
     - `tests/differential/stdlib/re_parity.py`

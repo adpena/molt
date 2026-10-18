@@ -77,7 +77,7 @@ class InlineHarness(CallMethodDispatchMixin, ClassMethodCompilationMixin):
     def _class_mro(self, class_ref: ClassRef) -> tuple[ClassRef, ...]:
         return (class_ref, OBJECT_CLASS)
 
-    def _class_attr_is_data_descriptor(self, class_id: ClassId, field: str) -> bool:
+    def _class_attr_may_be_data_descriptor(self, class_id: ClassId, field: str) -> bool:
         return False
 
     def _emit_guarded_setattr(self, receiver, name, value, owner) -> None:

@@ -151,7 +151,7 @@ class ExpressionVisitorMixin(GeneratorMixinBase):
             if local is not None:
                 return local
             if node.id == "__name__":
-                if self.entry_module and self.module_name == self.entry_module:
+                if self.is_entry_module:
                     return self._emit_module_attr_get("__name__")
                 res = MoltValue(self.next_var(), type_hint="str")
                 self.emit(MoltOp(kind="CONST_STR", args=[self.module_name], result=res))

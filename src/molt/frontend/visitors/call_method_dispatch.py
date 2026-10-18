@@ -332,7 +332,7 @@ class CallMethodDispatchMixin(GeneratorMixinBase):
             if (
                 name in seen
                 or name not in fields
-                or self._class_attr_is_data_descriptor(class_id, name)
+                or self._class_attr_may_be_data_descriptor(class_id, name)
                 or not inline_expression_is_frame_independent(expression, inline_params)
             ):
                 return False

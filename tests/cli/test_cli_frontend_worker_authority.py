@@ -135,7 +135,6 @@ def _worker_payload(path: Path, lease: _ModuleSourceLease) -> dict[str, object]:
         fallback_policy="error",
         module_is_namespace=False,
         module_execution_kind="imported",
-        entry_module=None,
         type_facts=None,
         enable_phi=True,
         known_modules={"app"},

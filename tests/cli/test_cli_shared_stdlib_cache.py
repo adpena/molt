@@ -670,7 +670,6 @@ def test_backend_code_reuse_keeps_final_runtime_policies_distinct(
     )
     module_graph_metadata = cli_models._ModuleGraphMetadata(
         logical_source_path_by_module={},
-        entry_override_by_module={},
         module_is_namespace_by_module={},
         module_is_package_by_module={},
         module_execution_kind_by_module={},
@@ -837,7 +836,6 @@ def test_prepare_backend_cache_setup_reuses_cache_fingerprints_for_backend_keys(
     )
     module_graph_metadata = cli_models._ModuleGraphMetadata(
         logical_source_path_by_module={},
-        entry_override_by_module={},
         module_is_namespace_by_module={},
         module_is_package_by_module={},
         module_execution_kind_by_module={},
@@ -944,7 +942,6 @@ def test_prepare_backend_cache_setup_custodies_free_threaded_mode_end_to_end(
     )
     module_graph_metadata = cli_models._ModuleGraphMetadata(
         logical_source_path_by_module={},
-        entry_override_by_module={},
         module_is_namespace_by_module={},
         module_is_package_by_module={},
         module_execution_kind_by_module={},
@@ -1048,7 +1045,6 @@ def test_prepare_backend_cache_setup_caches_stdlib_key_material(
     )
     module_graph_metadata = cli_models._ModuleGraphMetadata(
         logical_source_path_by_module={},
-        entry_override_by_module={},
         module_is_namespace_by_module={},
         module_is_package_by_module={},
         module_execution_kind_by_module={},
@@ -1135,7 +1131,6 @@ def test_prepare_backend_cache_setup_encodes_each_function_once(
     )
     module_graph_metadata = cli_models._ModuleGraphMetadata(
         logical_source_path_by_module={},
-        entry_override_by_module={},
         module_is_namespace_by_module={},
         module_is_package_by_module={},
         module_execution_kind_by_module={},
@@ -1236,7 +1231,6 @@ def test_prepare_backend_cache_setup_uses_verified_backend_compiler_fingerprint(
     )
     module_graph_metadata = cli_models._ModuleGraphMetadata(
         logical_source_path_by_module={},
-        entry_override_by_module={},
         module_is_namespace_by_module={},
         module_is_package_by_module={},
         module_execution_kind_by_module={},

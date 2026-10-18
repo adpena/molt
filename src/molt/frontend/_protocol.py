@@ -101,7 +101,6 @@ if TYPE_CHECKING:
 
 
 class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
-    globals: dict[str, MoltValue]
     imported_attr_names: dict[str, str]
     imported_module_attr_mutations: set[tuple[str, str]]
     imported_module_provenance: dict[str, frozenset[str]]
@@ -110,6 +109,7 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
     in_annotation: Any
     in_generator: Any
     instance_attr_mutations: dict[ClassId, set[str]]
+    is_entry_module: bool
     known_classes: dict[ClassId, ClassInfo]
     known_func_defaults: dict[str, dict[str, dict[str, Any]]]
     known_func_kinds: dict[str, dict[str, str]]
@@ -213,7 +213,6 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
         module_spec_name: str | None = ...,
         module_is_namespace: bool = ...,
         module_execution_kind: ModuleExecutionKind | None = ...,
-        entry_module: str | None = ...,
         enable_phi: bool = ...,
         known_modules: set[str] | None = ...,
         direct_call_modules: set[str] | None = ...,
@@ -384,6 +383,8 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
 
     def _call_has_bound_builtin_name(self, node: ast.expr) -> bool: ...
 
+    def _call_is_dataclasses_field(self, func: ast.Name) -> bool: ...
+
     def _call_needs_bind(self, node: ast.Call) -> bool: ...
 
     def _callable_cell_plan(
@@ -475,7 +476,9 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
         self, symbol: str, name: str, *, kind: FunctionKind = ...
     ) -> None: ...
 
-    def _class_attr_is_data_descriptor(self, class_id: ClassId, attr: str) -> bool: ...
+    def _class_attr_may_be_data_descriptor(
+        self, class_id: ClassId, attr: str
+    ) -> bool: ...
 
     def _class_binding_is_the_class(self, class_id: ClassId) -> bool: ...
 
@@ -490,6 +493,8 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
     def _class_defines_finalizer(self, class_id: ClassId) -> bool: ...
 
     def _class_id_for_definition(self, node: ast.ClassDef) -> ClassId: ...
+
+    def _class_instances_may_be_data_descriptors(self, class_id: ClassId) -> bool: ...
 
     def _class_is_exception_subclass(self, class_id: ClassId) -> bool: ...
 
@@ -743,10 +748,6 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
     def _current_module_static_class_ref(
         self, class_id: ClassId
     ) -> MoltValue | None: ...
-
-    def _data_descriptor_attrs(
-        self, class_attrs: dict[str, ast.expr]
-    ) -> frozenset[str]: ...
 
     def _dead_op_lattice_class(
         self, op: MoltOp | str, *, const_by_name: dict[str, Any] | None = ...
@@ -1738,7 +1739,7 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
 
     def _expire_exact_class_facts(self) -> None: ...
 
-    def _expr_is_data_descriptor(self, expr: ast.expr) -> bool: ...
+    def _expr_may_be_data_descriptor(self, expr: ast.expr) -> bool: ...
 
     def _expr_may_yield(self, node: ast.AST) -> bool: ...
 
@@ -1905,7 +1906,6 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
         module_spec_name: str | None,
         module_is_namespace: bool,
         module_execution_kind: ModuleExecutionKind | None,
-        entry_module: str | None,
         module_chunking: bool,
         module_chunk_max_ops: int,
         known_modules: set[str] | None,
@@ -2284,6 +2284,10 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
     def _pop_qualname(self) -> None: ...
 
     def _populate_sema_state(self, node: ast.Module) -> SemaResult: ...
+
+    def _possible_data_descriptor_attrs(
+        self, node: ast.ClassDef, class_attrs: dict[str, ast.expr]
+    ) -> frozenset[str]: ...
 
     def _prebox_scope_cell_vars(
         self, cell_vars: Sequence[str], *, private_cells: Sequence[str] = ...
