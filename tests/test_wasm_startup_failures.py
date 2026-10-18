@@ -249,6 +249,68 @@ for (const missing of ['molt_int_from_i64', 'molt_exception_pending_fast', 'molt
     )
 
 
+def test_app_export_invocation_moves_arguments_into_the_export(
+    tmp_path: Path,
+) -> None:
+    _run_node(
+        "const lifecyclePath = "
+        + json.dumps(str(ROOT / "wasm/runtime_lifecycle.js"))
+        + ";\n"
+        + r"""
+const assert = require('node:assert/strict');
+const {invokeAppExport, withRuntimeOwnedValues} = require(lifecyclePath);
+// Reference-counted fake runtime: a second release of a dead owner fails.
+const live = new Map();
+let next = 1n;
+const allocate = value => { const bits = next++; live.set(bits, {value, refs: 1}); return bits; };
+const retain = bits => { live.get(bits).refs++; };
+const release = bits => {
+  const object = live.get(bits);
+  assert.ok(object, `owner ${bits} released twice`);
+  if (--object.refs === 0) live.delete(bits);
+};
+const instance = {exports: {molt_dec_ref_obj: release}};
+const stored = [];
+// A compiled app export adopts every argument: it releases each at its frame
+// boundary, on normal and exceptional exit alike, and returns an owned result.
+const adopting = (behavior) => (...args) => {
+  try {
+    if (behavior === 'store') { retain(args[1]); stored.push(args[1]); }
+    if (behavior === 'trap') throw new Error('export trapped');
+    return allocate(args.map(bits => live.get(bits).value).join('+'));
+  } finally {
+    for (const bits of args) release(bits);
+  }
+};
+const call = (behavior, values, materialize = allocate) =>
+  withRuntimeOwnedValues(instance, [values],
+    specs => invokeAppExport(instance, adopting(behavior), specs, materialize),
+    ([result]) => live.get(result).value);
+
+assert.equal(call('plain', ['a', 'b', 'c']), 'a+b+c');
+assert.equal(live.size, 0, 'arguments or result outlived the call');
+
+assert.equal(call('store', ['a', 'b']), 'a+b');
+assert.deepEqual([...live.values()], [{value: 'b', refs: 1}],
+  'the export, not the host, owns the argument it stored');
+release(stored.pop());
+
+assert.throws(() => call('trap', ['a', 'b']), /export trapped/);
+assert.equal(live.size, 0, 'a trapping export still owns its arguments');
+
+const failure = new Error('conversion failed');
+let calls = 0;
+assert.throws(() => withRuntimeOwnedValues(instance, [['a', 'b', 'bad']],
+  specs => invokeAppExport(instance, () => { calls++; }, specs,
+    value => { if (value === 'bad') throw failure; return allocate(value); }),
+  () => assert.fail('consumed')), error => error === failure);
+assert.equal(calls, 0);
+assert.equal(live.size, 0, 'unsent arguments must be released by the invocation');
+""",
+        tmp_path,
+    )
+
+
 @pytest.mark.parametrize(
     ("host", "binding", "next_binding"),
     [
@@ -1917,7 +1979,7 @@ def test_browser_host_reusable_api_disposes_only_at_owner_end(tmp_path: Path) ->
         + r"""
 const vm = require('node:vm');
 const assert = require('node:assert/strict');
-const {createRuntimeLifetime, createRuntimeDisposer, withRuntimeOwnedValues, combinedError} = require(lifetimePath);
+const {createRuntimeLifetime, createRuntimeDisposer, withRuntimeOwnedValues, invokeAppExport, combinedError} = require(lifetimePath);
 const events = [];
 const names = {runtime_execution_enter: 'enter', runtime_execution_leave: 'leave', runtime_shutdown: 'shutdown'};
 const instance = {exports: {
@@ -1931,7 +1993,7 @@ const instance = {exports: {
 }};
 const context = {
   instance, state: {runtimeInstance: instance, memory: {}}, runtimeImportAbi: {export_names: names},
-  createRuntimeLifetime, createRuntimeDisposer, withRuntimeOwnedValues, combinedError, runtimeExceptionPending: () => false,
+  createRuntimeLifetime, createRuntimeDisposer, withRuntimeOwnedValues, invokeAppExport, combinedError, runtimeExceptionPending: () => false,
   pendingRuntimeExceptionMessage: () => null, memoryExport: {}, memory: {}, env: {}, linkedTable: {},
   makeBrowserHostArgObject: () => 0n, decRefMaybeWithRuntime() {},
   decodeOwnedExportResult: (_runtime, _memory, value) => value,
