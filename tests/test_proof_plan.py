@@ -359,7 +359,10 @@ def test_generated_local_dx_projection_has_stable_command_ids() -> None:
     projected = next(rule for rule in local["rules"] if rule["name"] == first["name"])
     assert projected["command_ids"] == [
         f"local.{first['name']}.{index}" for index, _ in enumerate(first["gates"])
-    ] + ([f"local.{first['name']}.pytest"] if first.get("pytest") else [])
+    ] + ([f"local.{first['name']}.pytest"] if first.get("pytest") else []) + [
+        f"local.{first['name']}.pytest-select-{index}"
+        for index, _ in enumerate(first.get("pytest_select", []))
+    ]
     assert local["pytest_workers"] == PLAN.local_pytest_workers > 0
 
 
@@ -395,6 +398,48 @@ def test_local_pytest_targets_project_one_command_per_rule() -> None:
         *rule["pytest"],
     ]
     assert tools == tuple(rule["toolchains"])
+
+
+@pytest.mark.parametrize(
+    "entry,message",
+    [
+        ({"k": "a", "m": "b", "targets": ["tests/test_proof_plan.py"]}, "exactly one"),
+        ({"x": "a", "targets": ["tests/test_proof_plan.py"]}, "exactly one"),
+        ({"k": "a", "n": "4", "targets": ["tests/test_proof_plan.py"]}, "exactly one"),
+        ({"k": " ", "targets": ["tests/test_proof_plan.py"]}, "non-empty"),
+        ({"m": "slow", "targets": ["-n 4"]}, "must be a tests/ path"),
+        ({"m": "slow"}, "must be a list of test paths"),
+    ],
+)
+def test_local_pytest_selections_name_one_selection_and_tests(entry, message) -> None:
+    first, *rest = PLAN.local_rules
+    invalid = {**first, "pytest_select": [entry]}
+    errors = replace(PLAN, local_rules=(invalid, *rest)).validate()
+    assert any(message in error and "pytest_select[0]" in error for error in errors), (
+        errors
+    )
+
+
+def test_local_pytest_selections_run_on_the_plan_workers() -> None:
+    rule = next(rule for rule in PLAN.local_rules if rule.get("pytest_select"))
+    commands = proof_plan.local_gate_commands(
+        {"rule": [rule], "local_pytest_workers": PLAN.local_pytest_workers}
+    )
+    for index, entry in enumerate(rule["pytest_select"]):
+        (key,) = set(entry) - {"targets"}
+        command, tools = commands[f"local.{rule['name']}.pytest-select-{index}"]
+        assert shlex.split(command) == [
+            "python",
+            "-m",
+            "pytest",
+            "-q",
+            "-n",
+            str(PLAN.local_pytest_workers),
+            f"-{key}",
+            entry[key],
+            *entry["targets"],
+        ]
+        assert tools == tuple(rule["toolchains"])
 
 
 @pytest.mark.parametrize(
