@@ -77,8 +77,8 @@ def test_symbol_reader_failure_is_a_build_error_and_releases_ir_lease(
     monkeypatch.setattr(
         backend_binary,
         "_ensure_backend_binary",
-        lambda *args, **kwargs: backend_binary._BackendBinaryEnsureResult(
-            ok=True, cache_compiler_fingerprint="test-backend"
+        lambda backend_bin, *args, **kwargs: backend_binary._BackendBinaryEnsureResult(
+            ok=True, cache_compiler_fingerprint="test-backend", binary=backend_bin
         ),
     )
     cache_setup = _BackendCacheSetup(
