@@ -104,7 +104,7 @@ def _below_hard_memory_cap(value_gb: float, hard_gb: float) -> float:
 
 
 def _gb_from_bytes(value: int | None) -> float | None:
-    if value is None or value <= 0:
+    if value is None or value < 0:
         return None
     return value / (1024 * 1024 * 1024)
 
@@ -120,7 +120,7 @@ def physical_memory_bytes(
     )
     if override is not None:
         return int(override * 1024 * 1024 * 1024)
-    return host_capacity.memory_bytes()[0]
+    return host_capacity.memory_capacity(source).total_bytes
 
 
 def available_memory_bytes(
@@ -134,7 +134,7 @@ def available_memory_bytes(
     )
     if override is not None:
         return int(override * 1024 * 1024 * 1024)
-    return host_capacity.memory_bytes()[1]
+    return host_capacity.memory_capacity(source).available_bytes
 
 
 def adaptive_memory_budget(
@@ -144,8 +144,13 @@ def adaptive_memory_budget(
     accounted_rss_kb: int = 0,
 ) -> AdaptiveMemoryBudget:
     source = os.environ if environ is None else environ
-    physical_gb = _gb_from_bytes(physical_memory_bytes(prefix, source))
-    available_gb = _gb_from_bytes(available_memory_bytes(prefix, source))
+    capacity = host_capacity.memory_capacity(source)
+    physical_gb = _float_env(source, _prefixed_names(prefix, "MEMORY_TOTAL_GB"))
+    if physical_gb is None:
+        physical_gb = _gb_from_bytes(capacity.total_bytes)
+    available_gb = _float_env(source, _prefixed_names(prefix, "MEMORY_AVAILABLE_GB"))
+    if available_gb is None:
+        available_gb = _gb_from_bytes(capacity.available_bytes)
     accounted_rss_gb = max(0, accounted_rss_kb) / (1024 * 1024)
     if available_gb is not None and accounted_rss_gb > 0:
         available_gb += accounted_rss_gb
@@ -177,10 +182,23 @@ def adaptive_memory_budget(
         usable_gb = physical_gb * 0.75
         source_name = "physical"
     else:
+        total_gb = DEFAULT_MAX_TOTAL_RSS_GB
+        process_gb = DEFAULT_MAX_RSS_GB
+        global_gb = DEFAULT_MAX_GLOBAL_RSS_GB
+        if capacity.tree_limit_bytes is not None:
+            total_gb = _below_hard_memory_cap(
+                capacity.tree_limit_bytes / 1024**3, DEFAULT_HARD_MAX_RSS_GB
+            )
+            process_gb = min(
+                process_gb,
+                total_gb,
+                max(0.25, total_gb * DEFAULT_PROCESS_FRACTION_OF_TOTAL),
+            )
+            global_gb = max(global_gb, total_gb)
         return AdaptiveMemoryBudget(
-            max_process_rss_gb=DEFAULT_MAX_RSS_GB,
-            max_total_rss_gb=DEFAULT_MAX_TOTAL_RSS_GB,
-            max_global_rss_gb=DEFAULT_MAX_GLOBAL_RSS_GB,
+            max_process_rss_gb=process_gb,
+            max_total_rss_gb=total_gb,
+            max_global_rss_gb=global_gb,
             reserve_gb=reserve_gb,
             physical_gb=None,
             available_gb=None,
@@ -195,10 +213,16 @@ def adaptive_memory_budget(
         global_gb,
         DEFAULT_HARD_MAX_GLOBAL_RSS_GB,
     )
-    total_gb = min(
-        global_gb,
-        max(0.25, global_gb * DEFAULT_TOTAL_FRACTION_OF_GLOBAL),
-    )
+    # A parent already admitted this tree. Preserve that allocation through
+    # serial wrappers; only host pressure or a narrower grant can reduce it.
+    # Allocating the root share again at each level makes budgets geometric.
+    if capacity.tree_limit_bytes is None:
+        total_gb = min(
+            global_gb,
+            max(0.25, global_gb * DEFAULT_TOTAL_FRACTION_OF_GLOBAL),
+        )
+    else:
+        total_gb = min(global_gb, capacity.tree_limit_bytes / 1024**3)
     total_gb = _below_hard_memory_cap(total_gb, DEFAULT_HARD_MAX_RSS_GB)
     process_gb = min(
         total_gb,

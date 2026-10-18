@@ -1340,6 +1340,7 @@ def test_windows_pytest_tempdir_patch_keeps_xdist_given_basetemp_readable(
 def test_pytest_cache_dir_arg_uses_the_artifact_root_control_state(
     monkeypatch, tmp_path
 ) -> None:
+    monkeypatch.delenv(dx.PROOF_SCRATCH_ROOT_ENV, raising=False)
     monkeypatch.setenv("MOLT_EXT_ROOT", str(tmp_path / "artifact-root"))
     args = ["tests/test_one.py", "-q"]
 
@@ -1358,6 +1359,7 @@ def test_pytest_cache_dir_arg_uses_the_artifact_root_control_state(
 def test_pytest_cache_dir_never_lands_in_the_checkout(monkeypatch) -> None:
     # A plain clone's artifact root is the clone itself; its cache must move
     # out of the tree on every platform.
+    monkeypatch.delenv(dx.PROOF_SCRATCH_ROOT_ENV, raising=False)
     monkeypatch.setenv("MOLT_EXT_ROOT", str(pytest_memory_guard_bootstrap.ROOT))
 
     cache = pytest_memory_guard_bootstrap.guarded_pytest_cache_dir()
@@ -1392,6 +1394,7 @@ def test_pytest_cache_dir_arg_preserves_explicit_cache_policy() -> None:
 def test_pytest_cache_dir_config_uses_the_artifact_root_control_state(
     monkeypatch, tmp_path
 ) -> None:
+    monkeypatch.delenv(dx.PROOF_SCRATCH_ROOT_ENV, raising=False)
     monkeypatch.setenv("MOLT_EXT_ROOT", str(tmp_path / "artifact-root"))
 
     class Config:
@@ -1408,6 +1411,20 @@ def test_pytest_cache_dir_config_uses_the_artifact_root_control_state(
     )
     assert value.origin == "override"
     assert "cache_dir" not in Config._inicache
+
+
+def test_pytest_cache_dir_follows_the_admitted_proof_scratch(monkeypatch, tmp_path):
+    scratch = tmp_path / "queue-output" / "scratch"
+    monkeypatch.setenv(dx.PROOF_SCRATCH_ROOT_ENV, str(scratch))
+    monkeypatch.setenv("MOLT_GUARD_SCRATCH_ROOT", str(tmp_path / "nested-guard"))
+    monkeypatch.setenv("MOLT_EXT_ROOT", str(tmp_path / "artifact-root"))
+    args = ["tests/test_one.py", "-q"]
+
+    assert pytest_memory_guard_bootstrap.guarded_pytest_cache_dir() == (
+        scratch / "pytest-cache"
+    )
+    assert pytest_memory_guard_bootstrap.install_pytest_cache_dir_arg(args)
+    assert args[-2:] == ["-o", f"cache_dir={scratch / 'pytest-cache'}"]
 
 
 def test_pytest_user_temp_root_matches_pytest_tmpdir_authority(tmp_path) -> None:

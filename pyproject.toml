@@ -143,7 +143,7 @@ clippy = [
 security = "cargo deny check"
 build = "cargo build --profile release-fast --workspace"
 backend = "cargo test --profile release-fast -p molt-backend --features native-backend --lib"
-compliance = "{project_python} -m pytest tests/compliance/ -p no:cacheprovider -n auto --tb=line -q"
+compliance = "{project_python} -m pytest tests/compliance/ -n auto --tb=line -q"
 clean-artifacts = "{project_python} tools/artifact_cleanup.py"
 bench-smoke = "{project_python} -m molt.cli bench -- --smoke --warmup 1 --json-out bench/results/dev-bench-smoke.json"
 rustfmt = "{project_python} tools/check_rustfmt.py --changed --write"
@@ -159,7 +159,7 @@ format-check = [
 ]
 subprocess-guard-audit = "{project_python} tools/check_subprocess_guard_coverage.py"
 memory-guard-wiring-audit = "{project_python} tools/check_memory_guard_wiring.py"
-dev-tooling-test = "{project_python} -m pytest -q -p no:cacheprovider tests/test_molt_dev.py"
+dev-tooling-test = "{project_python} -m pytest -q tests/test_molt_dev.py"
 lint = [
     "{project_python} -m ruff check .",
     "@format-check",

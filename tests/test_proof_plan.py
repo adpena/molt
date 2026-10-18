@@ -512,6 +512,7 @@ def test_compiler_runtime_partition_preserves_disjoint_test_and_tool_ownership()
     commands = {command.id: command for command in PLAN.commands}
     core = commands["rust.test.ir-wasm-runtime-authorities"]
     complement = commands["rust.test.compiler-authorities"]
+    assert "memory_budget::" in core.argv[core.argv.index("--") + 1 :]
 
     def test_packages(command: proof_plan.ProofCommand) -> set[str]:
         argv = command.argv

@@ -569,6 +569,136 @@ def test_limits_from_env_honors_explicit_child_rlimit_above_rss_budget(
     assert limits.dynamic_child_rlimit is False
 
 
+@pytest.fixture
+def delegated_memory_host(monkeypatch):
+    from molt import host_capacity
+
+    # This is the native probe's already cgroup-bounded host observation,
+    # independent of any environment-projected allocation.
+    sample = [12 * 1024**3, 11 * 1024**3]
+    monkeypatch.setattr(host_capacity, "_probe_memory_bytes", lambda: tuple(sample))
+    for stem in ("MOLT", "MOLT_WASM_TEST", "MOLT_WASM_LINK", "MOLT_BACKEND"):
+        for suffix in (
+            "MEMORY_TOTAL_GB",
+            "MEMORY_AVAILABLE_GB",
+            "MEMORY_RESERVE_GB",
+            "MAX_PROCESS_RSS_GB",
+            "MAX_TOTAL_RSS_GB",
+            "MAX_GLOBAL_RSS_GB",
+            "CHILD_RLIMIT_GB",
+        ):
+            monkeypatch.delenv(f"{stem}_{suffix}", raising=False)
+    for name in (
+        host_capacity.MEMORY_SLICE_ENV,
+        "CODEX_SHELL",
+        "CODEX_THREAD_ID",
+        "CODEX_INTERNAL_ORIGINATOR_OVERRIDE",
+    ):
+        monkeypatch.delenv(name, raising=False)
+    return sample
+
+
+@pytest.mark.parametrize("rotate_prefix", [False, True])
+def test_serial_nested_guard_budget_preserves_the_admitted_tree(
+    monkeypatch, delegated_memory_host, rotate_prefix
+):
+    from molt import host_capacity
+
+    env = {}
+    outer = harness_memory_guard.limits_from_env("MOLT_WASM_TEST", env)
+    admitted = outer.current_memory_limits(env)
+    assert admitted.max_total_rss_gb == pytest.approx(5.82, abs=1 / 1024**2)
+    prefixes = (
+        ("MOLT_WASM_TEST", "MOLT_WASM_LINK", "MOLT_BACKEND")
+        if rotate_prefix
+        else ("MOLT_WASM_TEST",)
+    )
+    parent = outer
+    parent_current = admitted
+    for depth in range(12):
+        child_env = dict(env)
+        harness_memory_guard.memory_guard._inject_guard_memory_contract_env(
+            child_env,
+            max_rss_kb=parent_current.max_process_rss_kb,
+            max_total_rss_kb=parent_current.max_total_rss_kb,
+            child_rlimit_kb=parent.current_child_rlimit_kb(env),
+        )
+        # Each level models an actual child whose ambient environment matches
+        # the parent's exported contract, rather than an unpropagated dict.
+        monkeypatch.setenv(
+            host_capacity.MEMORY_SLICE_ENV,
+            child_env[host_capacity.MEMORY_SLICE_ENV],
+        )
+        child = harness_memory_guard.limits_from_env(
+            prefixes[depth % len(prefixes)], child_env
+        )
+        current = child.current_memory_limits(child_env)
+        assert current.max_total_rss_kb == admitted.max_total_rss_kb, depth
+        assert 0 < current.max_process_rss_kb <= current.max_total_rss_kb
+        assert current.max_process_rss_kb <= parent_current.max_process_rss_kb
+        assert current.max_global_rss_kb == admitted.max_global_rss_kb
+        env, parent, parent_current = child_env, child, current
+
+
+def test_delegated_guard_slice_uses_the_supplied_environment(
+    monkeypatch, delegated_memory_host
+):
+    from molt import host_capacity
+
+    monkeypatch.setenv(host_capacity.MEMORY_SLICE_ENV, str(512 * 1024**2))
+    selected = {host_capacity.MEMORY_SLICE_ENV: str(4 * 1024**3)}
+    limits = harness_memory_guard.limits_from_env("MOLT_WASM_TEST", selected)
+    current = limits.current_memory_limits(selected)
+    assert current.max_total_rss_kb == 4 * 1024**2
+    assert 0 < current.max_process_rss_kb <= current.max_total_rss_kb
+
+    smaller = {host_capacity.MEMORY_SLICE_ENV: str(1024**3)}
+    child = harness_memory_guard.limits_from_env("MOLT_WASM_TEST", smaller)
+    narrowed = child.current_memory_limits(smaller)
+    assert narrowed.max_total_rss_kb == 1024**2
+    assert narrowed.max_process_rss_kb <= current.max_process_rss_kb
+
+
+@pytest.mark.parametrize("pressure", [(12, 2), (4, 3)])
+def test_delegated_guard_budget_still_obeys_host_and_cgroup_pressure(
+    monkeypatch, delegated_memory_host, pressure
+):
+    from molt import host_capacity
+
+    env = {host_capacity.MEMORY_SLICE_ENV: str(9 * 1024**3)}
+    monkeypatch.setenv(
+        host_capacity.MEMORY_SLICE_ENV, env[host_capacity.MEMORY_SLICE_ENV]
+    )
+    limits = harness_memory_guard.limits_from_env("MOLT_WASM_TEST", env)
+    before = limits.current_memory_limits(env)
+    delegated_memory_host[:] = [value * 1024**3 for value in pressure]
+    current = limits.current_memory_limits(env)
+    assert 0 < current.max_process_rss_kb <= current.max_total_rss_kb
+    assert current.max_total_rss_kb < before.max_total_rss_kb
+    assert current.max_total_rss_kb <= int((pressure[1] - 1) * 0.97 * 1024**2)
+    assert current.max_global_rss_kb <= int((pressure[1] - 1) * 0.97 * 1024**2)
+
+
+def test_delegated_guard_budget_does_not_charge_owned_rss_twice(
+    monkeypatch, delegated_memory_host
+):
+    from molt import host_capacity
+
+    env = {host_capacity.MEMORY_SLICE_ENV: str(9 * 1024**3)}
+    monkeypatch.setenv(
+        host_capacity.MEMORY_SLICE_ENV, env[host_capacity.MEMORY_SLICE_ENV]
+    )
+    limits = harness_memory_guard.limits_from_env("MOLT_WASM_TEST", env)
+    before = limits.current_memory_limits(env)
+    # Five GiB moved from host availability into this same owned tree.
+    delegated_memory_host[1] = 6 * 1024**3
+    current = limits.current_memory_limits(env, accounted_rss_kb=5 * 1024**2)
+    assert current.max_total_rss_kb == before.max_total_rss_kb
+    assert current.max_process_rss_kb == before.max_process_rss_kb
+    assert current.max_global_rss_kb == before.max_global_rss_kb
+    assert current.adaptive_budget.available_gb == 11
+
+
 def test_current_memory_limits_refreshes_unset_adaptive_caps(monkeypatch) -> None:
     calls: list[tuple[str, int]] = []
 

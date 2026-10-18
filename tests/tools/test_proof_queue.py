@@ -4626,27 +4626,50 @@ def test_python_bootstrap_honors_canonical_bytecode_policy_under_isolated_startu
     assert payload["adapter"] is True
 
 
-def test_python_bootstrap_pytest_disables_source_cache_exactly_once(
+def test_python_bootstrap_pytest_keeps_cacheprovider_in_admitted_scratch(
     tmp_path: Path,
 ) -> None:
+    scratch = tmp_path / "proof-scratch"
     test_file = tmp_path / "test_owned.py"
-    test_file.write_text("def test_owned():\n    assert True\n", encoding="utf-8")
+    test_file.write_text(
+        "def test_owned(cache):\n    cache.set('custody/value', {'retained': True})\n",
+        encoding="utf-8",
+    )
     envelope = {"python": {"kind": "direct"}}
+    declared = [
+        sys.executable,
+        "-m",
+        "pytest",
+        "-q",
+        "--strict-config",
+        "-W",
+        "error",
+        "-c",
+        str(state.ROOT / "pyproject.toml"),
+        str(test_file),
+    ]
     rewritten = command_admission._python_bootstrap_command(
         envelope,
-        [sys.executable, "-m", "pytest", "-q", str(test_file)],
+        declared,
     )
-    assert rewritten.count("no:cacheprovider") == 1
+    assert rewritten[-len(declared[3:]) :] == declared[3:]
     completed = run_custody_subject_process(
         rewritten,
         cwd=tmp_path,
-        env={**os.environ, "PYTEST_DISABLE_PLUGIN_AUTOLOAD": "1"},
+        env={
+            **os.environ,
+            "PYTEST_DISABLE_PLUGIN_AUTOLOAD": "1",
+            "MOLT_PROOF_SCRATCH_ROOT": str(scratch),
+        },
         check=False,
         text=True,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
     )
-    assert completed.returncode == 0, completed.stderr
+    assert completed.returncode == 0, completed.stdout + completed.stderr
+    assert json.loads((scratch / "pytest-cache" / "v/custody/value").read_text()) == {
+        "retained": True
+    }
     assert not (tmp_path / ".pytest_cache").exists()
     already_disabled = command_admission._python_bootstrap_command(
         envelope,

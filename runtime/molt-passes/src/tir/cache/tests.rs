@@ -95,6 +95,7 @@ fn env_lock() -> &'static Mutex<()> {
 const CACHE_ENV_NAMES: &[&str] = &[
     "MOLT_BACKEND_TIR_CACHE_MEMORY_MB",
     "MOLT_BACKEND_MEMORY_AVAILABLE_GB",
+    "MOLT_BACKEND_MAX_PROCESS_RSS_GB",
     "MOLT_CLI_MEMORY_AVAILABLE_GB",
     "MOLT_MEMORY_AVAILABLE_GB",
     "MOLT_BACKEND_MEMORY_RESERVE_GB",
@@ -212,6 +213,27 @@ fn memory_cache_default_uses_available_memory_after_reserve() {
         16 * 1024 * 1024,
         "2 GiB usable memory divided by the adaptive cache divisor"
     );
+}
+
+#[test]
+fn memory_cache_intersects_raw_allowance_with_the_admitted_process_cap() {
+    let _guard = env_lock().lock().expect("env lock");
+    let _env = EnvRestore::apply(&[
+        ("MOLT_BACKEND_MEMORY_AVAILABLE_GB", "8"),
+        ("MOLT_BACKEND_MEMORY_RESERVE_GB", "1"),
+        ("MOLT_BACKEND_MAX_PROCESS_RSS_GB", "2"),
+    ]);
+    assert_eq!(default_memory_cache_limit_bytes(), 16 * 1024 * 1024);
+}
+
+#[test]
+fn memory_cache_keeps_reserve_out_of_the_already_admitted_cap() {
+    let _guard = env_lock().lock().expect("env lock");
+    let _env = EnvRestore::apply(&[
+        ("MOLT_BACKEND_MEMORY_RESERVE_GB", "1"),
+        ("MOLT_BACKEND_MAX_PROCESS_RSS_GB", "2"),
+    ]);
+    assert_eq!(default_memory_cache_limit_bytes(), 16 * 1024 * 1024);
 }
 
 #[test]

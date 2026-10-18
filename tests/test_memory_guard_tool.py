@@ -3274,6 +3274,42 @@ def test_memory_guard_defaults_adapt_to_live_memory_budget() -> None:
     assert memory_guard.DEFAULT_POLL_INTERVAL_SEC == 0.10
 
 
+def test_adaptive_budget_samples_host_once(monkeypatch) -> None:
+    observations = []
+
+    def probe():
+        observations.append(None)
+        return 12 * 1024**3, 11 * 1024**3
+
+    monkeypatch.setattr(host_capacity, "_probe_memory_bytes", probe)
+    budget = memory_guard.adaptive_memory_budget("MOLT_TEST", {})
+    assert observations == [None]
+    assert budget.physical_gb == 12
+    assert budget.available_gb == 11
+    assert budget.max_total_rss_gb == pytest.approx(5.82)
+
+
+@pytest.mark.parametrize("tree_gb,process_gb", [(2, 1.8), (9, 8.1), (50, 12)])
+def test_unobserved_host_still_obeys_the_delegated_tree(
+    monkeypatch, tree_gb, process_gb
+) -> None:
+    monkeypatch.setattr(host_capacity, "_probe_memory_bytes", lambda: (None, None))
+    env = {host_capacity.MEMORY_SLICE_ENV: str(tree_gb * 1024**3)}
+    budget = memory_guard.adaptive_memory_budget("MOLT_TEST", env)
+    assert budget.source == "fallback"
+    assert budget.max_total_rss_gb == tree_gb
+    assert budget.max_process_rss_gb == pytest.approx(process_gb)
+    assert budget.max_global_rss_gb >= budget.max_total_rss_gb
+
+
+def test_zero_available_memory_remains_observed_pressure(monkeypatch) -> None:
+    monkeypatch.setattr(host_capacity, "_probe_memory_bytes", lambda: (12 * 1024**3, 0))
+    budget = memory_guard.adaptive_memory_budget("MOLT_TEST", {})
+    assert budget.available_gb == 0
+    assert budget.source == "available"
+    assert budget.max_global_rss_gb == 0.25
+
+
 def test_adaptive_budget_scales_up_and_down_with_live_available_memory() -> None:
     high = memory_guard.adaptive_memory_budget(
         "MOLT_BENCH",
@@ -7812,7 +7848,14 @@ def test_run_guarded_exception_releases_lease_and_updates_marker(
     assert marker["temporary_artifacts"]["finalize_elapsed_s"] >= 0.0
 
 
-def test_run_guarded_exports_backend_memory_contract() -> None:
+@pytest.mark.parametrize("raw_available", [None, "7.5"])
+def test_run_guarded_exports_backend_memory_contract(
+    raw_available, monkeypatch
+) -> None:
+    if raw_available is None:
+        monkeypatch.delenv("MOLT_BACKEND_MEMORY_AVAILABLE_GB", raising=False)
+    else:
+        monkeypatch.setenv("MOLT_BACKEND_MEMORY_AVAILABLE_GB", raw_available)
     result = memory_guard.run_guarded(
         [
             sys.executable,
@@ -7830,7 +7873,7 @@ def test_run_guarded_exports_backend_memory_contract() -> None:
     )
 
     assert result.returncode == 0
-    assert result.stdout.splitlines() == ["0.500000", "0.500000"]
+    assert result.stdout.splitlines() == [str(raw_available), "0.500000"]
 
 
 def test_main_reexec_preserves_stream_and_sample_rotation_options(

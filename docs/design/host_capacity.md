@@ -92,6 +92,39 @@ An independent audit (2026-10-17) found more:
    parent divides its memory slice among the units it admits and exports it;
    a child sizes itself against the smaller of its slice and live memory.
 
+### Guard delegation
+
+An inherited tree limit is an allocation ceiling, not a new machine. Keep the
+host/cgroup total and live availability distinct from the parent's delegated
+tree limit in one typed capacity snapshot. Scheduling uses the bounded view;
+guard policy uses the raw host facts for the one host reserve and global
+margin, then caps its tree by the inherited ceiling. A serial nested guard
+does not allocate a new peer share merely by adding another process wrapper.
+Applying the root reserve and tree fraction at every nesting level previously
+reduced a 9.54 GiB admitted proof tree to a roughly 0.69 GiB optimizer process
+limit on a 12 GiB VM, rejecting actual Binaryen work at about 0.8 GiB.
+
+The invariant follows the [Linux cgroup v2 delegation model](https://www.kernel.org/doc/html/latest/admin-guide/cgroup-v2.html#model-of-delegation):
+descendants remain inside their ancestor's restriction. Our inference for
+serial tooling is that an unchanged allocation remains unchanged across
+wrappers. Explicit smaller allocations and live host pressure may tighten it;
+nesting depth alone may not. This does not implement the separate peer
+allocation and host-wide jobserver work above.
+
+One capacity sample replaces the guard's separate total/available probes.
+The snapshot adds a small fixed-size Python value in development tooling; it
+removes a repeated host probe and preserves the delegated-limit fact. Guard
+exports carry the admitted backend process cap separately from raw availability:
+the backend intersects that cap with any explicit availability minus reserve,
+and never deducts a reserve from the already admitted cap. Loss of host
+telemetry preserves an inherited tree allocation within the hard guard ceiling
+and retains the conservative fallback process ceiling; zero available bytes
+remain observed pressure. The guest runtime and its memory policy are
+unaffected. Known-host nesting, pressure, explicit environment selection, RSS
+accounting and scheduler consumers have focused Python coverage. Corrected
+Linux optimizer execution and resource measurements remain required before
+acceptance.
+
 ## Storage
 
 Capacity includes where state lives. The frontend's source record store

@@ -9,13 +9,12 @@ use molt_ir::backend_environment::{self as backend_env, BackendEnv};
 
 const GIB_BYTES: u64 = 1024 * 1024 * 1024;
 
-/// Memory available to the backend, most specific first. The guard's
-/// process cap is the last fallback.
-const AVAILABLE_GB_ENV: [BackendEnv; 4] = [
+/// Raw memory availability, most specific first. The admitted process cap is
+/// separate: its host reserve has already been deducted.
+const AVAILABLE_GB_ENV: [BackendEnv; 3] = [
     BackendEnv::MOLT_BACKEND_MEMORY_AVAILABLE_GB,
     BackendEnv::MOLT_CLI_MEMORY_AVAILABLE_GB,
     BackendEnv::MOLT_MEMORY_AVAILABLE_GB,
-    BackendEnv::MOLT_BACKEND_MAX_PROCESS_RSS_GB,
 ];
 
 /// Memory to leave untouched, most specific first.
@@ -44,11 +43,26 @@ fn first_gb_env(keys: &[BackendEnv]) -> Option<u64> {
     })
 }
 
-/// Available memory minus the reserve, from the environment.
+/// Intersect raw availability after its reserve with the admitted process cap.
 pub fn env_memory_budget_bytes() -> Option<u64> {
-    let available = first_gb_env(&AVAILABLE_GB_ENV)?;
+    let available = first_gb_env(&AVAILABLE_GB_ENV);
     let reserve = first_gb_env(&RESERVE_GB_ENV).unwrap_or(0);
-    Some(available.saturating_sub(reserve))
+    let process_cap = first_gb_env(&[BackendEnv::MOLT_BACKEND_MAX_PROCESS_RSS_GB]);
+    memory_budget_bytes(available, reserve, process_cap)
+}
+
+fn memory_budget_bytes(
+    available: Option<u64>,
+    reserve: u64,
+    process_cap: Option<u64>,
+) -> Option<u64> {
+    match (
+        available.map(|value| value.saturating_sub(reserve)),
+        process_cap,
+    ) {
+        (Some(host_budget), Some(cap)) => Some(host_budget.min(cap)),
+        (host_budget, cap) => host_budget.or(cap),
+    }
 }
 
 /// The committed-memory rlimit the backend process guard installs
@@ -85,7 +99,21 @@ pub fn backend_memory_limit_bytes() -> Option<u64> {
 
 #[cfg(test)]
 mod tests {
-    use super::{GIB_BYTES, parse_nonnegative_gb};
+    use super::{GIB_BYTES, memory_budget_bytes, parse_nonnegative_gb};
+
+    #[test]
+    fn admitted_cap_and_raw_availability_have_distinct_reserve_semantics() {
+        for (available, reserve, cap, expected) in [
+            (Some(100), 30, Some(50), Some(50)),
+            (Some(100), 30, Some(90), Some(70)),
+            (Some(100), 30, None, Some(70)),
+            (None, 30, Some(50), Some(50)),
+            (Some(10), 30, Some(50), Some(0)),
+            (None, 30, None, None),
+        ] {
+            assert_eq!(memory_budget_bytes(available, reserve, cap), expected);
+        }
+    }
 
     #[test]
     fn fractional_guard_values_parse_to_bytes() {

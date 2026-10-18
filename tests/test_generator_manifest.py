@@ -672,6 +672,7 @@ def test_injected_orphan_generated_file_fails_the_gate(tmp_path: Path):
 
 def test_runner_renders_every_generator_after_its_upstreams() -> None:
     """tools/generators.py owns generator order: upstreams first, proof plan last."""
+    import tomllib
     from tools import generators
 
     order = [g.tool for g in generators.manifest_generators()]
@@ -688,6 +689,135 @@ def test_runner_renders_every_generator_after_its_upstreams() -> None:
         for upstream in g.get("upstream_generators", []):
             if g["tool"] in position and upstream in position:
                 assert position[upstream] < position[g["tool"]], (g["tool"], upstream)
+    assets = tomllib.loads(
+        (ROOT / "src/molt/browser_asset_graph.toml").read_text("utf-8")
+    )
+    asset_paths = {"wasm/" + row["path"] for row in assets["asset"]}
+    producers = {
+        row["tool"]
+        for row in manifest.generators
+        if asset_paths.intersection(row["outputs"])
+    }
+    graph = next(
+        row
+        for row in manifest.generators
+        if row["tool"] == "tools/gen_browser_asset_graph.py"
+    )
+    assert producers <= set(graph["upstream_generators"])
+
+
+def test_targeted_write_synchronizes_declared_consumers_once_in_order(
+    tmp_path, monkeypatch
+):
+    import hashlib
+    from contextlib import nullcontext
+    from types import SimpleNamespace
+    from tools import generators
+
+    (tmp_path / "tools").mkdir()
+    (tmp_path / "tools/proof_plan.toml").write_text("", encoding="utf-8")
+    upstream, middle, downstream = (tmp_path / name for name in ("a", "b", "c"))
+    for path in (upstream, middle, downstream):
+        path.write_text("old\n", encoding="utf-8")
+    manifest = tmp_path / "tools/generator_manifest.toml"
+    manifest.write_text(
+        """
+[[generator]]
+tool = "producer"
+check_mode = true
+toolchains = []
+[[generator]]
+tool = "consumer"
+check_mode = true
+toolchains = []
+upstream_generators = ["producer"]
+[[generator]]
+tool = "leaf"
+check_mode = true
+toolchains = []
+upstream_generators = ["producer", "consumer"]
+[[generator]]
+tool = "unrelated"
+check_mode = true
+toolchains = []
+""",
+        encoding="utf-8",
+    )
+    read_manifest = generators.manifest_generators
+    monkeypatch.setattr(
+        generators, "manifest_generators", lambda: read_manifest(manifest)
+    )
+    monkeypatch.setattr(generators, "ROOT", tmp_path)
+    monkeypatch.setattr(
+        generators.harness_memory_guard,
+        "repo_process_sentinel",
+        lambda **_: nullcontext(),
+    )
+    rendered = []
+
+    def render(tool):
+        rendered.append(tool)
+        if tool == "producer":
+            return {upstream: "current\n"}
+        if tool == "consumer":
+            return {middle: hashlib.sha256(upstream.read_bytes()).hexdigest() + "\n"}
+        if tool == "leaf":
+            return {downstream: "seen:" + middle.read_text(encoding="utf-8")}
+        pytest.fail("targeted write rendered an unrelated generator")
+
+    monkeypatch.setattr(
+        generators,
+        "load_generator",
+        lambda tool: SimpleNamespace(generated_outputs=lambda: render(tool)),
+    )
+    assert generators.main(["write", "--only", "producer", "--only", "producer"]) == 0
+    assert rendered == ["producer", "consumer", "leaf"]
+    expected = hashlib.sha256(b"current\n").hexdigest() + "\n"
+    assert middle.read_text(encoding="utf-8") == expected
+    assert downstream.read_text(encoding="utf-8") == "seen:" + expected
+    rendered.clear()
+    assert generators.main(["check", "--only", "producer"]) == 0
+    assert rendered == ["producer"]
+
+
+@pytest.mark.parametrize("explicit_host", [False, True])
+def test_targeted_write_requires_explicit_host_input_consumers(
+    tmp_path, monkeypatch, explicit_host
+):
+    from contextlib import nullcontext
+    from types import SimpleNamespace
+    from tools import generators
+
+    (tmp_path / "tools").mkdir()
+    (tmp_path / "tools/proof_plan.toml").write_text("", encoding="utf-8")
+    rows = [
+        generators.Generator("producer", (), True, ()),
+        generators.Generator("host-input", ("producer",), False, ()),
+    ]
+    monkeypatch.setattr(generators, "ROOT", tmp_path)
+    monkeypatch.setattr(generators, "manifest_generators", lambda: rows)
+    monkeypatch.setattr(
+        generators.harness_memory_guard,
+        "repo_process_sentinel",
+        lambda **_: nullcontext(),
+    )
+    rendered = []
+    monkeypatch.setattr(
+        generators,
+        "load_generator",
+        lambda tool: SimpleNamespace(
+            generated_outputs=lambda: rendered.append(tool) or {}
+        ),
+    )
+    arguments = ["write", "--only", "producer"]
+    if explicit_host:
+        assert generators.main([*arguments, "--only", "host-input"]) == 0
+        assert rendered == ["producer", "host-input"]
+    else:
+        with pytest.raises(SystemExit) as caught:
+            generators.main(arguments)
+        assert caught.value.code == 2
+        assert rendered == []
 
 
 def test_per_generator_check_command_is_flagged_as_duplicate(tmp_path: Path) -> None:
