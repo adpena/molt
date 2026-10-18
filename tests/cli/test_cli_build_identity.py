@@ -154,6 +154,9 @@ def test_concurrent_builds_of_same_named_programs_run_their_own_code(
         assert build.returncode == 0, (
             f"build {job} exited {build.returncode}\n{build.stdout}\n{build.stderr}"
         )
+        # A build must transfer its shared compiler daemon to the suite. Even
+        # when all programs finish first, command cleanup must not kill it.
+        assert not build.orphaned_process_groups, build.termination_reports
         expected = run_guarded_test_process(
             [sys.executable, str(source)],
             capture_output=True,

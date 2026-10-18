@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Generator, Mapping, MutableMapping
 from dataclasses import dataclass
 import contextlib
 import hashlib
@@ -39,6 +39,7 @@ _SHA = re.compile(r"[0-9a-f]{64}")
 # Fork children must not keep the owner's EOF pipe alive.
 _LEASE_PIPE_FDS: set[int] = set()
 _DRAIN_BUDGET_S = 5.0
+_LEASE_CLOSE_TIMEOUT_S = 7.0
 _LEASE_DESCRIPTOR_MUTEX = threading.Lock()
 _LEASE_FORK_LOCAL = threading.local()
 _LEASE_CHILD_CUSTODY_ERROR: str | None = None
@@ -983,7 +984,7 @@ class SuiteDaemonLease:
             _release_file_lock(lock)
             raise
 
-    def close(self, *, timeout: float = 7.0):
+    def close(self, *, timeout: float = _LEASE_CLOSE_TIMEOUT_S):
         # An inherited Python lease object never acquires the parent's custody.
         if self.record["owner_pid"] != os.getpid() or self.lock is None:
             return
@@ -1011,6 +1012,51 @@ class SuiteDaemonLease:
                     self.write_fd = -1
                 _release_file_lock(self.lock)
                 self.lock = None
+
+
+@contextlib.contextmanager
+def daemon_suite_scope(
+    *,
+    project_root: Path,
+    environ: MutableMapping[str, str],
+    close_timeout: float = _LEASE_CLOSE_TIMEOUT_S,
+) -> Generator[SuiteDaemonLease | None]:
+    """Own one suite receiver, or borrow an already live inherited receiver.
+
+    The creator alone closes its lease and restores the prior environment;
+    fork children retain inherited receiver identity without acquiring custody.
+    Windows retains its existing Job ownership and creates no POSIX receiver.
+    """
+    previous = environ.get(LEASE_ENV)
+    creator_pid = os.getpid()
+    owned = None
+    try:
+        if os.name == "posix":
+            inherited = None
+            if previous:
+                from tools.memory_guard_core.process_model import sample_processes
+
+                inherited = live_lease(
+                    Path(previous),
+                    project_root=project_root,
+                    samples=sample_processes(),
+                )
+            if inherited is None:
+                owned = SuiteDaemonLease.start(
+                    project_root=project_root, environ=environ
+                )
+                if owned is not None:
+                    environ[LEASE_ENV] = str(owned.path)
+        yield owned
+    finally:
+        if owned is not None and os.getpid() == creator_pid:
+            try:
+                owned.close(timeout=close_timeout)
+            finally:
+                if previous is None:
+                    environ.pop(LEASE_ENV, None)
+                else:
+                    environ[LEASE_ENV] = previous
 
 
 def drain_lease(path: Path) -> bool:

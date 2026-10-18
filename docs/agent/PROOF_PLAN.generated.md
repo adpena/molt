@@ -346,7 +346,7 @@ The wrapper conflict was reconfirmed by native CI run `30211145633` job `8981749
 |---|---:|---:|
 | `frontend-python` | 1 | 3 |
 | `build-output-identity` | 6 | 0 |
-| `backend-environment-contract` | 16 | 0 |
+| `backend-environment-contract` | 17 | 0 |
 | `bootstrap-stdlib` | 4 | 1 |
 | `heap-kind-lifetime-authority` | 6 | 1 |
 | `host-capability-authority` | 7 | 1 |
@@ -368,7 +368,7 @@ The wrapper conflict was reconfirmed by native CI run `30211145633` job `8981749
 | `dev-tooling` | 14 | 0 |
 | `host-entrypoint-imports` | 13 | 0 |
 | `host-capacity` | 9 | 0 |
-| `backend-daemon-custody` | 9 | 0 |
+| `backend-daemon-custody` | 11 | 0 |
 | `encoding-diagnostics` | 2 | 0 |
 | `runtime-cargo-input-custody` | 37 | 0 |
 | `rust-toolchain` | 11 | 1 |
