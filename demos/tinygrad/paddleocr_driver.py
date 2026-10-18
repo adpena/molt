@@ -26,9 +26,6 @@ Total model size: ~16.1 MB (detector 4.7 + classifier 0.6 + recognizer 10.8)
 """
 
 from __future__ import annotations
-from _intrinsics import require_intrinsic as _require_intrinsic
-
-_gpu_device = _require_intrinsic("molt_gpu_prim_device")
 
 from tinygrad.tensor import Tensor
 from tinygrad.dtypes import dtypes
