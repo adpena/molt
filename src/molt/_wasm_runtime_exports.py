@@ -20,7 +20,6 @@ from molt._wasm_abi_generated import (
     WASM_EXTERNAL_NATIVE_LINK_IMPORT_SYMBOL_KINDS,
     WASM_IMPORT_REGISTRY,
     WASM_RUNTIME_HOST_EXPORTS,
-    WASM_RUNTIME_IMPORT_FALLBACK_EXPORTS,
     wasm_import_signature,
     wasm_runtime_export_name,
 )
@@ -235,14 +234,6 @@ def wasm_cpython_abi_data_symbol_names() -> tuple[str, ...]:
 
 
 @lru_cache(maxsize=1)
-def _runtime_import_fallback_exports() -> dict[str, tuple[str, ...]]:
-    fallback_exports: dict[str, tuple[str, ...]] = {}
-    for import_name, exports in WASM_RUNTIME_IMPORT_FALLBACK_EXPORTS:
-        fallback_exports[_runtime_export_name_or_fail(import_name)] = tuple(exports)
-    return fallback_exports
-
-
-@lru_cache(maxsize=1)
 def wasm_runtime_import_names() -> tuple[str, ...]:
     return tuple(sorted(set(WASM_IMPORT_REGISTRY)))
 
@@ -405,11 +396,9 @@ def wasm_runtime_required_export_names(
             )
         )
     export_names = set(WASM_RUNTIME_HOST_EXPORTS)
-    fallback_exports = _runtime_import_fallback_exports()
     for raw_name in required_runtime_imports:
         name = _runtime_export_name_or_fail(raw_name)
         export_names.add(name)
-        export_names.update(fallback_exports.get(name, ()))
     return tuple(sorted(export_names))
 
 
@@ -441,8 +430,6 @@ def wasm_runtime_required_export_symbol_kinds(
         except ValueError:
             continue
         kinds[export_name] = _runtime_import_symbol_kind(raw_name)
-        for fallback in _runtime_import_fallback_exports().get(export_name, ()):
-            kinds[fallback] = "function"
     return kinds
 
 
@@ -455,12 +442,9 @@ def wasm_split_runtime_required_export_symbol_kinds(
     for raw_name in required_runtime_imports:
         try:
             split_name = _split_runtime_export_name_or_fail(raw_name)
-            fallback_key = _runtime_export_name_or_fail(raw_name)
         except ValueError:
             continue
         kinds[split_name] = _runtime_import_symbol_kind(raw_name)
-        for fallback in _runtime_import_fallback_exports().get(fallback_key, ()):
-            kinds[fallback] = "function"
     return kinds
 
 
@@ -479,9 +463,6 @@ def wasm_runtime_missing_required_exports(
             missing.add(raw_name)
             continue
         if name in available:
-            continue
-        fallback_exports = _runtime_import_fallback_exports().get(name)
-        if fallback_exports is not None and set(fallback_exports).issubset(available):
             continue
         missing.add(name)
     return missing
@@ -502,13 +483,6 @@ def wasm_split_runtime_missing_required_exports(
             missing.add(raw_name)
             continue
         if split_name in available:
-            continue
-        try:
-            fallback_key = _runtime_export_name_or_fail(raw_name)
-        except ValueError:
-            fallback_key = split_name
-        fallback_exports = _runtime_import_fallback_exports().get(fallback_key)
-        if fallback_exports is not None and set(fallback_exports).issubset(available):
             continue
         missing.add(split_name)
     return missing

@@ -28,8 +28,8 @@ Key characteristics of the current implementation:
 - **NaN-boxed object model**: Same 64-bit NaN-boxing scheme as native, with i64 as the universal value type.
 - **Relocatable object output**: Emits linking sections and relocation entries for `wasm-ld` to combine with the pre-compiled runtime `.wasm`.
 - **Generated and observed import surface**: `wasm_abi_manifest.toml` generates
-  the import registry/types, loop runtime calls, host exports, and fallback
-  exports. `wasm/module_abi/runtime_surface.rs` performs the single IR scan for
+  the import registry/types, loop runtime calls, host exports, and exact
+  runtime export identities/signatures. `wasm/module_abi/runtime_surface.rs` performs the single IR scan for
   module ABI facts, while code emission records actual import use in
   `TrackedImportIds`. Finalization strips unobserved imports before relocation
   and linking sections are emitted, so Auto/Pure retention is owned by emitted

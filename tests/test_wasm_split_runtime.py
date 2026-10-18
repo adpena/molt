@@ -1811,12 +1811,13 @@ class TestWorkerJsContent:
     def test_worker_builds_signature_aware_runtime_imports(self, split_build_a):
         content = self._read_worker(split_build_a)
         assert (
-            "const buildRuntimeImports = (module, runtimeInstance) => {" in content
+            "const buildRuntimeImports = (module, runtimeInstance) => bindRuntimeFunctionImports("
+            in content
         ), "worker.js must synthesize runtime imports from the app import surface"
         assert "const runtimeImportSignatures =" in content
         assert "const runtimeImportResultKinds =" in content
-        assert "const runtimeImportFallbacks =" in content
-        assert "runtimeFallback(entry.name)" in content
+        assert "bindRuntimeFunctionImports" in content
+        assert "name => runtimeImportExportNames[name] || null" in content
         assert "molt_string_from_bytes" in content
 
     def test_worker_sets_runtime_table_base(self, split_build_a):

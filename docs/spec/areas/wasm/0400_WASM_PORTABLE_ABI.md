@@ -63,6 +63,40 @@ A module is “portable” if it:
 
 ---
 
+## 2.4 Split-runtime import admission
+
+`runtime/molt-backend-wasm/src/wasm_abi_manifest.toml` owns each
+`molt_runtime` import's canonical export identity, machine signature and result
+ownership contract. Its generated Python and JSON projections serve the linker,
+runtime-image admission and hosts. Unknown manifest sections fail validation;
+derived projections are recomputed from source declarations.
+
+A requested import retains its exact export when linking the runtime image.
+Admission rejects an image missing any required export and reports the complete
+missing set. A borrowed getter or a call-builder with a compatible machine type
+cannot satisfy a different identity or result ownership contract. Optional
+features still follow the requested module's reachability and target plan.
+
+Node, browser host, browser embed and generated Workers use
+`bindRuntimeFunctionImports` in `wasm/loader_bridge.js` to bind the observed app
+imports once, before app instantiation. The split browser host instantiates and
+admits the runtime first; its deferred isolate bridge becomes callable after the
+app exists. Each binding captures the exact function and conversion adapter.
+Resolution costs O(imports) at startup, with no export lookup or adapter creation
+on subsequent calls. The missing-name set and sorting are allocated only on the
+error path. This is shipped host startup work; schema generation and image/link
+validation run in development or compilation, outside guest execution.
+
+This follows WebAssembly's
+[imported-instance construction](https://webassembly.org/getting-started/js-api/)
+and Wasmtime's
+[pre-instantiation import resolution](https://docs.wasmtime.dev/examples-fast-instantiation.html).
+Molt additionally preserves result ownership, which machine types alone cannot
+express. Wasm receiver tests execute all four actual host binders against real
+modules; product startup tests cover runtime/app initialization ordering.
+
+---
+
 ## 3. Memory Model and Data Passing
 
 ### 3.1 Linear memory

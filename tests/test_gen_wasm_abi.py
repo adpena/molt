@@ -1302,9 +1302,6 @@ def test_wasm_abi_manifest_owns_runtime_export_policy() -> None:
     host_export_signatures = {
         entry["name"]: entry for entry in data["runtime_host_export_signature"]
     }
-    fallback_specs = {
-        entry["import"]: entry for entry in data["runtime_import_fallback"]
-    }
 
     runtime_exports_path = ROOT / "src/molt/_wasm_runtime_exports.py"
     text = runtime_exports_path.read_text(encoding="utf-8")
@@ -1342,21 +1339,6 @@ def test_wasm_abi_manifest_owns_runtime_export_policy() -> None:
     }
     assert {"molt_gpu_matmul_contiguous", "molt_gpu_tensor__zeros"} <= host_exports
     assert "gpu_intrinsic_manifest_name" not in data
-    assert fallback_specs["fast_dict_get"] == {
-        "import": "fast_dict_get",
-        "strategy": "call_bind_ic",
-        "call_arity": 2,
-        "exports": [
-            "molt_call_bind_ic",
-            "molt_callargs_new",
-            "molt_callargs_push_pos",
-        ],
-    }
-    assert fallback_specs["dict_getitem"] == {
-        "import": "dict_getitem",
-        "strategy": "direct_export",
-        "exports": ["molt_dict_getitem_borrowed"],
-    }
 
     rendered_py = gen.render_py(data)
     rendered_js_abi = json.loads(gen.render_js_abi(data))
@@ -1365,8 +1347,8 @@ def test_wasm_abi_manifest_owns_runtime_export_policy() -> None:
     assert "WASM_GPU_INTRINSIC_MANIFEST_NAMES" not in rendered_py
     assert "WASM_RUNTIME_HOST_EXPORTS" in rendered_py
     assert "WASM_RUNTIME_HOST_EXPORT_SIGNATURES" in rendered_py
-    assert "WASM_RUNTIME_IMPORT_FALLBACK_EXPORTS" in rendered_py
-    assert "WASM_RUNTIME_IMPORT_FALLBACK_SPECS" in rendered_py
+    assert "WASM_RUNTIME_IMPORT_FALLBACK_EXPORTS" not in rendered_py
+    assert "WASM_RUNTIME_IMPORT_FALLBACK_SPECS" not in rendered_py
     assert "WASM_RUNTIME_IMPORT_EXPORT_NAMES" in rendered_py
     assert "WASM_RUNTIME_EXPORT_BY_IMPORT" in rendered_py
     assert "WASM_RUNTIME_IMPORT_BY_EXPORT" in rendered_py
@@ -1407,22 +1389,11 @@ def test_wasm_abi_manifest_owns_runtime_export_policy() -> None:
     assert rendered_js_abi["runtime_export_by_import"]["molt_PyArg_ParseTuple"] == (
         "molt_PyArg_ParseTuple"
     )
-    assert (
-        rendered_js_abi["runtime_import_canonical_names"]["molt_PyArg_ParseTuple"]
-        == "PyArg_ParseTuple"
-    )
+    assert "runtime_import_canonical_names" not in rendered_js_abi
     assert rendered_js_abi["runtime_export_by_import"]["PyType_Ready"] == (
         "molt_PyType_Ready"
     )
-    assert rendered_js_abi["runtime_import_fallbacks"]["fast_dict_get"] == {
-        "call_arity": 2,
-        "exports": [
-            "molt_call_bind_ic",
-            "molt_callargs_new",
-            "molt_callargs_push_pos",
-        ],
-        "strategy": "call_bind_ic",
-    }
+    assert "runtime_import_fallbacks" not in rendered_js_abi
     assert "runtime_export_name" in rendered_rs
     assert "RUNTIME_HOST_EXPORTS" in rendered_rs
     # The Python projection carries the table; Rust selects through a match.
@@ -1438,6 +1409,24 @@ def test_wasm_abi_manifest_owns_runtime_export_policy() -> None:
     assert 'Self::SocketDrop => "molt_socket_drop"' in rendered_rs
     rendered_namespace: dict[str, object] = {}
     exec(rendered_py, rendered_namespace)
+    # These independent public signatures must select the real producers, not
+    # call-bind builders or borrowed getters with a compatible machine type.
+    for name, arity in (
+        ("fast_list_append", 2),
+        ("fast_str_join", 2),
+        ("fast_dict_get", 3),
+        ("dict_setitem", 3),
+        ("dict_getitem", 2),
+        ("tuple_getitem", 2),
+    ):
+        export_name = f"molt_{name}"
+        assert rendered_namespace["wasm_runtime_export_name"](name) == export_name
+        assert rendered_namespace["wasm_runtime_import_name"](export_name) == name
+        assert rendered_namespace["wasm_import_signature"](name) == (
+            ("i64",) * arity,
+            ("i64",),
+        )
+        assert rendered_js_abi["runtime_export_by_import"][name] == export_name
     assert rendered_namespace["wasm_runtime_import_name"]("molt_none") == "molt_none"
     assert rendered_namespace["wasm_runtime_export_name"]("molt_none") == "molt_none"
     assert rendered_namespace["wasm_import_signature"]("molt_none") == (
@@ -3389,3 +3378,28 @@ def test_shared_boxed_ops_refuse_heterogeneous_protocols(mutation: str) -> None:
         entry["shared_boxed_call"] = "yes"
     with pytest.raises(manifest.WasmAbiManifestError, match="boxed"):
         manifest.runtime_boxed_op_specs(data)
+
+
+@pytest.mark.parametrize("field", ["runtime_import_fallback", "unrecognized_section"])
+def test_manifest_rejects_unknown_top_level_fields(field: str) -> None:
+    data = copy.deepcopy(gen_wasm_abi.load_manifest())
+    data[field] = []
+    with pytest.raises(
+        manifest.WasmAbiManifestError, match="unknown manifest fields"
+    ) as error:
+        manifest.validate_loaded_manifest(data)
+    assert field in str(error.value)
+
+
+def test_manifest_field_authority_covers_sources_and_recomputes_projections() -> None:
+    raw = tomllib.loads(manifest.MANIFEST.read_text(encoding="utf-8"))
+    assert set(raw) == manifest.MANIFEST_FIELDS
+    loaded = copy.deepcopy(gen_wasm_abi.load_manifest())
+    expected = manifest.validate_loaded_manifest(copy.deepcopy(loaded))
+    assert set(expected) <= manifest.MANIFEST_FIELDS | manifest.DERIVED_MANIFEST_FIELDS
+    assert set(expected) - set(raw) == manifest.DERIVED_MANIFEST_FIELDS
+    for field in manifest.DERIVED_MANIFEST_FIELDS:
+        loaded[field] = {"untrusted_projection": True}
+    actual = manifest.validate_loaded_manifest(loaded)
+    for field in manifest.DERIVED_MANIFEST_FIELDS:
+        assert actual[field] == expected[field], field

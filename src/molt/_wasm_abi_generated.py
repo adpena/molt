@@ -13807,24 +13807,6 @@ WASM_RUNTIME_HOST_EXPORTS: frozenset[str] = frozenset(
     }
 )
 
-WASM_RUNTIME_IMPORT_FALLBACK_EXPORTS: tuple[tuple[str, tuple[str, ...]], ...] = (
-    ("fast_list_append", ("molt_call_bind_ic", "molt_callargs_new", "molt_callargs_push_pos")),
-    ("fast_str_join", ("molt_call_bind_ic", "molt_callargs_new", "molt_callargs_push_pos")),
-    ("fast_dict_get", ("molt_call_bind_ic", "molt_callargs_new", "molt_callargs_push_pos")),
-    ("dict_setitem", ("molt_dict_set",)),
-    ("dict_getitem", ("molt_dict_getitem_borrowed",)),
-    ("tuple_getitem", ("molt_tuple_getitem_borrowed",)),
-)
-
-WASM_RUNTIME_IMPORT_FALLBACK_SPECS: tuple[tuple[str, str, int | None, tuple[str, ...]], ...] = (
-    ("fast_list_append", "call_bind_ic", 1, ("molt_call_bind_ic", "molt_callargs_new", "molt_callargs_push_pos")),
-    ("fast_str_join", "call_bind_ic", 1, ("molt_call_bind_ic", "molt_callargs_new", "molt_callargs_push_pos")),
-    ("fast_dict_get", "call_bind_ic", 2, ("molt_call_bind_ic", "molt_callargs_new", "molt_callargs_push_pos")),
-    ("dict_setitem", "direct_export", None, ("molt_dict_set",)),
-    ("dict_getitem", "direct_export", None, ("molt_dict_getitem_borrowed",)),
-    ("tuple_getitem", "direct_export", None, ("molt_tuple_getitem_borrowed",)),
-)
-
 WASM_LINK_ALLOWED_IMPORTS: tuple[str, ...] = (
     "args_sizes_get",
     "args_get",
