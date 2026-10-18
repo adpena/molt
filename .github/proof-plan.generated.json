@@ -374,7 +374,7 @@
     "tests/tools/test_win_job_contract.py",
     "tests/tools/test_windows_process_api.py"
   ],
-  "authority_sha256": "74eaf925267ccb09820f2ad43f7e6d5f19774bd4cb037453afead208dff81592",
+  "authority_sha256": "eea7c7a1c5608acf788f5cd205dad763a6bf0be335722b5b443440226f65fd60",
   "cargo_environment_policy": {
     "incident_command": "cargo metadata --locked --format-version 1",
     "incident_commit": "20b046b79bd4ca64a8c859f737f6e330377bcc4e",
@@ -1453,7 +1453,8 @@
         "pytest",
         "-q",
         "-n",
-        "2",
+        "auto",
+        "--molt-worker-memory-gb=1.25",
         "tests/fuzz/test_fuzz_differential.py",
         "tests/fuzz/test_fuzz_extended.py"
       ],
@@ -6599,7 +6600,8 @@
         "pytest",
         "-q",
         "-n",
-        "2",
+        "auto",
+        "--molt-worker-memory-gb=3.25",
         "--durations=10",
         "tests/metamorphic"
       ],
