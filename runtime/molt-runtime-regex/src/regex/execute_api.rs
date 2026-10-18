@@ -23,8 +23,12 @@ pub extern "C" fn molt_re_execute(
         let Some(mode) = string_obj_to_owned(obj_from_bits(mode_bits)) else {
             return raise_exception::<_>(_py, "TypeError", "mode must be str");
         };
-        let pos = pos.max(0) as usize;
-        let end = end.max(0) as usize;
+        let mode = match MatchMode::try_from(mode.as_str()) {
+            Ok(mode) => mode,
+            Err(error) => return match_error_result(_py, error),
+        };
+        let pos = usize::try_from(pos.max(0)).unwrap_or(usize::MAX);
+        let end = usize::try_from(end.max(0)).unwrap_or(usize::MAX);
         let subject_obj = obj_from_bits(text_bits);
         let matched = if compiled.compiled.is_bytes {
             let Some(bytes) = (unsafe { bytes_obj_to_borrowed(subject_obj) }) else {
@@ -34,7 +38,7 @@ pub extern "C" fn molt_re_execute(
                     "cannot use a bytes pattern on a string-like object",
                 );
             };
-            execute_match_bytes(&compiled.compiled, bytes, pos, end, &mode)
+            execute_match_bytes(&compiled.compiled, bytes, pos, end, mode)
         } else {
             let Some(text) = string_obj_to_owned(subject_obj) else {
                 return raise_exception::<_>(
@@ -43,7 +47,7 @@ pub extern "C" fn molt_re_execute(
                     "cannot use a string pattern on a bytes-like object",
                 );
             };
-            execute_match(&compiled.compiled, &text, pos, end, &mode)
+            execute_match(&compiled.compiled, &text, pos, end, mode)
         };
         match matched {
             Ok(Some(result)) => {
@@ -74,8 +78,8 @@ pub extern "C" fn molt_re_scanner_new(
         let Some(end) = to_i64(obj_from_bits(end_bits)) else {
             return raise_exception::<_>(_py, "TypeError", "end must be int");
         };
-        let pos = pos.max(0) as usize;
-        let end = end.max(0) as usize;
+        let pos = usize::try_from(pos.max(0)).unwrap_or(usize::MAX);
+        let end = usize::try_from(end.max(0)).unwrap_or(usize::MAX);
         let subject = obj_from_bits(subject_bits);
         let (text_chars, subject_len) = if pattern.compiled.is_bytes {
             let Some(bytes) = (unsafe { bytes_obj_to_borrowed(subject) }) else {
@@ -85,9 +89,6 @@ pub extern "C" fn molt_re_scanner_new(
                     "cannot use a bytes pattern on a string-like object",
                 );
             };
-            if pos > bytes.len() {
-                return raise_exception::<_>(_py, "ValueError", "pos out of range");
-            }
             (None, bytes.len())
         } else {
             let Some(text) = string_obj_to_owned(subject) else {
@@ -97,15 +98,16 @@ pub extern "C" fn molt_re_scanner_new(
                     "cannot use a string pattern on a bytes-like object",
                 );
             };
-            let chars: Vec<char> = text.chars().collect();
-            if pos > chars.len() {
-                return raise_exception::<_>(_py, "ValueError", "pos out of range");
+            let mut chars = Vec::new();
+            if let Err(error) = chars.try_reserve_exact(text.len()) {
+                return match_error_result(_py, error.into());
             }
+            chars.extend(text.chars());
             let len = chars.len();
             (Some(chars), len)
         };
         let end = end.min(subject_len);
-        let scanner = ScannerHandle::new(pattern, pos.min(end), end, text_chars);
+        let scanner = ScannerHandle::new(pattern, pos.min(subject_len), end, text_chars);
         match scanner_handle_new(Arc::new(Mutex::new(scanner))) {
             Some(bits) => bits,
             None => MoltObject::none().bits(),
@@ -140,11 +142,7 @@ pub extern "C" fn molt_re_finditer_next(scanner_bits: u64, subject_bits: u64) ->
                     "expected a contiguous bytes-like memoryview",
                 );
             };
-            advance_scanner(
-                &pattern.compiled,
-                &mut scanner,
-                SubjectStorage::Bytes(bytes),
-            )
+            advance_scanner(&mut scanner, SubjectStorage::Bytes(bytes))
         } else {
             let Some(chars) = scanner.text_chars.take() else {
                 drop(scanner);
@@ -154,11 +152,7 @@ pub extern "C" fn molt_re_finditer_next(scanner_bits: u64, subject_bits: u64) ->
                     "text scanner has no prepared subject",
                 );
             };
-            let result = advance_scanner(
-                &pattern.compiled,
-                &mut scanner,
-                SubjectStorage::Text(&chars),
-            );
+            let result = advance_scanner(&mut scanner, SubjectStorage::Text(&chars));
             scanner.text_chars = Some(chars);
             result
         };
@@ -172,36 +166,35 @@ pub extern "C" fn molt_re_finditer_next(scanner_bits: u64, subject_bits: u64) ->
 }
 
 pub(super) fn advance_scanner(
-    compiled: &CompiledPattern,
     scanner: &mut ScannerHandle,
     subject: SubjectStorage<'_>,
 ) -> Result<Option<MatchResult>, MatchError> {
-    while scanner.pos <= scanner.end {
-        let mode = if scanner.must_advance {
-            "search_nonempty"
-        } else {
-            "search"
-        };
-        let result = execute_match_subject(compiled, subject, scanner.pos, scanner.end, mode)?;
-        let Some(result) = result else {
-            if scanner.must_advance && scanner.pos < scanner.end {
-                scanner.pos += 1;
-                scanner.must_advance = false;
-                continue;
-            }
-            scanner.finished = true;
-            return Ok(None);
-        };
-        scanner.must_advance = result.start == result.end;
-        scanner.pos = if result.start == result.end {
-            result.start
-        } else {
-            result.end
-        };
-        return Ok(Some(result));
+    if scanner.finished || scanner.pos > scanner.end {
+        scanner.finished = true;
+        return Ok(None);
     }
-    scanner.finished = true;
-    Ok(None)
+    let mode = if scanner.must_advance {
+        MatchMode::SearchNonempty
+    } else {
+        MatchMode::Search
+    };
+    // Search already retries every eligible start, including a consuming
+    // alternative at the previous empty match. No post-failure rescan is needed.
+    // Keep cursor state unchanged until execution returns a successful outcome.
+    let result = execute_match_subject(
+        &scanner.pattern.compiled,
+        subject,
+        scanner.pos,
+        scanner.end,
+        mode,
+    )?;
+    if let Some(result) = &result {
+        scanner.must_advance = result.start == result.end;
+        scanner.pos = result.end;
+    } else {
+        scanner.finished = true;
+    }
+    Ok(result)
 }
 
 pub(super) fn build_match_result_bits(
@@ -265,6 +258,12 @@ pub(super) fn match_error_result(py: &CoreGilToken, error: MatchError) -> u64 {
     match error {
         MatchError::Memory => {
             raise_exception::<_>(py, "MemoryError", "regex workspace allocation failed")
+        }
+        MatchError::InvalidMode => {
+            raise_exception::<_>(py, "ValueError", "invalid regex match mode")
+        }
+        MatchError::Internal => {
+            raise_exception::<_>(py, "SystemError", "invalid regex capture marks")
         }
     }
 }

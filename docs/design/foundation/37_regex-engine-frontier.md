@@ -16,10 +16,12 @@ executable pattern payload. Compilation consumes it into an immutable typed
 instruction `Program` in `CompiledPattern`; `PatternHandle` owns that program.
 There is no runtime AST interpreter or alternate compatibility matcher.
 
-The instruction set gives alternatives explicit ordered successors, records group
-opening and closing, carries effective flags on predicates and assertions, and
+The instruction set gives alternatives explicit ordered successors, records independent raw group
+start/end marks, carries effective flags on predicates and assertions, and
 represents conditional groups and backreferences directly. Captures remain indexed
-by parsed group identity. Scoped flags affect compilation of their subtree; they
+by parsed group identity. Conditionals and backreferences validate the current
+start against the previous end mark; opening a repeated group must not expose
+a stale completed span. Invalid completed mark order is an internal error. Scoped flags affect compilation of their subtree; they
 cannot be lost when its continuation forces backtracking.
 
 The matcher uses an explicit choice stack and a trail of changed capture/repeat
@@ -32,7 +34,12 @@ CPython-backed fixture consume that same boundary.
 Fullmatch's end constraint and scanner `must_advance` are acceptance conditions.
 If the first successful path violates either, the VM retries alternatives at that
 same start. Rejecting the final result after the matcher has discarded alternatives
-would produce false no-match answers. Search reuses one workspace across starts.
+would produce false no-match answers. Search reuses one workspace across starts. Modes are a closed type inside the
+engine; only the public boundary parses their textual protocol, and invalid modes
+raise ValueError. Bounds clamp independently to physical length. CPython permits
+an empty anchored match beyond endpos, while search/fullmatch/iteration fail.
+The scanner owns its compiled pattern and commits cursor updates after execution;
+its old post-exhaustion rescan is deleted.
 
 Lookaround has an explicit frame with its original position, capture checkpoint,
 and alternative-stack barrier. A successful positive assertion retains captures
@@ -41,9 +48,11 @@ Lookbehind requires a fixed width and acceptance at its original position; neste
 lookahead still sees the original subject end. Shortening the visible subject to
 the lookbehind end would change nested assertion semantics.
 
-Counted repeats use a compact counter and cursor, not an instruction expansion
-proportional to the numeric bound. Their zero-width progress guard permits required
-iterations and terminates optional stalled iterations. Generic repeat alternatives
+Counted repeats use a compact counter and optional-iteration start, not an
+instruction expansion proportional to the numeric bound. Mandatory iterations
+never update the optional progress guard. After an empty mandatory iteration, the
+first optional iteration is still eligible; its own empty completion stops a
+second optional iteration at that position. Generic repeat alternatives
 and capture state participate in the same undo protocol as ordinary branches.
 
 A structural fixed-width repeat plan handles nonbranching positive-width atoms,
@@ -67,11 +76,16 @@ CPython literal parsing and its warning.
 
 Execution prepares a text index once per operation, or borrows byte input. Its
 base workspace scales with capture and generic repeat slots. Choice, assertion and
-undo storage grow with live backtracking history; allocation failure propagates as
+undo storage grow with live backtracking history; their allocation failure propagates as
 `MemoryError` through direct execution, iteration, split and substitution. A depth
 ceiling or allocation refusal must never return no-match. The matcher itself has
 no recursive execution calls. Parser/compiler recursion is a separate admission
-and failure obligation.
+and failure obligation. This is a VM-workspace guarantee: some bridge subject
+copies and split/substitution buffers still allocate infallibly. Full operation
+OOM handling remains required. The VM currently has no signal safepoint; adding
+CPython-compatible interruption must release borrowed byte views and scanner locks
+before handlers run, then resume the same execution if a handler returns. It
+cannot be implemented by restarting matching or imposing a silent step budget.
 
 Fixed-width repeat cursor state is independent of input length, apart from the
 prepared text index and fixed capture recipes. Generic backtracking can still take
@@ -94,14 +108,20 @@ development side; emitted programs pay only for their required matching machiner
   scanning, assertion atomicity, replacement/split semantics and error behavior
   across text/bytes, native/WASM, supported Python versions and runtime profiles.
   Existing public differential carriers and pure Rust vectors own the first
-  continuation/capture family; the complete CPython regex corpus and adversarial
+  continuation/capture family. Every existing `re_*.py` carrier automatically joins
+  the owning native/WASM cohort; the complete CPython regex corpus and adversarial
   grammar-generated cases remain broader acceptance.
 * Provide bounded regular execution and bounded memory without weakening match
   priority or captures. Thompson/Pike execution, bounded backtracking and prefilters
-  are possible algorithms over the same semantic program. Algorithm admission must
+  require separate semantic proofs over the same program. Nullable-loop captures
+  distinguish states with the same program/input position; counted loops add
+  counter state. A plain Pike `(pc, position)` deduplication is unsound here.
+  Selective failure memoization is a candidate that preserves match priority when
+  its key includes the required loop-progress and counter state. Algorithm admission must
   be explicit at compilation. Backreferences and other nonregular behavior require
   a documented resource-failure policy; failed matching is not feature detection.
-  A second engine with an independently drifting parser/flag/capture model is not
+  Signal delivery, raising/nonraising handlers and scanner reentry are explicit
+  acceptance cells. A second engine with an independently drifting parser/flag/capture model is not
   an acceptable shortcut.
 * Replace Rust-scalar/lossy pattern and subject preparation with canonical Python
   code points from runtime-core text storage, including raw surrogates. Captured
@@ -110,7 +130,9 @@ development side; emitted programs pay only for their required matching machiner
   IGNORECASE equivalences, ASCII/bytes/locale rules and Python-version changes such
   as empty-subject `\B`. Ambient host Unicode tables cannot define target semantics.
 * Complete atomic-group and possessive-quantifier parsing/execution and faithfully
-  reject invalid syntax. Do not add non-CPython regex dialect extensions as an
+  reject invalid syntax. Keep their control protocols distinct: CPython 3.12's
+  `(?:a|ab){2}+` fails on `abab`, while `(?>(?:a|ab){2})` matches `aba`.
+  Possessive iteration barriers cannot simply wrap an ordinary counted repeat. Do not add non-CPython regex dialect extensions as an
   ecosystem workaround. CPython-version admission also owns bound limits, error
   locations, named groups and width analysis.
 * Qualify pathological matching and long-input behavior, CPU and peak-memory cost,
@@ -136,6 +158,13 @@ show prioritized Thompson states, capture workspace and explicit bounded visitat
 They establish algorithm precedents, not automatic Python compatibility. Any use of
 these crates must account for target-versioned Unicode, Python captures and bounds,
 bytes/locale semantics, assertions and nonregular syntax before claiming parity.
+
+[Ruby 3.2's regex memoization](https://www.ruby-lang.org/en/news/2022/12/25/ruby-3-2-0-released/)
+and [Davis et al., S&P 2021](https://www3.cs.stonybrook.edu/~dongyoon/papers/SP-21-Memoization.pdf)
+provide a failure-memoization precedent and its memory trade. They do not prove a
+Molt admission class or CPython nullable-loop capture equivalence. A memoized
+executor must be compared with the nonmemoized semantic authority and CPython;
+no unverified timeout or default step budget is introduced by this migration.
 
 [RE2's syntax contract](https://github.com/google/re2/blob/main/doc/syntax.txt)
 makes its omitted nonregular constructs explicit. Molt must preserve its declared

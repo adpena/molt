@@ -76,11 +76,7 @@ pub extern "C" fn molt_re_split(handle_bits: u64, text_bits: u64, maxsplit_bits:
         };
         let mut scanner = ScannerHandle::new(Arc::clone(&compiled), 0, text_len, None);
         while limit.is_none_or(|lim| splits < lim) {
-            let result = match super::execute_api::advance_scanner(
-                &compiled.compiled,
-                &mut scanner,
-                subject,
-            ) {
+            let result = match super::execute_api::advance_scanner(&mut scanner, subject) {
                 Ok(Some(result)) => result,
                 Ok(None) => break,
                 Err(error) => return match_error_result(_py, error),
@@ -222,7 +218,6 @@ pub extern "C" fn molt_re_sub(
         let mut scanner = ScannerHandle::new(Arc::clone(&compiled), 0, text_len, None);
         while limit.is_none_or(|lim| replaced < lim) {
             let result = match super::execute_api::advance_scanner(
-                &compiled.compiled,
                 &mut scanner,
                 SubjectStorage::Text(&chars),
             ) {
@@ -310,15 +305,12 @@ fn molt_re_sub_bytes(
     let text_len = text.len();
     let mut scanner = ScannerHandle::new(Arc::clone(compiled), 0, text_len, None);
     while limit.is_none_or(|n| replaced < n) {
-        let result = match super::execute_api::advance_scanner(
-            &compiled.compiled,
-            &mut scanner,
-            SubjectStorage::Bytes(text),
-        ) {
-            Ok(Some(result)) => result,
-            Ok(None) => break,
-            Err(error) => return match_error_result(py, error),
-        };
+        let result =
+            match super::execute_api::advance_scanner(&mut scanner, SubjectStorage::Bytes(text)) {
+                Ok(Some(result)) => result,
+                Ok(None) => break,
+                Err(error) => return match_error_result(py, error),
+            };
         let (start, end) = (result.start, result.end);
         out.extend_from_slice(&text[last..start]);
         let expanded = match expand_match_replacement(

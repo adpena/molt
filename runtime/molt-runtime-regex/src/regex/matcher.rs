@@ -1,4 +1,5 @@
 use super::*;
+use std::num::NonZeroUsize;
 
 #[derive(Clone, Copy)]
 pub(super) enum SubjectStorage<'a> {
@@ -22,16 +23,27 @@ impl SubjectStorage<'_> {
     }
 }
 
+/// Subject slices cannot exceed isize::MAX bytes, so position + 1 is nonzero
+/// and fits usize. This keeps each optional mark one machine word.
+fn position_mark(pos: usize) -> NonZeroUsize {
+    NonZeroUsize::new(pos + 1).expect("subject position fits a nonzero mark")
+}
+
+#[derive(Clone, Copy, Default)]
+struct Marks {
+    start: Option<NonZeroUsize>,
+    end: Option<NonZeroUsize>,
+}
+
 #[derive(Clone, Copy, Default)]
 struct RepeatState {
     count: u64,
-    cursor: usize,
-    stalled: bool,
+    last_optional_start: Option<NonZeroUsize>,
 }
 
 enum Undo {
-    Start(u32, Option<usize>),
-    Capture(u32, Option<(usize, usize)>),
+    Start(u32, Option<NonZeroUsize>),
+    End(u32, Option<NonZeroUsize>),
     LastIndex(Option<u32>),
     Repeat(usize, RepeatState),
 }
@@ -59,8 +71,7 @@ pub(super) struct Matcher<'a> {
     compiled: &'a CompiledPattern,
     subject: SubjectStorage<'a>,
     end: usize,
-    starts: Vec<Option<usize>>,
-    groups: Vec<Option<(usize, usize)>>,
+    marks: Vec<Marks>,
     lastindex: Option<u32>,
     repeats: Vec<RepeatState>,
     undo: Vec<Undo>,
@@ -86,8 +97,7 @@ impl<'a> Matcher<'a> {
             compiled,
             subject,
             end,
-            starts: slots(count, None)?,
-            groups: slots(count, None)?,
+            marks: slots(count, Marks::default())?,
             lastindex: None,
             repeats: slots(compiled.program.repeats, RepeatState::default())?,
             undo: Vec::new(),
@@ -99,8 +109,8 @@ impl<'a> Matcher<'a> {
     fn rollback(&mut self, checkpoint: usize) {
         while self.undo.len() > checkpoint {
             match self.undo.pop().expect("undo checkpoint") {
-                Undo::Start(index, value) => self.starts[index as usize] = value,
-                Undo::Capture(index, value) => self.groups[index as usize] = value,
+                Undo::Start(index, value) => self.marks[index as usize].start = value,
+                Undo::End(index, value) => self.marks[index as usize].end = value,
                 Undo::LastIndex(value) => self.lastindex = value,
                 Undo::Repeat(index, value) => self.repeats[index] = value,
             }
@@ -108,21 +118,28 @@ impl<'a> Matcher<'a> {
     }
 
     fn start_group(&mut self, index: u32, pos: usize) -> Result<(), MatchError> {
-        let old = self.starts[index as usize];
+        let old = self.marks[index as usize].start;
         checked_push(&mut self.undo, Undo::Start(index, old))?;
-        self.starts[index as usize] = Some(pos);
+        self.marks[index as usize].start = Some(position_mark(pos));
         Ok(())
     }
 
-    fn capture(&mut self, index: u32, start: usize, end: usize) -> Result<(), MatchError> {
+    fn capture(&mut self, index: u32, end: usize) -> Result<(), MatchError> {
         checked_push(
             &mut self.undo,
-            Undo::Capture(index, self.groups[index as usize]),
+            Undo::End(index, self.marks[index as usize].end),
         )?;
         checked_push(&mut self.undo, Undo::LastIndex(self.lastindex))?;
-        self.groups[index as usize] = Some((start, end));
+        self.marks[index as usize].end = Some(position_mark(end));
         self.lastindex = Some(index);
         Ok(())
+    }
+
+    fn group(&self, index: u32) -> Option<(usize, usize)> {
+        let marks = self.marks.get(index as usize)?;
+        let start = marks.start?.get() - 1;
+        let end = marks.end?.get() - 1;
+        (end >= start).then_some((start, end))
     }
 
     fn repeat(&mut self, id: usize, value: RepeatState) -> Result<(), MatchError> {
@@ -163,7 +180,7 @@ impl<'a> Matcher<'a> {
             let start = pos - single.width;
             for recipe in &single.captures {
                 self.start_group(recipe.index, start + recipe.start)?;
-                self.capture(recipe.index, start + recipe.start, start + recipe.end)?;
+                self.capture(recipe.index, start + recipe.end)?;
             }
         }
         Ok(())
@@ -325,13 +342,14 @@ impl<'a> Matcher<'a> {
                     pc = next;
                 }
                 Instruction::GroupEnd { index, next } => {
-                    let start =
-                        self.starts[index as usize].expect("compiled group start dominates end");
-                    self.capture(index, start, pos)?;
+                    if self.marks[index as usize].start.is_none() {
+                        return Err(MatchError::Internal);
+                    }
+                    self.capture(index, pos)?;
                     pc = next;
                 }
                 Instruction::Backref { index, flags, next } => {
-                    if let Some((start, end)) = self.groups.get(index as usize).copied().flatten() {
+                    if let Some((start, end)) = self.group(index) {
                         let width = end - start;
                         if width <= self.end.saturating_sub(pos)
                             && (0..width).all(|offset| {
@@ -353,11 +371,7 @@ impl<'a> Matcher<'a> {
                     }
                 }
                 Instruction::Conditional { index, yes, no } => {
-                    pc = if self.groups.get(index as usize).is_some_and(Option::is_some) {
-                        yes
-                    } else {
-                        no
-                    };
+                    pc = if self.group(index).is_some() { yes } else { no };
                 }
                 Instruction::Assert {
                     entry,
@@ -390,49 +404,53 @@ impl<'a> Matcher<'a> {
                     }
                 }
                 Instruction::RepeatEnter { id, next } => {
-                    self.repeat(
-                        id,
-                        RepeatState {
-                            count: 0,
-                            cursor: pos,
-                            stalled: false,
-                        },
-                    )?;
+                    self.repeat(id, RepeatState::default())?;
                     pc = next;
                 }
                 Instruction::Repeat {
                     id,
                     body,
+                    optional,
                     min,
                     max,
                     greedy,
                     next,
                 } => {
                     let state = self.repeats[id];
-                    let more = max.is_none_or(|max| state.count < max)
-                        && (!state.stalled || state.count < min);
                     if state.count < min {
-                        if more {
-                            pc = body;
+                        pc = body;
+                    } else if max.is_none_or(|max| state.count < max)
+                        && state.last_optional_start != Some(position_mark(pos))
+                    {
+                        let (first, second) = if greedy {
+                            (optional, next)
                         } else {
-                            failed = true;
-                        }
-                    } else if more {
-                        let (first, second) = if greedy { (body, next) } else { (next, body) };
+                            (next, optional)
+                        };
                         self.choose(Retry::Resume { pc: second, pos })?;
                         pc = first;
                     } else {
                         pc = next;
                     }
                 }
-                Instruction::RepeatStep { id, next } => {
-                    let old = self.repeats[id];
+                Instruction::RepeatOptional { id, next } => {
+                    let state = self.repeats[id];
                     self.repeat(
                         id,
                         RepeatState {
-                            count: old.count + 1,
-                            cursor: pos,
-                            stalled: pos == old.cursor,
+                            last_optional_start: Some(position_mark(pos)),
+                            ..state
+                        },
+                    )?;
+                    pc = next;
+                }
+                Instruction::RepeatStep { id, next } => {
+                    let state = self.repeats[id];
+                    self.repeat(
+                        id,
+                        RepeatState {
+                            count: state.count + 1,
+                            ..state
                         },
                     )?;
                     pc = next;
@@ -458,13 +476,23 @@ impl<'a> Matcher<'a> {
         }
     }
 
-    pub(super) fn result(self, start: usize, end: usize) -> MatchResult {
-        MatchResult {
+    pub(super) fn result(self, start: usize, end: usize) -> Result<MatchResult, MatchError> {
+        let mut groups = Vec::new();
+        groups.try_reserve_exact(self.marks.len())?;
+        for marks in self.marks {
+            let group = match (marks.start, marks.end) {
+                (Some(start), Some(end)) if end >= start => Some((start.get() - 1, end.get() - 1)),
+                (Some(_), Some(_)) => return Err(MatchError::Internal),
+                _ => None,
+            };
+            groups.push(group);
+        }
+        Ok(MatchResult {
             start,
             end,
-            groups: self.groups,
+            groups,
             lastindex: self.lastindex,
-        }
+        })
     }
 }
 
@@ -607,8 +635,7 @@ mod workspace_tests {
             assert_eq!(matcher.run(0, true, None).unwrap(), Some(len));
             // Capacities retain peak allocations. This budget excludes the
             // deliberately prepared subject and includes every VM workspace.
-            let bytes = matcher.starts.capacity() * size_of::<Option<usize>>()
-                + matcher.groups.capacity() * size_of::<Option<(usize, usize)>>()
+            let bytes = matcher.marks.capacity() * size_of::<Marks>()
                 + matcher.repeats.capacity() * size_of::<RepeatState>()
                 + matcher.undo.capacity() * size_of::<Undo>()
                 + matcher.choices.capacity() * size_of::<Choice>()
@@ -617,7 +644,7 @@ mod workspace_tests {
                 bytes < 8192,
                 "fixed-width repeat retained {bytes} workspace bytes for {len} units"
             );
-            let result = matcher.result(0, len);
+            let result = matcher.result(0, len).unwrap();
             assert_eq!(
                 &result.groups[1..],
                 &[
@@ -650,7 +677,7 @@ mod workspace_tests {
             2,
             "literal length must not expand VM dispatch storage"
         );
-        let matched = execute_match(&compiled, &text, 0, text.len(), "fullmatch")
+        let matched = execute_match(&compiled, &text, 0, text.len(), MatchMode::FullMatch)
             .unwrap()
             .unwrap();
         assert_eq!(

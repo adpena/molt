@@ -1,5 +1,27 @@
 use super::*;
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum MatchMode {
+    Match,
+    FullMatch,
+    Search,
+    SearchNonempty,
+}
+
+impl TryFrom<&str> for MatchMode {
+    type Error = MatchError;
+
+    fn try_from(value: &str) -> Result<Self, Self::Error> {
+        match value {
+            "match" => Ok(Self::Match),
+            "fullmatch" => Ok(Self::FullMatch),
+            "search" => Ok(Self::Search),
+            "search_nonempty" => Ok(Self::SearchNonempty),
+            _ => Err(MatchError::InvalidMode),
+        }
+    }
+}
+
 /// Successful execution, including group closing order (not highest group id).
 #[derive(Debug)]
 pub(super) struct MatchResult {
@@ -15,7 +37,7 @@ pub(super) fn execute_match(
     text: &str,
     pos: usize,
     end: usize,
-    mode: &str,
+    mode: MatchMode,
 ) -> Result<Option<MatchResult>, MatchError> {
     let mut chars = Vec::new();
     // Reserve from the byte bound once; per-start work borrows this index.
@@ -29,7 +51,7 @@ pub(super) fn execute_match_bytes(
     bytes: &[u8],
     pos: usize,
     end: usize,
-    mode: &str,
+    mode: MatchMode,
 ) -> Result<Option<MatchResult>, MatchError> {
     execute_match_subject(compiled, SubjectStorage::Bytes(bytes), pos, end, mode)
 }
@@ -39,23 +61,26 @@ pub(super) fn execute_match_subject(
     subject: SubjectStorage<'_>,
     pos: usize,
     end: usize,
-    mode: &str,
+    mode: MatchMode,
 ) -> Result<Option<MatchResult>, MatchError> {
-    if pos > end || end > subject.len() {
+    // CPython clamps each bound to the physical subject, independently.
+    // Anchored match may still produce an empty result beyond endpos.
+    let pos = pos.min(subject.len());
+    let end = end.min(subject.len());
+    if pos > end && mode != MatchMode::Match {
         return Ok(None);
     }
     let (search, fullmatch, require_advance) = match mode {
-        "match" => (false, false, None),
-        "fullmatch" => (false, true, None),
-        "search" => (true, false, None),
-        "search_nonempty" => (true, false, Some(pos)),
-        _ => return Ok(None),
+        MatchMode::Match => (false, false, None),
+        MatchMode::FullMatch => (false, true, None),
+        MatchMode::Search => (true, false, None),
+        MatchMode::SearchNonempty => (true, false, Some(pos)),
     };
     let mut matcher = Matcher::new(compiled, subject, end)?;
     let last_start = if search { end } else { pos };
     for start in pos..=last_start {
         if let Some(end) = matcher.run(start, fullmatch, require_advance)? {
-            return Ok(Some(matcher.result(start, end)));
+            return Ok(Some(matcher.result(start, end)?));
         }
     }
     Ok(None)
