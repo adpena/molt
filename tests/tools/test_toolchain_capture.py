@@ -2145,6 +2145,88 @@ def test_rust_link_capture_declares_exact_msvc_build_tool_family(
     assert reused == telemetry
 
 
+@pytest.mark.parametrize("role", ["native-resource", "compiler-rt"])
+def test_native_file_watch_selection_never_admits_its_parent_tree(tmp_path, role):
+    from tools.proof_queue_pkg import execution_custody, execution_environment
+
+    source = tmp_path / "source"
+    source.mkdir()
+    library = tmp_path / "system-lib"
+    library.mkdir()
+    selected = library / ("forced-include.h" if role == "native-resource" else "rt.a")
+    selected.write_bytes(b"selected compiler input")
+    unrelated = library / "unrelated-input"
+    unrelated.write_bytes(b"outside selected custody")
+    identity = (
+        {
+            "link_selection": {
+                "native_build": [{"selection": {"resource_roots": [str(selected)]}}]
+            }
+        }
+        if role == "native-resource"
+        else {"link_inputs": {"compiler_rt": {"path": str(selected)}}}
+    )
+
+    roots = execution_environment._broad_toolchain_roots({"rustc": identity})
+    assert roots == []
+    specs = execution_custody.watch_specs(
+        source_root=source, tracked_paths=[], identities=[identity], broad_roots=roots
+    )
+    owner = next(spec for spec in specs if spec.root == library.resolve())
+    assert owner.paths is not None
+    assert owner.owns(selected)
+    assert not owner.owns(unrelated)
+    selected.unlink()
+    assert owner.owns(selected), "removing a selected input must retain its event"
+
+
+def test_native_directory_resource_alias_has_exact_selection_and_broad_content(
+    tmp_path,
+):
+    from tools.proof_queue_pkg import execution_custody, execution_environment
+
+    source = tmp_path / "source"
+    source.mkdir()
+    resources = tmp_path / "physical-headers"
+    resources.mkdir()
+    header = resources / "selected.h"
+    header.write_bytes(b"selected header")
+    selection = tmp_path / "toolchain-selection"
+    selection.mkdir()
+    alias = selection / "include"
+    try:
+        alias.symlink_to(resources, target_is_directory=True)
+    except OSError as exc:
+        pytest.skip(f"directory symlink capability unavailable: {exc}")
+    unrelated = selection / "unrelated"
+    unrelated.write_bytes(b"not selected")
+    identity = {
+        "link_selection": {
+            "native_build": [{"selection": {"resource_roots": [str(alias)]}}]
+        }
+    }
+
+    roots = execution_environment._broad_toolchain_roots({"rustc": identity})
+    assert roots == [resources.resolve()]
+    specs = execution_custody.watch_specs(
+        source_root=source, tracked_paths=[], identities=[identity], broad_roots=roots
+    )
+    content = next(spec for spec in specs if spec.root == resources.resolve())
+    assert content.paths is None
+    assert content.owns(header)
+    alias_owner = next(spec for spec in specs if spec.root == selection.resolve())
+    assert alias_owner.paths is not None
+    assert alias_owner.owns(alias)
+    assert not alias_owner.owns(unrelated)
+    alias.unlink()
+    assert alias_owner.owns(alias)
+    replacement = tmp_path / "replacement-headers"
+    replacement.mkdir()
+    (replacement / header.name).write_bytes(header.read_bytes())
+    alias.symlink_to(replacement, target_is_directory=True)
+    assert alias_owner.owns(alias), "same-byte directory retarget changes selection"
+
+
 @pytest.mark.parametrize("mutation", ["header", "new-header", "compiler-rt", "linker"])
 def test_wasi_sdk_closure_binds_helpers_and_complete_resources(tmp_path, mutation):
     from tests.runtime_build_identity_helper import (

@@ -144,10 +144,21 @@ The existing Linux VM admits storage, but tool capture exposed queue overrides
 arriving after DX had already selected cache wrappers and derived output roots.
 One requested environment now feeds validation, admission and DX resolution;
 the existing child-delivery and queue-owned custody rules remain intact. Its
-regression fails on the old ordering and the owning 22 controls pass on macOS;
-actual Linux guarded replay remains required. This correction is development
-work and adds nothing to emitted programs. The bounded target results above do
-not qualify unexecuted consumers or authorize release acceptance.
+regression fails on the old ordering and the owning 22 controls pass on both
+macOS and Linux. Linux replay then refused an unreadable unrelated system
+subtree before Cargo: finite Python/native files had become recursive parent
+roots, and Linux also recursively enumerated finite watches. The source now
+projects startup roles once, keeps exact/absent/alias inputs finite, and traverses
+only their selected ancestors; native resource/archive and environment import
+archive consumers move with it. Required input watch failures remain fatal.
+The selected macOS Python/toolchain ownership checks pass, including finite
+watch arming, negative selectors, aliases and required-root refusal. Actual
+Linux guarded replay remains required. The environment locator still
+arms base installation prefixes to cover startup selectors not represented in
+its location schema; that broader development cost remains under V1-07 and
+must be reconciled with the existing startup-selection authority. These changes
+add nothing to emitted programs. The bounded target results above do not
+qualify unexecuted consumers or authorize release acceptance.
 
 Local landing policy merges plain pytest targets into one parallel invocation;
 selector-bearing gates retain their declared scope. The driver and policy share

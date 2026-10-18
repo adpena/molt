@@ -1418,6 +1418,32 @@ original bytes before completion, so mutate-execute-restore cannot produce
 eligible evidence. Platforms without a lossless implemented watcher reject
 execution rather than falling back to sampling.
 
+Python's startup selection owns each lexical/resolved location and whether its
+role admits a directory tree. Only actual import and standard-library
+directories become recursive roots. Executables, native images, archives,
+prefix selectors and startup configuration remain finite inputs, including
+absent ZIP/configuration candidates and retargetable aliases. Their parent is
+an event anchor, never an additional recursive resource authority. A missing
+parent anchors at its nearest existing directory; creation of a selected
+ancestor is itself an input mutation.
+The environment locator likewise keeps import archives in its existing exact
+file list, and native compiler resources keep file/alias selectors finite.
+The active environment's installation prefix and declared SDK/resource
+directories remain tree owners. The environment locator also retains its
+broader base-installation prefix watches for startup selectors absent from that
+location schema. Replacing those watches requires migrating that selector
+coverage to the existing startup-selection authority; it is not covered by the
+finite runtime/native resource correction.
+
+Linux installs each root watch before enumerating owned directories, following
+the [inotify directory-watch and recursion contract](https://man7.org/linux/man-pages/man7/inotify.7.html).
+Finite inputs visit only their explicit directory ancestors and extend watches
+only for owned directory events. This costs at most one watch per selected
+ancestor, rather than scanning every subtree beside a selected file. Recursive
+source/package/resource trees retain their complete mutation coverage, and an
+unreadable required root still rejects execution. These operations belong to
+development evidence custody and add no checks to emitted programs.
+
 The proof command receives only classified host/runtime, compiler, and Molt
 environment names. Ambient pytest injection, package-index controls,
 unclassified overrides, URL credentials, and secret-bearing names are rejected
