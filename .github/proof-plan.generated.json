@@ -374,7 +374,7 @@
     "tests/tools/test_win_job_contract.py",
     "tests/tools/test_windows_process_api.py"
   ],
-  "authority_sha256": "4075f4c0e38c29ad9f31fd7f71635b6899251e8047fb7974bcca2dc3226163cb",
+  "authority_sha256": "ef43f469ccc136c958c1a4b37aa2e94c7f47763d68a55a3f54e722b299b54332",
   "cargo_environment_policy": {
     "incident_command": "cargo metadata --locked --format-version 1",
     "incident_commit": "20b046b79bd4ca64a8c859f737f6e330377bcc4e",
@@ -848,10 +848,12 @@
         "tests/proof_queue_owned_roots.py",
         "vendor/rust/object/**",
         "vendor/rust/cranelift-object/**",
+        "tools/metamorphic_runner.py",
         "tests/cli/test_runtime_build_identity.py/**",
         "tests/test_runtime_build_python.py/**",
         "tests/cli/test_cli_python_source_closure.py/**",
         "tests/cli/test_native_symbol_authority.py/**",
+        "tests/cli/test_cli_extension_commands.py/**",
         "tests/cli/test_native_link_plan.py/**",
         "tests/cli/test_native_link_manifest.py/**",
         "tests/cli/test_link_selection_admission.py/**",
@@ -864,7 +866,8 @@
         "tests/cli/test_backend_daemon_sequential.py/**",
         "tests/cli/test_cli_smoke.py/**",
         "tests/cli/test_cli_build_identity.py/**",
-        "tests/cli/test_traceback_carets.py/**"
+        "tests/cli/test_traceback_carets.py/**",
+        "tests/metamorphic/**"
       ],
       "job": "native-integration",
       "job_reserve_seconds": 180,
@@ -875,7 +878,7 @@
         "pr",
         "main"
       ],
-      "timeout_minutes": 53,
+      "timeout_minutes": 63,
       "workflow": ".github/workflows/ci.yml"
     },
     {
@@ -1712,6 +1715,46 @@
         "scheduled"
       ],
       "timeout_seconds": 2700,
+      "toolchains": [
+        "python",
+        "uv",
+        "rustc",
+        "cargo"
+      ]
+    },
+    {
+      "argv": [
+        "uv",
+        "run",
+        "python3",
+        "-m",
+        "pytest",
+        "-q",
+        "-n",
+        "auto",
+        "--molt-worker-memory-gb=1.25",
+        "tests/fuzz/test_fuzz_differential.py",
+        "tests/fuzz/test_fuzz_extended.py"
+      ],
+      "cache_domain": "cargo-workspace",
+      "cargo_build_python": true,
+      "cargo_native_units": {
+        "target": [
+          "c",
+          "c++"
+        ]
+      },
+      "cell": "linux-x86_64-py312-native-dev",
+      "dependencies": [
+        "nightly.verification-t3.compiler-prewarm"
+      ],
+      "family": "nightly_verification_t3",
+      "id": "nightly.verification-t3.fuzz-tests",
+      "resource_class": "scheduled-suite",
+      "tiers": [
+        "scheduled"
+      ],
+      "timeout_seconds": 1200,
       "toolchains": [
         "python",
         "uv",
@@ -5508,7 +5551,9 @@
         "tests/cli/test_cli_progress.py",
         "tests/cli/test_cli_wasm_codegen_layout.py",
         "tests/cli/test_cli_guard_infrastructure.py",
-        "tests/cli/test_cli_environment_custody.py"
+        "tests/cli/test_cli_environment_custody.py",
+        "tests/cli/test_cli_extension_commands.py",
+        "tests/cli/test_source_extension_reproducibility.py"
       ],
       "cache_domain": "pytest",
       "cell": "linux-x86_64-py312-unit",
@@ -5663,7 +5708,9 @@
         "tests/cli/test_cli_progress.py",
         "tests/cli/test_cli_wasm_codegen_layout.py",
         "tests/cli/test_cli_guard_infrastructure.py",
-        "tests/cli/test_cli_environment_custody.py"
+        "tests/cli/test_cli_environment_custody.py",
+        "tests/cli/test_cli_extension_commands.py",
+        "tests/cli/test_source_extension_reproducibility.py"
       ],
       "cache_domain": "pytest",
       "cell": "macos-arm64-py312-unit",
@@ -5771,6 +5818,7 @@
         "tests/test_cloudflare_demo_verify.py",
         "tests/test_cloudflare_ocr_tokenizer_contract.py",
         "tests/test_cloudflare_queue_batch_ocr_contract.py",
+        "tests/test_cloudflare_worker_access_contract.py",
         "tests/test_codec_family_private_module_surface.py",
         "tests/test_codecs_private_module_surface.py",
         "tests/test_coff_import_library.py",
@@ -6141,6 +6189,7 @@
         "tests/test_cloudflare_demo_verify.py",
         "tests/test_cloudflare_ocr_tokenizer_contract.py",
         "tests/test_cloudflare_queue_batch_ocr_contract.py",
+        "tests/test_cloudflare_worker_access_contract.py",
         "tests/test_codec_family_private_module_surface.py",
         "tests/test_codecs_private_module_surface.py",
         "tests/test_coff_import_library.py",
@@ -6756,6 +6805,8 @@
         "tests/cli/test_cli_python_source_closure.py::test_repository_wasm_linker_closure_reaches_binding_authority",
         "tests/cli/test_native_symbol_authority.py::test_member_symbols_real_native_archive",
         "tests/cli/test_native_symbol_authority.py::test_member_symbols_real_wasm_archive",
+        "tests/cli/test_cli_extension_commands.py::test_extension_build_compiles_iterator_mapping_surface_without_subprocess_mock",
+        "tests/cli/test_cli_extension_commands.py::test_extension_build_real_wasm_object_separates_import_and_data_relocation_closure",
         "tests/cli/test_native_link_plan.py::test_real_elf_extension_link_preserves_eager_members_lazy_dependencies_and_runtime_edges",
         "tests/cli/test_native_link_manifest.py::test_static_nobundle_order_changes_real_archive_resolution",
         "tests/cli/test_link_selection_admission.py",
@@ -6907,6 +6958,48 @@
         "cargo",
         "ld.lld",
         "llvm-strip"
+      ]
+    },
+    {
+      "argv": [
+        "uv",
+        "run",
+        "--python",
+        "3.12",
+        "pytest",
+        "-q",
+        "-n",
+        "auto",
+        "--molt-worker-memory-gb=3.25",
+        "--durations=10",
+        "tests/metamorphic"
+      ],
+      "cache_domain": "cargo-workspace",
+      "cargo_build_python": true,
+      "cargo_native_units": {
+        "target": [
+          "c",
+          "c++"
+        ]
+      },
+      "cell": "linux-x86_64-py312-native-dev",
+      "dependencies": [
+        "native.integration.capability-manifest"
+      ],
+      "family": "native_integration",
+      "id": "native.integration.metamorphic",
+      "resource_class": "compiler-build-resource",
+      "tiers": [
+        "main"
+      ],
+      "timeout_budget": "integration",
+      "timeout_seconds": 600,
+      "toolchains": [
+        "python",
+        "uv",
+        "rustc",
+        "cargo",
+        "ld.lld"
       ]
     },
     {
@@ -8592,14 +8685,14 @@
         }
       },
       "native_integration": {
-        "budget_seconds": 3180,
+        "budget_seconds": 3780,
         "critical_path_seconds": 1800,
         "headroom_seconds": 0,
         "job_reserve_seconds": 180,
-        "projected_makespan_seconds": 3000,
-        "required_job_seconds": 3180,
+        "projected_makespan_seconds": 3600,
+        "required_job_seconds": 3780,
         "resource_capacity_floor_seconds": {
-          "compiler-build-resource": 3000,
+          "compiler-build-resource": 3600,
           "python-tests": 150
         }
       },
@@ -8873,15 +8966,15 @@
         }
       },
       "nightly_verification_t3": {
-        "budget_seconds": 5400,
+        "budget_seconds": 6300,
         "critical_path_seconds": 4800,
         "headroom_seconds": 0,
         "job_reserve_seconds": 600,
-        "projected_makespan_seconds": 4800,
-        "required_job_seconds": 5400,
+        "projected_makespan_seconds": 5700,
+        "required_job_seconds": 6300,
         "resource_capacity_floor_seconds": {
           "compiler-build-resource": 1200,
-          "scheduled-suite": 3375
+          "scheduled-suite": 3675
         }
       },
       "runtime_candidate_costs": {
@@ -12065,7 +12158,7 @@
       "tiers": [
         "scheduled"
       ],
-      "timeout_minutes": 90,
+      "timeout_minutes": 105,
       "workflow": ".github/workflows/nightly.yml"
     },
     {

@@ -6,10 +6,8 @@ produces different output for the unrolled version, it has a loop
 codegen or iteration bug.
 """
 
-import sys
 import pytest
 
-sys.path.insert(0, ".")
 from tools.metamorphic_runner import MetamorphicRunner
 
 
@@ -94,7 +92,5 @@ def test_loop_unrolling_equivalence(pair: tuple[str, str]):
         pytest.fail(f"Build/run error: {result.error}")
 
     assert result.equivalent, (
-        f"Output differs after loop unrolling!\n"
-        f"Original stdout: {result.original_stdout!r}\n"
-        f"Unrolled stdout: {result.transformed_stdout!r}"
+        f"Output differs after loop unrolling!\n{result.describe()}"
     )

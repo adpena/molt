@@ -398,45 +398,9 @@ def test_mcp_tool_definition():
 
 
 # ---------------------------------------------------------------------------
-# 7. x402 payment verification contract
+# 7. x402 payment and CORS access: run through the worker's fetch handler in
+#    tests/test_cloudflare_worker_access_contract.py.
 # ---------------------------------------------------------------------------
-
-
-def test_x402_error_response_format():
-    """402 error response has the correct structure."""
-    error_response = {
-        "error": "Missing X-Payment-402 header",
-        "request_id": "test-123",
-    }
-    assert "error" in error_response
-    assert "request_id" in error_response
-
-
-def test_x402_required_for_ocr_endpoints():
-    """worker.js requires x402 for /ocr and /ocr/tokens but not /health."""
-    worker_path = os.path.normpath(
-        os.path.join(
-            os.path.dirname(__file__),
-            "..",
-            "..",
-            "deploy",
-            "cloudflare",
-            "worker.js",
-        )
-    )
-    with open(worker_path, encoding="utf-8") as f:
-        source = f.read()
-
-    # Health check must be before the common POST payment gate in the
-    # monitored handler. Earlier fast-path routes are separately guarded.
-    health_pos = source.index('if (path === "/health" && request.method === "GET")')
-    common_payment_pos = source.index(
-        "const payment = await verifyX402(request, env, rid, cors);",
-        health_pos,
-    )
-    assert health_pos < common_payment_pos, (
-        "/health must be handled before the common x402 verification gate"
-    )
 
 
 # ---------------------------------------------------------------------------
@@ -461,24 +425,6 @@ def test_supported_image_formats():
 
     for fmt in ["image/jpeg", "image/png", "image/webp"]:
         assert fmt in source, f"OCR API must support {fmt}"
-
-
-def test_cors_restricted_to_freeinvoicemaker():
-    """CORS headers restrict to freeinvoicemaker.app."""
-    worker_path = os.path.normpath(
-        os.path.join(
-            os.path.dirname(__file__),
-            "..",
-            "..",
-            "deploy",
-            "cloudflare",
-            "worker.js",
-        )
-    )
-    with open(worker_path, encoding="utf-8") as f:
-        source = f.read()
-
-    assert "freeinvoicemaker.app" in source
 
 
 def test_no_pii_logging():

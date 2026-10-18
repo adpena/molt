@@ -6,10 +6,8 @@ folding is semantically correct.
 """
 
 import ast
-import sys
 import pytest
 
-sys.path.insert(0, ".")
 from tools.metamorphic_runner import MetamorphicRunner
 
 
@@ -129,7 +127,5 @@ def test_constant_prefold_equivalence(program: str):
         pytest.fail(f"Build/run error: {result.error}")
 
     assert result.equivalent, (
-        f"Output differs after constant pre-folding!\n"
-        f"Original stdout: {result.original_stdout!r}\n"
-        f"Folded stdout:   {result.transformed_stdout!r}"
+        f"Output differs after constant pre-folding!\n{result.describe()}"
     )

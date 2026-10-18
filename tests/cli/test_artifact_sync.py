@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 from dataclasses import replace
@@ -16,6 +17,7 @@ from molt.cli import runtime_wasm_validation
 from molt.cli.backend_artifact_contract import (
     BackendArtifactContract,
     BackendArtifactKind,
+    BackendArtifactValidationError,
 )
 from molt.toolchain_identity import stable_regular_file_identity
 from tests.cli.native_link_test_support import static_archive_bytes
@@ -252,6 +254,47 @@ def _stub_external_inspectors(monkeypatch):
         "_reusable_wasm_artifact_validation_error",
         lambda path: None,
     )
+
+
+@pytest.mark.parametrize(
+    "contract", _CONTRACTS, ids=lambda c: f"{c.kind.value}-{c.target_triple}"
+)
+def test_backend_output_staged_through_a_symlinked_directory_publishes_its_cache(
+    tmp_path, monkeypatch, contract
+):
+    # macOS hands out temporary directories through /var -> /private/var, so
+    # an --out-dir there stages backend output below a symlink. The identity
+    # the stage captured must still admit the same file for cache publication.
+    _stub_external_inspectors(monkeypatch)
+    original, replacement = _artifact_pair(contract)
+    real = tmp_path / "real"
+    real.mkdir()
+    linked = tmp_path / "linked"
+    linked.symlink_to(real, target_is_directory=True)
+    staged = linked / ("backend" + contract.suffix)
+    staged.write_bytes(original)
+    identity = cache._validate_backend_cache_artifact(
+        staged, artifact_contract=contract
+    )
+    destination = tmp_path / "cache" / ("key" + contract.suffix)
+    warnings: list[str] = []
+    published = cache._publish_immutable_backend_cache_artifact(
+        staged,
+        destination,
+        artifact_contract=contract,
+        warnings=warnings,
+        identity=identity,
+    )
+    assert destination.read_bytes() == original
+    assert published.sha256 == hashlib.sha256(original).hexdigest()
+    assert not warnings
+    # The captured identity still names one file: another path is refused.
+    other = linked / ("other" + contract.suffix)
+    other.write_bytes(replacement)
+    with pytest.raises(BackendArtifactValidationError):
+        cache._validate_backend_cache_artifact(
+            other, artifact_contract=contract, identity=identity
+        )
 
 
 @pytest.mark.parametrize(

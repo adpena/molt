@@ -129,7 +129,7 @@ PaddleOCR driver compiled successfully to WASM via molt:
 
 ## Provenance
 
-- ONNX Runtime timing/op inventory: `tests/e2e/test_onnx_interpreter_correctness.py`.
+- ONNX Runtime timing/op inventory: `tests/e2e/paddleocr_onnx_inventory.py`.
 - Weight parser counts and dtype/data integrity checks: `tests/e2e/test_paddleocr_weights.py`.
-- PaddleOCR architecture and graph-op expectations: `src/molt/stdlib/tinygrad/paddleocr.py`.
+- PaddleOCR architecture and graph-op expectations: `demos/tinygrad/paddleocr.py`.
 - Linked-WASM execution trace: `logs/falcon_ocr_wasm_run_trace.err`.
