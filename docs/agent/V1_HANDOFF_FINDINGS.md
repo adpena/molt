@@ -137,6 +137,12 @@ that residual classification cost remains a V1-07 obligation. Normal regex
 buffer execution exits cleanly, but does not independently qualify the earlier
 exceptional-shutdown observation.
 
+The remaining runtime allocation-failure, compiled split-runtime and integration
+qualification is held at development storage admission. The allocation gate
+refused before Cargo compilation; it supplies no runtime pass or failure.
+The source migration and bounded target results above do not qualify those
+unexecuted consumers or authorize release acceptance.
+
 Local landing policy merges plain pytest targets into one parallel invocation;
 selector-bearing gates retain their declared scope. The driver and policy share
 one test-path/node-ID validator, including root containment. Generated batches
