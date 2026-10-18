@@ -1138,7 +1138,7 @@ admission_job = "wasm-validation"
 admission_needs = ["classify-changes"]
 tiers = ["pr", "main"]
 required = true
-timeout_minutes = 293
+timeout_minutes = 333
 # Observed setup/post-proof total 124s, rounded up to whole minutes.
 job_reserve_seconds = 180
 resource_class = "compiler-build-resource"
@@ -2799,7 +2799,7 @@ timeout_budget = "cold"
 timeout_env = ["MOLT_CARGO_TIMEOUT", "MOLT_WASM_TEST_TIMEOUT_SEC"]
 cache_domain = "cargo-workspace"
 dependencies = ["wasm.build.backend", "wasm.build.shared-runtime"]
-argv = ["python3", "tools/venv_exec.py", "python3", "-m", "pytest", "-q", "tests/test_wasm_split_runtime.py::test_linked_host_export_attribute_error_does_not_return_none", "tests/test_wasm_runtime_heavy_regressions.py::test_wasm_open_reports_all_missing_grants_before_mutation", "tests/test_wasm_runtime_heavy_regressions.py::test_wasm_compiled_finder_describes_module_before_initialization", "tests/test_wasm_runtime_heavy_regressions.py::test_wasm_final_tir_preserves_effects_scalar_proofs_and_escaped_calls"]
+argv = ["python3", "tools/venv_exec.py", "python3", "-m", "pytest", "-q", "tests/test_wasm_split_runtime.py::test_linked_host_export_attribute_error_does_not_return_none", "tests/test_wasm_split_runtime.py::test_split_runtime_host_export_calls_preserve_owned_results", "tests/test_wasm_split_runtime.py::test_split_runtime_host_export_struct_unpack_from_reads_u64", "tests/test_wasm_split_runtime.py::test_split_runtime_profile_json_emits_on_wasm", "tests/test_wasm_runtime_heavy_regressions.py::test_wasm_open_reports_all_missing_grants_before_mutation", "tests/test_wasm_runtime_heavy_regressions.py::test_wasm_compiled_finder_describes_module_before_initialization", "tests/test_wasm_runtime_heavy_regressions.py::test_wasm_final_tir_preserves_effects_scalar_proofs_and_escaped_calls"]
 toolchains = ["python", "uv", "node", "rustc", "cargo", "ld.lld", "wasm-ld", "wasm-tools", "wasi-clang", "wasm-opt"]
 cargo_build_python = true
 
@@ -2842,6 +2842,34 @@ timeout_env = ["MOLT_CARGO_TIMEOUT", "MOLT_WASM_TEST_TIMEOUT_SEC"]
 cache_domain = "cargo-workspace"
 dependencies = ["wasm.build.backend"]
 argv = ["python3", "tools/venv_exec.py", "python3", "-m", "pytest", "-q", "tests/test_wasm_split_runtime.py::test_linked_host_export_tensor_row_ops_accept_equivalent_float_dtype"]
+toolchains = ["python", "uv", "node", "rustc", "cargo", "ld.lld", "wasm-ld", "wasm-tools", "wasi-clang", "wasm-opt"]
+cargo_build_python = true
+
+[[command]]
+id = "wasm.integration.host-exports.gpu-bytes-ownership"
+family = "wasm"
+cell = "linux-x86_64-py312-wasm-dev"
+tiers = ["pr", "main"]
+resource_class = "compiler-build-resource"
+timeout_budget = "cold"
+timeout_env = ["MOLT_CARGO_TIMEOUT", "MOLT_WASM_TEST_TIMEOUT_SEC"]
+cache_domain = "cargo-workspace"
+dependencies = ["wasm.build.backend"]
+argv = ["python3", "tools/venv_exec.py", "python3", "-m", "pytest", "-q", "tests/test_wasm_split_runtime.py::test_split_runtime_host_export_bytes_survive_raw_temp_cleanup"]
+toolchains = ["python", "uv", "node", "rustc", "cargo", "ld.lld", "wasm-ld", "wasm-tools", "wasi-clang", "wasm-opt"]
+cargo_build_python = true
+
+[[command]]
+id = "wasm.integration.host-exports.falcon-driver"
+family = "wasm"
+cell = "linux-x86_64-py312-wasm-dev"
+tiers = ["pr", "main"]
+resource_class = "compiler-build-resource"
+timeout_budget = "cold"
+timeout_env = ["MOLT_CARGO_TIMEOUT", "MOLT_WASM_TEST_TIMEOUT_SEC"]
+cache_domain = "cargo-workspace"
+dependencies = ["wasm.build.backend"]
+argv = ["python3", "tools/venv_exec.py", "python3", "-m", "pytest", "-q", "tests/test_wasm_split_runtime.py::test_linked_falcon_ocr_wasm_driver_runs_stub_generation"]
 toolchains = ["python", "uv", "node", "rustc", "cargo", "ld.lld", "wasm-ld", "wasm-tools", "wasi-clang", "wasm-opt"]
 cargo_build_python = true
 
@@ -5315,6 +5343,7 @@ globs = [
   "runtime/molt-runtime-regex/**/*.rs",
   "runtime/molt-runtime-regex/Cargo.toml",
   "runtime/molt-stdlib-text/src/wtf8.rs",
+  "runtime/molt-stdlib-text/src/wtf8_tests.rs",
   "runtime/molt-stdlib-text/Cargo.toml",
   "runtime/molt-runtime/src/regex_bridge.rs",
   "src/molt/stdlib/re/**/*.py",
