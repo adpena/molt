@@ -87,7 +87,7 @@ def environment_override_policy_error(env_overrides: Mapping[str, str]) -> str |
             )
         seen[folded] = name
         if (
-            name.upper() in command_identity._CANONICAL_EXECUTION_ENV
+            name.upper() in command_identity.CANONICAL_EXECUTION_ENV
             or name.upper() == "NODE_OPTIONS"
             or name.upper() in command_identity._QUEUE_CUSTODY_ENV_NAMES
         ):

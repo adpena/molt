@@ -86,8 +86,6 @@ select = ["E4", "E7", "E9", "F"]
 "tests/e2e/test_falcon_ocr_parity.py" = ["E402"]  # Standalone script path setup precedes sibling imports.
 "tests/e2e/test_falcon_ocr_real.py" = ["E402"]    # Standalone script path setup precedes sibling imports.
 "tests/e2e/test_falcon_ocr_targets.py" = ["E402"] # Standalone script path setup precedes sibling imports.
-"tests/parity/**/*.py" = ["E402", "E731"]         # Executable parity scripts test import timing/order and syntax forms.
-"tests/parity/test_exceptions.py" = ["E402", "E722"]  # Bare except is parity corpus input.
 "tests/runtime_compat/scripts/*.py" = ["E402"]    # Harness scripts are executed directly by compatibility runner.
 
 [tool.ty.src]
