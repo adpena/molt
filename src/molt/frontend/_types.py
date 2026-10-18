@@ -1200,11 +1200,12 @@ class ClassInfo(TypedDict, total=False):
     field_order: list[str]
     defaults: dict[str, ast.expr]
     class_attrs: dict[str, ast.expr]
-    # Class attributes whose value the defining module proved is a data
-    # descriptor (``property(...)`` or an instance of a class with ``__set__``
-    # or ``__delete__``). Decided where the class is defined, so a consumer in
-    # another module never resolves the defining module's names.
-    data_descriptor_attrs: frozenset[str]
+    # Class attributes whose value the defining module cannot prove is not a
+    # data descriptor: anything but a literal display, a builtin non-descriptor
+    # constructor, or an instance of a class whose MRO defines no ``__set__``,
+    # ``__delete__`` or ``__new__``. Decided where the class is defined, so a
+    # consumer in another module never resolves the defining module's names.
+    possible_data_descriptor_attrs: frozenset[str]
     bases: tuple[ClassRef, ...]
     mro: tuple[ClassRef, ...]
     dynamic: bool

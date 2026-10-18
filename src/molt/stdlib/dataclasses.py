@@ -571,11 +571,14 @@ def _molt_apply_dataclass(
 
     annotations = getattr(cls, "__annotations__", {}) or {}
     kw_only_marker = kw_only
+    own_fields: list[Field] = []
     for name, annotation in annotations.items():
         if _is_kw_only(annotation):
             kw_only_marker = True
             continue
-        default = cls.__dict__.get(name, MISSING)
+        # CPython reads the default through the class attribute protocol, so
+        # a descriptor's ``__get__(None, cls)`` supplies it.
+        default = getattr(cls, name, MISSING)
         if isinstance(default, Field):
             field_obj = default
         else:
@@ -591,20 +594,19 @@ def _molt_apply_dataclass(
         if field_obj.kw_only is MISSING:
             field_obj.kw_only = kw_only_marker
         fields[name] = field_obj
+        own_fields.append(field_obj)
 
     _check_default_order(fields)
 
-    for field_obj in fields.values():
+    # Only a ``field()`` object is replaced: by its default, or removed when
+    # it has none. Any other class attribute, a descriptor included, stays.
+    for field_obj in own_fields:
         field_name = cast(str, field_obj.name)
-        if field_obj.default_factory is not MISSING:
-            if isinstance(cls.__dict__.get(field_name), Field):
+        if isinstance(getattr(cls, field_name, None), Field):
+            if field_obj.default is MISSING:
                 delattr(cls, field_name)
-            continue
-        if field_obj.default is MISSING:
-            if isinstance(cls.__dict__.get(field_name), Field):
-                delattr(cls, field_name)
-            continue
-        setattr(cls, field_name, field_obj.default)
+            else:
+                setattr(cls, field_name, field_obj.default)
 
     params = _DataclassParams(
         init=init,
