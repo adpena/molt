@@ -919,31 +919,32 @@ def test_cold_scan_with_cached_analysis_facts_preserves_retention_and_miss(
     assert retained_source == (text if retain else None)
 
 
+@pytest.mark.parametrize("newline", [b"\n", b"\r\n"])
 def test_gpu_reference_capture_is_lazy_and_generation_bound(
     monkeypatch: pytest.MonkeyPatch,
     compiler_sources: Path,
+    newline: bytes,
 ) -> None:
     root = compiler_sources.parents[3]
     reference = root / "src/molt/gpu/__init__.py"
     reference.parent.mkdir(parents=True)
-    reference.write_text("VALUE = 1\n", encoding="utf-8")
+    first = b"VALUE = 1" + newline
+    second = b"VALUE = 2" + newline
+    reference.write_bytes(first)
     with fingerprints._source_tree_fingerprint_transaction():
         snapshot = fingerprints._frontend_semantic_tooling_snapshot()
         assert snapshot.reference_sources == {}
         captured = snapshot.reference_source("gpu/__init__.py")
-        reference.write_text("VALUE = 2\n", encoding="utf-8")
+        reference.write_bytes(second)
         assert snapshot.reference_source("gpu/__init__.py") is captured
-        assert captured.content == b"VALUE = 1\n"
+        assert captured.content == first
     with fingerprints._source_tree_fingerprint_transaction():
         next_generation = fingerprints._frontend_semantic_tooling_snapshot()
         assert next_generation.fingerprint != snapshot.fingerprint
-        assert (
-            next_generation.reference_source("gpu/__init__.py").content
-            == b"VALUE = 2\n"
-        )
+        assert next_generation.reference_source("gpu/__init__.py").content == second
     with fingerprints._source_tree_fingerprint_transaction():
         changed_before_capture = fingerprints._frontend_semantic_tooling_snapshot()
-        reference.write_text("VALUE = 3\n", encoding="utf-8")
+        reference.write_bytes(b"VALUE = 3" + newline)
         with pytest.raises(ValueError, match="changed after semantic generation"):
             changed_before_capture.reference_source("gpu/__init__.py")
         assert changed_before_capture.reference_sources == {}

@@ -283,11 +283,18 @@ AUTOMATIC_PRUNE_INTERVAL_SECONDS = 300.0
 
 
 def _same_cache_generation(left: os.stat_result, right: os.stat_result) -> bool:
+    # CPython's Windows pathname stat exposes creation time as legacy ctime,
+    # while fstat may expose ChangeTime. Compare the native creation field
+    # explicitly; a pathname/descriptor pair must describe the same clock.
+    if os.name == "nt":
+        same_generation_time = left.st_birthtime_ns == right.st_birthtime_ns
+    else:
+        same_generation_time = left.st_ctime_ns == right.st_ctime_ns
     return (
         os.path.samestat(left, right)
         and left.st_size == right.st_size
         and left.st_mtime_ns == right.st_mtime_ns
-        and left.st_ctime_ns == right.st_ctime_ns
+        and same_generation_time
     )
 
 

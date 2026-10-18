@@ -1853,7 +1853,8 @@ def test_managed_symbol_reader_uses_receipt_and_preserves_archive_custody(
             ),
         )
         artifact = tmp_path / "input.a"
-        artifact.write_bytes(static_archive_bytes(LLVM_BITCODE_STAND_IN))
+        original_artifact = static_archive_bytes(LLVM_BITCODE_STAND_IN)
+        artifact.write_bytes(original_artifact)
         commands = []
 
         def inspect(argv, **kwargs):
@@ -1876,19 +1877,44 @@ def test_managed_symbol_reader_uses_receipt_and_preserves_archive_custody(
         assert facts.defined == {"provider"}
         assert [command[0] for command in commands] == [str(installation.llvm_nm)]
 
+        mutation_attempts = []
+        changed_artifact = static_archive_bytes(b"changed object")
+
         def mutate_input(argv, **kwargs):
-            artifact.write_bytes(static_archive_bytes(b"changed object"))
+            mutation_attempts.append(artifact)
+            if os.name == "nt":
+                # The real Windows read lease prevents this race; POSIX admits
+                # the write and the closing content fence must detect it.
+                with pytest.raises(PermissionError) as caught:
+                    artifact.write_bytes(changed_artifact)
+                assert caught.value.filename is not None
+                assert Path(caught.value.filename) == artifact
+                assert artifact.read_bytes() == original_artifact
+            else:
+                artifact.write_bytes(changed_artifact)
             return inspect(argv, **kwargs)
 
         monkeypatch.setattr(
             native_symbol_inspection, "_run_completed_command", mutate_input
         )
-        with pytest.raises(native_symbol_inspection.NativeSymbolArtifactError):
-            native_symbol_inspection._read_native_global_symbol_facts(
+        if os.name == "nt":
+            retained = native_symbol_inspection._read_native_global_symbol_facts(
                 artifact,
                 target_triple="wasm32-wasip1",
                 _reader=reader,
             )
+            assert retained == facts
+            assert artifact.read_bytes() == original_artifact
+        else:
+            with pytest.raises(native_symbol_inspection.NativeSymbolArtifactError):
+                native_symbol_inspection._read_native_global_symbol_facts(
+                    artifact,
+                    target_triple="wasm32-wasip1",
+                    _reader=reader,
+                )
+            assert artifact.read_bytes() == changed_artifact
+        assert mutation_attempts == [artifact]
+        assert [command[0] for command in commands] == [str(installation.llvm_nm)] * 2
 
 
 def test_managed_wasm_linker_ancestor_alias_uses_receipt_without_probe(
