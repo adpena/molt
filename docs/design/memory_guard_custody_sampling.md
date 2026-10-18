@@ -1,6 +1,6 @@
 # Memory guard custody sampling
 
-Status: Darwin implemented, 2026-10-18; Linux pending. Owner: integrator
+Status: Darwin and Linux implemented, 2026-10-18. Owner: integrator
 (coordination task `claude-guard-event-tree`). Ledger: HF-358 layer 2.
 
 ## Problem
@@ -66,9 +66,11 @@ back:
    size binds on read as before.
 2. Windows: done before this design; the job's member list gives exact
    membership (`sampling_source = "windows_job_members"`).
-3. Linux: `/proc/<pid>/task/<tid>/children` for tracked pids (or the guard as a
-   child subreaper, which keeps orphans in the tree), and `/proc/<pid>/stat`
-   for the rest.
+3. Linux (implemented): `/proc/<pid>/stat` for each watched and declared pid,
+   and `/proc/<pid>/task/<tid>/children` for every thread of each watched pid
+   (a child belongs to the thread that forked it), walked the same way. A
+   kernel without `CONFIG_PROC_CHILDREN` reads every `/proc/<pid>`; that is a
+   capability checked once, never a retry.
 4. Later, events: kqueue `EVFILT_PROC` on Darwin and pidfd on Linux, so a poll
    with no fork or exit reads only resident sizes.
 
@@ -104,3 +106,8 @@ the interest set and its rows. No new process or thread.
 | rows per poll (max) | 1,333-1,337 | 8 (the tree and the guard's 7-process lineage) |
 | guard observer CPU | 0.44-0.47 s | 0.14-0.16 s |
 | guard process user+sys | 0.64-0.67 s | 0.34-0.36 s |
+
+Linux (Lima aarch64 VM, 145 processes, guarded `/bin/sleep 2`, 3 runs each):
+sampler CPU 0.235-0.254 s over 69-70 polls before, 0.037-0.041 s over 76-78
+polls after; rows per poll 145 before, 6 after; observer CPU 0.29-0.31 s
+before, 0.08-0.10 s after.
