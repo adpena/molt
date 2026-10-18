@@ -171,6 +171,7 @@ tests/differential/stdlib/atexit_register_builtin_callables.py
 tests/differential/stdlib/atexit_unraisablehook_custom.py
 tests/differential/stdlib/base64_decode_argument_types.py
 tests/differential/stdlib/binascii_crc32_value.py
+tests/differential/stdlib/binascii_error_identity.py
 tests/differential/stdlib/binascii_simd_paths.py
 tests/differential/stdlib/bisect_api_surface.py
 tests/differential/stdlib/bisect_basic.py
@@ -987,6 +988,7 @@ tests/differential/stdlib/csv_writer_custom_str.py
 tests/differential/stdlib/csv_writer_lineterminator.py
 tests/differential/stdlib/ctypes_basic.py
 tests/differential/stdlib/dataclasses_comparison_capture.py
+tests/differential/stdlib/dataclasses_descriptor_field.py
 tests/differential/stdlib/datetime_astimezone_errors.py
 tests/differential/stdlib/datetime_basic.py
 tests/differential/stdlib/datetime_ctor_validation.py
