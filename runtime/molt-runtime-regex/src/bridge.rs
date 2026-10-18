@@ -171,8 +171,16 @@ pub fn bytes_pattern_to_string(obj: MoltObject) -> Option<String> {
     }
 }
 
-/// Borrow exact bytes storage for the current intrinsic call. The caller must
-/// keep the Python argument live and perform no callback before it is done.
+/// Borrow bytes storage for the current intrinsic call.
+///
+/// # Safety
+///
+/// The caller must hold the core GIL and keep the runtime object represented
+/// by `obj` valid and alive for the entire chosen lifetime `'a`. The returned
+/// slice must not escape the intrinsic call. For a memoryview, its export must
+/// remain live and its storage unmodified while the slice is borrowed: no
+/// Python callback, GC/finalizer boundary, export release or GIL release may
+/// occur before that borrow ends.
 pub unsafe fn bytes_obj_to_borrowed<'a>(obj: MoltObject) -> Option<&'a [u8]> {
     let mut out_ptr: *const u8 = std::ptr::null();
     let mut out_len: usize = 0;

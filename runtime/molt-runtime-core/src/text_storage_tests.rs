@@ -19,7 +19,7 @@ fn storage_preserves_adjacent_surrogate_codepoints() {
     }
     assert_eq!(encoded, expected);
     assert_eq!(code_points(&expected).collect::<Vec<_>>(), points);
-    assert!(std::str::from_utf8(&expected).is_err());
+    assert!(std::str::from_utf8(&encoded).is_err());
     let mut empty = code_points(&[]);
     assert_eq!(empty.size_hint(), (0, Some(0)));
     assert_eq!(empty.next(), None);

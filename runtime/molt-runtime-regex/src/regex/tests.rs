@@ -972,6 +972,22 @@ fn test_match_negative_lookbehind_fail() {
 fn test_match_ignorecase() {
     let m = do_execute("hello", RE_IGNORECASE, "HELLO", "match").unwrap();
     assert_eq!(m.end, 5);
+    // CPython 3.12 fullmatch oracle, including non-ASCII and a character
+    // whose Rust lowercase iterator contains multiple code points.
+    for (pattern, text, expected) in [
+        ("A", "a", true),
+        ("É", "é", true),
+        ("Σ", "σ", true),
+        ("İ", "İ", true),
+        ("🦀", "🦀", true),
+        ("x", "z", false),
+    ] {
+        let matched = do_execute(pattern, RE_IGNORECASE, text, "fullmatch");
+        assert_eq!(matched.is_some(), expected, "{pattern:?} / {text:?}");
+        if let Some(matched) = matched {
+            assert_eq!((matched.start, matched.end), (0, 1));
+        }
+    }
 }
 
 #[test]

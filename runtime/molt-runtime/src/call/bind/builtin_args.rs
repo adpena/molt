@@ -965,6 +965,9 @@ enum IntBytesCodec {
     From,
 }
 
+/// # Safety
+/// `function` is the live function retained by the enclosing call, and `py`
+/// holds the runtime GIL while its owned binding metadata is inspected.
 unsafe fn bind_builtin_int_bytes_codec(
     py: &PyToken<'_>,
     function: *mut u8,
@@ -1009,14 +1012,18 @@ unsafe fn bind_builtin_int_bytes_codec(
     }
     // The published callable owns the only default tuple. Keep it through the
     // native body: a keyword callback can retire other metadata owners.
-    let defaults_bits = function_binding_meta(py, function, FunctionBindingField::Defaults);
+    // SAFETY: the enclosing call retains the function and holds the GIL.
+    let defaults_bits =
+        unsafe { function_binding_meta(py, function, FunctionBindingField::Defaults) };
     let Some(defaults_ptr) = obj_from_bits(defaults_bits)
         .as_ptr()
-        .filter(|&ptr| object_type_id(ptr) == TYPE_ID_TUPLE)
+        .filter(|&ptr| unsafe { object_type_id(ptr) } == TYPE_ID_TUPLE)
     else {
         return raise_exception(py, "SystemError", "invalid integer bytes codec defaults");
     };
-    let defaults = crate::object::seq_access::pin_tuple(py, defaults_ptr)?;
+    // SAFETY: the live metadata owner still retains this type-checked tuple;
+    // pin_tuple retains it before keyword binding can invoke user code.
+    let defaults = unsafe { crate::object::seq_access::pin_tuple(py, defaults_ptr) }?;
     let expected_defaults = match codec {
         IntBytesCodec::To => 3,
         IntBytesCodec::From => 2,

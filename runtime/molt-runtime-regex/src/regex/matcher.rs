@@ -119,11 +119,9 @@ impl<'a> MatchState<'a> {
     pub(super) fn char_eq(&self, a: char, b: char) -> bool {
         if self.is_ignorecase() {
             if self.is_bytes {
-                return a.to_ascii_lowercase() == b.to_ascii_lowercase();
+                return a.eq_ignore_ascii_case(&b);
             }
-            let al: Vec<char> = a.to_lowercase().collect();
-            let bl: Vec<char> = b.to_lowercase().collect();
-            al == bl
+            a.to_lowercase().eq(b.to_lowercase())
         } else {
             a == b
         }
