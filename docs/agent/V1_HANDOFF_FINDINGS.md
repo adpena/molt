@@ -107,8 +107,7 @@ Python surrogate code points under its own invariant. Runtime core owns one
 borrowed, allocation-free surrogatepass iterator and encoder for all consumers,
 including generated charmaps and Windows paths. The crate-graph ratchet and the
 pinned CPython boundary-byte oracle pass. Actual Linux aarch64 target-3.12
-Unicode and bytes-regex consumers pass on native and WASM. The codec consumer
-exposed a missing public scanner default; its complete replay remains required.
+Unicode, bytes-regex and expanded codec consumers pass on native and WASM.
 The bounded development-side kernel experiment rejected a slower
 stack-buffer encoder. This source correction neither closes HF-329 nor proves
 comparative runtime performance, full conformance or release acceptance.
@@ -185,8 +184,10 @@ CPython's `_json.scanstring` accepts an omitted `strict` argument with value
 default authority now declares it, preserving one callable and the fixed
 three-argument runtime ABI across registry, bootstrap and compiled handles.
 The owning differential exercises both `_json` and `json.decoder` aliases,
-omitted and explicit strictness, and control-character rejection. Generator
-regression sensitivity is established; compiled replay remains required.
+omitted and explicit strictness, control-character rejection, and positional-only
+arity/keyword rejection. The generator regression fails with the old declaration;
+all 54 owning Python controls and the actual native/WASM consumer cohort pass.
+Other target versions, platforms and release acceptance remain unqualified.
 
 Linux process snapshots can legitimately report a zero boot-relative birth
 value. Development custody now retains those observations while preserving
