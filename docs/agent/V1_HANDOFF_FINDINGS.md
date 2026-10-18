@@ -228,7 +228,12 @@ five imported bytecode caches into the watched source. This is an operator
 launch violation, not evidence of a compiler-child policy gap. The original
 failed receipt remains rejected; read-only launch capsules and the owning
 runbook now require no-write Python startup while a source tree is held.
-Admissible compiled replay is still required.
+Admissible compiled replay is still required. Family inspection additionally
+found two read-only isolated launchers (installed `ty` validation and the
+verified-subset CPython identity probe) that lacked explicit `-B`. Both now
+carry it; real disposable-site startup controls fail without the flag despite
+inherited cache settings. These adjacent omissions did not cause the rejected
+WASM run. Their repair is compiler/development-only.
 
 Integration now binds attribution, changed-clippy and changed-rustfmt gates
 to its captured full upstream commit. Raw declarations still own prerequisite

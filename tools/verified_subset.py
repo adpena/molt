@@ -439,7 +439,8 @@ def _reference_python_identity(
         "},sort_keys=True))"
     )
     completed = harness_memory_guard.guarded_completed_process(
-        [*interpreter.command, "-I", "-c", probe_code],
+        # Isolation ignores inherited no-write/cache-prefix environment controls.
+        [*interpreter.command, "-B", "-I", "-c", probe_code],
         prefix="MOLT_VERIFIED_SUBSET_PYTHON",
         cwd=ROOT,
         capture_output=True,
