@@ -158,8 +158,9 @@ and execution hosts locally: the optional tool probes and successful early
 returns are removed across both backends. Actual compilation and execution own
 failure diagnostics; no per-test version subprocess is needed. Shared fixture
 changes select all compiled consumers. Linux aarch64 native and LLVM cohorts
-pass at `release-fast`, TIR/WASM at `dev-fast`, and the default-feature runtime
-semantic gate at `release-output`. The buffer-eligibility fixture had incorrectly
+pass at `release-fast`, TIR/WASM and standalone C-API link/tests at `dev-fast`,
+and the default-feature runtime semantic gate at `release-output`.
+The buffer-eligibility fixture had incorrectly
 adopted StoreIndex's borrowed statement receiver as an owned result.
 Its caller now discards that ABI return after checking success identity, retaining
 the actual failure, mutation and export-retirement oracles. Production statement
