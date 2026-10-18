@@ -7742,7 +7742,7 @@ pub(crate) const IMPORT_REGISTRY: &[RuntimeImportSpec] = &[
     RuntimeImportSpec {
         import: WasmRuntimeImport::BinasciiA2bBase64,
         name: "binascii_a2b_base64",
-        type_idx: 2,
+        type_idx: 5,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::BinasciiB2aBase64,
@@ -7752,7 +7752,7 @@ pub(crate) const IMPORT_REGISTRY: &[RuntimeImportSpec] = &[
     RuntimeImportSpec {
         import: WasmRuntimeImport::BinasciiA2bHex,
         name: "binascii_a2b_hex",
-        type_idx: 2,
+        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::BinasciiB2aHex,
@@ -7772,12 +7772,12 @@ pub(crate) const IMPORT_REGISTRY: &[RuntimeImportSpec] = &[
     RuntimeImportSpec {
         import: WasmRuntimeImport::BinasciiA2bUu,
         name: "binascii_a2b_uu",
-        type_idx: 2,
+        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::BinasciiB2aUu,
         name: "binascii_b2a_uu",
-        type_idx: 2,
+        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::BinasciiCrc32,
@@ -12772,7 +12772,7 @@ pub(crate) const IMPORT_REGISTRY: &[RuntimeImportSpec] = &[
     RuntimeImportSpec {
         import: WasmRuntimeImport::Base64B64decode,
         name: "base64_b64decode",
-        type_idx: 5,
+        type_idx: 7,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::Base64StandardB64encode,
@@ -12782,7 +12782,7 @@ pub(crate) const IMPORT_REGISTRY: &[RuntimeImportSpec] = &[
     RuntimeImportSpec {
         import: WasmRuntimeImport::Base64StandardB64decode,
         name: "base64_standard_b64decode",
-        type_idx: 2,
+        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::Base64UrlsafeB64encode,
@@ -12792,7 +12792,7 @@ pub(crate) const IMPORT_REGISTRY: &[RuntimeImportSpec] = &[
     RuntimeImportSpec {
         import: WasmRuntimeImport::Base64UrlsafeB64decode,
         name: "base64_urlsafe_b64decode",
-        type_idx: 2,
+        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::Base64B32encode,
@@ -12802,7 +12802,7 @@ pub(crate) const IMPORT_REGISTRY: &[RuntimeImportSpec] = &[
     RuntimeImportSpec {
         import: WasmRuntimeImport::Base64B32decode,
         name: "base64_b32decode",
-        type_idx: 5,
+        type_idx: 7,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::Base64B32hexencode,
@@ -12812,7 +12812,7 @@ pub(crate) const IMPORT_REGISTRY: &[RuntimeImportSpec] = &[
     RuntimeImportSpec {
         import: WasmRuntimeImport::Base64B32hexdecode,
         name: "base64_b32hexdecode",
-        type_idx: 3,
+        type_idx: 5,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::Base64B16encode,
@@ -12822,7 +12822,7 @@ pub(crate) const IMPORT_REGISTRY: &[RuntimeImportSpec] = &[
     RuntimeImportSpec {
         import: WasmRuntimeImport::Base64B16decode,
         name: "base64_b16decode",
-        type_idx: 3,
+        type_idx: 5,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::Base64A85encode,
@@ -12852,7 +12852,7 @@ pub(crate) const IMPORT_REGISTRY: &[RuntimeImportSpec] = &[
     RuntimeImportSpec {
         import: WasmRuntimeImport::Base64Decodebytes,
         name: "base64_decodebytes",
-        type_idx: 2,
+        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::CopyCopy,

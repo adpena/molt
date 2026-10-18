@@ -1,6 +1,7 @@
 use crate::bridge::*;
 use molt_cpython_abi::native_custody::ByteInput;
 use molt_runtime_core::prelude::*;
+use molt_runtime_core::rt_raise_class;
 
 const BASE64_TABLE: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
 
@@ -13,197 +14,140 @@ fn alloc_bytes_or_oom(_py: &PyToken, data: &[u8], context: &str) -> u64 {
     MoltObject::from_ptr(ptr).bits()
 }
 
-/// SIMD-accelerated whitespace stripping: removes ASCII whitespace bytes
-/// (\t, \n, \r, \x0c, ' ') from input using NEON/SSE2 bulk classification.
-fn simd_strip_whitespace(input: &[u8]) -> Vec<u8> {
-    let mut out: Vec<u8> = Vec::with_capacity(input.len());
-    let mut i = 0usize;
-
-    #[cfg(target_arch = "aarch64")]
-    {
-        unsafe {
-            use std::arch::aarch64::*;
-            let space = vdupq_n_u8(b' ');
-            let tab = vdupq_n_u8(b'\t');
-            let nl = vdupq_n_u8(b'\n');
-            let cr = vdupq_n_u8(b'\r');
-            let ff = vdupq_n_u8(0x0C); // form feed
-            while i + 16 <= input.len() {
-                let chunk = vld1q_u8(input.as_ptr().add(i));
-                let is_ws = vorrq_u8(
-                    vorrq_u8(
-                        vorrq_u8(vceqq_u8(chunk, space), vceqq_u8(chunk, tab)),
-                        vceqq_u8(chunk, nl),
-                    ),
-                    vorrq_u8(vceqq_u8(chunk, cr), vceqq_u8(chunk, ff)),
-                );
-                // Fast path: if no whitespace in this chunk, copy all 16 bytes
-                if vmaxvq_u8(is_ws) == 0 {
-                    let len = out.len();
-                    out.set_len(len + 16);
-                    vst1q_u8(out.as_mut_ptr().add(len), chunk);
-                } else {
-                    // Slow path: copy non-whitespace bytes one by one
-                    for j in 0..16 {
-                        let b = input[i + j];
-                        if !b.is_ascii_whitespace() {
-                            out.push(b);
-                        }
-                    }
-                }
-                i += 16;
-            }
-        }
+/// Base64 alphabet value per byte; `INVALID_BASE64` marks a non-alphabet byte.
+const INVALID_BASE64: u8 = 0xff;
+const BASE64_DECODE_TABLE: [u8; 256] = {
+    let mut table = [INVALID_BASE64; 256];
+    let mut index = 0;
+    while index < BASE64_TABLE.len() {
+        table[BASE64_TABLE[index] as usize] = index as u8;
+        index += 1;
     }
+    table
+};
 
-    #[cfg(target_arch = "x86_64")]
-    {
-        unsafe {
-            use std::arch::x86_64::*;
-            let space = _mm_set1_epi8(b' ' as i8);
-            let tab = _mm_set1_epi8(b'\t' as i8);
-            let nl = _mm_set1_epi8(b'\n' as i8);
-            let cr = _mm_set1_epi8(b'\r' as i8);
-            let ff = _mm_set1_epi8(0x0C);
-            while i + 16 <= input.len() {
-                let chunk = _mm_loadu_si128(input.as_ptr().add(i) as *const __m128i);
-                let is_ws = _mm_or_si128(
-                    _mm_or_si128(
-                        _mm_or_si128(_mm_cmpeq_epi8(chunk, space), _mm_cmpeq_epi8(chunk, tab)),
-                        _mm_cmpeq_epi8(chunk, nl),
-                    ),
-                    _mm_or_si128(_mm_cmpeq_epi8(chunk, cr), _mm_cmpeq_epi8(chunk, ff)),
-                );
-                let mask = _mm_movemask_epi8(is_ws) as u32;
-                if mask == 0 {
-                    let len = out.len();
-                    out.set_len(len + 16);
-                    _mm_storeu_si128(out.as_mut_ptr().add(len) as *mut __m128i, chunk);
-                } else {
-                    for j in 0..16 {
-                        let b = input[i + j];
-                        if !b.is_ascii_whitespace() {
-                            out.push(b);
-                        }
-                    }
-                }
-                i += 16;
-            }
-        }
-    }
-
-    #[cfg(target_arch = "wasm32")]
-    {
-        if cfg!(target_feature = "simd128") {
-            unsafe {
-                use std::arch::wasm32::*;
-                let space = u8x16_splat(b' ');
-                let tab = u8x16_splat(b'\t');
-                let nl = u8x16_splat(b'\n');
-                let cr = u8x16_splat(b'\r');
-                let ff = u8x16_splat(0x0C);
-                while i + 16 <= input.len() {
-                    let chunk = v128_load(input.as_ptr().add(i) as *const v128);
-                    let is_ws = v128_or(
-                        v128_or(
-                            v128_or(u8x16_eq(chunk, space), u8x16_eq(chunk, tab)),
-                            u8x16_eq(chunk, nl),
-                        ),
-                        v128_or(u8x16_eq(chunk, cr), u8x16_eq(chunk, ff)),
-                    );
-                    let mask = u8x16_bitmask(is_ws) as u32;
-                    if mask == 0 {
-                        let len = out.len();
-                        out.set_len(len + 16);
-                        v128_store(out.as_mut_ptr().add(len) as *mut v128, chunk);
-                    } else {
-                        for j in 0..16 {
-                            let b = input[i + j];
-                            if !b.is_ascii_whitespace() {
-                                out.push(b);
-                            }
-                        }
-                    }
-                    i += 16;
-                }
-            }
-        }
-    }
-
-    // Scalar tail
-    while i < input.len() {
-        let b = input[i];
-        if !b.is_ascii_whitespace() {
-            out.push(b);
-        }
-        i += 1;
-    }
-    out
+/// A failure of CPython's `binascii.a2b_base64`, raised as `binascii.Error`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Base64DecodeError {
+    LeadingPadding,
+    ExcessPadding,
+    ExcessDataAfterPadding,
+    NonAlphabet,
+    DiscontinuousPadding,
+    /// One data character past a whole quad; CPython reports the count.
+    OneExtraCharacter {
+        data_characters: usize,
+    },
+    IncorrectPadding,
 }
 
-fn base64_value(byte: u8) -> Option<u8> {
-    match byte {
-        b'A'..=b'Z' => Some(byte - b'A'),
-        b'a'..=b'z' => Some(byte - b'a' + 26),
-        b'0'..=b'9' => Some(byte - b'0' + 52),
-        b'+' => Some(62),
-        b'/' => Some(63),
-        _ => None,
+impl Base64DecodeError {
+    pub(crate) fn message(self) -> std::borrow::Cow<'static, str> {
+        match self {
+            Self::LeadingPadding => "Leading padding not allowed".into(),
+            Self::ExcessPadding => "Excess padding not allowed".into(),
+            Self::ExcessDataAfterPadding => "Excess data after padding".into(),
+            Self::NonAlphabet => "Only base64 data is allowed".into(),
+            Self::DiscontinuousPadding => "Discontinuous padding not allowed".into(),
+            Self::OneExtraCharacter { data_characters } => format!(
+                "Invalid base64-encoded string: number of data characters \
+                 ({data_characters}) cannot be 1 more than a multiple of 4"
+            )
+            .into(),
+            Self::IncorrectPadding => "Incorrect padding".into(),
+        }
     }
 }
 
-fn base64_decode(input: &[u8]) -> Result<Vec<u8>, &'static str> {
-    let compact = simd_strip_whitespace(input);
-    if compact.is_empty() {
-        return Ok(Vec::new());
+/// CPython's `binascii.a2b_base64(data, strict_mode=...)` (Modules/binascii.c).
+///
+/// Without `strict`, non-alphabet bytes are skipped and decoding stops at the
+/// first complete padding. With `strict`, every deviation is an error. Whole
+/// quads of alphabet bytes take a branch-free path; every other byte follows
+/// CPython's per-character state machine.
+pub(crate) fn a2b_base64(ascii: &[u8], strict: bool) -> Result<Vec<u8>, Base64DecodeError> {
+    if strict && ascii.first() == Some(&b'=') {
+        return Err(Base64DecodeError::LeadingPadding);
     }
-    if !compact.len().is_multiple_of(4) {
-        return Err("Incorrect padding");
+    let mut out = Vec::with_capacity(ascii.len().div_ceil(4) * 3);
+    let mut quad_pos = 0usize;
+    let mut leftchar = 0u8;
+    let mut pads = 0usize;
+    let mut padding_started = false;
+    let mut index = 0usize;
+    while index < ascii.len() {
+        if quad_pos == 0
+            && !padding_started
+            && let Some(quad) = ascii.get(index..index + 4)
+        {
+            let a = BASE64_DECODE_TABLE[quad[0] as usize];
+            let b = BASE64_DECODE_TABLE[quad[1] as usize];
+            let c = BASE64_DECODE_TABLE[quad[2] as usize];
+            let d = BASE64_DECODE_TABLE[quad[3] as usize];
+            if (a | b | c | d) < 64 {
+                out.extend_from_slice(&[(a << 2) | (b >> 4), (b << 4) | (c >> 2), (c << 6) | d]);
+                index += 4;
+                continue;
+            }
+        }
+        let byte = ascii[index];
+        index += 1;
+        if byte == b'=' {
+            padding_started = true;
+            if strict && quad_pos == 0 {
+                return Err(Base64DecodeError::ExcessPadding);
+            }
+            if quad_pos >= 2 {
+                pads += 1;
+                if quad_pos + pads >= 4 {
+                    if strict && index < ascii.len() {
+                        return Err(Base64DecodeError::ExcessDataAfterPadding);
+                    }
+                    return Ok(out);
+                }
+            }
+            continue;
+        }
+        let value = BASE64_DECODE_TABLE[byte as usize];
+        if value == INVALID_BASE64 {
+            if strict {
+                return Err(Base64DecodeError::NonAlphabet);
+            }
+            continue;
+        }
+        if strict && padding_started {
+            return Err(Base64DecodeError::DiscontinuousPadding);
+        }
+        pads = 0;
+        match quad_pos {
+            0 => {
+                quad_pos = 1;
+                leftchar = value;
+            }
+            1 => {
+                quad_pos = 2;
+                out.push((leftchar << 2) | (value >> 4));
+                leftchar = value & 0x0f;
+            }
+            2 => {
+                quad_pos = 3;
+                out.push((leftchar << 4) | (value >> 2));
+                leftchar = value & 0x03;
+            }
+            _ => {
+                quad_pos = 0;
+                out.push((leftchar << 6) | value);
+                leftchar = 0;
+            }
+        }
     }
-    let mut out = Vec::with_capacity(compact.len() / 4 * 3);
-    let mut idx = 0usize;
-    while idx < compact.len() {
-        let c0 = compact[idx];
-        let c1 = compact[idx + 1];
-        let c2 = compact[idx + 2];
-        let c3 = compact[idx + 3];
-
-        let Some(v0) = base64_value(c0) else {
-            return Err("Non-base64 digit found");
-        };
-        let Some(v1) = base64_value(c1) else {
-            return Err("Non-base64 digit found");
-        };
-        let pad2 = c2 == b'=';
-        let pad3 = c3 == b'=';
-        let v2 = if pad2 {
-            0
-        } else if let Some(v) = base64_value(c2) {
-            v
-        } else {
-            return Err("Non-base64 digit found");
-        };
-        let v3 = if pad3 {
-            0
-        } else if let Some(v) = base64_value(c3) {
-            v
-        } else {
-            return Err("Non-base64 digit found");
-        };
-        if pad2 && !pad3 {
-            return Err("Incorrect padding");
-        }
-
-        out.push((v0 << 2) | (v1 >> 4));
-        if !pad2 {
-            out.push(((v1 & 0x0F) << 4) | (v2 >> 2));
-        }
-        if !pad3 {
-            out.push(((v2 & 0x03) << 6) | v3);
-        }
-        idx += 4;
+    match quad_pos {
+        0 => Ok(out),
+        1 => Err(Base64DecodeError::OneExtraCharacter {
+            data_characters: out.len() / 3 * 4 + 1,
+        }),
+        _ => Err(Base64DecodeError::IncorrectPadding),
     }
-    Ok(out)
 }
 
 fn base64_encode(input: &[u8]) -> Vec<u8> {
@@ -617,57 +561,38 @@ unsafe fn hex_chars_to_nibbles_sse2(
     }
 }
 
-fn uu_val(ch: u8) -> Option<u8> {
-    if ch == b'`' {
-        return Some(0);
-    }
-    if !(b' '..=b'_').contains(&ch) {
-        return None;
-    }
-    Some((ch - b' ') & 0x3f)
-}
-
-fn uu_decode(input: &[u8]) -> Result<Vec<u8>, &'static str> {
-    let mut line = input;
-    while let Some(last) = line.last() {
-        if *last == b'\n' || *last == b'\r' {
-            line = &line[..line.len() - 1];
-        } else {
-            break;
+/// CPython's `binascii.a2b_uu` (Modules/binascii.c). The first byte gives the
+/// decoded length; a missing or line-ending byte decodes as zero, as CPython
+/// reads its buffer's NUL terminator for an empty input.
+fn uu_decode(ascii: &[u8]) -> Result<Vec<u8>, &'static str> {
+    let (&length_byte, mut rest) = ascii.split_first().unwrap_or((&0, &[]));
+    let mut remaining = usize::from(length_byte.wrapping_sub(b' ') & 0o77);
+    let mut out = Vec::with_capacity(remaining);
+    let mut leftchar = 0u32;
+    let mut leftbits = 0u32;
+    while remaining > 0 {
+        let value = match rest.split_first() {
+            None | Some((b'\n' | b'\r', _)) => 0,
+            // '`' (space + 64) also encodes zero.
+            Some((&byte, _)) if (b' '..=b' ' + 64).contains(&byte) => (byte - b' ') & 0o77,
+            Some(_) => return Err("Illegal char"),
+        };
+        rest = rest.get(1..).unwrap_or(&[]);
+        leftchar = (leftchar << 6) | u32::from(value);
+        leftbits += 6;
+        if leftbits >= 8 {
+            leftbits -= 8;
+            out.push((leftchar >> leftbits) as u8);
+            leftchar &= (1 << leftbits) - 1;
+            remaining -= 1;
         }
     }
-    if line.is_empty() {
-        return Ok(Vec::new());
+    if rest
+        .iter()
+        .any(|&byte| !matches!(byte, b' ' | b'`' | b'\n' | b'\r'))
+    {
+        return Err("Trailing garbage");
     }
-    let Some(want) = uu_val(line[0]) else {
-        return Err("Illegal char");
-    };
-    let want_len = usize::from(want);
-    let groups = want_len.div_ceil(3);
-    if line.len() < 1 + groups * 4 {
-        return Err("Truncated input");
-    }
-    let mut out = Vec::with_capacity(groups * 3);
-    let mut idx = 1usize;
-    for _ in 0..groups {
-        let Some(a) = uu_val(line[idx]) else {
-            return Err("Illegal char");
-        };
-        let Some(b) = uu_val(line[idx + 1]) else {
-            return Err("Illegal char");
-        };
-        let Some(c) = uu_val(line[idx + 2]) else {
-            return Err("Illegal char");
-        };
-        let Some(d) = uu_val(line[idx + 3]) else {
-            return Err("Illegal char");
-        };
-        out.push((a << 2) | (b >> 4));
-        out.push(((b & 0x0f) << 4) | (c >> 2));
-        out.push(((c & 0x03) << 6) | d);
-        idx += 4;
-    }
-    out.truncate(want_len);
     Ok(out)
 }
 
@@ -863,25 +788,59 @@ fn qp_encode(input: &[u8]) -> Vec<u8> {
     out
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_binascii_a2b_base64(data_bits: u64) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
-        let text = string_obj_to_owned(obj_from_bits(data_bits));
-        let input_export = if text.is_some() {
-            None
-        } else {
-            match unsafe { ByteInput::acquire(_py, data_bits) } {
-                Ok(export) => Some(export),
-                Err(_) => return MoltObject::none().bits(),
+/// CPython's `ascii_buffer_converter`: an ASCII `str` or a bytes-like object.
+enum AsciiData<'py> {
+    Text(String),
+    Buffer(ByteInput<'py>),
+}
+
+impl<'py> AsciiData<'py> {
+    fn acquire(py: &'py PyToken, bits: u64) -> Result<Self, u64> {
+        if let Some(text) = string_obj_to_owned(obj_from_bits(bits)) {
+            if !text.is_ascii() {
+                return Err(raise_exception::<u64>(
+                    py,
+                    "ValueError",
+                    "string argument should contain only ASCII characters",
+                ));
             }
+            return Ok(Self::Text(text));
+        }
+        match unsafe { ByteInput::acquire(py, bits) } {
+            Ok(export) => Ok(Self::Buffer(export)),
+            Err(_) => Err(MoltObject::none().bits()),
+        }
+    }
+
+    /// # Safety
+    /// No callback may run while the slice is borrowed (see `ByteInput::bytes`).
+    unsafe fn bytes<'view>(&'view self, py: &'view PyToken) -> &'view [u8] {
+        match self {
+            Self::Text(text) => text.as_bytes(),
+            Self::Buffer(export) => unsafe { export.bytes(py) },
+        }
+    }
+}
+
+/// `error_type` is `binascii.Error`, owned by the Python module.
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_binascii_a2b_base64(
+    error_type: u64,
+    data_bits: u64,
+    strict_mode_bits: u64,
+) -> u64 {
+    molt_runtime_core::with_gil_entry!(_py, {
+        let strict = is_truthy(_py, obj_from_bits(strict_mode_bits));
+        if exception_pending(_py) {
+            return MoltObject::none().bits();
+        }
+        let input = match AsciiData::acquire(_py, data_bits) {
+            Ok(input) => input,
+            Err(bits) => return bits,
         };
-        let raw = text.as_ref().map_or_else(
-            || unsafe { input_export.as_ref().unwrap().bytes(_py) },
-            |text| text.as_bytes(),
-        );
-        let decoded = match base64_decode(raw) {
+        let decoded = match a2b_base64(unsafe { input.bytes(_py) }, strict) {
             Ok(v) => v,
-            Err(msg) => return raise_exception::<_>(_py, "ValueError", msg),
+            Err(error) => return rt_raise_class(_py, error_type, &error.message()),
         };
         alloc_bytes_or_oom(_py, &decoded, "a2b_base64")
     })
@@ -899,36 +858,28 @@ pub extern "C" fn molt_binascii_b2a_base64(data_bits: u64) -> u64 {
     })
 }
 
+/// CPython's `binascii.a2b_hex`; `binascii.unhexlify` shares the symbol.
+pub(crate) fn a2b_hex(raw: &[u8]) -> Result<Vec<u8>, &'static str> {
+    if !raw.len().is_multiple_of(2) {
+        return Err("Odd-length string");
+    }
+    simd_hex_decode(raw).ok_or("Non-hexadecimal digit found")
+}
+
 #[unsafe(no_mangle)]
-pub extern "C" fn molt_binascii_a2b_hex(data_bits: u64) -> u64 {
+pub extern "C" fn molt_binascii_a2b_hex(error_type: u64, data_bits: u64) -> u64 {
     molt_runtime_core::with_gil_entry!(_py, {
-        let text = string_obj_to_owned(obj_from_bits(data_bits));
-        let input_export = if text.is_some() {
-            None
-        } else {
-            match unsafe { ByteInput::acquire(_py, data_bits) } {
-                Ok(export) => Some(export),
-                Err(_) => return MoltObject::none().bits(),
-            }
+        let input = match AsciiData::acquire(_py, data_bits) {
+            Ok(input) => input,
+            Err(bits) => return bits,
         };
-        let raw = text.as_ref().map_or_else(
-            || unsafe { input_export.as_ref().unwrap().bytes(_py) },
-            |text| text.as_bytes(),
-        );
-        if !raw.len().is_multiple_of(2) {
-            return raise_exception::<_>(_py, "ValueError", "Odd-length string");
-        }
-        // Use SIMD-accelerated hex decode (NEON/SSE2)
-        let out = match simd_hex_decode(raw) {
-            Some(v) => v,
-            None => {
-                return raise_exception::<_>(_py, "ValueError", "Non-hexadecimal digit found");
-            }
+        let out = match a2b_hex(unsafe { input.bytes(_py) }) {
+            Ok(v) => v,
+            Err(message) => return rt_raise_class(_py, error_type, message),
         };
         alloc_bytes_or_oom(_py, &out, "a2b_hex")
     })
 }
-
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_binascii_b2a_hex(data_bits: u64) -> u64 {
     molt_runtime_core::with_gil_entry!(_py, {
@@ -976,31 +927,22 @@ pub extern "C" fn molt_binascii_b2a_qp(data_bits: u64) -> u64 {
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn molt_binascii_a2b_uu(data_bits: u64) -> u64 {
+pub extern "C" fn molt_binascii_a2b_uu(error_type: u64, data_bits: u64) -> u64 {
     molt_runtime_core::with_gil_entry!(_py, {
-        let text = string_obj_to_owned(obj_from_bits(data_bits));
-        let input_export = if text.is_some() {
-            None
-        } else {
-            match unsafe { ByteInput::acquire(_py, data_bits) } {
-                Ok(export) => Some(export),
-                Err(_) => return MoltObject::none().bits(),
-            }
+        let input = match AsciiData::acquire(_py, data_bits) {
+            Ok(input) => input,
+            Err(bits) => return bits,
         };
-        let raw = text.as_ref().map_or_else(
-            || unsafe { input_export.as_ref().unwrap().bytes(_py) },
-            |text| text.as_bytes(),
-        );
-        let out = match uu_decode(raw) {
+        let out = match uu_decode(unsafe { input.bytes(_py) }) {
             Ok(v) => v,
-            Err(msg) => return raise_exception::<_>(_py, "ValueError", msg),
+            Err(message) => return rt_raise_class(_py, error_type, message),
         };
         alloc_bytes_or_oom(_py, &out, "a2b_uu")
     })
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn molt_binascii_b2a_uu(data_bits: u64) -> u64 {
+pub extern "C" fn molt_binascii_b2a_uu(error_type: u64, data_bits: u64) -> u64 {
     molt_runtime_core::with_gil_entry!(_py, {
         let input_export = match unsafe { ByteInput::acquire(_py, data_bits) } {
             Ok(export) => export,
@@ -1008,7 +950,7 @@ pub extern "C" fn molt_binascii_b2a_uu(data_bits: u64) -> u64 {
         };
         let out = match uu_encode(unsafe { input_export.bytes(_py) }) {
             Ok(v) => v,
-            Err(msg) => return raise_exception::<_>(_py, "ValueError", msg),
+            Err(message) => return rt_raise_class(_py, error_type, message),
         };
         alloc_bytes_or_oom(_py, &out, "b2a_uu")
     })
@@ -1183,4 +1125,69 @@ pub extern "C" fn molt_uu_codec_decode(data_bits: u64) -> u64 {
 
         alloc_bytes_or_oom(_py, &out, "uu_codec_decode")
     })
+}
+
+#[cfg(test)]
+mod cpython_decoder_tests {
+    use super::{Base64DecodeError, a2b_base64, uu_decode};
+
+    fn base64_outcome(data: &[u8], strict: bool) -> Result<Vec<u8>, String> {
+        a2b_base64(data, strict).map_err(|error| error.message().into_owned())
+    }
+
+    /// Expected values are CPython 3.12, 3.13 and 3.14 `binascii.a2b_base64`.
+    #[test]
+    fn a2b_base64_matches_cpython_in_both_modes() {
+        let cases: &[(&[u8], bool, Result<&[u8], &str>)] = &[
+            (b"=YWJj", false, Ok(b"abc")),
+            (b"=YWJj", true, Err("Leading padding not allowed")),
+            (b"YWJj=", true, Err("Excess padding not allowed")),
+            (b"YQ==", true, Ok(b"a")),
+            (b"YQ=", false, Err("Incorrect padding")),
+            (b"YQ===", false, Ok(b"a")),
+            (b"YQ===", true, Err("Excess data after padding")),
+            (b"YQ= =", false, Ok(b"a")),
+            (b"YQ= =", true, Err("Only base64 data is allowed")),
+            (b"Y=Q==", false, Ok(b"a")),
+            (b"Y=Q==", true, Err("Discontinuous padding not allowed")),
+            (b"====", false, Ok(b"")),
+            (b"====", true, Err("Leading padding not allowed")),
+            (b"YW Jj", false, Ok(b"abc")),
+            (b"YQ==YQ==", false, Ok(b"a")),
+            (b"YQ==YQ==", true, Err("Excess data after padding")),
+            (b"", true, Ok(b"")),
+        ];
+        for &(data, strict, expected) in cases {
+            let expected = expected.map(<[u8]>::to_vec).map_err(str::to_string);
+            assert_eq!(
+                base64_outcome(data, strict),
+                expected,
+                "{data:?} strict={strict}"
+            );
+        }
+        assert_eq!(
+            a2b_base64(b"YWJjZGVmZ", false),
+            Err(Base64DecodeError::OneExtraCharacter { data_characters: 9 })
+        );
+        assert_eq!(
+            base64_outcome(b"YWJjZ", true).unwrap_err(),
+            "Invalid base64-encoded string: number of data characters (5) cannot be 1 more \
+             than a multiple of 4"
+        );
+    }
+
+    /// Expected values are CPython 3.12, 3.13 and 3.14 `binascii.a2b_uu`.
+    #[test]
+    fn a2b_uu_matches_cpython() {
+        assert_eq!(uu_decode(b""), Ok(vec![0; 32]));
+        assert_eq!(uu_decode(b"!"), Ok(vec![0]));
+        assert_eq!(uu_decode(b"!!!!"), Err("Trailing garbage"));
+        assert_eq!(uu_decode(b"#86)C\n"), Ok(b"abc".to_vec()));
+        assert_eq!(uu_decode(b"#86)C``"), Ok(b"abc".to_vec()));
+        assert_eq!(uu_decode(b"#86)Cxx"), Err("Trailing garbage"));
+        assert_eq!(uu_decode(b"#86"), Ok(b"a`\0".to_vec()));
+        assert_eq!(uu_decode(b"\x7f"), Ok(vec![0; 31]));
+        assert_eq!(uu_decode(b" "), Ok(Vec::new()));
+        assert_eq!(uu_decode(b"#8\x016)C"), Err("Illegal char"));
+    }
 }
