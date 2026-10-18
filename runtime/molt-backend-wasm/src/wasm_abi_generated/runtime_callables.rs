@@ -9544,11 +9544,6 @@ pub(crate) const RUNTIME_CALLABLE_IMPORTS: &[RuntimeCallableImportSpec] = &[
         arity: 0,
     },
     RuntimeCallableImportSpec {
-        runtime_name: "molt_re_strip_verbose",
-        import: WasmRuntimeImport::ReStripVerbose,
-        arity: 2,
-    },
-    RuntimeCallableImportSpec {
         runtime_name: "molt_re_compile",
         import: WasmRuntimeImport::ReCompile,
         arity: 2,
@@ -14762,7 +14757,6 @@ pub(crate) fn runtime_callable_import(runtime_name: &str) -> Option<WasmRuntimeI
         "molt_platform_system" => Some(WasmRuntimeImport::PlatformSystem),
         "molt_platform_uname" => Some(WasmRuntimeImport::PlatformUname),
         "molt_platform_version" => Some(WasmRuntimeImport::PlatformVersion),
-        "molt_re_strip_verbose" => Some(WasmRuntimeImport::ReStripVerbose),
         "molt_re_compile" => Some(WasmRuntimeImport::ReCompile),
         "molt_re_execute" => Some(WasmRuntimeImport::ReExecute),
         "molt_re_scanner_new" => Some(WasmRuntimeImport::ReScannerNew),

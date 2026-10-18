@@ -2307,7 +2307,6 @@ pub(crate) enum WasmRuntimeImport {
     PlatformSystem,
     PlatformUname,
     PlatformVersion,
-    ReStripVerbose,
     ReCompile,
     ReExecute,
     ReScannerNew,

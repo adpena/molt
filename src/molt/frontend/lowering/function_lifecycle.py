@@ -657,11 +657,7 @@ class FunctionLifecycleMixin(GeneratorMixinBase):
                             result=MoltValue("none"),
                         )
                     )
-                    if (
-                        self.entry_module
-                        and self.module_name == self.entry_module
-                        and self.module_name != "__main__"
-                    ):
+                    if self.is_entry_module and self.module_name != "__main__":
                         main_name_val = MoltValue(self.next_var(), type_hint="str")
                         self.emit(
                             MoltOp(

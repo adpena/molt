@@ -9,6 +9,7 @@ verified-subset release receipts all consume this same projection.
 from __future__ import annotations
 
 import ast
+from glob import has_magic
 import hashlib
 import io
 import json
@@ -514,7 +515,11 @@ def collect_test_files(
     pattern: str = "*.py",
     repo_root: Path = ROOT,
 ) -> tuple[Path, ...]:
-    """Expand manifests/directories into one canonical, duplicate-free closure."""
+    """Expand files, filename patterns and suites into one canonical closure.
+
+    Filename patterns enumerate one admitted directory with case-sensitive
+    matching on every host. Patterns cannot select parent directories or recurse.
+    """
 
     root = repo_root.resolve()
     files: dict[str, Path] = {}
@@ -546,7 +551,46 @@ def collect_test_files(
         portable_identities[portable_identity] = identity
         files[identity] = resolved
 
+    def expand_filename_pattern(target: Path) -> bool:
+        if not has_magic(str(target)):
+            return False
+        candidate = target if target.is_absolute() else root / target
+        # Preserve exact existing paths, including portable literal '[' names.
+        if candidate.exists():
+            return False
+        if any(has_magic(part) for part in target.parent.parts):
+            raise ValueError(
+                f"differential filename patterns cannot select parent directories: {target}"
+            )
+        if ".." in target.parts or "**" in target.name:
+            raise ValueError(
+                f"differential filename pattern must be nonrecursive without parent traversal: {target}"
+            )
+        parent = resolve_owned_path(candidate.parent)
+        if candidate.parent.absolute() != parent:
+            raise ValueError(
+                f"differential filename pattern parent must not be an alias: {target}"
+            )
+        if not parent.is_relative_to(root):
+            raise ValueError(
+                f"differential filename pattern escapes the repository: {target}"
+            )
+        if not parent.is_dir():
+            raise ValueError(
+                f"differential filename pattern parent is not a directory: {target}"
+            )
+        before = len(files)
+        for match in sorted(parent.glob(target.name, case_sensitive=True)):
+            add(match)
+        if len(files) == before:
+            raise ValueError(
+                f"differential filename pattern selected no Python tests: {target}"
+            )
+        return True
+
     def expand(target: Path) -> None:
+        if expand_filename_pattern(target):
+            return
         candidate = target if target.is_absolute() else root / target
         if is_link_like(candidate) or candidate.absolute() != candidate.resolve(
             strict=True
@@ -559,6 +603,8 @@ def collect_test_files(
                     manifest_target = Path(entry)
                     if not manifest_target.is_absolute():
                         manifest_target = root / manifest_target
+                    if expand_filename_pattern(manifest_target):
+                        continue
                     if manifest_target.is_dir():
                         for match in sorted(manifest_target.glob(pattern)):
                             add(match)

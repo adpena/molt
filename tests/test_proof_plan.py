@@ -1266,11 +1266,28 @@ def test_shared_string_storage_exercises_both_real_backends(changed: str) -> Non
     argv = differential[0]
     assert argv[argv.index("--target") + 1] == "native,wasm"
     assert argv[argv.index("--build-profile") + 1] == "dev"
-    assert {
+    from tools.compat.test_policy import collect_test_files
+
+    root = PLAN.path.parent.parent
+    selectors = [arg for arg in argv if arg.startswith("tests/differential/")]
+    selected = {
+        path.relative_to(root).as_posix()
+        for path in collect_test_files(selectors, repo_root=root)
+    }
+    # Check the actual closure against the independently enumerated carrier
+    # family. Future regex cases must join without editing this oracle.
+    expected = {
         "tests/differential/basic/unicode_surrogate_handling.py",
-        "tests/differential/stdlib/re_bytes_admission.py",
         "tests/differential/stdlib/codecs_error_handlers_basic.py",
-    } <= set(argv)
+    }
+    expected.update(
+        path.relative_to(root).as_posix()
+        for path in (root / "tests/differential/stdlib").iterdir()
+        if path.is_file() and path.name.startswith("re_") and path.suffix == ".py"
+    )
+    assert selected == expected
+    assert "tests/differential/stdlib/re_parity.py" in selected
+    assert "tests/differential/stdlib/re_*.py" in selectors
 
 
 @pytest.mark.parametrize(

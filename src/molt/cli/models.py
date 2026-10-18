@@ -570,7 +570,6 @@ class _ScopedLoweringInputView:
 @dataclass(frozen=True)
 class _ModuleGraphMetadata:
     logical_source_path_by_module: Mapping[str, str]
-    entry_override_by_module: Mapping[str, str | None]
     module_is_namespace_by_module: Mapping[str, bool]
     module_is_package_by_module: Mapping[str, bool]
     module_execution_kind_by_module: Mapping[str, ModuleExecutionKind]
@@ -667,7 +666,6 @@ class _BinaryImageScope:
 @dataclass(frozen=True)
 class _ModuleLoweringMetadataView:
     logical_source_path: str
-    entry_override: str | None
     module_is_namespace: bool
     is_package: bool
     module_execution_kind: ModuleExecutionKind

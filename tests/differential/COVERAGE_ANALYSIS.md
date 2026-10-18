@@ -332,7 +332,7 @@
 | string_slice | `tests/differential/basic/assignment_aliasing_mutability.py`, `tests/differential/basic/augassign_inplace.py`, `tests/differential/basic/builtins_api_surface_312_plus.py` (+953 more) |
 | string_method_call | `tests/differential/basic/async_with_basic.py`, `tests/differential/basic/builtin_keyword_args.py`, `tests/differential/basic/builtins_api_surface_312_plus.py` (+1242 more) |
 | bytes_literal | `tests/differential/basic/assignment_annotations.py`, `tests/differential/basic/augassign_inplace.py`, `tests/differential/basic/boolean_edges.py` (+263 more) |
-| raw_string | `tests/differential/stdlib/importlib_util_cache_from_source_intrinsic.py`, `tests/differential/stdlib/re_named_backref_lookaround.py`, `tests/differential/stdlib/re_verbose_flag.py` |
+| raw_string | `tests/differential/stdlib/importlib_util_cache_from_source_intrinsic.py`, `tests/differential/stdlib/re_parity.py` |
 | multiline_string | `tests/differential/basic/builtins_symbol_abs_82451b41.py`, `tests/differential/basic/builtins_symbol_aiter_9064845b.py`, `tests/differential/basic/builtins_symbol_all_d87c4480.py` (+304 more) |
 
 ## type_hints

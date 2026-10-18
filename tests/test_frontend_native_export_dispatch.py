@@ -265,7 +265,6 @@ def test_hybrid_or_unlinked_import_never_mints_native_function_hint(
         else {}
     )
     generator = SimpleTIRGenerator(
-        entry_module="__main__",
         known_modules={"nativepkg", "nativepkg.ops"},
         direct_call_modules={"__main__"}
         if native == "unlinked_source"

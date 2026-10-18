@@ -379,7 +379,6 @@ def test_lowering_cache_hit_returns_fresh_decoded_payload_each_read(
 # Minimal lowering context inputs (mirrors the real call shape) so the tests can
 # compute a *real* context_digest and prove it no longer moves with mtime.
 _LOWERING_CTX = dict(
-    entry_override=None,
     module_execution_kind="imported",
     known_classes_snapshot={},
     parse_codec="json",

@@ -1213,11 +1213,7 @@ class ClassDefVisitorMixin(ClassMethodCompilationMixin):
             )
         qualname_val = MoltValue(self.next_var(), type_hint="str")
         self.emit(MoltOp(kind="CONST_STR", args=[qualname], result=qualname_val))
-        module_name = (
-            "__main__"
-            if self.entry_module and self.module_name == self.entry_module
-            else self.module_name
-        )
+        module_name = "__main__" if self.is_entry_module else self.module_name
         module_val = MoltValue(self.next_var(), type_hint="str")
         self.emit(MoltOp(kind="CONST_STR", args=[module_name], result=module_val))
 
