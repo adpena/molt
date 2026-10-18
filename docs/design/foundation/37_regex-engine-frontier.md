@@ -24,7 +24,7 @@ code ingest needed). No GPL code ingested.
 
 # Regex Engine Frontier (Design 37)
 
-**Document status:** Implementation-ready frontier design. **`re`-subsystem root doc.**
+**Document status:** Historical frontier design with a live implementation record below. **`re`-subsystem root doc.**
 **Scope:** The complete `re`-module story for molt across all targets (native
 macOS/Linux, WASM-browser, WASI, Luau) and all profiles. Defines the **two-tier
 engine** (Tier-F = linear-time finite automata for the regex-crate-expressible
@@ -35,10 +35,11 @@ the semantics-fidelity divergence table with its pinning tests, the per-target
 matrix, the benchmark gates, and the phased build plan with deletions.
 
 **The one-paragraph thesis.** molt does **not** today ship "a pure-Python regex
-engine" (as doc-29 SUBSYSTEM 6 and doc-16 claim). It ships a **5,708-line hand-rolled
+engine" (as doc-29 SUBSYSTEM 6 and doc-16 claim). At this document's 2026-06-06
+audit it shipped a **5,708-line hand-rolled
 recursive-descent parser + naïve recursive-backtracking NFA matcher in Rust**
 (`runtime/molt-runtime-regex/src/regex.rs`), duplicated verbatim as a second compiled
-copy in `runtime/molt-runtime/src/builtins/regex.rs`. That engine is feature-complete
+copy in `runtime/molt-runtime/src/builtins/regex.rs`. That historical engine was feature-complete
 on paper (backrefs, lookaround, conditionals, scoped flags, named groups, sub/split/
 finditer) but is **structurally unsound in three load-bearing ways**: (1) no
 linear-time guarantee — it is exponential-blowup backtracking with a `MAX_RECURSION_DEPTH
@@ -75,8 +76,8 @@ load-bearing claims are **false now** and the design must not inherit them:
 
 - **STALE-1 — "engine is entirely in Python" / "pure Python with Rust-backed literal
   and lookaround fast paths" (29:197-199).** FALSE. `re/__init__.py:10-24` imports
-  `molt_re_compile`, `molt_re_execute`, `molt_re_finditer_collect`, `molt_re_split`,
-  `molt_re_sub`, `molt_re_pattern_info` and routes ALL match
+  `molt_re_compile`, `molt_re_execute`, `molt_re_scanner_new`,
+  `molt_re_finditer_next`, `molt_re_split`, `molt_re_sub`, `molt_re_pattern_info` and routes ALL match
   execution into Rust. The Python file is a 478-line object wrapper (`Match`,
   `Pattern`, module functions, cache) with **zero match logic**. The engine —
   parser, IR, matcher — is `regex.rs:957-3666` (Rust).
@@ -108,14 +109,11 @@ load-bearing claims are **false now** and the design must not inherit them:
   (§5) is therefore about *feature-trimming an already-present crate*, not adopting a
   new one.
 
-- **STALE-4 — duplicate engine.** Neither prior audit noted that the engine exists as
-  **two compiled copies**: the satellite `molt-runtime-regex/src/regex.rs` (5,708 lines,
-  `with_core_gil!` + FFI bridge) and the in-tree `runtime/molt-runtime/src/builtins/regex.rs`
-  (5,708 lines, `with_gil_entry_nopanic!` + direct `crate::` calls), wired at
-  `builtins/mod.rs:116` (`pub(crate) mod regex;`). They are kept hand-synchronized
-  under a "satellite-parity guard" (the header comment `regex.rs:2-9`). **This is
-  ~5.7K lines of duplicated unsound code compiled into every binary.** Collapsing it is
-  a first-order deletion target (§7).
+- **STALE-4 — duplicate engine (historical finding, retired).** The 2026-06-06 audit
+  found two compiled copies. That duplication was retired under the satellite-dedup
+  arc; [design 21e](21e_runtime_satellite_dedup_PLAN.md) records zero tracked
+  dual-path pairs and a zero residual ceiling after HF-280 (2026-10-17). The old
+  duplicate-engine finding is not current implementation evidence.
 
 ### 0.2 Subsystem score (re-scored at HEAD)
 
@@ -126,7 +124,7 @@ state:
 | Domain | Importance | Gap (HEAD) | Product | Note |
 |---|---|---|---|---|
 | Data science | 3 | 2 | 6 | log/data parsing works for *most* patterns; silent ReDoS truncation + casefold divergence are correctness landmines |
-| Engineering | 3 | 2 | 6 | config/tokenizer parsing; the duplicate-unsound-engine debt + missing atomic groups |
+| Engineering | 3 | 2 | 6 | config/tokenizer parsing; regex semantic gaps + missing atomic groups |
 | Web | 3 | 3 | 9 | **ReDoS is a security property for servers**; the silent-truncation-on-depth behavior is worse than a hang (wrong answer, no signal) — and there is no guaranteed-linear mode |
 | ML | 1 | 1 | 1 | tokenizer regexes (GPT-2 BPE `'s|'t|...| ?\p{L}+|...`) need `\p{...}` Unicode classes, today unsupported |
 
@@ -135,6 +133,37 @@ matching *works*; but the **web row is now 9 (CRITICAL)** because the failure mo
 flipped from "loud NotImplementedError" to "silent wrong answer + ReDoS," which is
 the more dangerous class. **Verdict: FRONTIER-DESIGN-NOW** (this doc), riskiest phase
 flagged in §7.
+
+## Live implementation status (2026-10-18)
+
+The live source is a single `molt-runtime-regex` satellite implementation,
+consistent with [design 21e](21e_runtime_satellite_dedup_PLAN.md); the two-tier
+Tier-F/Tier-B engine described below remains a future frontier and is **not
+implemented**. Current bytes-admission work uses the existing matcher over typed
+text or byte subjects, owned immutable Pattern handles and a stateful scanner handle.
+The Python `Pattern.finditer` wrapper acquires byte-buffer custody when called and
+keeps the original subject object for Match identity and later capture reads. Bytes
+patterns use ASCII categories/case handling and reject Unicode-only escapes and the
+UNICODE flag. The replacement parser is shared by text and bytes templates; its typed
+syntax-error result is raised as the module's `re.error`, while unknown group names
+retain the builtin `IndexError` authority.
+
+The acceptance boundary for this migration is the public bytes-pattern family:
+buffer admission, subclass hook bypass, compile flags and cache identity, mutable
+capture reads, finditer lifetime/mutation, and bytes-valued split/sub/expand/escape.
+It does not establish broad regex parity. Backtracking complexity, Unicode tables,
+atomic and possessive groups, and Tier-F/Tier-B performance claims remain open. The
+single scanner transition is intended to own empty-match advancement and serve
+finditer, findall, split and substitution; every consumer must use it before that
+ownership claim is accepted.
+
+The semantic reference is pinned CPython 3.12.13:
+[`Lib/re/__init__.py`](https://github.com/python/cpython/blob/v3.12.13/Lib/re/__init__.py)
+defines public scanner and iterator behavior, while
+[`Modules/_sre/sre.c`](https://github.com/python/cpython/blob/v3.12.13/Modules/_sre/sre.c)
+owns buffer admission, physical subject length/slicing, capture extraction and the
+native scanner transition. The byte-subject and mutable-buffer differential cases
+are independent of the facade's host-CPython-backed unit fixture.
 
 ### 0.3 Refused designs (stated up front, with why)
 
@@ -294,10 +323,11 @@ exhaustion raises, it does not return a wrong span.
 
 ---
 
-## 2. Current-state audit (HEAD `ea9ef5c0f`) — the real gaps
+## 2. Historical current-state audit (HEAD `ea9ef5c0f`) — the gaps at that snapshot
 
-The engine is `molt-runtime-regex/src/regex.rs` (live; satellite) ≡ `builtins/regex.rs`
-(duplicate; in-tree). All anchors below are the satellite copy.
+The engine was `molt-runtime-regex/src/regex.rs` (satellite) plus `builtins/regex.rs`
+(in-tree duplicate) at the audited snapshot. All anchors below are historical; use
+the live implementation status above for the current architecture.
 
 ### 2-a. Silent ReDoS truncation — IMPORTANCE 3 × GAP 3 = **9 (CRITICAL, web)**
 
@@ -751,8 +781,9 @@ differential gate. LoC estimates are Rust unless noted. The **riskiest phase is 
 | 4 | ~700 | 0 (link-time only) | +700 |
 | **Σ** | ~3,900 | ~5,700 | **−1,800** |
 
-The end-state is **smaller** than today (a correct two-tier engine + DFA + `_sre` VM is
-fewer lines than the two duplicated unsound copies) **and** linear-time-by-default
+The proposed end-state is **smaller** than the audited 2026-06-06 snapshot (a correct
+two-tier engine + DFA + `_sre` VM was expected to use fewer lines than the then-present
+duplicated unsound copies) **and** linear-time-by-default
 **and** byte-identical to CPython 3.12+.
 
 ---
@@ -815,10 +846,10 @@ tier is **byte-identical to CPython 3.12+**, ReDoS-immune on the common case and
 never-silently-wrong on the rest; the opt-in **UNLEASHED tier** is RE2-mode
 (guaranteed-O(n), rejects backref/lookaround at compile). Constant patterns are
 **compiled to embedded automata at molt-build time** (the AOT superpower — zero runtime
-compile cost). The current **5,700-line duplicated unsound homegrown backtracker is
-deleted**; the pure-Python `re/__init__.py` is **demoted to a thin object layer**. Net
-LoC is *negative*. The riskiest step is the Phase-3 cutover/deletion, de-risked by
-proving both tiers green in parallel with the old engine in Phases 1–2.
+compile cost). This was the proposed end-state against the 2026-06-06 snapshot; it is
+not a claim that Tier-F or Tier-B has shipped. The live satellite deduplication is
+tracked separately in design 21e. The remaining frontier is parity, bounded execution
+and measured performance under the architecture stated here.
 
 Sources (provenance):
 - BurntSushi, [Regex engine internals as a library](https://burntsushi.net/regex-internals/) — meta engine, prefilters, DFA serialization (`to_bytes`/`from_bytes`), captures, leftmost-first.

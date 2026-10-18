@@ -12,12 +12,12 @@ use num_bigint::{BigInt, Sign};
 crate::object::native_handle::native_handle_bridge!(
     __molt_crypto_hash_owner_new,
     __molt_crypto_hash_owner_clone,
-    molt_runtime_crypto::hashlib::HashHandle
+    std::sync::Mutex<molt_runtime_crypto::hashlib::HashHandle>
 );
 crate::object::native_handle::native_handle_bridge!(
     __molt_crypto_hmac_owner_new,
     __molt_crypto_hmac_owner_clone,
-    molt_runtime_crypto::hmac::HmacHandle
+    std::sync::Mutex<molt_runtime_crypto::hmac::HmacHandle>
 );
 
 // ---------------------------------------------------------------------------

@@ -14,6 +14,7 @@ pub(super) struct ReParser {
     pub(super) group_widths: HashMap<u32, Option<u64>>,
     pub(super) open_group_names: std::collections::HashSet<String>,
     pub(super) flags: i64,
+    pub(super) is_bytes: bool,
     pub(super) inline_flags: i64,
     pub(super) nested_set_warning_pos: Option<i64>,
     pub(super) in_class: bool,
@@ -29,6 +30,7 @@ impl ReParser {
             group_widths: HashMap::new(),
             open_group_names: std::collections::HashSet::new(),
             flags,
+            is_bytes: false,
             inline_flags: 0,
             nested_set_warning_pos: None,
             in_class: false,
@@ -596,6 +598,9 @@ impl ReParser {
 
     pub(super) fn parse_escape(&mut self) -> Result<ReNode, String> {
         let ch = self.raw_next()?;
+        if self.is_bytes && matches!(ch, 'u' | 'U' | 'N') {
+            return Err(format!("bad escape \\{ch} at position {}", self.pos - 2));
+        }
         match ch {
             'd' | 'D' | 's' | 'S' | 'w' | 'W' => {
                 let negated = ch.is_ascii_uppercase();
@@ -703,6 +708,9 @@ impl ReParser {
         match ch {
             '\\' => {
                 let esc = self.raw_next()?;
+                if self.is_bytes && matches!(esc, 'u' | 'U' | 'N') {
+                    return Err(format!("bad escape \\{esc} at position {}", self.pos - 2));
+                }
                 match esc {
                     'd' | 'D' | 's' | 'S' | 'w' | 'W' => {
                         let category = if esc.is_ascii_uppercase() {
@@ -809,6 +817,7 @@ pub(super) fn fixed_width(
 ) -> Option<u64> {
     match node {
         ReNode::Empty => Some(0),
+        ReNode::RequireAdvance => Some(0),
         ReNode::Literal(s) => Some(s.chars().count() as u64),
         ReNode::Any => Some(1),
         ReNode::Anchor(_) => Some(0),
@@ -863,7 +872,16 @@ pub(super) fn fixed_width(
 // ---------------------------------------------------------------------------
 
 pub(super) fn parse_pattern(pattern: &str, flags: i64) -> Result<CompiledPattern, String> {
+    parse_pattern_typed(pattern, flags, false)
+}
+
+pub(super) fn parse_pattern_typed(
+    pattern: &str,
+    flags: i64,
+    is_bytes: bool,
+) -> Result<CompiledPattern, String> {
     let mut parser = ReParser::new(pattern, flags);
+    parser.is_bytes = is_bytes;
     let root = parser.parse()?;
     let group_count = parser.group_count;
     let group_names = parser.group_names;
@@ -874,6 +892,7 @@ pub(super) fn parse_pattern(pattern: &str, flags: i64) -> Result<CompiledPattern
         group_count,
         group_names,
         flags: flags | inline_flags,
+        is_bytes,
         warn_pos,
     })
 }

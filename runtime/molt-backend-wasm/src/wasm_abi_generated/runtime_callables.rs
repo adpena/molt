@@ -3511,7 +3511,12 @@ pub(crate) const RUNTIME_CALLABLE_IMPORTS: &[RuntimeCallableImportSpec] = &[
     RuntimeCallableImportSpec {
         runtime_name: "molt_re_expand_replacement",
         import: WasmRuntimeImport::ReExpandReplacement,
-        arity: 2,
+        arity: 3,
+    },
+    RuntimeCallableImportSpec {
+        runtime_name: "molt_re_subject_snapshot",
+        import: WasmRuntimeImport::ReSubjectSnapshot,
+        arity: 1,
     },
     RuntimeCallableImportSpec {
         runtime_name: "molt_shlex_quote",
@@ -7199,6 +7204,11 @@ pub(crate) const RUNTIME_CALLABLE_IMPORTS: &[RuntimeCallableImportSpec] = &[
         arity: 2,
     },
     RuntimeCallableImportSpec {
+        runtime_name: "molt_memoryview_from_simple_buffer",
+        import: WasmRuntimeImport::MemoryviewFromSimpleBuffer,
+        arity: 1,
+    },
+    RuntimeCallableImportSpec {
         runtime_name: "molt_memoryview_tolist",
         import: WasmRuntimeImport::MemoryviewTolist,
         arity: 1,
@@ -9549,9 +9559,14 @@ pub(crate) const RUNTIME_CALLABLE_IMPORTS: &[RuntimeCallableImportSpec] = &[
         arity: 5,
     },
     RuntimeCallableImportSpec {
-        runtime_name: "molt_re_finditer_collect",
-        import: WasmRuntimeImport::ReFinditerCollect,
+        runtime_name: "molt_re_scanner_new",
+        import: WasmRuntimeImport::ReScannerNew,
         arity: 4,
+    },
+    RuntimeCallableImportSpec {
+        runtime_name: "molt_re_finditer_next",
+        import: WasmRuntimeImport::ReFinditerNext,
+        arity: 2,
     },
     RuntimeCallableImportSpec {
         runtime_name: "molt_re_pattern_info",
@@ -11604,21 +11619,6 @@ pub(crate) const RUNTIME_CALLABLE_IMPORTS: &[RuntimeCallableImportSpec] = &[
         arity: 1,
     },
     RuntimeCallableImportSpec {
-        runtime_name: "molt_re_match_group",
-        import: WasmRuntimeImport::ReMatchGroup,
-        arity: 4,
-    },
-    RuntimeCallableImportSpec {
-        runtime_name: "molt_re_match_groups",
-        import: WasmRuntimeImport::ReMatchGroups,
-        arity: 3,
-    },
-    RuntimeCallableImportSpec {
-        runtime_name: "molt_re_match_groupdict",
-        import: WasmRuntimeImport::ReMatchGroupdict,
-        arity: 4,
-    },
-    RuntimeCallableImportSpec {
         runtime_name: "molt_re_split",
         import: WasmRuntimeImport::ReSplit,
         arity: 3,
@@ -13346,6 +13346,7 @@ pub(crate) fn runtime_callable_import(runtime_name: &str) -> Option<WasmRuntimeI
         "molt_enum_init_member" => Some(WasmRuntimeImport::EnumInitMember),
         "molt_re_group_values" => Some(WasmRuntimeImport::ReGroupValues),
         "molt_re_expand_replacement" => Some(WasmRuntimeImport::ReExpandReplacement),
+        "molt_re_subject_snapshot" => Some(WasmRuntimeImport::ReSubjectSnapshot),
         "molt_shlex_quote" => Some(WasmRuntimeImport::ShlexQuote),
         "molt_shlex_split_ex" => Some(WasmRuntimeImport::ShlexSplitEx),
         "molt_shlex_join" => Some(WasmRuntimeImport::ShlexJoin),
@@ -14251,6 +14252,7 @@ pub(crate) fn runtime_callable_import(runtime_name: &str) -> Option<WasmRuntimeI
         "molt_wrapper_member_set" => Some(WasmRuntimeImport::WrapperMemberSet),
         "molt_wrapper_member_delete" => Some(WasmRuntimeImport::WrapperMemberDelete),
         "molt_memoryview_from_flags" => Some(WasmRuntimeImport::MemoryviewFromFlags),
+        "molt_memoryview_from_simple_buffer" => Some(WasmRuntimeImport::MemoryviewFromSimpleBuffer),
         "molt_memoryview_tolist" => Some(WasmRuntimeImport::MemoryviewTolist),
         "molt_memoryview_count" => Some(WasmRuntimeImport::MemoryviewCount),
         "molt_memoryview_index" => Some(WasmRuntimeImport::MemoryviewIndex),
@@ -14763,7 +14765,8 @@ pub(crate) fn runtime_callable_import(runtime_name: &str) -> Option<WasmRuntimeI
         "molt_re_strip_verbose" => Some(WasmRuntimeImport::ReStripVerbose),
         "molt_re_compile" => Some(WasmRuntimeImport::ReCompile),
         "molt_re_execute" => Some(WasmRuntimeImport::ReExecute),
-        "molt_re_finditer_collect" => Some(WasmRuntimeImport::ReFinditerCollect),
+        "molt_re_scanner_new" => Some(WasmRuntimeImport::ReScannerNew),
+        "molt_re_finditer_next" => Some(WasmRuntimeImport::ReFinditerNext),
         "molt_re_pattern_info" => Some(WasmRuntimeImport::RePatternInfo),
         "molt_secrets_below" => Some(WasmRuntimeImport::SecretsBelow),
         "molt_secrets_choice" => Some(WasmRuntimeImport::SecretsChoice),
@@ -15220,9 +15223,6 @@ pub(crate) fn runtime_callable_import(runtime_name: &str) -> Option<WasmRuntimeI
         "molt_random_randbytes" => Some(WasmRuntimeImport::RandomRandbytes),
         "molt_random_randrange" => Some(WasmRuntimeImport::RandomRandrange),
         "molt_re_escape" => Some(WasmRuntimeImport::ReEscape),
-        "molt_re_match_group" => Some(WasmRuntimeImport::ReMatchGroup),
-        "molt_re_match_groups" => Some(WasmRuntimeImport::ReMatchGroups),
-        "molt_re_match_groupdict" => Some(WasmRuntimeImport::ReMatchGroupdict),
         "molt_re_split" => Some(WasmRuntimeImport::ReSplit),
         "molt_re_sub" => Some(WasmRuntimeImport::ReSub),
         "molt_timedelta_repr" => Some(WasmRuntimeImport::TimedeltaRepr),

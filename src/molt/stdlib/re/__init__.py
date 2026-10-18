@@ -3,8 +3,8 @@
 from __future__ import annotations
 
 from _intrinsics import require_intrinsic as _require_intrinsic
-from typing import Any, Iterator
-import warnings as _warnings
+from typing import Any, Iterator, Mapping
+from types import MappingProxyType as _MappingProxyType
 
 # Bind intrinsics in their consuming functions. Static link reachability still
 # retains a published function's body even when no caller invokes it, so lazy
@@ -76,7 +76,7 @@ class error(Exception):
 
 
 # Pattern cache
-_cache: dict[tuple[str, int], "Pattern"] = {}
+_cache: dict[tuple[str | bytes, int], "Pattern"] = {}
 _MAXCACHE = 512
 
 
@@ -106,7 +106,7 @@ class Match:
     def __init__(
         self,
         pattern: "Pattern",
-        string: str,
+        string: Any,
         pos: int,
         endpos: int,
         start: int,
@@ -122,25 +122,28 @@ class Match:
         self._group_spans = group_spans
 
     def group(self, *indices: int | str) -> Any:
-        _molt_re_match_group = _require_intrinsic("molt_re_match_group")
         if not indices:
             indices = (0,)
-        match_tuple = (self._start, self._end, self._group_spans)
-        return _molt_re_match_group(
-            self._string, match_tuple, indices, self._pattern.groupindex
-        )
+        spans = tuple(self._group_span(index) for index in indices)
+        values = _captured_values(self._string, spans)
+        return values[0] if len(values) == 1 else values
 
     def groups(self, default: Any = None) -> tuple[Any, ...]:
-        _molt_re_match_groups = _require_intrinsic("molt_re_match_groups")
-        match_tuple = (self._start, self._end, self._group_spans)
-        return _molt_re_match_groups(self._string, match_tuple, default)
+        values = _captured_values(
+            self._string,
+            tuple(self._group_span(index) for index in range(1, len(self._group_spans) + 1)),
+        )
+        return tuple(default if value is None else value for value in values)
 
     def groupdict(self, default: Any = None) -> dict[str, Any]:
-        _molt_re_match_groupdict = _require_intrinsic("molt_re_match_groupdict")
-        match_tuple = (self._start, self._end, self._group_spans)
-        return _molt_re_match_groupdict(
-            self._string, match_tuple, default, self._pattern.groupindex
+        names = self._pattern.groupindex
+        values = _captured_values(
+            self._string, tuple(self._group_span(index) for index in names.values())
         )
+        return {
+            name: default if value is None else value
+            for name, value in zip(names, values, strict=True)
+        }
 
     def start(self, group: int | str = 0) -> int:
         return self._group_span(group)[0]
@@ -151,7 +154,12 @@ class Match:
     def span(self, group: int | str = 0) -> tuple[int, int]:
         return self._group_span(group)
 
-    def expand(self, template: str) -> str:
+    def expand(self, template: str | bytes) -> str | bytes:
+        if isinstance(self._pattern.pattern, bytes):
+            if not isinstance(template, bytes):
+                raise TypeError("sequence item 0: expected a bytes-like object, str found")
+        elif not isinstance(template, str):
+            raise TypeError("sequence item 0: expected str instance, bytes found")
         return _expand_replacement(template, self)
 
     def __getitem__(self, g: int | str) -> Any:
@@ -168,7 +176,7 @@ class Match:
         return self._pattern
 
     @property
-    def string(self) -> str:
+    def string(self) -> Any:
         return self._string
 
     @property
@@ -210,64 +218,75 @@ class Match:
         span = self._group_spans[index - 1]
         return (-1, -1) if span is None else span
 
-    def _group_value(self, index: int | str) -> Any:
-        span = self._group_span(index)
-        if span[0] == -1 and span[1] == -1:
-            return None
-        return self._string[span[0] : span[1]]
-
-
 # ---------------------------------------------------------------------------
 # Pattern — thin wrapper around a compiled intrinsic handle
 # ---------------------------------------------------------------------------
 
 
 class Pattern:
-    __slots__ = ("pattern", "flags", "groups", "groupindex", "_handle")
+    __slots__ = (
+        "_pattern",
+        "_flags",
+        "_groups",
+        "_groupindex",
+        "_groupindex_data",
+        "_handle",
+        "__weakref__",
+    )
 
     def __init__(
         self,
-        pattern: str,
+        pattern: str | bytes,
         flags: int,
         handle: int,
         groups: int,
-        groupindex: dict[str, int],
+        groupindex: Mapping[str, int],
     ) -> None:
-        self.pattern = pattern
-        self.flags = flags
+        self._pattern = pattern
+        self._flags = flags
         self._handle = handle
-        self.groups = groups
-        self.groupindex = dict(groupindex)
+        self._groups = groups
+        self._groupindex_data = dict(groupindex)
+        self._groupindex = _MappingProxyType(self._groupindex_data)
+
+    @property
+    def pattern(self) -> str | bytes:
+        return self._pattern
+
+    @property
+    def flags(self) -> int:
+        return self._flags
+
+    @property
+    def groups(self) -> int:
+        return self._groups
+
+    @property
+    def groupindex(self) -> Mapping[str, int]:
+        return self._groupindex
 
     def search(
-        self, string: str, pos: int = 0, endpos: int | None = None
+        self, string: Any, pos: int = 0, endpos: int | None = None
     ) -> Match | None:
         return self._execute(string, pos, endpos, "search")
 
     def match(
-        self, string: str, pos: int = 0, endpos: int | None = None
+        self, string: Any, pos: int = 0, endpos: int | None = None
     ) -> Match | None:
         return self._execute(string, pos, endpos, "match")
 
     def fullmatch(
-        self, string: str, pos: int = 0, endpos: int | None = None
+        self, string: Any, pos: int = 0, endpos: int | None = None
     ) -> Match | None:
         return self._execute(string, pos, endpos, "fullmatch")
 
     def finditer(
-        self, string: str, pos: int = 0, endpos: int | None = None
+        self, string: Any, pos: int = 0, endpos: int | None = None
     ) -> Iterator[Match]:
-        _molt_re_finditer_collect = _require_intrinsic("molt_re_finditer_collect")
-        text = _ensure_text(string)
-        start, end = _clamp_span(len(text), pos, endpos)
-        raw = _molt_re_finditer_collect(self._handle, text, start, end)
-        if raw is None:
-            return
-        for item in raw:
-            yield Match(self, text, start, end, item[0], item[1], item[2])
+        return _RegexScanner(self, string, pos, endpos)
 
     def findall(
-        self, string: str, pos: int = 0, endpos: int | None = None
+        self, string: Any, pos: int = 0, endpos: int | None = None
     ) -> list[Any]:
         results: list[Any] = []
         for m in self.finditer(string, pos, endpos):
@@ -279,39 +298,117 @@ class Pattern:
                 results.append(m.groups())
         return results
 
-    def split(self, string: str, maxsplit: int = 0) -> list[str | Any]:
+    def split(self, string: Any, maxsplit: int = 0) -> list[Any]:
         _molt_re_split = _require_intrinsic("molt_re_split")
-        text = _ensure_text(string)
+        text = _subject_for(self, string)
         return _molt_re_split(self._handle, text, maxsplit)
 
-    def sub(self, repl: object, string: str, count: int = 0) -> str:
+    def sub(self, repl: object, string: Any, count: int = 0) -> Any:
         return self.subn(repl, string, count=count)[0]
 
-    def subn(self, repl: object, string: str, count: int = 0) -> tuple[str, int]:
-        text = _ensure_text(string)
+    def subn(self, repl: object, string: Any, count: int = 0) -> tuple[Any, int]:
         if count < 0:
             raise ValueError("count must be non-negative")
         if callable(repl):
-            # Callable replacement must stay in Python — iterate via finditer.
-            return _subn_callable(self, repl, text, count=count)
-        if not isinstance(repl, str):
+            return _subn_callable(self, repl, string, count=count)
+        text = _subject_for(self, string)
+        if isinstance(self.pattern, bytes):
+            if not isinstance(repl, bytes):
+                raise TypeError("a bytes-like object is required, not 'str'")
+            repl = _require_intrinsic("molt_re_subject_snapshot")(repl)
+            if not isinstance(repl, bytes):
+                raise TypeError("a bytes-like object is required for the replacement")
+        elif not isinstance(repl, str):
             repl = str(repl)
         _molt_re_sub = _require_intrinsic("molt_re_sub")
-        return _molt_re_sub(self._handle, repl, text, count)
+        result = _molt_re_sub(self._handle, repl, text, count)
+        if _is_regex_syntax_error(result):
+            _raise_regex_syntax_error(result)
+        return result
 
     def __repr__(self) -> str:
         return f"re.compile({self.pattern!r}, {self.flags!r})"
 
     def _execute(
-        self, string: str, pos: int, endpos: int | None, mode: str
+        self, string: Any, pos: int, endpos: int | None, mode: str
     ) -> Match | None:
         _molt_re_execute = _require_intrinsic("molt_re_execute")
-        text = _ensure_text(string)
-        start, end = _clamp_span(len(text), pos, endpos)
+        text = _subject_for(self, string)
+        start, end = _clamp_span(_subject_length(text), pos, endpos)
         raw = _molt_re_execute(self._handle, text, start, end, mode)
         if raw is None:
             return None
-        return Match(self, text, start, end, raw[0], raw[1], raw[2])
+        return Match(self, string, start, end, raw[0], raw[1], raw[2])
+
+
+class _RegexScanner(Iterator[Match]):
+    """Ordinary eager-acquisition iterator over native scanner state."""
+
+    __slots__ = (
+        "_pattern",
+        "_string",
+        "_subject",
+        "_start",
+        "_end",
+        "_scanner",
+        "_exhausted",
+    )
+
+    def __init__(
+        self, pattern: Pattern, string: Any, pos: int, endpos: int | None
+    ) -> None:
+        self._pattern = pattern
+        self._string = string
+        if isinstance(pattern.pattern, bytes):
+            if isinstance(string, str):
+                raise TypeError("cannot use a bytes pattern on a string-like object")
+            if type(string) is bytes:
+                subject: str | bytes | memoryview = string
+            else:
+                make_view = _require_intrinsic("molt_memoryview_from_simple_buffer")
+                subject = make_view(string)
+            length = _subject_length(subject)
+        else:
+            if not isinstance(string, str):
+                if isinstance(string, (bytes, bytearray, memoryview)):
+                    raise TypeError("cannot use a string pattern on a bytes-like object")
+                raise TypeError(
+                    f"expected string or bytes-like object, got '{type(string).__name__}'"
+                )
+            subject = string
+            length = str.__len__(string)
+        self._subject = subject
+        self._start, self._end = _clamp_span(length, pos, endpos)
+        create_scanner = _require_intrinsic("molt_re_scanner_new")
+        self._scanner = create_scanner(
+            pattern._handle, subject, self._start, self._end
+        )
+        self._exhausted = False
+
+    def __iter__(self) -> _RegexScanner:
+        return self
+
+    def __next__(self) -> Match:
+        if self._exhausted:
+            raise StopIteration
+        next_match = _require_intrinsic("molt_re_finditer_next")
+        raw = next_match(self._scanner, self._subject)
+        if raw is None:
+            self._exhausted = True
+            self._subject = b""
+            self._string = None
+            self._scanner = None
+            self._pattern = None
+            raise StopIteration
+        return Match(
+            self._pattern,
+            self._string,
+            self._start,
+            self._end,
+            raw[0],
+            raw[1],
+            raw[2],
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -325,6 +422,21 @@ def _ensure_text(string: Any) -> str:
     return string
 
 
+def _subject_for(pattern: Pattern, string: Any) -> str | bytes:
+    if isinstance(pattern.pattern, bytes):
+        if isinstance(string, str):
+            raise TypeError("cannot use a bytes pattern on a string-like object")
+        snapshot = _require_intrinsic("molt_re_subject_snapshot")(string)
+        if not isinstance(snapshot, bytes):
+            raise TypeError("cannot use a bytes pattern on a string-like object")
+        return snapshot
+    if not isinstance(string, str):
+        if isinstance(string, (bytes, bytearray, memoryview)):
+            raise TypeError("cannot use a string pattern on a bytes-like object")
+        raise TypeError(f"expected string or bytes-like object, got '{type(string).__name__}'")
+    return string
+
+
 def _clamp_span(length: int, pos: int, endpos: int | None) -> tuple[int, int]:
     start = max(pos, 0)
     end = length if endpos is None else max(endpos, 0)
@@ -335,40 +447,98 @@ def _clamp_span(length: int, pos: int, endpos: int | None) -> tuple[int, int]:
     return start, end
 
 
-def _match_group_values(match_obj: Match) -> tuple[object, ...]:
+def _subject_length(subject: str | bytes | memoryview) -> int:
+    """Read physical string/bytes length without dispatching subclass hooks."""
+    if isinstance(subject, str):
+        return str.__len__(subject)
+    if isinstance(subject, memoryview):
+        return subject.nbytes
+    return bytes.__len__(subject)
+
+
+def _subject_slice(
+    subject: str | bytes | memoryview, start: int, end: int
+) -> str | bytes:
+    """Slice physical subject storage without dispatching subclass hooks."""
+    if isinstance(subject, str):
+        return str.__getitem__(subject, slice(start, end))
+    if isinstance(subject, memoryview):
+        return subject[start:end].tobytes()
+    return bytes.__getitem__(subject, slice(start, end))
+
+
+def _captured_values(
+    subject: Any, spans: tuple[tuple[int, int], ...]
+) -> tuple[object, ...]:
     _molt_re_group_values = _require_intrinsic("molt_re_group_values")
+    normalized = tuple(None if start < 0 else (start, end) for start, end in spans)
+    return _molt_re_group_values(subject, normalized)
+
+
+def _match_group_values(match_obj: Match) -> tuple[object, ...]:
     group0 = (match_obj._start, match_obj._end)
-    all_spans = (group0,) + match_obj._group_spans
-    return _molt_re_group_values(match_obj._string, all_spans)
+    spans = (group0,) + tuple(
+        (-1, -1) if span is None else span for span in match_obj._group_spans
+    )
+    return _captured_values(match_obj._string, spans)
 
 
-def _expand_replacement(repl: object, match_obj: Match) -> str:
-    if callable(repl):
-        return str(repl(match_obj))
-    if not isinstance(repl, str):
-        repl = str(repl)
+def _expand_replacement(repl: str | bytes, match_obj: Match) -> str | bytes:
+    expected = bytes if isinstance(match_obj._pattern.pattern, bytes) else str
+    if not isinstance(repl, expected):
+        raise TypeError("replacement template must match the pattern type")
     _molt_re_expand_replacement = _require_intrinsic("molt_re_expand_replacement")
-    return _molt_re_expand_replacement(repl, _match_group_values(match_obj))
+    result = _molt_re_expand_replacement(
+        repl, _match_group_values(match_obj), match_obj._pattern._groupindex_data
+    )
+    if _is_regex_syntax_error(result):
+        _raise_regex_syntax_error(result)
+    return result
 
 
-def _compile(pattern: str, flags: int) -> Pattern:
-    if flags & LOCALE:
+def _is_regex_syntax_error(value: Any) -> bool:
+    return (
+        isinstance(value, tuple)
+        and len(value) == 3
+        and value[0] is None
+        and value[1] is None
+        and isinstance(value[2], str)
+    )
+
+
+def _raise_regex_syntax_error(value: tuple[None, None, str]) -> None:
+    raise error(value[2])
+
+
+def _compile(pattern: str | bytes, flags: int) -> Pattern:
+    is_bytes = isinstance(pattern, bytes)
+    if is_bytes and type(pattern) is not bytes:
+        # CPython admits bytes subclasses through their buffer slot, while the
+        # compiled syntax still comes from the subclass's physical bytes.
+        _require_intrinsic("molt_re_subject_snapshot")(pattern)
+    if flags & LOCALE and not is_bytes:
         raise ValueError("cannot use LOCALE flag with a str pattern")
     if flags & ASCII and flags & UNICODE:
         raise ValueError("ASCII and UNICODE flags are incompatible")
-    if not (flags & ASCII):
+    if not is_bytes and not (flags & ASCII):
         flags |= UNICODE
+    if is_bytes and flags & UNICODE:
+        raise ValueError("cannot use UNICODE flag with a bytes pattern")
     effective_pattern = pattern
-    if flags & VERBOSE:
+    if flags & VERBOSE and not is_bytes:
         _molt_re_strip_verbose = _require_intrinsic("molt_re_strip_verbose")
         effective_pattern = _molt_re_strip_verbose(pattern, flags)
     _molt_re_compile = _require_intrinsic("molt_re_compile")
     handle = _molt_re_compile(effective_pattern, flags)
+    if _is_regex_syntax_error(handle):
+        _raise_regex_syntax_error(handle)
     _molt_re_pattern_info = _require_intrinsic("molt_re_pattern_info")
     info = _molt_re_pattern_info(handle)
     groups, groupindex, effective_flags, warn_pos = info[0], info[1], info[2], info[3]
     if warn_pos is not None:
-        _warnings.warn(
+        import warnings
+
+        warnings.warn(
             f"Possible nested set at position {warn_pos}", FutureWarning, stacklevel=3
         )
     return Pattern(pattern, effective_flags, handle, groups, groupindex)
@@ -383,8 +553,8 @@ def _coerce_pattern(pattern: Any, flags: int) -> Pattern:
         if flags:
             raise error("cannot specify flags with a compiled pattern")
         return pattern  # type: ignore[return-value]
-    if not isinstance(pattern, str):
-        raise TypeError("pattern must be a string")
+    if not isinstance(pattern, (str, bytes)):
+        raise TypeError("first argument must be string or compiled pattern")
     key = (pattern, flags)
     cached = _cache.get(key)
     if cached is not None:
@@ -397,31 +567,40 @@ def _coerce_pattern(pattern: Any, flags: int) -> Pattern:
 
 
 def _subn_callable(
-    pattern: Pattern, repl: object, string: str, *, count: int = 0
-) -> tuple[str, int]:
-    """sub/subn with a callable replacement.
-
-    The replacement callable must receive a real ``Match`` object, so this path
-    stays in the Python shim and iterates over the intrinsic-backed
-    ``Pattern.finditer`` results.
-    """
+    pattern: Pattern, repl: object, string: Any, *, count: int = 0
+) -> tuple[str | bytes, int]:
     if count < 0:
         raise ValueError("count must be non-negative")
-    text = _ensure_text(string)
-    limit = None if count == 0 else count
-    out: list[str] = []
+    scanner = pattern.finditer(string)
+    subject = scanner._subject
+    byte_pattern = isinstance(pattern.pattern, bytes)
+    parts: list[str] | list[bytes] = []
     last = 0
     replaced = 0
-    for match_obj in pattern.finditer(text):
-        if limit is not None and replaced >= limit:
+    while not count or replaced < count:
+        try:
+            match_obj = next(scanner)
+        except StopIteration:
             break
-        start, end = match_obj.span()
-        out.append(text[last:start])
-        out.append(str(repl(match_obj)))
-        last = end
+        parts.append(_subject_slice(subject, last, match_obj._start))
+        value = repl(match_obj)  # type: ignore[operator]
+        if byte_pattern:
+            if not isinstance(value, bytes):
+                raise TypeError("sequence item 1: expected a bytes-like object, str found")
+        elif not isinstance(value, str):
+            raise TypeError("sequence item 1: expected str instance, object found")
+        parts.append(value)
+        last = match_obj._end
         replaced += 1
-    out.append(text[last:])
-    return ("".join(out), replaced)
+    if not replaced:
+        unchanged = (
+            subject
+            if isinstance(subject, (bytes, str))
+            else _subject_slice(subject, 0, _subject_length(subject))
+        )
+        return unchanged, 0
+    parts.append(_subject_slice(subject, last, _subject_length(subject)))
+    return (b"".join(parts) if byte_pattern else "".join(parts)), replaced
 
 
 # ---------------------------------------------------------------------------
@@ -429,47 +608,55 @@ def _subn_callable(
 # ---------------------------------------------------------------------------
 
 
-def compile(pattern: str, flags: int = 0) -> Pattern:
+def compile(pattern: str | bytes, flags: int = 0) -> Pattern:
     """Compile a regular expression pattern, returning a Pattern object."""
     return _coerce_pattern(pattern, flags)
 
 
-def search(pattern: str, string: str, flags: int = 0) -> Match | None:
+def search(pattern: str | bytes, string: Any, flags: int = 0) -> Match | None:
     return _coerce_pattern(pattern, flags).search(string)
 
 
-def match(pattern: str, string: str, flags: int = 0) -> Match | None:
+def match(pattern: str | bytes, string: Any, flags: int = 0) -> Match | None:
     return _coerce_pattern(pattern, flags).match(string)
 
 
-def fullmatch(pattern: str, string: str, flags: int = 0) -> Match | None:
+def fullmatch(pattern: str | bytes, string: Any, flags: int = 0) -> Match | None:
     return _coerce_pattern(pattern, flags).fullmatch(string)
 
 
-def finditer(pattern: str, string: str, flags: int = 0) -> Iterator[Match]:
+def finditer(pattern: str | bytes, string: Any, flags: int = 0) -> Iterator[Match]:
     return _coerce_pattern(pattern, flags).finditer(string)
 
 
-def findall(pattern: str, string: str, flags: int = 0) -> list[Any]:
+def findall(pattern: str | bytes, string: Any, flags: int = 0) -> list[Any]:
     return _coerce_pattern(pattern, flags).findall(string)
 
 
-def split(pattern: str, string: str, maxsplit: int = 0, flags: int = 0) -> list[str]:
+def split(pattern: str | bytes, string: Any, maxsplit: int = 0, flags: int = 0) -> list[Any]:
     return _coerce_pattern(pattern, flags).split(string, maxsplit=maxsplit)
 
 
-def sub(pattern: str, repl: object, string: str, count: int = 0, flags: int = 0) -> str:
+def sub(pattern: str | bytes, repl: object, string: Any, count: int = 0, flags: int = 0) -> Any:
     return _coerce_pattern(pattern, flags).sub(repl, string, count=count)
 
 
 def subn(
-    pattern: str, repl: object, string: str, count: int = 0, flags: int = 0
-) -> tuple[str, int]:
+    pattern: str | bytes, repl: object, string: Any, count: int = 0, flags: int = 0
+) -> tuple[Any, int]:
     return _coerce_pattern(pattern, flags).subn(repl, string, count=count)
 
 
-def escape(pattern: object) -> str:
+def escape(pattern: object) -> str | bytes:
     """Escape special characters in pattern."""
+    if isinstance(pattern, bytes):
+        special = b".\\^$*+?{}[]|()-#&~ \t\n\r\v\f"
+        out = bytearray()
+        for value in pattern:
+            if value in special:
+                out.append(92)
+            out.append(value)
+        return bytes(out)
     _molt_re_escape = _require_intrinsic("molt_re_escape")
     if not isinstance(pattern, str):
         pattern = str(pattern)
