@@ -4469,6 +4469,31 @@ pytest = [
   "tests/test_memory_guard_tool.py",
 ]
 
+# --- Backend daemon custody --------------------------------------------
+[[rule]]
+name = "backend-daemon-custody"
+toolchains = ["python"]
+description = "Daemon observation, identity and retirement custody, and the tools that list daemons."
+globs = [
+  "src/molt/backend_daemon_custody.py",
+  "src/molt/backend_daemon_suite_custody.py",
+  "tests/molt_diff.py",
+  "tools/bench_individual.py",
+  "tests/test_backend_daemon_custody.py",
+  "tests/test_backend_daemon_argv.py",
+  "tests/test_backend_daemon_suite_custody.py",
+  "tests/test_molt_diff_daemon_pruning.py",
+  "tests/test_bench_individual_tool.py",
+]
+gates = []
+pytest = [
+  "tests/test_backend_daemon_custody.py",
+  "tests/test_backend_daemon_argv.py",
+  "tests/test_backend_daemon_suite_custody.py",
+  "tests/test_molt_diff_daemon_pruning.py",
+  "tests/test_bench_individual_tool.py",
+]
+
 # --- Encoding gate diagnostics -----------------------------------------
 [[rule]]
 name = "encoding-diagnostics"

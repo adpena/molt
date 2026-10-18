@@ -371,7 +371,7 @@
     "tests/tools/test_win_job_contract.py",
     "tests/tools/test_windows_process_api.py"
   ],
-  "authority_sha256": "1d32d59bec6c69923800f69e9493c9fa5750afaa0a4ceb4afb7c80c26b5613f3",
+  "authority_sha256": "d0b0337d3dc398a1d4c184800ca85596e18172f0bfefc4f5b09279cb11a4393b",
   "cargo_environment_policy": {
     "incident_command": "cargo metadata --locked --format-version 1",
     "incident_commit": "20b046b79bd4ca64a8c859f737f6e330377bcc4e",
@@ -8582,6 +8582,7 @@
       "local.apparatus-learning-protection.1": "python tools/anti_recurrence_gate.py --check",
       "local.apparatus-learning-protection.pytest": "python -m pytest -q -n 4 tests/tools/test_apparatus_agent_safety.py tests/tools/test_anti_recurrence_gate.py tests/tools/test_hooks_session_learning.py tests/tools/test_check_gate_liveness.py tests/tools/test_memory_graph.py",
       "local.backend-daemon-cache.0": "cargo test --locked --profile dev-fast --config profile.dev-fast.package.cranelift-codegen.opt-level=0 -p molt-backend --no-default-features --features molt-backend/native-backend,molt-backend/wasm-backend,molt-backend/luau-backend,molt-backend/rust-backend,molt-backend/cbor --bin molt-backend daemon -- --test-threads=1",
+      "local.backend-daemon-custody.pytest": "python -m pytest -q -n 4 tests/test_backend_daemon_custody.py tests/test_backend_daemon_argv.py tests/test_backend_daemon_suite_custody.py tests/test_molt_diff_daemon_pruning.py tests/test_bench_individual_tool.py",
       "local.backend-environment-contract.pytest": "python -m pytest -q -n 4 tests/cli/test_backend_environment_contract.py tests/cli/test_cli_wasm_codegen_layout.py tests/cli/test_cli_shared_stdlib_cache.py tests/cli/test_cli_runtime_callable_symbols_authority.py tests/cli/test_native_codegen_identity.py tests/cli/test_cli_backend_prewarm.py",
       "local.backend-environment-contract.pytest-select-0": "python -m pytest -q -n 4 -k 'backend_codegen or backend_daemon or backend_cache_setup or backend_setup or backend_compile or backend_pipeline or backend_dispatch or codegen_selection or fingerprint_env' tests/cli/test_cli_import_collection.py",
       "local.backend-ir-framing.0": "cargo test --locked --profile release-fast -p molt-backend --features native-backend,cbor --bin molt-backend backend_process::input::tests",
@@ -9417,6 +9418,35 @@
           "tests/cli/test_cli_frontend_parallel_authority.py",
           "tests/tools/test_ci_resource_env.py",
           "tests/test_memory_guard_tool.py"
+        ],
+        "toolchains": [
+          "python"
+        ]
+      },
+      {
+        "command_ids": [
+          "local.backend-daemon-custody.pytest"
+        ],
+        "description": "Daemon observation, identity and retirement custody, and the tools that list daemons.",
+        "gates": [],
+        "globs": [
+          "src/molt/backend_daemon_custody.py",
+          "src/molt/backend_daemon_suite_custody.py",
+          "tests/molt_diff.py",
+          "tools/bench_individual.py",
+          "tests/test_backend_daemon_custody.py",
+          "tests/test_backend_daemon_argv.py",
+          "tests/test_backend_daemon_suite_custody.py",
+          "tests/test_molt_diff_daemon_pruning.py",
+          "tests/test_bench_individual_tool.py"
+        ],
+        "name": "backend-daemon-custody",
+        "pytest": [
+          "tests/test_backend_daemon_custody.py",
+          "tests/test_backend_daemon_argv.py",
+          "tests/test_backend_daemon_suite_custody.py",
+          "tests/test_molt_diff_daemon_pruning.py",
+          "tests/test_bench_individual_tool.py"
         ],
         "toolchains": [
           "python"
@@ -10803,6 +10833,9 @@
         "rustc",
         "cargo",
         "git"
+      ],
+      "local.backend-daemon-custody.pytest": [
+        "python"
       ],
       "local.backend-environment-contract.pytest": [
         "python"
