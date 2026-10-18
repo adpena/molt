@@ -157,7 +157,12 @@ Native and WASM final-link tests also require their declared compilers, linkers
 and execution hosts locally: the optional tool probes and successful early
 returns are removed across both backends. Actual compilation and execution own
 failure diagnostics; no per-test version subprocess is needed. Shared fixture
-changes select all compiled consumers. Compiled qualification remains pending.
+changes select all compiled consumers. Linux aarch64 native, LLVM and TIR/WASM
+cohorts pass. Runtime acceptance remains pending: the buffer-eligibility fixture
+incorrectly adopted StoreIndex's borrowed statement receiver as an owned result.
+Its caller now discards that ABI return after checking success identity, retaining
+the actual failure, mutation and export-retirement oracles. Production statement
+ownership remains unchanged; the expanded runtime gate must qualify this repair.
 Other CLI C-API and extension cells that skip when a compiler is absent remain
 unqualified; their prerequisites and actual executions remain V1-07 obligations.
 This work is development-only. Candidate integration and release qualification

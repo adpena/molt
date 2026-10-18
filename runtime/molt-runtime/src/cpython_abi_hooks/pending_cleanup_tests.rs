@@ -3061,7 +3061,14 @@ fn buffer_eligibility_preparation_failure_never_selects_a_fallback_protocol() {
                     [Some(instance.bits()), None, None],
                 ),
                 5 => crate::molt_bytearray_extend(destination.bits(), instance.bits()),
-                6 => crate::molt_store_index(destination.bits(), slice.bits(), instance.bits()),
+                6 => {
+                    let borrowed =
+                        crate::molt_store_index(destination.bits(), slice.bits(), instance.bits());
+                    assert!(crate::exception_pending(py) || borrowed == destination.bits());
+                    // StoreIndex has no IR result: its ABI receiver is borrowed,
+                    // unlike the owned values adopted by this consumer matrix.
+                    MoltObject::none().bits()
+                }
                 7 => SequenceComparison::Bytearray.invoke(
                     py,
                     destination.bits(),
