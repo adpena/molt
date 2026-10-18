@@ -151,7 +151,11 @@ fn regex_aggregates_retain_each_created_child_once() {
                     .expect("published named-group dictionary");
                     assert_eq!(names.len(), 6);
                     for (pair, (name, ordinal)) in
-                        names.chunks_exact(2).zip([("z", 1), ("a", 3), ("m", 4)])
+                        names
+                            .as_chunks::<2>()
+                            .0
+                            .iter()
+                            .zip([("z", 1), ("a", 3), ("m", 4)])
                     {
                         assert_eq!(
                             string_obj_to_owned(obj_from_bits(pair[0])).as_deref(),
