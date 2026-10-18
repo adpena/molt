@@ -4,9 +4,8 @@ Molt unified benchmark and differential testing harness.
 
 Modes:
   --bench    Run bench/*.py benchmarks, time Molt vs CPython
-  --parity   Run tests/parity/*.py, diff outputs
   --diff     Run tests/differential/basic/*.py, diff outputs
-  --full     Run all three modes
+  --full     Run both modes
 
 Options:
   --filter PATTERN   Only run tests matching glob/substring pattern
@@ -24,7 +23,7 @@ Examples:
   python3 bench/harness.py --bench
   python3 bench/harness.py --diff --filter "arith*" --parallel 8
   python3 bench/harness.py --full --update-baseline
-  python3 bench/harness.py --bench --parity --parallel 4
+  python3 bench/harness.py --bench --diff --parallel 4
 """
 
 import argparse
@@ -46,7 +45,6 @@ from typing import Optional
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 BENCH_DIR = REPO_ROOT / "bench"
-PARITY_DIR = REPO_ROOT / "tests" / "parity"
 DIFF_DIR = REPO_ROOT / "tests" / "differential" / "basic"
 DEFAULT_RESULTS_DIR = BENCH_DIR / "results"
 DEFAULT_OUTPUT = DEFAULT_RESULTS_DIR / "harness.json"
@@ -75,7 +73,7 @@ BENCH_MEMORY_PREFIX = "MOLT_BENCH"
 @dataclass
 class TestResult:
     name: str
-    suite: str  # "bench", "parity", "diff"
+    suite: str  # "bench", "diff"
     status: str  # "pass", "fail", "error", "skip", "timeout"
     cpython_stdout: str = ""
     cpython_stderr: str = ""
@@ -301,7 +299,7 @@ def run_single_test(
             result.status = "error"
             result.error_msg = f"Molt exited {m_rc}"
     else:
-        # For parity/diff tests, pass/fail based on output match
+        # For diff tests, pass/fail based on output match
         if m_rc != 0 and cp_rc == 0:
             result.status = "error"
             result.error_msg = f"Molt exited {m_rc}"
@@ -321,17 +319,6 @@ def run_single_test(
 
 def collect_bench_scripts(filter_pat: Optional[str] = None) -> list:
     scripts = sorted(BENCH_DIR.glob("bench_*.py"))
-    if filter_pat:
-        scripts = [
-            s
-            for s in scripts
-            if fnmatch.fnmatch(s.name, filter_pat) or filter_pat in s.name
-        ]
-    return scripts
-
-
-def collect_parity_scripts(filter_pat: Optional[str] = None) -> list:
-    scripts = sorted(PARITY_DIR.glob("test_*.py"))
     if filter_pat:
         scripts = [
             s
@@ -635,9 +622,6 @@ def main():
         "--bench", action="store_true", help="Run bench/*.py benchmarks"
     )
     parser.add_argument(
-        "--parity", action="store_true", help="Run tests/parity/*.py parity checks"
-    )
-    parser.add_argument(
         "--diff", action="store_true", help="Run tests/differential/basic/*.py"
     )
     parser.add_argument("--full", action="store_true", help="Run all suites")
@@ -679,12 +663,12 @@ def main():
     args = parser.parse_args()
 
     # If no mode specified, show help
-    if not (args.bench or args.parity or args.diff or args.full):
+    if not (args.bench or args.diff or args.full):
         parser.print_help()
         sys.exit(1)
 
     if args.full:
-        args.bench = args.parity = args.diff = True
+        args.bench = args.diff = True
 
     colors = Colors(enabled=not args.no_color)
     run_env = _base_env()
@@ -716,22 +700,6 @@ def main():
             scripts = collect_bench_scripts(args.filter)
             results, summary = run_suite(
                 "bench",
-                scripts,
-                molt_cmd,
-                args.python,
-                args.timeout,
-                args.parallel,
-                colors,
-                args.verbose,
-            )
-            all_results.extend(results)
-            summaries.append(summary)
-
-        # --- Parity suite ---
-        if args.parity:
-            scripts = collect_parity_scripts(args.filter)
-            results, summary = run_suite(
-                "parity",
                 scripts,
                 molt_cmd,
                 args.python,
