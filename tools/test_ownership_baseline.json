@@ -18,8 +18,6 @@
   "tests/e2e/test_multilang_ocr.py",
   "tests/e2e/test_ocr_accuracy.py",
   "tests/e2e/test_ocr_quality_comparison.py",
-  "tests/e2e/test_onnx_interpreter_correctness.py",
-  "tests/e2e/test_onnx_ops_numpy.py",
   "tests/e2e/test_paddleocr_weights.py",
   "tests/e2e/test_performance_guard.py",
   "tests/e2e/test_production_deployment.py",

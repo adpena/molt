@@ -584,8 +584,7 @@ const PADDLE_TEST_HTML = `<!DOCTYPE html>
             if (!f) return;
             const out = document.getElementById('output');
             out.textContent = 'Image selected: ' + f.name + ' (' + (f.size/1024).toFixed(1) + ' KB)\\n';
-            out.textContent += 'WASM inference not yet wired. Use the Python test harness:\\n';
-            out.textContent += '  .venv/bin/python tests/e2e/test_onnx_ops_numpy.py';
+            out.textContent += 'WASM inference is not wired into this page yet.';
         });
     </script>
 </body>
