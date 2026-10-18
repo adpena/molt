@@ -74,6 +74,17 @@ tails; it is not an integrated optimization. Reduce proven repeated semantic
 work before introducing another cache or storage protocol. These costs are
 development/compiler work and add nothing to emitted programs.
 
+The admitted AST now owns one module-export fact per target version and
+namespace premise; graph-owner/argument projections and star-import discovery
+share it, and the replaced target-only memo is deleted. In one isolated cold
+Darwin arm64 graph pair, export computations fell from 1,634 to 74 and their
+phase from 2.684 seconds to 0.064 seconds. All 1,633 persisted scan records were
+byte-identical. Full graph time moved from 24.739 to 23.807 seconds; this single
+ordered pair establishes no general wall-clock speedup. All 207 owning Python
+controls pass, including source-generation, target and namespace separation;
+the uncached-body control fails the repeated-work oracle. Broader repeated
+namespace scanning remains open under HF-285.
+
 The bytes-regex consumer migration in HF-322 is bounded by
 [the regex authority](../design/foundation/37_regex-engine-frontier.md).
 Owned patterns, incremental scanner state and correct buffer custody do not

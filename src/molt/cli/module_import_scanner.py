@@ -14,6 +14,7 @@ from pathlib import Path
 
 from molt.cli import module_resolution as _module_resolution
 from molt.cli.python_import_topology import PythonImportTopology
+from molt.compiler_analysis import python_import_scan as _source_import_scan
 from molt.cli.models import (
     _CompleteImportScan,
     _ModuleGraphScanAuthority,
@@ -91,7 +92,11 @@ def _expand_static_package_all_star_children(
                     target_python=target_python,
                     retain=False,
                 )
-                exports = parsed.all_exports(target_python)
+                exports = _source_import_scan._static_module_all_exports(
+                    parsed.tree,
+                    target_python=target_python,
+                    ast_digest_admission=parsed.admission,
+                )
             except (OSError, SyntaxError, UnicodeError) as exc:
                 exports = SourceAllExports("incomplete", reason=type(exc).__name__)
         exports_by_module[module] = exports

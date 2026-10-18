@@ -9,9 +9,14 @@ import struct
 from collections.abc import Iterator
 from dataclasses import dataclass, field
 from enum import StrEnum
-from typing import TypeAlias, cast
+from typing import TYPE_CHECKING, TypeAlias, cast
 from types import MappingProxyType
 from collections.abc import Mapping
+
+if TYPE_CHECKING:
+    from molt.compiler_analysis.python_imports import SourceAllExports
+    from molt.compiler_analysis.python_namespace_graph import PythonNamespacePremise
+    from molt.target_python import TargetPythonVersion
 
 
 PythonSourceKey: TypeAlias = tuple[int, int, int, int, str]
@@ -256,6 +261,10 @@ class _PythonAstDigestAdmission:
     module_setup_nodes: tuple[ast.stmt, ...] = field(
         init=False, repr=False, compare=False
     )
+
+    module_all_exports: dict[
+        tuple[TargetPythonVersion, PythonNamespacePremise | None], SourceAllExports
+    ] = field(default_factory=dict, init=False, repr=False, compare=False)
 
     _private_names_resolved: bool = field(
         default=False, init=False, repr=False, compare=False
