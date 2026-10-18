@@ -887,9 +887,9 @@ def _execute_backend_compile(
             backend_output_written = daemon_compile.output_written
             daemon_error = daemon_compile.error
             backend_output_exists = daemon_compile.output_exists
-            # Show only the daemon output produced by this request. Printing
-            # a rolling tail replays previous builds and makes warm user-code
-            # compiles look like they recompiled stdlib batches.
+            # Show output in this request's observed daemon-log interval.
+            # Concurrent requests can contribute to the same interval. A
+            # rolling tail would also replay output from previous builds.
             if daemon_log_path is not None and daemon_log_offset is not None:
                 daemon_log_delta = _backend_daemon_log_since(
                     daemon_log_path, daemon_log_offset
