@@ -169,6 +169,7 @@ tests/differential/stdlib/atexit_core_behaviors.py
 tests/differential/stdlib/atexit_exception_unraisable.py
 tests/differential/stdlib/atexit_register_builtin_callables.py
 tests/differential/stdlib/atexit_unraisablehook_custom.py
+tests/differential/stdlib/base64_decode_argument_types.py
 tests/differential/stdlib/binascii_crc32_value.py
 tests/differential/stdlib/binascii_simd_paths.py
 tests/differential/stdlib/bisect_api_surface.py
