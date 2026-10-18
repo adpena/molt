@@ -719,14 +719,15 @@ fn cpython_raw_codepoint_identity_and_offsets() {
     // Text values include 0xD800..0xDFFF: never convert through Rust char or lossy String.
     // Data only; parent uses parse_pattern_typed(pattern.to_vec(), i64::from(flags), false)
     // and execute_match_subject with SubjectStorage::Text(subject).
-    let cases: &[(
-        &[u32],
-        &[u32],
+    type CodepointCase<'a> = (
+        &'a [u32],
+        &'a [u32],
         u32,
-        &str,
-        (usize, usize),
-        Option<ExpectedMatch<'_>>,
-    )] = &[
+        &'a str,
+        Span,
+        Option<ExpectedMatch<'a>>,
+    );
+    let cases: &[CodepointCase<'_>] = &[
         // high-literal; equivalent modes: fullmatch, match, search
         (
             &[0xD83D],
