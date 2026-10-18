@@ -4,6 +4,7 @@ import codecs
 import json
 import os
 from _json import scanstring
+from json.decoder import scanstring as decoder_scanstring
 
 print(codecs.decode(b"\xff", "utf-8", "replace").encode("unicode_escape").decode("ascii"))
 print(codecs.decode(b"\xff", "utf-8", "ignore"))
@@ -281,6 +282,31 @@ document = 'x"\U00010000\ud800" tail'
 for value, end in (json.JSONDecoder().raw_decode(document, 1),
                    scanstring(document, 2)):
     print("json-end", value.encode("unicode_escape").hex(), end)
+
+# The public and decoder aliases share CPython's optional strict argument.
+# Omission must reject literal controls; explicit False must preserve them.
+for scan in (scanstring, decoder_scanstring):
+    print("json-scan-default", scan('"a"', 1))
+    print("json-scan-explicit", scan('"a"', 1, True))
+    print("json-scan-permissive", scan('"a\nb"', 1, False))
+    try:
+        scan('"a\nb"', 1)
+    except ValueError:
+        print("json-scan-default-rejects-control")
+    else:
+        raise AssertionError("default JSON scanner admitted a literal control")
+    for args, kwargs in (
+        (('"a"',), {}),
+        (('"a"', 1, True, False), {}),
+        (('"a"', 1), {"strict": False}),
+    ):
+        try:
+            scan(*args, **kwargs)
+        except TypeError:
+            print("json-scan-rejects-arguments", len(args), bool(kwargs))
+        else:
+            raise AssertionError("JSON scanner admitted an invalid call signature")
+
 for document in ('[\n "é\ud800",?]', '["\U00010000",\n"\udfff",?]'):
     try:
         json.loads(document)
