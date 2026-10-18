@@ -3190,6 +3190,144 @@ def _version_fingerprint(
     return identity
 
 
+@dataclass(frozen=True, slots=True)
+class ToolchainProjection:
+    """The variables that put the installed providers first, and the install
+    command of each selected provider that is not installed."""
+
+    delta: dict[str, str]
+    missing: tuple[str, ...]
+
+
+def project_toolchains(
+    policies: Iterable[ToolchainPolicy],
+    names: tuple[str, ...],
+    *,
+    environ: Mapping[str, str],
+    root: Path = ROOT,
+) -> ToolchainProjection:
+    """Project every installed provider the selection declares; never download."""
+
+    from molt.dx import canonical_toolchain_root
+    from molt.llvm_toolchain import (
+        llvm_bootstrap_command,
+        llvm_toolchain_environment_delta,
+        required_llvm_backend_pin,
+        selected_wasi_sdk_installation,
+        verify_available_llvm_toolchain,
+        wasm_toolchain_environment_delta,
+    )
+    from molt.tool_releases import discover_pinned_tool
+    from molt.wasm_optimizer_identity import managed_wasm_opt
+
+    policies = {policy.name: policy for policy in policies}
+    kinds: dict[str, list[str]] = {}
+    for name in names:
+        projection = policies[name].projection
+        if projection is not None:
+            kinds.setdefault(projection, []).append(name)
+
+    env = dict(environ)
+    delta: dict[str, str] = {}
+    missing: list[str] = []
+
+    def apply(values: dict[str, str]) -> None:
+        delta.update(values)
+        env.update(values)
+
+    if "llvm-sdk" in kinds:
+        verification = verify_available_llvm_toolchain(root)
+        if verification is None:
+            pin = required_llvm_backend_pin(root)
+            command = "" if pin is None else f": {llvm_bootstrap_command(pin)}"
+            missing.append(f"LLVM SDK ({', '.join(kinds['llvm-sdk'])}){command}")
+        else:
+            apply(llvm_toolchain_environment_delta(root, verification, environ=env))
+    if "wasi-sdk" in kinds:
+        installation = selected_wasi_sdk_installation(root, environ=env)
+        if installation is None:
+            missing.append(
+                f"wasi-sdk ({', '.join(kinds['wasi-sdk'])}): "
+                "python3 tools/provision_wasi_sdk.py"
+            )
+        else:
+            apply(wasm_toolchain_environment_delta(installation, environ=env))
+    for name in kinds.get("tool-release", ()):
+        tool = str(policies[name].data["executable"])
+        discovery = discover_pinned_tool(tool, root, environ=env)
+        if discovery is None:
+            missing.append(f"{tool}: python3 -m molt.tool_releases provision {tool}")
+            continue
+        directory = str(discovery.executable.parent)
+        rest = [part for part in env.get("PATH", "").split(os.pathsep) if part]
+        apply(
+            {"PATH": os.pathsep.join([directory, *(p for p in rest if p != directory)])}
+        )
+    if "binaryen" in kinds:
+        wasm_opt = managed_wasm_opt(environment=env)
+        if wasm_opt is None:
+            from molt.binaryen_toolchain import binaryen_host_asset
+
+            install = (
+                canonical_toolchain_root(root, env, require_exists=False)
+                / "toolchains"
+                / binaryen_host_asset(root).archive_root
+            )
+            missing.append(
+                f"wasm-opt: python3 tools/provision_binaryen.py --output {install}"
+            )
+        else:
+            apply({"MOLT_WASM_OPT": wasm_opt})
+    return ToolchainProjection(delta=delta, missing=tuple(missing))
+
+
+def _not_provisioned(missing: tuple[str, ...]) -> str:
+    return "not provisioned (this command never downloads); install with:\n  " + (
+        "\n  ".join(missing)
+    )
+
+
+@dataclass(frozen=True, slots=True)
+class AdmittedToolchains:
+    """The admitted identities and the variables the admission projected."""
+
+    fingerprints: dict[str, dict[str, Any]]
+    environment: dict[str, str]
+
+
+def admit_toolchains(
+    policies: Iterable[ToolchainPolicy],
+    names: tuple[str, ...],
+    *,
+    owners: Mapping[str, Iterable[str]] | None = None,
+    python_admissions: Mapping[str, BuildPythonAdmission] | None = None,
+    root: Path = ROOT,
+) -> AdmittedToolchains:
+    """Put the installed pinned providers first in this process's environment,
+    then admit each selected tool by its version contract, as CI's setup
+    actions do.
+
+    Every executor admits its toolchains here, so no shell needs projecting
+    by hand. The probes and the commands this process starts read
+    ``os.environ``; a caller that copied it earlier applies ``environment``.
+    A tool the contract admits on PATH still passes when its pinned provider
+    is not installed; a refusal names what to install.
+    """
+    policies = tuple(policies)
+    names = toolchain_closure(policies, names)
+    projection = project_toolchains(policies, names, environ=os.environ, root=root)
+    os.environ.update(projection.delta)
+    try:
+        fingerprints = toolchain_fingerprints(
+            policies, names, owners=owners, python_admissions=python_admissions
+        )
+    except ValueError as exc:
+        if not projection.missing:
+            raise
+        raise ValueError(f"{exc}; {_not_provisioned(projection.missing)}") from exc
+    return AdmittedToolchains(fingerprints=fingerprints, environment=projection.delta)
+
+
 def toolchain_fingerprints(
     toolchain_policies: Iterable[ToolchainPolicy],
     names: tuple[str, ...],
@@ -3344,15 +3482,6 @@ def toolchain_fingerprints(
                 f"{name}"
                 + (f" [{owner}]" if owner else "")
                 + f": {errors[name]}{suffix}"
-            )
-        projectable = [
-            name for name in names if name in errors and policies[name].projection
-        ]
-        if projectable:
-            selection = " ".join(f"--toolchain {name}" for name in projectable)
-            diagnostics.append(
-                "project the pinned toolchains into this shell: "
-                f'eval "$(python3 tools/toolchain_env.py {selection})"'
             )
         raise ValueError("toolchain contract violation: " + "; ".join(diagnostics))
     return fingerprints
@@ -3796,7 +3925,9 @@ def execute_commands(
         commands,
         receipt_path,
         _source_tree_changes=_source_tree_changes,
-        toolchain_fingerprints=toolchain_fingerprints,
+        toolchain_fingerprints=lambda policies, names: (
+            admit_toolchains(policies, names).fingerprints
+        ),
         _authority_sha256=_authority_sha256,
         _source_identity=_source_identity,
         _normalized_os=_normalized_os,

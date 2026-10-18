@@ -51,9 +51,9 @@ from tools import harness_memory_guard  # noqa: E402
 from tools.generator_io import display_path, stale_outputs, write_outputs  # noqa: E402
 from tools.import_file import tool_module_name  # noqa: E402
 from tools.proof_plan import (  # noqa: E402
+    admit_toolchains,
     load_toolchain_policies,
     toolchain_closure,
-    toolchain_fingerprints,
 )
 
 MANIFEST = ROOT / "tools" / "generator_manifest.toml"
@@ -140,9 +140,9 @@ def admit_generators(
         for policy in policies
         if policy.python_identity_role == "runtime"
     }
-    fingerprints = toolchain_fingerprints(
+    fingerprints = admit_toolchains(
         policies, names, owners=owners, python_admissions=admissions or None
-    )
+    ).fingerprints
     bindings: dict[str, dict[str, tuple[dict[str, Any], BuildPythonAdmission]]] = {
         row.tool: {} for row in selected
     }

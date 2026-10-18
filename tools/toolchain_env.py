@@ -21,6 +21,11 @@ wasi-sdk: injected into an unrelated run, they break C extension builds.
 
 The command never downloads. A provider that is not installed is reported with
 its install command, and the command exits 2 without printing an environment.
+
+Executors need no shell projection: the proof executor, ``molt_dev.py
+integrate`` and the generators check admit their toolchains through
+``proof_plan.admit_toolchains``, which projects the installed providers first, as CI's
+setup actions do. The ``eval`` lines above serve interactive shells.
 """
 
 from __future__ import annotations
@@ -39,8 +44,13 @@ from tools.import_file import bind_repository_imports  # noqa: E402
 
 ROOT = bind_repository_imports(__file__)
 
-from molt.dx import EnvRenderFormat, canonical_toolchain_root, render_env  # noqa: E402
-from tools.proof_plan import ProofPlan, _topological_commands  # noqa: E402
+from molt.dx import EnvRenderFormat, render_env  # noqa: E402
+from tools.proof_plan import (  # noqa: E402
+    ProofPlan,
+    _not_provisioned,
+    _topological_commands,
+    project_toolchains,
+)
 
 
 class ToolchainNotProvisioned(RuntimeError):
@@ -79,83 +89,13 @@ def toolchain_environment(
     environ: dict[str, str],
     root: Path = ROOT,
 ) -> dict[str, str]:
-    """The variables that put the selected providers first, at their values."""
-
-    from molt.llvm_toolchain import (
-        llvm_bootstrap_command,
-        llvm_toolchain_environment_delta,
-        required_llvm_backend_pin,
-        selected_wasi_sdk_installation,
-        verify_available_llvm_toolchain,
-        wasm_toolchain_environment_delta,
+    """The variables that put the selected providers first; all must be installed."""
+    projection = project_toolchains(
+        plan.toolchain_policies, names, environ=environ, root=root
     )
-    from molt.tool_releases import discover_pinned_tool
-    from molt.wasm_optimizer_identity import managed_wasm_opt
-
-    policies = {policy.name: policy for policy in plan.toolchain_policies}
-    kinds: dict[str, list[str]] = {}
-    for name in names:
-        projection = policies[name].projection
-        if projection is not None:
-            kinds.setdefault(projection, []).append(name)
-
-    env = dict(environ)
-    delta: dict[str, str] = {}
-    missing: list[str] = []
-
-    def apply(values: dict[str, str]) -> None:
-        delta.update(values)
-        env.update(values)
-
-    if "llvm-sdk" in kinds:
-        verification = verify_available_llvm_toolchain(root)
-        if verification is None:
-            pin = required_llvm_backend_pin(root)
-            command = "" if pin is None else f": {llvm_bootstrap_command(pin)}"
-            missing.append(f"LLVM SDK ({', '.join(kinds['llvm-sdk'])}){command}")
-        else:
-            apply(llvm_toolchain_environment_delta(root, verification, environ=env))
-    if "wasi-sdk" in kinds:
-        installation = selected_wasi_sdk_installation(root, environ=env)
-        if installation is None:
-            missing.append(
-                f"wasi-sdk ({', '.join(kinds['wasi-sdk'])}): "
-                "python3 tools/provision_wasi_sdk.py"
-            )
-        else:
-            apply(wasm_toolchain_environment_delta(installation, environ=env))
-    for name in kinds.get("tool-release", ()):
-        tool = str(policies[name].data["executable"])
-        discovery = discover_pinned_tool(tool, root, environ=env)
-        if discovery is None:
-            missing.append(f"{tool}: python3 -m molt.tool_releases provision {tool}")
-            continue
-        directory = str(discovery.executable.parent)
-        rest = [part for part in env.get("PATH", "").split(os.pathsep) if part]
-        apply(
-            {"PATH": os.pathsep.join([directory, *(p for p in rest if p != directory)])}
-        )
-    if "binaryen" in kinds:
-        wasm_opt = managed_wasm_opt(environment=env)
-        if wasm_opt is None:
-            from molt.binaryen_toolchain import binaryen_host_asset
-
-            install = (
-                canonical_toolchain_root(root, env, require_exists=False)
-                / "toolchains"
-                / binaryen_host_asset(root).archive_root
-            )
-            missing.append(
-                f"wasm-opt: python3 tools/provision_binaryen.py --output {install}"
-            )
-        else:
-            apply({"MOLT_WASM_OPT": wasm_opt})
-    if missing:
-        raise ToolchainNotProvisioned(
-            "not provisioned (this command never downloads); install with:\n  "
-            + "\n  ".join(missing)
-        )
-    return delta
+    if projection.missing:
+        raise ToolchainNotProvisioned(_not_provisioned(projection.missing))
+    return projection.delta
 
 
 def main(argv: list[str] | None = None) -> int:

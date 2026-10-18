@@ -49,6 +49,13 @@ _LEAN_PIN = next(
 )
 
 
+def _admit_synthetic_python(
+    _policies: object, _names: tuple[str, ...], **_admission: object
+) -> dict[str, dict[str, str]]:
+    """Admit a synthetic command's only toolchain without probing the host."""
+    return {"python": {"identity_sha256": "0" * 64}}
+
+
 def test_execution_authority_covers_its_transitive_python_imports() -> None:
     """Receipt-producing and classifying consumers must invalidate together."""
     root = Path(__file__).resolve().parents[1]
@@ -4093,7 +4100,7 @@ def test_provisioned_lean_fingerprint_admits_formal_build_receipt(
     observed_toolchains: list[tuple[str, ...]] = []
 
     def fake_fingerprints(
-        _plan: proof_plan.ProofPlan, names: tuple[str, ...]
+        _plan: proof_plan.ProofPlan, names: tuple[str, ...], **_admission: object
     ) -> dict[str, dict[str, str]]:
         observed_toolchains.append(names)
         return {
@@ -4241,7 +4248,7 @@ def test_executor_hashes_declared_evidence_and_rejects_zero_work(
     monkeypatch.setattr(
         proof_plan,
         "toolchain_fingerprints",
-        lambda _plan, _names: {"python": {"identity_sha256": "0" * 64}},
+        _admit_synthetic_python,
     )
     receipt_path = tmp_path / "receipt.json"
     assert proof_plan.execute_commands(plan, (producer,), receipt_path) == 0
@@ -4301,7 +4308,7 @@ def test_executor_binds_the_verified_checkout_commit_into_source_bound_argv(
     monkeypatch.setattr(
         proof_plan,
         "toolchain_fingerprints",
-        lambda _plan, _names: {"python": {"identity_sha256": "0" * 64}},
+        _admit_synthetic_python,
     )
     receipt_path = tmp_path / "receipt.json"
     assert proof_plan.execute_commands(plan, (producer,), receipt_path) == 0
@@ -4409,7 +4416,7 @@ def test_executor_schedules_dependencies_and_resources_with_deterministic_receip
     monkeypatch.setattr(
         proof_plan,
         "toolchain_fingerprints",
-        lambda _plan, _names: {"python": {"identity_sha256": "0" * 64}},
+        _admit_synthetic_python,
     )
     active_by_resource = {"resource-a": 0, "resource-b": 0}
     peak_by_resource = {"resource-a": 0, "resource-b": 0}
@@ -4480,7 +4487,7 @@ def test_executor_partition_failure_preserves_independent_work_and_blocks_depend
     monkeypatch.setattr(
         proof_plan,
         "toolchain_fingerprints",
-        lambda _plan, _names: {"python": {"identity_sha256": "0" * 64}},
+        _admit_synthetic_python,
     )
     live_started = threading.Event()
 
@@ -4586,7 +4593,7 @@ def test_actual_rust_roots_continue_after_failure_without_overlapping_capacity(
     monkeypatch.setattr(
         proof_plan,
         "toolchain_fingerprints",
-        lambda _plan, _names: {"python": {"identity_sha256": "0" * 64}},
+        _admit_synthetic_python,
     )
     receipt_path = tmp_path / "receipt.json"
     assert proof_plan.execute_commands(plan, commands, receipt_path) == 7
@@ -4625,7 +4632,7 @@ def test_executor_does_not_convert_control_plane_interrupts_into_records(
     monkeypatch.setattr(
         proof_plan,
         "toolchain_fingerprints",
-        lambda _plan, _names: {"python": {"identity_sha256": "0" * 64}},
+        _admit_synthetic_python,
     )
 
     def interrupt(
@@ -4701,7 +4708,7 @@ def test_executor_global_stop_uses_guard_custody_to_reap_live_process_tree(
     monkeypatch.setattr(
         proof_plan,
         "toolchain_fingerprints",
-        lambda _plan, _names: {"python": {"identity_sha256": "0" * 64}},
+        _admit_synthetic_python,
     )
 
     started = time.monotonic()
@@ -4782,7 +4789,7 @@ def test_executor_preflight_error_is_visible_and_receipted(
 ):
     monkeypatch.setattr(proof_plan, "_source_tree_changes", lambda: ())
 
-    def reject_toolchain(_plan, _names):
+    def reject_toolchain(_plan, _names, **_admission):
         raise ValueError("toolchain contract violation: node version mismatch")
 
     monkeypatch.setattr(proof_plan, "toolchain_fingerprints", reject_toolchain)
@@ -4808,7 +4815,7 @@ def test_executor_rejects_source_mutation_during_partition(
     monkeypatch.setattr(
         proof_plan,
         "toolchain_fingerprints",
-        lambda _plan, _names: {"python": {"identity_sha256": "0" * 64}},
+        _admit_synthetic_python,
     )
     monkeypatch.setattr(
         proof_plan,
@@ -5258,7 +5265,7 @@ def test_executor_stops_on_candidate_change_even_when_checkout_is_clean(
     monkeypatch.setattr(
         proof_plan,
         "toolchain_fingerprints",
-        lambda _plan, _names: {"python": {"identity_sha256": "0" * 64}},
+        _admit_synthetic_python,
     )
     commands = (
         _synthetic_executor_command("change"),
@@ -5296,7 +5303,7 @@ def test_executor_control_plane_interrupt_cancels_siblings_before_join(
     monkeypatch.setattr(
         proof_plan,
         "toolchain_fingerprints",
-        lambda _plan, _names: {"python": {"identity_sha256": "0" * 64}},
+        _admit_synthetic_python,
     )
     live_started = threading.Event()
     closed = threading.Event()
@@ -5611,7 +5618,7 @@ def test_python_rust_consumers_admit_tools_before_any_partition(
         assert {"rustc", "cargo"} <= set(PLAN.required_toolchains(command))
     observed = []
 
-    def reject_incomplete_installation(_plan, names):
+    def reject_incomplete_installation(_plan, names, **_admission):
         observed.append(names)
         assert {"python", "uv", "rustc", "cargo"} <= set(names)
         raise ValueError("independent fixture: partial Rust installation")
@@ -5781,7 +5788,7 @@ def test_executor_retains_owner_in_failure_receipt_and_library_exception(
     monkeypatch.setattr(
         proof_plan,
         "toolchain_fingerprints",
-        lambda *_: {"python": {"identity_sha256": "0" * 64}},
+        _admit_synthetic_python,
     )
     process = SimpleNamespace(pid=31, returncode=None)
     owned = GuardedCommand(
@@ -5906,7 +5913,7 @@ def test_cli_process_exit_preserves_autonomous_guard_and_eventual_closure(tmp_pa
         f"commands=tuple(p.ProofCommand(identity,data) for identity,data in {[(c.id, c.data) for c in commands]!r})\n"
         "plan=replace(base,commands=commands,executor_max_workers=2,resource_policies=(p.ResourcePolicy('resource-a',1),p.ResourcePolicy('resource-b',1)))\n"
         "p.ProofPlan.load=lambda _:plan\np._topological_commands=lambda *a,**k:commands\n"
-        "p._source_tree_changes=lambda:()\np.toolchain_fingerprints=lambda *a:{}\n"
+        "p._source_tree_changes=lambda:()\np.toolchain_fingerprints=lambda *a,**k:{}\n"
         "p._source_identity=lambda:{'commit':'a'*40,'tree':'b'*40}\n"
         "start=CommandExecutor.start_owned\n"
         "def held_start(self,args,**kwargs):\n"
