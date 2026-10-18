@@ -393,12 +393,15 @@ authority_inputs = [
 # Gates that run for any non-empty local integration change: whole-repository
 # checks of about 30 s in all, so `tools/molt_dev.py integrate` lands nothing
 # CI's repository-policy family would reject.
+# Local gates may use {integration_upstream_commit} as a whole commit or
+# BASE..HEAD argument. The driver binds its validated fetched full SHA, so
+# --remote/--branch select the same immutable base for every consumer.
 always_toolchains = ["python", "git", "generators"]
 always = [
   "python -m ruff check .",
   "python -m ruff format --check .",
   "python tools/check_rust_toolchain.py",
-  "python tools/check_rustfmt.py --changed",
+  "python tools/check_rustfmt.py --changed --base {integration_upstream_commit}",
   "python tools/generators.py check",
   "python tools/check_environment_registry.py --check",
   "python tools/check_test_ownership.py --check",
@@ -409,7 +412,7 @@ always = [
   "python tools/encoding_gate.py --check",
   "python tools/check_cargo_test_truth.py",
   "python tools/check_github_actions.py",
-  "python tools/check_commit_attribution.py --range origin/main..HEAD",
+  "python tools/check_commit_attribution.py --range {integration_upstream_commit}..HEAD",
   "python tools/public_contract_gate.py --check",
   "python tools/check_stdlib_intrinsic_surface.py --check",
   "python tools/build_graph_audit.py --check",
@@ -5032,7 +5035,7 @@ globs = [
   ".cargo/**",
 ]
 gates = [
-  "python tools/check_changed_clippy.py --base origin/main",
+  "python tools/check_changed_clippy.py --base {integration_upstream_commit}",
 ]
 
 # --- Native (Cranelift) backend Rust -------------------------------------

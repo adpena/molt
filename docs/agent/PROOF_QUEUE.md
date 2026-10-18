@@ -1459,6 +1459,17 @@ names, classes, and keyed fingerprints for every
 passed value, never plaintext values; queued logs and notebooks expose override
 names only.
 
+The frozen input tree also constrains neighboring control-plane commands. A
+Python `--dry-run` can write import bytecode before its command body runs.
+When inspecting a checkout held by a proof, invoke every Python entrypoint
+with `-B` before the script or `-m` (for example,
+`python -B tools/molt_dev.py integrate --dry-run`), and preserve the canonical
+external cache environment in its children. `-I`/`-E` ignore Python environment
+settings, so an environment variable alone does not establish a no-write
+launch. Keep source generation and other writes outside the held tree. The
+input journal rejects incidental bytecode writes too; do not ignore those
+events or promote the rejected receipt because the tests passed.
+
 LLVM SDK environment names come from the same authority as their exporters.
 The exact SDK selectors and versioned llvm-sys, mlir-sys and TableGen prefixes
 remain classified inputs through command admission, supervisor compilation,

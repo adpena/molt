@@ -826,7 +826,10 @@ def test_committed_native_policy_includes_owning_crate(drv, path):
     assert "--locked" in tests
     assert tests[tests.index("--features") + 1] == "molt-backend/native-backend"
     # Clippy for these crates is the changed-crate gate's plan cells.
-    assert "python tools/check_changed_clippy.py --base origin/main" in gates
+    assert (
+        "python tools/check_changed_clippy.py --base {integration_upstream_commit}"
+        in gates
+    )
     assert tests[1] == "test" and "--lib" in tests and "--no-fail-fast" in tests
     assert tests[tests.index("--profile") + 1] == "release-fast"
 
@@ -851,7 +854,9 @@ def test_committed_source_checks_precede_complete_native_build_selection(drv):
         "ci-wiring",
     }
     build_names = ["backend-native", "native-object-emission", "tir-midend"]
-    lint_gate = "python tools/check_changed_clippy.py --base origin/main"
+    lint_gate = (
+        "python tools/check_changed_clippy.py --base {integration_upstream_commit}"
+    )
     assert {rule.name for rule in matched} == source_names | set(build_names) | {
         "rust-clippy-changed"
     }
@@ -960,7 +965,10 @@ def test_committed_gate_manifest_selects_wasm_host_ratchet(drv):
         "wasm-host",
     ]
     # Clippy for every reached crate belongs to the changed-crate gate.
-    assert "python tools/check_changed_clippy.py --base origin/main" in gates
+    assert (
+        "python tools/check_changed_clippy.py --base {integration_upstream_commit}"
+        in gates
+    )
     assert "cargo build --locked --profile release-fast -p molt-wasm-host" in gates
 
 
@@ -2407,6 +2415,88 @@ def _commit_integration_policy(work: Path, commands: list[str]) -> str:
 
 def _integration_python(source: str) -> str:
     return shlex.join([sys.executable, "-c", source])
+
+
+@pytest.mark.parametrize("remote", ["origin", "publication"])
+@pytest.mark.parametrize("attributed", [False, True], ids=["clean", "rejected"])
+def test_integrate_binds_the_fetched_upstream_for_every_change_gate(
+    drv, origin_and_clone, remote, attributed, capfd
+):
+    """Real gates consume one full SHA despite unrelated and moving refs."""
+    origin, work = origin_and_clone
+    if remote != "origin":
+        publication = origin.with_name("publication.git")
+        shutil.copytree(origin, publication)
+        _git(work, "remote", "add", remote, str(publication))
+    expected = _git(work, "rev-parse", "origin/main").stdout.strip()
+    message = "changed human Rust source"
+    if attributed:
+        message += "\n\nCo-Authored-By: Claude <noreply@anthropic.com>"
+    feature = _commit_file(work, "feature.rs", "fn feature() {}\n", message)
+    upstream = "{integration_upstream_commit}"
+    imports = (
+        "import sys, subprocess; from pathlib import Path; "
+        f"sys.path[:0] = [{str(REPO_ROOT)!r}, {str(REPO_ROOT / 'src')!r}]; "
+    )
+    selection_gate = (
+        _integration_python(
+            imports
+            + "from tools import check_changed_clippy as clippy, check_rustfmt as rustfmt; "
+            + "clippy.ROOT = rustfmt.ROOT = Path.cwd(); "
+            # Mutate the selected tracking ref after fetch. A ref spelling passed
+            # instead of the captured commit would silently select no changes.
+            + f"subprocess.run(['git', 'update-ref', 'refs/remotes/{remote}/main', 'HEAD'], check=True); "
+            + "assert clippy.changed_paths('origin/main') == (); "
+            + "assert rustfmt._changed_rust_paths('origin/main') == (); "
+            + "assert set(clippy.changed_paths(sys.argv[1])) == {'feature.rs', 'tools/proof_plan.toml'}; "
+            + "assert rustfmt._changed_rust_paths(sys.argv[1]) == (Path('feature.rs'),); "
+            + f"assert sys.argv[1] == {expected!r}; "
+            + "print('selected-upstream-path-gates-passed')"
+        )
+        + f" {upstream}"
+    )
+    attribution_gate = (
+        _integration_python(
+            imports
+            + "from tools import check_commit_attribution as attribution; "
+            + "assert attribution.check_revisions(['origin/main..HEAD'], cwd=Path.cwd()) == []; "
+            + "raise SystemExit(attribution.main(['--range', sys.argv[1]]))"
+        )
+        + f" {upstream}..HEAD"
+    )
+    selected = _commit_integration_policy(work, [selection_gate, attribution_gate])
+    if remote != "origin":
+        # The source-sync remote may already contain this exact checkout.
+        # Only the explicitly selected publication remote defines new changes.
+        _git(origin, "fetch", "-q", str(work), "HEAD:refs/heads/main")
+        _git(work, "fetch", "-q", "origin", "main:refs/remotes/origin/main")
+    ns = _integrate_ns(
+        drv, repo=str(work), remote=remote, expected_upstream=expected, no_push=True
+    )
+    if attributed:
+        with pytest.raises(drv.DriverError, match=r"gate failed \(exit 1\)"):
+            drv.cmd_integrate(ns)
+    else:
+        assert drv.cmd_integrate(ns) == drv.EXIT_OK
+    output = capfd.readouterr()
+    assert "selected-upstream-path-gates-passed" in output.out
+    if attributed:
+        assert feature[:12] in output.err
+    assert _git(work, "rev-parse", f"{remote}/main").stdout.strip() == selected
+    assert _git(work, "rev-parse", "HEAD").stdout.strip() == selected
+
+
+def test_integrate_rejects_unknown_gate_binding_before_admission_or_spawn(
+    drv, origin_and_clone, monkeypatch
+):
+    _, work = origin_and_clone
+    _commit_integration_policy(work, ["echo {integration_upstream_ref}"])
+    monkeypatch.setattr(
+        drv.GateConfig, "admit", lambda *args: pytest.fail("invalid policy admitted")
+    )
+    monkeypatch.setattr(drv, "run_gate", lambda *args: pytest.fail("invalid gate ran"))
+    with pytest.raises(drv.DriverError, match="unknown local gate placeholder"):
+        drv.cmd_integrate(_integrate_ns(drv, repo=str(work), no_push=True))
 
 
 @pytest.mark.parametrize("kind", ["tracked", "staged", "untracked", "policy"])

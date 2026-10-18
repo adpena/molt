@@ -220,6 +220,23 @@ plugin and writes into admitted scratch.
 These are development/compiler changes with no emitted-runtime work. Actual
 compiled WASM qualification and canonical integration remain required.
 
+A subsequent held-source Linux/aarch64 run executes all nine WASM cases
+successfully in 395.25 seconds, with native process closure complete and a
+2.78 GiB peak process tree. The queue nevertheless rejects its input custody:
+a concurrent development-side integration dry-run without Python `-B` wrote
+five imported bytecode caches into the watched source. This is an operator
+launch violation, not evidence of a compiler-child policy gap. The original
+failed receipt remains rejected; read-only launch capsules and the owning
+runbook now require no-write Python startup while a source tree is held.
+Admissible compiled replay is still required.
+
+Integration now binds attribution, changed-clippy and changed-rustfmt gates
+to its captured full upstream commit. Raw declarations still own prerequisite
+identity, while the executed copies use that one immutable base. Controls with
+separate source-sync/publication remotes and a moved tracking ref reject the
+old `origin/main` ambiguity; default and non-default remote cases pass locally.
+This corrects development qualification and adds no emitted-runtime work.
+
 Local landing policy merges plain pytest targets into one parallel invocation;
 selector-bearing gates retain their declared scope. The driver and policy share
 one test-path/node-ID validator, including root containment. Generated batches

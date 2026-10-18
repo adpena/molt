@@ -477,7 +477,10 @@ class GateConfig:
         always = data.get("always", [])
         if not isinstance(always, list) or not all(isinstance(g, str) for g in always):
             raise DriverError("gate manifest `always` must be a list of str")
-        commands = local_gate_commands(data)
+        try:
+            commands = local_gate_commands(data)
+        except ValueError as exc:
+            raise DriverError(f"invalid local gate binding: {exc}") from exc
         return GateConfig(
             rules=rules,
             always=list(always),
@@ -1026,6 +1029,15 @@ def _integrate_exclusive(args: argparse.Namespace) -> int:
     )
     gate_cmds, matched_rules = config.select(touched)
     gate_cmds = list(gate_cmds) + list(args.extra_gate or [])
+    from tools.proof_plan import bind_local_gate_command
+
+    try:
+        gate_cmds = [
+            bind_local_gate_command(command, upstream_commit=upstream_before)
+            for command in gate_cmds
+        ]
+    except ValueError as exc:
+        raise DriverError(f"invalid local gate binding; executed=0: {exc}") from exc
     _step(
         f"gates ({len(gate_cmds)} selected for {len(touched)} touched path(s); "
         f"matched rules: {', '.join(r.name for r in matched_rules) or 'none'})"
