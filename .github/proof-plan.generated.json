@@ -376,7 +376,6 @@
     "tests/tools/test_win_job_contract.py",
     "tests/tools/test_windows_process_api.py"
   ],
-  "authority_sha256": "a95229cef5f8a2af763feb43853fe65c60262230ba4277aee000dac9f7f39a70",
   "cargo_environment_policy": {
     "incident_command": "cargo metadata --locked --format-version 1",
     "incident_commit": "20b046b79bd4ca64a8c859f737f6e330377bcc4e",
@@ -12321,7 +12320,7 @@
       "workflow": ".github/workflows/perf-gate.yml"
     }
   ],
-  "schema": "molt.proof-plan-projection.v7",
+  "schema": "molt.proof-plan-projection.v8",
   "toolchain_policies": [
     {
       "executable": "{python}",
