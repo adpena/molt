@@ -6,6 +6,7 @@ from molt.compiler_analysis.python_imports import (
 from molt.compiler_analysis import python_import_scan as _source_import_scan
 
 import ast
+import json
 import os
 from pathlib import Path
 
@@ -741,11 +742,11 @@ def test_direct_operation_failure_preserves_outer_and_releases_owned_transaction
         _store: SourceRecordStore,
         _kind: str,
         _key: str,
-        payload: Mapping[str, Any],
+        payload: bytes,
         *,
         generation: str,
     ) -> NoReturn:
-        fingerprint = payload["compiler_fingerprint"]
+        fingerprint = json.loads(payload)["compiler_fingerprint"]
         assert isinstance(fingerprint, str) and fingerprint == generation
         published_fingerprints.append(fingerprint)
         raise OSError("publication interrupted")

@@ -3983,11 +3983,14 @@ gates = [
 [[rule]]
 name = "frontend-ir-assembly"
 toolchains = ["python"]
-description = "Prove borrowed lowering records, copy-on-write assembly and reusable module-cache results across native, WASM and GPU preparation."
+description = "Prove source-record admission, borrowed lowering records, copy-on-write assembly and reusable module-cache results across native, WASM and GPU preparation."
 globs = [
   "src/molt/cli/backend_ir.py",
   "src/molt/cli/frontend_integration.py",
   "src/molt/cli/module_cache.py",
+  "src/molt/cli/module_graph_cache.py",
+  "src/molt/cli/source_record_store.py",
+  "src/molt/cache_eviction.py",
   "src/molt/frontend/module_publication.py",
   "tests/cli/test_cli_frontend_integration_authority.py",
   "tests/cli/test_cli_module_cache_authority.py",
@@ -3996,6 +3999,10 @@ globs = [
   "tests/test_frontend_module_publication.py",
   "tests/cli/test_cli_shared_stdlib_cache.py",
   "tests/cli/test_cli_module_frontend_shared_cache.py",
+  "tests/cli/test_cli_module_graph_cache_authority.py",
+  "tests/cli/test_source_record_store.py",
+  "tests/cli/test_frontend_source_snapshot_authority.py",
+  "tests/tools/test_molt_cache_prune.py",
   "tests/cli/test_cli_import_collection.py",
   "tests/test_gpu_kernel_compiled.py",
 ]
@@ -4008,6 +4015,10 @@ pytest = [
   "tests/test_frontend_module_publication.py",
   "tests/cli/test_cli_shared_stdlib_cache.py",
   "tests/cli/test_cli_module_frontend_shared_cache.py",
+  "tests/cli/test_cli_module_graph_cache_authority.py",
+  "tests/cli/test_source_record_store.py",
+  "tests/cli/test_frontend_source_snapshot_authority.py",
+  "tests/tools/test_molt_cache_prune.py",
   "tests/cli/test_cli_import_collection.py::test_native_callable_publication_augments_existing_source_init_once",
   "tests/cli/test_cli_import_collection.py::test_compiled_source_init_publishes_before_capture_and_rebinding",
   "tests/cli/test_cli_import_collection.py::test_entry_source_identity_survives_json_and_explicit_main_registry_alias",
@@ -4043,6 +4054,7 @@ description = "Prove selected operation settings, cache publication policy, runt
 globs = [
   "src/molt/backend_environment.py",
   "src/molt/backend_environment.json",
+  "src/molt/llvm_wasi_tools.py",
   "src/molt/cli/backend_cache_setup.py",
   "src/molt/cli/backend_compile.py",
   "src/molt/cli/backend_daemon_logs.py",
@@ -4051,6 +4063,7 @@ globs = [
   "src/molt/cli/models.py",
   "src/molt/cli/wasm_codegen_layout.py",
   "tests/cli/test_backend_environment_contract.py",
+  "tests/cli/test_llvm_wasi_tools.py",
   "tests/cli/test_cli_wasm_codegen_layout.py",
   "tests/cli/test_cli_shared_stdlib_cache.py",
   "tests/cli/test_cli_runtime_callable_symbols_authority.py",
@@ -4068,6 +4081,7 @@ pytest_select = [
 ]
 pytest = [
   "tests/cli/test_backend_environment_contract.py",
+  "tests/cli/test_llvm_wasi_tools.py",
   "tests/cli/test_cli_wasm_codegen_layout.py",
   "tests/cli/test_cli_shared_stdlib_cache.py",
   "tests/cli/test_cli_runtime_callable_symbols_authority.py",

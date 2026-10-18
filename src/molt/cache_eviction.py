@@ -8,8 +8,9 @@ import stat
 import time
 from collections.abc import Mapping
 from dataclasses import dataclass, field
+from functools import lru_cache
 from pathlib import Path
-from typing import Literal, TypedDict
+from typing import Any, Literal, TypedDict
 
 from molt.default_paths import (
     DEFAULT_MOLT_CACHE_MAX_AGE_DAYS,
@@ -290,6 +291,91 @@ def _same_cache_generation(left: os.stat_result, right: os.stat_result) -> bool:
     )
 
 
+@lru_cache(maxsize=1)
+def _windows_timestamp_api() -> tuple[Any, Any, Any]:
+    if os.name != "nt":
+        raise OSError("Windows timestamp API is unavailable on this platform")
+    import ctypes
+    from ctypes import wintypes
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.CreateFileW.restype = wintypes.HANDLE
+    kernel32.CreateFileW.argtypes = [
+        wintypes.LPCWSTR,
+        wintypes.DWORD,
+        wintypes.DWORD,
+        ctypes.c_void_p,
+        wintypes.DWORD,
+        wintypes.DWORD,
+        wintypes.HANDLE,
+    ]
+    kernel32.SetFileTime.restype = wintypes.BOOL
+    kernel32.SetFileTime.argtypes = [
+        wintypes.HANDLE,
+        ctypes.c_void_p,
+        ctypes.c_void_p,
+        ctypes.POINTER(wintypes.FILETIME),
+    ]
+    kernel32.CloseHandle.restype = wintypes.BOOL
+    kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+    return ctypes, kernel32, wintypes.FILETIME
+
+
+def _refresh_cache_entry_mtime(path: Path, observed: os.stat_result, now: int) -> None:
+    """Update the admitted generation through a pinned, no-follow descriptor.
+
+    CPython 3.12's Windows utime supports neither descriptors nor no-follow
+    paths. SetFileTime supplies the same operation on a no-follow Win32 handle;
+    read-only sharing prevents replacement while its identity is qualified.
+    POSIX uses futimens via os.utime. Neither path changes a replacement file.
+    """
+    if os.name == "nt":
+        import msvcrt
+
+        ctypes, kernel32, filetime = _windows_timestamp_api()
+        spelling = os.fspath(path)
+        if "\0" in spelling:
+            raise ValueError("embedded null character")
+        handle = kernel32.CreateFileW(
+            spelling,
+            0x0080 | 0x0100,  # FILE_READ_ATTRIBUTES | FILE_WRITE_ATTRIBUTES
+            0x00000001,  # FILE_SHARE_READ; pin against writes and deletion.
+            None,
+            3,  # OPEN_EXISTING
+            0x02000000 | 0x00200000,  # BACKUP_SEMANTICS | OPEN_REPARSE_POINT
+            None,
+        )
+        if handle in (None, ctypes.c_void_p(-1).value):
+            raise ctypes.WinError(ctypes.get_last_error())
+        try:
+            descriptor = msvcrt.open_osfhandle(handle, os.O_RDONLY | os.O_NOINHERIT)
+        except BaseException:
+            kernel32.CloseHandle(handle)
+            raise
+    else:
+        descriptor = os.open(
+            path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC
+        )
+    try:
+        metadata = os.fstat(descriptor)
+        if (
+            not (stat.S_ISREG(metadata.st_mode) or stat.S_ISDIR(metadata.st_mode))
+            or getattr(metadata, "st_file_attributes", 0)
+            & getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0)
+            or not _same_cache_generation(metadata, observed)
+        ):
+            return
+        if os.name == "nt":
+            ticks = now // 100 + 116444736000000000
+            written = filetime(ticks & 0xFFFFFFFF, ticks >> 32)
+            if not kernel32.SetFileTime(handle, None, None, ctypes.byref(written)):
+                raise ctypes.WinError(ctypes.get_last_error())
+        else:
+            os.utime(descriptor, ns=(metadata.st_atime_ns, now))
+    finally:
+        os.close(descriptor)
+
+
 def refresh_cache_entry_recency(
     path: Path,
     *,
@@ -326,12 +412,9 @@ def refresh_cache_entry_recency(
             if handle is None:
                 return
             with _file_lock_owned_operation(handle, expected_lock_path=lock_path):
-                metadata = path.lstat()
-                if not _same_cache_generation(metadata, observed):
-                    return
-                os.utime(path, ns=(metadata.st_atime_ns, now), follow_symlinks=False)
+                _refresh_cache_entry_mtime(path, observed, now)
         else:
-            os.utime(path, ns=(metadata.st_atime_ns, now), follow_symlinks=False)
+            _refresh_cache_entry_mtime(path, metadata, now)
     except OSError:
         # The value has already been admitted and copied into reader custody.
         pass

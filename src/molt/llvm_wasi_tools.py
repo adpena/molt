@@ -24,7 +24,6 @@ from molt.file_hashing import _sha256_file
 from molt.rust_toolchain import RustToolSearch, rustc_host, rustc_printed_sysroot
 from molt.toolchain_identity import (
     executable_candidates,
-    executable_name_candidates,
     executable_search_directories,
     find_executable,
     resolve_executable,
@@ -207,17 +206,24 @@ def _cached_managed_llvm_bin_directories(
         candidates.append(root / "bin")
         if target_family == "wasm":
             candidates.append(toolchains / "wasi-sdk" / "bin")
-        if toolchains.is_dir():
-            candidates.extend(
-                child / "bin"
-                for child in sorted(toolchains.iterdir(), reverse=True)
-                if child.is_dir()
-                and (
-                    child.name.startswith("llvm-")
-                    or (target_family == "wasm" and child.name.startswith("wasi-sdk-"))
-                )
-            )
-    return _dedupe_paths(candidates)
+        try:
+            children = sorted(toolchains.iterdir(), reverse=True)
+        except OSError:
+            continue
+        for child in children:
+            if not (
+                child.name.startswith("llvm-")
+                or (target_family == "wasm" and child.name.startswith("wasi-sdk-"))
+            ):
+                continue
+            try:
+                if child.is_dir():
+                    candidates.append(child / "bin")
+            except OSError:
+                continue
+    # Provenance is admitted by the candidate authority, not by resolving every
+    # potential directory here (which may include inaccessible automatic entries).
+    return _dedupe_tool_paths(candidates)
 
 
 def _managed_llvm_bin_directories(
@@ -271,9 +277,14 @@ def _selected_wasi_sdk_bins(environment: Mapping[str, str]) -> tuple[Path, ...]:
         executable_environment_value(environment, name).strip() for name in selectors
     ):
         return ()
-    installation = selected_wasi_sdk_installation(
-        compiler_source_root(), environ=environment
-    )
+    try:
+        installation = selected_wasi_sdk_installation(
+            compiler_source_root(), environ=environment
+        )
+    except OSError as error:
+        raise LlvmToolchainConfigError(
+            f"cannot inspect selected WASI SDK: {error}"
+        ) from error
     if installation is None:
         raise LlvmToolchainConfigError("selected WASI SDK is not provisioned")
     for name in ("MOLT_WASI_SYSROOT", "WASI_SYSROOT"):
@@ -300,14 +311,20 @@ def _observe_provenance_path(
 @functools.lru_cache(maxsize=512)
 def _cached_provenance_path(
     path: str, identity: _PathIdentity, parent_identity: _PathIdentity
-) -> Path:
+) -> Path | None:
     del identity, parent_identity
-    return Path(path).resolve(strict=False)
+    try:
+        return Path(path).resolve(strict=False)
+    except (OSError, RuntimeError):
+        # An automatic search entry may be inaccessible (including Windows
+        # untrusted junctions or Python 3.12's symlink-loop RuntimeError).
+        # Unknown provenance never admits a native tool.
+        return None
 
 
 def _resolved_provenance_path(
     path: Path, observations: _ProvenanceObservations
-) -> Path:
+) -> Path | None:
     # Following stat observes alias retargets; the lexical parent also catches
     # a file alias retargeted between hardlinks with identical content identity.
     return _cached_provenance_path(
@@ -322,19 +339,22 @@ def _cached_sdk_bin_layout(
     directory: str,
     shared_sysroot_identity: _PathIdentity,
     sysroot_identity: _PathIdentity,
-) -> bool:
+) -> bool | None:
     del shared_sysroot_identity, sysroot_identity
     root = Path(directory).parent
-    return (root / "share" / "wasi-sysroot").is_dir() or (
-        root / "wasi-sysroot"
-    ).is_dir()
+    try:
+        return (root / "share" / "wasi-sysroot").is_dir() or (
+            root / "wasi-sysroot"
+        ).is_dir()
+    except OSError:
+        return None
 
 
 def _is_wasi_sdk_bin(
     directory: Path,
     selected_bins: tuple[Path, ...],
     observations: _ProvenanceObservations,
-) -> bool:
+) -> bool | None:
     """Classify SDK search provenance, not a compiler's guessed target.
 
     Cover managed SDK names, explicitly selected SDKs, and relocated SDK trees.
@@ -343,11 +363,16 @@ def _is_wasi_sdk_bin(
     search inputs, not authorization to cross the native/WASM family boundary.
     """
     resolved = _resolved_provenance_path(directory, observations)
-    if any(
-        resolved == _resolved_provenance_path(selected, observations)
-        for selected in selected_bins
-    ):
-        return True
+    if resolved is None:
+        return None
+    for selected in selected_bins:
+        selected_path = _resolved_provenance_path(selected, observations)
+        if selected_path is None:
+            raise LlvmToolchainConfigError(
+                f"cannot resolve selected WASI SDK tool directory: {selected}"
+            )
+        if resolved == selected_path:
+            return True
     if resolved.name.lower() != "bin":
         return False
     root = resolved.parent
@@ -364,10 +389,14 @@ def _is_wasi_sdk_bin(
 
 def _tool_is_wasi_sdk(
     path: Path, sdk_bins: tuple[Path, ...], observations: _ProvenanceObservations
-) -> bool:
-    return _is_wasi_sdk_bin(path.parent, sdk_bins, observations) or _is_wasi_sdk_bin(
-        _resolved_provenance_path(path, observations).parent, sdk_bins, observations
-    )
+) -> bool | None:
+    directory_provenance = _is_wasi_sdk_bin(path.parent, sdk_bins, observations)
+    if directory_provenance is not False:
+        return directory_provenance
+    resolved = _resolved_provenance_path(path, observations)
+    if resolved is None:
+        return None
+    return _is_wasi_sdk_bin(resolved.parent, sdk_bins, observations)
 
 
 def llvm_tool_is_wasi_sdk(
@@ -376,7 +405,10 @@ def llvm_tool_is_wasi_sdk(
     """Identify SDK provenance while retaining a tool's lexical entrypoint."""
     effective_environment = os.environ if environment is None else environment
     sdk_bins = _selected_wasi_sdk_bins(effective_environment)
-    return _tool_is_wasi_sdk(path, sdk_bins, {})
+    provenance = _tool_is_wasi_sdk(path, sdk_bins, {})
+    if provenance is None:
+        raise LlvmToolchainConfigError(f"cannot resolve LLVM tool provenance: {path}")
+    return provenance
 
 
 def _native_search_environment(
@@ -389,7 +421,7 @@ def _native_search_environment(
     admitted = [
         directory
         for directory in directories
-        if not _is_wasi_sdk_bin(directory, selected_bins, observations)
+        if _is_wasi_sdk_bin(directory, selected_bins, observations) is False
     ]
     if admitted != list(directories):
         # Reuse the executable authority's quoted-PATH and implicit-cwd rules.
@@ -450,12 +482,9 @@ def _directory_candidates(
     directory: Path, names: Sequence[str], *, environment: Mapping[str, str]
 ) -> Iterable[Path]:
     for name in names:
-        for executable_name in executable_name_candidates(
-            name, environment=environment
-        ):
-            candidate = directory / executable_name
-            if candidate.is_file():
-                yield candidate
+        yield from executable_candidates(
+            os.fspath(directory / name), environment=environment
+        )
 
 
 def _dedupe_search_directories(
@@ -463,9 +492,9 @@ def _dedupe_search_directories(
 ) -> tuple[Path, ...]:
     """Deduplicate caller search directories without filesystem probing.
 
-    Candidate results are still canonicalized by ``_dedupe_paths`` on a cache
-    miss.  Keeping cache-key construction free of ``Path.resolve`` prevents the
-    memoization layer from repeating the filesystem work it exists to remove.
+    Candidate provenance is resolved separately; invocation retains its lexical
+    entrypoint. Keeping cache-key construction free of ``Path.resolve`` prevents
+    the memoization layer from repeating the filesystem work it exists to remove.
     """
     seen: set[str] = set()
     result: list[Path] = []
@@ -531,21 +560,35 @@ def _cached_llvm_named_tool_candidates(
     environment = dict(environment_items)
     sdk_bins = _selected_wasi_sdk_bins(environment)
     observations: _ProvenanceObservations = {}
-    explicit_paths = (
-        path
-        for command in explicit_commands
-        if command and (path := Path(command[0])).is_file()
-    )
-    paths = list(explicit_paths)
+
+    def automatic_candidate_admitted(path: Path) -> bool:
+        provenance = _tool_is_wasi_sdk(path, sdk_bins, observations)
+        return provenance is not None and (target_family == "wasm" or not provenance)
+
+    paths: list[Path] = []
+    for command in explicit_commands:
+        if not command:
+            continue
+        path = Path(command[0])
+        if (
+            _resolved_provenance_path(path, observations) is None
+            or _tool_is_wasi_sdk(path, sdk_bins, observations) is None
+        ):
+            raise LlvmToolchainConfigError(
+                f"cannot resolve explicitly selected LLVM tool provenance: {path}"
+            )
+        try:
+            if path.is_file():
+                paths.append(path)
+        except OSError as error:
+            raise LlvmToolchainConfigError(
+                f"cannot inspect explicitly selected LLVM tool: {path}: {error}"
+            ) from error
     for directory in map(Path, search_directories):
         paths.extend(_directory_candidates(directory, names, environment=environment))
     for name in names:
         resolved = find_executable(name, environment=environment, cwd=Path(cwd))
-        if (
-            resolved is not None
-            and target_family == "native"
-            and _tool_is_wasi_sdk(Path(resolved), sdk_bins, observations)
-        ):
+        if resolved is not None and not automatic_candidate_admitted(Path(resolved)):
             # File aliases can cross the family boundary even when their PATH
             # directory is not SDK-owned. Continue the canonical executable
             # ladder instead of hiding a later native tool behind that alias.
@@ -555,23 +598,19 @@ def _cached_llvm_named_tool_candidates(
                     for candidate in executable_candidates(
                         name, environment=environment, cwd=Path(cwd)
                     )
-                    if not _tool_is_wasi_sdk(candidate, sdk_bins, observations)
+                    if automatic_candidate_admitted(candidate)
                 ),
                 None,
             )
         if resolved is not None:
             paths.append(Path(resolved))
     result = _dedupe_tool_paths(paths)
-    if target_family == "native":
-        explicit_selections = {
-            Path(command[0]) for command in explicit_commands if command
-        }
-        result = tuple(
-            path
-            for path in result
-            if path in explicit_selections
-            or not _tool_is_wasi_sdk(path, sdk_bins, observations)
-        )
+    explicit_selections = {Path(command[0]) for command in explicit_commands if command}
+    result = tuple(
+        path
+        for path in result
+        if path in explicit_selections or automatic_candidate_admitted(path)
+    )
     # Include rejected aliases: their resolved SDK can become native without
     # changing the lexical PATH directory or any previously selected candidate.
     return _LlvmCandidateSnapshot(result, tuple(observations.items()))
@@ -705,6 +744,11 @@ def llvm_named_tool_candidates(
     effective_environment = dict(os.environ if environment is None else environment)
     sdk_bins = _selected_wasi_sdk_bins(effective_environment)
     observations: _ProvenanceObservations = {}
+    for selected_bin in sdk_bins:
+        if _resolved_provenance_path(selected_bin, observations) is None:
+            raise LlvmToolchainConfigError(
+                f"cannot resolve selected WASI SDK tool directory: {selected_bin}"
+            )
     normalized_explicit_commands = tuple(
         _selected_tool_command(command, environment=effective_environment)
         for command in explicit_commands
@@ -733,7 +777,7 @@ def llvm_named_tool_candidates(
         normalized_search_directories = tuple(
             directory
             for directory in normalized_search_directories
-            if not _is_wasi_sdk_bin(Path(directory), sdk_bins, observations)
+            if _is_wasi_sdk_bin(Path(directory), sdk_bins, observations) is False
         )
         effective_environment = _native_search_environment(
             effective_environment, sdk_bins, observations
@@ -775,7 +819,11 @@ def llvm_named_tool_candidates(
         # of the lexical search directories. Rebuild the same candidate ladder.
         _cached_llvm_named_tool_candidates.cache_clear()
         snapshot = _cached_llvm_named_tool_candidates(*key)
-    if not all(path.is_file() for path in snapshot.paths):
+    try:
+        paths_present = all(path.is_file() for path in snapshot.paths)
+    except OSError:
+        paths_present = False
+    if not paths_present:
         # Selected-path check backs up coarse directory timestamps.
         clear_llvm_tool_candidate_cache()
         snapshot = _cached_llvm_named_tool_candidates(*key)
