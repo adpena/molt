@@ -196,6 +196,7 @@ from tools.memory_guard_core.process_custody import (  # noqa: E402
     sample_processes_windows as sample_processes_windows,
     sample_processes_windows_hard_timeout as sample_processes_windows_hard_timeout,
     sample_processes as sample_processes,
+    sample_processes_custody as sample_processes_custody,
     terminate_watched_processes as terminate_watched_processes,
     cleanup_tracked_orphans as cleanup_tracked_orphans,
     _terminate_single_pid as _terminate_single_pid,
@@ -299,6 +300,23 @@ sample_processes_linux_proc = _process_model.sample_processes_linux_proc
 
 def parse_process_table_with_start(text: str) -> dict[int, ProcessSample]:
     return _process_model.parse_process_table_with_start(text)
+
+
+def _suite_lease_process_ids(environ: Mapping[str, str]) -> frozenset[int]:
+    """The owner and guardian pids of the suite lease this run inherits."""
+    from molt import backend_daemon_suite_custody as suite_custody
+
+    raw = environ.get(suite_custody.LEASE_ENV)
+    if not raw or _is_windows_process_model():
+        return frozenset()
+    record = suite_custody.read_lease(Path(raw))
+    if record is None:
+        return frozenset()
+    return frozenset(
+        pid
+        for pid in (record["owner_pid"], record["guardian_pid"])
+        if type(pid) is int and pid > 0
+    )
 
 
 def _timeout_sampler(
@@ -1136,10 +1154,18 @@ def run_guarded(
         sampling_source = (
             "windows_full_process_table"
             if _is_windows_process_model()
-            else "posix_process_table"
+            else _process_model.posix_custody_source()
         )
         if sampler is not sample_processes:
             sampling_source = "custom"
+        # Custody rows stop at the tree, while termination protection reads the
+        # guard's ancestry and host control-plane processes: when polls read
+        # partial rows, a termination decides on the host table.
+        custody_rows_partial = (
+            sampler is sample_processes
+            and not _is_windows_process_model()
+            and _process_model.posix_custody_reads_partial_rows()
+        )
         if guard_job is not None:
             cleanup_orphans = False
         if guard_job is not None:
@@ -1305,6 +1331,7 @@ def run_guarded(
             samples: Mapping[int, ProcessSample] | None = None,
             watched: set[int] | None = None,
             grace: float,
+            decide_on_host_table: bool = True,
         ) -> None:
             nonlocal interruption_inventory
             if (
@@ -1351,7 +1378,12 @@ def run_guarded(
                 _validated_termination_report(
                     terminate_watched_processes(
                         proc.pid,
-                        samples=samples,
+                        # None reads the host table for the protection decision.
+                        samples=(
+                            None
+                            if decide_on_host_table and custody_rows_partial
+                            else samples
+                        ),
                         watched=watched,
                         grace=grace,
                         reason=reason,
@@ -1407,6 +1439,16 @@ def run_guarded(
         termination_wait_s = termination_wait_seconds(env)
         remembered_samples: Mapping[int, ProcessSample] | None = None
         remembered_watched: set[int] | None = None
+        # Rows outside the tree that each poll still needs: a suite lease's
+        # owner and guardian, and the guard's own lineage, which protection
+        # walks for every tree member. Both are fixed for this run.
+        declared_pids = (
+            _suite_lease_process_ids(child_env) if cleanup_orphans else frozenset()
+        ) | (
+            _process_model.posix_custody_lineage(os.getpid())
+            if custody_rows_partial
+            else frozenset()
+        )
         saw_cargo_build_state = _command_invokes_cargo_build_state(command)
         cargo_incremental_observations: set[CargoIncrementalObservation] = set()
         latest_cargo_observations: set[CargoIncrementalObservation] = set()
@@ -1604,11 +1646,14 @@ def run_guarded(
                 "interruption snapshot unavailable after sampling failure"
             )
             if remembered_samples is not None and remembered_watched is not None:
+                # Sampling just failed: decide on the last poll's rows rather
+                # than read again before the direct-child kill.
                 terminate_owned_tree(
                     reason=reason,
                     samples=remembered_samples,
                     watched=remembered_watched,
                     grace=0.0,
+                    decide_on_host_table=False,
                 )
                 terminate_direct_child_handle(reason=f"{reason}_direct_child_handle")
                 return
@@ -1740,7 +1785,19 @@ def run_guarded(
                 )
 
             try:
-                samples = active_sampler()
+                if active_sampler is sample_processes:
+                    # One poll needs the tree and the declared rows, not the
+                    # host table (docs/design/memory_guard_custody_sampling.md).
+                    samples = sample_processes_custody(
+                        _process_model.CustodyInterest(
+                            tree_pids=frozenset(
+                                {tracker.root_pid, *(remembered_watched or ())}
+                            ),
+                            exact_pids=declared_pids,
+                        )
+                    )
+                else:
+                    samples = active_sampler()
             except WindowsProcessSnapshotTimeout as exc:
                 record_sampling_cost()
                 if allow_transient_timeout:

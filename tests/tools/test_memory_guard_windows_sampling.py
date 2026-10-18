@@ -232,6 +232,58 @@ def test_darwin_sampler_sizes_readable_rows_and_withholds_foreign_ones(
     assert samples[300].started_at_ns is None
 
 
+def test_darwin_custody_poll_reads_the_tree_not_the_host_table(monkeypatch) -> None:
+    # Root 100 forked 101, which forked 102 since the last poll. 103 was
+    # reparented to launchd and stays tracked by pid. 104's number was reused
+    # by an unrelated process between the two reads, and 105 is an unreaped
+    # zombie. 500 is the suite lease owner: its row, never its children.
+    zombie = process_model._DarwinKernelProcRow(
+        status=process_model._DARWIN_SZOMB,
+        ppid=100,
+        pgid=100,
+        started_at_ns=2_500,
+        command="sh",
+        uid=501,
+    )
+    rows = {
+        100: _darwin_row(ppid=50, pgid=100, started_at_ns=1_000, command="molt"),
+        101: _darwin_row(ppid=100, pgid=100, started_at_ns=2_000, command="cargo"),
+        102: _darwin_row(ppid=101, pgid=100, started_at_ns=3_000, command="rustc"),
+        103: _darwin_row(ppid=1, pgid=103, started_at_ns=1_500, command="daemon"),
+        104: _darwin_row(ppid=999, pgid=999, started_at_ns=4_000, command="other"),
+        105: zombie,
+        500: _darwin_row(ppid=1, pgid=500, started_at_ns=500, command="pytest"),
+        501: _darwin_row(ppid=500, pgid=500, started_at_ns=600, command="worker"),
+    }
+    children = {100: (101, 104, 105), 101: (102,), 500: (501,)}
+    walked: list[int] = []
+
+    class FakeAuthority:
+        def kernel_table(self) -> dict[int, process_model._DarwinKernelProcRow]:
+            raise AssertionError("a custody poll never reads the host table")
+
+        def kernel_row(self, pid: int) -> process_model._DarwinKernelProcRow | None:
+            return rows.get(pid)
+
+        def child_pids(self, ppid: int) -> tuple[int, ...]:
+            walked.append(ppid)
+            return children.get(ppid, ())
+
+    _install_fake_darwin_authority(monkeypatch, FakeAuthority())
+
+    samples = process_model.sample_processes_posix_custody(
+        process_model.CustodyInterest(
+            tree_pids=frozenset({100, 103}), exact_pids=frozenset({500})
+        )
+    )
+
+    assert set(samples) == {100, 101, 102, 103, 500}
+    assert 500 not in walked
+    tracker = process_model.ProcessTreeTracker(100)
+    tracker.known_pids.add(103)
+    assert tracker.update(samples) == {100, 101, 102, 103}
+
+
 def test_darwin_process_authority_binds_once_for_all_pid_reads(monkeypatch) -> None:
     class FakeAuthority:
         def kernel_row(self, pid: int) -> process_model._DarwinKernelProcRow:
@@ -265,7 +317,7 @@ def test_darwin_process_authority_retains_one_library_binding_set(
         argtypes = None
         restype = None
 
-    libproc = SimpleNamespace(proc_pidinfo=FakeFunction())
+    libproc = SimpleNamespace(proc_pidinfo=FakeFunction(), proc_listpids=FakeFunction())
     libsystem = SimpleNamespace(sysctl=FakeFunction())
     loads: list[str] = []
 

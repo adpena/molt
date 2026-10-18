@@ -74,6 +74,7 @@ the source of truth.
 - Backend compile daemon (concurrent requests, request-scoped settings, single flight, retirement): [design/backend_compile_daemon.md](design/backend_compile_daemon.md)
 - Host capacity and scheduling (one CPU and memory authority, declared per-unit needs, one scheduler; HF-334): [design/host_capacity.md](design/host_capacity.md)
 - Flag strings (one authority for argument vectors in Cargo and cc-rs environment strings, ported from each consumer's split rule; after Cargo `CARGO_ENCODED_RUSTFLAGS` and Go `cmd/internal/quoted`; HF-362): [design/flag_strings.md](design/flag_strings.md)
+- Memory guard custody sampling (a poll reads its tree's rows through kernel filters, not the host table; after Windows job members, systemd/Bazel cgroups and subreapers; HF-358): [design/memory_guard_custody_sampling.md](design/memory_guard_custody_sampling.md)
 - Landing queue (main advances only to a commit that passed its selected proofs on every cell; rollups on the owner's machines; HF-334): [design/landing_queue.md](design/landing_queue.md)
 - Process environment (one Windows/POSIX name-rule authority for child environments, after Rust `EnvKey`, Cargo `Env` and Go `dedupEnvCase`; HF-355): [design/process_environment.md](design/process_environment.md)
 - Op-kind registry and generated dispatch/classifier direction: [design/foundation/25_op_kind_registry.md](design/foundation/25_op_kind_registry.md)
