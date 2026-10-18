@@ -38,6 +38,7 @@ from tools.dependency_manifests import cargo_workspace_dirs
 from tools.proof_queue_pkg import command_admission, supervisor_custody
 from tools.proof_queue_pkg import custody as proof_queue_custody
 from tools.proof_queue_pkg import evidence as proof_queue_evidence
+from tests.executable_test_support import custody_spelling
 from tests.process_guard_common import install_module_view, run_guarded_test_process
 
 
@@ -8150,7 +8151,7 @@ def test_selected_runtime_fingerprint_and_receipt_bind_consumed_unicode(
         before["executable_sha256"]
         == hashlib.sha256(fixture.selected[0].read_bytes()).hexdigest()
     )
-    library, unicode_file = fixture.installations[str(fixture.selected[0])]
+    library, unicode_file = fixture.installations[custody_spelling(fixture.selected[0])]
     with unicode_file.open("ab") as stream:
         stream.write(b"changed database provider with unchanged process images")
     after = proof_plan._version_fingerprint(fixture.policy)

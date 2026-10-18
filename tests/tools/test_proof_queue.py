@@ -18921,7 +18921,7 @@ def test_selected_runtime_watch_capture_compact_and_cas_receivers(
         supervisor_binary=tmp_path / "unused-supervisor",
         reuse_root=tmp_path / "reuse",
     )
-    library, unicode_file = fixture.installations[str(fixture.selected[0])]
+    library, unicode_file = fixture.installations[custody_spelling(fixture.selected[0])]
     # The fixture declares one directory tree. Executables, native images and
     # startup configuration must not recursively admit their parent trees.
     assert roots == [library]

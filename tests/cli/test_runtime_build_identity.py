@@ -794,7 +794,7 @@ def test_ambient_c_and_cxx_flags_are_family_identity_inputs(
         "CXXFLAGS_wasm32-wasip1",
         "CXXFLAGS_wasm32_wasip1",
     ):
-        expected[cargo_plans._CargoEnvironment({}).canonical_key(name)] = (
+        expected[name] = (
             ("-O1", "--no-default-config")
             if name == "CFLAGS_wasm32-wasip1"
             else ("--no-default-config",)
