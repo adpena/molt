@@ -1775,7 +1775,7 @@ resource_class = "scheduled-suite"
 timeout_seconds = 1200
 cache_domain = "cargo-workspace"
 dependencies = ["nightly.verification-t3.compiler-prewarm"]
-argv = ["uv", "run", "python3", "-m", "pytest", "-q", "-n", "2", "tests/fuzz/test_fuzz_differential.py", "tests/fuzz/test_fuzz_extended.py"]
+argv = ["uv", "run", "python3", "-m", "pytest", "-q", "-n", "auto", "--molt-worker-memory-gb=1.25", "tests/fuzz/test_fuzz_differential.py", "tests/fuzz/test_fuzz_extended.py"]
 toolchains = ["python", "uv", "rustc", "cargo"]
 cargo_build_python = true
 
@@ -3277,7 +3277,7 @@ resource_class = "compiler-build-resource"
 timeout_budget = "integration"
 cache_domain = "cargo-workspace"
 dependencies = ["native.integration.capability-manifest"]
-argv = ["uv", "run", "--python", "3.12", "pytest", "-q", "-n", "2", "--durations=10", "tests/metamorphic"]
+argv = ["uv", "run", "--python", "3.12", "pytest", "-q", "-n", "auto", "--molt-worker-memory-gb=3.25", "--durations=10", "tests/metamorphic"]
 toolchains = ["python", "uv", "rustc", "cargo", "ld.lld"]
 cargo_build_python = true
 
