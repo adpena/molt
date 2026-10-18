@@ -456,6 +456,8 @@ def test_proven_exact_dataclass_value_authorizes_dataclass_field_access() -> Non
         "dataclass": True,
         "fields": {"value": 0},
         "field_hints": {"value": "int"},
+        # ``value: int`` binds no class attribute, so none may be a descriptor.
+        "possible_data_descriptor_attrs": frozenset(),
     }
     record = generator._stamp_exact_class(
         MoltValue("record", type_hint=DeclaredClass(RECORD)), RECORD
