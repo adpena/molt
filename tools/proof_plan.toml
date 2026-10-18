@@ -4417,6 +4417,32 @@ pytest = [
   "tests/test_cargo_workspace.py",
 ]
 
+# --- Host entrypoint import identity ------------------------------------
+[[rule]]
+name = "host-entrypoint-imports"
+toolchains = ["python"]
+description = "Every host script binds the repository before its first repository import and has one import identity."
+globs = [
+  "tools/**/*.py",
+  "bench/**/*.py",
+  "deploy/**/*.py",
+  "drivers/**/*.py",
+  "collab/**/*.py",
+  "packaging/**/*.py",
+  "docs/**/*.py",
+  ".github/**/*.py",
+  # Bare tool imports are checked in these roots too.
+  "src/**/*.py",
+  "tests/**/*.py",
+  "demos/**/*.py",
+  "demo/**/*.py",
+  "examples/**/*.py",
+]
+gates = []
+pytest = [
+  "tests/tools/test_import_file.py",
+]
+
 # --- Encoding gate diagnostics -----------------------------------------
 [[rule]]
 name = "encoding-diagnostics"

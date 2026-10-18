@@ -874,7 +874,8 @@ def test_committed_gate_manifest_selects_molt_ir_op_kind_registry(drv):
     cfg = drv.GateConfig.load(COMMITTED_GATES)
     gates, matched = cfg.select(["tools/op_kinds/render_rust.py"])
 
-    assert [r.name for r in matched] == ["op-kind-registry"]
+    # Every host script change also proves its import identity.
+    assert [r.name for r in matched] == ["op-kind-registry", "host-entrypoint-imports"]
     assert "python tools/gen_op_kinds.py --check" in gates
     assert "python tools/audit_op_kinds.py --check" in gates
 
