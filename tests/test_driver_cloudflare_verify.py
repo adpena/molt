@@ -160,7 +160,7 @@ def test_thin_adapter_validate_bundle_contract_accepts_materialized_layout(
         "browser.js",
         "config.json",
     ]:
-        (assets_root / name).write_text("x\n", encoding="utf-8")
+        (assets_root / name).write_bytes(b"x\n")
     execution_manifest = _write_execution_closure(assets_root)
     (assets_root / "driver-manifest.base.json").write_text(
         json.dumps(
@@ -225,7 +225,7 @@ def test_thin_adapter_validate_bundle_contract_rejects_missing_manifest_route(
         "config.json",
         "driver-manifest.base.json",
     ]:
-        (assets_root / name).write_text("x\n", encoding="utf-8")
+        (assets_root / name).write_bytes(b"x\n")
     _write_execution_closure(assets_root)
     worker_entrypoint = (
         bundle_root / "drivers" / "falcon" / "browser_webgpu" / "worker.ts"

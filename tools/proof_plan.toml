@@ -1154,7 +1154,7 @@ dependencies = []
 [[ci_family]]
 name = "wasm"
 description = "WASM backend, shared runtime, linked artifact, Luau sibling, and control-flow proof."
-inputs = [".github/workflows/molt-wasm-ci.yml", ".python-version", "Cargo.lock", "Cargo.toml", "rust-toolchain.toml", "runtime/**", "src/**", "tools/guarded_exec.py", "tools/harness_memory_guard.py", "tools/memory_guard.py", "tools/venv_exec.py", "tools/wasm_*.py", "tests/test_wasm_*.py", "tests/wasm_linked_runner.py", "wasm/**", "examples/*.py", "tools/compat/**", "tools/build_control_path.py", "tools/gen_reconstructed_function_fixtures.py", "tests/fixtures/reconstructed_functions/**", "tests/reconstructed_function_test_support.py", "drivers/falcon/browser_webgpu/*.py", "drivers/falcon/browser_webgpu/*.js", "drivers/cloudflare/thin_adapter/verify.py", "tests/test_falcon_driver_scaffold.py", "tests/test_falcon_ocr_prompt_contract.py", "tests/fixtures/falcon_ocr/**", "tools/gen_browser_asset_graph.py", "tests/test_browser_asset_closure.py", "tests/test_driver_cloudflare_verify.py", "tests/test_driver_cloudflare_worker.py"]
+inputs = [".github/workflows/molt-wasm-ci.yml", ".python-version", "Cargo.lock", "Cargo.toml", "rust-toolchain.toml", "runtime/**", "src/**", "tools/guarded_exec.py", "tools/harness_memory_guard.py", "tools/memory_guard.py", "tools/venv_exec.py", "tools/wasm_*.py", "tests/test_wasm_*.py", "tests/wasm_linked_runner.py", "wasm/**", "examples/*.py", "tools/compat/**", "tools/build_control_path.py", "tools/gen_reconstructed_function_fixtures.py", "tests/fixtures/reconstructed_functions/**", "tests/reconstructed_function_test_support.py", "drivers/falcon/browser_webgpu/*.py", "drivers/falcon/browser_webgpu/*.js", "drivers/cloudflare/thin_adapter/verify.py", "tests/test_falcon_driver_scaffold.py", "tests/test_falcon_ocr_prompt_contract.py", "tests/fixtures/falcon_ocr/**", "tools/gen_browser_asset_graph.py", "tests/test_browser_asset_closure.py", "tests/test_driver_cloudflare_verify.py", "tests/test_driver_cloudflare_worker.py", "drivers/_shared/artifacts.py"]
 executor = "github-job"
 workflow = ".github/workflows/molt-wasm-ci.yml"
 job = "wasm-build"
@@ -3955,9 +3955,9 @@ toolchains = ["python"]
 name = "browser-loader-deployment"
 toolchains = ["python", "uv", "node", "browser-acorn"]
 description = "Retained browser asset closures, Falcon execution manifests and initialization ownership."
-globs = ["tools/gen_browser_asset_graph.py", "tests/test_browser_asset_closure.py", "drivers/falcon/browser_webgpu/deploy.py", "drivers/falcon/browser_webgpu/browser.js", "drivers/cloudflare/thin_adapter/verify.py", "tests/test_falcon_driver_scaffold.py", "tests/test_driver_cloudflare_verify.py", "tests/test_driver_cloudflare_worker.py", "tests/test_falcon_ocr_prompt_contract.py", "tests/fixtures/falcon_ocr/**"]
+globs = ["drivers/_shared/artifacts.py", "tests/test_driver_layout.py", "tools/gen_browser_asset_graph.py", "tests/test_browser_asset_closure.py", "drivers/falcon/browser_webgpu/deploy.py", "drivers/falcon/browser_webgpu/browser.js", "drivers/cloudflare/thin_adapter/verify.py", "tests/test_falcon_driver_scaffold.py", "tests/test_driver_cloudflare_verify.py", "tests/test_driver_cloudflare_worker.py", "tests/test_falcon_ocr_prompt_contract.py", "tests/fixtures/falcon_ocr/**"]
 gates = []
-pytest = ["tests/test_browser_asset_closure.py", "tests/test_driver_cloudflare_verify.py", "tests/test_driver_cloudflare_worker.py", "tests/test_falcon_ocr_prompt_contract.py"]
+pytest = ["tests/test_driver_layout.py", "tests/test_browser_asset_closure.py", "tests/test_driver_cloudflare_verify.py", "tests/test_driver_cloudflare_worker.py", "tests/test_falcon_ocr_prompt_contract.py"]
 pytest_select = [
   { k = "not (test_falcon_browser_driver_init_and_ocr_tokens_roundtrip or test_falcon_browser_driver_reuses_cached_weights_on_second_init or test_falcon_browser_driver_init_from_manifest_roundtrip)", targets = ["tests/test_falcon_driver_scaffold.py"] },
 ]

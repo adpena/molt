@@ -2192,6 +2192,7 @@ def test_wasm_host_export_applications_have_independent_cold_partitions() -> Non
 
 def test_falcon_execution_contract_changes_select_existing_wasm_proof() -> None:
     for path in (
+        "drivers/_shared/artifacts.py",
         "drivers/falcon/browser_webgpu/browser.js",
         "drivers/falcon/browser_webgpu/deploy.py",
         "drivers/cloudflare/thin_adapter/verify.py",
