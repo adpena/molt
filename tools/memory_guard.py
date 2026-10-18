@@ -185,6 +185,7 @@ WindowsJobCleanup = _win_job.WindowsJobCleanup
 from tools.memory_guard_core import process_model as _process_model  # noqa: E402
 from tools.memory_guard_core import cli_contract as _cli_contract  # noqa: E402
 from tools.memory_guard_core import repro_context as _repro_context  # noqa: E402
+from tools.memory_guard_core.worker_peaks import WorkerPeakTracker  # noqa: E402
 from tools.memory_guard_core import reporting as _reporting  # noqa: E402
 from molt.memory_guard_paths import (  # noqa: E402
     active_guard_marker_dir,
@@ -845,6 +846,10 @@ def run_guarded(
     )
     child_env[ACTIVE_GUARD_TOKEN_ENV] = guard_token
     child_env[ACTIVE_GUARD_MARKER_ENV] = str(guard_marker)
+    # Peaks per pytest worker subtree and per test size the next run's workers.
+    worker_peaks = WorkerPeakTracker.for_child(
+        child_env, current_test_file_env=_PYTEST_CURRENT_TEST_FILE_ENV, root=ROOT
+    )
     _inject_guard_memory_contract_env(
         child_env,
         max_rss_kb=max_rss_kb,
@@ -1811,6 +1816,8 @@ def run_guarded(
                 peak_total is None or observed_total.rss_kb > peak_total.rss_kb
             ):
                 peak_total = observed_total
+            if worker_peaks is not None:
+                worker_peaks.observe(samples, watched)
             current_limits = resolve_memory_limits(
                 max_process_rss_kb=max_rss_kb,
                 max_total_rss_kb=max_total_rss_kb,
@@ -2439,6 +2446,7 @@ def run_guarded(
             temporary_artifacts=temporary_artifacts,
             child_returncode=proc.returncode,
             infrastructure_failure=infrastructure_failure,
+            worker_peaks=None if worker_peaks is None else worker_peaks.summary(),
         )
         _update_active_guard_marker(
             guard_marker,
