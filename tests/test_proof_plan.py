@@ -1626,13 +1626,14 @@ def test_matrix_family_budget_binds_each_cell() -> None:
     errors = replace(PLAN, commands=commands).validate()
     # Commands take the first free slot in declaration order. Harness (2401 s)
     # holds slot 1; custody (300), binding (300), frontend (600), CLI (900)
-    # and surface contracts (600) fill slot 2 until 2700 s; runtime-artifacts
-    # (600) takes slot 1 at 2401 s and ends at 3001 s; the 120 s boundary
-    # partition takes slot 2 at 2700 s. The makespan is 3001 s. The Linux job
-    # is unchanged, so only the macOS cell exceeds its 41-minute budget.
+    # and surface contracts (600) fill slot 2 until 2700 s; compiled contracts
+    # (600) take slot 1 at 2401 s and end at 3001 s; runtime-artifacts (600)
+    # takes slot 2 at 2700 s and ends at 3300 s; the 120 s boundary partition
+    # takes slot 1 at 3001 s. The makespan is 3300 s. The Linux job is
+    # unchanged, so only the macOS cell exceeds its 43-minute budget.
     assert [error for error in errors if "timeout envelope" in error] == [
-        "python_unit: projected resource-aware timeout envelope 3001s in matrix "
-        "cell macos-arm64-py312-unit plus job reserve 60s exceeds GitHub job budget 2460s"
+        "python_unit: projected resource-aware timeout envelope 3300s in matrix "
+        "cell macos-arm64-py312-unit plus job reserve 60s exceeds GitHub job budget 2580s"
     ]
 
 
