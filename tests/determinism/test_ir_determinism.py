@@ -10,7 +10,6 @@ from __future__ import annotations
 
 import base64
 import copy
-import hashlib
 import io
 import json
 import os
@@ -109,8 +108,12 @@ def _decode_compilation_result(result, *, allow_unsupported: bool) -> str:
 
         packed_ir = msgpack.unpackb(decoded["msgpack"], strict_map_key=False)
         assert isinstance(packed_ir, dict) and packed_ir.get("functions")
+        from molt.cli import cache_keys
+
+        # The transported canonical payload must carry the child's digest:
+        # the digest of its header and of each function (109b42e88).
         assert (
-            hashlib.sha256(decoded["cache_payload"]).hexdigest()
+            cache_keys._cache_payload_digest(json.loads(decoded["cache_payload"]))
             == record["cache_digest"]
         )
         assert isinstance(record["cache_key"], str) and len(record["cache_key"]) == 64
