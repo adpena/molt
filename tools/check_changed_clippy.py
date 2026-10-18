@@ -44,7 +44,10 @@ from tools.import_file import bind_repository_imports  # noqa: E402
 
 ROOT = bind_repository_imports(__file__)
 
-from molt.cargo_execution_policy import admit_cargo_build  # noqa: E402
+from molt.cargo_execution_policy import (  # noqa: E402
+    admit_cargo_build,
+    load_ci_cargo_policy,
+)
 from molt.cargo_workspace import (  # noqa: E402
     workspace_manifest_facts,
     workspace_member_packages,
@@ -313,11 +316,15 @@ def run(command: ProofCommand, plan: ProofPlan) -> int:
     )
     cwd = ROOT / str(command.data.get("cwd", "."))
     admit_cargo_build(command.argv, cwd=cwd, env=env)
+    # The plan's timeout is CI's, which starts from a restored warm cache. A
+    # landing's first clippy in a checkout target is cold, so the gate takes
+    # the Cargo execution policy's cold budget when it is the larger one.
+    cold = load_ci_cargo_policy().execution_budgets.timeout_seconds("cold")
     result = COMMANDS.run(
         command.argv,
         cwd=cwd,
         env=env,
-        timeout=float(command.data["timeout_seconds"]),
+        timeout=float(max(int(command.data["timeout_seconds"]), cold)),
     )
     return result.returncode
 

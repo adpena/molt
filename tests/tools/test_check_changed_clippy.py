@@ -290,3 +290,25 @@ def test_ambiguous_host_execution_is_rejected(monkeypatch) -> None:
         ValueError, match="multiple equivalent clippy cells for macos/aarch64"
     ):
         gate.local_clippy_commands(bounded)
+
+
+class _Completed:
+    returncode = 0
+
+
+def test_run_gives_a_cold_target_the_cargo_policy_cold_budget(monkeypatch) -> None:
+    plan = ProofPlan.load()
+    command = next(c for c in plan.commands if c.id == "rust.clippy.workspace-default")
+    seen: list[float] = []
+    monkeypatch.setattr(gate, "admit_cargo_build", lambda argv, **kwargs: None)
+    monkeypatch.setattr(gate, "toolchain_environment", lambda *args, **kwargs: {})
+    monkeypatch.setattr(
+        type(gate.COMMANDS),
+        "run",
+        lambda self, argv, **kwargs: seen.append(kwargs["timeout"]) or _Completed(),
+    )
+    assert gate.run(command, plan) == 0
+    cold = load_ci_cargo_policy().execution_budgets.timeout_seconds("cold")
+    # CI's warm budget is shorter than a landing's first cold run.
+    assert int(command.data["timeout_seconds"]) < cold
+    assert seen == [float(cold)]
