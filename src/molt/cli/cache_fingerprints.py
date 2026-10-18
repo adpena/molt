@@ -110,11 +110,10 @@ def _frontend_tooling_source_paths(project_root: Path) -> list[Path]:
 # Molt-owned frontend source files that are shared by *every* frontend phase
 # (import scan, analysis, lowering) yet live outside cli/ and frontend/.
 #
-#   * ``_intrinsic_symbols.py`` -- generated intrinsic symbol table consumed by
-#     ``_wasm_runtime_exports`` (itself a load-bearing frontend input); editing it
-#     changes what the exports helper returns, so it is a transitive lowering
-#     input and must be hashed even though nothing under ``frontend/`` imports it
-#     directly.
+#   * ``_intrinsic_symbols.py`` -- generated intrinsic signatures consumed by
+#     frontend lowering, required-feature selection and runtime export policy.
+#     Keep the shared declaration identity and total ABI arity in every phase's
+#     fingerprint, including processes that loaded the Python module earlier.
 #   * ``_runtime_feature_gates.py`` -- generated feature-gate table. It is
 #     consumed on the link/required-features path rather than proven on the
 #     ast->TIR path, but it is a ``feature-gate`` authority and is retained

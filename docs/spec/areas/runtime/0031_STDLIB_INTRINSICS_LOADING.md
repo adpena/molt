@@ -24,6 +24,32 @@ checklist for new or modified stdlib shims.
   builtin dispatch and module lookup. Name arguments remain borrowed: the
   resolver retains them across callback-capable work and releases them on exit.
 
+## Generated compiler signatures
+
+The canonical intrinsic manifest owns each declaration's executable symbol and
+total ABI argument count. `tools/gen_intrinsics.py` projects both facts into one
+`INTRINSIC_SIGNATURES` table in `molt._intrinsic_symbols`. Defaults do not reduce
+the argument count. An alias retains its declaration name for callable metadata
+and resolution while sharing its canonical executable symbol.
+
+Frontend lowering consumes the generated Python records directly. It does not
+read Rust registry source or typing stubs, reconstruct signatures, or substitute
+an empty registry when source files are absent. Unknown names remain distinct
+from declared zero-argument callables. Frontend builtin specifications remain a
+separate membership domain; their selected ABI validation stays lazy because
+the ABI generator imports those same specifications.
+
+This follows the build-time projection approach of
+[LLVM TableGen](https://llvm.org/docs/TableGen/ProgRef.html#introduction) and
+[CPython Argument Clinic](https://devguide.python.org/development-tools/clinic/).
+Generation parses declarations on the development side. Ordinary compilation
+uses constant-time table lookup and a small index of existing builtin records.
+The executing Python module and frontend semantic fingerprint supply input
+custody, including modules imported before build recording begins. No repeated
+source discovery or new input-reporting shim is required. Installed Python
+packages carry the generated module; release source inventory admission remains
+unchanged. These compiler facts add no checks or metadata to emitted programs.
+
 ## C symbol ownership
 
 A canonical intrinsic's Rust callable address does not establish its exported

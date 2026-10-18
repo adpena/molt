@@ -7,7 +7,7 @@ import sys
 
 import pytest
 
-from molt._intrinsic_symbols import INTRINSIC_SYMBOL_NAMES
+from molt._intrinsic_symbols import INTRINSIC_SIGNATURES
 from tests.stdlib_intrinsic_registry import (
     RESOLVER,
     capability_grants,
@@ -18,7 +18,7 @@ from tests.stdlib_intrinsic_registry import (
 def test_capability_grants_are_registered_runtime_intrinsics() -> None:
     names = capability_grants()
     assert names.keys() == {"molt_capabilities_has", "molt_capabilities_trusted"}
-    assert names.keys() <= INTRINSIC_SYMBOL_NAMES.keys()
+    assert names.keys() <= INTRINSIC_SIGNATURES.keys()
     assert names["molt_capabilities_trusted"]() is True
     assert names["molt_capabilities_has"]("fs.read") is True
 

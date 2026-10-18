@@ -4225,11 +4225,13 @@ pytest = [
 [[rule]]
 name = "intrinsic-registry"
 toolchains = ["python", "rustfmt"]
-description = "Intrinsic registry: manifest/category sync + generated resolver ownership."
+description = "Intrinsic registry: generated signatures, frontend lowering, reachability and resolver ownership."
 globs = [
   "tools/gen_intrinsics.py",
-  "src/molt/_intrinsics.pyi",
+  "src/molt/_intrinsics.pyi", "src/molt/_intrinsic_symbols.py",
   "src/molt/_runtime_feature_gates.py",
+  "src/molt/frontend/_types.py", "src/molt/frontend/lowering/runtime_references.py",
+  "src/molt/cli/required_features.py", "src/molt/_wasm_runtime_exports.py",
   "runtime/molt-runtime/src/intrinsics/manifest.pyi",
   "runtime/molt-runtime/src/intrinsics/categories.toml",
   "runtime/molt-runtime/src/intrinsics/generated.rs",
@@ -4242,6 +4244,15 @@ gates = [
 ]
 pytest = [
   "tests/test_gen_intrinsics.py",
+  "tests/test_frontend_builtin_call_lowering.py::test_intrinsic_alias_preserves_declaration_and_canonical_executable",
+  "tests/test_frontend_builtin_call_lowering.py::test_intrinsic_lowering_uses_isolated_python_package_without_runtime_sources",
+  "tests/test_frontend_builtin_call_lowering.py::test_frontend_intrinsic_function_objects_use_runtime_default_authority",
+  "tests/test_frontend_builtin_call_lowering.py::test_frontend_builtin_func_specs_are_wasm_manifest_backed",
+  "tests/test_stdlib_intrinsic_registry.py",
+  "tests/test_stdlib_inspect_coroutine_marking.py",
+  "tests/cli/test_required_features_reachability.py",
+  "tests/cli/test_wasm_runtime_exports.py",
+  "tests/cli/test_cli_lowering_cache_tooling_scope.py::test_kept_analysis_and_intrinsic_edits_still_invalidate",
 ]
 
 # --- Codec generated tables ----------------------------------------------

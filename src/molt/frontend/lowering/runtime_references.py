@@ -22,8 +22,7 @@ from molt.frontend._types import (
     BUILTIN_TYPE_TAGS,
     MoltOp,
     MoltValue,
-    _canonical_intrinsic_runtime_name,
-    _intrinsic_arity_exact,
+    _intrinsic_signature,
     TypeHint,
 )
 from molt.frontend.diagnostics import FrontendDiagnostic as Diagnostic
@@ -112,10 +111,10 @@ class RuntimeReferenceMixin(GeneratorMixinBase):
         # create a generated-source bootstrap cycle.
         from molt._wasm_abi_generated import WASM_NON_RUNTIME_CALLABLE_INTRINSICS
 
-        canonical_name = _canonical_intrinsic_runtime_name(runtime_name)
-        arity = _intrinsic_arity_exact(runtime_name)
-        if arity is None:
+        signature = _intrinsic_signature(runtime_name)
+        if signature is None:
             raise KeyError(runtime_name)
+        canonical_name, arity = signature
         if canonical_name in WASM_NON_RUNTIME_CALLABLE_INTRINSICS:
             raise FrontendRejection(
                 Diagnostic.OPERAND_VALUE,

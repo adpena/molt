@@ -2,11 +2,15 @@ from __future__ import annotations
 
 import ast
 import builtins
+import shutil
+import sys
 from types import CodeType
 from pathlib import Path
 from textwrap import indent
 
 import pytest
+
+from tests.process_guard_common import run_guarded_test_process
 
 from molt._wasm_abi_generated import wasm_runtime_callable_arity
 from molt.compat import CompatibilityError
@@ -2545,6 +2549,104 @@ def test_intrinsic_alias_preserves_declaration_and_canonical_executable(
     (name_op,) = [op for op in ops if op.get("out") == callable_op["args"][0]]
     assert name_op["kind"] == "const_str"
     assert name_op["s_value"] == declaration
+
+
+def test_intrinsic_lowering_uses_isolated_python_package_without_runtime_sources(
+    tmp_path: Path,
+) -> None:
+    package = tmp_path / "molt"
+    shutil.copytree(
+        Path(__file__).resolve().parents[1] / "src/molt",
+        package,
+        ignore=shutil.ignore_patterns("__pycache__", "*.pyc", "*.pyo", "*.pyi", "*.rs"),
+    )
+    assert not (package / "_intrinsics.pyi").exists()
+    assert not (tmp_path / "runtime").exists()
+    script = r"""
+import ast
+import os
+from pathlib import Path
+import sys
+
+root = Path(sys.argv[1]).resolve()
+sys.path.insert(0, str(root))
+os.environ["MOLT_SOURCE_ROOT"] = str(root)
+
+def refuse_runtime_source_reads(event, arguments):
+    if event == "open" and isinstance(arguments[0], (str, bytes, os.PathLike)):
+        path = os.fsdecode(arguments[0])
+        if path.endswith((".rs", ".pyi")):
+            raise AssertionError(f"frontend reopened runtime/stub source: {path}")
+
+sys.addaudithook(refuse_runtime_source_reads)
+from molt import frontend
+from molt._intrinsic_symbols import INTRINSIC_SIGNATURES
+from molt._wasm_abi_generated import wasm_import_signature
+from molt.frontend._types import _intrinsic_signature, _intrinsic_arity_exact
+from molt.frontend.diagnostics import FrontendRejection
+
+assert Path(frontend.__file__).resolve().is_relative_to(root / "molt"), frontend.__file__
+for name, arity in (("molt_len", 1), ("molt_print_builtin", 5)):
+    assert name not in INTRINSIC_SIGNATURES
+    assert _intrinsic_signature(name) == (name, arity)
+    assert _intrinsic_arity_exact(name) == arity
+assert _intrinsic_signature("molt_runtime_active_runtime") == ("molt_runtime_active_runtime", 0)
+assert _intrinsic_arity_exact("molt_runtime_active_runtime") == 0
+assert _intrinsic_signature("not_manifested") is None
+assert _intrinsic_arity_exact("not_manifested") is None
+# The wider WASM import registry is not callable intrinsic membership.
+assert wasm_import_signature("molt_alloc") is not None
+assert _intrinsic_signature("molt_alloc") is None
+
+aliases = {
+    "molt_operator_inv": "molt_operator_invert",
+    "molt_binascii_hexlify": "molt_binascii_b2a_hex",
+    "molt_binascii_unhexlify": "molt_binascii_a2b_hex",
+}
+for declaration, symbol in aliases.items():
+    generator = frontend.SimpleTIRGenerator(module_name="isolated_intrinsics")
+    generator.visit(ast.parse(
+        "from _intrinsics import require_intrinsic\n"
+        f"alias = require_intrinsic({declaration!r})\n"
+    ))
+    ops = [op for function in generator.to_json()["functions"] for op in function["ops"]]
+    assert _intrinsic_signature(declaration) == (symbol, 1)
+    (callable_op,) = [op for op in ops if op["kind"] == "builtin_func"
+                     and op.get("builtin_name") == declaration]
+    assert callable_op["s_value"] == symbol
+    assert callable_op["value"] == 1
+    (name_op,) = [op for op in ops if op.get("out") == callable_op["args"][0]]
+    assert name_op["kind"] == "const_str"
+    assert name_op["s_value"] == declaration
+
+for name in ("not_manifested", "molt_alloc"):
+    try:
+        generator._emit_intrinsic_function(name)
+    except KeyError as error:
+        assert error.args == (name,)
+    else:
+        raise AssertionError(f"unregistered intrinsic admitted: {name}")
+try:
+    generator._emit_intrinsic_function("molt_dict_getitem_borrowed")
+except FrontendRejection as error:
+    assert "raw non-callable ABI" in str(error)
+else:
+    raise AssertionError("borrowed raw ABI published as a callable")
+for name, module in tuple(sys.modules.items()):
+    if name == "molt" or name.startswith("molt."):
+        filename = getattr(module, "__file__", None)
+        if filename is not None:
+            assert Path(filename).resolve().is_relative_to(root / "molt"), filename
+print("isolated intrinsic authority passed")
+"""
+    result = run_guarded_test_process(
+        # Skip site startup so editable-install hooks cannot preload the checkout.
+        [sys.executable, "-I", "-S", "-B", "-c", script, str(tmp_path)],
+        cwd=tmp_path,
+        timeout=60,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert result.stdout.strip() == "isolated intrinsic authority passed"
 
 
 def test_frontend_intrinsic_function_objects_use_runtime_default_authority() -> None:
