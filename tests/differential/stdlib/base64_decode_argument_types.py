@@ -253,9 +253,9 @@ show("b64decode strided", base64.b64decode, strided)
 
 
 class SecondExportError:
-    def __init__(self):
+    def __init__(self, error_type):
         self.exports = 0
-        self.error = TypeError("second export refused")
+        self.error = error_type("second export refused")
 
     def __buffer__(self, flags):
         self.exports += 1
@@ -264,11 +264,33 @@ class SecondExportError:
         return memoryview(b"aGk=")
 
 
-second = SecondExportError()
-try:
-    base64.decodebytes(second)
-except TypeError as exc:
-    print("decodebytes second export", str(exc), exc is second.error, second.exports)
+def check_second_export(error_type, outer):
+    second = SecondExportError(error_type)
+    try:
+        base64.decodebytes(second)
+    except Exception as exc:
+        print(
+            "decodebytes second export",
+            error_type.__name__,
+            type(exc).__name__,
+            str(exc),
+            exc is second.error,
+            second.exports,
+            exc.__context__ is outer,
+            exc.__cause__,
+            exc.__suppress_context__,
+        )
+
+
+# Clinic replaces every exporter failure after the first format admission;
+# a surrounding handler remains the context instead of the discarded error.
+for error_type in (TypeError, ValueError, BufferError, MemoryError):
+    check_second_export(error_type, None)
+    outer = LookupError("outer decodebytes handler")
+    try:
+        raise outer
+    except LookupError:
+        check_second_export(error_type, outer)
 
 # Encoding never applies decode coercion to its alphabet. Data export happens
 # before length, repr, and buffer conversion of a mutable or user alphabet.
