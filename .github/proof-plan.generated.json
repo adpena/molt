@@ -369,7 +369,11 @@
     "tests/tools/test_win_job_contract.py",
     "tests/tools/test_windows_process_api.py"
   ],
+<<<<<<< HEAD
   "authority_sha256": "5781782002709fdb47e10aa9d04c414d38227f14f67ae2c177933dfda2999367",
+=======
+  "authority_sha256": "94c753fc4015f86c900fa98652334a873d4573ee8bca5031dc04ca59736c49aa",
+>>>>>>> 676d53f33c5757c06f2819bc423486a1613b9cbb
   "cargo_environment_policy": {
     "incident_command": "cargo metadata --locked --format-version 1",
     "incident_commit": "20b046b79bd4ca64a8c859f737f6e330377bcc4e",
@@ -8610,6 +8614,7 @@
       "local.heap-kind-lifetime-authority.pytest": "python -m pytest -q -n 4 tests/test_gen_heap_kinds.py",
       "local.host-capability-authority.0": "python tools/gen_host_capabilities.py --check",
       "local.host-capability-authority.pytest": "python -m pytest -q -n 4 tests/test_gen_host_capabilities.py tests/test_capability_policy.py",
+      "local.host-entrypoint-imports.pytest": "python -m pytest -q -n 4 tests/tools/test_import_file.py",
       "local.import-symbol-gate.0": "python tools/import_symbol_gate.py",
       "local.import-symbol-gate.pytest": "python -m pytest -q -n 4 tests/tools/test_import_symbol_gate.py",
       "local.intrinsic-registry.0": "python tools/gen_intrinsics.py --check",
@@ -9360,6 +9365,35 @@
         "toolchains": [
           "python",
           "uv"
+        ]
+      },
+      {
+        "command_ids": [
+          "local.host-entrypoint-imports.pytest"
+        ],
+        "description": "Every host script binds the repository before its first repository import and has one import identity.",
+        "gates": [],
+        "globs": [
+          "tools/**/*.py",
+          "bench/**/*.py",
+          "deploy/**/*.py",
+          "drivers/**/*.py",
+          "collab/**/*.py",
+          "packaging/**/*.py",
+          "docs/**/*.py",
+          ".github/**/*.py",
+          "src/**/*.py",
+          "tests/**/*.py",
+          "demos/**/*.py",
+          "demo/**/*.py",
+          "examples/**/*.py"
+        ],
+        "name": "host-entrypoint-imports",
+        "pytest": [
+          "tests/tools/test_import_file.py"
+        ],
+        "toolchains": [
+          "python"
         ]
       },
       {
@@ -10901,6 +10935,9 @@
         "python",
         "uv",
         "rustfmt"
+      ],
+      "local.host-entrypoint-imports.pytest": [
+        "python"
       ],
       "local.import-symbol-gate.0": [
         "python"
