@@ -5177,9 +5177,10 @@ globs = [
 ]
 gates = [
   "python tools/gen_native_callable_abi.py --check",
-  "cargo test --locked -p molt-ir --lib native_callable_abi",
-  "cargo test --locked -p molt-backend-native --lib native_callable",
-  "cargo test --locked -p molt-backend-wasm --features test-util --lib native_callable",
+  # One feature-unified build and the existing fast host profile exercise the
+  # same IR/native/WASM libtest family without three Cargo solves or a separate
+  # default-test dependency tree. native_callable includes native_callable_abi.
+  "cargo test --locked --profile dev-fast -p molt-ir -p molt-backend-native -p molt-backend-wasm --features molt-backend-wasm/test-util --lib native_callable --no-fail-fast",
 ]
 pytest = [
   "tests/test_gen_native_callable_abi.py",
