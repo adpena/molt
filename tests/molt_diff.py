@@ -739,12 +739,6 @@ def _daemon_health(socket_path: Path) -> dict[str, Any] | None:
 
 
 @dataclass(frozen=True)
-class _BackendDaemonProcess:
-    sample: memory_guard.ProcessSample
-    socket_path: Path
-
-
-@dataclass(frozen=True)
 class _PrunableProcess:
     pid: int
     identity: memory_guard.ProcessIdentity
@@ -752,16 +746,10 @@ class _PrunableProcess:
     reason: str
 
 
-def _list_backend_daemon_processes() -> list[_BackendDaemonProcess]:
+def _list_backend_daemon_processes() -> list[daemon_custody.BackendDaemonObservation]:
     return sorted(
-        (
-            _BackendDaemonProcess(
-                sample=sample,
-                socket_path=socket_path,
-            )
-            for sample, socket_path in daemon_custody.backend_daemon_process_observations()
-        ),
-        key=lambda process: process.sample.pid,
+        daemon_custody.backend_daemon_process_observations(),
+        key=lambda process: process.pid,
     )
 
 
@@ -781,7 +769,7 @@ def _current_session_backend_daemon_records_by_pid() -> dict[
 
 
 def _verified_backend_daemon_record(
-    process: _BackendDaemonProcess,
+    process: daemon_custody.BackendDaemonObservation,
     records_by_pid: Mapping[int, daemon_custody.BackendDaemonIdentityRecord],
 ) -> daemon_custody.BackendDaemonIdentityRecord | None:
     record = records_by_pid.get(process.sample.pid)
@@ -807,7 +795,7 @@ def _verified_backend_daemon_record(
 
 
 def _retire_idle_backend_daemon(
-    process: _BackendDaemonProcess,
+    process: daemon_custody.BackendDaemonObservation,
     records_by_pid: Mapping[int, daemon_custody.BackendDaemonIdentityRecord],
 ) -> bool:
     """Retire a daemon that reports no admitted jobs. A busy daemon keeps
