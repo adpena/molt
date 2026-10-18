@@ -124,7 +124,8 @@ runs:
           --format json \
           --github-env "$GITHUB_ENV"
 
-    # Explicit WASM selectors preserve the native SDK's PATH and compiler policy.
+    # SDK availability leaves every Rust target's libc/CRT selection to its
+    # command. Generic job setup must not publish target Rust link settings.
     - name: Verify and project WebAssembly SDK identity
       if: inputs.wasi == 'true'
       shell: bash

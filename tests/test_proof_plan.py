@@ -403,11 +403,13 @@ def test_local_gate_binding_keeps_raw_prerequisite_and_projection_identity() -> 
         "always = " + json.dumps([raw]) + "\n", "selected fixture"
     )
     commands, matched = cfg.select(["feature.rs"])
-    bound = proof_plan.bind_local_gate_command(commands[0], upstream_commit=upstream)
+    bound = proof_plan.bind_local_gate_command(
+        commands[0].command, upstream_commit=upstream
+    )
     assert bound == f"echo {upstream}..HEAD"
-    assert commands == [raw]
+    assert [gate.command for gate in commands] == [raw]
     assert cfg.prerequisites == {"local.always.0": (raw, ())}
-    assert cfg.admit(["feature.rs"], matched, [raw]) == {}
+    assert cfg.admit(["feature.rs"], matched, [raw]) is None
     with pytest.raises(
         molt_dev.DriverError, match="lack declared prerequisite custody"
     ):
@@ -1254,9 +1256,10 @@ def test_shared_string_storage_exercises_both_real_backends(changed: str) -> Non
 
     gates, _ = molt_dev.GateConfig.load(PLAN.path).select([changed])
     differential = [
-        shlex.split(gate)
+        shlex.split(gate.command)
         for gate in gates
-        if isinstance(gate, str) and "tests/molt_diff.py" in shlex.split(gate)
+        if isinstance(gate.command, str)
+        and "tests/molt_diff.py" in shlex.split(gate.command)
     ]
     assert len(differential) == 1
     argv = differential[0]
@@ -1287,7 +1290,10 @@ def test_daemon_lifetime_and_diagnostics_select_their_consumers(
 
     gates, _ = molt_dev.GateConfig.load(PLAN.path).select([changed])
     assert any(
-        consumer in (shlex.split(gate) if isinstance(gate, str) else gate)
+        consumer
+        in (
+            shlex.split(gate.command) if isinstance(gate.command, str) else gate.command
+        )
         for gate in gates
     )
 
@@ -1307,9 +1313,10 @@ def test_docs_architecture_local_gate_uses_project_python() -> None:
     # The driver activates the project environment for every local gate. The
     # Markdown parser is a project dependency; this needs no per-gate wrapper.
     assert [
-        gate.split()
+        gate.command.split()
         for gate in gates
-        if "tools/check_docs_architecture.py" in gate.split()
+        if isinstance(gate.command, str)
+        and "tools/check_docs_architecture.py" in gate.command.split()
     ] == [
         [
             "python",
@@ -1336,7 +1343,7 @@ def test_maintained_object_sources_select_owning_and_actual_consumers(path):
     assert classes["llvm"] is False
     gates, matched = molt_dev.GateConfig.load(PLAN.path).select([path])
     rule = next(r for r in matched if r.name == "native-object-emission")
-    assert set(rule.gates) <= set(gates)
+    assert set(rule.gates) <= {gate.command for gate in gates}
     for argv in (
         next(c.argv for c in PLAN.commands if c.id == "rust.test.compiler-authorities"),
         tuple(rule.gates[0].split()),
@@ -1365,9 +1372,9 @@ def test_maintained_zlib_changes_prove_real_provider_and_consumer_custody(
     gates, matched = molt_dev.GateConfig.load(PLAN.path).select([path])
     rule = next(rule for rule in matched if rule.name == "maintained-zlib-counters")
     assert _classes(path)["rust"] is True
-    assert set(rule.gates) <= set(gates)
+    assert set(rule.gates) <= {gate.command for gate in gates}
     assert "tests/cli/test_runtime_source_closure.py" in rule.pytest
-    merged = next(gate for gate in gates if isinstance(gate, tuple))
+    merged = next(gate.command for gate in gates if isinstance(gate.command, tuple))
     assert "tests/cli/test_runtime_source_closure.py" in merged
     local = tuple(next(g for g in rule.gates if g.startswith("cargo test")).split())
     ci = next(
@@ -1995,7 +2002,11 @@ def test_wasm_backend_prewarm_admits_the_consumer_compiler(
     monkeypatch.setenv("MOLT_BACKEND_DAEMON", "1")
     for command in (prewarm, consumer):
         environment, _policies = proof_plan._command_environment(
-            PLAN, command, command.data["timeout_seconds"], memory_share=None
+            PLAN,
+            command,
+            command.data["timeout_seconds"],
+            environment=dict(os.environ),
+            memory_share=None,
         )
         assert {name: environment[name] for name in inherited} == inherited
         assert environment["RUSTC_WRAPPER"] == "/opt/cache/sccache"
@@ -2055,7 +2066,11 @@ def test_wasm_python_consumers_share_prebuild_entrypoint_and_wrapper_selection(
     monkeypatch.setenv("MOLT_BUILD_PYTHON", "/selected/build-python")
     for row in rows.values():
         environment, _policies = proof_plan._command_environment(
-            PLAN, row, row.data["timeout_seconds"], memory_share=None
+            PLAN,
+            row,
+            row.data["timeout_seconds"],
+            environment=dict(os.environ),
+            memory_share=None,
         )
         assert environment["RUSTC_WRAPPER"] == "/selected/sccache"
         assert environment["CARGO_INCREMENTAL"] == (
@@ -2754,7 +2769,7 @@ def test_sccache_environment_policy_covers_every_rust_proof_family(
     }
     for command in rust_commands:
         environment, applied = proof_plan._command_environment(
-            PLAN, command, 30, memory_share=None
+            PLAN, command, 30, environment=dict(os.environ), memory_share=None
         )
         assert environment["CARGO_INCREMENTAL"] == "0", command.id
         assert applied == (
@@ -2799,7 +2814,11 @@ def test_compiler_build_commands_use_shared_timeout_budgets() -> None:
     }
     for command in compiler_commands:
         environment, _applied = proof_plan._command_environment(
-            PLAN, command, int(command.data["timeout_seconds"]), memory_share=None
+            PLAN,
+            command,
+            int(command.data["timeout_seconds"]),
+            environment=dict(os.environ),
+            memory_share=None,
         )
         assert environment[PROOF_COMMAND_TIMEOUT_ENV] == str(
             command.data["timeout_seconds"]
@@ -2863,7 +2882,7 @@ def test_command_direct_rustc_override_does_not_apply_sccache_policy(
     )
 
     environment, applied = proof_plan._command_environment(
-        PLAN, command, 30, memory_share=None
+        PLAN, command, 30, environment=dict(os.environ), memory_share=None
     )
 
     assert environment[wrapper_env] == ""
@@ -4547,6 +4566,165 @@ def test_executor_admits_toolchains_from_the_selected_plan_root(
     assert proof_plan.execute_commands(plan, (), tmp_path / "receipt.json") == 0
 
 
+@pytest.mark.parametrize("explicit_target_flags", [False, True])
+def test_executor_projects_each_command_from_immutable_pre_admission_environment(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, explicit_target_flags: bool
+) -> None:
+    from molt import llvm_toolchain
+
+    target_flags = "CARGO_TARGET_WASM32_WASIP1_RUSTFLAGS"
+    target_linker = "CARGO_TARGET_WASM32_WASIP1_LINKER"
+    observed_keys = (
+        target_flags,
+        target_linker,
+        "MOLT_WASI_SYSROOT",
+        "RUSTFLAGS",
+        "MOLT_PROJECTION_ORDER",
+        "MOLT_ADMISSION_ONLY",
+    )
+    for key in observed_keys:
+        monkeypatch.delenv(key, raising=False)
+    monkeypatch.setenv("RUSTFLAGS", "--cfg explicit_user_flags")
+    monkeypatch.setenv("MOLT_PROJECTION_ORDER", "baseline")
+    if explicit_target_flags:
+        monkeypatch.setenv(target_flags, "--cfg explicit_target_flags")
+        monkeypatch.setenv(target_linker, "/explicit/user/linker")
+    baseline = dict(os.environ)
+    selected_root = tmp_path / "selected checkout"
+    selected_root.mkdir()
+    (selected_root / "sdk-selector").write_text("selected SDK", encoding="utf-8")
+    admissions = []
+    projections = []
+    real_project = proof_plan.project_toolchains
+
+    def selected_sdk(root, *, environ):
+        assert root == selected_root
+        assert environ["RUSTFLAGS"] == baseline["RUSTFLAGS"]
+        return (root / "sdk-selector").read_text(encoding="utf-8")
+
+    def sdk_delta(installation, *, environ, rust_target):
+        assert rust_target == "wasm32-wasip1"
+        assert installation == "selected SDK"
+        return {
+            target_flags: (
+                environ.get(target_flags, "") + " -C link-self-contained=no"
+            ).strip(),
+            target_linker: "/selected/sdk/wasm-ld",
+            "MOLT_WASI_SYSROOT": "/selected/sdk/sysroot",
+            "MOLT_PROJECTION_ORDER": "projection",
+        }
+
+    def project(policies, names, *, environ, root):
+        if admissions:
+            assert dict(environ) == baseline
+            with pytest.raises(TypeError):
+                environ["MOLT_PROJECTION_ORDER"] = "mutated"
+        projections.append(names)
+        return real_project(policies, names, environ=environ, root=root)
+
+    def fingerprints(_policies, names, **_admission):
+        admissions.append(names)
+        # The aggregate is really published for admission. A child reading it
+        # instead of the retained baseline will expose both injected facts.
+        assert os.environ[target_flags].endswith("-C link-self-contained=no")
+        monkeypatch.setenv("MOLT_ADMISSION_ONLY", "probe-only")
+        return {name: {"identity_sha256": "0" * 64} for name in names}
+
+    monkeypatch.setattr(llvm_toolchain, "selected_wasi_sdk_installation", selected_sdk)
+    monkeypatch.setattr(llvm_toolchain, "wasm_toolchain_environment_delta", sdk_delta)
+    monkeypatch.setattr(proof_plan, "project_toolchains", project)
+    monkeypatch.setattr(proof_plan, "toolchain_fingerprints", fingerprints)
+    monkeypatch.setattr(proof_plan, "_source_tree_changes", lambda: ())
+    policies = (
+        proof_plan.ToolchainPolicy("python", {}),
+        proof_plan.ToolchainPolicy("cargo", {}),
+        proof_plan.ToolchainPolicy("sdk-image", {"projection": "wasi-sdk"}),
+        proof_plan.ToolchainPolicy("sdk-group", {"members": ["sdk-image"]}),
+    )
+    commands = []
+    outputs = {}
+    for name in ("pure-rust", "sdk", "sdk-sibling"):
+        output = tmp_path / f"{name}.json"
+        outputs[name] = output
+        command = _synthetic_executor_command(name)
+        commands.append(
+            replace(
+                command,
+                data={
+                    **command.data,
+                    "timeout_seconds": _REAL_CHILD_DEADLINE_SECONDS,
+                    "toolchains": ["python", "cargo"]
+                    + ([] if name == "pure-rust" else ["sdk-group"]),
+                    "env": {}
+                    if name == "pure-rust"
+                    else {
+                        "MOLT_PROJECTION_ORDER": "command",
+                        "RUSTFLAGS": "--cfg ordered_command_override",
+                    },
+                    "argv": [
+                        sys.executable,
+                        "-c",
+                        "import json,os,pathlib; "
+                        f"pathlib.Path({str(output)!r}).write_text("
+                        f"json.dumps({{key: os.environ.get(key) for key in {observed_keys!r}}}), "
+                        "encoding='utf-8')",
+                    ],
+                },
+            )
+        )
+    plan = replace(
+        _synthetic_executor_plan(tuple(commands), limits={"resource-a": 1}),
+        path=selected_root / "tools" / "proof_plan.toml",
+        toolchain_policies=policies,
+    )
+    assert proof_plan.execute_commands(plan, commands, tmp_path / "receipt.json") == 0
+    pure = json.loads(outputs["pure-rust"].read_text(encoding="utf-8"))
+    assert pure == {key: baseline.get(key) for key in observed_keys}
+    for name in ("sdk", "sdk-sibling"):
+        assert json.loads(outputs[name].read_text(encoding="utf-8")) == {
+            target_flags: (
+                baseline.get(target_flags, "") + " -C link-self-contained=no"
+            ).strip(),
+            target_linker: "/selected/sdk/wasm-ld",
+            "MOLT_WASI_SYSROOT": "/selected/sdk/sysroot",
+            "RUSTFLAGS": "--cfg ordered_command_override",
+            "MOLT_PROJECTION_ORDER": "command",
+            "MOLT_ADMISSION_ONLY": None,
+        }
+    assert admissions == [("python", "cargo", "sdk-image")]
+    assert projections == [
+        ("python", "cargo", "sdk-image"),  # aggregate admission
+        ("python", "cargo"),
+        ("python", "cargo", "sdk-image"),  # one shared SDK execution projection
+    ]
+
+
+def test_executor_preserves_admitted_path_provider_when_managed_projection_is_missing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    command = _synthetic_executor_command("admitted-path")
+    plan = _synthetic_executor_plan((command,), limits={"resource-a": 1})
+    baseline_path = os.environ["PATH"]
+    monkeypatch.setattr(proof_plan, "_source_tree_changes", lambda: ())
+    monkeypatch.setattr(proof_plan, "toolchain_fingerprints", _admit_synthetic_python)
+    monkeypatch.setattr(
+        proof_plan,
+        "project_toolchains",
+        lambda *_args, **_kwargs: proof_plan.ToolchainProjection(
+            {}, ("managed SDK is not installed; admitted PATH image is available",)
+        ),
+    )
+
+    def run(_plan, current, _cancel, *, environment, memory_share):
+        assert environment["PATH"] == baseline_path
+        with pytest.raises(TypeError):
+            environment["PATH"] = "/mutated"
+        return _successful_synthetic_record(current)
+
+    monkeypatch.setattr(proof_plan, "_run_command", run)
+    assert proof_plan.execute_commands(plan, (command,), tmp_path / "receipt.json") == 0
+
+
 def test_executor_emits_measured_receipt(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setattr(proof_plan, "_source_tree_changes", lambda: ())
     cell = proof_plan.MatrixCell(
@@ -4631,8 +4809,8 @@ def test_provisioned_lean_fingerprint_admits_formal_build_receipt(
     monkeypatch.setattr(
         proof_plan,
         "_run_command",
-        lambda _plan, current, _cancel, *, memory_share: _successful_synthetic_record(
-            current
+        lambda _plan, current, _cancel, *, environment, memory_share: (
+            _successful_synthetic_record(current)
         ),
     )
     receipt_path = tmp_path / "formal-lean-receipt.json"
@@ -4945,6 +5123,7 @@ def test_executor_schedules_dependencies_and_resources_with_deterministic_receip
         command: proof_plan.ProofCommand,
         _cancel: threading.Event,
         *,
+        environment: Any,
         memory_share: int | None,
     ) -> dict[str, object]:
         resource = str(command.data["resource_class"])
@@ -5009,7 +5188,7 @@ def test_executor_partition_failure_preserves_independent_work_and_blocks_depend
     )
     live_started = threading.Event()
 
-    def fake_run(_plan, command, cancel, *, memory_share):
+    def fake_run(_plan, command, cancel, *, environment, memory_share):
         if command.id == "synthetic.fail":
             assert live_started.wait(timeout=1)
             return {
@@ -5158,6 +5337,7 @@ def test_executor_does_not_convert_control_plane_interrupts_into_records(
         _command: proof_plan.ProofCommand,
         _cancel: threading.Event,
         *,
+        environment: Any,
         memory_share: int | None,
     ) -> dict[str, object]:
         raise KeyboardInterrupt
@@ -5340,7 +5520,7 @@ def test_executor_rejects_source_mutation_during_partition(
     monkeypatch.setattr(
         proof_plan,
         "_run_command",
-        lambda _plan, command, _cancel, *, memory_share: {
+        lambda _plan, command, _cancel, *, environment, memory_share: {
             "id": command.id,
             "status": "success",
             "returncode": 0,
@@ -5793,7 +5973,7 @@ def test_executor_stops_on_candidate_change_even_when_checkout_is_clean(
     )
     plan = _synthetic_executor_plan(commands, limits={"resource-a": 1})
 
-    def run(_plan, command, _cancel, *, memory_share):
+    def run(_plan, command, _cancel, *, environment, memory_share):
         current[field] = "c" * 40
         return _successful_synthetic_record(command)
 
@@ -5828,7 +6008,7 @@ def test_executor_control_plane_interrupt_cancels_siblings_before_join(
     live_started = threading.Event()
     closed = threading.Event()
 
-    def run(_plan, command, cancel, *, memory_share):
+    def run(_plan, command, cancel, *, environment, memory_share):
         if command.id == "interrupt":
             assert live_started.wait(1)
             raise KeyboardInterrupt
@@ -5920,7 +6100,9 @@ def test_executor_real_cargo_test_timeout_retains_completed_incremental_cache(
         },
     )
     plan = _synthetic_executor_plan((command,), limits={"resource-a": 1})
-    record = proof_plan._run_command(plan, command, memory_share=None)
+    record = proof_plan._run_command(
+        plan, command, environment=dict(os.environ), memory_share=None
+    )
     assert started.read_bytes() == b"started", record
     assert record["status"] == "timeout"
     assert record["returncode"] == 124
@@ -6284,11 +6466,15 @@ def test_executor_cancellation_requires_exact_terminal_closure(
     monkeypatch.setattr(proof_plan, "_COMMANDS", SimpleNamespace(start_guarded=start))
     if defect in {"missing", "unclosed", "startup"}:
         with pytest.raises(RuntimeError) as caught:
-            proof_plan._run_command(plan, command, event, memory_share=None)
+            proof_plan._run_command(
+                plan, command, event, environment=dict(os.environ), memory_share=None
+            )
         assert caught.value.guard_command is owned
         record = caught.value.proof_record
     else:
-        record = proof_plan._run_command(plan, command, event, memory_share=None)
+        record = proof_plan._run_command(
+            plan, command, event, environment=dict(os.environ), memory_share=None
+        )
     assert record["guard_returncode"] == (130 if defect == "noncanonical-code" else 137)
     assert record["failure_scope"] == "global"
     assert record["status"] == ("cancelled" if defect is None else "failure")
@@ -7873,7 +8059,7 @@ def test_executor_divides_memory_among_the_commands_it_runs_at_once(
     assert proof_plan._command_memory_share(plan, commands[:1]) == 36 * gib
     command = next(c for c in PLAN.commands if "pytest" in c.data["argv"])
     environment, _applied = proof_plan._command_environment(
-        PLAN, command, 30, memory_share=9 * gib
+        PLAN, command, 30, environment=dict(os.environ), memory_share=9 * gib
     )
     assert environment[proof_plan.host_capacity.MEMORY_SLICE_ENV] == str(9 * gib)
 

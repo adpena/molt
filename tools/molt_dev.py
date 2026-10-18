@@ -134,7 +134,7 @@ import sys
 import tempfile
 import time
 import tomllib
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -408,6 +408,12 @@ class GateRule:
     )
 
 
+@dataclass(frozen=True)
+class SelectedGate:
+    command: str | tuple[str, ...]
+    toolchains: tuple[str, ...]
+
+
 @dataclass
 class GateConfig:
     pytest_memory_units: "PytestMemoryUnits"
@@ -498,8 +504,8 @@ class GateConfig:
 
     def admit(
         self, touched: list[str], matched: list[GateRule], extra: list[str]
-    ) -> dict[str, str]:
-        """Admit the selected gates' toolchains; return the projected variables."""
+    ) -> None:
+        """Admit the union once; execution projects each gate from its baseline."""
         from tools.proof_plan import (
             admit_toolchains,
             load_toolchain_policies,
@@ -533,71 +539,130 @@ class GateConfig:
             for identifier, tools in selected.items():
                 for name in toolchain_closure(policies, tools):
                     owners.setdefault(name, []).append(identifier)
-            return admit_toolchains(
-                policies, tuple(owners), owners=owners, root=self.root
-            ).environment
+            admit_toolchains(policies, tuple(owners), owners=owners, root=self.root)
         except (ValueError, OSError, KeyError) as exc:
             raise DriverError(
                 f"selected gate prerequisites failed; executed=0: {exc}"
             ) from exc
 
     def select(
-        self, touched: list[str]
-    ) -> tuple[list[str | tuple[str, ...]], list[GateRule]]:
-        """Return (ordered unique gate commands, matched rules) for touched paths.
+        self, touched: list[str], *, extra: list[str] | None = None
+    ) -> tuple[list[SelectedGate], list[GateRule]]:
+        """Select commands with their declared prerequisites intact.
 
-        A rule matches when ANY touched path matches ANY of its globs. The
-        `always` gates run for every non-empty change. Order: `always` first,
-        then rules in manifest order; duplicates are de-duplicated preserving
-        first occurrence (so a determinism gate listed by two rules runs once).
-        Every matched rule's pytest targets run in one pytest invocation, at
-        the place of the first rule that has any. A rule's pytest selections
-        (``-k`` or ``-m``) each run on their own after it.
+        Deduplicated commands union their owners' tools. Only rules contributing
+        to the merged pytest invocation supply its tools; each selector cohort
+        keeps its own. Command binding happens after this policy selection.
         """
         from tools.proof_plan import local_pytest_argv
 
-        selected: list[str | tuple[str, ...]] = []
-        seen_commands: set[str] = set()
+        selected: list[SelectedGate] = []
+        indices: dict[str, int] = {}
         seen_pytest: set[str] = set()
         matched_rules: list[GateRule] = []
         pytest_targets: list[str] = []
+        pytest_tools: dict[str, None] = {}
         pytest_index: int | None = None
 
-        def _add(cmds: list[str] | list[tuple[str, ...]]) -> None:
-            for cmd in cmds:
-                key = cmd if isinstance(cmd, str) else shlex.join(cmd)
-                if key not in seen_commands:
-                    seen_commands.add(key)
-                    selected.append(cmd)
+        def add(command: str | tuple[str, ...], tools: tuple[str, ...]) -> None:
+            key = command if isinstance(command, str) else shlex.join(command)
+            if key in indices:
+                index = indices[key]
+                prior = selected[index]
+                selected[index] = replace(
+                    prior, toolchains=tuple(dict.fromkeys((*prior.toolchains, *tools)))
+                )
+            else:
+                indices[key] = len(selected)
+                selected.append(SelectedGate(command, tools))
+
+        def tools(identifier: str) -> tuple[str, ...]:
+            return self.prerequisites[identifier][1]
 
         if touched:
-            _add(self.always)
+            for index, command in enumerate(self.always):
+                add(command, tools(f"local.always.{index}"))
         for rule in self.rules:
-            if any(_is_ignored(path, tuple(rule.globs)) for path in touched):
-                matched_rules.append(rule)
-                _add(rule.gates)
-                if rule.pytest and pytest_index is None:
+            if not any(_is_ignored(path, tuple(rule.globs)) for path in touched):
+                continue
+            matched_rules.append(rule)
+            owner = f"local.{rule.name}"
+            for index, command in enumerate(rule.gates):
+                add(command, tools(f"{owner}.{index}"))
+            if rule.pytest:
+                if pytest_index is None:
                     pytest_index = len(selected)
-                _add(
-                    [
-                        local_pytest_argv(
-                            targets, select, memory_units=self.pytest_memory_units
-                        )
-                        for select, targets in rule.pytest_select
-                    ]
+                pytest_tools.update(dict.fromkeys(tools(f"{owner}.pytest")))
+            for index, (select, targets) in enumerate(rule.pytest_select):
+                add(
+                    local_pytest_argv(
+                        targets, select, memory_units=self.pytest_memory_units
+                    ),
+                    tools(f"{owner}.pytest-select-{index}"),
                 )
-                for target in rule.pytest:
-                    if target not in seen_pytest:
-                        seen_pytest.add(target)
-                        pytest_targets.append(target)
-        if pytest_index is not None:
-            selected.insert(
-                pytest_index,
-                local_pytest_argv(
-                    pytest_targets, memory_units=self.pytest_memory_units
-                ),
+            for target in rule.pytest:
+                if target not in seen_pytest:
+                    seen_pytest.add(target)
+                    pytest_targets.append(target)
+        # Extras are raw policy commands, not bound argv or unowned shell text.
+        for command in extra or ():
+            owners = [
+                required
+                for raw, required in self.prerequisites.values()
+                if raw == command
+            ]
+            if not owners:
+                raise DriverError(
+                    "extra gates lack declared prerequisite custody; declare them in "
+                    "proof_plan.toml before selection: " + command
+                )
+            add(
+                command,
+                tuple(dict.fromkeys(name for owner in owners for name in owner)),
             )
+        if pytest_index is not None:
+            command = local_pytest_argv(
+                pytest_targets, memory_units=self.pytest_memory_units
+            )
+            size = len(selected)
+            add(command, tuple(pytest_tools))
+            if len(selected) != size:
+                selected.insert(pytest_index, selected.pop())
         return selected, matched_rules
+
+    def environments(
+        self, gates: list[SelectedGate], *, baseline: dict[str, str]
+    ) -> dict[tuple[str, ...], dict[str, str]]:
+        """Project once per declared tool selection, never from aggregate admission."""
+        from tools.proof_plan import (
+            load_toolchain_policies,
+            project_toolchains,
+            toolchain_closure,
+        )
+
+        try:
+            names = tuple(
+                dict.fromkeys(name for gate in gates for name in gate.toolchains)
+            )
+            policies = load_toolchain_policies(
+                self.prerequisite_policy, root=self.root, names=names
+            )
+            environments = {}
+            for gate in gates:
+                if gate.toolchains in environments:
+                    continue
+                projection = project_toolchains(
+                    policies,
+                    toolchain_closure(policies, gate.toolchains),
+                    environ=baseline,
+                    root=self.root,
+                )
+                environments[gate.toolchains] = {**baseline, **projection.delta}
+            return environments
+        except (ValueError, OSError, KeyError) as exc:
+            raise DriverError(
+                f"selected gate environment failed; executed=0: {exc}"
+            ) from exc
 
 
 # --------------------------------------------------------------------------
@@ -1026,7 +1091,7 @@ def _integrate_exclusive(args: argparse.Namespace) -> int:
             )
 
     # --- step 5: gates (hazard 10) ------------------------------------------
-    gate_cmds: list[str | tuple[str, ...]] = []
+    gate_cmds: list[SelectedGate] = []
     matched_rules: list[GateRule] = []
     # Policy comes from the same immutable commit whose clean source executes it.
     policy = git._run(["show", f"{selected_commit}:tools/{GATES_CONFIG_NAME}"]).stdout
@@ -1038,14 +1103,18 @@ def _integrate_exclusive(args: argparse.Namespace) -> int:
         selected_commit,
         run_git=lambda arguments: git._run(arguments).stdout,
     )
-    gate_cmds, matched_rules = config.select(touched)
-    gate_cmds = list(gate_cmds) + list(args.extra_gate or [])
+    gate_cmds, matched_rules = config.select(touched, extra=list(args.extra_gate or []))
     from tools.proof_plan import bind_local_gate_command
 
     try:
         gate_cmds = [
-            bind_local_gate_command(command, upstream_commit=upstream_before)
-            for command in gate_cmds
+            replace(
+                gate,
+                command=bind_local_gate_command(
+                    gate.command, upstream_commit=upstream_before
+                ),
+            )
+            for gate in gate_cmds
         ]
     except ValueError as exc:
         raise DriverError(f"invalid local gate binding; executed=0: {exc}") from exc
@@ -1062,17 +1131,19 @@ def _integrate_exclusive(args: argparse.Namespace) -> int:
     env.setdefault("CARGO_TARGET_DIR", str(project_cargo_target_dir(repo, env)))
     if not dry:
         _assert_integration_source(git, selected_commit)
-        env.update(config.admit(touched, matched_rules, list(args.extra_gate or [])))
+        config.admit(touched, matched_rules, list(args.extra_gate or []))
+        environments = config.environments(gate_cmds, baseline=env)
         _assert_integration_source(git, selected_commit)
     gate_seconds: list[tuple[float, str]] = []
-    for cmd in gate_cmds:
+    for gate in gate_cmds:
+        cmd = gate.command
         display = cmd if isinstance(cmd, str) else shlex.join(cmd)
         _assert_integration_source(git, selected_commit)
         if dry:
             _say(f"    would-run gate: {display}")
             continue
         started = time.monotonic()
-        rc = run_gate(cmd, repo, env)
+        rc = run_gate(cmd, repo, environments[gate.toolchains])
         elapsed = time.monotonic() - started
         gate_seconds.append((elapsed, display))
         _assert_integration_source(git, selected_commit)
