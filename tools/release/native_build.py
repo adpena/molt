@@ -8,7 +8,6 @@ from dataclasses import asdict
 import os
 from pathlib import Path
 import re
-import shlex
 import sys
 import tempfile
 from typing import Any
@@ -26,6 +25,7 @@ from molt.cargo_execution_policy import (  # noqa: E402
     admit_cargo_build,
 )
 from molt.cli.native_binary import validate_native_binary_architecture  # noqa: E402
+from molt.flag_strings import FlagStringRule  # noqa: E402
 from molt.cli.compiler_identity import LlvmCompilerInputs, admit_llvm_compiler_inputs  # noqa: E402
 from molt.llvm_toolchain import (  # noqa: E402
     llvm_release,
@@ -714,8 +714,13 @@ def _select_build_tools(
     else:
         rustflags.extend(("-C", f"link-arg=--ld-path={paths['linker_backend']}"))
         cflags = [f"-ffile-prefix-map={work}=/molt", f"-fdebug-prefix-map={work}=/molt"]
-    env["CARGO_ENCODED_RUSTFLAGS"] = "\x1f".join(rustflags)
-    env["CFLAGS"] = env["CXXFLAGS"] = shlex.join(cflags)
+    env["CARGO_ENCODED_RUSTFLAGS"] = FlagStringRule.CARGO_ENCODED.encode(
+        rustflags, variable="CARGO_ENCODED_RUSTFLAGS"
+    )
+    # CC_SHELL_ESCAPED_FLAGS below selects cc-rs's shell rule for these.
+    env["CFLAGS"] = env["CXXFLAGS"] = FlagStringRule.CC_SHELL.encode(
+        cflags, variable="CFLAGS"
+    )
     env["CMAKE"] = str(paths["cmake"])
     env["CMAKE_GENERATOR"] = "Ninja"
     if "nasm" in paths:

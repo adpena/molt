@@ -73,6 +73,7 @@ the source of truth.
 - Typed suspension state machines (generator/coroutine frames as typed, liveness-sized slots; leading practice from Rust, LLVM, CPython, V8, Kotlin, C#, Swift, WasmFX; HF-229, HF-230): [design/typed_suspension_state_machines.md](design/typed_suspension_state_machines.md)
 - Backend compile daemon (concurrent requests, request-scoped settings, single flight, retirement): [design/backend_compile_daemon.md](design/backend_compile_daemon.md)
 - Host capacity and scheduling (one CPU and memory authority, declared per-unit needs, one scheduler; HF-334): [design/host_capacity.md](design/host_capacity.md)
+- Flag strings (one authority for argument vectors in Cargo and cc-rs environment strings, ported from each consumer's split rule; after Cargo `CARGO_ENCODED_RUSTFLAGS` and Go `cmd/internal/quoted`; HF-362): [design/flag_strings.md](design/flag_strings.md)
 - Landing queue (main advances only to a commit that passed its selected proofs on every cell; rollups on the owner's machines; HF-334): [design/landing_queue.md](design/landing_queue.md)
 - Process environment (one Windows/POSIX name-rule authority for child environments, after Rust `EnvKey`, Cargo `Env` and Go `dedupEnvCase`; HF-355): [design/process_environment.md](design/process_environment.md)
 - Op-kind registry and generated dispatch/classifier direction: [design/foundation/25_op_kind_registry.md](design/foundation/25_op_kind_registry.md)

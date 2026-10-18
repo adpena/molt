@@ -42,6 +42,7 @@ of truth when a claim drifts.
 - [design/parallel_build_architecture.md](design/parallel_build_architecture.md)
 - [design/backend_compile_daemon.md](design/backend_compile_daemon.md)
 - [design/host_capacity.md](design/host_capacity.md)
+- [design/flag_strings.md](design/flag_strings.md)
 - [design/landing_queue.md](design/landing_queue.md)
 - [design/process_environment.md](design/process_environment.md)
 - [architecture/compilation-model.md](architecture/compilation-model.md)
