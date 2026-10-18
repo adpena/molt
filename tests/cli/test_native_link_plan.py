@@ -19,7 +19,10 @@ from molt.cli import atomic_io
 from molt.cli import link_fingerprints
 from molt import file_publication
 from molt.cli.native_link_plan import NativeArtifactKind, NativeObjectFormat
-from tests.cli.native_link_test_support import RUNTIME_BUILD_IDENTITY
+from tests.cli.native_link_test_support import (
+    RUNTIME_BUILD_IDENTITY,
+    write_test_darwin_sdk,
+)
 from tests.native_artifact_fixtures import elf_header, signed_macho_image
 from tests.llvm_sdk_test_support import verified_llvm_tools
 from molt.cli.source_extension_link_requirements import (
@@ -65,9 +68,7 @@ def _plan(
         path.write_bytes(b"x")
 
     if host_platform == "darwin":
-        sdk = tmp_path / "SDK"
-        sdk.mkdir()
-        (sdk / "SDKSettings.json").write_text('{"Version":"15.4"}', encoding="utf-8")
+        sdk = write_test_darwin_sdk(tmp_path / "SDK")
         monkeypatch.setenv("SDKROOT", str(sdk))
         monkeypatch.delenv("DEVELOPER_DIR", raising=False)
     fake_driver = tmp_path / "clang.exe"
@@ -1121,9 +1122,7 @@ def test_host_spec_keeps_driver_and_runtime_selection_native(
     monkeypatch.setattr(
         native_link_command, "validate_compiler_target", lambda *a, **k: None
     )
-    sdk = tmp_path / "SDK"
-    sdk.mkdir()
-    (sdk / "SDKSettings.json").write_text('{"Version":"15.4"}', encoding="utf-8")
+    sdk = write_test_darwin_sdk(tmp_path / "SDK")
     monkeypatch.setenv("SDKROOT", str(sdk))
     monkeypatch.setenv("MOLT_MACOSX_DEPLOYMENT_TARGET", "11.0")
     monkeypatch.delenv("DEVELOPER_DIR", raising=False)

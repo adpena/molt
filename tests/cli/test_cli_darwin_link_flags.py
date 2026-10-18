@@ -14,6 +14,7 @@ import molt.cli.native_toolchain as NATIVE_TOOLCHAIN
 from molt.cli import native_link_command
 from molt.cli.native_link_manifest import write_native_link_dependency_manifest
 from tests.cli.native_link_test_support import (
+    write_test_darwin_sdk,
     write_test_static_archive,
 )
 from tests.cli.process_guard import run_cli_test_process
@@ -534,9 +535,7 @@ def test_native_compile_and_link_use_the_explicit_sdk(tmp_path, monkeypatch):
 def test_cross_darwin_search_paths_share_the_explicit_sysroot(
     tmp_path, monkeypatch, selector, symlink
 ):
-    sdk = tmp_path / "selected_sdk"
-    sdk.mkdir()
-    (sdk / "SDKSettings.json").write_text('{"Version":"15.4"}', encoding="utf-8")
+    sdk = write_test_darwin_sdk(tmp_path / "selected_sdk")
     selected_sdk = sdk
     if symlink:
         selected_sdk = tmp_path / "SDK alias"

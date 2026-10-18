@@ -15,6 +15,7 @@ from molt.cli import source_extension_set_registry as registry_authority
 from molt.cli.source_extension_invocation import SourceExtensionSetInvocation
 from tools.proof_queue_pkg import command_admission as admission
 from tools.proof_queue_pkg import cli, command_identity, execution_environment, pact
+from tests.cli.native_link_test_support import write_test_darwin_sdk
 
 
 @pytest.fixture
@@ -310,9 +311,7 @@ def test_named_native_intent_reaches_host_compiler_selection(
     }
     sdk_arguments = ()
     if target.native_target is not None and target.native_target.os == "macos":
-        sdk = tmp_path / "SDK"
-        sdk.mkdir()
-        (sdk / "SDKSettings.json").write_text('{"Version":"15.4"}', encoding="utf-8")
+        sdk = write_test_darwin_sdk(tmp_path / "SDK")
         selected.update(SDKROOT=str(sdk), MACOSX_DEPLOYMENT_TARGET="14.0")
         sdk_arguments = ("-isysroot", str(sdk), "-mmacosx-version-min=14.0")
     seen = []
