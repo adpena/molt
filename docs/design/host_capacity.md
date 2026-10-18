@@ -119,7 +119,8 @@ sequentially. Volume choice is measured per machine, not a fixed path.
    sized from measured peaks.
 2. Split the tests that alone bound a suite's wall time.
 3. Landing gates through the proof executor, with declared timeouts and
-   resource classes, longest first.
+   resource classes, longest first; the first step of the
+   [landing queue](landing_queue.md).
 4. The host-wide jobserver.
 5. Record stores per compiler generation, on the fastest local volume.
 6. The same authority on each machine of the Tailscale farm, so a remote cell
