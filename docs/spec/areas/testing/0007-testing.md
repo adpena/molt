@@ -343,6 +343,11 @@ no preparation. A tool the version contract admits still passes when its
 pinned provider is not installed; a refusal names the install command, and
 nothing downloads.
 
+Admission requires the caller's explicit repository root. The proof runner
+uses its selected plan root, integration its selected checkout, and generators
+their selected source root. Provider discovery and version admission therefore
+use the same source context; the driver's repository is not a default selector.
+
 The hosted state moves the toolchain root, so under it the runner finds no
 provider. Project the toolchains before entering it, and for any command you
 run outside these executors:

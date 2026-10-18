@@ -501,6 +501,7 @@ def _mirror_min_tree(tmp_path: Path) -> Path:
     ci_checkable generator's --check-step requirement (so the only gating signal
     is whatever WE inject). Executable audit code remains canonical repository
     authority; the mirror is scan data only. Returns the temp root."""
+
     import shutil
 
     (tmp_path / "tools").mkdir()
@@ -1060,6 +1061,48 @@ package_lock = "missing/lock"
     )
     assert generators.main(["check", "--only", "simple"]) == 0
     assert rendered == ["simple"]
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX executable fixture")
+def test_generator_admission_projects_its_explicit_source_root(tmp_path, monkeypatch):
+    import os
+    from types import SimpleNamespace
+    from molt import tool_releases
+    from tools import generators
+
+    provider = tmp_path / "selected generator tools"
+    provider.mkdir()
+    executable = provider / "fixture-tool"
+    # The owned alias retains the native system image's execution identity.
+    executable.symlink_to("/bin/echo")
+    observed_roots = []
+
+    def discover(name, root, *, environ):
+        assert name == "fixture-tool"
+        assert root == tmp_path
+        observed_roots.append(root)
+        return SimpleNamespace(executable=executable)
+
+    monkeypatch.setattr(tool_releases, "discover_pinned_tool", discover)
+    monkeypatch.setenv("PATH", os.environ["PATH"])
+    (tmp_path / "tools").mkdir()
+    (tmp_path / "tools/proof_plan.toml").write_text(
+        """
+[[toolchain_policy]]
+name = "fixture-tool"
+projection = "tool-release"
+executable = "fixture-tool"
+version_args = ["selected-generator-tool"]
+version_pattern = '^selected-generator-tool$'
+""",
+        encoding="utf-8",
+    )
+    rows = [generators.Generator("selected-generator", (), True, ("fixture-tool",))]
+    fingerprints, bindings = generators.admit_generators(rows, root=tmp_path)
+    assert observed_roots == [tmp_path]
+    assert fingerprints["fixture-tool"]["version"] == "selected-generator-tool"
+    assert bindings == {}
+    assert os.environ["PATH"].split(os.pathsep)[0] == str(provider)
 
 
 def test_generator_manifest_refuses_undeclared_prerequisites(tmp_path):

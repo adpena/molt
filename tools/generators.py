@@ -141,7 +141,7 @@ def admit_generators(
         if policy.python_identity_role == "runtime"
     }
     fingerprints = admit_toolchains(
-        policies, names, owners=owners, python_admissions=admissions or None
+        policies, names, owners=owners, python_admissions=admissions or None, root=root
     ).fingerprints
     bindings: dict[str, dict[str, tuple[dict[str, Any], BuildPythonAdmission]]] = {
         row.tool: {} for row in selected
