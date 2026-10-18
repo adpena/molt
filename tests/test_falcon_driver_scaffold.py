@@ -1388,7 +1388,7 @@ def test_falcon_refuses_omitted_loader_reference_even_without_descriptor(
     _write_execution_fixture(artifacts)
     if mode == "linked":
         manifest_path = artifacts / "manifest.json"
-        original = json.loads(manifest_path.read_text())
+        original = json.loads(manifest_path.read_text(encoding="utf-8"))
         manifest_path.write_text(
             json.dumps(
                 {
@@ -1396,9 +1396,10 @@ def test_falcon_refuses_omitted_loader_reference_even_without_descriptor(
                     "mode": "linked",
                     "modules": {"linked": original["modules"]["app"]},
                 }
-            )
+            ),
+            encoding="utf-8",
         )
-    (root / "config.json").write_text("{}")
+    (root / "config.json").write_text("{}", encoding="utf-8")
     (root / "weights").mkdir()
     (root / "weights/model.safetensors").write_bytes(b"weights")
     bundle = deploy.materialize_deploy_bundle(
@@ -1409,9 +1410,9 @@ def test_falcon_refuses_omitted_loader_reference_even_without_descriptor(
     output = Path(bundle["assets_root"])
     runtime = output / "runtime"
     driver_path = output / "driver-manifest.base.json"
-    driver = json.loads(driver_path.read_text())
+    driver = json.loads(driver_path.read_text(encoding="utf-8"))
     execution_path = runtime / "manifest.json"
-    execution = json.loads(execution_path.read_text())
+    execution = json.loads(execution_path.read_text(encoding="utf-8"))
 
     def publish_record(name: str, content: bytes) -> None:
         path = runtime / name
@@ -1436,7 +1437,7 @@ def test_falcon_refuses_omitted_loader_reference_even_without_descriptor(
             size_bytes=len(payload),
             sha256=hashlib.sha256(payload).hexdigest(),
         )
-        driver_path.write_text(json.dumps(driver))
+        driver_path.write_text(json.dumps(driver), encoding="utf-8")
 
     if omitted == "nested/leaf.mjs":
         publish_record(
