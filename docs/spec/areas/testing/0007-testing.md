@@ -214,7 +214,7 @@ as generated programs; a pass on one host cannot establish the whole matrix.
   [proof queue contract](../../../agent/PROOF_QUEUE.md). This supervision belongs
   to development and proof tooling; runtime deployment limits are a separate
   [resource contract](../../../RESOURCE_CONTROLS.md).
-- **OOM retry**: OOM failures are retried once with `--jobs 1` (disable via `--no-retry-oom` or `MOLT_DIFF_RETRY_OOM=0`).
+- **First failure is terminal**: every selected backend attempt retains its first outcome and raw diagnostics, including OOM and dyld failures. The harness does not rerun, mutate selected daemon/cache/rebuild settings, allocate a cold target or fall back from batch to CLI. Operator re-execution is a separate run with its own recorded selection; keep the earlier failure queue and `MOLT_DIFF_RESULTS_JSONL` evidence.
 - **Warm cache**: `--warm-cache` or `MOLT_DIFF_WARM_CACHE=1` prebuilds all tests to seed `MOLT_CACHE`.
 - **Failure queue**: failed tests are written to `MOLT_DIFF_ROOT/failures.txt` (override with `--failures-output` or `MOLT_DIFF_FAILURES`).
 - **Summary sidecar**: `MOLT_DIFF_ROOT/summary.json` (or `MOLT_DIFF_SUMMARY=<path>`) includes run metadata and RSS aggregates when enabled.
@@ -526,9 +526,10 @@ number of unidentified samples, and rejects an entry only when no victim birth
 can be identified. Missing root birth does not discard an independently
 captured descendant birth. PID-only matching is never sufficient.
 
-Persistent batch builds use the shared suite-trip result merger before strict
-retry or subprocess fallback. The client captures the server launch birth and
-each serialized request's monotonic start. The existing suite sentinel records
+Persistent batch builds use the shared suite-trip result merger before returning
+the selected attempt's terminal outcome. Startup or request failure is never
+resubmitted or replaced by a CLI attempt. The client captures the server launch
+birth and each serialized request's monotonic start. The existing suite sentinel records
 the sample clock and ancestor chains captured by ProcessTreeTracker during live
 admission. New custody edges require positive exact-integer parent and child
 births with the parent no younger than the child. This shared rule also governs

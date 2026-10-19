@@ -231,7 +231,7 @@ lockfiles committed with the manifest change.
 - **Memory profiling**: native RSS profiling is opt-in with `MOLT_DIFF_MEASURE_RSS=1` or a positive `MOLT_DIFF_MAX_RSS_KB` threshold; explicit profiling-off conflicts with an active threshold. The mandatory memory guard remains active. See [Operations](OPERATIONS.md) for metric scope and proof-custody limits.
 - **Summary sidecar**: `MOLT_DIFF_ROOT/summary.json` (or `MOLT_DIFF_SUMMARY=<path>`) records jobs, limits, and RSS aggregates.
 - **Failure queue**: failed tests are written to `MOLT_DIFF_ROOT/failures.txt` (override with `MOLT_DIFF_FAILURES` or `--failures-output`).
-- **OOM retry**: OOM failures retry once with `--jobs 1` by default (`MOLT_DIFF_RETRY_OOM=0` disables).
+- **First failure is terminal**: each selected backend attempt keeps its first outcome and diagnostics. OOM, dyld, daemon/cache and batch failures never trigger an implicit rerun, configuration mutation, cold target or batch-to-CLI fallback. Operator re-execution is a separate run with its own recorded selection. Preserve earlier evidence and record the new results through the same failure queue and raw `MOLT_DIFF_RESULTS_JSONL` authorities.
 - **Memory caps**: default adaptive per-process, per-tree, and global RSS budgets
   with a matching child `RLIMIT_RSS` backstop; override with
   `MOLT_DIFF_CHILD_RLIMIT_GB`, or disable that kernel backstop with
@@ -239,8 +239,9 @@ lockfiles committed with the manifest change.
   explicit local investigation. Sparse virtual-address reservations are never
   capped by this RSS policy.
 - **Backend daemon mode**: set `MOLT_DIFF_BACKEND_DAEMON=1|0` to force daemon behavior in diff runs; default is platform-safe auto (`0` on macOS, `1` elsewhere).
-- **dyld incident handling**: diff retries force `MOLT_BACKEND_DAEMON=0`; set `MOLT_DIFF_QUARANTINE_ON_DYLD=1` only if you explicitly want cold target/state quarantine.
-- **no-cache safety lane**: set `MOLT_DIFF_FORCE_NO_CACHE=1|0` to force/disable `--no-cache`; default is cache-enabled on all platforms, and dyld guard/retry can force no-cache for the active incident-scoped run.
+- **dyld preflight**: `MOLT_DIFF_DYLD_PREFLIGHT=1|0` selects the native binary preflight (default on macOS). A detected defect fails that attempt.
+- **Cache and rebuild selection**: set `MOLT_DIFF_FORCE_NO_CACHE=1|0` to force/disable `--no-cache`, or `MOLT_DIFF_FORCE_REBUILD=1` to request rebuilds explicitly. Defaults keep caching enabled and forced rebuilds off; failures preserve the selected roots and settings.
+- **Batch selection**: `MOLT_DIFF_BATCH_COMPILE_SERVER=1` explicitly selects persistent batch builds (default off). Startup and request failures retain their diagnostics and terminate that selected attempt.
 - **Shared diff Cargo target**: set `MOLT_DIFF_CARGO_TARGET_DIR` to reuse one checkout-scoped Cargo target across diff workers; `tools/throughput_env.sh --apply` sets this to `CARGO_TARGET_DIR` by default.
 - **Diff run lock**: the harness uses `diff_run.lock` under the [resolved build-state root](OPERATIONS.md#build-throughput-multi-agent) to serialize overlapping full diff runs across agents sharing a Cargo target. Tune waiting via `MOLT_DIFF_RUN_LOCK_WAIT_SEC` (default 900) and `MOLT_DIFF_RUN_LOCK_POLL_SEC`.
 

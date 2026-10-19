@@ -2427,7 +2427,20 @@ def test_runtime_import_conformance_receivers_execute_both_targets() -> None:
         ("--evidence-dir", "runtime-import"),
     ):
         assert row.argv[row.argv.index(option) + 1] == value
-    assert "--no-retry-oom" in row.argv
+    # One runner invocation declares the complete execution selection. First
+    # outcomes are terminal under the runner contract, without recovery flags.
+    assert {token for token in row.argv if token.startswith("--")} == {
+        "--python-version",
+        "--molt-target-python",
+        "--compiler-profile",
+        "--build-profile",
+        "--stdlib-profile",
+        "--target",
+        "--jobs",
+        "--files-from",
+        "--evidence-dir",
+        "--json",
+    }
     assert "--warm-cache" not in row.argv
     assert not row.dependencies
     assert [

@@ -326,7 +326,6 @@ def _run_diff_matrix(
                 str(summary_path),
                 "--log-dir",
                 str(log_dir),
-                "--no-retry-oom",
                 *args.diff_scripts,
             ]
             print(f"[diff] {case_name}", flush=True)

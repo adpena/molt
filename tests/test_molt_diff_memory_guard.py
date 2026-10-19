@@ -853,7 +853,6 @@ def test_suite_trip_partial_births_preserve_identified_victims(
     assert "omitted 5 unidentified victim samples" in result.stderr
 
 
-@pytest.mark.parametrize("strict", [False, True])
 @pytest.mark.parametrize("protocol_death", [False, True])
 @pytest.mark.parametrize(
     "case",
@@ -870,8 +869,8 @@ def test_suite_trip_partial_births_preserve_identified_victims(
         "malformed",
     ],
 )
-def test_batch_suite_trip_uses_request_custody_before_retry_or_fallback(
-    monkeypatch, tmp_path, strict, protocol_death, case
+def test_batch_suite_trip_uses_submitted_request_custody_before_shutdown(
+    monkeypatch, tmp_path, protocol_death, case
 ):
     from tools.batch_compile_client import (
         BatchCompileRequestCustody,
@@ -940,10 +939,6 @@ def test_batch_suite_trip_uses_request_custody_before_retry_or_fallback(
     monkeypatch.setattr(
         module, "_shutdown_batch_compile_server", lambda **k: shutdown.append(True)
     )
-    monkeypatch.setattr(
-        module, "_batch_compile_server_mark_disabled", lambda reason: None
-    )
-    monkeypatch.setattr(module, "_batch_compile_server_reset_disabled", lambda: None)
     result = module._run_batch_compile_build(
         env={module._DIFF_MEMORY_GUARD_TRIP_FILE_ENV: str(marker)},
         file_path="fixture.py",
@@ -954,7 +949,6 @@ def test_batch_suite_trip_uses_request_custody_before_retry_or_fallback(
         no_cache=False,
         rebuild=False,
         request_timeout=2.0,
-        strict_mode=strict,
         budget=module.compat_backends.ItemBudget(
             module.compat_backends.TimeoutPolicy.from_environment({}), None
         ),
@@ -975,6 +969,9 @@ def test_batch_suite_trip_uses_request_custody_before_retry_or_fallback(
         else 1
     )
     assert requests == ["build"]
+    assert shutdown == (
+        [True] if case == "timeout" or protocol_death and case != "success" else []
+    )
     if case != "success":
         assert result.build_failed
     assert result.timed_out is (case == "timeout")
@@ -1007,7 +1004,6 @@ def test_batch_admission_preserves_prior_suite_trip_without_launch(
         no_cache=False,
         rebuild=False,
         request_timeout=2.0,
-        strict_mode=True,
         budget=module.compat_backends.ItemBudget(
             module.compat_backends.TimeoutPolicy.from_environment({}), None
         ),
@@ -1299,7 +1295,6 @@ def test_terminal_batch_result_survives_deadline_during_cleanup(
     monkeypatch.setattr(module, "_diff_measure_rss", lambda: False)
     monkeypatch.setattr(module, "_diff_fail_rss_kb", lambda: 0)
     monkeypatch.setattr(module, "_diff_batch_compile_server_enabled", lambda: True)
-    monkeypatch.setattr(module, "_diff_batch_compile_server_strict", lambda: True)
     monkeypatch.setattr(module, "_record_rss_metrics", lambda *a, **k: None)
     metadata_calls = []
     resolve = module._resolve_molt_cli_python
@@ -1358,7 +1353,6 @@ def test_native_resource_evidence_survives_build_and_run(
     monkeypatch.setattr(
         module, "_diff_batch_compile_server_enabled", lambda: source == "batch"
     )
-    monkeypatch.setattr(module, "_diff_batch_compile_server_strict", lambda: False)
     monkeypatch.setattr(module, "_resolve_molt_cli_python", lambda: "fixture-python")
     monkeypatch.setattr(module, "_dyld_preflight_error", lambda output, *, budget: None)
     monkeypatch.setattr(module, "_record_rss_metrics", lambda *a, **k: None)

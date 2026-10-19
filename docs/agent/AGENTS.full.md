@@ -1561,7 +1561,7 @@ PermissionError: missing 'net.connect' capability. Grant MOLT_CAPABILITIES=net.c
   - macOS/Linux: let `tests/molt_diff.py` apply its adaptive child limit by default; use `MOLT_DIFF_CHILD_RLIMIT_GB` only for a deliberate narrower cap, or `MOLT_DIFF_CHILD_RLIMIT_GB=0` only for an explicit local investigation.
   - If the adaptive limit is hit or memory pressure occurs, inspect the guard telemetry, reduce parallelism (`--jobs 2` or `--jobs 1`) only as a containment step, and fix the underlying allocation growth.
 - Differential artifacts can be redirected to an external volume to avoid local disk pressure.
-  - Set `MOLT_DIFF_ROOT` to an absolute path; all per-test build artifacts, caches, and temp dirs will live under it.
+  - Set `MOLT_DIFF_ROOT` to an absolute path to select differential custody for summaries, failure queues and guard evidence; the default is canonical run scratch. Cargo targets and the codegen cache keep their separate `MOLT_DIFF_CARGO_TARGET_DIR` and `MOLT_CACHE` selections.
   - Optional: set `MOLT_DIFF_TMPDIR` to override only the temp root.
   - Optional: set `MOLT_CACHE` to a shared path to reuse Molt codegen artifacts across tests (dramatically faster on large suites).
   - Optional: set `MOLT_DIFF_KEEP=1` to preserve per-test artifacts after each run.
@@ -1573,7 +1573,7 @@ PermissionError: missing 'net.connect' capability. Grant MOLT_CAPABILITIES=net.c
   - Optional: set `MOLT_DIFF_ORDER=auto|name|size-asc|size-desc` to control scheduling order (default: auto).
   - Optional: set `MOLT_DIFF_FAILURES=<path>` or pass `--failures-output <path>` to capture a failure queue file.
   - Optional: set `MOLT_DIFF_WARM_CACHE=1` or pass `--warm-cache` to prebuild all tests once to seed `MOLT_CACHE` before the diff run (useful for large suites).
-  - Optional: set `MOLT_DIFF_RETRY_OOM=1` (default) or pass `--no-retry-oom` to disable the one-shot OOM retry with `--jobs 1`.
+  - Each selected backend attempt keeps its first outcome and raw diagnostics. OOM, dyld, daemon/cache and batch failures trigger no implicit rerun, setting mutation, cold target or batch-to-CLI fallback. Operator re-execution is a separate run with its own recorded selection; preserve the earlier failure queue and `MOLT_DIFF_RESULTS_JSONL` evidence.
   - Optional: set `MOLT_DIFF_SUMMARY=<path>` or read `MOLT_DIFF_ROOT/summary.json` for the LLM-friendly summary sidecar (includes RSS aggregates when enabled).
   - Optional: set `MOLT_DIFF_ALLOW_RUSTC_WRAPPER=1` to allow `RUSTC_WRAPPER`/`sccache` during diff runs; by default the harness disables wrappers for maximum portability/reproducibility.
   - Optional: set `MOLT_DIFF_LOG_PASSES=1` to keep per-test logs for passing tests when `--log-dir` is used (default prunes pass logs to reduce clutter).
@@ -1581,10 +1581,9 @@ PermissionError: missing 'net.connect' capability. Grant MOLT_CAPABILITIES=net.c
   - Optional (recommended on macOS when many agents are active): explicitly set both `CARGO_TARGET_DIR` and `MOLT_DIFF_CARGO_TARGET_DIR` to the same shared path to avoid accidental fallback to ad-hoc/default targets that can trigger duplicate rebuild storms.
   - Optional: set `MOLT_DIFF_RUN_LOCK_WAIT_SEC=<seconds>` to control how long a diff run waits for the shared run lock (`<CARGO_TARGET_DIR>/.molt_state/diff_run.lock`, default 900s). Set `MOLT_DIFF_RUN_LOCK_POLL_SEC=<seconds>` to tune lock polling cadence.
   - Optional: set `MOLT_DIFF_BACKEND_DAEMON=1|0` to force daemon mode for diff runs. Default is platform-safe auto (`0` on macOS, `1` elsewhere) to avoid dyld import-format instability.
-  - Optional: set `MOLT_DIFF_QUARANTINE_ON_DYLD=1` to force cold target/state quarantine after a dyld incident. Default keeps shared target/cache and disables daemon only.
-  - Optional: set `MOLT_DIFF_DYLD_LOCAL_FALLBACK=1|0` to enable/disable local `/tmp` retry + quarantine lanes for dyld incidents. Default is `1` on macOS (`0` elsewhere).
-  - Optional: set `MOLT_DIFF_DYLD_LOCAL_ROOT=<abs path>` to override the local dyld quarantine root (default: `/tmp/molt_diff_dyld`).
-  - Optional: set `MOLT_DIFF_FORCE_NO_CACHE=1|0` to force/disable `--no-cache` in diff runs. Default is cache-enabled on all platforms; dyld guard/retry can force no-cache for the incident-scoped retry.
+  - Optional: set `MOLT_DIFF_DYLD_PREFLIGHT=1|0` to select the native binary preflight (default on macOS); a detected defect fails that attempt.
+  - Optional: set `MOLT_DIFF_FORCE_NO_CACHE=1|0` to force/disable `--no-cache`, or `MOLT_DIFF_FORCE_REBUILD=1` to request rebuilds explicitly. Defaults keep caching enabled and forced rebuilds off; failures never change these settings or the selected roots.
+  - Optional: set `MOLT_DIFF_BATCH_COMPILE_SERVER=1` to select persistent batch builds (default off). Startup or request failure is terminal for the selected attempt.
   - Optional cleanup for interrupted/crashed sessions before starting a new long run: use the custody-aware sentinel, for example `python3 tools/process_sentinel.py --once --stale-orphan-sec 3600 --stale-pytest-sec 900`. Keep one supervising diff run per shared target to minimize contention and memory spikes.
 - Before running differential examples, export the developer artifact authority:
   `eval "$(python3 tools/run_context_env.py --prefer-external-artifacts --dx --format posix)"`.
