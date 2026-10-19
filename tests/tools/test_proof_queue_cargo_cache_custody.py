@@ -2521,6 +2521,7 @@ def test_workspace_real_cargo_warm_and_declared_edits(
     inputs["env"].update(
         WITNESS_ENV="alpha",
         CARGO_INCREMENTAL="0",
+        CARGO_LOG="cargo::core::compiler::fingerprint=info",
         MOLT_USE_SCCACHE="0",
         MOLT_PROOF_SCRATCH_ROOT=str(tmp_path / "scratch"),
         # The dependency-free fixture owns its headroom, not the runtime floor.
@@ -2618,7 +2619,11 @@ def test_workspace_real_cargo_warm_and_declared_edits(
                 for row in artifacts
                 if row.get("reason") == "compiler-artifact" and row.get("executable")
             )
-            assert test_image["fresh"] is fresh
+            assert test_image["fresh"] is fresh, (
+                f"Cargo freshness: expected {fresh!r}, observed {test_image['fresh']!r}\n"
+                f"step={step}, workspace={source}, target_dir={lease.target}\n"
+                f"Cargo stdout:\n{result.stdout}\nCargo stderr:\n{result.stderr}"
+            )
             from tools import cargo_test_binary_runner, run_cargo_test_truth
 
             if step == "cold":

@@ -1977,6 +1977,7 @@ def test_workspace_targets_execute_own_cargo_sources(tmp_path):
         caller.update(
             MOLT_EXT_ROOT=str(artifact),
             CARGO_INCREMENTAL="0",
+            CARGO_LOG="cargo::core::compiler::fingerprint=info",
             MOLT_USE_SCCACHE="0",
             # Two registry-free workspace fixtures own this measured budget.
             MOLT_DISK_GUARD_HIGH_WATER_GB="1",
@@ -2000,7 +2001,11 @@ def test_workspace_targets_execute_own_cargo_sources(tmp_path):
             for row in records
             if row.get("reason") == "compiler-artifact" and row.get("executable")
         )
-        assert binary["fresh"] is fresh
+        assert binary["fresh"] is fresh, (
+            f"Cargo freshness: expected {fresh!r}, observed {binary['fresh']!r}\n"
+            f"workspace={roots[name]}, target_dir={env['CARGO_TARGET_DIR']!r}\n"
+            f"Cargo stdout:\n{built.stdout}\nCargo stderr:\n{built.stderr}"
+        )
         ran = run_guarded_test_process(
             [binary["executable"]], cwd=roots[name], env=env, timeout=10
         )
