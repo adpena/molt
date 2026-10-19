@@ -395,8 +395,9 @@ authority_inputs = [
 # Use portable Python directly; standalone proof commands retain their own
 # declared interpreter/version custody.
 # Gates that run for any non-empty local integration change: whole-repository
-# checks of about 30 s in all, so `tools/molt_dev.py integrate` lands nothing
-# CI's repository-policy family would reject.
+# checks, so `tools/molt_dev.py integrate` lands nothing CI's repository-policy
+# family would reject. The full generator gate owns reproducible freshness;
+# rules add semantic checks and owning tests without repeating named generators.
 # Local gates may use {integration_upstream_commit} as a whole commit or
 # BASE..HEAD argument. The driver binds its validated fetched full SHA, so
 # --remote/--branch select the same immutable base for every consumer.
@@ -4315,9 +4316,7 @@ globs = [
   "runtime/molt-runtime/src/object/heap_kinds_generated.rs",
   "tests/test_gen_heap_kinds.py",
 ]
-gates = [
-  "python tools/gen_heap_kinds.py --check",
-]
+gates = []
 pytest = [
   "tests/test_gen_heap_kinds.py",
 ]
@@ -4335,9 +4334,7 @@ globs = [
   "docs/spec/areas/security/host_capabilities.generated.md",
   "tests/test_gen_host_capabilities.py",
 ]
-gates = [
-  "python tools/gen_host_capabilities.py --check",
-]
+gates = []
 pytest = [
   "tests/test_gen_host_capabilities.py",
   "tests/test_capability_policy.py",
@@ -4355,9 +4352,7 @@ globs = [
   "src/molt/_runtime_profile_schema.py",
   "tests/test_gen_runtime_profile_schema.py",
 ]
-gates = [
-  "python tools/gen_runtime_profile_schema.py --check",
-]
+gates = []
 pytest = [
   "tests/test_gen_runtime_profile_schema.py",
   "tests/test_runtime_profile_schema.py",
@@ -4389,7 +4384,6 @@ globs = [
   "runtime/molt-backend-wasm/src/**/*.rs",
 ]
 gates = [
-  "python tools/gen_op_kinds.py --check",
   "python tools/audit_op_kinds.py --check",
 ]
 pytest = [
@@ -4410,9 +4404,7 @@ globs = [
   "src/molt/frontend/**/*.py",
   "tests/test_frontend_diagnostics.py",
 ]
-gates = [
-  "python tools/gen_frontend_diagnostics.py --check",
-]
+gates = []
 pytest = [
   "tests/test_frontend_diagnostics.py",
 ]
@@ -4437,9 +4429,7 @@ globs = [
   "runtime/molt-runtime/src/intrinsics/manifest.pyi",
   "tests/test_gen_wasm_abi.py",
 ]
-gates = [
-  "python tools/gen_wasm_abi.py --check",
-]
+gates = []
 pytest = [
   "tests/test_gen_wasm_abi.py",
 ]
@@ -4488,9 +4478,7 @@ globs = [
   "runtime/molt-runtime-stringprep/src/intrinsics_generated.rs",
   "tests/test_gen_intrinsics.py",
 ]
-gates = [
-  "python tools/gen_intrinsics.py --check",
-]
+gates = []
 pytest = [
   "tests/test_gen_intrinsics.py",
   "tests/test_frontend_builtin_call_lowering.py::test_intrinsic_alias_preserves_declaration_and_canonical_executable",
@@ -4518,9 +4506,7 @@ globs = [
   "src/molt/stdlib/encodings/*.py",
   "tests/test_gen_codecs.py",
 ]
-gates = [
-  "python tools/gen_codecs.py --check",
-]
+gates = []
 pytest = [
   "tests/test_gen_codecs.py",
 ]
@@ -4535,9 +4521,7 @@ globs = [
   "runtime/molt-runtime-stringprep/src/tables.rs",
   "tests/test_gen_stringprep_tables.py",
 ]
-gates = [
-  "python tools/gen_stringprep_tables.py --check",
-]
+gates = []
 pytest = [
   "tests/test_gen_stringprep_tables.py",
 ]
@@ -4781,7 +4765,6 @@ globs = [
   "tools/finding_status.py",
 ]
 gates = [
-  "python tools/update_status_blocks.py --check",
   "python tools/check_docs_architecture.py",
 ]
 
@@ -5157,9 +5140,7 @@ globs = [
   "tests/tools/test_reproducible_build_truth.py",
   "tests/tools/test_ci_resource_env.py",
 ]
-gates = [
-  "python tools/gen_proof_plan.py --check",
-]
+gates = []
 pytest = [
   "tests/test_proof_plan.py",
   "tests/test_ci_workflow_topology.py",
@@ -5240,6 +5221,16 @@ pytest = [
   "tests/tools/test_check_gate_liveness.py",
   "tests/tools/test_memory_graph.py",
 ]
+
+# The always gate audits live sources; its parser and complexity controls are
+# needed only when that authority or its owning tests change.
+[[rule]]
+name = "timing-ratio-authority"
+toolchains = ["python"]
+description = "Timing-ratio diagnostics retain parsed Python semantics and linear operand analysis."
+globs = ["tools/check_ratio_direction.py", "tests/tools/test_signed_ratio.py"]
+gates = []
+pytest = ["tests/tools/test_signed_ratio.py"]
 
 # Measurement producers and their receivers migrate as one boundary.
 [[rule]]
@@ -5681,7 +5672,6 @@ globs = [
   "tests/test_gen_python_effects.py",
 ]
 gates = [
-  "python tools/gen_python_effects.py --check",
   "cargo test --locked -p molt-ir --lib python_effects_generated",
 ]
 pytest = [
@@ -5701,9 +5691,7 @@ globs = [
   "tools/gen_python_identity_catalog.py",
   "tests/test_gen_python_identity_catalog.py",
 ]
-gates = [
-  "python tools/gen_python_identity_catalog.py --check",
-]
+gates = []
 pytest = [
   "tests/test_gen_python_identity_catalog.py",
   "tests/test_python_binding_flow.py",
@@ -5726,7 +5714,6 @@ globs = [
   "tests/test_frontend_builtin_binding_guards.py",
 ]
 gates = [
-  "python tools/gen_builtin_binding_guards.py --check",
   "cargo test --locked -p molt-runtime --lib binding_guards",
 ]
 pytest = [
@@ -5762,7 +5749,6 @@ globs = [
   "tests/test_gen_native_callable_abi.py",
 ]
 gates = [
-  "python tools/gen_native_callable_abi.py --check",
   # One feature-unified build and the existing fast host profile exercise the
   # same IR/native/WASM libtest family without three Cargo solves or a separate
   # default-test dependency tree. native_callable includes native_callable_abi.

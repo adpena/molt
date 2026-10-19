@@ -17,6 +17,7 @@ Two non-negotiable invariants:
 
 from __future__ import annotations
 
+import ast
 import math
 import json
 import os
@@ -287,6 +288,254 @@ def test_drift_gate_prefilter_is_sound_for_ms_only(tmp_path: Path) -> None:
     assert crd.scan_file(offender), "an _ms-only timing ratio must be flagged"
 
 
+@pytest.mark.parametrize(
+    "expression,expected_ops",
+    [
+        ("a_ｔｉｍｅ / b_ｔｉｍｅ", ["/"]),
+        ("row.a_ｍｓ * row.b_ｍｓ", ["*"]),
+        (r'stats["left\x5ftime"] / stats["right\u005ftime"]', ["/"]),
+        ('stats["left_ti" "me"] / stats["right_" "time"]', ["/"]),
+        ('stats["left_ti"\n # joined key\n "me"] / stats["right_" "time"]', ["/"]),
+        (
+            "f\"{stats['left_ti' 'me'] / stats['right_' 'time']:"
+            '{a_ｔｉｍｅ / b_ｔｉｍｅ}}"',
+            ["/", "/"],
+        ),
+    ],
+)
+def test_drift_gate_uses_parsed_timing_names(
+    tmp_path: Path, expression: str, expected_ops: list[str]
+) -> None:
+    # Each is real executable ratio syntax with fewer than two raw suffixes.
+    # Python owns NFKC identifier normalization and constant key decoding/joining.
+    assert expression.count("_time") + expression.count("_ms") < 2
+    offender = tmp_path / "decoded_names.py"
+    offender.write_text(f"value = {expression}\n", encoding="utf-8")
+    assert [row["op"] for row in crd.scan_file(offender)] == expected_ops
+
+
+@pytest.mark.parametrize(
+    "operand,is_timing",
+    [
+        ("left_time", True),
+        ("row.left_time", True),
+        ('stats["left_time"]', True),
+        ("left_time + 1", True),
+        ("left_time ** 0", True),
+        ("-left_time", True),
+        ("left_time if condition else 0", True),
+        ("0 if condition else left_time", True),
+        ("value := left_time", True),
+        ("read(left_time)", True),
+        ("read(value=left_time)", True),
+        ("read(**left_time)", True),
+        ("row[left_time]", False),
+        ("left_time.other", False),
+        ("left_time[0]", False),
+        ("left_time()", False),
+        ("read(left_time=0)", False),
+        ("read(*left_time)", False),
+        ("0 if left_time else 1", False),
+        ("left_time := 0", False),
+        ("'left_time'", False),
+        ("(left_time,)", False),
+        ("[left_time]", False),
+        ("left_time and True", False),
+        ("left_time < 1", False),
+        ("f'{left_time}'", False),
+        ("lambda: left_time", False),
+    ],
+)
+def test_drift_gate_preserves_value_operand_boundaries(
+    tmp_path: Path, operand: str, is_timing: bool
+) -> None:
+    source = tmp_path / "operand_boundaries.py"
+    source.write_text(f"value = ({operand}) / right_time\n", encoding="utf-8")
+    assert [row["op"] for row in crd.scan_file(source)] == (["/"] if is_timing else [])
+
+
+@pytest.mark.parametrize(
+    "owner",
+    [
+        "(left_time / right_time)()",
+        "(left_time / right_time).other",
+        "row[left_time / right_time]",
+        "f'{left_time / right_time}'",
+        "f\"{f'{left_time / right_time}'}\"",
+        "((left_time / right_time) and 1)",
+    ],
+)
+def test_drift_gate_traverses_contexts_that_do_not_propagate_operands(
+    tmp_path: Path, owner: str
+) -> None:
+    source = tmp_path / "nested_context.py"
+    source.write_text(f"value = ({owner}) / outer_time\n", encoding="utf-8")
+    # The nested computation is still visited; its enclosing opaque value does
+    # not become a timing operand merely because the syntax contains that ratio.
+    assert [(row["line"], row["op"]) for row in crd.scan_file(source)] == [(1, "/")]
+
+
+def test_drift_gate_retains_syntax_preorder_rather_than_line_order(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "preorder.py"
+    source.write_text(
+        "value = (\n"
+        "    (left_time / other_time)\n"
+        "    if (test_time * another_time)\n"
+        "    else fallback_time\n"
+        ") / right_time\n",
+        encoding="utf-8",
+    )
+    assert [(row["line"], row["op"]) for row in crd.scan_file(source)] == [
+        (1, "/"),
+        (3, "*"),
+        (2, "/"),
+    ]
+
+
+@pytest.mark.parametrize(
+    "shape,size",
+    [
+        ("left", 128),
+        ("left", 2048),
+        ("right", 128),
+        ("right", 2048),
+        ("balanced", 7),
+        ("balanced", 11),
+    ],
+)
+def test_drift_gate_operand_work_is_linear_and_stack_safe(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, shape: str, size: int
+) -> None:
+    def leaf() -> ast.Name:
+        return ast.Name(id="sample_time", ctx=ast.Load())
+
+    def balanced(depth: int, index: int) -> tuple[ast.expr, list[tuple[int, str]]]:
+        if not depth:
+            return leaf(), []
+        left, left_hits = balanced(depth - 1, index * 2)
+        right, right_hits = balanced(depth - 1, index * 2 + 1)
+        node = ast.BinOp(left=left, op=ast.Mult(), right=right, lineno=index)
+        return node, [(index, "*"), *left_hits, *right_hits]
+
+    if shape == "balanced":
+        expression, expected = balanced(size, 1)
+        count = 2**size - 1
+    else:
+        count = size
+        expression = leaf()
+        for line in range(1, count + 1):
+            left, right = (
+                (expression, leaf()) if shape == "left" else (leaf(), expression)
+            )
+            expression = ast.BinOp(left=left, op=ast.Div(), right=right, lineno=line)
+        expected = [(line, "/") for line in range(count, 0, -1)]
+    tree = ast.Expression(body=expression)
+    visits: dict[ast.expr, int] = {}
+    original = crd._is_time_operand
+
+    def counted(node: ast.expr) -> bool:
+        visits[node] = visits.get(node, 0) + 1
+        return original(node)
+
+    monkeypatch.setattr(crd, "_is_time_operand", counted)
+    # The parser has its own nesting limits. Supply an otherwise ordinary AST
+    # to isolate the checker's traversal, without raising Python's stack limit.
+    monkeypatch.setattr(crd, "ast", ModuleView(ast, parse=lambda *args, **kwargs: tree))
+    source = tmp_path / "long_arithmetic.py"
+    source.write_text("value = left_time / right_time\n", encoding="utf-8")
+    assert [(row["line"], row["op"]) for row in crd.scan_file(source)] == expected
+    assert len(visits) == 2 * count + 1
+    assert set(visits.values()) == {1}
+
+
+def test_ratio_gate_does_not_resolve_clean_sources(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source = tmp_path / "unit_conversion.py"
+    source.write_text("value = sample_time / 1000\n", encoding="utf-8")
+
+    def forbidden_resolution(_path: Path) -> str:
+        pytest.fail("a clean file needs no physical diagnostic path")
+
+    monkeypatch.setattr(crd, "_rel", forbidden_resolution)
+    assert crd.scan_file(source) == []
+
+
+def test_ratio_gate_preserves_authority_exemption_before_reading(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(crd, "REPO_ROOT", tmp_path)
+    authority = tmp_path / "src/molt/metric_ratios.py"
+    original_read = Path.read_text
+
+    def forbidden_read(path: Path, *args: object, **kwargs: object) -> str:
+        if path == authority:
+            pytest.fail("the canonical authority is exempt even when unreadable")
+        return original_read(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", forbidden_read)
+    assert crd.scan_file(authority) == []
+
+
+def test_ratio_gate_preserves_resolved_exemption_for_hits_and_read_errors(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    alias = tmp_path / "alias.py"
+    alias.write_text("value = left_time / right_time\n", encoding="utf-8")
+
+    def resolved_authority(path: Path) -> str:
+        assert path == alias
+        return "src/molt/metric_ratios.py"
+
+    monkeypatch.setattr(crd, "_rel", resolved_authority)
+    assert crd.scan_file(alias) == []
+    original_read = Path.read_text
+
+    def unreadable(path: Path, *args: object, **kwargs: object) -> str:
+        if path == alias:
+            raise PermissionError("unreadable authority alias")
+        return original_read(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", unreadable)
+    assert crd.scan_file(alias) == []
+
+
+@pytest.mark.parametrize("link_kind", ["canonical_file", "canonical_parent", "alias"])
+def test_ratio_gate_exemption_follows_physical_source(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, link_kind: str
+) -> None:
+    monkeypatch.setattr(crd, "REPO_ROOT", tmp_path)
+    canonical = tmp_path / "src/molt/metric_ratios.py"
+    if link_kind == "canonical_parent":
+        target = tmp_path / "ordinary-src/molt/metric_ratios.py"
+        target.parent.mkdir(parents=True)
+        link, referent = tmp_path / "src", target.parent.parent
+        source = canonical
+        expected = "ordinary-src/molt/metric_ratios.py"
+    elif link_kind == "canonical_file":
+        target = tmp_path / "ordinary.py"
+        canonical.parent.mkdir(parents=True)
+        link, referent = canonical, target
+        source = canonical
+        expected = "ordinary.py"
+    else:
+        target = canonical
+        target.parent.mkdir(parents=True)
+        link, referent = tmp_path / "alias.py", canonical
+        source = link
+        expected = None
+    target.write_text("value = left_time / right_time\n", encoding="utf-8")
+    try:
+        link.symlink_to(referent, target_is_directory=link_kind == "canonical_parent")
+    except OSError as exc:
+        pytest.skip(f"host cannot create source symlinks: {exc}")
+    assert [(row["path"], row["op"]) for row in crd.scan_file(source)] == (
+        [] if expected is None else [(expected, "/")]
+    )
+
+
 # --- budget_utilization: a SEPARATE domain (zero spend is valid) -------------
 
 
@@ -331,11 +580,7 @@ def test_drift_gate_exempts_metric_ratio_authority_itself() -> None:
     # timing-like operand by another. tools/perf_authority.py only re-exports
     # those primitives for tooling; it is not a second implementation authority.
     assert crd.EXEMPT_RELATIVE == {"src/molt/metric_ratios.py"}
-    report = crd.run()
-    offending_authority = [
-        v for v in report["violations"] if v["path"] == "src/molt/metric_ratios.py"
-    ]
-    assert offending_authority == []
+    assert crd.scan_file(REPO_ROOT / "src/molt/metric_ratios.py") == []
 
 
 def test_live_tree_has_no_unguarded_time_ratio() -> None:
