@@ -3364,6 +3364,34 @@ def test_integrate_missing_committer_refuses_before_rebase(
     assert drv.Git(work).head_sha() == local
 
 
+def test_selected_catalog_admission_preserves_imports_after_proof_plan_collection():
+    # A sibling file may collect proof_plan before pytest puts the repository
+    # root first. Command identity is still lazy at integration time, exactly
+    # the lifecycle the original path/catalog isolation oracle must preserve.
+    target = (
+        "tests/test_molt_dev.py::"
+        "test_integrate_uses_selected_committed_target_catalog_without_import_rebinding"
+    )
+    code = (
+        "import sys\n"
+        "from tools import proof_plan\n"
+        "assert 'tools.proof_queue_pkg.command_identity' not in sys.modules\n"
+        "import pytest\n"
+        f"raise SystemExit(pytest.main(['-q', '-n', '0', {target!r}]))\n"
+    )
+    result = run_guarded_test_process(
+        [sys.executable, "-c", code],
+        cwd=REPO_ROOT,
+        env={
+            **os.environ,
+            "PYTHONPATH": os.pathsep.join((str(REPO_ROOT), str(REPO_ROOT / "src"))),
+            "PYTEST_ADDOPTS": "",
+        },
+        timeout=60,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+
+
 def test_integrate_uses_selected_committed_target_catalog_without_import_rebinding(
     drv, origin_and_clone, monkeypatch
 ):

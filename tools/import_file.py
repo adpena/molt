@@ -202,7 +202,7 @@ def _publish_namespace(package: str, prototype: ModuleType) -> None:
 
 
 def bind_repository_imports(source_file: str | Path) -> Path:
-    """Bind file-launched imports without reanchoring loaded packages."""
+    """Admit the package family and repair only an unbound search path."""
 
     root = _repository_root(source_file)
     source_root = root / "src"
@@ -224,22 +224,35 @@ def bind_repository_imports(source_file: str | Path) -> Path:
             _install_namespace_metadata(loaded, prototype)
     selected_roots = (root.resolve(), source_root.resolve())
     tools_root = (root / "tools").resolve()
-
-    def _unbound(item: object) -> bool:
+    admitted_prefix = set()
+    prefix_open = True
+    needs_repair = False
+    remaining = []
+    for item in sys.path:
         # A by-path launch puts the script's own directory first. Tools
         # import each other only as `tools.<module>`, so no directory inside
         # tools/ belongs on the path; removing it also stops tools/profile.py
         # from shadowing the stdlib `profile` module.
-        if not isinstance(item, str):
-            return True
-        resolved = Path(item or ".").resolve()
-        return resolved not in selected_roots and not resolved.is_relative_to(
-            tools_root
-        )
-
-    sys.path[:] = [item for item in sys.path if _unbound(item)]
-    for import_root in (root, source_root):
-        sys.path.insert(0, str(import_root))
+        if isinstance(item, str):
+            resolved = Path(item or ".").resolve()
+            if resolved in selected_roots:
+                if item != str(resolved):
+                    needs_repair = True
+                    prefix_open = False
+                elif prefix_open:
+                    admitted_prefix.add(resolved)
+                continue
+            if resolved.is_relative_to(tools_root):
+                needs_repair = True
+                prefix_open = False
+                continue
+        prefix_open = False
+        remaining.append(item)
+    if needs_repair or admitted_prefix != set(selected_roots):
+        # Repeated library binding preserves an admitted root/src order. A
+        # repair removes unsafe aliases and publishes both roots together,
+        # without a transient window exposing only ambient search directories.
+        sys.path[:] = [str(source_root), str(root), *remaining]
     return root
 
 
