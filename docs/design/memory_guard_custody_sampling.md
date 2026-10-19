@@ -54,7 +54,7 @@ only the sampling-failure path reuses the last poll's rows, by design.
 
 ## Design
 
-One sampler, `process_custody.sample_processes_custody(interest)`, returns the
+One sampler, `process_model.sample_processes_custody(interest)`, returns the
 rows of a `CustodyInterest` (watched `tree_pids`, declared `exact_pids`) only.
 The guard's run loop uses it whenever its sampler is the host sampler. Each platform implements it with
 kernel filters, chosen from typed platform facts, never by trying and falling
@@ -76,9 +76,14 @@ back:
 
 Full-table `sample_processes()` stays for the callers that need the host view
 (custody cleanup, diagnostics, preflight, the exit census), and stays the
-oracle in tests. Follow-up: `process_custody.sample_processes` duplicates
-`process_model.sample_processes` (85 test sites patch its Windows predicate);
-fold them into one authority.
+oracle in tests. `process_model` owns both entry points and their single
+`is_windows_process_model()` predicate. Custody policy, the guard, sentinel and
+orphan reaper consume that authority directly; custody and sentinel sampler
+wrappers are removed. Windows host and custody snapshots use the same bounded
+query, including at timeout. Job-member polling remains a separate kernel
+operation. An explicitly supplied sampler stays in use at timeout; cleanup
+captures the native host sampler before any caller substitution. Tests replace
+the actual authority, preserving private OS views and session-sentinel isolation.
 
 ## Costs
 

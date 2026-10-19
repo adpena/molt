@@ -70,6 +70,7 @@ _REPO_ROOT = _THIS_FILE.parents[1]
 from tools import memory_guard  # noqa: E402
 from tools import process_sentinel  # noqa: E402
 from tools.memory_guard import ProcessSample  # noqa: E402
+from tools.memory_guard_core import process_model  # noqa: E402
 
 # Build/pipe tools that are safe to reap WHEN ORPHANED **and Molt-owned**.
 # Deliberately excludes python/node (ambiguous — Codex/guard helpers) and every
@@ -104,7 +105,7 @@ def _snapshot() -> dict[int, ProcessSample]:
     gate). This is the same snapshot authority ``process_sentinel`` scans; the
     reaper does not maintain a private, weaker process view.
     """
-    return memory_guard.sample_processes_windows_hard_timeout()
+    return process_model.sample_processes()
 
 
 def _exe_name(command: str) -> str:

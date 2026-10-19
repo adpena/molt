@@ -1854,13 +1854,9 @@ def _darwin_samples(
     return samples
 
 
-def sample_processes_windows(
-    snapshot_rows: Callable[[], Sequence[WindowsProcessSnapshotRow]] = (
-        _windows_process_snapshot_rows_hard_timeout
-    ),
-) -> dict[int, ProcessSample]:
+def sample_processes_windows() -> dict[int, ProcessSample]:
     try:
-        rows = snapshot_rows()
+        rows = _windows_process_snapshot_rows_hard_timeout()
     except ProcessSnapshotError:
         raise
     except (OSError, TypeError, AttributeError, TimeoutError) as exc:
@@ -1871,10 +1867,22 @@ def sample_processes_windows(
     return samples
 
 
+def is_windows_process_model() -> bool:
+    return os.name == "nt"
+
+
 def sample_processes() -> dict[int, ProcessSample]:
-    if os.name == "nt":
+    """The canonical host-table snapshot, bounded on every Windows request."""
+    if is_windows_process_model():
         return sample_processes_windows()
     return sample_processes_posix()
+
+
+def sample_processes_custody(interest: CustodyInterest) -> dict[int, ProcessSample]:
+    """Rows one guard poll needs; a superset where no kernel filter exists."""
+    if is_windows_process_model():
+        return sample_processes_windows()
+    return sample_processes_posix_custody(interest)
 
 
 def sample_pgid_or_pid(sample: ProcessSample) -> int:

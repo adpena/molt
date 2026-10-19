@@ -8,9 +8,13 @@ import pytest
 
 from molt import file_locks as locks
 from tools import memory_guard, process_sentinel as sentinel
+from tools.memory_guard_core import process_model
 from tools.memory_guard_core import process_custody as core
 
 from tests.process_guard_common import run_custody_subject_process
+
+
+pytestmark = pytest.mark.usefixtures("session_sentinel_paused")
 
 
 @pytest.mark.parametrize("replacement_leader", [False, True])
@@ -29,9 +33,9 @@ def test_dead_or_reused_sentinel_leader_never_grants_group_signal(
             group, 1, 64, "foreign replacement", group, None, 999
         )
         expected[group] = memory_guard.ProcessIdentity(100)
-    monkeypatch.setattr(sentinel, "sample_processes_for_sentinel", lambda: samples)
+    monkeypatch.setattr(process_model, "sample_processes", lambda: samples)
     monkeypatch.setattr(sentinel, "_safe_getpgrp", lambda: 91000)
-    monkeypatch.setattr(sentinel, "_is_windows_process_model", lambda: False)
+    monkeypatch.setattr(process_model, "is_windows_process_model", lambda: False)
     monkeypatch.setattr(
         sentinel, "protected_process_group_ids", lambda *_a, **_k: set()
     )

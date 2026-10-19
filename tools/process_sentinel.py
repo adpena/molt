@@ -27,6 +27,7 @@ _REPO_ROOT = _THIS_FILE.parents[1]
 
 
 from tools import guarded_entrypoints, memory_guard  # noqa: E402
+from tools.memory_guard_core import process_model as _process_model  # noqa: E402
 from tools.memory_guard_core.process_model import (  # noqa: E402
     ancestor_pids,
     birth_fenced_descendants,
@@ -303,7 +304,7 @@ def _normalized_repo_tokens(root: Path) -> tuple[str, ...]:
 
 
 def _command_contains(command: str, token: str) -> bool:
-    if _is_windows_process_model():
+    if _process_model.is_windows_process_model():
         return token.casefold() in command.casefold()
     return token in command
 
@@ -324,7 +325,7 @@ def _repo_scoped_command_match(command: str, root: Path) -> bool:
         normalized_command,
         normalized_command.casefold(),
         root,
-        windows_model=_is_windows_process_model(),
+        windows_model=_process_model.is_windows_process_model(),
         entrypoint_tokens=_normalized_token_tuple(repo_scoped_molt_entrypoint_tokens()),
         artifact_root_tokens=_normalized_token_tuple(
             REPO_SCOPED_MOLT_ARTIFACT_ROOT_TOKENS
@@ -405,10 +406,6 @@ def protected_process_group_ids(
 
 def _safe_getpgrp() -> int | None:
     return memory_guard._safe_getpgrp()
-
-
-def _is_windows_process_model() -> bool:
-    return os.name == "nt"
 
 
 def _group_samples_by_pgid(
@@ -611,7 +608,7 @@ def is_molt_process(
     return _cached_molt_command_classification(
         sample.command,
         root,
-        _is_windows_process_model(),
+        _process_model.is_windows_process_model(),
         INSPECTION_COMMAND_TOKENS,
         repo_scoped_molt_entrypoint_tokens(),
         REPO_SCOPED_MOLT_ARTIFACT_ROOT_TOKENS,
@@ -1002,7 +999,7 @@ def emit_violations(
 def _windows_group_expected_identity(
     violation: SentinelViolation,
 ) -> memory_guard.ProcessIdentity | None:
-    if not _is_windows_process_model():
+    if not _process_model.is_windows_process_model():
         return None
     for sample in violation.samples:
         if _sample_pgid(sample) == violation.pgid:
@@ -1017,12 +1014,6 @@ def process_group_expected_identities(
         sample.pid: memory_guard.process_identity(sample)
         for sample in violation.samples
     }
-
-
-def sample_processes_for_sentinel() -> dict[int, memory_guard.ProcessSample]:
-    if _is_windows_process_model():
-        return memory_guard.sample_processes_windows_hard_timeout()
-    return memory_guard.sample_processes()
 
 
 def _emit_report_only(pgid: int, command: str) -> None:
@@ -1047,7 +1038,7 @@ def terminate_group(
     if pgid <= 0 or (self_pgid is not None and pgid == self_pgid):
         return
     root = repo_root() if root is None else root
-    samples = sample_processes_for_sentinel()
+    samples = _process_model.sample_processes()
     protected_pgids = protected_process_group_ids(
         samples,
         self_pid=os.getpid(),
@@ -1055,7 +1046,7 @@ def terminate_group(
     )
     if pgid in protected_pgids:
         return
-    if _is_windows_process_model():
+    if _process_model.is_windows_process_model():
         sample = samples.get(pgid)
         if sample is None:
             return
@@ -1077,7 +1068,7 @@ def terminate_group(
             pgid,
             expected_pid_identity,
             signal.SIGTERM,
-            sampler=sample_processes_for_sentinel,
+            sampler=_process_model.sample_processes,
         )
         if action.result != "sent":
             return
@@ -1086,7 +1077,7 @@ def terminate_group(
             pgid,
             expected_pid_identity,
             memory_guard.fallback_kill_signal(),
-            sampler=sample_processes_for_sentinel,
+            sampler=_process_model.sample_processes,
         )
         return
     if expected_identities is None:
@@ -1116,7 +1107,7 @@ def terminate_group(
             return
         for pid, identity in owned.items():
             memory_guard._send_pid_signal_if_identity_action(
-                pid, identity, signal.SIGTERM, sampler=sample_processes_for_sentinel
+                pid, identity, signal.SIGTERM, sampler=_process_model.sample_processes
             )
         if owned:
             time.sleep(max(0.0, grace))
@@ -1125,7 +1116,7 @@ def terminate_group(
                 pid,
                 identity,
                 memory_guard.fallback_kill_signal(),
-                sampler=sample_processes_for_sentinel,
+                sampler=_process_model.sample_processes,
             )
         return
     if report_only_enabled():
@@ -1136,13 +1127,13 @@ def terminate_group(
         pgid,
         expected_identities,
         signal.SIGTERM,
-        sampler=sample_processes_for_sentinel,
+        sampler=_process_model.sample_processes,
     )
     if action.result != "sent":
         return
     if memory_guard.process_group_exited_or_unobservable(pgid, grace=grace):
         return
-    samples = sample_processes_for_sentinel()
+    samples = _process_model.sample_processes()
     protected_pgids = protected_process_group_ids(
         samples,
         self_pid=os.getpid(),
@@ -1154,7 +1145,7 @@ def terminate_group(
         pgid,
         expected_identities,
         memory_guard.fallback_kill_signal(),
-        sampler=sample_processes_for_sentinel,
+        sampler=_process_model.sample_processes,
     )
 
 
@@ -1364,7 +1355,7 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     def scan_groups() -> list[ProcessGroup]:
         return process_groups(
-            sample_processes_for_sentinel(),
+            _process_model.sample_processes(),
             root=root,
             self_pid=os.getpid(),
             self_pgid=_safe_getpgrp(),
