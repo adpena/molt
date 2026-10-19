@@ -204,7 +204,7 @@ This surface is implemented by:
 - Rust host in the server
 
 `runtime/molt-backend-wasm/src/wasm_abi_manifest.toml` is the executable authority
-for Molt runtime import names, the static function type table and its indices,
+for Molt runtime import names and their canonical machine signatures,
 backend Pure-profile skip prefixes, linker host-import allowlists, strip-tool
 host import classification, split/link output export policy, and op-to-import
 dependency planning.
@@ -215,6 +215,32 @@ consumers:
 - `src/molt/_wasm_abi_generated.py` for runtime-export validation, split/link export
   policy, and tools.
 - `tools/wasm_allowed_imports.txt` for `wasm-ld --allow-undefined-file`.
+
+The manifest's signature catalog is unique and every row has a materialized
+import producer. Its private catalog indices are never module type indices.
+Generated Rust imports expose signature slices, without an integer index API.
+One module-local `WasmFunctionTypes` owner interns runtime imports, native
+callables, user and void-extern functions, wrappers, resolvers and exception
+tags by their complete parameter/result types. Module indices follow stable
+first use; no emitter reserves positions or carries a second index counter.
+This follows [LLVM's WASM type-section interning](https://github.com/llvm/llvm-project/blob/main/lld/wasm/SyntheticSections.cpp#L148-L168).
+
+The owner encodes each requested signature once. Generic lookup costs linear
+work in its parameter/result slices plus expected constant-time map lookup;
+hits allocate nothing. All-i64 parameters have a disjoint arity-keyed
+partition, so repeated boxed-signature requests take expected constant time
+without constructing or scanning a parameter vector. Both partitions use
+complete result types. Maps are queried, never traversed to assign indices.
+Storage and encoding scale with distinct requested signatures and their bytes,
+rather than reserving every arity through the largest one (quadratic encoded
+parameter bytes). These are compiler costs; emitted programs retain no interner.
+
+Decoded-module tests require unique exact signatures, sparse high-arity
+allocation, correct import references and distinct void/value results.
+Native-callable, indirect-call, exception-tag and relocation controls consume
+the actual module indices. The former facade test's numeric positions and
+minimum-type-count assertions are retired with its duplicate test target;
+the owning WASM library proof runs its structural replacements.
 
 Do not add host import names or linker/export keep policy by parsing Rust or
 hand-editing generated outputs. Update the manifest and regenerate.

@@ -1,7 +1,7 @@
 use super::add_reloc_sections;
 use super::symbols::is_manifest_call_indirect_import_name;
 use crate::wasm::test_execution::wasm_ld_path;
-use crate::wasm_abi::{NATIVE_CALLABLE_IMPORT_MODULE, RUNTIME_IMPORT_MODULE, TypeSectionExt};
+use crate::wasm_abi::{NATIVE_CALLABLE_IMPORT_MODULE, RUNTIME_IMPORT_MODULE};
 use crate::wasm_binary::{emit_call_indirect, encode_u32_leb128_padded, strip_unused_imports};
 use crate::wasm_data::WasmDataSegments;
 use crate::wasm_table::{
@@ -133,7 +133,7 @@ fn call_indirect_symbol_preservation_uses_manifest_membership() {
 #[test]
 fn reloc_symbol_table_preserves_native_callable_import_symbols() {
     let mut types = TypeSection::new();
-    types.function([], []);
+    types.ty().function([], []);
 
     let mut imports = ImportSection::new();
     imports.import(
@@ -173,7 +173,7 @@ fn reloc_symbol_table_preserves_native_callable_import_symbols() {
 #[test]
 fn reloc_symbol_table_preserves_user_function_import_symbols() {
     let mut types = TypeSection::new();
-    types.function([], []);
+    types.ty().function([], []);
 
     let mut imports = ImportSection::new();
     imports.import("env", "stdlib_external", EntityType::Function(0));
@@ -204,7 +204,7 @@ fn reloc_symbol_table_preserves_user_function_import_symbols() {
 #[should_panic(expected = "unsupported WASM function import module")]
 fn reloc_symbol_table_rejects_unknown_function_import_modules() {
     let mut types = TypeSection::new();
-    types.function([], []);
+    types.ty().function([], []);
 
     let mut imports = ImportSection::new();
     imports.import("unknown_host", "foreign", EntityType::Function(0));
@@ -230,7 +230,7 @@ fn reloc_symbol_table_rejects_unknown_function_import_modules() {
 #[test]
 fn data_reloc_sites_follow_defined_body_ordinal_after_import_strip() {
     let mut types = TypeSection::new();
-    types.function([], []);
+    types.ty().function([], []);
 
     let mut imports = ImportSection::new();
     imports.import(
@@ -298,7 +298,7 @@ fn data_reloc_sites_follow_defined_body_ordinal_after_import_strip() {
 #[test]
 fn table_reloc_sites_use_symbol_identity_after_import_strip() {
     let mut types = TypeSection::new();
-    types.function([], []);
+    types.ty().function([], []);
 
     let mut imports = ImportSection::new();
     imports.import(
@@ -395,8 +395,8 @@ fn table_reloc_sites_use_symbol_identity_after_import_strip() {
 #[test]
 fn native_initializer_table_reloc_resolves_native_import_symbol_after_import_strip() {
     let mut types = TypeSection::new();
-    types.function([], []);
-    types.function([], [wasm_encoder::ValType::I32]);
+    types.ty().function([], []);
+    types.ty().function([], [wasm_encoder::ValType::I32]);
 
     let mut imports = ImportSection::new();
     imports.import(

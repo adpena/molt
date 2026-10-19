@@ -31,8 +31,9 @@ impl WasmBackend {
         };
         let init_rows: Vec<_> = registry.init_rows().collect();
         let func_index = self.func_count;
-        // Static type 2 is (i64) -> i64, matching the runtime env import.
-        self.funcs.function(2);
+        // Share the (i64) -> i64 signature with the runtime env import.
+        let type_idx = self.types.boxed(1, true);
+        self.funcs.function(type_idx);
         self.func_count += 1;
         self.exports
             .export("molt_isolate_import", ExportKind::Func, func_index);

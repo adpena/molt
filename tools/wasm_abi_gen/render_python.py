@@ -30,14 +30,6 @@ def render_py(
     reserved_callables = _shared_runtime_callables(data)
     non_runtime_callables = sorted(data.get("non_runtime_callable_intrinsic", []))
     lines.append(
-        "WASM_STATIC_TYPES: tuple[tuple[tuple[str, ...], tuple[str, ...]], ...] = (\n"
-    )
-    for entry in data["static_type"]:
-        lines.append(
-            f"    ({_py_tuple(entry['params'])}, {_py_tuple(entry['results'])}),\n"
-        )
-    lines.append(")\n\n")
-    lines.append(
         "WASM_RESERVED_RUNTIME_CALLABLE_TRAMPOLINE_ABI_BY_RUNTIME: dict[str, str] = {\n"
     )
     for entry in reserved_callables:
@@ -45,7 +37,6 @@ def render_py(
             f'    "{entry["runtime_name"]}": "{entry.get("trampoline_abi", "unpack_args")}",\n'
         )
     lines.append("}\n\n")
-    lines.append(f"WASM_STATIC_TYPE_COUNT: int = {len(data['static_type'])}\n\n")
     lines.append("WASM_NON_RUNTIME_CALLABLE_INTRINSICS: frozenset[str] = frozenset({\n")
     for name in non_runtime_callables:
         lines.append(f'    "{name}",\n')

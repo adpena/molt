@@ -1,31 +1,29 @@
 //! One linker/validator for executable LIR test bodies.
 use crate::wasm::WasmBackend;
 use crate::wasm::body::WasmBody;
-use crate::wasm_abi::emit_static_type_section;
 use crate::wasm_data::DataSegmentRef;
+use crate::wasm_function_types::WasmFunctionTypes;
 use std::collections::BTreeMap;
 use wasm_encoder::{
     CodeSection, EntityType, ExportKind, ExportSection, Function, FunctionSection, ImportSection,
-    MemorySection, MemoryType, Module, TypeSection,
+    MemorySection, MemoryType, Module,
 };
 
 pub(super) fn executable_module(body: &WasmBody) -> Vec<u8> {
-    let mut types = TypeSection::new();
-    emit_static_type_section(&mut types);
-    let function_type = types.len();
-    types
-        .ty()
-        .function(body.param_types.clone(), body.result_types.clone());
+    let mut types = WasmFunctionTypes::new();
+    let function_type = types.function(&body.param_types, &body.result_types);
     let mut imports = ImportSection::new();
     let mut import_indices = BTreeMap::new();
     for import in body.runtime_imports() {
         let index = import_indices.len() as u32;
         if let std::collections::btree_map::Entry::Vacant(entry) = import_indices.entry(import) {
             entry.insert(index);
+            let (params, results) = import.machine_signature();
+            let import_type = types.function(params, results);
             imports.import(
                 "molt_runtime",
                 import.name(),
-                EntityType::Function(import.type_idx()),
+                EntityType::Function(import_type),
             );
         }
     }

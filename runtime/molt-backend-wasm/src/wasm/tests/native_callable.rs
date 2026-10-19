@@ -667,6 +667,10 @@ fn native_callable_pyinit_passes_app_owned_table_address_to_runtime_transaction(
     });
     let type_signatures = wasm_type_section_value_signatures(&wasm);
     assert_eq!(
+        type_signatures.iter().collect::<BTreeSet<_>>().len(),
+        type_signatures.len()
+    );
+    assert_eq!(
         type_signatures
             .get(native_type_index as usize)
             .unwrap_or_else(|| panic!("missing type signature for index {native_type_index}")),

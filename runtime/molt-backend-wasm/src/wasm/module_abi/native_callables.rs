@@ -7,13 +7,9 @@ use crate::native_callable_abi::{
     parse_native_callable_abi,
 };
 use crate::wasm::WasmBackend;
-use crate::wasm_abi::{NATIVE_CALLABLE_IMPORT_MODULE, TypeSectionExt, static_func_type_idx};
+use crate::wasm_abi::NATIVE_CALLABLE_IMPORT_MODULE;
+use crate::wasm_function_types::WasmFunctionTypes;
 use crate::{OpIR, SimpleIR};
-
-pub(super) struct WasmNativeCallableImportEmission {
-    pub(super) imports: WasmNativeCallableImports,
-    pub(super) next_type_idx: u32,
-}
 
 #[derive(Clone, Debug, Default)]
 pub(in crate::wasm) struct WasmNativeCallableImports {
@@ -197,21 +193,14 @@ impl WasmBackend {
     pub(super) fn emit_native_callable_import_surface(
         &mut self,
         ir: &SimpleIR,
-        mut next_type_idx: u32,
-    ) -> WasmNativeCallableImportEmission {
+    ) -> WasmNativeCallableImports {
         let requests = native_callable_requests(ir);
         let mut imports = WasmNativeCallableImports::default();
-        let mut dynamic_type_indices = BTreeMap::new();
         let mut symbol_imports: BTreeMap<String, NativeSymbolImport> = BTreeMap::new();
 
         for request in requests.values() {
-            let type_idx = native_callable_type_idx(
-                &mut self.types,
-                &mut next_type_idx,
-                &mut dynamic_type_indices,
-                request.abi_contract,
-                request.arity,
-            );
+            let type_idx =
+                native_callable_type_idx(&mut self.types, request.abi_contract, request.arity);
             let symbol_import = match symbol_imports.entry(request.symbol.clone()) {
                 Entry::Vacant(entry) => {
                     let function_index = self.func_count;
@@ -269,10 +258,7 @@ impl WasmBackend {
             });
         }
 
-        WasmNativeCallableImportEmission {
-            imports,
-            next_type_idx,
-        }
+        imports
     }
 }
 
@@ -305,9 +291,7 @@ fn native_callable_requests(ir: &SimpleIR) -> BTreeMap<String, NativeCallableReq
 }
 
 fn native_callable_type_idx(
-    types: &mut wasm_encoder::TypeSection,
-    next_type_idx: &mut u32,
-    dynamic_type_indices: &mut BTreeMap<(NativeCallableAbi, usize), u32>,
+    types: &mut WasmFunctionTypes,
     abi: NativeCallableAbi,
     arity: usize,
 ) -> u32 {
@@ -326,18 +310,7 @@ fn native_callable_type_idx(
         .copied()
         .map(wasm_val_type)
         .collect::<Vec<_>>();
-    if let Some(type_idx) = static_func_type_idx(&params, &results) {
-        return type_idx;
-    }
-    let key = (abi, arity);
-    if let Some(type_idx) = dynamic_type_indices.get(&key) {
-        return *type_idx;
-    }
-    let type_idx = *next_type_idx;
-    types.function(params, results);
-    *next_type_idx += 1;
-    dynamic_type_indices.insert(key, type_idx);
-    type_idx
+    types.function(&params, &results)
 }
 
 fn wasm_val_type(value: NativeCallableWasmType) -> ValType {

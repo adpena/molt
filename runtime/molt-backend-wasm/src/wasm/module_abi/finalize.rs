@@ -6,7 +6,6 @@ use wasm_encoder::{CustomSection, RawSection, TagKind, TagSection, TagType};
 
 use super::callable_table::WasmCallableTableElements;
 use crate::wasm::{WasmBackend, WasmCompileOutput};
-use crate::wasm_abi::TAG_EXCEPTION_FUNC_TYPE;
 use crate::wasm_binary::{add_reloc_sections, strip_unused_imports, validate_wasm_sections};
 use crate::wasm_options::WasmProfile;
 use crate::wasm_plan::{
@@ -175,17 +174,22 @@ impl WasmBackend {
     }
 
     fn append_ordered_sections(&mut self, callable_table_elements: &WasmCallableTableElements) {
+        let exception_type = if self.options.native_eh_enabled && !self.options.reloc_enabled {
+            Some(self.types.boxed(1, false))
+        } else {
+            None
+        };
         self.module.section(&self.types);
         self.module.section(&self.imports);
         self.module.section(&self.funcs);
         self.module.section(&self.tables);
         self.module.section(&self.memories);
 
-        if self.options.native_eh_enabled && !self.options.reloc_enabled {
+        if let Some(exception_type) = exception_type {
             let mut tags = TagSection::new();
             tags.tag(TagType {
                 kind: TagKind::Exception,
-                func_type_idx: TAG_EXCEPTION_FUNC_TYPE,
+                func_type_idx: exception_type,
             });
             self.module.section(&tags);
         }

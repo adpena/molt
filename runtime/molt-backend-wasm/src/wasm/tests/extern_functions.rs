@@ -114,6 +114,11 @@ fn full_compile_pipeline_preserves_extern_signature_metadata() {
         .expect("optimized extern linkage must emit valid WASM");
 
     let import_types = wasm_function_import_type_indices(&wasm);
+    let value_signatures = wasm_type_section_value_signatures(&wasm);
+    assert_eq!(
+        value_signatures.iter().collect::<BTreeSet<_>>().len(),
+        value_signatures.len()
+    );
     let signatures = wasm_type_section_signatures(&wasm);
     assert_eq!(signatures[import_types["stdlib_void"] as usize], (0, 0));
     assert_eq!(signatures[import_types["stdlib_value"] as usize], (2, 1));

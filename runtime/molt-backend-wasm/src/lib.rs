@@ -52,6 +52,8 @@ mod wasm_binary;
 #[cfg(feature = "wasm-backend")]
 mod wasm_data;
 #[cfg(feature = "wasm-backend")]
+mod wasm_function_types;
+#[cfg(feature = "wasm-backend")]
 mod wasm_import_tracking;
 #[cfg(feature = "wasm-backend")]
 mod wasm_options;

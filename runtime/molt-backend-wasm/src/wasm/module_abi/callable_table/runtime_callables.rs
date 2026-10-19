@@ -76,14 +76,11 @@ impl WasmBackend {
     pub(super) fn emit_runtime_callable_wrappers(
         &mut self,
         plan: &WasmRuntimeCallableTablePlan,
-        user_type_map: &BTreeMap<usize, u32>,
         reloc_enabled: bool,
     ) -> BTreeMap<String, u32> {
         let mut wrapper_indices = BTreeMap::new();
         for spec in &plan.compact_builtin_runtime_callables {
-            let type_idx = *user_type_map.get(&spec.arity).unwrap_or_else(|| {
-                panic!("missing builtin wrapper signature for arity {}", spec.arity)
-            });
+            let type_idx = self.types.boxed(spec.arity, true);
             let import_idx = self.import_ids[spec.import];
             self.funcs.function(type_idx);
             let func_index = self.func_count;

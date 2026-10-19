@@ -50,4 +50,4 @@ pub(crate) use runtime_callables::{
     RUNTIME_CALLABLE_IMPORTS, ReservedRuntimeCallableDispatch, poll_table_import_slot,
     runtime_callable_import,
 };
-pub(crate) use static_types::{STATIC_FUNC_TYPES, STATIC_TYPE_COUNT};
+pub(crate) use static_types::STATIC_FUNC_TYPES;

@@ -638,10 +638,16 @@ def _intrinsic_signature_rows() -> tuple[tuple[str, int, str], ...]:
 def _static_type_index_by_signature(
     static_types: list[dict],
 ) -> dict[tuple[tuple[str, ...], tuple[str, ...]], int]:
-    return {
-        (tuple(entry["params"]), tuple(entry["results"])): idx
-        for idx, entry in enumerate(static_types)
-    }
+    indices: dict[tuple[tuple[str, ...], tuple[str, ...]], int] = {}
+    for idx, entry in enumerate(static_types):
+        signature = (tuple(entry["params"]), tuple(entry["results"]))
+        if signature in indices:
+            raise WasmAbiManifestError(
+                f"duplicate static type signature at indices {indices[signature]} "
+                f"and {idx}: {signature!r}"
+            )
+        indices[signature] = idx
+    return indices
 
 
 def _runtime_callable_signature(
@@ -1392,7 +1398,7 @@ def _intrinsic_runtime_callable_imports(
                     f"{existing_runtime!r}"
                 )
             existing_type = existing_entry.get("type")
-            if not isinstance(existing_type, int) or not (
+            if type(existing_type) is not int or not (
                 0 <= existing_type < len(static_types)
             ):
                 raise WasmAbiManifestError(
@@ -1603,7 +1609,7 @@ def _materialize_reserved_runtime_callable_imports(
             explicit_imports_by_name[import_name] = existing_entry
         else:
             existing_type = existing_entry.get("type")
-            if not isinstance(existing_type, int) or not (
+            if type(existing_type) is not int or not (
                 0 <= existing_type < len(static_types)
             ):
                 raise WasmAbiManifestError(
@@ -2042,13 +2048,8 @@ def validate_loaded_manifest(
         entry["results"] = _validate_val_type_list(
             "static_type", idx, "results", entry.get("results")
         )
-    if len(static_types) <= 1 or static_types[1] != {
-        "params": ["i64"],
-        "results": [],
-    }:
-        raise WasmAbiManifestError(
-            "static_type index 1 must remain the (i64) -> () exception-tag ABI"
-        )
+    # Catalog positions identify import signatures, never emitted module types.
+    _static_type_index_by_signature(static_types)
     static_type_count = len(static_types)
     imports = data.get("import")
     if not isinstance(imports, list) or not imports:
@@ -2096,7 +2097,7 @@ def validate_loaded_manifest(
         if name in seen_imports:
             raise WasmAbiManifestError(f"duplicate import name {name!r}")
         seen_imports.add(name)
-        if not isinstance(type_idx, int) or type_idx < 0:
+        if type(type_idx) is not int or type_idx < 0:
             raise WasmAbiManifestError(f"import {name!r} has invalid type index")
         if type_idx >= static_type_count:
             raise WasmAbiManifestError(
@@ -2172,6 +2173,15 @@ def validate_loaded_manifest(
                 f"poll_table_slot values must be contiguous from 1; missing {missing}"
             )
     _validate_runtime_callable_export_abi(imports)
+    # Reserved and intrinsic imports have now materialized their producers.
+    # Count the complete catalog before the separate WASM provider projection.
+    produced_static_types = {entry["type"] for entry in imports}
+    unproduced_static_types = set(range(static_type_count)) - produced_static_types
+    if unproduced_static_types:
+        raise WasmAbiManifestError(
+            "static type entries have no materialized import producer: "
+            + ", ".join(str(idx) for idx in sorted(unproduced_static_types))
+        )
     # These normalized declarations own target-neutral callable and boxed ABI
     # facts. The WASM provider view shares their rows without removing native
     # providers from the declaration authority.

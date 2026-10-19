@@ -27,7 +27,8 @@ impl WasmBackend {
         } = spec;
         let behavior = kind.behavior();
         let func_index = self.func_count;
-        self.funcs.function(5);
+        let type_idx = self.types.boxed(3, true);
+        self.funcs.function(type_idx);
         self.func_count += 1;
         let mut local_types = Vec::new();
         if let TrampolineBehavior::Task(task_kind) = behavior {

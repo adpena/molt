@@ -261,7 +261,6 @@ impl WasmBackend {
         function_abi_returns_value: &BTreeMap<String, bool>,
         user_function_imports: &WasmUserFunctionImports,
         native_callable_imports: &WasmNativeCallableImports,
-        user_type_map: &BTreeMap<usize, u32>,
         reloc_enabled: bool,
         sentinel_func_idx: u32,
         manifest_intrinsic_names: &BTreeSet<String>,
@@ -302,13 +301,9 @@ impl WasmBackend {
         // before freezing the region layout so every downstream user/trampoline
         // index is derived from the actual next function index, not the
         // pre-wrapper snapshot.
-        let builtin_wrapper_indices = self.emit_runtime_callable_wrappers(
-            &runtime_callable_plan,
-            user_type_map,
-            reloc_enabled,
-        );
-        let table_import_wrappers =
-            poll_table.emit_import_wrappers(self, reloc_enabled, user_type_map);
+        let builtin_wrapper_indices =
+            self.emit_runtime_callable_wrappers(&runtime_callable_plan, reloc_enabled);
+        let table_import_wrappers = poll_table.emit_import_wrappers(self, reloc_enabled);
         let reserved_runtime_trampoline_count = RESERVED_RUNTIME_CALLABLE_SPECS.len();
         let layout = CallableTableRegionLayout::build(
             table_base,

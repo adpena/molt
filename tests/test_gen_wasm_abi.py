@@ -977,7 +977,7 @@ def test_rust_render_derives_import_variants_once_per_transaction(
     data["import"].append(
         {
             "name": "render_transaction_extra_import",
-            "type": 0,
+            "type": _import_by_name(data, "types_bootstrap")["type"],
             "return_contract": "raw_bits",
         }
     )
@@ -990,6 +990,19 @@ def test_rust_render_derives_import_variants_once_per_transaction(
 
 def _raw_manifest() -> dict:
     return tomllib.loads(manifest.MANIFEST.read_text(encoding="utf-8"))
+
+
+def _import_by_name(data: dict, name: str, *, section: str = "import") -> dict:
+    return next(entry for entry in data[section] if entry["name"] == name)
+
+
+def _import_signature(
+    data: dict, name: str, *, section: str = "import"
+) -> tuple[tuple[str, ...], tuple[str, ...]]:
+    signature = data["static_type"][
+        _import_by_name(data, name, section=section)["type"]
+    ]
+    return tuple(signature["params"]), tuple(signature["results"])
 
 
 def _rendered_rs(gen, data) -> str:
@@ -1253,14 +1266,14 @@ def test_external_native_function_signature_authority_is_complete() -> None:
     assert signatureless == []
 
 
-def test_wasm_abi_manifest_owns_static_type_section() -> None:
+def test_wasm_abi_manifest_owns_import_signature_catalog() -> None:
     gen = gen_wasm_abi
     data = gen.load_manifest()
     static_types = data["static_type"]
     static_type_count = len(static_types)
 
-    assert static_types[0] == {"params": [], "results": ["i64"]}
-    assert static_types[1] == {"params": ["i64"], "results": []}
+    assert _import_signature(data, "types_bootstrap") == ((), ("i64",))
+    assert _import_signature(data, "inc_ref_obj") == (("i64",), ())
     assert {"params": [], "results": ["i32"]} in static_types
     # A generic write site passes receiver, name pointer and length, value
     # and its site id.
@@ -1274,23 +1287,129 @@ def test_wasm_abi_manifest_owns_static_type_section() -> None:
     assert not any(
         entry["name"].startswith("list_builder_") for entry in data["import"]
     )
-    assert static_types[31] == {"params": ["i64"] * 9, "results": ["i64"]}
-    assert static_types[34] == {"params": ["i64"] * 12, "results": ["i64"]}
+    assert _import_signature(data, "code_new") == (("i64",) * 9, ("i64",))
+    signatures = {
+        (tuple(entry["params"]), tuple(entry["results"])) for entry in static_types
+    }
+    assert len(signatures) == len(static_types)
+    assert {entry["type"] for entry in data["runtime_import"]} == set(
+        range(static_type_count)
+    )
     assert all(len(signature["results"]) <= 1 for signature in static_types)
     assert all(entry["type"] < len(static_types) for entry in data["import"])
 
     rendered_rs = _rendered_rs(gen, data)
     rendered_py = gen.render_py(data)
     assert "STATIC_FUNC_TYPES" in rendered_rs
-    assert f"STATIC_TYPE_COUNT: u32 = {static_type_count}" in rendered_rs
-    assert "WASM_STATIC_TYPES" in rendered_py
-    assert f"WASM_STATIC_TYPE_COUNT: int = {static_type_count}" in rendered_py
+    modules = gen.render_rs_modules(data)
+    assert "fn machine_signature(" in modules["import_metadata.rs"]
+    assert "fn type_idx(" not in modules["import_metadata.rs"]
+    assert "type_idx:" not in modules["import_registry.rs"]
+    generated = _exec_rendered_py(rendered_py)
+    assert {
+        (params, results) for _, params, results in generated["WASM_IMPORT_SIGNATURES"]
+    } == signatures
 
     wasm_abi = (ROOT / "runtime/molt-backend-wasm/src/wasm_abi.rs").read_text(
         encoding="utf-8"
     )
     assert "static_func_type(" not in wasm_abi
     assert "const STATIC_FUNC_TYPES" not in wasm_abi
+
+
+def test_wasm_abi_catalog_keeps_signatures_produced_by_synthesized_imports() -> None:
+    raw = _raw_manifest()
+    loaded = gen_wasm_abi.load_manifest()
+    for name, arity in (
+        ("datetime_format_isodatetime", 10),
+        ("gpu_rope_apply_contiguous", 11),
+    ):
+        assert name not in {entry["name"] for entry in raw["import"]}
+        assert _import_signature(loaded, name) == (("i64",) * arity, ("i64",))
+
+
+def test_wasm_abi_catalog_rejects_duplicate_signatures() -> None:
+    raw = _raw_manifest()
+    raw["static_type"].append(copy.deepcopy(raw["static_type"][0]))
+    with pytest.raises(
+        manifest.WasmAbiManifestError, match="duplicate static type signature"
+    ):
+        manifest.validate_loaded_manifest(raw)
+
+
+def test_wasm_abi_catalog_rejects_signatures_without_import_producers() -> None:
+    raw = _raw_manifest()
+    extra = {"params": ["f64"], "results": ["f64"]}
+    assert extra not in raw["static_type"]
+    raw["static_type"].append(extra)
+    with pytest.raises(
+        manifest.WasmAbiManifestError, match="no materialized import producer"
+    ):
+        manifest.validate_loaded_manifest(raw)
+
+
+def test_wasm_abi_catalog_order_does_not_change_import_contracts() -> None:
+    raw = _raw_manifest()
+    last = len(raw["static_type"]) - 1
+    raw["static_type"].reverse()
+    for entry in raw["import"]:
+        entry["type"] = last - entry["type"]
+    reordered = manifest.validate_loaded_manifest(raw)
+    expected = gen_wasm_abi.load_manifest()
+    for section in ("import", "runtime_import"):
+        before = {
+            entry["name"]: (
+                expected["static_type"][entry["type"]],
+                {key: value for key, value in entry.items() if key != "type"},
+            )
+            for entry in expected[section]
+        }
+        after = {
+            entry["name"]: (
+                reordered["static_type"][entry["type"]],
+                {key: value for key, value in entry.items() if key != "type"},
+            )
+            for entry in reordered[section]
+        }
+        assert before == after
+
+
+@pytest.mark.parametrize("invalid_index", [False, True])
+@pytest.mark.parametrize("import_kind", ["ordinary", "intrinsic", "reserved"])
+def test_wasm_abi_import_type_indices_require_exact_integers(
+    import_kind: str, invalid_index: bool
+) -> None:
+    raw = _raw_manifest()
+    name = {
+        "ordinary": "inc_ref_obj",
+        "intrinsic": "abs_builtin",
+        "reserved": "object_new_bound",
+    }[import_kind]
+    if import_kind == "intrinsic":
+        # Exercise intrinsic synthesis's explicit transport validator before
+        # the synthesized callable metadata could bypass that boundary.
+        imported = copy.deepcopy(_import_by_name(gen_wasm_abi.load_manifest(), name))
+        imported.pop("runtime_name", None)
+        imported.pop("callable_arity", None)
+        raw["import"] = [entry for entry in raw["import"] if entry["name"] != name]
+        raw["import"].append(imported)
+    imported = _import_by_name(raw, name)
+    old = imported["type"]
+    position = int(invalid_index)
+    raw["static_type"][old], raw["static_type"][position] = (
+        raw["static_type"][position],
+        raw["static_type"][old],
+    )
+    for entry in raw["import"]:
+        if entry["type"] == old:
+            entry["type"] = position
+        elif entry["type"] == position:
+            entry["type"] = old
+    # The selected signature is correct even at index 0 or 1; only the index's
+    # boolean identity makes this import invalid.
+    imported["type"] = invalid_index
+    with pytest.raises(manifest.WasmAbiManifestError, match="invalid .*type"):
+        manifest.validate_loaded_manifest(raw)
 
 
 def test_wasm_abi_manifest_owns_runtime_export_policy() -> None:
@@ -1487,11 +1606,17 @@ def test_wasm_abi_manifest_owns_runtime_callable_registry() -> None:
     assert "runtime_feature" not in manifest.MANIFEST.read_text(encoding="utf-8")
     imports = {entry["name"]: entry for entry in data["import"]}
 
-    assert imports["importlib_import_transaction"]["type"] == 12
-    assert imports["importlib_import_transaction"] == {
+    assert _import_signature(data, "importlib_import_transaction") == (
+        ("i64",) * 5,
+        ("i64",),
+    )
+    assert {
+        key: value
+        for key, value in imports["importlib_import_transaction"].items()
+        if key != "type"
+    } == {
         "name": "importlib_import_transaction",
         "return_contract": "owned_object",
-        "type": 12,
     }
     assert imports["types_bootstrap"]["runtime_name"] == "molt_types_bootstrap"
     assert imports["types_bootstrap"]["callable_arity"] == 0
@@ -1509,7 +1634,7 @@ def test_wasm_abi_manifest_owns_runtime_callable_registry() -> None:
     assert imports["set_app_callable_resolver"]["runtime_name"] == (
         "molt_set_app_callable_resolver"
     )
-    assert imports["set_app_callable_resolver"]["type"] == 2
+    assert _import_signature(data, "set_app_callable_resolver") == (("i64",), ("i64",))
     assert "callable_arity" not in imports["set_app_callable_resolver"]
     assert imports["function_init_metadata_packed"]["runtime_name"] == (
         "molt_function_init_metadata_packed"
@@ -2045,12 +2170,15 @@ def test_wasm_abi_reserved_runtime_callable_import_names_are_fail_closed() -> No
         entry for entry in rematerialized["import"] if entry["name"] != "type_call"
     ]
     manifest.validate_loaded_manifest(rematerialized)
-    assert next(
-        entry for entry in rematerialized["import"] if entry["name"] == "type_call"
-    ) == {"name": "type_call", "type": 2}
+    assert {
+        key: value
+        for key, value in _import_by_name(rematerialized, "type_call").items()
+        if key != "type"
+    } == {"name": "type_call"}
+    assert _import_signature(rematerialized, "type_call") == (("i64",), ("i64",))
 
     broken = copy.deepcopy(data)
-    broken["import"].append({"name": "type_call", "type": 2})
+    broken["import"].append(copy.deepcopy(_import_by_name(data, "type_call")))
     with pytest.raises(
         manifest.WasmAbiManifestError, match="duplicate import name 'type_call'"
     ):
@@ -2070,7 +2198,9 @@ def test_wasm_abi_reserved_runtime_callable_import_names_are_fail_closed() -> No
     broken = copy.deepcopy(data)
     for entry in broken["import"]:
         if entry["name"] == "object_new_bound":
-            entry["type"] = 3
+            entry["type"] = _import_by_name(data, "importlib_import_transaction")[
+                "type"
+            ]
             break
     with pytest.raises(
         manifest.WasmAbiManifestError,
@@ -2082,7 +2212,7 @@ def test_wasm_abi_reserved_runtime_callable_import_names_are_fail_closed() -> No
     broken["import"].append(
         {
             "name": "shadow_type_call",
-            "type": 2,
+            "type": _import_by_name(data, "type_call")["type"],
             "runtime_name": "molt_type_call",
             "callable_arity": 1,
         }
@@ -2150,7 +2280,12 @@ def test_wasm_abi_runtime_import_aliases_are_unambiguous() -> None:
     data = gen.load_manifest()
 
     broken = copy.deepcopy(data)
-    broken["import"].append({"name": "molt_socket_drop", "type": 2})
+    broken["import"].append(
+        {
+            "name": "molt_socket_drop",
+            "type": _import_by_name(data, "socket_drop")["type"],
+        }
+    )
     with pytest.raises(
         manifest.WasmAbiManifestError,
         match="runtime import aliases collide with canonical import names",

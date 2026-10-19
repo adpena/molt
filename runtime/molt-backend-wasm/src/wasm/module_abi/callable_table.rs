@@ -137,11 +137,9 @@ impl WasmCallableTablePlan {
         let mut task_target_signatures = crate::wasm_abi::POLL_TABLE_IMPORTS
             .iter()
             .filter_map(|spec| {
-                let signature =
-                    &crate::wasm_abi::STATIC_FUNC_TYPES[spec.import.type_idx() as usize];
-                (signature.params == [wasm_encoder::ValType::I64]
-                    && signature.results == [wasm_encoder::ValType::I64])
-                .then_some((spec.import.runtime_export_name(), (1, true)))
+                let (params, results) = spec.import.machine_signature();
+                (params == [wasm_encoder::ValType::I64] && results == [wasm_encoder::ValType::I64])
+                    .then_some((spec.import.runtime_export_name(), (1, true)))
             })
             .collect::<BTreeMap<_, _>>();
         for function in &ir.functions {
@@ -437,7 +435,8 @@ impl WasmBackend {
         manifest_len: u32,
     ) -> u32 {
         let func_index = self.func_count;
-        self.funcs.function(0);
+        let type_idx = self.types.boxed(0, true);
+        self.funcs.function(type_idx);
         self.func_count += 1;
         let mut func = Function::new_with_locals_types(Vec::new());
         self.emit_host_init_sequence(
