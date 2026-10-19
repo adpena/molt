@@ -554,16 +554,16 @@ def _unit_dep_info(
     *,
     dep_info_base: Path,
 ) -> _RustcDepInfo | None:
-    """The rustc dep-info of one unit: ``<crate>-<metadata>.d``.
+    """The rustc dep-info of one unit, with or without a metadata suffix.
 
     A library's outputs in ``deps`` carry the ``<crate>-<metadata>`` stem, with
     the dep-info beside them. A build script compiles in
     ``build/<package>-<metadata>/`` as ``build_script_build-<metadata>``, while
     Cargo reports its uplifted copy ``build-script-build``. A root artifact
     Cargo reports only uplifted (a staticlib or binary in the profile
-    directory) has several ``<crate>-<metadata>.d`` candidates, one per feature
-    and profile lane. Bind its populated output rules to Cargo's actual
-    output bytes; several units can share the same ``OUT_DIR``.
+    directory) can have ``<crate>.d`` and ``<crate>-<metadata>.d`` candidates
+    across feature and profile lanes. Bind all candidates' populated output
+    rules to Cargo's actual output bytes; several units can share ``OUT_DIR``.
     """
     filenames = _strings(message.get("filenames"))
     target = message.get("target")
@@ -593,7 +593,12 @@ def _unit_dep_info(
         return None
     candidates = []
     for path in sorted(
-        {path for directory in deps_dirs for path in directory.glob(f"{crate}-*.d")}
+        {
+            path
+            for directory in deps_dirs
+            for pattern in (f"{crate}.d", f"{crate}-*.d")
+            for path in directory.glob(pattern)
+        }
     ):
         # Inspect all records before selection; an unreadable candidate cannot
         # establish uniqueness. OUT_DIR narrows candidates only when recorded.

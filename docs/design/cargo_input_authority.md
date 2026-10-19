@@ -71,14 +71,19 @@ The authority is the build's own per-unit outputs, which Cargo reports in its
 JSON messages:
 
 1. For each local `compiler-artifact` unit, the rustc dep-info beside its
-   outputs (`<crate>-<metadata>.d`): its files and its `# env-dep:` variables.
+   outputs (`<crate>.d` or `<crate>-<metadata>.d`): its files and its
+   `# env-dep:` variables.
    A build script's unit lives in `build/<package>-<metadata>/`. For a root
    artifact reported only uplifted, the reader binds a candidate's populated
    rustc output rules to the primary outputs in Cargo's
    [`compiler-artifact` message](https://doc.rust-lang.org/cargo/reference/external-tools.html#compiler-artifact).
    Several feature or profile units can share `OUT_DIR`; its recorded value
    narrows candidates when present. Actual output identity establishes the
-   binding, including units that do not read `OUT_DIR`.
+   binding, including units that do not read `OUT_DIR`. Unhashed and hashed
+   records share this candidate pool and the same output/ambiguity checks;
+   an unhashed name alone does not establish identity. The combined WASM
+   producer reports final archives/modules under the target root while its
+   unhashed per-unit dep-info lives in the resource-selected build directory.
 2. For each `build-script-executed` message, the script's `output` file beside
    its `out_dir`: the `rerun-if-changed` paths (relative to the package root)
    and the `rerun-if-env-changed` names. A script that declares neither counts
