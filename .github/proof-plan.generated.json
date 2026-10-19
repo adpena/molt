@@ -3383,6 +3383,31 @@
         "uv",
         "run",
         "python3",
+        "tools/perf_methodology.py",
+        "--check"
+      ],
+      "cache_domain": "uv",
+      "cell": "linux-x86_64-py312-repository-policy",
+      "dependencies": [],
+      "family": "repository_policy",
+      "id": "repository.perf-methodology",
+      "resource_class": "repository-policy",
+      "tiers": [
+        "pre-push",
+        "pr",
+        "main"
+      ],
+      "timeout_seconds": 60,
+      "toolchains": [
+        "python",
+        "uv"
+      ]
+    },
+    {
+      "argv": [
+        "uv",
+        "run",
+        "python3",
         "-m",
         "pytest",
         "-q",
@@ -3448,7 +3473,8 @@
         "repository.generators",
         "repository.structural-debt",
         "repository.canonicalization",
-        "repository.call-fact-coverage"
+        "repository.call-fact-coverage",
+        "repository.perf-methodology"
       ],
       "family": "repository_policy",
       "id": "repository.docs-tests",
@@ -8920,7 +8946,7 @@
         "projected_makespan_seconds": 2820,
         "required_job_seconds": 2940,
         "resource_capacity_floor_seconds": {
-          "repository-policy": 2655
+          "repository-policy": 2670
         }
       },
       "rust": {
@@ -9329,6 +9355,7 @@
       "local.native-object-emission.0": "cargo test --locked --profile dev-fast -p object@0.39.1 -p cranelift-object@0.133.3 -p molt-backend --no-default-features --features molt-backend/native-backend --test integration --test basic --test native_extern_linkage --no-fail-fast -- --skip read::coff::coff_extended_relocations --skip read::elf::get_buildid_bad_elf --skip read::elf::get_buildid_less_bad_elf --skip read::elf::zero_sized_section_works --skip read::macho::test_macho_entry_point --skip read::macho::test_go_macho",
       "local.op-kind-registry.0": "python tools/audit_op_kinds.py --check",
       "local.op-kind-registry.pytest": "python -m pytest -q -n auto --molt-worker-memory-gb=1.75 tests/test_frontend_op_kind_registry.py tests/test_gen_op_kinds.py",
+      "local.performance-measurement.0": "python tools/perf_methodology.py --check",
       "local.performance-measurement.pytest-select-0": "python -m pytest -q -n auto --molt-worker-memory-gb=2.5 -m 'not slow' tests/test_node_runtime.py tests/test_bench_tool.py tests/test_bench_audit.py tests/test_bench_report.py tests/test_temporary_artifacts.py tests/tools/test_direct_run_process_custody.py tests/tools/test_cold_start_decompose.py tests/tools/test_perf_profile_selection.py tests/tools/test_perf_release_integrity.py tests/tools/test_perf_scoreboard.py tests/tools/test_perf_methodology.py tests/tools/test_perf_schema.py tests/tools/test_perf_history.py tests/tools/test_perf_board.py tests/tools/test_perf_authority.py",
       "local.phase-exit-manifest.0": "python tools/legacy_inventory.py --check",
       "local.phase-exit-manifest.pytest": "python -m pytest -q -n auto --molt-worker-memory-gb=1.75 tests/tools/test_phase_exit_manifest.py tests/tools/test_legacy_inventory.py",
@@ -10848,10 +10875,13 @@
       },
       {
         "command_ids": [
+          "local.performance-measurement.0",
           "local.performance-measurement.pytest-select-0"
         ],
         "description": "Typed sample transport, deployment selection and complete benchmark artifact lifetimes.",
-        "gates": [],
+        "gates": [
+          "python tools/perf_methodology.py --check"
+        ],
         "globs": [
           "tools/bench.py",
           "tools/bench_audit.py",
@@ -10862,6 +10892,7 @@
           "src/molt/backend_executable_names.py",
           "src/molt/host_tool_products.py",
           "config/perf_methodology.toml",
+          "tools/perf_methodology.py",
           "tests/test_bench_tool.py",
           "tests/test_bench_audit.py",
           "src/molt/node_runtime.py",
@@ -12286,6 +12317,10 @@
       "local.op-kind-registry.pytest": [
         "python",
         "rustfmt"
+      ],
+      "local.performance-measurement.0": [
+        "python",
+        "uv"
       ],
       "local.performance-measurement.pytest-select-0": [
         "python",

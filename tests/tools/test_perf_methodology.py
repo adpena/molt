@@ -19,15 +19,6 @@ from molt.cli.python_import_resolution import (  # noqa: E402
 )
 
 
-def test_methodology_content_matches_its_locked_version() -> None:
-    methodology = pm.load()
-    assert pm.content_sha256(methodology) == methodology.locked_sha256, (
-        "the perf methodology files changed: run "
-        "`python3 tools/perf_methodology.py --bump` if the change can move a "
-        "measured number or a verdict, otherwise `--relock`"
-    )
-
-
 def _direct_local_imports(path: Path) -> set[str]:
     resolver = LocalPythonModuleResolver(
         (REPO_ROOT / "tools", REPO_ROOT / "src", REPO_ROOT),

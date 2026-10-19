@@ -18,7 +18,7 @@ Landing checks execute the generator and authority inputs captured from the exac
 | CI selection families | 5 | 13 |
 | Hashed executable authority inputs | 1 | 375 |
 | Local path rules | 35 | 69 |
-| Unique local commands | 73 | 74 |
+| Unique local commands | 73 | 75 |
 | Handwritten Python classifier rule tables | 5 | 0 |
 
 ## CI families
@@ -242,7 +242,8 @@ The wrapper conflict was reconfirmed by native CI run `30211145633` job `8981749
 | `repository.canonicalization.receipt` | `repository_policy` | `linux-x86_64-py312-repository-policy` | `explicit` | 300 s | `repository-policy` | 0 |
 | `repository.call-fact-coverage` | `repository_policy` | `linux-x86_64-py312-repository-policy` | `explicit` | 300 s | `repository-policy` | 0 |
 | `repository.release-supply-chain` | `repository_policy` | `linux-x86_64-py312-repository-policy` | `explicit` | 900 s | `repository-policy` | 0 |
-| `repository.docs-tests` | `repository_policy` | `linux-x86_64-py312-repository-policy` | `explicit` | 900 s | `repository-policy` | 5 |
+| `repository.perf-methodology` | `repository_policy` | `linux-x86_64-py312-repository-policy` | `explicit` | 60 s | `repository-policy` | 0 |
+| `repository.docs-tests` | `repository_policy` | `linux-x86_64-py312-repository-policy` | `explicit` | 900 s | `repository-policy` | 6 |
 | `repository.tooling-tests` | `repository_policy` | `linux-x86_64-py312-repository-policy` | `explicit` | 900 s | `repository-policy` | 0 |
 | `repository.agent-coordination` | `repository_policy` | `linux-x86_64-py312-repository-policy` | `explicit` | 600 s | `repository-policy` | 0 |
 | `wasm.build.backend` | `wasm` | `linux-x86_64-py312-wasm-dev` | `cold` | 1200 s | `compiler-build-resource` | 0 |
@@ -388,7 +389,7 @@ The wrapper conflict was reconfirmed by native CI run `30211145633` job `8981749
 | `apparatus-hooks` | 11 | 2 |
 | `apparatus-learning-protection` | 12 | 2 |
 | `timing-ratio-authority` | 2 | 0 |
-| `performance-measurement` | 27 | 0 |
+| `performance-measurement` | 28 | 1 |
 | `apparatus-a11` | 10 | 4 |
 | `apparatus-a8-a12-disk-reclaim` | 12 | 2 |
 | `import-symbol-gate` | 2 | 1 |
