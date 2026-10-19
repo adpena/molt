@@ -47,7 +47,6 @@ unsafe extern "C" {
     ) -> u64;
 
     fn __molt_logging_exception_pending() -> i32;
-    fn __molt_logging_clear_exception();
 }
 
 pub fn raise_exception<T: ExceptionSentinel>(_py: &CoreGilToken, type_name: &str, msg: &str) -> T {
@@ -59,10 +58,6 @@ pub fn raise_exception<T: ExceptionSentinel>(_py: &CoreGilToken, type_name: &str
 
 pub fn exception_pending(_py: &CoreGilToken) -> bool {
     unsafe { __molt_logging_exception_pending() != 0 }
-}
-
-pub fn clear_exception(_py: &CoreGilToken) {
-    unsafe { __molt_logging_clear_exception() }
 }
 
 /// Trait for exception return sentinels.

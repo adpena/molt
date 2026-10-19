@@ -57,13 +57,6 @@ pub extern "C" fn __molt_logging_exception_pending() -> i32 {
     crate::with_gil_entry_nopanic!(_py, { if exception_pending(_py) { 1 } else { 0 } })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn __molt_logging_clear_exception() {
-    crate::with_gil_entry_nopanic!(_py, {
-        clear_exception(_py);
-    })
-}
-
 // ---------------------------------------------------------------------------
 // Object allocation
 // ---------------------------------------------------------------------------
