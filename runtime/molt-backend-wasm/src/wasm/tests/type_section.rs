@@ -47,7 +47,14 @@ fn module_types_are_unique_structural_signatures_with_one_result_authority() {
 
 #[test]
 fn equally_typed_user_functions_reference_one_module_type() {
-    let bytes = compile(vec![function("first", 2), function("second", 2)]);
+    let mut first = function("first", 2);
+    // Escaping the callable preserves both functions through reachability and
+    // prevents inlining from erasing the independent type references.
+    let mut callable = wasm_test_op("func_new", Some("callable"), vec![]);
+    callable.s_value = Some("second".into());
+    callable.value = Some(2);
+    first.ops = vec![callable, wasm_test_op("ret", None, vec!["callable"])];
+    let bytes = compile(vec![first, function("second", 2)]);
     let signatures = wasm_type_section_value_signatures(&bytes);
     let requested = (vec!["I64".to_string(); 2], vec!["I64".to_string()]);
     assert_eq!(signatures.iter().filter(|ty| **ty == requested).count(), 1);
