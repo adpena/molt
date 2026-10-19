@@ -140,6 +140,7 @@ class BuildPythonAdmission:
         self._environment: tuple[tuple[str, str], ...] | None = None
         self._identity: dict[str, object] | None = None
         self._startup_selection: dict[str, object] | None = None
+        self._input_log_dir: str | None = None
         self._primary_failure: object | None = None
         self.cleanup_failure: BuildPythonCleanupError | None = None
         self.custody_path: str | None = None
@@ -212,6 +213,9 @@ class BuildPythonAdmission:
         return response
 
     def _start(self, entrypoint: Path, env: Mapping[str, str]) -> dict[str, object]:
+        from molt import input_report
+
+        self._input_log_dir = input_report.worker_log_dir()
         self._executor = process_guard.source_command_executor("MOLT_BUILD_PYTHON")
         self._stderr = tempfile.TemporaryFile(mode="w+b")
         try:
@@ -345,6 +349,16 @@ class BuildPythonAdmission:
         with self._lock:
             if self._closed:
                 raise ValueError("runtime build Python admission is revoked")
+            from molt import input_report
+
+            log_dir = input_report.worker_log_dir()
+            if input_report.active() and (
+                log_dir is None
+                or (self._identity is not None and log_dir != self._input_log_dir)
+            ):
+                input_report.refuse(
+                    "build Python admission does not belong to this input recording"
+                )
             try:
                 path = resolve_build_python(env)
                 policy = _loader_environment(env)

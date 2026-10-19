@@ -269,6 +269,37 @@ def test_tampered_or_stale_installs_are_not_discoveries(tmp_path: Path) -> None:
     assert tool_releases.discover_tool(release, toolchain_root) is None
 
 
+def test_a_missing_pinned_executable_is_an_input_to_build_reuse(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import time
+
+    from molt import build_record, input_report
+
+    release, archive = _pinned_release(tmp_path, b"demo binary")
+    downloads = tmp_path / "downloads"
+    downloads.mkdir()
+    (downloads / archive.name).write_bytes(archive.read_bytes())
+    toolchain_root = tmp_path / "target-root"
+    discovery = tool_releases.provision_tool(
+        release, toolchain_root, downloads=downloads
+    )
+    payload = discovery.executable.read_bytes()
+    discovery.executable.unlink()
+    ledger = build_record.InputLedger(time.time_ns() + 10 * 10**9)
+    monkeypatch.setattr(input_report, "_SINK", ledger)
+    assert tool_releases.discover_tool(release, toolchain_root) is None
+    monkeypatch.setattr(input_report, "_SINK", None)
+    output = tmp_path / "app"
+    output.write_bytes(b"compiled output")
+    record = build_record.record_path(tmp_path / "state", "a" * 64)
+    assert build_record.write_record(record, "a" * 64, ledger, output=output) is None
+    assert build_record.check(record, "a" * 64, output) is None
+    discovery.executable.write_bytes(payload)
+    assert tool_releases.discover_tool(release, toolchain_root) is not None
+    assert build_record.check(record, "a" * 64, output) is not None
+
+
 def test_download_that_disagrees_with_the_pin_is_refused(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

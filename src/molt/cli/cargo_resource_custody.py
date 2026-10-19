@@ -60,6 +60,17 @@ class CargoFileCustody:
             "",
         ).content_record()
 
+    def _report_to_build_record(self) -> None:
+        if not _input_report.active():
+            return
+        token = self.identity.stat_token()
+        _input_report.report_captured_file(self.entrypoint, token, self.identity.sha256)
+        if self.identity.path != self.entrypoint:
+            _input_report.report_probe(self.entrypoint)
+            _input_report.report_captured_file(
+                self.identity.path, token, self.identity.sha256
+            )
+
 
 @dataclass(frozen=True, slots=True)
 class CargoExecutableCustody(CargoFileCustody):
@@ -71,7 +82,9 @@ class CargoExecutableCustody(CargoFileCustody):
             entrypoint,
             identity,
         ):
-            return cls(label, entrypoint, identity)
+            result = cls(label, entrypoint, identity)
+            result._report_to_build_record()
+            return result
 
 
 @dataclass(frozen=True, slots=True)
@@ -331,14 +344,7 @@ class CargoResourceCustody:
             for path, _token in walk.directories:
                 _input_report.report_directory(path)
             for item in files:
-                token = item.identity.stat_token()
-                _input_report.report_captured_file(
-                    item.entrypoint, token, item.identity.sha256
-                )
-                if item.identity.path != item.entrypoint:
-                    _input_report.report_captured_file(
-                        item.identity.path, token, item.identity.sha256
-                    )
+                item._report_to_build_record()
 
     @classmethod
     def _capture(

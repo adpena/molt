@@ -351,6 +351,8 @@ def discover_tool(release: ToolRelease, toolchain_root: Path) -> ToolDiscovery |
     installed executable is not a discovery: the caller provisions afresh or
     fails closed, never trusts a partially matching install.
     """
+    from molt import input_report
+
     prefix = tool_prefix(toolchain_root, release)
     executable = tool_executable(prefix, release)
     attestation_path = prefix / TOOL_ATTESTATION_FILENAME
@@ -358,7 +360,10 @@ def discover_tool(release: ToolRelease, toolchain_root: Path) -> ToolDiscovery |
         attestation = json.loads(attestation_path.read_text(encoding="utf-8"))
     except (OSError, UnicodeError, json.JSONDecodeError):
         return None
-    if not isinstance(attestation, Mapping) or not executable.is_file():
+    if not isinstance(attestation, Mapping):
+        return None
+    input_report.report_probe(executable)
+    if not executable.is_file():
         return None
     asset = release.assets.get(str(attestation.get("asset") or ""))
     if asset is None:

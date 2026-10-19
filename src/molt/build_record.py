@@ -29,7 +29,7 @@ from molt import file_publication, input_report
 from molt.file_hashing import DIGEST_RACY_WINDOW_NS
 from molt.input_report import ProbeOutcome, StatToken, resolved_probe, stat_token
 
-_SCHEMA = "molt-build-record-v5"
+_SCHEMA = "molt-build-record-v6"
 # Keys that name the terminal or login session. No build step reads them for
 # its artifact (`TERM` only styles progress output); they change between
 # shells and would defeat every hit. Everything else is keyed, `PWD` included:
