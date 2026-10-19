@@ -743,15 +743,13 @@ mod iter_next_fusion {
 
     #[test]
     fn pre_guard_eval_breaker_observation_keeps_finalizer_order() {
-        for kind in ["async_work_poll", "check_exception"] {
-            let mut ops = guarded_projection_ops();
-            let mut observation = op_val(kind, 90);
-            observation.async_work_poll = kind == "check_exception";
-            ops.insert(3, observation);
-            ops.extend([op_val("label", 90), op("ret_void")]);
+        let mut ops = guarded_projection_ops();
+        // The wire alias lifts to a CheckException with the typed poll marker;
+        // that marker is not a legal SimpleIR field on check_exception itself.
+        ops.insert(3, op_val("async_work_poll", 90));
+        ops.extend([op_val("label", 90), op("ret_void")]);
 
-            assert_materialized(&lower(&ops, &["iter"]));
-        }
+        assert_materialized(&lower(&ops, &["iter"]));
     }
 }
 
