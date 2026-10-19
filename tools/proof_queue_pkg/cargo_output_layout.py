@@ -17,7 +17,7 @@ import stat
 import sys
 from typing import Mapping, Sequence
 
-from molt import file_publication
+from molt import custody_layout, file_publication
 from molt.dx import checkout_custody
 from molt.exact_json import canonical_json_bytes, canonical_json_sha256
 
@@ -356,13 +356,24 @@ class CargoOutputLayout:
             # custody. Bootstrap output instead has a deterministic sibling
             # address; canonical external custody keeps its existing address.
             root = source.parent if custody.is_relative_to(source) else custody
+            # Explicit scratch custody can deliberately equal the source. Its
+            # bootstrap sibling must still stay out of any enclosing checkout.
+            for checkout in custody_layout.enclosing_checkouts(root):
+                root = checkout.parent
         namespace = hashlib.sha256(os.path.normcase(str(source)).encode()).hexdigest()[
             :24
         ]
         store = file_publication.resolve_owned_path(
             root / "proof-supervisor" / namespace
         )
-        if _overlaps(store, source) or _overlaps(store, self.result_root):
+        if any(
+            _overlaps(store, protected)
+            for protected in (
+                source,
+                self.result_root,
+                *custody_layout.enclosing_checkouts(store),
+            )
+        ):
             raise ValueError(
                 "supervisor store overlaps source or receipt custody; "
                 "select an external --cargo-output-root"

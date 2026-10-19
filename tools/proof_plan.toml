@@ -4812,6 +4812,23 @@ pytest = [
   "tests/test_cargo_workspace.py",
 ]
 
+# --- Development output custody ----------------------------------------
+[[rule]]
+name = "checkout-output-custody"
+toolchains = ["python"]
+description = "Checkout boundaries, execution-root overrides and supervisor output placement share one custody authority."
+globs = ["src/molt/custody_layout.py", "src/molt/dx.py", "tools/proof_queue_pkg/cargo_output_layout.py", "tests/test_custody_layout.py", "tests/test_dx_run_context.py", "tests/tools/test_proof_queue_output_layout.py"]
+gates = []
+pytest = ["tests/test_custody_layout.py", "tests/test_dx_run_context.py", "tests/tools/test_proof_queue_output_layout.py"]
+
+[[rule]]
+name = "fresh-guard-observer"
+toolchains = ["python"]
+description = "Fresh observer recursion, exact-node execution, guard admission and cache placement through every current protocol consumer."
+globs = ["tests/process_guard_common.py", "tests/test_process_guard_common.py"]
+gates = []
+pytest = ["tests/test_process_guard_common.py", "tests/test_backend_daemon_suite_custody.py::test_guarded_protocol_daemon_transfer_and_failure_cleanup", "tests/test_memory_guard_tool.py::test_run_guarded_marks_child_environment_as_guarded", "tests/test_memory_guard_tool.py::test_run_guarded_scratch_cleanup_failure_preserves_primary_result", "tests/test_memory_guard_tool.py::test_run_guarded_retention_sweep_health_preserves_primary_result", "tests/test_memory_guard_tool.py::test_run_guarded_exports_backend_memory_contract", "tests/tools/test_memory_guard_spawn_callback.py::test_on_spawn_observes_custodied_child_and_result_owns_tree_peak", "tests/tools/test_memory_guard_spawn_callback.py::test_guard_polls_read_the_tree_not_the_host_table"]
+
 # --- Host entrypoint import identity ------------------------------------
 [[rule]]
 name = "host-entrypoint-imports"

@@ -1744,10 +1744,57 @@ def test_checkout_head_is_read_from_git_files_without_git_on_path(
     assert dx.git_checkout_head(checkout) == oracle
 
 
+@pytest.mark.parametrize("placement", ["durable", "scratch", "explicit", "hosted"])
+def test_nested_checkout_root_selection_preserves_execution_overrides(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, placement: str
+) -> None:
+    primary = tmp_path / "family" / "molt-src"
+    primary.mkdir(parents=True)
+    _git(primary, "init", "-q", "-b", "main")
+    (primary / "tracked").write_text("source\n", encoding="utf-8")
+    _git(primary, "add", "tracked")
+    _git(primary, "commit", "-q", "-m", "source")
+    source = primary / ".claude" / "worktrees" / "agent"
+    _git(primary, "worktree", "add", "-q", "--detach", str(source))
+    monkeypatch.setattr(
+        dx,
+        "_host_scratch_roots",
+        lambda: (tmp_path if placement == "scratch" else tmp_path / "host-temp",),
+    )
+    selected = {"PATH": os.environ.get("PATH", "")}
+    expected = primary.parent
+    if placement == "scratch":
+        expected = source
+    elif placement == "explicit":
+        expected = tmp_path / "operator-artifacts"
+        selected.update(
+            MOLT_EXT_ROOT=str(expected),
+            CARGO_TARGET_DIR=str(tmp_path / "caller-target"),
+        )
+    elif placement == "hosted":
+        selected = _github_actions_custody_env(
+            source, tmp_path / "runner-temp", sha=_git(source, "rev-parse", "HEAD")
+        )
+        expected = Path(selected[dx.GITHUB_ACTIONS_EPHEMERAL_ROOT_ENV])
+    resolved = RunContext(source, prefer_external_artifacts=True).canonical_env(
+        selected, create_dirs=False
+    )
+    assert Path(resolved["MOLT_EXT_ROOT"]) == expected
+    if placement == "explicit":
+        assert Path(resolved["CARGO_TARGET_DIR"]) == tmp_path / "caller-target"
+    elif placement == "scratch":
+        assert Path(resolved["CARGO_TARGET_DIR"]) == source / "target"
+    else:
+        assert Path(resolved["CARGO_TARGET_DIR"]).is_relative_to(expected)
+    assert not Path(resolved["TMPDIR"]).is_relative_to(source)
+
+
 def test_checkout_head_refuses_an_unreadable_layout(tmp_path: Path) -> None:
     (tmp_path / ".git").write_text("not a gitdir pointer\n", encoding="utf-8")
     assert dx.git_checkout_head(tmp_path) is None
     assert dx.git_checkout_head(tmp_path / "missing") is None
+    with pytest.raises(dx.DxConfigError, match="malformed Git checkout metadata"):
+        dx.canonical_molt_root(tmp_path)
 
 
 @pytest.mark.parametrize("layout", ["bundle", "wheel", "damaged-bundle"])

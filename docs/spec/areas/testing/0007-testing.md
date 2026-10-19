@@ -57,6 +57,11 @@ spawned test children. It must not redirect imports or cache writes in the
 pytest process that also runs guard and sentinel threads. Bytecode controls use
 the existing `ProcessPoolExecutor` spawn boundary and ordinary CPython loaders.
 
+Fresh guarded pytest observers run exactly the selected node serially. Clearing
+project `addopts` requires explicitly loading the canonical guard configuration
+plugin: programmatic `pytest.main` does not enter the CLI bootstrap. Its cache
+must remain outside source custody with plugin autoload enabled or disabled.
+
 ## Test quality and agent-written tests
 
 This is the shared test-authoring contract for human and agent contributions.

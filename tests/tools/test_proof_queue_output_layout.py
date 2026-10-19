@@ -35,7 +35,10 @@ from tools.proof_queue_pkg import (
     supervisor_custody,
     state,
 )
-from tests.process_guard_common import install_module_view
+from tests.process_guard_common import install_module_view, run_guarded_test_process
+from tests.test_custody_layout import git_checkout as git_checkout
+from tests.test_dx_run_context import _git
+from tools.git_identity import repository_source_paths
 
 
 pytestmark = pytest.mark.usefixtures("cargo_output_implementation_source")
@@ -881,6 +884,59 @@ def test_supervisor_store_rejects_overlapping_custody(
     with pytest.raises(ValueError, match="overlaps source or receipt custody"):
         _ = selected.supervisor_store
     assert not (root / "proof-supervisor").exists()
+
+
+@pytest.mark.parametrize(
+    "placement", ["durable", "scratch", "external", "inside-other-source"]
+)
+def test_supervisor_storage_never_enters_an_enclosing_source_checkout(
+    tmp_path, monkeypatch, git_checkout, placement
+):
+    from molt import dx
+
+    source = git_checkout / ".claude" / "worktrees" / "agent"
+    _git(git_checkout, "worktree", "add", "-q", "--detach", str(source))
+    monkeypatch.setattr(layout, "implementation_source_root", lambda: source)
+    monkeypatch.setattr(
+        dx,
+        "_host_scratch_roots",
+        lambda: (tmp_path if placement == "scratch" else tmp_path / "host-temp",),
+    )
+    declaration = None
+    if placement in {"external", "inside-other-source"}:
+        root = tmp_path / "operator-output"
+        root.mkdir()
+        if placement == "inside-other-source":
+            _git(root, "init", "-q")
+        declaration = layout.declare_root(str(root))
+    selected = layout.CargoOutputLayout(tmp_path / "receipts", declaration)
+
+    def run_git(root, arguments):
+        result = run_guarded_test_process(
+            ["git", "-C", str(root), *arguments], text=False, check=True, timeout=30
+        )
+        assert isinstance(result.stdout, bytes)
+        return result.stdout
+
+    before = repository_source_paths(
+        git_checkout, run_git=run_git, include_untracked=True
+    )
+    if placement == "inside-other-source":
+        with pytest.raises(ValueError, match="overlaps source or receipt custody"):
+            _ = selected.supervisor_store
+        assert not (root / "proof-supervisor").exists()
+        return
+    store = selected.supervisor_store
+    expected = root if placement == "external" else git_checkout.parent
+    assert store.parent == expected / "proof-supervisor"
+    assert not store.is_relative_to(git_checkout)
+    assert not store.is_relative_to(source)
+    store.mkdir(parents=True)
+    (store / "identity.json").write_bytes(b"retained tool identity")
+    assert (
+        repository_source_paths(git_checkout, run_git=run_git, include_untracked=True)
+        == before
+    )
 
 
 def test_supervisor_intermediates_are_external_but_executable_cas_stays_canonical(
