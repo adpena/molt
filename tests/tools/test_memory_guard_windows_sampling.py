@@ -124,10 +124,10 @@ def test_parse_windows_process_snapshot_rows_binds_only_visited_resident_sizes(
 
 
 def test_sample_processes_uses_windows_sampler_on_nt(monkeypatch) -> None:
-    module = process_custody
+    module = process_model
     sample = module.ProcessSample(pid=7, ppid=1, rss_kb=9, command="python.exe")
 
-    monkeypatch.setattr(module, "_is_windows_process_model", lambda: True)
+    monkeypatch.setattr(process_model, "is_windows_process_model", lambda: True)
     monkeypatch.setattr(module, "sample_processes_windows", lambda: {7: sample})
     monkeypatch.setattr(module, "sample_processes_posix", lambda: {})
 
@@ -136,7 +136,7 @@ def test_sample_processes_uses_windows_sampler_on_nt(monkeypatch) -> None:
 
 def test_sample_processes_posix_missing_ps_is_typed_failure(monkeypatch) -> None:
     """Other BSDs still shell out to ps; its absence is a typed snapshot failure."""
-    module = process_custody
+    module = process_model
 
     def missing_ps(*args, **kwargs):  # noqa: ANN002, ANN003
         raise FileNotFoundError("ps")
@@ -192,7 +192,7 @@ def test_darwin_sampler_never_shells_out_and_types_enumeration_failure(
     with pytest.raises(
         windows_snapshot.ProcessSnapshotError, match="Darwin process enumeration failed"
     ):
-        process_custody.sample_processes_posix()
+        process_model.sample_processes_posix()
 
 
 def test_darwin_sampler_sizes_readable_rows_and_withholds_foreign_ones(
@@ -220,7 +220,7 @@ def test_darwin_sampler_sizes_readable_rows_and_withholds_foreign_ones(
 
     _install_fake_darwin_authority(monkeypatch, FakeAuthority())
 
-    samples = process_custody.sample_processes_posix()
+    samples = process_model.sample_processes_posix()
 
     assert samples[200].rss_kb == 64
     assert samples[200].ppid == 100
@@ -418,7 +418,7 @@ def test_darwin_cached_authority_keeps_reuse_fail_closed(monkeypatch) -> None:
 
 
 def test_sample_processes_windows_uses_injected_snapshot_authority(monkeypatch) -> None:
-    module = process_custody
+    module = process_model
 
     def fail_run(*args, **kwargs):  # noqa: ANN002, ANN003
         raise AssertionError("Windows sampler must not shell out")
@@ -440,7 +440,7 @@ def test_sample_processes_windows_uses_injected_snapshot_authority(monkeypatch) 
 
 
 def test_sample_processes_windows_timeout_fails_closed(monkeypatch) -> None:
-    module = process_custody
+    module = process_model
 
     def timed_out():
         raise TimeoutError("snapshot deadline")
@@ -808,7 +808,7 @@ def test_windows_snapshot_keeps_readable_identity_without_resident_queries(
 
 def test_windows_guarded_popen_uses_new_process_group(monkeypatch) -> None:
     module = memory_guard
-    monkeypatch.setattr(module, "_is_windows_process_model", lambda: True)
+    monkeypatch.setattr(process_model, "is_windows_process_model", lambda: True)
     install_module_view(
         monkeypatch,
         "subprocess",
@@ -857,7 +857,7 @@ def test_windows_wrapper_terminalizes_worker_exit_running_summary(
         assert kwargs["env"][module.INTERNAL_WORKER_ENV] == "1"
         return SimpleNamespace(returncode=15)
 
-    monkeypatch.setattr(module, "_is_windows_process_model", lambda: True)
+    monkeypatch.setattr(process_model, "is_windows_process_model", lambda: True)
     monkeypatch.setattr(
         module, "subprocess", SimpleNamespace(**{**vars(subprocess), "run": fake_run})
     )
@@ -1027,7 +1027,7 @@ def test_pytest_bootstrap_handoff_preserves_stdio_under_hidden_console(
 
 def test_posix_guarded_popen_uses_new_session(monkeypatch) -> None:
     module = memory_guard
-    monkeypatch.setattr(module, "_is_windows_process_model", lambda: False)
+    monkeypatch.setattr(process_model, "is_windows_process_model", lambda: False)
 
     assert module._guarded_popen_process_isolation_kwargs() == {
         "start_new_session": True
@@ -1266,7 +1266,7 @@ def test_windows_protects_external_codex_descendants_but_not_owned_children(
         ),
     }
 
-    monkeypatch.setattr(module, "_is_windows_process_model", lambda: True)
+    monkeypatch.setattr(process_model, "is_windows_process_model", lambda: True)
 
     protected = module.protected_process_group_ids(
         samples,
@@ -1309,7 +1309,7 @@ def test_hidden_argv_uses_subprocess_worker_on_windows(monkeypatch) -> None:
     def fail_execve(*args, **kwargs):  # noqa: ANN002, ANN003
         raise AssertionError("Windows hidden-argv path must not call execve")
 
-    monkeypatch.setattr(module, "_is_windows_process_model", lambda: True)
+    monkeypatch.setattr(process_model, "is_windows_process_model", lambda: True)
     monkeypatch.setattr(module, "inherit_stdio_kwargs", lambda: stdio)
     monkeypatch.setattr(
         module, "subprocess", SimpleNamespace(**{**vars(subprocess), "run": fake_run})
@@ -1342,7 +1342,7 @@ def test_hidden_argv_uses_subprocess_worker_on_windows(monkeypatch) -> None:
 
 def test_process_group_signal_without_host_capability_fails_closed(monkeypatch) -> None:
     monkeypatch.delattr(process_custody.os, "killpg", raising=False)
-    monkeypatch.setattr(process_custody, "_is_windows_process_model", lambda: False)
+    monkeypatch.setattr(process_model, "is_windows_process_model", lambda: False)
     action = process_custody._send_process_group_signal_action(100, 15)
     assert action.result == "failed"
     assert action.error == "host has no POSIX process-group signal capability"
@@ -1369,7 +1369,7 @@ def test_terminate_watched_processes_windows_kills_owned_descendants(
     def fake_kill(pid: int, sig: int) -> None:
         sent.append((pid, sig))
 
-    monkeypatch.setattr(module, "_is_windows_process_model", lambda: True)
+    monkeypatch.setattr(process_model, "is_windows_process_model", lambda: True)
     monkeypatch.setattr(
         module, "_current_protected_process_group_ids", lambda _s, **_kw: set()
     )
@@ -1415,7 +1415,7 @@ def test_windows_termination_revalidates_identity_between_discovery_and_term(
         started_at_ns=201,
     )
     sent: list[tuple[int, int]] = []
-    monkeypatch.setattr(module, "_is_windows_process_model", lambda: True)
+    monkeypatch.setattr(process_model, "is_windows_process_model", lambda: True)
     monkeypatch.setattr(
         module, "_current_protected_process_group_ids", lambda _s, **_kw: set()
     )
@@ -1463,7 +1463,7 @@ def test_windows_termination_revalidates_identity_between_term_and_kill(
     )
     samples = iter(({200: original}, {200: reused}))
     sent: list[tuple[int, int]] = []
-    monkeypatch.setattr(module, "_is_windows_process_model", lambda: True)
+    monkeypatch.setattr(process_model, "is_windows_process_model", lambda: True)
     monkeypatch.setattr(
         module, "_current_protected_process_group_ids", lambda _s, **_kw: set()
     )
@@ -1517,7 +1517,7 @@ def test_terminate_watched_processes_windows_refuses_codex_root(
     }
     sent: list[tuple[int, int]] = []
 
-    monkeypatch.setattr(module, "_is_windows_process_model", lambda: True)
+    monkeypatch.setattr(process_model, "is_windows_process_model", lambda: True)
     _fake_custody(
         monkeypatch,
         "os",
@@ -1543,7 +1543,7 @@ def test_terminate_watched_processes_windows_refuses_owned_root_with_empty_sampl
     module = process_custody
     sent: list[tuple[int, int]] = []
 
-    monkeypatch.setattr(module, "_is_windows_process_model", lambda: True)
+    monkeypatch.setattr(process_model, "is_windows_process_model", lambda: True)
     _fake_custody(
         monkeypatch,
         "os",
@@ -1607,7 +1607,7 @@ def test_terminate_watched_processes_windows_refuses_external_codex_descendant_r
     }
     sent: list[tuple[int, int]] = []
 
-    monkeypatch.setattr(module, "_is_windows_process_model", lambda: True)
+    monkeypatch.setattr(process_model, "is_windows_process_model", lambda: True)
     _fake_custody(
         monkeypatch,
         "os",
@@ -1672,7 +1672,7 @@ def test_pid_signal_windows_refuses_external_codex_lineage_without_group_net(
     }
     sent: list[tuple[int, int]] = []
 
-    monkeypatch.setattr(module, "_is_windows_process_model", lambda: True)
+    monkeypatch.setattr(process_model, "is_windows_process_model", lambda: True)
     monkeypatch.setattr(
         module, "_current_protected_process_group_ids", lambda _s, **_kw: set()
     )
@@ -1721,8 +1721,8 @@ def test_terminate_single_pid_windows_refuses_external_codex_lineage(
     }
     sent: list[tuple[int, int]] = []
 
-    monkeypatch.setattr(module, "_is_windows_process_model", lambda: True)
-    monkeypatch.setattr(module, "sample_processes", lambda: samples)
+    monkeypatch.setattr(process_model, "is_windows_process_model", lambda: True)
+    monkeypatch.setattr(process_model, "sample_processes", lambda: samples)
     monkeypatch.setattr(
         module, "_current_protected_process_group_ids", lambda _s, **_kw: set()
     )
@@ -1776,8 +1776,8 @@ def test_terminate_single_pid_windows_rechecks_identity_before_signal(
         sample_calls += 1
         return owned if sample_calls == 1 else reused_as_codex
 
-    monkeypatch.setattr(module, "_is_windows_process_model", lambda: True)
-    monkeypatch.setattr(module, "sample_processes", sample_processes)
+    monkeypatch.setattr(process_model, "is_windows_process_model", lambda: True)
+    monkeypatch.setattr(process_model, "sample_processes", sample_processes)
     monkeypatch.setattr(
         module, "_current_protected_process_group_ids", lambda _s, **_kw: set()
     )
@@ -1857,6 +1857,7 @@ def test_windows_current_guard_child_custody(
     }
     sent: list[tuple[int, int]] = []
     install_module_os_view(monkeypatch, module, name="nt")
+    monkeypatch.setattr(process_model, "is_windows_process_model", lambda: True)
     monkeypatch.setattr(module.os, "getpid", lambda: 999)
     monkeypatch.setattr(module.os, "kill", lambda pid, sig: sent.append((pid, sig)))
 
@@ -2109,24 +2110,38 @@ def test_windows_command_read_rejects_invalid_or_changed_descriptors(monkeypatch
     )
 
 
-@pytest.mark.parametrize("module", [process_custody, process_model])
-def test_all_default_windows_sampling_uses_isolated_authority(monkeypatch, module):
+@pytest.mark.parametrize("selection", ["windows", "host", "custody"])
+def test_all_default_windows_sampling_uses_isolated_authority(monkeypatch, selection):
     def native():
         raise AssertionError("native query escaped helper isolation")
 
+    reads = []
+
+    def bounded():
+        reads.append(True)
+        return [(7, 1, "python.exe", 3, 123, "full")]
+
     monkeypatch.setattr(windows_snapshot, "_windows_process_snapshot_rows", native)
-    if module is process_model:
-        assert (
-            module.sample_processes_windows.__defaults__[0]
-            is windows_snapshot._windows_process_snapshot_rows_hard_timeout
-        )
+    monkeypatch.setattr(process_model, "is_windows_process_model", lambda: True)
+    monkeypatch.setattr(
+        process_model, "_windows_process_snapshot_rows_hard_timeout", bounded
+    )
+    if selection == "windows":
+        samples = process_model.sample_processes_windows()
+    elif selection == "host":
+        samples = process_model.sample_processes()
     else:
-        monkeypatch.setattr(
-            module,
-            "_windows_process_snapshot_rows_hard_timeout",
-            lambda: [(7, 1, "python.exe", 3, 123, "full")],
+        samples = process_model.sample_processes_custody(
+            process_model.CustodyInterest(
+                tree_pids=frozenset({7}), exact_pids=frozenset()
+            )
         )
-        assert module.sample_processes_windows()[7].command == "python.exe"
+
+    assert sorted(samples) == [7]
+    assert samples[7].ppid == 1
+    assert samples[7].started_at_ns == 123
+    assert samples[7].command == "python.exe"
+    assert reads == [True]
 
 
 def test_windows_native_av_helper_is_typed_failure(monkeypatch):

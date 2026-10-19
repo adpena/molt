@@ -12,11 +12,17 @@ and termination re-validates process identity (creation time) at the kill.
 from __future__ import annotations
 
 from pathlib import Path
+
+import pytest
 import signal
 import os
 from tests.process_guard_common import install_module_view
 from tools import orphan_reaper
+from tools.memory_guard_core import process_model
 from tools.memory_guard_core import process_custody
+
+pytestmark = pytest.mark.usefixtures("session_sentinel_paused")
+
 
 WINDOWS_ROOT = Path(r"C:\repo\molt")
 
@@ -25,10 +31,7 @@ def _force_windows_model(module, monkeypatch) -> None:
     # ``is_molt_process`` casefolds path matching only under the Windows process
     # model; force it so the ownership gate exercises real Windows command lines
     # regardless of the host the test runs on.
-    monkeypatch.setattr(
-        module.process_sentinel, "_is_windows_process_model", lambda: True
-    )
-    monkeypatch.setattr(module.memory_guard, "_is_windows_process_model", lambda: True)
+    monkeypatch.setattr(process_model, "is_windows_process_model", lambda: True)
 
 
 def _sample(module, *, pid, ppid, command, started_at_ns=1_000):
@@ -185,8 +188,8 @@ def test_reap_one_refuses_on_pid_reuse_identity_mismatch(monkeypatch) -> None:
     # Route the shared identity-checked primitive at the recycled table and
     # observe whether it would signal. ``os.kill`` lives in the custody module.
     monkeypatch.setattr(
-        module.memory_guard,
-        "sample_processes_windows_hard_timeout",
+        process_model,
+        "sample_processes",
         lambda: {4321: recycled_sample},
     )
     install_module_view(monkeypatch, "os", os, process_custody, kill=fake_os_kill)
@@ -219,8 +222,8 @@ def test_reap_one_signals_when_identity_matches(monkeypatch) -> None:
         sent.append((pid, sig))
 
     monkeypatch.setattr(
-        module.memory_guard,
-        "sample_processes_windows_hard_timeout",
+        process_model,
+        "sample_processes",
         lambda: {4321: sample},
     )
     install_module_view(monkeypatch, "os", os, process_custody, kill=fake_os_kill)

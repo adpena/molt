@@ -191,12 +191,11 @@ from molt.memory_guard_paths import (  # noqa: E402
     active_guard_marker_dir,
     memory_guard_state_root,
 )
-from tools.memory_guard_core.process_custody import (  # noqa: E402
-    sample_processes_posix as sample_processes_posix,
-    sample_processes_windows as sample_processes_windows,
-    sample_processes_windows_hard_timeout as sample_processes_windows_hard_timeout,
+from tools.memory_guard_core.process_model import (  # noqa: E402
     sample_processes as sample_processes,
     sample_processes_custody as sample_processes_custody,
+)
+from tools.memory_guard_core.process_custody import (  # noqa: E402
     terminate_watched_processes as terminate_watched_processes,
     cleanup_tracked_orphans as cleanup_tracked_orphans,
     _terminate_single_pid as _terminate_single_pid,
@@ -221,7 +220,6 @@ from tools.memory_guard_core.process_custody import (  # noqa: E402
     _filter_protected_watched_pids as _filter_protected_watched_pids,
     _fully_completed_process_groups as _fully_completed_process_groups,
     _inject_guard_memory_contract_env as _inject_guard_memory_contract_env,
-    _is_windows_process_model as _is_windows_process_model,
     _live_process_group_ids as _live_process_group_ids,
     _pid_exited_or_unobservable as _pid_exited_or_unobservable,
     _process_group_exited_or_unobservable as _process_group_exited_or_unobservable,
@@ -295,7 +293,6 @@ _INTERNAL_ENV_KEYS = (
 )
 HOST_CONTROL_PLANE_TOKENS = _process_model.HOST_CONTROL_PLANE_TOKENS
 HOST_CONTROL_PLANE_EXECUTABLE_NAMES = _process_model.HOST_CONTROL_PLANE_EXECUTABLE_NAMES
-sample_processes_linux_proc = _process_model.sample_processes_linux_proc
 
 
 def parse_process_table_with_start(text: str) -> dict[int, ProcessSample]:
@@ -307,7 +304,7 @@ def _suite_lease_process_ids(environ: Mapping[str, str]) -> frozenset[int]:
     from molt import backend_daemon_suite_custody as suite_custody
 
     raw = environ.get(suite_custody.LEASE_ENV)
-    if not raw or _is_windows_process_model():
+    if not raw or _process_model.is_windows_process_model():
         return frozenset()
     record = suite_custody.read_lease(Path(raw))
     if record is None:
@@ -317,14 +314,6 @@ def _suite_lease_process_ids(environ: Mapping[str, str]) -> frozenset[int]:
         for pid in (record["owner_pid"], record["guardian_pid"])
         if type(pid) is int and pid > 0
     )
-
-
-def _timeout_sampler(
-    sampler: Callable[[], Mapping[int, ProcessSample]],
-) -> Callable[[], Mapping[int, ProcessSample]]:
-    if _is_windows_process_model() and sampler is sample_processes:
-        return sample_processes_windows_hard_timeout
-    return sampler
 
 
 def _validated_termination_report(
@@ -711,7 +700,7 @@ def _close_fds(fds: Sequence[int | None]) -> None:
 
 def _guarded_popen_process_isolation_kwargs() -> ProcessGroupKwargs:
     return detached_process_group_kwargs(
-        windows=_is_windows_process_model(),
+        windows=_process_model.is_windows_process_model(),
         subprocess_module=subprocess,
     )
 
@@ -762,7 +751,7 @@ def _cargo_interruption_reason(
 def _returncode_signal_payload(returncode: int) -> dict[str, object] | None:
     return _reporting.exit_signal_payload(
         returncode,
-        windows_process_model=_is_windows_process_model(),
+        windows_process_model=_process_model.is_windows_process_model(),
     )
 
 
@@ -1153,7 +1142,7 @@ def run_guarded(
                 child_clock.started = resumed_at
         sampling_source = (
             "windows_full_process_table"
-            if _is_windows_process_model()
+            if _process_model.is_windows_process_model()
             else _process_model.posix_custody_source()
         )
         if sampler is not sample_processes:
@@ -1163,7 +1152,7 @@ def run_guarded(
         # partial rows, a termination decides on the host table.
         custody_rows_partial = (
             sampler is sample_processes
-            and not _is_windows_process_model()
+            and not _process_model.is_windows_process_model()
             and _process_model.posix_custody_reads_partial_rows()
         )
         if guard_job is not None:
@@ -1285,7 +1274,7 @@ def run_guarded(
             sampling_source = "windows_job_members"
         root_started_at_ns = (
             windows_process_handle_started_at_ns(getattr(proc, "_handle", None))
-            if _is_windows_process_model()
+            if _process_model.is_windows_process_model()
             else _process_model.process_started_at_ns(proc.pid)
         )
         if root_started_at_ns is not None:
@@ -1712,7 +1701,7 @@ def run_guarded(
             # a lease export which Job completion would immediately terminate.
             if (
                 not cleanup_orphans
-                or _is_windows_process_model()
+                or _process_model.is_windows_process_model()
                 or not child_env.get("MOLT_BACKEND_DAEMON_SUITE_LEASE")
             ):
                 return
@@ -1747,7 +1736,6 @@ def run_guarded(
 
         def sample_tracked_tree(
             *,
-            timeout_deadline: bool = False,
             allow_transient_timeout: bool = False,
         ) -> tuple[Mapping[int, ProcessSample], set[int]] | None:
             nonlocal guard_interrupted, last_sample_cost_s, latest_cargo_observations
@@ -1759,7 +1747,6 @@ def run_guarded(
             nonlocal sampling_wall_time_s, sampling_cpu_time_s
             nonlocal max_sampling_wall_time_s, max_sampling_cpu_time_s
             nonlocal sampling_process_rows, max_sampling_process_rows
-            active_sampler = _timeout_sampler(sampler) if timeout_deadline else sampler
             sample_started_ns = time.perf_counter_ns()
             sample_cpu_started_ns = time.process_time_ns()
             sampling_attempts += 1
@@ -1785,7 +1772,7 @@ def run_guarded(
                 )
 
             try:
-                if active_sampler is sample_processes:
+                if sampler is sample_processes:
                     # One poll needs the tree and the declared rows, not the
                     # host table (docs/design/memory_guard_custody_sampling.md).
                     samples = sample_processes_custody(
@@ -1797,7 +1784,7 @@ def run_guarded(
                         )
                     )
                 else:
-                    samples = active_sampler()
+                    samples = sampler()
             except WindowsProcessSnapshotTimeout as exc:
                 record_sampling_cost()
                 if allow_transient_timeout:
@@ -1986,7 +1973,7 @@ def run_guarded(
                 break
             if timeout is not None and now - start >= timeout:
                 timed_out = True
-                timeout_snapshot = sample_tracked_tree(timeout_deadline=True)
+                timeout_snapshot = sample_tracked_tree()
                 assert timeout_snapshot is not None
                 samples, watched = timeout_snapshot
                 if guard_interrupted:
@@ -2105,7 +2092,7 @@ def run_guarded(
             if (
                 cleanup_orphans
                 and not guard_interrupted
-                and not _is_windows_process_model()
+                and not _process_model.is_windows_process_model()
                 and child_env.get("MOLT_BACKEND_DAEMON_SUITE_LEASE")
             ):
                 transfer_receipted_daemon_instances(sampler())
@@ -2295,7 +2282,7 @@ def run_guarded(
                 tracker=tracker,
                 sampler=sampler,
                 windows_job_cleanup=windows_job_cleanup,
-                windows_process_model=_is_windows_process_model(),
+                windows_process_model=_process_model.is_windows_process_model(),
                 posix_process_model=os.name == "posix",
                 cleanup_orphans=cleanup_orphans,
                 guard_interrupted=guard_interrupted,
@@ -3048,7 +3035,7 @@ def main(
         return 2
     if hide_command_argv and current_env.get(INTERNAL_WORKER_ENV) != "1":
         worker_argv = _worker_argv(args)
-        if _is_windows_process_model():
+        if _process_model.is_windows_process_model():
             completed = subprocess.run(
                 worker_argv,
                 env=_worker_env(current_env, command),

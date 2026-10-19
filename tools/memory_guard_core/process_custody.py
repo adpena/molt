@@ -24,17 +24,12 @@ from tools.memory_guard_core.common import utc_timestamp as _utc_timestamp
 from tools.memory_guard_core.memory_limits import ResolvedMemoryLimits
 from tools.memory_guard_core.windows_snapshot import (
     WindowsProcessSnapshotRow,
-    _windows_process_snapshot_rows_hard_timeout,
 )
 
 from molt import host_capacity
 
 ROOT = Path(__file__).resolve().parents[2]
 MAX_TERMINATION_PID_FANOUT = 128
-
-
-def _is_windows_process_model() -> bool:
-    return os.name == "nt"
 
 
 def signal_payload(sig: int) -> dict[str, int | str]:
@@ -407,37 +402,6 @@ def parse_windows_process_snapshot_rows(
     rows: Sequence[WindowsProcessSnapshotRow],
 ) -> dict[int, ProcessSample]:
     return _process_model.parse_windows_process_snapshot_rows(rows)
-
-
-def sample_processes_posix() -> dict[int, ProcessSample]:
-    return _process_model.sample_processes_posix()
-
-
-def sample_processes_windows() -> dict[int, ProcessSample]:
-    return _process_model.sample_processes_windows(
-        _windows_process_snapshot_rows_hard_timeout
-    )
-
-
-def sample_processes_windows_hard_timeout() -> dict[int, ProcessSample]:
-    return _process_model.sample_processes_windows(
-        _windows_process_snapshot_rows_hard_timeout
-    )
-
-
-def sample_processes() -> dict[int, ProcessSample]:
-    if _is_windows_process_model():
-        return sample_processes_windows()
-    return sample_processes_posix()
-
-
-def sample_processes_custody(
-    interest: _process_model.CustodyInterest,
-) -> dict[int, ProcessSample]:
-    """The rows one guard poll needs; a superset where no kernel filter exists."""
-    if _is_windows_process_model():
-        return sample_processes_windows()
-    return _process_model.sample_processes_posix_custody(interest)
 
 
 def _sample_pgid(sample: ProcessSample) -> int:
@@ -982,11 +946,11 @@ def _inject_guard_memory_contract_env(
 def _terminate_single_process_group(pgid: int, *, grace: float) -> bool:
     if pgid <= 0:
         return True
-    if _is_windows_process_model():
+    if _process_model.is_windows_process_model():
         return _terminate_single_pid(pgid, grace=grace)
     if os.name != "posix" or pgid == os.getpgrp():
         return True
-    samples = sample_processes()
+    samples = _process_model.sample_processes()
     identities = {
         sample.pid: process_identity(sample)
         for sample in _process_group_members(samples, pgid)
@@ -996,7 +960,7 @@ def _terminate_single_process_group(pgid: int, *, grace: float) -> bool:
     action = _terminate_process_group_if_identities_match_action(
         pgid,
         identities,
-        sampler=sample_processes,
+        sampler=_process_model.sample_processes,
         grace=grace,
     )
     return action.result in {
@@ -1012,7 +976,7 @@ def _terminate_single_process_group(pgid: int, *, grace: float) -> bool:
 def _terminate_single_pid(pid: int, *, grace: float) -> bool:
     if pid <= 0 or pid == os.getpid():
         return True
-    samples = sample_processes()
+    samples = _process_model.sample_processes()
     sample = samples.get(pid)
     if sample is None:
         return True
@@ -1032,7 +996,7 @@ def _terminate_single_pid(pid: int, *, grace: float) -> bool:
     action = _terminate_pid_if_identity_action(
         pid,
         process_identity(sample),
-        sampler=sample_processes,
+        sampler=_process_model.sample_processes,
         grace=grace,
     )
     return action.result in {
@@ -1087,7 +1051,7 @@ def _pid_exited_or_unobservable(pid: int, *, grace: float) -> bool:
 
 
 def _process_group_exited_or_unobservable(pgid: int, *, grace: float) -> bool:
-    if _is_windows_process_model():
+    if _process_model.is_windows_process_model():
         return _pid_exited_or_unobservable(pgid, grace=grace)
     killpg = getattr(os, "killpg", None)
     if killpg is None:
@@ -1491,7 +1455,7 @@ def terminate_watched_processes(
     a missing sampler row. It grants no descendant or process-group ownership.
     """
     if sampler is None:
-        sampler = sample_processes
+        sampler = _process_model.sample_processes
     started_at = _utc_timestamp()
     actions: list[GuardTerminationAction] = []
 
@@ -1555,7 +1519,7 @@ def terminate_watched_processes(
             )
         )
         return finish(finish_reason="invalid_root_pid")
-    if _is_windows_process_model():
+    if _process_model.is_windows_process_model():
         observed_samples = sampler() if samples is None else samples
         observed = (
             watched
@@ -1979,7 +1943,7 @@ def cleanup_tracked_orphans(
     if root_pid <= 0:
         return GuardOrphanCleanupResult()
     if sampler is None:
-        sampler = sample_processes
+        sampler = _process_model.sample_processes
     sampler_failure: BaseException | None = None
     if samples is None:
         try:
@@ -2144,7 +2108,9 @@ def terminate_verified_pid(
     pid: int,
     identity: ProcessIdentity,
     *,
-    sampler: Callable[[], Mapping[int, ProcessSample]] = sample_processes,
+    sampler: Callable[
+        [], Mapping[int, ProcessSample]
+    ] = _process_model.sample_processes,
     grace: float = 0.25,
 ) -> tuple[GuardTerminationAction, ...]:
     """Terminate one PID only through the shared identity/custody gate.
@@ -2211,7 +2177,9 @@ def cleanup_repo_scoped_orphans_since_baseline(
     *,
     baseline_pgids: frozenset[int],
     tracker: ProcessTreeTracker,
-    sampler: Callable[[], Mapping[int, ProcessSample]] = sample_processes,
+    sampler: Callable[
+        [], Mapping[int, ProcessSample]
+    ] = _process_model.sample_processes,
     samples: Mapping[int, ProcessSample] | None = None,
     grace: float = 0.25,
 ) -> GuardOrphanCleanupResult:

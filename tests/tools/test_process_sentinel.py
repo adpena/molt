@@ -4,6 +4,8 @@ import os
 import sys
 import time
 from pathlib import Path
+
+import pytest
 from typing import Any
 
 from tests.process_guard_common import (
@@ -12,7 +14,11 @@ from tests.process_guard_common import (
     run_guarded_test_process,
 )
 from tools import guarded_entrypoints, process_sentinel
+from tools.memory_guard_core import process_model
 from tools.memory_guard_core import process_custody
+
+pytestmark = pytest.mark.usefixtures("session_sentinel_paused")
+
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 WINDOWS_ROOT = Path("C:/repo/molt")
@@ -688,8 +694,7 @@ def test_process_groups_protect_codex_spawned_molt_launcher_parent_present(
     monkeypatch,
 ) -> None:
     module = process_sentinel
-    monkeypatch.setattr(module, "_is_windows_process_model", lambda: True)
-    monkeypatch.setattr(module.memory_guard, "_is_windows_process_model", lambda: True)
+    monkeypatch.setattr(process_model, "is_windows_process_model", lambda: True)
     samples = {
         500: module.memory_guard.ProcessSample(
             pid=500,
@@ -726,8 +731,7 @@ def test_process_groups_protect_molt_launcher_with_absent_parent(
     monkeypatch,
 ) -> None:
     module = process_sentinel
-    monkeypatch.setattr(module, "_is_windows_process_model", lambda: True)
-    monkeypatch.setattr(module.memory_guard, "_is_windows_process_model", lambda: True)
+    monkeypatch.setattr(process_model, "is_windows_process_model", lambda: True)
     samples = {
         501: module.memory_guard.ProcessSample(
             pid=501,
@@ -744,7 +748,7 @@ def test_process_groups_protect_molt_launcher_with_absent_parent(
 
 def test_process_groups_keep_confirmed_orphan_build_killable(monkeypatch) -> None:
     module = process_sentinel
-    monkeypatch.setattr(module, "_is_windows_process_model", lambda: True)
+    monkeypatch.setattr(process_model, "is_windows_process_model", lambda: True)
     samples = {
         501: module.memory_guard.ProcessSample(
             pid=501,
@@ -764,7 +768,7 @@ def test_process_groups_explicit_ownership_overrides_incomplete_ancestry(
     monkeypatch,
 ) -> None:
     module = process_sentinel
-    monkeypatch.setattr(module, "_is_windows_process_model", lambda: True)
+    monkeypatch.setattr(process_model, "is_windows_process_model", lambda: True)
     samples = {
         20: module.memory_guard.ProcessSample(
             pid=20,
@@ -819,7 +823,7 @@ def test_process_groups_exclude_windows_snapshot_helper_descendants(
         ),
     }
 
-    monkeypatch.setattr(module, "_is_windows_process_model", lambda: True)
+    monkeypatch.setattr(process_model, "is_windows_process_model", lambda: True)
 
     groups = module.process_groups(samples, root=root, self_pid=999)
 
@@ -859,7 +863,7 @@ def test_process_groups_exclude_explicitly_owned_windows_snapshot_helper_tree(
         ),
     }
 
-    monkeypatch.setattr(module, "_is_windows_process_model", lambda: True)
+    monkeypatch.setattr(process_model, "is_windows_process_model", lambda: True)
 
     groups = module.process_groups(
         samples,
@@ -1170,8 +1174,7 @@ def test_process_groups_exclude_windows_external_codex_descendant_but_keep_owned
         ),
     }
 
-    monkeypatch.setattr(module, "_is_windows_process_model", lambda: True)
-    monkeypatch.setattr(module.memory_guard, "_is_windows_process_model", lambda: True)
+    monkeypatch.setattr(process_model, "is_windows_process_model", lambda: True)
     groups = module.process_groups(
         samples,
         root=root,
@@ -1241,8 +1244,7 @@ def test_process_groups_exclude_windows_codex_claude_helper_paths(
         ),
     }
 
-    monkeypatch.setattr(module, "_is_windows_process_model", lambda: True)
-    monkeypatch.setattr(module.memory_guard, "_is_windows_process_model", lambda: True)
+    monkeypatch.setattr(process_model, "is_windows_process_model", lambda: True)
 
     groups = module.process_groups(samples, root=root, self_pid=999)
 
@@ -1429,7 +1431,7 @@ def test_terminate_group_refuses_protected_codex_group(monkeypatch) -> None:
         ),
     }
     sent_groups: list[tuple[int, int]] = []
-    monkeypatch.setattr(module, "sample_processes_for_sentinel", lambda: samples)
+    monkeypatch.setattr(process_model, "sample_processes", lambda: samples)
     _install_sentinel_os(
         monkeypatch,
         module,
@@ -1459,8 +1461,8 @@ def test_terminate_group_refuses_posix_group_without_expected_identities(
     }
     sent_groups: list[tuple[int, int]] = []
 
-    monkeypatch.setattr(module, "_is_windows_process_model", lambda: False)
-    monkeypatch.setattr(module, "sample_processes_for_sentinel", lambda: samples)
+    monkeypatch.setattr(process_model, "is_windows_process_model", lambda: False)
+    monkeypatch.setattr(process_model, "sample_processes", lambda: samples)
     _install_sentinel_os(
         monkeypatch,
         module,
@@ -1488,7 +1490,7 @@ def test_terminate_group_uses_pid_kill_without_getpgrp_on_windows(monkeypatch) -
     killed: list[tuple[int, int]] = []
     killpg_calls: list[tuple[int, int]] = []
 
-    monkeypatch.setattr(module, "_is_windows_process_model", lambda: True)
+    monkeypatch.setattr(process_model, "is_windows_process_model", lambda: True)
     monkeypatch.setattr(module, "_safe_getpgrp", lambda: None)
     _install_sentinel_os(
         monkeypatch,
@@ -1498,7 +1500,7 @@ def test_terminate_group_uses_pid_kill_without_getpgrp_on_windows(monkeypatch) -
         killpg=lambda pgid, sig: killpg_calls.append((pgid, sig)),
     )
     install_module_view(monkeypatch, "time", time, module, sleep=lambda _seconds: None)
-    monkeypatch.setattr(module, "sample_processes_for_sentinel", lambda: samples)
+    monkeypatch.setattr(process_model, "sample_processes", lambda: samples)
 
     module.terminate_group(
         100,
@@ -1527,7 +1529,7 @@ def test_terminate_group_report_only_env_skips_windows_termination(
     killed: list[tuple[int, int]] = []
 
     monkeypatch.setenv(module.REPORT_ONLY_ENV, "1")
-    monkeypatch.setattr(module, "_is_windows_process_model", lambda: True)
+    monkeypatch.setattr(process_model, "is_windows_process_model", lambda: True)
     monkeypatch.setattr(module, "_safe_getpgrp", lambda: None)
     _install_sentinel_os(
         monkeypatch,
@@ -1536,7 +1538,7 @@ def test_terminate_group_report_only_env_skips_windows_termination(
         kill=lambda pid, sig: killed.append((pid, sig)),
     )
     install_module_view(monkeypatch, "time", time, module, sleep=lambda _seconds: None)
-    monkeypatch.setattr(module, "sample_processes_for_sentinel", lambda: samples)
+    monkeypatch.setattr(process_model, "sample_processes", lambda: samples)
 
     module.terminate_group(
         100,
@@ -1568,7 +1570,7 @@ def test_terminate_group_refuses_windows_group_without_expected_identity(
     }
     killed: list[tuple[int, int]] = []
 
-    monkeypatch.setattr(module, "_is_windows_process_model", lambda: True)
+    monkeypatch.setattr(process_model, "is_windows_process_model", lambda: True)
     monkeypatch.setattr(module, "_safe_getpgrp", lambda: None)
     _install_sentinel_os(
         monkeypatch,
@@ -1576,7 +1578,7 @@ def test_terminate_group_refuses_windows_group_without_expected_identity(
         getpid=lambda: 9999,
         kill=lambda pid, sig: killed.append((pid, sig)),
     )
-    monkeypatch.setattr(module, "sample_processes_for_sentinel", lambda: samples)
+    monkeypatch.setattr(process_model, "sample_processes", lambda: samples)
 
     module.terminate_group(100, grace=0.001, root=Path("/repo/molt"))
 
@@ -1605,8 +1607,7 @@ def test_terminate_group_windows_refuses_reused_pid_identity(monkeypatch) -> Non
     }
     killed: list[tuple[int, int]] = []
 
-    monkeypatch.setattr(module, "_is_windows_process_model", lambda: True)
-    monkeypatch.setattr(module.memory_guard, "_is_windows_process_model", lambda: True)
+    monkeypatch.setattr(process_model, "is_windows_process_model", lambda: True)
     monkeypatch.setattr(module, "_safe_getpgrp", lambda: None)
     _install_sentinel_os(
         monkeypatch,
@@ -1614,7 +1615,7 @@ def test_terminate_group_windows_refuses_reused_pid_identity(monkeypatch) -> Non
         getpid=lambda: 9999,
         kill=lambda pid, sig: killed.append((pid, sig)),
     )
-    monkeypatch.setattr(module, "sample_processes_for_sentinel", lambda: samples)
+    monkeypatch.setattr(process_model, "sample_processes", lambda: samples)
 
     module.terminate_group(
         100,
@@ -1652,8 +1653,7 @@ def test_terminate_group_refuses_windows_codex_app_server(monkeypatch) -> None:
     }
     killed: list[tuple[int, int]] = []
 
-    monkeypatch.setattr(module, "_is_windows_process_model", lambda: True)
-    monkeypatch.setattr(module.memory_guard, "_is_windows_process_model", lambda: True)
+    monkeypatch.setattr(process_model, "is_windows_process_model", lambda: True)
     monkeypatch.setattr(module, "_safe_getpgrp", lambda: None)
     _install_sentinel_os(
         monkeypatch,
@@ -1661,7 +1661,7 @@ def test_terminate_group_refuses_windows_codex_app_server(monkeypatch) -> None:
         getpid=lambda: 9999,
         kill=lambda pid, sig: killed.append((pid, sig)),
     )
-    monkeypatch.setattr(module, "sample_processes_for_sentinel", lambda: samples)
+    monkeypatch.setattr(process_model, "sample_processes", lambda: samples)
 
     module.terminate_group(100, grace=0.001)
     module.terminate_group(101, grace=0.001)
@@ -1704,8 +1704,7 @@ def test_terminate_group_windows_refuses_external_codex_descendant_repo_command(
     }
     killed: list[tuple[int, int]] = []
 
-    monkeypatch.setattr(module, "_is_windows_process_model", lambda: True)
-    monkeypatch.setattr(module.memory_guard, "_is_windows_process_model", lambda: True)
+    monkeypatch.setattr(process_model, "is_windows_process_model", lambda: True)
     monkeypatch.setattr(module, "_safe_getpgrp", lambda: None)
     _install_sentinel_os(
         monkeypatch,
@@ -1713,7 +1712,7 @@ def test_terminate_group_windows_refuses_external_codex_descendant_repo_command(
         getpid=lambda: 9999,
         kill=lambda pid, sig: killed.append((pid, sig)),
     )
-    monkeypatch.setattr(module, "sample_processes_for_sentinel", lambda: samples)
+    monkeypatch.setattr(process_model, "sample_processes", lambda: samples)
 
     module.terminate_group(
         777,
@@ -1765,8 +1764,7 @@ def test_terminate_group_windows_keeps_current_sentinel_child_killable(
     }
     killed: list[tuple[int, int]] = []
 
-    monkeypatch.setattr(module, "_is_windows_process_model", lambda: True)
-    monkeypatch.setattr(module.memory_guard, "_is_windows_process_model", lambda: True)
+    monkeypatch.setattr(process_model, "is_windows_process_model", lambda: True)
     monkeypatch.setattr(module, "_safe_getpgrp", lambda: None)
     _install_sentinel_os(
         monkeypatch,
@@ -1775,7 +1773,7 @@ def test_terminate_group_windows_keeps_current_sentinel_child_killable(
         kill=lambda pid, sig: killed.append((pid, sig)),
     )
     install_module_view(monkeypatch, "time", time, module, sleep=lambda _seconds: None)
-    monkeypatch.setattr(module, "sample_processes_for_sentinel", lambda: samples)
+    monkeypatch.setattr(process_model, "sample_processes", lambda: samples)
 
     module.terminate_group(
         200,
@@ -1803,8 +1801,8 @@ def test_terminate_group_report_only_env_skips_posix_termination(
     sent_groups: list[tuple[int, int]] = []
 
     monkeypatch.setenv(module.REPORT_ONLY_ENV, "1")
-    monkeypatch.setattr(module, "_is_windows_process_model", lambda: False)
-    monkeypatch.setattr(module, "sample_processes_for_sentinel", lambda: samples)
+    monkeypatch.setattr(process_model, "is_windows_process_model", lambda: False)
+    monkeypatch.setattr(process_model, "sample_processes", lambda: samples)
     _install_sentinel_os(
         monkeypatch,
         module,
@@ -1852,8 +1850,8 @@ def test_terminate_group_rechecks_protection_before_sigterm(monkeypatch) -> None
         return first if calls == 1 else protected
 
     sent_groups: list[tuple[int, int]] = []
-    monkeypatch.setattr(module, "_is_windows_process_model", lambda: False)
-    monkeypatch.setattr(module, "sample_processes_for_sentinel", sample_processes)
+    monkeypatch.setattr(process_model, "is_windows_process_model", lambda: False)
+    monkeypatch.setattr(process_model, "sample_processes", sample_processes)
     _install_sentinel_os(
         monkeypatch,
         module,
@@ -2113,7 +2111,7 @@ def test_main_once_refreshes_adaptive_limits_with_matched_group_rss(
         return []
 
     monkeypatch.setattr(module.memory_guard, "adaptive_memory_budget", fake_budget)
-    monkeypatch.setattr(module, "sample_processes_for_sentinel", lambda: {})
+    monkeypatch.setattr(process_model, "sample_processes", lambda: {})
     monkeypatch.setattr(module, "process_groups", lambda *args, **kwargs: [group])
     monkeypatch.setattr(module, "find_violations", fake_find_violations)
 
@@ -2138,54 +2136,25 @@ def test_parser_accepts_group_and_tree_rss_aliases() -> None:
     assert tree_args.max_total_rss_gb == 3.5
 
 
-def test_sample_processes_for_sentinel_uses_windows_hard_sampler(monkeypatch) -> None:
-    module = process_sentinel
-    sample = module.memory_guard.ProcessSample(
-        pid=7,
-        ppid=1,
-        pgid=None,
-        rss_kb=9,
-        command="python.exe",
-    )
+def test_sentinel_cli_samples_through_the_canonical_host_dispatch(monkeypatch):
+    sample = process_model.ProcessSample(7, 1, 9, "foreign.exe")
+    for windows in (False, True):
+        calls = []
 
-    def fail_hot_sampler():
-        raise AssertionError("Windows sentinel cleanup must use hard-timeout sampler")
+        def snapshot(label):
+            calls.append(label)
+            return {sample.pid: sample}
 
-    monkeypatch.setattr(module, "_is_windows_process_model", lambda: True)
-    monkeypatch.setattr(module.memory_guard, "sample_processes", fail_hot_sampler)
-    monkeypatch.setattr(
-        module.memory_guard,
-        "sample_processes_windows_hard_timeout",
-        lambda: {7: sample},
-    )
-
-    assert module.sample_processes_for_sentinel() == {7: sample}
-
-
-def test_sample_processes_for_sentinel_uses_default_sampler_on_posix(
-    monkeypatch,
-) -> None:
-    module = process_sentinel
-    sample = module.memory_guard.ProcessSample(
-        pid=7,
-        ppid=1,
-        pgid=7,
-        rss_kb=9,
-        command="python",
-    )
-
-    def fail_windows_sampler():
-        raise AssertionError("POSIX sentinel cleanup must use default process sampler")
-
-    monkeypatch.setattr(module, "_is_windows_process_model", lambda: False)
-    monkeypatch.setattr(module.memory_guard, "sample_processes", lambda: {7: sample})
-    monkeypatch.setattr(
-        module.memory_guard,
-        "sample_processes_windows_hard_timeout",
-        fail_windows_sampler,
-    )
-
-    assert module.sample_processes_for_sentinel() == {7: sample}
+        with monkeypatch.context() as patch:
+            patch.setattr(process_model, "is_windows_process_model", lambda: windows)
+            patch.setattr(
+                process_model, "sample_processes_windows", lambda: snapshot("windows")
+            )
+            patch.setattr(
+                process_model, "sample_processes_posix", lambda: snapshot("posix")
+            )
+            assert process_sentinel.main(["--once", "--dry-run"]) == 0
+        assert calls == ["windows" if windows else "posix"]
 
 
 def test_main_once_dry_run_reports_without_terminating(monkeypatch, capsys) -> None:
@@ -2193,8 +2162,8 @@ def test_main_once_dry_run_reports_without_terminating(monkeypatch, capsys) -> N
     terminated: list[int] = []
 
     monkeypatch.setattr(
-        module,
-        "sample_processes_for_sentinel",
+        process_model,
+        "sample_processes",
         lambda: {
             10: module.memory_guard.ProcessSample(
                 pid=10,
@@ -2229,8 +2198,8 @@ def test_main_once_reports_repo_match_without_terminating(
     monkeypatch.setattr(module, "_utc_timestamp", lambda: "2026-05-24T10:00:00Z")
     install_module_view(monkeypatch, "time", time, module, monotonic=lambda: clock)
     monkeypatch.setattr(
-        module,
-        "sample_processes_for_sentinel",
+        process_model,
+        "sample_processes",
         lambda: {
             10: module.memory_guard.ProcessSample(
                 pid=10,
@@ -2274,8 +2243,8 @@ def test_main_json_reports_operator_incident_fields(monkeypatch, capsys) -> None
         "tests/tools/test_process_sentinel.py::json_unit (call)",
     )
     monkeypatch.setattr(
-        module,
-        "sample_processes_for_sentinel",
+        process_model,
+        "sample_processes",
         lambda: {
             10: module.memory_guard.ProcessSample(
                 pid=10,
@@ -2365,7 +2334,7 @@ def test_main_until_clean_drains_delayed_launches(monkeypatch) -> None:
         nonlocal clock
         clock += seconds
 
-    monkeypatch.setattr(module, "sample_processes_for_sentinel", fake_sample_processes)
+    monkeypatch.setattr(process_model, "sample_processes", fake_sample_processes)
     install_module_view(
         monkeypatch, "time", time, module, monotonic=fake_monotonic, sleep=fake_sleep
     )
@@ -2419,7 +2388,7 @@ def test_main_until_clean_waits_for_no_matched_groups(monkeypatch) -> None:
         nonlocal clock
         clock += seconds
 
-    monkeypatch.setattr(module, "sample_processes_for_sentinel", fake_sample_processes)
+    monkeypatch.setattr(process_model, "sample_processes", fake_sample_processes)
     install_module_view(
         monkeypatch, "time", time, module, monotonic=fake_monotonic, sleep=fake_sleep
     )
@@ -2517,8 +2486,7 @@ def test_molt_command_classification_cache_matches_uncached() -> None:
 
 def test_is_molt_process_verdicts_are_immune_to_pid_reuse(monkeypatch) -> None:
     module = process_sentinel
-    monkeypatch.setattr(module, "_is_windows_process_model", lambda: True)
-    monkeypatch.setattr(module.memory_guard, "_is_windows_process_model", lambda: True)
+    monkeypatch.setattr(process_model, "is_windows_process_model", lambda: True)
     molt = module.memory_guard.ProcessSample(
         pid=500,
         ppid=1,
@@ -2545,8 +2513,7 @@ def test_is_molt_process_verdicts_are_immune_to_pid_reuse(monkeypatch) -> None:
 
 def test_is_molt_process_self_pid_exclusion_is_not_cached(monkeypatch) -> None:
     module = process_sentinel
-    monkeypatch.setattr(module, "_is_windows_process_model", lambda: True)
-    monkeypatch.setattr(module.memory_guard, "_is_windows_process_model", lambda: True)
+    monkeypatch.setattr(process_model, "is_windows_process_model", lambda: True)
     sample = module.memory_guard.ProcessSample(
         pid=500,
         ppid=1,
@@ -2569,20 +2536,19 @@ def test_is_molt_process_cache_keys_on_process_model(monkeypatch) -> None:
         rss_kb=1000,
         command=upper_command,
     )
-    monkeypatch.setattr(module, "_is_windows_process_model", lambda: True)
+    monkeypatch.setattr(process_model, "is_windows_process_model", lambda: True)
     assert module.is_molt_process(sample, root=WINDOWS_ROOT, self_pid=9999)
     # POSIX matching is case-sensitive; the cached Windows verdict must not
     # leak across a process-model change.
-    monkeypatch.setattr(module, "_is_windows_process_model", lambda: False)
+    monkeypatch.setattr(process_model, "is_windows_process_model", lambda: False)
     assert not module.is_molt_process(sample, root=WINDOWS_ROOT, self_pid=9999)
-    monkeypatch.setattr(module, "_is_windows_process_model", lambda: True)
+    monkeypatch.setattr(process_model, "is_windows_process_model", lambda: True)
     assert module.is_molt_process(sample, root=WINDOWS_ROOT, self_pid=9999)
 
 
 def test_is_molt_process_cache_keys_on_token_authorities(monkeypatch) -> None:
     module = process_sentinel
-    monkeypatch.setattr(module, "_is_windows_process_model", lambda: True)
-    monkeypatch.setattr(module.memory_guard, "_is_windows_process_model", lambda: True)
+    monkeypatch.setattr(process_model, "is_windows_process_model", lambda: True)
     sample = module.memory_guard.ProcessSample(
         pid=501,
         ppid=1,
