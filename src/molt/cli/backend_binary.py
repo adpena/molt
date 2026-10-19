@@ -12,7 +12,6 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Mapping, cast
 
-from molt.backend_executable_names import backend_executable_name
 from molt.cargo_execution_policy import source_build_disabled_reason
 from molt.cli import progress as _progress
 from molt.cli.artifact_state import (
@@ -68,6 +67,7 @@ from molt.file_hashing import (
     _hash_source_tree_paths,
     _iter_source_fingerprint_files,
 )
+from molt.host_tool_products import HostToolProduct
 from molt.process_environment import ProcessEnvironment
 from molt.python_identity_common import _valid_sha256
 from molt.toolchain_identity import (
@@ -368,9 +368,12 @@ def _backend_fingerprint(
     build_admission: BackendBuildAdmission,
     backend_features: tuple[str, ...],
     stored_fingerprint: dict[str, Any] | None = None,
+    product: HostToolProduct = HostToolProduct.BACKEND,
 ) -> dict[str, Any]:
     source_paths, lock_digest = _backend_source_identity_inputs(
-        project_root, _backend_source_paths(project_root, backend_features)
+        project_root,
+        _backend_source_paths(project_root, backend_features, product=product),
+        product=product,
     )
     if _input_report.active():
         # Enumerate every backend source for the build record, whichever
@@ -447,12 +450,14 @@ def _current_backend_fingerprint(
     cargo_profile: str,
     backend_features: tuple[str, ...],
     build_admission: BackendBuildAdmission,
+    product: HostToolProduct = HostToolProduct.BACKEND,
 ) -> dict[str, Any]:
-    """This checkout's backend identity, hashed in full without a receipt."""
+    """This checkout's selected host-tool identity, without a stored receipt."""
     return _backend_fingerprint(
         project_root,
         cargo_profile=cargo_profile,
         build_admission=build_admission,
+        product=product,
         backend_features=backend_features,
     )
 
@@ -645,7 +650,12 @@ def import_backend_binary(
     return generation.path
 
 
-def _backend_probe_target(backend_features: tuple[str, ...]) -> str:
+def _backend_probe_target(
+    backend_features: tuple[str, ...],
+    product: HostToolProduct = HostToolProduct.BACKEND,
+) -> str:
+    if product is HostToolProduct.WASM_FACTS:
+        return product.value
     if "wasm-backend" in backend_features:
         return "wasm"
     if "luau-backend" in backend_features:
@@ -655,8 +665,14 @@ def _backend_probe_target(backend_features: tuple[str, ...]) -> str:
     return "native"
 
 
-def _is_cargo_output_coordinate(coordinate: Path) -> bool:
-    return coordinate == coordinate.parent / backend_executable_name(os_name=os.name)
+def _host_tool_output_name(product: HostToolProduct) -> str:
+    return product.value + (".exe" if os.name == "nt" else "")
+
+
+def _is_cargo_output_coordinate(
+    coordinate: Path, product: HostToolProduct = HostToolProduct.BACKEND
+) -> bool:
+    return coordinate == coordinate.parent / _host_tool_output_name(product)
 
 
 def _admit_published_backend(
@@ -668,6 +684,7 @@ def _admit_published_backend(
     backend_features: tuple[str, ...],
     fingerprint_path: Path,
     probe_validation_path: Path,
+    product: HostToolProduct = HostToolProduct.BACKEND,
 ) -> _BackendBinaryEnsureResult | None:
     """Admit a published feature lane by reads alone, or return None.
 
@@ -690,6 +707,7 @@ def _admit_published_backend(
             build_admission=build_admission,
             backend_features=backend_features,
             stored_fingerprint=stored_fingerprint,
+            product=product,
         )
         generation = _selected_backend_generation_matches(
             backend_bin,
@@ -710,7 +728,7 @@ def _admit_published_backend(
         if not _backend_probe_validation_matches(
             probe_validation_path,
             binary_path=generation,
-            probe_target=_backend_probe_target(backend_features),
+            probe_target=_backend_probe_target(backend_features, product),
             backend_features=backend_features,
             fingerprint=fingerprint,
         ):
@@ -733,17 +751,24 @@ def _ensure_backend_binary(
     backend_features: tuple[str, ...],
     rust_cpu: RustCpuPolicy,
     stage_timings_ms: dict[str, float] | None = None,
+    product: HostToolProduct = HostToolProduct.BACKEND,
+    environment: Mapping[str, str] | None = None,
 ) -> _BackendBinaryEnsureResult:
-    """Admit ``backend_bin``'s selected generation, publishing one if needed.
+    """Admit one selected host-tool generation, publishing one if needed.
 
     ``backend_bin`` is the variant's coordinate. Success names the immutable
     generation the build runs; the coordinate itself is never an executable.
     """
+    if not isinstance(product, HostToolProduct):
+        return _backend_ensure_failure("host_tool_product", "Unknown host tool product")
+    tool_label = "Backend" if product is HostToolProduct.BACKEND else "WASM facts tool"
     # Installed compilers are immutable release inputs, never Cargo outputs.
     # Admit before every developer skip/hydration/rebuild path.
     try:
         installed = installed_compiler_admission(
-            project_root, backend_features, cargo_profile
+            project_root,
+            backend_features if product is HostToolProduct.BACKEND else None,
+            cargo_profile if product is HostToolProduct.BACKEND else None,
         )
         if installed is not None:
             if rust_cpu is not RustCpuPolicy.BASELINE:
@@ -751,27 +776,39 @@ def _ensure_backend_binary(
                     "Installed Molt ships a baseline-CPU backend compiler; "
                     "MOLT_PERF_PROFILE=native-arch needs a source checkout"
                 )
-            if backend_bin != installed.compiler.binary:
+            installed_binary = installed.compiler.binary
+            if product is HostToolProduct.WASM_FACTS:
+                installed.compiler.verify_wasm_facts()
+                installed_binary = installed.compiler.wasm_facts_binary
+            if backend_bin != installed_binary:
                 raise ValueError(
-                    "Selected compiler differs from the installed compiler"
+                    f"Selected {product.value} differs from the installed product"
                 )
             return _BackendBinaryEnsureResult(
                 ok=True,
                 cache_compiler_fingerprint=installed.fingerprint,
-                binary=installed.compiler.binary,
+                binary=installed_binary,
             )
     except (OSError, ValueError) as exc:
         return _backend_ensure_failure("installed_compiler", str(exc))
-    if _is_cargo_output_coordinate(backend_bin):
+    if _is_cargo_output_coordinate(backend_bin, product):
         # Cargo's shared output belongs to whichever lane built last; only a
         # feature variant names a selection.
         return _backend_ensure_failure(
             "backend_artifact",
-            f"Backend coordinate names Cargo's shared output, not a variant: {backend_bin}",
+            f"{tool_label} coordinate names Cargo's shared output, not a variant: {backend_bin}",
         )
     try:
+        admission_environment = ProcessEnvironment(
+            os.environ if environment is None else environment
+        )
         build_admission = backend_build_admission(
-            project_root, backend_features, cargo_profile, os.environ, rust_cpu=rust_cpu
+            project_root,
+            backend_features,
+            cargo_profile,
+            admission_environment,
+            rust_cpu=rust_cpu,
+            product=product,
         )
     except CompilerIdentityError as exc:
         return _backend_ensure_failure("backend_source_identity", str(exc))
@@ -790,6 +827,7 @@ def _ensure_backend_binary(
         backend_features=backend_features,
         fingerprint_path=fingerprint_path,
         probe_validation_path=probe_validation_path,
+        product=product,
     )
     if published is not None:
         _record_backend_binary_stage_ms(
@@ -819,6 +857,7 @@ def _ensure_backend_binary(
                 build_admission=build_admission,
                 backend_features=backend_features,
                 stored_fingerprint=stored_fingerprint,
+                product=product,
             )
         except (OSError, ValueError) as exc:
             return _backend_ensure_failure("backend_source_identity", str(exc))
@@ -827,7 +866,7 @@ def _ensure_backend_binary(
             "backend_binary_compute_fingerprint",
             stage_start,
         )
-        cargo_output = backend_bin.parent / backend_executable_name(os_name=os.name)
+        cargo_output = backend_bin.parent / _host_tool_output_name(product)
 
         def _publish_cargo_output_receipt(
             identity: StableRegularFileIdentity,
@@ -853,7 +892,7 @@ def _ensure_backend_binary(
             identity: StableRegularFileIdentity | None = None,
         ) -> _BackendBinaryEnsureResult:
             stage_start = time.perf_counter()
-            probe_ir = json.dumps(
+            probe_ir: bytes | None = json.dumps(
                 {
                     "functions": [],
                     "module": "__probe__",
@@ -862,7 +901,7 @@ def _ensure_backend_binary(
                 }
             ).encode()
             probe_suffix = ".o"
-            if probe_target == "wasm":
+            if probe_target == "wasm" or product is HostToolProduct.WASM_FACTS:
                 probe_suffix = ".wasm"
             elif probe_target == "luau":
                 probe_suffix = ".luau"
@@ -874,15 +913,20 @@ def _ensure_backend_binary(
                 delete=False,
             )
             probe_path = Path(probe_tmp.name)
-            probe_tmp.close()
             probe_cmd = [str(binary), "--output", str(probe_path)]
-            if probe_target == "wasm":
+            if product is HostToolProduct.WASM_FACTS:
+                probe_ir = None
+                probe_cmd = [str(binary), "--scan-wasm-link-facts", str(probe_path)]
+            elif probe_target == "wasm":
                 probe_cmd.extend(["--target", "wasm"])
             elif probe_target == "luau":
                 probe_cmd.extend(["--target", "luau"])
             elif probe_target == "rust":
                 probe_cmd.extend(["--target", "rust"])
             try:
+                if product is HostToolProduct.WASM_FACTS:
+                    probe_tmp.write(b"\0asm\x01\0\0\0")
+                probe_tmp.close()
                 with stable_executable_probe(
                     binary,
                     label="backend probe executable",
@@ -903,6 +947,7 @@ def _ensure_backend_binary(
                         probe_cmd,
                         input=probe_ir,
                         cwd=project_root,
+                        env=build_admission.plan.environment,
                         timeout=cargo_timeout,
                         memory_guard_prefix="MOLT_BUILD",
                     )
@@ -913,7 +958,7 @@ def _ensure_backend_binary(
                     stage_start,
                 )
                 detail = (
-                    f"Backend feature probe did not finish within {exc.timeout:.1f}s "
+                    f"{tool_label} capability probe did not finish within {exc.timeout:.1f}s "
                     "(MOLT_CARGO_TIMEOUT); the first run of a newly built backend "
                     "can wait on the operating system's check of a new executable."
                 )
@@ -933,6 +978,7 @@ def _ensure_backend_binary(
                     "backend_feature_probe", str(exc), command=probe_cmd
                 )
             finally:
+                probe_tmp.close()
                 try:
                     probe_path.unlink()
                 except OSError:
@@ -950,7 +996,7 @@ def _ensure_backend_binary(
                     )
                     return _backend_ensure_failure(
                         "backend_probe_publication",
-                        f"Backend probe validation publication failed: {exc}",
+                        f"{tool_label} probe validation publication failed: {exc}",
                     )
             _record_backend_binary_stage_ms(
                 stage_timings_ms,
@@ -1048,7 +1094,7 @@ def _ensure_backend_binary(
                 "backend_binary_read_fingerprint",
                 stage_start,
             )
-        _quick_target = _backend_probe_target(backend_features)
+        _quick_target = _backend_probe_target(backend_features, product)
         probe_failure: _BackendBinaryEnsureResult | None = None
         selection_failure = _select_admitted_cargo_output(_quick_target)
         if selection_failure is not None:
@@ -1161,7 +1207,7 @@ def _ensure_backend_binary(
         )
         if hydrated is not None:
             hydrated_generation, fingerprint = hydrated
-            _probe_target = _backend_probe_target(backend_features)
+            _probe_target = _backend_probe_target(backend_features, product)
             _probe_result = _probe_backend_binary_support(
                 _probe_target,
                 binary=hydrated_generation.path,
@@ -1176,9 +1222,13 @@ def _ensure_backend_binary(
             if _probe_result.phase in _PROBE_TERMINAL_PHASES:
                 return _probe_result
             probe_failure = _probe_result
-        if reason := source_build_disabled_reason("Backend compiler"):
+        if reason := source_build_disabled_reason(
+            product.value, environment=admission_environment
+        ):
             if probe_failure is not None and probe_failure.detail:
-                reason += f"\nBackend feature probe failed: {probe_failure.detail}"
+                reason += (
+                    f"\n{tool_label} capability probe failed: {probe_failure.detail}"
+                )
             return _backend_ensure_failure("rebuild-policy", reason)
         # Raw Cargo outputs and source-only sidecars do not establish provenance.
         # Confirm the source/feature build before publishing content-bound receipts.
@@ -1196,7 +1246,9 @@ def _ensure_backend_binary(
         try:
             source_generation = CompilerSourceGeneration.capture(
                 [
-                    *_backend_source_paths(project_root, backend_features),
+                    *_backend_source_paths(
+                        project_root, backend_features, product=product
+                    ),
                     project_root / "Cargo.lock",
                 ]
             )
@@ -1215,7 +1267,7 @@ def _ensure_backend_binary(
                 build_admission.plan,
                 timeout=cargo_timeout,
                 json_output=json_output,
-                label="Backend build",
+                label=f"{tool_label} build",
             )
         except (CargoPlanExecutionError, CompilerIdentityError) as exc:
             return _backend_ensure_failure(
@@ -1223,9 +1275,9 @@ def _ensure_backend_binary(
             )
         except subprocess.TimeoutExpired:
             timeout_note = (
-                f"Backend build timed out after {cargo_timeout:.1f}s."
+                f"{tool_label} build timed out after {cargo_timeout:.1f}s."
                 if cargo_timeout is not None
-                else "Backend build timed out."
+                else f"{tool_label} build timed out."
             )
             return _backend_ensure_failure(
                 "backend_cargo_build", timeout_note, command=cmd
@@ -1233,7 +1285,7 @@ def _ensure_backend_binary(
         except (OSError, ValueError) as exc:
             return _backend_ensure_failure(
                 "backend_cargo_build",
-                f"Backend Cargo admission or spawn failed: {exc}",
+                f"{tool_label} Cargo admission or spawn failed: {exc}",
                 command=cmd,
             )
         finally:
@@ -1243,7 +1295,7 @@ def _ensure_backend_binary(
         if build.returncode != 0:
             return _backend_ensure_failure(
                 "backend_cargo_build",
-                _completed_process_failure_detail("Backend cargo build", build),
+                _completed_process_failure_detail(f"{tool_label} cargo build", build),
                 returncode=build.returncode,
                 command=cmd,
             )
@@ -1262,6 +1314,7 @@ def _ensure_backend_binary(
                     build_admission=build_admission,
                     backend_features=backend_features,
                     stored_fingerprint=None,
+                    product=product,
                 )
             if _artifact_semantic_identity(current) != _artifact_semantic_identity(
                 fingerprint
@@ -1274,14 +1327,14 @@ def _ensure_backend_binary(
             return _backend_ensure_failure(
                 "backend_source_identity", str(exc), command=cmd
             )
-        # Cargo always produces target/<profile>/molt-backend regardless of
-        # features. Every selected feature set, including native, publishes the
+        # Cargo produces its selected package/bin regardless of backend
+        # features. Every selected product/feature set publishes the
         # freshly built bytes as a generation of its own variant, so builds
         # with different feature sets (native vs wasm vs rust) never replace
         # each other's compiler, and no build replaces one that another holds.
         if not cargo_output.exists():
             return _backend_ensure_failure(
-                "backend_artifact", "Backend binary missing after rebuild."
+                "backend_artifact", f"{tool_label} binary missing after rebuild."
             )
         try:
             environment = build_admission.plan.environment
@@ -1321,7 +1374,7 @@ def _ensure_backend_binary(
         # Admit the built compiler before publishing provenance. A failed probe
         # is a failed build outcome: rerunning the same Cargo plan changes no
         # input and cannot establish why that compiler was unusable.
-        _probe_target = _backend_probe_target(backend_features)
+        _probe_target = _backend_probe_target(backend_features, product)
         _probe_result = _probe_backend_binary_support(
             _probe_target,
             binary=rebuilt_generation.path,
@@ -1330,7 +1383,7 @@ def _ensure_backend_binary(
         if _probe_result.phase in _PROBE_TERMINAL_PHASES and not _probe_result:
             return _probe_result
         if not _probe_result:
-            detail = "Built backend failed its feature probe."
+            detail = f"Built {tool_label} failed its capability probe."
             if _probe_result.detail:
                 detail += f"\n{_probe_result.detail}"
             return _backend_ensure_failure(
@@ -1353,7 +1406,7 @@ def _ensure_backend_binary(
             except (OSError, ValueError) as exc:
                 return _backend_ensure_failure(
                     "backend_artifact_publication",
-                    f"Backend artifact provenance publication failed: {exc}",
+                    f"{tool_label} artifact provenance publication failed: {exc}",
                     command=cmd,
                 )
         return _backend_ensure_success(

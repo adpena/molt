@@ -30,8 +30,7 @@ use super::{
     write_cached_output,
 };
 use super::{
-    BackendTarget, GIB, RequestBoundedRead, default_backend_max_rss_gb_from_physical_mem_bytes,
-    ensure_output_parent_dir, read_bounded_request_bytes,
+    BackendTarget, GIB, RequestBoundedRead, ensure_output_parent_dir, read_bounded_request_bytes,
 };
 #[cfg(feature = "native-backend")]
 use super::{

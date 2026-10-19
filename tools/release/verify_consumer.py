@@ -575,10 +575,12 @@ def _verify_pip_distribution(
     if (
         pip_compiler is None
         or pip_compiler.record != compiler.record
+        or pip_compiler.wasm_facts != compiler.wasm_facts
         or pip_compiler.runtime != compiler.runtime
     ):
         raise ValueError("pip consumer did not install the candidate compiler/runtime")
     pip_compiler.verify_sources()
+    pip_compiler.verify_wasm_facts()
     pip_compiler.verify_runtime()
     script = venv / ("Scripts/molt.exe" if os.name == "nt" else "bin/molt")
     cells = _verify_guest_cells(
@@ -615,6 +617,7 @@ def _verify_pip_distribution(
         "source_sha256": sha256_file(source),
         "cells": cells,
         "compiler_sha256": compiler.record["sha256"],
+        "wasm_facts_sha256": compiler.wasm_facts["sha256"],
     }
 
 
@@ -859,8 +862,11 @@ def verify(
             raise ValueError("Bundle compiler identity differs from candidate")
         if compiler.launcher != candidate["launcher"]:
             raise ValueError("Bundle launcher identity differs from candidate")
+        if compiler.wasm_facts != candidate["wasm_facts"]:
+            raise ValueError("Bundle WASM facts identity differs from candidate")
         compiler.verify_launcher()
         compiler.verify_sources()
+        compiler.verify_wasm_facts()
         if (
             rust_channel((compiler.source_root / "rust-toolchain.toml").read_bytes())
             != candidate["native_build"]["policy"]["rust_channel"]
@@ -939,6 +945,7 @@ def verify(
             for minor, reference in coordinates
         ]
         compiler.verify_sources()
+        compiler.verify_wasm_facts()
         compiler.verify_runtime()
         minor, reference = coordinates[0]
         pip_proof = _verify_pip_distribution(
@@ -990,6 +997,7 @@ def verify(
             "errors": 0,
             "compiler": compiler.record,
             "launcher": compiler.launcher,
+            "wasm_facts": compiler.wasm_facts,
             "runtime": compiler.runtime,
             "pip_proof": pip_proof,
             "guest_cells": [lane.as_record() for lane in lanes],

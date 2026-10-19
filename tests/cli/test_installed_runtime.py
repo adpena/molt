@@ -193,7 +193,11 @@ def _installed_bundle(
     system, arch = current_host_coordinate()
     windows = system == "windows"
     binaries = {}
-    for name, data in (("molt-backend", b"compiler"), ("molt", b"launcher")):
+    for name, data in (
+        ("molt-backend", b"compiler"),
+        ("molt", b"launcher"),
+        ("molt-wasm-facts", b"facts"),
+    ):
         path = root / "bin" / (name + (".exe" if windows else ""))
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_bytes(data)
@@ -220,6 +224,14 @@ def _installed_bundle(
             "path": "bin/" + binaries["molt"].name,
             "size": 8,
             "sha256": _digest(b"launcher"),
+            "platform": system,
+            "arch": arch,
+        },
+        "wasm_facts": {
+            "path": "bin/" + binaries["molt-wasm-facts"].name,
+            "size": 5,
+            "sha256": _digest(b"facts"),
+            "profile": "release",
             "platform": system,
             "arch": arch,
         },

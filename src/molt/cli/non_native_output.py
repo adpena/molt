@@ -772,7 +772,7 @@ def _prepare_non_native_build_result(
     artifacts_root: Path | None = None,
     stage_timings_ms: dict[str, float] | None = None,
     phase_starts: dict[str, float] | None = None,
-    wasm_facts_scanner: Path,
+    wasm_facts_scanner: Path | None,
     app_export_contract_path: Path | None = None,
     validate_inputs: Callable[[], None],
 ) -> tuple[_PreparedNonNativeResult | None, _CliFailure | None]:
@@ -842,7 +842,7 @@ def _prepare_non_native_build_result_in_generation(
     artifacts_root: Path | None = None,
     stage_timings_ms: dict[str, float] | None = None,
     phase_starts: dict[str, float] | None = None,
-    wasm_facts_scanner: Path,
+    wasm_facts_scanner: Path | None,
     app_export_contract_path: Path | None = None,
     validate_inputs: Callable[[], None],
 ) -> tuple[_PreparedNonNativeResult | None, _CliFailure | None]:
@@ -900,6 +900,12 @@ def _prepare_non_native_build_result_in_generation(
         wasm_link_requirements = SourceExtensionLinkRequirements(wasm_link_target)
         app_export_contract: dict[str, object] | None = None
         if linked or _split_runtime:
+            if wasm_facts_scanner is None:
+                return None, _fail(
+                    "Linked WASM requires an admitted WASM inspection tool",
+                    json_output,
+                    command="build",
+                )
             if app_export_contract_path is None:
                 return None, _fail(
                     "Linked WASM requires the frontend app export contract",

@@ -28,6 +28,7 @@ from tools.release.archive import ArchivePolicy, write_reproducible_zip  # noqa:
 from tools.release.compiler_payload import (  # noqa: E402
     compiler_record,
     launcher_record,
+    wasm_facts_record,
     materialize_sources,
 )
 from tools.release.binary_compatibility import (  # noqa: E402
@@ -144,6 +145,7 @@ def _bundle_molt(
     *,
     compiler: Path,
     launcher: Path,
+    wasm_facts: Path,
     snapshot: GitSourceSnapshot,
     runtime_cells: Path,
     platform: str,
@@ -151,6 +153,7 @@ def _bundle_molt(
 ) -> None:
     record = compiler_record(compiler, platform=platform, arch=arch)
     entry = launcher_record(launcher, platform=platform, arch=arch)
+    facts = wasm_facts_record(wasm_facts, platform=platform, arch=arch)
     runtime = read_runtime_inventory(runtime_cells, platform=platform, arch=arch)
     if runtime["source"] != {
         "object_format": snapshot.object_format,
@@ -164,10 +167,12 @@ def _bundle_molt(
         snapshot=snapshot,
         compiler=record,
         launcher=entry,
+        wasm_facts=facts,
         runtime=runtime,
     )
     _copy_file(compiler, root / record["path"], executable=True)
     _copy_file(launcher, root / entry["path"], executable=True)
+    _copy_file(wasm_facts, root / facts["path"], executable=True)
     for cell in runtime["cells"]:
         for member in cell["files"]:
             _copy_file(
@@ -244,6 +249,7 @@ def build_bundle(
     arch: str,
     compiler: Path | None = None,
     launcher: Path | None = None,
+    wasm_facts: Path | None = None,
     snapshot: GitSourceSnapshot | None = None,
     runtime_cells: Path | None = None,
     pure_wheel: Path | None = None,
@@ -260,11 +266,12 @@ def build_bundle(
     if kind == "molt" and (
         compiler is None
         or launcher is None
+        or wasm_facts is None
         or snapshot is None
         or runtime_cells is None
     ):
         raise ValueError(
-            "production compiler, launcher, runtime cells and committed source "
+            "production compiler, launcher, WASM facts tool, runtime cells and committed source "
             "are required for molt bundles"
         )
     if (pure_wheel is None) != (wheel_output_dir is None) or (
@@ -283,6 +290,7 @@ def build_bundle(
             assert (
                 compiler is not None
                 and launcher is not None
+                and wasm_facts is not None
                 and snapshot is not None
                 and runtime_cells is not None
             )
@@ -290,6 +298,7 @@ def build_bundle(
                 root_dir,
                 compiler=compiler,
                 launcher=launcher,
+                wasm_facts=wasm_facts,
                 snapshot=snapshot,
                 runtime_cells=runtime_cells,
                 platform=platform,
@@ -344,6 +353,7 @@ def main() -> None:
     parser.add_argument("--worker", type=Path)
     parser.add_argument("--compiler", type=Path)
     parser.add_argument("--launcher", type=Path)
+    parser.add_argument("--wasm-facts", type=Path)
     parser.add_argument("--runtime-cells", type=Path)
     parser.add_argument("--source-sha")
     parser.add_argument("--kind", choices=["molt", "molt-worker"], default="molt")
@@ -366,6 +376,7 @@ def main() -> None:
         arch=args.arch,
         compiler=args.compiler,
         launcher=args.launcher,
+        wasm_facts=args.wasm_facts,
         runtime_cells=args.runtime_cells,
         snapshot=source_snapshot(ROOT, args.source_sha) if args.source_sha else None,
     )

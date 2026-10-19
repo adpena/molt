@@ -201,7 +201,7 @@ def test_native_receipts_relocate_without_losing_architecture(
     assert str(tmp_path) not in json.dumps(first)
 
 
-@pytest.mark.parametrize("role", ["compiler", "launcher", "worker"])
+@pytest.mark.parametrize("role", ["compiler", "launcher", "worker", "wasm_facts"])
 def test_receipt_rejects_different_native_bytes(tmp_path, snapshot, role):
     receipt = native_build_fixture(tmp_path, snapshot)
     (tmp_path / receipt["artifacts"][role]["path"]).write_bytes(
@@ -218,12 +218,13 @@ def test_receipt_rejects_different_native_bytes(tmp_path, snapshot, role):
         )
 
 
-def test_worker_architecture_is_admitted_even_with_self_consistent_hash(
-    tmp_path, snapshot
+@pytest.mark.parametrize("role", ["worker", "wasm_facts"])
+def test_native_tool_architecture_is_admitted_even_with_self_consistent_hash(
+    tmp_path, snapshot, role
 ):
     receipt = native_build_fixture(tmp_path, snapshot)
     wrong = native_image("linux", "aarch64")
-    record = receipt["artifacts"]["worker"]
+    record = receipt["artifacts"][role]
     (tmp_path / record["path"]).write_bytes(wrong)
     record.update(sha256=hashlib.sha256(wrong).hexdigest(), size=len(wrong))
     write_exact(tmp_path / native_build.RECEIPT_NAME, receipt)
@@ -680,6 +681,10 @@ def test_producer_publishes_only_complete_verified_generation(
                 archive.write_bytes(b"substituted")
         else:
             assert "LLVM_SYS_221_PREFIX" not in env
+            if argv[argv.index("--bin") + 1] == "molt-wasm-facts":
+                assert argv[argv.index("--package") + 1] == "molt-wasm-facts"
+                assert argv[argv.index("--features") + 1] == "host-tool"
+                assert argv[argv.index("--profile") + 1] == "release"
         profile = argv[argv.index("--profile") + 1]
         binary = argv[argv.index("--bin") + 1]
         output = cwd / "target" / "x86_64-unknown-linux-gnu" / profile / binary
@@ -714,8 +719,13 @@ def test_producer_publishes_only_complete_verified_generation(
             arch="x86_64",
             build_root=tmp_path / "isolated-builds",
         )
-        assert len(observations) == 3
-        assert set(receipt["artifacts"]) == {"compiler", "launcher", "worker"}
+        assert len(observations) == 4
+        assert set(receipt["artifacts"]) == {
+            "compiler",
+            "launcher",
+            "worker",
+            "wasm_facts",
+        }
         assert {entry.name for entry in output.iterdir()} == {
             "bin",
             native_build.RECEIPT_NAME,
@@ -732,7 +742,7 @@ def test_producer_publishes_only_complete_verified_generation(
             )
 
 
-@pytest.mark.parametrize("difference", ["same-root", "tool", "worker"])
+@pytest.mark.parametrize("difference", ["same-root", "tool", "worker", "wasm_facts"])
 def test_candidate_requires_independent_equal_receipts_and_bytes(
     tmp_path, snapshot, monkeypatch, difference
 ):
@@ -745,8 +755,8 @@ def test_candidate_requires_independent_equal_receipts_and_bytes(
     if difference == "tool":
         receipt["tools"]["cc"]["sha256"] = "d" * 64
         write_exact(second / native_build.RECEIPT_NAME, receipt)
-    elif difference == "worker":
-        (second / receipt["artifacts"]["worker"]["path"]).write_bytes(
+    elif difference in {"worker", "wasm_facts"}:
+        (second / receipt["artifacts"][difference]["path"]).write_bytes(
             native_image() + b"different"
         )
     else:

@@ -20,7 +20,7 @@
 #   * `molt-ir` is the vocabulary fixpoint (layer 0) -- it must NEVER recompile
 #     when a pass or backend changes, so it must have zero workspace deps.
 #   * `molt-codegen-abi` is the NaN-box/type-id ABI fixpoint (layer 0).
-#   * `molt-passes` (layer 1) depends only on the vocabulary.
+#   * `molt-passes` (layer 1) depends on vocabulary and host process budgets.
 #   * `molt-tir` (layer 2) is today's lowering+plan crate (the future
 #     `molt-lower`); it depends on passes (transitively the vocabulary).
 #   * the 5 backend crates (layer 3) are leaf consumers of lowering+ABI; they
@@ -112,10 +112,10 @@ layer = 0
 role = "gpu/tensor compute and rendering primitive; independent of Python object runtime"
 
 [[crate]]
-name = "molt-wasm-facts"
+name = "molt-host-process"
 runtime_layer = "outside"
 layer = 0
-role = "WASM link-fact vocabulary and callable-table attestation shared by backend and host"
+role = "host-tool process memory budgets and OS caps; no guest-runtime or compiler dependencies"
 
 [[crate]]
 name = "molt-artifact-publish"
@@ -153,10 +153,16 @@ role = "platform and OS ABI primitive shared by CPython ABI and the runtime fan-
 # ---------------------------------------------------------------------------
 
 [[crate]]
+name = "molt-wasm-facts"
+runtime_layer = "outside"
+layer = 1
+role = "WASM facts library and standalone host scan/publication executable; no compiler dependency"
+
+[[crate]]
 name = "molt-passes"
 runtime_layer = "outside"
 layer = 1
-role = "TIR transforms + analyses + pass orchestration (deps molt-ir only)"
+role = "TIR transforms + analyses + pass orchestration over vocabulary and host budgets"
 
 [[crate]]
 name = "molt-lang-obj-model"

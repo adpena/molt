@@ -10,6 +10,7 @@ license = "Apache-2.0"
 molt-artifact-publish = { path = "../molt-artifact-publish" }
 molt-ir = { path = "../molt-ir" }
 molt-passes = { path = "../molt-passes" }
+molt-host-process = { path = "../molt-host-process" }
 molt-tir = { path = "../molt-tir" }
 molt-backend-native = { path = "../molt-backend-native", optional = true, default-features = false }
 molt-backend-luau = { path = "../molt-backend-luau", optional = true, default-features = false }
@@ -23,7 +24,6 @@ rustc-demangle = "0.1.28"
 object = { version = "0.39", default-features = false, features = ["read", "std"] }
 ar_archive_writer = { version = "0.5.2", optional = true }
 memmap2 = { version = "0.9", optional = true }
-molt-wasm-facts = { path = "../molt-wasm-facts", optional = true }
 rmp-serde = "1"
 ciborium = { version = "0.2", optional = true }
 
@@ -41,12 +41,8 @@ wasmparser = "0.261.0"
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.61", features = [
     "Win32_Foundation",
-    "Win32_Security",
     "Win32_Storage_FileSystem",
-    "Win32_System_JobObjects",
     "Win32_System_IO",
-    "Win32_System_SystemInformation",
-    "Win32_System_Threading",
 ] }
 
 [features]
@@ -65,8 +61,6 @@ cbor = ["dep:ciborium"]
 rust-backend = ["dep:molt-backend-rust", "molt-backend-rust/rust-backend"]
 wasm-backend = [
     "dep:molt-backend-wasm",
-    "dep:memmap2",
-    "dep:molt-wasm-facts",
     "molt-backend-wasm/wasm-backend",
     "molt-ir/wasm-backend",
     "molt-tir/wasm-backend",
@@ -130,10 +124,6 @@ required-features = ["wasm-backend"]
 
 [[test]]
 name = "wasm_data_segments"
-required-features = ["wasm-backend"]
-
-[[test]]
-name = "wasm_link_facts_cli"
 required-features = ["wasm-backend"]
 
 [[test]]

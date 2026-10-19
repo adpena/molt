@@ -809,6 +809,10 @@ def test_compiler_runtime_partition_preserves_disjoint_test_and_tool_ownership()
     }
     assert not test_packages(core) & test_packages(complement)
     assert "molt-wasm-facts" in test_packages(complement)
+    assert "molt-host-process" in test_packages(complement)
+    assert "molt-wasm-facts/host-tool" in complement.argv[
+        complement.argv.index("--features") + 1
+    ].split(",")
     assert core.dependencies == complement.dependencies == ()
     assert {"regex::", "text_storage::"} <= set(core.argv[core.argv.index("--") + 1 :])
     assert set(core.toolchains) == {"rustc", "cargo", "node", "wasm-ld"}
@@ -1212,7 +1216,9 @@ def test_daemon_cache_runs_actual_native_and_wasm_binary_receivers() -> None:
     assert "--no-default-features" in argv
     features = set(argv[argv.index("--features") + 1].split(","))
     assert {"molt-backend/native-backend", "molt-backend/wasm-backend"} <= features
-    assert features == compiler_features
+    # The combined compiler cell also builds the independent facts executable;
+    # daemon-only admission must not enable that unrelated product.
+    assert compiler_features == features | {"molt-wasm-facts/host-tool"}
     assert argv[argv.index("--bin") + 2 :] == [
         "--",
         "daemon",

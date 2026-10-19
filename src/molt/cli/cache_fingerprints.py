@@ -22,6 +22,7 @@ from molt.file_hashing import (
     _sha256_file,
     _source_fingerprint_files,
 )
+from molt.host_tool_products import HostToolProduct
 from molt.cli.python_import_resolution import (
     PythonImportPolicy,
 )
@@ -39,24 +40,29 @@ if TYPE_CHECKING:
 
 
 _CACHE_SOURCE_FINGERPRINT_SCHEMA_VERSION = "source-tree-v3"
-_BACKEND_FACADE_CRATE = Path("runtime/molt-backend")
 
 
 def _backend_crate_source_closure(
     project_root: Path,
     backend_features: tuple[str, ...],
+    *,
+    product: HostToolProduct = HostToolProduct.BACKEND,
 ) -> list[Path]:
     from molt.cli.cargo_source_closure import _cargo_crate_source_closure
 
     return _cargo_crate_source_closure(
         project_root=project_root,
-        crate_root=project_root / _BACKEND_FACADE_CRATE,
+        crate_root=project_root / "runtime" / product.value,
         crate_features=backend_features,
-        extra_source_paths=(
-            project_root / "Cargo.toml",
-            # Rust embeds these authorities from outside its Cargo crate root.
-            project_root / "src" / "molt" / "backend_environment.json",
-            project_root / "src" / "molt" / "backend_daemon_protocol_version.txt",
+        extra_source_paths=(project_root / "Cargo.toml",)
+        + (
+            (
+                # Rust embeds these authorities from outside its Cargo crate root.
+                project_root / "src" / "molt" / "backend_environment.json",
+                project_root / "src" / "molt" / "backend_daemon_protocol_version.txt",
+            )
+            if product is HostToolProduct.BACKEND
+            else ()
         ),
     )
 
@@ -64,16 +70,21 @@ def _backend_crate_source_closure(
 def _backend_source_paths(
     project_root: Path,
     backend_features: tuple[str, ...] = (),
+    *,
+    product: HostToolProduct = HostToolProduct.BACKEND,
 ) -> list[Path]:
     # Reachable manifests own topology. Re-read their admitted content instead
     # of caching a graph behind a hand-enumerated manifest/stat stamp.
     return _backend_crate_source_closure(
-        project_root, tuple(sorted(set(backend_features)))
+        project_root, tuple(sorted(set(backend_features))), product=product
     )
 
 
 def _backend_source_identity_inputs(
-    project_root: Path, source_paths: Sequence[Path]
+    project_root: Path,
+    source_paths: Sequence[Path],
+    *,
+    product: HostToolProduct = HostToolProduct.BACKEND,
 ) -> tuple[list[Path], str]:
     """Replace the workspace lockfile with its compiler dependency identity."""
     from molt.cli.cargo_source_closure import _cargo_locked_dependency_digest
@@ -81,7 +92,7 @@ def _backend_source_identity_inputs(
     lock_path = (project_root / "Cargo.lock").resolve()
     paths = [path for path in source_paths if path.resolve() != lock_path]
     return paths, _cargo_locked_dependency_digest(
-        project_root, project_root / _BACKEND_FACADE_CRATE
+        project_root, project_root / "runtime" / product.value
     )
 
 

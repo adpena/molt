@@ -340,7 +340,7 @@ pub(crate) fn emit_cli(args: &[String]) -> io::Result<()> {
                 "--scan-native-artifact-facts requires exactly one path",
             ));
         };
-        let file = crate::backend_process::open_regular_artifact(std::path::Path::new(path))?;
+        let file = molt_artifact_publish::open_regular_artifact(std::path::Path::new(path))?;
         let limit = crate::backend_process::stdin_request_limit_bytes();
         if file.metadata()?.len() > limit as u64 {
             return Err(invalid(

@@ -242,18 +242,10 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "cf8baf1c55e62ffcace7a9f06f4bd9cd3f0c4beb022d3b367256b91b87513d98"
 
 [[package]]
-name = "memmap2"
-version = "0.9.11"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d1219ed1b7f229ee7104d281dd01d6802fe28bb6e95d292942c4daacdeb798c0"
-dependencies = [
- "libc",
-]
-
-[[package]]
 name = "molt-artifact-publish"
 version = "0.1.0"
 dependencies = [
+ "libc",
  "windows-sys",
 ]
 
@@ -262,13 +254,12 @@ name = "molt-backend"
 version = "0.1.0"
 dependencies = [
  "libc",
- "memmap2",
  "molt-artifact-publish",
  "molt-backend-wasm",
+ "molt-host-process",
  "molt-ir",
  "molt-passes",
  "molt-tir",
- "molt-wasm-facts",
  "object",
  "rmp-serde",
  "rustc-demangle",
@@ -304,6 +295,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "molt-host-process"
+version = "0.1.0"
+dependencies = [
+ "libc",
+ "windows-sys",
+]
+
+[[package]]
 name = "molt-ir"
 version = "0.1.0"
 dependencies = [
@@ -327,6 +326,7 @@ version = "0.1.0"
 dependencies = [
  "hashlink",
  "libc",
+ "molt-host-process",
  "molt-ir",
  "num-integer",
  "rmp-serde",
@@ -346,15 +346,6 @@ dependencies = [
  "rmp-serde",
  "serde",
  "serde_json",
-]
-
-[[package]]
-name = "molt-wasm-facts"
-version = "0.1.0"
-dependencies = [
- "serde",
- "wasm-encoder",
- "wasmparser",
 ]
 
 [[package]]

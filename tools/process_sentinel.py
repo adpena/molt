@@ -26,6 +26,8 @@ _THIS_FILE = Path(__file__).resolve()
 _REPO_ROOT = _THIS_FILE.parents[1]
 
 
+from molt.host_tool_products import HostToolProduct  # noqa: E402
+
 from tools import guarded_entrypoints, memory_guard  # noqa: E402
 from tools.memory_guard_core import process_model as _process_model  # noqa: E402
 from tools.memory_guard_core.process_model import (  # noqa: E402
@@ -65,7 +67,7 @@ def molt_process_tokens() -> tuple[str, ...]:
                 *guarded_entrypoint_tokens(),
                 "python -m molt",
                 "molt.cli",
-                "molt-backend",
+                *(product.value for product in HostToolProduct),
                 "molt_diff.py",
                 "bench_individual.py",
                 "bench_wasm.py",

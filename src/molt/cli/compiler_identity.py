@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Mapping, Sequence, cast
 
 from molt.exact_json import canonical_json_sha256
+from molt.host_tool_products import HostToolProduct
 
 if TYPE_CHECKING:
     from molt.cli.cargo_resource_custody import CargoResourceCustody
@@ -78,6 +79,7 @@ def installed_compiler_admission(
                 "compiler": compiler.record,
                 "launcher": compiler.launcher,
                 "runtime": compiler.runtime,
+                "wasm_facts": compiler.wasm_facts,
             }
         )
         key = (os.fspath(root.resolve()), release)
@@ -191,8 +193,9 @@ def backend_build_admission(
     env: Mapping[str, str],
     *,
     rust_cpu: RustCpuPolicy,
+    product: HostToolProduct = HostToolProduct.BACKEND,
 ) -> BackendBuildAdmission:
-    """Admit the backend compiler build of ``root`` for one feature lane.
+    """Admit one compiler/host-tool product through the shared Cargo authority.
 
     ``rust_cpu`` is the build's Rust CPU policy. The Cargo plan applies it to
     the Rust flags Cargo selects, and the fingerprint binds those flags.
@@ -207,10 +210,17 @@ def backend_build_admission(
     from molt.llvm_toolchain import LlvmToolchainConfigError
 
     transaction = _SOURCE_TREE_FINGERPRINT_TRANSACTION.get()
+    if not isinstance(product, HostToolProduct):
+        raise CompilerIdentityError("Unknown host tool product")
+    if product is HostToolProduct.WASM_FACTS and features != product.required_features:
+        raise CompilerIdentityError(
+            "The WASM facts tool requires its host-tool feature"
+        )
     # The complete caller environment keys operation-local reuse; semantic output
     # identity below projects only admitted Cargo/profile/toolchain selectors.
     key = (
         os.fspath(root.resolve()),
+        product.value,
         cargo_profile,
         ",".join(sorted(features)),
         rust_cpu.value,
@@ -239,9 +249,9 @@ def backend_build_admission(
             "--locked",
             "--message-format=json-render-diagnostics",
             "--package",
-            "molt-backend",
+            product.value,
             "--bin",
-            "molt-backend",
+            product.value,
             "--profile",
             cargo_profile,
         ]

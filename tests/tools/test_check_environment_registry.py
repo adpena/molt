@@ -266,12 +266,19 @@ def test_rust_forms_are_classified(tree: Path) -> None:
     )
 
 
-def test_rust_typed_backend_keys_are_reads(tmp_path: Path) -> None:
+@pytest.mark.parametrize(
+    "expression",
+    [
+        "backend_env::var(BackendEnv::MOLT_TYPED_KEY)",
+        "std::env::var(HostProcessEnv::MOLT_TYPED_KEY.name())",
+    ],
+)
+def test_rust_typed_environment_keys_are_reads(tmp_path: Path, expression: str) -> None:
     source = tmp_path / "runtime" / "pass.rs"
     source.parent.mkdir(parents=True)
     source.write_text(
         "fn run() -> bool {\n"
-        "    backend_env::var(BackendEnv::MOLT_TYPED_KEY).is_ok()\n"
+        f"    {expression}.is_ok()\n"
         "}\n"
         "const OTHER: Other = Other::MOLT_NOT_A_BACKEND_KEY;\n",
         encoding="utf-8",
@@ -282,7 +289,7 @@ def test_rust_typed_backend_keys_are_reads(tmp_path: Path) -> None:
     assert [(s.access, s.form, s.line) for s in typed] == [
         (C.ACCESS_REFERENCE, C.FORM_TYPED_KEY, 2)
     ]
-    # Only the backend key type names a setting.
+    # An unrelated type does not declare an environment key.
     assert not [s for s in scan.sites if s.name == "MOLT_NOT_A_BACKEND_KEY"]
 
 

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from pathlib import Path
 from dataclasses import replace
 import time
@@ -165,6 +166,26 @@ def _emit_backend_pipeline_outputs(
         output_layout = replace(
             output_layout, output_artifact=backend_output_destination
         )
+        wasm_facts_scanner: Path | None = None
+        if output_layout.is_wasm and (
+            output_layout.linked or output_layout.split_runtime
+        ):
+            from molt.cli.wasm_facts_tool import ensure_wasm_facts_tool
+
+            try:
+                wasm_facts_scanner = ensure_wasm_facts_tool(
+                    prepared_build_roots.molt_root,
+                    cargo_profile=prepared_build_config.backend_cargo_profile,
+                    env=os.environ,
+                )
+            except (OSError, ValueError) as exc:
+                return return_after_build_diagnostics(
+                    _fail(
+                        f"Cannot admit WASM inspection tool: {exc}",
+                        json_output,
+                        command="build",
+                    )
+                )
         prepared_non_native_result, prepared_non_native_result_error = (
             _non_native_output._prepare_non_native_build_result(
                 is_rust_transpile=output_layout.is_rust_transpile,
@@ -194,7 +215,7 @@ def _emit_backend_pipeline_outputs(
                 artifacts_root=artifacts_root,
                 stage_timings_ms=pipeline_stage_ms,
                 phase_starts=prepared_build_preamble.phase_starts,
-                wasm_facts_scanner=prepared_backend_setup.backend_bin,
+                wasm_facts_scanner=wasm_facts_scanner,
                 app_export_contract_path=app_export_contract_path,
                 validate_inputs=validate_inputs,
             )

@@ -142,6 +142,7 @@ def _bundle_tree(root: Path) -> Path:
     for relative, data in {
         "bin/molt-backend": b"compiler",
         "bin/molt": b"launcher",
+        "bin/molt-wasm-facts": b"facts",
         "runtime/cell/libmolt_runtime.stdlib_micro.a": b"runtime",
         "source/tools/script.py": b"#!/usr/bin/env python3\n",
         "source/src/molt/__init__.py": b"",
@@ -201,12 +202,15 @@ def test_platform_wheel_carries_the_bundle_for_pip(tmp_path: Path) -> None:
         assert archive.read("molt/cli/__init__.py") == b"def main():\n    pass\n"
         for member in (
             "bin/molt-backend",
+            "bin/molt-wasm-facts",
             "runtime/cell/libmolt_runtime.stdlib_micro.a",
             "source/release-compiler-source.json",
         ):
             assert data + member in files
         # pip keeps only the executable bit: bundle and Git modes survive install.
         assert files[data + "bin/molt-backend"].external_attr >> 16 & 0o111
+        assert archive.read(data + "bin/molt-wasm-facts") == b"facts"
+        assert files[data + "bin/molt-wasm-facts"].external_attr >> 16 & 0o111
         assert files[data + "source/tools/script.py"].external_attr >> 16 & 0o111
         assert (
             not files[data + "source/src/molt/__init__.py"].external_attr >> 16 & 0o111
@@ -339,6 +343,7 @@ def _set(path, value):
     [
         _set(("wheel", "sha256"), "f" * 64),
         _set(("compiler_sha256",), "f" * 64),
+        _set(("wasm_facts_sha256",), "f" * 64),
         _set(("commands", 2, "argv", 0), "/consumer/bundle/molt-0.0.001/bin/molt"),
         _set(("commands", 2, "argv", 5), "dev"),
         _set(("commands", 3, "stdout_sha256"), "0" * 64),
@@ -389,6 +394,7 @@ def test_bundle_rejects_runtime_cells_from_another_source(tmp_path, release_sour
             arch="x86_64",
             compiler=worker,
             launcher=worker,
+            wasm_facts=worker,
             snapshot=release_source,
             runtime_cells=cells,
         )

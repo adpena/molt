@@ -901,9 +901,6 @@ def test_committed_gate_manifest_selects_tir_midend_ratchet(drv, path):
         "runtime/molt-backend-native/src/simple_backend/module_metadata.rs",
         "runtime/molt-backend-native/Cargo.toml",
         "runtime/molt-backend/src/lib.rs",
-        "runtime/molt-wasm-facts/src/publication.rs",
-        "runtime/molt-wasm-facts/Cargo.toml",
-        "tools/wasm_link_fact_provider.py",
     ],
 )
 def test_committed_native_policy_includes_owning_crate(drv, path):
@@ -911,19 +908,49 @@ def test_committed_native_policy_includes_owning_crate(drv, path):
     gates, matched = cfg.select([path])
     gates = [gate.command for gate in gates]
     rule = next(rule for rule in matched if rule.name == "backend-native")
-    tests, provider = [shlex.split(gate) for gate in rule.gates]
+    (tests,) = [shlex.split(gate) for gate in rule.gates]
     packages = {tests[i + 1] for i, token in enumerate(tests) if token == "-p"}
     assert packages == {
         "molt-backend",
         "molt-backend-native",
         "molt-artifact-publish",
-        "molt-wasm-facts",
     }
     assert "--locked" in tests
     assert set(tests[tests.index("--features") + 1].split(",")) == {
         "molt-backend/native-backend",
         "molt-backend/wasm-backend",
     }
+    assert "--test" not in tests
+    assert (
+        "python tools/check_changed_clippy.py --base {integration_upstream_commit}"
+        in gates
+    )
+    assert tests[1] == "test" and "--lib" in tests and "--no-fail-fast" in tests
+    assert tests[tests.index("--profile") + 1] == "release-fast"
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "runtime/molt-wasm-facts/src/publication.rs",
+        "runtime/molt-wasm-facts/Cargo.toml",
+        "tools/wasm_link_fact_provider.py",
+    ],
+)
+def test_committed_facts_policy_excludes_compiler_codegen(drv, path):
+    cfg = drv.GateConfig.load(COMMITTED_GATES)
+    gates, matched = cfg.select([path])
+    gates = [gate.command for gate in gates]
+    assert "backend-native" not in {rule.name for rule in matched}
+    rule = next(rule for rule in matched if rule.name == "wasm-facts-host-tool")
+    tests, provider = [shlex.split(gate) for gate in rule.gates]
+    assert {tests[i + 1] for i, token in enumerate(tests) if token == "-p"} == {
+        "molt-wasm-facts",
+        "molt-artifact-publish",
+        "molt-host-process",
+    }
+    assert "--locked" in tests
+    assert tests[tests.index("--features") + 1] == "molt-wasm-facts/host-tool"
     assert tests[tests.index("--test") + 1] == "wasm_link_facts_cli"
     assert provider == [
         "python",

@@ -8,6 +8,7 @@ import time
 import pytest
 
 from molt import backend_daemon_custody as custody
+from molt.backend_executable_names import is_host_tool_executable_name
 from tools import memory_guard
 from tools.memory_guard_core import process_custody, process_model
 from tests.process_guard_common import (
@@ -16,6 +17,12 @@ from tests.process_guard_common import (
 
 # These tests fake process data the session sentinel also reads.
 pytestmark = pytest.mark.usefixtures("session_sentinel_paused")
+
+
+@pytest.mark.parametrize("image", ["molt-wasm-facts", "molt-wasm-facts.host_tool.exe"])
+def test_host_scanners_cannot_be_adopted_as_backend_daemons(image: str) -> None:
+    assert is_host_tool_executable_name(image)
+    assert not custody._command_executable_matches_backend(image, None)
 
 
 def _identity(tmp_path: Path, *, pid: int = 101) -> custody.BackendDaemonIdentity:
