@@ -694,9 +694,10 @@ def test_landing_pytest_inherits_actual_larger_owning_units(drv):
         for gate in gates
         if isinstance(gate, tuple) and "tests/test_table_drift_gate.py" in gate
     )
-    # The compiled-contract files moved into their own CI cell. The remaining
-    # largest owner here is repository.docs-tests (the LLVM ABI audit).
-    assert "--molt-worker-memory-gb=1.75" in merged
+    # Backend preparation consumes admitted frontend digest seeds, so its joined
+    # assembly proof includes CLI controls and inherits that cell's declared unit.
+    # Compiled heavy-regression cells remain separate below.
+    assert "--molt-worker-memory-gb=6.25" in merged
     assert "tests/test_resource_enforcement_e2e.py" not in merged
     assert "tests/test_wasm_runtime_heavy_regressions.py" not in merged
     assert "-k" not in merged and "-m" not in merged[3:]
