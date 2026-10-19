@@ -563,9 +563,13 @@ class GateConfig:
         pytest_targets: list[str] = []
         pytest_tools: dict[str, None] = {}
         pytest_index: int | None = None
+        pytest_commands: set[str] = set()
+
+        def command_key(command: str | tuple[str, ...]) -> str:
+            return command if isinstance(command, str) else shlex.join(command)
 
         def add(command: str | tuple[str, ...], tools: tuple[str, ...]) -> None:
-            key = command if isinstance(command, str) else shlex.join(command)
+            key = command_key(command)
             if key in indices:
                 index = indices[key]
                 prior = selected[index]
@@ -594,10 +598,12 @@ class GateConfig:
                     pytest_index = len(selected)
                 pytest_tools.update(dict.fromkeys(tools(f"{owner}.pytest")))
             for index, (select, targets) in enumerate(rule.pytest_select):
+                command = local_pytest_argv(
+                    targets, select, memory_units=self.pytest_memory_units
+                )
+                pytest_commands.add(command_key(command))
                 add(
-                    local_pytest_argv(
-                        targets, select, memory_units=self.pytest_memory_units
-                    ),
+                    command,
                     tools(f"{owner}.pytest-select-{index}"),
                 )
             for target in rule.pytest:
@@ -624,10 +630,40 @@ class GateConfig:
             command = local_pytest_argv(
                 pytest_targets, memory_units=self.pytest_memory_units
             )
+            pytest_commands.add(command_key(command))
             size = len(selected)
             add(command, tuple(pytest_tools))
             if len(selected) != size:
                 selected.insert(pytest_index, selected.pop())
+        # Preserve declared source-check and Cargo command order. Only early
+        # consumer cohorts move behind the selected Rust compilation check.
+        lint_commands = {
+            command
+            for rule in matched_rules
+            if rule.name == "rust-clippy-changed"
+            for command in rule.gates
+        }
+        lint_positions = [
+            index
+            for index, gate in enumerate(selected)
+            if command_key(gate.command) in lint_commands
+        ]
+        if lint_positions:
+            boundary = max(lint_positions) + 1
+            prelude, remainder = selected[:boundary], selected[boundary:]
+            selected = (
+                [
+                    gate
+                    for gate in prelude
+                    if command_key(gate.command) not in pytest_commands
+                ]
+                + [
+                    gate
+                    for gate in prelude
+                    if command_key(gate.command) in pytest_commands
+                ]
+                + remainder
+            )
         return selected, matched_rules
 
     def environments(
