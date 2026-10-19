@@ -27,6 +27,7 @@ from molt.cli import python_source_closure as source_closure
 from molt.cli.module_source import PythonSourceSnapshot
 from molt.cli.source_record_store import SourceRecordStore
 from tests.source_record_test_support import replace_source_record, source_records
+from tests.cli.test_installed_compiler import installation as installation
 from molt.cli.models import (
     ImportScanMode,
     _CompleteImportScan,
@@ -243,44 +244,40 @@ def test_next_operation_recaptures_semantic_bytes_and_topology(
 
 
 def test_installed_semantic_snapshot_uses_admitted_release_without_graph(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    monkeypatch: pytest.MonkeyPatch, installation: Path
 ) -> None:
-    from types import SimpleNamespace
-
     from molt import compiler_distribution
     from molt.cli import compiler_identity
 
     calls = {"sources": 0, "executing": 0, "binary": 0}
+    installed_type = compiler_distribution.InstalledCompiler
+    verify_sources = installed_type.verify_sources
+    verify_executing = installed_type.verify_executing_package
+    verify_binary = installed_type.verify_binary
 
-    def sources():
+    # Keep strict release-manifest and live file admission real. The shared
+    # fixture's synthetic executable bytes are never execution evidence.
+    def sources(compiler):
         calls["sources"] += 1
+        return verify_sources(compiler)
 
-    def executing():
+    def executing(compiler):
         calls["executing"] += 1
+        return verify_executing(compiler)
 
-    def binary(*args):
+    def binary(compiler, features, cargo_profile):
         calls["binary"] += 1
+        return verify_binary(compiler, features, cargo_profile)
 
-    compiler = SimpleNamespace(
-        source_sha="a" * 40,
-        files=(),
-        record={"features": [], "profile": "release"},
-        launcher={},
-        runtime={},
-        verify_sources=sources,
-        verify_executing_package=executing,
-        verify_binary=binary,
-    )
-
-    def forbidden(*args):
+    def forbidden(root: Path) -> NoReturn:
         raise AssertionError(
             "admitted installed source must not walk the developer graph"
         )
 
-    monkeypatch.setattr(fingerprints, "_compiler_root", lambda: tmp_path)
-    monkeypatch.setattr(
-        compiler_distribution, "installed_compiler", lambda root: compiler
-    )
+    monkeypatch.setattr(installed_type, "verify_sources", sources)
+    monkeypatch.setattr(installed_type, "verify_executing_package", executing)
+    monkeypatch.setattr(installed_type, "verify_binary", binary)
+    monkeypatch.setattr(fingerprints, "_compiler_root", lambda: installation)
     monkeypatch.setattr(fingerprints, "_frontend_semantic_tooling_sources", forbidden)
     with fingerprints._source_tree_fingerprint_transaction():
         first = fingerprints._frontend_semantic_tooling_snapshot()
@@ -289,18 +286,20 @@ def test_installed_semantic_snapshot_uses_admitted_release_without_graph(
     assert first.source_paths == ()
     assert first.fingerprint != broad  # Explicit consumer namespace separation.
     assert calls == {"sources": 1, "executing": 1, "binary": 2}
-    compiler.source_sha = "b" * 40
+
+    manifest = installation / compiler_distribution.MANIFEST_NAME
+    payload = json.loads(manifest.read_text(encoding="utf-8"))
+    payload["git"]["commit"] = "b" * 40
+    payload["runtime"]["source"]["commit"] = "b" * 40
+    manifest.write_text(json.dumps(payload), encoding="utf-8")
     with fingerprints._source_tree_fingerprint_transaction():
         second = fingerprints._frontend_semantic_tooling_snapshot()
     assert second.fingerprint != first.fingerprint
 
-    def reject():
-        raise ValueError("installed source generation changed")
-
-    compiler.verify_sources = reject
+    (installation / "Cargo.toml").write_bytes(b"changed source generation")
     with fingerprints._source_tree_fingerprint_transaction():
         with pytest.raises(
-            compiler_identity.CompilerIdentityError, match="generation changed"
+            compiler_identity.CompilerIdentityError, match="content changed"
         ):
             fingerprints._frontend_semantic_tooling_snapshot()
 
