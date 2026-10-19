@@ -481,7 +481,7 @@ def _mock_llvm_config(
         if arguments == ("--includedir",):
             return str(prefix / "include")
         if arguments == ("--libnames", "--link-static"):
-            return str(prefix / "lib" / "LLVMCore.lib")
+            return "LLVMCore.lib"
         if arguments == ("--system-libs", "--link-static"):
             return "kernel32.lib"
         raise AssertionError(arguments)
@@ -489,10 +489,11 @@ def _mock_llvm_config(
     monkeypatch.setattr("molt.llvm_toolchain._run_llvm_config", run)
 
 
+@pytest.mark.parametrize("prefix_name", ["llvm", "llvm sdk with spaces"])
 def test_complete_prefix_verifier_and_attestation_share_one_contract(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, prefix_name: str
 ) -> None:
-    prefix = tmp_path / "llvm"
+    prefix = tmp_path / prefix_name
     _write_complete_llvm_prefix(prefix)
     _mock_tool_process_versions(monkeypatch)
 
@@ -502,6 +503,7 @@ def test_complete_prefix_verifier_and_attestation_share_one_contract(
         prefix,
         expected_targets=("X86", "WebAssembly"),
     )
+    assert verification.link_closure == ("lib/LLVMCore.lib", "system:kernel32.lib")
     attestation = write_llvm_toolchain_attestation(
         ROOT,
         verification,

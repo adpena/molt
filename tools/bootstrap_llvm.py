@@ -235,12 +235,10 @@ def _preflight_resources(
     required_free_gb: float,
     required_memory_gb: float,
 ) -> None:
-    try:
-        required_bytes = capacity_bytes_from_gib(required_free_gb)
-    except ValueError as exc:
-        raise SystemExit(
-            f"invalid --required-free-gb value {required_free_gb!r}: {exc}"
-        ) from None
+    required_bytes = _resource_budget_bytes(required_free_gb, "required-free-gb")
+    required_memory_bytes = _resource_budget_bytes(
+        required_memory_gb, "required-memory-gb"
+    )
     capacity = probe_capacity(path, required_bytes=required_bytes)
     if capacity.error is not None or capacity.available_bytes is None:
         raise SystemExit(
@@ -255,11 +253,18 @@ def _preflight_resources(
         )
     plan = plan_resource_pressure(prefix="MOLT_LLVM")
     memory_gb = plan.available_gb if plan.available_gb is not None else plan.physical_gb
-    if memory_gb is not None and memory_gb < required_memory_gb:
+    if memory_gb is not None and memory_gb < required_memory_bytes / (1024**3):
         raise SystemExit(
             f"LLVM bootstrap requires at least {required_memory_gb:.1f} GiB of "
             f"available/physical memory; resource authority reports {memory_gb:.1f} GiB"
         )
+
+
+def _resource_budget_bytes(value: float, option: str) -> int:
+    try:
+        return capacity_bytes_from_gib(value)
+    except ValueError as exc:
+        raise SystemExit(f"invalid --{option} value {value!r}: {exc}") from None
 
 
 def _llvm_sys_prefix_env_var(version: str) -> str:
@@ -1138,6 +1143,29 @@ def _validate_projected_publication(
     )
 
 
+def _verified_canonical_prefix(
+    prefix: Path,
+    *,
+    version: str,
+    required_targets: set[str],
+) -> tuple[LlvmPrefixVerification, Path] | None:
+    """Inspect or recover the canonical prefix while its build lock is held."""
+    _recover_publication(prefix)
+    try:
+        current = verify_llvm_toolchain_prefix(
+            ROOT,
+            prefix,
+            version=version,
+            expected_targets=tuple(sorted(required_targets)),
+            require_attestation=True,
+            content_policy="cached",
+        )
+    except LlvmToolchainConfigError:
+        return None
+    print(f"[bootstrap-llvm] canonical prefix already verified {prefix}", flush=True)
+    return current, prefix / ".molt-llvm-toolchain.json"
+
+
 def _build_and_publish(
     args: argparse.Namespace,
     *,
@@ -1156,24 +1184,11 @@ def _build_and_publish(
     lock_path = build_dir.with_name(f".{build_dir.name}.build.lock")
     with _ExclusiveFileLock(lock_path):
         if is_canonical:
-            _recover_publication(prefix)
-            try:
-                current = verify_llvm_toolchain_prefix(
-                    ROOT,
-                    prefix,
-                    version=args.version,
-                    expected_targets=tuple(sorted(required_targets)),
-                    require_attestation=True,
-                    content_policy="cached",
-                )
-            except LlvmToolchainConfigError:
-                pass
-            else:
-                print(
-                    f"[bootstrap-llvm] canonical prefix already verified {prefix}",
-                    flush=True,
-                )
-                return current, prefix / ".molt-llvm-toolchain.json"
+            current = _verified_canonical_prefix(
+                prefix, version=args.version, required_targets=required_targets
+            )
+            if current is not None:
+                return current
 
         _prepare_build_cache(
             build_dir,
@@ -1378,7 +1393,7 @@ def main(argv: list[str] | None = None) -> int:
         help="LLVM subprojects required by Molt's native, linker, and MLIR backends.",
     )
     parser.add_argument("--build-type", default=canonical_llvm_build_type(ROOT))
-    parser.add_argument("--jobs", type=int, default=_default_llvm_jobs())
+    parser.add_argument("--jobs", type=int, default=None)
     parser.add_argument("--required-free-gb", type=float, default=40.0)
     parser.add_argument("--required-memory-gb", type=float, default=8.0)
     parser.add_argument("--configure-only", action="store_true")
@@ -1398,6 +1413,10 @@ def main(argv: list[str] | None = None) -> int:
         ),
     )
     args = parser.parse_args(argv)
+    _resource_budget_bytes(args.required_free_gb, "required-free-gb")
+    _resource_budget_bytes(args.required_memory_gb, "required-memory-gb")
+    if args.jobs is not None and args.jobs <= 0:
+        raise SystemExit("--jobs must be a positive integer")
 
     managed = managed_llvm_paths(ROOT, pin, version=args.version)
     raw_prefix = args.prefix or managed.prefix
@@ -1471,6 +1490,7 @@ def main(argv: list[str] | None = None) -> int:
                 f"missing={missing_targets} found={sorted(target_set)}; "
                 f"build type expected={expected_build_type} found={args.build_type}"
             )
+    required_targets.update(target_set)
     env_var = _llvm_sys_prefix_env_var(args.version)
     if args.reattest:
         attestation = _reattest_prefix(
@@ -1525,16 +1545,6 @@ def main(argv: list[str] | None = None) -> int:
         if args.build_dir is not None
         else custody_paths.build_dir
     )
-    minimum_cmake = (
-        release.minimum_cmake
-        if release is not None
-        else str(args.development_minimum_cmake)
-    )
-    cmake = _compatible_cmake(minimum_cmake)
-    ninja = _required_build_tool("ninja")
-    env = activate_msvc_environment(os.environ, repo_root=ROOT)
-    if platform.system() == "Windows":
-        _require_windows_atl(env, Path(env["VSINSTALLDIR"]))
     if is_canonical:
         for label, path, expected in (
             ("archive", archive, managed.archive),
@@ -1552,62 +1562,83 @@ def main(argv: list[str] | None = None) -> int:
         source_root=source_root,
         build_dir=build_dir,
     )
-    _preflight_resources(
-        managed.root if is_canonical else prefix.parent,
-        required_free_gb=args.required_free_gb,
-        required_memory_gb=max(0.0, args.required_memory_gb),
-    )
-    url = release.url if release is not None else str(args.development_source_url)
     source_sha256 = _source_sha256(args.version, args.development_source_sha256)
-    expected_size = release.size if release is not None else None
-    release_identity: dict[str, object] = (
-        asdict(release)
-        if release is not None
-        else {
-            "version": args.version,
-            "url": url,
-            "size": expected_size,
-            "source_sha256": source_sha256,
-            "custody": "development-noncanonical",
-        }
-    )
-    _download(
-        url,
-        archive,
-        expected_sha256=source_sha256,
-        expected_size=expected_size,
-    )
-    source_identity = _safe_extract_tar_xz(
-        archive,
-        source_root,
-        archive_sha256=source_sha256,
-        source_contract=release_identity,
-    )
-    llvm_source = _llvm_source_root(source_root, args.version)
-    build_identity = _build_cache_identity(
-        release_identity=release_identity,
-        source_identity=source_identity,
-        architecture_contract_sha256=contract.digest,
-        targets=targets,
-        projects=args.projects,
-        build_type=args.build_type,
-        cmake=cmake,
-        ninja=ninja,
-    )
-    result = _build_and_publish(
-        args,
-        prefix=prefix,
-        build_dir=build_dir,
-        llvm_source=llvm_source,
-        targets=targets,
-        required_targets=required_targets,
-        project_set=project_set,
-        env=env,
-        is_canonical=is_canonical,
-        build_identity=build_identity,
-        cmake=cmake,
-        ninja=ninja,
-    )
+    env = dict(os.environ)
+    result: tuple[LlvmPrefixVerification, Path] | None = None
+    if is_canonical:
+        lock_path = build_dir.with_name(f".{build_dir.name}.build.lock")
+        with _ExclusiveFileLock(lock_path):
+            result = _verified_canonical_prefix(
+                prefix, version=args.version, required_targets=required_targets
+            )
+    if result is None:
+        minimum_cmake = (
+            release.minimum_cmake
+            if release is not None
+            else str(args.development_minimum_cmake)
+        )
+        cmake = _compatible_cmake(minimum_cmake)
+        ninja = _required_build_tool("ninja")
+        env = activate_msvc_environment(env, repo_root=ROOT)
+        if platform.system() == "Windows":
+            _require_windows_atl(env, Path(env["VSINSTALLDIR"]))
+        _preflight_resources(
+            managed.root if is_canonical else prefix.parent,
+            required_free_gb=args.required_free_gb,
+            required_memory_gb=args.required_memory_gb,
+        )
+        url = release.url if release is not None else str(args.development_source_url)
+        expected_size = release.size if release is not None else None
+        release_identity: dict[str, object] = (
+            asdict(release)
+            if release is not None
+            else {
+                "version": args.version,
+                "url": url,
+                "size": expected_size,
+                "source_sha256": source_sha256,
+                "custody": "development-noncanonical",
+            }
+        )
+        _download(
+            url,
+            archive,
+            expected_sha256=source_sha256,
+            expected_size=expected_size,
+        )
+        source_identity = _safe_extract_tar_xz(
+            archive,
+            source_root,
+            archive_sha256=source_sha256,
+            source_contract=release_identity,
+        )
+        llvm_source = _llvm_source_root(source_root, args.version)
+        build_identity = _build_cache_identity(
+            release_identity=release_identity,
+            source_identity=source_identity,
+            architecture_contract_sha256=contract.digest,
+            targets=targets,
+            projects=args.projects,
+            build_type=args.build_type,
+            cmake=cmake,
+            ninja=ninja,
+        )
+        if args.jobs is None and not args.configure_only:
+            args.jobs = _default_llvm_jobs()
+        result = _build_and_publish(
+            args,
+            prefix=prefix,
+            build_dir=build_dir,
+            llvm_source=llvm_source,
+            targets=targets,
+            required_targets=required_targets,
+            project_set=project_set,
+            env=env,
+            is_canonical=is_canonical,
+            build_identity=build_identity,
+            cmake=cmake,
+            ninja=ninja,
+        )
     if result is None:
         return 0
     verification, attestation = result
