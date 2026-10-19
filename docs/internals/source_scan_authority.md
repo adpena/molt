@@ -27,6 +27,13 @@ domain-dependent binding projections. The frontier tests compare every suffix
 against public state projections, including absent slots, late exposure and
 nonancestor/decreasing-epoch histories. This is compiler analysis only.
 
+A Linux aarch64 target3.14 filter-build profile makes the repeated work visible:
+the same 3,009 binding queries take 123.43 versus 49.46 seconds, and history
+construction falls from 5,966 calls/78.42 seconds to 1,230 calls/6.50 seconds.
+Both native and linked-WASM consumers pass. These are profiled development
+observations; backend cache reuse differs, so they do not establish a matched
+whole-build speedup or release performance acceptance.
+
 `compiler_analysis/python_source_keys.py` owns source-text digests, typed AST
 digests, source-span keys, and exact-tree digest admission. AST identity streams
 prefix-free v3 framing into SHA-256, with separate sorted member digests only for
