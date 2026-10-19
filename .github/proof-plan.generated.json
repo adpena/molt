@@ -9282,6 +9282,31 @@
     "rules": [
       {
         "command_ids": [
+          "local.rust-clippy-changed.0"
+        ],
+        "description": "Clippy -D warnings with the proof plan's feature, target and profile cells for every Cargo package a change reaches.",
+        "gates": [
+          "python tools/check_changed_clippy.py --base {integration_upstream_commit}"
+        ],
+        "globs": [
+          "runtime/**",
+          "vendor/rust/**",
+          "deploy/browser/simd-ops-rs/**",
+          "Cargo.toml",
+          "Cargo.lock",
+          "rust-toolchain.toml",
+          "clippy.toml",
+          ".cargo/**"
+        ],
+        "name": "rust-clippy-changed",
+        "toolchains": [
+          "python",
+          "rustc",
+          "cargo"
+        ]
+      },
+      {
+        "command_ids": [
           "local.browser-loader-deployment.pytest",
           "local.browser-loader-deployment.pytest-select-0"
         ],
@@ -10942,31 +10967,6 @@
         ],
         "toolchains": [
           "python"
-        ]
-      },
-      {
-        "command_ids": [
-          "local.rust-clippy-changed.0"
-        ],
-        "description": "Clippy -D warnings with the proof plan's feature, target and profile cells for every Cargo package a change reaches.",
-        "gates": [
-          "python tools/check_changed_clippy.py --base {integration_upstream_commit}"
-        ],
-        "globs": [
-          "runtime/**",
-          "vendor/rust/**",
-          "deploy/browser/simd-ops-rs/**",
-          "Cargo.toml",
-          "Cargo.lock",
-          "rust-toolchain.toml",
-          "clippy.toml",
-          ".cargo/**"
-        ],
-        "name": "rust-clippy-changed",
-        "toolchains": [
-          "python",
-          "rustc",
-          "cargo"
         ]
       },
       {

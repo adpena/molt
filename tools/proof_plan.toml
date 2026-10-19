@@ -3948,6 +3948,34 @@ toolchains = ["python"]
 # Git timestamp can attest these different test/build graphs.
 
 
+# --- Clippy for every Cargo package a change reaches ---------------------
+# tools/check_changed_clippy.py selects the pre-push `cargo clippy` commands
+# whose packages the change reaches (members, their reverse
+# dependencies, the whole workspace for root Cargo inputs) and runs them
+# unchanged, so integration lints exactly the cells CI lints (HF-318). It
+# precedes Python cohorts as well as Rust build/test rules, so compile errors
+# do not wait behind unrelated consumer runs. Rule
+# globs only admit candidate paths; the tool owns the precise reach. The tool
+# projects and verifies each selected command's own toolchains (WASI SDK,
+# LLVM SDK) and refuses with the install command when one is missing.
+[[rule]]
+name = "rust-clippy-changed"
+toolchains = ["python", "rustc", "cargo"]
+description = "Clippy -D warnings with the proof plan's feature, target and profile cells for every Cargo package a change reaches."
+globs = [
+  "runtime/**",
+  "vendor/rust/**",
+  "deploy/browser/simd-ops-rs/**",
+  "Cargo.toml",
+  "Cargo.lock",
+  "rust-toolchain.toml",
+  "clippy.toml",
+  ".cargo/**",
+]
+gates = [
+  "python tools/check_changed_clippy.py --base {integration_upstream_commit}",
+]
+
 # --- Frontend / stdlib Python (bootstrap-critical) -----------------------
 # Deployment receivers validate retained JavaScript with the canonical scanner.
 # Product compilation stays in the existing Falcon WASM integration cell.
@@ -5327,33 +5355,6 @@ gates = [
 ]
 pytest = [
   "tests/tools/test_public_contract_gate.py",
-]
-
-# --- Clippy for every Cargo package a change reaches ---------------------
-# tools/check_changed_clippy.py selects the pre-push `cargo clippy` commands
-# whose packages the change reaches (members, their reverse
-# dependencies, the whole workspace for root Cargo inputs) and runs them
-# unchanged, so integration lints exactly the cells CI lints (HF-318). It
-# precedes the build and test rules so a lint fails before they compile. Rule
-# globs only admit candidate paths; the tool owns the precise reach. The tool
-# projects and verifies each selected command's own toolchains (WASI SDK,
-# LLVM SDK) and refuses with the install command when one is missing.
-[[rule]]
-name = "rust-clippy-changed"
-toolchains = ["python", "rustc", "cargo"]
-description = "Clippy -D warnings with the proof plan's feature, target and profile cells for every Cargo package a change reaches."
-globs = [
-  "runtime/**",
-  "vendor/rust/**",
-  "deploy/browser/simd-ops-rs/**",
-  "Cargo.toml",
-  "Cargo.lock",
-  "rust-toolchain.toml",
-  "clippy.toml",
-  ".cargo/**",
-]
-gates = [
-  "python tools/check_changed_clippy.py --base {integration_upstream_commit}",
 ]
 
 # --- Native (Cranelift) backend Rust -------------------------------------

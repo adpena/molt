@@ -346,6 +346,7 @@ The wrapper conflict was reconfirmed by native CI run `30211145633` job `8981749
 
 | Rule | Input globs | Commands |
 |---|---:|---:|
+| `rust-clippy-changed` | 8 | 1 |
 | `browser-loader-deployment` | 12 | 0 |
 | `frontend-python` | 1 | 3 |
 | `frontend-ir-assembly` | 64 | 1 |
@@ -389,7 +390,6 @@ The wrapper conflict was reconfirmed by native CI run `30211145633` job `8981749
 | `import-symbol-gate` | 2 | 1 |
 | `phase-exit-manifest` | 7 | 1 |
 | `public-contract` | 19 | 1 |
-| `rust-clippy-changed` | 8 | 1 |
 | `backend-native` | 9 | 1 |
 | `backend-daemon-cache` | 6 | 2 |
 | `backend-ir-framing` | 4 | 1 |
