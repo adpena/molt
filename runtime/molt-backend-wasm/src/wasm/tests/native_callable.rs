@@ -289,9 +289,9 @@ fn native_callable_direct_symbol_object_call_imports_and_directly_calls_symbol()
 
     let import_type_indices = wasm_function_import_type_indices(&wasm);
     assert_eq!(
-        import_type_indices.get(native_symbol).copied(),
-        Some(2),
-        "unary object-call native callable ABI must use boxed (i64) -> i64 type index"
+        wasm_type_section_value_signatures(&wasm)[import_type_indices[native_symbol] as usize],
+        (vec!["I64".to_string()], vec!["I64".to_string()]),
+        "unary object-call native callable ABI must use boxed (i64) -> i64"
     );
 
     let import_indices = wasm_function_import_indices(&wasm);
@@ -403,9 +403,9 @@ fn native_callable_direct_symbol_object_callargs_imports_and_directly_calls_symb
 
     let import_type_indices = wasm_function_import_type_indices(&wasm);
     assert_eq!(
-        import_type_indices.get(native_symbol).copied(),
-        Some(2),
-        "object-callargs native callable ABI must use boxed (i64) -> i64 type index"
+        wasm_type_section_value_signatures(&wasm)[import_type_indices[native_symbol] as usize],
+        (vec!["I64".to_string()], vec!["I64".to_string()]),
+        "object-callargs native callable ABI must use boxed (i64) -> i64"
     );
 
     let import_indices = wasm_function_import_indices(&wasm);
@@ -601,8 +601,11 @@ fn native_callable_forward_f32_imports_and_directly_calls_typed_payload_symbol()
 
     let import_type_indices = wasm_function_import_type_indices(&wasm);
     assert_eq!(
-        import_type_indices.get(native_symbol).copied(),
-        Some(19),
+        wasm_type_section_value_signatures(&wasm)[import_type_indices[native_symbol] as usize],
+        (
+            vec!["I32".to_string(), "I64".to_string(), "I32".to_string()],
+            vec!["I32".to_string()]
+        ),
         "forward_f32 must use typed native WASM ABI (i32 input_ptr, i64 byte_len, i32 output_ptr) -> i32"
     );
 
