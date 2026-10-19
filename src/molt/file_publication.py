@@ -771,16 +771,20 @@ def is_owned_staged_file_path(
     suffix: str | None = None,
 ) -> bool:
     """Recognize only a same-directory stage issued by the naming authority."""
+    from molt.path_custody import resolved_host_path_key
+
     staged = Path(staged)
     destination = Path(destination)
-    match = _STAGED_NAME_RE.fullmatch(staged.name)
-    if match is None or staged.parent != destination.parent:
+    match = _STAGED_NAME_RE.fullmatch(os.path.normcase(staged.name))
+    if match is None or resolved_host_path_key(staged.parent) != resolved_host_path_key(
+        destination.parent
+    ):
         return False
     identity = hashlib.sha256(os.fsencode(destination.name)).hexdigest()[:16]
     return (
         match.group("identity") == identity
         and (purpose is None or match.group("purpose") == _staged_purpose(purpose))
-        and (suffix is None or match.group("suffix") == suffix)
+        and (suffix is None or match.group("suffix") == os.path.normcase(suffix))
     )
 
 

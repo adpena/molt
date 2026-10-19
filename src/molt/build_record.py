@@ -282,10 +282,9 @@ def resolve_observed(
     from molt.path_custody import resolved_host_path_key
 
     output = (
-        None
-        if published_output is None
-        else Path(resolved_host_path_key(os.path.realpath(published_output)))
+        None if published_output is None else Path(os.path.realpath(published_output))
     )
+    output_parent = None if output is None else resolved_host_path_key(output.parent)
     roots = tuple(
         {
             resolved_host_path_key(os.path.realpath(root)).rstrip(os.sep) + os.sep
@@ -328,10 +327,11 @@ def resolve_observed(
         completed_lookups.update(chain)
 
     for kind, name in sorted(ledger.observed):
-        real = resolved_host_path_key(os.path.realpath(name))
+        resolved = os.path.realpath(name)
+        real = resolved_host_path_key(resolved)
         if output is not None and (
-            (kind == "file" and is_publication_family_member(Path(real), output))
-            or (kind == "directory" and real == os.fspath(output.parent))
+            (kind == "file" and is_publication_family_member(Path(resolved), output))
+            or (kind == "directory" and real == output_parent)
         ):
             continue
         if (real + os.sep).startswith(roots):
