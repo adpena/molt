@@ -472,8 +472,11 @@ impl<'a> SsaContext<'a> {
     /// `IterNextUnboxed` value result. The bounded state walk consumes the
     /// already-built augmented CFG and exact SSA identities; it is not a
     /// reaching-definition analysis. Each candidate carries one three-bit
-    /// state per block and one bounded edge list, so the cost is
-    /// `O(candidates * (blocks + edges + ops))` without per-op map cloning.
+    /// state per block and one bounded edge list. The cost per candidate is
+    /// `O(blocks + edges + ops + checks * log(edges + 1))`, where checks are
+    /// inline pending-error observations. Their handler lookup reuses the
+    /// canonical sorted CFG relation without a second handler index or per-op
+    /// map cloning.
     fn iter_item_projection_is_valid(
         &self,
         blocks: &[TirBlock],
