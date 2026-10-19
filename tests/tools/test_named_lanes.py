@@ -12,6 +12,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from tests.executable_test_support import custody_spelling
 from tests.process_guard_common import current_thread_only
 from tools import proof_plan
 from tools.proof_queue_pkg import command_admission
@@ -471,13 +472,13 @@ def test_queue_sdk_role_launch_and_attestation_share_absolute_selection(
 
     def run(command, **_kwargs):
         calls.append(tuple(command))
-        assert list(command) == [str(selected), "--version"]
+        assert list(command) == [custody_spelling(selected), "--version"]
         return subprocess.CompletedProcess(command, 0, f"LLD {version}", "")
 
     monkeypatch.setattr(command_identity, "_run_captured", run)
     envelope = {"argv": ["wasm-ld", "--version"], "python": None}
     exact = command_identity._exact_command(envelope, cwd=tmp_path, env=environment)
-    assert exact == [str(selected), "--version"]
+    assert exact == [custody_spelling(selected), "--version"]
     # An enclosing uv environment cannot send the role back through its PATH.
     assert (
         command_identity._which_in_command_environment(
@@ -492,11 +493,11 @@ def test_queue_sdk_role_launch_and_attestation_share_absolute_selection(
     identity = command_identity._tool_identity(
         PLAN, "wasm-ld", envelope, exact, cwd=tmp_path, env=environment
     )
-    assert identity["path"] == str(selected)
+    assert identity["path"] == custody_spelling(selected)
     assert (
         identity["executable_sha256"] == hashlib.sha256(b"SDK entrypoint").hexdigest()
     )
-    assert calls == [(str(selected), "--version")]
+    assert calls == [(custody_spelling(selected), "--version")]
     if selected_sdk_version:
         command_identity._validate_toolchain_identity(PLAN, "wasm-ld", identity)
     else:
@@ -811,7 +812,7 @@ def test_uncaptured_environment_image_cannot_borrow_a_prepared_image_identity(
         "allowed": [
             {
                 "toolchain": "python",
-                "path": os.path.normcase(os.path.abspath(captured)),
+                "path": custody_spelling(captured),
                 "sha256": hashlib.sha256(b"same-image").hexdigest(),
             }
         ],
@@ -854,8 +855,8 @@ def test_sdk_role_and_generation_use_request_cwd_separately_from_probe_cwd(
 
     def version(command, *, cwd, env):
         assert cwd == proof_plan.ROOT / "tools"
-        assert command[0] == str(
-            (installation.sdk / installation.tool_fact("clang")["path"])
+        assert command[0] == custody_spelling(
+            installation.sdk / installation.tool_fact("clang")["path"]
         )
         probes.append(tuple(command))
         return subprocess.CompletedProcess(
@@ -871,13 +872,18 @@ def test_sdk_role_and_generation_use_request_cwd_separately_from_probe_cwd(
         cwd=request,
         env=env,
     )
-    assert identity["path"] == str(
-        (installation.sdk / installation.tool_fact("clang")["path"])
+    assert identity["path"] == custody_spelling(
+        installation.sdk / installation.tool_fact("clang")["path"]
     )
-    assert identity["wasi_sdk"]["sdk"] == str(installation.sdk)
+    assert identity["wasi_sdk"]["sdk"] == custody_spelling(installation.sdk)
     assert identity["probe_cwd"] == str(proof_plan.ROOT / "tools")
     assert probes == [
-        (str((installation.sdk / installation.tool_fact("clang")["path"])), "--version")
+        (
+            custody_spelling(
+                installation.sdk / installation.tool_fact("clang")["path"]
+            ),
+            "--version",
+        )
     ]
     assert not (ambient / "relative-tools").exists()
 
