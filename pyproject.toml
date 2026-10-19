@@ -103,6 +103,8 @@ addopts = [
     "molt.pytest_capacity_plugin",
     "--ignore=tests/differential",
     "--ignore=tests/compliance",
+    "--durations=10",
+    "--durations-min=0.25",
 ]
 norecursedirs = ["third_party", ".git", ".venv", ".molt-venv", ".hypothesis", "dist", "build", "logs"]
 markers = [

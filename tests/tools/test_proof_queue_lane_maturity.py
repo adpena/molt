@@ -32,7 +32,6 @@ def test_queue_submission_refuses_expensive_wasm_below_l1(tmp_path):
 
 
 def test_queue_submission_allows_wasm_at_l1(tmp_path):
-    (tmp_path / ".git").mkdir()
     scheduling.lane_maturity.write_registry(
         tmp_path,
         {
@@ -66,7 +65,6 @@ def test_queue_submission_allows_wasm_at_l1(tmp_path):
 def _context(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, maturity: str = "L0"
 ) -> tuple[argparse.Namespace, sqlite3.Connection]:
-    (tmp_path / ".git").mkdir()
     scheduling.lane_maturity.write_registry(
         tmp_path,
         {
