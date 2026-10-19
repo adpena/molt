@@ -21,14 +21,18 @@ from __future__ import annotations
 from collections.abc import Iterable, Iterator, Mapping, Sequence
 from contextlib import ExitStack
 from dataclasses import dataclass
-import json
 import os
 from pathlib import Path
+import re
 import stat
+import tomllib
 from urllib.parse import urlparse
 from urllib.request import url2pathname
 
 from molt.file_publication import metadata_is_link_like
+from molt.cli.cargo_environment_inputs import CargoEnvironmentInputs
+from molt.exact_json import loads_exact
+from molt.process_environment import ProcessEnvironment
 from molt.toolchain_identity import (
     StableRegularFileHandle,
     open_stable_regular_file,
@@ -73,9 +77,7 @@ class CargoBuildReads:
     # Directories a build script named with rerun-if-changed: Cargo watches
     # their whole listing, not only the files present now.
     directories: tuple[Path, ...]
-    # Variables rustc or a build script read, with rustc's recorded value
-    # (None when only a build script declared the name).
-    environment: tuple[tuple[str, str | None], ...]
+    environment: CargoEnvironmentInputs
 
 
 @dataclass(frozen=True, slots=True)
@@ -86,26 +88,313 @@ class _RustcDepInfo:
     environment: dict[str, str | None]
 
 
+@dataclass(frozen=True, slots=True)
+class _BuildScriptInputs:
+    out_dir: str
+    paths: tuple[str, ...]
+    variables: tuple[str, ...]
+    generated: ProcessEnvironment
+
+
+# Closed crate-compilation variables from Cargo's environment reference:
+# https://doc.rust-lang.org/cargo/reference/environment-variables.html#environment-variables-cargo-sets-for-crates
+# Build-script execution variables (CARGO_CFG_*, CARGO_FEATURE_*, TARGET, etc.)
+# are not automatically rustc overrides. Unknown names remain ambient inputs.
+_CARGO_PACKAGE_FIELDS = {
+    "CARGO_PKG_NAME": "name",
+    "CARGO_PKG_VERSION": "version",
+    "CARGO_PKG_AUTHORS": "authors",
+    "CARGO_PKG_DESCRIPTION": "description",
+    "CARGO_PKG_HOMEPAGE": "homepage",
+    "CARGO_PKG_REPOSITORY": "repository",
+    "CARGO_PKG_LICENSE": "license",
+    "CARGO_PKG_LICENSE_FILE": "license-file",
+    "CARGO_PKG_RUST_VERSION": "rust-version",
+    "CARGO_PKG_README": "readme",
+}
+_CARGO_VERSION_COMPONENTS = {
+    "CARGO_PKG_VERSION_MAJOR": 1,
+    "CARGO_PKG_VERSION_MINOR": 2,
+    "CARGO_PKG_VERSION_PATCH": 3,
+    "CARGO_PKG_VERSION_PRE": 4,
+}
+
+
+def _environment_name(name: object) -> str:
+    if type(name) is not str or not name or "\0" in name or "=" in name:
+        raise CargoBuildReadsError("Cargo reported an invalid environment name")
+    return name
+
+
+def _build_script_inputs(
+    messages: Sequence[Mapping[str, object]], environment: ProcessEnvironment
+) -> dict[str, tuple[_BuildScriptInputs, ...]]:
+    result: dict[str, list[_BuildScriptInputs]] = {}
+    for message in messages:
+        if message.get("reason") != "build-script-executed":
+            continue
+        package = message.get("package_id")
+        out_dir = message.get("out_dir")
+        if not isinstance(package, str) or not isinstance(out_dir, str) or not out_dir:
+            raise CargoBuildReadsError(
+                "a build-script message has no package or out_dir"
+            )
+        rows = message.get("env", [])
+        if not isinstance(rows, list):
+            raise CargoBuildReadsError(
+                "a build-script message has invalid generated env"
+            )
+        generated: dict[str, str] = {}
+        for row in rows:
+            if not isinstance(row, list) or len(row) != 2 or type(row[1]) is not str:
+                raise CargoBuildReadsError(
+                    "a build-script generated env row is invalid"
+                )
+            name = environment.rule.key(_environment_name(row[0]))
+            if name in generated and generated[name] != row[1]:
+                raise CargoBuildReadsError(
+                    f"conflicting build-script generated input: {name}"
+                )
+            generated[name] = row[1]
+        paths, variables = _read_build_script_output(Path(out_dir).parent / "output")
+        for name in variables:
+            _environment_name(name)
+        observed = _BuildScriptInputs(
+            out_dir,
+            paths,
+            variables,
+            ProcessEnvironment(generated, rule=environment.rule),
+        )
+        previous = result.setdefault(package, [])
+        if any(row.out_dir == out_dir and row != observed for row in previous):
+            raise CargoBuildReadsError("conflicting build-script unit observations")
+        if observed not in previous:
+            previous.append(observed)
+    return {package: tuple(rows) for package, rows in result.items()}
+
+
+def _unit_generated_inputs(
+    info: _RustcDepInfo,
+    contexts: Sequence[_BuildScriptInputs],
+    environment: ProcessEnvironment,
+) -> ProcessEnvironment:
+    observed = ProcessEnvironment(
+        {name: value for name, value in info.environment.items() if value is not None},
+        rule=environment.rule,
+    )
+    if "OUT_DIR" in observed:
+        contexts = [row for row in contexts if row.out_dir == observed["OUT_DIR"]]
+        if not contexts:
+            raise CargoBuildReadsError(
+                "rustc OUT_DIR has no matching build-script unit"
+            )
+    projected = []
+    names = {environment.rule.key(name) for name in info.environment}
+    for context in contexts:
+        values = {
+            name: value for name, value in context.generated.items() if name in names
+        }
+        if "OUT_DIR" in names:
+            if "OUT_DIR" in values and values["OUT_DIR"] != context.out_dir:
+                raise CargoBuildReadsError(
+                    "build-script generated OUT_DIR conflicts with its unit"
+                )
+            values["OUT_DIR"] = context.out_dir
+        projected.append(ProcessEnvironment(values, rule=environment.rule))
+    if projected and any(values != projected[0] for values in projected[1:]):
+        raise CargoBuildReadsError("rustc unit has ambiguous build-script environment")
+    return projected[0] if projected else ProcessEnvironment({}, rule=environment.rule)
+
+
+def _cargo_manifest(path: Path) -> Mapping[str, object]:
+    try:
+        return tomllib.loads(_read_bounded(path))
+    except tomllib.TOMLDecodeError as exc:
+        raise CargoBuildReadsError(f"invalid Cargo package manifest: {path}") from exc
+
+
+def _package_environment(manifest: Path, workspace_root: Path) -> dict[str, str]:
+    document = _cargo_manifest(manifest)
+    package = document.get("package")
+    if not isinstance(package, dict):
+        raise CargoBuildReadsError(f"Cargo package manifest has no package: {manifest}")
+    result: dict[str, str] = {}
+    shared_package: Mapping[str, object] | None = None
+    for name, field in _CARGO_PACKAGE_FIELDS.items():
+        value = package.get(
+            field, [] if field == "authors" else "0.0.0" if field == "version" else ""
+        )
+        if isinstance(value, dict) and value == {"workspace": True}:
+            if shared_package is None:
+                workspace = _cargo_manifest(workspace_root / "Cargo.toml").get(
+                    "workspace"
+                )
+                shared = (
+                    workspace.get("package") if isinstance(workspace, Mapping) else None
+                )
+                if not isinstance(shared, Mapping):
+                    raise CargoBuildReadsError(
+                        "Cargo workspace package fields are unavailable"
+                    )
+                shared_package = shared
+            value = shared_package.get(field)
+            if field in {"license-file", "readme"} and isinstance(value, str):
+                value = os.path.relpath(workspace_root / value, manifest.parent)
+        if (
+            field == "authors"
+            and isinstance(value, list)
+            and all(type(item) is str for item in value)
+        ):
+            value = ":".join(value)
+        if field == "readme" and (value is True or (field not in package)):
+            value = next(
+                (
+                    name
+                    for name in ("README.md", "README.txt", "README")
+                    if (manifest.parent / name).is_file()
+                ),
+                "",
+            )
+        if field == "readme" and value is False:
+            value = ""
+        if type(value) is not str:
+            raise CargoBuildReadsError(
+                f"unsupported Cargo package environment field: {name}"
+            )
+        result[name] = value
+    version = re.fullmatch(
+        r"(\d+)\.(\d+)\.(\d+)(?:-([^+]+))?(?:\+[^+]+)?", result["CARGO_PKG_VERSION"]
+    )
+    if version is None:
+        raise CargoBuildReadsError(f"Cargo package has an invalid version: {manifest}")
+    result.update(
+        {
+            name: version.group(index) or ""
+            for name, index in _CARGO_VERSION_COMPONENTS.items()
+        }
+    )
+    result["CARGO_MANIFEST_DIR"] = os.fspath(manifest.parent)
+    result["CARGO_MANIFEST_PATH"] = os.fspath(manifest)
+    return result
+
+
+def _ambient_unit_inputs(
+    message: Mapping[str, object],
+    info: _RustcDepInfo,
+    contexts: Sequence[_BuildScriptInputs],
+    environment: ProcessEnvironment,
+    *,
+    workspace_root: Path,
+    package_values: dict[Path, dict[str, str]],
+) -> set[str]:
+    target = message.get("target")
+    if not isinstance(target, Mapping):
+        raise CargoBuildReadsError("a compiler artifact has no target")
+    unit = f"{message.get('package_id')} target {target.get('name')}"
+    try:
+        generated = (
+            _unit_generated_inputs(info, contexts, environment)
+            if contexts and "custom-build" not in _strings(target.get("kind"))
+            else ProcessEnvironment({}, rule=environment.rule)
+        )
+    except CargoBuildReadsError as exc:
+        raise CargoBuildReadsError(f"Cargo unit {unit}: {exc}") from exc
+    provided: dict[str, str] = {}
+    target_name = target.get("name")
+    if isinstance(target_name, str):
+        provided["CARGO_CRATE_NAME"] = target_name.replace("-", "_")
+        if "bin" in _strings(target.get("kind")) or (
+            "example" in _strings(target.get("kind"))
+            and "bin" in _strings(target.get("crate_types"))
+        ):
+            provided["CARGO_BIN_NAME"] = target_name
+    package_names = {
+        *_CARGO_PACKAGE_FIELDS,
+        *_CARGO_VERSION_COMPONENTS,
+        "CARGO_MANIFEST_DIR",
+        "CARGO_MANIFEST_PATH",
+    }
+    if any(
+        environment.rule.key(name) in package_names and name not in generated
+        for name in info.environment
+    ):
+        raw_manifest = message.get("manifest_path")
+        package = _local_package_root(message.get("package_id"))
+        manifest = (
+            Path(raw_manifest)
+            if isinstance(raw_manifest, str)
+            else package / "Cargo.toml"
+            if package
+            else None
+        )
+        if manifest is None:
+            raise CargoBuildReadsError(
+                f"Cargo unit {unit}: environment requires its package manifest"
+            )
+        if not manifest.is_absolute() or (
+            package is not None
+            and Path(os.path.realpath(manifest)) != package / "Cargo.toml"
+        ):
+            raise CargoBuildReadsError("Cargo unit manifest differs from its package")
+        if manifest not in package_values:
+            try:
+                package_values[manifest] = _package_environment(
+                    manifest, workspace_root
+                )
+            except CargoBuildReadsError as exc:
+                raise CargoBuildReadsError(f"Cargo unit {unit}: {exc}") from exc
+        provided.update(package_values[manifest])
+    unit_values = ProcessEnvironment(provided, rule=environment.rule)
+    names: set[str] = set()
+    mismatched: set[str] = set()
+    for raw_name, actual in info.environment.items():
+        name = environment.rule.key(_environment_name(raw_name))
+        if name in generated:
+            expected = generated[name]
+        elif name in unit_values:
+            expected = unit_values[name]
+        else:
+            expected = environment.get(name)
+            names.add(name)
+        if actual != expected:
+            mismatched.add(name)
+    if mismatched:
+        raise CargoBuildReadsError(
+            f"rustc environment differs from its input owner for {unit}: "
+            + ", ".join(sorted(mismatched))
+        )
+    return names
+
+
 def cargo_build_reads(
     cargo_stdout: str,
     *,
     workspace_root: Path,
+    dep_info_base: Path,
     product_roots: Sequence[Path],
     toolchain_roots: Sequence[Path],
+    environment: ProcessEnvironment,
 ) -> CargoBuildReads:
     """Collect what the Cargo build that printed ``cargo_stdout`` read.
 
     Files under ``product_roots`` are outputs of build scripts, whose inputs
     are collected; files under ``toolchain_roots`` belong to the plan
     identity. Any other file outside ``workspace_root`` means the build read
-    another workspace's sources, so it is refused.
+    another workspace's sources, so it is refused. ``dep_info_base`` is the
+    command owner's explicit base for rustc's relative per-unit paths; an
+    isolated Cargo workspace can be nested within the source-admission root.
+    The full successful build transcript must contain one terminal
+    ``build-finished`` record; bounded diagnostic excerpts are not input evidence.
     """
+    if not isinstance(environment, ProcessEnvironment):
+        raise TypeError("Cargo build reads require a ProcessEnvironment")
     root = Path(os.path.realpath(workspace_root))
+    base = Path(os.path.realpath(dep_info_base))
     skipped = tuple(Path(os.path.realpath(path)) for path in product_roots)
     covered = tuple(Path(os.path.realpath(path)) for path in toolchain_roots)
     files: set[Path] = set()
     directories: set[Path] = set()
-    environment: dict[str, str | None] = {}
+    ambient_names: set[str] = set()
 
     def admit(path: Path, *, whole_package: bool = False) -> None:
         resolved = Path(os.path.realpath(path))
@@ -143,46 +432,53 @@ def cargo_build_reads(
         for filename in _strings(message.get("filenames"))
         if Path(filename).parent.name == "deps"
     }
-    out_dirs = {
-        message.get("package_id"): message.get("out_dir")
-        for message in messages
-        if message.get("reason") == "build-script-executed"
-    }
+    scripts = _build_script_inputs(messages, environment)
+    package_values: dict[Path, dict[str, str]] = {}
     units = 0
     for message in messages:
         reason = message.get("reason")
-        package = _local_package_root(message.get("package_id"))
+        if reason not in {"compiler-artifact", "build-script-executed"}:
+            continue
+        package_id = message.get("package_id")
+        if not isinstance(package_id, str):
+            raise CargoBuildReadsError("a Cargo unit message has no package_id")
+        package = _local_package_root(package_id)
         if reason == "compiler-artifact":
+            script_inputs = scripts.get(package_id, ())
+            out_dirs = {script.out_dir for script in script_inputs}
             dep_info = _unit_dep_info(
                 message,
                 deps_dirs,
-                out_dirs.get(message.get("package_id")),
-                workspace_root=root,
+                next(iter(out_dirs)) if len(out_dirs) == 1 else None,
+                dep_info_base=base,
             )
-            if package is None:
-                # A registry or git unit: Cargo.lock identifies its sources,
-                # but the variables it read still decide its bytes.
-                if dep_info is not None:
-                    environment.update(dep_info.environment)
-                continue
             if dep_info is None:
                 raise CargoBuildReadsError(
                     f"Cargo reported no dep-info for {message.get('package_id')}"
                 )
-            environment.update(dep_info.environment)
+            ambient_names.update(
+                _ambient_unit_inputs(
+                    message,
+                    dep_info,
+                    script_inputs,
+                    environment,
+                    workspace_root=base,
+                    package_values=package_values,
+                )
+            )
+            if package is None:
+                # Cargo.lock owns registry/git source bytes, not their ambient reads.
+                continue
             for entry in dep_info.files:
                 path = Path(entry)
-                admit(path if path.is_absolute() else root / path)
+                admit(path if path.is_absolute() else base / path)
             units += 1
         elif reason == "build-script-executed":
-            out_dir = message.get("out_dir")
-            if not isinstance(out_dir, str):
-                raise CargoBuildReadsError("a build-script message has no out_dir")
-            changed, variables = _read_build_script_output(
-                Path(out_dir).parent / "output"
+            script = next(
+                row for row in scripts[package_id] if row.out_dir == message["out_dir"]
             )
-            for name in variables:
-                environment.setdefault(name, None)
+            changed, variables = script.paths, script.variables
+            ambient_names.update(variables)
             if package is None:
                 continue
             for entry in changed:
@@ -195,7 +491,9 @@ def cargo_build_reads(
     return CargoBuildReads(
         tuple(sorted(files)),
         tuple(sorted(directories)),
-        tuple(sorted(environment.items())),
+        CargoEnvironmentInputs.capture(
+            environment, ambient_names, local_unit_count=units
+        ),
     )
 
 
@@ -213,15 +511,40 @@ def paths_outside(
 
 
 def _messages(cargo_stdout: str) -> Iterator[Mapping[str, object]]:
-    for line in cargo_stdout.splitlines():
+    """Read a complete successful Cargo build, preserving arbitrary tool text.
+
+    Cargo's JSON protocol ends with build-finished, including with
+    json-render-diagnostics. Other tools may print non-JSON lines. A malformed
+    JSON candidate cannot be ignored: it could be a unit whose inputs we need.
+    https://doc.rust-lang.org/cargo/reference/external-tools.html#json-messages
+    """
+    finished = False
+    # The wire delimiter is LF (possibly CRLF), not Unicode line separators
+    # that may occur literally inside JSON strings such as source pathnames.
+    for number, line in enumerate(cargo_stdout.split("\n"), start=1):
         if not line.startswith("{"):
             continue
         try:
-            message = json.loads(line)
-        except ValueError:
-            continue
-        if isinstance(message, dict):
-            yield message
+            message = loads_exact(line)
+        except ValueError as exc:
+            raise CargoBuildReadsError(
+                f"malformed Cargo JSON on stdout line {number}"
+            ) from exc
+        if finished:
+            raise CargoBuildReadsError(
+                f"Cargo JSON follows build-finished on stdout line {number}"
+            )
+        if message.get("reason") == "build-finished":
+            if message.get("success") is not True:
+                raise CargoBuildReadsError(
+                    "Cargo build-finished does not report success:true"
+                )
+            finished = True
+        yield message
+    if not finished:
+        raise CargoBuildReadsError(
+            "Cargo stdout has no successful terminal build-finished record"
+        )
 
 
 def _unit_dep_info(
@@ -229,7 +552,7 @@ def _unit_dep_info(
     deps_dirs: Iterable[Path],
     out_dir: object,
     *,
-    workspace_root: Path,
+    dep_info_base: Path,
 ) -> _RustcDepInfo | None:
     """The rustc dep-info of one unit: ``<crate>-<metadata>.d``.
 
@@ -284,7 +607,7 @@ def _unit_dep_info(
         candidates.append(candidate)
     if not candidates:
         return None
-    return _uplifted_dep_info(candidates, filenames, workspace_root, library, crate)
+    return _uplifted_dep_info(candidates, filenames, dep_info_base, library, crate)
 
 
 def _output_role(path: Path, library: bool) -> str | None:
@@ -303,13 +626,13 @@ def _output_role(path: Path, library: bool) -> str | None:
 def _uplifted_dep_info(
     candidates: Sequence[_RustcDepInfo],
     filenames: Sequence[str],
-    root: Path,
+    dep_info_base: Path,
     library: bool,
     crate: str,
 ) -> _RustcDepInfo:
     def absolute(value: str) -> Path:
         path = Path(value)
-        return path if path.is_absolute() else root / path
+        return path if path.is_absolute() else dep_info_base / path
 
     try:
         with ExitStack() as custody:
@@ -452,12 +775,18 @@ def _read_dep_info(path: Path) -> _RustcDepInfo:
     outputs: list[str] = []
     environment: dict[str, str | None] = {}
     first_rule = True
-    for line in _read_bounded(path).splitlines():
+    # Cargo uses Rust str.lines(): only LF/CRLF delimit records. Other Unicode
+    # separators remain literal parts of environment names and values.
+    for line in re.split(r"\r?\n", _read_bounded(path)):
         if line.startswith(_ENV_DEP):
             name, separator, value = line[len(_ENV_DEP) :].partition("=")
-            environment[_unescape_env(name)] = (
-                _unescape_env(value) if separator else None
-            )
+            name = _environment_name(_unescape_env(name))
+            actual = _unescape_env(value) if separator else None
+            if name in environment and environment[name] != actual:
+                raise CargoBuildReadsError(
+                    f"conflicting rustc environment facts: {name}"
+                )
+            environment[name] = actual
             continue
         target, separator, deps = line.partition(": ")
         if not separator:
@@ -504,7 +833,8 @@ def _unescape_env(value: str) -> str:
 def _read_build_script_output(path: Path) -> tuple[tuple[str, ...], tuple[str, ...]]:
     changed: list[str] = []
     variables: list[str] = []
-    for line in _read_bounded(path).splitlines():
+    # BuildOutput::parse splits bytes only on LF, then trims each line.
+    for line in _read_bounded(path).split("\n"):
         line = line.strip()
         for prefix in _RERUN_IF_CHANGED:
             if line.startswith(prefix):

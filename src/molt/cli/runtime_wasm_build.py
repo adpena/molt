@@ -15,6 +15,7 @@ from molt.cli.atomic_io import (
     _atomic_copy_file,
 )
 from molt.cli.build_locks import _build_lock, BuildLockAcquisitionError
+from molt.cli.cargo_environment_inputs import CargoEnvironmentInputs
 from molt.cli.runtime_fingerprints import (
     _write_runtime_fingerprint,
 )
@@ -51,6 +52,7 @@ class _RuntimeWasmMemberFinalizer:
     root: Path
     required_exports: set[str] | frozenset[str] | None
     spec: _RuntimeWasmBuildSpec
+    cargo_environment: CargoEnvironmentInputs
 
     @property
     def kind(self) -> str:
@@ -127,16 +129,22 @@ def _reuse_target_runtime_wasm(
         if ctx.reloc
         else _wasm_runtime_wasm_candidates(ctx.spec.target_root, ctx.spec.profile_dir)
     )
+    if ctx.spec.cargo_plan is None:
+        raise ValueError("runtime WASM target admission lost its Cargo plan")
+    ctx.cargo_environment.verify(ctx.spec.cargo_plan.environment)
     target = _current_runtime_target_artifact(
         candidates,
         build_state_root=ctx.target_build_state_root,
         cargo_profile=ctx.spec.cargo_profile,
         target_label=target_label,
         fingerprint=target_fingerprint,
+        environment=ctx.spec.cargo_plan.environment,
     )
     if target is None:
         return None
-    artifact, target_fingerprint_path = target
+    artifact, target_fingerprint_path, cargo_environment = target
+    if cargo_environment != ctx.cargo_environment:
+        return None
     if not ctx.reloc and (
         _inspect_wasm_binary(artifact) != "valid"
         or not _is_valid_shared_runtime_wasm_artifact(artifact)
@@ -196,6 +204,7 @@ def _reuse_target_runtime_wasm(
             target_fingerprint_path,
             target_fingerprint,
             artifact=artifact,
+            cargo_environment=cargo_environment,
         )
         if persist_output_fingerprint:
             ctx.spec.fingerprint_path.parent.mkdir(parents=True, exist_ok=True)
@@ -203,6 +212,7 @@ def _reuse_target_runtime_wasm(
                 ctx.spec.fingerprint_path,
                 output_fingerprint,
                 artifact=ctx.runtime_wasm,
+                cargo_environment=cargo_environment,
             )
     except OSError as exc:
         raise ValueError(
@@ -221,6 +231,7 @@ def _materialize_runtime_wasm_member_from_target(
     required_exports: set[str] | frozenset[str] | None,
     resolved_modules: set[str] | frozenset[str] | None,
     spec: _RuntimeWasmBuildSpec,
+    cargo_environment: CargoEnvironmentInputs,
 ) -> bool:
     """Finalize one transient pair member from an exact canonical target spec.
 
@@ -238,6 +249,7 @@ def _materialize_runtime_wasm_member_from_target(
         root=project_root,
         required_exports=required_exports,
         spec=spec,
+        cargo_environment=cargo_environment,
     )
     if spec.fingerprint is None or spec.staticlib_fingerprint is None:
         raise ValueError(

@@ -380,7 +380,9 @@ def test_supervisor_build_refuses_capacity_before_starting_cargo(
     with pytest.raises(disk_capacity.DiskCapacityError):
         supervisor_generation.build_cargo(
             inputs=_supervisor_inputs(tmp_path),
-            env={"CARGO_TARGET_DIR": str(target)},
+            environment=supervisor_generation.effective_cargo_environment(
+                _supervisor_inputs(tmp_path), {"CARGO_TARGET_DIR": str(target)}
+            ),
         )
     assert not target.exists()
 
@@ -408,7 +410,10 @@ def test_supervisor_build_probes_separate_build_directory(
     monkeypatch.setattr(command_identity, "_run_captured", run)
     binary, completed = supervisor_generation.build_cargo(
         inputs=_supervisor_inputs(crate.parents[1]),
-        env={"CARGO_TARGET_DIR": "output", "CARGO_BUILD_BUILD_DIR": "build"},
+        environment=supervisor_generation.effective_cargo_environment(
+            _supervisor_inputs(crate.parents[1]),
+            {"CARGO_TARGET_DIR": "output", "CARGO_BUILD_BUILD_DIR": "build"},
+        ),
     )
     assert completed.returncode == 0
     assert binary.parent == crate / "output" / "debug"

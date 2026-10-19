@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from tests.runtime_build_identity_helper import runtime_cargo_environment_inputs
+
 from functools import partial
 
 import contextlib
@@ -186,13 +188,14 @@ def test_manifest_is_path_neutral_and_custodies_non_system_static_libraries(
         cargo_profile="dev-fast",
         target_triple="x86_64-apple-darwin",
         **build_args,
+        cargo_environment=runtime_cargo_environment_inputs(),
     )
     manifest = read_native_link_dependency_manifest(
         runtime,
         target_triple="x86_64-apple-darwin",
     )
     assert path == native_link_dependency_manifest_path(runtime)
-    assert manifest["schema_version"] == 5
+    assert manifest["schema_version"] == 6
     build_identity = build_args["runtime_build_identity"]
     assert manifest["runtime_build_identity"] == build_identity.to_dict()
     assert "build_scripts" not in manifest
@@ -250,6 +253,7 @@ def test_manifest_is_deterministic_without_reordering_semantic_messages(
             cargo_profile="release-output",
             target_triple="aarch64-unknown-linux-gnu",
         ),
+        cargo_environment=runtime_cargo_environment_inputs(),
     )
     second = manifest_from_cargo_json(
         _cargo_output(f"{other}\n{message}", "-lz -lz -lother"),
@@ -260,6 +264,7 @@ def test_manifest_is_deterministic_without_reordering_semantic_messages(
             cargo_profile="release-output",
             target_triple="aarch64-unknown-linux-gnu",
         ),
+        cargo_environment=runtime_cargo_environment_inputs(),
     )
     assert first == second
     assert [item["argument"] for item in _link_plan_items(first)] == [
@@ -276,6 +281,7 @@ def test_manifest_is_deterministic_without_reordering_semantic_messages(
             cargo_profile="release-output",
             target_triple="aarch64-unknown-linux-gnu",
         ),
+        cargo_environment=runtime_cargo_environment_inputs(),
     )
     assert len(_link_plan_items(deduped)) == 2
 
@@ -301,6 +307,7 @@ def test_direct_static_link_input_is_custodied_and_replayed_after_pruning(
         cargo_profile="dev-fast",
         target_triple=target_triple,
         runtime_build_identity=build_identity,
+        cargo_environment=runtime_cargo_environment_inputs(),
     )
     direct.unlink()
 
@@ -342,6 +349,7 @@ def test_direct_dynamic_link_input_requires_runtime_distribution_contract(
             cargo_profile="dev-fast",
             target_triple=target_triple,
             **_runtime_build_args(target_triple=target_triple),
+            cargo_environment=runtime_cargo_environment_inputs(),
         )
 
 
@@ -375,6 +383,7 @@ def test_search_resolved_dynamic_library_is_not_misclassified_as_system(
             cargo_profile="dev-fast",
             target_triple=target_triple,
             **_runtime_build_args(target_triple=target_triple),
+            cargo_environment=runtime_cargo_environment_inputs(),
         )
 
 
@@ -421,6 +430,7 @@ def test_local_coff_library_requires_explicit_static_or_runtime_custody(
             cargo_profile="dev-fast",
             target_triple=target_triple,
             runtime_build_identity=build_identity,
+            cargo_environment=runtime_cargo_environment_inputs(),
         )
 
     if error is not None:
@@ -461,6 +471,7 @@ def test_direct_linker_script_requires_a_typed_relocation_contract(
             cargo_profile="dev-fast",
             target_triple=target_triple,
             **_runtime_build_args(target_triple=target_triple),
+            cargo_environment=runtime_cargo_environment_inputs(),
         )
 
 
@@ -494,6 +505,7 @@ def test_non_system_framework_requires_runtime_distribution_contract(
             cargo_profile="dev-fast",
             target_triple=target_triple,
             **_runtime_build_args(target_triple=target_triple),
+            cargo_environment=runtime_cargo_environment_inputs(),
         )
 
 
@@ -510,6 +522,7 @@ def test_system_framework_remains_an_explicit_path_neutral_link_plan_item(
         cargo_profile="dev-fast",
         target_triple=target_triple,
         **_runtime_build_args(target_triple=target_triple),
+        cargo_environment=runtime_cargo_environment_inputs(),
     )
 
     assert _mapping_field(manifest, "custody")["archive"] is None
@@ -552,6 +565,7 @@ def test_path_bearing_linker_arguments_cannot_bypass_custody(
             cargo_profile="dev-fast",
             target_triple=target_triple,
             **_runtime_build_args(target_triple=target_triple),
+            cargo_environment=runtime_cargo_environment_inputs(),
         )
 
 
@@ -598,6 +612,7 @@ def test_implicit_native_link_protocol_uses_captured_target_not_reader_host(
         cargo_profile="dev-fast",
         target_triple=None,
         runtime_build_identity=build_identity,
+        cargo_environment=runtime_cargo_environment_inputs(),
     )
     manifest = read_native_link_dependency_manifest(
         runtime,
@@ -648,6 +663,7 @@ def test_manifest_reader_rejects_object_format_target_disagreement(
         cargo_profile="dev-fast",
         target_triple=target_triple,
         runtime_build_identity=build_identity,
+        cargo_environment=runtime_cargo_environment_inputs(),
     )
 
     with pytest.raises(NativeLinkDependencyManifestError, match="object format"):
@@ -675,6 +691,7 @@ def test_manifest_rejects_nonstring_item_kind_with_domain_diagnostic(
         cargo_profile="dev-fast",
         target_triple=None,
         runtime_build_identity=_RUNTIME_BUILD_IDENTITY,
+        cargo_environment=runtime_cargo_environment_inputs(),
     )
     manifest = json.loads(path.read_text(encoding="utf-8"))
     manifest["link_plan"]["items"][0]["kind"] = kind
@@ -728,11 +745,46 @@ def test_manifest_rejects_resealed_runtime_numeric_coercion(
         cargo_profile="dev-fast",
         target_triple=None,
         **_runtime_build_args(),
+        cargo_environment=runtime_cargo_environment_inputs(),
     )
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     manifest["runtime"]["size_bytes"] = size
     manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
     with pytest.raises(NativeLinkDependencyManifestError, match="nonnegative integer"):
+        read_native_link_dependency_manifest(runtime, target_triple=None)
+
+
+@pytest.mark.parametrize(
+    "profile,profile_dir",
+    [("dev", "debug"), ("release", "release"), ("dev-fast", "dev-fast")],
+)
+def test_manifest_profile_follows_cargo_plan_after_storage_relocation(
+    tmp_path, profile, profile_dir
+):
+    runtime = tmp_path / "retained-storage" / "runtime.a"
+    runtime.parent.mkdir()
+    runtime.write_bytes(b"runtime")
+    receipt = write_native_link_dependency_manifest(
+        "",
+        cargo_stderr="note: native-static-libs: -lc\n",
+        runtime_lib=runtime,
+        cargo_profile=profile,
+        target_triple=None,
+        **_runtime_build_args(cargo_profile=profile),
+        cargo_environment=runtime_cargo_environment_inputs(),
+    )
+    facts = read_native_link_dependency_manifest(runtime, target_triple=None)
+    assert facts["cargo"] == {
+        "profile": profile,
+        "profile_dir": profile_dir,
+        "target_triple": None,
+    }
+    payload = json.loads(receipt.read_text())
+    payload["cargo"]["profile_dir"] = runtime.parent.name
+    receipt.write_text(json.dumps(payload))
+    with pytest.raises(
+        NativeLinkDependencyManifestError, match="profile identity is inconsistent"
+    ):
         read_native_link_dependency_manifest(runtime, target_triple=None)
 
 
@@ -746,11 +798,12 @@ def test_manifest_rejects_archive_target_profile_and_json_drift(tmp_path: Path) 
         cargo_profile="dev-fast",
         target_triple=None,
         **_runtime_build_args(),
+        cargo_environment=runtime_cargo_environment_inputs(),
     )
     manifest_path = native_link_dependency_manifest_path(runtime)
     original_manifest = manifest_path.read_text(encoding="utf-8")
     manifest = json.loads(original_manifest)
-    manifest["schema_version"] = 5.0
+    manifest["schema_version"] = 6.0
     manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
     with pytest.raises(
         NativeLinkDependencyManifestError, match="unsupported manifest schema"
@@ -806,6 +859,7 @@ def test_manifest_rejects_archive_target_profile_and_json_drift(tmp_path: Path) 
             cargo_profile="dev-fast",
             target_triple=None,
             **_runtime_build_args(),
+            cargo_environment=runtime_cargo_environment_inputs(),
         )
 
 
@@ -840,6 +894,7 @@ def test_manifest_not_name_matching_selects_exact_build_script_instance(
         cargo_profile="dev-fast",
         target_triple=None,
         **_runtime_build_args(),
+        cargo_environment=runtime_cargo_environment_inputs(),
     )
 
     assert list(
@@ -878,6 +933,7 @@ def test_hydrated_byte_identical_artifact_requires_matching_sidecar(
         cargo_profile="dev-fast",
         target_triple=None,
         **_runtime_build_args(),
+        cargo_environment=runtime_cargo_environment_inputs(),
     )
     shutil.copyfile(provider, consumer)
     with pytest.raises(NativeLinkDependencyManifestError, match="cannot read"):
@@ -933,6 +989,7 @@ def test_manifest_replay_survives_pruned_producer_link_directories(
         cargo_profile="dev-fast",
         target_triple=None,
         runtime_build_identity=_RUNTIME_BUILD_IDENTITY,
+        cargo_environment=runtime_cargo_environment_inputs(),
     )
     manifest = read_native_link_dependency_manifest(
         runtime,
@@ -987,6 +1044,7 @@ def test_hydrated_manifest_refuses_foreign_runtime_build_identity(
         cargo_profile="dev-fast",
         target_triple=None,
         runtime_build_identity=_RUNTIME_BUILD_IDENTITY,
+        cargo_environment=runtime_cargo_environment_inputs(),
     )
     shutil.copyfile(provider, consumer)
     shutil.copyfile(
@@ -1039,6 +1097,7 @@ def test_repeated_publication_and_concurrent_reads_preserve_exact_build_identity
             cargo_profile="dev-fast",
             target_triple=None,
             runtime_build_identity=_RUNTIME_BUILD_IDENTITY,
+            cargo_environment=runtime_cargo_environment_inputs(),
         )
 
     path = publish()
@@ -1079,6 +1138,7 @@ def test_native_static_lib_note_is_captured_from_exact_rustc_stderr(
         cargo_profile="dev-fast",
         target_triple="x86_64-pc-windows-msvc",
         **_runtime_build_args(target_triple="x86_64-pc-windows-msvc"),
+        cargo_environment=runtime_cargo_environment_inputs(),
     )
     assert [item["argument"] for item in _link_plan_items(manifest)] == [
         "user32.lib",
@@ -1105,6 +1165,7 @@ def test_native_static_lib_note_ignores_terminal_color_decoration(
         cargo_profile="dev-fast",
         target_triple="x86_64-unknown-linux-gnu",
         **_runtime_build_args(target_triple="x86_64-unknown-linux-gnu"),
+        cargo_environment=runtime_cargo_environment_inputs(),
     )
     assert [item["argument"] for item in _link_plan_items(manifest)] == [
         "-lgcc_s",
@@ -1224,6 +1285,7 @@ def test_multiple_native_static_lib_notes_fail_closed(tmp_path: Path) -> None:
             cargo_profile="dev-fast",
             target_triple="x86_64-pc-windows-msvc",
             **_runtime_build_args(target_triple="x86_64-pc-windows-msvc"),
+            cargo_environment=runtime_cargo_environment_inputs(),
         )
 
 
@@ -1249,6 +1311,7 @@ def test_manifest_reader_rejects_tampered_runtime_build_identity(
         cargo_profile="dev-fast",
         target_triple=None,
         runtime_build_identity=_RUNTIME_BUILD_IDENTITY,
+        cargo_environment=runtime_cargo_environment_inputs(),
     )
     payload = json.loads(path.read_text(encoding="utf-8"))
     identity = payload["runtime_build_identity"]
@@ -1280,6 +1343,7 @@ def test_runtime_admission_reads_current_content_and_rejects_preserved_metadata_
         cargo_profile="dev-fast",
         target_triple=None,
         runtime_build_identity=_RUNTIME_BUILD_IDENTITY,
+        cargo_environment=runtime_cargo_environment_inputs(),
     )
 
     real_hash_exact = archive_identity._hash_exact
@@ -1353,6 +1417,7 @@ def test_rustc_native_static_lib_order_is_replayed_exactly(tmp_path: Path) -> No
             cargo_profile="dev-fast",
             target_triple=target_triple,
             runtime_build_identity=build_identity,
+            cargo_environment=runtime_cargo_environment_inputs(),
         )
         return list(
             native_link_deps._collect_cargo_native_link_deps(
@@ -1401,6 +1466,7 @@ def test_coff_rustc_linker_tokens_are_forwarded_through_driver_exactly(
         cargo_profile="dev-fast",
         target_triple="x86_64-pc-windows-msvc",
         runtime_build_identity=build_identity,
+        cargo_environment=runtime_cargo_environment_inputs(),
     )
     assert list(
         read_native_link_flags(
@@ -1449,6 +1515,7 @@ def test_rustc_lowered_native_flags_are_not_reconstructed(tmp_path: Path) -> Non
         cargo_profile="dev-fast",
         target_triple=target_triple,
         runtime_build_identity=build_identity,
+        cargo_environment=runtime_cargo_environment_inputs(),
     )
     flags = list(
         native_link_deps._collect_cargo_native_link_deps(

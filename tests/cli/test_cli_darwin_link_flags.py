@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from tests.runtime_build_identity_helper import runtime_cargo_environment_inputs
+
 from molt.cli.native_link_plan import resolve_native_target_spec
 
 import json
@@ -147,6 +149,7 @@ def test_collect_cargo_native_link_deps_preserves_framework_link_kinds(
         cargo_profile="dev-fast",
         target_triple=target_triple,
         runtime_build_identity=build_identity,
+        cargo_environment=runtime_cargo_environment_inputs(),
     )
 
     link_flags = list(
@@ -218,6 +221,7 @@ def test_collect_cargo_native_link_deps_ignores_stale_inactive_build_outputs(
         cargo_profile="release-output",
         target_triple=target_triple,
         runtime_build_identity=build_identity,
+        cargo_environment=runtime_cargo_environment_inputs(),
     )
 
     link_flags = list(
@@ -263,6 +267,7 @@ def _darwin_native_link_plan(
         cargo_profile="dev-fast",
         target_triple=target_triple,
         runtime_build_identity=build_identity,
+        cargo_environment=runtime_cargo_environment_inputs(),
     )
 
     plan = native_link_command._build_native_link_plan(
@@ -553,6 +558,7 @@ def test_cross_darwin_search_paths_share_the_explicit_sysroot(
     monkeypatch.setenv(
         "CFLAGS", "" if selector == "argument" else f'-isysroot "{selected_sdk}"'
     )
+    monkeypatch.setenv("CC_SHELL_ESCAPED_FLAGS", "1")
     monkeypatch.setattr(
         native_link_command, "validate_compiler_target", lambda *_: None
     )

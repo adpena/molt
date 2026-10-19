@@ -26,7 +26,10 @@ from molt.wasm_artifact import (
     transform_wasm_publication_file,
 )
 from tests.process_guard_common import current_thread_only, install_module_view
-from tests.runtime_build_identity_helper import runtime_build_identity
+from tests.runtime_build_identity_helper import (
+    runtime_build_identity,
+    runtime_cargo_environment_inputs,
+)
 
 
 def test_owned_path_has_one_spelling_before_and_after_allocation(tmp_path):
@@ -159,6 +162,7 @@ def test_every_atomic_publication_has_one_file_fsync_per_staged_file(
         reloc,
         shared_identity=runtime_build_identity("shared", "atomic-publication"),
         reloc_identity=runtime_build_identity("reloc", "atomic-publication"),
+        cargo_environment=runtime_cargo_environment_inputs(),
     )
     # Immutable shared+reloc members, the atomic pair pointer and the store's
     # usage ledger. Internal publication deliberately creates no fixed-name

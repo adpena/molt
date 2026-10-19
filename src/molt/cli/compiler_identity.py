@@ -7,14 +7,13 @@ Only an explicit source-fingerprint operation owns reuse of live admissions.
 
 from __future__ import annotations
 
-import hashlib
 import os
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Mapping, Sequence, cast
 
-from molt.exact_json import canonical_json_sha256, string_keyed_mapping
+from molt.exact_json import canonical_json_sha256
 
 if TYPE_CHECKING:
     from molt.cli.cargo_resource_custody import CargoResourceCustody
@@ -209,7 +208,7 @@ def backend_build_admission(
 
     transaction = _SOURCE_TREE_FINGERPRINT_TRANSACTION.get()
     # The complete caller environment keys operation-local reuse; semantic output
-    # identity below projects only admitted Cargo/build-script input domains.
+    # identity below projects only admitted Cargo/profile/toolchain selectors.
     key = (
         os.fspath(root.resolve()),
         cargo_profile,
@@ -238,6 +237,7 @@ def backend_build_admission(
             "cargo",
             "build",
             "--locked",
+            "--message-format=json-render-diagnostics",
             "--package",
             "molt-backend",
             "--bin",
@@ -262,35 +262,9 @@ def backend_build_admission(
         environment = _runtime_build_environment_identity(
             plan, cargo_profile=cargo_profile
         )
-        # An ambient value can override a non-forced [env] default. Capturing
-        # configuration bytes alone would miss that effective build-script input.
-        configured_environment = set()
-        for document in [
-            *(item.document for item in plan.configuration),
-            plan.cli_configuration,
-        ]:
-            configured_values = string_keyed_mapping(document.get("env", {}))
-            if configured_values is None:
-                raise CompilerIdentityError(
-                    "Cargo environment configuration must be a table"
-                )
-            configured_environment.update(configured_values)
-        for name in configured_environment:
-            selected = plan.environment.get(name)
-            if selected is not None:
-                environment["config-env/" + name] = hashlib.sha256(
-                    selected.encode("utf-8")
-                ).hexdigest()
-        for name, value in plan.environment.items():
-            if (
-                name.startswith("CARGO_BUILD_")
-                or ("llvm" in features and name.startswith("LLVM_SYS_"))
-            ) and name not in {
-                "CARGO_BUILD_JOBS",
-                "CARGO_BUILD_BUILD_DIR",
-                "CARGO_BUILD_TARGET_DIR",
-            }:
-                environment[name] = hashlib.sha256(value.encode("utf-8")).hexdigest()
+        # Build-script and rustc ambient reads are captured from Cargo's actual
+        # unit outputs after execution, then checked separately on every reuse.
+        # The plan owns direct Cargo/profile selectors and typed tool/resources.
         fingerprint = canonical_json_sha256(
             {
                 "schema": "molt.compiler-cargo-build.v1",

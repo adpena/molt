@@ -32,7 +32,6 @@ from molt.cli.runtime_identity_schema import (
     _runtime_toolchain_build_python,
 )
 from molt import host_capacity
-from molt.cargo_execution_policy import cargo_native_dependency_environment_name
 from molt.file_publication import metadata_is_link_like
 from molt.python_environment_identity import (
     python_capture_authority_paths,
@@ -63,6 +62,7 @@ _RUNTIME_BUILD_TOOLING_RELPATHS = (
     "src/molt/cargo_execution_policy.py",
     "src/molt/capability_policy.py",
     "src/molt/cli/cargo_build_reads.py",
+    "src/molt/cli/cargo_environment_inputs.py",
     "src/molt/cli/cargo_command.py",
     "src/molt/cli/cargo_execution.py",
     "src/molt/cli/cargo_profiles.py",
@@ -834,14 +834,6 @@ def _ambient_c_build_environment(cargo_plan: RuntimeCargoPlan) -> dict[str, list
     return {name: list(tokens) for name, tokens in cargo_plan.c_environment.items()}
 
 
-def _target_environment_forms(target_triple: str) -> tuple[str, ...]:
-    return (
-        target_triple,
-        target_triple.replace("-", "_"),
-        target_triple.upper().replace("-", "_"),
-    )
-
-
 def _runtime_build_environment_identity(
     cargo_plan: RuntimeCargoPlan,
     *,
@@ -853,19 +845,14 @@ def _runtime_build_environment_identity(
         "CARGO_BUILD_DEP_INFO_BASEDIR",
         "CARGO_INCREMENTAL",
         "RUSTC_BOOTSTRAP",
-        "RUSTUP_TOOLCHAIN",
-        "SOURCE_DATE_EPOCH",
-        "MACOSX_DEPLOYMENT_TARGET",
-        "CRATE_CC_NO_DEFAULTS",
     }
     exact_names.update(cargo_plan.profile_environment(cargo_profile))
-    exact_names.update(
-        name for name in env if cargo_native_dependency_environment_name(name)
-    )
+    # These selectors configure Cargo/rustc itself. Transitive build-script
+    # inputs belong to the produced generation's observed environment record.
     return {
         name: hashlib.sha256(env[name].encode("utf-8")).hexdigest()
         for name in sorted(exact_names)
-        if env.get(name, "") or cargo_native_dependency_environment_name(name)
+        if name in env
     }
 
 

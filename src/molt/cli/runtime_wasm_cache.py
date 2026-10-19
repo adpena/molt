@@ -5,6 +5,8 @@ from __future__ import annotations
 from pathlib import Path
 
 from molt.cli import runtime_wasm_cache_diagnostics as _cache_diagnostics
+from molt.cli.cargo_environment_inputs import CargoEnvironmentInputs
+from molt.process_environment import ProcessEnvironment
 from molt.default_paths import _default_molt_cache
 from molt.cli.runtime_identity_schema import RuntimeBuildIdentity
 from molt.cli.runtime_wasm_generation import (
@@ -37,6 +39,7 @@ def hydrate_runtime_wasm_pair_from_shared_cache(
     dest_reloc: Path,
     shared_identity: RuntimeBuildIdentity,
     reloc_identity: RuntimeBuildIdentity,
+    environment: ProcessEnvironment,
 ) -> RuntimeWasmGeneration | None:
     _cache_diagnostics._RUNTIME_WASM_CACHE_STATS["hydrate_attempts"] = (
         int(_cache_diagnostics._RUNTIME_WASM_CACHE_STATS["hydrate_attempts"]) + 1
@@ -58,6 +61,7 @@ def hydrate_runtime_wasm_pair_from_shared_cache(
         )
         return None
     try:
+        generation.cargo_environment.verify(environment)
         hydrated = hydrate_runtime_wasm_generation(
             source_manifest=cache_manifest,
             source_generation=generation,
@@ -83,6 +87,7 @@ def publish_runtime_wasm_pair_to_shared_cache(
     reloc: Path,
     shared_identity: RuntimeBuildIdentity,
     reloc_identity: RuntimeBuildIdentity,
+    cargo_environment: CargoEnvironmentInputs,
 ) -> str | None:
     _cache_diagnostics._RUNTIME_WASM_CACHE_STATS["publish_attempts"] = (
         int(_cache_diagnostics._RUNTIME_WASM_CACHE_STATS["publish_attempts"]) + 1
@@ -95,6 +100,7 @@ def publish_runtime_wasm_pair_to_shared_cache(
             cache_reloc,
             shared_identity=shared_identity,
             reloc_identity=reloc_identity,
+            cargo_environment=cargo_environment,
             source_shared=shared,
             source_reloc=reloc,
         )

@@ -1,5 +1,14 @@
 from __future__ import annotations
 
+import os
+
+from tests.compiler_identity_helper import (
+    compiler_environment_inputs,
+    compiler_cargo_stdout,
+)
+from molt.process_environment import ProcessEnvironment
+from tests.runtime_build_identity_helper import runtime_cargo_environment_inputs
+
 from contextlib import contextmanager
 import json
 from pathlib import Path
@@ -121,7 +130,9 @@ def test_backend_admission_preserves_lockfile_on_its_single_cargo_attempt(
         output.parent.mkdir(parents=True, exist_ok=True)
         output.write_bytes(b"backend executable")
         output.chmod(0o755)
-        return subprocess.CompletedProcess(cmd, 0, "", "")
+        return subprocess.CompletedProcess(
+            cmd, 0, compiler_cargo_stdout(root, output, kwargs["env"]), ""
+        )
 
     def probe(cmd, **kwargs):
         probes.append(list(cmd))
@@ -235,8 +246,12 @@ def test_refresh_write_failure_is_nonfatal_but_invalid_identity_is_not(
     runtime_fingerprints._write_runtime_fingerprint(
         receipt,
         {**source, "artifact_content_identity": artifact_content_identity(artifact)},
+        cargo_environment=compiler_environment_inputs(),
     )
     before = receipt.read_bytes()
+    source = runtime_fingerprints._admitted_runtime_fingerprint(
+        source, runtime_fingerprints._read_runtime_fingerprint(receipt)
+    )
 
     def unwritable(*args, **kwargs):
         raise PermissionError("metadata directory read-only")
@@ -272,7 +287,11 @@ def test_hydration_preserves_matched_toolchain_coordinates(tmp_path):
     }
     image = b"#!/bin/sh\nexit 0\n"
     canonical_generation = publish_backend(
-        canonical, image, receipt=receipt, fingerprint=fingerprint
+        canonical,
+        image,
+        receipt=receipt,
+        fingerprint=fingerprint,
+        cargo_environment=compiler_environment_inputs(),
     )
     session_receipt = tmp_path / "session.json"
     hydrated = backend_binary._hydrate_canonical_backend_generation(
@@ -281,6 +300,7 @@ def test_hydration_preserves_matched_toolchain_coordinates(tmp_path):
         canonical,
         receipt,
         fingerprint={**fingerprint, "rustc": None},
+        environment=ProcessEnvironment(os.environ),
     )
     assert hydrated is not None
     generation, admitted = hydrated
@@ -303,6 +323,7 @@ def test_hydration_preserves_matched_toolchain_coordinates(tmp_path):
             canonical,
             receipt,
             fingerprint={**fingerprint, "rustc": "different-toolchain"},
+            environment=ProcessEnvironment(os.environ),
         )
         is None
     )
@@ -342,7 +363,7 @@ def test_feature_probe_failure_does_not_retry_a_different_build_environment(
     import subprocess
     from molt.cli import cargo_execution
 
-    _isolated_molt_root(tmp_path, monkeypatch)
+    root = _isolated_molt_root(tmp_path, monkeypatch)
     _fake_backend_toolchain(monkeypatch)
     monkeypatch.setattr(
         backend_binary,
@@ -363,7 +384,9 @@ def test_feature_probe_failure_does_not_retry_a_different_build_environment(
         output.parent.mkdir(parents=True, exist_ok=True)
         output.write_bytes(b"backend executable")
         output.chmod(0o755)
-        return subprocess.CompletedProcess(cmd, 0, "", "")
+        return subprocess.CompletedProcess(
+            cmd, 0, compiler_cargo_stdout(root, output, kwargs["env"]), ""
+        )
 
     def mismatch(cmd, **kwargs):
         if failure_kind == "capacity":
@@ -472,7 +495,11 @@ def test_hydration_copy_race_cannot_publish_receipt(tmp_path, monkeypatch):
     fingerprint = {"hash": "a" * 64, "rustc": "rustc", "inputs_digest": "b" * 64}
     receipt = tmp_path / "canonical.json"
     canonical_generation = publish_backend(
-        canonical, b"#!/bin/sh\nexit 0\n", receipt=receipt, fingerprint=fingerprint
+        canonical,
+        b"#!/bin/sh\nexit 0\n",
+        receipt=receipt,
+        fingerprint=fingerprint,
+        cargo_environment=compiler_environment_inputs(),
     )
     session_receipt = tmp_path / "session.json"
     original = backend_generation._staged_copy_file
@@ -489,6 +516,7 @@ def test_hydration_copy_race_cannot_publish_receipt(tmp_path, monkeypatch):
             canonical,
             receipt,
             fingerprint=fingerprint,
+            environment=ProcessEnvironment(os.environ),
         )
         is None
     )
@@ -549,6 +577,7 @@ def test_wasm_member_lock_boundary_distinguishes_acquisition_from_work(
             required_exports=None,
             resolved_modules=None,
             spec=spec,
+            cargo_environment=runtime_cargo_environment_inputs(),
         )
 
     if inside_work:

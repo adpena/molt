@@ -2,6 +2,12 @@
 
 from __future__ import annotations
 
+import os
+
+from molt.process_environment import ProcessEnvironment
+
+from tests.runtime_build_identity_helper import runtime_cargo_environment_inputs
+
 import json
 from pathlib import Path
 
@@ -45,6 +51,7 @@ def test_pair_cache_is_session_independent_and_hydrates_both(
             reloc=reloc,
             shared_identity=shared_identity,
             reloc_identity=reloc_identity,
+            cargo_environment=runtime_cargo_environment_inputs(),
         )
         is None
     )
@@ -71,6 +78,7 @@ def test_pair_cache_is_session_independent_and_hydrates_both(
         dest_reloc=dest_reloc,
         shared_identity=shared_identity,
         reloc_identity=reloc_identity,
+        environment=ProcessEnvironment(os.environ),
     )
     assert hydrated is not None
     assert len(reads) == 1
@@ -96,6 +104,7 @@ def test_pair_cache_rejects_cross_identity_and_single_artifact_tamper(
             reloc=reloc,
             shared_identity=shared_identity,
             reloc_identity=reloc_identity,
+            cargo_environment=runtime_cargo_environment_inputs(),
         )
         is None
     )
@@ -110,12 +119,14 @@ def test_pair_cache_rejects_cross_identity_and_single_artifact_tamper(
         dest_reloc=dest / reloc.name,
         shared_identity=shared_identity,
         reloc_identity=reloc_identity,
+        environment=ProcessEnvironment(os.environ),
     )
     assert not cache.hydrate_runtime_wasm_pair_from_shared_cache(
         dest_shared=dest / shared.name,
         dest_reloc=dest / reloc.name,
         shared_identity=shared_identity,
         reloc_identity=_identity("reloc", "other"),
+        environment=ProcessEnvironment(os.environ),
     )
     assert not cached_shared.exists()
     assert not dest.exists()
@@ -134,6 +145,7 @@ def test_pair_cache_diagnostics_attest_generation_activity(tmp_path: Path) -> No
             reloc=reloc,
             shared_identity=shared_identity,
             reloc_identity=reloc_identity,
+            cargo_environment=runtime_cargo_environment_inputs(),
         )
         is None
     )
@@ -155,6 +167,7 @@ def test_pair_cache_rejects_excessive_receipt_nesting(tmp_path: Path) -> None:
             dest_reloc=dest / "molt_runtime_reloc.wasm",
             shared_identity=shared_identity,
             reloc_identity=reloc_identity,
+            environment=ProcessEnvironment(os.environ),
         )
         is None
     )
@@ -203,3 +216,62 @@ def test_cargo_build_env_defaults_jobs_but_respects_override(
     monkeypatch.setenv("CARGO_BUILD_JOBS", "7")
     env2 = CARGO_EXEC._cargo_build_env()
     assert env2["CARGO_BUILD_JOBS"] == "7"
+
+
+@pytest.mark.parametrize("before,after", [("first", "second"), (None, ""), ("", None)])
+def test_shared_cache_checks_exact_observation_before_copy(
+    tmp_path, monkeypatch, before, after
+):
+    name = "MOLT_TEST_RUNTIME_INPUT"
+
+    def select(value):
+        if value is None:
+            monkeypatch.delenv(name, raising=False)
+        else:
+            monkeypatch.setenv(name, value)
+
+    select(before)
+    shared = tmp_path / "built" / "molt_runtime.wasm"
+    reloc = shared.with_name("molt_runtime_reloc.wasm")
+    shared.parent.mkdir()
+    shared.write_bytes(b"shared")
+    reloc.write_bytes(b"reloc")
+    inputs = runtime_cargo_environment_inputs()
+    identities = (_identity("shared"), _identity("reloc"))
+    assert (
+        cache.publish_runtime_wasm_pair_to_shared_cache(
+            shared=shared,
+            reloc=reloc,
+            shared_identity=identities[0],
+            reloc_identity=identities[1],
+            cargo_environment=inputs,
+        )
+        is None
+    )
+    select(after)
+    destination = tmp_path / "refused"
+    assert (
+        cache.hydrate_runtime_wasm_pair_from_shared_cache(
+            dest_shared=destination / shared.name,
+            dest_reloc=destination / reloc.name,
+            shared_identity=identities[0],
+            reloc_identity=identities[1],
+            environment=ProcessEnvironment(os.environ),
+        )
+        is None
+    )
+    assert not destination.exists()
+    select(before)
+    admitted = cache.hydrate_runtime_wasm_pair_from_shared_cache(
+        dest_shared=destination / shared.name,
+        dest_reloc=destination / reloc.name,
+        shared_identity=identities[0],
+        reloc_identity=identities[1],
+        environment=ProcessEnvironment(os.environ),
+    )
+    assert admitted is not None
+    assert admitted.cargo_environment == inputs
+    assert (
+        admitted.shared.read_bytes() == b"shared"
+        and admitted.reloc.read_bytes() == b"reloc"
+    )

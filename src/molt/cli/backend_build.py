@@ -21,6 +21,7 @@ from molt.cli import backend_binary as _backend_binary
 from molt.cli import backend_compile as _backend_compile
 from molt.cli.backend_artifact_contract import resolve_backend_artifact_contract
 from molt.cli.backend_generation import selected_backend_generation
+from molt.cli.cargo_environment_inputs import CargoEnvironmentInputs
 from molt.cli.build_inputs import _resolve_backend_compiler_profile
 from molt.cli.command_runtime import _resolve_timeout_env
 from molt.cli.output import emit_json, fail, json_payload
@@ -115,12 +116,33 @@ def _verified_backend_receipts(
             f"{receipt_fingerprint}, admitted {admitted_fingerprint}); the next "
             "build would not reuse this compiler."
         )
+    build_admission = _backend_binary.backend_build_admission(
+        molt_root,
+        selection.features,
+        selection.cargo_profile,
+        os.environ,
+        rust_cpu=selection.rust_cpu,
+    )
+    build_admission.verify()
+    CargoEnvironmentInputs.from_dict(source.get("cargo_environment")).verify(
+        build_admission.plan.environment
+    )
+    current = _backend_binary._current_backend_fingerprint(
+        molt_root,
+        cargo_profile=selection.cargo_profile,
+        backend_features=selection.features,
+        build_admission=build_admission,
+    )
     selected = selected_backend_generation(selection.binary, source)
     if (
         selected is None
         or selected.resolve() != binary.resolve()
         or not _runtime_artifact_fingerprint_matches(
-            binary, source, source_path, require_artifact_digest=True
+            binary,
+            current,
+            source_path,
+            environment=build_admission.plan.environment,
+            require_artifact_digest=True,
         )
     ):
         return None, missing
@@ -141,6 +163,7 @@ def _verified_backend_receipts(
             "inputs_digest": source.get("inputs_digest"),
             "meta_digest": source.get("meta_digest"),
             "artifact_content_identity": source.get("artifact_content_identity"),
+            "cargo_environment": source.get("cargo_environment"),
         },
         "feature_probe": {
             "path": os.fspath(probe_path),

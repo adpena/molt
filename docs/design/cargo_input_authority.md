@@ -1,8 +1,8 @@
 # Cargo input authority
 
-Status: native coverage guard implemented, 2026-10-17 (HF-300, HF-252).
-The input record remains unimplemented. Owner:
-build speed and artifact identity.
+Status: native file coverage guard and observed Cargo environment inputs
+implemented (HF-300, HF-302). Replacing guessed file roots with the complete
+content record remains open. Owner: build speed and artifact identity.
 
 ## Problem
 
@@ -35,7 +35,7 @@ extras. The guess was wrong in both directions, and slow:
   `rerun-if-env-changed` lines, compared by mtime. A build script that prints
   neither reruns when any file of its package changes. A directory named by
   `rerun-if-changed` is watched recursively, its own mtimes included.
-  ([fingerprint](https://doc.rust-lang.org/nightly/nightly-rustc/cargo/core/compiler/fingerprint/index.html),
+  ([fingerprint](https://doc.rust-lang.org/stable/nightly-rustc/cargo/compiler/fingerprint/index.html),
   [build scripts](https://doc.rust-lang.org/cargo/reference/build-scripts.html#rerun-if-changed))
 - **Ninja** reads the depfile the compiler wrote during the previous build into
   its deps log and decides by stat alone.
@@ -150,15 +150,80 @@ materialization; adoption of an already published generation and emitted guest
 programs acquire no additional work. Its cost scales with inspected records,
 compared artifact bytes and watched directory contents.
 
-This guard covers native runtime publication only; it does not
-establish environment completeness, actual used bytes or release acceptance.
+The file coverage guard covers native runtime publication; it does not
+establish actual used bytes or release acceptance. Environment observation is a
+separate part of the same reader, used by every source Cargo artifact owner.
 The canonical tree identity includes directory names from its existing traversal,
 so even an empty subdirectory addition invalidates the recorded source tree.
 This adds directory labels to the index, with no extra traversal or file hash.
 Cross-platform and native stdlib-lane execution qualification remains separate;
 current bounded checks and remaining target cells belong to the V1 findings ledger.
 
-### The input record (next slice)
+### Observed environment inputs
+
+`CargoEnvironmentInputs` owns the immutable observation. It records the host's
+`NameRule`, a positive local-unit count and sorted unique variable names with
+SHA-256 value digests; absence is `null`, distinct from the digest of an empty
+value. Values never enter the receipt in plaintext. Windows names use the shared
+nonexpanding fold; POSIX names remain exact. The invocation owner passes the
+frozen effective `ProcessEnvironment`, after Cargo configuration and execution
+policy, to both Cargo and the reader. No ambient environment default is allowed.
+
+The reader requires Cargo's complete successful JSON transcript, including its
+terminal `build-finished` message. Malformed JSON candidates, duplicate terminal
+messages and records after completion refuse before publication; tool text is
+not mistaken for protocol data. The execution boundary retains full stdout,
+separately from bounded diagnostic excerpts.
+
+The reader preserves unit ownership before collecting ambient names. A
+`rerun-if-env-changed` declaration observes the Cargo invocation environment,
+even when a script emits `rustc-env` for the same name. Rustc's generated values
+come from that package's `build-script-executed.env` and actual `OUT_DIR`.
+An `OUT_DIR` read selects its corresponding script context; conflicting relevant
+contexts refuse publication. Cargo's closed crate-variable set is derived from
+the unit's manifest and target metadata. Unknown `CARGO_*` names remain ordinary
+ambient dependencies. Missing dep-info, stale ambient facts and ambiguous or
+unproven unit-owned values refuse with package, target and variable diagnostics.
+There is no blanket prefix exclusion. Command-injected variables that need
+unavailable ownership context, including `CARGO_PRIMARY_PACKAGE` and
+`CARGO_BIN_EXE_*`, are not claimed until that context is established.
+
+These rules follow Cargo's distinction between
+[invocation environment changes](https://doc.rust-lang.org/cargo/reference/build-scripts.html#rerun-if-env-changed),
+[crate environment variables](https://doc.rust-lang.org/cargo/reference/environment-variables.html#environment-variables-cargo-sets-for-crates)
+and [generated build-script output](https://doc.rust-lang.org/cargo/reference/external-tools.html#build-script-output).
+The command owner also supplies the dep-info base explicitly: the repository
+workspace for runtime/backend and the isolated supervisor workspace for its
+crate. The allowed source fence can be wider than that relative-path base.
+
+The one observation is embedded in each existing result receipt: the native
+link manifest, WASM pair generation, CPython-ABI/backend artifact fingerprint,
+and supervisor generation inputs. Native selection binds its manifest by hash;
+codegen carries that original archive and manifest through final link. WASM and
+backend source hydration, selected and raw-output reuse, transfer and final
+admission verify the exact carried observation under the current frozen inputs.
+A mismatch enters the normal explicit build/no-build policy. Metadata refresh
+preserves the admitted observation and cannot replace or erase it. Missing or
+older observation schemas never authorize source reuse.
+
+A plan identity describes how to build; this result record describes what was
+read. A changed environment need not change output bytes. Application cache
+identity remains derived from admitted result bytes, following rustc's red-green
+principle, rather than acquiring an environment digest that invalidates equal
+results. Installed artifacts and historical/transport validation check the
+record's shape and member binding without consulting a consumer's ambient
+variables or requiring Cargo or a source checkout.
+
+Capture runs once after successful Cargo execution, using the reader's existing
+unit evidence. Warm verification hashes only the recorded present values:
+O(names + value bytes), no process spawn, directory walk, artifact copy or new
+sidecar. Build scripts and compiler tooling bear this cost; emitted user binaries
+perform no observation or verification work. This is a correctness and cost
+contract, not a measured Molt build speedup. Platform execution and release
+qualification remain explicit in the V1 findings ledger.
+
+### Complete file input record (remaining work)
+
 
 The record replaces the guessed roots. It holds, for one build of one
 artifact:
@@ -166,7 +231,7 @@ artifact:
 - every file the build read, with size and SHA-256;
 - each watched directory's sorted recursive listing, so an added header that
   shadows another is seen;
-- every variable the build read, by name and value digest;
+- the implemented environment observation described above;
 - a lower bound the plan supplies, not the record: Cargo.lock, the root
   `Cargo.toml` (workspace edition, inherited features, `[patch]`), every local
   package's manifest and at least one dep-info file per local unit. An empty
@@ -205,7 +270,9 @@ fails on a stat-cache disagreement, as rustc's `-Zincremental-verify-ich` does.
   `runtime_source_roots`, the source part of `RuntimeTreeIndex` captures) and
   the hand-listed extras in `runtime_source_paths`.
 - The backend source walks and the walk inside `CompilerSourceGeneration`.
-- The fixed environment allowlist for build-script variables.
+The fixed build-script environment allowlists are already retired by the
+observed environment migration. Typed Cargo/rustc, C-tool and configuration
+selectors remain with their existing plan owners.
 
 Link fingerprints walk link inputs, which are artifacts; they are unchanged.
 
@@ -215,21 +282,18 @@ Each slice is one contract, migrated whole with its consumers and tests:
 
 1. **Coverage guard**: `cargo_build_reads`, native runtime
    publication, the roots fix.
-2. **Runtime family record.** The native runtime, the WASM pair and the CPython
-   ABI share `family.compile.sources` (`runtime_identity_schema.py`). The
-   generation identity becomes the plan identity plus the record digest, which
-   every consumer that keys on it must see: adoption, the pre-link check,
-   publication, `native_link_manifest.py`, `backend_output_pipeline.py`,
-   `native_toolchain_transfer.py`, `runtime_callable_symbols.py`,
-   `models.py`, phase timing (`runtime_wasm_build_spec.py`), the WASM cache
-   root, installed admission (`installed_runtime.py`, which must never re-verify
-   against a source tree), and release verification
-   (`verify_runtime_source_trees`, `tools/release/runtime_cells.py`,
-   `tools/release/build_bundle.py`). The WASM coverage guard comes first, once
-   its dep-info is checked on a host with the WASI SDK.
-3. **Backend compiler.** `_backend_fingerprint`, its receipts and shortcuts,
-   the `CompilerSourceGeneration` fence and `_cache_fingerprint`.
-4. **Proof supervisor** (`supervisor_generation.py:197-236`).
+2. **Environment observation (implemented).** Native runtime, WASM pair,
+   CPython ABI, backend and proof supervisor produce and consume the same typed
+   record in their existing receipts. Source admission re-verifies; installed
+   admission does not consult source inputs. Codegen pins receipt facts through
+   final link. No second optimizer, cache registry or end-user check is added.
+3. **Complete file record (open).** Replace the guessed file roots across all
+   these producers and consumers, preserving coverage, input-stability fences,
+   no-build policy, transfer, installed and release contracts. The runtime
+   family/member identities, backend compiler identity, output pipeline, phase
+   timing, cache layout and release source-tree verification must migrate as one
+   contract. The record does not supply its own coverage proof, and changed
+   inputs producing equal bytes must preserve downstream output identity.
 
 ## Development fixture cost
 

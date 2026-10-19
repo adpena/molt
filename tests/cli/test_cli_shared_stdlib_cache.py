@@ -34,6 +34,7 @@ from tests.cli.native_link_test_support import (
 )
 from tests.native_artifact_fixtures import native_relocatable_object
 from tests.compiler_identity_helper import (
+    compiler_cargo_stdout,
     stub_compiler_admission,
     write_compiler_source,
 )
@@ -1903,7 +1904,9 @@ def test_ensure_backend_binary_preserves_repo_local_shared_stdlib_cache(
         runtime_fixture_root.native_executable(
             cargo_output.relative_to(tmp_path).as_posix()
         )
-        return subprocess.CompletedProcess(cmd, 0, "", "")
+        return subprocess.CompletedProcess(
+            cmd, 0, compiler_cargo_stdout(tmp_path, cargo_output, plan.environment), ""
+        )
 
     monkeypatch.setenv("MOLT_CACHE", str(cache_root))
     monkeypatch.setenv("MOLT_HOME", str(home_bin.parent))
@@ -1931,6 +1934,7 @@ def test_ensure_backend_binary_preserves_repo_local_shared_stdlib_cache(
             "cargo",
             "build",
             "--locked",
+            "--message-format=json-render-diagnostics",
             "--package",
             "molt-backend",
             "--bin",

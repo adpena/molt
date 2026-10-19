@@ -32,11 +32,21 @@ FRONTEND_INIT = ROOT / "src" / "molt" / "frontend" / "__init__.py"
 def _production_ir_record(ir: dict) -> dict:
     """Retain frontend determinism and transport the canonical executable view."""
     from molt.cli import cache_keys
-    from molt.cli.backend_ir_transport import write_backend_ir
     from molt.frontend.module_publication import project_frontend_tir_to_executable
 
     frontend_bytes = cache_keys._backend_ir_bytes(ir)
     ir = project_frontend_tir_to_executable(ir)
+    return {
+        "frontend_json": base64.b64encode(frontend_bytes).decode("ascii"),
+        **_executable_ir_record(ir),
+    }
+
+
+def _executable_ir_record(ir: dict) -> dict:
+    """Observe the already lowered backend input without projecting it again."""
+    from molt.cli import cache_keys
+    from molt.cli.backend_ir_transport import write_backend_ir
+
     functions = ir.get("functions")
     assert isinstance(functions, list) and functions, "compiler returned no functions"
     assert any(isinstance(fn, dict) and fn.get("ops") for fn in functions), (
@@ -57,7 +67,6 @@ def _production_ir_record(ir: dict) -> dict:
     assert cache_keys._cache_payload_digest(copy.deepcopy(payload)) == digest
     return {
         "kind": "ir",
-        "frontend_json": base64.b64encode(frontend_bytes).decode("ascii"),
         "json": base64.b64encode(json_bytes).decode("ascii"),
         "streamed_json": base64.b64encode(streamed_bytes).decode("ascii"),
         "msgpack": base64.b64encode(msgpack_bytes).decode("ascii"),

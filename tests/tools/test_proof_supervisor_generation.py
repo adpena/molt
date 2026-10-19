@@ -2,6 +2,7 @@
 
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import nullcontext
+import hashlib
 import json
 import os
 from types import SimpleNamespace
@@ -14,6 +15,8 @@ import time
 import pytest
 
 from molt.exact_json import canonical_json_sha256
+from molt.cli.cargo_environment_inputs import CargoEnvironmentInputs
+from molt.process_environment import NameRule, ProcessEnvironment
 from molt.toolchain_identity import (
     stable_regular_file_identity,
     verify_stable_regular_file_identity,
@@ -28,13 +31,20 @@ from tools.proof_queue_pkg import (
 
 
 pytestmark = pytest.mark.usefixtures("cargo_output_implementation_source")
+_OBSERVED_ENV = "Molt_Supervisor_Unlisted_Input"
 
 
 def _model(tmp_path, monkeypatch, *, during_build=None):
     target = tmp_path / "store" / "target"
     target.mkdir(parents=True)
-    source = tmp_path / "source.rs"
+    crate = tmp_path / "tools" / "proof_supervisor"
+    source = crate / "src" / "main.rs"
+    source.parent.mkdir(parents=True)
     source.write_bytes(b"supervisor source")
+    (crate / "Cargo.toml").write_text(
+        '[package]\nname="molt_proof_supervisor"\nversion="0.1.0"\n[workspace]\nmembers=[]\n',
+        encoding="utf-8",
+    )
     name = (
         "molt-proof-supervisor.exe"
         if sys.platform == "win32"
@@ -47,7 +57,7 @@ def _model(tmp_path, monkeypatch, *, during_build=None):
     def inputs(env, *, profile="release", target=None, reuse_telemetry=None):
         del profile, target, reuse_telemetry
         identity = stable_regular_file_identity(source, label="model supervisor input")
-        return {
+        captured = {
             "profile": "release",
             "source_root": str(tmp_path),
             "command": ["cargo", "build", "--locked", "--release"],
@@ -61,7 +71,12 @@ def _model(tmp_path, monkeypatch, *, during_build=None):
             },
             "source_sha256": identity.sha256,
             "environment_sha256": canonical_json_sha256(dict(env)),
-        }, [identity]
+        }
+        return (
+            captured,
+            [identity],
+            generation.effective_cargo_environment(captured, env),
+        )
 
     def verify(inputs, identities, env):
         for identity in identities:
@@ -70,15 +85,55 @@ def _model(tmp_path, monkeypatch, *, during_build=None):
             )
 
     def build(command, *, cwd, env, timeout):
+        from tests.cli.test_cargo_build_reads import _script, _unit
+
         # This boundary models Cargo only. Real locks, input fences, immutable
         # file publication and receipt consumers run below it.
         calls.append((tuple(command), cwd, dict(env)))
         if during_build is not None:
             during_build(source)
         binary.write_bytes(b"immutable supervisor image")
-        message = {"reason": "compiler-artifact", "fresh": len(calls) > 1}
+        deps = binary.parent / "deps"
+        message = json.loads(
+            _unit(
+                deps,
+                crate,
+                "molt_proof_supervisor",
+                ["src/main.rs"],
+                kind="bin",
+                environment={
+                    "SUPERVISOR_BUILD_SCRIPT_VALUE": "generated",
+                    _OBSERVED_ENV: env.get(_OBSERVED_ENV),
+                },
+            )
+        )
+        # Cargo reports the uplifted executable and its deps image. The real
+        # reader must bind that final output to the populated rustc rule.
+        Path(message["filenames"][0]).write_bytes(binary.read_bytes())
+        message["executable"] = str(binary)
+        message["fresh"] = len(calls) > 1
+        script = json.loads(
+            _script(
+                binary.parent / "build",
+                crate,
+                "molt_proof_supervisor",
+                [
+                    f"cargo:rerun-if-env-changed={_OBSERVED_ENV}",
+                    "cargo:rustc-env=SUPERVISOR_BUILD_SCRIPT_VALUE=generated",
+                ],
+                generated={"SUPERVISOR_BUILD_SCRIPT_VALUE": "generated"},
+            )
+        )
         return subprocess.CompletedProcess(
-            command, 0, json.dumps(message) + "\n" + str(binary) + "\n", ""
+            command,
+            0,
+            json.dumps(message)
+            + "\n"
+            + json.dumps(script)
+            + "\n"
+            + json.dumps({"reason": "build-finished", "success": True})
+            + "\n",
+            "",
         )
 
     # Model tests do not sample the host process table. The scope's real
@@ -124,10 +179,138 @@ def test_distinct_results_share_cargo_freshness_and_immutable_image(
         records.append((cas_root, receipt, copied))
     # Historical receipts do not depend on the mutable target or shared store.
     (tmp_path / "store").rename(tmp_path / "retained-store")
+    monkeypatch.setenv(_OBSERVED_ENV, "different historical verifier environment")
     for cas_root, receipt, copied in records:
         generation.validate_receipt(
             receipt,
             binary=copied,
+            cas_root=cas_root,
+            expected_target=Path(env["CARGO_TARGET_DIR"]),
+        )
+
+
+@pytest.mark.usefixtures("admitted_build_capacity")
+@pytest.mark.parametrize("rule", [NameRule.EXACT, NameRule.WINDOWS])
+@pytest.mark.parametrize("value", [None, "", "private-build-value"])
+def test_generation_records_declared_environment_from_frozen_cargo_boundary(
+    tmp_path, monkeypatch, rule, value
+):
+    env, source, mutable, calls = _model(tmp_path, monkeypatch)
+    if value is not None:
+        env[_OBSERVED_ENV] = value
+    frozen = ProcessEnvironment(env, rule=rule)
+    image, telemetry = generation.provision(cwd=tmp_path, env=frozen)
+    record = generation.read_generation(telemetry)
+    observation = record["inputs"]["cargo_environment"]
+    expected_digest = (
+        None if value is None else hashlib.sha256(value.encode()).hexdigest()
+    )
+    assert observation == {
+        "schema": "molt.cargo-environment-inputs.v1",
+        "name_rule": rule.value,
+        "local_unit_count": 1,
+        "variables": [{"name": rule.key(_OBSERVED_ENV), "sha256": expected_digest}],
+    }
+    assert image.read_bytes() == b"immutable supervisor image"
+    assert len(calls) == 1
+    assert calls[0][2].get(_OBSERVED_ENV) == value
+    assert "private-build-value" not in json.dumps(record)
+    observed = CargoEnvironmentInputs.from_dict(observation)
+    observed.verify(frozen)
+    with pytest.raises(ValueError, match="Cargo environment inputs changed"):
+        observed.verify(frozen.updated({_OBSERVED_ENV: "changed after compilation"}))
+
+
+@pytest.mark.usefixtures("admitted_build_capacity")
+def test_cargo_observation_does_not_recapture_mutated_caller_or_global_environment(
+    tmp_path, monkeypatch
+):
+    def mutate(_source):
+        env[_OBSERVED_ENV] = "caller changed during Cargo"
+        monkeypatch.setenv(_OBSERVED_ENV, "global changed during Cargo")
+
+    env, source, mutable, calls = _model(tmp_path, monkeypatch, during_build=mutate)
+    env[_OBSERVED_ENV] = "frozen execution value"
+    image, telemetry = generation.provision(cwd=tmp_path, env=env)
+    observation = generation.read_generation(telemetry)["inputs"]["cargo_environment"]
+    assert observation["variables"] == [
+        {
+            "name": NameRule.host().key(_OBSERVED_ENV),
+            "sha256": hashlib.sha256(b"frozen execution value").hexdigest(),
+        }
+    ]
+    assert calls[0][2][_OBSERVED_ENV] == "frozen execution value"
+    assert image.read_bytes() == b"immutable supervisor image"
+
+
+@pytest.mark.usefixtures("admitted_build_capacity")
+def test_equal_supervisor_bytes_keep_each_published_observation(tmp_path, monkeypatch):
+    env, source, mutable, calls = _model(tmp_path, monkeypatch)
+    image, first = generation.provision(
+        cwd=tmp_path, env={**env, _OBSERVED_ENV: "first build"}
+    )
+    same_image, second = generation.provision(
+        cwd=tmp_path, env={**env, _OBSERVED_ENV: "second build"}
+    )
+    assert image == same_image
+    assert first["generation_artifact"] != second["generation_artifact"]
+    cas_root = tmp_path / "result" / "custody-cas"
+    binary = custody_cas.put_file(cas_root, image, executable=True).as_dict()
+    # Copy both receipts after the second provision changed the shared target.
+    # Each exact generation reference must retain its own observation.
+    for telemetry, value in ((first, b"first build"), (second, b"second build")):
+        receipt = generation.publish_receipt(telemetry, cas_root=cas_root)
+        record = custody_cas.read_ref(
+            receipt["generation_artifact"], expected_root=cas_root
+        )
+        assert (
+            receipt["generation_artifact"]["semantic_sha256"]
+            == telemetry["generation_artifact"]["semantic_sha256"]
+        )
+        assert record["inputs"]["cargo_environment"]["variables"] == [
+            {
+                "name": NameRule.host().key(_OBSERVED_ENV),
+                "sha256": hashlib.sha256(value).hexdigest(),
+            }
+        ]
+        generation.validate_receipt(
+            receipt,
+            binary=binary,
+            cas_root=cas_root,
+            expected_target=Path(env["CARGO_TARGET_DIR"]),
+        )
+    assert len(calls) == 2
+
+
+@pytest.mark.usefixtures("admitted_build_capacity")
+@pytest.mark.parametrize("fault", ["missing", "extra-field", "bad-digest", "unbound"])
+def test_historical_generation_requires_exact_bound_cargo_observation(
+    tmp_path, monkeypatch, fault
+):
+    env, source, mutable, calls = _model(tmp_path, monkeypatch)
+    image, telemetry = generation.provision(cwd=tmp_path, env=env)
+    cas_root = tmp_path / "result" / "custody-cas"
+    binary = custody_cas.put_file(cas_root, image, executable=True).as_dict()
+    receipt = generation.publish_receipt(telemetry, cas_root=cas_root)
+    record = custody_cas.read_ref(
+        receipt["generation_artifact"], expected_root=cas_root
+    )
+    observation = record["inputs"]["cargo_environment"]
+    if fault == "missing":
+        del record["inputs"]["cargo_environment"]
+    elif fault == "extra-field":
+        observation["ambient_values"] = {}
+    elif fault == "bad-digest":
+        observation["variables"][0]["sha256"] = "not a digest"
+    else:
+        observation["variables"][0]["sha256"] = "0" * 64
+    if fault != "unbound":
+        record["input_sha256"] = canonical_json_sha256(record["inputs"])
+    receipt["generation_artifact"] = custody_cas.put_json(cas_root, record).as_dict()
+    with pytest.raises(ValueError, match="Cargo environment|supervisor generation"):
+        generation.validate_receipt(
+            receipt,
+            binary=binary,
             cas_root=cas_root,
             expected_target=Path(env["CARGO_TARGET_DIR"]),
         )
@@ -477,6 +660,19 @@ def test_cargo_content_inputs_exclude_transport_but_bind_compile_environment(tmp
         assert all(value != capture(changed)[key] for key, value in first.items())
 
 
+def test_source_authority_includes_observed_cargo_input_implementation():
+    from tools.proof_queue_pkg import supervisor_custody
+
+    root = Path(__file__).resolve().parents[2]
+    paths = set(supervisor_custody.source_authority_paths(root))
+    assert {
+        root / "src/molt/cli/cargo_build_reads.py",
+        root / "src/molt/cli/cargo_environment_inputs.py",
+        root / "src/molt/cargo_execution_policy.py",
+        root / "src/molt/process_environment.py",
+    } <= paths
+
+
 def test_build_inputs_bind_dispatch_and_probes_to_selected_cargo(tmp_path, monkeypatch):
     from tools.proof_queue_pkg import toolchain_capture
 
@@ -490,7 +686,19 @@ def test_build_inputs_bind_dispatch_and_probes_to_selected_cargo(tmp_path, monke
     suffix = ".exe" if os.name == "nt" else ""
     cargo = selected / ("cargo" + suffix)
     rustc = selected / ("rustc" + suffix)
-    environment = {"CARGO": str(cargo), "RUSTC": str(rustc), "PATH": str(decoy)}
+    cargo_home = tmp_path / "cargo-home"
+    cargo_home.mkdir()
+    (cargo_home / "config.toml").write_text(
+        '[env]\nMOLT_SUPERVISOR_CAPTURED = { value = "configured", force = true }\n',
+        encoding="utf-8",
+    )
+    environment = {
+        "CARGO": str(cargo),
+        "RUSTC": str(rustc),
+        "PATH": str(decoy),
+        "CARGO_HOME": str(cargo_home),
+        "MOLT_SUPERVISOR_CAPTURED": "caller value",
+    }
     version_commands, link_commands = [], []
 
     def version(argv, **kwargs):
@@ -505,7 +713,9 @@ def test_build_inputs_bind_dispatch_and_probes_to_selected_cargo(tmp_path, monke
     monkeypatch.setattr(
         toolchain_capture, "capture_rust_link_process_images", link_probe
     )
-    inputs, identities = generation._build_inputs(environment, profile="debug")
+    inputs, identities, execution_environment = generation._build_inputs(
+        environment, profile="debug"
+    )
     assert inputs["command"][0] == str(cargo)
     # Toolchain identity records the custody spelling; argv keeps the selection.
     assert inputs["toolchains"]["cargo"]["path"] == custody_spelling(cargo)
@@ -517,3 +727,10 @@ def test_build_inputs_bind_dispatch_and_probes_to_selected_cargo(tmp_path, monke
     assert link_commands[0]["cargo"] == cargo
     assert link_commands[0]["command_argv"] == inputs["command"]
     assert identities
+    assert isinstance(execution_environment, ProcessEnvironment)
+    assert execution_environment["CARGO"] == str(cargo)
+    assert execution_environment["MOLT_SUPERVISOR_CAPTURED"] == "configured"
+    assert all(
+        execution_environment[name] == value
+        for name, value in inputs["cargo_inputs"].items()
+    )

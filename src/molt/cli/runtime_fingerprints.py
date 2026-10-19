@@ -8,6 +8,7 @@ import stat
 from typing import Any
 
 from molt.cli.atomic_io import _atomic_write_json
+from molt.cli.cargo_environment_inputs import CargoEnvironmentInputs
 from molt.cli.runtime_identity_schema import (
     RUNTIME_ARTIFACT_METADATA_MAX_BYTES,
     RuntimeBuildIdentity,
@@ -20,9 +21,10 @@ from molt.cli.static_archive_identity import (
 )
 from molt.exact_json import read_exact
 from molt.python_identity_common import _valid_sha256
+from molt.process_environment import ProcessEnvironment
 from molt.wasm_artifact import is_valid_wasm_binary
 
-_RUNTIME_FINGERPRINT_SCHEMA_VERSION = 3
+_RUNTIME_FINGERPRINT_SCHEMA_VERSION = 4
 _FIELDS = frozenset(
     {
         "version",
@@ -34,6 +36,7 @@ _FIELDS = frozenset(
         "artifact_content_identity",
         "build_identity",
         "build_identity_scope",
+        "cargo_environment",
     }
 )
 # The identity an artifact is admitted under. Everything else in a sidecar is
@@ -96,6 +99,13 @@ def _runtime_fingerprint_payload_is_valid(payload: object) -> bool:
             validate_artifact_content_identity(payload.get("artifact_content_identity"))
         except StaticArchiveIdentityError:
             return False
+        if "cargo_environment" not in payload:
+            return False
+    if "cargo_environment" in payload:
+        try:
+            CargoEnvironmentInputs.from_dict(payload["cargo_environment"])
+        except (TypeError, ValueError):
+            return False
     return True
 
 
@@ -121,9 +131,15 @@ def _fingerprint_payload(fingerprint: dict[str, Any]) -> dict[str, Any]:
 
 
 def _write_runtime_fingerprint(
-    path: Path, fingerprint: dict[str, Any], *, artifact: Path | None = None
+    path: Path,
+    fingerprint: dict[str, Any],
+    *,
+    cargo_environment: CargoEnvironmentInputs,
+    artifact: Path | None = None,
 ) -> None:
-    payload = _fingerprint_payload(fingerprint)
+    payload = _fingerprint_payload(
+        {**fingerprint, "cargo_environment": cargo_environment.to_dict()}
+    )
     if artifact is not None:
         payload["artifact_content_identity"] = artifact_content_identity(artifact)
     _atomic_write_json(path, payload, indent=2)
@@ -148,6 +164,9 @@ def _admitted_runtime_fingerprint(
         raise ValueError("artifact semantic identity changed during admission")
     admitted = {
         **fingerprint,
+        "cargo_environment": CargoEnvironmentInputs.from_dict(
+            stored.get("cargo_environment")
+        ).to_dict(),
         **{
             key: value
             for key, value in identity.items()
@@ -170,7 +189,17 @@ def _refresh_runtime_fingerprint_metadata(
     existing = _read_runtime_fingerprint(path)
     if existing is None:
         raise ValueError("artifact receipt lost custody before metadata refresh")
-    payload = _fingerprint_payload(fingerprint)
+    recorded_environment = CargoEnvironmentInputs.from_dict(
+        existing.get("cargo_environment")
+    ).to_dict()
+    admitted_environment = CargoEnvironmentInputs.from_dict(
+        fingerprint.get("cargo_environment")
+    ).to_dict()
+    if admitted_environment != recorded_environment:
+        raise ValueError("artifact metadata refresh cannot change its Cargo inputs")
+    payload = _fingerprint_payload(
+        {**fingerprint, "cargo_environment": recorded_environment}
+    )
     if _artifact_semantic_identity(existing) != _artifact_semantic_identity(payload):
         raise ValueError(
             "artifact metadata refresh cannot change its admitted semantic identity"
@@ -281,10 +310,19 @@ def _runtime_artifact_fingerprint_matches(
     fingerprint: dict[str, Any] | None,
     fingerprint_path: Path,
     *,
+    environment: ProcessEnvironment,
     require_artifact_digest: bool,
 ) -> bool:
     stored = _read_runtime_fingerprint(fingerprint_path)
     if _artifact_needs_rebuild(artifact, fingerprint, stored):
+        return False
+    if stored is None:
+        return False
+    try:
+        CargoEnvironmentInputs.from_dict(stored.get("cargo_environment")).verify(
+            environment
+        )
+    except ValueError:
         return False
     if not require_artifact_digest:
         return True

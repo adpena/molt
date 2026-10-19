@@ -30,17 +30,19 @@ def main() -> int:
 
     env = dict(os.environ)
     with supervisor_generation._provision_guard_scope(env):
-        inputs, identities = supervisor_generation._build_inputs(
+        inputs, identities, environment = supervisor_generation._build_inputs(
             env, profile="release" if args.release else "debug", target=args.target
         )
-        binary, completed = supervisor_generation.build_cargo(inputs=inputs, env=env)
+        binary, completed = supervisor_generation.build_cargo(
+            inputs=inputs, environment=environment
+        )
         if completed.stdout:
             print(completed.stdout, end="")
         if completed.stderr:
             print(completed.stderr, file=sys.stderr, end="")
         if completed.returncode:
             return completed.returncode
-        supervisor_generation._verify_inputs(inputs, identities, env)
+        supervisor_generation._verify_inputs(inputs, identities, environment)
     print(binary)
     return 0
 

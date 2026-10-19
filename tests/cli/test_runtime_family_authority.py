@@ -6,6 +6,7 @@ from molt.process_environment import (
     ProcessEnvironmentBuilder,
 )
 
+import hashlib
 import json
 import os
 import subprocess
@@ -22,6 +23,7 @@ from molt.cli import cargo_command as cargo_argv
 from molt.cli import cargo_resource_custody as resource_custody
 from molt.cli import runtime_cargo_plan as plans
 from molt.cli import runtime_fingerprints as fingerprints
+from molt.cli.cargo_environment_inputs import CargoEnvironmentInputs
 from molt.cli.runtime_build_identity import (
     _capture_plan_toolchain,
     _runtime_build_environment_identity,
@@ -397,7 +399,7 @@ def test_publication_change_reuses_only_compile_and_member_output() -> None:
         second = runtime_build_fingerprint(after, scope=scope)
         assert first["hash"] == second["hash"]
         assert fingerprints._runtime_fingerprint_payload_is_valid(
-            {"version": 3, **first}
+            {"version": 4, **first}
         )
 
 
@@ -406,7 +408,7 @@ def test_fingerprint_is_a_checked_projection_not_an_independent_claim(
     scope: str,
 ) -> None:
     identity = native_runtime_staticlib_identity()
-    payload = {"version": 3, **runtime_build_fingerprint(identity, scope=scope)}
+    payload = {"version": 4, **runtime_build_fingerprint(identity, scope=scope)}
     assert fingerprints._runtime_fingerprint_payload_is_valid(payload)
     payload["hash"] = "f" * 64
     assert not fingerprints._runtime_fingerprint_payload_is_valid(payload)
@@ -415,7 +417,7 @@ def test_fingerprint_is_a_checked_projection_not_an_independent_claim(
 @pytest.mark.parametrize("scope", [[], {}, 1, None, "unrecognized"])
 def test_untrusted_fingerprint_scope_fails_without_type_leak(scope: object) -> None:
     payload = {
-        "version": 3,
+        "version": 4,
         **runtime_build_fingerprint(native_runtime_staticlib_identity()),
     }
     payload["build_identity_scope"] = scope
@@ -427,18 +429,215 @@ def test_fingerprint_reader_rejects_duplicate_keys_and_restored_mtime(
 ) -> None:
     path = tmp_path / "identity.json"
     payload = {
-        "version": 3,
+        "version": 4,
         **runtime_build_fingerprint(native_runtime_staticlib_identity()),
     }
     original = json.dumps(payload)
     path.write_text(original, encoding="utf-8")
     assert fingerprints._read_runtime_fingerprint(path) == payload
     before = path.stat()
-    path.write_text(original.replace('"version": 3', '"version": 2'), encoding="utf-8")
+    path.write_text(original.replace('"version": 4', '"version": 3'), encoding="utf-8")
     os.utime(path, ns=(before.st_atime_ns, before.st_mtime_ns))
     assert fingerprints._read_runtime_fingerprint(path) is None
-    path.write_text('{"version":3,' + original[1:], encoding="utf-8")
+    path.write_text('{"version":4,' + original[1:], encoding="utf-8")
     assert fingerprints._read_runtime_fingerprint(path) is None
+
+
+@pytest.mark.parametrize("rule", list(NameRule))
+@pytest.mark.parametrize("value", [None, "", "result-only-value"])
+def test_cargo_artifact_fingerprint_uses_explicit_observed_environment(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    rule: NameRule,
+    value: str | None,
+) -> None:
+    name = "Molt_Hf302_Result_Only"
+    environment = ProcessEnvironment({} if value is None else {name: value}, rule=rule)
+    observation = CargoEnvironmentInputs.capture(
+        environment, (name,), local_unit_count=1
+    )
+    artifact = tmp_path / "runtime.bin"
+    artifact.write_bytes(b"runtime-result")
+    receipt = tmp_path / "runtime.json"
+    plan = {"hash": "a" * 64, "rustc": "rustc-fixture"}
+    fingerprints._write_runtime_fingerprint(
+        receipt, plan, artifact=artifact, cargo_environment=observation
+    )
+    stored = fingerprints._read_runtime_fingerprint(receipt)
+    assert stored is not None
+    assert stored["version"] == 4
+    assert stored["cargo_environment"] == {
+        "schema": "molt.cargo-environment-inputs.v1",
+        "name_rule": rule.value,
+        "local_unit_count": 1,
+        "variables": [
+            {
+                "name": name.upper() if rule is NameRule.WINDOWS else name,
+                "sha256": None
+                if value is None
+                else hashlib.sha256(value.encode()).hexdigest(),
+            }
+        ],
+    }
+    assert "result-only-value" not in receipt.read_text(encoding="utf-8")
+    monkeypatch.setenv(name, "different-ambient-value")
+    assert fingerprints._runtime_artifact_fingerprint_matches(
+        artifact,
+        plan,
+        receipt,
+        environment=environment.updated({"UNOBSERVED_HF302_NAME": "ignored"}),
+        require_artifact_digest=True,
+    )
+    assert not fingerprints._runtime_artifact_fingerprint_matches(
+        artifact,
+        plan,
+        receipt,
+        environment=environment.updated({name: "changed-explicit-value"}),
+        require_artifact_digest=True,
+    )
+    other_rule = NameRule.EXACT if rule is NameRule.WINDOWS else NameRule.WINDOWS
+    assert not fingerprints._runtime_artifact_fingerprint_matches(
+        artifact,
+        plan,
+        receipt,
+        environment=ProcessEnvironment(dict(environment), rule=other_rule),
+        require_artifact_digest=True,
+    )
+
+
+@pytest.mark.parametrize("mutation", ["missing", "malformed"])
+def test_artifact_receipt_cannot_omit_or_forge_cargo_observation(
+    tmp_path: Path, mutation: str
+) -> None:
+    environment = ProcessEnvironment({"HF302_SCRIPT_INPUT": "selected"})
+    observation = CargoEnvironmentInputs.capture(
+        environment, ("HF302_SCRIPT_INPUT",), local_unit_count=1
+    )
+    artifact = tmp_path / "runtime.bin"
+    artifact.write_bytes(b"runtime-result")
+    receipt = tmp_path / "runtime.json"
+    plan = {"hash": "a" * 64}
+    fingerprints._write_runtime_fingerprint(
+        receipt, plan, artifact=artifact, cargo_environment=observation
+    )
+    assert fingerprints._runtime_artifact_fingerprint_matches(
+        artifact, plan, receipt, environment=environment, require_artifact_digest=True
+    )
+    stored = json.loads(receipt.read_text(encoding="utf-8"))
+    if mutation == "missing":
+        del stored["cargo_environment"]
+    else:
+        stored["cargo_environment"]["local_unit_count"] = 0
+    receipt.write_text(json.dumps(stored), encoding="utf-8")
+
+    assert fingerprints._read_runtime_fingerprint(receipt) is None
+    for require_digest in (False, True):
+        assert not fingerprints._runtime_artifact_fingerprint_matches(
+            artifact,
+            plan,
+            receipt,
+            environment=environment,
+            require_artifact_digest=require_digest,
+        )
+    # Final-link projections remain valid, but cannot admit a Cargo result.
+    link_projection = {"version": 4, **plan}
+    assert fingerprints._runtime_fingerprint_payload_is_valid(link_projection)
+    with pytest.raises(ValueError, match="Cargo environment inputs"):
+        fingerprints._admitted_runtime_fingerprint(plan, link_projection)
+
+
+def test_fingerprint_metadata_refresh_retains_admitted_observation_and_bytes(
+    tmp_path: Path,
+) -> None:
+    environment = ProcessEnvironment({"HF302_SCRIPT_INPUT": "old-result"})
+    observation = CargoEnvironmentInputs.capture(
+        environment, ("HF302_SCRIPT_INPUT",), local_unit_count=1
+    )
+    artifact = tmp_path / "runtime.bin"
+    artifact.write_bytes(b"runtime-result")
+    receipt = tmp_path / "runtime.json"
+    plan = {
+        "hash": "a" * 64,
+        "inputs_digest": "b" * 64,
+        "source_state": {"head": "old"},
+    }
+    fingerprints._write_runtime_fingerprint(
+        receipt, plan, artifact=artifact, cargo_environment=observation
+    )
+    stored = fingerprints._read_runtime_fingerprint(receipt)
+    assert stored is not None
+    request_observation = CargoEnvironmentInputs.capture(
+        environment.updated({"HF302_SCRIPT_INPUT": "new-request"}),
+        ("HF302_SCRIPT_INPUT",),
+        local_unit_count=1,
+    )
+    admitted = fingerprints._admitted_runtime_fingerprint(
+        {**plan, "cargo_environment": request_observation.to_dict()}, stored
+    )
+    assert admitted["cargo_environment"] == stored["cargo_environment"]
+    refreshed = {**admitted, "inputs_digest": "c" * 64, "source_state": {"head": "new"}}
+    fingerprints._refresh_runtime_fingerprint_metadata(receipt, refreshed)
+    result = fingerprints._read_runtime_fingerprint(receipt)
+    assert result is not None
+    assert result["inputs_digest"] == "c" * 64
+    assert result["source_state"] == {"head": "new"}
+    assert result["cargo_environment"] == stored["cargo_environment"]
+    assert result["artifact_content_identity"] == stored["artifact_content_identity"]
+    assert artifact.read_bytes() == b"runtime-result"
+
+
+@pytest.mark.parametrize("replacement", ["different", "missing", "malformed"])
+def test_fingerprint_refresh_refuses_receipt_replacement_after_admission(
+    tmp_path: Path, replacement: str
+) -> None:
+    environment = ProcessEnvironment({"HF302_SCRIPT_INPUT": "first-result"})
+    observation = CargoEnvironmentInputs.capture(
+        environment, ("HF302_SCRIPT_INPUT",), local_unit_count=1
+    )
+    artifact = tmp_path / "runtime.bin"
+    artifact.write_bytes(b"identical-result-bytes")
+    receipt = tmp_path / "runtime.json"
+    plan = {"hash": "a" * 64, "inputs_digest": "b" * 64}
+    fingerprints._write_runtime_fingerprint(
+        receipt, plan, artifact=artifact, cargo_environment=observation
+    )
+    initial = fingerprints._read_runtime_fingerprint(receipt)
+    assert initial is not None
+    admitted = fingerprints._admitted_runtime_fingerprint(plan, initial)
+    other = CargoEnvironmentInputs.capture(
+        environment.updated({"HF302_SCRIPT_INPUT": "second-result"}),
+        ("HF302_SCRIPT_INPUT",),
+        local_unit_count=1,
+    )
+    fingerprints._write_runtime_fingerprint(
+        receipt, plan, artifact=artifact, cargo_environment=other
+    )
+    replacement_receipt = fingerprints._read_runtime_fingerprint(receipt)
+    assert replacement_receipt is not None
+    assert replacement_receipt["cargo_environment"] == other.to_dict()
+    assert (
+        replacement_receipt["artifact_content_identity"]
+        == initial["artifact_content_identity"]
+    )
+    if replacement != "different":
+        payload = json.loads(receipt.read_text(encoding="utf-8"))
+        if replacement == "missing":
+            del payload["cargo_environment"]
+        else:
+            payload["cargo_environment"]["variables"][0]["sha256"] = "invalid"
+        receipt.write_text(json.dumps(payload), encoding="utf-8")
+    replaced_bytes = receipt.read_bytes()
+    diagnostic = (
+        "cannot change its Cargo inputs"
+        if replacement == "different"
+        else "lost custody"
+    )
+    with pytest.raises(ValueError, match=diagnostic):
+        fingerprints._refresh_runtime_fingerprint_metadata(
+            receipt, {**admitted, "inputs_digest": "c" * 64}
+        )
+    assert receipt.read_bytes() == replaced_bytes
+    assert artifact.read_bytes() == b"identical-result-bytes"
 
 
 @pytest.fixture
@@ -1289,7 +1488,7 @@ def test_inherited_profile_overrides_enter_identity_and_policy(plan_root: Path) 
     assert not baseline.preserve_debug_for_profile("release-output")
 
 
-def test_native_dependency_controls_enter_runtime_identity_including_inactive_values(
+def test_native_dependency_inputs_are_observed_instead_of_guessed_in_plan_identity(
     plan_root: Path,
 ) -> None:
     baseline = _plan(plan_root, env={"AWS_LC_SYS_SMALL": "0"})
@@ -1308,21 +1507,43 @@ def test_native_dependency_controls_enter_runtime_identity_including_inactive_va
     after = _runtime_build_environment_identity(changed, cargo_profile="dev")
     other = _runtime_build_environment_identity(unused, cargo_profile="dev")
 
-    assert before != after != other
-    assert before["AWS_LC_SYS_SMALL"] == (
+    assert before == after == other
+    names = (
+        "AWS_LC_SYS_SMALL",
+        "AWS_LC_SYS_USE_SYSTEM_aarch64_unknown_linux_gnu",
+        "AWS_LC_SYS_PROJECT_NOTE",
+        "HOST_CFLAGS_aarch64_unknown_linux_gnu",
+        "TARGET_CFLAGS_aarch64_unknown_linux_gnu",
+    )
+    recorded = [
+        CargoEnvironmentInputs.capture(plan.environment, names, local_unit_count=1)
+        for plan in (baseline, changed, unused)
+    ]
+    assert len({item.digest for item in recorded}) == 3
+    before_values, after_values, other_values = (
+        dict(item.variables) for item in recorded
+    )
+    key = baseline.environment.rule.key
+    assert before_values["AWS_LC_SYS_SMALL"] == (
         "5feceb66ffc86f38d952786c6d696c79c2dbc239dd4e91b46729d73a27fb57e9"
     )
-    assert after["AWS_LC_SYS_SMALL"] == (
+    assert after_values["AWS_LC_SYS_SMALL"] == (
         "6b86b273ff34fce19d6b804eff5a3f5747ada4eaa22f1d49c01e52ddb7875b4b"
     )
-    assert "AWS_LC_SYS_USE_SYSTEM_aarch64_unknown_linux_gnu" in other
-    assert other["AWS_LC_SYS_PROJECT_NOTE"] == (
+    assert before_values["AWS_LC_SYS_PROJECT_NOTE"] is None
+    assert other_values["AWS_LC_SYS_PROJECT_NOTE"] == (
         "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
     )
-    assert "HOST_CFLAGS_aarch64_unknown_linux_gnu" in other
-    assert other["TARGET_CFLAGS_aarch64_unknown_linux_gnu"] == (
+    assert other_values[key("HOST_CFLAGS_aarch64_unknown_linux_gnu")] is not None
+    assert other_values[key("TARGET_CFLAGS_aarch64_unknown_linux_gnu")] == (
         "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
     )
+    for plan, observation in zip((baseline, changed, unused), recorded, strict=True):
+        observation.verify(plan.environment)
+    with pytest.raises(ValueError, match="AWS_LC_SYS_SMALL"):
+        recorded[0].verify(changed.environment)
+    with pytest.raises(ValueError, match="AWS_LC_SYS_PROJECT_NOTE"):
+        recorded[0].verify(unused.environment)
 
 
 def test_native_dependency_implicit_target_uses_captured_rust_host(
@@ -1357,7 +1578,7 @@ def test_native_dependency_implicit_target_uses_captured_rust_host(
         )
 
 
-def test_native_dependency_empty_target_control_shadows_generic_and_has_cache_identity(
+def test_native_dependency_empty_target_control_shadows_generic_and_is_observed(
     plan_root: Path,
 ) -> None:
     generic = {"AWS_LC_SYS_CMAKE_BUILDER": "1"}
@@ -1366,21 +1587,29 @@ def test_native_dependency_empty_target_control_shadows_generic_and_has_cache_id
         "AWS_LC_SYS_CMAKE_BUILDER_x86_64_unknown_linux_gnu": "",
     }
     selected = _plan(plan_root, env=controls)
-    identity = _runtime_build_environment_identity(selected, cargo_profile="dev")
-    assert identity["AWS_LC_SYS_CMAKE_BUILDER_x86_64_unknown_linux_gnu"] == (
+    observation = CargoEnvironmentInputs.capture(
+        selected.environment, controls, local_unit_count=1
+    )
+    values = dict(observation.variables)
+    key = selected.environment.rule.key
+    assert values[key("AWS_LC_SYS_CMAKE_BUILDER_x86_64_unknown_linux_gnu")] == (
         "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
     )
-    assert identity["AWS_LC_SYS_CMAKE_BUILDER"] == (
+    assert values["AWS_LC_SYS_CMAKE_BUILDER"] == (
         "6b86b273ff34fce19d6b804eff5a3f5747ada4eaa22f1d49c01e52ddb7875b4b"
     )
     with pytest.raises(ValueError, match="AWS_LC_SYS_CMAKE_BUILDER"):
         _plan(plan_root, env=generic)
-    assert identity != _runtime_build_environment_identity(
-        _plan(plan_root), cargo_profile="dev"
+    baseline = _plan(plan_root)
+    assert _runtime_build_environment_identity(selected, cargo_profile="dev") == (
+        _runtime_build_environment_identity(baseline, cargo_profile="dev")
     )
+    observation.verify(selected.environment)
+    with pytest.raises(ValueError, match="AWS_LC_SYS_CMAKE_BUILDER"):
+        observation.verify(baseline.environment)
 
 
-def test_native_dependency_empty_selection_changes_actual_runtime_fingerprint(
+def test_native_dependency_observation_changes_without_changing_plan_fingerprint(
     plan_root: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     from molt.cli import runtime_build_identity as builder
@@ -1405,7 +1634,7 @@ def test_native_dependency_empty_selection_changes_actual_runtime_fingerprint(
 
     def resolve(controls):
         plan = _plan(plan_root, env=controls)
-        return builder.resolve_native_runtime_build_identity(
+        identity = builder.resolve_native_runtime_build_identity(
             plan_root,
             env=plan.environment,
             cargo_profile="dev",
@@ -1415,22 +1644,31 @@ def test_native_dependency_empty_selection_changes_actual_runtime_fingerprint(
             artifact_selection=RUNTIME_STATICLIB_ARTIFACTS,
             cargo_plan=plan,
         )
+        return identity, plan.environment
 
-    absent = resolve({})
-    present = resolve({"AWS_LC_SYS_CMAKE_BUILDER_x86_64_unknown_linux_gnu": ""})
-    inactive_role = resolve(
-        {"HOST_CFLAGS_aarch64_unknown_linux_gnu": "-include /unused.h"}
-    )
-    empty_role = resolve({"TARGET_CFLAGS_aarch64_unknown_linux_gnu": ""})
-    assert absent.compile_digest != present.compile_digest
-    assert absent.family_digest != present.family_digest
-    assert absent.compile_digest != inactive_role.compile_digest
-    assert absent.compile_digest != empty_role.compile_digest
-    for scope in ("compile", "member", "member-output"):
-        assert (
-            runtime_build_fingerprint(absent, scope=scope)["hash"]
-            != (runtime_build_fingerprint(present, scope=scope)["hash"])
+    absent, absent_environment = resolve({})
+    for controls in (
+        {"AWS_LC_SYS_CMAKE_BUILDER_x86_64_unknown_linux_gnu": ""},
+        {"HOST_CFLAGS_aarch64_unknown_linux_gnu": "-include /unused.h"},
+        {"TARGET_CFLAGS_aarch64_unknown_linux_gnu": ""},
+        {"HF302_ARBITRARY_BUILD_SCRIPT_INPUT": "dependency-selected"},
+    ):
+        present, present_environment = resolve(controls)
+        assert absent.compile_digest == present.compile_digest
+        assert absent.family_digest == present.family_digest
+        for scope in ("compile", "member", "member-output"):
+            assert (
+                runtime_build_fingerprint(absent, scope=scope)["hash"]
+                == (runtime_build_fingerprint(present, scope=scope)["hash"])
+            )
+        observation = CargoEnvironmentInputs.capture(
+            present_environment, controls, local_unit_count=1
         )
+        observation.verify(present_environment)
+        with pytest.raises(
+            ValueError, match=present_environment.rule.key(next(iter(controls)))
+        ):
+            observation.verify(absent_environment)
 
 
 def test_profile_cli_inheritance_and_overlapping_prefixes_share_authority(

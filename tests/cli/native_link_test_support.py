@@ -25,10 +25,17 @@ from molt.cli.static_archive_identity import (
     StaticArchiveMemberIdentity,
 )
 
-from molt.cli.native_link_manifest import write_native_link_dependency_manifest
+from molt.cli.native_link_manifest import (
+    native_link_dependency_manifest_path,
+    read_native_link_flags,
+    write_native_link_dependency_manifest,
+)
 from molt.cli.runtime_identity_schema import RuntimeBuildIdentity
-from molt.cli.native_link_plan import _host_target_triple
-from tests.runtime_build_identity_helper import native_runtime_staticlib_identity
+from molt.cli.native_link_plan import _host_target_triple, resolve_native_target_spec
+from tests.runtime_build_identity_helper import (
+    native_runtime_staticlib_identity,
+    runtime_cargo_environment_inputs,
+)
 from tests.native_artifact_fixtures import (
     NativeSymbolFixture,
     native_relocatable_object,
@@ -273,6 +280,7 @@ def write_test_native_link_manifest(
     build_identity: RuntimeBuildIdentity | None = None,
     target_triple: str | None = None,
     native_arguments: str = "-lc",
+    cargo_profile: str | None = None,
 ) -> RuntimeBuildIdentity:
     """Attach the minimal strict manifest required by production link plans."""
     if build_identity is None:
@@ -286,11 +294,50 @@ def write_test_native_link_manifest(
         "",
         cargo_stderr=f"note: native-static-libs: {native_arguments}\n",
         runtime_lib=runtime_lib,
-        cargo_profile=runtime_lib.parent.name,
+        cargo_profile=cargo_profile or runtime_lib.parent.name,
         target_triple=target_triple,
         runtime_build_identity=build_identity,
+        cargo_environment=runtime_cargo_environment_inputs(),
     )
     return build_identity
+
+
+def _ensure_test_native_link_manifest(
+    runtime_lib: Path, build_identity: RuntimeBuildIdentity
+):
+    archive_path = runtime_lib.resolve(strict=True)
+    manifest_path = native_link_dependency_manifest_path(archive_path)
+    configuration = build_identity.payload["family"]["compile"]["common_config"]
+    target = configuration["target_triple"]
+    target_triple = None if target == "native" else target
+    if not (manifest_path.exists() or manifest_path.is_symlink()):
+        write_test_native_link_manifest(
+            archive_path,
+            build_identity=build_identity,
+            target_triple=target_triple,
+            cargo_profile=configuration["cargo_profile"],
+        )
+    return archive_path, manifest_path, configuration["cargo_profile"], target_triple
+
+
+def native_runtime_generation_fixture(
+    runtime_lib: Path, build_identity: RuntimeBuildIdentity
+):
+    """Capture the source fixture's original strict, file-fenced generation."""
+    from molt.cli.runtime_native_generation import _capture_generation
+
+    if not runtime_lib.exists():
+        runtime_lib.parent.mkdir(parents=True, exist_ok=True)
+        write_test_static_archive(runtime_lib)
+    _archive, _manifest, profile, target = _ensure_test_native_link_manifest(
+        runtime_lib, build_identity
+    )
+    return _capture_generation(
+        runtime_lib,
+        build_identity=build_identity,
+        cargo_profile=profile,
+        target_triple=target,
+    )
 
 
 def native_codegen_binding(runtime_lib: Path, build_identity: RuntimeBuildIdentity):
@@ -302,6 +349,17 @@ def native_codegen_binding(runtime_lib: Path, build_identity: RuntimeBuildIdenti
     symbols = runtime_lib.with_name(runtime_lib.name + ".test-callables")
     if not symbols.exists():
         symbols.write_text("molt_test_intrinsic\n", encoding="utf-8")
+    archive_path, manifest_path, _profile, target_triple = (
+        _ensure_test_native_link_manifest(runtime_lib, build_identity)
+    )
+    link = read_native_link_flags(
+        archive_path,
+        target_triple=target_triple,
+        object_format=resolve_native_target_spec(
+            build_identity.effective_target
+        ).object_format,
+        runtime_build_identity=build_identity,
+    )
     # Like the production producer (native_symbol_inspection), the archive
     # identity names the resolved generation; a symlinked fixture root (macOS
     # /tmp or /var) otherwise fails NativeRuntimeCodegenBinding.verify().
@@ -317,6 +375,11 @@ def native_codegen_binding(runtime_lib: Path, build_identity: RuntimeBuildIdenti
         semantic_digest=_runtime_callable_symbols_digest(
             tuple(sorted(set(symbols.read_text(encoding="utf-8").splitlines())))
         ),
+        manifest=stable_regular_file_identity(
+            manifest_path, label="test codegen manifest"
+        ),
+        link_facts=link.facts,
+        custody=link.custody,
     )
 
 

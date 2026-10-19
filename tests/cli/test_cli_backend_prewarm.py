@@ -35,7 +35,12 @@ from molt.cli.runtime_paths import _cargo_profile_dir, _cargo_target_root
 from molt.cli.rust_cpu_policy import RustCpuPolicy
 from molt.exact_json import canonical_json_sha256
 from molt.source_root import compiler_source_root
-from tests.compiler_identity_helper import compiler_build_admission, write_compiler_lock
+from tests.compiler_identity_helper import (
+    compiler_build_admission,
+    compiler_cargo_stdout,
+    write_compiler_lock,
+    write_compiler_source,
+)
 
 _EXE = ".exe" if os.name == "nt" else ""
 _MOLT_ROOT_MARKERS = (
@@ -275,6 +280,7 @@ def _fake_backend_toolchain(
     probe_calls: list[list[str]] = []
 
     def admission(root, features, profile, environment, *, rust_cpu):
+        write_compiler_source(root)
         selected_environment = {
             **environment,
             "CARGO_TARGET_DIR": os.fspath(_cargo_target_root(root)),
@@ -315,7 +321,12 @@ def _fake_backend_toolchain(
         output.parent.mkdir(parents=True, exist_ok=True)
         output.write_bytes(f"backend build {len(cargo_calls)}".encode())
         output.chmod(0o755)
-        return subprocess.CompletedProcess(cmd, 0, "", "")
+        return subprocess.CompletedProcess(
+            cmd,
+            0,
+            compiler_cargo_stdout(plan.project_root, output, plan.environment),
+            "",
+        )
 
     def probe(cmd: list[str], **_kwargs: Any) -> subprocess.CompletedProcess[bytes]:
         probe_calls.append(list(cmd))

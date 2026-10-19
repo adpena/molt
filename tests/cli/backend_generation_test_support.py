@@ -9,6 +9,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
+from molt.cli.cargo_environment_inputs import CargoEnvironmentInputs
 from molt.cli import backend_binary
 from molt.cli.backend_generation import publish_backend_generation
 from molt.toolchain_identity import stable_regular_file_identity
@@ -20,6 +21,7 @@ def publish_backend(
     *,
     receipt: Path | None = None,
     fingerprint: dict[str, Any] | None = None,
+    cargo_environment: CargoEnvironmentInputs | None = None,
 ) -> Path:
     """Publish ``data`` as a generation of ``coordinate`` and return its path.
 
@@ -34,8 +36,12 @@ def publish_backend(
     source.unlink()
     if receipt is not None:
         assert fingerprint is not None
+        assert cargo_environment is not None
         backend_binary._select_backend_generation(
-            receipt, generation, fingerprint=fingerprint
+            receipt,
+            generation,
+            fingerprint=fingerprint,
+            cargo_environment=cargo_environment,
         )
     return generation.path
 

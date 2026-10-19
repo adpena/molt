@@ -58,6 +58,7 @@ if TYPE_CHECKING:
     from molt.cli.runtime_identity_schema import RuntimeBuildIdentity
     from molt.cli.runtime_wasm_generation import RuntimeWasmCodegenBinding
     from molt.cli.runtime_native_codegen import NativeRuntimeCodegenBinding
+    from molt.cli.runtime_native_generation import NativeRuntimeGeneration
     from molt.cli.installed_runtime_contract import InstalledNativeAdmission
     from molt.cli.build_output_layout import _BuildOutputLayout
     from molt.cli.module_resolution import _ModuleResolutionCache
@@ -964,6 +965,7 @@ class _RuntimeArtifactState:
     # runtimes always compile for their fixed baseline.
     rust_cpu: RustCpuPolicy = RustCpuPolicy.BASELINE
     native_runtime_build_identity: RuntimeBuildIdentity | None = None
+    native_runtime_generation: NativeRuntimeGeneration | None = None
     native_runtime_codegen_binding: NativeRuntimeCodegenBinding | None = None
     # One build operation's installed-cell admission; codegen and final link
     # reuse it through its fences. None for source-checkout runtimes.
@@ -977,6 +979,7 @@ class _RuntimeArtifactState:
         """Revoke all authority to use this operation's native generation."""
         self.native_runtime_codegen_binding = None
         self.native_runtime_build_identity = None
+        self.native_runtime_generation = None
         self.installed_native_admission = None
 
 

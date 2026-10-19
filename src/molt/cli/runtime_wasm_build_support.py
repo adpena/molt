@@ -25,6 +25,9 @@ from molt.cli.artifact_state import (
     _runtime_target_fingerprint_path,
 )
 from molt.cli.build_locks import _build_lock
+from molt.cli.cargo_build_reads import cargo_build_reads
+from molt.cli.cargo_environment_inputs import CargoEnvironmentInputs
+from molt.process_environment import ProcessEnvironment
 from molt.cli.cargo_execution import (
     CargoExecutionResult,
     CargoPlanExecutionError,
@@ -51,6 +54,7 @@ from molt.cli.runtime_cargo_plan import (
     resolve_runtime_cargo_plan,
 )
 from molt.cli.runtime_fingerprints import (
+    _admitted_runtime_fingerprint,
     _read_runtime_fingerprint,
     _refresh_runtime_fingerprint_metadata,
     _runtime_artifact_fingerprint_matches,
@@ -261,6 +265,7 @@ def _ensure_wasm_cpython_abi_staticlib(
                     cargo_profile=cargo_profile,
                     target_label=target_label,
                     fingerprint=fingerprint,
+                    environment=plan.environment,
                 )
                 if current is not None:
                     stage = "target-admission"
@@ -273,8 +278,15 @@ def _ensure_wasm_cpython_abi_staticlib(
                     staticlib_path,
                     fingerprint,
                     fingerprint_path,
+                    environment=plan.environment,
                     require_artifact_digest=True,
                 ):
+                    fingerprint = _admitted_runtime_fingerprint(
+                        fingerprint, stored_fingerprint
+                    )
+                    CargoEnvironmentInputs.from_dict(
+                        fingerprint.get("cargo_environment")
+                    ).verify(plan.environment)
                     if _runtime_fingerprint_metadata_needs_refresh(
                         stored_fingerprint,
                         fingerprint,
@@ -323,12 +335,31 @@ def _ensure_wasm_cpython_abi_staticlib(
                     return fail(
                         "CPython ABI wasm identity changed during Cargo; refusing publication."
                     )
+                stage = "cargo-input-observation"
+                reads = cargo_build_reads(
+                    build.stdout,
+                    workspace_root=root,
+                    dep_info_base=root,
+                    product_roots=tuple(
+                        Path(plan.environment[name])
+                        for name in ("CARGO_TARGET_DIR", "CARGO_BUILD_BUILD_DIR")
+                        if plan.environment.get(name)
+                    ),
+                    toolchain_roots=tuple(
+                        item.identity.path
+                        for custody in (plan.rust_resources, plan.link_resources)
+                        for item in custody.files
+                    ),
+                    environment=plan.environment,
+                )
+                plan.verify()
                 stage = "metadata-publication"
                 fingerprint_path.parent.mkdir(parents=True, exist_ok=True)
                 _write_runtime_fingerprint(
                     fingerprint_path,
                     fingerprint,
                     artifact=provider,
+                    cargo_environment=reads.environment,
                 )
                 provider_fingerprint_path = _runtime_target_fingerprint_path(
                     build_state_root,
@@ -341,6 +372,7 @@ def _ensure_wasm_cpython_abi_staticlib(
                     provider_fingerprint_path,
                     fingerprint,
                     artifact=provider,
+                    cargo_environment=reads.environment,
                 )
                 return provider
         except CargoPlanExecutionError as exc:
@@ -365,7 +397,8 @@ def _current_runtime_target_artifact(
     cargo_profile: str,
     target_label: str,
     fingerprint: dict[str, Any],
-) -> tuple[Path, Path] | None:
+    environment: ProcessEnvironment,
+) -> tuple[Path, Path, CargoEnvironmentInputs] | None:
     for candidate in candidates:
         fingerprint_path = _runtime_target_fingerprint_path(
             build_state_root,
@@ -378,8 +411,14 @@ def _current_runtime_target_artifact(
             candidate,
             fingerprint,
             fingerprint_path,
+            environment=environment,
             require_artifact_digest=True,
         ):
+            admitted = _admitted_runtime_fingerprint(fingerprint, stored_fingerprint)
+            cargo_environment = CargoEnvironmentInputs.from_dict(
+                admitted.get("cargo_environment")
+            )
+            cargo_environment.verify(environment)
             if _runtime_fingerprint_metadata_needs_refresh(
                 stored_fingerprint,
                 fingerprint,
@@ -387,9 +426,9 @@ def _current_runtime_target_artifact(
                 with contextlib.suppress(OSError):
                     _refresh_runtime_fingerprint_metadata(
                         fingerprint_path,
-                        fingerprint,
+                        admitted,
                     )
-            return candidate, fingerprint_path
+            return candidate, fingerprint_path, cargo_environment
     return None
 
 
