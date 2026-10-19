@@ -597,9 +597,10 @@ def test_a_started_program_records_its_search(tmp_path: Path, transient: Path) -
     assert os.fspath(early) in ledger.directories, "a tool added here would win"
     assert ledger.probes[os.fspath(missing)] is None, "creating it is a change"
     ledger.started_ns = time.time_ns() + 10 * 10**9
-    output = tmp_path / "app"
+    # Windows also searches cwd. Both products stay outside that input root.
+    output = transient / "app"
     output.write_bytes(b"x")
-    record, reason = _write(tmp_path, ledger, output)
+    record, reason = _write(transient, ledger, output)
     assert reason is None and _current(record, output)
     shadow = early / name
     shutil.copyfile(tool, shadow)
