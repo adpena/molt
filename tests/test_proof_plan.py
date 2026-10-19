@@ -1415,7 +1415,12 @@ def test_installed_product_changes_select_complete_distribution_consumers(change
 
 @pytest.mark.parametrize(
     "changed",
-    ["src/molt/backend_executable_names.py", "src/molt/host_tool_products.py"],
+    [
+        "src/molt/backend_executable_names.py",
+        "src/molt/host_tool_products.py",
+        "config/perf_methodology.toml",
+        "tools/perf_methodology.py",
+    ],
 )
 def test_host_tool_identity_changes_select_measurement_consumers(changed) -> None:
     from tools import molt_dev
@@ -1424,13 +1429,19 @@ def test_host_tool_identity_changes_select_measurement_consumers(changed) -> Non
     rule = next(r for r in config.rules if r.name == "performance-measurement")
     gates, matched = replace(config, rules=[rule], always=[]).select([changed])
     assert [r.name for r in matched] == [rule.name]
-    assert len(gates) == 1
-    command = gates[0].command
+    assert len(gates) == 2
+    assert gates[0].command == "python tools/perf_methodology.py --check"
+    command = gates[1].command
     argv = shlex.split(command) if isinstance(command, str) else command
     assert {
         "tests/tools/test_perf_scoreboard.py",
         "tests/tools/test_perf_methodology.py",
     } <= set(argv)
+    ci_check = next(c for c in PLAN.commands if c.id == "repository.perf-methodology")
+    assert ci_check.argv[-2:] == ("tools/perf_methodology.py", "--check")
+    assert set(ci_check.data["tiers"]) == {"pre-push", "pr", "main"}
+    ci_tests = next(c for c in PLAN.commands if c.id == "repository.docs-tests")
+    assert ci_check.id in ci_tests.dependencies
 
 
 def test_docs_architecture_local_gate_uses_project_python() -> None:
