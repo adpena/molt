@@ -2172,7 +2172,10 @@ def test_namespace_syntax_is_shared_by_binding_and_graph_projections(
     tmp_path, monkeypatch
 ):
     from molt.compiler_analysis import python_binding_flow, python_namespace_writes
-    from molt.compiler_analysis.python_namespace_graph import PythonNamespacePremise
+    from molt.compiler_analysis.python_namespace_graph import (
+        PythonNamespacePremise,
+        python_namespace_binding_policy,
+    )
     from molt.compiler_analysis.python_source_keys import python_node_source_key
 
     source = (
@@ -2232,9 +2235,8 @@ def test_namespace_syntax_is_shared_by_binding_and_graph_projections(
             parsed.tree,
             source_digest=parsed.admission.digest,
             ast_digest_admission=parsed.admission,
-            policy=python_binding_flow.PythonBindingFlowPolicy(
-                foreign_namespace_writes=premise.foreign_writes,
-                callback_member_writes=premise.member_writes,
+            policy=python_namespace_binding_policy(
+                python_binding_flow.PythonBindingFlowPolicy(), premise
             ),
         )
     # Resolving foreign relative imports needs a package; own callback names do

@@ -196,6 +196,9 @@ def _closed_class_import_flow(
         PythonBindingPolicy,
         analyze_python_source_bindings,
     )
+    from molt.compiler_analysis.python_namespace_graph import (
+        python_namespace_binding_policy,
+    )
 
     sources = {
         "pkg": (tmp_path / "pkg" / "__init__.py", ""),
@@ -214,12 +217,12 @@ def _closed_class_import_flow(
     index = analyze_python_source_bindings(
         source,
         filename=str(sources["pkg.entry"][0]),
-        policy=PythonBindingPolicy(
-            module_name="pkg.entry",
-            target_python=_DEFAULT_TARGET_PYTHON_VERSION.feature_version,
-            foreign_namespace_writes=premise.foreign_writes,
-            callback_member_writes=premise.member_writes,
-            entry_invalid_members=premise.member_writes,
+        policy=python_namespace_binding_policy(
+            PythonBindingPolicy(
+                module_name="pkg.entry",
+                target_python=_DEFAULT_TARGET_PYTHON_VERSION.feature_version,
+            ),
+            premise,
         ),
     )
     return ast.parse(source), index.module_import_flow

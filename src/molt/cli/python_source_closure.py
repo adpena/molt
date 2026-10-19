@@ -57,7 +57,7 @@ _EXECUTABLE_TOOL_IMPORT_POLICY = PythonImportPolicy(
     unknown_relative_sources="local_inventory",
 )
 _DYNAMIC_IMPORT_MANIFEST = Path("src/molt/cli/python_source_closure.toml")
-_GRAPH_CACHE_SCHEMA_VERSION = 20
+_GRAPH_CACHE_SCHEMA_VERSION = 21
 _GraphQuery = tuple[
     Path, tuple[Path, ...], tuple[Path, ...], tuple[Path, ...], PythonImportPolicy
 ]

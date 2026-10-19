@@ -48,13 +48,15 @@ from molt.compiler_analysis.static_truth import (
 from molt.compiler_analysis.python_binding_facts import (
     PythonParameterRef,
 )
-from molt.compiler_analysis.python_namespace_graph import PythonNamespacePremise
+from molt.compiler_analysis.python_namespace_graph import (
+    PythonNamespacePremise,
+    python_namespace_binding_policy,
+)
 from molt.compiler_analysis.python_namespace_writes import (
     python_namespace_summary,
     python_package_name,
 )
 from molt.compiler_analysis.python_identity_catalog_generated import (
-    ALL_INVALID_MEMBERS,
     PythonIdentity,
 )
 from molt.compiler_analysis.python_binding_facts import PythonBindingIndex
@@ -99,24 +101,16 @@ def _source_binding_policy(
     namespace_premise: PythonNamespacePremise | None = None,
     include_import_discovery: bool = False,
 ) -> PythonBindingPolicy:
-    return PythonBindingPolicy(
-        target_python=target_python.feature_version,
-        module_name=module_name,
-        module_spec_name=module_name,
-        module_is_package=is_package,
-        module_execution_kind="script" if module_name is None else "imported",
-        include_import_discovery=include_import_discovery,
-        foreign_namespace_writes=(
-            namespace_premise.foreign_writes if namespace_premise is not None else None
+    return python_namespace_binding_policy(
+        PythonBindingPolicy(
+            target_python=target_python.feature_version,
+            module_name=module_name,
+            module_spec_name=module_name,
+            module_is_package=is_package,
+            module_execution_kind="script" if module_name is None else "imported",
+            include_import_discovery=include_import_discovery,
         ),
-        callback_member_writes=(
-            namespace_premise.member_writes
-            if namespace_premise is not None
-            else ALL_INVALID_MEMBERS
-        ),
-        entry_invalid_members=(
-            namespace_premise.member_writes if namespace_premise is not None else 0
-        ),
+        namespace_premise,
     )
 
 

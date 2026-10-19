@@ -165,6 +165,28 @@ receiver behavior.
    run before this module's first canonical acquisition. Future callback writes and initial member
    uncertainty are separate policy facts. Standalone analysis retains its explicit initial premise;
    an unknown graph owner cannot supply a pristine-entry proof. Policy identity includes both facts.
+   `python_namespace_binding_policy` in the existing graph authority applies
+   foreign names, callback members and entry members together. User-program
+   scans, compiler-host tooling closures and their closed-graph fixtures use
+   this projection; target, module, deferred-body and discovery settings remain
+   with their caller. Without a graph premise it returns the caller's policy.
+   Tooling graph cache schema 21 rejects earlier request records, which could
+   omit an import when another module changed `typing.TYPE_CHECKING` before
+   the reader's first acquisition. An isolated CPython execution and the real
+   eager closure distinguish that failure; a poisoned schema-20 record exercises
+   persistent rejection without a remembered correct row masking it. The binding
+   core already keys its entry mask, so its schema and the already-correct
+   user-program scan records do not change. Applying a graph premise adds one
+   immutable policy copy, with constant field count and no I/O, locking or
+   process launch. A bounded macOS/CPython 3.12 control measured about 1.17 us
+   added per closed-policy construction; it establishes no build-time gain.
+   These are compiler/development costs, with no emitted-program work.
+   This follows [rustc's explicit query-input and invalidation model](https://rustc-dev-guide.rust-lang.org/queries/incremental-compilation-in-detail.html):
+   every fact that changes a query's result must participate in its authority.
+   Further premise slicing must account for implicit module metadata, export
+   protocols such as `__all__` and `__getattr__`, dynamic namespace reads and
+   published source-value facts. Lexical name reads alone do not prove that
+   those outputs are unchanged; current member masks remain intact.
 3. **The import flow asks the binding flow.** `PythonBindingFacts.callbacks_rewrite_metadata` says
    whether any callback can rebind `__name__`, `__package__`, `__spec__` or `__path__`. Without it,
    every callback summary in the import flow leaves the metadata states unchanged.
