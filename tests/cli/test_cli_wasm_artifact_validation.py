@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from tests.runtime_build_identity_helper import runtime_cargo_environment_inputs
+
 from tests.compiler_identity_helper import (
     compiler_build_admission,
     stub_compiler_admission,
@@ -773,6 +775,7 @@ def test_publication_finalizer_uses_target_and_resolved_profile_policy(
         root,
         frozenset({"PyLong_FromLong"}),
         reloc_spec if reloc else shared,
+        cargo_environment=runtime_cargo_environment_inputs(),
     )
     assert member.finalize_publication()
     assert seen["final_artifact"] is not reloc
@@ -799,7 +802,14 @@ def test_reloc_runtime_publication_preserves_linker_metadata_bytes(
     path = tmp_path / "reloc.wasm"
     path.write_bytes(data)
     member = RUNTIME_WASM_BUILD._RuntimeWasmMemberFinalizer(
-        path, True, True, 5.0, root, None, reloc
+        path,
+        True,
+        True,
+        5.0,
+        root,
+        None,
+        reloc,
+        cargo_environment=runtime_cargo_environment_inputs(),
     )
     assert member.finalize_publication()
     assert path.read_bytes() == data
@@ -925,9 +935,12 @@ def test_target_pair_rejects_newer_but_semantically_incompatible_artifacts(
             target_label="wasm32-wasip1",
         )
         RUNTIME_FINGERPRINTS._write_runtime_fingerprint(
-            receipt, fingerprint, artifact=path
+            receipt,
+            fingerprint,
+            artifact=path,
+            cargo_environment=runtime_cargo_environment_inputs(),
         )
-    assert not _combined_context(root, shared, reloc).target_pair_is_current()
+    assert not _combined_context(root, shared, reloc).admitted_target_pair_inputs()
 
 
 def test_full_profile_feature_receipt_matches_exact_combined_cargo_command(

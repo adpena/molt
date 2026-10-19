@@ -51,7 +51,9 @@ from molt.artifact_publication import discard_staged_output  # noqa: E402
 from molt.file_publication import staged_file_path  # noqa: E402
 from molt.cli.native_link_command import _build_native_link_plan  # noqa: E402
 from molt.cli.native_link_manifest import (  # noqa: E402
+    NativeLinkDependencyManifestError,
     native_link_dependency_manifest_path,
+    _read_native_link_dependency_manifest,
 )
 from molt.cli.native_link_plan import (  # noqa: E402
     NativeLinkPlan,
@@ -61,7 +63,7 @@ from molt.cli.native_link_plan import (  # noqa: E402
 from molt.cli.python_source_closure import local_python_import_closure  # noqa: E402
 from molt.cli.runtime_identity_schema import RuntimeBuildIdentity  # noqa: E402
 from molt.cli.runtime_native_build import (  # noqa: E402
-    current_native_runtime_build_identity,
+    current_native_runtime_build_inputs,
 )
 from molt.cli.rust_cpu_policy import RustCpuPolicy  # noqa: E402
 from molt.cli.native_link_tool_identity import native_link_tool_facts  # noqa: E402
@@ -226,7 +228,7 @@ def implementation_source_facts() -> dict[str, object]:
                 _native_link_execution_command,
                 _finalize_native_link_candidate,
                 native_link_selection,
-                current_native_runtime_build_identity,
+                current_native_runtime_build_inputs,
             )
         ),
     )
@@ -279,7 +281,7 @@ def benchmark_runtime_build_identity(
     """Resolve the benchmark expectation from the current runtime build plan."""
 
     try:
-        return current_native_runtime_build_identity(
+        inputs = current_native_runtime_build_inputs(
             ROOT,
             runtime_lib,
             target_triple=target_triple,
@@ -288,7 +290,15 @@ def benchmark_runtime_build_identity(
             extra_runtime_features=extra_runtime_features,
             rust_cpu=rust_cpu,
         )
-    except (OSError, ValueError) as exc:
+        facts = _read_native_link_dependency_manifest(
+            runtime_lib,
+            target_triple=target_triple,
+            cargo_profile=cargo_profile,
+            runtime_build_identity=inputs.build_identity,
+        )
+        facts.cargo_environment.verify(inputs.environment)
+        return inputs.build_identity
+    except (NativeLinkDependencyManifestError, OSError, ValueError) as exc:
         raise LinkBenchmarkError(
             f"cannot establish current runtime build identity: {exc}"
         ) from exc

@@ -29,24 +29,18 @@ class NativeRuntimeCodegenBinding:
     archive: StableRegularFileIdentity
     callable_symbols: StableRegularFileIdentity
     semantic_digest: str
-    manifest: StableRegularFileIdentity | None = None
-    link_facts: NativeLinkManifestFacts | None = None
-    custody: NativeLinkCustodyObservation | None = None
+    manifest: StableRegularFileIdentity
+    link_facts: NativeLinkManifestFacts
+    custody: NativeLinkCustodyObservation
 
     def verify(self) -> None:
-        if (self.manifest is None) != (self.link_facts is None):
-            raise ValueError("native runtime binding has incomplete receipt facts")
-        if self.link_facts is not None:
-            if self.link_facts.build_identity != self.build_identity:
-                raise ValueError("native runtime binding changed build identity")
-            assert self.manifest is not None
-            if self.manifest.path != native_link_dependency_manifest_path(
-                self.archive.path
-            ):
-                raise ValueError("native runtime binding changed receipt coordinate")
-            verify_stable_regular_file_identity(
-                self.manifest, label="native link receipt"
-            )
+        if self.link_facts.build_identity != self.build_identity:
+            raise ValueError("native runtime binding changed build identity")
+        if self.manifest.path != native_link_dependency_manifest_path(
+            self.archive.path
+        ):
+            raise ValueError("native runtime binding changed receipt coordinate")
+        verify_stable_regular_file_identity(self.manifest, label="native link receipt")
         if self.runtime_lib.resolve(strict=True) != self.archive.path:
             raise ValueError(
                 "native runtime path no longer names its codegen generation"

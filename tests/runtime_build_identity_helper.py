@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from molt.process_environment import ProcessEnvironment, ProcessEnvironmentBuilder
+from molt.cli.cargo_environment_inputs import CargoEnvironmentInputs
 
 import hashlib
 import json
@@ -48,6 +49,30 @@ from molt.cli.runtime_wasm_build_spec import (
 from molt.cli.compiler_metadata import _compiler_root
 from molt.wasi_sdk_identity import WasiCAbiProjection
 from tests.executable_test_support import native_executable_donor
+
+
+RUNTIME_FIXTURE_INPUT = "MOLT_TEST_RUNTIME_INPUT"
+
+
+def runtime_cargo_environment_inputs(environment=None) -> CargoEnvironmentInputs:
+    """One modeled Cargo unit's explicit ambient dependency observation."""
+    return CargoEnvironmentInputs.capture(
+        ProcessEnvironment(os.environ if environment is None else environment),
+        (RUNTIME_FIXTURE_INPUT,),
+        local_unit_count=1,
+    )
+
+
+def native_runtime_build_inputs(
+    build_identity: RuntimeBuildIdentity, *, environment=None
+):
+    """The source fixture's plan and the frozen environment it models."""
+    from molt.cli.runtime_native_build import NativeRuntimeBuildInputs
+
+    return NativeRuntimeBuildInputs(
+        build_identity,
+        ProcessEnvironment(os.environ if environment is None else environment),
+    )
 
 
 def _copy_native_image(source: Path, destination: Path) -> None:
@@ -789,7 +814,7 @@ def write_runtime_crate(project_root: Path, source: bytes = b"before") -> Path:
 
 
 def runtime_cargo_unit_stdout(project_root: Path, scratch: Path) -> str:
-    """Cargo's message for the molt-runtime unit that wrote ``scratch``.
+    """A complete successful Cargo invocation for the unit writing ``scratch``.
 
     Cargo's per-unit output owns its dep-info; the uplifted scratch archive
     remains the generation publisher's input, so the real coverage reader and
@@ -816,7 +841,12 @@ def runtime_cargo_unit_stdout(project_root: Path, scratch: Path) -> str:
         "executable": None,
         "fresh": False,
     }
-    return json.dumps(artifact) + "\n"
+    return (
+        json.dumps(artifact)
+        + "\n"
+        + json.dumps({"reason": "build-finished", "success": True})
+        + "\n"
+    )
 
 
 def runtime_wasm_codegen_binding_fixture(
@@ -874,5 +904,82 @@ def runtime_wasm_codegen_binding_fixture(
         reloc_identity=runtime_build_identity("reloc", seed),
         source_shared=shared,
         source_reloc=reloc,
+        cargo_environment=runtime_cargo_environment_inputs(),
     )
     return bind_runtime_wasm_codegen(pair, None)
+
+
+def runtime_cargo_stdout(root, outputs, environment, *, package="molt-runtime"):
+    """Cargo artifacts and rustc dep-info for one synthetic local library unit.
+
+    The unit reads an existing fixture source and MOLT_TEST_RUNTIME_INPUT;
+    every reported output and its dep-info output rule names the same bytes.
+    No source file is created or changed by this process-boundary fixture.
+    """
+    import json
+    import os
+    from pathlib import Path
+    import shutil
+
+    root = Path(root).resolve()
+    folder = "molt-cpython-abi" if package == "molt-lang-cpython-abi" else package
+    package_root = root / "runtime" / folder
+    source = package_root / "src" / "lib.rs"
+    if not source.is_file():
+        raise ValueError(f"synthetic Cargo unit requires its existing source: {source}")
+    crate = "molt_cpython_abi" if package == "molt-lang-cpython-abi" else "molt_runtime"
+    paths = tuple(Path(path) for path in outputs)
+    if not paths:
+        raise ValueError("synthetic Cargo unit requires actual output bytes")
+    reported = []
+    for output in paths:
+        if output.parent.name == "deps":
+            reported.append(output)
+        else:
+            deps = output.parent / "deps"
+            deps.mkdir(parents=True, exist_ok=True)
+            unit = deps / (
+                f"lib{crate}-hf302.a"
+                if output.suffix == ".a"
+                else f"{crate}-hf302{output.suffix}"
+            )
+            shutil.copyfile(output, unit)
+            reported.append(unit)
+    reported.extend(path for path in paths if path not in reported)
+
+    def escape(value):
+        return (
+            str(value)
+            .replace("\\", "\\\\")
+            .replace(" ", "\\ ")
+            .replace("#", "\\#")
+            .replace(":", "\\:")
+        )
+
+    name = "MOLT_TEST_RUNTIME_INPUT"
+    value = environment.get(name)
+    variable = "# env-dep:" + name
+    if value is not None:
+        variable += "=" + value.replace("\\", "\\\\").replace("\n", "\\n").replace(
+            "\r", "\\r"
+        )
+    rules = " ".join(escape(path) for path in reported) + ": " + escape(source)
+    text = rules + "\n\n" + escape(source) + ":\n\n" + variable + "\n"
+    for output in reported:
+        stem = output.stem.removeprefix("lib")
+        output.with_name(stem + ".d").write_text(text, encoding="utf-8")
+    return (
+        json.dumps(
+            {
+                "reason": "compiler-artifact",
+                "package_id": f"path+{package_root.as_uri()}#{package}@0.1.0",
+                "manifest_path": str(package_root / "Cargo.toml"),
+                "target": {"kind": ["lib"], "name": crate, "src_path": str(source)},
+                "filenames": [os.fspath(path) for path in reported],
+                "fresh": False,
+            }
+        )
+        + "\n"
+        + json.dumps({"reason": "build-finished", "success": True})
+        + "\n"
+    )

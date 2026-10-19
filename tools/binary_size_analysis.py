@@ -173,12 +173,9 @@ def _native_scanner(explicit: Path | None) -> tuple[Path, tuple[str, int] | None
         backend_features_for_target,
     )
     from molt.cli.backend_execution import _backend_bin_path
-    from molt.cli.backend_binary import _backend_fingerprint_path
-    from molt.cli.backend_generation import selected_backend_generation
-    from molt.cli.runtime_fingerprints import (
-        _read_runtime_fingerprint,
-        _artifact_needs_rebuild,
-    )
+    from molt.cli.backend_binary import admitted_backend_binary
+    from molt.cli.runtime_fingerprints import _read_runtime_fingerprint
+    from molt.cli.rust_cpu_policy import resolve_rust_cpu_policy
 
     profile = compiler_cargo_profile(os.environ)
     features = backend_features_for_target(
@@ -188,18 +185,22 @@ def _native_scanner(explicit: Path | None) -> tuple[Path, tuple[str, int] | None
         codegen_backend=DEFAULT_CODEGEN_BACKEND,
     )
     coordinate = _backend_bin_path(REPO_ROOT, profile, features)
-    receipt_path = _backend_fingerprint_path(REPO_ROOT, coordinate, profile)
-    receipt = _read_runtime_fingerprint(receipt_path)
-    # The receipt selects one immutable generation; its bytes are the scanner.
-    selected = selected_backend_generation(coordinate, receipt)
-    if (
-        receipt is None
-        or selected is None
-        or _artifact_needs_rebuild(selected, receipt, receipt)
-    ):
+    rust_cpu, _warning = resolve_rust_cpu_policy("native", os.environ)
+    try:
+        selected, receipt_path = admitted_backend_binary(
+            REPO_ROOT,
+            binary=coordinate,
+            cargo_profile=profile,
+            backend_features=features,
+            rust_cpu=rust_cpu,
+        )
+    except (OSError, ValueError) as exc:
         raise ValueError(
             "Native size analysis requires an admitted existing backend; prebuild it with molt internal-backend-build, or select --native-facts-scanner explicitly. Analysis never builds a compiler."
-        )
+        ) from exc
+    receipt = _read_runtime_fingerprint(receipt_path)
+    if receipt is None:
+        raise ValueError("Native facts scanner lacks an admitted byte receipt")
     # Receipt parsing is owned by _read_runtime_fingerprint. Join its byte
     # identity to the captured executable immediately before execution; do not
     # re-read a second potentially different receipt or hash the image twice.

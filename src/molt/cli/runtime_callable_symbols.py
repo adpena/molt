@@ -22,8 +22,9 @@ from molt.cli.output import fail as _fail
 from molt.cli.runtime_native_build import _ensure_native_runtime_lib_ready_for_codegen
 from molt.cli.runtime_native_codegen import NativeRuntimeCodegenBinding
 from molt.cli.native_link_manifest import (
+    _object_format_for_identity,
     NativeLinkDependencyManifestError,
-    read_native_link_dependency_manifest,
+    read_native_link_flags,
 )
 from molt.toolchain_identity import (
     StableRegularFileHandle,
@@ -242,39 +243,6 @@ def _installed_runtime_callable_projection(
         return None, f"installed runtime callable projection admission failed: {exc}"
 
 
-def _runtime_callable_projection_for_codegen(
-    runtime_state: _RuntimeArtifactState,
-    runtime_lib: Path,
-    *,
-    identity: StableRegularFileIdentity,
-    target_triple: str | None,
-    runtime_cargo_profile: str,
-    molt_root: Path,
-    stdlib_profile: str | None,
-) -> tuple[RuntimeCallableProjection | None, str | None]:
-    """Installed cells ship their projection; source checkouts inspect the archive."""
-    try:
-        cell = select_installed_native_runtime(
-            molt_root,
-            target_triple=target_triple,
-            cargo_profile=runtime_cargo_profile,
-            stdlib_profile=stdlib_profile,
-            extra_runtime_features=runtime_state.extra_runtime_features,
-        )
-    except (OSError, ValueError) as exc:
-        return None, f"installed runtime selection failed: {exc}"
-    admission = runtime_state.installed_native_admission
-    if cell is None:
-        if admission is not None:
-            return None, "installed runtime selection changed after admission"
-        return _runtime_callable_symbols_file(
-            runtime_lib, identity=identity, target_triple=target_triple
-        )
-    if admission is None:
-        return None, "installed runtime has no admitted generation for code generation"
-    return _installed_runtime_callable_projection(cell, admission)
-
-
 def _runtime_callable_symbols_digest(symbols: tuple[str, ...]) -> str:
     """Digest the same immutable symbol tuple used for the byte projection."""
     if not symbols:
@@ -368,6 +336,19 @@ def _stage_runtime_callable_symbols_for_native_codegen(
         )
     admission = runtime_state.installed_native_admission
     try:
+        cell = select_installed_native_runtime(
+            molt_root,
+            target_triple=target_triple,
+            cargo_profile=runtime_cargo_profile,
+            stdlib_profile=stdlib_profile,
+            extra_runtime_features=runtime_state.extra_runtime_features,
+        )
+        if cell is not None and admission is None:
+            raise ValueError(
+                "installed runtime has no admitted generation for code generation"
+            )
+        if cell is None and admission is not None:
+            raise ValueError("installed runtime selection changed after admission")
         if admission is not None:
             # The operation's installed admission hashed these retained members
             # and validated their receipt and custody; bind that exact
@@ -381,19 +362,32 @@ def _stage_runtime_callable_symbols_for_native_codegen(
                 )
             admission.verify()
             archive_identity = admission.archive
+            manifest_identity = admission.manifest
+            link_facts = admission.link_facts
+            custody = admission.custody
         else:
-            archive_identity = (
-                native_symbol_inspection._native_symbol_artifact_identity(runtime_lib)
-            )
-            read_native_link_dependency_manifest(
+            generation = runtime_state.native_runtime_generation
+            if (
+                generation is None
+                or generation.runtime_lib != runtime_lib
+                or generation.build_identity != build_identity
+            ):
+                raise ValueError("native codegen lost its admitted source generation")
+            generation.verify()
+            archive_identity = generation.members[0][1]
+            manifest_identity = generation.members[1][1]
+            link_inputs = read_native_link_flags(
                 runtime_lib,
-                cargo_profile=runtime_cargo_profile,
                 target_triple=target_triple,
+                object_format=_object_format_for_identity(build_identity),
                 runtime_build_identity=build_identity,
             )
-            native_symbol_inspection._require_unchanged_symbol_artifact(
-                runtime_lib, archive_identity
+            verify_stable_regular_file_identity(
+                manifest_identity, label="native codegen link receipt"
             )
+            link_facts = link_inputs.facts
+            custody = link_inputs.custody
+            generation.verify()
     except (OSError, ValueError, NativeLinkDependencyManifestError) as exc:
         runtime_state.revoke_native_runtime_admission()
         return "", _fail(
@@ -402,15 +396,15 @@ def _stage_runtime_callable_symbols_for_native_codegen(
             command="build",
         )
     symbol_file_start = time.perf_counter()
-    projection, symbols_failure = _runtime_callable_projection_for_codegen(
-        runtime_state,
-        runtime_lib,
-        identity=archive_identity,
-        target_triple=target_triple,
-        runtime_cargo_profile=runtime_cargo_profile,
-        molt_root=molt_root,
-        stdlib_profile=stdlib_profile,
-    )
+    if admission is None:
+        projection, symbols_failure = _runtime_callable_symbols_file(
+            runtime_lib, identity=archive_identity, target_triple=target_triple
+        )
+    else:
+        assert cell is not None
+        projection, symbols_failure = _installed_runtime_callable_projection(
+            cell, admission
+        )
     _record_runtime_callable_stage_ms(
         stage_timings_ms,
         "runtime_callable_symbols_file",
@@ -431,9 +425,9 @@ def _stage_runtime_callable_symbols_for_native_codegen(
         archive=archive_identity,
         callable_symbols=projection.identity,
         semantic_digest=projection.semantic_digest,
-        manifest=admission.manifest if admission is not None else None,
-        link_facts=admission.link_facts if admission is not None else None,
-        custody=admission.custody if admission is not None else None,
+        manifest=manifest_identity,
+        link_facts=link_facts,
+        custody=custody,
     )
     try:
         binding.verify()

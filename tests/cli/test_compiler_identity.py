@@ -325,6 +325,7 @@ def test_prepared_cargo_environment_and_configuration_govern_identity(
         environment_transform,
         rustflags_transform,
     ):
+        assert "--message-format=json-render-diagnostics" in cargo_command
         env = environment_transform(env)
         seen.append(dict(env))
         config_digest = canonical_json_sha256(configuration.read_text(encoding="utf-8"))
@@ -383,6 +384,24 @@ def test_prepared_cargo_environment_and_configuration_govern_identity(
         }
     )
     assert guest.fingerprint == baseline.fingerprint
+    # Transitive build-script/rustc reads belong to the observed receipt, not
+    # a guessed family of semantic-plan environment names.
+    for variable in (
+        "MOLT_TEST_BACKEND_INPUT",
+        "SOURCE_DATE_EPOCH",
+        "MACOSX_DEPLOYMENT_TARGET",
+        "CRATE_CC_NO_DEFAULTS",
+        "LLVM_SYS_999_FAKE_SETTING",
+        "CARGO_BUILD_UNKNOWN_SETTING",
+    ):
+        assert (
+            admission({**baseline_env, variable: "first"}).fingerprint
+            == baseline.fingerprint
+        )
+        assert (
+            admission({**baseline_env, variable: "second"}).fingerprint
+            == baseline.fingerprint
+        )
     configuration.write_text('[build]\nrustflags=["-Copt-level=3"]\n', encoding="utf-8")
     assert admission(baseline_env).fingerprint != baseline.fingerprint
 

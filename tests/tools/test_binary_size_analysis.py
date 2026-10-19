@@ -356,19 +356,21 @@ def test_installed_scanner_preserves_admitted_image_fact(monkeypatch, tmp_path):
         size._native_scanner(None)
 
 
-def test_development_scanner_uses_published_byte_receipt(monkeypatch, tmp_path):
+def test_development_scanner_uses_current_source_admission(monkeypatch, tmp_path):
     from molt.cli import (
         compiler_identity,
         backend_execution,
         backend_binary,
         runtime_fingerprints,
     )
+    from molt.cli.rust_cpu_policy import RustCpuPolicy
 
     selected = tmp_path / "published-backend"
+    generation = backend_generation_path(selected, "c" * 64)
     receipt_path = tmp_path / "published-receipt"
     content = {"schema": "molt.artifact-bytes.v1", "sha256": "c" * 64, "size_bytes": 73}
     receipt = {"artifact_content_identity": content}
-    seen = []
+    calls = []
     monkeypatch.setattr(
         compiler_identity, "installed_compiler_admission", lambda root: None
     )
@@ -376,36 +378,46 @@ def test_development_scanner_uses_published_byte_receipt(monkeypatch, tmp_path):
         compiler_identity, "compiler_cargo_profile", lambda environ: "dev"
     )
     monkeypatch.setattr(backend_execution, "_backend_bin_path", lambda *args: selected)
-    monkeypatch.setattr(
-        backend_binary, "_backend_fingerprint_path", lambda *args: receipt_path
-    )
+
+    def admit(root, *, binary, cargo_profile, backend_features, rust_cpu):
+        assert root == size.REPO_ROOT
+        assert binary == selected and cargo_profile == "dev"
+        assert backend_features == ("native-backend",)
+        assert rust_cpu is RustCpuPolicy.BASELINE
+        calls.append("admission")
+        return generation, receipt_path
 
     def read(path):
         assert path == receipt_path
-        seen.append(path)
+        calls.append("receipt")
         return receipt
 
+    monkeypatch.setattr(backend_binary, "admitted_backend_binary", admit)
     monkeypatch.setattr(runtime_fingerprints, "_read_runtime_fingerprint", read)
-    monkeypatch.setattr(
-        runtime_fingerprints,
-        "_artifact_needs_rebuild",
-        lambda artifact, expected, actual: False,
-    )
-    # The receipt selects an immutable generation; that is the scanner.
-    generation = backend_generation_path(selected, "c" * 64)
+    monkeypatch.delenv("MOLT_PERF_PROFILE", raising=False)
     assert size._native_scanner(None) == (generation, ("c" * 64, 73))
-    assert seen == [receipt_path]
+    assert calls == ["admission", "receipt"]
     del content["size_bytes"]
     with pytest.raises(ValueError, match="byte identity"):
-        size._native_scanner(None)
-    receipt.clear()
-    with pytest.raises(ValueError, match="never builds"):
         size._native_scanner(None)
     monkeypatch.setattr(
         runtime_fingerprints, "_read_runtime_fingerprint", lambda path: None
     )
-    with pytest.raises(ValueError, match="never builds"):
+    with pytest.raises(ValueError, match="admitted byte receipt"):
         size._native_scanner(None)
+
+    def changed_inputs(*args, **kwargs):
+        raise ValueError("observed arbitrary environment input changed")
+
+    monkeypatch.setattr(backend_binary, "admitted_backend_binary", changed_inputs)
+    monkeypatch.setattr(
+        runtime_fingerprints,
+        "_read_runtime_fingerprint",
+        lambda path: pytest.fail("refused compiler receipt must not execute"),
+    )
+    with pytest.raises(ValueError, match="never builds") as failure:
+        size._native_scanner(None)
+    assert "arbitrary environment input changed" in str(failure.value.__cause__)
 
 
 def _copied_scanner(tmp_path):

@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+from molt.process_environment import ProcessEnvironment
+
+from tests.runtime_build_identity_helper import native_runtime_build_inputs
+
 from molt.cli.cache_keys import FunctionDigests
 
 from molt.compiler_analysis import native_support_slice
@@ -133,6 +137,8 @@ from tests.cli.native_link_test_support import (
     RUNTIME_BUILD_IDENTITY,
     NativeArchiveFixtureCatalog,
     native_codegen_binding,
+    native_runtime_generation_fixture,
+    write_test_static_archive,
     static_archive_bytes,
     transport_codegen_binding,
     write_test_darwin_sdk,
@@ -144,6 +150,8 @@ from tests.cli.process_guard import (
     run_cli_test_process,
 )
 from tests.compiler_identity_helper import (
+    compiler_cargo_stdout,
+    compiler_environment_inputs,
     stub_compiler_admission,
     write_compiler_source,
 )
@@ -380,6 +388,9 @@ def _install_fake_backend_compile(
             return True
         write_fake_runtime_artifacts()
         runtime_state.native_runtime_build_identity = RUNTIME_BUILD_IDENTITY
+        runtime_state.native_runtime_generation = native_runtime_generation_fixture(
+            runtime_state.runtime_lib, RUNTIME_BUILD_IDENTITY
+        )
         return True
 
     def fake_run_subprocess_captured_to_tempfiles(
@@ -445,8 +456,8 @@ def _install_fake_backend_compile(
     # fixture does not compile a runtime from the surrounding source checkout.
     monkeypatch.setattr(
         RUNTIME_NATIVE_BUILD,
-        "current_native_runtime_build_identity",
-        lambda *args, **kwargs: RUNTIME_BUILD_IDENTITY,
+        "current_native_runtime_build_inputs",
+        lambda *args, **kwargs: native_runtime_build_inputs(RUNTIME_BUILD_IDENTITY),
     )
     monkeypatch.setattr(
         RUNTIME_CALLABLE_SYMBOLS,
@@ -472,7 +483,7 @@ def _native_dispatch_binding_fixture(root: Path):
     root = Path(mkdtemp(prefix="runtime-", dir=root))
     archive = root / "runtime.lib"
     if not archive.exists():
-        archive.write_bytes(b"test runtime")
+        write_test_static_archive(archive, payload=b"test runtime")
     return native_codegen_binding(archive, RUNTIME_BUILD_IDENTITY)
 
 
@@ -12481,7 +12492,7 @@ def test_prepare_native_link_includes_stdlib_object_in_link_fingerprint_inputs(
     output_obj = tmp_path / "output.o"
     output_obj.write_bytes(b"\x7fELFobject")
     runtime_lib = tmp_path / "libmolt_runtime.a"
-    runtime_lib.write_bytes(b"archive")
+    write_test_static_archive(runtime_lib, payload=b"archive")
     runtime_build_identity = write_test_native_link_manifest(runtime_lib)
     output_binary = tmp_path / "app"
     stdlib_obj = tmp_path / "stdlib.a"
@@ -12548,7 +12559,7 @@ def test_prepare_native_link_rehashes_when_stdlib_object_contents_change(
     output_obj = tmp_path / "output.o"
     output_obj.write_bytes(b"\x7fELFobject")
     runtime_lib = tmp_path / "libmolt_runtime.a"
-    runtime_lib.write_bytes(b"archive")
+    write_test_static_archive(runtime_lib, payload=b"archive")
     runtime_build_identity = write_test_native_link_manifest(runtime_lib)
     output_binary = tmp_path / "app"
     stdlib_obj = tmp_path / "stdlib.a"
@@ -12633,7 +12644,7 @@ def test_prepare_native_link_uses_owned_stdlib_object_for_link_command(
     output_obj = tmp_path / "output.o"
     output_obj.write_bytes(b"\x7fELFobject")
     runtime_lib = tmp_path / "libmolt_runtime.a"
-    runtime_lib.write_bytes(b"archive")
+    write_test_static_archive(runtime_lib, payload=b"archive")
     runtime_build_identity = write_test_native_link_manifest(runtime_lib)
     output_binary = tmp_path / "app"
     stdlib_obj = tmp_path / "stdlib.a"
@@ -12782,7 +12793,7 @@ def test_prepare_native_link_stages_external_native_artifacts_for_runtime_custod
     output_obj = tmp_path / "output.o"
     output_obj.write_bytes(b"\x7fELFobject")
     runtime_lib = tmp_path / "libmolt_runtime.a"
-    runtime_lib.write_bytes(b"archive")
+    write_test_static_archive(runtime_lib, payload=b"archive")
     runtime_build_identity = write_test_native_link_manifest(runtime_lib)
     output_binary = tmp_path / "app"
     artifacts_root = tmp_path / "artifacts"
@@ -12963,7 +12974,7 @@ def test_prepare_native_link_rejects_external_native_artifact_checksum_drift(
     output_obj = tmp_path / "output.o"
     output_obj.write_bytes(b"\x7fELFobject")
     runtime_lib = tmp_path / "libmolt_runtime.a"
-    runtime_lib.write_bytes(b"archive")
+    write_test_static_archive(runtime_lib, payload=b"archive")
     artifacts_root = tmp_path / "artifacts"
     artifacts_root.mkdir()
 
@@ -13078,7 +13089,7 @@ def test_build_native_link_plan_does_not_read_ambient_stdlib_env(
     ambient_stdlib = tmp_path / "ambient.stdlib.o"
     output_obj.write_bytes(b"\x7fELFobject")
     stub_path.write_text("int main(void) { return 0; }\n", encoding="utf-8")
-    runtime_lib.write_bytes(b"archive")
+    write_test_static_archive(runtime_lib, payload=b"archive")
     ambient_stdlib.write_bytes(b"stdlib")
 
     monkeypatch.setenv("CC", "clang")
@@ -13110,7 +13121,7 @@ def test_linux_release_link_omits_safe_icf_without_capable_linker(
     output_binary = tmp_path / "app"
     output_obj.write_bytes(b"\x7fELFobject")
     stub_path.write_text("int main(void) { return 0; }\n", encoding="utf-8")
-    runtime_lib.write_bytes(b"archive")
+    write_test_static_archive(runtime_lib, payload=b"archive")
     clang = tmp_path / "clang"
     clang.write_bytes(b"tool")
 
@@ -13150,7 +13161,7 @@ def test_linux_link_places_source_extension_archives_in_runtime_group(
     output_binary = tmp_path / "app"
     output_obj.write_bytes(b"\x7fELFobject")
     stub_path.write_text("int main(void) { return 0; }\n", encoding="utf-8")
-    runtime_lib.write_bytes(b"archive")
+    write_test_static_archive(runtime_lib, payload=b"archive")
     extension_archive = tmp_path / "libextension.a"
     extension_archive.write_bytes(b"extension")
     clang = tmp_path / "clang"
@@ -13217,7 +13228,7 @@ def test_darwin_link_force_loads_each_source_extension_archive_without_runtime_e
     output_binary = tmp_path / "app"
     output_obj.write_bytes(b"Mach-O object")
     stub_path.write_text("int main(void) { return 0; }\n", encoding="utf-8")
-    runtime_lib.write_bytes(b"archive")
+    write_test_static_archive(runtime_lib, payload=b"archive")
     extension_archives = (
         tmp_path / "libextension_core.a",
         tmp_path / "libextension_helpers.a",
@@ -13303,7 +13314,7 @@ def test_linux_release_link_selects_lld_without_icf_for_fn_identity(
     output_binary = tmp_path / "app"
     output_obj.write_bytes(b"\x7fELFobject")
     stub_path.write_text("int main(void) { return 0; }\n", encoding="utf-8")
-    runtime_lib.write_bytes(b"archive")
+    write_test_static_archive(runtime_lib, payload=b"archive")
     clang = tmp_path / "clang"
     clang.write_bytes(b"tool")
 
@@ -13346,7 +13357,7 @@ def test_windows_link_omits_icf_for_fn_identity(
     output_binary = tmp_path / "app.exe"
     output_obj.write_bytes(b"COFFobject")
     stub_path.write_text("int main(void) { return 0; }\n", encoding="utf-8")
-    runtime_lib.write_bytes(b"archive")
+    write_test_static_archive(runtime_lib, payload=b"archive")
 
     monkeypatch.setenv("CC", "clang")
     monkeypatch.setattr(
@@ -13382,7 +13393,7 @@ def test_windows_link_force_loads_source_extension_archives_without_wildcard_exp
     output_binary = tmp_path / "app.exe"
     output_obj.write_bytes(b"COFFobject")
     stub_path.write_text("int main(void) { return 0; }\n", encoding="utf-8")
-    runtime_lib.write_bytes(b"archive")
+    write_test_static_archive(runtime_lib, payload=b"archive")
     extension_archive = tmp_path / "extension.lib"
     extension_archive.write_bytes(b"extension")
 
@@ -13442,7 +13453,7 @@ def test_windows_gnu_link_uses_gnu_system_lib_flags(
     output_binary = tmp_path / "app.exe"
     output_obj.write_bytes(b"COFFobject")
     stub_path.write_text("int main(void) { return 0; }\n", encoding="utf-8")
-    runtime_lib.write_bytes(b"archive")
+    write_test_static_archive(runtime_lib, payload=b"archive")
 
     monkeypatch.setattr(
         NATIVE_LINK_COMMAND,
@@ -22100,8 +22111,12 @@ def test_prepare_backend_setup_stages_runtime_callables_before_native_cache_hit(
         del kwargs
         assert isinstance(runtime_state, cli_models._RuntimeArtifactState)
         ensure_calls.append(runtime_state.runtime_lib)
-        runtime_lib.write_bytes(b"runtime")
+        if not runtime_lib.exists():
+            write_test_static_archive(runtime_lib, payload=b"runtime")
         runtime_state.native_runtime_build_identity = RUNTIME_BUILD_IDENTITY
+        runtime_state.native_runtime_generation = native_runtime_generation_fixture(
+            runtime_state.runtime_lib, RUNTIME_BUILD_IDENTITY
+        )
         return True
 
     monkeypatch.setattr(
@@ -22111,11 +22126,6 @@ def test_prepare_backend_setup_stages_runtime_callables_before_native_cache_hit(
         RUNTIME_CALLABLE_SYMBOLS,
         "_ensure_native_runtime_lib_ready_for_codegen",
         fake_ensure_runtime_lib_ready,
-    )
-    monkeypatch.setattr(
-        RUNTIME_CALLABLE_SYMBOLS,
-        "read_native_link_dependency_manifest",
-        lambda *_args, **_kwargs: {},
     )
     monkeypatch.setattr(
         RUNTIME_CALLABLE_SYMBOLS,
@@ -22231,8 +22241,12 @@ def test_prepare_backend_setup_stages_runtime_callables_before_native_cache_miss
         del kwargs
         assert isinstance(runtime_state, cli_models._RuntimeArtifactState)
         ensure_calls.append(runtime_state.runtime_lib)
-        runtime_lib.write_bytes(b"runtime")
+        if not runtime_lib.exists():
+            write_test_static_archive(runtime_lib, payload=b"runtime")
         runtime_state.native_runtime_build_identity = RUNTIME_BUILD_IDENTITY
+        runtime_state.native_runtime_generation = native_runtime_generation_fixture(
+            runtime_state.runtime_lib, RUNTIME_BUILD_IDENTITY
+        )
         return True
 
     monkeypatch.setattr(
@@ -22242,11 +22256,6 @@ def test_prepare_backend_setup_stages_runtime_callables_before_native_cache_miss
         RUNTIME_CALLABLE_SYMBOLS,
         "_ensure_native_runtime_lib_ready_for_codegen",
         fake_ensure_runtime_lib_ready,
-    )
-    monkeypatch.setattr(
-        RUNTIME_CALLABLE_SYMBOLS,
-        "read_native_link_dependency_manifest",
-        lambda *_args, **_kwargs: {},
     )
     monkeypatch.setattr(
         RUNTIME_CALLABLE_SYMBOLS,
@@ -22357,8 +22366,12 @@ def test_prepare_backend_setup_uses_runtime_callable_digest_instead_of_native_as
     def fake_ensure_runtime_lib_ready(runtime_state: object, **kwargs: object) -> bool:
         del kwargs
         assert isinstance(runtime_state, cli_models._RuntimeArtifactState)
-        runtime_lib.write_bytes(b"runtime")
+        if not runtime_lib.exists():
+            write_test_static_archive(runtime_lib, payload=b"runtime")
         runtime_state.native_runtime_build_identity = RUNTIME_BUILD_IDENTITY
+        runtime_state.native_runtime_generation = native_runtime_generation_fixture(
+            runtime_state.runtime_lib, RUNTIME_BUILD_IDENTITY
+        )
         return True
 
     monkeypatch.setattr(
@@ -22368,11 +22381,6 @@ def test_prepare_backend_setup_uses_runtime_callable_digest_instead_of_native_as
         RUNTIME_CALLABLE_SYMBOLS,
         "_ensure_native_runtime_lib_ready_for_codegen",
         fake_ensure_runtime_lib_ready,
-    )
-    monkeypatch.setattr(
-        RUNTIME_CALLABLE_SYMBOLS,
-        "read_native_link_dependency_manifest",
-        lambda *_args, **_kwargs: {},
     )
     monkeypatch.setattr(
         RUNTIME_CALLABLE_SYMBOLS,
@@ -22488,8 +22496,12 @@ def test_prepare_backend_setup_stages_runtime_callables_for_object_emit_without_
         del kwargs
         assert isinstance(runtime_state, cli_models._RuntimeArtifactState)
         ensure_calls.append(runtime_state.runtime_lib)
-        runtime_lib.write_bytes(b"runtime")
+        if not runtime_lib.exists():
+            write_test_static_archive(runtime_lib, payload=b"runtime")
         runtime_state.native_runtime_build_identity = RUNTIME_BUILD_IDENTITY
+        runtime_state.native_runtime_generation = native_runtime_generation_fixture(
+            runtime_state.runtime_lib, RUNTIME_BUILD_IDENTITY
+        )
         return True
 
     monkeypatch.setattr(
@@ -22499,11 +22511,6 @@ def test_prepare_backend_setup_stages_runtime_callables_for_object_emit_without_
         RUNTIME_CALLABLE_SYMBOLS,
         "_ensure_native_runtime_lib_ready_for_codegen",
         fake_ensure_runtime_lib_ready,
-    )
-    monkeypatch.setattr(
-        RUNTIME_CALLABLE_SYMBOLS,
-        "read_native_link_dependency_manifest",
-        lambda *_args, **_kwargs: {},
     )
     monkeypatch.setattr(
         RUNTIME_CALLABLE_SYMBOLS,
@@ -22605,6 +22612,9 @@ def test_ensure_native_runtime_lib_ready_for_codegen_awaits_async_future(
         runtime_lib=tmp_path / "libmolt_runtime.a",
         runtime_lib_ready_future=fake_future,
         native_runtime_build_identity=RUNTIME_BUILD_IDENTITY,
+        native_runtime_generation=native_runtime_generation_fixture(
+            tmp_path / "libmolt_runtime.a", RUNTIME_BUILD_IDENTITY
+        ),
     )
     monkeypatch.setattr(
         RUNTIME_NATIVE_BUILD,
@@ -22642,6 +22652,9 @@ def test_ensure_native_runtime_lib_ready_for_codegen_passes_resolved_modules(
     def fake_ensure_runtime_lib_ready(runtime_state, **kwargs) -> bool:
         captured.append(frozenset(cast(set[str], kwargs["resolved_modules"])))
         runtime_state.native_runtime_build_identity = RUNTIME_BUILD_IDENTITY
+        runtime_state.native_runtime_generation = native_runtime_generation_fixture(
+            runtime_state.runtime_lib, RUNTIME_BUILD_IDENTITY
+        )
         return True
 
     monkeypatch.setattr(
@@ -22934,6 +22947,7 @@ def test_runtime_artifact_fingerprint_match_fails_closed_without_stored_fingerpr
             artifact,
             {"hash": "expected"},
             fingerprint_path,
+            environment=ProcessEnvironment(os.environ),
             require_artifact_digest=True,
         )
         is False
@@ -25547,7 +25561,9 @@ def test_ensure_backend_binary_uses_native_feature_for_native(
         runtime_fixture_root.native_executable(
             cargo_output.relative_to(tmp_path).as_posix()
         )
-        return subprocess.CompletedProcess(cmd, 0, "", "")
+        return subprocess.CompletedProcess(
+            cmd, 0, compiler_cargo_stdout(tmp_path, cargo_output, plan.environment), ""
+        )
 
     monkeypatch.setattr(
         cli_backend_binary, "_backend_fingerprint", fake_backend_fingerprint
@@ -25574,6 +25590,7 @@ def test_ensure_backend_binary_uses_native_feature_for_native(
             "cargo",
             "build",
             "--locked",
+            "--message-format=json-render-diagnostics",
             "--package",
             "molt-backend",
             "--bin",
@@ -25619,7 +25636,12 @@ def test_ensure_backend_binary_rebuild_does_not_signal_verified_daemons(
         runtime_fixture_root.native_executable(
             cargo_backend_bin.relative_to(tmp_path).as_posix()
         )
-        return subprocess.CompletedProcess(cmd, 0, "", "")
+        return subprocess.CompletedProcess(
+            cmd,
+            0,
+            compiler_cargo_stdout(tmp_path, cargo_backend_bin, plan.environment),
+            "",
+        )
 
     monkeypatch.setattr(
         cli_backend_binary, "_backend_fingerprint", lambda *args, **kwargs: fingerprint
@@ -25684,7 +25706,9 @@ def test_ensure_backend_binary_enables_wasm_feature_for_wasm(
         runtime_fixture_root.native_executable(
             cargo_output.relative_to(tmp_path).as_posix()
         )
-        return subprocess.CompletedProcess(cmd, 0, "", "")
+        return subprocess.CompletedProcess(
+            cmd, 0, compiler_cargo_stdout(tmp_path, cargo_output, plan.environment), ""
+        )
 
     monkeypatch.setattr(
         cli_backend_binary, "_backend_fingerprint", fake_backend_fingerprint
@@ -25711,6 +25735,7 @@ def test_ensure_backend_binary_enables_wasm_feature_for_wasm(
             "cargo",
             "build",
             "--locked",
+            "--message-format=json-render-diagnostics",
             "--package",
             "molt-backend",
             "--bin",
@@ -25758,6 +25783,7 @@ def test_ensure_backend_binary_selects_admitted_cargo_output_without_rebuild(
             tmp_path, cargo_output, "dev-fast"
         ),
         fingerprint,
+        cargo_environment=compiler_environment_inputs(),
         artifact=cargo_output,
     )
     build_cmds: list[list[str]] = []
@@ -25913,7 +25939,9 @@ def test_build_rust_target_uses_rust_backend_feature_and_skips_daemon(
         cmd = list(plan.command)
         build_cmds.append(list(cmd))
         runtime_fixture_root.native_executable(canonical_backend.name)
-        return subprocess.CompletedProcess(cmd, 0, "", "")
+        return subprocess.CompletedProcess(
+            cmd, 0, compiler_cargo_stdout(ROOT, canonical_backend, plan.environment), ""
+        )
 
     def fake_run(cmd: list[str], *args: object, **kwargs: object):  # type: ignore[no-untyped-def]
         if cmd and is_backend_generation(backend_bin, Path(cmd[0])):
@@ -25986,6 +26014,7 @@ def test_build_rust_target_uses_rust_backend_feature_and_skips_daemon(
     assert build_cmd[1:config_start] == [
         "build",
         "--locked",
+        "--message-format=json-render-diagnostics",
         "--package",
         "molt-backend",
         "--bin",
@@ -26072,7 +26101,9 @@ def test_build_release_rust_target_uses_release_backend_profile_by_default(
         cmd = list(plan.command)
         build_cmds.append(list(cmd))
         runtime_fixture_root.native_executable(canonical_backend.name)
-        return subprocess.CompletedProcess(cmd, 0, "", "")
+        return subprocess.CompletedProcess(
+            cmd, 0, compiler_cargo_stdout(ROOT, canonical_backend, plan.environment), ""
+        )
 
     def fake_run(cmd: list[str], *args: object, **kwargs: object):  # type: ignore[no-untyped-def]
         if cmd and is_backend_generation(backend_bin, Path(cmd[0])):
@@ -26133,6 +26164,7 @@ def test_build_release_rust_target_uses_release_backend_profile_by_default(
     assert build_cmd[1:config_start] == [
         "build",
         "--locked",
+        "--message-format=json-render-diagnostics",
         "--package",
         "molt-backend",
         "--bin",
@@ -34659,7 +34691,7 @@ def _real_frontend_fake_backend(
     project: Path, cache_root: Path, workers: int, records: list[dict[str, object]]
 ) -> Iterator[None]:
     """Real CLI/frontend/cache inputs; replace only native artifact production."""
-    from tests.determinism.test_ir_determinism import _production_ir_record
+    from tests.determinism.test_ir_determinism import _executable_ir_record
 
     backend_bin = project / "fixture-backend"
     if not backend_bin.exists():
@@ -34712,7 +34744,7 @@ def _real_frontend_fake_backend(
             result = prepare(**kwargs)
             # Observe the real final CLI IR and actual cache authority, including
             # on a warm backend hit. No test-side IR sorting or fake frontend.
-            record = _production_ir_record(kwargs["ir"])
+            record = _executable_ir_record(kwargs["ir"])
             record["actual_cache_key"] = result.cache_key
             record["actual_function_cache_key"] = result.function_cache_key
             assert record["actual_cache_key"]

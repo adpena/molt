@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from tests.runtime_build_identity_helper import runtime_cargo_environment_inputs
+
 import contextlib
 import hashlib
 import json
@@ -18,11 +20,13 @@ from molt.cli.models import _RuntimeArtifactState
 from molt.cli.native_link_manifest import native_link_dependency_manifest_path
 from molt.cli.rust_cpu_policy import RustCpuPolicy
 from molt.exact_json import canonical_json_sha256
+from molt.process_environment import ProcessEnvironment
 from tests.cli.native_link_test_support import write_test_static_archive
 from tests.runtime_build_identity_helper import (
+    RUNTIME_FIXTURE_INPUT,
     native_runtime_staticlib_identity,
     runtime_cargo_plan,
-    runtime_cargo_unit_stdout,
+    runtime_cargo_stdout,
     write_runtime_crate,
 )
 
@@ -42,6 +46,7 @@ def publish(coordinate: Path, *, seed: str = "one", inputs_are_current=lambda: T
             cargo_profile="dev-fast", family_seed=seed
         ),
         inputs_are_current=inputs_are_current,
+        cargo_environment=runtime_cargo_environment_inputs(),
     )
 
 
@@ -148,7 +153,7 @@ def native_build(tmp_path, runtime_fixture_root, monkeypatch):
     plans = []
     cargo_runs = []
     events = []
-    current = SimpleNamespace(coordinate=None)
+    current = SimpleNamespace(coordinate=None, environment={})
 
     @contextlib.contextmanager
     def lock(_root, _name, *, default_timeout_s: float = 300.0):
@@ -201,7 +206,7 @@ def native_build(tmp_path, runtime_fixture_root, monkeypatch):
             subprocess.CompletedProcess(
                 plan.command,
                 0,
-                runtime_cargo_unit_stdout(tmp_path, scratch),
+                runtime_cargo_stdout(tmp_path, (scratch,), plan.environment),
                 "note: native-static-libs: -lc\n",
             ),
             attempts=(),
@@ -214,7 +219,10 @@ def native_build(tmp_path, runtime_fixture_root, monkeypatch):
     monkeypatch.setattr(
         runtime,
         "_cargo_build_env",
-        lambda: {"MOLT_BUILD_PYTHON": os.path.relpath(sys.executable, tmp_path)},
+        lambda: {
+            "MOLT_BUILD_PYTHON": os.path.relpath(sys.executable, tmp_path),
+            **current.environment,
+        },
     )
     monkeypatch.setattr(runtime, "_cargo_target_root", lambda _root: tmp_path / "cargo")
     monkeypatch.setattr(
@@ -340,6 +348,55 @@ def test_native_admission_observes_source_rewrite_with_restored_mtime(native_bui
     os.utime(native_build.source, ns=(before.st_atime_ns, before.st_mtime_ns))
     assert native_build.run()[0]
     assert len(native_build.cargo_runs) == 2
+
+
+@pytest.mark.parametrize("before,after", [(None, ""), ("", "changed"), ("set", None)])
+@pytest.mark.parametrize("rebuild", [False, True])
+def test_native_admission_reverifies_observed_environment_without_cargo_on_reuse(
+    native_build, monkeypatch, before, after, rebuild
+):
+    def change(value):
+        native_build.current.environment.clear()
+        if value is not None:
+            native_build.current.environment[RUNTIME_FIXTURE_INPUT] = value
+
+    change(before)
+    ok, original, _timings = native_build.run()
+    assert ok and len(native_build.cargo_runs) == 1
+    generation = original.native_runtime_generation
+    selector = generations.native_runtime_generation_path(
+        native_build.current.coordinate
+    )
+    retained = selector.read_bytes()
+    ok, warm, _timings = native_build.run()
+    assert ok and warm.runtime_lib == original.runtime_lib
+    assert len(native_build.cargo_runs) == 1
+    assert selector.read_bytes() == retained
+
+    change(after)
+    if not rebuild:
+        monkeypatch.setenv("MOLT_SKIP_RUNTIME_REBUILD", "1")
+    ok, changed, _timings = native_build.run()
+    assert ok is rebuild
+    if rebuild:
+        assert len(native_build.cargo_runs) == 2
+        assert (
+            changed.native_runtime_build_identity
+            == original.native_runtime_build_identity
+        )
+        # This fixture deliberately emits equal code. Input changes must not
+        # fabricate different archive identities, but their receipts must differ.
+        assert changed.runtime_lib.read_bytes() == original.runtime_lib.read_bytes()
+        assert (
+            changed.native_runtime_generation.cargo_environment
+            != generation.cargo_environment
+        )
+    else:
+        assert len(native_build.cargo_runs) == 1
+        assert changed.native_runtime_generation is None
+        assert changed.native_runtime_build_failure.stage == "rebuild-policy"
+        assert selector.read_bytes() == retained
+    generation.verify()
 
 
 def test_native_publication_rejects_inputs_changed_during_staging(
@@ -526,6 +583,7 @@ def _import(coordinate: Path, selection: Path, members, *, seed: str = "one"):
         members=members,
         cargo_profile="dev-fast",
         target_triple=None,
+        environment=ProcessEnvironment(os.environ),
         build_identity=native_runtime_staticlib_identity(
             cargo_profile="dev-fast", family_seed=seed
         ),

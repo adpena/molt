@@ -13,6 +13,8 @@ import pytest
 
 from molt import llvm_wasi_tools
 from molt.cli import native_link_tool_identity
+from molt.cli.cargo_environment_inputs import CargoEnvironmentInputs
+from molt.cli.native_link_manifest import write_native_link_dependency_manifest
 from molt.cli.python_source_closure import local_python_import_closure
 from molt.cli.native_link_plan import (
     NativeLinkCapabilities,
@@ -23,8 +25,15 @@ from molt.cli.native_link_plan import (
     NativeObjectFormat,
     NativeTargetSpec,
 )
+from molt.cli.rust_cpu_policy import RustCpuPolicy
+from molt.process_environment import NameRule, ProcessEnvironment
 from tools import native_link_benchmark as benchmark
+from tests.cli.native_link_test_support import write_test_static_archive
 from tests.process_guard_common import install_module_os_view
+from tests.runtime_build_identity_helper import (
+    native_runtime_build_inputs,
+    native_runtime_staticlib_identity,
+)
 
 
 def _plan(tmp_path: Path) -> NativeLinkPlan:
@@ -105,6 +114,132 @@ def _report(*, fingerprint_suffix: str = "", warm: list[int] | None = None) -> d
         "runs": runs,
         "summary": benchmark.summarize_runs(runs),
     }
+
+
+@pytest.mark.parametrize("rule", list(NameRule))
+def test_runtime_identity_checks_manifest_observation_under_frozen_build_inputs(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, rule: NameRule
+) -> None:
+    runtime = tmp_path / "dev-fast" / "libmolt_runtime.a"
+    runtime.parent.mkdir()
+    write_test_static_archive(runtime)
+    identity = native_runtime_staticlib_identity(cargo_profile="dev-fast")
+    name = "Molt_Hf302_Benchmark_Input"
+    environment = ProcessEnvironment({name: "producer-value"}, rule=rule)
+    observation = CargoEnvironmentInputs.capture(
+        environment, (name,), local_unit_count=1
+    )
+    manifest = write_native_link_dependency_manifest(
+        "",
+        cargo_stderr="note: native-static-libs: -lc\n",
+        runtime_lib=runtime,
+        cargo_profile="dev-fast",
+        target_triple=None,
+        runtime_build_identity=identity,
+        cargo_environment=observation,
+    )
+    inputs = native_runtime_build_inputs(identity, environment=environment)
+    requests = []
+
+    def current_inputs(root, runtime_lib, **kwargs):
+        requests.append((root, runtime_lib, kwargs))
+        return inputs
+
+    monkeypatch.setattr(
+        benchmark, "current_native_runtime_build_inputs", current_inputs
+    )
+    # Neither source admission nor a later mismatch may consult process globals.
+    monkeypatch.setenv(name, "consumer-global-value")
+    coordinates = {
+        "target_triple": None,
+        "cargo_profile": "dev-fast",
+        "stdlib_profile": "full",
+        "extra_runtime_features": ("stdlib_net",),
+        "rust_cpu": RustCpuPolicy.BASELINE,
+    }
+    assert (
+        benchmark.benchmark_runtime_build_identity(runtime, **coordinates) == identity
+    )
+    assert requests == [(benchmark.ROOT, runtime, coordinates)]
+    before = manifest.read_bytes()
+    inputs = native_runtime_build_inputs(
+        identity, environment=environment.updated({name: "changed-explicit-value"})
+    )
+    monkeypatch.setenv(name, "producer-value")
+    with pytest.raises(
+        benchmark.LinkBenchmarkError,
+        match="cannot establish current runtime build identity: Cargo environment inputs changed",
+    ):
+        benchmark.benchmark_runtime_build_identity(runtime, **coordinates)
+    assert len(requests) == 2
+    assert manifest.read_bytes() == before
+
+
+@pytest.mark.parametrize(
+    "mutation", ["missing", "malformed", "missing-observation", "archive-drift"]
+)
+def test_runtime_identity_reports_manifest_admission_failures(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mutation: str
+) -> None:
+    runtime = tmp_path / "dev-fast" / "libmolt_runtime.a"
+    runtime.parent.mkdir()
+    write_test_static_archive(runtime)
+    identity = native_runtime_staticlib_identity(cargo_profile="dev-fast")
+    environment = ProcessEnvironment({"HF302_BENCHMARK_INPUT": "producer-value"})
+    observation = CargoEnvironmentInputs.capture(
+        environment, ("HF302_BENCHMARK_INPUT",), local_unit_count=1
+    )
+    manifest = write_native_link_dependency_manifest(
+        "",
+        cargo_stderr="note: native-static-libs: -lc\n",
+        runtime_lib=runtime,
+        cargo_profile="dev-fast",
+        target_triple=None,
+        runtime_build_identity=identity,
+        cargo_environment=observation,
+    )
+    monkeypatch.setattr(
+        benchmark,
+        "current_native_runtime_build_inputs",
+        lambda *_args, **_kwargs: native_runtime_build_inputs(
+            identity, environment=environment
+        ),
+    )
+    coordinates = {
+        "target_triple": None,
+        "cargo_profile": "dev-fast",
+        "stdlib_profile": "full",
+        "extra_runtime_features": (),
+        "rust_cpu": RustCpuPolicy.BASELINE,
+    }
+    assert (
+        benchmark.benchmark_runtime_build_identity(runtime, **coordinates) == identity
+    )
+    if mutation == "missing":
+        manifest.unlink()
+    elif mutation == "malformed":
+        manifest.write_text("{invalid-json", encoding="utf-8")
+    elif mutation == "missing-observation":
+        payload = json.loads(manifest.read_text(encoding="utf-8"))
+        del payload["cargo_environment"]
+        manifest.write_text(json.dumps(payload), encoding="utf-8")
+    else:
+        write_test_static_archive(runtime, b"changed-object")
+    manifest_before = manifest.read_bytes() if manifest.exists() else None
+    runtime_before = runtime.read_bytes()
+    detail = {
+        "missing": "cannot read native link dependency manifest",
+        "malformed": "cannot read native link dependency manifest",
+        "missing-observation": "invalid manifest shape",
+        "archive-drift": "archive digest mismatch",
+    }[mutation]
+    with pytest.raises(
+        benchmark.LinkBenchmarkError,
+        match=f"cannot establish current runtime build identity: .*{detail}",
+    ):
+        benchmark.benchmark_runtime_build_identity(runtime, **coordinates)
+    assert runtime.read_bytes() == runtime_before
+    assert (manifest.read_bytes() if manifest.exists() else None) == manifest_before
 
 
 def test_input_fingerprint_is_ordered_by_role_and_content_addressed(

@@ -27,6 +27,7 @@ from molt.cli.atomic_io import (
 )
 from molt.cli.build_locks import _build_lock, BuildLockAcquisitionError
 from molt.cli.cargo_build_reads import (
+    CargoBuildReads,
     CargoBuildReadsError,
     cargo_build_reads,
     paths_outside,
@@ -47,7 +48,6 @@ from molt.cli.diagnostic_text import strip_terminal_decoration
 from molt.cli.installed_runtime import (
     InstalledRuntimeCell,
     admit_installed_native_runtime,
-    installed_native_runtime_identity,
     reuse_installed_native_admission,
     select_installed_native_runtime,
 )
@@ -58,7 +58,6 @@ from molt.cli.models import (
 from molt.cli.native_link_custody import NativeLinkCustodyError
 from molt.cli.native_link_manifest import (
     NativeLinkDependencyManifestError,
-    read_native_link_dependency_manifest,
 )
 from molt.cli.runtime_artifact_selection import (
     RUNTIME_STATICLIB_ARTIFACTS,
@@ -74,6 +73,7 @@ from molt.cli.runtime_identity_schema import (
 )
 from molt.cli.runtime_cargo_plan import RuntimeCargoPlan, resolve_runtime_cargo_plan
 from molt.cli.rust_cpu_policy import RustCpuPolicy
+from molt.process_environment import ProcessEnvironment
 from molt.cli.runtime_features import (
     _runtime_builtin_features_for_profile,
     _runtime_cargo_features,
@@ -510,13 +510,7 @@ def _ensure_native_runtime_lib_ready_before_link(
                 )
             reuse_installed_native_admission(installed, admission)
         else:
-            read_native_link_dependency_manifest(
-                binding.runtime_lib,
-                cargo_profile=runtime_cargo_profile,
-                target_triple=target_triple,
-                runtime_build_identity=binding.build_identity,
-            )
-            current = current_native_runtime_build_identity(
+            current = current_native_runtime_build_inputs(
                 molt_root,
                 binding.runtime_lib,
                 target_triple=target_triple,
@@ -526,8 +520,9 @@ def _ensure_native_runtime_lib_ready_before_link(
                 rust_cpu=runtime_state.rust_cpu,
                 build_python_admission=runtime_state.build_python_admission,
             )
+            binding.link_facts.cargo_environment.verify(current.environment)
             binding.verify()
-            if current != binding.build_identity:
+            if current.build_identity != binding.build_identity:
                 raise ValueError(
                     "native runtime inputs changed after code generation; "
                     "refusing to link against a different runtime"
@@ -772,6 +767,7 @@ class _NativeRuntimeBuildPlan:
         if self.runtime_state is not None:
             self.runtime_state.runtime_lib = generation.runtime_lib
             self.runtime_state.native_runtime_build_identity = generation.build_identity
+            self.runtime_state.native_runtime_generation = generation
         return True
 
 
@@ -957,7 +953,15 @@ def _prepare_native_runtime_build(
     )
 
 
-def current_native_runtime_build_identity(
+@dataclass(frozen=True, slots=True)
+class NativeRuntimeBuildInputs:
+    """One source request's plan identity and effective frozen environment."""
+
+    build_identity: RuntimeBuildIdentity
+    environment: ProcessEnvironment
+
+
+def current_native_runtime_build_inputs(
     project_root: Path,
     runtime_lib: Path,
     *,
@@ -967,7 +971,7 @@ def current_native_runtime_build_identity(
     extra_runtime_features: Sequence[str] | None = None,
     rust_cpu: RustCpuPolicy,
     build_python_admission: BuildPythonAdmission | None = None,
-) -> RuntimeBuildIdentity:
+) -> NativeRuntimeBuildInputs:
     """Resolve the exact current native-runtime build-plan identity.
 
     Artifact consumers use this authority instead of accepting a receipt's
@@ -984,7 +988,7 @@ def current_native_runtime_build_identity(
         extra_runtime_features=extra_runtime_features,
     )
     if installed is not None:
-        return installed_native_runtime_identity(installed, runtime_lib)
+        raise ValueError("installed runtime admission does not use source Cargo inputs")
     plan = _prepare_native_runtime_build(
         runtime_lib,
         target_triple,
@@ -1002,18 +1006,21 @@ def current_native_runtime_build_identity(
     )
     if plan is None:
         raise ValueError("cannot resolve the current native-runtime build identity")
-    return require_native_runtime_staticlib_identity(
-        plan.build_identity,
-        cargo_profile=cargo_profile,
-        target_triple=target_triple,
-        artifact_selection=RUNTIME_STATICLIB_ARTIFACTS,
+    return NativeRuntimeBuildInputs(
+        require_native_runtime_staticlib_identity(
+            plan.build_identity,
+            cargo_profile=cargo_profile,
+            target_triple=target_triple,
+            artifact_selection=RUNTIME_STATICLIB_ARTIFACTS,
+        ),
+        plan.cargo_plan.environment,
     )
 
 
-def _runtime_build_inputs_outside_identity(
+def _runtime_build_reads(
     plan: _NativeRuntimeBuildPlan, build: CargoExecutionResult
-) -> tuple[str, ...]:
-    """Build inputs the runtime identity does not cover (HF-300).
+) -> CargoBuildReads:
+    """Capture one build's files and environment once (HF-300, HF-302).
 
     Each unit's rustc dep-info and each build script's declared inputs list
     what the build read. An input outside the identity's roots would let a
@@ -1021,9 +1028,11 @@ def _runtime_build_inputs_outside_identity(
     refuses it, as Bazel refuses an undeclared inclusion.
     """
     environment = plan.cargo_plan.environment
-    reads = cargo_build_reads(
+    return cargo_build_reads(
         build.stdout,
         workspace_root=plan.project_root,
+        dep_info_base=plan.project_root,
+        environment=environment,
         product_roots=tuple(
             Path(environment[name])
             for name in ("CARGO_TARGET_DIR", "CARGO_BUILD_BUILD_DIR")
@@ -1031,22 +1040,23 @@ def _runtime_build_inputs_outside_identity(
         ),
         toolchain_roots=(),
     )
-    return paths_outside(
-        (*reads.files, *reads.directories),
-        plan.project_root,
-        (
-            *runtime_source_paths(plan.project_root, plan.fingerprint_features),
-            *runtime_build_tooling_paths(plan.project_root),
-        ),
-    )
 
 
 def _publish_native_runtime_build(
     plan: _NativeRuntimeBuildPlan,
     build: CargoExecutionResult,
 ) -> bool:
+    reads: CargoBuildReads | None = None
     try:
-        uncovered = _runtime_build_inputs_outside_identity(plan, build)
+        reads = _runtime_build_reads(plan, build)
+        uncovered = paths_outside(
+            (*reads.files, *reads.directories),
+            plan.project_root,
+            (
+                *runtime_source_paths(plan.project_root, plan.fingerprint_features),
+                *runtime_build_tooling_paths(plan.project_root),
+            ),
+        )
     except (OSError, CargoBuildReadsError) as exc:
         uncovered_error: str | None = str(exc)
         uncovered = ()
@@ -1071,7 +1081,9 @@ def _publish_native_runtime_build(
             emit_diagnostic=not plan.json_output,
         )
     started = time.perf_counter()
+    assert reads is not None
     try:
+        reads.environment.verify(plan.cargo_plan.environment)
         generation = publish_native_runtime_generation(
             plan.runtime_lib,
             source_archive=_runtime_cargo_scratch_lib_path(
@@ -1082,6 +1094,7 @@ def _publish_native_runtime_build(
             cargo_profile=plan.cargo_profile,
             target_triple=plan.target_triple,
             build_identity=plan.build_identity,
+            cargo_environment=reads.environment,
             inputs_are_current=lambda: plan.identity_is_current(
                 stage="generation-publication-identity-stability"
             ),
@@ -1274,6 +1287,10 @@ def _ensure_runtime_lib(
                 return False
             for generation in plan.candidates:
                 if generation.build_identity == plan.build_identity:
+                    try:
+                        generation.cargo_environment.verify(plan.cargo_plan.environment)
+                    except ValueError:
+                        continue
                     accepted = plan.accept(generation)
                     if not accepted:
                         build_python_admission.record_failure()

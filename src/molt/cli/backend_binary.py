@@ -32,6 +32,8 @@ from molt.cli.cache_fingerprints import (
     _backend_source_identity_inputs,
     _backend_source_paths,
 )
+from molt.cli.cargo_build_reads import cargo_build_reads
+from molt.cli.cargo_environment_inputs import CargoEnvironmentInputs
 from molt.cli.cargo_execution import (
     CargoPlanExecutionError,
     _run_resolved_cargo_plan,
@@ -46,7 +48,6 @@ from molt.cli.compiler_identity import (
     installed_compiler_admission,
 )
 from molt.cli.runtime_fingerprints import (
-    _artifact_needs_rebuild,
     _artifact_semantic_identity,
     _admitted_runtime_fingerprint,
     _read_runtime_fingerprint,
@@ -67,6 +68,7 @@ from molt.file_hashing import (
     _hash_source_tree_paths,
     _iter_source_fingerprint_files,
 )
+from molt.process_environment import ProcessEnvironment
 from molt.python_identity_common import _valid_sha256
 from molt.toolchain_identity import (
     StableRegularFileIdentity,
@@ -444,19 +446,13 @@ def _current_backend_fingerprint(
     *,
     cargo_profile: str,
     backend_features: tuple[str, ...],
-    rust_cpu: RustCpuPolicy,
+    build_admission: BackendBuildAdmission,
 ) -> dict[str, Any]:
     """This checkout's backend identity, hashed in full without a receipt."""
     return _backend_fingerprint(
         project_root,
         cargo_profile=cargo_profile,
-        build_admission=backend_build_admission(
-            project_root,
-            backend_features,
-            cargo_profile,
-            os.environ,
-            rust_cpu=rust_cpu,
-        ),
+        build_admission=build_admission,
         backend_features=backend_features,
     )
 
@@ -465,6 +461,8 @@ def _selected_backend_generation_matches(
     coordinate: Path,
     fingerprint: dict[str, Any] | None,
     receipt: Path,
+    *,
+    environment: ProcessEnvironment,
 ) -> Path | None:
     """The generation ``receipt`` selects for ``coordinate`` when it is admitted.
 
@@ -476,7 +474,11 @@ def _selected_backend_generation_matches(
         coordinate, _read_runtime_fingerprint(receipt)
     )
     if generation is None or not _runtime_artifact_fingerprint_matches(
-        generation, fingerprint, receipt, require_artifact_digest=True
+        generation,
+        fingerprint,
+        receipt,
+        environment=environment,
+        require_artifact_digest=True,
     ):
         return None
     return generation
@@ -496,18 +498,25 @@ def admitted_backend_binary(
     a build consults them. A candidate counts only when its receipt matches this
     checkout's backend identity and binds the selected generation's content.
     """
+    build_admission = backend_build_admission(
+        project_root, backend_features, cargo_profile, os.environ, rust_cpu=rust_cpu
+    )
+    build_admission.verify()
     fingerprint = _current_backend_fingerprint(
         project_root,
         cargo_profile=cargo_profile,
         backend_features=backend_features,
-        rust_cpu=rust_cpu,
+        build_admission=build_admission,
     )
     for coordinate, receipt in (
         (binary, _backend_fingerprint_path(project_root, binary, cargo_profile)),
         _canonical_backend_candidate(project_root, binary, cargo_profile),
     ):
         generation = _selected_backend_generation_matches(
-            coordinate, fingerprint, receipt
+            coordinate,
+            fingerprint,
+            receipt,
+            environment=build_admission.plan.environment,
         )
         if generation is not None:
             return generation, receipt
@@ -543,6 +552,7 @@ def _select_backend_generation(
     generation: StableRegularFileIdentity,
     *,
     fingerprint: dict[str, Any],
+    cargo_environment: CargoEnvironmentInputs,
 ) -> None:
     """Point a coordinate's ``receipt`` at ``generation``: the selection switch.
 
@@ -554,6 +564,7 @@ def _select_backend_generation(
     _write_runtime_fingerprint(
         receipt,
         {**fingerprint, "artifact_content_identity": content_identity},
+        cargo_environment=cargo_environment,
     )
     verify_stable_regular_file_identity(generation, label="backend selection")
 
@@ -578,11 +589,15 @@ def import_backend_binary(
     transported = _read_runtime_fingerprint(receipt)
     if transported is None or "artifact_content_identity" not in transported:
         raise ValueError(f"transported backend receipt is invalid: {receipt}")
+    build_admission = backend_build_admission(
+        project_root, backend_features, cargo_profile, os.environ, rust_cpu=rust_cpu
+    )
+    build_admission.verify()
     fingerprint = _current_backend_fingerprint(
         project_root,
         cargo_profile=cargo_profile,
         backend_features=backend_features,
-        rust_cpu=rust_cpu,
+        build_admission=build_admission,
     )
     if any(
         transported.get(key) != fingerprint.get(key)
@@ -591,10 +606,15 @@ def import_backend_binary(
         raise ValueError(
             "transported backend was built from other inputs than this checkout"
         )
+    cargo_environment = CargoEnvironmentInputs.from_dict(
+        transported.get("cargo_environment")
+    )
+    cargo_environment.verify(build_admission.plan.environment)
     canonical_binary, canonical_receipt = _canonical_backend_candidate(
         project_root, binary, cargo_profile
     )
     with _backend_admission_lock(project_root, cargo_profile):
+        build_admission.verify()
         with stable_executable_probe(executable, label="transported backend") as (
             _entrypoint,
             identity,
@@ -607,11 +627,18 @@ def import_backend_binary(
             generation = publish_backend_generation(
                 canonical_binary, identity.path, observed=identity
             )
+        build_admission.verify()
         _select_backend_generation(
-            canonical_receipt, generation, fingerprint=fingerprint
+            canonical_receipt,
+            generation,
+            fingerprint=fingerprint,
+            cargo_environment=cargo_environment,
         )
         admitted = _selected_backend_generation_matches(
-            canonical_binary, fingerprint, canonical_receipt
+            canonical_binary,
+            fingerprint,
+            canonical_receipt,
+            environment=build_admission.plan.environment,
         )
         if admitted is None or admitted.resolve() != generation.path.resolve():
             raise ValueError("imported backend failed its own admission")
@@ -665,12 +692,18 @@ def _admit_published_backend(
             stored_fingerprint=stored_fingerprint,
         )
         generation = _selected_backend_generation_matches(
-            backend_bin, fingerprint, fingerprint_path
+            backend_bin,
+            fingerprint,
+            fingerprint_path,
+            environment=build_admission.plan.environment,
         )
         if generation is None:
             return None
         fingerprint = _admitted_runtime_fingerprint(
             fingerprint, _read_runtime_fingerprint(fingerprint_path)
+        )
+        CargoEnvironmentInputs.from_dict(fingerprint.get("cargo_environment")).verify(
+            build_admission.plan.environment
         )
         if _runtime_fingerprint_metadata_needs_refresh(stored_fingerprint, fingerprint):
             return None
@@ -798,6 +831,7 @@ def _ensure_backend_binary(
 
         def _publish_cargo_output_receipt(
             identity: StableRegularFileIdentity,
+            cargo_environment: CargoEnvironmentInputs,
         ) -> None:
             assert fingerprint is not None
             verify_stable_regular_file_identity(identity, label="backend publication")
@@ -808,6 +842,7 @@ def _ensure_backend_binary(
             _write_runtime_fingerprint(
                 _backend_fingerprint_path(project_root, cargo_output, cargo_profile),
                 {**fingerprint, "artifact_content_identity": content_identity},
+                cargo_environment=cargo_environment,
             )
             verify_stable_regular_file_identity(identity, label="backend publication")
 
@@ -949,6 +984,7 @@ def _ensure_backend_binary(
                         cargo_output,
                         fingerprint,
                         candidate_fingerprint_path,
+                        environment=build_admission.plan.environment,
                         require_artifact_digest=True,
                     ):
                         return None
@@ -958,8 +994,14 @@ def _ensure_backend_binary(
                         fingerprint,
                         _read_runtime_fingerprint(candidate_fingerprint_path),
                     )
+                    CargoEnvironmentInputs.from_dict(
+                        fingerprint.get("cargo_environment")
+                    ).verify(build_admission.plan.environment)
                     selected = _selected_backend_generation_matches(
-                        backend_bin, fingerprint, fingerprint_path
+                        backend_bin,
+                        fingerprint,
+                        fingerprint_path,
+                        environment=build_admission.plan.environment,
                     )
                     if (
                         selected is not None
@@ -985,7 +1027,12 @@ def _ensure_backend_binary(
                         else None
                     )
                 _select_backend_generation(
-                    fingerprint_path, generation, fingerprint=fingerprint
+                    fingerprint_path,
+                    generation,
+                    fingerprint=fingerprint,
+                    cargo_environment=CargoEnvironmentInputs.from_dict(
+                        fingerprint.get("cargo_environment")
+                    ),
                 )
             except (OSError, RuntimeError, ValueError) as exc:
                 return _backend_ensure_failure(
@@ -1008,7 +1055,10 @@ def _ensure_backend_binary(
             return selection_failure
         stage_start = time.perf_counter()
         selected_generation = _selected_backend_generation_matches(
-            backend_bin, fingerprint, fingerprint_path
+            backend_bin,
+            fingerprint,
+            fingerprint_path,
+            environment=build_admission.plan.environment,
         )
         if selected_generation is not None:
             # A temporarily unavailable rustc must not rename an admitted
@@ -1020,6 +1070,9 @@ def _ensure_backend_binary(
                 fingerprint = _admitted_runtime_fingerprint(
                     fingerprint, _read_runtime_fingerprint(fingerprint_path)
                 )
+                CargoEnvironmentInputs.from_dict(
+                    fingerprint.get("cargo_environment")
+                ).verify(build_admission.plan.environment)
             except ValueError as exc:
                 return _backend_ensure_failure("backend_receipt_identity", str(exc))
             _record_backend_binary_stage_ms(
@@ -1099,6 +1152,7 @@ def _ensure_backend_binary(
             canonical_backend_bin,
             canonical_fingerprint_path,
             fingerprint=fingerprint,
+            environment=build_admission.plan.environment,
         )
         _record_backend_binary_stage_ms(
             stage_timings_ms,
@@ -1230,6 +1284,33 @@ def _ensure_backend_binary(
                 "backend_artifact", "Backend binary missing after rebuild."
             )
         try:
+            environment = build_admission.plan.environment
+            reads = cargo_build_reads(
+                build.stdout,
+                workspace_root=project_root,
+                dep_info_base=project_root,
+                product_roots=tuple(
+                    Path(environment[name])
+                    for name in ("CARGO_TARGET_DIR", "CARGO_BUILD_BUILD_DIR")
+                    if environment.get(name)
+                ),
+                toolchain_roots=tuple(
+                    resource.identity.path
+                    for custody in (
+                        build_admission.plan.rust_resources,
+                        build_admission.plan.link_resources,
+                    )
+                    for resource in custody.files
+                ),
+                environment=environment,
+            )
+            build_admission.verify()
+            source_generation.verify()
+        except (OSError, ValueError) as exc:
+            return _backend_ensure_failure(
+                "backend_source_identity", str(exc), command=cmd
+            )
+        try:
             rebuilt_source_identity, rebuilt_generation = (
                 _publish_backend_generation_from(
                     backend_bin, cargo_output, label="rebuilt Cargo backend output"
@@ -1260,9 +1341,14 @@ def _ensure_backend_binary(
             )
         if fingerprint is not None:
             try:
-                _publish_cargo_output_receipt(rebuilt_source_identity)
+                _publish_cargo_output_receipt(
+                    rebuilt_source_identity, reads.environment
+                )
                 _select_backend_generation(
-                    fingerprint_path, rebuilt_generation, fingerprint=fingerprint
+                    fingerprint_path,
+                    rebuilt_generation,
+                    fingerprint=fingerprint,
+                    cargo_environment=reads.environment,
                 )
             except (OSError, ValueError) as exc:
                 return _backend_ensure_failure(
@@ -1284,6 +1370,7 @@ def _hydrate_canonical_backend_generation(
     canonical_fingerprint_path: Path,
     *,
     fingerprint: dict[str, Any] | None,
+    environment: ProcessEnvironment,
 ) -> tuple[StableRegularFileIdentity, dict[str, Any]] | None:
     """Publish the canonical target's admitted generation into this target.
 
@@ -1299,11 +1386,20 @@ def _hydrate_canonical_backend_generation(
     if (
         stored is None
         or candidate is None
-        or _artifact_needs_rebuild(candidate, fingerprint, stored)
+        or not _runtime_artifact_fingerprint_matches(
+            candidate,
+            fingerprint,
+            canonical_fingerprint_path,
+            environment=environment,
+            require_artifact_digest=True,
+        )
     ):
         return None
     try:
         admitted = _admitted_runtime_fingerprint(fingerprint, stored)
+        CargoEnvironmentInputs.from_dict(admitted.get("cargo_environment")).verify(
+            environment
+        )
         _source, generation = _publish_backend_generation_from(
             backend_bin, candidate, label="canonical backend generation"
         )
@@ -1314,7 +1410,14 @@ def _hydrate_canonical_backend_generation(
             != stored["artifact_content_identity"]
         ):
             return None
-        _select_backend_generation(fingerprint_path, generation, fingerprint=admitted)
+        _select_backend_generation(
+            fingerprint_path,
+            generation,
+            fingerprint=admitted,
+            cargo_environment=CargoEnvironmentInputs.from_dict(
+                admitted.get("cargo_environment")
+            ),
+        )
     except (OSError, RuntimeError, ValueError):
         return None
     return generation, admitted

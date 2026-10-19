@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from tests.runtime_build_identity_helper import native_runtime_build_inputs
+
 from molt.cli.cache_keys import FunctionDigests
 
 import hashlib
@@ -13,7 +15,11 @@ from molt.backend_environment import CodegenSelection
 import molt.cli as cli
 from molt.cli import runtime_callable_symbols, native_symbol_inspection
 from molt.cli.rust_cpu_policy import RustCpuPolicy
-from tests.cli.native_link_test_support import stub_native_symbol_admission
+from tests.cli.native_link_test_support import (
+    stub_native_symbol_admission,
+    native_runtime_generation_fixture,
+    write_test_static_archive,
+)
 
 _RUNTIME_CALLABLE_SYMBOL_NAMES = (
     "_runtime_callable_symbols_digest",
@@ -191,6 +197,7 @@ def admitted_runtime(tmp_path, monkeypatch):
     state = _RuntimeArtifactState(
         runtime_lib=archive,
         native_runtime_build_identity=identity,
+        native_runtime_generation=native_runtime_generation_fixture(archive, identity),
         native_runtime_codegen_binding=native_codegen_binding(archive, identity),
     )
     monkeypatch.setattr(
@@ -238,10 +245,10 @@ def test_final_codegen_admission_recaptures_once_without_reselecting(
 
     def current(root, archive, **kwargs):
         captured.append((root, archive, kwargs))
-        return original.build_identity
+        return native_runtime_build_inputs(original.build_identity)
 
     monkeypatch.setattr(
-        runtime_native_build, "current_native_runtime_build_identity", current
+        runtime_native_build, "current_native_runtime_build_inputs", current
     )
     assert _admit_final_runtime(state, tmp_path)
     assert state.native_runtime_codegen_binding is original
@@ -261,6 +268,84 @@ def test_final_codegen_admission_recaptures_once_without_reselecting(
     ]
 
     state.build_python_admission.close()
+
+
+def test_final_codegen_admission_reverifies_original_observed_environment(
+    admitted_runtime, tmp_path, monkeypatch
+):
+    from molt.cli import runtime_native_build
+    from tests.runtime_build_identity_helper import RUNTIME_FIXTURE_INPUT
+
+    state = admitted_runtime
+    original = state.native_runtime_codegen_binding
+    current = native_runtime_build_inputs(original.build_identity)
+    monkeypatch.setattr(
+        runtime_native_build,
+        "current_native_runtime_build_inputs",
+        lambda *_a, **_k: current,
+    )
+    assert _admit_final_runtime(state, tmp_path)
+    # The plan and all artifact bytes remain equal. Only a variable actually
+    # observed by Cargo changes, beyond the old pre-build environment allowlist.
+    changed = dict(current.environment)
+    changed[RUNTIME_FIXTURE_INPUT] = changed.get(RUNTIME_FIXTURE_INPUT, "") + "changed"
+    current = native_runtime_build_inputs(original.build_identity, environment=changed)
+    assert not _admit_final_runtime(state, tmp_path)
+    assert state.native_runtime_codegen_binding is None
+    assert state.native_runtime_generation is None
+    assert state.native_runtime_build_failure.stage == "codegen-link-admission"
+    assert RUNTIME_FIXTURE_INPUT in state.native_runtime_build_failure.summary
+
+
+@pytest.mark.parametrize("replace_receipt", [False, True])
+def test_source_codegen_pins_original_generation_without_rehashing_archive(
+    admitted_runtime, tmp_path, monkeypatch, replace_receipt
+):
+    from concurrent.futures import Future
+
+    state = admitted_runtime
+    generation = state.native_runtime_generation
+    receipt = generation.members[1][1].path
+    if replace_receipt:
+        other = receipt.with_suffix(".replacement")
+        other.write_bytes(receipt.read_bytes())
+        os.replace(other, receipt)
+    ready = Future()
+    ready.set_result(True)
+    state.runtime_lib_ready_future = ready
+
+    def inspect_archive(_path, **kwargs):
+        assert kwargs["identity"] == generation.members[0][1]
+        symbols = frozenset({"molt_fixture"})
+        return native_symbol_inspection._NativeGlobalSymbolFacts(
+            symbols, frozenset(), symbols, artifact_digest=kwargs["identity"].sha256
+        )
+
+    stub_native_symbol_admission(monkeypatch, inspect_archive)
+    monkeypatch.setattr(
+        native_symbol_inspection,
+        "_native_symbol_artifact_identity",
+        lambda *_a, **_k: pytest.fail("codegen rehashed the admitted runtime archive"),
+    )
+    digest, failure = (
+        runtime_callable_symbols._stage_runtime_callable_symbols_for_native_codegen(
+            state,
+            target_triple=None,
+            json_output=True,
+            runtime_cargo_profile="dev-fast",
+            molt_root=tmp_path,
+            cargo_timeout=None,
+            stdlib_profile="micro",
+        )
+    )
+    if replace_receipt:
+        assert failure is not None and not digest
+        assert state.native_runtime_generation is None
+        assert state.native_runtime_codegen_binding is None
+    else:
+        assert failure is None and digest
+        assert state.native_runtime_codegen_binding.archive is generation.members[0][1]
+        assert state.native_runtime_codegen_binding.manifest is generation.members[1][1]
 
 
 @pytest.mark.parametrize("changed_input", ["source", "configuration", "python"])
@@ -286,19 +371,24 @@ def test_final_codegen_admission_rejects_current_input_drift(
         digest = hashlib.sha256(
             b"\0".join(path.read_bytes() for path in inputs.values())
         ).hexdigest()
-        return native_runtime_staticlib_identity(
-            cargo_profile="dev-fast", family_seed=digest
+        return native_runtime_build_inputs(
+            native_runtime_staticlib_identity(
+                cargo_profile="dev-fast", family_seed=digest
+            )
         )
 
     state = admitted_runtime
-    original = current()
+    original = current().build_identity
     write_test_native_link_manifest(state.runtime_lib, build_identity=original)
     state.native_runtime_build_identity = original
+    state.native_runtime_generation = native_runtime_generation_fixture(
+        state.runtime_lib, original
+    )
     state.native_runtime_codegen_binding = native_codegen_binding(
         state.runtime_lib, original
     )
     monkeypatch.setattr(
-        runtime_native_build, "current_native_runtime_build_identity", current
+        runtime_native_build, "current_native_runtime_build_inputs", current
     )
     inputs[changed_input].write_bytes(b"after!")
     assert not _admit_final_runtime(state, tmp_path)
@@ -340,10 +430,10 @@ def test_final_codegen_admission_fences_exact_file_generations(
         captures.append(True)
         if when == "during":
             mutate()
-        return binding.build_identity
+        return native_runtime_build_inputs(binding.build_identity)
 
     monkeypatch.setattr(
-        runtime_native_build, "current_native_runtime_build_identity", current
+        runtime_native_build, "current_native_runtime_build_inputs", current
     )
     if when == "before":
         mutate()
@@ -370,7 +460,7 @@ def test_final_codegen_admission_rejects_foreign_manifest_diagnostically(
     )
     monkeypatch.setattr(
         runtime_native_build,
-        "current_native_runtime_build_identity",
+        "current_native_runtime_build_inputs",
         lambda *_a, **_k: pytest.fail(
             "foreign archive receipt must fail before capture"
         ),
@@ -378,7 +468,8 @@ def test_final_codegen_admission_rejects_foreign_manifest_diagnostically(
     assert not _admit_final_runtime(state, tmp_path)
     assert state.native_runtime_codegen_binding is None
     assert (
-        "runtime build identity mismatch" in state.native_runtime_build_failure.summary
+        "native link receipt changed since identity capture"
+        in state.native_runtime_build_failure.summary
     )
 
 
@@ -431,8 +522,10 @@ def test_async_runtime_completion_is_bound_before_codegen(
     captures = []
     monkeypatch.setattr(
         runtime_native_build,
-        "current_native_runtime_build_identity",
-        lambda *_a, **_k: captures.append(True) or identity,
+        "current_native_runtime_build_inputs",
+        lambda *_a, **_k: (
+            captures.append(True) or native_runtime_build_inputs(identity)
+        ),
     )
     assert _admit_final_runtime(state, tmp_path)
     assert captures == [True]
@@ -453,7 +546,7 @@ def test_final_codegen_admission_never_uses_unbound_state(
         state.runtime_lib = tmp_path / "another-runtime.lib"
     monkeypatch.setattr(
         runtime_native_build,
-        "current_native_runtime_build_identity",
+        "current_native_runtime_build_inputs",
         lambda *_a, **_k: pytest.fail("unbound state must fail before capture"),
     )
     assert not _admit_final_runtime(state, tmp_path)
@@ -475,7 +568,7 @@ def test_callable_dispatch_and_all_cache_tiers_are_operation_owned(
         root = tmp_path / name
         root.mkdir()
         archive = root / "runtime.lib"
-        archive.write_bytes(b"runtime fixture")
+        write_test_static_archive(archive, payload=b"runtime fixture")
         archive.with_name("runtime.lib.test-callables").write_bytes(content)
         return native_codegen_binding(
             archive, admitted_runtime.native_runtime_build_identity
@@ -767,7 +860,7 @@ def test_native_object_output_rejects_runtime_generation_drift(
         calls.append("capture")
         if when == "final_capture":
             mutate()
-        return binding.build_identity
+        return native_runtime_build_inputs(binding.build_identity)
 
     def project(**_kwargs):
         calls.append("project")
@@ -776,7 +869,7 @@ def test_native_object_output_rejects_runtime_generation_drift(
         return staged_object, None
 
     monkeypatch.setattr(
-        runtime_native_build, "current_native_runtime_build_identity", current
+        runtime_native_build, "current_native_runtime_build_inputs", current
     )
     monkeypatch.setattr(
         backend_output_pipeline._link_pipeline,

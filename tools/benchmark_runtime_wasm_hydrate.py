@@ -23,10 +23,10 @@ from molt.cli.atomic_io import _atomic_copy_file  # noqa: E402
 from molt.cli.runtime_identity_schema import RuntimeBuildIdentity  # noqa: E402
 from molt.cli.runtime_wasm_cache import (  # noqa: E402
     _shared_runtime_wasm_cache_root,
-    hydrate_runtime_wasm_pair_from_shared_cache,
 )
 from molt.cli.runtime_wasm_generation import (  # noqa: E402
     RuntimeWasmGeneration,
+    hydrate_runtime_wasm_generation,
     read_runtime_wasm_generation,
     runtime_wasm_generation_identities,
 )
@@ -115,6 +115,7 @@ def _run_sample(
     dest_reloc: Path,
     shared_identity: RuntimeBuildIdentity,
     reloc_identity: RuntimeBuildIdentity,
+    source_generation: RuntimeWasmGeneration,
 ) -> tuple[float, int]:
     started = time.perf_counter()
     if mode == "before":
@@ -125,11 +126,16 @@ def _run_sample(
             dest_reloc=dest_reloc,
         )
     else:
-        generation = hydrate_runtime_wasm_pair_from_shared_cache(
+        # Measure transport of an already selected immutable generation. Source
+        # freshness belongs to the build/cache admission owner, outside this
+        # custody benchmark; consumer ambient inputs do not identify its bytes.
+        generation = hydrate_runtime_wasm_generation(
+            source_manifest=source_generation.manifest,
+            source_generation=source_generation,
             dest_shared=dest_shared,
             dest_reloc=dest_reloc,
-            shared_identity=shared_identity,
-            reloc_identity=reloc_identity,
+            expected_shared_identity=shared_identity,
+            expected_reloc_identity=reloc_identity,
         )
         ok = (
             generation is not None
@@ -189,6 +195,7 @@ def main() -> int:
                     dest_reloc=sample_root / "molt_runtime_reloc.wasm",
                     shared_identity=shared_identity,
                     reloc_identity=reloc_identity,
+                    source_generation=source_generation,
                 )
                 samples[mode].append(elapsed_ms)
                 max_rss = max(max_rss, rss)

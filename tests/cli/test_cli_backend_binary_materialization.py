@@ -1,8 +1,12 @@
 from __future__ import annotations
 
+from tests.compiler_identity_helper import compiler_environment_inputs
+from molt.process_environment import ProcessEnvironment
+
 from tests.cli.backend_generation_test_support import publish_backend, selected_backend
 from tests.compiler_identity_helper import (
     compiler_build_admission,
+    compiler_cargo_stdout,
     stub_compiler_admission,
     write_compiler_source,
 )
@@ -136,7 +140,9 @@ def test_target_switch_preserves_admitted_native_and_wasm_compilers(
         output = selected.with_name(backend_executable_name(os_name=os.name))
         output.parent.mkdir(parents=True, exist_ok=True)
         output.write_bytes(("compiled:" + ",".join(features)).encode())
-        return subprocess.CompletedProcess(cmd, 0, "", "")
+        return subprocess.CompletedProcess(
+            cmd, 0, compiler_cargo_stdout(tmp_path, output, cmd.environment), ""
+        )
 
     monkeypatch.setattr(cli_backend_binary, "_backend_fingerprint", fingerprint)
     monkeypatch.setattr(cli_backend_binary, "_run_resolved_cargo_plan", build)
@@ -192,6 +198,7 @@ def test_rebuild_disabled_still_admits_backend_identity_and_features(
             b"unverified compiler bytes",
             receipt=None if state == "unattested" else _receipt(tmp_path, selected),
             fingerprint=stored,
+            cargo_environment=compiler_environment_inputs(),
         )
         if state == "corrupt":
             generation.write_bytes(b"unexpected compiler bytes")
@@ -244,6 +251,7 @@ def test_slow_first_probe_run_shares_the_build_budget_and_never_rebuilds(
         b"attested compiler bytes",
         receipt=_receipt(tmp_path, selected),
         fingerprint=fingerprint,
+        cargo_environment=compiler_environment_inputs(),
     )
     monkeypatch.setattr(
         cli_backend_binary, "_backend_fingerprint", lambda *_a, **_k: fingerprint
@@ -344,7 +352,10 @@ def test_backend_refresh_distinguishes_source_metadata_from_content(
     artifact.write_bytes(b"admitted backend bytes")
     sidecar = tmp_path / "backend.fingerprint"
     runtime_fingerprints._write_runtime_fingerprint(
-        sidecar, original, artifact=artifact
+        sidecar,
+        original,
+        artifact=artifact,
+        cargo_environment=compiler_environment_inputs(),
     )
     before = runtime_fingerprints._read_runtime_fingerprint(sidecar)
     assert before is not None
@@ -359,19 +370,23 @@ def test_backend_refresh_distinguishes_source_metadata_from_content(
         current,
         sidecar,
         require_artifact_digest=True,
+        environment=ProcessEnvironment(os.environ),
     )
     if change == "content":
         assert not admitted
+        current["cargo_environment"] = before["cargo_environment"]
         with pytest.raises(ValueError, match="semantic identity"):
             runtime_fingerprints._refresh_runtime_fingerprint_metadata(sidecar, current)
         assert runtime_fingerprints._read_runtime_fingerprint(sidecar) == before
     else:
         assert admitted
+        current = runtime_fingerprints._admitted_runtime_fingerprint(current, before)
         runtime_fingerprints._refresh_runtime_fingerprint_metadata(sidecar, current)
         after = runtime_fingerprints._read_runtime_fingerprint(sidecar)
         assert after is not None
         assert after["inputs_digest"] == current["inputs_digest"]
         assert after["artifact_content_identity"] == before["artifact_content_identity"]
+        assert after["cargo_environment"] == before["cargo_environment"]
 
 
 @pytest.mark.parametrize(
@@ -397,6 +412,7 @@ def test_ensure_backend_binary_selects_only_an_admitted_cargo_output(
         old_bytes,
         receipt=_receipt(tmp_path, backend_bin),
         fingerprint=fingerprint,
+        cargo_environment=compiler_environment_inputs(),
     )
     held = stable_regular_file_identity(old_generation, label="held backend")
     cargo_output.write_bytes(old_bytes)
@@ -420,6 +436,7 @@ def test_ensure_backend_binary_selects_only_an_admitted_cargo_output(
             _receipt(tmp_path, cargo_output),
             candidate_fingerprint,
             artifact=cargo_output,
+            cargo_environment=compiler_environment_inputs(),
         )
 
     monkeypatch.setattr(
@@ -463,7 +480,11 @@ def test_ensure_backend_binary_reuses_exact_probe_validation_token(
     fingerprint = _fingerprint()
     fingerprint_path = _receipt(tmp_path, backend_bin)
     publish_backend(
-        backend_bin, b"backend-v1", receipt=fingerprint_path, fingerprint=fingerprint
+        backend_bin,
+        b"backend-v1",
+        receipt=fingerprint_path,
+        fingerprint=fingerprint,
+        cargo_environment=compiler_environment_inputs(),
     )
     probe_calls = 0
 
@@ -503,6 +524,7 @@ def test_ensure_backend_binary_reuses_exact_probe_validation_token(
             b"backend-v2" if mutation == "same-size" else b"backend-v2-changed",
             receipt=fingerprint_path,
             fingerprint=fingerprint,
+            cargo_environment=compiler_environment_inputs(),
         )
     after_result = _ensure(backend_bin, tmp_path, ("native-backend",))
     assert after_result
@@ -539,6 +561,7 @@ def test_corrupted_generation_is_never_admitted(
         b"backend-v1",
         receipt=_receipt(tmp_path, backend_bin),
         fingerprint=fingerprint,
+        cargo_environment=compiler_environment_inputs(),
     )
     generation.write_bytes(b"backend-XX")
     builds = 0
@@ -548,7 +571,9 @@ def test_corrupted_generation_is_never_admitted(
         builds += 1
         cargo_output.write_bytes(b"backend-v1")
         cargo_output.chmod(0o755)
-        return subprocess.CompletedProcess(cmd, 0, "", "")
+        return subprocess.CompletedProcess(
+            cmd, 0, compiler_cargo_stdout(tmp_path, cargo_output, cmd.environment), ""
+        )
 
     monkeypatch.setattr(
         cli_backend_binary, "_backend_fingerprint", lambda *_a, **_k: fingerprint
@@ -609,14 +634,20 @@ def test_ensure_backend_binary_returns_cargo_failure_detail(
     assert not result
     assert result.phase == "backend_cargo_build"
     assert result.returncode == 101
-    assert result.command[:7] == (
+    assert result.command == (
         "cargo",
         "build",
         "--locked",
+        "--message-format=json-render-diagnostics",
         "--package",
         "molt-backend",
         "--bin",
         "molt-backend",
+        "--profile",
+        "release-fast",
+        "--no-default-features",
+        "--features",
+        "native-backend",
     )
     assert "Backend cargo build failed (exit 101)" in result.message
     assert "duplicate symbol: PyMemoryView_FromMemory" in result.message
@@ -638,6 +669,7 @@ def test_backend_probe_cannot_publish_receipt_for_binary_changed_during_probe(
         b"backend-v1",
         receipt=_receipt(tmp_path, backend_bin),
         fingerprint=fingerprint,
+        cargo_environment=compiler_environment_inputs(),
     )
     probe_calls = 0
 
@@ -699,6 +731,7 @@ def test_backend_probe_publication_failure_is_typed_without_rebuild(
         b"backend",
         receipt=_receipt(tmp_path, backend_bin),
         fingerprint=fingerprint,
+        cargo_environment=compiler_environment_inputs(),
     )
     monkeypatch.setattr(
         cli_backend_binary, "_backend_fingerprint", lambda *_a, **_k: fingerprint
@@ -749,6 +782,7 @@ def test_backend_build_publishes_provenance_only_after_successful_probe(
             cargo_receipt,
             fingerprint,
             artifact=cargo_output if receipt == "stale-content" else None,
+            cargo_environment=compiler_environment_inputs(),
         )
     metadata = cargo_output.stat()
     cargo_output.write_bytes(b"backend-v2")
@@ -762,7 +796,9 @@ def test_backend_build_publishes_provenance_only_after_successful_probe(
         nonlocal calls
         calls += 1
         cargo_output.write_bytes(b"backend-v3")
-        return subprocess.CompletedProcess(cmd, 0, "", "")
+        return subprocess.CompletedProcess(
+            cmd, 0, compiler_cargo_stdout(tmp_path, cargo_output, cmd.environment), ""
+        )
 
     def probe(cmd, **_kwargs):
         probe_commands.append(tuple(cmd))
@@ -817,10 +853,17 @@ def test_backend_build_publishes_provenance_only_after_successful_probe(
     assert Path(probe_commands[0][0]).samefile(generation)
     assert generation.read_bytes() == b"backend-v3"
     assert cli_backend_binary._runtime_artifact_fingerprint_matches(
-        cargo_output, fingerprint, cargo_receipt, require_artifact_digest=True
+        cargo_output,
+        fingerprint,
+        cargo_receipt,
+        require_artifact_digest=True,
+        environment=ProcessEnvironment(os.environ),
     ) == (probe_outcome == "pass")
     selection = cli_backend_binary._selected_backend_generation_matches(
-        backend_bin, fingerprint, _receipt(tmp_path, backend_bin)
+        backend_bin,
+        fingerprint,
+        _receipt(tmp_path, backend_bin),
+        environment=ProcessEnvironment(os.environ),
     )
     assert (selection is not None) == (probe_outcome == "pass")
     if selection is not None:
@@ -847,6 +890,7 @@ def test_generation_replaced_during_selection_cannot_acquire_provenance(
             _receipt(tmp_path, cargo_output),
             fingerprint,
             artifact=cargo_output,
+            cargo_environment=compiler_environment_inputs(),
         )
     write_fingerprint = cli_backend_binary._write_runtime_fingerprint
 
@@ -875,7 +919,9 @@ def test_generation_replaced_during_selection_cannot_acquire_provenance(
     monkeypatch.setattr(
         cli_backend_binary,
         "_run_resolved_cargo_plan",
-        lambda cmd, **_k: subprocess.CompletedProcess(cmd, 0, "", ""),
+        lambda cmd, **_k: subprocess.CompletedProcess(
+            cmd, 0, compiler_cargo_stdout(tmp_path, cargo_output, cmd.environment), ""
+        ),
     )
     monkeypatch.setattr(
         cli_backend_binary,
@@ -891,7 +937,10 @@ def test_generation_replaced_during_selection_cannot_acquire_provenance(
     )
     assert (
         cli_backend_binary._selected_backend_generation_matches(
-            backend_bin, fingerprint, selection_receipt
+            backend_bin,
+            fingerprint,
+            selection_receipt,
+            environment=ProcessEnvironment(os.environ),
         )
         is None
     )
@@ -925,7 +974,9 @@ def test_warm_build_reuses_the_exact_cargo_bytes_without_republication(
         cargo_output.parent.mkdir(parents=True, exist_ok=True)
         cargo_output.write_bytes(b"compiled:wasm-backend")
         cargo_output.chmod(0o755)
-        return subprocess.CompletedProcess(cmd, 0, "", "")
+        return subprocess.CompletedProcess(
+            cmd, 0, compiler_cargo_stdout(tmp_path, cargo_output, cmd.environment), ""
+        )
 
     def probe(cmd, **_kwargs):  # type: ignore[no-untyped-def]
         probes.append(list(cmd))
@@ -991,7 +1042,9 @@ def _two_generation_fixture(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
         cargo_output.parent.mkdir(parents=True, exist_ok=True)
         cargo_output.write_bytes(f"#!/bin/sh\n# {state['source']}\n".encode())
         cargo_output.chmod(0o755)
-        return subprocess.CompletedProcess(cmd, 0, "", "")
+        return subprocess.CompletedProcess(
+            cmd, 0, compiler_cargo_stdout(tmp_path, cargo_output, cmd.environment), ""
+        )
 
     monkeypatch.setattr(cli_backend_binary, "_backend_fingerprint", fingerprint)
     monkeypatch.setattr(cli_backend_binary, "_run_resolved_cargo_plan", build)
@@ -1191,3 +1244,201 @@ def test_backend_generation_eviction_retains_a_refused_removal(
     assert store.evict_idle(generation_store.GENERATION_STORE_IDLE_SECONDS) == ()
     assert compiler.read_bytes() == b"held compiler"
     assert store.last_used == {entry.name: 0.0}
+
+
+@pytest.mark.parametrize("before,after", [("first", "second"), (None, ""), ("", None)])
+@pytest.mark.parametrize(
+    "reuse",
+    [
+        "published",
+        "selected-probe",
+        "cargo-output",
+        "canonical",
+        "transfer-read",
+        "transfer-import",
+    ],
+)
+def test_observed_environment_change_refuses_every_backend_reuse(
+    tmp_path, monkeypatch, before, after, reuse
+):
+    from tests.compiler_identity_helper import BACKEND_FIXTURE_INPUT
+
+    def select(value):
+        if value is None:
+            monkeypatch.delenv(BACKEND_FIXTURE_INPUT, raising=False)
+        else:
+            monkeypatch.setenv(BACKEND_FIXTURE_INPUT, value)
+
+    select(before)
+    coordinate, ensure = _two_generation_fixture(tmp_path, monkeypatch)
+    generation = ensure("v1")
+    receipt = _receipt(tmp_path, coordinate, "release")
+    original_receipt = receipt.read_bytes()
+    observed = cli_runtime_fingerprints._read_runtime_fingerprint(receipt)[
+        "cargo_environment"
+    ]
+    assert observed == compiler_environment_inputs().to_dict()
+    select(after)
+    monkeypatch.setattr(
+        cli_backend_binary,
+        "_run_resolved_cargo_plan",
+        lambda *_a, **_k: pytest.fail(
+            "reuse refusal must not invoke Cargo with no-build policy"
+        ),
+    )
+    monkeypatch.setattr(
+        cli_backend_binary,
+        "_run_subprocess_captured_to_tempfiles",
+        lambda *_a, **_k: pytest.fail(
+            "a stale compiler must not reach its capability probe"
+        ),
+    )
+    features = ("wasm-backend",)
+    if reuse == "transfer-read":
+        with pytest.raises(ValueError, match="no backend compiler admitted"):
+            cli_backend_binary.admitted_backend_binary(
+                tmp_path,
+                binary=coordinate,
+                cargo_profile="release",
+                backend_features=features,
+                rust_cpu=RustCpuPolicy.BASELINE,
+            )
+    elif reuse == "transfer-import":
+        with pytest.raises(ValueError, match=BACKEND_FIXTURE_INPUT):
+            cli_backend_binary.import_backend_binary(
+                tmp_path,
+                binary=coordinate,
+                cargo_profile="release",
+                backend_features=features,
+                rust_cpu=RustCpuPolicy.BASELINE,
+                executable=generation,
+                receipt=receipt,
+            )
+    else:
+        target = coordinate
+        if reuse == "selected-probe":
+            cli_backend_binary._backend_probe_validation_path(
+                tmp_path, coordinate, "release"
+            ).unlink()
+        elif reuse == "cargo-output":
+            receipt.unlink()
+        elif reuse == "canonical":
+            target = tmp_path / "other-target" / "release" / coordinate.name
+            monkeypatch.setattr(
+                cli_backend_binary,
+                "_canonical_backend_candidate",
+                lambda *_a: (coordinate, receipt),
+            )
+        monkeypatch.setenv("MOLT_SKIP_RUNTIME_REBUILD", "1")
+        result = _ensure(target, tmp_path, features, profile="release")
+        assert not result and result.phase == "rebuild-policy"
+    assert generation.read_bytes() == b"#!/bin/sh\n# v1\n"
+    if receipt.exists():
+        assert receipt.read_bytes() == original_receipt
+
+
+def test_backend_observation_rebuild_preserves_identical_byte_cache_key_and_warm_receipts(
+    tmp_path, monkeypatch
+):
+    from tests.compiler_identity_helper import BACKEND_FIXTURE_INPUT
+
+    monkeypatch.setenv(BACKEND_FIXTURE_INPUT, "first")
+    coordinate, _ensure_generation = _two_generation_fixture(tmp_path, monkeypatch)
+    original_cargo = cli_backend_binary._run_resolved_cargo_plan
+    builds = []
+
+    def cargo(plan, **kwargs):
+        builds.append(plan.environment[BACKEND_FIXTURE_INPUT])
+        return original_cargo(plan, **kwargs)
+
+    monkeypatch.setattr(cli_backend_binary, "_run_resolved_cargo_plan", cargo)
+    features = ("wasm-backend",)
+    first = _ensure(coordinate, tmp_path, features, profile="release")
+    assert first, first.message
+    assert first.binary is not None
+    receipt = _receipt(tmp_path, coordinate, "release")
+    cargo_output = coordinate.with_name(backend_executable_name(os_name=os.name))
+    paths = (
+        receipt,
+        _receipt(tmp_path, cargo_output, "release"),
+        cli_backend_binary._backend_probe_validation_path(
+            tmp_path, coordinate, "release"
+        ),
+        first.binary,
+    )
+    before = [(path.read_bytes(), path.stat().st_mtime_ns) for path in paths]
+    for _ in range(2):
+        warm = _ensure(coordinate, tmp_path, features, profile="release")
+        assert warm, warm.message
+        assert warm.binary == first.binary
+        assert warm.cache_compiler_fingerprint == first.cache_compiler_fingerprint
+    assert builds == ["first"]
+    assert [(path.read_bytes(), path.stat().st_mtime_ns) for path in paths] == before
+    old_observation = cli_runtime_fingerprints._read_runtime_fingerprint(receipt)[
+        "cargo_environment"
+    ]
+
+    monkeypatch.setenv(BACKEND_FIXTURE_INPUT, "second")
+    rebuilt = _ensure(coordinate, tmp_path, features, profile="release")
+    assert rebuilt, rebuilt.message
+    assert builds == ["first", "second"]
+    assert rebuilt.binary == first.binary
+    assert rebuilt.cache_compiler_fingerprint == first.cache_compiler_fingerprint
+    current = cli_runtime_fingerprints._read_runtime_fingerprint(receipt)
+    cargo_current = cli_runtime_fingerprints._read_runtime_fingerprint(paths[1])
+    assert current["cargo_environment"] != old_observation
+    assert current["cargo_environment"] == cargo_current["cargo_environment"]
+    assert (
+        current["artifact_content_identity"]
+        == cargo_current["artifact_content_identity"]
+    )
+    assert (
+        current["artifact_content_identity"]["sha256"]
+        == hashlib.sha256(first.binary.read_bytes()).hexdigest()
+    )
+
+
+def test_backend_admission_verifies_the_observation_it_carries_after_receipt_race(
+    tmp_path, monkeypatch
+):
+    from tests.compiler_identity_helper import BACKEND_FIXTURE_INPUT
+
+    monkeypatch.setenv(BACKEND_FIXTURE_INPUT, "current")
+    coordinate, ensure = _two_generation_fixture(tmp_path, monkeypatch)
+    generation = ensure("v1")
+    receipt = _receipt(tmp_path, coordinate, "release")
+    cargo_output = coordinate.with_name(backend_executable_name(os_name=os.name))
+    _receipt(tmp_path, cargo_output, "release").unlink()
+    source = cli_runtime_fingerprints._read_runtime_fingerprint(receipt)
+    replacement = compiler_environment_inputs(
+        ProcessEnvironment(os.environ).updated({BACKEND_FIXTURE_INPUT: "other-build"})
+    )
+    read = cli_backend_binary._read_runtime_fingerprint
+    reads = 0
+
+    def publish_after_match(path):
+        nonlocal reads
+        if path == receipt:
+            reads += 1
+            # The initial source read and selected-generation lookup precede
+            # the shared matcher's own read. Its success cannot vouch for the
+            # later row that _admitted_runtime_fingerprint actually carries.
+            if reads == 3:
+                cli_runtime_fingerprints._write_runtime_fingerprint(
+                    receipt, source, cargo_environment=replacement
+                )
+        return read(path)
+
+    monkeypatch.setattr(
+        cli_backend_binary, "_read_runtime_fingerprint", publish_after_match
+    )
+    monkeypatch.setenv("MOLT_SKIP_RUNTIME_REBUILD", "1")
+    monkeypatch.setattr(
+        cli_backend_binary,
+        "_run_resolved_cargo_plan",
+        lambda *_a, **_k: pytest.fail("receipt race must not invoke disabled Cargo"),
+    )
+    result = _ensure(coordinate, tmp_path, ("wasm-backend",), profile="release")
+    assert not result and result.phase == "rebuild-policy"
+    assert reads >= 3
+    assert generation.read_bytes() == b"#!/bin/sh\n# v1\n"

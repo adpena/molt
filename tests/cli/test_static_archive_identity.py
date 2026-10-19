@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from tests.runtime_build_identity_helper import runtime_cargo_environment_inputs
+
 from pathlib import Path
 import os
 
@@ -18,6 +20,7 @@ from molt.cli.native_link_manifest import (
     read_native_link_dependency_manifest,
     write_native_link_dependency_manifest,
 )
+from molt.process_environment import ProcessEnvironment
 from molt.cli.link_fingerprints import _link_fingerprint
 from molt.cli.runtime_fingerprints import (
     _runtime_artifact_fingerprint_matches,
@@ -294,7 +297,10 @@ def test_fingerprint_and_manifest_share_semantic_archive_authority(
     assert initial_link is not None
     initial_benchmark = collect_input_facts({"runtime": runtime})
     _write_runtime_fingerprint(
-        fingerprint_path, dict(_SOURCE_FINGERPRINT), artifact=runtime
+        fingerprint_path,
+        dict(_SOURCE_FINGERPRINT),
+        artifact=runtime,
+        cargo_environment=runtime_cargo_environment_inputs(),
     )
     write_native_link_dependency_manifest(
         "",
@@ -303,6 +309,7 @@ def test_fingerprint_and_manifest_share_semantic_archive_authority(
         cargo_profile="dev-fast",
         target_triple=None,
         runtime_build_identity=RUNTIME_BUILD_IDENTITY,
+        cargo_environment=runtime_cargo_environment_inputs(),
     )
 
     _archive(
@@ -331,6 +338,7 @@ def test_fingerprint_and_manifest_share_semantic_archive_authority(
         runtime,
         dict(_SOURCE_FINGERPRINT),
         fingerprint_path,
+        environment=ProcessEnvironment(os.environ),
         require_artifact_digest=True,
     )
     read_native_link_dependency_manifest(
@@ -364,6 +372,7 @@ def test_fingerprint_and_manifest_share_semantic_archive_authority(
         runtime,
         dict(_SOURCE_FINGERPRINT),
         fingerprint_path,
+        environment=ProcessEnvironment(os.environ),
         require_artifact_digest=True,
     )
     with pytest.raises(NativeLinkDependencyManifestError, match="digest mismatch"):

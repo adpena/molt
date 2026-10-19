@@ -21,6 +21,7 @@ from molt.cli.generation_store import (
 )
 from molt.file_deletion import unlink_file
 from molt.file_publication import atomic_write_bytes, durable_replace, staged_file_path
+from molt.cli.cargo_environment_inputs import CargoEnvironmentInputs
 from molt.cli.runtime_identity_schema import RuntimeBuildIdentity
 from molt.exact_json import (
     capture_exact,
@@ -47,7 +48,7 @@ if TYPE_CHECKING:
     from molt.wasm_artifact import WasmRuntimeFacts
 
 
-_RUNTIME_WASM_GENERATION_SCHEMA = "molt.runtime-wasm-generation.v4"
+_RUNTIME_WASM_GENERATION_SCHEMA = "molt.runtime-wasm-generation.v5"
 _RUNTIME_WASM_EXPECTED_PAIR_SCHEMA = "molt.runtime-wasm-expected-pair.v2"
 _RUNTIME_WASM_GENERATION_NAME = "molt_runtime.generation.json"
 _MEMBER_SUFFIX = ".runtime-wasm-member"
@@ -95,6 +96,10 @@ class RuntimeWasmGeneration:
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "payload", _freeze_json(self.payload))
+
+    @cached_property
+    def cargo_environment(self) -> CargoEnvironmentInputs:
+        return CargoEnvironmentInputs.from_dict(self.payload.get("cargo_environment"))
 
     def verify_members(self, *, hash_content: bool = False) -> None:
         for path, member in (
@@ -455,6 +460,7 @@ def publish_runtime_wasm_generation(
     *,
     shared_identity: RuntimeBuildIdentity,
     reloc_identity: RuntimeBuildIdentity,
+    cargo_environment: CargoEnvironmentInputs,
     source_shared: Path | None = None,
     source_reloc: Path | None = None,
     expected_source_receipts: dict[str, dict[str, object]] | None = None,
@@ -513,6 +519,7 @@ def publish_runtime_wasm_generation(
             "schema": _RUNTIME_WASM_GENERATION_SCHEMA,
             "family_digest": shared_identity.family_digest,
             "family": shared_identity.family_payload(),
+            "cargo_environment": cargo_environment.to_dict(),
             "receipts": {"shared": shared_record, "reloc": reloc_record},
         }
         manifest = runtime_wasm_generation_path(shared)
@@ -657,6 +664,7 @@ def runtime_wasm_generation_identities(
         or value.get("schema") != _RUNTIME_WASM_GENERATION_SCHEMA
     ):
         raise ValueError("runtime WASM generation receipt is invalid")
+    CargoEnvironmentInputs.from_dict(value.get("cargo_environment"))
     shared, reloc = (
         RuntimeBuildIdentity.from_member_reference(
             receipts[kind].get("identity"),
@@ -713,12 +721,14 @@ def _generation_record_descriptors(
     if (
         expected_shared_identity.family_digest != expected_reloc_identity.family_digest
         or not isinstance(payload, Mapping)
-        or set(payload) != {"schema", "family_digest", "family", "receipts"}
+        or set(payload)
+        != {"schema", "family_digest", "family", "receipts", "cargo_environment"}
         or payload.get("schema") != _RUNTIME_WASM_GENERATION_SCHEMA
         or payload.get("family_digest") != expected_shared_identity.family_digest
     ):
         return None
     try:
+        CargoEnvironmentInputs.from_dict(payload.get("cargo_environment"))
         if runtime_family_digest(payload.get("family")) != payload["family_digest"]:
             return None
     except (TypeError, ValueError):
@@ -845,6 +855,7 @@ def hydrate_runtime_wasm_generation(
         dest_reloc,
         shared_identity=expected_shared_identity,
         reloc_identity=expected_reloc_identity,
+        cargo_environment=payload.cargo_environment,
         source_shared=source_member_shared,
         source_reloc=source_member_reloc,
         expected_source_receipts=receipts,

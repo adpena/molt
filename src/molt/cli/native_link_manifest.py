@@ -20,6 +20,7 @@ from molt.cli.native_link_custody import (
 )
 from molt.cli.native_link_plan import resolve_native_target_spec
 from molt.cli.runtime_artifact_selection import RUNTIME_STATICLIB_ARTIFACTS
+from molt.cli.runtime_paths import _cargo_profile_dir
 from molt.cli.runtime_identity_schema import (
     RuntimeBuildIdentity,
     require_native_runtime_staticlib_identity,
@@ -36,6 +37,7 @@ from molt.cli.static_archive_identity import (
     validate_artifact_content_identity,
 )
 from molt.exact_json import loads_exact, read_exact
+from molt.cli.cargo_environment_inputs import CargoEnvironmentInputs
 
 if TYPE_CHECKING:
     from molt.cli.runtime_native_codegen import NativeRuntimeCodegenBinding
@@ -48,8 +50,13 @@ class NativeLinkManifestFacts:
     manifest: Mapping[str, object]
     items: tuple[Mapping[str, object], ...]
     build_identity: RuntimeBuildIdentity
+    cargo_environment: CargoEnvironmentInputs
 
     def __post_init__(self) -> None:
+        if _freeze_json(self.manifest.get("cargo_environment")) != _freeze_json(
+            self.cargo_environment.to_dict()
+        ):
+            raise ValueError("native link facts changed their Cargo observation")
         object.__setattr__(self, "manifest", _freeze_json(self.manifest))
         object.__setattr__(self, "items", _freeze_json(self.items))
 
@@ -61,7 +68,7 @@ class NativeLinkManifestFacts:
         return cast(dict[str, object], _thaw_json(self.manifest))
 
 
-_SCHEMA_VERSION = 5
+_SCHEMA_VERSION = 6
 _KIND = "molt_native_link_dependencies"
 _NATIVE_STATIC_LIBS_PREFIX = "native-static-libs:"
 _LINK_PLAN_SCHEMA = "molt.native-link-plan.v1"
@@ -493,6 +500,7 @@ def manifest_from_cargo_json(
     cargo_profile: str,
     target_triple: str | None,
     runtime_build_identity: RuntimeBuildIdentity,
+    cargo_environment: CargoEnvironmentInputs,
 ) -> dict[str, object]:
     """Capture exact build-script provenance from one successful Cargo JSON run."""
     runtime_build_identity = _validated_native_runtime_build_identity(
@@ -612,9 +620,10 @@ def manifest_from_cargo_json(
         "kind": _KIND,
         "runtime": _runtime_identity(runtime_lib),
         "runtime_build_identity": runtime_build_identity.to_dict(),
+        "cargo_environment": cargo_environment.to_dict(),
         "cargo": {
             "profile": cargo_profile,
-            "profile_dir": runtime_lib.parent.name,
+            "profile_dir": _cargo_profile_dir(cargo_profile),
             "target_triple": target_triple,
         },
         "link_plan": link_plan,
@@ -630,6 +639,7 @@ def write_native_link_dependency_manifest(
     cargo_profile: str,
     target_triple: str | None,
     runtime_build_identity: RuntimeBuildIdentity,
+    cargo_environment: CargoEnvironmentInputs,
 ) -> Path:
     manifest = manifest_from_cargo_json(
         cargo_stdout,
@@ -638,6 +648,7 @@ def write_native_link_dependency_manifest(
         cargo_profile=cargo_profile,
         target_triple=target_triple,
         runtime_build_identity=runtime_build_identity,
+        cargo_environment=cargo_environment,
     )
     path = native_link_dependency_manifest_path(runtime_lib)
     _atomic_write_json(path, manifest, indent=2, sort_keys=True)
@@ -659,6 +670,7 @@ def validate_native_link_dependency_manifest(
         "kind",
         "runtime",
         "runtime_build_identity",
+        "cargo_environment",
         "cargo",
         "link_plan",
         "custody",
@@ -673,6 +685,14 @@ def validate_native_link_dependency_manifest(
             f"unsupported manifest schema: {context}"
         )
     runtime = manifest.get("runtime")
+    try:
+        cargo_environment = CargoEnvironmentInputs.from_dict(
+            manifest.get("cargo_environment")
+        )
+    except (TypeError, ValueError) as exc:
+        raise NativeLinkDependencyManifestError(
+            f"invalid Cargo environment observation: {context}: {exc}"
+        ) from exc
     stored_build_identity_value = manifest.get("runtime_build_identity")
     cargo = manifest.get("cargo")
     try:
@@ -707,9 +727,7 @@ def validate_native_link_dependency_manifest(
         expected=runtime_build_identity,
         context=context,
     )
-    expected_dir_for_profile = (
-        "debug" if cargo["profile"] == "dev" else cargo["profile"]
-    )
+    expected_dir_for_profile = _cargo_profile_dir(cargo_profile_value)
     if expected_dir_for_profile != cargo["profile_dir"]:
         raise NativeLinkDependencyManifestError(
             f"native link manifest Cargo profile identity is inconsistent: {context}"
@@ -731,7 +749,9 @@ def validate_native_link_dependency_manifest(
         raise NativeLinkDependencyManifestError(
             f"native link manifest archive digest mismatch: {context}"
         )
-    return NativeLinkManifestFacts(manifest, link_items, stored_build_identity)
+    return NativeLinkManifestFacts(
+        manifest, link_items, stored_build_identity, cargo_environment
+    )
 
 
 def read_native_link_dependency_manifest_payload(path: Path) -> Mapping[str, object]:
@@ -1098,10 +1118,7 @@ def read_native_link_flags(
     runtime_codegen_binding: NativeRuntimeCodegenBinding | None = None,
 ) -> NativeLinkInputs:
     _require_object_format(runtime_build_identity, object_format)
-    if (
-        runtime_codegen_binding is not None
-        and runtime_codegen_binding.link_facts is not None
-    ):
+    if runtime_codegen_binding is not None:
         runtime_codegen_binding.verify()
         if (
             runtime_codegen_binding.runtime_lib != runtime_lib

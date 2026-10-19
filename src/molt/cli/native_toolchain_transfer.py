@@ -25,10 +25,10 @@ from molt.cli.cargo_profiles import _resolve_cargo_profile_name
 from molt.cli.native_link_custody import NativeLinkCustodyError
 from molt.cli.native_link_manifest import NativeLinkDependencyManifestError
 from molt.cli.runtime_build_python import build_python_scope
-from molt.cli.runtime_identity_schema import RuntimeBuildIdentity
 from molt.cli.runtime_native_build import (
+    NativeRuntimeBuildInputs,
     canonical_native_runtime_coordinate,
-    current_native_runtime_build_identity,
+    current_native_runtime_build_inputs,
     native_runtime_generation_coordinates,
 )
 from molt.cli.runtime_native_generation import (
@@ -122,7 +122,7 @@ class NativeToolchainSelection:
             ),
         )
 
-    def runtime_build_identity(self) -> RuntimeBuildIdentity:
+    def runtime_build_inputs(self) -> NativeRuntimeBuildInputs:
         """This checkout's current runtime inputs; never a receipt's claim.
 
         The capture runs in the build-Python scope a ``molt build`` opens, so
@@ -130,7 +130,7 @@ class NativeToolchainSelection:
         """
         try:
             with build_python_scope(None) as build_python_admission:
-                return current_native_runtime_build_identity(
+                return current_native_runtime_build_inputs(
                     self.project_root,
                     self.runtime_lib,
                     target_triple=None,
@@ -149,7 +149,8 @@ def export_native_toolchain(
     selection: NativeToolchainSelection,
 ) -> tuple[TransferMember, ...]:
     """The admitted runtime generation and backend files, in transfer order."""
-    identity = selection.runtime_build_identity()
+    inputs = selection.runtime_build_inputs()
+    identity = inputs.build_identity
     members: list[TransferMember] | None = None
     checked: list[str] = []
     for coordinate in native_runtime_generation_coordinates(
@@ -174,6 +175,11 @@ def export_native_toolchain(
             )
         )
         if generation is not None and generation.build_identity == identity:
+            try:
+                generation.cargo_environment.verify(inputs.environment)
+            except ValueError as exc:
+                checked[-1] = f"{coordinate}: {exc}"
+                continue
             members = [
                 TransferMember(
                     RUNTIME_SELECTION_ROLE,
@@ -220,7 +226,8 @@ def import_native_toolchain(
         raise NativeToolchainTransferError(
             f"native toolchain files are incomplete: missing={missing}, unknown={unknown}"
         )
-    identity = selection.runtime_build_identity()
+    inputs = selection.runtime_build_inputs()
+    identity = inputs.build_identity
     runtime_members = {
         role: path
         for role, path in files.items()
@@ -239,6 +246,7 @@ def import_native_toolchain(
             cargo_profile=selection.runtime_cargo_profile,
             target_triple=None,
             build_identity=identity,
+            environment=inputs.environment,
         )
         import_backend_binary(
             selection.project_root,

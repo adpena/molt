@@ -13,6 +13,11 @@ Verifies the combined-compile design invariants that make the dedup correct:
 
 from __future__ import annotations
 
+from tests.runtime_build_identity_helper import (
+    runtime_cargo_environment_inputs,
+    runtime_cargo_stdout,
+)
+
 from molt.cli.runtime_wasm_validation import (
     RuntimeWasmAdmissionIssue,
     RuntimeWasmAdmissionReport,
@@ -144,6 +149,7 @@ def test_disabled_pair_build_still_admits_hydrated_generation(
             reloc_identity=reloc,
             source_shared=source_shared,
             source_reloc=source_reloc,
+            cargo_environment=runtime_cargo_environment_inputs(),
         )
         if cache == "corrupt":
             generation.shared.write_bytes(b"corrupt")
@@ -429,13 +435,21 @@ def test_concurrent_pair_builds_serialize_and_reuse_the_published_pair(
 
 @pytest.mark.parametrize(
     "outcome",
-    ["stable", "source-drift", "missing-export", "member-corrupt", "pointer-replaced"],
+    [
+        "stable",
+        "source-drift",
+        "environment-drift",
+        "missing-export",
+        "member-corrupt",
+        "pointer-replaced",
+    ],
 )
 def test_codegen_bound_pair_never_rebuilds_for_final_imports(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
     outcome: str,
 ) -> None:
+    monkeypatch.setenv("MOLT_TEST_RUNTIME_INPUT", "before-codegen")
     shared_identity = make_runtime_build_identity("shared", "bound")
     reloc_identity = make_runtime_build_identity("reloc", "bound")
     source_shared = tmp_path / "source-shared"
@@ -449,6 +463,7 @@ def test_codegen_bound_pair_never_rebuilds_for_final_imports(
         reloc_identity=reloc_identity,
         source_shared=source_shared,
         source_reloc=source_reloc,
+        cargo_environment=runtime_cargo_environment_inputs(),
     )
     state = _RuntimeArtifactState(
         runtime_wasm=tmp_path / "molt_runtime.wasm",
@@ -465,6 +480,17 @@ def test_codegen_bound_pair_never_rebuilds_for_final_imports(
         if len(plans) > 1 and outcome == "source-drift":
             current_shared = make_runtime_build_identity("shared", "changed")
             current_reloc = make_runtime_build_identity("reloc", "changed")
+        current_shared_spec, current_reloc_spec = shared_spec, reloc_spec
+        if len(plans) > 1 and outcome == "environment-drift":
+            assert shared_spec.cargo_plan is not None
+            plan = replace(
+                shared_spec.cargo_plan,
+                environment=shared_spec.cargo_plan.environment.updated(
+                    {"MOLT_TEST_RUNTIME_INPUT": "after-codegen"}
+                ),
+            )
+            current_shared_spec = shared_spec.with_cargo_plan(plan)
+            current_reloc_spec = reloc_spec.with_cargo_plan(plan)
         return runtime_wasm_pair_build._RuntimeWasmPairBuild(
             runtime_state=runtime_state,
             json_output=True,
@@ -479,8 +505,8 @@ def test_codegen_bound_pair_never_rebuilds_for_final_imports(
             required_exports=kwargs["required_exports"],
             runtime_wasm=tmp_path / "molt_runtime.wasm",
             runtime_reloc_wasm=tmp_path / "molt_runtime_reloc.wasm",
-            shared_spec=shared_spec,
-            reloc_spec=reloc_spec,
+            shared_spec=current_shared_spec,
+            reloc_spec=current_reloc_spec,
             toolchain_manifest_path=tmp_path / "toolchain.json",
             generation_manifest=generation.manifest,
             pre_identity=runtime_wasm_pair_build._RuntimeWasmPairIdentity(
@@ -884,6 +910,7 @@ def test_staticlib_compile_identity_survives_final_export_expansion_and_relinks(
         staticlib_sidecar,
         early.staticlib_fingerprint,
         artifact=staticlib,
+        cargo_environment=runtime_cargo_environment_inputs(),
     )
 
     linked: list[tuple[Path, tuple[str, ...]]] = []
@@ -931,6 +958,7 @@ def test_staticlib_compile_identity_survives_final_export_expansion_and_relinks(
         required_exports={"add", "typing_get_origin"},
         resolved_modules=None,
         spec=final,
+        cargo_environment=runtime_cargo_environment_inputs(),
     )
     assert linked and linked[0][0] == staticlib
     assert "link-arg=--export-if-defined=molt_typing_get_origin" in linked[0][1]
@@ -1005,6 +1033,15 @@ def test_relocation_root_feature_closure_reports_one_cargo_compile(
     cdylib = profile_root / "deps" / "molt_runtime-feedface.wasm"
     staticlib = profile_root / "deps" / "libmolt_runtime-feedface.a"
     cargo_calls: list[list[str]] = []
+    observations = []
+    capture = runtime_wasm_pair_build.cargo_build_reads
+
+    def observe(*args, **kwargs):
+        reads = capture(*args, **kwargs)
+        observations.append(reads.environment)
+        return reads
+
+    monkeypatch.setattr(runtime_wasm_pair_build, "cargo_build_reads", observe)
 
     def _fake_build(**kwargs):  # noqa: ANN003
         cmd = list(kwargs["cargo_plan"].command)
@@ -1012,13 +1049,8 @@ def test_relocation_root_feature_closure_reports_one_cargo_compile(
         cdylib.parent.mkdir(parents=True, exist_ok=True)
         cdylib.write_bytes(b"\0asm\x01\0\0\0")
         staticlib.write_bytes(b"!<arch>\n")
-        stdout = json.dumps(
-            {
-                "reason": "compiler-artifact",
-                "package_id": "path+file:///repo/runtime/molt-runtime#0.0.1",
-                "target": {"name": "molt_runtime"},
-                "filenames": [str(cdylib), str(staticlib)],
-            }
+        stdout = runtime_cargo_stdout(
+            root, (cdylib, staticlib), kwargs["cargo_plan"].environment
         )
         return subprocess.CompletedProcess(cmd, 0, stdout, ""), cdylib
 
@@ -1063,6 +1095,7 @@ def test_relocation_root_feature_closure_reports_one_cargo_compile(
         assert snapshot is not None
         assert snapshot["cargo_compile_builds"] == 1
         assert len(cargo_calls) == 1
+        assert len(observations) == 1
     finally:
         _reset_runtime_wasm_build_timings()
 
@@ -1206,6 +1239,10 @@ def test_pair_member_staging_is_identity_local_and_never_process_cached(
     tmp_path: Path,
 ) -> None:
     ctx = _test_pair_context(tmp_path)
+    assert ctx.shared_spec.cargo_plan is not None
+    ctx.cargo_environment = runtime_cargo_environment_inputs(
+        ctx.shared_spec.cargo_plan.environment
+    )
     identity = ctx.pre_identity
     assert identity is not None
     canonical_shared = ctx.runtime_wasm
@@ -1280,6 +1317,7 @@ def test_pair_target_materialization_keeps_canonical_spec_without_output_sidecar
         required_exports=None,
         resolved_modules=None,
         spec=shared,
+        cargo_environment=runtime_cargo_environment_inputs(),
     )
     assert observed == [(destination, shared, False)]
 
@@ -1367,7 +1405,7 @@ def test_combined_cargo_cmd_selects_exact_pair_and_uses_response_file(
         simd_enabled=True,
         freestanding=False,
     )
-    assert ok is False  # fake build returned non-zero
+    assert ok is None  # fake build returned non-zero
     cmd = captured["cmd"]
     assert isinstance(cmd, list)
     # The producer overrides the manifest rlib default with exactly the two
@@ -1418,13 +1456,10 @@ def test_combined_build_requires_and_fingerprints_only_reported_crate_types(
     reported_filenames = [str(reported_cdylib)]
     if report_staticlib:
         reported_filenames.append(str(reported_staticlib))
-    cargo_stdout = json.dumps(
-        {
-            "reason": "compiler-artifact",
-            "package_id": "path+file:///repo/runtime/molt-runtime#0.0.1",
-            "target": {"name": "molt_runtime"},
-            "filenames": reported_filenames,
-        }
+    cargo_stdout = runtime_cargo_stdout(
+        root,
+        tuple(Path(path) for path in reported_filenames),
+        shared.cargo_plan.environment,
     )
 
     def _fake_build(**kwargs):  # noqa: ANN003
@@ -1466,8 +1501,8 @@ def test_combined_build_requires_and_fingerprints_only_reported_crate_types(
             simd_enabled=True,
             freestanding=False,
         )
-        is report_staticlib
-    )
+        is not None
+    ) is report_staticlib
 
     def _target_fingerprint(path: Path) -> Path:
         return runtime_artifact_state._runtime_target_fingerprint_path(
@@ -2240,6 +2275,7 @@ def _observed_pair_fixture(tmp_path: Path, *, flags: int = 0):
         reloc_identity=ctx.pre_identity.reloc,
         source_shared=shared,
         source_reloc=reloc,
+        cargo_environment=runtime_cargo_environment_inputs(),
     )
     return ctx, generation
 
@@ -2425,6 +2461,7 @@ def test_generation_linking_parse_failure_has_one_admission_reason(
         reloc_identity=generation.reloc_identity,
         source_shared=generation.shared,
         source_reloc=source,
+        cargo_environment=runtime_cargo_environment_inputs(),
     )
     monkeypatch.setattr(
         runtime_wasm_validation, "_validate_wasm_structural", lambda _: None

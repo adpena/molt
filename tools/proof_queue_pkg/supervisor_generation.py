@@ -17,7 +17,11 @@ import time
 from typing import Iterator, Mapping
 
 from molt import file_locks, file_publication
+from molt.cargo_execution_policy import normalize_cargo_environment
+from molt.cli.cargo_build_reads import cargo_build_reads
+from molt.cli.cargo_environment_inputs import CargoEnvironmentInputs
 from molt.exact_json import canonical_json_sha256, loads_exact
+from molt.process_environment import ProcessEnvironment, ProcessEnvironmentBuilder
 from molt.rust_toolchain import cargo_configuration_paths
 from molt.toolchain_identity import (
     StableRegularFileIdentity,
@@ -27,8 +31,8 @@ from molt.toolchain_identity import (
 from tools.proof_queue_pkg import cargo_output_layout, custody_cas
 
 
-GENERATION_SCHEMA = "molt.proof-supervisor-generation.v1"
-PROVISION_SCHEMA = "molt.proof-supervisor-provision-telemetry.v2"
+GENERATION_SCHEMA = "molt.proof-supervisor-generation.v2"
+PROVISION_SCHEMA = "molt.proof-supervisor-provision-telemetry.v3"
 
 
 TOOL_IDENTITY_REUSE_DIRNAME = "tool-identity"
@@ -40,7 +44,7 @@ def _build_inputs(
     profile: str = "release",
     target: str | None = None,
     reuse_telemetry: list[dict[str, object]] | None = None,
-) -> tuple[dict[str, object], list[StableRegularFileIdentity]]:
+) -> tuple[dict[str, object], list[StableRegularFileIdentity], ProcessEnvironment]:
     # Import after supervisor_custody's protocol/source authority is initialized.
     from tools import proof_plan
     from tools.proof_queue_pkg import (
@@ -67,7 +71,7 @@ def _build_inputs(
     if target:
         command.extend(("--target", target))
     envelope = admission.envelope_for_command(command)
-    execution_environment._require_cargo_build_tool_environment_context(
+    env = execution_environment._require_cargo_build_tool_environment_context(
         envelope,
         outputs=execution_environment.cargo_output_environment.CargoOutputEnvironment.for_envelope(
             envelope
@@ -140,7 +144,7 @@ def _build_inputs(
         "command": command,
         "toolchains": tooling,
         "environment_executables": configured,
-        # Bind every effective value, including custody transport, without
+        # Bind every configured caller value, including custody transport, without
         # publishing credentials. This digest is evidence, not a cache key.
         "environment_sha256": execution_environment._canonical_environment_sha256(env),
         "entrypoints": [
@@ -153,7 +157,7 @@ def _build_inputs(
         ],
     }
     inputs["cargo_inputs"] = _cargo_content_inputs(inputs, env)
-    return inputs, identities
+    return inputs, identities, effective_cargo_environment(inputs, env)
 
 
 def _cargo_content_inputs(
@@ -237,34 +241,49 @@ def _cargo_content_inputs(
     return result
 
 
+def effective_cargo_environment(
+    inputs: Mapping[str, object], env: Mapping[str, str]
+) -> ProcessEnvironment:
+    """Freeze the configured environment after the existing execution policy.
+
+    The caller has already resolved Cargo configuration. Preserve its name rule
+    while adding the package inputs and normalizing subprocess policy once.
+    """
+    environment = ProcessEnvironmentBuilder(env)
+    environment.update(inputs["cargo_inputs"])
+    normalized, _policies = normalize_cargo_environment(environment)
+    return ProcessEnvironment(normalized, rule=environment.rule)
+
+
 def build_cargo(
-    *, inputs: Mapping[str, object], env: Mapping[str, str]
+    *, inputs: Mapping[str, object], environment: ProcessEnvironment
 ) -> tuple[Path, subprocess.CompletedProcess[str]]:
     """The direct driver and immutable producer share one Cargo invocation."""
     from molt.disk_capacity import require_build_capacity
     from tools.proof_queue_pkg import command_identity
 
+    if not isinstance(environment, ProcessEnvironment):
+        raise TypeError("supervisor Cargo execution requires a frozen environment")
     crate = Path(str(inputs["source_root"])) / "tools" / "proof_supervisor"
-    target_root = Path(env.get("CARGO_TARGET_DIR", "target"))
+    target_root = Path(environment.get("CARGO_TARGET_DIR", "target"))
     if not target_root.is_absolute():
         target_root = crate / target_root
     target_root = file_publication.resolve_owned_path(target_root)
     output_roots = [target_root]
-    if build_dir := env.get("CARGO_BUILD_BUILD_DIR"):
+    if build_dir := environment.get("CARGO_BUILD_BUILD_DIR"):
         build_root = Path(build_dir)
         output_roots.append(
             build_root if build_root.is_absolute() else crate / build_root
         )
-    require_build_capacity(output_roots, env=env)
+    require_build_capacity(output_roots, env=environment)
     command = [
         *inputs["command"],
         "--message-format=json-render-diagnostics",
         "--target-dir",
         str(target_root),
     ]
-    build_env = {**env, **inputs["cargo_inputs"]}
     completed = command_identity._run_captured(
-        command, cwd=crate, env=build_env, timeout=600.0
+        command, cwd=crate, env=environment, timeout=600.0
     )
     selected_target = inputs.get("target")
     if selected_target:
@@ -277,6 +296,30 @@ def build_cargo(
             f"Cargo succeeded without expected supervisor binary: {binary}"
         )
     return binary, completed
+
+
+def _observed_cargo_environment(
+    inputs: Mapping[str, object],
+    *,
+    cargo_stdout: str,
+    environment: ProcessEnvironment,
+) -> CargoEnvironmentInputs:
+    root = Path(str(inputs["source_root"]))
+    crate = root / "tools" / "proof_supervisor"
+    product_roots = tuple(
+        path if path.is_absolute() else crate / path
+        for name in ("CARGO_TARGET_DIR", "CARGO_BUILD_BUILD_DIR")
+        if (value := environment.get(name))
+        for path in (Path(value),)
+    )
+    return cargo_build_reads(
+        cargo_stdout,
+        workspace_root=root,
+        dep_info_base=crate,
+        product_roots=product_roots,
+        toolchain_roots=(),
+        environment=environment,
+    ).environment
 
 
 def _verify_inputs(
@@ -361,16 +404,15 @@ def provision(*, cwd: Path, env: Mapping[str, str]) -> tuple[Path, dict[str, obj
             # The lock covers input capture, Cargo and the immutable copy. No
             # process can overwrite the shared Cargo output during publication.
             reuse_telemetry: list[dict[str, object]] = []
-            inputs, identities = _build_inputs(env, reuse_telemetry=reuse_telemetry)
-            binary, completed = build_cargo(inputs=inputs, env=env)
+            inputs, identities, environment = _build_inputs(
+                env, reuse_telemetry=reuse_telemetry
+            )
+            binary, completed = build_cargo(inputs=inputs, environment=environment)
             if completed.returncode != 0:
                 raise ValueError(
                     "native proof supervisor provisioning failed: "
                     + (completed.stderr.strip() or completed.stdout.strip())
                 )
-            lines = [
-                line.strip() for line in completed.stdout.splitlines() if line.strip()
-            ]
             binary = file_publication.resolve_owned_path(binary)
             if binary != target / "release" / name or not binary.is_file():
                 raise ValueError(
@@ -379,7 +421,12 @@ def provision(*, cwd: Path, env: Mapping[str, str]) -> tuple[Path, dict[str, obj
             with file_locks._file_lock_owned_operation(
                 lock, expected_lock_path=lock_path
             ):
-                _verify_inputs(inputs, identities, env)
+                _verify_inputs(inputs, identities, environment)
+                observed_environment = _observed_cargo_environment(
+                    inputs, cargo_stdout=completed.stdout, environment=environment
+                )
+                inputs["cargo_environment"] = observed_environment.to_dict()
+                observed_environment.verify(environment)
                 image_identity = stable_regular_file_identity(
                     binary, label="supervisor build output"
                 )
@@ -396,7 +443,8 @@ def provision(*, cwd: Path, env: Mapping[str, str]) -> tuple[Path, dict[str, obj
                     raise ValueError(
                         "native proof supervisor output changed during publication"
                     )
-                _verify_inputs(inputs, identities, env)
+                observed_environment.verify(environment)
+                _verify_inputs(inputs, identities, environment)
                 generation = {
                     "schema": custody_cas.ARTIFACT_SCHEMA,
                     "kind": GENERATION_SCHEMA,
@@ -412,7 +460,7 @@ def provision(*, cwd: Path, env: Mapping[str, str]) -> tuple[Path, dict[str, obj
                 }
                 generation_ref = custody_cas.put_json(cas_root, generation).as_dict()
                 fresh = compiled = 0
-                for line in lines:
+                for line in completed.stdout.split("\n"):
                     if not line.startswith("{"):
                         continue
                     message = loads_exact(line)
@@ -481,7 +529,17 @@ def validate_receipt(
     inputs = generation.get("inputs")
     output = generation.get("binary")
     if (
-        generation.get("schema") != custody_cas.ARTIFACT_SCHEMA
+        set(generation)
+        != {
+            "schema",
+            "kind",
+            "inputs",
+            "input_sha256",
+            "build_target_dir",
+            "binary",
+            "freshness_authority",
+        }
+        or generation.get("schema") != custody_cas.ARTIFACT_SCHEMA
         or generation.get("kind") != GENERATION_SCHEMA
         or not isinstance(inputs, Mapping)
         or inputs.get("profile") != "release"
@@ -490,6 +548,7 @@ def validate_receipt(
         or generation.get("build_target_dir") != str(expected_target)
         or telemetry.get("build_target_dir") != str(expected_target)
         or not isinstance(output, Mapping)
+        or set(output) != {"name", "sha256", "size_bytes"}
         or output.get("name") != Path(str(binary.get("path"))).name
         or output.get("sha256") != binary.get("sha256")
         or output.get("size_bytes") != binary.get("size_bytes")
@@ -499,3 +558,6 @@ def validate_receipt(
         raise ValueError(
             "supervisor generation differs from admitted build or executable"
         )
+    # Historical evidence validates its own exact observation and result binding.
+    # It must never compare a past build with this verifier's current environment.
+    CargoEnvironmentInputs.from_dict(inputs.get("cargo_environment"))

@@ -46,9 +46,13 @@ from molt.verified_subset import current_host_coordinate
 from molt.cli.rust_cpu_policy import RustCpuPolicy
 from tests.cli.native_link_test_support import (
     write_test_native_link_manifest,
+    native_runtime_generation_fixture,
     write_test_static_archive,
 )
-from tests.runtime_build_identity_helper import runtime_build_identity
+from tests.runtime_build_identity_helper import (
+    runtime_build_identity,
+    runtime_cargo_environment_inputs,
+)
 from tests.release_lane_fixtures import stage_release_lane_authorities
 
 _SOURCE_FILES = (
@@ -241,11 +245,19 @@ def _cell(bundle: Path) -> installed_runtime.InstalledRuntimeCell:
 
 
 def _forbid_cargo(monkeypatch) -> None:
+    from molt.cli.cargo_environment_inputs import CargoEnvironmentInputs
+
     def fail(*_args, **_kwargs):
-        pytest.fail("installed runtime entered a source Cargo plan")
+        pytest.fail(
+            "installed runtime captured or verified a consumer Cargo environment"
+        )
 
     monkeypatch.setattr(runtime_native_build, "_prepare_native_runtime_build", fail)
     monkeypatch.setattr(runtime_native_build, "resolve_runtime_cargo_plan", fail)
+    monkeypatch.setattr(
+        runtime_native_build, "current_native_runtime_build_inputs", fail
+    )
+    monkeypatch.setattr(CargoEnvironmentInputs, "verify", fail)
     monkeypatch.setattr(
         runtime_wasm_pair_build, "_prepare_runtime_wasm_pair_build", fail
     )
@@ -770,6 +782,11 @@ def test_release_native_cell_stages_the_canonical_projection(
         identity = write_test_native_link_manifest(runtime_lib)
         kwargs["runtime_state"].runtime_lib = runtime_lib
         kwargs["runtime_state"].native_runtime_build_identity = identity
+        kwargs[
+            "runtime_state"
+        ].native_runtime_generation = native_runtime_generation_fixture(
+            runtime_lib, identity
+        )
         built.update(profile=cargo_profile, identity=identity)
         return True
 
@@ -937,11 +954,10 @@ def _forbid_readmission(monkeypatch) -> None:
             runtime_native_build,
             (
                 "admit_installed_native_runtime",
-                "installed_native_runtime_identity",
-                "current_native_runtime_build_identity",
-                "read_native_link_dependency_manifest",
+                "current_native_runtime_build_inputs",
             ),
         ),
+        (runtime_callable_symbols, ("read_native_link_flags",)),
         (
             installed_runtime,
             (
@@ -1096,17 +1112,24 @@ def test_failed_installed_link_admission_revokes_without_repair(bundle, monkeypa
     assert runtime_lib.read_bytes() == damaged
 
 
+@pytest.mark.parametrize("stray_source_generation", [False, True])
 def test_installed_codegen_requires_the_operation_admission(
-    bundle, monkeypatch, capsys
+    bundle, monkeypatch, capsys, stray_source_generation
 ):
     _forbid_cargo(monkeypatch)
     _forbid_symbol_reader(monkeypatch)
     cell = _cell(bundle)
     identity = installed_runtime.admit_installed_native_runtime(cell).build_identity
+    source_generation = (
+        native_runtime_generation_fixture(cell.runtime_lib, identity)
+        if stray_source_generation
+        else None
+    )
 
     def ready(runtime_state, **_kwargs):
-        # A readiness path that records an identity but no admission.
+        # Neither a bare identity nor a source generation admits an installed cell.
         runtime_state.native_runtime_build_identity = identity
+        runtime_state.native_runtime_generation = source_generation
         return True
 
     monkeypatch.setattr(
@@ -1117,11 +1140,15 @@ def test_installed_codegen_requires_the_operation_admission(
         "select_installed_native_runtime",
         lambda *_args, **_kwargs: cell,
     )
+    _forbid_readmission(monkeypatch)
     state = _RuntimeArtifactState(runtime_lib=cell.runtime_lib)
     digest, failure = _stage_native_codegen(state, bundle)
     assert failure is not None and not digest
     assert "no admitted generation" in capsys.readouterr().out
     assert state.native_runtime_codegen_binding is None
+    assert state.native_runtime_generation is None
+    assert state.installed_native_admission is None
+    assert state.native_runtime_build_identity is None
 
 
 _WASM_MEMBERS = {
@@ -1176,6 +1203,7 @@ def _bound_installed_wasm(bundle: Path, tmp_path: Path, monkeypatch):
         reloc_identity=runtime_build_identity("reloc"),
         source_shared=sources["wasm_shared_member"],
         source_reloc=sources["wasm_reloc_member"],
+        cargo_environment=runtime_cargo_environment_inputs(),
     )
     binding = bind_runtime_wasm_codegen(generation, None)
     state = _RuntimeArtifactState(
@@ -1493,6 +1521,7 @@ def _ship_installed_wasm_cell(bundle: Path, tmp_path: Path, **facts) -> dict:
         reloc_identity=reloc_identity,
         source_shared=sources["shared"],
         source_reloc=sources["reloc"],
+        cargo_environment=runtime_cargo_environment_inputs(),
     )
     members = (
         (generation.manifest, "wasm_generation_manifest"),

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from tests.runtime_build_identity_helper import runtime_cargo_environment_inputs
+
 import json
 import hashlib
 import multiprocessing
@@ -94,6 +96,7 @@ def _publish_pair(
         reloc_identity=reloc_identity,
         source_shared=source_shared,
         source_reloc=source_reloc,
+        cargo_environment=runtime_cargo_environment_inputs(),
     )
     return generation, shared_identity, reloc_identity
 
@@ -132,6 +135,7 @@ def test_runtime_pair_staging_reaps_only_successfully_created_files(
             reloc_identity=_identity("reloc"),
             source_shared=source_shared,
             source_reloc=source_reloc,
+            cargo_environment=runtime_cargo_environment_inputs(),
         )
 
     assert collision.read_bytes() == b"another owner's stage"
@@ -186,6 +190,7 @@ def test_wasm_pair_remains_owned_through_receipt_publication(
             reloc_identity=generation.reloc_identity,
             source_shared=generation.shared,
             source_reloc=generation.reloc,
+            cargo_environment=runtime_cargo_environment_inputs(),
         )
     else:
         bind_runtime_wasm_codegen(generation, None)
@@ -399,6 +404,7 @@ def test_reader_and_existing_member_race_reject_symlink_indirection(
             reloc_identity=reloc_identity,
             source_shared=source_shared,
             source_reloc=source_reloc,
+            cargo_environment=runtime_cargo_environment_inputs(),
         )
 
 
@@ -510,6 +516,7 @@ def _publish_process(
         reloc_identity=RuntimeBuildIdentity.from_dict(reloc_identity),
         source_shared=source / "shared.wasm",
         source_reloc=source / "reloc.wasm",
+        cargo_environment=runtime_cargo_environment_inputs(),
     )
 
 
@@ -925,3 +932,64 @@ def test_unknown_generation_files_start_their_window_at_first_sight(
     store_clock.now += 25 * _HOUR
     _publish_pair(tmp_path, pair_seed="later", shared=b"x-shared", reloc=b"x-reloc")
     assert not stray.exists() and not stray_receipt.exists()
+
+
+@pytest.mark.parametrize(
+    "invalid", ["prior-epoch", "missing-inputs", "malformed-inputs"]
+)
+def test_generation_rejects_receipts_without_complete_environment_observation(
+    tmp_path, invalid
+):
+    generation, shared, reloc = _publish_pair(tmp_path)
+    payload = json.loads(generation.manifest.read_text(encoding="utf-8"))
+    assert payload["cargo_environment"] == generation.cargo_environment.to_dict()
+    if invalid == "prior-epoch":
+        payload["schema"] = "molt.runtime-wasm-generation.v4"
+    elif invalid == "missing-inputs":
+        del payload["cargo_environment"]
+    else:
+        payload["cargo_environment"]["local_unit_count"] = 0
+    generation.manifest.write_text(json.dumps(payload), encoding="utf-8")
+    assert (
+        read_runtime_wasm_generation(
+            generation.manifest,
+            expected_shared_identity=shared,
+            expected_reloc_identity=reloc,
+        )
+        is None
+    )
+    with pytest.raises(ValueError):
+        runtime_wasm_generation_identities(payload)
+
+
+def test_generation_observation_is_context_free_and_byte_keys_ignore_provenance(
+    tmp_path, monkeypatch
+):
+    first_root = tmp_path / "first"
+    second_root = tmp_path / "second"
+    first_root.mkdir()
+    second_root.mkdir()
+    monkeypatch.setenv("MOLT_TEST_RUNTIME_INPUT", "first-build")
+    first, shared, reloc = _publish_pair(first_root)
+    first_binding = bind_runtime_wasm_codegen(first, None)
+    monkeypatch.setenv("MOLT_TEST_RUNTIME_INPUT", "second-build")
+    # Installed/transport parsing validates shape and exact members, independently
+    # of a consumer process's unrelated ambient configuration.
+    admitted = read_runtime_wasm_generation(
+        first.manifest, expected_shared_identity=shared, expected_reloc_identity=reloc
+    )
+    assert (
+        admitted is not None and admitted.cargo_environment == first.cargo_environment
+    )
+    second, _, _ = _publish_pair(second_root)
+    second_binding = bind_runtime_wasm_codegen(second, None)
+    assert first.cargo_environment != second.cargo_environment
+    assert first_binding.semantic_digest == second_binding.semantic_digest
+    assert first_binding.generation.receipt_identity is not None
+    assert second_binding.generation.receipt_identity is not None
+    assert (
+        first_binding.generation.receipt_identity.sha256
+        != second_binding.generation.receipt_identity.sha256
+    )
+    first_binding.verify()
+    second_binding.verify()

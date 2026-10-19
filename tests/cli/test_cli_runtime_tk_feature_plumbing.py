@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+from tests.compiler_identity_helper import compiler_environment_inputs
+from molt.process_environment import ProcessEnvironment
+
 from molt.cli.cache_keys import FunctionDigests
 
 from tests.compiler_identity_helper import (
@@ -534,7 +537,7 @@ def test_artifact_needs_rebuild_checks_regular_artifact_once(
     monkeypatch.setattr(Path, "stat", wrapped_stat)
     assert (
         RUNTIME_FINGERPRINTS._artifact_needs_rebuild(
-            artifact, fingerprint, {"version": 3, **fingerprint}
+            artifact, fingerprint, {"version": 4, **fingerprint}
         )
         is not present
     )
@@ -546,7 +549,7 @@ def test_artifact_needs_rebuild_on_runtime_meta_digest_mismatch(tmp_path: Path) 
     artifact.write_bytes(static_archive_bytes(b"fake-staticlib"))
     fingerprint = _source_fingerprint("current")
     assert RUNTIME_FINGERPRINTS._artifact_needs_rebuild(
-        artifact, fingerprint, {"version": 3, **fingerprint, "meta_digest": "other"}
+        artifact, fingerprint, {"version": 4, **fingerprint, "meta_digest": "other"}
     )
 
 
@@ -559,7 +562,10 @@ def test_runtime_artifact_match_reads_content_even_with_preserved_metadata(
     fingerprint_path = tmp_path / "runtime.fingerprint.json"
     fingerprint = _source_fingerprint("current")
     RUNTIME_FINGERPRINTS._write_runtime_fingerprint(
-        fingerprint_path, fingerprint, artifact=artifact
+        fingerprint_path,
+        fingerprint,
+        artifact=artifact,
+        cargo_environment=compiler_environment_inputs(),
     )
     stored = RUNTIME_FINGERPRINTS._read_runtime_fingerprint(fingerprint_path)
     assert stored is not None
@@ -578,7 +584,11 @@ def test_runtime_artifact_match_reads_content_even_with_preserved_metadata(
     monkeypatch.setattr(RUNTIME_FINGERPRINTS, "artifact_content_identity", capture)
     assert (
         RUNTIME_FINGERPRINTS._runtime_artifact_fingerprint_matches(
-            artifact, fingerprint, fingerprint_path, require_artifact_digest=True
+            artifact,
+            fingerprint,
+            fingerprint_path,
+            require_artifact_digest=True,
+            environment=ProcessEnvironment(os.environ),
         )
         is not mutated
     )
@@ -593,17 +603,25 @@ def test_runtime_fingerprint_metadata_refresh_preserves_artifact_content_identit
     fingerprint_path = tmp_path / "runtime.fingerprint.json"
     fingerprint = _source_fingerprint("current")
     RUNTIME_FINGERPRINTS._write_runtime_fingerprint(
-        fingerprint_path, fingerprint, artifact=artifact
+        fingerprint_path,
+        fingerprint,
+        artifact=artifact,
+        cargo_environment=compiler_environment_inputs(),
     )
     before = RUNTIME_FINGERPRINTS._read_runtime_fingerprint(fingerprint_path)
     assert before is not None
-    refreshed = {**fingerprint, "source_state": {"kind": "diagnostic-only"}}
+    refreshed = {
+        **fingerprint,
+        "cargo_environment": before["cargo_environment"],
+        "source_state": {"kind": "diagnostic-only"},
+    }
     RUNTIME_FINGERPRINTS._refresh_runtime_fingerprint_metadata(
         fingerprint_path, refreshed
     )
     after = RUNTIME_FINGERPRINTS._read_runtime_fingerprint(fingerprint_path)
     assert after is not None
     assert after["source_state"] == refreshed["source_state"]
+    assert after["cargo_environment"] == before["cargo_environment"]
     assert after["artifact_content_identity"] == before["artifact_content_identity"]
 
 
@@ -1292,14 +1310,28 @@ def test_runtime_fingerprint_read_observes_same_size_preserved_mtime_rewrite(
     fingerprint_path = tmp_path / "runtime.fingerprint.json"
     first_fingerprint = _source_fingerprint("first")
     second_fingerprint = _source_fingerprint("other")
-    RUNTIME_FINGERPRINTS._write_runtime_fingerprint(fingerprint_path, first_fingerprint)
+    RUNTIME_FINGERPRINTS._write_runtime_fingerprint(
+        fingerprint_path,
+        first_fingerprint,
+        cargo_environment=compiler_environment_inputs(),
+    )
     first = RUNTIME_FINGERPRINTS._read_runtime_fingerprint(fingerprint_path)
     metadata = fingerprint_path.stat()
     RUNTIME_FINGERPRINTS._write_runtime_fingerprint(
-        fingerprint_path, second_fingerprint
+        fingerprint_path,
+        second_fingerprint,
+        cargo_environment=compiler_environment_inputs(),
     )
     assert fingerprint_path.stat().st_size == metadata.st_size
     os.utime(fingerprint_path, ns=(metadata.st_atime_ns, metadata.st_mtime_ns))
     second = RUNTIME_FINGERPRINTS._read_runtime_fingerprint(fingerprint_path)
-    assert first == {"version": 3, **first_fingerprint}
-    assert second == {"version": 3, **second_fingerprint}
+    assert first == {
+        "version": 4,
+        **first_fingerprint,
+        "cargo_environment": compiler_environment_inputs().to_dict(),
+    }
+    assert second == {
+        "version": 4,
+        **second_fingerprint,
+        "cargo_environment": compiler_environment_inputs().to_dict(),
+    }

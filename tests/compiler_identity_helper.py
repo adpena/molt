@@ -1,9 +1,14 @@
 from __future__ import annotations
 
 from pathlib import Path
+import json
+import os
+import shutil
 from types import SimpleNamespace
 
+from molt.cli.cargo_environment_inputs import CargoEnvironmentInputs
 from molt.cli.rust_cpu_policy import RustCpuPolicy
+from molt.process_environment import ProcessEnvironment
 from molt.exact_json import canonical_json_sha256
 
 
@@ -14,6 +19,7 @@ def compiler_build_admission(
         "cargo",
         "build",
         "--locked",
+        "--message-format=json-render-diagnostics",
         "--package",
         "molt-backend",
         "--bin",
@@ -39,7 +45,9 @@ def compiler_build_admission(
             pass
 
     plan = Plan(command)
-    plan.environment = dict(environment or {})
+    plan.environment = ProcessEnvironment(environment or {})
+    plan.rust_resources = SimpleNamespace(files=())
+    plan.link_resources = SimpleNamespace(files=())
     # This fixture models a fixed toolchain and features/profile/Rust flags,
     # including the build's Rust CPU policy.
     # Guest settings and process custody do not rename that host compiler.
@@ -63,6 +71,7 @@ def stub_compiler_admission(monkeypatch):
     from molt.cli import backend_binary, compiler_identity
 
     def admission(root, features, profile, env, *, rust_cpu):
+        write_compiler_source(root)
         return compiler_build_admission(features, profile, env, rust_cpu)
 
     monkeypatch.setattr(backend_binary, "backend_build_admission", admission)
@@ -101,3 +110,70 @@ def write_compiler_source(root: Path) -> None:
         if not path.exists():
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text(content, encoding="utf-8")
+
+
+# Synthetic backend Cargo fixtures declare this arbitrary input in rustc's
+# dep-info; published-receipt fixtures model that same local unit observation.
+BACKEND_FIXTURE_INPUT = "MOLT_TEST_BACKEND_INPUT"
+
+
+def compiler_environment_inputs(environment=None):
+    return CargoEnvironmentInputs.capture(
+        ProcessEnvironment(os.environ if environment is None else environment),
+        (BACKEND_FIXTURE_INPUT,),
+        local_unit_count=1,
+    )
+
+
+def compiler_cargo_stdout(root: Path, output: Path, environment) -> str:
+    """Real Cargo/rustc protocol for a known local binary's exact output bytes."""
+    root = root.resolve()
+    write_compiler_source(root)
+    package = root / "runtime/molt-backend"
+    source = package / "src/main.rs"
+    deps = output.parent / "deps"
+    deps.mkdir(parents=True, exist_ok=True)
+    unit = deps / (
+        "molt_backend-fixture.exe" if os.name == "nt" else "molt_backend-fixture"
+    )
+    shutil.copyfile(output, unit)
+
+    def escape(value):
+        return (
+            str(value)
+            .replace("\\", "\\\\")
+            .replace(" ", "\\ ")
+            .replace("#", "\\#")
+            .replace(":", "\\:")
+        )
+
+    value = environment.get(BACKEND_FIXTURE_INPUT)
+    env_line = "# env-dep:" + BACKEND_FIXTURE_INPUT
+    if value is not None:
+        env_line += "=" + value.replace("\\", "\\\\").replace("\n", "\\n").replace(
+            "\r", "\\r"
+        )
+    unit.with_suffix(".d").write_text(
+        f"{escape(unit)}: {escape(source)}\n\n{escape(source)}:\n\n{env_line}\n",
+        encoding="utf-8",
+    )
+    return (
+        json.dumps(
+            {
+                "reason": "compiler-artifact",
+                "package_id": f"path+{package.as_uri()}#molt-backend@0.1.0",
+                "manifest_path": str(package / "Cargo.toml"),
+                "target": {
+                    "kind": ["bin"],
+                    "name": "molt-backend",
+                    "src_path": str(source),
+                },
+                "filenames": [str(unit), str(output)],
+                "executable": str(output),
+                "fresh": False,
+            }
+        )
+        + "\n"
+        + json.dumps({"reason": "build-finished", "success": True})
+        + "\n"
+    )

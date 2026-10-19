@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from tests.runtime_build_identity_helper import native_runtime_build_inputs
+
 import json
 import os
 import time
@@ -44,6 +46,7 @@ from molt.toolchain_identity import stable_regular_file_identity
 from molt.cli.rust_cpu_policy import RustCpuPolicy
 from tests.cli.native_link_test_support import (
     native_codegen_binding,
+    native_runtime_generation_fixture,
     write_test_native_link_manifest,
     write_test_static_archive,
 )
@@ -108,6 +111,7 @@ def test_native_object_publication_is_one_admitted_transaction(
         build_python_admission=admission,
         runtime_lib=archive,
         native_runtime_build_identity=identity,
+        native_runtime_generation=native_runtime_generation_fixture(archive, identity),
         native_runtime_codegen_binding=binding,
     )
     monkeypatch.setattr(
@@ -153,10 +157,10 @@ def test_native_object_publication_is_one_admitted_transaction(
         assert destination.read_bytes() == previous
         if failure == "final_capture":
             mutate_binding()
-        return identity
+        return native_runtime_build_inputs(identity)
 
     monkeypatch.setattr(
-        runtime_native_build, "current_native_runtime_build_identity", current_identity
+        runtime_native_build, "current_native_runtime_build_inputs", current_identity
     )
     original_project = link_pipeline._prepare_native_object_artifact
 

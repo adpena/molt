@@ -8,6 +8,8 @@ are substituted.
 
 from __future__ import annotations
 
+from tests.runtime_build_identity_helper import runtime_cargo_environment_inputs
+
 from dataclasses import dataclass
 import os
 from pathlib import Path
@@ -25,10 +27,14 @@ from molt.exact_json import canonical_json_sha256
 from tests.cli.backend_generation_test_support import publish_backend
 from tests.cli.native_link_test_support import write_test_static_archive
 from tests.compiler_identity_helper import (
+    compiler_environment_inputs,
     stub_compiler_admission,
     write_compiler_source,
 )
-from tests.runtime_build_identity_helper import native_runtime_staticlib_identity
+from tests.runtime_build_identity_helper import (
+    native_runtime_staticlib_identity,
+    native_runtime_build_inputs,
+)
 
 RUNTIME_PROFILE = "dev-fast"
 BACKEND_PROFILE = "release"
@@ -83,8 +89,10 @@ class Checkout:
         monkeypatch.setenv("MOLT_BUILD_STATE_DIR", str(self.build_state))
         monkeypatch.setattr(
             transfer.NativeToolchainSelection,
-            "runtime_build_identity",
-            lambda _selection: runtime_identity(self.runtime_seed),
+            "runtime_build_inputs",
+            lambda _selection: native_runtime_build_inputs(
+                runtime_identity(self.runtime_seed)
+            ),
         )
         monkeypatch.setattr(
             backend_binary,
@@ -108,6 +116,7 @@ class Checkout:
             target_triple=None,
             build_identity=runtime_identity(self.runtime_seed),
             inputs_are_current=lambda: True,
+            cargo_environment=runtime_cargo_environment_inputs(),
         )
         backend = selection.backend.binary
         publish_backend(
@@ -117,6 +126,7 @@ class Checkout:
                 self.root, backend, BACKEND_PROFILE
             ),
             fingerprint=backend_fingerprint(self.backend_seed),
+            cargo_environment=compiler_environment_inputs(),
         )
 
 

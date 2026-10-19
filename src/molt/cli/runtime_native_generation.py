@@ -9,6 +9,7 @@ import tempfile
 from typing import TypeVar, cast
 
 from molt.cli.atomic_io import _atomic_copy_file, _atomic_write_json
+from molt.cli.cargo_environment_inputs import CargoEnvironmentInputs
 from molt.cli.native_link_custody import (
     NativeLinkCustodyError,
     native_link_custody_archive_path,
@@ -17,6 +18,7 @@ from molt.cli.native_link_manifest import (
     NativeLinkDependencyManifestError,
     native_link_dependency_manifest_path,
     read_native_link_dependency_manifest,
+    read_native_link_dependency_manifest_payload,
     write_native_link_dependency_manifest,
 )
 from molt.cli.runtime_artifact_selection import RUNTIME_STATICLIB_ARTIFACTS
@@ -33,6 +35,7 @@ from molt.file_publication import (
     resolve_owned_path,
 )
 from molt.portable_paths import portable_path_component
+from molt.process_environment import ProcessEnvironment
 from molt.toolchain_identity import (
     StableRegularFileIdentity,
     stable_regular_file_identity,
@@ -71,6 +74,7 @@ class NativeRuntimeGeneration:
     runtime_lib: Path
     build_identity: RuntimeBuildIdentity
     members: tuple[tuple[str, StableRegularFileIdentity], ...]
+    cargo_environment: CargoEnvironmentInputs
 
     def verify(self) -> None:
         if resolve_owned_path(self.runtime_lib) != self.members[0][1].path:
@@ -130,7 +134,12 @@ def _capture_generation(
                 ),
             )
         )
-    generation = NativeRuntimeGeneration(runtime_lib, identity, tuple(members))
+    generation = NativeRuntimeGeneration(
+        runtime_lib,
+        identity,
+        tuple(members),
+        CargoEnvironmentInputs.from_dict(manifest["cargo_environment"]),
+    )
     if expected_records is not None and generation.records() != expected_records:
         raise ValueError("native runtime generation members differ from selection")
     generation.verify()
@@ -278,6 +287,7 @@ def publish_native_runtime_generation(
     cargo_profile: str,
     target_triple: str | None,
     build_identity: RuntimeBuildIdentity,
+    cargo_environment: CargoEnvironmentInputs,
     inputs_are_current: Callable[[], bool],
 ) -> NativeRuntimeGeneration | None:
     """Stage the closure, recapture inputs once, then select it atomically.
@@ -308,6 +318,7 @@ def publish_native_runtime_generation(
             cargo_profile=cargo_profile,
             target_triple=target_triple,
             runtime_build_identity=build_identity,
+            cargo_environment=cargo_environment,
         )
         staged = _capture_generation(
             runtime_lib,
@@ -333,6 +344,7 @@ def import_native_runtime_generation(
     cargo_profile: str,
     target_triple: str | None,
     build_identity: RuntimeBuildIdentity,
+    environment: ProcessEnvironment,
 ) -> NativeRuntimeGeneration:
     """Select a generation another checkout published, through local admission.
 
@@ -366,6 +378,12 @@ def import_native_runtime_generation(
         raise ValueError("transported native runtime members are invalid")
     if sorted(str(record.get("role")) for record in records) != sorted(members):
         raise ValueError("transported native runtime members differ from its selection")
+    manifest = read_native_link_dependency_manifest_payload(
+        members["native_link_manifest"]
+    )
+    CargoEnvironmentInputs.from_dict(manifest.get("cargo_environment")).verify(
+        environment
+    )
     profile_dir = _cargo_profile_dir(cargo_profile)
     generations = coordinate.parent / ".molt-native-generations"
     generations.mkdir(parents=True, exist_ok=True)
@@ -391,6 +409,7 @@ def import_native_runtime_generation(
             target_triple=target_triple,
             expected_records=records,
         )
+        staged.cargo_environment.verify(environment)
         published = _select_staged_generation(
             coordinate,
             stage=stage,

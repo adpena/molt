@@ -733,7 +733,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = _parser().parse_args(argv)
     try:
         selection = NativeToolchainSelection.current(args.project_root)
-        runtime_build_identity = selection.runtime_build_identity()
+        runtime_build_identity = selection.runtime_build_inputs().build_identity
         identity = collect_bundle_identity(
             args.project_root, runtime_build_identity=runtime_build_identity
         )

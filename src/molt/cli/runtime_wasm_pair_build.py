@@ -20,6 +20,8 @@ from molt.cli.artifact_state import (
     _build_state_root,
     _runtime_target_fingerprint_path,
 )
+from molt.cli.cargo_build_reads import cargo_build_reads
+from molt.cli.cargo_environment_inputs import CargoEnvironmentInputs
 from molt.cli.cargo_execution import (
     CargoPlanExecutionError,
     _text_output,
@@ -129,8 +131,8 @@ class _CombinedRuntimeWasmBuild:
         command: tuple[str, ...] = (),
         timed_out: bool = False,
         timeout_error: subprocess.TimeoutExpired | None = None,
-    ) -> bool:
-        return record_runtime_wasm_failure(
+    ) -> None:
+        record_runtime_wasm_failure(
             self.runtime_state,
             project_root=self.project_root,
             stage=stage,
@@ -153,12 +155,15 @@ class _CombinedRuntimeWasmBuild:
             else None,
         )
 
-    def target_pair_is_current(self) -> bool:
+    def admitted_target_pair_inputs(self) -> CargoEnvironmentInputs | None:
         if (
             self.shared_spec.fingerprint is None
             or self.reloc_spec.staticlib_fingerprint is None
         ):
-            return False
+            return None
+        plan = self.shared_spec.cargo_plan
+        if plan is None:
+            return None
         shared = _current_runtime_target_artifact(
             _wasm_runtime_wasm_candidates(
                 self.shared_spec.target_root, self.shared_spec.profile_dir
@@ -167,6 +172,7 @@ class _CombinedRuntimeWasmBuild:
             cargo_profile=self.shared_spec.cargo_profile,
             target_label="wasm32-wasip1",
             fingerprint=self.shared_spec.fingerprint,
+            environment=plan.environment,
         )
         reloc = _current_runtime_target_artifact(
             _wasm_runtime_staticlib_candidates(
@@ -176,12 +182,16 @@ class _CombinedRuntimeWasmBuild:
             cargo_profile=self.shared_spec.cargo_profile,
             target_label="wasm32-wasip1",
             fingerprint=self.reloc_spec.staticlib_fingerprint,
+            environment=plan.environment,
         )
-        return (
+        if (
             shared is not None
             and reloc is not None
+            and shared[2] == reloc[2]
             and _is_valid_shared_runtime_wasm_artifact(shared[0])
-        )
+        ):
+            return shared[2]
+        return None
 
 
 def _combined_runtime_wasm_command(
@@ -197,7 +207,7 @@ def _publish_combined_runtime_wasm_target(
     ctx: _CombinedRuntimeWasmBuild,
     build: subprocess.CompletedProcess[str],
     reported_cdylib: Path,
-) -> bool:
+) -> CargoEnvironmentInputs | None:
     artifacts = _reported_runtime_artifacts_from_cargo_stdout(
         build.stdout, target_root=ctx.shared_spec.target_root
     )
@@ -219,6 +229,26 @@ def _publish_combined_runtime_wasm_target(
             build=build,
         )
     try:
+        plan = ctx.shared_spec.cargo_plan
+        if plan is None:
+            raise ValueError("runtime WASM target publication lost its Cargo plan")
+        reads = cargo_build_reads(
+            build.stdout,
+            workspace_root=ctx.project_root,
+            dep_info_base=ctx.project_root,
+            product_roots=tuple(
+                Path(plan.environment[name])
+                for name in ("CARGO_TARGET_DIR", "CARGO_BUILD_BUILD_DIR")
+                if plan.environment.get(name)
+            ),
+            toolchain_roots=tuple(
+                item.identity.path
+                for custody in (plan.rust_resources, plan.link_resources)
+                for item in custody.files
+            ),
+            environment=plan.environment,
+        )
+        plan.verify()
         for artifact, fingerprint in (
             (cdylib, ctx.shared_spec.fingerprint),
             (staticlib, ctx.reloc_spec.staticlib_fingerprint),
@@ -231,7 +261,12 @@ def _publish_combined_runtime_wasm_target(
             )
             fingerprint_path.parent.mkdir(parents=True, exist_ok=True)
             assert fingerprint is not None
-            _write_runtime_fingerprint(fingerprint_path, fingerprint, artifact=artifact)
+            _write_runtime_fingerprint(
+                fingerprint_path,
+                fingerprint,
+                artifact=artifact,
+                cargo_environment=reads.environment,
+            )
     except (OSError, ValueError) as exc:
         # StaticArchiveIdentityError (a ValueError) reports an archive that
         # changed while its identity was read; it is a failed stage, not a crash.
@@ -240,7 +275,7 @@ def _publish_combined_runtime_wasm_target(
             f"Runtime wasm combined build failed to record target fingerprints: {exc}",
             build=build,
         )
-    return True
+    return reads.environment
 
 
 def _prepopulate_combined_runtime_wasm_target(
@@ -254,19 +289,20 @@ def _prepopulate_combined_runtime_wasm_target(
     simd_enabled: bool,
     freestanding: bool,
     force_build: bool = False,
-) -> bool:
+) -> CargoEnvironmentInputs | None:
     """Populate the exact shared+reloc target pair with one Cargo transaction."""
     if (
         shared_spec.fingerprint is None
         or reloc_spec.fingerprint is None
         or reloc_spec.staticlib_fingerprint is None
     ):
-        return record_runtime_wasm_failure(
+        record_runtime_wasm_failure(
             runtime_state,
             project_root=project_root,
             stage="combined-build-spec",
             summary="Runtime wasm combined build specification is incomplete.",
         )
+        return None
     ctx = _CombinedRuntimeWasmBuild(
         runtime_state,
         shared_spec,
@@ -286,8 +322,10 @@ def _prepopulate_combined_runtime_wasm_target(
         plan.verify()
     except (OSError, ValueError) as exc:
         return ctx.fail("combined-cargo-admission", str(exc), command=plan.command)
-    if not force_build and ctx.target_pair_is_current():
-        return True
+    if not force_build:
+        admitted = ctx.admitted_target_pair_inputs()
+        if admitted is not None:
+            return admitted
     env, cmd = _combined_runtime_wasm_command(ctx)
     if not json_output:
         _progress.notice("WASM runtime artifacts need one combined source build")
@@ -420,6 +458,7 @@ class _RuntimeWasmPairBuild:
     staging_shared: Path | None = None
     staging_reloc: Path | None = None
 
+    cargo_environment: CargoEnvironmentInputs | None = None
     accepted_generation: RuntimeWasmGeneration | None = None
     admission_report: RuntimeWasmAdmissionReport | None = None
 
@@ -483,6 +522,13 @@ class _RuntimeWasmPairBuild:
             or generation.reloc_identity != identity.reloc
         ):
             return None
+        plan = self.shared_spec.cargo_plan
+        if plan is None:
+            return None
+        try:
+            generation.cargo_environment.verify(plan.environment)
+        except ValueError:
+            return None
         self.admission_report = runtime_wasm_generation_admission(
             generation, self.required_exports
         )
@@ -534,6 +580,8 @@ class _RuntimeWasmPairBuild:
 
     def ensure_member(self, *, reloc: bool) -> bool:
         try:
+            if self.cargo_environment is None:
+                raise ValueError("runtime WASM member lacks its compile observation")
             return _materialize_runtime_wasm_member_from_target(
                 self.staging_member(reloc=reloc),
                 reloc=reloc,
@@ -543,6 +591,7 @@ class _RuntimeWasmPairBuild:
                 resolved_modules=self.resolved_modules,
                 required_exports=self.required_exports,
                 spec=self.reloc_spec if reloc else self.shared_spec,
+                cargo_environment=self.cargo_environment,
             )
         except RuntimeWasmLinkError as exc:
             process = exc.process
@@ -688,11 +737,13 @@ def _materialize_runtime_wasm_pair(
     if ctx.pre_identity is None:
         return _PairBuildOutcome.FAILED
     assert ctx.pre_identity is not None
+    assert ctx.shared_spec.cargo_plan is not None
     hydrated = hydrate_runtime_wasm_pair_from_shared_cache(
         dest_shared=ctx.runtime_wasm,
         dest_reloc=ctx.runtime_reloc_wasm,
         shared_identity=ctx.pre_identity.shared,
         reloc_identity=ctx.pre_identity.reloc,
+        environment=ctx.shared_spec.cargo_plan.environment,
     )
     if hydrated is not None:
         if ctx.accept_generation(observed_generation=hydrated):
@@ -714,7 +765,7 @@ def _materialize_runtime_wasm_pair(
             f"Runtime WASM pair staging failed: {exc}",
         )
         return _PairBuildOutcome.FAILED
-    if not _prepopulate_combined_runtime_wasm_target(
+    ctx.cargo_environment = _prepopulate_combined_runtime_wasm_target(
         runtime_state=ctx.runtime_state,
         shared_spec=ctx.shared_spec,
         reloc_spec=ctx.reloc_spec,
@@ -724,7 +775,8 @@ def _materialize_runtime_wasm_pair(
         simd_enabled=ctx.simd_enabled,
         freestanding=ctx.freestanding,
         force_build=False,
-    ):
+    )
+    if ctx.cargo_environment is None:
         return _PairBuildOutcome.FAILED
     if not ctx.ensure_member(reloc=False):
         if ctx.runtime_state.runtime_wasm_build_failure is None:
@@ -766,11 +818,17 @@ def _publish_runtime_wasm_pair(ctx: _RuntimeWasmPairBuild) -> bool:
             "Runtime build identity changed during Cargo; refusing publication.",
         )
     try:
+        if ctx.cargo_environment is None:
+            raise ValueError(
+                "runtime WASM pair lacks its Cargo environment observation"
+            )
+        ctx.cargo_environment.verify(plan.environment)
         published = publish_runtime_wasm_generation(
             ctx.runtime_wasm,
             ctx.runtime_reloc_wasm,
             shared_identity=post_identity.shared,
             reloc_identity=post_identity.reloc,
+            cargo_environment=ctx.cargo_environment,
             source_shared=ctx.staging_member(reloc=False),
             source_reloc=ctx.staging_member(reloc=True),
         )
@@ -786,6 +844,7 @@ def _publish_runtime_wasm_pair(ctx: _RuntimeWasmPairBuild) -> bool:
                 reloc=published.reloc,
                 shared_identity=post_identity.shared,
                 reloc_identity=post_identity.reloc,
+                cargo_environment=published.cargo_environment,
             ),
             json_output=ctx.json_output,
         )
