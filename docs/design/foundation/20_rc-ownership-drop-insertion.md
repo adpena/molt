@@ -258,6 +258,17 @@ The following summarizes the C-ABI that generated code and the runtime both comm
 | `molt_iter_next_unboxed(iter, value_out)` | Borrowed iterator; writable result slot | False transfers one owned item; true means exhaustion; a pending error leaves a defined `None` result |
 | Generator `_poll(frame, send_val)` | Borrowed | Owned |
 
+SSA removes the caller's materialized iterator carrier only when its two exact
+projections cannot escape and the done-false edge proves item validity. A plain
+pending-error check uses the existing authored exception edge: its handler
+abandons the step and must not receive the pair. Callback-bearing eval-breaker
+polls and suspension/resume edges remain barriers before the done guard. This
+follows [MLIR's SSA block-argument model](https://mlir.llvm.org/docs/LangRef/#blocks)
+and [CPython 3.12's `FOR_ITER` error/item distinction](https://github.com/python/cpython/blob/v3.12.15/Python/bytecodes.c).
+Removing caller projections does not remove a generator's internal poll/frame
+carrier; the typed suspension-state migration owns that separate allocation
+under HF-229. Native iterator caches also retain their own lifetime contract.
+
 Runtime iterator consumers share `molt-runtime-core::iter_next_owned`, the owned
 projection of `molt_iter_next_unboxed`. Runtime `OwnedIterator`, `functools.reduce`,
 and both compiled itertools profiles use this transport. A pending exception

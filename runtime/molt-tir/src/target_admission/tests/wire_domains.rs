@@ -2,11 +2,12 @@ use super::*;
 
 #[test]
 fn preserved_iterator_spelling_requires_the_iterable_protocol() {
-    for kind in ["iter", "get_iter"] {
+    for kind in ["iter", "get_iter", "iter_next", "iter_next_unboxed"] {
         let op = OpIR {
             kind: kind.into(),
             args: Some(vec!["source".into()]),
             out: Some("iterator".into()),
+            var: (kind == "iter_next_unboxed").then(|| "item".into()),
             ..OpIR::default()
         };
         assert!(

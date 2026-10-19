@@ -2776,7 +2776,7 @@ timeout_env = ["MOLT_CARGO_TIMEOUT", "MOLT_WASM_TEST_TIMEOUT_SEC"]
 cache_domain = "pytest"
 dependencies = ["wasm.build.backend", "wasm.build.host", "wasm.build.shared-runtime"]
 argv = ["python3", "tools/venv_exec.py", "python3", "-m", "pytest", "tests/test_wasm_control_flow.py", "tests/test_wasm_longdouble_printf_link.py", "tests/cli/test_native_symbol_authority.py::test_member_symbols_real_wasm_archive", "-q"]
-toolchains = ["python", "uv", "rustc", "cargo", "clang", "llvm-ar", "llvm-nm", "ld.lld", "wasm-ld", "wasm-tools", "wasi-clang", "ninja", "wasm-opt"]
+toolchains = ["python", "uv", "node", "rustc", "cargo", "clang", "llvm-ar", "llvm-nm", "ld.lld", "wasm-ld", "wasm-tools", "wasi-clang", "ninja", "wasm-opt"]
 cargo_build_python = true
 
 [[command]]

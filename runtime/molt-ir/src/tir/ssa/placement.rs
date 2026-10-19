@@ -557,6 +557,12 @@ impl<'a> SsaContext<'a> {
                     .map(|&(from, to, _)| (from, to)),
             )
             .collect();
+        let resume_edges: HashSet<(usize, usize)> = self
+            .cfg
+            .state_resume_edges
+            .iter()
+            .map(|&(from, to, _)| (from, to))
+            .collect();
         let mut worklist = VecDeque::from([self.cfg.entry]);
         let mut queued = vec![false; blocks.len()];
         queued[self.cfg.entry] = true;
@@ -569,6 +575,7 @@ impl<'a> SsaContext<'a> {
             let block = &blocks[block_idx];
             let mut states = incoming_states[block_idx];
             let mut exception_probe = None;
+            let mut inline_exception_target = None;
             for (op_idx, op) in block.ops.iter().enumerate() {
                 let location = TirOpLocation {
                     block: block_idx,
@@ -614,9 +621,25 @@ impl<'a> SsaContext<'a> {
                         } else {
                             None
                         };
-                    if !(effects.effect_free && effects.nothrow) && exact_exception_probe.is_none()
+                    // The frontend's pending-error check carries its handler
+                    // edge inline, rather than spelling a boolean branch. It
+                    // only observes pending state: no Python callback can
+                    // observe an exhausted pair before its done guard. A fused
+                    // eval-breaker poll has a different callback contract.
+                    let inline_check_target = (op.opcode == OpCode::CheckException
+                        && !op.is_async_work_poll()
+                        && op.results.is_empty()
+                        && op_idx + 1 == block.ops.len())
+                    .then(|| self.cfg.exception_target(block_idx))
+                    .flatten();
+                    if !(effects.effect_free && effects.nothrow)
+                        && exact_exception_probe.is_none()
+                        && inline_check_target.is_none()
                     {
                         return false;
+                    }
+                    if let Some(target) = inline_check_target {
+                        inline_exception_target = Some(target);
                     }
                     if let Some(targets) = exact_exception_probe
                         && exception_probe.replace(targets).is_some()
@@ -634,10 +657,14 @@ impl<'a> SsaContext<'a> {
                 let regular_edge = regular_edges.contains(&(block_idx, target));
                 let implicit_edge = implicit_edges.contains(&(block_idx, target));
 
-                // Implicit exception/resume transfers do not prove the direct
-                // done polarity for this dynamic step. Conservatively reject
-                // them while a producer is awaiting its guard.
-                if states & ITER_PATH_AWAITING_GUARD != 0 && implicit_edge {
+                // An exact pending-state observation abandons this step on
+                // its authored handler edge. All other implicit transfers,
+                // including a resume edge to that same target, remain unsafe.
+                if states & ITER_PATH_AWAITING_GUARD != 0
+                    && implicit_edge
+                    && (inline_exception_target != Some(target)
+                        || resume_edges.contains(&(block_idx, target)))
+                {
                     return false;
                 }
 
