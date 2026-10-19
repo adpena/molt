@@ -347,9 +347,44 @@ pub(super) fn needs_builtin_namespace(ir: &SimpleIR) -> bool {
 }
 
 pub(super) fn validate_ir_adapters(ir: &SimpleIR) -> Result<(), String> {
+    use molt_ir::tir::op_kinds_generated::{SimpleIrCallTargetRole, simpleir_call_target_role};
+
     let library = library()?;
+    let functions: BTreeSet<_> = ir
+        .functions
+        .iter()
+        .map(|function| function.name.as_str())
+        .collect();
     for function in &ir.functions {
         for (index, op) in function.ops.iter().enumerate() {
+            // Direct symbols and constructed function targets need executable
+            // linkage. Opaque call operands retain their dynamic callable
+            // contract, and code_new stores metadata rather than a target.
+            let direct = matches!(
+                simpleir_call_target_role(&op.kind),
+                Some(
+                    SimpleIrCallTargetRole::ExternalOrRuntime
+                        | SimpleIrCallTargetRole::InternalRequired
+                )
+            ) || op.kind == "func_new";
+            if direct
+                && let Some(target) = op.s_value.as_deref()
+                && !functions.contains(target)
+            {
+                let admission = if op.kind == "call"
+                    && let Some(mapped) = op_calls::direct_builtin_target(target)
+                {
+                    library.validate_adapter(mapped)
+                } else {
+                    library
+                        .close(BTreeSet::from([target.to_string()]))
+                        .map(|_| ())
+                };
+                admission.map_err(|reason| format!(
+                    "luau target rejected before source generation: {}:op#{index} `{}` target `{target}`: {reason}",
+                    function.name, op.kind,
+                ))?;
+            }
             if op.kind != "builtin_func" || op_calls::is_public_builtin_acquisition(op) {
                 continue;
             }

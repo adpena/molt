@@ -399,43 +399,20 @@ class ImportLoweringMixin(GeneratorMixinBase):
         level_val = MoltValue(self.next_var(), type_hint="int")
         self.emit(MoltOp(kind="CONST", args=[level], result=level_val))
 
-        transaction_func = self._emit_intrinsic_function(
-            "molt_importlib_import_transaction"
+        return self._emit_intrinsic_call(
+            "molt_importlib_import_transaction",
+            [name_val, globals_val, locals_val, fromlist_val, level_val],
+            type_hint="module",
         )
-        imported_val = MoltValue(self.next_var(), type_hint="module")
-        self.emit(
-            MoltOp(
-                kind="CALL_FUNC",
-                args=[
-                    transaction_func,
-                    name_val,
-                    globals_val,
-                    locals_val,
-                    fromlist_val,
-                    level_val,
-                ],
-                result=imported_val,
-            )
-        )
-        return imported_val
 
     def _emit_importlib_import_module_leaf(self, module_name: str) -> MoltValue:
         name_val = MoltValue(self.next_var(), type_hint="str")
         self.emit(MoltOp(kind="CONST_STR", args=[module_name], result=name_val))
         package_val = MoltValue(self.next_var(), type_hint="None")
         self.emit(MoltOp(kind="CONST_NONE", args=[], result=package_val))
-        import_module_func = self._emit_intrinsic_function(
-            "molt_importlib_import_module"
+        return self._emit_intrinsic_call(
+            "molt_importlib_import_module", [name_val, package_val], type_hint="module"
         )
-        imported_val = MoltValue(self.next_var(), type_hint="module")
-        self.emit(
-            MoltOp(
-                kind="CALL_FUNC",
-                args=[import_module_func, name_val, package_val],
-                result=imported_val,
-            )
-        )
-        return imported_val
 
     def _emit_source_import_transaction(
         self,

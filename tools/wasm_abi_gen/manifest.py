@@ -763,7 +763,9 @@ def runtime_boxed_call_specs(data: dict) -> list[dict]:
     that representation with boxed_call without becoming Python-callable.
     Plain op-loop local/result sinks are transport facts, not value semantics,
     so only explicitly boxed op-loop rows authorize this projection.
-    Raw and trampoline imports stay out.
+    Raw imports and trampoline-only callable declarations stay out. Explicit
+    compiler boxed-call semantics are independent of callable-table dispatch;
+    a trampoline callable may also expose an exact positional boxed entry.
     The target-neutral runtime_import declarations own this ABI; filtering the
     WASM provider view must not remove native direct-call facts.
     """
@@ -818,10 +820,6 @@ def runtime_boxed_call_specs(data: dict) -> list[dict]:
         op_loop_arity = op_loop_arities.get(entry["name"])
         direct = entry.get("callable_dispatch", "direct") == "direct"
         compiler_boxed = explicit or lir_arity is not None or op_loop_arity is not None
-        if compiler_boxed and not direct:
-            raise WasmAbiManifestError(
-                f"import {entry['name']!r} cannot combine boxed_call with trampoline dispatch"
-            )
         if not compiler_boxed and not (callable_arity is not None and direct):
             continue
         signature = data["static_type"][entry["type"]]

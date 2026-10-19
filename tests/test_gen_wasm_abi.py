@@ -527,9 +527,95 @@ def test_runtime_boxed_abi_does_not_promote_transport_only_contracts() -> None:
     assert manifest.runtime_boxed_call_specs(data) == []
     data["import"][0].update(callable_arity=1, callable_dispatch="trampoline")
     assert manifest.runtime_boxed_call_specs(data) == []
+
+
+@pytest.mark.parametrize("callable_authority", ["import", "reserved"])
+def test_runtime_boxed_abi_admits_explicit_boxed_trampoline_transport(
+    callable_authority: str,
+) -> None:
+    data = _boxed_abi_fixture()
     data["import"][0]["boxed_call"] = True
-    with pytest.raises(manifest.WasmAbiManifestError, match="trampoline dispatch"):
+    callable_declaration = {
+        "runtime_name": "molt_example",
+        "callable_arity": 1,
+        "callable_dispatch": "trampoline",
+    }
+    if callable_authority == "import":
+        data["import"][0].update(callable_declaration)
+    else:
+        data["reserved_runtime_callable"] = [
+            {"import_name": "example", **callable_declaration}
+        ]
+    before = copy.deepcopy(data)
+    assert manifest.runtime_boxed_call_specs(data) == [
+        {"runtime_name": "molt_example", "arity": 1, "result": "i64"}
+    ]
+    assert manifest.runtime_import_return_specs(data) == {"example": "owned_object"}
+    assert data == before
+
+
+@pytest.mark.parametrize(
+    "type_index, arity, result", [(1, 1, "i64"), (0, 2, "i64"), (2, 1, "i64")]
+)
+def test_runtime_boxed_abi_rejects_inconsistent_boxed_trampoline_shapes(
+    type_index: int, arity: int, result: str
+) -> None:
+    data = _boxed_abi_fixture()
+    data["import"][0].update(
+        type=type_index,
+        boxed_call=True,
+        callable_arity=arity,
+        callable_result=result,
+        callable_dispatch="trampoline",
+    )
+    with pytest.raises(manifest.WasmAbiManifestError, match="boxed call"):
         manifest.runtime_boxed_call_specs(data)
+
+
+@pytest.mark.parametrize("contract", ["owned_object", "raw_bits", "unpublished_object"])
+def test_runtime_boxed_abi_rejects_conflicting_boxed_trampoline_ownership(
+    contract: str,
+) -> None:
+    data = _boxed_abi_fixture()
+    data["import"][0].update(
+        boxed_call=True,
+        callable_arity=1,
+        callable_dispatch="trampoline",
+        return_contract=contract,
+    )
+    with pytest.raises(manifest.WasmAbiManifestError, match="boxed return authority"):
+        manifest.runtime_boxed_call_specs(data)
+
+
+def test_import_transaction_direct_boxed_entry_preserves_callable_trampoline() -> None:
+    data = gen_wasm_abi.load_manifest()
+    name = "importlib_import_transaction"
+    symbol = "molt_importlib_import_transaction"
+    entry = next(row for row in data["runtime_import"] if row["name"] == name)
+    assert entry["boxed_call"] is True
+    assert "return_contract" not in entry
+    assert data["static_type"][entry["type"]] == {
+        "params": ["i64", "i64", "i64", "i64", "i64"],
+        "results": ["i64"],
+    }
+    assert next(
+        row for row in data["reserved_runtime_callable"] if row["runtime_name"] == symbol
+    ) == {
+        "index": 23,
+        "runtime_name": symbol,
+        "import_name": name,
+        "callable_arity": 5,
+        "callable_dispatch": "trampoline",
+    }
+    assert next(
+        row for row in data["runtime_callable_abi"] if row["runtime_name"] == symbol
+    ) == {"runtime_name": symbol, "arity": 5, "trampoline_abi": "unpack_args"}
+    assert next(
+        row
+        for row in manifest.runtime_boxed_call_specs(data)
+        if row["runtime_name"] == symbol
+    ) == {"runtime_name": symbol, "arity": 5, "result": "i64"}
+    assert manifest.runtime_import_return_specs(data)[name] == "owned_object"
 
 
 @pytest.mark.parametrize(
@@ -1616,8 +1702,12 @@ def test_wasm_abi_manifest_owns_runtime_callable_registry() -> None:
         if key != "type"
     } == {
         "name": "importlib_import_transaction",
-        "return_contract": "owned_object",
+        "boxed_call": True,
     }
+    assert (
+        manifest.runtime_import_return_specs(data)["importlib_import_transaction"]
+        == "owned_object"
+    )
     assert imports["types_bootstrap"]["runtime_name"] == "molt_types_bootstrap"
     assert imports["types_bootstrap"]["callable_arity"] == 0
     assert imports["types_bootstrap"].get("shared_runtime_callable") is None

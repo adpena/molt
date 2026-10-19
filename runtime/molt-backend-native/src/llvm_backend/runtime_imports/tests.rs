@@ -213,16 +213,20 @@ fn generated_callable_contracts_supply_machine_abis_without_native_whitelists() 
             abi.symbol
         );
     }
-    // The five-word `__import__` entry is a native-only Python callable: the
-    // WASM import table filters it out and the boxed-call table never carries
-    // it, yet it classifies at its exact manifest arity and at no other.
+    // Compiler calls use the exact five-object transport independently of the
+    // observable Python callable's retained trampoline-table dispatch.
     let symbol = "molt_importlib_import_transaction";
     assert_eq!(
         runtime_import_return_abi(symbol, 5),
         Some(RuntimeReturnAbi::I64)
     );
     assert_eq!(runtime_import_return_abi(symbol, 4), None);
-    assert!(molt_ir::runtime_boxed_abi_generated::runtime_boxed_abi(symbol, 5).is_none());
+    let boxed = molt_ir::runtime_boxed_abi_generated::runtime_boxed_abi(symbol, 5)
+        .expect("explicit compiler boxed-call admission");
+    assert_eq!(
+        boxed.result,
+        molt_ir::runtime_boxed_abi_generated::RuntimeBoxedReturn::OwnedValue
+    );
     // Some callables also own a fixed declaration with stronger attributes.
     // Its hand-written signature must agree with the generated callable ABI,
     // or the shared declaration path would reject the builtin at build time.

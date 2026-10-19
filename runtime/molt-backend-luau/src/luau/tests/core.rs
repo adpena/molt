@@ -2840,6 +2840,142 @@ fn runtime_adapters_require_real_providers_but_public_names_remain_lookup() {
     }
 }
 
+fn direct_provider_reference_ir(kind: &str, symbol: &str, arity: usize) -> SimpleIR {
+    let params: Vec<_> = (0..arity).map(|index| format!("arg{index}")).collect();
+    SimpleIR {
+        functions: vec![FunctionIR {
+            name: "provider_probe".into(),
+            params: params.clone(),
+            return_abi: molt_ir::FunctionReturnAbi::Value,
+            ops: vec![
+                OpIR {
+                    kind: kind.into(),
+                    s_value: Some(symbol.into()),
+                    args: (kind != "func_new").then_some(params),
+                    value: (kind == "func_new").then_some(arity as i64),
+                    out: Some("result".into()),
+                    ..Default::default()
+                },
+                OpIR {
+                    kind: "ret".into(),
+                    args: Some(vec!["result".into()]),
+                    ..Default::default()
+                },
+            ],
+            ..Default::default()
+        }],
+        profile: None,
+    }
+}
+
+#[test]
+fn direct_runtime_references_require_executable_providers_before_emission() {
+    for (symbol, arity) in [
+        ("molt_exception_match_handler", 2),
+        ("molt_get_awaitable", 1),
+        ("molt_importlib_import_module", 2),
+        ("molt_importlib_import_transaction", 5),
+        ("molt_iterator_throw", 2),
+        ("molt_types_bootstrap", 0),
+        ("molt_missing_provider_probe", 0),
+        ("missing_provider_probe", 0),
+    ] {
+        for kind in ["call", "call_internal", "func_new"] {
+            let ir = direct_provider_reference_ir(kind, symbol, arity);
+            // Exercise the provider boundary even when a broader target policy
+            // (e.g. import/coroutine protocol) independently refuses this IR.
+            let error = runtime_prelude::validate_ir_adapters(&ir).unwrap_err();
+            assert!(error.contains("provider_probe:op#0"), "{error}");
+            assert!(
+                error.contains(&format!("`{kind}` target `{symbol}`")),
+                "{error}"
+            );
+            assert!(
+                error.contains(&format!(
+                    "missing executable Luau runtime provider `{symbol}`"
+                )),
+                "{error}"
+            );
+        }
+    }
+
+    // These otherwise admitted calls must fail at the public checked boundary,
+    // before either a source buffer or an emitter failure accumulator is used.
+    for (symbol, arity) in [
+        ("molt_exception_match_handler", 2),
+        ("molt_types_bootstrap", 0),
+        ("molt_missing_provider_probe", 0),
+        ("missing_provider_probe", 0),
+    ] {
+        let ir = direct_provider_reference_ir("call", symbol, arity);
+        let mut backend = LuauBackend::new();
+        let error = backend.compile_checked(&ir).unwrap_err();
+        assert!(
+            error.contains("rejected before source generation"),
+            "{error}"
+        );
+        assert!(error.contains(&format!("provider `{symbol}`")), "{error}");
+        assert!(backend.output.is_empty());
+        assert!(backend.unsupported_ops.is_empty());
+    }
+}
+
+#[test]
+fn direct_builtin_mapping_uses_real_provider_dependencies_and_native_targets() {
+    for (symbol, call, definitions) in [
+        (
+            "any",
+            "local result = molt_any(arg0)",
+            &["function molt_any(", "function molt_bool("][..],
+        ),
+        (
+            "len",
+            "local result = molt_len(arg0)",
+            &["function molt_len(", "function molt_sequence_len("][..],
+        ),
+        ("abs", "local result = math.abs(arg0)", &[][..]),
+    ] {
+        let ir = direct_provider_reference_ir("call", symbol, 1);
+        let source = LuauBackend::new().compile_checked(&ir).unwrap();
+        assert!(source.contains(call), "{source}");
+        for definition in definitions {
+            assert!(source.contains(definition), "{source}");
+        }
+    }
+}
+
+#[test]
+fn compiled_direct_targets_take_precedence_over_builtin_and_runtime_spellings() {
+    for symbol in ["len", "abs", "molt_missing_provider_probe"] {
+        for kind in ["call", "call_internal"] {
+            let mut ir = direct_provider_reference_ir(kind, symbol, 1);
+            ir.functions.push(FunctionIR {
+                name: symbol.into(),
+                params: vec!["value".into()],
+                return_abi: molt_ir::FunctionReturnAbi::Value,
+                ops: vec![OpIR {
+                    kind: "ret".into(),
+                    args: Some(vec!["value".into()]),
+                    ..Default::default()
+                }],
+                ..Default::default()
+            });
+            let source = LuauBackend::new().compile_checked(&ir).unwrap();
+            let target = emit_function_ident(symbol);
+            let call = if kind == "call" {
+                format!("local result = molt_call_checked({target}, arg0)")
+            } else {
+                format!("local result = {target}(arg0)")
+            };
+            assert!(source.contains(&call), "{source}");
+            assert!(
+                source.contains(&format!("{target} = function(value")),
+                "{source}"
+            );
+        }
+    }
+}
+
 #[test]
 #[ignore = "requires the declared Lune runner; run rust.test.compiler-authorities"]
 fn lune_oracle_public_any_all_execute_transitive_helpers_with_many_guest_functions() {

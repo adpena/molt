@@ -1292,6 +1292,15 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
 
     def _emit_intrinsic_function(self, runtime_name: str) -> MoltValue: ...
 
+    def _emit_intrinsic_call(
+        self,
+        runtime_name: str,
+        args: Sequence[MoltValue],
+        *,
+        type_hint: TypeHint = ...,
+        result: MoltValue | None = ...,
+    ) -> MoltValue: ...
+
     def _emit_is_exact_builtin(self, value: MoltValue, type_name: str) -> MoltValue: ...
 
     def _emit_iter_loop(
@@ -1533,7 +1542,12 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
     def _emit_return_value(self, value: MoltValue) -> None: ...
 
     def _emit_runtime_call(
-        self, runtime_name: str, args: Sequence[MoltValue], *, type_hint: TypeHint = ...
+        self,
+        runtime_name: str,
+        args: Sequence[MoltValue],
+        *,
+        type_hint: TypeHint = ...,
+        result: MoltValue | None = ...,
     ) -> MoltValue: ...
 
     def _emit_runtime_function(

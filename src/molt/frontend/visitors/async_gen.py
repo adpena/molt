@@ -1001,9 +1001,8 @@ class AsyncGenVisitorMixin(GeneratorMixinBase):
                 result=MoltValue("none"),
             )
         )
-        throw = self._emit_intrinsic_function("molt_iterator_throw")
-        self.emit(
-            MoltOp(kind="CALL_FUNC", args=[throw, iter_obj, pending_throw], result=pair)
+        self._emit_intrinsic_call(
+            "molt_iterator_throw", [iter_obj, pending_throw], result=pair
         )
         if pair_slot is not None:
             self.emit(
@@ -1478,12 +1477,7 @@ class AsyncGenVisitorMixin(GeneratorMixinBase):
     def _emit_awaitable_transform(self, awaitable: MoltValue) -> MoltValue:
         # One runtime protocol owns type-slot lookup, descriptor binding, and
         # iterator admission for every await expression and yield-from bridge.
-        get_awaitable = self._emit_intrinsic_function("molt_get_awaitable")
-        result = MoltValue(self.next_var(), type_hint="Any")
-        self.emit(
-            MoltOp(kind="CALL_FUNC", args=[get_awaitable, awaitable], result=result)
-        )
-        return result
+        return self._emit_intrinsic_call("molt_get_awaitable", [awaitable])
 
     def _emit_await_value(self, awaitable: MoltValue) -> MoltValue:
         if not self._in_coroutine_body():

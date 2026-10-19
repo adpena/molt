@@ -721,23 +721,18 @@ def test_function_import_transaction_uses_active_globals() -> None:
         for op in ops
         if op.get("kind") == "call" and op.get("s_value") == "molt_globals_builtin"
     }
-    transaction_funcs = {
-        op["out"]
-        for op in ops
-        if op.get("kind") == "builtin_func"
-        and op.get("s_value") == "molt_importlib_import_transaction"
-    }
+
     transactions = [
         op
         for op in ops
-        if op.get("kind") == "call_func"
+        if op.get("kind") == "call"
+        and op.get("s_value") == "molt_importlib_import_transaction"
         and isinstance(op.get("args"), list)
-        and len(op["args"]) == 6
-        and op["args"][0] in transaction_funcs
+        and len(op["args"]) == 5
     ]
 
     assert len(transactions) == 1
-    assert transactions[0]["args"][2] in active_globals
+    assert transactions[0]["args"][1] in active_globals
 
 
 @pytest.mark.parametrize("name", ["globals", "vars", "dir"])
@@ -866,35 +861,7 @@ def _module_import_targets(main_ops: list[dict[str, object]]) -> set[str]:
 
 
 def _importlib_transaction_targets(main_ops: list[dict[str, object]]) -> set[str]:
-    const_str = {
-        op["out"]: op["s_value"]
-        for op in main_ops
-        if op.get("kind") == "const_str"
-        and isinstance(op.get("out"), str)
-        and isinstance(op.get("s_value"), str)
-    }
-    transaction_funcs = {
-        op["out"]
-        for op in main_ops
-        if op.get("kind") == "builtin_func"
-        and op.get("s_value") == "molt_importlib_import_transaction"
-        and isinstance(op.get("out"), str)
-    }
-
-    targets: set[str] = set()
-    for op in main_ops:
-        if op.get("kind") != "call_func":
-            continue
-        args = op.get("args")
-        if not isinstance(args, list) or len(args) != 6:
-            continue
-        callee, name_var, _globals_var, _locals_var, _fromlist_var, _level_var = args
-        if callee not in transaction_funcs:
-            continue
-        target = const_str.get(name_var)
-        if isinstance(target, str):
-            targets.add(target)
-    return targets
+    return {name for name, _fromlist, _level in _import_transaction_details(main_ops)}
 
 
 def _importlib_import_module_targets(main_ops: list[dict[str, object]]) -> set[str]:
@@ -905,24 +872,18 @@ def _importlib_import_module_targets(main_ops: list[dict[str, object]]) -> set[s
         and isinstance(op.get("out"), str)
         and isinstance(op.get("s_value"), str)
     }
-    import_module_funcs = {
-        op["out"]
-        for op in main_ops
-        if op.get("kind") == "builtin_func"
-        and op.get("s_value") == "molt_importlib_import_module"
-        and isinstance(op.get("out"), str)
-    }
 
     targets: set[str] = set()
     for op in main_ops:
-        if op.get("kind") != "call_func":
+        if (
+            op.get("kind") != "call"
+            or op.get("s_value") != "molt_importlib_import_module"
+        ):
             continue
         args = op.get("args")
-        if not isinstance(args, list) or len(args) != 3:
+        if not isinstance(args, list) or len(args) != 2:
             continue
-        callee, name_var, _package_var = args
-        if callee not in import_module_funcs:
-            continue
+        name_var, _package_var = args
         target = const_str.get(name_var)
         if isinstance(target, str):
             targets.add(target)
@@ -955,24 +916,18 @@ def _import_transaction_details(
         for op in main_ops
         if op.get("kind") == "tuple_new" and isinstance(op.get("out"), str)
     }
-    transaction_funcs = {
-        op["out"]
-        for op in main_ops
-        if op.get("kind") == "builtin_func"
-        and op.get("s_value") == "molt_importlib_import_transaction"
-        and isinstance(op.get("out"), str)
-    }
 
     details: list[tuple[str, tuple[str, ...], int]] = []
     for op in main_ops:
-        if op.get("kind") != "call_func":
+        if (
+            op.get("kind") != "call"
+            or op.get("s_value") != "molt_importlib_import_transaction"
+        ):
             continue
         args = op.get("args")
-        if not isinstance(args, list) or len(args) != 6:
+        if not isinstance(args, list) or len(args) != 5:
             continue
-        callee, name_var, _globals_var, _locals_var, fromlist_var, level_var = args
-        if callee not in transaction_funcs:
-            continue
+        name_var, _globals_var, _locals_var, fromlist_var, level_var = args
         if not isinstance(name_var, str) or not isinstance(level_var, str):
             continue
         target = const_str.get(name_var)
@@ -1437,8 +1392,7 @@ def test_sync_try_except_uses_split_label_valued_handler_entry() -> None:
     assert handler_idx < exception_last_idx < normal_idx
     # The handler is a Python expression, including when spelled ValueError.
     assert any(
-        op.get("kind") == "builtin_func"
-        and op.get("s_value") == "molt_exception_match_handler"
+        op.get("kind") == "call" and op.get("s_value") == "molt_exception_match_handler"
         for op in func_ops
     )
     assert not any(op.get("kind") == "exception_match_builtin" for op in func_ops)
@@ -4545,9 +4499,9 @@ def test_source_import_statements_use_import_transaction_details() -> None:
 
     details = _import_transaction_details(main_ops)
     transaction_arities = {
-        op.get("value")
+        len(op["args"])
         for op in main_ops
-        if op.get("kind") == "builtin_func"
+        if op.get("kind") == "call"
         and op.get("s_value") == "molt_importlib_import_transaction"
     }
     assert transaction_arities == {
@@ -5503,16 +5457,11 @@ def test_except_builtin_spelling_uses_local_handler_value() -> None:
     )
     ops = next(fn["ops"] for fn in ir["functions"] if fn["name"] == "__main____probe")
     handlers = _local_reads(ops, "ValueError")
-    matchers = {
-        op["out"]
-        for op in ops
-        if op["kind"] == "builtin_func"
-        and op.get("s_value") == "molt_exception_match_handler"
-    }
+
     assert any(
-        op["kind"] == "call_func"
-        and op["args"][0] in matchers
-        and op["args"][2] in handlers
+        op["kind"] == "call"
+        and op.get("s_value") == "molt_exception_match_handler"
+        and op["args"][1] in handlers
         for op in ops
     )
     assert not any(op["kind"] == "exception_match_builtin" for op in ops)
@@ -5566,22 +5515,96 @@ def test_async_for_termination_matches_canonical_exception_class() -> None:
     assert not any(op["kind"] == "exception_kind" for op in ops)
 
 
+@pytest.mark.parametrize(
+    ("source", "symbol", "arity"),
+    [
+        ("async def probe(value):\n    return await value\n", "molt_get_awaitable", 1),
+        (
+            "def probe(handler, error):\n    try:\n        raise error\n"
+            "    except handler:\n        return 1\n",
+            "molt_exception_match_handler",
+            2,
+        ),
+        ("def probe(iterator):\n    yield from iterator\n", "molt_iterator_throw", 2),
+        ("import json\n", "molt_importlib_import_transaction", 5),
+        (
+            "import importlib\nvalue = importlib.import_module('json')\n",
+            "molt_importlib_import_module",
+            2,
+        ),
+        (
+            "def probe(base):\n    class Inner(base):\n        pass\n    return Inner\n",
+            "molt_types_bootstrap",
+            0,
+        ),
+    ],
+)
+def test_internal_protocol_calls_do_not_materialize_callable_objects(
+    source: str, symbol: str, arity: int
+) -> None:
+    gen = SimpleTIRGenerator(
+        known_modules={"json", "importlib"}, stdlib_allowlist={"json", "importlib"}
+    )
+    gen.visit(ast.parse(source))
+    ops = [op for function in gen.to_json()["functions"] for op in function["ops"]]
+    calls = [op for op in ops if op["kind"] == "call" and op.get("s_value") == symbol]
+    assert calls
+    assert all(len(op["args"]) == arity for op in calls)
+    assert not any(
+        op["kind"] == "builtin_func" and op.get("s_value") == symbol for op in ops
+    )
+
+
+@pytest.mark.parametrize("arity", [0, 2])
+def test_internal_intrinsic_calls_require_full_abi_before_emitting(arity: int) -> None:
+    from molt.frontend.diagnostics import FrontendRejection
+
+    gen = SimpleTIRGenerator()
+    before = list(gen.current_ops)
+    with pytest.raises(FrontendRejection, match="requires 1 ABI arguments"):
+        gen._emit_intrinsic_call("molt_get_awaitable", [MoltValue("arg")] * arity)
+    assert gen.current_ops == before
+
+
+def test_internal_intrinsic_calls_keep_raw_abi_and_unknown_refusals() -> None:
+    from molt.frontend.diagnostics import FrontendRejection
+
+    gen = SimpleTIRGenerator()
+    before = list(gen.current_ops)
+    with pytest.raises(KeyError):
+        gen._emit_intrinsic_call("molt_no_such_intrinsic", [])
+    with pytest.raises(FrontendRejection, match="raw non-callable ABI"):
+        gen._emit_intrinsic_call("molt_dict_getitem_borrowed", [])
+    assert gen.current_ops == before
+
+
+def test_internal_intrinsic_calls_preserve_existing_result_destination() -> None:
+    gen = SimpleTIRGenerator()
+    start = len(gen.current_ops)
+    iterator, error = MoltValue("iterator"), MoltValue("error")
+    destination = MoltValue("pair", type_hint="tuple")
+    result = gen._emit_intrinsic_call(
+        "molt_iterator_throw", [iterator, error], result=destination
+    )
+    assert result is destination
+    emitted = gen.current_ops[start:]
+    (call,) = [op for op in emitted if op.kind == "CALL"]
+    assert call.kind == "CALL"
+    assert call.args == ["molt_iterator_throw", iterator, error]
+    assert call.result is destination
+    assert any(op.kind == "CHECK_EXCEPTION" for op in emitted)
+    assert not any(op.kind in {"COPY", "BUILTIN_FUNC", "CALL_FUNC"} for op in emitted)
+
+
 def test_await_operand_uses_shared_runtime_protocol() -> None:
     gen = SimpleTIRGenerator()
     value = MoltValue("value", type_hint="Any")
     result = gen._emit_awaitable_transform(value)
-    handles = {
-        op.result.name
-        for op in gen.current_ops
-        if op.kind == "BUILTIN_FUNC" and op.args[0] == "molt_get_awaitable"
-    }
-    assert any(
-        op.kind == "CALL_FUNC"
-        and op.args[0].name in handles
-        and op.args[1] is value
-        and op.result is result
-        for op in gen.current_ops
-    )
+    calls = [op for op in gen.current_ops if op.kind == "CALL"]
+    assert len(calls) == 1
+    assert calls[0].args == ["molt_get_awaitable", value]
+    assert calls[0].result is result
+    assert not any(op.kind in {"BUILTIN_FUNC", "CALL_FUNC"} for op in gen.current_ops)
     assert not any(
         op.kind in {"HASATTR_NAME", "GETATTR_NAME"} for op in gen.current_ops
     )

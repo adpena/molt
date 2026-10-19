@@ -1260,8 +1260,9 @@ class ClassDefVisitorMixin(ClassMethodCompilationMixin):
                 raise FrontendRejection(
                     Diagnostic.OPERAND_VALUE, "Unsupported class bases"
                 )
-            types_bootstrap_func = self._emit_intrinsic_function("molt_types_bootstrap")
-            types_bootstrap = self._emit_call_bound_or_func(types_bootstrap_func, [])
+            types_bootstrap = self._emit_intrinsic_call(
+                "molt_types_bootstrap", [], type_hint="dict"
+            )
             resolve_key = MoltValue(self.next_var(), type_hint="str")
             self.emit(
                 MoltOp(kind="CONST_STR", args=["resolve_bases"], result=resolve_key)
