@@ -318,9 +318,8 @@ def terminal_build(
     state.wasm_facts_scanner = tmp_path / "molt-wasm-facts"
     state.wasm_facts_requests = []
 
-    def admit_facts(root, *, cargo_profile, env):
+    def admit_facts(root, *, env):
         assert root == args["prepared_build_roots"].molt_root
-        assert cargo_profile == "release"
         state.wasm_facts_requests.append(dict(env))
         return state.wasm_facts_scanner
 

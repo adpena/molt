@@ -112,6 +112,16 @@ dependency count remains 29. These are graph facts, not a whole-build speedup.
 The extraction does not change the independent preserved-mtime Cargo freshness
 frontier tracked by HF-300.
 
+Source inspection uses the existing optimized `release-fast` host profile,
+independently of the codegen compiler's development profile. Installed tools
+retain the production `release` profile. Two alternating guarded pairs on the
+same 13,759,302-byte Linux/aarch64 guest returned byte-identical schema-v7
+responses: median wall time was 0.488 s for `dev-fast` and 0.080 s for
+`release-fast`; executable sizes were 15,340,944 and 2,036,688 bytes. Both
+products already existed, so this comparison required no additional Cargo
+build. These bounded scan observations justify optimized source inspection;
+they do not establish cold-build, whole-build or release-matrix performance.
+
 `tools/wasm_link_fact_provider.py` owns the only Python boundary. It validates
 the exact schema-v7 JSON field set, freezes the decoded data, and projects
 linker-facing `WasmImportFact`, `WasmExportFact`, and `WasmLinkFacts` values.
