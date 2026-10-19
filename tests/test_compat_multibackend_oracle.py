@@ -2226,7 +2226,7 @@ def test_native_child_failure_is_reported_once_without_recovery(
     tmp_path, monkeypatch, capsys, diagnostic
 ):
     source = tmp_path / "case.py"
-    source.write_text("print('expected')\n")
+    source.write_text("print('expected')\n", encoding="utf-8")
     launches = tmp_path / "launches"
     script = "import pathlib,sys\nwith pathlib.Path(sys.argv[1]).open('ab') as sink: sink.write(b'x')\nprint(sys.argv[2],file=sys.stderr)\nraise SystemExit(7)"
     monkeypatch.setenv("MOLT_DIFF_ROOT", str(tmp_path / "evidence"))
