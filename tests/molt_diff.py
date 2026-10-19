@@ -5,12 +5,10 @@ import hashlib
 import io
 import json
 import os
-import re
 import shutil
 import signal
 import subprocess
 import sys
-import tempfile
 import threading
 import time
 from collections.abc import Callable, Iterator, Mapping, MutableMapping, Sequence
@@ -70,16 +68,12 @@ from tools.memory_guard_core import harness_outcomes  # noqa: E402
 from molt.build_state_layout import build_state_root  # noqa: E402
 from molt.memory_guard_paths import memory_guard_state_root  # noqa: E402
 
-_DYLD_GUARD_MARKER = "dyld_guard.json"
 _FAILURE_STATUSES = frozenset({"fail", "oom", "uncalibrated"})
 _PROCESS_STARTED = time.monotonic()
 _DIFF_RUN_LOCK_HANDLE: file_locks._FileLockHandle | None = None
 _WORKER_ORPHAN_GUARD_INSTALLED = False
 _BATCH_COMPILE_SERVER_CLIENT: "_BatchCompileServerClient | None" = None
 _BATCH_COMPILE_SERVER_CLIENT_PID = 0
-_BATCH_COMPILE_SERVER_DISABLED_UNTIL = 0.0
-_BATCH_COMPILE_SERVER_DISABLE_REASON = ""
-_BATCH_COMPILE_SERVER_FAILURE_COUNT = 0
 _DIFF_MEMORY_GUARD_TRIP_FILE_ENV = harness_outcomes.SUITE_TRIP_FILE_ENV
 _DIFF_MEMORY_GUARD_EVENTS_JSONL_ENV = "MOLT_DIFF_MEMORY_GUARD_EVENTS_JSONL"
 _DIFF_MEMORY_GUARD_GLOBAL_SAMPLES_JSONL_ENV = (
@@ -692,16 +686,6 @@ def _ensure_diff_run_lock() -> None:
     atexit.register(_release_diff_run_lock)
 
 
-def _dyld_guard_marker_path() -> Path:
-    return _diff_state_root() / _DYLD_GUARD_MARKER
-
-
-def _global_dyld_guard_marker_path() -> Path:
-    # Keep dyld guard state in the shared diff root, independent of per-run
-    # target overrides/quarantine paths.
-    return _diff_root() / "target" / ".molt_state" / _DYLD_GUARD_MARKER
-
-
 def _parse_int_env(name: str, default: int) -> int:
     raw = os.environ.get(name, "").strip()
     if not raw:
@@ -1149,20 +1133,6 @@ def _diff_warm_cache() -> bool:
     return raw in {"1", "true", "yes", "on"}
 
 
-def _diff_retry_oom_default() -> bool:
-    raw = os.environ.get("MOLT_DIFF_RETRY_OOM", "").strip().lower()
-    if raw:
-        return raw in {"1", "true", "yes", "on"}
-    return True
-
-
-def _diff_retry_dyld_default() -> bool:
-    raw = os.environ.get("MOLT_DIFF_RETRY_DYLD", "").strip().lower()
-    if raw:
-        return raw in {"1", "true", "yes", "on"}
-    return True
-
-
 def _diff_dyld_preflight_default() -> bool:
     explicit = _bool_env("MOLT_DIFF_DYLD_PREFLIGHT")
     if explicit is not None:
@@ -1200,13 +1170,6 @@ def _diff_batch_compile_server_enabled() -> bool:
     return False
 
 
-def _diff_batch_compile_server_strict() -> bool:
-    explicit = _bool_env("MOLT_DIFF_BATCH_COMPILE_SERVER_STRICT")
-    if explicit is not None:
-        return explicit
-    return False
-
-
 def _diff_batch_compile_server_request_timeout(
     build_timeout: float | None = None,
 ) -> float:
@@ -1223,106 +1186,11 @@ def _diff_batch_compile_server_request_timeout(
     return 60.0
 
 
-def _batch_compile_server_disable_cooldown_sec() -> float:
-    raw = _parse_float_env("MOLT_DIFF_BATCH_COMPILE_SERVER_DISABLE_COOLDOWN_SEC")
-    if raw is None:
-        return 30.0
-    return max(0.0, raw)
-
-
-def _batch_compile_server_disable_after_failures() -> int:
-    return max(
-        1,
-        _parse_int_env(
-            "MOLT_DIFF_BATCH_COMPILE_SERVER_DISABLE_AFTER_FAILURES",
-            2,
-        ),
-    )
-
-
-def _batch_compile_server_mark_disabled(reason: str) -> None:
-    global _BATCH_COMPILE_SERVER_DISABLED_UNTIL
-    global _BATCH_COMPILE_SERVER_DISABLE_REASON
-    global _BATCH_COMPILE_SERVER_FAILURE_COUNT
-    _BATCH_COMPILE_SERVER_FAILURE_COUNT += 1
-    cooldown = _batch_compile_server_disable_cooldown_sec()
-    _BATCH_COMPILE_SERVER_DISABLE_REASON = reason.strip()
-    if (
-        _BATCH_COMPILE_SERVER_FAILURE_COUNT
-        < _batch_compile_server_disable_after_failures()
-    ):
-        _BATCH_COMPILE_SERVER_DISABLED_UNTIL = 0.0
-        return
-    if cooldown <= 0:
-        _BATCH_COMPILE_SERVER_DISABLED_UNTIL = 0.0
-    else:
-        _BATCH_COMPILE_SERVER_DISABLED_UNTIL = time.monotonic() + cooldown
-
-
-def _batch_compile_server_reset_disabled() -> None:
-    global _BATCH_COMPILE_SERVER_DISABLED_UNTIL
-    global _BATCH_COMPILE_SERVER_DISABLE_REASON
-    global _BATCH_COMPILE_SERVER_FAILURE_COUNT
-    _BATCH_COMPILE_SERVER_DISABLED_UNTIL = 0.0
-    _BATCH_COMPILE_SERVER_DISABLE_REASON = ""
-    _BATCH_COMPILE_SERVER_FAILURE_COUNT = 0
-
-
-def _batch_compile_server_disabled_message() -> str | None:
-    remaining = _BATCH_COMPILE_SERVER_DISABLED_UNTIL - time.monotonic()
-    if remaining <= 0:
-        if _BATCH_COMPILE_SERVER_DISABLED_UNTIL > 0:
-            _batch_compile_server_reset_disabled()
-        return None
-    if _BATCH_COMPILE_SERVER_DISABLE_REASON:
-        return (
-            "batch compile server temporarily disabled for this worker "
-            f"({remaining:.1f}s remaining): {_BATCH_COMPILE_SERVER_DISABLE_REASON}"
-        )
-    return (
-        "batch compile server temporarily disabled for this worker "
-        f"({remaining:.1f}s remaining)"
-    )
-
-
-def _diff_disable_daemon_on_dyld() -> bool:
-    raw = os.environ.get("MOLT_DIFF_DISABLE_DAEMON_ON_DYLD", "").strip().lower()
-    if raw:
-        return raw in {"1", "true", "yes", "on"}
-    return True
-
-
-def _diff_quarantine_on_dyld() -> bool:
-    explicit = _bool_env("MOLT_DIFF_QUARANTINE_ON_DYLD")
-    if explicit is not None:
-        return explicit
-    # Keep shared target/state by default to avoid expensive cold rebuilds.
-    return False
-
-
-def _diff_dyld_local_fallback() -> bool:
-    explicit = _bool_env("MOLT_DIFF_DYLD_LOCAL_FALLBACK")
-    if explicit is not None:
-        return explicit
-    # macOS is where dyld import-format corruption has been observed.
-    return sys.platform == "darwin"
-
-
-def _diff_dyld_local_root() -> Path:
-    raw = os.environ.get("MOLT_DIFF_DYLD_LOCAL_ROOT", "").strip()
-    if raw:
-        return Path(raw).expanduser()
-    return Path(tempfile.gettempdir()) / "molt_diff_dyld"
-
-
 def _diff_force_no_cache() -> bool:
     explicit = _bool_env("MOLT_DIFF_FORCE_NO_CACHE")
     if explicit is not None:
         return explicit
     # Throughput-first default: keep cache enabled unless explicitly overridden.
-    # Dyld corruption handling is enforced by the retry/quarantine pipeline
-    # (daemon-off + --no-cache + rebuild + isolated target fallback) only
-    # when a real incident is detected.
     return False
 
 
@@ -1331,167 +1199,6 @@ def _diff_force_rebuild() -> bool:
     if explicit is not None:
         return explicit
     return False
-
-
-def _diff_force_rebuild_on_dyld() -> bool:
-    explicit = _bool_env("MOLT_DIFF_FORCE_REBUILD_ON_DYLD")
-    if explicit is not None:
-        return explicit
-    return True
-
-
-def _diff_dyld_guard_ttl_sec() -> int:
-    return max(60, _parse_int_env("MOLT_DIFF_DYLD_GUARD_TTL_SEC", 6 * 60 * 60))
-
-
-def _diff_dyld_guard_runs() -> int:
-    # Quarantine only a bounded number of subsequent runs after a dyld incident.
-    # This keeps safety hardening while avoiding long streaks of cold rebuilds.
-    return max(1, _parse_int_env("MOLT_DIFF_DYLD_GUARD_RUNS", 1))
-
-
-def _read_dyld_guard_marker() -> dict[str, object] | None:
-    marker_path = _global_dyld_guard_marker_path()
-    if not marker_path.exists():
-        return None
-    try:
-        raw = marker_path.read_text(encoding="utf-8")
-    except OSError:
-        return None
-    try:
-        data = json.loads(raw)
-    except json.JSONDecodeError:
-        return None
-    if not isinstance(data, dict):
-        return None
-    return data
-
-
-def _write_dyld_guard_marker(data: dict[str, object]) -> None:
-    marker_path = _global_dyld_guard_marker_path()
-    marker_path.parent.mkdir(parents=True, exist_ok=True)
-    marker_path.write_text(json.dumps(data, sort_keys=True), encoding="utf-8")
-
-
-def _clear_dyld_guard_marker() -> None:
-    with contextlib.suppress(OSError):
-        _global_dyld_guard_marker_path().unlink()
-
-
-def _mark_dyld_guard(file_path: str) -> None:
-    payload = {
-        "ts": int(time.time()),
-        "pid": os.getpid(),
-        "run_id": os.environ.get("MOLT_DIFF_RUN_ID", ""),
-        "file": file_path,
-        "cargo_target_dir": os.environ.get("CARGO_TARGET_DIR", ""),
-        "remaining_runs": _diff_dyld_guard_runs(),
-    }
-    _write_dyld_guard_marker(payload)
-
-
-def _should_preemptive_dyld_quarantine() -> bool:
-    force = os.environ.get("MOLT_DIFF_DYLD_PREEMPTIVE", "").strip().lower()
-    if force in {"1", "true", "yes", "on"}:
-        return True
-    if force in {"0", "false", "no", "off"}:
-        return False
-    clear = os.environ.get("MOLT_DIFF_CLEAR_DYLD_GUARD", "").strip().lower()
-    if clear in {"1", "true", "yes", "on"}:
-        _clear_dyld_guard_marker()
-        return False
-    marker_path = _global_dyld_guard_marker_path()
-    marker_data = _read_dyld_guard_marker()
-    if marker_data is None:
-        if marker_path.exists():
-            _clear_dyld_guard_marker()
-        return False
-    try:
-        age_sec = time.time() - marker_path.stat().st_mtime
-    except OSError:
-        return False
-    if age_sec > _diff_dyld_guard_ttl_sec():
-        _clear_dyld_guard_marker()
-        return False
-    remaining_raw = marker_data.get("remaining_runs", _diff_dyld_guard_runs())
-    remaining = remaining_raw if isinstance(remaining_raw, int) else 0
-    if remaining <= 0:
-        _clear_dyld_guard_marker()
-        return False
-    return True
-
-
-def _consume_dyld_guard_run() -> int | None:
-    marker_data = _read_dyld_guard_marker()
-    if marker_data is None:
-        return None
-    remaining_raw = marker_data.get("remaining_runs", _diff_dyld_guard_runs())
-    remaining = remaining_raw if isinstance(remaining_raw, int) else 0
-    remaining -= 1
-    if remaining <= 0:
-        _clear_dyld_guard_marker()
-        return 0
-    marker_data["remaining_runs"] = remaining
-    marker_data["last_consume_ts"] = int(time.time())
-    _write_dyld_guard_marker(marker_data)
-    return remaining
-
-
-def _activate_dyld_quarantine_target(
-    *, use_local: bool = False
-) -> tuple[Path, Path, bool]:
-    from tools.proof_queue_pkg.cargo_output_environment import (
-        require_independent_cargo_target,
-    )
-
-    require_independent_cargo_target(os.environ)
-    run_id = os.environ.get("MOLT_DIFF_RUN_ID", "").strip() or "adhoc"
-    safe_run_id = re.sub(r"[^A-Za-z0-9_.-]+", "_", run_id)
-    selected = diff_output_layout.selected_for_compat(
-        os.environ, repo_root=_repo_root()
-    )
-    if selected is not None:
-        quarantine_root = selected / "guest-tmp" / "dyld_quarantine" / safe_run_id
-    elif use_local:
-        quarantine_root = _diff_dyld_local_root() / safe_run_id
-    else:
-        quarantine_root = _diff_root() / "dyld_quarantine" / safe_run_id
-    target_dir = quarantine_root / "target"
-    state_dir = (
-        diff_output_layout.isolated_state_root(
-            repo_root=_repo_root(),
-            target=target_dir,
-            environment=os.environ,
-        )
-        if selected is not None
-        else quarantine_root / "state"
-    )
-    target_dir.mkdir(parents=True, exist_ok=True)
-    state_dir.mkdir(parents=True, exist_ok=True)
-    activated = (
-        os.environ.get("MOLT_DIFF_CARGO_TARGET_DIR", "") != str(target_dir)
-        or os.environ.get("MOLT_BUILD_STATE_DIR", "") != str(state_dir)
-        or os.environ.get("MOLT_BACKEND_DAEMON", "") != "0"
-    )
-    os.environ["MOLT_DIFF_CARGO_TARGET_DIR"] = str(target_dir)
-    os.environ["MOLT_BUILD_STATE_DIR"] = str(state_dir)
-    os.environ["CARGO_TARGET_DIR"] = str(target_dir)
-    if selected is not None:
-        os.environ["MOLT_DIFF_TARGET_MODE"] = "dyld"
-    os.environ["MOLT_BACKEND_DAEMON"] = "0"
-    return target_dir, state_dir, activated
-
-
-def _diff_retry_isolated_default() -> bool:
-    raw = os.environ.get("MOLT_DIFF_RETRY_ISOLATED", "").strip().lower()
-    if raw:
-        return raw in {"1", "true", "yes", "on"}
-    return True
-
-
-def _diff_keep_isolated_retry_dirs(environment: Mapping[str, str]) -> bool:
-    raw = environment.get("MOLT_DIFF_KEEP_ISOLATED_RETRY", "").strip().lower()
-    return raw in {"1", "true", "yes", "on"}
 
 
 def _dyld_preflight_error(
@@ -2618,9 +2325,6 @@ def _batch_compile_server_client(
 ) -> tuple[_BatchCompileServerClient | None, Exception | None]:
     global _BATCH_COMPILE_SERVER_CLIENT
     global _BATCH_COMPILE_SERVER_CLIENT_PID
-    disabled_message = _batch_compile_server_disabled_message()
-    if disabled_message is not None:
-        return None, RuntimeError(disabled_message)
     pid = os.getpid()
     if _BATCH_COMPILE_SERVER_CLIENT_PID != pid:
         _shutdown_batch_compile_server(force=True)
@@ -2646,9 +2350,7 @@ def _batch_compile_server_client(
         if client is not None:
             with contextlib.suppress(Exception):
                 client.close(force=True)
-        _batch_compile_server_mark_disabled(str(exc))
         return None, exc
-    _batch_compile_server_reset_disabled()
     _BATCH_COMPILE_SERVER_CLIENT = client
     _BATCH_COMPILE_SERVER_CLIENT_PID = pid
     atexit.register(_shutdown_batch_compile_server)
@@ -2666,7 +2368,6 @@ def _run_batch_compile_build(
     no_cache: bool,
     rebuild: bool,
     request_timeout: float,
-    strict_mode: bool,
     budget: compat_backends.ItemBudget,
     extra_params: dict[str, object] | None = None,
 ) -> compat_backends.BackendResult:
@@ -2700,128 +2401,87 @@ def _run_batch_compile_build(
         request_timeout = (
             build_cap if request_timeout is None else min(request_timeout, build_cap)
         )
-    attempts = 2 if strict_mode else 1
-    last_error: Exception = RuntimeError("batch compile server request failed")
-    for attempt in range(attempts):
+    admission = compat_backends.suite_trip_outcome(
+        harness_outcomes.read_suite_trip(env)
+    )
+    if admission is not None:
+        return admission.as_build_failure(
+            detail="suite guard stopped batch admission", fallback="suite guard tripped"
+        )
+    if budget.expired():
+        return budget.exhausted_result(build_failed=True)
+    client, start_error = _batch_compile_server_client(
+        env, request_timeout=budget.limit(request_timeout), budget=budget
+    )
+    if client is None:
+        error = start_error or RuntimeError("batch compile server startup failed")
+        if isinstance(error, (TimeoutError, compat_backends.ItemBudgetExpired)):
+            return compat_backends.BackendResult.from_deadline(
+                timeout=request_timeout, stderr=str(error), build_failed=True
+            )
         admission = compat_backends.suite_trip_outcome(
             harness_outcomes.read_suite_trip(env)
         )
         if admission is not None:
             return admission.as_build_failure(
-                detail="suite guard stopped batch admission",
+                detail="suite guard stopped batch startup",
                 fallback="suite guard tripped",
             )
-        if budget.expired():
-            return budget.exhausted_result(build_failed=True)
-        if strict_mode and attempt > 0:
-            _batch_compile_server_reset_disabled()
-        client, start_error = _batch_compile_server_client(
-            env,
-            request_timeout=budget.limit(request_timeout),
-            budget=budget,
+        return compat_backends.BackendResult(
+            None,
+            str(error),
+            127,
+            build_failed=True,
+            detail="batch compile server startup failed",
         )
-        if client is None:
-            if start_error is not None:
-                last_error = start_error
-            if isinstance(
-                last_error, (TimeoutError, compat_backends.ItemBudgetExpired)
-            ):
-                return compat_backends.BackendResult.from_deadline(
-                    timeout=request_timeout,
-                    stderr=str(last_error),
-                    build_failed=True,
-                )
-            admission = compat_backends.suite_trip_outcome(
-                harness_outcomes.read_suite_trip(env)
+    request_timeout = budget.limit(request_timeout)
+    if request_timeout == 0:
+        return budget.exhausted_result(build_failed=True)
+    try:
+        response = client.request("build", params=params, timeout=request_timeout)
+    except Exception as error:
+        # Capture the submitted request's outcome before shutdown can change
+        # process observations. An indeterminate request is never resubmitted.
+        failure = compat_backends.BackendResult(
+            None, str(error), 127, build_failed=True
+        )
+        evidence = harness_outcomes.read_suite_trip(env)
+        deadline = isinstance(error, (TimeoutError, compat_backends.ItemBudgetExpired))
+        if not deadline:
+            failure = compat_backends.merge_suite_trip_result(
+                failure, getattr(error, "batch_request_custody", None), evidence
             )
-            if admission is not None:
-                return admission.as_build_failure(
-                    detail="suite guard stopped batch startup",
-                    fallback="suite guard tripped",
-                )
-            if strict_mode and attempt + 1 < attempts:
-                continue
-            raise last_error
-        request_timeout = budget.limit(request_timeout)
-        if request_timeout == 0:
-            return budget.exhausted_result(build_failed=True)
-        try:
-            response = client.request(
-                "build",
-                params=params,
-                timeout=request_timeout,
+        _shutdown_batch_compile_server(force=True)
+        if failure.rss_limit_exceeded:
+            return failure
+        if deadline:
+            return compat_backends.BackendResult.from_deadline(
+                timeout=request_timeout, stderr=str(error), build_failed=True
             )
-        except Exception as exc:
-            last_error = exc
-            # Freeze request custody before shutdown starts another request or
-            # changes the server exit observation. Classify before retry/fallback.
-            failure = compat_backends.BackendResult(
-                None, str(exc), 127, build_failed=True
+        if evidence is not None and evidence.infrastructure_failure is not None:
+            return compat_backends.suite_trip_outcome(evidence).as_build_failure(
+                detail="invalid suite trip evidence", fallback="suite guard failure"
             )
-            evidence = harness_outcomes.read_suite_trip(env)
-            failure = (
-                compat_backends.merge_suite_trip_result(
-                    failure,
-                    getattr(exc, "batch_request_custody", None),
-                    evidence,
-                )
-                if not isinstance(
-                    exc, (TimeoutError, compat_backends.ItemBudgetExpired)
-                )
-                else failure
-            )
-            _batch_compile_server_mark_disabled(str(last_error))
-            _shutdown_batch_compile_server(force=True)
-            if failure.rss_limit_exceeded:
-                return failure
-            if isinstance(exc, (TimeoutError, compat_backends.ItemBudgetExpired)):
-                return compat_backends.BackendResult.from_deadline(
-                    timeout=request_timeout,
-                    stderr=str(exc),
-                    build_failed=True,
-                )
-            if evidence is not None:
-                # An unattributed interruption still failed. Retain the suite
-                # verdict; a retry/fallback must not manufacture a passing cell.
-                if evidence.infrastructure_failure is not None:
-                    return compat_backends.suite_trip_outcome(
-                        evidence
-                    ).as_build_failure(
-                        detail="invalid suite trip evidence",
-                        fallback="suite guard failure",
-                    )
-                return failure
-            if strict_mode and attempt + 1 < attempts:
-                continue
-            raise last_error
-        stdout = response.get("stdout")
-        stderr = response.get("stderr")
-        error = response.get("error")
-        returncode = response.get("returncode")
-        if not isinstance(returncode, int):
-            returncode = 1 if not bool(response.get("ok")) else 0
-        out_text = stdout if isinstance(stdout, str) else ""
-        err_text = stderr if isinstance(stderr, str) else ""
-        if isinstance(error, str) and error:
-            if err_text:
-                err_text = f"{err_text}\n{error}"
-            else:
-                err_text = error
-        _batch_compile_server_reset_disabled()
-        result = compat_backends.BackendResult(out_text, err_text, returncode)
-        if returncode != 0:
-            result = compat_backends.merge_suite_trip_result(
-                result,
-                response.custody,
-                harness_outcomes.read_suite_trip(env),
-            )
-        if returncode != 0:
-            return result.as_build_failure(
-                detail="batch compile failed",
-                fallback="batch compile failed",
-            )
-        return result
-    raise last_error
+        return failure
+    stdout = response.get("stdout")
+    stderr = response.get("stderr")
+    error = response.get("error")
+    returncode = response.get("returncode")
+    if not isinstance(returncode, int):
+        returncode = 1 if not bool(response.get("ok")) else 0
+    out_text = stdout if isinstance(stdout, str) else ""
+    err_text = stderr if isinstance(stderr, str) else ""
+    if isinstance(error, str) and error:
+        err_text = f"{err_text}\n{error}" if err_text else error
+    result = compat_backends.BackendResult(out_text, err_text, returncode)
+    if returncode != 0:
+        result = compat_backends.merge_suite_trip_result(
+            result, response.custody, harness_outcomes.read_suite_trip(env)
+        )
+        return result.as_build_failure(
+            detail="batch compile failed", fallback="batch compile failed"
+        )
+    return result
 
 
 def run_cpython(
@@ -3301,9 +2961,7 @@ def _run_molt_owned(
     build_timeout = budget.policy.phase("native", "build")
     rss_limit_kb = _diff_fail_rss_kb()
     build_rc = 0
-    build_via_batch_server = False
     batch_requested = _diff_batch_compile_server_enabled()
-    batch_strict = _diff_batch_compile_server_strict()
     batch_request_timeout = _diff_batch_compile_server_request_timeout(build_timeout)
     if batch_requested:
         try:
@@ -3321,27 +2979,19 @@ def _run_molt_owned(
                 no_cache=no_cache,
                 rebuild=rebuild,
                 request_timeout=batch_request_timeout,
-                strict_mode=batch_strict,
                 budget=budget,
             )
         except Exception as exc:
-            if batch_strict:
-                message = f"Batch compile server strict mode failed: {exc}"
-                _record_rss_metrics(
-                    file_path,
-                    build_metrics=None,
-                    run_metrics=None,
-                    build_rc=127,
-                    run_rc=None,
-                    status="build_batch_server_error",
-                )
-                return compat_backends.BackendResult(
-                    None, message, 127, build_failed=True
-                )
-            print(
-                "[WARN] Batch compile server unavailable; falling back to subprocess build: "
-                f"{exc}"
+            message = f"Batch compile server failed: {exc}"
+            _record_rss_metrics(
+                file_path,
+                build_metrics=None,
+                run_metrics=None,
+                build_rc=127,
+                run_rc=None,
+                status="build_batch_server_error",
             )
+            return compat_backends.BackendResult(None, message, 127, build_failed=True)
         else:
             if (
                 batch_result.timed_out
@@ -3358,11 +3008,10 @@ def _run_molt_owned(
                     else "build_timeout",
                 )
                 return batch_result
-            build_via_batch_server = True
             build_rc = batch_result.returncode
             build_outcome = batch_result
 
-    if not build_via_batch_server:
+    else:
         build_cmd = [
             _resolve_molt_cli_python(),
             "-m",
@@ -3543,117 +3192,6 @@ def _run_molt_owned(
     return outcome
 
 
-def _is_dyld_unknown_imports(stderr: str) -> bool:
-    needle = stderr.lower()
-    return "dyld" in needle and "unknown imports format" in needle
-
-
-def _is_timeout_error(stderr: str) -> bool:
-    needle = stderr.lower()
-    return "timeout after" in needle
-
-
-def _is_backend_daemon_build_error(stderr: str) -> bool:
-    needle = stderr.lower()
-    # Retry only failures that identify the daemon transport/startup protocol.
-    # A backend compilation failure or compiler panic is deterministic program
-    # signal; rebuilding it cold wastes minutes and cannot repair the input.
-    return any(
-        token in needle
-        for token in (
-            "backend daemon failed to become ready",
-            "failed to start backend daemon",
-            "backend daemon connection failed",
-            "backend daemon died while request was in flight",
-            "backend daemon returned empty response",
-            "backend daemon returned no response",
-            "backend daemon returned invalid json",
-            "backend daemon returned non-object response",
-            "backend daemon response missing job results",
-            "backend daemon response had malformed job payload",
-            "backend daemon reported success but output is missing",
-            "backend daemon process is not running",
-            "backend daemon closed response pipe",
-            "incompatiblesignature(",
-        )
-    )
-
-
-def _run_isolated_retry(
-    run: Callable[[dict[str, str]], compat_backends.BackendResult],
-    *,
-    local_tmp: bool = False,
-    environment: Mapping[str, str] | None = None,
-) -> compat_backends.BackendResult:
-    from tools.proof_queue_pkg.cargo_output_environment import (
-        require_independent_cargo_target,
-    )
-
-    environment = dict(os.environ if environment is None else environment)
-    require_independent_cargo_target(environment)
-    selected = diff_output_layout.selected_for_compat(
-        environment, repo_root=_repo_root()
-    )
-    retry_base = (
-        _diff_tmp_root(environment)
-        if selected is not None
-        else Path(tempfile.gettempdir())
-        if local_tmp
-        else _diff_tmp_root(environment)
-    )
-    retry_lease = diff_output_layout.new_guest_leaf(
-        retry_base,
-        prefix="molt_diff_retry_",
-        boundary=retry_base,
-        environment=environment,
-        repo_root=_repo_root(),
-    )
-    leases = [retry_lease]
-
-    def run_retry() -> compat_backends.BackendResult:
-        retry_root = retry_lease.path
-        target_dir = retry_root / "target"
-        state_dir = (
-            diff_output_layout.isolated_state_root(
-                repo_root=_repo_root(),
-                target=target_dir,
-                environment=environment,
-            )
-            if selected is not None
-            else retry_root / "state"
-        )
-        target_dir.mkdir(parents=True, exist_ok=True)
-        if selected is not None:
-            leases.append(
-                diff_output_layout.claim_new_guest_leaf(
-                    state_dir,
-                    boundary=canonical_artifact_root(_repo_root(), environment),
-                    environment=environment,
-                    repo_root=_repo_root(),
-                )
-            )
-        else:
-            state_dir.mkdir(parents=True, exist_ok=True)
-        env = {
-            "CARGO_TARGET_DIR": str(target_dir),
-            "MOLT_DIFF_CARGO_TARGET_DIR": str(target_dir),
-            "MOLT_BUILD_STATE_DIR": str(state_dir),
-            "MOLT_BACKEND_DAEMON": "0",
-            "MOLT_USE_SCCACHE": "0",
-        }
-        if selected is not None:
-            env["MOLT_DIFF_TARGET_MODE"] = "isolated-retry"
-        return run(env)
-
-    return compat_backends.run_with_guest_outputs(
-        leases,
-        run_retry,
-        environment=environment,
-        repo_root=_repo_root(),
-        keep=_diff_keep_isolated_retry_dirs(environment),
-    )
-
-
 def _aggregate_rss_metrics(run_id: str) -> dict[str, object]:
     if not _diff_measure_rss():
         return {}
@@ -3701,12 +3239,10 @@ def _aggregate_rss_metrics(run_id: str) -> dict[str, object]:
 def _aggregate_rss_entries_by_file(
     entries: list[dict[str, object]],
 ) -> list[dict[str, object]]:
-    """Collapse per-attempt RSS entries into one record per test file.
+    """Collapse warmup and execution RSS observations per test file.
 
-    The diff harness can emit multiple records for a single file when retry lanes
-    run (dyld/cache/isolated fallback). Top-RSS reporting should keep max RSS
-    per file but use the final status for that file, so pass/fail reporting
-    matches the actual differential outcome.
+    An explicit cache warmup and the selected execution can both report metrics.
+    Keep their maximum RSS; the caller supplies the authoritative item status.
     """
 
     by_file: dict[str, dict[str, object]] = {}
@@ -3926,197 +3462,6 @@ def _compat_backend_registry() -> dict[str, compat_backends.BackendAdapter]:
     return _COMPAT_BACKEND_REGISTRY
 
 
-def _run_native_backend(
-    file_path: str,
-    context: compat_backends.BackendExecutionContext,
-) -> compat_backends.BackendResult:
-    """Run the NATIVE backend with the full dyld/daemon/OOM retry pipeline.
-
-    This is the native adapter's implementation and is kept native-specific because the
-    daemon custody, dyld-quarantine, and isolated-retry machinery are all
-    native-shaped. Returns the complete typed result; an intentional guest exit
-    code must never substitute for a resource-failure fact. A timeout is not evidence of damaged cache
-    state: preserve its original result instead of allocating a colder target
-    and hiding the critical-path failure behind another full build.
-    """
-    outcome = run_molt(
-        file_path,
-        context.build_profile,
-        execution_context=context,
-    )
-    if outcome.blocks_build_recovery:
-        return outcome
-    saw_dyld_retry = False
-    if _diff_retry_dyld_default() and _is_dyld_unknown_imports(
-        outcome.child_stderr or ""
-    ):
-        if context.budget.expired():
-            return context.budget.exhausted_result(build_failed=True)
-        _mark_dyld_guard(file_path)
-        saw_dyld_retry = True
-        print(
-            "[RETRY] "
-            f"{file_path} encountered dyld unknown imports format; "
-            "retrying with backend daemon disabled (cache preserved)."
-        )
-        outcome = run_molt(
-            file_path,
-            context.build_profile,
-            daemon_enabled=False,
-            no_cache=False,
-            execution_context=context,
-        )
-        if not outcome.blocks_build_recovery and _is_dyld_unknown_imports(
-            outcome.child_stderr or ""
-        ):
-            if context.budget.expired():
-                return context.budget.exhausted_result(build_failed=True)
-            print(
-                "[RETRY] "
-                f"{file_path} persistent dyld failure; retrying with "
-                "daemon disabled and --no-cache on shared target."
-            )
-            outcome = run_molt(
-                file_path,
-                context.build_profile,
-                daemon_enabled=False,
-                no_cache=True,
-                execution_context=context,
-            )
-        if (
-            not outcome.blocks_build_recovery
-            and _is_dyld_unknown_imports(outcome.child_stderr or "")
-            and _diff_force_rebuild_on_dyld()
-        ):
-            if context.budget.expired():
-                return context.budget.exhausted_result(build_failed=True)
-            print(
-                "[RETRY] "
-                f"{file_path} persistent dyld failure; retrying with "
-                "daemon disabled, --no-cache, and --rebuild."
-            )
-            outcome = run_molt(
-                file_path,
-                context.build_profile,
-                daemon_enabled=False,
-                no_cache=True,
-                rebuild=True,
-                execution_context=context,
-            )
-        if (
-            not outcome.blocks_build_recovery
-            and _is_dyld_unknown_imports(outcome.child_stderr or "")
-            and _diff_retry_isolated_default()
-        ):
-            if context.budget.expired():
-                return context.budget.exhausted_result(build_failed=True)
-            use_local_retry = _diff_dyld_local_fallback()
-            print(
-                "[RETRY] "
-                f"{file_path} persistent dyld failure; retrying with isolated "
-                f"{'local /tmp ' if use_local_retry else ''}"
-                "target/build-state, daemon off, and --rebuild."
-            )
-            outcome = _run_isolated_retry(
-                lambda isolated_env: run_molt(
-                    file_path,
-                    context.build_profile,
-                    daemon_enabled=False,
-                    no_cache=True,
-                    rebuild=True,
-                    extra_env=isolated_env,
-                    execution_context=context,
-                ),
-                local_tmp=use_local_retry,
-                environment=context.environment,
-            )
-    if outcome.blocks_build_recovery:
-        return outcome
-    if (
-        not context.budget.expired()
-        and saw_dyld_retry
-        and _diff_disable_daemon_on_dyld()
-    ):
-        os.environ["MOLT_BACKEND_DAEMON"] = "0"
-        os.environ["MOLT_DIFF_FORCE_NO_CACHE"] = "1"
-        if _diff_force_rebuild_on_dyld():
-            os.environ["MOLT_DIFF_FORCE_REBUILD"] = "1"
-        if _diff_quarantine_on_dyld():
-            use_local_quarantine = _diff_dyld_local_fallback()
-            target_dir, state_dir, activated = _activate_dyld_quarantine_target(
-                use_local=use_local_quarantine
-            )
-            if activated:
-                print(
-                    "[WARN] dyld unknown imports format detected; forcing "
-                    "MOLT_BACKEND_DAEMON=0 and quarantining remaining tests to "
-                    f"{'local ' if use_local_quarantine else ''}"
-                    f"target={target_dir} state={state_dir} (rebuild forced)."
-                )
-        else:
-            print(
-                "[WARN] dyld unknown imports format detected; forcing "
-                "MOLT_BACKEND_DAEMON=0, --no-cache, and --rebuild for "
-                "remaining tests in this run (shared target retained)."
-            )
-    if (
-        not outcome.blocks_build_recovery
-        and outcome.stdout is None
-        and _is_backend_daemon_build_error(outcome.child_stderr or "")
-    ):
-        if context.budget.expired():
-            return context.budget.exhausted_result(build_failed=True)
-        print(
-            "[RETRY] "
-            f"{file_path} backend daemon/cache build failure; retrying with "
-            "daemon disabled (cache preserved)."
-        )
-        outcome = run_molt(
-            file_path,
-            context.build_profile,
-            daemon_enabled=False,
-            no_cache=False,
-            execution_context=context,
-        )
-        if (
-            not outcome.blocks_build_recovery
-            and outcome.stdout is None
-            and _is_backend_daemon_build_error(outcome.child_stderr or "")
-            and _diff_retry_isolated_default()
-        ):
-            if context.budget.expired():
-                return context.budget.exhausted_result(build_failed=True)
-            print(
-                "[RETRY] "
-                f"{file_path} persistent backend daemon/cache failure; retrying with "
-                "isolated target/build-state and --no-cache."
-            )
-            outcome = _run_isolated_retry(
-                lambda isolated_env: run_molt(
-                    file_path,
-                    context.build_profile,
-                    daemon_enabled=False,
-                    no_cache=True,
-                    extra_env=isolated_env,
-                    execution_context=context,
-                ),
-                environment=context.environment,
-            )
-        if (
-            not outcome.blocks_build_recovery
-            and outcome.stdout is None
-            and _is_backend_daemon_build_error(outcome.child_stderr or "")
-        ):
-            if context.budget.expired():
-                return context.budget.exhausted_result(build_failed=True)
-            os.environ["MOLT_BACKEND_DAEMON"] = "0"
-            print(
-                "[WARN] Persistent backend daemon/cache failure detected; "
-                "forcing MOLT_BACKEND_DAEMON=0 for remaining tests in this run."
-            )
-    return outcome
-
-
 def _run_backend_for_diff(
     *,
     backend: str,
@@ -4127,27 +3472,15 @@ def _run_backend_for_diff(
     if context.budget.expired():
         return context.budget.exhausted_result(build_failed=True)
     try:
-        if backend == "native":
-            result = _run_native_backend(file_path, context)
-            # Pass the native outcome through the SAME fault-injection seam the other
-            # backends use, so the synthetic-divergence proof works uniformly on
-            # every backend (the seam is inert unless MOLT_COMPAT_FAULT_INJECT names
-            # this backend). Native keeps its rich retry pipeline above; only the
-            # final outcome is routed through the seam, symmetric with the adapters.
-        else:
-            registry = _compat_backend_registry()
-            adapter = registry.get(backend)
-            if adapter is None:
-                raise ValueError(f"unknown differential backend {backend!r}")
-            avail = adapter.availability(context.budget)
-            context.budget.check(build_failed=True)
-            if not avail.available:
-                print(f"[UNCALIBRATED] {file_path} ({backend}: {avail.reason})")
-                return avail
-            result = adapter.build_and_run(
-                file_path,
-                context=context,
-            )
+        adapter = _compat_backend_registry().get(backend)
+        if adapter is None:
+            raise ValueError(f"unknown differential backend {backend!r}")
+        availability = adapter.availability(context.budget)
+        context.budget.check(build_failed=True)
+        if not availability.available:
+            print(f"[UNCALIBRATED] {file_path} ({backend}: {availability.reason})")
+            return availability
+        result = adapter.build_and_run(file_path, context=context)
     except compat_backends.ItemBudgetExpired as error:
         return error.result()
     # Apply the fault-injection seam once, preserving all execution metadata.
@@ -4492,9 +3825,7 @@ def diff_test(
         # The CPython oracle, the meta gating, the comparison law, and the
         # cross-backend divergence check are all backend-INDEPENDENT (doc 66
         # FACT 2). Only HOW a backend produces (stdout, stderr, rc) differs, and
-        # that lives in the backend adapter. `native` keeps the full dyld/daemon/
-        # OOM retry pipeline (it is native-shaped); other backends use their
-        # adapter's guarded build+run.
+        # that lives in the selected adapter's single guarded build+run attempt.
         # --- Per-backend verdict vs CPython (the single comparison law) -------
         def _verdict(outcome: compat_backends.BackendResult) -> tuple[bool, str]:
             """(ok, detail) for one backend vs CPython under the one law."""
@@ -4747,7 +4078,6 @@ def run_diff(
     fail_fast: bool = False,
     failures_output: Path | None = None,
     warm_cache: bool = False,
-    retry_oom: bool = False,
     deadline_s: float | None = None,
     oracle_version: str | None = None,
 ) -> dict:
@@ -4879,38 +4209,6 @@ def run_diff(
         if suite_sentinel is not None:
             os.environ[sentinel_env_key] = "1"
             atexit.register(close_suite_sentinel)
-        if (
-            admission.admits()
-            and _should_preemptive_dyld_quarantine()
-            and _diff_disable_daemon_on_dyld()
-        ):
-            remaining = _consume_dyld_guard_run()
-            remaining_suffix = (
-                f" remaining_guard_runs={remaining}." if remaining is not None else "."
-            )
-            os.environ["MOLT_BACKEND_DAEMON"] = "0"
-            os.environ["MOLT_DIFF_FORCE_NO_CACHE"] = "1"
-            if _diff_force_rebuild_on_dyld():
-                os.environ["MOLT_DIFF_FORCE_REBUILD"] = "1"
-            if _diff_quarantine_on_dyld():
-                use_local_quarantine = _diff_dyld_local_fallback()
-                target_dir, state_dir, activated = _activate_dyld_quarantine_target(
-                    use_local=use_local_quarantine
-                )
-                if activated:
-                    print(
-                        "[WARN] Active dyld guard marker detected; forcing "
-                        "MOLT_BACKEND_DAEMON=0 and quarantining this run to "
-                        f"{'local ' if use_local_quarantine else ''}"
-                        f"target={target_dir} state={state_dir} with rebuild forced"
-                        f"{remaining_suffix}"
-                    )
-            else:
-                print(
-                    "[WARN] Active dyld guard marker detected; forcing "
-                    "MOLT_BACKEND_DAEMON=0, --no-cache, and --rebuild for this run "
-                    f"(shared target retained){remaining_suffix}"
-                )
         os.environ.setdefault("CARGO_TARGET_DIR", str(_diff_cargo_target_root()))
         test_files = _order_test_files(test_files, jobs)
         if warm_cache:
@@ -5109,32 +4407,6 @@ def run_diff(
             else guard_trip_outcome.stderr.rstrip("\n")
         )
         status_by_path = {path: status for path, status in results}
-        if jobs > 1 and retry_oom and not fail_fast and guard_trip_message is None:
-            oom_paths = [p for p, s in status_by_path.items() if s == "oom"]
-            for index, path in enumerate(oom_paths):
-                if suite_trip_outcome() is not None or not admission.admits():
-                    break
-                if index == 0:
-                    _emit_line(
-                        f"[RETRY-OOM] Retrying {len(oom_paths)} test(s) with --jobs 1",
-                        None,
-                        echo=True,
-                    )
-                retry_payload = _diff_run_single(
-                    path,
-                    python_exe,
-                    build_profile,
-                    targets,
-                    compiler_target_python,
-                    admission.new_budget(),
-                )
-                if retry_payload["guard_signal"] is not None:
-                    defer_suite_signal(retry_payload["guard_signal"], None)
-                    signal_by_path[path] = retry_payload["guard_signal"]
-                retry_status = retry_payload["status"]
-                assert isinstance(retry_status, str)
-                status_by_path[path] = retry_status
-                duration_by_path[path] = float(retry_payload["duration_s"])
         guard_trip_outcome = suite_trip_outcome()
         guard_trip_message = (
             None
@@ -5269,9 +4541,7 @@ def run_diff(
                 )
                 or "",
                 "warm_cache": warm_cache,
-                "retry_oom": retry_oom,
                 "batch_compile_server": _diff_batch_compile_server_enabled(),
-                "batch_compile_server_strict": _diff_batch_compile_server_strict(),
                 "memory_guard": {
                     "enabled": True,
                     **_config_payload(guard_config),
@@ -5455,7 +4725,7 @@ if __name__ == "__main__":
         "--fail-fast",
         action="store_true",
         help="Stop admitting tests after a failure, OOM, or unavailable target; "
-        "record already-running results without retrying OOM tests.",
+        "record every already-running result.",
     )
     parser.add_argument(
         "--failures-output",
@@ -5465,16 +4735,6 @@ if __name__ == "__main__":
         "--warm-cache",
         action="store_true",
         help="Warm shared MOLT_CACHE with build-only pass before running tests.",
-    )
-    parser.add_argument(
-        "--retry-oom",
-        action="store_true",
-        help="Retry OOM failures once with --jobs 1 (enabled by default).",
-    )
-    parser.add_argument(
-        "--no-retry-oom",
-        action="store_true",
-        help="Disable OOM retries.",
     )
 
     args = parser.parse_args()
@@ -5520,11 +4780,6 @@ if __name__ == "__main__":
 
     if target_paths:
         targets = [Path(path) for path in target_paths]
-        retry_oom = _diff_retry_oom_default()
-        if args.retry_oom:
-            retry_oom = True
-        if args.no_retry_oom:
-            retry_oom = False
         try:
             summary = run_diff(
                 targets,
@@ -5540,7 +4795,6 @@ if __name__ == "__main__":
                 fail_fast=args.fail_fast,
                 failures_output=failures_output,
                 warm_cache=args.warm_cache or _diff_warm_cache(),
-                retry_oom=retry_oom,
                 deadline_s=args.deadline_s,
                 oracle_version=args.python_version,
             )
@@ -5573,7 +4827,6 @@ if __name__ == "__main__":
             fail_fast=args.fail_fast,
             failures_output=failures_output,
             warm_cache=args.warm_cache or _diff_warm_cache(),
-            retry_oom=_diff_retry_oom_default(),
             deadline_s=args.deadline_s,
             oracle_version=args.python_version,
         )

@@ -1011,8 +1011,8 @@ def install_fake_registry(monkeypatch, cpython_oracle):
             name: _FakeAdapter(name, result) for name, result in backend_results.items()
         }
         native_contexts: list[compat_backends.BackendExecutionContext] = []
-        # native still flows through run_molt -> stub run_molt to return the
-        # native scripted result so even native is in-memory here.
+        # Exercise the real native adapter with an in-memory build boundary,
+        # while the other adapters record the same context directly.
         native_result = backend_results.get("native")
 
         def _fake_run_molt(file_path, build_profile, **kwargs):
@@ -1024,6 +1024,8 @@ def install_fake_registry(monkeypatch, cpython_oracle):
             return native_result
 
         monkeypatch.setattr(molt_diff, "run_molt", _fake_run_molt)
+        if native_result is not None:
+            registry["native"] = compat_backends.NativeAdapter(_fake_run_molt)
         monkeypatch.setattr(molt_diff, "_COMPAT_BACKEND_REGISTRY", registry)
         cpython_result = (
             cpython
@@ -1691,12 +1693,12 @@ def test_intentional_exit_125_remains_semantic_evidence(
     assert molt_diff.diff_test(str(fake_test_file))["resolved_status"] == "pass"
 
 
-@pytest.mark.parametrize("entry", ["initial", "after-dyld", "after-daemon"])
 @pytest.mark.parametrize(
-    "kind", ["infrastructure", "rss", "allocation", "interrupted", "timeout"]
+    "kind",
+    ["infrastructure", "rss", "allocation", "interrupted", "timeout", "dyld", "daemon"],
 )
-def test_native_infrastructure_failure_never_triggers_another_retry_or_quarantine(
-    monkeypatch, entry, kind
+def test_native_first_failure_is_terminal_and_preserves_selection(
+    monkeypatch, tmp_path, kind
 ):
     failure = {
         "infrastructure": _infrastructure_outcome(build_failed=True),
@@ -1712,45 +1714,50 @@ def test_native_infrastructure_failure_never_triggers_another_retry_or_quarantin
         "timeout": compat_backends.BackendResult.from_deadline(
             timeout=5, build_failed=True
         ),
+        "dyld": compat_backends.BackendResult(
+            None, "dyld: unknown imports format", 1, build_failed=True
+        ),
+        "daemon": compat_backends.BackendResult(
+            None, "backend daemon connection failed", 1, build_failed=True
+        ),
     }[kind]
-    results = [failure] if entry == "initial" else [_outcome(None, rc=1), failure]
+    selected = {
+        "MOLT_DIFF_ROOT": str(tmp_path),
+        "MOLT_BACKEND_DAEMON": "1",
+        "MOLT_DIFF_FORCE_NO_CACHE": "0",
+        "MOLT_DIFF_FORCE_REBUILD": "0",
+    }
+    for key, value in selected.items():
+        monkeypatch.setenv(key, value)
     calls = []
 
-    def run(*args, **kwargs):
-        calls.append(kwargs)
-        return results.pop(0)
+    def run(file, profile, *, execution_context, **kwargs):
+        calls.append((file, profile, execution_context, kwargs))
+        return failure if len(calls) == 1 else _outcome("recovered")
 
     monkeypatch.setattr(molt_diff, "run_molt", run)
     monkeypatch.setattr(
-        molt_diff, "_diff_retry_dyld_default", lambda: entry == "after-dyld"
+        molt_diff, "_COMPAT_BACKEND_REGISTRY", compat_backends.build_registry(run)
     )
-    monkeypatch.setattr(molt_diff, "_is_dyld_unknown_imports", lambda _: True)
-    monkeypatch.setattr(molt_diff, "_is_backend_daemon_build_error", lambda _: True)
-    monkeypatch.setattr(molt_diff, "_mark_dyld_guard", lambda _: None)
-    for hook in (
-        "_diff_disable_daemon_on_dyld",
-        "_diff_retry_isolated_default",
-        "_diff_force_rebuild_on_dyld",
-    ):
-        monkeypatch.setattr(
-            molt_diff,
-            hook,
-            lambda: pytest.fail(
-                "terminal execution evidence cannot authorize retry/quarantine"
-            ),
-        )
     context = compat_backends.BackendExecutionContext(
         target_python=TargetPythonVersion(3, 12, 0),
         build_profile="dev",
         capabilities="",
-        environment={},
+        environment=selected.copy(),
         budget=compat_backends.ItemBudget(
             compat_backends.TimeoutPolicy.from_environment({}), None
         ),
     )
-    assert molt_diff._run_native_backend("fixture.py", context) is failure
-    assert len(calls) == (1 if entry == "initial" else 2)
-    assert results == []
+    assert (
+        molt_diff._run_backend_for_diff(
+            backend="native", file_path="fixture.py", context=context
+        )
+        is failure
+    )
+    assert calls == [("fixture.py", "dev", context, {})]
+    assert context.environment == selected
+    assert {key: os.environ[key] for key in selected} == selected
+    assert not list(tmp_path.iterdir())
 
 
 @pytest.mark.parametrize("returncode", [0, 1, 9, -9, 137, 0xC0000409])
@@ -2145,7 +2152,9 @@ def test_shared_item_budget_caps_successive_guarded_phases(monkeypatch):
 
 
 @pytest.mark.parametrize("remaining", [0.0, 2.0])
-def test_native_recovery_cannot_renew_item_deadline(monkeypatch, remaining):
+def test_native_failure_cannot_replace_the_selected_budget_or_outcome(
+    monkeypatch, remaining
+):
     clock = SimpleNamespace(now=0.0)
     monkeypatch.setattr(
         compat_backends, "time", SimpleNamespace(monotonic=lambda: clock.now)
@@ -2161,31 +2170,26 @@ def test_native_recovery_cannot_renew_item_deadline(monkeypatch, remaining):
         environment={},
         budget=budget,
     )
+    failure = compat_backends.BackendResult(
+        None, "dyld: unknown imports format", 1, build_failed=True
+    )
     calls = []
-    markers = []
 
-    def native(
-        file, profile, *, execution_context, daemon_enabled=None, no_cache=False
-    ):
+    def native(file, profile, *, execution_context):
         assert execution_context.budget is budget
         calls.append(budget.limit(policy.phase("native", "build")))
-        if len(calls) == 1:
-            clock.now = 10.0 - remaining
-            return compat_backends.BackendResult(
-                None, "dyld: unknown imports format", 1, build_failed=True
-            )
-        return compat_backends.BackendResult("recovered", "", 0)
+        clock.now = 10.0 - remaining
+        return failure
 
-    monkeypatch.setattr(molt_diff, "run_molt", native)
-    monkeypatch.setattr(molt_diff, "_diff_retry_dyld_default", lambda: True)
-    monkeypatch.setattr(molt_diff, "_mark_dyld_guard", markers.append)
-    monkeypatch.setattr(molt_diff, "_diff_disable_daemon_on_dyld", lambda: False)
-    result = molt_diff._run_native_backend("case.py", context)
-    assert calls == ([6] if remaining == 0 else [6, 2])
-    assert markers == ([] if remaining == 0 else ["case.py"])
-    assert result.timed_out is (remaining == 0)
-    if remaining:
-        assert result.stdout == "recovered"
+    monkeypatch.setattr(
+        molt_diff, "_COMPAT_BACKEND_REGISTRY", compat_backends.build_registry(native)
+    )
+    result = molt_diff._run_backend_for_diff(
+        backend="native", file_path="case.py", context=context
+    )
+    assert result is failure
+    assert calls == [6]
+    assert budget.deadline == 10.0
 
 
 def test_item_deadline_reaches_actual_sleeping_child(monkeypatch, tmp_path):
@@ -2213,3 +2217,78 @@ def test_item_deadline_reaches_actual_sleeping_child(monkeypatch, tmp_path):
     assert result.timed_out
     assert result.infrastructure_failure is None
     assert "started" in (result.stdout or "") and "late" not in (result.stdout or "")
+
+
+@pytest.mark.parametrize(
+    "diagnostic", ["dyld: unknown imports format", "backend daemon connection failed"]
+)
+def test_native_child_failure_is_reported_once_without_recovery(
+    tmp_path, monkeypatch, capsys, diagnostic
+):
+    source = tmp_path / "case.py"
+    source.write_text("print('expected')\n")
+    launches = tmp_path / "launches"
+    script = "import pathlib,sys\nwith pathlib.Path(sys.argv[1]).open('ab') as sink: sink.write(b'x')\nprint(sys.argv[2],file=sys.stderr)\nraise SystemExit(7)"
+    monkeypatch.setenv("MOLT_DIFF_ROOT", str(tmp_path / "evidence"))
+    monkeypatch.setenv("MOLT_DIFF_TMPDIR", str(tmp_path / "scratch"))
+    # All incident mutations, if an old implementation attempts them, stay in
+    # this test's environment and temporary root.
+    for key, value in {
+        "MOLT_BACKEND_DAEMON": "1",
+        "MOLT_DIFF_FORCE_NO_CACHE": "0",
+        "MOLT_DIFF_FORCE_REBUILD": "0",
+    }.items():
+        monkeypatch.setenv(key, value)
+    environment = dict(os.environ)
+    outcomes = []
+
+    def native(file, profile, *, execution_context, **kwargs):
+        result = molt_diff._run_subprocess(
+            [sys.executable, "-B", "-c", script, str(launches), diagnostic],
+            env=dict(execution_context.environment),
+            timeout=30,
+        )
+        failure = result.as_build_failure(
+            detail="injected child failure", fallback="child failed"
+        )
+        outcomes.append(failure)
+        return failure if len(outcomes) == 1 else _outcome("expected\n")
+
+    monkeypatch.setattr(molt_diff, "run_molt", native)
+    monkeypatch.setattr(
+        molt_diff, "_COMPAT_BACKEND_REGISTRY", compat_backends.build_registry(native)
+    )
+    monkeypatch.setattr(
+        molt_diff, "run_cpython", lambda *a, **k: _outcome("expected\n")
+    )
+    records = []
+    monkeypatch.setattr(molt_diff, "_record_diff_result", records.append)
+    result = molt_diff.diff_test(str(source))
+    assert launches.read_bytes() == b"x"
+    assert len(outcomes) == 1
+    assert result["raw_status"] == result["resolved_status"] == "fail"
+    assert len(records) == 1
+    native_row = records[0]["backend_rows"][0]
+    assert native_row["returncode"] == 7
+    assert native_row["build_failed"] is True
+    assert (
+        native_row["stderr_sha256"]
+        == hashlib.sha256((diagnostic + "\n").encode()).hexdigest()
+    )
+    assert outcomes[0].child_stderr == diagnostic + "\n"
+    assert diagnostic in capsys.readouterr().out
+    assert {
+        key: os.environ[key]
+        for key in [
+            "MOLT_BACKEND_DAEMON",
+            "MOLT_DIFF_FORCE_NO_CACHE",
+            "MOLT_DIFF_FORCE_REBUILD",
+        ]
+    } == {
+        key: environment[key]
+        for key in [
+            "MOLT_BACKEND_DAEMON",
+            "MOLT_DIFF_FORCE_NO_CACHE",
+            "MOLT_DIFF_FORCE_REBUILD",
+        ]
+    }

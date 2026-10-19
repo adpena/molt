@@ -15,9 +15,9 @@ tools/compat/comparison.py, the cross-backend divergence sub-oracle) is
 backend-independent and lives once in molt_diff.diff_test.
 
 Adapters:
-  * native — delegates to molt_diff's rich build+run+RSS+retry machinery (passed
+  * native — delegates to molt_diff's guarded build+run+RSS machinery (passed
     in as a callable to avoid an import cycle); this is the ONLY backend that
-    keeps the daemon/dyld/RSS pipeline, because that pipeline is native-shaped.
+    keeps the daemon/RSS pipeline, because that pipeline is native-shaped.
   * wasm   — `molt build --target wasm` (linked) + the canonical node host shim
     `wasm/run_wasm.js`, with Node diagnostics separate from guest stderr.
   * llvm   — `molt build --target llvm` (emits a native binary) + run the binary
@@ -163,15 +163,6 @@ class BackendResult:
         if any(_ALLOCATION_FAILURE_LINE.fullmatch(line) for line in lines):
             return "allocation_failed"
         return None
-
-    @property
-    def blocks_build_recovery(self) -> bool:
-        return (
-            self.timed_out
-            or self.infrastructure_failure is not None
-            or self.guard_signal is not None
-            or self.resource_failure is not None
-        )
 
     @classmethod
     def from_process(
@@ -487,7 +478,7 @@ def _apply_fault_injection(backend: str, result: BackendResult) -> BackendResult
 # ---------------------------------------------------------------------------
 
 # The native build+run path is deeply tied to molt_diff's daemon custody, RSS
-# measurement, dyld-retry pipeline and build-lock pruning. Rather than fork that
+# measurement and build-lock pruning. Rather than fork that
 # machinery, the native adapter is constructed with a callable that runs it
 # (molt_diff.run_molt), keeping the single rich implementation as the source of
 # truth and this module free of an import cycle.

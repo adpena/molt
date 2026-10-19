@@ -153,10 +153,12 @@ A full corpus calibration outlives many turns. `tools/calib_daemon.py` double-fo
 + `os.setsid()` so the run lives in its own session, immune to the launcher process
 group's teardown (a `nohup … &` from inside a tool is reaped when that group dies).
 It writes a pidfile + a donefile (exit status) so a poller can detect completion
-without a live parent. Run calibration SERIAL (`--jobs 1`) and RE-VERIFY every
-candidate fail in isolation before seeding — a contended parallel build can produce
-false build-failures, so the survey is only a candidate filter; ground truth comes
-from the isolated re-run.
+without a live parent. Run calibration serially (`--jobs 1`). Each selected
+backend attempt retains its first outcome: no implicit rerun, daemon/cache setting
+mutation, cold target or batch-to-CLI fallback can replace a failure. Investigate
+contention before seeding a candidate failure. Any operator re-execution is a
+separate run with its own recorded selection and evidence; preserve the earlier
+failure queue and raw JSONL instead of replacing its outcome with a later pass.
 
 ## Commands
 
@@ -176,7 +178,7 @@ uv run --python 3.12 python tools/check_suite_honesty.py --calibrate-wasm [paths
         # run molt_diff --target wasm to (re)generate wasm_calibration.jsonl
 
 # Long serial calibration that survives the launcher (poll RUN.done for exit code):
-MOLT_DIFF_RESULTS_JSONL=/tmp/stdlib.jsonl MOLT_DIFF_RETRY_ISOLATED=0 \
+MOLT_DIFF_RESULTS_JSONL=/tmp/stdlib.jsonl \
 uv run --python 3.12 python tools/calib_daemon.py --log RUN.log --pidfile RUN.pid --donefile RUN.done -- \
   uv run --python 3.12 python tests/molt_diff.py --build-profile release --jobs 1 \
     --files-from STDLIB_LIST.txt

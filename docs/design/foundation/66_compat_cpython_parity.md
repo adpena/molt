@@ -34,6 +34,31 @@ current tool inventory. LLVM/Luau execution parity, systematic surface
 enumeration, and elimination of all applicable expected-failure debt remain
 open work.
 
+### One authoritative execution attempt
+
+Every selected backend runs once through the same adapter registry. Its first
+build or execution outcome reaches the existing raw/backend JSONL rows, cohort
+summary and failure list. A failed native or batch build cannot silently become
+a passing cell by disabling the daemon, ignoring caches, rebuilding, selecting
+a cold Cargo target or retrying an OOM serially. A batch request with an unknown
+outcome is terminal; resubmission could execute the compile twice. Startup ping
+and request custody retain their existing bounded transport and cleanup owners.
+
+This follows the ordinary single-attempt default in
+[Bazel](https://github.com/bazelbuild/bazel/blob/master/src/main/java/com/google/devtools/build/lib/exec/ExecutionOptions.java)
+and [cargo-nextest](https://nexte.st/docs/configuration/reference/#retry-configuration).
+Nextest also distinguishes a flaky retry from an initial pass. Molt acceptance
+keeps one attempt; an operator's explicitly reconfigured rerun is a separate
+invocation and does not replace the earlier evidence.
+
+The cost is one selected build/run per item, with no failure-driven scratch
+generation, persistent incident marker or second result to reconcile. Ordinary
+explicit cache, rebuild, target-root and daemon selections still apply before
+execution. Resource, interruption, timeout and cleanup facts retain the shared
+typed outcome. Host/toolchain correctness, suite capacity, conformance and
+performance qualification remain separate obligations in the findings ledger.
+This is development-side policy and adds no work to emitted programs.
+
 ---
 
 ## 0. The Time-Traveler Frame: The End-State, Stated Crisply

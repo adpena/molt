@@ -1775,31 +1775,7 @@ audience = "developer"
 kind = "bool"
 default = "0"
 owner = "tests/molt_diff.py"
-summary = "Routes differential test builds through one long-lived molt internal-batch-build-server child instead of a fresh build subprocess per test; 1/true/yes/on enables it, 0/false/no/off disables it, default off."
-
-[[variable]]
-name = "MOLT_DIFF_BATCH_COMPILE_SERVER_DISABLE_AFTER_FAILURES"
-audience = "developer"
-kind = "int"
-default = "2"
-owner = "tests/molt_diff.py"
-summary = "Number of consecutive batch compile server failures before a differential worker puts the server in cooldown; values below 1 clamp to 1 and non-integer values use 2."
-
-[[variable]]
-name = "MOLT_DIFF_BATCH_COMPILE_SERVER_DISABLE_COOLDOWN_SEC"
-audience = "developer"
-kind = "float"
-default = "30"
-owner = "tests/molt_diff.py"
-summary = "Seconds a differential worker keeps the batch compile server disabled after the failure threshold; negative values clamp to 0 (no cooldown) and non-numeric values use 30."
-
-[[variable]]
-name = "MOLT_DIFF_BATCH_COMPILE_SERVER_STRICT"
-audience = "developer"
-kind = "bool"
-default = "0"
-owner = "tests/molt_diff.py"
-summary = "Makes a batch compile server failure a build failure (status build_batch_server_error, return code 127) instead of a warning plus subprocess fallback; 1/true/yes/on enables it, 0/false/no/off disables it, default off."
+summary = "Selects one long-lived molt internal-batch-build-server child for differential builds instead of a fresh CLI build subprocess per test; 1/true/yes/on enables it, 0/false/no/off disables it, default off. Startup or request failures are terminal for that selected attempt, with no resubmission, cooldown or CLI fallback."
 
 [[variable]]
 name = "MOLT_DIFF_BATCH_COMPILE_SERVER_TIMEOUT_SEC"
@@ -1859,14 +1835,6 @@ owner = "tests/molt_diff.py"
 summary = "Shared Cargo target directory for differential builds; unset falls back to CARGO_TARGET_DIR and then a target derived from the artifact root, the dx run-context sets it to CARGO_TARGET_DIR, and molt setup warns when a source checkout leaves it unset. Admitted Python Cargo proofs bind it to the leased Cargo generation."
 
 [[variable]]
-name = "MOLT_DIFF_CLEAR_DYLD_GUARD"
-audience = "developer"
-kind = "bool"
-default = "0"
-owner = "tests/molt_diff.py"
-summary = "Truthy 1/true/yes/on makes tests/molt_diff.py delete the global dyld guard marker at run start and skip the preemptive dyld quarantine; an explicit MOLT_DIFF_DYLD_PREEMPTIVE takes precedence, default off."
-
-[[variable]]
 name = "MOLT_DIFF_DAEMON_MAX_RSS_KB"
 audience = "developer"
 kind = "int"
@@ -1875,60 +1843,12 @@ owner = "tests/molt_diff.py"
 summary = "RSS threshold in kilobytes above which tests/molt_diff.py retires a verified backend daemon it owns during its pruning passes on POSIX hosts, once the daemon reports no admitted jobs; retirement unlinks the socket and lets accepted work finish, and a busy daemon keeps running. 0 or a negative value disables RSS-based retirement, non-numeric values fall back to 2500000."
 
 [[variable]]
-name = "MOLT_DIFF_DISABLE_DAEMON_ON_DYLD"
-audience = "developer"
-kind = "bool"
-default = "1"
-owner = "tests/molt_diff.py"
-summary = "Controls whether tests/molt_diff.py sets MOLT_BACKEND_DAEMON=0 and MOLT_DIFF_FORCE_NO_CACHE=1 for the rest of the run after a dyld unknown-imports incident or a preemptive dyld quarantine; 1/true/yes/on enables it, any other non-empty value disables it, default on."
-
-[[variable]]
-name = "MOLT_DIFF_DYLD_GUARD_RUNS"
-audience = "developer"
-kind = "int"
-default = "1"
-owner = "tests/molt_diff.py"
-summary = "Number of later diff runs that stay in dyld quarantine after an incident writes the global dyld guard marker; values below 1 are raised to 1, non-numeric values fall back to 1."
-
-[[variable]]
-name = "MOLT_DIFF_DYLD_GUARD_TTL_SEC"
-audience = "developer"
-kind = "int"
-default = "21600"
-owner = "tests/molt_diff.py"
-summary = "Age in seconds after which tests/molt_diff.py treats the global dyld guard marker as expired and clears it instead of quarantining the run; values below 60 are raised to 60, non-numeric values fall back to 21600 (6 hours)."
-
-[[variable]]
-name = "MOLT_DIFF_DYLD_LOCAL_FALLBACK"
-audience = "developer"
-kind = "bool"
-default = ""
-owner = "tests/molt_diff.py"
-summary = "Enables (1, true, yes, on) or disables (0, false, no, off) the local temp-directory retry and quarantine lanes after a dyld import-format incident in differential runs; unset means on for macOS and off elsewhere."
-
-[[variable]]
-name = "MOLT_DIFF_DYLD_LOCAL_ROOT"
-audience = "developer"
-kind = "path"
-default = ""
-owner = "tests/molt_diff.py"
-summary = "Root directory for the local dyld quarantine lanes of differential runs; unset uses <system temp dir>/molt_diff_dyld."
-
-[[variable]]
-name = "MOLT_DIFF_DYLD_PREEMPTIVE"
-audience = "developer"
-kind = "bool"
-default = ""
-owner = "tests/molt_diff.py"
-summary = "Forces the preemptive dyld quarantine decision at run start: 1/true/yes/on quarantines, 0/false/no/off skips, and when unset tests/molt_diff.py consults MOLT_DIFF_CLEAR_DYLD_GUARD and then the dyld guard marker's age and remaining runs."
-
-[[variable]]
 name = "MOLT_DIFF_DYLD_PREFLIGHT"
 audience = "developer"
 kind = "bool"
 default = ""
 owner = "tests/molt_diff.py"
-summary = "Enables the otool -l preflight that checks a freshly built test binary for dyld unknown imports format or malformed load command corruption before it runs; 1/true/yes/on enables it, 0/false/no/off disables it, and when unset the check runs on macOS only."
+summary = "Enables the otool -l preflight that checks a freshly built test binary for dyld unknown imports format or malformed load command corruption before it runs; 1/true/yes/on enables it, 0/false/no/off disables it, and when unset the check runs on macOS only. A detected defect fails the selected attempt without rerunning it."
 
 [[variable]]
 name = "MOLT_DIFF_FAILURES"
@@ -1944,7 +1864,7 @@ audience = "developer"
 kind = "bool"
 default = "0"
 owner = "tests/molt_diff.py"
-summary = "Forces (1, true, yes, on) or disables (0, false, no, off) --no-cache for differential runs; default off (cache enabled), and the harness and mutation_test set it to 1 for dyld-incident retries and mutant runs."
+summary = "Forces (1, true, yes, on) or disables (0, false, no, off) --no-cache for the selected differential run; default off (cache enabled). The mutation-test driver explicitly enables it for mutant runs; a differential failure never changes the selection."
 
 [[variable]]
 name = "MOLT_DIFF_FORCE_REBUILD"
@@ -1952,15 +1872,7 @@ audience = "developer"
 kind = "bool"
 default = "0"
 owner = "tests/molt_diff.py"
-summary = "Truthy 1/true/yes/on forces a Molt rebuild for every differential test build; tests/molt_diff.py also sets it to 1 itself after a dyld incident when MOLT_DIFF_FORCE_REBUILD_ON_DYLD is on, default off."
-
-[[variable]]
-name = "MOLT_DIFF_FORCE_REBUILD_ON_DYLD"
-audience = "developer"
-kind = "bool"
-default = "1"
-owner = "tests/molt_diff.py"
-summary = "Controls whether a dyld unknown-imports incident or a preemptive dyld quarantine also sets MOLT_DIFF_FORCE_REBUILD=1 for the rest of the run; 1/true/yes/on enables it, 0/false/no/off disables it, default on."
+summary = "Truthy 1/true/yes/on explicitly requests a Molt rebuild for every differential test build in the selected run; default off. A differential failure never changes this selection or the selected target/state roots."
 
 [[variable]]
 name = "MOLT_DIFF_GLOB"
@@ -2001,14 +1913,6 @@ kind = "bool"
 default = "0"
 owner = "tools/compat/diff_output_layout.py"
 summary = "Set to 1, true, yes, or on to keep per-test differential artifacts and fresh adapter leaves after each run; default removes them."
-
-[[variable]]
-name = "MOLT_DIFF_KEEP_ISOLATED_RETRY"
-audience = "developer"
-kind = "bool"
-default = "0"
-owner = "tests/molt_diff.py"
-summary = "Truthy 1/true/yes/on keeps the isolated target and build-state directories after an isolated retry of a differential test instead of retiring them; default off."
 
 [[variable]]
 name = "MOLT_DIFF_LOG_PASSES"
@@ -2165,14 +2069,6 @@ owner = "tests/molt_diff.py"
 summary = "Explicit CPython interpreter the differential harness uses as the reference side when a --python-version target is given, and the first candidate baseline interpreter for the Rust correctness tests; tools/verified_subset.py sets it to its own interpreter, and when unset the harness resolves the target version itself."
 
 [[variable]]
-name = "MOLT_DIFF_QUARANTINE_ON_DYLD"
-audience = "developer"
-kind = "bool"
-default = "0"
-owner = "tests/molt_diff.py"
-summary = "Whether a dyld import-format incident moves the differential run to a cold quarantine Cargo target and build-state directory; 1, true, yes or on enables it, and unset, 0, false, no or off keeps the shared target to avoid cold rebuilds."
-
-[[variable]]
 name = "MOLT_DIFF_RESULTS_JSONL"
 audience = "internal"
 kind = "path"
@@ -2181,36 +2077,12 @@ owner = "tests/molt_diff.py"
 summary = "Append-only JSONL sink where tests/molt_diff.py records one line per test with its raw status before the xfail overlay plus the resolved status and per-backend rows; tools/check_suite_honesty.py and tools/verified_subset.py set it for the harness they launch, and unset records nothing."
 
 [[variable]]
-name = "MOLT_DIFF_RETRY_DYLD"
-audience = "developer"
-kind = "bool"
-default = "1"
-owner = "tests/molt_diff.py"
-summary = "Controls whether a differential test whose stderr shows dyld unknown imports format is retried with the backend daemon disabled; 1/true/yes/on enables it, any other non-empty value disables it, default on."
-
-[[variable]]
-name = "MOLT_DIFF_RETRY_ISOLATED"
-audience = "developer"
-kind = "bool"
-default = "1"
-owner = "tests/molt_diff.py"
-summary = "Controls whether a differential test with a persistent dyld failure or backend daemon/cache failure is retried in an isolated target and build-state directory with --no-cache; 1/true/yes/on enables it, any other non-empty value disables it, default on."
-
-[[variable]]
-name = "MOLT_DIFF_RETRY_OOM"
-audience = "developer"
-kind = "bool"
-default = "1"
-owner = "tests/molt_diff.py"
-summary = "Whether the differential harness retries OOM-killed tests once with --jobs 1; 1, true, yes, on or unset retries, and 0, false, no or off disables the retry."
-
-[[variable]]
 name = "MOLT_DIFF_ROOT"
 audience = "user"
 kind = "path"
 default = ""
 owner = "src/molt/debug/verify.py"
-summary = "Root directory for differential-harness artifacts such as summary.json, failures.txt, memory_guard/ and dyld quarantine lanes; tests/molt_diff.py defaults it to <MOLT_EXT_ROOT or repo>/tmp/diff, src/molt/dx.py installs <scratch root>/diff, and src/molt/debug/verify.py falls back to the repository root when unset."
+summary = "Custody root for differential-harness artifacts such as summary.json, failures.txt and memory_guard/; tests/molt_diff.py and src/molt/dx.py default it to the canonical <scratch root>/diff, and src/molt/debug/verify.py honors an explicit selection. Failures do not move the run to another root or change the separately selected Cargo target and codegen cache."
 
 [[variable]]
 name = "MOLT_DIFF_RSS_TOP"
@@ -2226,7 +2098,7 @@ audience = "developer"
 kind = "string"
 default = ""
 owner = "tests/molt_diff.py"
-summary = "Identifier for one differential run, used in scratch-lease names, dyld-quarantine directories, RSS records and cleanup receipts; tests/molt_diff.py generates <UTC timestamp>_<pid> when unset and exports the value to its workers, and tools/compat uses adhoc when it is empty."
+summary = "Identifier for one differential run, used in scratch-lease names, RSS records and cleanup receipts; tests/molt_diff.py generates <UTC timestamp>_<pid> when unset and exports the value to its workers, and tools/compat uses adhoc when it is empty. Operator re-execution is a separate run with its own recorded selection."
 
 [[variable]]
 name = "MOLT_DIFF_RUN_LOCK_POLL_SEC"
@@ -2260,15 +2132,6 @@ kind = "path"
 default = ""
 owner = "tests/molt_diff.py"
 summary = "File path for the JSON summary of a differential run; when unset tests/molt_diff.py writes MOLT_DIFF_ROOT/summary.json."
-
-[[variable]]
-name = "MOLT_DIFF_TARGET_MODE"
-audience = "internal"
-kind = "enum"
-default = ""
-values = ["dyld", "isolated-retry"]
-owner = "tools/compat/diff_output_layout.py"
-summary = "Names the isolation lane that owns a differential Cargo target inside the guest output root; tests/molt_diff.py sets dyld or isolated-retry when it activates a quarantine or an isolated retry, and tools/compat/diff_output_layout.py reads it to admit that target, otherwise only the shared cargo-target directory is allowed."
 
 [[variable]]
 name = "MOLT_DIFF_TIMEOUT"

@@ -10,7 +10,6 @@ from pathlib import Path
 from typing import Mapping, MutableMapping
 
 from molt import disk_capacity
-from molt.build_state_layout import build_state_root
 from molt.dx import configured_artifact_root, scratch_dir, scratch_root
 from molt.exact_json import canonical_json_bytes, dumps_exact, loads_exact
 from molt.file_publication import durable_remove_path, is_link_like, resolve_owned_path
@@ -133,45 +132,16 @@ def _derived(root: Path) -> dict[str, str]:
     }
 
 
-def isolated_state_root(
-    *, target: Path, environment: Mapping[str, str], repo_root: Path
-) -> Path:
-    """An isolated target cannot inherit another target's explicit control root."""
-    return build_state_root(
-        project_root=repo_root,
-        cargo_target=target,
-        environment={
-            key: value
-            for key, value in environment.items()
-            if key != "MOLT_BUILD_STATE_DIR"
-        },
-    )
-
-
 def projected_target(environment: Mapping[str, str], root: Path) -> Path:
-    """Only the shared target or an explicitly named in-root isolation target."""
-    default = root / "cargo-target"
-    cargo = environment.get("CARGO_TARGET_DIR", str(default))
-    diff = environment.get("MOLT_DIFF_CARGO_TARGET_DIR", str(default))
-    if cargo == diff == str(default):
-        return default
-    if cargo != diff:
-        raise ValueError("differential target selectors disagree")
-    target = resolve_owned_path(Path(cargo))
-    mode = environment.get("MOLT_DIFF_TARGET_MODE", "")
-    if mode == "dyld":
-        namespace = root / "guest-tmp" / "dyld_quarantine"
-        if target.name == "target" and target.parent.parent == namespace:
-            return target
-    if mode == "isolated-retry":
-        namespace = root / "guest-tmp"
-        if (
-            target.name == "target"
-            and target.parent.parent == namespace
-            and target.parent.name.startswith("molt_diff_retry_")
-        ):
-            return target
-    raise ValueError("differential Cargo target escaped selected guest output root")
+    """Require the selected guest root's shared Cargo target."""
+    target = root / "cargo-target"
+    expected = str(target)
+    if (
+        environment.get("CARGO_TARGET_DIR", expected) != expected
+        or environment.get("MOLT_DIFF_CARGO_TARGET_DIR", expected) != expected
+    ):
+        raise ValueError("differential Cargo target escaped selected guest output root")
+    return target
 
 
 def admit(
@@ -193,7 +163,7 @@ def admit(
     derived = _derived(root)
     if environment.get(IDENTITY_ENV):
         # Re-admission validates the existing selection; it cannot silently
-        # restore changed paths or erase a deliberately isolated target.
+        # restore changed paths.
         enforce_child(environment, repo_root=repo_root)
         target = str(projected_target(environment, root))
         derived.update(CARGO_TARGET_DIR=target, MOLT_DIFF_CARGO_TARGET_DIR=target)

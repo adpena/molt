@@ -278,7 +278,6 @@ def suite(tmp_path, monkeypatch):
         "_emit_json",
     ):
         monkeypatch.setattr(molt_diff, name, lambda *a, **k: None)
-    monkeypatch.setattr(molt_diff, "_should_preemptive_dyld_quarantine", lambda: False)
     monkeypatch.setattr(
         molt_diff.test_policy, "collect_test_files", lambda *a, **k: files
     )
@@ -427,7 +426,6 @@ def test_fail_fast_stops_admission_and_retains_running_results(
         sys.executable,
         jobs=jobs,
         fail_fast=True,
-        retry_oom=True,
         failures_output=tmp_path / "failures.txt",
     )
     assert suite.calls == [str(path) for path in suite.files[:jobs]]
@@ -458,9 +456,8 @@ def test_parallel_success_replenishes_bounded_workers(suite, tmp_path):
 
 
 @pytest.mark.parametrize("live", (False, True))
-@pytest.mark.parametrize("retry_oom", (False, True))
 def test_parallel_diagnostics_publish_at_completion_without_retaining_history(
-    suite, tmp_path, monkeypatch, capsys, live, retry_oom
+    suite, tmp_path, monkeypatch, capsys, live
 ):
     class CapturedText(str):
         pass
@@ -475,7 +472,7 @@ def test_parallel_diagnostics_publish_at_completion_without_retaining_history(
                 "path": str(path),
                 "status": status,
                 "guard_signal": None,
-                "duration_s": 0.25,
+                "duration_s": 0.25 + index,
                 "stdout": CapturedText(f"detail-out-{index}\n"),
                 "stderr": CapturedText(f"detail-error-{index}\n"),
             }
@@ -496,21 +493,31 @@ def test_parallel_diagnostics_publish_at_completion_without_retaining_history(
 
     monkeypatch.setattr(molt_diff, "_parallel_diff_results", completions)
     status_log = tmp_path / "status.log"
+    failures = tmp_path / "failures.txt"
     summary = molt_diff.run_diff(
         suite.files,
         sys.executable,
         jobs=2,
         targets=("native", "wasm"),
         live=live,
-        retry_oom=retry_oom,
         log_file=status_log,
-        failures_output=tmp_path / "failures.txt",
+        failures_output=failures,
     )
     assert summary["discovered"] == len(statuses)
-    assert summary["failed"] == (2 if retry_oom else 3)
-    assert suite.calls == ([str(suite.files[1])] if retry_oom else [])
+    assert summary["failed"] == 3 and summary["oom"] == 1
+    assert summary["passed"] == 1 and summary["skipped"] == 1
+    assert suite.calls == []
+    assert [row["status"] for row in summary["item_results"]] == statuses
+    assert [row["duration_s"] for row in summary["item_results"]] == [
+        0.25 + index for index in range(len(statuses))
+    ]
+    expected_failed = [str(path) for path in suite.files[:3]]
+    assert summary["failed_files"] == expected_failed
+    assert failures.read_text(encoding="utf-8").splitlines() == expected_failed
     assert all(reference() is None for reference in retained)
     assert "detail-out" not in status_log.read_text(encoding="utf-8")
+    captured = capsys.readouterr()
+    assert "detail-out" not in captured.out and "detail-error" not in captured.err
 
 
 @pytest.mark.parametrize("sink", ("directory", "aggregate", "unusable-directory"))
@@ -606,7 +613,7 @@ def test_case_log_identity_is_contained_bounded_and_unambiguous(
 
 
 @pytest.mark.parametrize("jobs", (1, 2))
-def test_serial_and_oom_retry_tee_diagnostics_are_not_replayed(
+def test_serial_tee_and_parallel_failure_diagnostics_are_not_replayed(
     suite, tmp_path, monkeypatch, capsys, jobs
 ):
     suite.files[:] = suite.files[:2]
@@ -617,7 +624,10 @@ def test_serial_and_oom_retry_tee_diagnostics_are_not_replayed(
         serial_calls.append(path)
         print("serial-out")
         print("serial-error", file=sys.stderr)
-        return {"resolved_status": "pass", "guard_signal": None}
+        return {
+            "resolved_status": "oom" if path == str(suite.files[0]) else "pass",
+            "guard_signal": None,
+        }
 
     monkeypatch.setattr(molt_diff, "diff_test", diagnostic_case)
     monkeypatch.setattr(molt_diff, "_diff_run_single", suite.original_run_single)
@@ -625,19 +635,19 @@ def test_serial_and_oom_retry_tee_diagnostics_are_not_replayed(
         suite.files,
         sys.executable,
         jobs=jobs,
-        retry_oom=True,
         failures_output=tmp_path / "failures.txt",
     )
     captured = capsys.readouterr()
-    assert summary["passed"] == 2 and summary["failed"] == 0
-    expected = 2 if jobs == 1 else 1
-    assert len(serial_calls) == expected
+    assert summary["passed"] == 1 and summary["failed"] == 1
+    assert summary["oom"] == 1
+    assert [row["status"] for row in summary["item_results"]] == ["oom", "pass"]
+    expected = 2 if jobs == 1 else 0
+    assert serial_calls == ([str(path) for path in suite.files] if jobs == 1 else [])
     assert captured.out.count("serial-out\n") == expected
     assert captured.err.count("serial-error\n") == expected
     if jobs == 2:
+        assert suite.calls == [str(path) for path in suite.files]
         assert captured.out.count("worker output") == 1
-        assert captured.out.index("worker output") < captured.out.index("[RETRY-OOM]")
-        assert captured.out.index("[RETRY-OOM]") < captured.out.index("serial-out")
 
 
 @pytest.mark.parametrize("jobs", (1, 2))
@@ -669,18 +679,13 @@ def test_deadline_admits_only_tests_that_can_finish(suite, tmp_path, monkeypatch
     assert (summary["passed"], summary["not_run"]) == (len(suite.files), 0)
 
 
-@pytest.mark.parametrize(
-    ("cutoff_phase", "expected_retries"),
-    [("parallel-drain", 0), ("first-retry", 1), ("never", 2)],
-)
-def test_oom_retries_share_the_run_admission_deadline(
-    suite, tmp_path, monkeypatch, capsys, cutoff_phase, expected_retries
+@pytest.mark.parametrize("cutoff_phase", ("first-completion", "drained", "never"))
+def test_oom_completions_remain_terminal_when_the_admission_deadline_expires(
+    suite, tmp_path, monkeypatch, capsys, cutoff_phase
 ):
-    suite.files[:] = suite.files[:2]
     clock = SimpleNamespace(now=0.0)
     monkeypatch.setattr(molt_diff, "_PROCESS_STARTED", 0.0)
-    # The fake clock reaches only the two modules that keep differential
-    # deadlines; pytest, the guard and every other reader keep real time.
+    # The fake clock reaches only the modules that own differential deadlines.
     install_module_view(
         monkeypatch,
         "time",
@@ -691,50 +696,59 @@ def test_oom_retries_share_the_run_admission_deadline(
     )
     monkeypatch.setenv("MOLT_DIFF_TIMEOUT", "10")
     monkeypatch.setenv("MOLT_DIFF_BUILD_TIMEOUT", "30")
-    # The real admission policy reserves 30 s build + 10 s run + 10 s CPython.
-    # Advancing to 50 s exhausts a 100 s run's remaining test budget.
-    retries = []
+    original_wait = molt_diff.concurrent.futures.wait
+    completions = []
 
-    def payload(path, status):
-        return {
-            "path": str(path),
-            "status": status,
-            "guard_signal": None,
-            "duration_s": 0.25,
-            "stdout": "",
-            "stderr": "",
-        }
+    def complete(pending, **kwargs):
+        done, remaining = original_wait(pending, **kwargs)
+        for future in done:
+            result = future.result()
+            index = suite.files.index(Path(result["path"]))
+            result.update(status="oom", duration_s=0.25 + index)
+            completions.append(result["path"])
+        # Two workers have already been admitted at the first completion.
+        # Expiry prevents replenishment but cannot erase either running result.
+        if cutoff_phase == "first-completion" or (
+            cutoff_phase == "drained" and len(completions) == len(suite.files)
+        ):
+            clock.now = 100.0
+        return done, remaining
 
-    def parallel(_executor, files, *args, **kwargs):
-        for path in files:
-            assert kwargs["admits"]()
-            suite.calls.append(str(path))
-            yield payload(path, "oom")
-        if cutoff_phase == "parallel-drain":
-            clock.now = 50.0
-
-    def retry(path, *args):
-        retries.append(path)
-        if cutoff_phase == "first-retry":
-            clock.now = 50.0
-        return payload(path, "pass")
-
-    monkeypatch.setattr(molt_diff, "_parallel_diff_results", parallel)
-    monkeypatch.setattr(molt_diff, "_diff_run_single", retry)
+    monkeypatch.setattr(molt_diff.concurrent.futures, "wait", complete)
+    monkeypatch.setattr(
+        molt_diff,
+        "_diff_run_single",
+        lambda *a, **k: pytest.fail(
+            "a terminal parallel outcome started a serial attempt"
+        ),
+    )
+    failures = tmp_path / "failures.txt"
     summary = molt_diff.run_diff(
         suite.files,
         sys.executable,
         jobs=2,
-        retry_oom=True,
         deadline_s=100,
-        failures_output=tmp_path / "failures.txt",
+        failures_output=failures,
     )
-    assert retries == [str(path) for path in suite.files[:expected_retries]]
-    assert summary["discovered"] == 2 and summary["not_run"] == 0
-    assert summary["passed"] == expected_retries
-    assert summary["failed"] == 2 - expected_retries
-    assert summary["oom"] == 2 - expected_retries
-    assert ("[RETRY-OOM]" in capsys.readouterr().out) is bool(expected_retries)
+    expected_count = 2 if cutoff_phase == "first-completion" else len(suite.files)
+    expected_paths = [str(path) for path in suite.files[:expected_count]]
+    assert suite.calls == completions == expected_paths
+    assert summary["discovered"] == expected_count
+    assert summary["passed"] == 0
+    assert summary["failed"] == summary["oom"] == expected_count
+    assert summary["failed_files"] == expected_paths
+    assert failures.read_text(encoding="utf-8").splitlines() == expected_paths
+    started = _started(summary)
+    assert [row["status"] for row in started] == ["oom"] * expected_count
+    assert [row["duration_s"] for row in started] == [
+        0.25 + index for index in range(expected_count)
+    ]
+    assert len(summary["item_results"]) == len(suite.files)
+    assert summary["not_run"] == len(suite.files) - expected_count
+    assert {
+        row["reason"] for row in summary["item_results"] if row["status"] == "not_run"
+    } == ({"deadline"} if cutoff_phase == "first-completion" else set())
+    assert capsys.readouterr().out.count("worker output") == expected_count
 
 
 def test_deadline_requires_a_per_test_bound(suite, tmp_path, monkeypatch):
@@ -779,39 +793,51 @@ def guarded_suite(suite, monkeypatch):
     return suite
 
 
-def test_suite_guard_covers_oom_retry_and_summary(guarded_suite, tmp_path, monkeypatch):
+def test_suite_guard_covers_oom_drain_failure_receipt_and_summary(
+    guarded_suite, tmp_path, monkeypatch
+):
     guarded_suite.status = "oom"
+    failures = tmp_path / "failures.txt"
     summary_emissions = []
+    completions = []
+    original_parallel = molt_diff._parallel_diff_results
 
-    def retry(path, *args, **kwargs):
+    def drain(*args, **kwargs):
+        for result in original_parallel(*args, **kwargs):
+            assert guarded_suite.exits == []
+            assert len(guarded_suite.exit_callbacks) == 1
+            completions.append((result["path"], result["status"]))
+            yield result
+
+    def emit_summary(summary, *args, **kwargs):
         assert guarded_suite.exits == []
         assert len(guarded_suite.exit_callbacks) == 1
-        return {
-            "path": path,
-            "status": "pass",
-            "guard_signal": None,
-            "duration_s": 0.1,
-            "stdout": "retry output",
-            "stderr": "",
-        }
+        assert failures.read_text(encoding="utf-8").splitlines() == [
+            str(guarded_suite.files[0])
+        ]
+        summary_emissions.append(summary)
 
-    def emit_summary(*args, **kwargs):
-        assert guarded_suite.exits == []
-        summary_emissions.append((args, kwargs))
-
-    monkeypatch.setattr(molt_diff, "_diff_run_single", retry)
+    monkeypatch.setattr(molt_diff, "_parallel_diff_results", drain)
+    monkeypatch.setattr(
+        molt_diff,
+        "_diff_run_single",
+        lambda *a, **k: pytest.fail("a drained OOM started a serial attempt"),
+    )
     monkeypatch.setattr(molt_diff, "_emit_json", emit_summary)
     summary = molt_diff.run_diff(
         guarded_suite.files,
         sys.executable,
         jobs=2,
-        retry_oom=True,
-        failures_output=tmp_path / "failures.txt",
+        failures_output=failures,
     )
 
-    assert summary["failed"] == 0
-    assert summary["passed"] == len(guarded_suite.files)
-    assert summary_emissions
+    assert completions == [
+        (str(path), "oom" if index == 0 else "pass")
+        for index, path in enumerate(guarded_suite.files)
+    ]
+    assert summary["failed"] == summary["oom"] == 1
+    assert summary["passed"] == len(guarded_suite.files) - 1
+    assert summary_emissions == [summary]
     assert len(guarded_suite.exits) == 1
     assert guarded_suite.exit_callbacks == []
 
@@ -916,7 +942,6 @@ def test_parent_trip_infrastructure_stops_admission_without_oom(
         suite.files,
         sys.executable,
         jobs=jobs,
-        retry_oom=True,
         failures_output=tmp_path / "failures.txt",
     )
     assert suite.calls == [str(path) for path in suite.files[:jobs]]
@@ -939,7 +964,6 @@ def test_typed_signal_stops_without_fail_fast_and_drains_running_results(
         guarded_suite.files,
         sys.executable,
         jobs=jobs,
-        retry_oom=True,
         failures_output=tmp_path / "failures.txt",
     )
     assert guarded_suite.calls == [str(path) for path in guarded_suite.files[:jobs]]
@@ -974,7 +998,6 @@ def test_between_commands_signal_defers_exit_until_running_results_drained(
         guarded_suite.files,
         sys.executable,
         jobs=jobs,
-        retry_oom=True,
         failures_output=tmp_path / "failures.txt",
     )
     assert guarded_suite.calls == [str(path) for path in guarded_suite.files[:jobs]]
@@ -1029,43 +1052,57 @@ def test_signal_during_warmup_stops_case_and_further_warmup_admission(
     assert len(guarded_suite.exits) == 1
 
 
-def test_signal_during_oom_retry_stops_next_retry(guarded_suite, tmp_path, monkeypatch):
+def test_operator_signal_after_oom_drains_admitted_results_without_replacing_failures(
+    guarded_suite, tmp_path, monkeypatch, capsys
+):
     original_wait = molt_diff.concurrent.futures.wait
+    previous_handler = signal.getsignal(signal.SIGTERM)
+    completions = []
 
-    def all_oom(*args, **kwargs):
-        done, pending = original_wait(*args, **kwargs)
+    def complete(pending, **kwargs):
+        assert guarded_suite.exits == []
+        assert len(guarded_suite.exit_callbacks) == 1
+        done, remaining = original_wait(pending, **kwargs)
         for future in done:
-            # All initial cases fail ordinarily; only a later retry is cancelled.
-            future.result()["status"] = "oom"
-        return done, pending
+            result = future.result()
+            index = guarded_suite.files.index(Path(result["path"]))
+            result.update(status="oom", duration_s=0.25 + index)
+            completions.append(result["path"])
+        # The first OOM is already retained and a third case has been admitted.
+        # The signal stops replenishment while all three receipts still drain.
+        if len(completions) == 2:
+            signal.raise_signal(signal.SIGTERM)
+        return done, remaining
 
-    retries = []
-
-    def retry(path, *args, **kwargs):
-        retries.append(path)
-        return {
-            "path": path,
-            "status": "uncalibrated",
-            "guard_signal": 15,
-            "duration_s": 0.1,
-            "stdout": "",
-            "stderr": "interrupted",
-        }
-
-    monkeypatch.setattr(molt_diff.concurrent.futures, "wait", all_oom)
-    monkeypatch.setattr(molt_diff, "_diff_run_single", retry)
+    monkeypatch.setattr(molt_diff.concurrent.futures, "wait", complete)
+    monkeypatch.setattr(
+        molt_diff,
+        "_diff_run_single",
+        lambda *a, **k: pytest.fail("an interrupted cohort started a serial attempt"),
+    )
+    failures = tmp_path / "failures.txt"
     summary = molt_diff.run_diff(
         guarded_suite.files,
         sys.executable,
         jobs=2,
-        retry_oom=True,
-        failures_output=tmp_path / "failures.txt",
+        failures_output=failures,
     )
-    assert retries == [str(guarded_suite.files[0])]
-    assert summary["guard_signal"] == 15
-    assert summary["oom"] == len(guarded_suite.files) - 1
-    assert summary["failed"] == len(guarded_suite.files)
+    expected_paths = [str(path) for path in guarded_suite.files[:3]]
+    assert guarded_suite.calls == completions == expected_paths
+    assert summary["guard_signal"] == signal.SIGTERM
+    assert summary["oom"] == 3
+    assert summary["failed"] == 4 and summary["passed"] == 0
+    assert summary["failed_files"] == [*expected_paths, "<operator_signal>"]
+    assert failures.read_text(encoding="utf-8").splitlines() == summary["failed_files"]
+    assert [row["status"] for row in _started(summary)] == ["oom"] * 3
+    assert [row["duration_s"] for row in _started(summary)] == [0.25, 1.25, 2.25]
+    assert len(summary["item_results"]) == len(guarded_suite.files)
+    assert summary["not_run"] == len(guarded_suite.files) - 3
     assert len(guarded_suite.exits) == 1
+    assert guarded_suite.exit_callbacks == []
+    assert signal.getsignal(signal.SIGTERM) is previous_handler
+    assert molt_diff.compat_backends.suite_stop_signal() is None
+    assert capsys.readouterr().out.count("worker output") == 3
 
 
 @pytest.mark.parametrize("jobs", (1, 2))

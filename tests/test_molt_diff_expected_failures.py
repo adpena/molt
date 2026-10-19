@@ -281,41 +281,69 @@ def test_expected_failure_status_ignored_when_cpython_fails() -> None:
     assert reason is None
 
 
-def test_deterministic_compiler_panic_does_not_trigger_backend_retry(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    module = _load_diff_module()
-    calls: list[dict[str, object]] = []
-    stderr = (
+@pytest.mark.parametrize(
+    "stderr",
+    [
         "backend compilation failed\n"
         "thread 'main' panicked at runtime/molt-passes/src/tir/passes/"
-        "async_work_poll.rs:152: zero-payload exception edge"
+        "async_work_poll.rs:152: zero-payload exception edge",
+        "dyld: unknown imports format",
+        "backend daemon failed to become ready",
+        "backend daemon connection failed: timeout",
+        "backend daemon returned invalid JSON: bad payload",
+        "IncompatibleSignature(expected, actual)",
+    ],
+)
+def test_native_adapter_preserves_first_failure_and_admitted_selection(
+    monkeypatch: pytest.MonkeyPatch, admitted_guest_environment, stderr: str
+) -> None:
+    module = _load_diff_module()
+    _repo, environment = admitted_guest_environment
+    environment.update(
+        MOLT_CAPABILITY_TIER="none",
+        MOLT_BACKEND_DAEMON="1",
+        MOLT_BUILD_STATE_DIR=str(Path(environment["MOLT_EXT_ROOT"]) / "shared-state"),
     )
+    selected_environment = dict(environment)
+    before = dict(os.environ)
+    calls: list[dict[str, object]] = []
+    failure = module.compat_backends.BackendResult(None, stderr, 1, build_failed=True)
 
     def fail_once(*args: object, **kwargs: object):
         calls.append({"args": args, "kwargs": kwargs})
-        return module.compat_backends.BackendResult(None, stderr, 1, build_failed=True)
+        return (
+            failure
+            if len(calls) == 1
+            else module.compat_backends.BackendResult(
+                "a second attempt would pass", "", 0
+            )
+        )
 
     monkeypatch.setattr(module, "run_molt", fail_once)
+    monkeypatch.setattr(module, "_COMPAT_BACKEND_REGISTRY", None)
 
     context = module.compat_backends.BackendExecutionContext(
         target_python=module.TargetPythonVersion(3, 12, 0),
         build_profile="dev",
         capabilities="",
-        environment={"MOLT_CAPABILITY_TIER": "none"},
+        environment=environment,
         budget=module.compat_backends.ItemBudget(
-            module.compat_backends.TimeoutPolicy.from_environment(
-                {"MOLT_CAPABILITY_TIER": "none"}
-            ),
+            module.compat_backends.TimeoutPolicy.from_environment(environment),
             None,
         ),
     )
-    assert module._run_native_backend(
-        "case.py", context
-    ) == module.compat_backends.BackendResult(None, stderr, 1, build_failed=True)
+    assert (
+        module._run_backend_for_diff(
+            backend="native", file_path="case.py", context=context
+        )
+        is failure
+    )
     assert len(calls) == 1
     assert calls[0]["kwargs"]["execution_context"] is context
-    assert not module._is_backend_daemon_build_error(stderr)
+    assert calls[0]["kwargs"] == {"execution_context": context}
+    assert dict(context.environment) == environment == selected_environment
+    assert dict(os.environ) == before
+    assert not Path(environment["MOLT_DIFF_TMPDIR"]).exists()
 
 
 def test_molt_target_python_must_match_cpython_oracle(
@@ -339,16 +367,11 @@ def test_molt_target_python_must_match_cpython_oracle(
             module._resolve_molt_target_python("python", explicit)
 
 
-@pytest.mark.parametrize("retry_isolated", [None, "0", "1"])
 @pytest.mark.parametrize("stderr", ["build timeout after 1200s", "execution timed out"])
 def test_timeout_preserves_original_failure_without_cold_rebuild(
-    monkeypatch: pytest.MonkeyPatch, retry_isolated: str | None, stderr: str
+    monkeypatch: pytest.MonkeyPatch, stderr: str
 ) -> None:
     module = _load_diff_module()
-    if retry_isolated is None:
-        monkeypatch.delenv("MOLT_DIFF_RETRY_ISOLATED", raising=False)
-    else:
-        monkeypatch.setenv("MOLT_DIFF_RETRY_ISOLATED", retry_isolated)
     calls: list[dict[str, object]] = []
     failure = module.compat_backends.BackendResult(
         None, stderr, 124, build_failed=True, timed_out=True
@@ -358,11 +381,8 @@ def test_timeout_preserves_original_failure_without_cold_rebuild(
         calls.append(kwargs)
         return failure
 
-    def forbidden_isolation(*args: object, **kwargs: object) -> None:
-        pytest.fail("a timeout is not evidence of cache corruption")
-
     monkeypatch.setattr(module, "run_molt", timed_out)
-    monkeypatch.setattr(module, "_run_isolated_retry", forbidden_isolation)
+    monkeypatch.setattr(module, "_COMPAT_BACKEND_REGISTRY", None)
     context = module.compat_backends.BackendExecutionContext(
         target_python=module.TargetPythonVersion(3, 12, 0),
         build_profile="dev",
@@ -375,24 +395,13 @@ def test_timeout_preserves_original_failure_without_cold_rebuild(
             None,
         ),
     )
-    assert module._run_native_backend("case.py", context) == failure
+    assert (
+        module._run_backend_for_diff(
+            backend="native", file_path="case.py", context=context
+        )
+        is failure
+    )
     assert calls == [{"execution_context": context}]
-
-
-@pytest.mark.parametrize(
-    "stderr",
-    [
-        "backend daemon failed to become ready",
-        "backend daemon connection failed: timeout",
-        "backend daemon returned invalid JSON: bad payload",
-        "IncompatibleSignature(expected, actual)",
-    ],
-)
-def test_backend_retry_classifier_accepts_only_explicit_daemon_failures(
-    stderr: str,
-) -> None:
-    module = _load_diff_module()
-    assert module._is_backend_daemon_build_error(stderr)
 
 
 def test_source_scope_marks_exec_eval_cases(tmp_path: Path) -> None:
@@ -442,7 +451,7 @@ def test_repo_scopes_have_no_policy_deferred_runpy_dynamic_cases() -> None:
     assert not deferred_runpy
 
 
-def test_rss_top_entries_use_final_file_status_after_retries(
+def test_rss_top_entries_use_final_file_status_and_peak_sample(
     tmp_path: Path, monkeypatch
 ) -> None:
     module = _load_diff_module()
@@ -470,7 +479,7 @@ def test_rss_top_entries_use_final_file_status_after_retries(
     top = module._top_rss_entries(run_id, 5, phase="run")
     assert len(top) == 1
     assert top[0]["status"] == "ok"
-    # Keep max RSS from all attempts for worst-case memory visibility.
+    # Keep peak RSS across retained observations for worst-case visibility.
     assert top[0]["run"]["max_rss"] == 20000
 
 
@@ -807,14 +816,10 @@ def test_stderr_exact_mode_keeps_full_string_match() -> None:
 def test_diff_batch_compile_server_env_flags(monkeypatch) -> None:
     module = _load_diff_module()
     monkeypatch.delenv("MOLT_DIFF_BATCH_COMPILE_SERVER", raising=False)
-    monkeypatch.delenv("MOLT_DIFF_BATCH_COMPILE_SERVER_STRICT", raising=False)
     assert module._diff_batch_compile_server_enabled() is False
-    assert module._diff_batch_compile_server_strict() is False
 
     monkeypatch.setenv("MOLT_DIFF_BATCH_COMPILE_SERVER", "1")
-    monkeypatch.setenv("MOLT_DIFF_BATCH_COMPILE_SERVER_STRICT", "true")
     assert module._diff_batch_compile_server_enabled() is True
-    assert module._diff_batch_compile_server_strict() is True
 
 
 def test_diff_batch_compile_server_timeout_env(monkeypatch) -> None:
@@ -872,11 +877,13 @@ def test_shutdown_batch_compile_server_uses_force_close_path(monkeypatch) -> Non
     assert module._BATCH_COMPILE_SERVER_CLIENT_PID == 0
 
 
-def test_batch_compile_server_ping_failure_requires_repeated_failures_before_cooldown(
-    monkeypatch,
+@pytest.mark.parametrize("error_type", [RuntimeError, TimeoutError])
+def test_batch_compile_server_ping_failure_closes_the_unpublished_client(
+    monkeypatch, error_type
 ) -> None:
     module = _load_diff_module()
     events: list[tuple[str, bool | float | None | str]] = []
+    failure = error_type("first ping failure")
 
     class _FakeClient:
         def __init__(self, _env, *, budget) -> None:
@@ -885,7 +892,7 @@ def test_batch_compile_server_ping_failure_requires_repeated_failures_before_coo
         def request(self, op: str, *, params=None, timeout: float) -> dict[str, object]:
             events.append(("request", timeout))
             assert op == "ping"
-            raise TimeoutError("ping timeout")
+            raise failure
 
         def close(self, *, force: bool = False, timeout: float | None = None) -> None:
             events.append(("close", force))
@@ -893,8 +900,6 @@ def test_batch_compile_server_ping_failure_requires_repeated_failures_before_coo
     monkeypatch.setattr(module, "_BatchCompileServerClient", _FakeClient)
     monkeypatch.setattr(module, "_BATCH_COMPILE_SERVER_CLIENT", None)
     monkeypatch.setattr(module, "_BATCH_COMPILE_SERVER_CLIENT_PID", 0)
-    module._batch_compile_server_reset_disabled()
-
     client, error = module._batch_compile_server_client(
         {},
         request_timeout=0.1,
@@ -903,39 +908,22 @@ def test_batch_compile_server_ping_failure_requires_repeated_failures_before_coo
         ),
     )
     assert client is None
-    assert error is not None
-    assert "ping timeout" in str(error)
-    assert ("close", True) in events
-
-    client_retry, retry_error = module._batch_compile_server_client(
-        {},
-        request_timeout=0.1,
-        budget=module.compat_backends.ItemBudget(
-            module.compat_backends.TimeoutPolicy.from_environment({}), None
-        ),
-    )
-    assert client_retry is None
-    assert retry_error is not None
-    assert "ping timeout" in str(retry_error)
-
-    client_cooldown, cooldown_error = module._batch_compile_server_client(
-        {},
-        request_timeout=0.1,
-        budget=module.compat_backends.ItemBudget(
-            module.compat_backends.TimeoutPolicy.from_environment({}), None
-        ),
-    )
-    assert client_cooldown is None
-    assert cooldown_error is not None
-    assert "temporarily disabled" in str(cooldown_error)
+    assert error is failure
+    assert events == [("init", None), ("request", 0.1), ("close", True)]
+    assert module._BATCH_COMPILE_SERVER_CLIENT is None
+    assert module._BATCH_COMPILE_SERVER_CLIENT_PID == 0
 
 
-def test_run_batch_compile_build_success_resets_failure_budget(
-    monkeypatch, tmp_path: Path
+@pytest.mark.parametrize("stdlib_profile", [None, "full"])
+def test_run_batch_compile_build_preserves_selected_request_context(
+    monkeypatch, tmp_path: Path, stdlib_profile: str | None
 ) -> None:
     module = _load_diff_module()
-    resets = {"count": 0}
     seen_params: list[dict[str, object]] = []
+    starts = []
+    environment = {"MOLT_CODEC": "msgpack"}
+    if stdlib_profile is not None:
+        environment["MOLT_DIFF_STDLIB_PROFILE"] = stdlib_profile
 
     class _Client:
         def request(self, op: str, *, params=None, timeout: float) -> dict[str, object]:
@@ -951,18 +939,15 @@ def test_run_batch_compile_build_success_resets_failure_budget(
             }
 
     def _fake_client_factory(_env, *, request_timeout: float, budget):
+        starts.append((_env, request_timeout, budget))
         return _Client(), None
 
-    def _fake_reset_disabled() -> None:
-        resets["count"] += 1
-
     monkeypatch.setattr(module, "_batch_compile_server_client", _fake_client_factory)
-    monkeypatch.setattr(
-        module, "_batch_compile_server_reset_disabled", _fake_reset_disabled
+    budget = module.compat_backends.ItemBudget(
+        module.compat_backends.TimeoutPolicy.from_environment({}), None
     )
-
     result = module._run_batch_compile_build(
-        env={"MOLT_CODEC": "msgpack"},
+        env=environment,
         file_path="tests/differential/basic/arith.py",
         output_root=tmp_path,
         output_binary=tmp_path / "arith_molt",
@@ -971,48 +956,33 @@ def test_run_batch_compile_build_success_resets_failure_budget(
         no_cache=False,
         rebuild=False,
         request_timeout=8.0,
-        strict_mode=False,
-        budget=module.compat_backends.ItemBudget(
-            module.compat_backends.TimeoutPolicy.from_environment({}), None
-        ),
+        budget=budget,
     )
 
     assert result == module.compat_backends.BackendResult("ok", "", 0)
-    assert resets["count"] == 1
-    assert "stdlib_profile" not in seen_params[0]
+    assert starts == [(environment, 8.0, budget)]
+    assert len(seen_params) == 1
     assert seen_params[0]["python_version"] == "3.14"
-
-    result = module._run_batch_compile_build(
-        env={"MOLT_CODEC": "msgpack", "MOLT_DIFF_STDLIB_PROFILE": "full"},
-        file_path="tests/differential/basic/arith.py",
-        output_root=tmp_path,
-        output_binary=tmp_path / "arith_molt",
-        build_profile="dev",
-        target_python=module.TargetPythonVersion(3, 14, 0),
-        no_cache=False,
-        rebuild=False,
-        request_timeout=8.0,
-        strict_mode=False,
-        budget=module.compat_backends.ItemBudget(
-            module.compat_backends.TimeoutPolicy.from_environment({}), None
-        ),
-    )
-
-    assert result == module.compat_backends.BackendResult("ok", "", 0)
-    assert resets["count"] == 2
-    assert seen_params[1]["stdlib_profile"] == "full"
-    assert seen_params[1]["python_version"] == "3.14"
+    assert seen_params[0]["env_overrides"] == environment
+    assert seen_params[0]["respect_pythonpath"] is True
+    if stdlib_profile is None:
+        assert "stdlib_profile" not in seen_params[0]
+    else:
+        assert seen_params[0]["stdlib_profile"] == stdlib_profile
 
 
-def test_run_batch_compile_build_strict_mode_retries_once_on_start_error(
+def test_run_batch_compile_build_preserves_first_startup_error(
     monkeypatch, tmp_path: Path
 ) -> None:
     module = _load_diff_module()
     attempts = {"count": 0}
-    resets = {"count": 0}
+    requests = []
+    environment = {"MOLT_CODEC": "msgpack"}
+    original = dict(environment)
 
     class _FakeClient:
         def request(self, op: str, *, params=None, timeout: float) -> dict[str, object]:
+            requests.append(op)
             assert op == "build"
             assert isinstance(params, dict)
             return {
@@ -1030,16 +1000,10 @@ def test_run_batch_compile_build_strict_mode_retries_once_on_start_error(
             return None, RuntimeError("transient startup failure")
         return _FakeClient(), None
 
-    def _fake_reset_disabled() -> None:
-        resets["count"] += 1
-
     monkeypatch.setattr(module, "_batch_compile_server_client", _fake_client_factory)
-    monkeypatch.setattr(
-        module, "_batch_compile_server_reset_disabled", _fake_reset_disabled
-    )
 
     result = module._run_batch_compile_build(
-        env={"MOLT_CODEC": "msgpack"},
+        env=environment,
         file_path="tests/differential/basic/arith.py",
         output_root=tmp_path,
         output_binary=tmp_path / "arith_molt",
@@ -1048,24 +1012,24 @@ def test_run_batch_compile_build_strict_mode_retries_once_on_start_error(
         no_cache=False,
         rebuild=False,
         request_timeout=12.0,
-        strict_mode=True,
         budget=module.compat_backends.ItemBudget(
             module.compat_backends.TimeoutPolicy.from_environment({}), None
         ),
     )
 
-    assert result == module.compat_backends.BackendResult("ok", "", 0)
-    assert attempts["count"] == 2
-    assert resets["count"] == 2
+    assert result.build_failed and result.returncode == 127
+    assert result.stdout is None
+    assert result.child_stderr == "transient startup failure"
+    assert attempts["count"] == 1
+    assert requests == []
+    assert environment == original
 
 
-@pytest.mark.parametrize("strict_mode", (False, True))
 def test_run_batch_compile_build_timeout_is_terminal_and_force_closes_server(
-    monkeypatch, tmp_path: Path, strict_mode: bool
+    monkeypatch, tmp_path: Path
 ) -> None:
     module = _load_diff_module()
     shutdown_calls: list[bool] = []
-    disabled_reasons: list[str] = []
     requests = 0
 
     class _FailingClient:
@@ -1082,14 +1046,8 @@ def test_run_batch_compile_build_timeout_is_terminal_and_force_closes_server(
     def _fake_shutdown(*, force: bool = True) -> None:
         shutdown_calls.append(force)
 
-    def _fake_mark_disabled(reason: str) -> None:
-        disabled_reasons.append(reason)
-
     monkeypatch.setattr(module, "_batch_compile_server_client", _fake_client_factory)
     monkeypatch.setattr(module, "_shutdown_batch_compile_server", _fake_shutdown)
-    monkeypatch.setattr(
-        module, "_batch_compile_server_mark_disabled", _fake_mark_disabled
-    )
 
     result = module._run_batch_compile_build(
         env={"MOLT_CODEC": "msgpack"},
@@ -1101,7 +1059,6 @@ def test_run_batch_compile_build_timeout_is_terminal_and_force_closes_server(
         no_cache=False,
         rebuild=False,
         request_timeout=8.0,
-        strict_mode=strict_mode,
         budget=module.compat_backends.ItemBudget(
             module.compat_backends.TimeoutPolicy.from_environment({}), None
         ),
@@ -1114,11 +1071,11 @@ def test_run_batch_compile_build_timeout_is_terminal_and_force_closes_server(
     assert "timeout after 8.0s" in result.stderr
     assert requests == 1
     assert shutdown_calls == [True]
-    assert disabled_reasons == ["build timed out"]
 
 
-def test_run_molt_does_not_fallback_after_batch_deadline(
-    monkeypatch, tmp_path: Path
+@pytest.mark.parametrize("failure_at", ["deadline", "startup", "request", "unexpected"])
+def test_run_molt_preserves_selected_batch_failure_without_subprocess_fallback(
+    monkeypatch, tmp_path: Path, failure_at: str
 ) -> None:
     module = _load_diff_module()
     deadline = module.compat_backends.BackendResult.from_deadline(
@@ -1129,6 +1086,32 @@ def test_run_molt_does_not_fallback_after_batch_deadline(
     )
     subprocess_calls = []
     metric_statuses = []
+    starts = []
+    requests = []
+    shutdown = []
+    original_error = RuntimeError("first batch transport failure")
+
+    class Client:
+        def __init__(self, env, *, budget):
+            starts.append((dict(env), env))
+            if failure_at == "startup":
+                raise original_error
+
+        def request(self, op, *, params=None, timeout):
+            requests.append(op)
+            assert timeout == 9.0
+            if op == "ping":
+                return {"ok": True, "pong": True}
+            assert op == "build"
+            if requests.count("build") == 1:
+                raise original_error
+            return {"ok": True, "returncode": 0, "stdout": "replacement pass"}
+
+        def close(self, *, force=False, timeout=None):
+            shutdown.append(force)
+
+    def unexpected(**kwargs):
+        raise original_error
 
     monkeypatch.setattr(module, "_diff_tmp_root", lambda _environment=None: tmp_path)
     monkeypatch.setattr(module, "_diff_root", lambda: tmp_path / "diff-root")
@@ -1144,11 +1127,18 @@ def test_run_molt_does_not_fallback_after_batch_deadline(
     monkeypatch.setenv("MOLT_DIFF_BUILD_TIMEOUT", "60")
     monkeypatch.setattr(module, "_diff_fail_rss_kb", lambda: 0)
     monkeypatch.setattr(module, "_diff_batch_compile_server_enabled", lambda: True)
-    monkeypatch.setattr(module, "_diff_batch_compile_server_strict", lambda: False)
     monkeypatch.setattr(
         module, "_diff_batch_compile_server_request_timeout", lambda timeout: 9.0
     )
-    monkeypatch.setattr(module, "_run_batch_compile_build", lambda **kwargs: deadline)
+    monkeypatch.setattr(module, "_BatchCompileServerClient", Client)
+    monkeypatch.setattr(module, "_BATCH_COMPILE_SERVER_CLIENT", None)
+    monkeypatch.setattr(module, "_BATCH_COMPILE_SERVER_CLIENT_PID", 0)
+    if failure_at == "deadline":
+        monkeypatch.setattr(
+            module, "_run_batch_compile_build", lambda **kwargs: deadline
+        )
+    elif failure_at == "unexpected":
+        monkeypatch.setattr(module, "_run_batch_compile_build", unexpected)
     monkeypatch.setattr(
         module,
         "_run_with_optional_time",
@@ -1186,9 +1176,22 @@ def test_run_molt_does_not_fallback_after_batch_deadline(
         execution_context=context,
     )
 
-    assert result == deadline
+    if failure_at == "deadline":
+        assert result == deadline
+        assert metric_statuses == ["build_timeout"]
+    else:
+        assert result.build_failed and result.returncode == 127
+        assert result.stdout is None
+        assert "first batch transport failure" in result.child_stderr
+        assert not result.timed_out
     assert subprocess_calls == []
-    assert metric_statuses == ["build_timeout"]
+    assert len(starts) == int(failure_at in {"startup", "request"})
+    assert requests == (["ping", "build"] if failure_at == "request" else [])
+    assert shutdown == ([True] if failure_at == "request" else [])
+    assert module._BATCH_COMPILE_SERVER_CLIENT is None
+    assert module._BATCH_COMPILE_SERVER_CLIENT_PID == 0
+    for selected, environment in starts:
+        assert environment == selected
 
 
 def test_run_molt_build_only_uses_build_profile_flag(
@@ -1651,23 +1654,10 @@ def admitted_guest_environment(tmp_path, monkeypatch):
     return repo, env
 
 
-@pytest.mark.parametrize("mode", ["dyld", "isolated-retry"])
-def test_guest_readmission_preserves_selected_mode(admitted_guest_environment, mode):
+def test_guest_readmission_preserves_selected_outputs(admitted_guest_environment):
     from tools.compat import diff_output_layout as output
 
     repo, env = admitted_guest_environment
-    root = Path(env[output.ROOT_ENV])
-    parent = root / "guest-tmp"
-    target = (
-        parent / "dyld_quarantine" / "run" / "target"
-        if mode == "dyld"
-        else parent / "molt_diff_retry_run" / "target"
-    )
-    env.update(
-        CARGO_TARGET_DIR=str(target),
-        MOLT_DIFF_CARGO_TARGET_DIR=str(target),
-        MOLT_DIFF_TARGET_MODE=mode,
-    )
     original = dict(env)
     output.admit(env, repo_root=repo, custody_root=Path(env["MOLT_DIFF_ROOT"]))
     assert env == original
@@ -1842,61 +1832,24 @@ def test_guest_backends_preserve_primary_and_cleanup_failure(
     assert seen[0].exists()
 
 
-def test_selected_dyld_and_retry_ignore_inherited_control_override(
-    admitted_guest_environment, monkeypatch
-):
-    from tools.compat import diff_output_layout as output
-
-    repo, env = admitted_guest_environment
-    env["MOLT_BUILD_STATE_DIR"] = str(Path(env["MOLT_EXT_ROOT"]) / "shared-state")
-    # This control exercises the unqueued independent-root contract, even when
-    # pytest itself is launched by the queue.
-    monkeypatch.delenv("MOLT_PROOF_SCRATCH_ROOT", raising=False)
-    module = _load_diff_module()
-    monkeypatch.setattr(module, "_repo_root", lambda: repo)
-    for key, value in env.items():
-        monkeypatch.setenv(key, value)
-    for key in ("MOLT_DIFF_TARGET_MODE", "MOLT_DIFF_KEEP_ISOLATED_RETRY"):
-        monkeypatch.delenv(key, raising=False)
-    for key in ("MOLT_BUILD_STATE_DIR", "MOLT_BACKEND_DAEMON", "MOLT_DIFF_TARGET_MODE"):
-        # Quarantine intentionally mutates these globals; register restoration.
-        monkeypatch.setenv(key, os.environ.get(key, ""))
-    target, state, activated = module._activate_dyld_quarantine_target(use_local=True)
-    assert activated and target.is_relative_to(Path(env[output.ROOT_ENV]))
-    assert state == output.isolated_state_root(
-        target=target, environment=env, repo_root=repo
-    )
-    assert state != Path(env["MOLT_BUILD_STATE_DIR"])
-    assert output.enforce_child(dict(os.environ), repo_root=repo) == Path(
-        env[output.ROOT_ENV]
-    )
-    retry_states: list[Path] = []
-
-    def run_retry(isolated):
-        retry_state = Path(isolated["MOLT_BUILD_STATE_DIR"])
-        assert retry_state != state and retry_state != Path(env["MOLT_BUILD_STATE_DIR"])
-        assert retry_state.exists()
-        retry_states.append(retry_state)
-        return module.compat_backends.BackendResult("retry stdout", "", 0)
-
-    result = module._run_isolated_retry(run_retry, environment=env)
-    assert result.stdout == "retry stdout" and result.infrastructure_failure is None
-    assert len(retry_states) == 1 and not retry_states[0].exists()
-
-
 @pytest.mark.parametrize(
-    "failure", ["body", "state-allocation", "cleanup-success", "cleanup-failure"]
+    "failure", ["body", "allocation", "cleanup-success", "cleanup-failure"]
 )
-def test_retry_lease_always_retires_and_reports_failures(
+def test_guest_output_leases_preserve_setup_body_and_cleanup_failures(
     admitted_guest_environment, monkeypatch, failure
 ):
     from tools.compat import diff_output_layout as output
 
     repo, env = admitted_guest_environment
     module = _load_diff_module()
-    monkeypatch.setattr(module, "_repo_root", lambda: repo)
+    root = Path(env["MOLT_DIFF_TMPDIR"])
+    lease = output.new_guest_leaf(
+        root, prefix="primary_", boundary=root, environment=env, repo_root=repo
+    )
+    secondary = lease.path / "additional-output"
+    leases = [lease]
     primary = LookupError("primary")
-    if failure == "state-allocation":
+    if failure == "allocation":
 
         def cannot_claim(*_args, **_kwargs):
             raise primary
@@ -1908,7 +1861,7 @@ def test_retry_lease_always_retires_and_reports_failures(
         retired.append(lease.path)
         return "cleanup failed"
 
-    if failure != "state-allocation":
+    if failure != "allocation":
         monkeypatch.setattr(output.GuestOutputLease, "retire", blocked_retirement)
     guest = module.compat_backends.BackendResult(
         "guest stdout",
@@ -1917,26 +1870,30 @@ def test_retry_lease_always_retires_and_reports_failures(
         detail="guest detail",
     )
 
-    def run_retry(isolated):
-        child = {**env, **isolated}
-        assert output.enforce_child(child, repo_root=repo) == Path(env[output.ROOT_ENV])
-        assert Path(isolated["MOLT_BUILD_STATE_DIR"]).is_relative_to(
-            Path(env["MOLT_EXT_ROOT"])
+    def run():
+        leases.append(
+            output.claim_new_guest_leaf(
+                secondary, boundary=root, environment=env, repo_root=repo
+            )
         )
         if failure == "body":
             raise primary
         return guest
 
-    if failure in {"body", "state-allocation"}:
+    if failure in {"body", "allocation"}:
         with pytest.raises(LookupError) as caught:
-            module._run_isolated_retry(run_retry, environment=env)
+            module.compat_backends.run_with_guest_outputs(
+                leases, run, environment=env, repo_root=repo, keep=False
+            )
         assert caught.value is primary
-        if failure == "state-allocation":
-            assert not list(Path(env["MOLT_DIFF_TMPDIR"]).iterdir())
+        if failure == "allocation":
+            assert not list(root.iterdir())
         else:
             assert primary.__notes__ == ["cleanup failed", "cleanup failed"]
     else:
-        result = module._run_isolated_retry(run_retry, environment=env)
+        result = module.compat_backends.run_with_guest_outputs(
+            leases, run, environment=env, repo_root=repo, keep=False
+        )
         assert (result.stdout, result.stderr, result.returncode) == (
             guest.stdout,
             guest.stderr,
@@ -1949,10 +1906,8 @@ def test_retry_lease_always_retires_and_reports_failures(
             "cleanup failed",
         )
         assert result.detail == "guest detail\ncleanup failed\ncleanup failed"
-    if failure != "state-allocation":
-        assert len(retired) == 2
-        assert retired[0].is_relative_to(Path(env["MOLT_EXT_ROOT"]))
-        assert retired[1].is_relative_to(Path(env[output.ROOT_ENV]))
+    if failure != "allocation":
+        assert retired == [secondary, lease.path]
 
 
 def test_diff_lock_rejects_target_drift_without_dropping_held_lock(
@@ -2334,34 +2289,34 @@ def test_queued_output_binding_reaches_native_wasm_and_compat_consumers(
     assert not any(tmp_path.glob("foreign-*"))
 
 
-@pytest.mark.parametrize("kind", ["dyld", "dyld-local", "retry", "retry-local"])
-def test_queued_target_relocation_refuses_before_any_mutation(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, kind: str
+@pytest.mark.parametrize("target_location", ["in-root", "outside-root"])
+def test_guest_target_relocation_refuses_before_any_mutation(
+    admitted_guest_environment, monkeypatch: pytest.MonkeyPatch, target_location: str
 ) -> None:
-    module = _load_diff_module()
-    monkeypatch.setenv("MOLT_PROOF_SCRATCH_ROOT", str(tmp_path / "proof-scratch"))
-    before = dict(os.environ)
+    from tools.compat import diff_output_layout as output
+
+    repo, environment = admitted_guest_environment
+    root = Path(environment[output.ROOT_ENV])
+    target = (root if target_location == "in-root" else repo) / "other-target"
+    environment.update(
+        CARGO_TARGET_DIR=str(target), MOLT_DIFF_CARGO_TARGET_DIR=str(target)
+    )
+    before = dict(environment)
 
     def forbidden(*_args, **_kwargs):
         pytest.fail("secondary output touched before ownership refusal")
 
     with monkeypatch.context() as mutation_guard:
         mutation_guard.setattr(Path, "mkdir", forbidden)
-        mutation_guard.setattr(module.diff_output_layout, "new_guest_leaf", forbidden)
-        with pytest.raises(ValueError, match="queued Cargo ownership forbids"):
-            if kind.startswith("dyld"):
-                module._activate_dyld_quarantine_target(
-                    use_local=kind.endswith("local")
-                )
-            else:
-                module._run_isolated_retry(
-                    forbidden, local_tmp=kind.endswith("local"), environment=before
-                )
-    assert dict(os.environ) == before
+        mutation_guard.setattr(output, "new_guest_leaf", forbidden)
+        with pytest.raises(ValueError, match="escaped"):
+            output.projected_target(environment, root)
+    assert environment == before
+    assert not target.exists()
 
 
 @pytest.mark.parametrize("exhaust_at", ["startup", "request"])
-def test_batch_startup_and_strict_recovery_share_one_item_budget(
+def test_batch_startup_and_request_share_one_item_budget(
     monkeypatch, tmp_path, exhaust_at
 ):
     module = _load_diff_module()
@@ -2378,26 +2333,14 @@ def test_batch_startup_and_strict_recovery_share_one_item_budget(
         def request(self, op, *, params, timeout):
             calls.append((op, timeout))
             clock.now = 10.0
-            raise RuntimeError("recoverable batch transport failure")
+            raise TimeoutError("batch request exhausted its admitted deadline")
 
     def start(env, *, request_timeout, budget):
         calls.append(("startup", request_timeout))
         clock.now = 10.0 if exhaust_at == "startup" else 9.0
-        return (
-            (None, RuntimeError("startup failure"))
-            if exhaust_at == "startup"
-            else (Client(), None)
-        )
+        return Client(), None
 
     monkeypatch.setattr(module, "_batch_compile_server_client", start)
-    monkeypatch.setattr(
-        module,
-        "_batch_compile_server_reset_disabled",
-        lambda: calls.append(("reset", None)),
-    )
-    monkeypatch.setattr(
-        module, "_batch_compile_server_mark_disabled", lambda reason: None
-    )
     monkeypatch.setattr(module, "_shutdown_batch_compile_server", lambda *, force: None)
     monkeypatch.setattr(
         module.harness_outcomes, "read_suite_trip", lambda *a, **k: None
@@ -2412,7 +2355,6 @@ def test_batch_startup_and_strict_recovery_share_one_item_budget(
         no_cache=False,
         rebuild=False,
         request_timeout=30,
-        strict_mode=True,
         budget=budget,
     )
     assert result.timed_out and result.build_failed
