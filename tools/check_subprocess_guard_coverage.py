@@ -122,6 +122,19 @@ class SubprocessGuardAudit:
 
 ALLOWLIST: tuple[AllowedRawSubprocessUse, ...] = (
     AllowedRawSubprocessUse(
+        "tests/cli/test_source_record_store.py",
+        "_close_fork_observer",
+        "process.terminate",
+        "bounded SQLite/fork metadata oracle must inherit the parent's exact "
+        "handle and lock; cleanup targets only its created child after a finite pipe wait",
+    ),
+    AllowedRawSubprocessUse(
+        "tests/cli/test_source_record_store.py",
+        "_close_fork_observer",
+        "process.kill",
+        "escalates only that same unreaped fork observer after a bounded terminate/join",
+    ),
+    AllowedRawSubprocessUse(
         "tests/test_molt_queue_cli.py",
         "_real_queue_cli",
         "Popen",
