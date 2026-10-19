@@ -11,6 +11,7 @@ pub(crate) enum CompatibilityError<'a> {
     WindowsSignalHandler,
     AbstractSignalHandler,
     RawIoBaseReadinto,
+    LoggingHandlerEmit,
     MemoryviewSubView {
         rank: usize,
         indices: usize,
@@ -39,6 +40,7 @@ impl CompatibilityError<'_> {
         let target = crate::object::ops_sys::runtime_target_python_info(runtime_state(py));
         let supported_minor = match &self {
             Self::RawIoBaseReadinto => matches!(target.minor, 12..=15),
+            Self::LoggingHandlerEmit => matches!(target.minor, 12..=15),
             _ => matches!(target.minor, 12..=14),
         };
         if target.major != 3 || !supported_minor {
@@ -54,6 +56,9 @@ impl CompatibilityError<'_> {
             Self::WindowsSignalHandler if cfg!(target_os = "windows") => String::new(),
             Self::AbstractSignalHandler => String::new(),
             Self::RawIoBaseReadinto => String::new(),
+            Self::LoggingHandlerEmit => {
+                "emit must be implemented by Handler subclasses".to_owned()
+            }
             Self::MemoryviewSubView {
                 rank,
                 indices,
@@ -125,6 +130,7 @@ pub extern "C" fn molt_compatibility_error(outcome_bits: u64) -> u64 {
             Some(1) => CompatibilityError::CounterFromkeys,
             Some(2) => CompatibilityError::WindowsSignalHandler,
             Some(3) => CompatibilityError::AbstractSignalHandler,
+            Some(4) => CompatibilityError::LoggingHandlerEmit,
             _ => {
                 return raise_exception(
                     py,
@@ -141,7 +147,7 @@ mod tests {
     use super::CompatibilityError;
 
     #[test]
-    fn raw_readinto_target_support_does_not_widen_older_outcomes() {
+    fn raw_readinto_and_logging_emit_target_support_does_not_widen_older_outcomes() {
         let transaction = crate::test_support::RuntimeTestTransaction::new();
         crate::with_gil_entry_nopanic!(py, {
             for minor in 12..=15 {
@@ -150,12 +156,20 @@ mod tests {
                         CompatibilityError::RawIoBaseReadinto.message(py).as_deref(),
                         Ok("")
                     );
+                    assert_eq!(
+                        CompatibilityError::LoggingHandlerEmit.message(py).as_deref(),
+                        Ok("emit must be implemented by Handler subclasses")
+                    );
                 });
             }
             for minor in [11, 16] {
                 transaction.with_target_python_minor(py, minor, || {
                     assert_eq!(
                         CompatibilityError::RawIoBaseReadinto.message(py),
+                        Err("unsupported compatibility-error target"),
+                    );
+                    assert_eq!(
+                        CompatibilityError::LoggingHandlerEmit.message(py),
                         Err("unsupported compatibility-error target"),
                     );
                 });

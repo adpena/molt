@@ -1,7 +1,7 @@
 //! Intrinsics for the `logging` stdlib module.
 //!
-//! Implements LogRecord, Formatter, Handler, StreamHandler, Logger, Manager,
-//! and level utilities with CPython `logging` module semantics.
+//! Implements handler and logger handles and level utilities for `logging`.
+//! Python LogRecord and Formatter objects own mutable record and format state.
 //!
 //! Handle registries are scoped to the owning Molt `RuntimeState` through the
 //! runtime extension-state bridge, so nested runtimes do not share or leak
@@ -12,7 +12,6 @@ use molt_runtime_core::prelude::*;
 use std::collections::HashMap;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicI64, Ordering};
-use std::time::{SystemTime, UNIX_EPOCH};
 
 // ── Standard logging levels (CPython) ────────────────────────────────────────
 
@@ -24,18 +23,6 @@ const DEBUG: i64 = 10;
 const NOTSET: i64 = 0;
 
 // ── Handle counters ──────────────────────────────────────────────────────────
-
-fn next_record_handle() -> i64 {
-    logging_state()
-        .next_record_handle
-        .fetch_add(1, Ordering::Relaxed)
-}
-
-fn next_formatter_handle() -> i64 {
-    logging_state()
-        .next_formatter_handle
-        .fetch_add(1, Ordering::Relaxed)
-}
 
 fn next_handler_handle() -> i64 {
     logging_state()
@@ -67,22 +54,6 @@ fn handle_from_bits(_py: &PyToken, handle_bits: u64, kind: &str) -> Option<i64> 
         return None;
     };
     Some(id)
-}
-
-fn opt_str(bits: u64) -> Option<String> {
-    let obj = obj_from_bits(bits);
-    if obj.is_none() {
-        None
-    } else {
-        string_obj_to_owned(obj)
-    }
-}
-
-fn current_time_secs() -> f64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_secs_f64())
-        .unwrap_or(0.0)
 }
 
 // ── Level name mapping ───────────────────────────────────────────────────────
@@ -134,683 +105,10 @@ impl LevelNames {
     }
 }
 
-// ── LogRecord ────────────────────────────────────────────────────────────────
-
-struct LogRecordState {
-    name: String,
-    level: i64,
-    levelname: String,
-    pathname: String,
-    filename: String,
-    module: String,
-    lineno: i64,
-    msg: String,
-    args: String,
-    exc_info: String,
-    func_name: String,
-    created: f64,
-    msecs: f64,
-    relative_created: f64,
-    thread: i64,
-    thread_name: String,
-    process: Option<i64>,
-    process_name: String,
-    message: Option<String>,
-    asctime: Option<String>,
-    exc_text: Option<String>,
-    stack_info: Option<String>,
-}
-
-impl LogRecordState {
-    fn get_message(&self) -> String {
-        if let Some(ref cached) = self.message {
-            return cached.clone();
-        }
-        if self.args.is_empty() || self.args == "()" || self.args == "None" {
-            return self.msg.clone();
-        }
-        // In the intrinsic layer we store the already-formatted message
-        // from the Python side (args have been applied there). Return msg as-is.
-        self.msg.clone()
-    }
-}
-
-fn filename_from_pathname(pathname: &str) -> String {
-    match pathname.rfind('/') {
-        Some(pos) => pathname[pos + 1..].to_string(),
-        None => match pathname.rfind('\\') {
-            Some(pos) => pathname[pos + 1..].to_string(),
-            None => pathname.to_string(),
-        },
-    }
-}
-
-fn module_from_filename(filename: &str) -> String {
-    match filename.rfind('.') {
-        Some(pos) => filename[..pos].to_string(),
-        None => filename.to_string(),
-    }
-}
-
-// ── LogRecord intrinsics ─────────────────────────────────────────────────────
-
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_logging_record_new(
-    name_bits: u64,
-    level_bits: u64,
-    pathname_bits: u64,
-    lineno_bits: u64,
-    msg_bits: u64,
-    args_bits: u64,
-    exc_info_bits: u64,
-    process_bits: u64,
-) -> u64 {
-    molt_runtime_core::with_core_gil!(_py, {
-        let Some(name) = string_obj_to_owned(obj_from_bits(name_bits)) else {
-            return raise_exception::<u64>(_py, "TypeError", "LogRecord name must be str");
-        };
-        let Some(level) = to_i64(obj_from_bits(level_bits)) else {
-            return raise_exception::<u64>(_py, "TypeError", "LogRecord level must be int");
-        };
-        // Process metadata is supplied by the Python caller after its canonical
-        // os.getpid operation (or None when logProcesses is disabled).
-        let process = if obj_from_bits(process_bits).is_none() {
-            None
-        } else {
-            let Some(process) = to_i64(obj_from_bits(process_bits)) else {
-                return raise_exception::<u64>(
-                    _py,
-                    "TypeError",
-                    "LogRecord process must be int or None",
-                );
-            };
-            Some(process)
-        };
-        let pathname = opt_str(pathname_bits).unwrap_or_default();
-        let lineno = to_i64(obj_from_bits(lineno_bits)).unwrap_or(0);
-        let msg = opt_str(msg_bits).unwrap_or_default();
-        let args = opt_str(args_bits).unwrap_or_default();
-        let exc_info = opt_str(exc_info_bits).unwrap_or_default();
-
-        let filename = filename_from_pathname(&pathname);
-        let module = module_from_filename(&filename);
-        let levelname = logging_state().level_names.lock().unwrap().get_name(level);
-        let created = current_time_secs();
-        let msecs = (created - created.floor()) * 1000.0;
-        let start = logging_state().start_time;
-        let relative_created = (created - start) * 1000.0;
-
-        let record = LogRecordState {
-            name,
-            level,
-            levelname,
-            pathname,
-            filename,
-            module,
-            lineno,
-            msg,
-            args,
-            exc_info,
-            func_name: String::new(),
-            created,
-            msecs,
-            relative_created,
-            thread: 0,
-            thread_name: "MainThread".to_string(),
-            process,
-            process_name: "MainProcess".to_string(),
-            message: None,
-            asctime: None,
-            exc_text: None,
-            stack_info: None,
-        };
-
-        let id = next_record_handle();
-        logging_state()
-            .record_registry
-            .lock()
-            .unwrap()
-            .insert(id, record);
-        MoltObject::from_int(id).bits()
-    })
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_logging_record_get_message(handle_bits: u64) -> u64 {
-    molt_runtime_core::with_core_gil!(_py, {
-        let Some(id) = handle_from_bits(_py, handle_bits, "LogRecord") else {
-            return MoltObject::none().bits();
-        };
-        let message = {
-            let registry = logging_state().record_registry.lock().unwrap();
-            let Some(record) = registry.get(&id) else {
-                return raise_exception::<u64>(_py, "ValueError", "invalid LogRecord handle");
-            };
-            record.get_message()
-        };
-        return_str(_py, &message)
-    })
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_logging_record_drop(handle_bits: u64) -> u64 {
-    molt_runtime_core::with_core_gil!(_py, {
-        let Some(id) = handle_from_bits(_py, handle_bits, "LogRecord") else {
-            return MoltObject::none().bits();
-        };
-        logging_state().record_registry.lock().unwrap().remove(&id);
-        MoltObject::none().bits()
-    })
-}
-
-// ── Formatter ────────────────────────────────────────────────────────────────
-
-#[derive(Clone)]
-enum FormatStyle {
-    Percent,
-    StrFormat,
-    Dollar,
-}
-
-struct FormatterState {
-    fmt: String,
-    datefmt: Option<String>,
-    style: FormatStyle,
-    default_time_format: String,
-}
-
-impl FormatterState {
-    fn uses_time(&self) -> bool {
-        match self.style {
-            FormatStyle::Percent => self.fmt.contains("%(asctime)"),
-            FormatStyle::StrFormat => self.fmt.contains("{asctime"),
-            FormatStyle::Dollar => self.fmt.contains("$asctime"),
-        }
-    }
-
-    fn format_time(&self, record: &LogRecordState) -> String {
-        let created = record.created;
-        let msecs = record.msecs;
-
-        if let Some(ref datefmt) = self.datefmt {
-            // Apply the custom datefmt via strftime-style formatting.
-            format_time_strftime(created, datefmt)
-        } else {
-            // Default: use default_time_format then apply msec format.
-            let base = format_time_strftime(created, &self.default_time_format);
-            // CPython default_msec_format is "%s,%03d"
-            format!("{},{:03}", base, msecs as u32)
-        }
-    }
-
-    fn format_record(&self, record: &LogRecordState) -> String {
-        let message = record.get_message();
-        let asctime = if self.uses_time() {
-            self.format_time(record)
-        } else {
-            String::new()
-        };
-
-        let result = self.apply_format(record, &message, &asctime);
-
-        let mut s = result;
-        if !record.exc_info.is_empty()
-            && record.exc_info != "None"
-            && record.exc_info != "False"
-            && let Some(ref exc_text) = record.exc_text
-            && !exc_text.is_empty()
-        {
-            s.push('\n');
-            s.push_str(exc_text);
-        }
-        if let Some(ref stack_info) = record.stack_info
-            && !stack_info.is_empty()
-        {
-            s.push('\n');
-            s.push_str(stack_info);
-        }
-        s
-    }
-
-    fn apply_format(&self, record: &LogRecordState, message: &str, asctime: &str) -> String {
-        match self.style {
-            FormatStyle::Percent => percent_format(&self.fmt, record, message, asctime),
-            FormatStyle::StrFormat => strformat_format(&self.fmt, record, message, asctime),
-            FormatStyle::Dollar => dollar_format(&self.fmt, record, message, asctime),
-        }
-    }
-}
-
-/// Apply CPython-style `%(key)s` / `%(key)d` / `%(key)f` formatting for log records.
-fn percent_format(fmt: &str, record: &LogRecordState, message: &str, asctime: &str) -> String {
-    let mut out = String::with_capacity(fmt.len() + message.len());
-    let chars: Vec<char> = fmt.chars().collect();
-    let mut idx = 0;
-
-    while idx < chars.len() {
-        if chars[idx] != '%' {
-            out.push(chars[idx]);
-            idx += 1;
-            continue;
-        }
-        // Look for %(key)s pattern
-        if idx + 1 < chars.len() && chars[idx + 1] == '%' {
-            out.push('%');
-            idx += 2;
-            continue;
-        }
-        if idx + 1 < chars.len() && chars[idx + 1] == '(' {
-            // Parse %(key)X
-            let start = idx + 2;
-            let mut end = start;
-            while end < chars.len() && chars[end] != ')' {
-                end += 1;
-            }
-            if end < chars.len() && end + 1 < chars.len() {
-                let key: String = chars[start..end].iter().collect();
-                let spec = chars[end + 1];
-                let value = lookup_record_field(record, &key, message, asctime);
-                match spec {
-                    's' => out.push_str(&value),
-                    'd' => {
-                        // Try to parse as integer for %d formatting.
-                        if let Ok(v) = value.parse::<i64>() {
-                            out.push_str(&v.to_string());
-                        } else if let Ok(v) = value.parse::<f64>() {
-                            out.push_str(&(v as i64).to_string());
-                        } else {
-                            out.push_str(&value);
-                        }
-                    }
-                    'f' => {
-                        if let Ok(v) = value.parse::<f64>() {
-                            out.push_str(&format!("{v:.6}"));
-                        } else {
-                            out.push_str(&value);
-                        }
-                    }
-                    _ => {
-                        // Unknown specifier: output raw
-                        out.push('%');
-                        out.push('(');
-                        out.push_str(&key);
-                        out.push(')');
-                        out.push(spec);
-                    }
-                }
-                idx = end + 2;
-            } else {
-                // Malformed: emit raw
-                out.push(chars[idx]);
-                idx += 1;
-            }
-        } else {
-            out.push(chars[idx]);
-            idx += 1;
-        }
-    }
-    out
-}
-
-/// Apply `{key}` style formatting for log records.
-fn strformat_format(fmt: &str, record: &LogRecordState, message: &str, asctime: &str) -> String {
-    let mut out = String::with_capacity(fmt.len() + message.len());
-    let chars: Vec<char> = fmt.chars().collect();
-    let mut idx = 0;
-
-    while idx < chars.len() {
-        if chars[idx] == '{' && idx + 1 < chars.len() && chars[idx + 1] == '{' {
-            out.push('{');
-            idx += 2;
-            continue;
-        }
-        if chars[idx] == '}' && idx + 1 < chars.len() && chars[idx + 1] == '}' {
-            out.push('}');
-            idx += 2;
-            continue;
-        }
-        if chars[idx] == '{' {
-            let start = idx + 1;
-            let mut end = start;
-            // Find closing }, handling optional format spec after ':'
-            while end < chars.len() && chars[end] != '}' {
-                end += 1;
-            }
-            if end < chars.len() {
-                let inner: String = chars[start..end].iter().collect();
-                // Split on ':' for format spec
-                let key = if let Some(colon_pos) = inner.find(':') {
-                    &inner[..colon_pos]
-                } else {
-                    &inner
-                };
-                let value = lookup_record_field(record, key, message, asctime);
-                out.push_str(&value);
-                idx = end + 1;
-            } else {
-                out.push(chars[idx]);
-                idx += 1;
-            }
-        } else {
-            out.push(chars[idx]);
-            idx += 1;
-        }
-    }
-    out
-}
-
-/// Apply `$key` / `${key}` style formatting for log records.
-fn dollar_format(fmt: &str, record: &LogRecordState, message: &str, asctime: &str) -> String {
-    let mut out = String::with_capacity(fmt.len() + message.len());
-    let chars: Vec<char> = fmt.chars().collect();
-    let mut idx = 0;
-
-    while idx < chars.len() {
-        if chars[idx] == '$' && idx + 1 < chars.len() && chars[idx + 1] == '$' {
-            out.push('$');
-            idx += 2;
-            continue;
-        }
-        if chars[idx] == '$' && idx + 1 < chars.len() && chars[idx + 1] == '{' {
-            // ${key} form
-            let start = idx + 2;
-            let mut end = start;
-            while end < chars.len() && chars[end] != '}' {
-                end += 1;
-            }
-            if end < chars.len() {
-                let key: String = chars[start..end].iter().collect();
-                let value = lookup_record_field(record, &key, message, asctime);
-                out.push_str(&value);
-                idx = end + 1;
-            } else {
-                out.push(chars[idx]);
-                idx += 1;
-            }
-        } else if chars[idx] == '$'
-            && idx + 1 < chars.len()
-            && (chars[idx + 1].is_alphanumeric() || chars[idx + 1] == '_')
-        {
-            // $key form — consume identifier chars
-            let start = idx + 1;
-            let mut end = start;
-            while end < chars.len() && (chars[end].is_alphanumeric() || chars[end] == '_') {
-                end += 1;
-            }
-            let key: String = chars[start..end].iter().collect();
-            let value = lookup_record_field(record, &key, message, asctime);
-            out.push_str(&value);
-            idx = end;
-        } else {
-            out.push(chars[idx]);
-            idx += 1;
-        }
-    }
-    out
-}
-
-fn lookup_record_field(record: &LogRecordState, key: &str, message: &str, asctime: &str) -> String {
-    match key {
-        "name" => record.name.clone(),
-        "msg" => record.msg.clone(),
-        "args" => record.args.clone(),
-        "levelno" => record.level.to_string(),
-        "levelname" => record.levelname.clone(),
-        "pathname" => record.pathname.clone(),
-        "filename" => record.filename.clone(),
-        "module" => record.module.clone(),
-        "lineno" => record.lineno.to_string(),
-        "funcName" => record.func_name.clone(),
-        "created" => format!("{:.6}", record.created),
-        "msecs" => format!("{:.6}", record.msecs),
-        "relativeCreated" => format!("{:.6}", record.relative_created),
-        "thread" => record.thread.to_string(),
-        "threadName" => record.thread_name.clone(),
-        "process" => record
-            .process
-            .map_or_else(|| "None".to_string(), |pid| pid.to_string()),
-        "processName" => record.process_name.clone(),
-        "message" => message.to_string(),
-        "asctime" => asctime.to_string(),
-        "exc_info" => record.exc_info.clone(),
-        "exc_text" => record.exc_text.as_deref().unwrap_or("").to_string(),
-        "stack_info" => record.stack_info.as_deref().unwrap_or("").to_string(),
-        _ => String::new(),
-    }
-}
-
-/// Format a UNIX timestamp into a strftime-style string.
-///
-/// We implement a subset of strftime directives in pure Rust so the runtime
-/// does not depend on libc `strftime`.  This covers the directives that
-/// CPython's logging module uses by default.
-fn format_time_strftime(timestamp: f64, fmt: &str) -> String {
-    let secs = timestamp as i64;
-
-    // Decompose into calendar components (UTC-like, matching CPython localtime
-    // when TZ is unset — acceptable for Molt's deterministic model).
-    let (year, month, day, hour, minute, second) = unix_to_calendar(secs);
-
-    let chars: Vec<char> = fmt.chars().collect();
-    let mut out = String::with_capacity(fmt.len() + 16);
-    let mut idx = 0;
-    while idx < chars.len() {
-        if chars[idx] == '%' && idx + 1 < chars.len() {
-            let spec = chars[idx + 1];
-            match spec {
-                'Y' => out.push_str(&format!("{year:04}")),
-                'm' => out.push_str(&format!("{month:02}")),
-                'd' => out.push_str(&format!("{day:02}")),
-                'H' => out.push_str(&format!("{hour:02}")),
-                'M' => out.push_str(&format!("{minute:02}")),
-                'S' => out.push_str(&format!("{second:02}")),
-                '%' => out.push('%'),
-                'I' => {
-                    let h12 = if hour == 0 {
-                        12
-                    } else if hour > 12 {
-                        hour - 12
-                    } else {
-                        hour
-                    };
-                    out.push_str(&format!("{h12:02}"));
-                }
-                'p' => {
-                    if hour < 12 {
-                        out.push_str("AM");
-                    } else {
-                        out.push_str("PM");
-                    }
-                }
-                'j' => {
-                    let yday = day_of_year(year, month, day);
-                    out.push_str(&format!("{yday:03}"));
-                }
-                _ => {
-                    out.push('%');
-                    out.push(spec);
-                }
-            }
-            idx += 2;
-        } else {
-            out.push(chars[idx]);
-            idx += 1;
-        }
-    }
-    out
-}
-
-/// Convert a UNIX timestamp (seconds since epoch) to calendar components.
-/// Returns (year, month, day, hour, minute, second).
-fn unix_to_calendar(secs: i64) -> (i64, i64, i64, i64, i64, i64) {
-    let day_secs = secs.rem_euclid(86400);
-    let hour = day_secs / 3600;
-    let minute = (day_secs % 3600) / 60;
-    let second = day_secs % 60;
-
-    // Days since epoch (1970-01-01).
-    let mut days = secs.div_euclid(86400);
-
-    // Algorithm from Howard Hinnant's chrono-compatible date library.
-    days += 719468; // shift epoch from 1970-01-01 to 0000-03-01
-    let era = if days >= 0 { days } else { days - 146096 } / 146097;
-    let doe = (days - era * 146097) as u64; // [0, 146096]
-    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365; // [0, 399]
-    let y = yoe as i64 + era * 400;
-    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100); // [0, 365]
-    let mp = (5 * doy + 2) / 153; // [0, 11]
-    let d = doy - (153 * mp + 2) / 5 + 1; // [1, 31]
-    let m = if mp < 10 { mp + 3 } else { mp - 9 }; // [1, 12]
-    let y = if m <= 2 { y + 1 } else { y };
-
-    (y, m as i64, d as i64, hour, minute, second)
-}
-
-/// Day of year (1-indexed).
-fn day_of_year(year: i64, month: i64, day: i64) -> i64 {
-    let days_before = [0, 31, 59, 90, 120, 151, 181, 212, 243, 273, 304, 334];
-    let m = (month - 1) as usize;
-    let mut doy = if m < 12 { days_before[m] } else { 0 } + day;
-    if month > 2 && is_leap(year) {
-        doy += 1;
-    }
-    doy
-}
-
-fn is_leap(year: i64) -> bool {
-    (year % 4 == 0 && year % 100 != 0) || year % 400 == 0
-}
-
-// ── Formatter intrinsics ─────────────────────────────────────────────────────
-
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_logging_formatter_new(
-    fmt_bits: u64,
-    datefmt_bits: u64,
-    style_bits: u64,
-    _validate_bits: u64,
-) -> u64 {
-    molt_runtime_core::with_core_gil!(_py, {
-        let fmt_str = opt_str(fmt_bits);
-        let datefmt = opt_str(datefmt_bits);
-        let style_str = opt_str(style_bits).unwrap_or_else(|| "%".to_string());
-
-        let style = match style_str.as_str() {
-            "%" => FormatStyle::Percent,
-            "{" => FormatStyle::StrFormat,
-            "$" => FormatStyle::Dollar,
-            _ => {
-                return raise_exception::<u64>(_py, "ValueError", "Style must be one of: %, {, $");
-            }
-        };
-
-        let default_fmt = match style {
-            FormatStyle::Percent => "%(message)s",
-            FormatStyle::StrFormat => "{message}",
-            FormatStyle::Dollar => "${message}",
-        };
-
-        let formatter = FormatterState {
-            fmt: fmt_str.unwrap_or_else(|| default_fmt.to_string()),
-            datefmt,
-            style,
-            default_time_format: "%Y-%m-%d %H:%M:%S".to_string(),
-        };
-
-        let id = next_formatter_handle();
-        logging_state()
-            .formatter_registry
-            .lock()
-            .unwrap()
-            .insert(id, formatter);
-        MoltObject::from_int(id).bits()
-    })
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_logging_formatter_format(formatter_bits: u64, record_bits: u64) -> u64 {
-    molt_runtime_core::with_core_gil!(_py, {
-        let Some(fmt_id) = handle_from_bits(_py, formatter_bits, "Formatter") else {
-            return MoltObject::none().bits();
-        };
-        let Some(rec_id) = handle_from_bits(_py, record_bits, "LogRecord") else {
-            return MoltObject::none().bits();
-        };
-        let formatted = {
-            let fmt_reg = logging_state().formatter_registry.lock().unwrap();
-            let Some(formatter) = fmt_reg.get(&fmt_id) else {
-                return raise_exception::<u64>(_py, "ValueError", "invalid Formatter handle");
-            };
-            let mut rec_reg = logging_state().record_registry.lock().unwrap();
-            let Some(record) = rec_reg.get_mut(&rec_id) else {
-                return raise_exception::<u64>(_py, "ValueError", "invalid LogRecord handle");
-            };
-            // Update cached message and asctime on the record, matching CPython.
-            record.message = Some(record.get_message());
-            if formatter.uses_time() {
-                record.asctime = Some(formatter.format_time(record));
-            }
-            formatter.format_record(record)
-        };
-        return_str(_py, &formatted)
-    })
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_logging_formatter_format_time(
-    formatter_bits: u64,
-    record_bits: u64,
-    datefmt_bits: u64,
-) -> u64 {
-    molt_runtime_core::with_core_gil!(_py, {
-        let Some(fmt_id) = handle_from_bits(_py, formatter_bits, "Formatter") else {
-            return MoltObject::none().bits();
-        };
-        let Some(rec_id) = handle_from_bits(_py, record_bits, "LogRecord") else {
-            return MoltObject::none().bits();
-        };
-        let override_datefmt = opt_str(datefmt_bits);
-        let time_str = {
-            let fmt_reg = logging_state().formatter_registry.lock().unwrap();
-            let Some(formatter) = fmt_reg.get(&fmt_id) else {
-                return raise_exception::<u64>(_py, "ValueError", "invalid Formatter handle");
-            };
-            let rec_reg = logging_state().record_registry.lock().unwrap();
-            let Some(record) = rec_reg.get(&rec_id) else {
-                return raise_exception::<u64>(_py, "ValueError", "invalid LogRecord handle");
-            };
-            if let Some(ref df) = override_datefmt {
-                format_time_strftime(record.created, df)
-            } else {
-                formatter.format_time(record)
-            }
-        };
-        return_str(_py, &time_str)
-    })
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_logging_formatter_drop(handle_bits: u64) -> u64 {
-    molt_runtime_core::with_core_gil!(_py, {
-        let Some(id) = handle_from_bits(_py, handle_bits, "Formatter") else {
-            return MoltObject::none().bits();
-        };
-        logging_state()
-            .formatter_registry
-            .lock()
-            .unwrap()
-            .remove(&id);
-        MoltObject::none().bits()
-    })
-}
-
 // ── Handler ──────────────────────────────────────────────────────────────────
 
 struct HandlerState {
     level: i64,
-    formatter_handle: Option<i64>,
-    /// For base handler, emitted records are buffered here as formatted strings.
-    buffer: Vec<String>,
     closed: bool,
 }
 
@@ -818,26 +116,8 @@ impl HandlerState {
     fn new_base(level: i64) -> Self {
         Self {
             level,
-            formatter_handle: None,
-            buffer: Vec::new(),
             closed: false,
         }
-    }
-
-    fn format_record(&self, record: &mut LogRecordState) -> String {
-        if let Some(fmt_id) = self.formatter_handle {
-            let fmt_reg = logging_state().formatter_registry.lock().unwrap();
-            if let Some(formatter) = fmt_reg.get(&fmt_id) {
-                record.message = Some(record.get_message());
-                if formatter.uses_time() {
-                    record.asctime = Some(formatter.format_time(record));
-                }
-                return formatter.format_record(record);
-            }
-        }
-        // Fallback: use BASIC_FORMAT = "%(levelname)s:%(name)s:%(message)s"
-        let message = record.get_message();
-        format!("{}:{}:{}", record.levelname, record.name, message)
     }
 }
 
@@ -859,35 +139,6 @@ pub extern "C" fn molt_logging_handler_new(level_bits: u64) -> u64 {
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn molt_logging_handler_emit(handler_bits: u64, record_bits: u64) -> u64 {
-    molt_runtime_core::with_core_gil!(_py, {
-        let Some(h_id) = handle_from_bits(_py, handler_bits, "Handler") else {
-            return MoltObject::none().bits();
-        };
-        let Some(r_id) = handle_from_bits(_py, record_bits, "LogRecord") else {
-            return MoltObject::none().bits();
-        };
-        let formatted = {
-            let mut rec_reg = logging_state().record_registry.lock().unwrap();
-            let Some(record) = rec_reg.get_mut(&r_id) else {
-                return raise_exception::<u64>(_py, "ValueError", "invalid LogRecord handle");
-            };
-            let handler_reg = logging_state().handler_registry.lock().unwrap();
-            let Some(handler) = handler_reg.get(&h_id) else {
-                return raise_exception::<u64>(_py, "ValueError", "invalid Handler handle");
-            };
-            handler.format_record(record)
-        };
-        // Store in handler's buffer
-        let mut handler_reg = logging_state().handler_registry.lock().unwrap();
-        if let Some(handler) = handler_reg.get_mut(&h_id) {
-            handler.buffer.push(formatted);
-        }
-        MoltObject::none().bits()
-    })
-}
-
-#[unsafe(no_mangle)]
 pub extern "C" fn molt_logging_handler_set_level(handler_bits: u64, level_bits: u64) -> u64 {
     molt_runtime_core::with_core_gil!(_py, {
         let Some(h_id) = handle_from_bits(_py, handler_bits, "Handler") else {
@@ -905,46 +156,14 @@ pub extern "C" fn molt_logging_handler_set_level(handler_bits: u64, level_bits: 
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn molt_logging_handler_set_formatter(
-    handler_bits: u64,
-    formatter_bits: u64,
-) -> u64 {
-    molt_runtime_core::with_core_gil!(_py, {
-        let Some(h_id) = handle_from_bits(_py, handler_bits, "Handler") else {
-            return MoltObject::none().bits();
-        };
-        let fmt_id = if obj_from_bits(formatter_bits).is_none() {
-            None
-        } else {
-            handle_from_bits(_py, formatter_bits, "Formatter")
-        };
-        let mut registry = logging_state().handler_registry.lock().unwrap();
-        if let Some(handler) = registry.get_mut(&h_id) {
-            handler.formatter_handle = fmt_id;
-        } else {
-            return raise_exception::<u64>(_py, "ValueError", "invalid Handler handle");
-        }
-        MoltObject::none().bits()
-    })
-}
-
-#[unsafe(no_mangle)]
 pub extern "C" fn molt_logging_handler_flush(handler_bits: u64) -> u64 {
     molt_runtime_core::with_core_gil!(_py, {
         let Some(h_id) = handle_from_bits(_py, handler_bits, "Handler") else {
             return MoltObject::none().bits();
         };
-        // Flush buffered messages to stderr for base handlers.
-        let messages: Vec<String> = {
-            let mut registry = logging_state().handler_registry.lock().unwrap();
-            let Some(handler) = registry.get_mut(&h_id) else {
-                return raise_exception::<u64>(_py, "ValueError", "invalid Handler handle");
-            };
-
-            std::mem::take(&mut handler.buffer)
-        };
-        for msg in &messages {
-            eprintln!("{msg}");
+        let registry = logging_state().handler_registry.lock().unwrap();
+        if !registry.contains_key(&h_id) {
+            return raise_exception::<u64>(_py, "ValueError", "invalid Handler handle");
         }
         MoltObject::none().bits()
     })
@@ -959,7 +178,6 @@ pub extern "C" fn molt_logging_handler_close(handler_bits: u64) -> u64 {
         let mut registry = logging_state().handler_registry.lock().unwrap();
         if let Some(handler) = registry.get_mut(&h_id) {
             handler.closed = true;
-            handler.buffer.clear();
         }
         MoltObject::none().bits()
     })
@@ -1020,40 +238,28 @@ impl LoggerState {
 }
 
 struct LoggingRuntimeState {
-    next_record_handle: AtomicI64,
-    next_formatter_handle: AtomicI64,
     next_handler_handle: AtomicI64,
     next_logger_handle: AtomicI64,
     level_names: Mutex<LevelNames>,
-    record_registry: Mutex<HashMap<i64, LogRecordState>>,
-    formatter_registry: Mutex<HashMap<i64, FormatterState>>,
     handler_registry: Mutex<HashMap<i64, HandlerState>>,
     logger_registry: Mutex<HashMap<i64, LoggerState>>,
     logger_cache: Mutex<HashMap<String, i64>>,
-    start_time: f64,
 }
 
 impl LoggingRuntimeState {
     fn new() -> Self {
         Self {
-            next_record_handle: AtomicI64::new(1),
-            next_formatter_handle: AtomicI64::new(1),
             next_handler_handle: AtomicI64::new(1),
             next_logger_handle: AtomicI64::new(1),
             level_names: Mutex::new(LevelNames::new()),
-            record_registry: Mutex::new(HashMap::new()),
-            formatter_registry: Mutex::new(HashMap::new()),
             handler_registry: Mutex::new(HashMap::new()),
             logger_registry: Mutex::new(HashMap::new()),
             logger_cache: Mutex::new(HashMap::new()),
-            start_time: current_time_secs(),
         }
     }
 
     fn clear(&self) {
         *self.level_names.lock().unwrap() = LevelNames::new();
-        self.record_registry.lock().unwrap().clear();
-        self.formatter_registry.lock().unwrap().clear();
         self.handler_registry.lock().unwrap().clear();
         self.logger_registry.lock().unwrap().clear();
         self.logger_cache.lock().unwrap().clear();
@@ -1218,26 +424,13 @@ pub extern "C" fn molt_logging_logger_drop(handle_bits: u64) -> u64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_logging_shutdown() -> u64 {
     molt_runtime_core::with_core_gil!(_py, {
-        // Flush and close all handlers.
-        let handler_ids: Vec<i64> = {
-            let registry = logging_state().handler_registry.lock().unwrap();
-            registry.keys().copied().collect()
-        };
-        for h_id in handler_ids {
-            // Flush buffered messages.
-            let messages: Vec<String> = {
-                let mut registry = logging_state().handler_registry.lock().unwrap();
-                if let Some(handler) = registry.get_mut(&h_id) {
-                    let msgs = std::mem::take(&mut handler.buffer);
-                    handler.closed = true;
-                    msgs
-                } else {
-                    Vec::new()
-                }
-            };
-            for msg in &messages {
-                eprintln!("{msg}");
-            }
+        for handler in logging_state()
+            .handler_registry
+            .lock()
+            .unwrap()
+            .values_mut()
+        {
+            handler.closed = true;
         }
         MoltObject::none().bits()
     })

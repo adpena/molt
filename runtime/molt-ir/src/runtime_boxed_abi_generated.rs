@@ -6804,26 +6804,6 @@ pub const RUNTIME_BOXED_ABIS: &[RuntimeBoxedAbi] = &[
         result: RuntimeBoxedReturn::OwnedValue,
     },
     RuntimeBoxedAbi {
-        symbol: "molt_logging_formatter_drop",
-        arity: 1,
-        result: RuntimeBoxedReturn::OwnedValue,
-    },
-    RuntimeBoxedAbi {
-        symbol: "molt_logging_formatter_format",
-        arity: 2,
-        result: RuntimeBoxedReturn::OwnedValue,
-    },
-    RuntimeBoxedAbi {
-        symbol: "molt_logging_formatter_format_time",
-        arity: 3,
-        result: RuntimeBoxedReturn::OwnedValue,
-    },
-    RuntimeBoxedAbi {
-        symbol: "molt_logging_formatter_new",
-        arity: 4,
-        result: RuntimeBoxedReturn::OwnedValue,
-    },
-    RuntimeBoxedAbi {
         symbol: "molt_logging_get_level_name",
         arity: 1,
         result: RuntimeBoxedReturn::OwnedValue,
@@ -6839,11 +6819,6 @@ pub const RUNTIME_BOXED_ABIS: &[RuntimeBoxedAbi] = &[
         result: RuntimeBoxedReturn::OwnedValue,
     },
     RuntimeBoxedAbi {
-        symbol: "molt_logging_handler_emit",
-        arity: 2,
-        result: RuntimeBoxedReturn::OwnedValue,
-    },
-    RuntimeBoxedAbi {
         symbol: "molt_logging_handler_flush",
         arity: 1,
         result: RuntimeBoxedReturn::OwnedValue,
@@ -6851,11 +6826,6 @@ pub const RUNTIME_BOXED_ABIS: &[RuntimeBoxedAbi] = &[
     RuntimeBoxedAbi {
         symbol: "molt_logging_handler_new",
         arity: 1,
-        result: RuntimeBoxedReturn::OwnedValue,
-    },
-    RuntimeBoxedAbi {
-        symbol: "molt_logging_handler_set_formatter",
-        arity: 2,
         result: RuntimeBoxedReturn::OwnedValue,
     },
     RuntimeBoxedAbi {
@@ -6901,26 +6871,6 @@ pub const RUNTIME_BOXED_ABIS: &[RuntimeBoxedAbi] = &[
     RuntimeBoxedAbi {
         symbol: "molt_logging_logger_set_level",
         arity: 2,
-        result: RuntimeBoxedReturn::OwnedValue,
-    },
-    RuntimeBoxedAbi {
-        symbol: "molt_logging_percent_style_format",
-        arity: 2,
-        result: RuntimeBoxedReturn::OwnedValue,
-    },
-    RuntimeBoxedAbi {
-        symbol: "molt_logging_record_drop",
-        arity: 1,
-        result: RuntimeBoxedReturn::OwnedValue,
-    },
-    RuntimeBoxedAbi {
-        symbol: "molt_logging_record_get_message",
-        arity: 1,
-        result: RuntimeBoxedReturn::OwnedValue,
-    },
-    RuntimeBoxedAbi {
-        symbol: "molt_logging_record_new",
-        arity: 8,
         result: RuntimeBoxedReturn::OwnedValue,
     },
     RuntimeBoxedAbi {
@@ -13074,14 +13024,14 @@ pub fn runtime_boxed_op_abi(kind: &str) -> Option<&'static RuntimeBoxedAbi> {
         "bytes_find_slice" => Some(&RUNTIME_BOXED_ABIS[241]),
         "bytes_startswith" => Some(&RUNTIME_BOXED_ABIS[247]),
         "bytes_startswith_slice" => Some(&RUNTIME_BOXED_ABIS[248]),
-        "string_count" => Some(&RUNTIME_BOXED_ABIS[2164]),
-        "string_count_slice" => Some(&RUNTIME_BOXED_ABIS[2165]),
-        "string_endswith" => Some(&RUNTIME_BOXED_ABIS[2166]),
-        "string_endswith_slice" => Some(&RUNTIME_BOXED_ABIS[2167]),
-        "string_find" => Some(&RUNTIME_BOXED_ABIS[2169]),
-        "string_find_slice" => Some(&RUNTIME_BOXED_ABIS[2170]),
-        "string_startswith" => Some(&RUNTIME_BOXED_ABIS[2192]),
-        "string_startswith_slice" => Some(&RUNTIME_BOXED_ABIS[2193]),
+        "string_count" => Some(&RUNTIME_BOXED_ABIS[2154]),
+        "string_count_slice" => Some(&RUNTIME_BOXED_ABIS[2155]),
+        "string_endswith" => Some(&RUNTIME_BOXED_ABIS[2156]),
+        "string_endswith_slice" => Some(&RUNTIME_BOXED_ABIS[2157]),
+        "string_find" => Some(&RUNTIME_BOXED_ABIS[2159]),
+        "string_find_slice" => Some(&RUNTIME_BOXED_ABIS[2160]),
+        "string_startswith" => Some(&RUNTIME_BOXED_ABIS[2182]),
+        "string_startswith_slice" => Some(&RUNTIME_BOXED_ABIS[2183]),
         _ => None,
     }
 }

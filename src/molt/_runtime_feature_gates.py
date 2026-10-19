@@ -188,8 +188,6 @@ RUNTIME_FEATURE_GATES: tuple[tuple[str, str], ...] = (
     ("molt_quopri_", "stdlib_email"),
     ("molt_decimal_", "stdlib_decimal"),
     ("molt_logging_", "stdlib_logging"),
-    ("molt_logging_record_", "stdlib_logging_ext"),
-    ("molt_logging_formatter_", "stdlib_logging_ext"),
     ("molt_logging_handler_", "stdlib_logging_ext"),
     ("molt_logging_logger_", "stdlib_logging_ext"),
     ("molt_logging_shutdown", "stdlib_logging_ext"),

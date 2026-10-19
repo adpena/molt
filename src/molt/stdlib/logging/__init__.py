@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from typing import Any, Callable, TextIO, cast
 from types import ModuleType
 import types as _types
@@ -15,30 +16,11 @@ import traceback as _traceback
 import warnings as _warnings
 
 from _intrinsics import require_intrinsic as _require_intrinsic
-
-# ── Intrinsic bindings ───────────────────────────────────────────────────────
-
-_LOGGING_PERCENT_STYLE_FORMAT = cast(
-    Callable[[str, dict[str, Any]], str],
-    _require_intrinsic("molt_logging_percent_style_format"),
-)
-
-# LogRecord intrinsics
-_RECORD_NEW = _require_intrinsic("molt_logging_record_new")
-_RECORD_GET_MESSAGE = _require_intrinsic("molt_logging_record_get_message")
-_RECORD_DROP = _require_intrinsic("molt_logging_record_drop")
-
-# Formatter intrinsics
-_FORMATTER_NEW = _require_intrinsic("molt_logging_formatter_new")
-_FORMATTER_FORMAT = _require_intrinsic("molt_logging_formatter_format")
-_FORMATTER_FORMAT_TIME = _require_intrinsic("molt_logging_formatter_format_time")
-_FORMATTER_DROP = _require_intrinsic("molt_logging_formatter_drop")
+from _compatibility_errors import logging_handler_emit_error as _handler_emit_error
 
 # Handler intrinsics
 _HANDLER_NEW = _require_intrinsic("molt_logging_handler_new")
-_HANDLER_EMIT = _require_intrinsic("molt_logging_handler_emit")
 _HANDLER_SET_LEVEL = _require_intrinsic("molt_logging_handler_set_level")
-_HANDLER_SET_FORMATTER = _require_intrinsic("molt_logging_handler_set_formatter")
 _HANDLER_FLUSH = _require_intrinsic("molt_logging_handler_flush")
 _HANDLER_CLOSE = _require_intrinsic("molt_logging_handler_close")
 _HANDLER_DROP = _require_intrinsic("molt_logging_handler_drop")
@@ -207,10 +189,6 @@ def _check_level(level: int | str | None) -> int:
     raise TypeError("Level must be an int or str")
 
 
-def _percent_fallback(fmt: str, mapping: dict[str, Any]) -> str:
-    return _LOGGING_PERCENT_STYLE_FORMAT(fmt, mapping)
-
-
 class _RLock:
     def __init__(self) -> None:
         self._handle = _RLOCK_NEW()
@@ -254,24 +232,27 @@ class Filter:
 
 class Filterer:
     def __init__(self) -> None:
-        self.filters: list[Filter] = []
+        self.filters: list[Any] = []
 
-    def addFilter(self, filt: Filter) -> None:
+    def addFilter(self, filt: Any) -> None:
         if filt not in self.filters:
             self.filters.append(filt)
 
-    def removeFilter(self, filt: Filter) -> None:
+    def removeFilter(self, filt: Any) -> None:
         if filt in self.filters:
             self.filters.remove(filt)
 
-    def filter(self, record: "LogRecord") -> bool:
+    def filter(self, record: "LogRecord") -> bool | LogRecord:
         for filt in self.filters:
-            try:
-                if not filt.filter(record):
-                    return False
-            except Exception:
+            if hasattr(filt, "filter"):
+                result = filt.filter(record)
+            else:
+                result = filt(record)
+            if not result:
                 return False
-        return True
+            if isinstance(result, LogRecord):
+                record = result
+        return record
 
 
 class LogRecord:
@@ -289,20 +270,12 @@ class LogRecord:
     ) -> None:
         # Query process metadata once through the canonical OS operation.
         process_id = _os.getpid() if logProcesses else None
-        self._handle = _RECORD_NEW(
-            name,
-            level,
-            pathname,
-            lineno,
-            str(msg) if msg is not None else "",
-            str(args) if args else "",
-            str(exc_info) if exc_info else "",
-            process_id,
-        )
-        # Keep Python-side attributes for compatibility with __dict__ access,
-        # extra fields from makeRecord, and direct attribute writes.
+        # These mutable attributes are the record, including callback writes.
+        # No parallel native snapshot or eager message coercion is needed.
         self.name = name
         self.msg = msg
+        if args and len(args) == 1 and isinstance(args[0], Mapping) and args[0]:
+            args = args[0]
         self.args = args
         self.levelno = int(level)
         self.levelname = str(_GET_LEVEL_NAME(level))
@@ -333,76 +306,10 @@ class LogRecord:
         self.asctime: str | None = None
 
     def getMessage(self) -> str:
-        try:
-            result = _RECORD_GET_MESSAGE(self._handle)
-            if result is not None and str(result):
-                return str(result)
-        except Exception:
-            pass
-        # Fallback for records with Python-side args not captured by intrinsic.
-        msg = self.msg
-        if isinstance(msg, str):
-            if self.args:
-                try:
-                    return msg % self.args
-                except Exception:
-                    return msg
-            return msg
-        try:
-            return str(msg)
-        except Exception:
-            return "<unprintable message>"
-
-    def __del__(self, _drop=_RECORD_DROP) -> None:
-        try:
-            handle = getattr(self, '_handle', None)
-            if handle is None:
-                return
-            object.__setattr__(self, '_handle', None)
-            if _drop is not None:
-                _drop(handle)
-        except Exception:
-            return
-
-
-_RECORD_FORMAT_FIELDS = (
-    "name",
-    "msg",
-    "args",
-    "levelname",
-    "levelno",
-    "pathname",
-    "filename",
-    "module",
-    "lineno",
-    "funcName",
-    "created",
-    "msecs",
-    "relativeCreated",
-    "thread",
-    "threadName",
-    "process",
-    "processName",
-    "message",
-    "asctime",
-    "exc_text",
-    "stack_info",
-)
-
-
-def _record_format_mapping(record: LogRecord) -> dict[str, Any]:
-    mapping: dict[str, Any] = {}
-    raw = getattr(record, "__dict__", None)
-    if isinstance(raw, dict):
-        mapping.update(raw)
-    for key in _RECORD_FORMAT_FIELDS:
-        if key in mapping:
-            continue
-        try:
-            mapping[key] = getattr(record, key)
-        except Exception:
-            continue
-    return mapping
+        message = str(self.msg)
+        if self.args:
+            message = message % self.args
+        return message
 
 
 class _Style:
@@ -416,6 +323,12 @@ class _Style:
         return False
 
     def format(self, record: LogRecord) -> str:
+        try:
+            return self._format(record)
+        except KeyError as exc:
+            raise ValueError(f"Formatting field not found in record: {exc}")
+
+    def _format(self, record: LogRecord) -> str:
         return self._fmt
 
 
@@ -423,17 +336,8 @@ class PercentStyle(_Style):
     def usesTime(self) -> bool:
         return "%(asctime)" in self._fmt
 
-    def format(self, record: LogRecord) -> str:
-        fmt = self._fmt
-        mapping = _record_format_mapping(record)
-        try:
-            mapping["message"] = record.getMessage()
-        except Exception:
-            mapping["message"] = ""
-        try:
-            return _percent_fallback(fmt, mapping)
-        except Exception:
-            return fmt
+    def _format(self, record: LogRecord) -> str:
+        return self._fmt % record.__dict__
 
 
 class StrFormatStyle(_Style):
@@ -443,8 +347,8 @@ class StrFormatStyle(_Style):
     def usesTime(self) -> bool:
         return "{asctime" in self._fmt
 
-    def format(self, record: LogRecord) -> str:
-        return self._fmt.format(**_record_format_mapping(record))
+    def _format(self, record: LogRecord) -> str:
+        return self._fmt.format(**record.__dict__)
 
 
 class StringTemplateStyle(_Style):
@@ -454,11 +358,12 @@ class StringTemplateStyle(_Style):
     def usesTime(self) -> bool:
         return "$asctime" in self._fmt
 
-    def format(self, record: LogRecord) -> str:
-        return _string.Template(self._fmt).substitute(_record_format_mapping(record))
+    def _format(self, record: LogRecord) -> str:
+        return _string.Template(self._fmt).substitute(record.__dict__)
 
 
 class Formatter:
+    converter = staticmethod(_time.localtime)
     default_time_format = "%Y-%m-%d %H:%M:%S"
     default_msec_format = "%s,%03d"
 
@@ -468,8 +373,6 @@ class Formatter:
         datefmt: str | None = None,
         style: str = "%",
     ) -> None:
-        # Create Rust-side formatter handle.
-        self._handle = _FORMATTER_NEW(fmt, datefmt, style, True)
         if style == "%":
             self._style: _Style = PercentStyle(fmt)
         elif style == "{":
@@ -485,25 +388,13 @@ class Formatter:
         return self._style.usesTime()
 
     def formatTime(self, record: LogRecord, datefmt: str | None = None) -> str:
-        try:
-            return str(_FORMATTER_FORMAT_TIME(self._handle, record._handle, datefmt))
-        except Exception:
-            pass
-        # Fallback for edge cases.
-        localtime = getattr(_time, "localtime", None)
-        strftime = getattr(_time, "strftime", None)
-        if callable(localtime) and callable(strftime):
-            try:
-                ct = localtime(record.created)
-            except Exception:
-                ct = localtime(0.0)
-            if datefmt:
-                return strftime(datefmt, ct)
-            t = strftime(self.default_time_format, ct)
-            return self.default_msec_format % (t, record.msecs)
+        ct = self.converter(record.created)
         if datefmt:
-            return datefmt
-        return f"{record.created:.3f}"
+            return _time.strftime(datefmt, ct)
+        rendered = _time.strftime(self.default_time_format, ct)
+        if self.default_msec_format:
+            rendered = self.default_msec_format % (rendered, record.msecs)
+        return rendered
 
     def formatException(self, exc_info: Any) -> str:
         return "".join(_traceback.format_exception(*exc_info)).rstrip()
@@ -512,22 +403,10 @@ class Formatter:
         return stack_info
 
     def format(self, record: LogRecord) -> str:
-        try:
-            result = _FORMATTER_FORMAT(self._handle, record._handle)
-            if result is not None:
-                return str(result)
-        except Exception:
-            pass
-        # Fallback: Python-side formatting.
         record.message = record.getMessage()
         if self.usesTime():
             record.asctime = self.formatTime(record, self.datefmt)
-        if self._fmt.find("%(") != -1:
-            mapping = _record_format_mapping(record)
-            mapping["message"] = record.message
-            s = _percent_fallback(self._fmt, mapping)
-        else:
-            s = self._style.format(record)
+        s = self._style.format(record)
         if record.exc_info:
             if not record.exc_text:
                 record.exc_text = self.formatException(record.exc_info)
@@ -536,17 +415,6 @@ class Formatter:
         if record.stack_info:
             s = s + "\n" + self.formatStack(record.stack_info)
         return s
-
-    def __del__(self, _drop=_FORMATTER_DROP) -> None:
-        try:
-            handle = getattr(self, '_handle', None)
-            if handle is None:
-                return
-            object.__setattr__(self, '_handle', None)
-            if _drop is not None:
-                _drop(handle)
-        except Exception:
-            return
 
 
 _defaultFormatter = Formatter()
@@ -581,21 +449,34 @@ class Handler(Filterer):
 
     def setFormatter(self, fmt: Formatter | None) -> None:
         self.formatter = fmt
-        fmt_handle = fmt._handle if fmt is not None else None
-        _HANDLER_SET_FORMATTER(self._handle, fmt_handle)
 
     def emit(self, record: LogRecord) -> None:
-        _HANDLER_EMIT(self._handle, record._handle)
+        raise _handler_emit_error()
 
-    def handle(self, record: LogRecord) -> bool:
-        if self.filter(record):
-            self.acquire()
-            try:
-                self.emit(record)
-            finally:
-                self.release()
-            return True
-        return False
+    # Select the versioned lock protocol once, without a version test per record.
+    if _sys.version_info >= (3, 13):
+
+        def handle(self, record: LogRecord) -> bool | LogRecord:
+            result = self.filter(record)
+            if isinstance(result, LogRecord):
+                record = result
+            if result:
+                with self.lock:
+                    self.emit(record)
+            return result
+    else:
+
+        def handle(self, record: LogRecord) -> bool | LogRecord:
+            result = self.filter(record)
+            if isinstance(result, LogRecord):
+                record = result
+            if result:
+                self.acquire()
+                try:
+                    self.emit(record)
+                finally:
+                    self.release()
+            return result
 
     def acquire(self) -> None:
         self.lock.acquire()
@@ -830,8 +711,11 @@ class Logger(Filterer):
     def handle(self, record: LogRecord) -> None:
         if self.disabled:
             return None
-        if not self.filter(record):
+        result = self.filter(record)
+        if not result:
             return None
+        if isinstance(result, LogRecord):
+            record = result
         self.callHandlers(record)
 
     def callHandlers(self, record: LogRecord) -> None:

@@ -7,8 +7,8 @@ The inventory includes older and future Python 3 minor spellings, full eight-dig
 ## Counts
 
 - `authority-routed` files: 62
-- `operational-tooling` files: 57
-- `scattered-assumption` files: 346
+- `operational-tooling` files: 58
+- `scattered-assumption` files: 345
 
 ## Files
 
@@ -111,7 +111,7 @@ The inventory includes older and future Python 3 minor spellings, full eight-dig
 | `src/molt/stdlib/json/tool.py` | 3 | operational-tooling | `sys.version_info` |
 | `src/molt/stdlib/keyword.py` | 1 | scattered-assumption | `3.12` |
 | `src/molt/stdlib/locale.py` | 1 | scattered-assumption | `3.12` |
-| `src/molt/stdlib/logging/__init__.py` | 1 | scattered-assumption | `3.12` |
+| `src/molt/stdlib/logging/__init__.py` | 2 | operational-tooling | `_sys.version_info` |
 | `src/molt/stdlib/math.py` | 2 | scattered-assumption | `3.141592653589793` |
 | `src/molt/stdlib/multiprocessing/_api_surface.py` | 1 | scattered-assumption | `3.12` |
 | `src/molt/stdlib/numbers.py` | 1 | scattered-assumption | `3.12` |
@@ -407,7 +407,7 @@ The inventory includes older and future Python 3 minor spellings, full eight-dig
 | `tools/ci_resource_env.py` | 1 | scattered-assumption | `3.06` |
 | `tools/cloudflare_demo_deploy_verify.py` | 1 | scattered-assumption | `3.14` |
 | `tools/cold_start_decompose.py` | 1 | scattered-assumption | `3.45` |
-| `tools/compatibility_error_protocol.py` | 18 | authority-routed | `3.12` |
+| `tools/compatibility_error_protocol.py` | 19 | authority-routed | `3.12` |
 | `tools/compile_progress.py` | 2 | scattered-assumption | `3.12` |
 | `tools/correctness_dashboard.py` | 3 | operational-tooling | `3.12` |
 | `tools/cpython_regrtest.py` | 13 | scattered-assumption | `3.12` |

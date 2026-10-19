@@ -288,8 +288,6 @@ prefixes = ["logging_"]
 feature = "stdlib_logging"
 [stdlib.logging_ext]
 prefixes = [
-    "logging_record_",
-    "logging_formatter_",
     "logging_handler_",
     "logging_logger_",
     "logging_shutdown",
