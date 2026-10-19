@@ -518,8 +518,6 @@ pub fn molt_is_callable(bits: u64) -> bool {
 
 unsafe extern "C" {
     fn __molt_http_format_obj_str(bits: u64, out_ptr: *mut *const u8, out_len: *mut usize) -> i32;
-    fn __molt_http_molt_repr_from_obj(bits: u64) -> u64;
-    fn __molt_http_molt_str_from_obj(bits: u64) -> u64;
 }
 
 pub fn format_obj_str(_py: &CoreGilToken, obj: MoltObject) -> Option<String> {
@@ -532,14 +530,6 @@ pub fn format_obj_str(_py: &CoreGilToken, obj: MoltObject) -> Option<String> {
     } else {
         None
     }
-}
-
-pub fn molt_repr_from_obj(bits: u64) -> u64 {
-    unsafe { __molt_http_molt_repr_from_obj(bits) }
-}
-
-pub fn molt_str_from_obj(bits: u64) -> u64 {
-    unsafe { __molt_http_molt_str_from_obj(bits) }
 }
 
 // ---------------------------------------------------------------------------

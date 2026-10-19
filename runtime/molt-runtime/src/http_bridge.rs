@@ -496,16 +496,6 @@ pub extern "C" fn __molt_http_format_obj_str(
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn __molt_http_molt_repr_from_obj(bits: u64) -> u64 {
-    crate::molt_repr_from_obj(bits)
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn __molt_http_molt_str_from_obj(bits: u64) -> u64 {
-    crate::molt_str_from_obj(bits)
-}
-
 // ---------------------------------------------------------------------------
 // Module / object attribute helpers
 // ---------------------------------------------------------------------------

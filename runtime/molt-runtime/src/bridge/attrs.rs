@@ -72,16 +72,6 @@ pub fn attr_optional(_py: &CoreGilToken, obj_bits: u64, name: &[u8]) -> Result<O
 }
 
 #[cfg(not(feature = "stdlib_http"))]
-pub fn molt_repr_from_obj(bits: u64) -> u64 {
-    crate::molt_repr_from_obj(bits)
-}
-
-#[cfg(not(feature = "stdlib_http"))]
-pub fn molt_str_from_obj(bits: u64) -> u64 {
-    crate::molt_str_from_obj(bits)
-}
-
-#[cfg(not(feature = "stdlib_http"))]
 pub fn builtin_classes(_py: &CoreGilToken, name: &str) -> u64 {
     crate::with_gil_entry_nopanic!(py, {
         let classes = crate::builtin_classes(py);

@@ -21,13 +21,6 @@ pub fn exception_pending(_py: &CoreGilToken) -> bool {
     crate::with_gil_entry_nopanic!(py, { crate::exception_pending(py) })
 }
 
-#[cfg(not(feature = "stdlib_http"))]
-pub fn clear_exception(_py: &CoreGilToken) {
-    crate::with_gil_entry_nopanic!(py, {
-        crate::clear_exception(py);
-    })
-}
-
 #[cfg(not(feature = "stdlib_path"))]
 pub fn raise_os_error<T: ExceptionSentinel>(
     _py: &CoreGilToken,
@@ -181,7 +174,7 @@ pub fn to_i64(obj: MoltObject) -> Option<i64> {
     crate::to_i64(obj)
 }
 
-#[cfg(any(not(feature = "stdlib_http"), not(feature = "stdlib_path")))]
+#[cfg(not(feature = "stdlib_path"))]
 pub fn to_f64(obj: MoltObject) -> Option<f64> {
     crate::to_f64(obj)
 }
