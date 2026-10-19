@@ -26,6 +26,24 @@ from molt.path_custody import (
 from tools import hosted_ci_env, run_context_env
 
 
+@pytest.mark.parametrize(
+    ("path", "parent", "expected"),
+    [
+        (r"C:\root\child", r"\\?\c:\ROOT", True),
+        (r"\\?\C:\ROOT\child", r"c:\root", True),
+        (r"\\server\share\root\child", r"\\?\UNC\SERVER\share\root", True),
+        (r"\\?\UNC\server\share\root\child", r"\\SERVER\share\ROOT", True),
+        (r"\\?\C:\root-sibling\child", r"C:\root", False),
+        (r"\\?\C:\root.\child", r"C:\root", False),
+        (r"\\.\C:\root\child", r"C:\root", False),
+    ],
+)
+def test_windows_path_identity_retains_namespace_and_component_boundaries(
+    path: str, parent: str, expected: bool
+) -> None:
+    assert pure_path_is_within(path, parent) is expected
+
+
 # Unit cases create independent synthetic project roots. The process-wide
 # hosted checkout contract belongs to GITHUB_WORKSPACE, not those fixtures.
 pytestmark = pytest.mark.usefixtures("developer_host_context")

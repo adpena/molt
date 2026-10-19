@@ -279,11 +279,19 @@ def resolve_observed(
     even for the published output.
     """
     from molt.artifact_publication import is_publication_family_member
+    from molt.path_custody import resolved_host_path_key
 
     output = (
-        None if published_output is None else Path(os.path.realpath(published_output))
+        None
+        if published_output is None
+        else Path(resolved_host_path_key(os.path.realpath(published_output)))
     )
-    roots = tuple({os.path.realpath(root) + os.sep for root in excluded_roots})
+    roots = tuple(
+        {
+            resolved_host_path_key(os.path.realpath(root)).rstrip(os.sep) + os.sep
+            for root in excluded_roots
+        }
+    )
     # Only this resolution's completed chains prove that a failed lookup has
     # a generation boundary. Explicit probes may not have recorded one.
     completed_lookups: set[str] = set()
@@ -320,7 +328,7 @@ def resolve_observed(
         completed_lookups.update(chain)
 
     for kind, name in sorted(ledger.observed):
-        real = os.path.realpath(name)
+        real = resolved_host_path_key(os.path.realpath(name))
         if output is not None and (
             (kind == "file" and is_publication_family_member(Path(real), output))
             or (kind == "directory" and real == os.fspath(output.parent))

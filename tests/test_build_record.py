@@ -225,7 +225,9 @@ def test_isolated_python_probe_logs_captured_files_and_negative_selectors(
 
     # This source belongs to the independently selected base interpreter,
     # whether its isolated loader executes source or a bytecode cache.
-    subject = Path(sys.modules["pathlib"].__file__)
+    source = sys.modules["pathlib"].__file__
+    assert source is not None
+    subject = Path(source)
     expected = hashlib.sha256(subject.read_bytes()).hexdigest()
     environment = {
         **os.environ,
@@ -319,6 +321,30 @@ assert data == b'first observed input'
     assert completed.returncode == 0, completed.stdout + completed.stderr
 
 
+@pytest.mark.skipif(os.name != "nt", reason="Windows directory size providers")
+@pytest.mark.parametrize("kind", ["directory", "file"])
+def test_windows_tokens_distinguish_file_length_from_directory_allocation(
+    tmp_path: Path, kind: str
+) -> None:
+    subject = tmp_path / "subject"
+    if kind == "directory":
+        subject.mkdir()
+    else:
+        subject.write_bytes(b"payload")
+    metadata = subject.stat()
+    fields = list(metadata)
+    fields[stat.ST_SIZE] = 4096 if metadata.st_size != 4096 else 0
+    alternate = os.stat_result(fields, {"st_mtime_ns": metadata.st_mtime_ns})
+    first = input_report.stat_token(subject, metadata)
+    second = input_report.stat_token(subject, alternate)
+    assert first is not None and second is not None
+    assert (first == second) is (kind == "directory")
+    if kind == "directory":
+        assert first[3] == 0
+    else:
+        assert first[3] == len(b"payload")
+
+
 def test_a_rustup_candidate_becoming_the_selected_proxy_invalidates_output(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -372,7 +398,9 @@ def _capture_threaded_python_tree(root: Path) -> int:
             pool=_FileNodePool(capture_context=context),
         )
         context.verify()
-        return context.inventory_profile()["hashed_files"]
+        count = context.inventory_profile()["hashed_files"]
+        assert isinstance(count, int)
+        return count
 
 
 def test_threaded_python_capture_records_every_file_and_tree_dependency(
@@ -557,7 +585,7 @@ def test_a_started_program_records_its_search(tmp_path: Path, transient: Path) -
     late.mkdir()
     from tests.executable_test_support import native_executable_donor
 
-    name = "cc.EXE" if os.name == "nt" else "cc"
+    name = "cc.exe" if os.name == "nt" else "cc"
     tool = late / name
     shutil.copyfile(native_executable_donor(), tool)
     tool.chmod(0o755)
@@ -713,39 +741,64 @@ def test_the_request_key_binds_arguments_environment_cwd_and_host() -> None:
     assert first != key(environment={**guarded, "MOLT_BACKEND": "llvm"})
 
 
+@pytest.mark.parametrize("extended_side", ["neither", "observed", "products"])
 def test_only_named_products_are_excluded_and_explicit_inputs_win(
-    tmp_path: Path,
+    tmp_path: Path, extended_side: str
 ) -> None:
+    if extended_side != "neither" and os.name != "nt":
+        pytest.skip("Windows verbatim path spelling")
+
+    def observed(path: Path) -> str:
+        return (
+            "\\\\?\\" + str(path).upper() if extended_side == "observed" else str(path)
+        )
+
+    def selected(path: Path) -> Path:
+        return (
+            Path("\\\\?\\" + str(path).upper()) if extended_side == "products" else path
+        )
+
     # Existing product custody owns the scratch root and exact published file;
     # its parent and explicitly reported inputs never become implicit products.
     source = tmp_path / "project" / "config.toml"
     scratch = tmp_path / "scratch"
     product = scratch / "object.o"
+    sibling = tmp_path / "scratch-sibling" / "config.toml"
     output = tmp_path / "out" / "app"
-    for path in (source, product, output):
+    for path in (source, product, sibling, output):
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text("", encoding="utf-8")
     ledger = _future_ledger()
     ledger.observed |= {
-        ("file", os.fspath(source)),
-        ("file", os.fspath(product)),
-        ("file", os.fspath(output)),
-        ("directory", os.fspath(source.parent)),
-        ("directory", os.fspath(scratch)),
+        ("file", observed(source)),
+        ("file", observed(product)),
+        ("file", observed(sibling)),
+        ("file", observed(output)),
+        ("directory", observed(source.parent)),
+        ("directory", observed(scratch)),
     }
-    build_record.resolve_observed(ledger, (scratch,), published_output=output)
-    assert set(ledger.files) == {os.fspath(source)}
-    assert set(ledger.directories) == {os.fspath(source.parent)}
+    build_record.resolve_observed(
+        ledger, (selected(scratch),), published_output=selected(output)
+    )
+    assert set(ledger.files) == {observed(source), observed(sibling)}
+    assert set(ledger.directories) == {observed(source.parent)}
 
     explicit = _future_ledger()
     explicit.file(output, input_report.stat_token(output), None)
     explicit.file(product, input_report.stat_token(product), None)
     explicit.observed = ledger.observed.copy()
-    build_record.resolve_observed(explicit, (scratch,), published_output=output)
+    build_record.resolve_observed(
+        explicit, (selected(scratch),), published_output=selected(output)
+    )
     assert {os.fspath(output), os.fspath(product)} <= explicit.files.keys()
 
 
-def test_the_outputs_publication_custody_is_a_product(tmp_path: Path) -> None:
+@pytest.mark.parametrize("extended_side", ["neither", "observed", "products"])
+def test_the_outputs_publication_custody_is_a_product(
+    tmp_path: Path, extended_side: str
+) -> None:
+    if extended_side != "neither" and os.name != "nt":
+        pytest.skip("Windows verbatim path spelling")
     from molt import artifact_publication, file_publication
 
     output = tmp_path / "out" / "app"
@@ -772,7 +825,15 @@ def test_the_outputs_publication_custody_is_a_product(tmp_path: Path) -> None:
         # The publication's own scan for journals.
         ("directory", os.fspath(output.parent)),
     }
-    build_record.resolve_observed(ledger, (), published_output=output)
+    if extended_side == "observed":
+        ledger.observed = {
+            (kind, "\\\\?\\" + name.upper()) for kind, name in ledger.observed
+        }
+        other_receipt = Path("\\\\?\\" + str(other_receipt).upper())
+    selected_output = (
+        Path("\\\\?\\" + str(output).upper()) if extended_side == "products" else output
+    )
+    build_record.resolve_observed(ledger, (), published_output=selected_output)
     # Another destination's receipt stays an input; nothing records the
     # directory the publication changed.
     assert set(ledger.files) == {os.fspath(other_receipt)}
@@ -782,7 +843,7 @@ def test_the_outputs_publication_custody_is_a_product(tmp_path: Path) -> None:
     explicit = _future_ledger()
     explicit.directory(output.parent, input_report.stat_token(output.parent))
     explicit.observed = {("directory", os.fspath(output.parent))}
-    build_record.resolve_observed(explicit, (), published_output=output)
+    build_record.resolve_observed(explicit, (), published_output=selected_output)
     assert set(explicit.directories) == {os.fspath(output.parent)}
 
 
@@ -1133,11 +1194,19 @@ def test_repeated_equal_facts_are_accepted_but_changed_facts_refuse(
     assert ledger.refusals == []
     child = subject / "child"
     child.mkdir()
+    # NTFS may defer directory timestamp propagation or coalesce rapid
+    # namespace changes. This cell tests the ledger's conflict protocol;
+    # explicitly select distinct observable directory generations.
+    changed = subject.stat().st_mtime_ns + 5 * 10**9
+    if transition == "directory":
+        os.utime(subject, ns=(changed, changed))
     report()
     report()
     expected = f"{'directory' if transition == 'directory' else 'lookup'} changed during the build: {subject if transition == 'directory' else child}"
     assert ledger.refusals == [expected]
     child.rmdir()
+    if transition == "directory":
+        os.utime(subject, ns=(changed + 10**9, changed + 10**9))
     report()
     report()
     assert ledger.refusals == [expected, expected], (

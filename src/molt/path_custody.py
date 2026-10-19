@@ -41,8 +41,33 @@ def pure_path(raw: PathInput) -> PurePath:
 def _pure_key(path: PurePath) -> tuple[str, ...]:
     parts = path.parts
     if isinstance(path, PureWindowsPath):
-        return tuple(ntpath.normcase(part) for part in parts)
+        return PureWindowsPath(_windows_path_key(str(path))).parts
     return parts
+
+
+def _windows_path_key(path: str) -> str:
+    key = ntpath.normcase(path)
+    # Compare in the verbatim namespace, retaining unusual but real names
+    # (for example trailing dots). Stripping a prefix and opening that result
+    # could select a different Win32 file. These keys are never used for I/O.
+    if key.startswith(("\\\\?\\", "\\\\.\\")):
+        return key
+    if key.startswith("\\\\"):
+        return "\\\\?\\unc\\" + key[2:]
+    drive, tail = ntpath.splitdrive(key)
+    if len(drive) == 2 and drive[1] == ":" and tail.startswith("\\"):
+        return "\\\\?\\" + key
+    return key
+
+
+def resolved_host_path_key(path: PathInput) -> str:
+    """Compare already-resolved paths without another filesystem traversal.
+
+    Windows DOS/UNC and verbatim spellings share a key. Callers retain the
+    original path for I/O and establish realpath/symlink semantics themselves.
+    """
+    rendered = os.fspath(path)
+    return _windows_path_key(rendered) if os.name == "nt" else rendered
 
 
 def pure_path_is_within(path: PathInput, parent: PathInput) -> bool:
@@ -72,9 +97,9 @@ def same_host_path(left: PathInput, right: PathInput) -> bool:
         return type(left_path) is type(right_path) and _pure_key(
             left_path
         ) == _pure_key(right_path)
-    return Path(left).expanduser().resolve(strict=False) == Path(
-        right
-    ).expanduser().resolve(strict=False)
+    return resolved_host_path_key(
+        Path(left).expanduser().resolve(strict=False)
+    ) == resolved_host_path_key(Path(right).expanduser().resolve(strict=False))
 
 
 def host_path_is_within(path: PathInput, parent: PathInput) -> bool:
@@ -84,8 +109,8 @@ def host_path_is_within(path: PathInput, parent: PathInput) -> bool:
         _looks_windows_absolute(path) or _looks_windows_absolute(parent)
     ):
         return pure_path_is_within(path, parent)
-    child = os.path.normcase(str(Path(path).resolve(strict=False)))
-    root = os.path.normcase(str(Path(parent).resolve(strict=False)))
+    child = resolved_host_path_key(Path(path).resolve(strict=False))
+    root = resolved_host_path_key(Path(parent).resolve(strict=False))
     try:
         return os.path.commonpath((child, root)) == root
     except ValueError:
