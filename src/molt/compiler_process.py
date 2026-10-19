@@ -86,6 +86,7 @@ def exit_process(code: object) -> NoReturn:
     # callbacks and flushes the standard streams. Only the freeing comes later.
     threading._shutdown()  # ty: ignore[unresolved-attribute]
     atexit._run_exitfuncs()
+    _shutdown_spawn_tracker()
     for stream in (sys.stdout, sys.stderr):
         if stream is None or stream.closed:
             continue
@@ -95,6 +96,18 @@ def exit_process(code: object) -> NoReturn:
             status = _FLUSH_FAILURE_STATUS
             _report_flush_failure(stream, exc)
     os._exit(status)
+
+
+def _shutdown_spawn_tracker() -> None:
+    # CPython joins this helper in ResourceTracker.__del__, after ordinary
+    # atexit callbacks. Skipping heap teardown must not skip that ownership
+    # obligation. Completed worker/queue finalizers have already released their
+    # pipe writers and named resources. Borrowed spawn trackers have no creator
+    # PID, so CPython's own _stop leaves their parent's tracker untouched.
+    # Do not import multiprocessing or start a helper for commands without one.
+    tracker_module = sys.modules.get("multiprocessing.resource_tracker")
+    if tracker_module is not None:
+        tracker_module._resource_tracker._stop()
 
 
 def _observed() -> bool:

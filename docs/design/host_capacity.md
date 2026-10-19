@@ -249,3 +249,25 @@ Differential stop
 state comes from the selected context, and orphan detection observes the
 creating parent's sentinel rather than the server's OS PID. Explicit fork
 ownership tests retain their separate semantics.
+
+The compiler's fast exit joins the already-loaded spawn resource tracker after
+thread and atexit callbacks have joined workers and released queues. This
+executes the ownership work in
+[CPython's tracker destructor](https://github.com/python/cpython/blob/v3.12.15/Lib/multiprocessing/resource_tracker.py#L73-L112),
+which heap-free exit otherwise skips;
+[multiprocessing's atexit callback](https://github.com/python/cpython/blob/v3.12.15/Lib/multiprocessing/util.py#L312-L354)
+joins registered workers but does not join this helper. The canonical spawn
+lane borrows only the parent's tracker descriptor in workers; CPython's own
+stop operation leaves that borrowed owner intact. This is not a custody claim
+for arbitrary raw-fork callers, whose tracker state differs across CPython
+versions. Forkserver is not a compiler producer, and the descriptor sharer is
+a daemon thread with different finalization semantics; neither gains another
+cleanup path here.
+
+Commands without a tracker perform one loaded-module lookup, without importing
+multiprocessing or starting a process. Commands with an owned tracker close
+its existing pipe and join it once; this preserves fast heap reclamation and
+eliminates reliance on a guard terminating the surviving helper. The kernel
+wait oracle checks retirement before root exit, while real spawned workers
+check that their borrowed descriptor and parent helper remain usable. These
+are compiler/development costs only; emitted binaries have no Python tracker.
