@@ -34,7 +34,6 @@ _WASM_OPT_OZ_PASSES = (
     "--merge-blocks",
     "--dce",
     "--vacuum",
-    "--zero-filled-memory",
     "--memory-packing",
 )
 _WASM_OPT_O3_PASSES = (

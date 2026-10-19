@@ -18,6 +18,8 @@ def test_optimizer_policy_covers_every_binaryen_level(level: str) -> None:
     assert len(link.pipeline) == len(set(link.pipeline))
     assert set(WASM_OPT_FEATURE_FLAGS) <= set(link.pipeline)
     assert "--enable-exception-handling" in link.pipeline
+    # Hosts may instantiate another module over memory initialized by a runtime.
+    assert "--zero-filled-memory" not in link.pipeline
 
 
 def test_dev_link_policy_runs_one_nonconverging_o1_level() -> None:
