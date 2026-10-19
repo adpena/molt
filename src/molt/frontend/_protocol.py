@@ -1290,8 +1290,6 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
 
     def _emit_inline_set_comp(self, node: ast.SetComp) -> MoltValue: ...
 
-    def _emit_intrinsic_function(self, runtime_name: str) -> MoltValue: ...
-
     def _emit_intrinsic_call(
         self,
         runtime_name: str,
@@ -1300,6 +1298,8 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
         type_hint: TypeHint = ...,
         result: MoltValue | None = ...,
     ) -> MoltValue: ...
+
+    def _emit_intrinsic_function(self, runtime_name: str) -> MoltValue: ...
 
     def _emit_is_exact_builtin(self, value: MoltValue, type_name: str) -> MoltValue: ...
 
