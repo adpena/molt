@@ -124,6 +124,99 @@ def _worker_process_observation() -> dict[str, object]:
     }
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX spawn resource tracker")
+def test_exit_joins_the_owned_spawn_resource_tracker() -> None:
+    probe = textwrap.dedent(
+        """
+        import os
+        from concurrent.futures import ProcessPoolExecutor
+        from multiprocessing import resource_tracker
+        from molt import compiler_process
+        from tests.cli.test_cli_process_policy import _worker_process_observation
+
+        if __name__ == "__main__":
+            with ProcessPoolExecutor(
+                max_workers=1, mp_context=compiler_process.worker_context(),
+            ) as pool:
+                assert pool.submit(_worker_process_observation).result()["parent_alive"]
+            tracker_pid = resource_tracker._resource_tracker._pid
+            assert tracker_pid is not None
+            finish = os._exit
+
+            def checked_exit(status):
+                # The kernel, not the tracker's mutable fields, proves that
+                # our child has already been joined before the root exits.
+                try:
+                    state = os.waitpid(tracker_pid, os.WNOHANG)
+                except ChildProcessError:
+                    pass
+                else:
+                    raise AssertionError(("spawn tracker was not joined", state))
+                finish(status)
+
+            os._exit = checked_exit
+            compiler_process.exit_process(0)
+        """
+    )
+    status, stdout, stderr = _run(probe)
+    assert (status, stdout, stderr) == (0, "", "")
+
+
+def test_exit_without_workers_does_not_import_multiprocessing() -> None:
+    probe = textwrap.dedent(
+        """
+        import os, sys
+        from molt import compiler_process
+
+        before = {name for name in sys.modules if name.startswith('multiprocessing')}
+        finish = os._exit
+
+        def checked_exit(status):
+            after = {name for name in sys.modules if name.startswith('multiprocessing')}
+            assert after == before
+            finish(status)
+
+        os._exit = checked_exit
+        compiler_process.exit_process(0)
+        """
+    )
+    assert _run(probe) == (0, "", "")
+
+
+def _borrowed_tracker_observation() -> bool:
+    import os
+    from multiprocessing import resource_tracker
+    from molt import compiler_process
+
+    tracker = resource_tracker._resource_tracker
+    assert tracker._pid is None
+    descriptor = tracker.getfd()
+    before = os.fstat(descriptor)
+    compiler_process._shutdown_spawn_tracker()
+    after = os.fstat(descriptor)
+    assert (after.st_dev, after.st_ino) == (before.st_dev, before.st_ino)
+    return tracker._check_alive()
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX spawn resource tracker")
+def test_spawn_worker_preserves_its_borrowed_resource_tracker() -> None:
+    probe = textwrap.dedent(
+        """
+        from concurrent.futures import ProcessPoolExecutor
+        from molt import compiler_process
+        from tests.cli.test_cli_process_policy import _borrowed_tracker_observation
+
+        if __name__ == "__main__":
+            with ProcessPoolExecutor(
+                max_workers=1, mp_context=compiler_process.worker_context(),
+            ) as pool:
+                assert pool.submit(_borrowed_tracker_observation).result()
+            compiler_process.exit_process(0)
+        """
+    )
+    assert _run(probe) == (0, "", "")
+
+
 def test_workers_use_the_compiler_collector_pacing() -> None:
     # The actual worker must not inherit a marker or locked mutex added only
     # to the parent. Raw fork fails both independent observations.

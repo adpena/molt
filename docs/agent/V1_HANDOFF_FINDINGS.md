@@ -84,7 +84,7 @@ facts explicitly. Strict executable tools project through the same authority.
 Module admission stages only local additions and commits after complete
 validation, preserving shared state on refusal. Sixteen paired frontend cells
 retain executable values and exact metadata; original eager integration fails
-two unchanged-state controls. The next coherent migration implements compact
+two unchanged-state controls. The integrated migration now implements compact
 schema-9 function records, one shared four-kind source store, admitted-use
 recency and global byte/age retention. Strong-identity digest seeds travel
 through serial/parallel admission and survive only unchanged backend bodies;
@@ -125,6 +125,33 @@ Fresh compiler/development pool contexts also prevent inherited parent heaps
 and locks. The sibling audit, frontend, environment and differential consumers
 share that policy, including stop-state and creating-parent custody.
 These are development/compiler changes with no emitted-program checks.
+
+The storage/digest consumer migration is integrated at `4173741a6`: all 38
+selected Linux aarch64 integration gates pass, including 4,763 joined consumer
+cases with 17 explicit skips. The unchanged production storage/codec bytes
+also passed 201 Windows x64 cases with three POSIX-only skips. A six-build
+Linux aarch64/CPython 3.12 development cohort executes native cold, unchanged,
+comment and body edits plus linked WASM before/after the body edit. Every
+product matches the independent CPython output with Python removed from its
+execution path. This is source-build qualification, not installed delivery or
+release-matrix acceptance. Native unchanged/comment builds take 3.41/3.49 s;
+WASM linking accounts for 52.1 of 137.5 measured build-phase seconds. There is
+no matched baseline or general speedup claim. These remaining costs belong to
+HF-266/HF-357 and V1-07.
+
+That cohort also exposed a terminal cleanup defect: five build guards attempted
+tracked-orphan cleanup after successful compiler exits. Historical receipts do
+not retain those helpers' executable identities. A separate kernel wait oracle
+reproduces the compiler's missing join of its owned spawn resource tracker
+before root exit. The fast-exit authority now performs CPython's tracker stop
+after completed thread/atexit callbacks, preserving borrowed spawn descriptors
+and avoiding a new helper import for commands without workers. The owning
+controls pass on Darwin arm64, and a pure-standard-library mechanism probe
+passes on CPython 3.12.15, 3.13.12, 3.14.3 and 3.15.0 there. Its measured terminal
+join takes 5.4–7.1 ms in that bounded cohort. This does not qualify arbitrary
+raw-fork custody, whole-version support or all platform cells. Actual Linux
+consumer/lifecycle qualification remains required under V1-12/HF-334; output
+parity and eventual guard cleanup do not close that obligation.
 
 The current compiler-cost work reuses the cross-project lowering-cache repair
 (HF-327) and one shared fast-profile Cargo cohort for the native-callable ABI
