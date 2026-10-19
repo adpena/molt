@@ -563,6 +563,12 @@ class RustWasmFactsProvider:
         with self._lock:
             return self._provide(data)
 
+    def _remember(self, digest: str, facts: WasmLinkFacts) -> None:
+        self._cache[digest] = facts
+        self._cache.move_to_end(digest)
+        while len(self._cache) > _WASM_FACTS_CACHE_ENTRIES:
+            self._cache.popitem(last=False)
+
     def _provide(self, data: bytes) -> WasmLinkFacts:
         hash_start = time.perf_counter()
         digest = hashlib.sha256(data).hexdigest()
@@ -623,9 +629,7 @@ class RustWasmFactsProvider:
                         f"{self.evidence_root}: {evidence_error}"
                     ) from exc
                 raise ValueError(f"{exc}; rejected input kept at {evidence}") from exc
-            self._cache[digest] = facts
-            while len(self._cache) > _WASM_FACTS_CACHE_ENTRIES:
-                self._cache.popitem(last=False)
+            self._remember(digest, facts)
             return facts
         finally:
             with contextlib.suppress(OSError):
@@ -638,7 +642,11 @@ class RustWasmFactsProvider:
         layout: CallableTableLayout | None = None,
         role: str = "monolithic",
     ) -> WasmLinkFacts:
-        """Publish through this invocation's single captured scanner identity."""
+        """Publish an exclusively owned stage through the captured scanner.
+
+        The caller retains mutation custody until this call returns. Facts are
+        admitted only for the stable generation committed by that publication.
+        """
 
         with self._lock:
             return self._publish_in_place(artifact, layout=layout, role=role)
@@ -689,6 +697,7 @@ class RustWasmFactsProvider:
             capture_output=True,
             check=False,
         )
+        published_metadata = artifact.lstat() if process.returncode == 0 else None
         verify_stable_regular_file_identity(
             self.scanner_identity,
             label="WASM facts scanner after publication",
@@ -699,6 +708,18 @@ class RustWasmFactsProvider:
         )
         if facts.get("callable_table_attestation_present") is not True:
             raise ValueError("Rust WASM facts publication omitted final attestation")
+        assert published_metadata is not None
+        hash_start = time.perf_counter()
+        published_identity = stable_regular_file_identity(
+            artifact,
+            label="published WASM facts output",
+            expected_path_stat=published_metadata,
+        )
+        if self.metrics is not None:
+            self.metrics["wasm_facts_hash_ms"] += max(
+                0.0, (time.perf_counter() - hash_start) * 1000.0
+            )
+        self._remember(published_identity.sha256, facts)
         return facts
 
 

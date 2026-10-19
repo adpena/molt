@@ -124,6 +124,58 @@ fn streaming_publication_replaces_sections_and_self_validates() {
 }
 
 #[test]
+fn publication_returns_complete_facts_for_exact_output_in_every_role() {
+    let layout = CallableTableLayout {
+        fixed_prefix_base: 10,
+        fixed_prefix_len: 2,
+        finalized_app_base: 20,
+        app_entry_count: 99,
+    };
+    for (role, slots) in [
+        (
+            CallableTableArtifactRole::Monolithic,
+            vec![10, 11, 12, 19, 20, 21],
+        ),
+        (CallableTableArtifactRole::App, vec![20, 21]),
+        (CallableTableArtifactRole::Runtime, vec![10, 11, 12, 19]),
+    ] {
+        let mut input = module_with_callable_slots(&slots);
+        // Independent raw sections preserve duplicate non-owned names and data.
+        input.extend_from_slice(b"\0\x07\x01xfirst\0\x08\x01xsecond");
+        for replacing_owned_sections in [false, true] {
+            let mut output = Vec::new();
+            let returned =
+                scan_and_write_callable_table_attestation(&input, Some(layout), role, &mut output)
+                    .expect("publish complete facts");
+            let rescanned =
+                scan_wasm_link_facts(&output).expect("independently scan published bytes");
+            assert_eq!(returned, rescanned);
+            let expected = if replacing_owned_sections {
+                vec![
+                    "x",
+                    "x",
+                    "y",
+                    "molt.callable_table.layout",
+                    "molt.callable_table",
+                ]
+            } else {
+                vec![
+                    "x",
+                    "x",
+                    "molt.callable_table.layout",
+                    "molt.callable_table",
+                ]
+            };
+            assert_eq!(returned.custom_section_names, expected);
+            input = output;
+            // On the second publication, owned sections precede a preserved
+            // section and must move to the end without retaining their old names.
+            input.extend_from_slice(b"\0\x06\x01ylate");
+        }
+    }
+}
+
+#[test]
 fn monolithic_publication_replaces_stale_pre_link_layout_from_final_elements() {
     let stale_layout = CallableTableLayout {
         fixed_prefix_base: 0,
@@ -133,9 +185,16 @@ fn monolithic_publication_replaces_stale_pre_link_layout_from_final_elements() {
     };
     let with_stale_layout = module_with_callable_table(Some(stale_layout));
 
-    let published = publish_callable_table_attestation(&with_stale_layout, None)
-        .expect("derive final monolithic layout");
+    let mut published = Vec::new();
+    let returned = scan_and_write_callable_table_attestation(
+        &with_stale_layout,
+        None,
+        CallableTableArtifactRole::Monolithic,
+        &mut published,
+    )
+    .expect("derive final monolithic layout");
     let facts = scan_wasm_link_facts(&published).expect("scan published module");
+    assert_eq!(returned, facts);
 
     assert_eq!(
         facts.callable_table_layout,

@@ -474,6 +474,14 @@ that phase once. Cache restoration does not replay historical timings, and a
 failure before split processing is not charged to the split phase. These are
 development measurements and add no end-user runtime work.
 
+Callable-table publication returns the complete facts for its committed output,
+including the final custom-section order. That exact generation enters the
+existing bounded invocation-local facts cache, so export and structural
+validators reuse the publication result. A changed generation must be scanned
+again; final validators and their failure paths remain mandatory. Admission
+adds one stable output hash in place of another full scan, scratch-file cycle
+and facts serialization round trip.
+
 `--preserve-debug-sections` is a linked-publication policy across monolithic,
 split-app, and shared-runtime artifacts. It suppresses Binaryen debug/name
 stripping, requests Binaryen debug output, and partitions optimizer caches.

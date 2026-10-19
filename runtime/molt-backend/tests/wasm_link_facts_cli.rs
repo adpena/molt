@@ -147,6 +147,14 @@ fn cli_publishes_and_validates_rust_owned_attestation() {
     assert_eq!(payload["ok"], true);
     assert_eq!(payload["facts"]["callable_table_attestation_present"], true);
     assert!(fs::metadata(&published.0).expect("published wasm").len() > 8);
+    let rescanned = Command::new(env!("CARGO_BIN_EXE_molt-backend"))
+        .arg("--scan-wasm-link-facts")
+        .arg(&published.0)
+        .output()
+        .expect("rescan separate published output");
+    assert!(rescanned.status.success());
+    let actual: Value = serde_json::from_slice(&rescanned.stdout).expect("parse rescan JSON");
+    assert_eq!(payload["facts"], actual["facts"]);
 }
 
 #[test]
@@ -172,9 +180,12 @@ fn cli_publishes_in_place_through_one_atomic_commit() {
         .output()
         .expect("rescan in-place publication");
     assert!(rescanned.status.success());
+    let publication: Value =
+        serde_json::from_slice(&output.stdout).expect("parse publication JSON");
     let payload: Value =
         serde_json::from_slice(&rescanned.stdout).expect("parse in-place publication JSON");
     assert_eq!(payload["facts"]["callable_table_attestation_present"], true);
+    assert_eq!(publication["facts"], payload["facts"]);
 }
 
 #[test]

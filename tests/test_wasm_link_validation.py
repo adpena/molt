@@ -1173,9 +1173,11 @@ def test_post_link_optimizer_projects_only_current_request_cost(
         assert attestation == {}
 
 
+@pytest.mark.parametrize("role", ["monolithic", "app", "runtime"])
 def test_rust_facts_publication_is_admitted_through_artifact_state(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    role: str,
 ) -> None:
     scanner = tmp_path / "molt-backend"
     scanner.write_bytes(b"scanner")
@@ -1184,9 +1186,11 @@ def test_rust_facts_publication_is_admitted_through_artifact_state(
     published = wasm_link_operations.build_sections(
         [(0, wasm_link_format._build_custom_section("molt.attested", b"yes"))]
     )
+    metrics: dict[str, float] = {}
     provider = _REAL_MAKE_RUST_WASM_FACTS_PROVIDER(
         scanner,
         tmp_path / "facts-scratch",
+        metrics,
         evidence_root=tmp_path / "evidence",
     )
     state = wasm_link_transaction.WasmArtifactState.from_bytes(
@@ -1204,10 +1208,27 @@ def test_rust_facts_publication_is_admitted_through_artifact_state(
         }
     )
     publication_paths: list[Path] = []
+    scans: list[bytes] = []
 
     def fake_run(command, **_kwargs):  # type: ignore[no-untyped-def]
         assert Path(command[0]) == provider.scanner_identity.path
+        if command[1] == "--scan-wasm-link-facts":
+            scanned = Path(command[2]).read_bytes()
+            scans.append(scanned)
+            return subprocess.CompletedProcess(
+                command,
+                0,
+                json.dumps(
+                    {
+                        "schema_version": 7,
+                        "ok": True,
+                        "facts": _rust_facts_fixture(scanned),
+                    }
+                ),
+                "",
+            )
         assert command[1:3] == ["--publish-wasm-link-facts", str(path)]
+        assert command[-2:] == ["--callable-table-role", role]
         output = Path(command[4])
         assert command[3] == "--output"
         assert output == path
@@ -1221,7 +1242,13 @@ def test_rust_facts_publication_is_admitted_through_artifact_state(
     )
 
     facts = state.apply_atomic_facts_publication(
-        lambda artifact: provider.publish_in_place(artifact)
+        lambda artifact: provider.publish_in_place(
+            artifact,
+            role=role,
+            layout=wasm_link_format.CallableTableLayout(0, 0, 0, 0)
+            if role != "monolithic"
+            else None,
+        )
     )
 
     assert facts["callable_table_attestation_present"] is True
@@ -1230,6 +1257,106 @@ def test_rust_facts_publication_is_admitted_through_artifact_state(
     assert path.read_bytes() == published
     assert state.revision == 1
     assert publication_paths == [path]
+    assert provider(published) is facts
+    assert scans == []
+    assert metrics["wasm_facts_scan_calls"] == 0
+    assert metrics["wasm_facts_input_bytes"] == 0
+    assert metrics["wasm_facts_response_chars"] == 0
+    assert metrics["wasm_facts_cache_hits"] == 1
+    assert hashlib.sha256(initial).hexdigest() not in provider._cache
+
+    # A real byte mutation invalidates artifact facts and misses the same cache.
+    assert state.replace(initial)
+    state.persist()
+    assert state.facts() is not facts
+    assert scans == [initial]
+    assert metrics["wasm_facts_scan_calls"] == 1
+    assert metrics["wasm_facts_input_bytes"] == len(initial)
+    for index in range(wasm_link_fact_provider._WASM_FACTS_CACHE_ENTRIES):
+        provider(initial + b"\0\x03\x01x" + bytes([index]))
+    assert len(provider._cache) == wasm_link_fact_provider._WASM_FACTS_CACHE_ENTRIES
+    assert hashlib.sha256(published).hexdigest() not in provider._cache
+
+    # Publication itself obeys the same eviction bound when the cache is full.
+    evicted = next(iter(provider._cache))
+    provider.publish_in_place(
+        path,
+        role=role,
+        layout=wasm_link_format.CallableTableLayout(0, 0, 0, 0)
+        if role != "monolithic"
+        else None,
+    )
+    assert len(provider._cache) == wasm_link_fact_provider._WASM_FACTS_CACHE_ENTRIES
+    assert evicted not in provider._cache
+    scan_count = len(scans)
+    assert provider(published)["callable_table_attestation_present"] is True
+    assert len(scans) == scan_count
+
+
+@pytest.mark.parametrize(
+    ("failure", "message"),
+    [
+        ("error", "fixture rejection"),
+        ("bad-json", "invalid JSON"),
+        ("missing-attestation", "omitted final attestation"),
+        ("swapped-output", "changed"),
+    ],
+)
+def test_rust_facts_publication_rejects_failed_or_changed_output_without_caching(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    failure: str,
+    message: str,
+) -> None:
+    scanner = tmp_path / "scanner"
+    scanner.write_bytes(b"scanner")
+    path = tmp_path / "owned-stage.wasm"
+    path.write_bytes(b"\0asm\x01\0\0\0")
+    published = path.read_bytes() + b"\0\x03\x01xa"
+    provider = _REAL_MAKE_RUST_WASM_FACTS_PROVIDER(
+        scanner, tmp_path / "scratch", evidence_root=tmp_path / "evidence"
+    )
+
+    def fake_run(command, **_kwargs):  # type: ignore[no-untyped-def]
+        if failure == "error":
+            return subprocess.CompletedProcess(
+                command,
+                2,
+                '{"schema_version":7,"ok":false,"error":"fixture rejection"}',
+                "",
+            )
+        path.write_bytes(published)
+        facts = _rust_facts_fixture(published)
+        if failure == "missing-attestation":
+            facts["callable_table_attestation_present"] = False
+        return subprocess.CompletedProcess(
+            command,
+            0,
+            "{"
+            if failure == "bad-json"
+            else json.dumps({"schema_version": 7, "ok": True, "facts": facts}),
+            "",
+        )
+
+    monkeypatch.setattr(
+        wasm_link_fact_provider, "_COMMANDS", SimpleNamespace(run=fake_run)
+    )
+    if failure == "swapped-output":
+        real_decode = wasm_link_fact_provider._decode_wasm_facts_response
+
+        def decode_and_swap(*args, **kwargs):  # type: ignore[no-untyped-def]
+            facts = real_decode(*args, **kwargs)
+            replacement = tmp_path / "foreign-generation.wasm"
+            replacement.write_bytes(published + b"\0\x03\x01xb")
+            replacement.replace(path)
+            return facts
+
+        monkeypatch.setattr(
+            wasm_link_fact_provider, "_decode_wasm_facts_response", decode_and_swap
+        )
+    with pytest.raises(ValueError, match=message):
+        provider.publish_in_place(path)
+    assert not provider._cache
 
 
 def test_rust_facts_provider_attests_scan_cost_and_content_cache(
