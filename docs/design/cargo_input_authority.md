@@ -8,7 +8,12 @@ content record remains open. Owner: build speed and artifact identity.
 
 Molt builds four artifacts with Cargo: the native runtime staticlib, the WASM
 runtime pair, the WASM CPython-ABI staticlib and the backend compiler (the proof
-supervisor is a fifth). To decide whether a stored build of one is current,
+supervisor is a fifth). The standalone browser SIMD producer
+(`tools/build_browser_simd.py`) also reuses the Cargo transcript boundary, but
+publishes a static asset without a compiler/runtime generation receipt. Its
+ordinary Cargo Fresh behavior cannot establish consumed-byte attestation either;
+include it when applying the complete file-input policy to source-built assets.
+To decide whether a stored compiler/runtime build is current,
 Molt hashes every file under the crate roots it guesses from the Cargo
 manifests (`cargo_source_closure._crate_source_paths`), plus hand-listed
 extras. The guess was wrong in both directions, and slow:
