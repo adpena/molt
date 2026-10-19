@@ -87,7 +87,9 @@ def _worker_lifetime_peak_rss_bytes() -> int:
 
         counters = ProcessMemoryCounters()
         counters.cb = ctypes.sizeof(counters)
-        process = ctypes.windll.kernel32.GetCurrentProcess()
+        from molt.windows_process_api import process_query_api
+
+        process = process_query_api().GetCurrentProcess()
         get_memory_info = ctypes.windll.kernel32.K32GetProcessMemoryInfo
         get_memory_info.argtypes = [
             ctypes.c_void_p,

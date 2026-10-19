@@ -170,11 +170,18 @@ def _observe(entry: tuple[str, str]) -> None:
         except (ValueError, NotImplementedError):
             pass  # Unmapped/sourceless bytecode remains an actual file input.
         else:
-            names += (source,)
-            # Explicit potential-input facts survive product-root filtering.
-            # A readable-open audit is pre-syscall: absence is a probe, never
-            # proof that the process created or successfully read this file.
-            report_data_file(source)
+            # CPython strips the source drive under pycache_prefix on Windows:
+            # C:\same\a.py and D:\same\a.py can name the very same cache.
+            # No inverse can prove which source the loader stat-ed. Retain the
+            # actual cache and refuse reuse rather than invent its drive.
+            if os.name == "nt" and not os.path.splitdrive(source)[0]:
+                refuse(f"bytecode source drive is ambiguous: {name}")
+            else:
+                names += (source,)
+                # Explicit potential-input facts survive product-root filtering.
+                # A readable-open audit is pre-syscall: absence is a probe, never
+                # proof that the process created or successfully read this file.
+                report_data_file(source)
     sink = _SINK
     for observed in names:
         if sink is not None:

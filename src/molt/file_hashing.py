@@ -146,7 +146,9 @@ def _windows_handle_change_time_ns(handle: Any) -> int | None:
             handle, 0, ctypes.byref(info), ctypes.sizeof(info)
         ):
             return None
-        return int(info.ChangeTime) * 100
+        # FILE_BASIC_INFO uses 100 ns ticks since 1601; every public
+        # content-change token shares stat/time.time_ns Unix-epoch units.
+        return (int(info.ChangeTime) - 116_444_736_000_000_000) * 100
     except (AttributeError, OSError, ValueError):
         return None
 

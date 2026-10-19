@@ -20,7 +20,7 @@ from molt.process_spawn import (
     hidden_windows_process_group_kwargs,
 )
 from tools.proof_queue_pkg import state
-from tools.windows_process_api import process_query_api
+from molt.windows_process_api import process_query_api
 
 MEMORY_GUARD_POLL_SEC_ENV = "MOLT_MEMORY_GUARD_POLL_SEC"
 

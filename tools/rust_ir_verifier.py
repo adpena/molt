@@ -23,7 +23,7 @@ SRC = ROOT / "src"
 from molt.cargo_execution_policy import require_cargo_build_capacity  # noqa: E402
 from molt.dx import development_artifact_env  # noqa: E402
 from tools.command_execution import CommandExecutor  # noqa: E402
-from tools.windows_process_api import bind_process_query_api  # noqa: E402
+from molt.windows_process_api import bind_process_query_api  # noqa: E402
 
 _BINARY_NAME = "molt-ir-verify.exe" if os.name == "nt" else "molt-ir-verify"
 _BUILD_LOCK = threading.Lock()

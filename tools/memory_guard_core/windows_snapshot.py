@@ -20,7 +20,7 @@ from tools.import_file import bind_repository_imports  # noqa: E402
 bind_repository_imports(__file__)
 
 from molt.backend_executable_names import is_backend_executable_name  # noqa: E402
-from tools.windows_process_api import bind_process_query_api, process_query_api  # noqa: E402
+from molt.windows_process_api import bind_process_query_api, process_query_api  # noqa: E402
 
 
 DEFAULT_WINDOWS_PROCESS_SNAPSHOT_TIMEOUT_SEC = 5.0

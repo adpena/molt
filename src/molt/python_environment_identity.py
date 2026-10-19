@@ -214,6 +214,7 @@ def python_capture_authority_paths(
         "custody_layout",
         "memory_guard_paths",
         "process_spawn",
+        "windows_process_api",
         "dx",
         "host_capacity",
         "cargo_execution_policy",

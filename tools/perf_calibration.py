@@ -52,7 +52,7 @@ bind_repository_imports(__file__)
 
 from tools import harness_memory_guard  # noqa: E402
 from tools.command_execution import CommandExecutor  # noqa: E402
-from tools.windows_process_api import bind_process_query_api  # noqa: E402
+from molt.windows_process_api import bind_process_query_api  # noqa: E402
 
 _COMMANDS = CommandExecutor.for_file(__file__)
 

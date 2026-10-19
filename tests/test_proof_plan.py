@@ -3905,7 +3905,7 @@ def test_release_flag_changes_execute_real_windows_compilers(path: str) -> None:
 
 @pytest.mark.parametrize(
     "path",
-    ["tools/windows_process_api.py", "tests/tools/test_windows_process_api.py"],
+    ["src/molt/windows_process_api.py", "tests/tools/test_windows_process_api.py"],
 )
 def test_windows_process_binding_selects_and_executes_portability_proof(
     path: str,

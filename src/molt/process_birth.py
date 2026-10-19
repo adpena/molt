@@ -75,9 +75,9 @@ def _windows_started_ns() -> int | None:
         return None
     import ctypes
     from ctypes import wintypes
+    from molt.windows_process_api import process_query_api
 
-    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
-    kernel32.GetCurrentProcess.restype = wintypes.HANDLE
+    kernel32 = process_query_api()
     creation = wintypes.FILETIME()
     unused = (wintypes.FILETIME(), wintypes.FILETIME(), wintypes.FILETIME())
     if not kernel32.GetProcessTimes(

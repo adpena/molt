@@ -81,7 +81,7 @@ def test_rust_bundled_linker_uses_compiler_host_not_wasm_target(tmp_path, host, 
 
 @pytest.mark.parametrize("relative", [False, True])
 def test_rust_explicit_linker_path_is_not_replaced_by_bundled_name(tmp_path, relative):
-    linker = tmp_path / "explicit" / "rust-lld"
+    linker = tmp_path / "explicit" / ("rust-lld.exe" if os.name == "nt" else "rust-lld")
     linker.parent.mkdir()
     linker.write_bytes(b"explicit linker")
     linker.chmod(0o755)

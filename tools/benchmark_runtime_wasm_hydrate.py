@@ -87,15 +87,16 @@ def _peak_rss_bytes() -> int:
 
     counters = ProcessMemoryCounters()
     counters.cb = ctypes.sizeof(counters)
+    from molt.windows_process_api import process_query_api
+
     kernel32 = ctypes.windll.kernel32
-    kernel32.GetCurrentProcess.restype = ctypes.c_void_p
     kernel32.K32GetProcessMemoryInfo.argtypes = (
         ctypes.c_void_p,
         ctypes.POINTER(ProcessMemoryCounters),
         ctypes.c_ulong,
     )
     kernel32.K32GetProcessMemoryInfo.restype = ctypes.c_int
-    process = kernel32.GetCurrentProcess()
+    process = process_query_api().GetCurrentProcess()
     if not kernel32.K32GetProcessMemoryInfo(
         process,
         ctypes.byref(counters),

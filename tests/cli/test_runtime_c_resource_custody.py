@@ -451,7 +451,9 @@ def test_real_cargo_reuses_only_matching_external_resource_generation(
             json_output=True,
             label="external-resource-reuse-test",
         )
-        assert result.returncode == 0, result.stderr
+        assert result.returncode == 0, (
+            f"Cargo stdout:\n{result.stdout}\nCargo stderr:\n{result.stderr}"
+        )
         artifacts = [
             json.loads(line)
             for line in result.stdout.splitlines()
