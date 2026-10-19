@@ -531,6 +531,7 @@ def prewarm_rust_item_projections(texts: Iterable[str], *, workers: int) -> None
 
     with ProcessPoolExecutor(
         max_workers=workers,
+        mp_context=compiler_process.worker_context(),
         initializer=compiler_process.worker_initializer,
         initargs=(input_report.worker_log_dir(),),
     ) as pool:

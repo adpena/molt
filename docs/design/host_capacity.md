@@ -143,10 +143,15 @@ root, which on the primary Mac is an external USB volume: 285 MB holding
 more under suite load (that test took 43 s alone and 295 s in its suite).
 
 Small, hot metadata belongs on the fastest local volume with room for it, and
-bulk artifacts (Cargo targets, linked outputs) on the large one. The record
-store keeps one file per compiler generation, so a build reads only its own
-generation, a trim deletes a file, and a cold process can read its generation
-sequentially. Volume choice is measured per machine, not a fixed path.
+bulk artifacts (Cargo targets, linked outputs) on the large one. The canonical
+source-record authority instead uses one shared four-kind
+SQLite table with generation retirement and global byte/age retention; see
+[the record contract](../spec/areas/compiler/SIMPLE_IR_JSON_SCHEMA.md). The
+previous per-generation-file proposal is retired: retained scan-key replays
+under HF-285 do not establish a persistent-storage bottleneck. Frontend
+operations and live observations own connections; a weak identity registry
+releases abandoned roots rather than retaining a connection per historical
+root. Volume choice still requires measurement per machine.
 
 ## Migration
 
@@ -197,9 +202,28 @@ sequentially. Volume choice is measured per machine, not a fixed path.
    resource classes, longest first; the first step of the
    [landing queue](landing_queue.md).
 4. The host-wide jobserver.
-5. Record stores per compiler generation, on the fastest local volume.
+5. Qualify the canonical shared source-record lifetime and retention costs;
+   measure volume placement before changing it.
 6. The same authority on each machine of the Tailscale farm, so a remote cell
    sizes itself on its host.
 
 Target semantics are out of scope: a compiled program's `os.cpu_count()`
 reports the machine it runs on, as CPython does.
+
+### Fresh worker processes
+
+Compiler, source-audit, environment-audit and differential worker pools share
+`molt.compiler_process.worker_context`. It explicitly selects `spawn` before
+starting work. No pool forks the calling compiler's heap or locks, and every
+new pool receives the current parent environment. This follows
+[CPython's process-context guidance](https://docs.python.org/3.12/library/multiprocessing.html#contexts-and-start-methods)
+while deliberately retaining spawn on POSIX: a reused forkserver keeps the
+server's original environment, which is stale when an embedded compiler changes
+cache, source, session or toolchain selections between invocations. Rebuilding
+that ambient-state protocol would add another authority. Spawn starts each
+interpreter independently; its startup cost must be measured against the
+inherited-heap amplification it removes. The policy adds no guest work.
+Differential stop
+state comes from the selected context, and orphan detection observes the
+creating parent's sentinel rather than the server's OS PID. Explicit fork
+ownership tests retain their separate semantics.

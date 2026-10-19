@@ -1,4 +1,4 @@
-"""Admission and result custody regressions without compiler/worker processes."""
+"""Admission, result custody, and worker-state regressions without compiler builds."""
 
 from __future__ import annotations
 
@@ -256,6 +256,17 @@ def suite(tmp_path, monkeypatch):
         original_run_single=molt_diff._diff_run_single,
         original_emit_json=molt_diff._emit_json,
     )
+    worker_context = molt_diff.compiler_process.worker_context()
+    raw_value = worker_context.RawValue
+
+    def shared_stop(*args):
+        state.shared_stop = raw_value(*args)
+        return state.shared_stop
+
+    monkeypatch.setattr(worker_context, "RawValue", shared_stop)
+    monkeypatch.setattr(
+        molt_diff.compiler_process, "worker_context", lambda: worker_context
+    )
     for name in (
         "_ensure_diff_run_lock",
         "_prune_orphan_diff_workers",
@@ -335,6 +346,8 @@ def suite(tmp_path, monkeypatch):
     class Executor:
         def __init__(self, **kwargs):
             self.max_workers = kwargs["max_workers"]
+            assert kwargs["mp_context"] is worker_context
+            assert kwargs["initargs"] == (state.shared_stop,)
             state.executor_kwargs = kwargs
 
         def __enter__(self):
@@ -1285,3 +1298,49 @@ def test_a_test_import_path_reaches_the_native_build_under_an_execution_context(
             budget=budget,
         )
     assert seen["PYTHONPATH"] == expected
+
+
+def _diff_worker_stop_observation():
+    import multiprocessing
+
+    parent = multiprocessing.parent_process()
+    assert parent is not None
+    return (
+        molt_diff.compat_backends.suite_stop_signal(),
+        parent.pid,
+        parent.is_alive(),
+    )
+
+
+def test_parallel_worker_state_uses_fresh_context_and_live_shared_stop():
+    import textwrap
+
+    probe = textwrap.dedent(
+        """
+        import json, os, signal
+        from concurrent.futures import ProcessPoolExecutor
+        from molt import compiler_process
+        from tests.test_molt_diff_scheduling import (
+            _diff_worker_stop_observation, molt_diff,
+        )
+
+        if __name__ == "__main__":
+            context = compiler_process.worker_context()
+            stop = context.RawValue("i", 0)
+            with ProcessPoolExecutor(
+                max_workers=1,
+                mp_context=context,
+                initializer=molt_diff._install_worker_state,
+                initargs=(stop,),
+            ) as executor:
+                before = executor.submit(_diff_worker_stop_observation).result()
+                stop.value = signal.SIGTERM
+                after = executor.submit(_diff_worker_stop_observation).result()
+            print(json.dumps([before, after, os.getpid(), int(signal.SIGTERM)]))
+        """
+    )
+    result = run_guarded_test_process([sys.executable, "-c", probe], timeout=120)
+    assert result.returncode == 0, result.stderr
+    before, after, parent_pid, stop_signal = json.loads(result.stdout)
+    assert before == [None, parent_pid, True]
+    assert after == [stop_signal, parent_pid, True]

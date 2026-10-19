@@ -246,6 +246,7 @@ def _run_frontend_parallel_enabled_layers(
     parallel_pool_usable = True
     executor = ProcessPoolExecutor(
         max_workers=frontend_parallel_config.workers,
+        mp_context=compiler_process.worker_context(),
         initializer=compiler_process.worker_initializer,
         initargs=(_input_report.worker_log_dir(),),
     )
@@ -260,6 +261,7 @@ def _run_frontend_parallel_enabled_layers(
                 executor.shutdown(wait=False, cancel_futures=True)
                 executor = ProcessPoolExecutor(
                     max_workers=frontend_parallel_config.workers,
+                    mp_context=compiler_process.worker_context(),
                     initializer=compiler_process.worker_initializer,
                     initargs=(_input_report.worker_log_dir(),),
                 )

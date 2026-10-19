@@ -35,6 +35,7 @@ from molt.cli.python_source_closure import (
 if TYPE_CHECKING:
     from molt.cli.module_source import PythonSourceSnapshot
     from molt.cli.rust_cpu_policy import RustCpuPolicy
+    from molt.cli.source_record_store import SourceRecordStore
 
 
 _CACHE_SOURCE_FINGERPRINT_SCHEMA_VERSION = "source-tree-v3"
@@ -330,8 +331,8 @@ class _SourceTreeFingerprintTransaction:
     # Each path resolves once per operation; a graph keys one module under
     # many import contexts and scans it under many premises.
     resolved_paths: dict[str, Path] = field(default_factory=dict)
-    # Every source-record kind shares one root, resolved once per operation.
-    source_records_root: Path | None = None
+    # Pin one connection owner through the operation, including nested calls.
+    source_records: SourceRecordStore | None = None
 
 
 _SOURCE_TREE_FINGERPRINT_TRANSACTION: ContextVar[

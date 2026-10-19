@@ -733,3 +733,247 @@ def test_malformed_metadata_refuses_maintenance_without_loading_payload(
             records.SourceRecordUnavailable, match="invalid source record metadata"
         ):
             list(maintenance.iter_lru())
+
+
+def test_factory_releases_abandoned_roots_and_closes_their_connections(tmp_path):
+    import gc
+    import weakref
+
+    refs, connections = [], []
+    for index in range(24):
+        store = records.source_record_store(tmp_path / str(index))
+        assert store.put("module-lowering", "body", b"body", generation="g")
+        refs.append(weakref.ref(store))
+        # Keep the connection independently alive: collection alone cannot
+        # make this oracle pass without the store closing its resource.
+        connections.append(store._connect())
+    del store
+    gc.collect()
+    assert all(ref() is None for ref in refs)
+    for connection in connections:
+        with pytest.raises(sqlite3.ProgrammingError, match="closed"):
+            connection.execute("SELECT 1")
+
+
+def test_record_observation_pins_its_owner_until_admission_ends(tmp_path, monkeypatch):
+    import gc
+    import weakref
+
+    install_module_view(monkeypatch, "time", time, records, time_ns=lambda: 10 * _DAY)
+    store = records.source_record_store(tmp_path)
+    assert store.put("module-analysis", "k", b"body", generation="g")
+    observation = store.get("module-analysis", "k", generation="g", max_bytes=16)
+    assert observation is not None
+    connection = store._connect()
+    owner = weakref.ref(store)
+    del store
+    gc.collect()
+    assert owner() is not None
+    install_module_view(monkeypatch, "time", time, records, time_ns=lambda: 11 * _DAY)
+    assert observation.refresh()
+    del observation
+    gc.collect()
+    assert owner() is None
+    with pytest.raises(sqlite3.ProgrammingError, match="closed"):
+        connection.execute("SELECT 1")
+
+
+@pytest.mark.parametrize("fail", [False, True])
+def test_operation_pins_one_store_and_releases_on_all_exits(
+    tmp_path, monkeypatch, fail
+):
+    import gc
+    import weakref
+    from molt.cli.cache_fingerprints import (
+        _fresh_compiler_identity_inputs,
+        _source_tree_fingerprint_transaction,
+    )
+
+    monkeypatch.setattr(records, "_default_molt_cache", lambda: tmp_path)
+    connections = []
+    owner = None
+    try:
+        with _source_tree_fingerprint_transaction():
+            store = records.shared_source_records()
+            owner = weakref.ref(store)
+            assert store.put("import-scan", "k", b"body", generation="g")
+            connection = store._connect()
+            connections.append(connection)
+            del store
+            assert records.shared_source_records() is owner()
+            with _source_tree_fingerprint_transaction():
+                assert records.shared_source_records()._connect() is connection
+            # A fresh identity scope must not close a surviving outer owner.
+            with _fresh_compiler_identity_inputs():
+                assert records.shared_source_records() is owner()
+                assert records.shared_source_records()._connect() is connection
+            assert connection.execute("SELECT count(*) FROM records").fetchone() == (1,)
+            if fail:
+                raise RuntimeError("operation failed")
+    except RuntimeError as exc:
+        assert fail and str(exc) == "operation failed"
+    gc.collect()
+    assert owner is not None and owner() is None
+    for connection in connections:
+        with pytest.raises(sqlite3.ProgrammingError, match="closed"):
+            connection.execute("SELECT 1")
+
+
+def _exercise_inherited_owner(store, maintenance, pipe):
+    observation = records.SourceRecord(
+        b"body", "import-scan", "k", "g", b"x" * 16, 0, store
+    )
+    refused = (
+        store.get("import-scan", "k", generation="g", max_bytes=16) is None
+        and not store.put("import-scan", "k", b"wrong", generation="g")
+        and not observation.refresh()
+    )
+    store.close()
+    try:
+        maintenance.inventory()
+    except records.SourceRecordUnavailable:
+        pass
+    else:
+        raise AssertionError("inherited maintenance performed SQL")
+    maintenance.close_snapshot()
+    fresh = records.source_record_store(store.path.parent)
+    value = fresh.get("import-scan", "k", generation="g", max_bytes=16)
+    pipe.send((refused, None if value is None else value.payload))
+    pipe.close()
+
+
+@pytest.mark.skipif(
+    "fork" not in multiprocessing.get_all_start_methods(), reason="requires fork"
+)
+def test_inherited_owner_refuses_before_a_parent_lock_and_fresh_owner_works(tmp_path):
+    context = multiprocessing.get_context("fork")
+    store = records.source_record_store(tmp_path)
+    assert store.put("import-scan", "k", b"body", generation="g")
+    receive, send = context.Pipe(duplex=False)
+    with store.maintenance(dry_run=True) as maintenance:
+        child = context.Process(
+            target=_exercise_inherited_owner, args=(store, maintenance, send)
+        )
+        with store._lock:
+            child.start()
+            send.close()
+            try:
+                assert receive.poll(10), "child waited on an inherited owner lock"
+                assert receive.recv() == (True, b"body")
+                child.join(10)
+                assert child.exitcode == 0
+            finally:
+                if child.is_alive():
+                    child.terminate()
+                    child.join(10)
+                receive.close()
+                child.close()
+        assert maintenance.inventory().entries == 1
+    assert (
+        store.get("import-scan", "k", generation="g", max_bytes=16).payload == b"body"
+    )
+
+
+def test_factory_cannot_resurrect_an_owner_while_sqlite_closes(tmp_path, monkeypatch):
+    import threading
+    import weakref
+
+    entered, release = threading.Event(), threading.Event()
+    original_connect = sqlite3.connect
+    closing = []
+
+    class ClosingConnection(sqlite3.Connection):
+        def close(self):
+            if closing and self is closing[0]:
+                entered.set()
+                assert release.wait(10)
+            return super().close()
+
+    install_module_view(
+        monkeypatch,
+        "sqlite3",
+        sqlite3,
+        records,
+        connect=lambda *args, **kwargs: original_connect(
+            *args, factory=ClosingConnection, **kwargs
+        ),
+    )
+    holder = [records.source_record_store(tmp_path)]
+    assert holder[0].put("import-scan", "k", b"body", generation="g")
+    closing.append(holder[0]._connect())
+    owner = weakref.ref(holder[0])
+    thread = threading.Thread(target=holder.clear)
+    thread.start()
+    try:
+        assert entered.wait(10), "owner did not close its SQLite connection"
+        assert owner() is None, "factory could resurrect an owner being finalized"
+        replacement = records.source_record_store(tmp_path)
+        assert replacement.put("import-scan", "k", b"new", generation="g")
+    finally:
+        release.set()
+        thread.join(10)
+    assert not thread.is_alive()
+    assert (
+        replacement.get("import-scan", "k", generation="g", max_bytes=16).payload
+        == b"new"
+    )
+
+
+def _drop_inherited_direct_owner(holder, connection_ref, root, pipe):
+    import gc
+
+    holder.clear()
+    gc.collect()
+    retained = connection_ref() is not None
+    fresh = records.source_record_store(Path(root))
+    record = fresh.get("import-scan", "k", generation="g", max_bytes=16)
+    pipe.send((retained, None if record is None else record.payload))
+    pipe.close()
+
+
+@pytest.mark.skipif(
+    "fork" not in multiprocessing.get_all_start_methods(), reason="requires fork"
+)
+def test_fork_finalization_keeps_a_directly_constructed_handle_inert(
+    tmp_path, monkeypatch
+):
+    import weakref
+
+    original_connect = sqlite3.connect
+
+    class ObservableConnection(sqlite3.Connection):
+        pass
+
+    install_module_view(
+        monkeypatch,
+        "sqlite3",
+        sqlite3,
+        records,
+        connect=lambda *args, **kwargs: original_connect(
+            *args, factory=ObservableConnection, **kwargs
+        ),
+    )
+    holder = [_store(tmp_path)]
+    assert holder[0].put("import-scan", "k", b"body", generation="g")
+    connection_ref = weakref.ref(holder[0]._connect())
+    context = multiprocessing.get_context("fork")
+    receive, send = context.Pipe(duplex=False)
+    child = context.Process(
+        target=_drop_inherited_direct_owner,
+        args=(holder, connection_ref, str(tmp_path), send),
+    )
+    child.start()
+    send.close()
+    try:
+        assert receive.poll(10)
+        assert receive.recv() == (True, b"body")
+        child.join(10)
+        assert child.exitcode == 0
+    finally:
+        if child.is_alive():
+            child.terminate()
+            child.join(10)
+        receive.close()
+        child.close()
+    holder.clear()
+    assert connection_ref() is None
