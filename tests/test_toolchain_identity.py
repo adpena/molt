@@ -1180,7 +1180,10 @@ def test_retained_file_consumers_bound_growth_before_acceptance(
     from molt import artifact_publication
     from molt.cli import backend_artifact_contract, runtime_wasm_generation
     from molt.cli import static_archive_identity
-    from tests.runtime_build_identity_helper import runtime_build_identity
+    from tests.runtime_build_identity_helper import (
+        runtime_build_identity,
+        runtime_cargo_environment_inputs,
+    )
 
     source = tmp_path / "source"
     raw = b"finite admitted text\n" * 4
@@ -1222,6 +1225,7 @@ def test_retained_file_consumers_bound_growth_before_acceptance(
                 reloc_identity=runtime_build_identity("reloc", "bounded-stage"),
                 source_shared=source,
                 source_reloc=reloc,
+                cargo_environment=runtime_cargo_environment_inputs(),
             )
         with artifact_publication.staged_copy_file(
             source, destination, observed=observed
