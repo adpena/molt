@@ -68,7 +68,9 @@ def test_backend_publication_is_owned_by_the_shared_artifact_crate() -> None:
     manifest = tomllib.loads((crate / "Cargo.toml").read_text(encoding="utf-8"))
     assert not manifest.get("dependencies")
     assert not manifest.get("features")
-    assert set(manifest["target"]) == {"cfg(windows)"}
+    assert set(manifest["target"]) == {"cfg(unix)", "cfg(windows)"}
+    # Opened-descriptor admission rejects FIFOs without waiting for a writer.
+    assert manifest["target"]["cfg(unix)"]["dependencies"] == {"libc": "0.2"}
     assert set(manifest["target"]["cfg(windows)"]["dependencies"]) == {"windows-sys"}
     backend = ROOT / "runtime/molt-backend/src"
     assert not (backend / "backend_process/atomic_publish.rs").exists()

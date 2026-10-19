@@ -204,12 +204,33 @@ def test_cargo_mutation_rejected_before_any_alias_probe_or_receipt(
             raise compiler_identity.CompilerIdentityError("Cargo configuration changed")
 
     admission.verify = verify
-    monkeypatch.setattr(
-        backend_binary, "backend_build_admission", lambda *args, **kw: admission
-    )
-    monkeypatch.setattr(
-        backend_binary, "_backend_source_paths", lambda *args, **kwargs: [source.parent]
-    )
+
+    def admit(
+        root,
+        features,
+        profile,
+        environment,
+        *,
+        rust_cpu,
+        product=HostToolProduct.BACKEND,
+    ):
+        del environment
+        assert root == tmp_path
+        assert features == ("native-backend",)
+        assert profile == "release"
+        assert rust_cpu is RustCpuPolicy.BASELINE
+        assert product is HostToolProduct.BACKEND
+        return admission
+
+    monkeypatch.setattr(backend_binary, "backend_build_admission", admit)
+
+    def source_paths(root, features, *, product=HostToolProduct.BACKEND):
+        assert root == tmp_path
+        assert features == ("native-backend",)
+        assert product is HostToolProduct.BACKEND
+        return [source.parent]
+
+    monkeypatch.setattr(backend_binary, "_backend_source_paths", source_paths)
     monkeypatch.setattr(
         backend_binary, "_compiler_clean_source_state", lambda *args: None
     )

@@ -11,6 +11,7 @@ from __future__ import annotations
 
 from molt.cli.cache_keys import FunctionDigests
 
+from collections.abc import Mapping
 import hashlib
 import json
 import os
@@ -34,6 +35,7 @@ from molt.cli.project_roots import _find_project_root
 from molt.cli.runtime_paths import _cargo_profile_dir, _cargo_target_root
 from molt.cli.rust_cpu_policy import RustCpuPolicy
 from molt.exact_json import canonical_json_sha256
+from molt.host_tool_products import HostToolProduct
 from molt.source_root import compiler_source_root
 from tests.compiler_identity_helper import (
     compiler_build_admission,
@@ -163,16 +165,29 @@ def _record_backend_admission(
     admissions: list[dict[str, object]] = []
 
     def record(
-        backend_bin: Path, **kwargs: Any
+        backend_bin: Path,
+        *,
+        cargo_timeout: float | None,
+        json_output: bool,
+        cargo_profile: str,
+        project_root: Path,
+        backend_features: tuple[str, ...],
+        rust_cpu: RustCpuPolicy,
+        stage_timings_ms: dict[str, float] | None = None,
+        product: HostToolProduct = HostToolProduct.BACKEND,
+        environment: Mapping[str, str] | None = None,
     ) -> cli_backend_binary._BackendBinaryEnsureResult:
+        del json_output, stage_timings_ms, environment
+        assert product is HostToolProduct.BACKEND
         admissions.append(
             {
                 "binary": backend_bin,
-                "cargo_profile": kwargs["cargo_profile"],
-                "features": kwargs["backend_features"],
-                "project_root": kwargs["project_root"],
-                "cargo_timeout": kwargs["cargo_timeout"],
-                "rust_cpu": kwargs["rust_cpu"],
+                "product": product,
+                "cargo_profile": cargo_profile,
+                "features": backend_features,
+                "project_root": project_root,
+                "cargo_timeout": cargo_timeout,
+                "rust_cpu": rust_cpu,
                 # Ambient Rust flags are the caller's; neither command writes them.
                 "rustflags": os.environ.get("RUSTFLAGS"),
             }
@@ -279,14 +294,23 @@ def _fake_backend_toolchain(
     cargo_calls: list[list[str]] = []
     probe_calls: list[list[str]] = []
 
-    def admission(root, features, profile, environment, *, rust_cpu):
-        write_compiler_source(root)
+    def admission(
+        root,
+        features,
+        profile,
+        environment,
+        *,
+        rust_cpu,
+        product=HostToolProduct.BACKEND,
+    ):
+        assert product is HostToolProduct.BACKEND
+        write_compiler_source(root, product=product)
         selected_environment = {
             **environment,
             "CARGO_TARGET_DIR": os.fspath(_cargo_target_root(root)),
         }
         admitted = compiler_build_admission(
-            features, profile, selected_environment, rust_cpu
+            features, profile, selected_environment, rust_cpu, product=product
         )
         admitted.plan.project_root = root
         return admitted
@@ -298,7 +322,9 @@ def _fake_backend_toolchain(
         build_admission: Any,
         backend_features: tuple[str, ...],
         stored_fingerprint: object = None,
+        product: HostToolProduct = HostToolProduct.BACKEND,
     ) -> dict[str, str]:
+        assert product is HostToolProduct.BACKEND
         del project_root, stored_fingerprint
         return {
             "hash": canonical_json_sha256(
@@ -335,13 +361,14 @@ def _fake_backend_toolchain(
     monkeypatch.setattr(cli_backend_binary, "backend_build_admission", admission)
     monkeypatch.setattr(compiler_identity, "backend_build_admission", admission)
     monkeypatch.setattr(cli_backend_binary, "_backend_fingerprint", fingerprint)
+
     # The fixture has one source manifest; the live source-generation fence
     # still captures it and Cargo.lock before/after every modeled build.
-    monkeypatch.setattr(
-        cli_backend_binary,
-        "_backend_source_paths",
-        lambda root, _features: [root / "runtime/molt-backend/Cargo.toml"],
-    )
+    def source_paths(root, _features, *, product=HostToolProduct.BACKEND):
+        assert product is HostToolProduct.BACKEND
+        return [root / "runtime/molt-backend/Cargo.toml"]
+
+    monkeypatch.setattr(cli_backend_binary, "_backend_source_paths", source_paths)
     monkeypatch.setattr(cli_backend_binary, "_run_resolved_cargo_plan", cargo)
     monkeypatch.setattr(
         cli_backend_binary, "_run_subprocess_captured_to_tempfiles", probe
@@ -477,6 +504,7 @@ def test_prewarm_selects_the_release_host_compiler_in_the_session_target(
     assert admissions == [
         {
             "binary": session_release / f"{binary_name}{_EXE}",
+            "product": HostToolProduct.BACKEND,
             "cargo_profile": "release",
             "features": features,
             "project_root": root,

@@ -42,7 +42,7 @@ from molt.compiler_analysis.python_imports import (
     resolve_relative_import,
 )
 from molt.frontend.lowering import import_lowering, module_lifecycle
-from molt.frontend import SimpleTIRGenerator
+from molt.frontend import MoltOp, MoltValue, SimpleTIRGenerator
 
 
 _SEMANTIC_DEFINITIONS = (
@@ -899,22 +899,93 @@ def test_rebound_intrinsic_lookup_does_not_retain_metadata_capability() -> None:
         )
 
 
-def test_deferred_relative_import_without_module_name_uses_runtime_transaction() -> (
-    None
-):
+@pytest.mark.parametrize(
+    ("statement", "name", "level", "binding"),
+    (
+        ("from . import sibling", "", 1, "sibling"),
+        ("from .. import sibling", "", 2, "sibling"),
+        ("from .child import sibling", "child", 1, "sibling"),
+        ("from ..child import sibling as chosen", "child", 2, "chosen"),
+    ),
+)
+def test_deferred_relative_import_uses_runtime_transaction(
+    statement: str, name: str, level: int, binding: str
+) -> None:
+    from types import SimpleNamespace
+
+    source = f"def load():\n    {statement}\n    return {binding}\n"
+    imported_value = object()
+    observed: list[tuple[object, ...]] = []
+
+    def import_oracle(
+        name: object,
+        globals: object,
+        locals: object,
+        fromlist: object,
+        level: object,
+    ) -> SimpleNamespace:
+        observed.append((name, globals, locals, fromlist, level))
+        return SimpleNamespace(sibling=imported_value)
+
+    namespace: dict[str, object] = {
+        "__builtins__": {"__import__": import_oracle},
+        "__package__": "pkg",
+    }
+    exec(source, namespace)
+    load = namespace["load"]
+    assert callable(load)
+    assert load() is imported_value
+    assert len(observed) == 1
+    observed_name, observed_globals, observed_locals, fromlist, observed_level = (
+        observed[0]
+    )
+    assert (observed_name, observed_locals, fromlist, observed_level) == (
+        name,
+        None,
+        ("sibling",),
+        level,
+    )
+    assert observed_globals is namespace
+
     generator = SimpleTIRGenerator(
         source_path="pkg/module.py",
         module_name="pkg.module",
         module_execution_kind="imported",
         known_modules={"pkg", "pkg.module", "pkg.sibling"},
     )
-    generator.visit(
-        ast.parse("def load():\n    from . import sibling\n    return sibling\n")
-    )
+    generator.visit(ast.parse(source))
 
     load_ops = generator.funcs_map["pkg_module__load"]["ops"]
-    assert any(op.kind == "CALL_FUNC" for op in load_ops)
-    assert any(op.kind == "CONST" and op.args == [1] for op in load_ops)
+    transactions = [
+        op
+        for op in load_ops
+        if op.kind == "CALL" and op.args[0] == "molt_importlib_import_transaction"
+    ]
+    assert len(transactions) == 1
+    transaction = transactions[0]
+    _, name_val, globals_val, locals_val, fromlist_val, level_val = transaction.args
+
+    def producer(value: MoltValue) -> MoltOp:
+        return next(op for op in load_ops if op.result is value)
+
+    assert producer(name_val).kind == "CONST_STR"
+    assert producer(name_val).args == [name]
+    assert producer(globals_val).kind == "CALL"
+    assert producer(globals_val).args == ["molt_globals_builtin"]
+    assert producer(locals_val).kind == "CONST_NONE"
+    assert producer(fromlist_val).kind == "TUPLE_NEW"
+    assert [producer(value).args for value in producer(fromlist_val).args] == [
+        ["sibling"]
+    ]
+    assert all(
+        producer(value).kind == "CONST_STR" for value in producer(fromlist_val).args
+    )
+    assert producer(level_val).kind == "CONST"
+    assert producer(level_val).args == [level]
+    imported = next(op for op in load_ops if op.kind == "MODULE_IMPORT_FROM")
+    assert imported.args[0] is transaction.result
+    assert producer(imported.args[1]).kind == "CONST_STR"
+    assert producer(imported.args[1]).args == ["sibling"]
 
 
 def test_import_flow_is_cached_and_state_growth_is_bounded() -> None:
