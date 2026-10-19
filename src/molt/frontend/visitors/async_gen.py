@@ -602,14 +602,12 @@ class AsyncGenVisitorMixin(GeneratorMixinBase):
         item = node.items[0]
         ctx_val = self.visit(item.context_expr)
         if ctx_val is None:
-            self._bridge_fallback(
-                node,
+            raise FrontendRejection(
+                Diagnostic.CONTROL_FLOW,
                 "async with",
-                impact="high",
-                alternative="use contextlib.nullcontext for now",
-                detail="context expression did not lower",
+                "use contextlib.nullcontext for now",
+                "context expression did not lower",
             )
-            return None
 
         aenter_fn = MoltValue(self.next_var(), type_hint="Any")
         self.emit(

@@ -25,7 +25,7 @@ from typing import (
 
 from molt._intrinsic_symbols import INTRINSIC_SIGNATURES
 from molt._wasm_abi_generated import wasm_runtime_callable_arity
-from molt.compat import CompatibilityError, CompatibilityReporter, FallbackPolicy
+from molt.compat import CompatibilityError, CompatibilityReporter
 from molt.frontend.cfg_analysis import CFGGraph, ControlMaps, build_cfg
 from molt.frontend.module_publication import SourceModulePublication
 from molt.type_facts import normalize_type_hint
@@ -1273,7 +1273,6 @@ __all__ = [
     "_CANONICALIZATION_STATE_SIGNATURE_CACHE_KEY",
     "CompatibilityError",
     "CompatibilityReporter",
-    "FallbackPolicy",
     "CFGGraph",
     "ControlMaps",
     "build_cfg",

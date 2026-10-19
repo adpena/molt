@@ -132,7 +132,6 @@ def _worker_payload(path: Path, lease: _ModuleSourceLease) -> dict[str, object]:
         source_lease=lease,
         parse_codec="json",
         type_hint_policy="ignore",
-        fallback_policy="error",
         module_is_namespace=False,
         module_execution_kind="imported",
         type_facts=None,

@@ -62,7 +62,6 @@ from project configuration: `[tool.molt.build] entry-file = "app.py"` or
 |------|-------------|
 | `--codec {msgpack,cbor,json}` | Structured codec for parse calls. |
 | `--type-hints {ignore,trust,check}` | Apply type annotations to guide lowering. |
-| `--fallback {error,bridge}` | Fallback policy for unsupported constructs. |
 | `--type-facts PATH` | Path to type facts JSON from `molt check`. |
 | `--pgo-profile PATH` | Path to PGO profile artifact for optimization hints. |
 | `--pgo-collect` | Instrument the binary to collect PGO counters at runtime. |
@@ -140,7 +139,6 @@ molt factgraph app.py hot_loop --output tmp/facts/hot_loop.json --target llvm
 | `--backend {auto,cranelift,llvm}` | Native backend fact selection; `--target llvm` selects the LLVM backend. |
 | `--profile {dev,release}` | Build profile for frontend/midend optimization. |
 | `--type-hints {ignore,trust,check}` | Apply type annotations to guide lowering and specialization. |
-| `--fallback {error,bridge}` | Fallback policy for unsupported constructs. |
 | `--python-version VERSION` | Target Python semantics: `3.12`, `3.13`, or `3.14`. |
 | `--capabilities SPEC` | Capability profiles/tokens or path to manifest. |
 | `--trusted / --no-trusted` | Select the finite generated maximum built-in capability tier. |

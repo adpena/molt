@@ -848,7 +848,6 @@ classifier_owned_value = [
     "ascii_from_obj",
     "asyncgen_new",
     "bound_method_new",
-    "bridge_unavailable",
     "builtin_func",
     "builtin_type",
     "bytearray_count",

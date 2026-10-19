@@ -4,7 +4,9 @@
 from __future__ import annotations
 
 from enum import Enum
-from typing import Final, Literal, NamedTuple
+from typing import Final, NamedTuple
+
+from molt.compat import CompatibilityTier, Impact
 
 
 class FrontendDiagnostic(str, Enum):
@@ -21,45 +23,45 @@ class FrontendDiagnostic(str, Enum):
 class FrontendDiagnosticMetadata(NamedTuple):
     title: str
     detail: str
-    tier: Literal["native", "guarded", "bridge", "unsupported"]
-    impact: Literal["low", "medium", "high"]
+    tier: CompatibilityTier
+    impact: Impact
 
 
 FRONTEND_DIAGNOSTIC_METADATA: Final = {
     FrontendDiagnostic.CALL_TARGET: FrontendDiagnosticMetadata(
         title="call target cannot be lowered",
         detail="MOLT-FE001: call target cannot be lowered",
-        tier="bridge",
+        tier="unsupported",
         impact="high",
     ),
     FrontendDiagnostic.OPERAND_VALUE: FrontendDiagnosticMetadata(
         title="operand or value cannot be lowered",
         detail="MOLT-FE003: operand or value cannot be lowered",
-        tier="bridge",
+        tier="unsupported",
         impact="high",
     ),
     FrontendDiagnostic.TYPE_FORM: FrontendDiagnosticMetadata(
         title="type form cannot be lowered",
         detail="MOLT-FE004: type form cannot be lowered",
-        tier="bridge",
+        tier="unsupported",
         impact="high",
     ),
     FrontendDiagnostic.SYNTAX_FORM: FrontendDiagnosticMetadata(
         title="syntax form cannot be lowered",
         detail="MOLT-FE005: syntax form cannot be lowered",
-        tier="bridge",
+        tier="unsupported",
         impact="high",
     ),
     FrontendDiagnostic.CONTROL_FLOW: FrontendDiagnosticMetadata(
         title="control-flow form cannot be lowered",
         detail="MOLT-FE006: control-flow form cannot be lowered",
-        tier="bridge",
+        tier="unsupported",
         impact="high",
     ),
     FrontendDiagnostic.IMPORT_RESOLUTION: FrontendDiagnosticMetadata(
         title="imported symbol cannot be resolved for lowering",
         detail="MOLT-FE007: imported symbol cannot be resolved for lowering",
-        tier="bridge",
+        tier="unsupported",
         impact="high",
     ),
     FrontendDiagnostic.INTERNAL_INVARIANT: FrontendDiagnosticMetadata(
@@ -71,7 +73,7 @@ FRONTEND_DIAGNOSTIC_METADATA: Final = {
     FrontendDiagnostic.UNSUPPORTED_FEATURE: FrontendDiagnosticMetadata(
         title="frontend capability is not implemented",
         detail="MOLT-FE009: frontend capability is not implemented",
-        tier="bridge",
+        tier="unsupported",
         impact="high",
     ),
 }

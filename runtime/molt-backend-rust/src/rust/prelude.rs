@@ -570,14 +570,6 @@ impl RustBackend {
                 "}\n\n",
             ));
         }
-        if used("molt_bridge_unavailable(") {
-            self.output.push_str(concat!(
-                "fn molt_bridge_unavailable(message: &MoltValue) -> MoltValue {\n",
-                "    panic!(\"{}\", molt_str(message));\n",
-                "}\n\n",
-            ));
-        }
-
         // print
         if used("molt_print(") {
             self.output.push_str(concat!(

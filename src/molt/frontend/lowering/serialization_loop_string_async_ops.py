@@ -536,14 +536,6 @@ class SerializationLoopStringAsyncOpsMixin(GeneratorMixinBase):
                     "out": op.result.name,
                 }
             )
-        elif op.kind == "BRIDGE_UNAVAILABLE":
-            ctx.json_ops.append(
-                {
-                    "kind": "bridge_unavailable",
-                    "args": [op.args[0].name],
-                    "out": op.result.name,
-                }
-            )
         elif op.kind == "STORE_VAR":
             var_name = op.metadata["var"] if op.metadata else ""
             ctx.json_ops.append(

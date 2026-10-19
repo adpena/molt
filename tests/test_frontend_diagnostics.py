@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import ast
+from collections.abc import Callable
 import json
 from pathlib import Path
 import sys
@@ -11,7 +12,7 @@ import tomllib
 import pytest
 
 from molt.compat import CompatibilityError, CompatibilityReporter
-from molt.frontend import SimpleTIRGenerator
+from molt.frontend import MoltValue, SimpleTIRGenerator, compile_to_tir
 from molt.frontend.diagnostics import (
     FrontendDiagnostic,
     FrontendRejection,
@@ -68,7 +69,7 @@ def test_a_retired_code_stays_reserved(tmp_path: Path) -> None:
     authority = tmp_path / "frontend_diagnostics.toml"
     active = (
         'schema_version = 1\n[[diagnostic]]\nname = "first"\ncode = "MOLT-FE001"\n'
-        'title = "t"\ntier = "bridge"\nimpact = "high"\n'
+        'title = "t"\ntier = "unsupported"\nimpact = "high"\n'
     )
     authority.write_text(
         active + '[[retired]]\nname = "old"\ncode = "MOLT-FE001"\nreason = "r"\n',
@@ -123,7 +124,7 @@ def test_consumer_gate_rejects_stringly_rejection(tmp_path: Path) -> None:
 
 def test_rejection_conversion_has_stable_code_and_location() -> None:
     node = ast.parse("value = getattr(obj, name)\n").body[0]
-    reporter = CompatibilityReporter("error", "probe.py")
+    reporter = CompatibilityReporter("probe.py")
     rejection = FrontendRejection(
         FrontendDiagnostic.OPERAND_VALUE, "getattr expects object and name"
     )
@@ -132,6 +133,144 @@ def test_rejection_conversion_has_stable_code_and_location() -> None:
     message = str(raised.value)
     assert "MOLT-FE003: operand or value cannot be lowered" in message
     assert "location: probe.py:1:0" in message
+    assert raised.value.issue.tier == "unsupported"
+
+
+def test_diagnostic_catalog_rejects_the_retired_bridge_tier(tmp_path: Path) -> None:
+    authority = tmp_path / "frontend_diagnostics.toml"
+    authority.write_text(
+        'schema_version = 1\n[[diagnostic]]\nname = "first"\ncode = "MOLT-FE001"\n'
+        'title = "t"\ntier = "bridge"\nimpact = "high"\n',
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="invalid tier 'bridge'"):
+        GEN.load_authority(authority)
+
+
+@pytest.mark.parametrize("factory", [SimpleTIRGenerator, compile_to_tir])
+def test_frontend_api_rejects_the_retired_fallback_policy(
+    factory: Callable[..., object],
+) -> None:
+    arguments = ("pass\n",) if factory is compile_to_tir else ()
+    with pytest.raises(TypeError, match="fallback_policy"):
+        factory(*arguments, fallback_policy="bridge")
+
+
+@pytest.mark.parametrize(
+    "source,feature,code,line,column,alternative,detail",
+    [
+        (
+            "with unlowered:\n    pass\n",
+            "with",
+            "MOLT-FE006",
+            1,
+            0,
+            "use contextlib.nullcontext for now",
+            "context expression did not lower",
+        ),
+        (
+            "async def f():\n    async with unlowered:\n        pass\n",
+            "async with",
+            "MOLT-FE006",
+            2,
+            4,
+            "use contextlib.nullcontext for now",
+            "context expression did not lower",
+        ),
+        (
+            "try:\n    pass\nexcept unlowered:\n    pass\n",
+            "except (unsupported handler)",
+            "MOLT-FE006",
+            3,
+            0,
+            "use a lowered exception name or tuple",
+            "handler expression could not be lowered",
+        ),
+        (
+            "try:\n    pass\nexcept* unlowered:\n    pass\n",
+            "except* (unsupported handler)",
+            "MOLT-FE006",
+            3,
+            0,
+            "use a lowered exception name or tuple",
+            "handler expression could not be lowered",
+        ),
+        (
+            "raise unlowered\n",
+            "raise (unsupported expression)",
+            "MOLT-FE003",
+            1,
+            0,
+            "raise a named exception with a string literal",
+            "unsupported raise expression form",
+        ),
+        (
+            "assert enabled, unlowered\n",
+            "assert message expression (unsupported form)",
+            "MOLT-FE003",
+            1,
+            0,
+            "assert with supported message expression",
+            "unsupported assert message expression",
+        ),
+        (
+            "ValueError(unlowered)\n",
+            "ValueError with unsupported arg expression",
+            "MOLT-FE003",
+            1,
+            0,
+            "ValueError with simple literals",
+            "argument expression could not be lowered",
+        ),
+        (
+            "ExceptionGroup(unlowered, [])\n",
+            "ExceptionGroup with unsupported arg expression",
+            "MOLT-FE003",
+            1,
+            0,
+            "ExceptionGroup with simple literals",
+            "argument expression could not be lowered",
+        ),
+    ],
+)
+def test_missing_expression_lowering_refuses_without_an_executable_placeholder(
+    source: str,
+    feature: str,
+    code: str,
+    line: int,
+    column: int,
+    alternative: str,
+    detail: str,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    # These are valid CPython source forms. Inject the missing lowering at its
+    # actual expression boundary; successful artifact generation would be a bug,
+    # even if executing a fatal placeholder could eventually report a failure.
+    compile(source, "probe.py", "exec")
+    generator = SimpleTIRGenerator(source_path="probe.py")
+    original = generator.visit_Name
+
+    def lower_name(node: ast.Name) -> MoltValue | None:
+        return None if node.id == "unlowered" else original(node)
+
+    monkeypatch.setattr(generator, "visit_Name", lower_name)
+    with pytest.raises(CompatibilityError) as raised:
+        generator.visit(ast.parse(source))
+    issue = raised.value.issue
+    assert issue.feature == feature
+    assert issue.diagnostic_code == code
+    assert issue.location == f"probe.py:{line}:{column}"
+    assert issue.alternative == alternative
+    assert issue.detail is not None and issue.detail.endswith("; " + detail)
+    assert issue.tier == "unsupported"
+    assert issue.impact == "high"
+    assert capsys.readouterr().err == ""
+    assert not any(
+        op.kind == "BRIDGE_UNAVAILABLE"
+        for function in generator.funcs_map.values()
+        for op in function["ops"]
+    )
 
 
 def test_real_frontend_rejection_is_deterministic() -> None:
@@ -205,7 +344,6 @@ def test_native_and_wasm_cli_share_the_frontend_diagnostic(
     # The build's project is the working directory, which gets dist/; keep it
     # out of the checkout.
     monkeypatch.chdir(tmp_path)
-    monkeypatch.setenv("MOLT_COMPAT_WARNINGS", "0")
     monkeypatch.setenv("PYTHONHASHSEED", "0")
     # Cache activation has separate stderr diagnostics; this fixture stops at
     # the structured frontend error before backend compilation.

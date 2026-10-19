@@ -75,7 +75,6 @@ from molt.frontend._types import (
     _CANONICALIZATION_STATE_SIGNATURE_CACHE_KEY,
     CompatibilityError,
     CompatibilityReporter,
-    FallbackPolicy,
     CFGGraph,
     ControlMaps,
     build_cfg,
@@ -192,7 +191,6 @@ __all__ = [
     "_CANONICALIZATION_STATE_SIGNATURE_CACHE_KEY",
     "CompatibilityError",
     "CompatibilityReporter",
-    "FallbackPolicy",
     "CFGGraph",
     "ControlMaps",
     "build_cfg",
@@ -251,7 +249,6 @@ def compile_to_tir(
     source: str,
     parse_codec: Literal["msgpack", "cbor", "json"] = "msgpack",
     type_hint_policy: Literal["ignore", "trust", "check"] = "ignore",
-    fallback_policy: FallbackPolicy = "error",
 ) -> dict[str, Any]:
     from molt.target_python import require_frontend_python
 
@@ -260,7 +257,6 @@ def compile_to_tir(
     gen = SimpleTIRGenerator(
         parse_codec=parse_codec,
         type_hint_policy=type_hint_policy,
-        fallback_policy=fallback_policy,
     )
     gen.visit(tree)
     return gen.to_json()

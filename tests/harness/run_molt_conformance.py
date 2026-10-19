@@ -144,7 +144,6 @@ def _molt_batch_build_params(
         "target": "native",
         "codec": env.get("MOLT_CODEC", "msgpack"),
         "type_hints": "check",
-        "fallback": "error",
         "output": str(out),
         "json_output": False,
         "deterministic": True,

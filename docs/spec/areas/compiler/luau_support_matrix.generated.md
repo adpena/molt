@@ -13,8 +13,8 @@ Validated structured CFG uses `function_body.rs` and `flow_dispatch.rs` separate
 - `compile-error`: `8`
 - `implemented-exact`: `191`
 - `implemented-target-limited`: `15`
-- `not-admitted`: `188`
-- `total`: `402`
+- `not-admitted`: `187`
+- `total`: `401`
 
 ## Matrix
 
@@ -51,7 +51,6 @@ Validated structured CFG uses `function_body.rs` and `flow_dispatch.rs` separate
 | `br_if` | `compile-error` | Checked Luau emission rejects this arm through the shared unsupported-operation helper. |
 | `branch` | `not-admitted` | Operation is unclassified in the generated target-contract authority. |
 | `branch_false` | `compile-error` | Checked Luau emission rejects this arm through the shared unsupported-operation helper. |
-| `bridge_unavailable` | `not-admitted` | Operation is unclassified in the generated target-contract authority. |
 | `build_dict` | `implemented-exact` | Lowered and outside every generated target-contract limitation. |
 | `build_list` | `implemented-exact` | Lowered and outside every generated target-contract limitation. |
 | `builtin_func` | `implemented-target-limited` | The raw emitter accepts its explicit builtin-name whitelist; otherwise valid unlisted builtin forms reach the shared unsupported-operation helper. |

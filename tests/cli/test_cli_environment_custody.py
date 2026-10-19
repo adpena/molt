@@ -272,6 +272,45 @@ def test_luau_layout_leaves_the_chunk_size_to_the_frontend(
     assert "MOLT_MODULE_CHUNK_OPS" not in os.environ
 
 
+@pytest.mark.parametrize("policy", ["error", "bridge", None, False])
+def test_batch_server_refuses_retired_fallback_before_environment_or_build(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    policy: object,
+) -> None:
+    requests = [
+        {
+            "id": 17,
+            "op": "build",
+            "params": {
+                "fallback": policy,
+                "env_overrides": {"MOLT_RETIRED_POLICY_PROBE": "must-not-apply"},
+            },
+        },
+        {"id": 18, "op": "shutdown"},
+    ]
+    before = dict(os.environ)
+    monkeypatch.setattr(
+        sys, "stdin", io.StringIO("".join(json.dumps(row) + "\n" for row in requests))
+    )
+
+    def forbidden(*_args: object, **_kwargs: object):
+        pytest.fail("retired RPC parameter reached environment or build selection")
+
+    monkeypatch.setattr(quality_commands, "_temporary_env_overrides", forbidden)
+    assert quality_commands._internal_batch_build_server(build_fn=forbidden) == 0
+    responses = [json.loads(line) for line in capsys.readouterr().out.splitlines()]
+    assert responses == [
+        {
+            "id": 17,
+            "ok": False,
+            "error": "build parameter 'fallback' was removed; unsupported constructs fail at compile time",
+        },
+        {"id": 18, "ok": True, "shutdown": True},
+    ]
+    assert dict(os.environ) == before
+
+
 def test_batch_server_selects_each_request_backend_explicitly(
     clean_selection_env: None,
     monkeypatch: pytest.MonkeyPatch,

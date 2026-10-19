@@ -17,9 +17,7 @@ IMPORT_BINDINGS = (
 
 
 def _generate(source: str) -> tuple[SimpleTIRGenerator, list[MoltOp]]:
-    gen = SimpleTIRGenerator(
-        known_modules={"nativepkg", "nativepkg.child"}, fallback_policy="bridge"
-    )
+    gen = SimpleTIRGenerator(known_modules={"nativepkg", "nativepkg.child"})
     gen.visit(ast.parse(source))
     return gen, [op for fn in gen.funcs_map.values() for op in fn["ops"]]
 
@@ -128,9 +126,7 @@ def test_live_module_mutation_retires_deferred_publication_without_replay() -> N
 def test_boxed_module_loop_import_has_one_module_store_and_one_cell_store(
     statement: str,
 ) -> None:
-    gen = SimpleTIRGenerator(
-        known_modules={"nativepkg", "nativepkg.child"}, fallback_policy="bridge"
-    )
+    gen = SimpleTIRGenerator(known_modules={"nativepkg", "nativepkg.child"})
     gen.module_obj = MoltValue("module", type_hint="module")
     # An arbitrary old object may run release callbacks. Keep its boxed owner
     # explicit while checking that overlapping loop/mutation requirements do

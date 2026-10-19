@@ -9,6 +9,7 @@ import json
 from pathlib import Path
 import re
 import tomllib
+from typing import get_args
 
 import sys
 
@@ -20,6 +21,7 @@ from tools.import_file import bind_repository_imports  # noqa: E402
 
 bind_repository_imports(__file__)
 
+from molt.compat import CompatibilityTier, Impact  # noqa: E402
 from tools.generator_io import generator_main  # noqa: E402
 
 
@@ -28,8 +30,8 @@ SOURCE = ROOT / "src/molt/frontend/frontend_diagnostics.toml"
 OUTPUT = ROOT / "src/molt/frontend/frontend_diagnostics_generated.py"
 NAME_RE = re.compile(r"^[a-z][a-z0-9_]*$")
 CODE_RE = re.compile(r"^MOLT-FE([0-9]{3})$")
-VALID_TIERS = frozenset({"native", "guarded", "bridge", "unsupported"})
-VALID_IMPACTS = frozenset({"low", "medium", "high"})
+VALID_TIERS = frozenset(get_args(CompatibilityTier))
+VALID_IMPACTS = frozenset(get_args(Impact))
 
 
 @dataclass(frozen=True, slots=True)
@@ -146,7 +148,9 @@ def render(
         "from __future__ import annotations",
         "",
         "from enum import Enum",
-        "from typing import Final, Literal, NamedTuple",
+        "from typing import Final, NamedTuple",
+        "",
+        "from molt.compat import CompatibilityTier, Impact",
         "",
         "",
         "class FrontendDiagnostic(str, Enum):",
@@ -162,8 +166,8 @@ def render(
             "class FrontendDiagnosticMetadata(NamedTuple):",
             "    title: str",
             "    detail: str",
-            '    tier: Literal["native", "guarded", "bridge", "unsupported"]',
-            '    impact: Literal["low", "medium", "high"]',
+            "    tier: CompatibilityTier",
+            "    impact: Impact",
             "",
             "",
             "FRONTEND_DIAGNOSTIC_METADATA: Final = {",

@@ -47,14 +47,12 @@ class CallNamedDispatchMixin(GeneratorMixinBase):
         for arg in node.args:
             arg_val = self.visit(arg)
             if arg_val is None:
-                self._bridge_fallback(
-                    node,
+                raise FrontendRejection(
+                    Diagnostic.OPERAND_VALUE,
                     f"{original_attr} with unsupported arg expression",
-                    impact="medium",
-                    alternative=f"{original_attr} with simple arguments",
-                    detail="argument expression could not be lowered",
+                    f"{original_attr} with simple arguments",
+                    "argument expression could not be lowered",
                 )
-                return None
             args.append(arg_val)
         class_val = self.visit(node.func)
         if class_val is None:
@@ -275,14 +273,12 @@ class CallNamedDispatchMixin(GeneratorMixinBase):
                 for arg in node.args:
                     arg_val = self.visit(arg)
                     if arg_val is None:
-                        self._bridge_fallback(
-                            node,
+                        raise FrontendRejection(
+                            Diagnostic.OPERAND_VALUE,
                             f"{func_id} with unsupported arg expression",
-                            impact="medium",
-                            alternative=f"{func_id} with simple literals",
-                            detail="argument expression could not be lowered",
+                            f"{func_id} with simple literals",
+                            "argument expression could not be lowered",
                         )
-                        return None
                     args.append(arg_val)
                 class_val = self._emit_exception_class(func_id)
                 return self._emit_exception_new_from_class(class_val, args)
@@ -303,14 +299,12 @@ class CallNamedDispatchMixin(GeneratorMixinBase):
                     for arg in node.args:
                         arg_val = self.visit(arg)
                         if arg_val is None:
-                            self._bridge_fallback(
-                                node,
+                            raise FrontendRejection(
+                                Diagnostic.OPERAND_VALUE,
                                 f"{func_id} with unsupported arg expression",
-                                impact="medium",
-                                alternative=f"{func_id} with simple literals",
-                                detail="argument expression could not be lowered",
+                                f"{func_id} with simple literals",
+                                "argument expression could not be lowered",
                             )
-                            return None
                         args.append(arg_val)
                     return self._emit_exception_new_from_args(func_id, args)
             if func_id == "abs" and len(node.args) == 1 and not node.keywords:
@@ -1400,36 +1394,6 @@ class CallNamedDispatchMixin(GeneratorMixinBase):
                 "areas/compat/surfaces/stdlib/stdlib_surface_matrix.md)"
             )
             detail = "The module must be admitted by the compilation import graph."
-            if self.fallback_policy == "bridge":
-                self.compat.bridge_unavailable(
-                    node,
-                    f"call to non-allowlisted function '{func_id}'",
-                    impact="high",
-                    alternative=alternative,
-                    detail=detail,
-                )
-                callee = self.visit(node.func)
-                if callee is None:
-                    raise FrontendRejection(
-                        Diagnostic.CALL_TARGET, "Unsupported call target"
-                    )
-                res = MoltValue(self.next_var(), type_hint="Any")
-                if needs_bind:
-                    callargs = self._emit_call_args_builder(node)
-                    self.emit(
-                        MoltOp(
-                            kind="CALL_BIND",
-                            args=[callee, callargs],
-                            result=res,
-                        )
-                    )
-                else:
-                    args = self._emit_call_args(node.args)
-                    self.emit(
-                        MoltOp(kind="CALL_FUNC", args=[callee] + args, result=res)
-                    )
-                return res
-
             raise FrontendRejection(
                 Diagnostic.IMPORT_RESOLUTION,
                 f"call to non-allowlisted function '{func_id}'",

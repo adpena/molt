@@ -23,7 +23,7 @@ from molt.frontend._types import (
     TryScope,
 )
 from molt.frontend.diagnostics import FrontendDiagnostic as Diagnostic
-from molt.frontend.diagnostics import FrontendRejection
+from molt.frontend.diagnostics import FrontendRejection, raise_compatibility_error
 
 
 _VisitorArgs = ParamSpec("_VisitorArgs")
@@ -184,14 +184,12 @@ class ControlFlowStatementVisitorMixin(GeneratorMixinBase):
         item = node.items[0]
         ctx_val = self.visit(item.context_expr)
         if ctx_val is None:
-            self._bridge_fallback(
-                node,
+            raise FrontendRejection(
+                Diagnostic.CONTROL_FLOW,
                 "with",
-                impact="high",
-                alternative="use contextlib.nullcontext for now",
-                detail="context expression did not lower",
+                "use contextlib.nullcontext for now",
+                "context expression did not lower",
             )
-            return None
 
         ctx_cell = self._new_scratch_cell(ctx_val, type_hint=ctx_val.type_hint)
         action = SyncContextExit(ctx_cell)
@@ -405,23 +403,19 @@ class ControlFlowStatementVisitorMixin(GeneratorMixinBase):
 
     def visit_Try(self, node: ast.Try) -> None:
         if not node.handlers and not node.finalbody:
-            self._bridge_fallback(
-                node,
+            raise FrontendRejection(
+                Diagnostic.CONTROL_FLOW,
                 "try without except",
-                impact="high",
-                alternative="add an except handler or a finally block",
-                detail="try without except/finally is not supported yet",
+                "add an except handler or a finally block",
+                "try without except/finally is not supported yet",
             )
-            return None
         if node.orelse and not node.handlers:
-            self._bridge_fallback(
-                node,
+            raise FrontendRejection(
+                Diagnostic.CONTROL_FLOW,
                 "try/finally with else",
-                impact="high",
-                alternative="move the else body into the try",
-                detail="try/else requires an except handler",
+                "move the else body into the try",
+                "try/else requires an except handler",
             )
-            return None
         exact_assigned = self._collect_assigned_names([node])
         provenance_flow = self._begin_module_provenance_flow(
             record_exception_prefixes=True
@@ -802,23 +796,19 @@ class ControlFlowStatementVisitorMixin(GeneratorMixinBase):
 
     def visit_TryStar(self, node: ast.TryStar) -> None:
         if not node.handlers and not node.finalbody:
-            self._bridge_fallback(
-                node,
+            raise FrontendRejection(
+                Diagnostic.CONTROL_FLOW,
                 "try* without except",
-                impact="high",
-                alternative="add an except* handler or a finally block",
-                detail="try* without except*/finally is not supported yet",
+                "add an except* handler or a finally block",
+                "try* without except*/finally is not supported yet",
             )
-            return None
         if node.orelse and not node.handlers:
-            self._bridge_fallback(
-                node,
+            raise FrontendRejection(
+                Diagnostic.CONTROL_FLOW,
                 "try*/finally with else",
-                impact="high",
-                alternative="move the else body into the try*",
-                detail="try*/else requires an except* handler",
+                "move the else body into the try*",
+                "try*/else requires an except* handler",
             )
-            return None
         exact_assigned = self._collect_assigned_names([node])
         provenance_flow = self._begin_module_provenance_flow(
             record_exception_prefixes=True
@@ -954,11 +944,15 @@ class ControlFlowStatementVisitorMixin(GeneratorMixinBase):
             else:
                 class_val = self.visit(handler.type)
             if class_val is None:
-                self._bridge_fallback(
+                raise_compatibility_error(
+                    self.compat,
                     handler,
-                    "except* (unsupported handler)",
-                    alternative="use a lowered exception name or tuple",
-                    detail="handler expression could not be lowered",
+                    FrontendRejection(
+                        Diagnostic.CONTROL_FLOW,
+                        "except* (unsupported handler)",
+                        "use a lowered exception name or tuple",
+                        "handler expression could not be lowered",
+                    ),
                 )
             else:
                 pair = MoltValue(self.next_var(), type_hint="tuple")
@@ -1395,14 +1389,12 @@ class ControlFlowStatementVisitorMixin(GeneratorMixinBase):
                 return none_val
             exc_val = self.visit(expr)
             if exc_val is None:
-                self._bridge_fallback(
-                    node,
+                raise FrontendRejection(
+                    Diagnostic.OPERAND_VALUE,
                     f"{context} (unsupported expression)",
-                    impact="high",
-                    alternative=f"{context} a named exception with a string literal",
-                    detail="unsupported raise expression form",
+                    f"{context} a named exception with a string literal",
+                    "unsupported raise expression form",
                 )
-                return None
             return exc_val
 
         if node.exc is None:
@@ -1487,14 +1479,12 @@ class ControlFlowStatementVisitorMixin(GeneratorMixinBase):
     def visit_Assert(self, node: ast.Assert) -> None:
         test_val = self._emit_condition(node.test)
         if test_val is None:
-            self._bridge_fallback(
-                node,
+            raise FrontendRejection(
+                Diagnostic.OPERAND_VALUE,
                 "assert test expression (unsupported form)",
-                impact="medium",
-                alternative="assert supported expressions",
-                detail="unsupported assert test expression",
+                "assert supported expressions",
+                "unsupported assert test expression",
             )
-            return None
 
         test_false = MoltValue(self.next_var(), type_hint="bool")
         self.emit(MoltOp(kind="NOT", args=[test_val], result=test_false))
@@ -1504,15 +1494,12 @@ class ControlFlowStatementVisitorMixin(GeneratorMixinBase):
         else:
             msg_val = self.visit(node.msg)
             if msg_val is None:
-                self._bridge_fallback(
-                    node,
+                raise FrontendRejection(
+                    Diagnostic.OPERAND_VALUE,
                     "assert message expression (unsupported form)",
-                    impact="low",
-                    alternative="assert with supported message expression",
-                    detail="unsupported assert message expression",
+                    "assert with supported message expression",
+                    "unsupported assert message expression",
                 )
-                self.emit(MoltOp(kind="END_IF", args=[], result=MoltValue("none")))
-                return None
             exc_val = self._emit_exception_new_from_args("AssertionError", [msg_val])
         self._emit_raise(exc_val)
         self.emit(MoltOp(kind="END_IF", args=[], result=MoltValue("none")))

@@ -1239,10 +1239,6 @@ return_contract = "raw_bits"
 type = 5
 
 [[import]]
-name = "bridge_unavailable"
-type = 2
-
-[[import]]
 name = "capabilities_has"
 type = 2
 runtime_name = "molt_capabilities_has"
@@ -5940,10 +5936,6 @@ variant = "ModuleNew"
 import_name = "module_new"
 
 [[lir_runtime_call]]
-variant = "BridgeUnavailable"
-import_name = "bridge_unavailable"
-
-[[lir_runtime_call]]
 variant = "ContextEnter"
 import_name = "context_enter"
 
@@ -6245,13 +6237,6 @@ import_name = "module_del_global_if_present"
 args = ["local:0", "local:1"]
 lir_variant = "ModuleDelGlobalIfPresent"
 lir_operand_count = 2
-
-[[op_loop_runtime_call]]
-kind = "bridge_unavailable"
-import_name = "bridge_unavailable"
-args = ["local:0"]
-lir_variant = "BridgeUnavailable"
-lir_operand_count = 1
 
 [[op_loop_runtime_call]]
 kind = "context_enter"

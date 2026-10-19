@@ -159,13 +159,6 @@ fn preserved_copy_runtime_service_imports_stay_lir_fast_runtime_calls() {
             true,
             "module_import_star",
         ),
-        (
-            "bridge_unavailable",
-            "bridge_unavailable",
-            1,
-            true,
-            "bridge_unavailable",
-        ),
         ("context_enter", "context_enter", 1, true, "context_enter"),
         ("context_exit", "context_exit", 2, true, "context_exit"),
     ];

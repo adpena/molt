@@ -434,7 +434,7 @@ def test_rust_backend_lowering_gap_probe_counts_unsupported_op_groups(
     (rust / "op_emitter.rs").write_text(
         '            "branch"\n'
         '            | "block_on"\n'
-        '            | "bridge_unavailable" => {\n'
+        '            | "fixture_unimplemented_op" => {\n'
         "                self.emit_unsupported_op(\n"
         "                    op,\n"
         '                    format!("semantic op `{}` has no Rust backend lowering", op.kind),\n'
@@ -453,7 +453,7 @@ def test_rust_backend_lowering_gap_probe_counts_unsupported_op_groups(
     assert findings[0].location == (
         "runtime/molt-backend-rust/src/rust/op_emitter.rs:4"
     )
-    assert findings[0].detail == "L4:branch, block_on, bridge_unavailable"
+    assert findings[0].detail == "L4:branch, block_on, fixture_unimplemented_op"
     assert findings[1].detail == "L10:catch-all Rust backend op"
 
 

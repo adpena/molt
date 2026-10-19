@@ -329,7 +329,6 @@ def test_policy_file_does_not_redeclare_fixed_coordinate_authorities(
     policy_path.write_text(document, encoding="utf-8")
 
     loaded = authority.load_verified_subset_policy(policy_path)
-    assert loaded.fallback_policy == "error"
     assert loaded.abi == "cpython-language"
     assert loaded.concurrency == "gil"
     assert loaded.backends == ("llvm", "native", "wasm")

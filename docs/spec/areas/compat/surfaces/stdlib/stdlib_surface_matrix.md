@@ -19,9 +19,8 @@
 
 ## 0.1 Call and execution policy
 - **Binding and effects:** direct-call specialization requires the current compiler's binding, mutation and effect proofs. Otherwise supported calls retain runtime dispatch; this matrix is not an identity proof or a blanket exemption from observable mutation.
-- **Unsupported operations:** the [compatibility diagnostics contract](../../contracts/compatibility_fallback_contract.md) owns compile-time refusal and unavailable-path diagnostics. `--fallback=bridge` supplies no host interpreter.
+- **Unsupported operations:** the [compatibility diagnostics contract](../../contracts/compatibility_fallback_contract.md) owns compile-time refusal for unavailable implementations. Compiled programs have no fallback interpreter.
 - **Standalone execution:** the [Python execution boundary](../../contracts/cpython_bridge_policy.md) applies to every compiled profile and target.
-- **Warnings control:** `MOLT_COMPAT_WARNINGS=0` suppresses compatibility warnings without changing admission or runtime behavior.
 
 ## 0.2 Submodule Policy
 - **Explicit tracking:** submodules are listed explicitly in this matrix (or noted under the parent) before they are considered importable.

@@ -106,15 +106,6 @@ def _build_entrypoint_parser() -> argparse.ArgumentParser:
         help="Apply type annotations to guide lowering and specialization.",
     )
     build_parser.add_argument(
-        "--fallback",
-        choices=["error", "bridge"],
-        default=None,
-        help=(
-            "Unsupported-construct policy: error at compile time (default), or "
-            "bridge diagnostics with unavailable-path failure; no host Python."
-        ),
-    )
-    build_parser.add_argument(
         "--type-facts",
         help="Path to type facts JSON from `molt check`.",
     )

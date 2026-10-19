@@ -29,7 +29,6 @@ _POLICY_KEYS = frozenset(
         "excluded_verification_scopes",
     }
 )
-_FALLBACK_POLICY = "error"
 _ABI = "cpython-language"
 _CONCURRENCY = "gil"
 _SUPPORTED_BACKENDS = ("llvm", "native", "wasm")
@@ -54,7 +53,6 @@ class VerifiedSubsetPolicy:
     python_versions: tuple[str, ...]
     reference_cpython: tuple[str, ...]
     excluded_verification_scopes: tuple[str, ...]
-    fallback_policy: str
     abi: str
     concurrency: str
     backends: tuple[str, ...]
@@ -240,7 +238,6 @@ def capture_verified_subset_policy(
             for minor in SUPPORTED_TARGET_PYTHON_SHORT_VERSIONS
         ),
         excluded_verification_scopes=excluded_verification_scopes,
-        fallback_policy=_FALLBACK_POLICY,
         abi=_ABI,
         concurrency=_CONCURRENCY,
         backends=_SUPPORTED_BACKENDS,

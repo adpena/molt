@@ -514,7 +514,7 @@ fn test_compile_checked_rejects_unavailable_lexical_cell_transport() {
 }
 
 #[test]
-fn test_compile_checked_lowers_bridge_unavailable_to_runtime_error() {
+fn test_compile_checked_rejects_retired_bridge_marker() {
     let ir = SimpleIR {
         functions: vec![FunctionIR {
             return_abi: molt_ir::FunctionReturnAbi::Void,
@@ -544,18 +544,12 @@ fn test_compile_checked_lowers_bridge_unavailable_to_runtime_error() {
         profile: None,
     };
     let mut backend = LuauBackend::new();
-    let source = backend.compile(&ir);
+    let error = backend
+        .compile_checked(&ir)
+        .expect_err("retired bridge marker must fail before source emission");
     assert!(
-        source.contains("local v0: any = error({__type=\"RuntimeError\""),
-        "bridge_unavailable should be a terminal RuntimeError expression, got:\n{source}"
-    );
-    assert!(
-        source.contains("Molt bridge unavailable: "),
-        "diagnostic should match runtime bridge-unavailable prefix, got:\n{source}"
-    );
-    assert!(
-        !source.contains("[bridge_unavailable]"),
-        "bridge_unavailable must not leave a semantic stub marker, got:\n{source}"
+        error.contains("unregistered op kind `bridge_unavailable`"),
+        "{error}"
     );
 }
 

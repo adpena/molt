@@ -203,14 +203,6 @@ fn rust_backend_lowers_admitted_runtime_value_surface_ops() {
     ascii.args = Some(vec!["word".to_string()]);
     ascii.out = Some("ascii_word".to_string());
 
-    let mut message = op("const_str");
-    message.s_value = Some("feature unavailable".to_string());
-    message.out = Some("message".to_string());
-
-    let mut bridge = op("bridge_unavailable");
-    bridge.args = Some(vec!["message".to_string()]);
-    bridge.out = Some("bridge_result".to_string());
-
     let mut ret = op("ret");
     ret.args = Some(vec!["ascii_word".to_string()]);
 
@@ -219,7 +211,7 @@ fn rust_backend_lowers_admitted_runtime_value_surface_ops() {
             return_abi: molt_ir::FunctionReturnAbi::Value,
             name: "molt_test_runtime_surface".to_string(),
             params: Vec::new(),
-            ops: vec![word, string, repr, ascii, message, bridge, ret],
+            ops: vec![word, string, repr, ascii, ret],
             param_types: None,
             source_file: None,
             is_extern: false,
@@ -238,18 +230,13 @@ fn rust_backend_lowers_admitted_runtime_value_surface_ops() {
     assert!(source.contains("let mut string_word: MoltValue = molt_str_from_obj(&word);"));
     assert!(source.contains("let mut repr_word: MoltValue = molt_repr(&word);"));
     assert!(source.contains("let mut ascii_word: MoltValue = molt_ascii_from_obj(&word);"));
-    assert!(
-        source.contains("let mut bridge_result: MoltValue = molt_bridge_unavailable(&message);")
-    );
     assert!(source.contains("fn molt_str_from_obj(x: &MoltValue) -> MoltValue"));
     assert!(source.contains("fn molt_repr(x: &MoltValue) -> MoltValue"));
     assert!(source.contains("fn molt_ascii_from_obj(x: &MoltValue) -> MoltValue"));
     assert!(source.contains("fn molt_escape_non_ascii(text: &str) -> String"));
-    assert!(source.contains("fn molt_bridge_unavailable(message: &MoltValue) -> MoltValue"));
     assert!(!source.contains("MOLT_STUB: str_from_obj"));
     assert!(!source.contains("MOLT_STUB: repr_from_obj"));
     assert!(!source.contains("MOLT_STUB: ascii_from_obj"));
-    assert!(!source.contains("MOLT_STUB: bridge_unavailable"));
 }
 
 #[test]

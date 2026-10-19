@@ -24,7 +24,6 @@ from molt.cli.env_paths import _base_env
 from molt.cli.models import (
     BuildProfile,
     EmitMode,
-    FallbackPolicy,
     ParseCodec,
     TypeHintPolicy,
 )
@@ -101,6 +100,15 @@ def _internal_batch_build_server(
         if not isinstance(params, dict):
             _emit_response({"id": req_id, "ok": False, "error": "missing build params"})
             continue
+        if "fallback" in params:
+            _emit_response(
+                {
+                    "id": req_id,
+                    "ok": False,
+                    "error": "build parameter 'fallback' was removed; unsupported constructs fail at compile time",
+                }
+            )
+            continue
         env_overrides_raw = params.get("env_overrides", {})
         if not isinstance(env_overrides_raw, dict) or any(
             not isinstance(key, str) or not isinstance(value, str)
@@ -154,9 +162,6 @@ def _internal_batch_build_server(
                         parse_codec=cast(ParseCodec, params.get("codec", "msgpack")),
                         type_hint_policy=cast(
                             TypeHintPolicy, params.get("type_hints", "check")
-                        ),
-                        fallback_policy=cast(
-                            FallbackPolicy, params.get("fallback", "error")
                         ),
                         type_facts_path=params.get("type_facts"),
                         pgo_profile=params.get("pgo_profile"),

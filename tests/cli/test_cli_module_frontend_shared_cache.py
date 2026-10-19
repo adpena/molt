@@ -323,7 +323,6 @@ _LOWERING_CTX = dict(
     known_classes_snapshot={},
     parse_codec="json",
     type_hint_policy="trust",
-    fallback_policy="error",
     type_facts=None,
     enable_phi=True,
     known_modules=("m",),
@@ -338,6 +337,50 @@ _LOWERING_CTX = dict(
     pgo_hot_function_names=(),
     module_dep_closures={"m": frozenset({"m"})},
 )
+
+
+@pytest.mark.parametrize("retired_policy", ["error", "bridge"])
+def test_retired_policy_context_cannot_reuse_a_persisted_lowering(
+    tmp_path: Path, retired_policy: str
+) -> None:
+    path = _write_module(tmp_path, "m", "pass\n")
+    lease = _ModuleSourceLease.path_backed(path)
+    context = MC._module_lowering_context_payload(
+        "m",
+        path,
+        source_lease=lease,
+        logical_source_path=str(path),
+        is_package=False,
+        **_LOWERING_CTX,
+    )
+    assert context is not None and "fallback_policy" not in context
+    current_digest = MC._module_lowering_context_digest(context)
+    retired_digest = MC._module_lowering_context_digest(
+        {**context, "fallback_policy": retired_policy}
+    )
+    assert current_digest is not None and retired_digest is not None
+    assert current_digest != retired_digest
+    poison = {
+        "functions": [],
+        "function_metadata": {},
+        "retired_policy_result": retired_policy,
+    }
+    # Use the CURRENT source-store generation and record schema deliberately;
+    # only the removed semantic context field distinguishes this old record.
+    MC._write_persisted_module_lowering(
+        path, source_lease=lease, context_digest=retired_digest, result=poison
+    )
+    assert (
+        MC._read_persisted_module_lowering(
+            path, source_lease=lease, module_name="m", context_digest=current_digest
+        )
+        is None
+    )
+    retained = MC._read_persisted_module_lowering(
+        path, source_lease=lease, module_name="m", context_digest=retired_digest
+    )
+    assert retained is not None
+    assert retained["retired_policy_result"] == retired_policy
 
 
 def _bump_mtime(path: Path, delta_ns: int = 5_000_000_000) -> None:

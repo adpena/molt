@@ -1821,16 +1821,6 @@ _REGISTRY_JSON = r"""{
       "values": []
     },
     {
-      "audience": "user",
-      "default": "1",
-      "kind": "bool",
-      "name": "MOLT_COMPAT_WARNINGS",
-      "output_neutral": false,
-      "owner": "src/molt/compat.py",
-      "summary": "Controls whether the frontend prints compatibility warnings to stderr; 0, false, no, or off (case-insensitive) silences them, default on.",
-      "values": []
-    },
-    {
       "audience": "developer",
       "default": "",
       "kind": "path",

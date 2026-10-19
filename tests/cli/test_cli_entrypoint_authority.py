@@ -54,6 +54,60 @@ def test_cli_entrypoint_dispatch_and_parser_authorities_are_single_home() -> Non
     assert "ArgumentParser(" not in root_module_source
 
 
+@pytest.mark.parametrize(
+    "command", [["build", "app.py"], ["factgraph", "app.py", "main"]]
+)
+@pytest.mark.parametrize("policy", ["error", "bridge"])
+def test_removed_fallback_option_is_refused_by_the_command_parser(
+    command: list[str], policy: str
+) -> None:
+    parser = entrypoint_parser._build_entrypoint_parser()
+    with pytest.raises(SystemExit) as error:
+        parser.parse_args([*command, "--fallback", policy])
+    assert error.value.code == 2
+
+
+@pytest.mark.parametrize("policy", ["error", "bridge"])
+def test_removed_build_policy_keyword_is_refused_before_build_execution(
+    policy: str,
+) -> None:
+    with pytest.raises(TypeError, match="fallback_policy"):
+        build_command.build(Path("retired-policy.py"), fallback_policy=policy)
+
+
+@pytest.mark.parametrize("config_name", ["molt.toml", "pyproject.toml"])
+@pytest.mark.parametrize("policy", ["error", "bridge"])
+def test_removed_project_fallback_is_refused_before_build_dispatch(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    config_name: str,
+    policy: str,
+) -> None:
+    section = "build" if config_name == "molt.toml" else "tool.molt.build"
+    (tmp_path / config_name).write_text(
+        f'[{section}]\nfallback = "{policy}"\n', encoding="utf-8"
+    )
+    source = tmp_path / "app.py"
+    source.write_text("print('supported source')\n", encoding="utf-8")
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("MOLT_PROJECT_ROOT", str(tmp_path))
+    monkeypatch.setattr(sys, "argv", ["molt", "build", str(source), "--json"])
+
+    def forbidden_build(*_args: object, **_kwargs: object) -> int:
+        pytest.fail("retired configuration reached the build")
+
+    assert entrypoint.main(build_fn=forbidden_build) == 2
+    captured = capsys.readouterr()
+    assert captured.err == ""
+    payload = json.loads(captured.out)
+    assert payload["status"] == "error" and payload["command"] == "build"
+    assert payload["data"]["returncode"] == 2
+    assert payload["errors"] == [
+        "build configuration 'fallback' was removed; unsupported constructs fail at compile time"
+    ]
+
+
 def test_run_options_after_source_are_not_silently_forwarded_to_program() -> None:
     parser = entrypoint_parser._build_entrypoint_parser()
 

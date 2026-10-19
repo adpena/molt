@@ -114,7 +114,6 @@ def _dispatch_entrypoint_command(
         target = _configured_build_target(args.target, build_cfg)
         codec = args.codec or build_cfg.get("codec") or "msgpack"
         type_hints = args.type_hints or build_cfg.get("type_hints") or "check"
-        fallback = args.fallback or build_cfg.get("fallback") or "error"
         output = args.output or build_cfg.get("output")
         out_dir = args.out_dir or build_cfg.get("out_dir") or build_cfg.get("out-dir")
         sysroot = (
@@ -349,7 +348,6 @@ def _dispatch_entrypoint_command(
             target,
             codec,
             type_hints,
-            fallback,
             type_facts,
             pgo_profile,
             runtime_feedback,

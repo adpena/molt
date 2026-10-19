@@ -72,7 +72,7 @@ the separate [packaging acceptance contract](../../packaging/PACKAGING.md).
   `borrow`, `dec_ref`, `release`, `box`, `unbox`, `cast`, `widen`,
   `identity_alias`, `binding_alias`), plus runtime probes and side-effecting
   helper shims (`env_get`, `exception_pending`, `function_defaults_version`,
-  `print`, `warn_stderr`, `print_newline`, `block_on`, `bridge_unavailable`),
+  `print`, `warn_stderr`, `print_newline`, `block_on`),
   and constant/literal materialization (`const`, `const_bigint`, `const_bool`,
   `const_none`, `const_not_implemented`, `const_ellipsis`, `const_float`,
   `const_str`, `const_bytes`) including loop-entry constant

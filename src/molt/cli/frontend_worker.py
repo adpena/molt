@@ -19,7 +19,6 @@ from molt.type_facts import TypeFacts
 
 from molt.cli.models import (
     BuildProfile,
-    FallbackPolicy,
     ModuleExecutionKind,
     ParseCodec,
     TypeHintPolicy,
@@ -103,7 +102,6 @@ def _frontend_lower_module_worker(payload: dict[str, Any]) -> dict[str, Any]:
         }
     parse_codec = cast(ParseCodec, payload["parse_codec"])
     type_hint_policy = cast(TypeHintPolicy, payload["type_hint_policy"])
-    fallback_policy = cast(FallbackPolicy, payload["fallback_policy"])
     module_is_namespace = bool(payload["module_is_namespace"])
     module_execution_kind = cast(ModuleExecutionKind, payload["module_execution_kind"])
     enable_phi = bool(payload["enable_phi"])
@@ -170,7 +168,6 @@ def _frontend_lower_module_worker(payload: dict[str, Any]) -> dict[str, Any]:
     gen = SimpleTIRGenerator(
         parse_codec=parse_codec,
         type_hint_policy=type_hint_policy,
-        fallback_policy=fallback_policy,
         source_path=logical_source_path,
         module_name=module_name,
         module_is_namespace=module_is_namespace,
@@ -309,7 +306,6 @@ def _module_frontend_generator(
     module_execution_kind: ModuleExecutionKind,
     parse_codec: ParseCodec,
     type_hint_policy: TypeHintPolicy,
-    fallback_policy: FallbackPolicy,
     enable_phi: bool,
     stdlib_allowlist: Collection[str],
     module_chunking: bool,
@@ -323,7 +319,6 @@ def _module_frontend_generator(
     return SimpleTIRGenerator(
         parse_codec=parse_codec,
         type_hint_policy=type_hint_policy,
-        fallback_policy=fallback_policy,
         source_path=logical_source_path,
         type_facts=scoped_inputs.type_facts,
         module_name=module_name,
@@ -439,7 +434,6 @@ def _lower_module_serial_with_context(
             known_classes_snapshot=lowering_context.known_classes,
             parse_codec=lowering_context.parse_codec,
             type_hint_policy=lowering_context.type_hint_policy,
-            fallback_policy=lowering_context.fallback_policy,
             type_facts=lowering_context.type_facts,
             enable_phi=lowering_context.enable_phi,
             known_modules=lowering_context.known_modules,
@@ -495,7 +489,6 @@ def _lower_module_serial_with_context(
         module_execution_kind=module_execution_kind,
         parse_codec=lowering_context.parse_codec,
         type_hint_policy=lowering_context.type_hint_policy,
-        fallback_policy=lowering_context.fallback_policy,
         enable_phi=lowering_context.enable_phi,
         stdlib_allowlist=lowering_context.stdlib_allowlist,
         module_chunking=lowering_context.module_chunking,
@@ -640,7 +633,6 @@ def _prepare_frontend_parallel_batch(
     known_classes_snapshot: dict[ClassId, ClassInfo],
     parse_codec: ParseCodec,
     type_hint_policy: TypeHintPolicy,
-    fallback_policy: FallbackPolicy,
     type_facts: TypeFacts | None,
     enable_phi: bool,
     known_modules: Collection[str],
@@ -723,7 +715,6 @@ def _prepare_frontend_parallel_batch(
                 known_classes_snapshot=known_classes_snapshot,
                 parse_codec=parse_codec,
                 type_hint_policy=type_hint_policy,
-                fallback_policy=fallback_policy,
                 type_facts=type_facts,
                 enable_phi=enable_phi,
                 known_modules=known_modules,
@@ -765,7 +756,6 @@ def _prepare_frontend_parallel_batch(
             known_classes_snapshot=known_classes_snapshot,
             parse_codec=parse_codec,
             type_hint_policy=type_hint_policy,
-            fallback_policy=fallback_policy,
             type_facts=type_facts,
             enable_phi=enable_phi,
             known_modules=known_modules,
@@ -808,7 +798,6 @@ def _prepare_frontend_parallel_batch(
                     source_lease=source_lease,
                     parse_codec=parse_codec,
                     type_hint_policy=type_hint_policy,
-                    fallback_policy=fallback_policy,
                     module_is_namespace=module_is_namespace,
                     module_execution_kind=module_execution_kind,
                     type_facts=type_facts,
