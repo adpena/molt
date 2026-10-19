@@ -633,7 +633,9 @@ def test_unhashed_combined_wasm_reads_bind_every_uplifted_product(
     products = [
         _write(
             final / path.name,
-            "different bytes" if path.suffix == different_output else path.read_text(),
+            "different bytes"
+            if path.suffix == different_output
+            else path.read_text(encoding="utf-8"),
         )
         for path in outputs
     ]
