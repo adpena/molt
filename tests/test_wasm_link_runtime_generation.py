@@ -10,7 +10,10 @@ from molt.cli.runtime_wasm_generation import (
     publish_runtime_wasm_generation,
     read_runtime_wasm_generation,
 )
-from tests.runtime_build_identity_helper import runtime_build_identity
+from tests.runtime_build_identity_helper import (
+    runtime_build_identity,
+    runtime_cargo_environment_inputs,
+)
 from molt.toolchain_identity import stable_regular_file_identity
 from tools import wasm_link
 
@@ -112,6 +115,7 @@ def test_linker_requires_caller_trusted_atomic_pair_identity(tmp_path: Path) -> 
         reloc_identity=reloc_identity,
         source_shared=source_shared,
         source_reloc=source_reloc,
+        cargo_environment=runtime_cargo_environment_inputs(),
     )
     expected = tmp_path / "trusted-build-state" / "expected.json"
     expected.parent.mkdir()
@@ -155,6 +159,7 @@ def test_linker_requires_caller_trusted_atomic_pair_identity(tmp_path: Path) -> 
         reloc_identity=reloc_identity,
         source_shared=source_shared,
         source_reloc=source_reloc,
+        cargo_environment=runtime_cargo_environment_inputs(),
     )
     manifest_text = refreshed.manifest.read_text(encoding="utf-8")
     refreshed.manifest.write_text(
