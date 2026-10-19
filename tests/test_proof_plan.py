@@ -1413,6 +1413,26 @@ def test_installed_product_changes_select_complete_distribution_consumers(change
     ) == ([], [])
 
 
+@pytest.mark.parametrize(
+    "changed",
+    ["src/molt/backend_executable_names.py", "src/molt/host_tool_products.py"],
+)
+def test_host_tool_identity_changes_select_measurement_consumers(changed) -> None:
+    from tools import molt_dev
+
+    config = molt_dev.GateConfig.load(PLAN.path)
+    rule = next(r for r in config.rules if r.name == "performance-measurement")
+    gates, matched = replace(config, rules=[rule], always=[]).select([changed])
+    assert [r.name for r in matched] == [rule.name]
+    assert len(gates) == 1
+    command = gates[0].command
+    argv = shlex.split(command) if isinstance(command, str) else command
+    assert {
+        "tests/tools/test_perf_scoreboard.py",
+        "tests/tools/test_perf_methodology.py",
+    } <= set(argv)
+
+
 def test_docs_architecture_local_gate_uses_project_python() -> None:
     from tools import molt_dev
 

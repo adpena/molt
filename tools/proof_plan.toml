@@ -5245,6 +5245,7 @@ description = "Typed sample transport, deployment selection and complete benchma
 globs = [
   "tools/bench.py", "tools/bench_audit.py", "tools/bench_reporting.py",
   "tools/safe_run.py", "tools/cold_start_decompose.py", "tools/perf_scoreboard*.py",
+  "src/molt/backend_executable_names.py", "src/molt/host_tool_products.py",
   "config/perf_methodology.toml", "tests/test_bench_tool.py", "tests/test_bench_audit.py",
   "src/molt/node_runtime.py", "tests/test_node_runtime.py",
   "tools/perf_schema.py", "tools/perf_history.py", "tools/perf_board.py", "tools/perf_authority.py",

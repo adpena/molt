@@ -10859,6 +10859,8 @@
           "tools/safe_run.py",
           "tools/cold_start_decompose.py",
           "tools/perf_scoreboard*.py",
+          "src/molt/backend_executable_names.py",
+          "src/molt/host_tool_products.py",
           "config/perf_methodology.toml",
           "tests/test_bench_tool.py",
           "tests/test_bench_audit.py",
