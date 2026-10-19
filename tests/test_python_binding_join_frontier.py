@@ -806,6 +806,75 @@ def test_history_summary_refreshes_domain_dependent_events_and_initial_projectio
     ).properties(2)
 
 
+@pytest.mark.parametrize("admit_before_summary", [False, True])
+@pytest.mark.parametrize("shape", ["chain", "joined", "decreasing", "initial-taint"])
+@pytest.mark.parametrize("slot", [1, 31, 32, 129])
+def test_absent_history_binding_matches_every_suffix_state(
+    admit_before_summary: bool, shape: str, slot: int
+) -> None:
+    pool = flow._StatePool()
+    stored = pool.set_binding(0, 0, INERT, 1)
+    exposed = pool.taint_exposed_bindings(stored)
+    later = pool.invalidate_members(exposed, 1)
+    joined = pool.join(exposed, later)
+    histories = {
+        "chain": [stored, exposed, later],
+        "joined": [stored, joined, pool.invalidate_members(joined, 2)],
+        "decreasing": [exposed, stored, later, stored],
+        "initial-taint": [exposed, later],
+    }
+    history = histories[shape]
+    if admit_before_summary:
+        pool.set_taint_domain(1 << slot)
+    summary = flow._HistorySummary.build(pool, history)
+    if not admit_before_summary:
+        # Query before exposure too, so a cached initial projection cannot hide
+        # a later admission. No retained state has storage for this slot.
+        for start in range(len(history)):
+            assert summary.binding(pool, start, slot) == UNBOUND_IDENTITY
+        pool.set_taint_domain(1 << slot)
+    for start in range(len(history)):
+        expected = 0
+        for state in history[start:]:
+            expected |= pool.binding(state, slot)
+        assert summary.binding(pool, start, slot) == expected
+    if shape == "chain":
+        # Exposure happened before the last start position, but remains live.
+        assert summary.binding(pool, 2, slot) == UNBOUND_IDENTITY | OTHER_IDENTITY
+    if shape == "decreasing":
+        assert summary.binding(pool, 3, slot) == UNBOUND_IDENTITY
+
+
+def test_unrelated_activation_slots_do_not_replay_completed_history(
+    monkeypatch,
+) -> None:
+    pool = flow._StatePool()
+    stored = pool.set_binding(0, 0, INERT, 1)
+    exposed = pool.taint_exposed_bindings(stored)
+    history = [stored, exposed, pool.invalidate_members(exposed, 1)]
+    summary = flow._HistorySummary.build(pool, history)
+
+    def forbidden_replay(*_args):
+        raise AssertionError(
+            "unrelated new activation slots replayed completed history"
+        )
+
+    domain = 0
+    with monkeypatch.context() as patch:
+        patch.setattr(pool, "transition_binding_events", forbidden_replay)
+        for slot in (32, 63, 64, 129, 1024):
+            domain |= 1 << slot
+            pool.set_taint_domain(domain)
+            summary.refresh(pool)
+            assert summary.binding(pool, 2, slot) == UNBOUND_IDENTITY | OTHER_IDENTITY
+            assert summary.result(pool, 2, slot) == UNKNOWN_EXPRESSION_RESULT
+
+    # Appending actual storage must still refresh the completed summary.
+    history.append(pool.set_binding(history[-1], 129, INERT, 2))
+    assert summary.binding(pool, 3, 129) == INERT
+    assert summary.state_count == len(history)
+
+
 @pytest.mark.parametrize("admitted", [(), (1, 33), tuple(range(64))])
 def test_projection_frontier_matches_full_slot_oracle_across_storage_and_epochs(
     admitted: tuple[int, ...],

@@ -16,6 +16,17 @@ requirements; context sharing never relaxes version, platform, or provenance
 gates. Persisted compiler/tooling closure identity includes the complete binding policy,
 analysis schema, and parser version.
 
+Completed deferred histories retain their raw-storage extent. Allocating exposed
+slots in a later activation cannot change an earlier history that never stored
+those slots, so it does not replay that history's transitions or result suffixes.
+Growth of the retained history or exposure within its conservative storage bound
+still refreshes the summary. Binding queries start from the canonical projection
+at their actual history position, then join future events; an earlier exposure
+remains live even when it recorded no write. There is no separate cache of these
+domain-dependent binding projections. The frontier tests compare every suffix
+against public state projections, including absent slots, late exposure and
+nonancestor/decreasing-epoch histories. This is compiler analysis only.
+
 `compiler_analysis/python_source_keys.py` owns source-text digests, typed AST
 digests, source-span keys, and exact-tree digest admission. AST identity streams
 prefix-free v3 framing into SHA-256, with separate sorted member digests only for
