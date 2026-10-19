@@ -10,9 +10,7 @@ fn cache_fixture_job(target: DaemonJobTarget, source: &str) -> DaemonJobRequest 
         function_cache_key: None,
         skip_module_output_if_synced: false,
         skip_function_output_if_synced: false,
-        probe_cache_only: true,
-        ir: None,
-        ir_path: None,
+        ir_source: DaemonIrSource::Probe,
         config_namespace: None,
     }
 }
@@ -24,6 +22,7 @@ fn seed_daemon_cache(cache: &DaemonCache, kind: &str, source: &str, bytes: &[u8]
         "id": "cache-fixture", "output": "unused", "cache_key": source,
         "is_wasm": kind == "wasm",
         "native_output_kind": if kind == "wasm" { None } else { Some(kind) },
+        "probe_cache_only": true,
     });
     let mut job = DaemonJobRequest::from_json_value(&value, "fixture").unwrap();
     let key = job
@@ -72,10 +71,17 @@ fn daemon_non_unicode_stdlib_request_cannot_bypass_admission_on_any_native_trans
                     seed_daemon_cache(&cache, kind, "same", b"cached");
                 }
                 let output = root.join(format!("{kind}-{probe}-{warm}"));
-                let value = serde_json::json!({
+                let mut value = serde_json::json!({
                     "id":"invalid", "is_wasm":false, "native_output_kind":kind,
                     "output":output.to_string_lossy(), "cache_key":"same", "probe_cache_only":probe
                 });
+                if !probe {
+                    value["ir_path"] = root
+                        .join("absent-ir.msgpack")
+                        .to_string_lossy()
+                        .as_ref()
+                        .into();
+                }
                 let result = compile_single_job(
                     DaemonJobRequest::from_json_value(&value, "job").expect("parse job"),
                     &cache,
@@ -155,10 +161,17 @@ fn daemon_native_object_contract_is_checked_before_cached_or_probe_admission() {
                 seed_daemon_cache(&cache, "object", "same", b"cached object");
             }
             let output = root.join(format!("object-{probe}-{warm}.o"));
-            let value = serde_json::json!({
+            let mut value = serde_json::json!({
                 "id": "invalid-object", "is_wasm": false, "native_output_kind": "object",
                 "output": output.to_string_lossy(), "cache_key": "same", "probe_cache_only": probe
             });
+            if !probe {
+                value["ir_path"] = root
+                    .join("absent-ir.msgpack")
+                    .to_string_lossy()
+                    .as_ref()
+                    .into();
+            }
             let job = DaemonJobRequest::from_json_value(&value, "job").expect("parse job");
             let result = compile_single_job(job, &cache);
             assert!(!result.ok && !result.cached && !result.needs_ir && !result.output_written);
@@ -246,13 +259,18 @@ fn assert_compiled_cache_target_isolation(
         request["output"] = original.to_str().unwrap().into();
         request["cache_key"] = if tier == "module" { "same" } else { "" }.into();
         request["function_cache_key"] = if tier == "function" { "same" } else { "" }.into();
-        request["ir"] = serde_json::json!({
-            "functions": [{
-                "return_abi": "void", "name": "molt_main", "params": [],
-                "ops": [{"kind": "ret_void"}]
-            }],
-            "profile": null
-        });
+        let lease = root.join(format!("{tier}-input.msgpack"));
+        request["ir_path"] = write_daemon_ir_fixture(
+            &lease,
+            &serde_json::json!({
+                "functions": [{
+                    "return_abi": "void", "name": "molt_main", "params": [],
+                    "ops": [{"kind": "ret_void"}]
+                }],
+                "profile": null
+            }),
+        )
+        .into();
         let compile = |value: &serde_json::Value| {
             let mut job = DaemonJobRequest::from_json_value(value, "job").expect("parse job");
             job.config_namespace = Some("same-config".to_string());
@@ -266,10 +284,8 @@ fn assert_compiled_cache_target_isolation(
         );
         let expected = std::fs::read(&original).expect("compiled output");
         assert!(!expected.is_empty());
-        let missing_ir = root.join("absent-ir.json");
-        assert!(!missing_ir.exists());
-        request.as_object_mut().unwrap().remove("ir");
-        request["ir_path"] = missing_ir.to_str().unwrap().into();
+        std::fs::remove_file(&lease).expect("retire producer lease");
+        request.as_object_mut().unwrap().remove("ir_path");
         request["probe_cache_only"] = true.into();
         for (index, (field, value)) in alternatives.iter().enumerate() {
             let output = root.join(format!("{tier}-different-{index}"));
@@ -291,7 +307,7 @@ fn assert_compiled_cache_target_isolation(
         let hit = compile(&request);
         assert!(hit.ok && hit.cached && !hit.needs_ir && hit.output_written);
         assert_eq!(std::fs::read(replay).unwrap(), expected);
-        assert!(!missing_ir.exists());
+        assert!(!lease.exists());
         assert_eq!(cache.usage().0, 1, "only the actual producer inserts");
     }
     std::fs::remove_dir_all(root).expect("remove fixture");
@@ -336,11 +352,11 @@ fn daemon_actual_environment_scopes_compiled_module_and_function_reuse() {
     let root = molt_ir::debug_artifacts::prepare_unique_debug_artifact_path("daemon-env-cache")
         .expect("unique fixture path");
     std::fs::create_dir(&root).expect("create fixture");
-    let missing_ir = root.join("absent-ir.json");
     let ir = serde_json::json!({
         "functions": [{"return_abi":"void", "name":"molt_main", "params":[],
             "ops":[{"kind":"ret_void"}]}], "profile":null
     });
+    let lease = write_daemon_ir_fixture(&root.join("input.msgpack"), &ir);
     let memory_minimum = |bytes: &[u8]| {
         let mut minimum = None;
         for payload in Parser::new(0).parse_all(bytes) {
@@ -375,7 +391,7 @@ fn daemon_actual_environment_scopes_compiled_module_and_function_reuse() {
             "env":{"MOLT_WASM_MIN_PAGES":"1024"},
             "jobs":[{"id":"same", "is_wasm":true, "output":original.to_str().unwrap(),
                 "cache_key":if tier == "module" {"same"} else {""},
-                "function_cache_key":if tier == "function" {"same"} else {""}, "ir":ir}]
+                "function_cache_key":if tier == "function" {"same"} else {""}, "ir_path":lease}]
         });
         let built = run(&request);
         assert!(
@@ -384,8 +400,10 @@ fn daemon_actual_environment_scopes_compiled_module_and_function_reuse() {
         );
         let expected = std::fs::read(original).unwrap();
         assert_eq!(memory_minimum(&expected), 1024);
-        request["jobs"][0].as_object_mut().unwrap().remove("ir");
-        request["jobs"][0]["ir_path"] = missing_ir.to_str().unwrap().into();
+        request["jobs"][0]
+            .as_object_mut()
+            .unwrap()
+            .remove("ir_path");
         request["jobs"][0]["probe_cache_only"] = true.into();
 
         let changed_output = root.join(format!("{tier}-changed.wasm"));
@@ -398,12 +416,8 @@ fn daemon_actual_environment_scopes_compiled_module_and_function_reuse() {
         );
         assert!(!changed_output.exists());
         // Compile the changed semantics and inspect its literal binary effect.
-        request["jobs"][0]
-            .as_object_mut()
-            .unwrap()
-            .remove("ir_path");
         request["jobs"][0]["probe_cache_only"] = false.into();
-        request["jobs"][0]["ir"] = ir.clone();
+        request["jobs"][0]["ir_path"] = lease.clone().into();
         let changed = run(&request);
         assert!(
             changed.ok && !changed.cached && changed.output_written,
@@ -414,8 +428,10 @@ fn daemon_actual_environment_scopes_compiled_module_and_function_reuse() {
             2048
         );
 
-        request["jobs"][0].as_object_mut().unwrap().remove("ir");
-        request["jobs"][0]["ir_path"] = missing_ir.to_str().unwrap().into();
+        request["jobs"][0]
+            .as_object_mut()
+            .unwrap()
+            .remove("ir_path");
         request["jobs"][0]["probe_cache_only"] = true.into();
         request["env"] = serde_json::json!({"MOLT_WASM_MIN_PAGES":"1024"});
         for (case, additions) in [
@@ -712,10 +728,6 @@ fn served_target() -> DaemonJobTarget {
 #[test]
 fn daemon_probe_cache_only_returns_needs_ir_on_miss() {
     let _env_guard = TestEnvGuard::clear(&DAEMON_REQUEST_ENV_KEYS);
-    let missing_lease =
-        molt_ir::debug_artifacts::prepare_unique_debug_artifact_path("probe-missing-ir")
-            .expect("unique absent lease");
-    assert!(!missing_lease.exists());
     let cache = DaemonCache::new(None);
     let result = compile_single_job(
         DaemonJobRequest {
@@ -726,9 +738,7 @@ fn daemon_probe_cache_only_returns_needs_ir_on_miss() {
             function_cache_key: Some("function".to_string()),
             skip_module_output_if_synced: false,
             skip_function_output_if_synced: false,
-            probe_cache_only: true,
-            ir: None,
-            ir_path: Some(missing_lease.to_string_lossy().into_owned()),
+            ir_source: DaemonIrSource::Probe,
             config_namespace: None,
         },
         &cache,
@@ -741,7 +751,7 @@ fn daemon_probe_cache_only_returns_needs_ir_on_miss() {
 }
 
 #[test]
-fn daemon_probe_cache_only_hits_without_reading_ir() {
+fn daemon_probes_and_full_cache_hits_do_not_open_ir() {
     let _env_guard = TestEnvGuard::clear(&DAEMON_REQUEST_ENV_KEYS);
     let cache = DaemonCache::new(None);
     let key = cache_fixture_job(served_target(), "module")
@@ -757,7 +767,10 @@ fn daemon_probe_cache_only_hits_without_reading_ir() {
 
     let missing_lease = output.with_extension("missing-ir");
     assert!(!missing_lease.exists());
-    for ir_path in [None, Some(missing_lease.to_string_lossy().into_owned())] {
+    for ir_source in [
+        DaemonIrSource::Probe,
+        DaemonIrSource::Lease(missing_lease.to_string_lossy().into_owned()),
+    ] {
         let result = compile_single_job(
             DaemonJobRequest {
                 id: "job0".to_string(),
@@ -767,9 +780,7 @@ fn daemon_probe_cache_only_hits_without_reading_ir() {
                 function_cache_key: Some("function".to_string()),
                 skip_module_output_if_synced: false,
                 skip_function_output_if_synced: false,
-                probe_cache_only: true,
-                ir: None,
-                ir_path,
+                ir_source,
                 config_namespace: None,
             },
             &cache,
@@ -816,9 +827,7 @@ fn daemon_cache_hit_requires_matching_shared_stdlib_artifact() {
             function_cache_key: Some("function".to_string()),
             skip_module_output_if_synced: false,
             skip_function_output_if_synced: false,
-            probe_cache_only: true,
-            ir: None,
-            ir_path: None,
+            ir_source: DaemonIrSource::Probe,
             config_namespace: None,
         },
         &cache,
@@ -928,7 +937,7 @@ fn concurrent_requests_for_one_artifact_compile_it_once() {
                 "output": output.to_string_lossy(),
                 "cache_key": "module",
                 "function_cache_key": "function",
-                "ir": {
+                "ir_path": write_daemon_ir_fixture(&output.with_extension("msgpack"), &serde_json::json!({
                     "functions": [
                         {"return_abi": "void", "name": "molt_main", "params": [], "ops": [
                             {"kind": "call", "s_value": "helper"}, {"kind": "ret_void"}
@@ -936,7 +945,7 @@ fn concurrent_requests_for_one_artifact_compile_it_once() {
                         {"return_abi": "void", "name": "helper", "params": [], "ops": [{"kind": "ret_void"}]}
                     ],
                     "profile": null
-                }
+                }))
             }]
         })
     };
@@ -983,7 +992,7 @@ fn concurrent_requests_for_one_artifact_compile_it_once() {
 
 #[cfg(feature = "native-backend")]
 #[test]
-fn daemon_json_lease_rejects_suffix_before_output_publication() {
+fn daemon_messagepack_lease_rejects_suffix_before_output_publication() {
     let _env_guard = TestEnvGuard::clear(&DAEMON_REQUEST_ENV_KEYS);
     let nonce = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -992,12 +1001,13 @@ fn daemon_json_lease_rejects_suffix_before_output_publication() {
     let root =
         std::env::temp_dir().join(format!("molt-daemon-frame-{}-{nonce}", std::process::id()));
     std::fs::create_dir(&root).unwrap();
-    let lease = root.join("input.json");
+    let lease = root.join("input.msgpack");
     let output = root.join("output.o");
-    for bytes in [
-        b"{\"functions\":[]}{}".as_slice(),
-        b"{\"functions\":[]}!".as_slice(),
-    ] {
+    // Literal wire bytes independent of the fixture encoder: {"functions": []}.
+    let frame = b"\x81\xa9functions\x90";
+    for suffix in [frame.as_slice(), b"\x00", b"\xc1", b" "] {
+        let mut bytes = frame.to_vec();
+        bytes.extend_from_slice(suffix);
         std::fs::write(&lease, bytes).unwrap();
         let job = DaemonJobRequest::from_json_value(
             &serde_json::json!({
@@ -1010,11 +1020,35 @@ fn daemon_json_lease_rejects_suffix_before_output_publication() {
         let response = compile_single_job(job, &DaemonCache::new(None));
         assert!(!response.ok && !response.cached && !response.output_written);
         let error = response.message.expect("lease error");
-        assert!(
-            error.contains("ir_path") && error.contains("trailing"),
-            "{error}"
-        );
+        assert!(error.contains("trailing"), "{error}");
         assert!(!output.exists());
     }
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[cfg(feature = "native-backend")]
+#[test]
+fn daemon_rejects_retired_json_lease_without_replacing_output() {
+    let _env_guard = TestEnvGuard::clear(&DAEMON_REQUEST_ENV_KEYS);
+    let root = molt_ir::debug_artifacts::prepare_unique_debug_artifact_path("daemon-retired-json")
+        .expect("unique fixture path");
+    std::fs::create_dir(&root).unwrap();
+    let lease = root.join("input.json");
+    let output = root.join("output.o");
+    std::fs::write(&lease, b"{\"functions\":[]}").unwrap();
+    std::fs::write(&output, b"previous output").unwrap();
+    let job = DaemonJobRequest::from_json_value(
+        &serde_json::json!({
+            "id":"retired-json", "is_wasm":false, "output":output.to_str().unwrap(),
+            "cache_key":"", "ir_path":lease.to_str().unwrap(),
+        }),
+        "job",
+    )
+    .unwrap();
+    let response = compile_single_job(job, &DaemonCache::new(None));
+    assert!(!response.ok && !response.cached && !response.output_written);
+    let error = response.message.expect("invalid MessagePack diagnostic");
+    assert!(error.contains("msgpack IR"), "{error}");
+    assert_eq!(std::fs::read(output).unwrap(), b"previous output");
     std::fs::remove_dir_all(root).unwrap();
 }

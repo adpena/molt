@@ -9,6 +9,7 @@ import sys
 from typing import Any
 from molt import file_publication
 from molt.artifact_publication import discard_staged_output
+from molt.backend_protocol import BACKEND_IR_LEASE_FORMAT
 from molt.cli.config_resolution import _select_codegen_backend
 from molt.cli.native_link_plan import NativeArtifactKind
 
@@ -190,7 +191,7 @@ def execute_backend_fact_graph(
         )
         try:
             ir_file_path = ensure_backend_ir_file_path()
-        except OSError as exc:
+        except (OSError, TypeError, ValueError, OverflowError) as exc:
             return fail(
                 f"Backend IR lease write failed: {exc}",
                 json_output,
@@ -198,6 +199,8 @@ def execute_backend_fact_graph(
             )
         cmd.extend(
             [
+                "--ir-format",
+                BACKEND_IR_LEASE_FORMAT,
                 "--ir-file",
                 str(ir_file_path),
                 "--fact-graph-output",

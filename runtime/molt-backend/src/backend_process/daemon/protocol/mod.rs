@@ -4,6 +4,7 @@ mod response;
 
 pub(crate) use framing::{daemon_response_payload, read_daemon_request_bytes};
 pub(crate) use request::{
-    DaemonArtifactCacheKeys, DaemonCacheKey, DaemonJobRequest, DaemonJobTarget, DaemonRequest,
+    DaemonArtifactCacheKeys, DaemonCacheKey, DaemonIrSource, DaemonJobRequest, DaemonJobTarget,
+    DaemonRequest,
 };
 pub(crate) use response::{DaemonHealthResponse, DaemonJobResponse, DaemonResponse};

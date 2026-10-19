@@ -8,7 +8,10 @@ use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 
-const PROTOCOL_VERSION: u32 = 1;
+const PROTOCOL_VERSION: u32 = include!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../src/molt/backend_daemon_protocol_version.txt"
+));
 const PATIENCE: Duration = Duration::from_secs(30);
 
 struct Daemon {
@@ -97,6 +100,16 @@ fn an_open_connection_does_not_block_other_clients() {
     let daemon = Daemon::start("concurrent");
     // One build holds a connection open without finishing its request.
     let _waiting_build = daemon.connect();
+    let rejected = daemon.connect().request(serde_json::json!({
+        "version": PROTOCOL_VERSION - 1, "ping": true,
+    }));
+    assert_eq!(rejected["ok"], false, "{rejected}");
+    assert!(
+        rejected["error"]
+            .as_str()
+            .unwrap()
+            .contains("unsupported protocol version")
+    );
     let response = daemon.connect().ping();
     assert_eq!(response["pong"], true, "{response}");
     assert_eq!(response["health"]["active_jobs"], 0, "{response}");
@@ -133,6 +146,26 @@ fn native_compile_request(
     key: &str,
     env: serde_json::Value,
 ) -> serde_json::Value {
+    let lease = output.with_extension("msgpack");
+    let mut file = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&lease)
+        .expect("create compile IR lease");
+    rmp_serde::encode::write_named(
+        &mut file,
+        &serde_json::json!({
+            "functions": [
+                {"return_abi": "void", "name": "molt_main", "params": [], "ops": [
+                    {"kind": "call", "s_value": "helper"}, {"kind": "ret_void"}
+                ]},
+                {"return_abi": "void", "name": "helper", "params": [], "ops": [{"kind": "ret_void"}]}
+            ],
+            "profile": null
+        }),
+    )
+    .expect("encode compile IR lease");
+
     serde_json::json!({
         "version": PROTOCOL_VERSION,
         "config_digest": "daemon-server-test",
@@ -144,15 +177,7 @@ fn native_compile_request(
             "output": output.to_string_lossy(),
             "cache_key": key,
             "function_cache_key": format!("{key}-functions"),
-            "ir": {
-                "functions": [
-                    {"return_abi": "void", "name": "molt_main", "params": [], "ops": [
-                        {"kind": "call", "s_value": "helper"}, {"kind": "ret_void"}
-                    ]},
-                    {"return_abi": "void", "name": "helper", "params": [], "ops": [{"kind": "ret_void"}]}
-                ],
-                "profile": null
-            }
+            "ir_path": lease.to_string_lossy()
         }]
     })
 }

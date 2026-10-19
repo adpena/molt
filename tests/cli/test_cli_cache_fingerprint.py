@@ -388,7 +388,15 @@ def _write_backend_identity_fixture(
     catalog = root / "src" / "molt" / "backend_environment.json"
     catalog.parent.mkdir(parents=True, exist_ok=True)
     catalog.write_text('{"schema": 1, "diagnostic": []}\n', encoding="utf-8")
-    return {"backend": backend, "native": native, "wasm": wasm, "catalog": catalog}
+    protocol = catalog.parent / "backend_daemon_protocol_version.txt"
+    protocol.write_text("2\n", encoding="ascii")
+    return {
+        "backend": backend,
+        "native": native,
+        "wasm": wasm,
+        "catalog": catalog,
+        "protocol": protocol,
+    }
 
 
 def _backend_source_fingerprint(root: Path, features: tuple[str, ...]) -> str:
@@ -432,8 +440,9 @@ def test_backend_source_fingerprint_tracks_selected_leaf_sources(
 
 
 @pytest.mark.parametrize("feature", ["native-backend", "wasm-backend"])
-def test_backend_fingerprints_track_embedded_environment_catalog(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, feature: str
+@pytest.mark.parametrize("authority", ["catalog", "protocol"])
+def test_backend_fingerprints_track_embedded_authorities(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, feature: str, authority: str
 ) -> None:
     stub_compiler_admission(monkeypatch)
     from molt.cli import backend_binary
@@ -456,8 +465,11 @@ def test_backend_fingerprints_track_embedded_environment_catalog(
     source_before = _backend_source_fingerprint(root, (feature,))
     binary_before = binary_fingerprint()
     assert binary_before is not None
-    sources["catalog"].write_text(
-        '{"schema": 1, "diagnostic": ["MOLT_DUMP_IR"]}\n', encoding="utf-8"
+    sources[authority].write_text(
+        '{"schema": 1, "diagnostic": ["MOLT_DUMP_IR"]}\n'
+        if authority == "catalog"
+        else "3\n",
+        encoding="utf-8",
     )
     assert _backend_source_fingerprint(root, (feature,)) != source_before
     binary_after = binary_fingerprint(binary_before)
@@ -573,7 +585,13 @@ def test_cache_tooling_fingerprint_changes_when_tooling_source_changes_in_proces
 
 
 @pytest.mark.parametrize(
-    "filename", ["backend_environment.py", "backend_environment.json"]
+    "filename",
+    [
+        "backend_environment.py",
+        "backend_environment.json",
+        "backend_protocol.py",
+        "backend_daemon_protocol_version.txt",
+    ],
 )
 def test_backend_environment_tooling_changes_preserve_frontend_semantic_scope(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path, filename: str
@@ -1307,6 +1325,7 @@ def test_huge_hex_source_and_folded_literals_have_identical_binary_backend_and_c
     import io
     import sys
     from molt.frontend import SimpleTIRGenerator
+    from molt.cli.backend_ir_transport import write_backend_ir
     from molt.opcode_literal_payloads import integer_literal_value
 
     huge_hex = "0x1" + "0" * 5000
@@ -1344,13 +1363,11 @@ def test_huge_hex_source_and_folded_literals_have_identical_binary_backend_and_c
             CACHE_KEYS._write_backend_ir_text(streamed, ir)
             assert streamed.getvalue().encode() == payload
             assert json.loads(payload) == ir
-            transport, data = CACHE_KEYS._backend_ir_format_and_bytes(ir)
-            if transport == "msgpack":
-                import msgpack
+            binary = io.BytesIO()
+            write_backend_ir(binary, ir)
+            import msgpack
 
-                assert msgpack.unpackb(data) == ir
-            else:
-                assert data == payload
+            assert msgpack.unpackb(binary.getvalue()) == ir
             outputs.append((payload, CACHE_KEYS._cache_payload_digest(ir)))
         assert outputs[0] == outputs[1]
         changed = dict(ir, constants={"changed": expected + 7})

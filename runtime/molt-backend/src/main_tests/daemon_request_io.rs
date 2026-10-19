@@ -2,14 +2,16 @@ use super::*;
 
 #[test]
 fn read_daemon_request_bytes_stops_at_protocol_newline() {
-    let mut cursor = Cursor::new(b"{\"version\":1}\ntrailing".to_vec());
+    let frame = format!("{{\"version\":{BACKEND_DAEMON_PROTOCOL_VERSION}}}\n");
+    let mut cursor = Cursor::new(format!("{frame}trailing").into_bytes());
     let bytes = read_daemon_request_bytes(&mut cursor, 1024).expect("request bytes");
-    assert_eq!(bytes, b"{\"version\":1}\n");
+    assert_eq!(bytes, frame.as_bytes());
 }
 
 #[test]
 fn read_daemon_request_bytes_rejects_oversized_request() {
-    let mut cursor = Cursor::new(b"{\"version\":1}\n".to_vec());
+    let mut cursor =
+        Cursor::new(format!("{{\"version\":{BACKEND_DAEMON_PROTOCOL_VERSION}}}\n").into_bytes());
     let err = read_daemon_request_bytes(&mut cursor, 4).expect_err("oversized request");
     assert_eq!(err.kind(), io::ErrorKind::InvalidData);
     assert!(
@@ -21,21 +23,15 @@ fn read_daemon_request_bytes_rejects_oversized_request() {
 #[cfg(feature = "native-backend")]
 #[test]
 fn daemon_request_parse_applies_boolean_defaults() {
-    let request = DaemonRequest::from_json_bytes(
-        br#"{
-            "version": 1,
-            "jobs": [
-                {
-                    "id": "job0",
-                    "is_wasm": false,
-                    "output": "/tmp/out.o",
-                    "cache_key": "module"
-                }
-            ]
-        }"#,
-    )
-    .expect("request parse");
-
+    let frame = serde_json::to_vec(&serde_json::json!({
+        "version": BACKEND_DAEMON_PROTOCOL_VERSION,
+        "jobs": [{
+            "id": "job0", "is_wasm": false, "output": "/tmp/out.o",
+            "cache_key": "module", "ir_path": "/tmp/molt-ir.msgpack",
+        }],
+    }))
+    .unwrap();
+    let request = DaemonRequest::from_json_bytes(&frame).expect("request parse");
     let job = request.jobs.expect("job list").pop().expect("job");
     assert_eq!(
         job.target,
@@ -43,80 +39,40 @@ fn daemon_request_parse_applies_boolean_defaults() {
     );
     assert!(!job.skip_module_output_if_synced);
     assert!(!job.skip_function_output_if_synced);
-    assert!(!job.probe_cache_only);
-    assert!(job.ir.is_none());
-    assert!(job.ir_path.is_none());
+    assert_eq!(
+        job.ir_source,
+        DaemonIrSource::Lease("/tmp/molt-ir.msgpack".to_owned())
+    );
 }
 
-#[cfg(feature = "native-backend")]
 #[test]
-fn daemon_request_parse_accepts_path_backed_ir_lease() {
-    let request = DaemonRequest::from_json_bytes(
-        br#"{
-            "version": 1,
-            "jobs": [
-                {
-                    "id": "job0",
-                    "is_wasm": false,
-                    "output": "/tmp/out.o",
-                    "cache_key": "module",
-                    "ir_path": "/tmp/molt-ir.json"
-                }
-            ]
-        }"#,
-    )
-    .expect("request parse");
-
-    let job = request.jobs.expect("job list").pop().expect("job");
-    assert!(job.ir.is_none());
-    assert_eq!(job.ir_path.as_deref(), Some("/tmp/molt-ir.json"));
-}
-
-#[cfg(feature = "native-backend")]
-#[test]
-fn daemon_request_parse_rejects_duplicate_ir_authority() {
-    let err = DaemonRequest::from_json_bytes(
-        br#"{
-            "version": 1,
-            "jobs": [
-                {
-                    "id": "job0",
-                    "is_wasm": false,
-                    "output": "/tmp/out.o",
-                    "cache_key": "module",
-                    "ir_path": "/tmp/molt-ir.json",
-                    "ir": {"functions": []}
-                }
-            ]
-        }"#,
-    )
-    .expect_err("duplicate IR sources");
-
-    assert!(err.contains("request.jobs[0] must use exactly one IR custody field: ir or ir_path"));
+fn daemon_request_parse_accepts_a_probe_without_ir_custody() {
+    let frame = serde_json::to_vec(&serde_json::json!({
+        "version": BACKEND_DAEMON_PROTOCOL_VERSION,
+        "jobs": [{
+            "id": "probe", "is_wasm": cfg!(feature = "wasm-backend"),
+            "output": "unused", "cache_key": "module", "probe_cache_only": true,
+        }],
+    }))
+    .unwrap();
+    let request = DaemonRequest::from_json_bytes(&frame).expect("probe request");
+    assert_eq!(request.jobs.unwrap()[0].ir_source, DaemonIrSource::Probe);
 }
 
 #[cfg(feature = "wasm-backend")]
 #[test]
 fn daemon_request_parse_reads_split_runtime_app_table_base() {
-    let request = DaemonRequest::from_json_bytes(
-        br#"{
-            "version": 1,
-            "jobs": [
-                {
-                    "id": "job0",
-                    "is_wasm": true,
-                    "wasm_link": true,
-                    "wasm_data_base": 1048576,
-                    "wasm_table_base": 4096,
-                    "wasm_split_runtime_app_table_base": 8192,
-                    "output": "/tmp/out.wasm",
-                    "cache_key": "module"
-                }
-            ]
-        }"#,
-    )
-    .expect("request parse");
-
+    let frame = serde_json::to_vec(&serde_json::json!({
+        "version": BACKEND_DAEMON_PROTOCOL_VERSION,
+        "jobs": [{
+            "id": "job0", "is_wasm": true, "wasm_link": true,
+            "wasm_data_base": 1048576, "wasm_table_base": 4096,
+            "wasm_split_runtime_app_table_base": 8192, "output": "/tmp/out.wasm",
+            "cache_key": "module", "probe_cache_only": true,
+        }],
+    }))
+    .unwrap();
+    let request = DaemonRequest::from_json_bytes(&frame).expect("request parse");
     let job = request.jobs.expect("job list").pop().expect("job");
     assert_eq!(
         job.target,
@@ -155,16 +111,25 @@ fn daemon_response_payload_omits_false_optional_fields() {
     assert!(!text.contains("\"error\""));
 }
 
-#[cfg(feature = "native-backend")]
 #[test]
-fn daemon_inline_ir_requires_a_complete_request_frame() {
-    let frame = br#"{"version":1,"jobs":[{"id":"frame","is_wasm":false,"output":"unused.o","cache_key":"frame","ir":{"functions":[]}}]}"#;
-    let mut whitespace = frame.to_vec();
+fn daemon_control_requires_a_complete_request_frame() {
+    let frame = serde_json::to_vec(&serde_json::json!({
+        "version": BACKEND_DAEMON_PROTOCOL_VERSION,
+        "jobs": [{
+            "id": "frame", "is_wasm": cfg!(feature = "wasm-backend"),
+            "output": "unused", "cache_key": "frame", "ir_path": "unopened.msgpack",
+        }],
+    }))
+    .unwrap();
+    let mut whitespace = frame.clone();
     whitespace.extend_from_slice(b" \t\r\n");
-    let request = DaemonRequest::from_json_bytes(&whitespace).expect("complete inline request");
-    assert!(request.jobs.unwrap()[0].ir.is_some());
+    let request = DaemonRequest::from_json_bytes(&whitespace).expect("complete control request");
+    assert_eq!(
+        request.jobs.unwrap()[0].ir_source,
+        DaemonIrSource::Lease("unopened.msgpack".to_owned())
+    );
     for suffix in [b"{}".as_slice(), b"!".as_slice(), frame.as_slice()] {
-        let mut bytes = frame.to_vec();
+        let mut bytes = frame.clone();
         bytes.extend_from_slice(suffix);
         let error = DaemonRequest::from_json_bytes(&bytes).expect_err("request suffix");
         assert!(error.contains("trailing"), "{error}");

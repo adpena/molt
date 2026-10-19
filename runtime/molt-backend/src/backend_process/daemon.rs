@@ -14,7 +14,7 @@ pub(crate) use cache::{
 pub(crate) use compile::compile_single_job;
 pub(crate) use protocol::DaemonHealthResponse;
 pub(crate) use protocol::{
-    DaemonJobRequest, DaemonJobResponse, DaemonJobTarget, DaemonRequest, DaemonResponse,
-    daemon_response_payload, read_daemon_request_bytes,
+    DaemonIrSource, DaemonJobRequest, DaemonJobResponse, DaemonJobTarget, DaemonRequest,
+    DaemonResponse, daemon_response_payload, read_daemon_request_bytes,
 };
 pub(crate) use server::run_daemon;

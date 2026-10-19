@@ -95,6 +95,7 @@ def write_compiler_source(root: Path) -> None:
         "Cargo.toml": '[workspace]\nmembers = ["runtime/molt-backend"]\n',
         "runtime/molt-backend/src/main.rs": "fn main() {}\n",
         "src/molt/backend_environment.json": "{}\n",
+        "src/molt/backend_daemon_protocol_version.txt": "2\n",
     }.items():
         path = root / relative
         if not path.exists():

@@ -6,6 +6,7 @@ import io
 import json
 import os
 from pathlib import Path
+from types import SimpleNamespace
 import tarfile
 from typing import cast
 
@@ -38,6 +39,36 @@ def _published_custody(
     entries = cast(list[object], custody["entries"])
     entry = cast(dict[str, object], entries[0])
     return runtime, custody, archive, entry
+
+
+def test_custody_archive_collision_preserves_the_unowned_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runtime = tmp_path / "runtime" / "libmolt_runtime.a"
+    runtime.parent.mkdir()
+    runtime.write_bytes(b"previous runtime")
+    source = tmp_path / "libinput.a"
+    source.write_bytes(b"input")
+    token = "f" * 32
+    stage = runtime.parent / f".molt-native-link-custody-{token}.stage.tar"
+    stage.write_bytes(b"another owner's stage")
+    before = stage.stat()
+    monkeypatch.setattr(
+        custody_authority,
+        "uuid",
+        SimpleNamespace(uuid4=lambda: SimpleNamespace(hex=token)),
+    )
+
+    with pytest.raises(
+        NativeLinkCustodyError, match="cannot create deterministic"
+    ) as caught:
+        publish_native_link_custody(runtime, (source,))
+
+    assert isinstance(caught.value.__cause__, FileExistsError)
+    assert stage.read_bytes() == b"another owner's stage"
+    assert os.path.samestat(before, stage.stat())
+    assert source.read_bytes() == b"input"
+    assert runtime.read_bytes() == b"previous runtime"
 
 
 def test_custody_rejects_retired_schema(tmp_path: Path) -> None:

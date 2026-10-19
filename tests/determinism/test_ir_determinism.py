@@ -32,6 +32,7 @@ FRONTEND_INIT = ROOT / "src" / "molt" / "frontend" / "__init__.py"
 def _production_ir_record(ir: dict) -> dict:
     """Retain frontend determinism and transport the canonical executable view."""
     from molt.cli import cache_keys
+    from molt.cli.backend_ir_transport import write_backend_ir
     from molt.frontend.module_publication import project_frontend_tir_to_executable
 
     frontend_bytes = cache_keys._backend_ir_bytes(ir)
@@ -46,8 +47,9 @@ def _production_ir_record(ir: dict) -> dict:
     cache_keys._write_backend_ir_text(streamed, ir)
     streamed_bytes = streamed.getvalue().encode("utf-8")
     assert streamed_bytes == json_bytes
-    encoding, msgpack_bytes = cache_keys._backend_ir_format_and_bytes(ir)
-    assert encoding == "msgpack", "msgpack proof must not silently use JSON fallback"
+    binary = io.BytesIO()
+    write_backend_ir(binary, ir)
+    msgpack_bytes = binary.getvalue()
     payload = cache_keys._cache_backend_payload_ir(ir)
     payload_bytes = cache_keys._cache_json_payload_bytes(payload)
     digest = cache_keys._cache_payload_digest(payload)

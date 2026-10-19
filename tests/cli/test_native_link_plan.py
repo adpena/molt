@@ -6,6 +6,7 @@ from types import SimpleNamespace
 
 from dataclasses import FrozenInstanceError, replace
 from pathlib import Path
+import os
 import subprocess
 import sys
 import platform
@@ -163,6 +164,51 @@ def test_native_link_sidecars_are_private_for_overlapping_plans(
         assert plain_script.read_bytes() == plain.sidecars[0].content
     assert not plain_script.exists()
     assert not plain.sidecars[0].planned_path.exists()
+
+
+@pytest.mark.parametrize("collision_index", [0, 1])
+def test_native_link_sidecar_collision_reaps_only_acquired_stages(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, collision_index: int
+) -> None:
+    plan = _plan(monkeypatch, tmp_path, host_platform="linux")
+    first = plan.sidecars[0]
+    second = replace(
+        first,
+        planned_path=first.planned_path.with_name("second.map"),
+        command_index=len(plan.command),
+    )
+    plan = replace(
+        plan,
+        command=(*plan.command, f"{second.operand_prefix}{second.planned_path}"),
+        sidecars=(first, second),
+    )
+    stages = {
+        sidecar.planned_path: file_publication.staged_file_path(
+            sidecar.planned_path,
+            purpose="native-link",
+            suffix=sidecar.planned_path.suffix,
+        )
+        for sidecar in plan.sidecars
+    }
+    collision = stages[plan.sidecars[collision_index].planned_path]
+    collision.write_bytes(b"another owner's stage")
+    before = collision.stat()
+    monkeypatch.setattr(
+        file_publication, "staged_file_path", lambda path, **kwargs: stages[path]
+    )
+
+    with pytest.raises(FileExistsError):
+        with native_link_plan.native_link_execution_command(
+            plan,
+            planned_output=tmp_path / "app",
+            execution_output=tmp_path / "candidate",
+        ):
+            pytest.fail("a colliding private sidecar was admitted")
+
+    assert collision.read_bytes() == b"another owner's stage"
+    assert os.path.samestat(before, collision.stat())
+    assert not stages[plan.sidecars[1 - collision_index].planned_path].exists()
+    assert all(not sidecar.planned_path.exists() for sidecar in plan.sidecars)
 
 
 def test_native_link_sidecar_retargets_only_its_typed_operand(

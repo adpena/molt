@@ -215,22 +215,26 @@ def staged_copy_file(
     """Own a verified private copy until its caller publishes or abandons it."""
 
     tmp_path = staged_output_path(dst, purpose="copy")
+    destination = tmp_path.open("xb")
     try:
         if observed is None:
+            destination.close()
             shutil.copyfile(src, tmp_path)
         else:
-            with open_stable_regular_file(
-                src, label="staged copy source", observed=observed
-            ) as opened:
+            with (
+                destination,
+                open_stable_regular_file(
+                    src, label="staged copy source", observed=observed
+                ) as opened,
+            ):
                 digest = hashlib.sha256()
                 size = 0
-                with tmp_path.open("xb") as destination:
-                    for block in iter_stable_regular_file_chunks(
-                        opened, chunk_bytes=1024 * 1024
-                    ):
-                        digest.update(block)
-                        size += len(block)
-                        destination.write(block)
+                for block in iter_stable_regular_file_chunks(
+                    opened, chunk_bytes=1024 * 1024
+                ):
+                    digest.update(block)
+                    size += len(block)
+                    destination.write(block)
                 verify_stable_regular_file_content(
                     observed,
                     sha256=digest.hexdigest(),
@@ -247,7 +251,10 @@ def staged_copy_file(
             tmp_path.chmod(stat.S_IMODE(opened.stat.st_mode))
         yield tmp_path
     finally:
-        discard_staged_output(tmp_path)
+        try:
+            destination.close()
+        finally:
+            discard_staged_output(tmp_path)
 
 
 def fsync_file(path: Path) -> None:

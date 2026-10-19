@@ -12,11 +12,16 @@ pub(crate) struct DaemonJobRequest {
     pub(crate) function_cache_key: Option<String>,
     pub(crate) skip_module_output_if_synced: bool,
     pub(crate) skip_function_output_if_synced: bool,
-    pub(crate) probe_cache_only: bool,
-    pub(crate) ir: Option<molt_backend::BackendIrDocument>,
-    pub(crate) ir_path: Option<String>,
+    pub(crate) ir_source: DaemonIrSource,
     /// The request's backend configuration digest, which scopes its cache keys.
     pub(crate) config_namespace: Option<String>,
+}
+
+/// A cache probe opens no IR. An admitted compile owns exactly one file lease.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum DaemonIrSource {
+    Probe,
+    Lease(String),
 }
 
 /// The artifact a daemon job builds. The daemon serves native and WASM jobs

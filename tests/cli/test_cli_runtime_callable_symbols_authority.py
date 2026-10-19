@@ -604,7 +604,7 @@ def test_callable_dispatch_and_all_cache_tiers_are_operation_owned(
 
     for probe in (True, False):
         payload, error = backend_execution._backend_daemon_compile_request_bytes(
-            ir=None if probe else {"functions": []},
+            ir_path=None if probe else Path("backend-ir.msgpack"),
             backend_output=tmp_path / "out.a",
             artifact_contract=resolve_backend_artifact_contract(
                 target="native", emit_mode="bin"
@@ -617,7 +617,6 @@ def test_callable_dispatch_and_all_cache_tiers_are_operation_owned(
             config_digest=None,
             skip_module_output_if_synced=False,
             skip_function_output_if_synced=False,
-            probe_cache_only=probe,
             native_runtime_codegen_binding=first,
             request_environment=os.environ,
         )
@@ -672,7 +671,7 @@ def test_callable_dispatch_and_all_cache_tiers_are_operation_owned(
         backend_timeout=None,
         molt_root=tmp_path,
         backend_cargo_profile="dev-fast",
-        _ensure_backend_ir_file_path=lambda: tmp_path / "ir.json",
+        _ensure_backend_ir_file_path=lambda: tmp_path / "ir.msgpack",
         cache_hit=False,
         backend_daemon_cached=None,
         backend_daemon_cache_tier=None,
@@ -712,7 +711,7 @@ def test_absent_binding_cannot_inherit_ambient_callable_inputs(tmp_path, monkeyp
     monkeypatch.setenv("MOLT_RUNTIME_CALLABLE_SYMBOLS_SHA256", "b" * 64)
     assert backend_execution._backend_codegen_env_digest(is_wasm=False) == baseline
     payload, error = backend_execution._backend_daemon_compile_request_bytes(
-        ir={"functions": []},
+        ir_path=Path("backend-ir.msgpack"),
         backend_output=tmp_path / "probe.o",
         artifact_contract=resolve_backend_artifact_contract(
             target="native", emit_mode="obj"

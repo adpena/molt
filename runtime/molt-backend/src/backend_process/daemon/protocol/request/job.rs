@@ -6,7 +6,8 @@ use molt_backend::json_boundary::{
 use serde_json::Value as JsonValue;
 
 use super::model::{
-    DaemonArtifactCacheKeys, DaemonCacheContext, DaemonCacheKey, DaemonJobRequest, DaemonJobTarget,
+    DaemonArtifactCacheKeys, DaemonCacheContext, DaemonCacheKey, DaemonIrSource, DaemonJobRequest,
+    DaemonJobTarget,
 };
 use std::sync::Arc;
 
@@ -64,15 +65,18 @@ impl DaemonJobRequest {
         } else {
             native_job_target(obj, native_output_kind.as_deref(), ctx)?
         };
-        let ir_path = optional_string(obj, "ir_path", ctx)?;
-        if obj.get("ir").is_some_and(|value| !value.is_null()) && ir_path.is_some() {
+        if obj.contains_key("ir") {
             return Err(format!(
-                "{ctx} must use exactly one IR custody field: ir or ir_path"
+                "{ctx}.ir is retired; compile jobs require a MessagePack ir_path"
             ));
         }
-        let ir = match obj.get("ir") {
-            None | Some(JsonValue::Null) => None,
-            Some(ir_value) => Some(molt_backend::BackendIrDocument::from_json_value(ir_value)?),
+        let ir_path = optional_string(obj, "ir_path", ctx)?;
+        let probe = optional_bool(obj, "probe_cache_only", ctx)?.unwrap_or(false);
+        let ir_source = match (probe, ir_path) {
+            (true, None) if !obj.contains_key("ir_path") => DaemonIrSource::Probe,
+            (false, Some(path)) if !path.is_empty() => DaemonIrSource::Lease(path),
+            (true, _) => return Err(format!("{ctx} cache probe must not contain ir_path")),
+            (false, _) => return Err(format!("{ctx} compile requires a nonempty ir_path")),
         };
         Ok(Self {
             id: required_string(obj, "id", ctx)?,
@@ -88,9 +92,7 @@ impl DaemonJobRequest {
                 ctx,
             )?
             .unwrap_or(false),
-            probe_cache_only: optional_bool(obj, "probe_cache_only", ctx)?.unwrap_or(false),
-            ir,
-            ir_path,
+            ir_source,
             config_namespace: None,
         })
     }

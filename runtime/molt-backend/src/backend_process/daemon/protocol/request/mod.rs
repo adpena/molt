@@ -4,7 +4,8 @@ mod model;
 mod wire;
 
 pub(crate) use model::{
-    DaemonArtifactCacheKeys, DaemonCacheKey, DaemonJobRequest, DaemonJobTarget, DaemonRequest,
+    DaemonArtifactCacheKeys, DaemonCacheKey, DaemonIrSource, DaemonJobRequest, DaemonJobTarget,
+    DaemonRequest,
 };
 
 #[cfg(test)]

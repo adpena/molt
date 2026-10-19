@@ -23,10 +23,11 @@ use super::run_luau_tir_module_pipeline;
 use super::rust_source_for_ir;
 #[cfg(molt_backend_daemon)]
 use super::{
-    BACKEND_DAEMON_PROTOCOL_VERSION, DaemonCache, DaemonJobRequest, DaemonJobResponse,
-    DaemonJobTarget, DaemonLru, DaemonRequest, DaemonResponse, MIB, compile_single_job,
-    daemon_response_payload, default_daemon_cache_bytes_from_physical_mem_bytes,
-    read_daemon_request_bytes, write_cached_output,
+    BACKEND_DAEMON_PROTOCOL_VERSION, DaemonCache, DaemonIrSource, DaemonJobRequest,
+    DaemonJobResponse, DaemonJobTarget, DaemonLru, DaemonRequest, DaemonResponse, MIB,
+    compile_single_job, daemon_response_payload,
+    default_daemon_cache_bytes_from_physical_mem_bytes, read_daemon_request_bytes,
+    write_cached_output,
 };
 use super::{
     BackendTarget, GIB, RequestBoundedRead, default_backend_max_rss_gb_from_physical_mem_bytes,
@@ -55,6 +56,18 @@ use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 static ENV_TEST_MUTEX: Mutex<()> = Mutex::new(());
+
+/// Publish fixture IR inside the caller's existing artifact root and lifetime.
+#[cfg(molt_backend_daemon)]
+fn write_daemon_ir_fixture(path: &std::path::Path, ir: &impl serde::Serialize) -> String {
+    let mut file = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(path)
+        .expect("create MessagePack IR fixture");
+    rmp_serde::encode::write_named(&mut file, ir).expect("encode MessagePack IR fixture");
+    path.to_str().expect("Unicode fixture path").to_owned()
+}
 
 /// Every variable a daemon request carries, for tests that isolate them.
 #[cfg(molt_backend_daemon)]

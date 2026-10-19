@@ -222,6 +222,48 @@ when a caller repeats its configuration claim. Binding consumed IR bytes to
 caller source claims remains open under V1-01; target/environment isolation
 does not establish authenticated compiler-input or release provenance.
 
+### IR transport and admission
+
+`src/molt/backend_daemon_protocol_version.txt` owns the protocol version. Python
+reads that packaged integer; Rust includes the same expression at compile time.
+The file participates in backend source identity, package data and release
+source inventory. Protocol 2 retires inline IR. Request parsing constructs one
+closed `DaemonIrSource`: `Probe`, with no `ir_path` field, or `Lease`, with a
+nonempty MessagePack path. Even a null retired `ir` or a null probe path is an
+error. The Python request producer likewise takes only a path or probe state.
+This removes combinations of optional documents, paths and probe booleans from
+the admitted job model.
+
+The CLI allocates a lease only after a cache miss. It writes an exclusive file
+using the existing sorted function-body MessagePack codec, with standard map
+and array headers and one encoded top-level array element resident at a time.
+A failed create does not grant cleanup ownership; a failed write removes only
+the newly created lease. The lease lives until its synchronous request ends.
+Daemon and standalone receivers share the existing direct typed reader rather
+than decoding through a JSON value tree. Both require EOF and admit a regular
+file descriptor using the existing nonblocking/device-aware open authority.
+Cache hits never open unused leases. Input file size remains governed by the
+caller and compiler resource guard; the stdin byte ceiling does not bound files.
+Public JSON exports, MLIR's JSON stdin and batch-artifact JSON are distinct
+interfaces and retain their formats.
+
+The framing follows the [MessagePack specification](https://github.com/msgpack/msgpack/blob/master/spec.md),
+including its container bounds and IEEE 754 values. Reusing the encoder follows
+[msgspec's performance guidance](https://github.com/msgspec/msgspec/blob/main/docs/perf-tips.rst).
+Streaming avoids a whole-document byte buffer, while direct typed deserialization
+preserves floating-point bits without a JSON projection. This trades small
+per-element writes for bounded temporary memory; the buffered file owns syscall
+batching. Encoding and file IO remain linear in emitted bytes. There is one
+exclusive file create and one unlink per miss, no added sync, worker, retry or
+guest-binary dependency. The existing msgspec dependency belongs to the compiler.
+
+A bounded production-writer comparison on one 74,829-operation executable IR
+measures encoding CPU medians of 18.0 ms for streamed JSON and 5.9 ms for
+MessagePack, with 5.19/4.01 MB emitted and 7.91/4.39 MB traced temporary Python
+peaks. The source and decoded values are held equal. Filesystem wall timings
+are noisy; this does not establish whole-build speed, decoder performance or
+release acceptance.
+
 ### Retirement
 
 - A `{"retire": true}` request, or `MOLT_BACKEND_DAEMON_IDLE_TIMEOUT` seconds

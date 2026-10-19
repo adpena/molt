@@ -1,6 +1,4 @@
 mod constants;
-#[cfg(molt_backend_daemon)]
-mod daemon_env;
 mod memory;
 
 pub(crate) use constants::DEFAULT_STDIN_REQUEST_LIMIT_BYTES;
@@ -16,7 +14,10 @@ pub(crate) use constants::{
     MIB,
 };
 #[cfg(molt_backend_daemon)]
-pub(crate) use daemon_env::BACKEND_DAEMON_PROTOCOL_VERSION;
+pub(crate) const BACKEND_DAEMON_PROTOCOL_VERSION: u32 = include!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../src/molt/backend_daemon_protocol_version.txt"
+));
 pub(crate) use memory::default_backend_max_rss_gb;
 #[cfg(test)]
 pub(crate) use memory::default_backend_max_rss_gb_from_physical_mem_bytes;

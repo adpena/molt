@@ -48,11 +48,16 @@ whitespace and rejects any second value or other suffix. MessagePack and CBOR
 require immediate EOF after the decoded value, including for buffered stdin.
 Malformed input returns an error before target admission or emission.
 
-This is a decoder boundary, not a new cache receipt or byte digest. Daemon JSON
-file leases use the same complete-document reader; inline documents remain
-inside one completely decoded JSON request frame. A cache-only hit need not
-open an unused lease. Native batch jobs likewise retain their complete JSON
-artifact/request decoding.
+Compiler-owned leases use MessagePack for daemon, one-shot and factgraph
+dispatch. JSON exports and the MLIR stdin boundary retain JSON. Both file
+receivers use the same typed complete-document reader, including regular-file
+admission and EOF validation. File sizes are not bounded by the stdin ceiling.
+Daemon protocol 2 keeps its small control frame in JSON, but admits only a
+cache probe without an IR path or a compile with a nonempty MessagePack
+`ir_path`; inline `ir` is rejected, including null. A cache hit need not open
+an unused lease. Native batch jobs retain their separate complete JSON
+artifact/request decoding. None of these boundaries adds a cache receipt or
+changes the semantic digest domain.
 
 The boundary follows [Serde JSON's whole-reader EOF contract](https://docs.rs/serde_json/1.0.151/serde_json/fn.from_reader.html).
 The binary value decoders require an explicit EOF check on their retained reader;

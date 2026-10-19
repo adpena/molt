@@ -148,8 +148,9 @@ def _fsync_directory(path: Path) -> None:
 def _atomic_json(path: Path, payload: dict[str, object]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
+    handle = temporary.open("x", encoding="utf-8")
     try:
-        with temporary.open("x", encoding="utf-8") as handle:
+        with handle:
             json.dump(payload, handle, sort_keys=True, indent=2)
             handle.write("\n")
             handle.flush()
@@ -336,7 +337,8 @@ def _version_key(version: str) -> tuple[int, int, int]:
     match = re.fullmatch(r"(\d+)\.(\d+)\.(\d+)", version)
     if match is None:
         raise SystemExit(f"Invalid semantic tool version: {version!r}")
-    return tuple(int(part) for part in match.groups())  # type: ignore[return-value]
+    major, minor, patch = match.groups()
+    return int(major), int(minor), int(patch)
 
 
 def _compatible_cmake(minimum: str) -> _BuildTool:
@@ -418,8 +420,10 @@ def _download(
             archive.unlink()
         tmp = archive.with_name(f".{archive.name}.{uuid.uuid4().hex}.partial")
         print(f"[bootstrap-llvm] downloading {url}", flush=True)
+        owned_tmp = False
         try:
             with urllib.request.urlopen(url) as response, tmp.open("xb") as fh:
+                owned_tmp = True
                 shutil.copyfileobj(response, fh)
                 fh.flush()
                 os.fsync(fh.fileno())
@@ -438,7 +442,7 @@ def _download(
             os.replace(tmp, archive)
             _fsync_directory(archive.parent)
         finally:
-            if tmp.exists():
+            if owned_tmp and tmp.exists():
                 tmp.unlink()
 
 

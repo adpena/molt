@@ -8,7 +8,7 @@ import os
 from pathlib import Path, PurePosixPath
 import re
 import tarfile
-from typing import cast
+from typing import BinaryIO, cast
 import uuid
 
 from molt.cli.atomic_io import (
@@ -377,22 +377,19 @@ def _archive_member_is_canonical(
 
 
 def _write_archive(
-    stage: Path,
+    raw: BinaryIO,
     entries: Sequence[NativeLinkCustodyEntry],
     sources: Mapping[str, StableRegularFileIdentity],
 ) -> None:
-    with stage.open("xb") as raw:
-        with tarfile.open(
-            fileobj=raw, mode="w", format=tarfile.USTAR_FORMAT
-        ) as archive:
-            for entry in entries:
-                source = sources[entry.identifier]
-                with open_stable_regular_file(
-                    source.path, label="native custody archive source", observed=source
-                ) as opened:
-                    archive.addfile(_tar_info(entry), opened.stream)
-        raw.flush()
-        os.fsync(raw.fileno())
+    with tarfile.open(fileobj=raw, mode="w", format=tarfile.USTAR_FORMAT) as archive:
+        for entry in entries:
+            source = sources[entry.identifier]
+            with open_stable_regular_file(
+                source.path, label="native custody archive source", observed=source
+            ) as opened:
+                archive.addfile(_tar_info(entry), opened.stream)
+    raw.flush()
+    os.fsync(raw.fileno())
 
 
 def _validate_archive_file(
@@ -533,16 +530,19 @@ def publish_native_link_custody(
 
     runtime_lib.parent.mkdir(parents=True, exist_ok=True)
     stage = runtime_lib.parent / f".{_ARCHIVE_PREFIX}{uuid.uuid4().hex}.stage.tar"
+    owned_stage = False
     try:
         try:
-            _write_archive(
-                stage,
-                entries,
-                {
-                    identifier: source
-                    for identifier, (_entry, source) in described.items()
-                },
-            )
+            with stage.open("xb") as raw:
+                owned_stage = True
+                _write_archive(
+                    raw,
+                    entries,
+                    {
+                        identifier: source
+                        for identifier, (_entry, source) in described.items()
+                    },
+                )
         except (OSError, tarfile.TarError, ValueError) as exc:
             raise NativeLinkCustodyError(
                 f"cannot create deterministic native-link custody archive: {exc}"
@@ -581,8 +581,9 @@ def publish_native_link_custody(
             "entries": [entry.to_dict() for entry in entries],
         }, path_to_id
     finally:
-        with contextlib.suppress(OSError):
-            stage.unlink()
+        if owned_stage:
+            with contextlib.suppress(OSError):
+                stage.unlink()
 
 
 def _validate_extracted_root(

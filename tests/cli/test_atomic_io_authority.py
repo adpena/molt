@@ -176,6 +176,36 @@ def test_every_atomic_publication_has_one_file_fsync_per_staged_file(
     assert len(calls) == barriers_per_commit
 
 
+@pytest.mark.parametrize("changed", [False, True])
+def test_wasm_transform_cleanup_requires_successful_stage_creation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, changed: bool
+) -> None:
+    wasm = tmp_path / "publication.wasm"
+    original = _build_wasm_sections(
+        [(0, _write_wasm_string(".debug_info") + b"debug")] if changed else []
+    )
+    wasm.write_bytes(original)
+    stage = file_publication.staged_file_path(wasm, purpose="wasm-transform")
+    stage.write_bytes(b"another owner's stage")
+    before = stage.stat()
+    monkeypatch.setattr(file_publication, "staged_file_path", lambda *a, **k: stage)
+
+    if changed:
+        with pytest.raises(FileExistsError):
+            transform_wasm_publication_file(
+                wasm, rename_map={}, final_artifact=True, preserve_debug=False
+            )
+    else:
+        metrics = transform_wasm_publication_file(
+            wasm, rename_map={}, final_artifact=True, preserve_debug=False
+        )
+        assert metrics.changed is False
+
+    assert stage.read_bytes() == b"another owner's stage"
+    assert os.path.samestat(before, stage.stat())
+    assert wasm.read_bytes() == original
+
+
 def test_windows_namespace_commit_requests_replace_and_write_through(
     tmp_path: Path,
 ) -> None:

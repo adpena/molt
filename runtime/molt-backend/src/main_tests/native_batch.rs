@@ -36,11 +36,9 @@ fn daemon_native_path_written_output_skips_oversized_memory_cache() {
         function_cache_key: Some("function-cache".to_string()),
         skip_module_output_if_synced: false,
         skip_function_output_if_synced: false,
-        probe_cache_only: false,
-        ir: Some(molt_backend::BackendIrDocument {
-            code_slots: Default::default(),
-            module_registry: None,
-            ir: SimpleIR {
+        ir_source: DaemonIrSource::Lease(write_daemon_ir_fixture(
+            &tmp_dir.join("input.msgpack"),
+            &SimpleIR {
                 functions: vec![
                     FunctionIR {
                         return_abi: molt_ir::FunctionReturnAbi::Void,
@@ -82,8 +80,7 @@ fn daemon_native_path_written_output_skips_oversized_memory_cache() {
                 ],
                 profile: None,
             },
-        }),
-        ir_path: None,
+        )),
         config_namespace: None,
     };
     let cache = DaemonCache::new(Some(1));
@@ -242,7 +239,7 @@ fn daemon_batch_compile_keeps_user_module_chunk_stub_defined() {
             "output": output.to_string_lossy(),
             "cache_key": "",
             "function_cache_key": "",
-            "ir": {
+            "ir_path": write_daemon_ir_fixture(&tmp_dir.join("batch-input.msgpack"), &serde_json::json!({
                 "functions": [
                     {"return_abi": "void", "name": "molt_main", "params": [], "ops": [
                         {"kind": "call", "s_value": "molt_init_demo"},
@@ -264,7 +261,7 @@ fn daemon_batch_compile_keeps_user_module_chunk_stub_defined() {
                     {"return_abi": "void", "name": "molt_init_sys", "params": [], "ops": [{"kind": "ret_void"}]}
                 ],
                 "profile": null
-            }
+            }))
         }]
     });
 

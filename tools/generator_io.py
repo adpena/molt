@@ -73,8 +73,8 @@ def write_generated_texts(outputs: Mapping[Path, str]) -> tuple[Path, ...]:
     try:
         for final, text in outputs.items():
             staged = staged_output_path(final)
-            pairs.append((staged, final))
             with staged.open("xb") as stream:
+                pairs.append((staged, final))
                 stream.write(canonical_generated_bytes(text.encode("utf-8")))
         return publish_validated_outputs(pairs)
     finally:

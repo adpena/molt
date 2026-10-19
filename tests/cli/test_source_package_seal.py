@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
+from types import SimpleNamespace
 import shutil
 import warnings
 
@@ -318,6 +319,31 @@ def test_seal_tree_flush_has_one_owner(
     payload_flushes = [path for path in flushed if "files" in path.parts]
     assert len(payload_flushes) == len(seal.files)
     assert len(set(payload_flushes)) == len(payload_flushes)
+
+
+def test_blob_staging_collision_preserves_the_unowned_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source = _write(tmp_path / "source", b"source bytes")
+    root = tmp_path / "transaction"
+    token = "f" * 32
+    incoming = _write(
+        root / "blobs" / ".incoming" / f"{token}.blob", b"another owner's blob"
+    )
+    before = incoming.stat()
+    monkeypatch.setattr(
+        seal_api, "uuid", SimpleNamespace(uuid4=lambda: SimpleNamespace(hex=token))
+    )
+
+    with pytest.raises(FileExistsError):
+        stage_source_package_seal(
+            root, [SourcePackageInput(source, "pkg/source.py", "source")]
+        )
+
+    assert incoming.read_bytes() == b"another owner's blob"
+    assert os.path.samestat(before, incoming.stat())
+    assert source.read_bytes() == b"source bytes"
+    assert not (root / "seals").exists()
 
 
 def test_exclusive_blob_publication_supports_cross_directory_staging(

@@ -610,12 +610,19 @@ uv run --python 3.12 python -u tests/molt_diff.py tests/differential/basic/exec_
   through the limit; JSON and CBOR stdin paths reject oversized input before
   deserialization rather than buffering unbounded request bodies.
 - **Backend IR lease custody**: CLI backend dispatch writes request IR as a
-  JSON lease under `tmp/backend-ir-leases/` and passes `ir_path`/`--ir-file` to
-  daemon and one-shot backends. The lease writer streams JSON directly to disk
-  instead of materializing a second full IR byte buffer: CPython's C encoder
-  encodes each top-level member, and each element of a top-level array, so only
-  one element's text is resident and the bytes equal `_backend_ir_text`. Leases
-  are removed after the compile request completes.
+  MessagePack lease under `tmp/backend-ir-leases/` and passes `ir_path` or
+  `--ir-format msgpack --ir-file` to daemon and one-shot backends, including
+  factgraph. The writer reuses the sorted function-body codec and retains at
+  most one encoded top-level array element. It creates each lease exclusively,
+  preserves an existing path on collision, removes its own partial writes, and
+  removes the lease after the request completes. Both receivers use the same
+  typed complete-frame reader and reject nonregular file descriptors before
+  reading. File inputs have no additional byte ceiling; the stdin ceiling
+  above applies only to stdin. Daemon protocol 2 has only cache-probe and
+  MessagePack-file states; inline IR is retired. Its version is shared through
+  `src/molt/backend_daemon_protocol_version.txt`. JSON exports and MLIR stdin
+  retain their separate JSON contracts. These are compiler-side costs and
+  dependencies; emitted programs do not carry the transport codec.
 - **Daemon warm-hit probe path**: when cache keys are present, the build pipeline now lets the daemon send a probe-only request first and only encodes full IR after a daemon-declared miss. This preserves warm daemon hits without paying full IR encode/send cost on every run.
 - **Daemon socket placement**: sockets default to a local temp dir (`MOLT_BACKEND_DAEMON_SOCKET_DIR`, or explicit `MOLT_BACKEND_DAEMON_SOCKET`) so shared/external volumes that do not support Unix sockets do not break daemon startup.
 - **Daemon lifecycle**: with the ordinary persistent target root, daemon logs
@@ -869,7 +876,7 @@ Benchmarks that cannot survive a disconnect are not acceptable.
 ### Build time
 
 Compiler caches use atomic publication without durability barriers when their
-contents can be reconstructed: source/import/analysis records, lowering JSON,
+contents can be reconstructed: source/import/analysis and lowering records,
 toolchain and backend-analysis memos, wrapper build manifests, and both directions
 of shared frontend-cache copying. Missing or malformed cache data is a miss;
 each consumer still qualifies its source, context, tooling, target or artifact
@@ -888,6 +895,17 @@ unlinking an old entry first or copying across filesystems after a failed rename
 This follows [CPython's bytecode cache publication](https://github.com/python/cpython/blob/v3.15.0/Lib/importlib/_bootstrap_external.py#L183-L202),
 which writes a private file and replaces it atomically without a flush barrier.
 It changes compiler/development I/O only; emitted programs do no cache validation.
+
+Exclusive staging grants cleanup custody only after creation succeeds. A
+chosen pathname, an unattempted second output, or a failed `x`/`xb` open grants
+no deletion authority. Copying, WASM transforms and generations, generated
+outputs, native-link sidecars and custody archives, package blobs, LLVM setup
+and backend IR leases follow that rule. Acquired partial stages are reclaimed
+on later write or validation failure; colliding stages preserve their bytes and
+identity. The fast copy path reserves its leaf before `shutil.copyfile`, adding
+one cold open/close while keeping the platform copy optimization. This policy
+adds no guest execution work and does not establish protection against pathname
+replacement after acquisition.
 
 The ratio-direction gate and proof source capture share the lightweight Git
 source inventory. Git selects tracked and eligible untracked paths, so ignored

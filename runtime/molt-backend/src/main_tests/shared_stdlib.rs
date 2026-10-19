@@ -841,11 +841,9 @@ fn daemon_empty_stdlib_partition_emits_cache_artifact_and_sidecars() {
         function_cache_key: None,
         skip_module_output_if_synced: false,
         skip_function_output_if_synced: false,
-        probe_cache_only: false,
-        ir: Some(molt_backend::BackendIrDocument {
-            code_slots: Default::default(),
-            module_registry: None,
-            ir: SimpleIR {
+        ir_source: DaemonIrSource::Lease(write_daemon_ir_fixture(
+            &tmp_dir.join("input.msgpack"),
+            &SimpleIR {
                 functions: vec![
                     FunctionIR {
                         return_abi: molt_ir::FunctionReturnAbi::Void,
@@ -911,8 +909,7 @@ fn daemon_empty_stdlib_partition_emits_cache_artifact_and_sidecars() {
                 ],
                 profile: None,
             },
-        }),
-        ir_path: None,
+        )),
         config_namespace: None,
     };
 

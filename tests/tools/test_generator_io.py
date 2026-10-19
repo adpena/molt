@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import tempfile
+import os
 from pathlib import Path
 
 import pytest
@@ -28,6 +29,53 @@ def test_check_ignores_checkout_newline_policy(tmp_path):
     generator_io.generator_main(render, ["--write"])
     (tmp_path / "b.txt").write_bytes(b"b\r\n")
     assert generator_io.stale_outputs(render()) == []
+
+
+@pytest.mark.parametrize("collision_index", [0, 1])
+def test_generated_family_collision_reaps_only_acquired_stages(
+    tmp_path, monkeypatch, collision_index
+):
+    from molt import artifact_publication
+
+    finals = [tmp_path / "first", tmp_path / "second"]
+    stages = {final: artifact_publication.staged_output_path(final) for final in finals}
+    for final in finals:
+        final.write_bytes(b"previous output")
+    collision = stages[finals[collision_index]]
+    collision.write_bytes(b"another owner's stage")
+    before = collision.stat()
+    monkeypatch.setattr(artifact_publication, "staged_output_path", stages.__getitem__)
+
+    with pytest.raises(FileExistsError):
+        generator_io.write_generated_texts({final: "new output\n" for final in finals})
+
+    assert collision.read_bytes() == b"another owner's stage"
+    assert os.path.samestat(before, collision.stat())
+    assert not stages[finals[1 - collision_index]].exists()
+    assert all(final.read_bytes() == b"previous output" for final in finals)
+
+
+def test_generated_encoding_failure_reaps_the_current_and_prior_owned_stages(
+    tmp_path, monkeypatch
+):
+    from molt import artifact_publication
+
+    first = tmp_path / "first"
+    second = tmp_path / "second"
+    stages = {
+        final: artifact_publication.staged_output_path(final)
+        for final in (first, second)
+    }
+    first.write_bytes(b"previous first")
+    second.write_bytes(b"previous second")
+    monkeypatch.setattr(artifact_publication, "staged_output_path", stages.__getitem__)
+
+    with pytest.raises(UnicodeEncodeError):
+        generator_io.write_generated_texts({first: "valid\n", second: "\ud800"})
+
+    assert first.read_bytes() == b"previous first"
+    assert second.read_bytes() == b"previous second"
+    assert all(not stage.exists() for stage in stages.values())
 
 
 @pytest.mark.parametrize("argv", [[], ["--check", "--write"]])

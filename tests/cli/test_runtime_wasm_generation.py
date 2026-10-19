@@ -24,7 +24,7 @@ from molt.cli.runtime_wasm_generation import (
 from tests.runtime_build_identity_helper import (
     runtime_build_identity,
 )
-from molt.toolchain_identity import stable_regular_file_identity
+from molt.toolchain_identity import StableRegularFileError, stable_regular_file_identity
 
 
 def _identity(
@@ -96,6 +96,52 @@ def _publish_pair(
         source_reloc=source_reloc,
     )
     return generation, shared_identity, reloc_identity
+
+
+@pytest.mark.parametrize(
+    "failure", ["shared-collision", "reloc-collision", "shared-source"]
+)
+def test_runtime_pair_staging_reaps_only_successfully_created_files(
+    tmp_path, monkeypatch, failure
+):
+    from molt.cli import runtime_wasm_generation as module
+
+    source_shared, source_reloc = _source_pair(tmp_path / "source", b"shared", b"reloc")
+    shared = tmp_path / "molt_runtime.wasm"
+    reloc = tmp_path / "molt_runtime_reloc.wasm"
+    shared.write_bytes(b"previous shared")
+    reloc.write_bytes(b"previous reloc")
+    stages = {
+        path: module.staged_file_path(path, purpose="generation")
+        for path in (shared, reloc)
+    }
+    collision = stages[shared if failure == "shared-collision" else reloc]
+    collision.write_bytes(b"another owner's stage")
+    before = collision.stat()
+    monkeypatch.setattr(module, "staged_file_path", lambda path, **kwargs: stages[path])
+    if failure == "shared-source":
+        source_shared.unlink()
+
+    with pytest.raises(
+        StableRegularFileError if failure == "shared-source" else FileExistsError
+    ):
+        publish_runtime_wasm_generation(
+            shared,
+            reloc,
+            shared_identity=_identity("shared"),
+            reloc_identity=_identity("reloc"),
+            source_shared=source_shared,
+            source_reloc=source_reloc,
+        )
+
+    assert collision.read_bytes() == b"another owner's stage"
+    assert os.path.samestat(before, collision.stat())
+    other = stages[reloc if collision == stages[shared] else shared]
+    assert not other.exists()
+    assert shared.read_bytes() == b"previous shared"
+    assert reloc.read_bytes() == b"previous reloc"
+    assert source_reloc.read_bytes() == b"reloc"
+    assert not runtime_wasm_generation_path(shared).exists()
 
 
 @pytest.mark.parametrize("operation", ["publish", "bind"])
@@ -688,14 +734,15 @@ def test_generation_staging_checks_supplied_digest_without_a_receipt(
     os.utime(source, ns=(before.st_atime_ns, before.st_mtime_ns))
     current = stable_regular_file_identity(source, label="current metadata fixture")
     observed = replace(current, sha256=observed.sha256)
-    with pytest.raises(ValueError, match="content changed"):
-        module._stage_artifact(
-            source,
-            tmp_path / "stage",
-            published_name="molt_runtime.wasm",
-            identity=_identity("shared"),
-            observed=observed,
-        )
+    with (tmp_path / "stage").open("xb") as staged_handle:
+        with pytest.raises(ValueError, match="content changed"):
+            module._stage_artifact(
+                source,
+                staged_handle,
+                published_name="molt_runtime.wasm",
+                identity=_identity("shared"),
+                observed=observed,
+            )
 
 
 def test_hydration_reuses_source_receipt_and_readmits_destination_content(

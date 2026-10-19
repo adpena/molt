@@ -9,11 +9,8 @@ mod tests;
 
 use std::io;
 
-#[cfg(molt_backend_daemon)]
-pub(crate) use json::decode as decode_json_ir_document;
-
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum IrFormat {
+pub(crate) enum IrFormat {
     Json,
     MessagePack,
     Cbor,
@@ -21,7 +18,7 @@ enum IrFormat {
 }
 
 impl IrFormat {
-    fn parse(value: &str) -> io::Result<Self> {
+    pub(crate) fn parse(value: &str) -> io::Result<Self> {
         match value {
             "json" => Ok(Self::Json),
             "msgpack" => Ok(Self::MessagePack),
@@ -36,10 +33,10 @@ impl IrFormat {
 }
 
 pub(crate) fn read_backend_ir_document(
-    ir_format: &str,
+    ir_format: IrFormat,
     ir_file_path: Option<&str>,
 ) -> io::Result<molt_backend::BackendIrDocument> {
-    match IrFormat::parse(ir_format)? {
+    match ir_format {
         IrFormat::Json => json::read_json_backend_ir_document(ir_file_path),
         IrFormat::MessagePack => msgpack::read_msgpack_backend_ir_document(ir_file_path),
         IrFormat::Cbor => cbor::read_cbor_backend_ir_document(ir_file_path),
