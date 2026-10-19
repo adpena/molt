@@ -4,8 +4,8 @@
 # files; when they change, run `python3 tools/perf_methodology.py --bump` if the
 # change can move a number or a verdict, else `--relock`.
 schema = "molt-perf-methodology-v1"
-version = 3
-content_sha256 = "8e1ababb7f4fb6237b1eee178d90459c347800da4e3793bd9b61e8cfa2f0ddc5"
+version = 4
+content_sha256 = "7025ca92e2e82b4585a38cd392bbbf41a495a8bb36f6e4075de908a541d22685"
 
 [[methodology]]
 path = "tools/safe_run.py"
@@ -22,6 +22,14 @@ role = "finalizes typed measurements into each cell verdict"
 [[methodology]]
 path = "tools/perf_scoreboard.py"
 role = "classifies cells against CPython and the repeat interval"
+
+[[methodology]]
+path = "src/molt/backend_executable_names.py"
+role = "classifies compiler and inspection candidates for measurement quiescence"
+
+[[methodology]]
+path = "src/molt/host_tool_products.py"
+role = "defines host-tool names admitted by quiescence discovery and classification"
 
 [[methodology]]
 path = "tools/perf_schema.py"
@@ -141,10 +149,6 @@ reason = "validates object ids"
 [[mechanics]]
 path = "src/molt/backend_binary_identity.py"
 reason = "provenance digest of the compiler bytes"
-
-[[mechanics]]
-path = "src/molt/backend_executable_names.py"
-reason = "names compiler executables for process custody"
 
 [[mechanics]]
 path = "src/molt/dx.py"

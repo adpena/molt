@@ -122,6 +122,7 @@ from tools import harness_memory_guard  # noqa: E402
 from tools.sample_profile import read_self_time  # noqa: E402
 from molt.backend_binary_identity import identify_backend_binary  # noqa: E402
 from molt.backend_executable_names import is_host_tool_executable_name  # noqa: E402
+from molt.host_tool_products import HostToolProduct  # noqa: E402
 from tools.perf_schema import (  # noqa: E402
     CLASS_DIMENSIONAL_WIN,
     CLASS_GREEN,
@@ -233,10 +234,15 @@ from tools.perf_scoreboard_resolver import (  # noqa: E402
 # always caught (a build also trips the process check directly).
 QUIESCENT_LOAD_FRACTION = 0.5
 # Process-name patterns that mean "build/test work is competing for cycles".
-# ``pgrep -fl`` uses these only as a broad discovery filter; the final decision
+# The native pgrep query uses these only as a broad discovery filter; the final decision
 # is argv/image-aware so proof-log observers do not count as build workers just
 # because a log path contains "cargo" or "rustc".
-_BUILD_PROC_PATTERNS = ("cargo", "rustc", "molt-backend", "molt build")
+_BUILD_PROC_PATTERNS = (
+    "cargo",
+    "rustc",
+    *(re.escape(product.value) for product in HostToolProduct),
+    "molt build",
+)
 _BUILD_IMAGE_NAMES = frozenset(
     {
         "cargo",
@@ -455,9 +461,10 @@ def _is_build_process_command(cmd: str, *, image_name: str | None = None) -> boo
 
 
 def _list_build_processes() -> list[dict]:
-    """Active cargo/rustc/molt-backend/molt-build processes, EXCLUDING codex.
+    """Active Cargo, rustc, admitted host-tool and Molt build candidates.
 
-    Uses ``pgrep -fl`` (full command line). We exclude this very tool's own PID
+    Requests full argv: procps uses ``-a``, BSD uses ``-l`` with ``-f``.
+    We exclude this very tool's own PID
     and any line containing ``codex`` (project policy: never count/kill codex).
     A pgrep that finds nothing exits 1 with empty stdout — that is the quiet
     case, not an error.
@@ -489,7 +496,10 @@ def _list_build_processes() -> list[dict]:
             if _is_build_process_command(cmd, image_name=image_name):
                 out.append({"pid": pid, "cmd": cmd})
         return out
-    res = _metadata_probe(["pgrep", "-fl", pattern], timeout_s=15)
+    # procps -l prints only comm (and truncates long feature-variant names),
+    # whereas BSD -fl prints the full argument list required by classification.
+    flags = "-af" if sys.platform.startswith("linux") else "-fl"
+    res = _metadata_probe(["pgrep", flags, pattern], timeout_s=15)
     if res is None:
         # If we cannot probe, we cannot certify quiet — report a sentinel so the
         # caller downgrades authority rather than silently trusting the run.
@@ -652,7 +662,7 @@ def gather_quiescence() -> dict:
 
     Returns a dict with the council-mandated provenance fields plus a ``quiet``
     bool and a ``reasons`` list naming EACH failing check. A run is quiet iff:
-      (a) no active cargo/rustc/molt-backend/molt-build process (codex excluded),
+      (a) no active Cargo, rustc, host-tool or Molt build process (codex excluded),
       (b) 1-min load average <= ncpu * QUIESCENT_LOAD_FRACTION,
       (c) runnable-thread count does not itself indicate a build storm,
       (d) no thermal/CPU-speed throttle (best-effort; skipped if unavailable).
@@ -674,8 +684,8 @@ def gather_quiescence() -> dict:
             for p in real_procs[:6]
         )
         reasons.append(
-            f"{len(real_procs)} active build process(es) (cargo/rustc/molt-backend/"
-            f"molt build): {names}"
+            f"{len(real_procs)} active build process(es) "
+            f"(Cargo/rustc/host tools/molt build): {names}"
         )
     if probe_failed:
         reasons.append("process probe (pgrep) unavailable — cannot certify quiet")

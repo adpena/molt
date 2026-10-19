@@ -388,7 +388,7 @@ The wrapper conflict was reconfirmed by native CI run `30211145633` job `8981749
 | `apparatus-hooks` | 11 | 2 |
 | `apparatus-learning-protection` | 12 | 2 |
 | `timing-ratio-authority` | 2 | 0 |
-| `performance-measurement` | 25 | 0 |
+| `performance-measurement` | 27 | 0 |
 | `apparatus-a11` | 10 | 4 |
 | `apparatus-a8-a12-disk-reclaim` | 12 | 2 |
 | `import-symbol-gate` | 2 | 1 |

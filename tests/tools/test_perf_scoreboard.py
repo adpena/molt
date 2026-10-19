@@ -11,6 +11,7 @@ from __future__ import annotations
 from dataclasses import asdict
 import json
 import os
+import re
 import sys
 from pathlib import Path
 from tests.process_guard_common import install_module_os_view, install_module_view
@@ -1565,13 +1566,17 @@ def test_list_build_processes_uses_windows_cim_snapshot(monkeypatch) -> None:
     assert all("codex" not in p["cmd"].lower() for p in procs)
 
 
-def test_list_build_processes_filters_posix_log_observers(monkeypatch) -> None:
+@pytest.mark.parametrize("platform,flags", [("linux", "-af"), ("darwin", "-fl")])
+def test_list_build_processes_filters_posix_log_observers(
+    monkeypatch, platform, flags
+) -> None:
     install_module_os_view(monkeypatch, ps, name="posix")
+    install_module_view(monkeypatch, "sys", sys, ps, platform=platform)
     monkeypatch.setattr(ps.os, "getpid", lambda: 10)
     monkeypatch.setattr(ps.os, "getppid", lambda: 11)
 
     def fake_metadata_probe(cmd: list[str], **kwargs) -> SimpleNamespace:
-        assert cmd[:2] == ["pgrep", "-fl"]
+        assert cmd[:2] == ["pgrep", flags]
         return SimpleNamespace(
             stdout=(
                 "20 cargo build -p molt-runtime\n"
@@ -1635,6 +1640,44 @@ def test_gather_quiescence_not_quiet_when_build_active(monkeypatch) -> None:
 def test_feature_variant_compilers_are_build_processes(image) -> None:
     assert ps._is_build_process_command(f"{image} --daemon", image_name=image)
     assert not ps._is_build_process_command(f"tail {image}", image_name="tail")
+
+
+@pytest.mark.parametrize(
+    "os_name,platform,flags",
+    [("posix", "linux", "-af"), ("posix", "darwin", "-fl"), ("nt", "win32", None)],
+)
+@pytest.mark.parametrize(
+    "image",
+    ["molt-backend.wasm_backend", "molt-wasm-facts", "molt-wasm-facts.host_tool.exe"],
+)
+def test_host_tools_reach_quiescence_through_platform_discovery(
+    monkeypatch, os_name, platform, flags, image
+) -> None:
+    install_module_os_view(monkeypatch, ps, name=os_name)
+    install_module_view(monkeypatch, "sys", sys, ps, platform=platform)
+    monkeypatch.setattr(ps.os, "getpid", lambda: 10)
+    monkeypatch.setattr(ps.os, "getppid", lambda: 11)
+    command = f"/compiler/bin/{image} --scan-wasm-link-facts input.wasm"
+
+    def probe(argv, **kwargs):
+        if os_name == "posix":
+            assert argv[:2] == ["pgrep", flags]
+            # Honor the actual discovery filter: returning every fixture row
+            # would conceal a missing producer before final classification.
+            found = bool(re.search(argv[2], command))
+            return subprocess.CompletedProcess(
+                argv, 0 if found else 1, f"20 {command}\n" if found else "", ""
+            )
+        assert argv[0] == "powershell.exe"
+        return subprocess.CompletedProcess(
+            argv,
+            0,
+            json.dumps([{"ProcessId": 20, "Name": image, "CommandLine": command}]),
+            "",
+        )
+
+    monkeypatch.setattr(ps, "_metadata_probe", probe)
+    assert ps._list_build_processes() == [{"pid": 20, "cmd": command}]
 
 
 def test_backend_log_and_symbol_names_are_not_compiler_images() -> None:

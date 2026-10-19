@@ -14,6 +14,11 @@ and warm timings, native+LLVM backend parity, repeat-CI classification,
 quiescence, provenance, and stale-tree status. It is the only lane allowed to
 publish `authoritative=true`.
 
+Methodology v4 includes the declared host-tool names and their classifier in
+the content lock. Both POSIX discovery and Windows classification include the
+standalone WASM inspector when determining quiescence. This can change authority
+decisions, so earlier methodology versions remain separate comparison classes.
+
 The gate's `release-fast` label selects the public CLI's `--build-profile release`
 while its shared profile selection explicitly pins the `release-fast` guest/runtime
 and independently built `release` host compiler. Compiler lookup uses that host
