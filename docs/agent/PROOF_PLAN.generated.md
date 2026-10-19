@@ -17,8 +17,8 @@ Landing checks execute the generator and authority inputs captured from the exac
 | Hand-maintained path-to-proof authorities | 4 | 1 |
 | CI selection families | 5 | 13 |
 | Hashed executable authority inputs | 1 | 374 |
-| Local path rules | 35 | 65 |
-| Unique local commands | 73 | 86 |
+| Local path rules | 35 | 66 |
+| Unique local commands | 73 | 71 |
 | Handwritten Python classifier rule tables | 5 | 0 |
 
 ## CI families
@@ -356,23 +356,23 @@ The wrapper conflict was reconfirmed by native CI run `30211145633` job `8981749
 | `build-output-identity` | 6 | 0 |
 | `backend-environment-contract` | 22 | 0 |
 | `bootstrap-stdlib` | 4 | 1 |
-| `heap-kind-lifetime-authority` | 6 | 1 |
-| `host-capability-authority` | 7 | 1 |
-| `runtime-profile-schema-authority` | 6 | 1 |
-| `op-kind-registry` | 18 | 2 |
-| `frontend-diagnostics` | 6 | 1 |
-| `wasm-abi-registry` | 13 | 1 |
+| `heap-kind-lifetime-authority` | 6 | 0 |
+| `host-capability-authority` | 7 | 0 |
+| `runtime-profile-schema-authority` | 6 | 0 |
+| `op-kind-registry` | 18 | 1 |
+| `frontend-diagnostics` | 6 | 0 |
+| `wasm-abi-registry` | 13 | 0 |
 | `tinygrad-op-contract` | 9 | 2 |
-| `intrinsic-registry` | 14 | 1 |
-| `codec-tables` | 7 | 1 |
-| `stringprep-tables` | 3 | 1 |
+| `intrinsic-registry` | 14 | 0 |
+| `codec-tables` | 7 | 0 |
+| `stringprep-tables` | 3 | 0 |
 | `llvm-runtime-abi` | 8 | 1 |
 | `source-extension-package-sets` | 44 | 0 |
 | `source-extension-proof-policy` | 60 | 0 |
 | `suite-honesty` | 4 | 2 |
 | `ecosystem-compat` | 2 | 1 |
 | `tinygrad-upat-static-exec-registry` | 2 | 0 |
-| `docs-architecture` | 4 | 2 |
+| `docs-architecture` | 4 | 1 |
 | `dev-tooling` | 14 | 0 |
 | `host-entrypoint-imports` | 13 | 0 |
 | `host-capacity` | 9 | 0 |
@@ -384,9 +384,10 @@ The wrapper conflict was reconfirmed by native CI run `30211145633` job `8981749
 | `table-drift` | 12 | 1 |
 | `findings-registry` | 4 | 0 |
 | `memory-graph` | 5 | 1 |
-| `ci-wiring` | 58 | 1 |
+| `ci-wiring` | 58 | 0 |
 | `apparatus-hooks` | 11 | 2 |
 | `apparatus-learning-protection` | 12 | 2 |
+| `timing-ratio-authority` | 2 | 0 |
 | `performance-measurement` | 25 | 0 |
 | `apparatus-a11` | 10 | 4 |
 | `apparatus-a8-a12-disk-reclaim` | 12 | 2 |
@@ -406,10 +407,10 @@ The wrapper conflict was reconfirmed by native CI run `30211145633` job `8981749
 | `gpu-runtime` | 3 | 1 |
 | `runtime-vfs` | 4 | 2 |
 | `runtime-lib` | 3 | 1 |
-| `python-effect-capability-authority` | 6 | 2 |
-| `python-identity-catalog-authority` | 7 | 1 |
-| `builtin-binding-guard-authority` | 9 | 2 |
-| `native-callable-abi` | 20 | 2 |
+| `python-effect-capability-authority` | 6 | 1 |
+| `python-identity-catalog-authority` | 7 | 0 |
+| `builtin-binding-guard-authority` | 9 | 1 |
+| `native-callable-abi` | 20 | 1 |
 | `runtime-regex` | 11 | 2 |
 | `stringprep-leaf` | 2 | 1 |
 | `cpython-abi-authorities` | 2 | 1 |

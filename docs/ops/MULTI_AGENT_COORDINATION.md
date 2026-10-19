@@ -357,8 +357,12 @@ shipped feature/profile matrix.
 
 Use source checks and generator oracles before compilation. A generator-only
 repair whose Rust outputs remain byte-identical needs no new Rust build unless
-another compiled input changed. Reuse completed evidence for unchanged inputs;
-rebuild affected artifacts after actual input changes. Target-Python versions
+another compiled input changed. The unconditional `tools/generators.py check`
+owns freshness for the manifest's reproducible generators; local rules add their
+semantic checks and owning tests without repeating named freshness commands.
+Generators that require external or host inputs retain their selected checks.
+Reuse completed evidence for unchanged inputs; rebuild affected artifacts after
+actual input changes. Target-Python versions
 may share a Rust image only where version selection is dynamic; syntax oracles,
 version-specific ABI layouts and actual matrix execution still need their own
 evidence. Release/performance builds prove their distinct profile contracts and

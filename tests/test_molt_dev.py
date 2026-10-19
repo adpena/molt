@@ -971,7 +971,8 @@ def test_committed_gate_manifest_selects_molt_ir_op_kind_registry(drv):
 
     # Every host script change also proves its import identity.
     assert [r.name for r in matched] == ["op-kind-registry", "host-entrypoint-imports"]
-    assert "python tools/gen_op_kinds.py --check" in gates
+    assert gates.count("python tools/generators.py check") == 1
+    assert "python tools/gen_op_kinds.py --check" not in gates
     assert "python tools/audit_op_kinds.py --check" in gates
 
     gates, matched = cfg.select(["runtime/molt-ir/src/tir/op_kinds.toml"])
@@ -981,7 +982,8 @@ def test_committed_gate_manifest_selects_molt_ir_op_kind_registry(drv):
         "rust-clippy-changed",
         "tir-midend",
     ]
-    assert "python tools/gen_op_kinds.py --check" in gates
+    assert gates.count("python tools/generators.py check") == 1
+    assert "python tools/gen_op_kinds.py --check" not in gates
     assert "python tools/audit_op_kinds.py --check" in gates
 
 
@@ -1016,14 +1018,16 @@ def test_committed_gate_manifest_selects_codec_table_registry(drv):
         "codec-tables",
         "rust-clippy-changed",
     ]
-    assert "python tools/gen_codecs.py --check" in gates
+    assert gates.count("python tools/generators.py check") == 1
+    assert "python tools/gen_codecs.py --check" not in gates
     merged = next(gate for gate in gates if isinstance(gate, tuple))
     assert "tests/test_gen_codecs.py" in merged
 
     gates, matched = cfg.select(["src/molt/stdlib/encodings/cp1252.py"])
     gates = [gate.command for gate in gates]
     assert "codec-tables" in {r.name for r in matched}
-    assert "python tools/gen_codecs.py --check" in gates
+    assert gates.count("python tools/generators.py check") == 1
+    assert "python tools/gen_codecs.py --check" not in gates
 
     gates, matched = cfg.select(
         ["runtime/molt-stdlib-text/src/codec_aliases_generated.rs"]
@@ -1033,7 +1037,8 @@ def test_committed_gate_manifest_selects_codec_table_registry(drv):
         "codec-tables",
         "rust-clippy-changed",
     ]
-    assert "python tools/gen_codecs.py --check" in gates
+    assert gates.count("python tools/generators.py check") == 1
+    assert "python tools/gen_codecs.py --check" not in gates
 
     gates, matched = cfg.select(
         ["runtime/molt-stdlib-text/src/charmap_codecs_generated.rs"]
@@ -1043,12 +1048,14 @@ def test_committed_gate_manifest_selects_codec_table_registry(drv):
         "codec-tables",
         "rust-clippy-changed",
     ]
-    assert "python tools/gen_codecs.py --check" in gates
+    assert gates.count("python tools/generators.py check") == 1
+    assert "python tools/gen_codecs.py --check" not in gates
 
     gates, matched = cfg.select(["runtime/molt-runtime/src/object/ops_encoding.rs"])
     gates = [gate.command for gate in gates]
     assert "codec-tables" in {r.name for r in matched}
-    assert "python tools/gen_codecs.py --check" in gates
+    assert gates.count("python tools/generators.py check") == 1
+    assert "python tools/gen_codecs.py --check" not in gates
     merged = next(gate for gate in gates if isinstance(gate, tuple))
     assert "tests/test_gen_codecs.py" in merged
 

@@ -46,6 +46,7 @@ Usage::
 from __future__ import annotations
 
 import argparse
+from collections import deque
 import ast
 import json
 import sys
@@ -116,45 +117,67 @@ def _is_time_operand(node: ast.expr) -> bool:
     return _is_time_name(name)
 
 
-def _contains_time_operand(node: ast.expr) -> bool:
-    """True if ``node`` contains a timing value reference.
+def _time_ratio_hits(tree: ast.AST) -> list[tuple[int, str]]:
+    """Compute operand facts once, retaining original preorder diagnostics.
 
-    Direct-operand scans miss normalized deltas such as
-    ``(new_time - old_time) / old_time``. Walk arithmetic/value expressions so
-    those ratios are caught while unit conversions like ``timeout_ms / 1000``
-    remain outside this gate.
+    Traverse every syntax context, including f-string expressions, independently
+    of the narrower value-expression edges through which timing facts propagate.
+    Reverse parent-before-child order visits operands before their owners without
+    Python recursion. Only actual hits need a second walk for preorder output.
+    All temporary facts belong to this file; absent set membership means False.
     """
-    if _is_time_operand(node):
-        return True
-    if isinstance(node, ast.BinOp):
-        return _contains_time_operand(node.left) or _contains_time_operand(node.right)
-    if isinstance(node, ast.UnaryOp):
-        return _contains_time_operand(node.operand)
-    if isinstance(node, ast.IfExp):
-        return _contains_time_operand(node.body) or _contains_time_operand(node.orelse)
-    if isinstance(node, ast.NamedExpr):
-        return _contains_time_operand(node.value)
-    if isinstance(node, ast.Call):
-        return any(_contains_time_operand(arg) for arg in node.args) or any(
-            _contains_time_operand(keyword.value) for keyword in node.keywords
-        )
-    return False
+    expressions: list[ast.expr] = []
+    candidates: list[ast.BinOp] = []
+    timing: set[ast.expr] = set()
+    direct_references = 0
+    leaf_types = (ast.Name, ast.Constant)
+    pending_nodes = deque([tree])
+    while pending_nodes:
+        node = pending_nodes.popleft()
+        if isinstance(node, ast.expr):
+            if _is_time_operand(node):
+                timing.add(node)
+                direct_references += 1
+            elif isinstance(
+                node, (ast.BinOp, ast.UnaryOp, ast.IfExp, ast.NamedExpr, ast.Call)
+            ):
+                expressions.append(node)
+        if isinstance(node, ast.BinOp) and isinstance(node.op, (ast.Div, ast.Mult)):
+            candidates.append(node)
+        if type(node) not in leaf_types:
+            pending_nodes.extend(ast.iter_child_nodes(node))
 
-
-class _TimeRatioFinder(ast.NodeVisitor):
-    """Collect every timing-expression ``/`` or ``*`` timing-expression BinOp."""
-
-    def __init__(self) -> None:
-        self.hits: list[tuple[int, str]] = []
-
-    def visit_BinOp(self, node: ast.BinOp) -> None:  # noqa: N802
-        if isinstance(node.op, (ast.Div, ast.Mult)) and (
-            _contains_time_operand(node.left) and _contains_time_operand(node.right)
-        ):
-            op = "/" if isinstance(node.op, ast.Div) else "*"
-            self.hits.append((node.lineno, op))
-        # Recurse so a nested time/time inside a larger expression is still seen.
-        self.generic_visit(node)
+    # Each reported ratio needs a direct reference in each disjoint operand
+    # subtree. This counts parsed occurrences, including decoded string keys.
+    if not candidates or direct_references < 2:
+        return []
+    for node in reversed(expressions):
+        contains = False
+        if isinstance(node, ast.BinOp):
+            contains = node.left in timing or node.right in timing
+        elif isinstance(node, ast.UnaryOp):
+            contains = node.operand in timing
+        elif isinstance(node, ast.IfExp):
+            contains = node.body in timing or node.orelse in timing
+        elif isinstance(node, ast.NamedExpr):
+            contains = node.value in timing
+        elif isinstance(node, ast.Call):
+            contains = any(arg in timing for arg in node.args) or any(
+                keyword.value in timing for keyword in node.keywords
+            )
+        if contains:
+            timing.add(node)
+    hits = {node for node in candidates if node.left in timing and node.right in timing}
+    if not hits:
+        return []
+    ordered: list[tuple[int, str]] = []
+    pending = [tree]
+    while pending:
+        node = pending.pop()
+        if isinstance(node, ast.BinOp) and node in hits:
+            ordered.append((node.lineno, "/" if isinstance(node.op, ast.Div) else "*"))
+        pending.extend(reversed(list(ast.iter_child_nodes(node))))
+    return ordered
 
 
 def _read_source_git(cwd: Path, arguments: list[str]) -> bytes:
@@ -184,28 +207,26 @@ def _rel(path: Path) -> str:
 
 def scan_file(path: Path) -> list[dict]:
     """Return a list of violation records for one file (empty == clean)."""
-    rel = _rel(path)
-    if rel in EXEMPT_RELATIVE:
+    if (
+        any(path == REPO_ROOT / rel for rel in EXEMPT_RELATIVE)
+        and _rel(path) in EXEMPT_RELATIVE
+    ):
         return []
     try:
-        source = path.read_text(encoding="utf-8")
-    except UnicodeDecodeError:
-        source = path.read_bytes().decode("utf-8", errors="replace")
-    # Cheap SOUND pre-filter before the (expensive) full AST parse: a timing
-    # BinOp (``<x> (/|*) <y>`` with both operands timing fields) REQUIRES at
-    # least two timing-suffix TOKENS in the source AND a ``/`` or ``*``. The
-    # token set must cover EVERY suffix _is_time_name accepts (``_time``,
-    # ``_time_s``, ``_ms``, ``mean_ms``/``median_ms``); ``_time_s`` and the
-    # ``mean_ms``/``median_ms`` forms already contain ``_time`` / ``_ms``, so
-    # counting ``_time`` + ``_ms`` occurrences is a sound lower bound. A file
-    # with fewer than two timing tokens (or no ``/``/``*``) cannot contain the
-    # pattern, so skipping its parse can NEVER miss a real violation - it only
-    # avoids parsing the ~99% of files with no time ratio (keeps this tier-1
-    # gate fast over thousands of files). If _is_time_name gains a suffix that
-    # is not a superstring of one of these tokens, this filter must gain it too.
-    if (source.count("_time") + source.count("_ms")) < 2 or (
-        "/" not in source and "*" not in source
-    ):
+        try:
+            source = path.read_text(encoding="utf-8")
+        except UnicodeDecodeError:
+            source = path.read_bytes().decode("utf-8", errors="replace")
+    except OSError:
+        # Preserve exempt aliases' read-error outcome. Readable aliases may now
+        # be parsed, but physical exemption still precedes every diagnostic.
+        if _rel(path) in EXEMPT_RELATIVE:
+            return []
+        raise
+    # Executable Div/Mult syntax requires these literal operator characters.
+    # Timing names cannot be preselected by raw suffix counts: the parser
+    # normalizes identifiers and decodes/concatenates constant string keys.
+    if "/" not in source and "*" not in source:
         return []
     try:
         tree = ast.parse(source, filename=str(path))
@@ -213,8 +234,12 @@ def scan_file(path: Path) -> list[dict]:
         # A file that does not parse is not our concern here (other gates catch
         # it); it cannot contain a live time/time division we must flag.
         return []
-    finder = _TimeRatioFinder()
-    finder.visit(tree)
+    hits = _time_ratio_hits(tree)
+    if not hits:
+        return []
+    rel = _rel(path)
+    if rel in EXEMPT_RELATIVE:
+        return []
     return [
         {
             "path": rel,
@@ -228,7 +253,7 @@ def scan_file(path: Path) -> list[dict]:
                 "can never become a finite ratio."
             ),
         }
-        for lineno, op in finder.hits
+        for lineno, op in hits
     ]
 
 

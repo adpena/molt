@@ -262,6 +262,33 @@ def test_lean_cache_is_ignored_untracked_build_state() -> None:
     )
 
 
+def test_local_generator_freshness_has_one_execution_owner() -> None:
+    manifest = tomllib.loads(
+        (proof_plan.ROOT / "tools/generator_manifest.toml").read_text(encoding="utf-8")
+    )
+    covered = {
+        "python " + row["check_command"]
+        for row in manifest["generator"]
+        if row.get("check_mode")
+        and not row.get("discovery_only")
+        and row.get("ci_checkable", True)
+    }
+    assert PLAN.always.count("python tools/generators.py check") == 1
+    assert not covered.intersection(PLAN.always)
+    duplicates = {
+        rule["name"]: sorted(covered.intersection(rule.get("gates", ())))
+        for rule in PLAN.local_rules
+        if covered.intersection(rule.get("gates", ()))
+    }
+    assert not duplicates, duplicates
+    # Host-input generators are outside the reproducible aggregate. Their
+    # independently selected checks must survive freshness consolidation.
+    gpu = next(
+        rule for rule in PLAN.local_rules if rule["name"] == "tinygrad-op-contract"
+    )
+    assert "python tools/gen_gpu_op_contract.py --check" in gpu["gates"]
+
+
 def test_generated_local_dx_projection_has_stable_command_ids() -> None:
     projection = json.loads(gen_proof_plan._json_projection(PLAN))
     assert projection["schema"] == "molt.proof-plan-projection.v8"
