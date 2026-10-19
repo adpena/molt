@@ -43,10 +43,6 @@ pub(super) fn runtime_value_call_for_kind(kind: &str) -> Option<RuntimeValueCall
             rust_fn: "molt_ascii_from_obj",
             arity: 1,
         }),
-        "bridge_unavailable" => Some(RuntimeValueCall {
-            rust_fn: "molt_bridge_unavailable",
-            arity: 1,
-        }),
         _ => None,
     }
 }

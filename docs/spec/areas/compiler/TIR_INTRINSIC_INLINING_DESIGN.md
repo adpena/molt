@@ -491,7 +491,7 @@ All 373 unique `molt_*` functions imported via `Linkage::Import`, organized by c
 | `molt_cbor_parse_scalar` | 1 | Low | |
 | `molt_cbor_parse_scalar_obj` | 2 | Low | |
 
-#### Miscellaneous (15 functions)
+#### Miscellaneous (14 functions)
 
 | Function | Decl count | Hot? | Notes |
 |----------|-----------|------|-------|
@@ -500,7 +500,6 @@ All 373 unique `molt_*` functions imported via `Linkage::Import`, organized by c
 | `molt_getargv` | 1 | Low | `sys.argv` |
 | `molt_getframe` | 1 | Low | `sys._getframe()` |
 | `molt_sys_executable` | 1 | Low | |
-| `molt_bridge_unavailable` | 1 | Low | |
 | `molt_memoryview_new` | 1 | Low | |
 | `molt_memoryview_tobytes` | 1 | Low | |
 | `molt_memoryview_cast` | 1 | Low | |

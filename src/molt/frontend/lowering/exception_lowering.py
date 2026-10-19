@@ -24,6 +24,8 @@ from molt.frontend._types import (
     TryScope,
 )
 from molt.frontend._mixin_base import GeneratorMixinBase
+from molt.frontend.diagnostics import FrontendDiagnostic as Diagnostic
+from molt.frontend.diagnostics import FrontendRejection, raise_compatibility_error
 
 
 SyntaxErrorName = Literal["SyntaxError", "IndentationError", "TabError"]
@@ -215,15 +217,16 @@ class ExceptionLoweringMixin(GeneratorMixinBase):
                     result=MoltValue("none"),
                 )
             )
-            self._bridge_fallback(
+            raise_compatibility_error(
+                self.compat,
                 handler,
-                "except (unsupported handler)",
-                alternative="use a lowered exception name or tuple",
-                detail="handler expression could not be lowered",
+                FrontendRejection(
+                    Diagnostic.CONTROL_FLOW,
+                    "except (unsupported handler)",
+                    "use a lowered exception name or tuple",
+                    "handler expression could not be lowered",
+                ),
             )
-            res = MoltValue(self.next_var(), type_hint="bool")
-            self.emit(MoltOp(kind="CONST_BOOL", args=[0], result=res))
-            return res
         # Exception handlers validate every top-level tuple item before matching
         # canonical inheritance; isinstance permits invalid handlers and invokes
         # user metaclass hooks that the exception protocol must not call.

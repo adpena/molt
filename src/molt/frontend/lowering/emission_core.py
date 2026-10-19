@@ -1,16 +1,16 @@
-"""EmissionCoreMixin: dispatch, op emission, and bridge-unavailable policy.
+"""EmissionCoreMixin: dispatch, op emission, and typed capability diagnostics.
 
 Move-only extraction from frontend/__init__.py. This mixin owns the generator's
 cross-cutting emission control path: AST dispatch line markers, temporary and
 label allocation, CHECK_EXCEPTION insertion, scalar fast-path predicates, and
-unsupported-feature bridge diagnostics.
+unsupported-feature diagnostic conversion.
 """
 
 from __future__ import annotations
 
 import ast
 from contextlib import contextmanager
-from typing import Any, Literal
+from typing import Any
 
 from molt.compiler_analysis.python_effects_generated import (
     NO_PYTHON_CALLBACKS_FORBIDDEN_EFFECTS,
@@ -219,26 +219,3 @@ class EmissionCoreMixin(GeneratorMixinBase):
 
     def _hints_enabled(self) -> bool:
         return self.type_hint_policy in {"trust", "check"} or self.stdlib_hint_trust
-
-    def _emit_bridge_unavailable(self, message: str) -> MoltValue:
-        msg_val = MoltValue(self.next_var(), type_hint="str")
-        self.emit(MoltOp(kind="CONST_STR", args=[message], result=msg_val))
-        res = MoltValue(self.next_var(), type_hint="Any")
-        self.emit(MoltOp(kind="BRIDGE_UNAVAILABLE", args=[msg_val], result=res))
-        return res
-
-    def _bridge_fallback(
-        self,
-        node: ast.AST,
-        feature: str,
-        *,
-        impact: Literal["low", "medium", "high"] = "high",
-        alternative: str | None = None,
-        detail: str | None = None,
-    ) -> MoltValue:
-        issue = self.compat.bridge_unavailable(
-            node, feature, impact=impact, alternative=alternative, detail=detail
-        )
-        if self.fallback_policy != "bridge":
-            raise self.compat.error(issue)
-        return self._emit_bridge_unavailable(issue.runtime_message())

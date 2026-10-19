@@ -66,7 +66,7 @@ prefixes = [
     "func_new", "bound_method_new",
     "is_bound_method", "is_function_obj", "function_",
     "call_bind", "call_indirect_ic", "call_func_dispatch",
-    "invoke_ffi_ic", "call_arity_error", "bridge_unavailable",
+    "invoke_ffi_ic", "call_arity_error",
     "callargs_", "closure_", "cell_", "handle_resolve",
     "is", "string_eq", "eq", "ne", "lt", "le", "gt", "ge",
     "missing", "pending", "not_implemented", "ellipsis",

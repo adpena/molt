@@ -172,7 +172,6 @@ pub(crate) enum WasmRuntimeImport {
     IsBoundMethod,
     IsFunctionObj,
     FunctionDirectCallEligible,
-    BridgeUnavailable,
     CapabilitiesHas,
     CapabilitiesRequire,
     CapabilitiesRequireOperation,

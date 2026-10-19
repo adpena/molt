@@ -594,7 +594,6 @@ def _validate_verified_subset_facts(
             "coordinate",
             "counts",
             "execution",
-            "fallback_policy",
             "outcomes",
             "projection",
             "suites",
@@ -604,8 +603,6 @@ def _validate_verified_subset_facts(
         return ["verified_subset facts schema is invalid"]
     problems: list[str] = []
     policy = validation.policy
-    if facts.get("fallback_policy") != policy.fallback_policy:
-        problems.append("facts.fallback_policy differs from verified-subset policy")
     suites = facts.get("suites")
     if suites != [suite.as_record() for suite in policy.suites]:
         problems.append("facts.suites differs from verified-subset policy")

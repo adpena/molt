@@ -1362,7 +1362,7 @@ owned structural arc is enough unless a failure exposes a wider contract risk.
 
 ## No CPython Fallback (Non-Negotiable)
 - Molt-compiled binaries must run on systems without Python installed; do not depend on `python`, `sys.executable`, or CPython at runtime.
-- Never implement CPython fallback/bridging in CLI, runtime, tests, or tooling. Unsupported constructs must be compile-time errors or `bridge_unavailable` runtime exits when `--fallback bridge` is explicitly requested.
+- Never implement CPython fallback/bridging in CLI, runtime, tests, or tooling. Unavailable implementations must fail compilation through the canonical frontend diagnostic authority; unsupported constructs remain release obligations.
 - CPython is only allowed for baseline comparisons (`molt compare`, `tests/molt_diff.py`, CPython regrtest); it must be explicit and never used to execute Molt binaries.
 
 ## Runtime Capability System (Non-Negotiable)

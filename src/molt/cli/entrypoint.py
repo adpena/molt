@@ -91,7 +91,15 @@ def main(build_fn: Callable[..., int] | None = None) -> int:
         except OSError:
             config_root = _find_project_root(Path.cwd())
     config = _load_molt_config(config_root)
-    build_cfg = _resolve_build_config(config)
+    try:
+        build_cfg = _resolve_build_config(config)
+    except ValueError as exc:
+        return fail(
+            str(exc),
+            bool(getattr(args, "json", False)),
+            code=2,
+            command=str(args.command),
+        )
     run_cfg = _resolve_command_config(config, "run")
     compare_cfg = _resolve_command_config(config, "compare")
     test_cfg = _resolve_command_config(config, "test")

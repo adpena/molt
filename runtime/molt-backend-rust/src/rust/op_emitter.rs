@@ -206,7 +206,7 @@ impl RustBackend {
             | "drop_inserted"
             | "exception_region_drops_inserted" => self.emit_op_nop(op),
             "warn_stderr" => self.emit_op_warn_stderr(op),
-            "str_from_obj" | "repr_from_obj" | "ascii_from_obj" | "bridge_unavailable" => {
+            "str_from_obj" | "repr_from_obj" | "ascii_from_obj" => {
                 self.emit_op_runtime_value_call(op)
             }
             "unpack_sequence" => self.emit_op_unpack_sequence(op),

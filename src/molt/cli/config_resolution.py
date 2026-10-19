@@ -158,7 +158,12 @@ def _resolve_command_config(config: Mapping[str, Any], command: str) -> dict[str
 
 
 def _resolve_build_config(config: Mapping[str, Any]) -> dict[str, Any]:
-    return _resolve_command_config(config, "build")
+    build_config = _resolve_command_config(config, "build")
+    if "fallback" in build_config:
+        raise ValueError(
+            "build configuration 'fallback' was removed; unsupported constructs fail at compile time"
+        )
+    return build_config
 
 
 def _resolve_capabilities_config(

@@ -403,7 +403,6 @@ def _receipt_facts(
         "coordinate": coordinate.as_record(),
         "counts": outcome_counts(results),
         "execution": dict(execution),
-        "fallback_policy": policy.fallback_policy,
         "outcomes": list(results),
         "projection": projection.closure_record(),
         "suites": [suite.as_record() for suite in policy.suites],

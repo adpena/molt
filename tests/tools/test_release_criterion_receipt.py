@@ -371,6 +371,17 @@ def _validate_verified(payload: object) -> tuple[str, ...]:
     )
 
 
+@pytest.mark.parametrize("policy", ("error", "bridge"))
+def test_verified_receipt_rejects_retired_fallback_selector(
+    monkeypatch: pytest.MonkeyPatch, policy: str
+) -> None:
+    payload, _coordinate = _verified_receipt(monkeypatch)
+    assert "fallback_policy" not in payload["facts"]
+    payload["facts"]["fallback_policy"] = policy
+
+    assert "verified_subset facts schema is invalid" in _validate_verified(payload)
+
+
 def test_verified_receipt_rejects_validation_from_another_root(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

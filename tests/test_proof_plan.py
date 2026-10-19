@@ -808,6 +808,7 @@ def test_compiler_runtime_partition_preserves_disjoint_test_and_tool_ownership()
         "integration",
         "basic",
         "native_extern_linkage",
+        "rust_transpiler_preview",
     }
     for command in (core, complement):
         assert "--nocapture" in command.argv[command.argv.index("--") + 1 :]

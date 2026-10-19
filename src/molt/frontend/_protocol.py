@@ -49,7 +49,6 @@ from molt.frontend._types import (
     ControlMaps,
     DeclaredClass,
     ExactClassFact,
-    FallbackPolicy,
     LoopBoundFact,
     LoopScope,
     MethodDescriptor,
@@ -101,7 +100,6 @@ if TYPE_CHECKING:
 
 
 class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
-    imported_attr_names: dict[str, str]
     imported_module_attr_mutations: set[tuple[str, str]]
     imported_module_provenance: dict[str, frozenset[str]]
     imported_modules: dict[str, str]
@@ -205,7 +203,6 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
         self,
         parse_codec: Literal["msgpack", "cbor", "json"] = ...,
         type_hint_policy: Literal["ignore", "trust", "check"] = ...,
-        fallback_policy: FallbackPolicy = ...,
         source_path: str | None = ...,
         type_facts: "TypeFacts | None" = ...,
         type_facts_module: str | None = ...,
@@ -323,16 +320,6 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
     def _bound_method_wire(hint: BoundMethodHint) -> str | None: ...
 
     def _box_local(self, name: str) -> None: ...
-
-    def _bridge_fallback(
-        self,
-        node: ast.AST,
-        feature: str,
-        *,
-        impact: Literal["low", "medium", "high"] = ...,
-        alternative: str | None = ...,
-        detail: str | None = ...,
-    ) -> MoltValue: ...
 
     def _build_class_definition_index(
         self, module: ast.Module
@@ -891,8 +878,6 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
     def _emit_borrow(self, value: MoltValue) -> MoltValue: ...
 
     def _emit_box(self, value: MoltValue, *, hint: str | None = ...) -> MoltValue: ...
-
-    def _emit_bridge_unavailable(self, message: str) -> MoltValue: ...
 
     def _emit_builtin_exception_match(
         self, exc_val: MoltValue, builtin_name: str

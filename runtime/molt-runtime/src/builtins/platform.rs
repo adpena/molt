@@ -34,18 +34,6 @@ pub(crate) const IO_EVENT_ERROR: u32 = 1 << 2;
 
 // --- errno/socket/env helpers ---
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_bridge_unavailable(msg_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
-        let msg = format_obj_str(_py, obj_from_bits(msg_bits));
-        if exception_pending(_py) {
-            return MoltObject::none().bits();
-        }
-        eprintln!("Molt bridge unavailable: {msg}");
-        std::process::exit(1);
-    })
-}
-
 const PLATFORM_OBJECT_SLOT_COUNT: usize = 4;
 
 pub(crate) struct PlatformRuntimeState {

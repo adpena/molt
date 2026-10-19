@@ -21,12 +21,12 @@ execution, package inspection and conformance checks may use the pinned
 interpreter. None of those reference processes becomes an emitted program's
 execution dependency.
 
-`--fallback=bridge` is an existing compatibility diagnostic policy, described in
-the [compatibility contract](compatibility_fallback_contract.md). It does not
-provide a host interpreter. An unsupported operation may emit an unavailable-path
-marker; reaching that marker fails. The existing `python.bridge` capability on
-`ffi.bridge` gates an FFI dispatch operation inside Molt. A capability grant does
-not supply a CPython runtime or make an unsupported operation executable.
+Unavailable implementations fail compilation under the
+[compatibility contract](compatibility_fallback_contract.md). Compiled outputs
+contain no deferred unavailable-operation marker. The existing `python.bridge`
+capability on `ffi.bridge` gates an FFI dispatch operation inside Molt. A
+capability grant does not supply a CPython runtime or make an unsupported
+operation executable.
 
 Runtime/C-API object bridges, source-recompiled extensions, WASM host imports and
 explicit application services retain their own ownership and capability

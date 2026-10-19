@@ -91,7 +91,6 @@ pub(crate) enum LirRuntimeCall {
     ModuleImport,
     ModuleImportStar,
     ModuleNew,
-    BridgeUnavailable,
     ContextEnter,
     ContextExit,
     ObjectNewBound,
@@ -201,7 +200,6 @@ impl LirRuntimeCall {
         Self::ModuleImport,
         Self::ModuleImportStar,
         Self::ModuleNew,
-        Self::BridgeUnavailable,
         Self::ContextEnter,
         Self::ContextExit,
         Self::ObjectNewBound,
@@ -310,7 +308,6 @@ impl LirRuntimeCall {
             Self::ModuleImport => WasmRuntimeImport::ModuleImport,
             Self::ModuleImportStar => WasmRuntimeImport::ModuleImportStar,
             Self::ModuleNew => WasmRuntimeImport::ModuleNew,
-            Self::BridgeUnavailable => WasmRuntimeImport::BridgeUnavailable,
             Self::ContextEnter => WasmRuntimeImport::ContextEnter,
             Self::ContextExit => WasmRuntimeImport::ContextExit,
             Self::ObjectNewBound => WasmRuntimeImport::ObjectNewBound,
@@ -474,10 +471,6 @@ pub(crate) fn lir_fixed_runtime_call(kind: &str) -> Option<LirFixedRuntimeCall> 
         "module_del_global_if_present" => Some(LirFixedRuntimeCall {
             call: LirRuntimeCall::ModuleDelGlobalIfPresent,
             operand_count: 2,
-        }),
-        "bridge_unavailable" => Some(LirFixedRuntimeCall {
-            call: LirRuntimeCall::BridgeUnavailable,
-            operand_count: 1,
         }),
         "context_enter" => Some(LirFixedRuntimeCall {
             call: LirRuntimeCall::ContextEnter,
@@ -1113,12 +1106,6 @@ pub(crate) fn op_loop_runtime_call(kind: &str, marked: bool) -> Option<OpLoopRun
                 OpLoopRuntimeArgSpec::Local(1),
             ],
             required_imports: &[WasmRuntimeImport::ModuleDelGlobalIfPresent],
-            discard_result: false,
-        }),
-        "bridge_unavailable" => Some(OpLoopRuntimeCallSpec {
-            import: WasmRuntimeImport::BridgeUnavailable,
-            args: &[OpLoopRuntimeArgSpec::Local(0)],
-            required_imports: &[WasmRuntimeImport::BridgeUnavailable],
             discard_result: false,
         }),
         "context_enter" => Some(OpLoopRuntimeCallSpec {

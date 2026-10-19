@@ -124,7 +124,6 @@ class _GeneratorProtocolAttrs(Protocol):
     exception_stack_depth_baseline: MoltValue | None
     exception_stack_prev_baseline: MoltValue | None
     explicit_type_hints: dict[str, TypeHint]
-    fallback_policy: Any
     frame_code_slots: CodeSlotDeclaration | None
     frame_home_slots: dict[str, int] | None
     free_var_hints: dict[str, TypeHint]
@@ -147,3 +146,4 @@ class _GeneratorProtocolAttrs(Protocol):
     global_imported_modules: dict[str, str]
     global_imported_names: dict[str, str]
     globals: dict[str, MoltValue]
+    imported_attr_names: dict[str, str]

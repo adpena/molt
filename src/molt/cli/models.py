@@ -69,7 +69,6 @@ if TYPE_CHECKING:
 
 ParseCodec = Literal["msgpack", "cbor", "json"]
 TypeHintPolicy = Literal["ignore", "trust", "check"]
-FallbackPolicy = Literal["error", "bridge"]
 BuildProfile = Literal["dev", "release"]
 EmitMode = Literal["bin", "obj", "wasm"]
 Target = str
@@ -783,7 +782,6 @@ class _FrontendLayerExecutionContext:
     project_root: Path | None
     parse_codec: "ParseCodec"
     type_hint_policy: "TypeHintPolicy"
-    fallback_policy: "FallbackPolicy"
     type_facts: TypeFacts | None
     enable_phi: bool
     known_modules: Collection[str]
@@ -842,7 +840,6 @@ class _SerialFrontendLoweringContext:
     project_root: Path | None
     parse_codec: "ParseCodec"
     type_hint_policy: "TypeHintPolicy"
-    fallback_policy: "FallbackPolicy"
     type_facts: TypeFacts | None
     enable_phi: bool
     known_modules: Collection[str]

@@ -371,11 +371,15 @@ fn external_programs_reject_unknown_and_backend_private_kinds_before_preprocessi
     use molt_ir::ir_schema::OpShapeViolation;
     use molt_ir::tir::op_kinds_generated::SIMPLEIR_BACKEND_PRIVATE_KINDS;
 
-    for (kind, owner) in std::iter::once(("future_unregistered_op", None)).chain(
-        SIMPLEIR_BACKEND_PRIVATE_KINDS
-            .iter()
-            .map(|&(kind, owner)| (kind, Some(owner))),
-    ) {
+    for (kind, owner) in ["future_unregistered_op", "bridge_unavailable"]
+        .into_iter()
+        .map(|kind| (kind, None))
+        .chain(
+            SIMPLEIR_BACKEND_PRIVATE_KINDS
+                .iter()
+                .map(|&(kind, owner)| (kind, Some(owner))),
+        )
+    {
         for out in [None, Some("unused_result")] {
             // Even unreachable, unused and resultless operations must be rejected
             // before optimization can erase them at any checked backend boundary.

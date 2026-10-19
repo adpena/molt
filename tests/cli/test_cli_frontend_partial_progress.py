@@ -87,7 +87,6 @@ def _run_batch(project_root: Path, module_graph: dict[str, Path]):
         project_root=project_root,
         parse_codec="msgpack",
         type_hint_policy="ignore",
-        fallback_policy="error",
         type_facts=None,
         enable_phi=True,
         known_modules=set(names),

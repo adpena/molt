@@ -632,7 +632,7 @@ end
             "local v0 = nil -- [internal: function_closure_bits]",
             "local v0 = true -- [stub: isinstance]",
             "-- [class op: class_new]",
-            "local v0 = nil -- [bridge_unavailable]",
+            "local v0 = nil -- [fixture_missing_semantics]",
         ];
         for marker in markers {
             let source = format!("--!strict\nfunction molt_main()\n\t{marker}\nend\n");

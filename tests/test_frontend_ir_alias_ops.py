@@ -335,16 +335,13 @@ def test_dead_static_module_branch_preserves_names_without_executing_import() ->
 
 
 def test_raw_guard_tag_emitted_for_type_hints() -> None:
-    kinds = _raw_kinds(
-        "x: int = 1\n", type_hint_policy="check", fallback_policy="bridge"
-    )
+    kinds = _raw_kinds("x: int = 1\n", type_hint_policy="check")
     assert "GUARD_TAG" in kinds
 
 
 def test_raw_dict_increment_uses_runtime_admission_for_bound_operands() -> None:
     ops = _raw_function_ops(
         "def f(d, key, step):\n    d[key] = d.get(key, 0) + step\n",
-        fallback_policy="bridge",
     )
     increments = [op for op in ops if op.kind == "DICT_STR_INT_INC"]
     assert len(increments) == 1
@@ -357,7 +354,6 @@ def test_raw_dict_increment_uses_runtime_admission_for_bound_operands() -> None:
 def test_raw_dict_increment_decline_runs_the_original_statement() -> None:
     ops = _raw_function_ops(
         "def f(d, key, step):\n    d[key] = d.get(key, 0) + step\n",
-        fallback_policy="bridge",
     )
     increment = next(op for op in ops if op.kind == "DICT_STR_INT_INC")
     declined = next(
@@ -401,27 +397,39 @@ def test_raw_dict_increment_decline_runs_the_original_statement() -> None:
 
 
 @pytest.mark.parametrize(
-    "arguments,expected", [("1", "CALL_FUNC"), ("value=1", "CALL_BIND")]
+    "arguments,expected",
+    [
+        ("1", "CALL_FUNC"),
+        ("value=1", "CALL_BIND"),
+        ('*(1,), **{"value": 2}', "CALL_INDIRECT"),
+    ],
 )
-def test_raw_bridge_attr_call_uses_matching_argument_protocol(
+def test_raw_generic_attr_call_uses_matching_argument_protocol(
     arguments, expected
 ) -> None:
     kinds = _raw_kinds(
-        f"import unknown_mod\nunknown_mod.foo({arguments})\n", fallback_policy="bridge"
+        f"import discovered_mod\ndiscovered_mod.foo({arguments})\n",
+        known_modules={"discovered_mod"},
     )
     assert expected in kinds
 
 
 @pytest.mark.parametrize(
-    "arguments,expected", [("1", "call_func"), ("value=1", "call_bind")]
+    "arguments,expected",
+    [
+        ("1", "call_func"),
+        ("value=1", "call_bind"),
+        ('*(1,), **{"value": 2}', "call_indirect"),
+    ],
 )
-def test_lowered_bridge_attr_call_uses_matching_argument_protocol(
+def test_lowered_generic_attr_call_uses_matching_argument_protocol(
     arguments, expected
 ) -> None:
-    kinds = _lowered_kinds(
-        f"import unknown_mod\nunknown_mod.foo({arguments})\n", fallback_policy="bridge"
+    ops = _lowered_ops(
+        f"import discovered_mod\ndiscovered_mod.foo({arguments})\n",
+        known_modules={"discovered_mod"},
     )
-    assert expected in kinds
+    assert expected in {op["kind"] for op in ops}
 
 
 def test_lowered_dynamic_noncallable_attr_uses_runtime_callable_check() -> None:
@@ -435,15 +443,12 @@ def test_lowered_guard_tag_lane_is_used_for_type_hint_checking() -> None:
     kinds = _lowered_kinds(
         "def f(x: int):\n    return x\n",
         type_hint_policy="check",
-        fallback_policy="bridge",
     )
     assert "guard_tag" in kinds
 
 
 def test_raw_module_call_uses_the_captured_callable_object() -> None:
-    ops = _raw_function_ops(
-        "def f():\n    import os\n    return os.getcwd()\n", fallback_policy="bridge"
-    )
+    ops = _raw_function_ops("def f():\n    import os\n    return os.getcwd()\n")
     loads = _raw_attribute_loads(ops, "getcwd")
     assert len(loads) == 1
     calls = [
@@ -457,9 +462,7 @@ def test_raw_module_call_uses_the_captured_callable_object() -> None:
 
 
 def test_lowered_module_call_preserves_the_captured_callable_operand() -> None:
-    ir = compile_to_tir(
-        "def f():\n    import os\n    return os.getcwd()\n", fallback_policy="bridge"
-    )
+    ir = compile_to_tir("def f():\n    import os\n    return os.getcwd()\n")
     ops = [op for fn in ir["functions"] for op in fn["ops"]]
     constants = _const_str_map(ops)
     loads = [
@@ -488,7 +491,6 @@ def test_module_call_captures_before_argument_effects_and_preserves_binding(
     arguments = "path=effect()" if keyword else "effect()"
     ops = _raw_function_ops(
         f"def f(effect):\n    import os\n    return os.getcwd({arguments})\n",
-        fallback_policy="bridge",
     )
     loads = _raw_attribute_loads(ops, "getcwd")
     assert len(loads) == 1
@@ -542,7 +544,6 @@ def test_native_callable_export_calls_the_live_callable_object() -> None:
             known_modules={"nativepkg", "nativepkg.ndimage"},
             direct_call_modules={"__main__"},
             native_callable_exports=exports,
-            fallback_policy="bridge",
         )
         gen.visit(ast.parse(source))
         ir = gen.to_json()
@@ -570,7 +571,6 @@ def test_conditional_native_callable_import_calls_live_global(
                 "symbol": "molt_nativepkg_ndimage_distance_transform_edt",
             }
         },
-        fallback_policy="bridge",
     )
     gen.visit(
         ast.parse(
@@ -602,7 +602,6 @@ def test_rebound_native_callable_import_still_uses_module_global_call() -> None:
                 "symbol": "molt_nativepkg_ndimage_distance_transform_edt",
             }
         },
-        fallback_policy="bridge",
     )
     gen.visit(
         ast.parse(
@@ -633,7 +632,6 @@ def test_native_callable_export_rejects_unknown_abi_before_invoke_ffi() -> None:
                     "symbol": "molt_nativepkg_ndimage_distance_transform_edt",
                 }
             },
-            fallback_policy="bridge",
         )
 
 
@@ -650,7 +648,6 @@ def test_native_callable_fixed_arity_is_enforced_by_the_published_wrapper() -> N
                 "symbol": "molt_nativepkg_ndimage_distance_transform_edt",
             }
         },
-        fallback_policy="bridge",
     )
 
     gen.visit(
@@ -679,7 +676,6 @@ def test_native_callable_module_attr_export_uses_normal_dispatch() -> None:
                 "abi": "molt.object_call_v1",
             }
         },
-        fallback_policy="bridge",
     )
 
     gen.visit(
@@ -709,7 +705,6 @@ def test_native_callable_dotted_import_export_uses_normal_dispatch() -> None:
                 "abi": "molt.object_call_v1",
             }
         },
-        fallback_policy="bridge",
     )
 
     gen.visit(
@@ -739,7 +734,6 @@ def test_native_callable_dotted_chain_requires_imported_child_module() -> None:
                 "abi": "molt.object_call_v1",
             }
         },
-        fallback_policy="bridge",
     )
 
     gen.visit(
@@ -768,7 +762,6 @@ def test_native_callable_module_attr_from_import_uses_captured_callable() -> Non
                 "abi": "molt.object_call_v1",
             }
         },
-        fallback_policy="bridge",
     )
 
     gen.visit(
@@ -869,10 +862,10 @@ def _assert_live_global_call(
         ("from os import getcwd\ngetcwd()\n", "getcwd", ()),
     ],
 )
-def test_module_import_store_callbacks_require_live_bridge_callee(
+def test_module_import_store_callbacks_require_live_generic_callee(
     source: str, name: str, attributes: tuple[str, ...]
 ) -> None:
-    ops = _lowered_ops(source, fallback_policy="bridge")
+    ops = _lowered_ops(source)
     assert not any(op["kind"] == "invoke_ffi" for op in ops)
     _assert_live_global_call(ops, name, attributes=attributes)
 
@@ -922,7 +915,6 @@ def test_native_export_metadata_does_not_override_callback_exposed_binding(
                 ),
             }
         },
-        fallback_policy="bridge",
     )
     assert not any(op["kind"] == "invoke_ffi" for op in ops)
     _assert_live_global_call(ops, name, attributes=attributes, argument="data")

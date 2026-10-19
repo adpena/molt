@@ -22,25 +22,6 @@ impl LuauBackend {
                     "Python-visible frame objects require exact whole-program locals activation",
                 );
             }
-            "bridge_unavailable" => {
-                let args = op.args.as_deref().unwrap_or(&[]);
-                let msg = args
-                    .first()
-                    .map(|arg| {
-                        format!(
-                            "\"Molt bridge unavailable: \" .. tostring({})",
-                            sanitize_ident(arg)
-                        )
-                    })
-                    .unwrap_or_else(|| "\"Molt bridge unavailable\"".to_string());
-                let diagnostic = format!("{{__type=\"RuntimeError\", __msg={msg}}}");
-                if let Some(ref out_name) = op.out {
-                    let out = sanitize_ident(out_name);
-                    self.emit_line(&format!("local {out}: any = error({diagnostic})"));
-                } else {
-                    self.emit_line(&format!("error({diagnostic})"));
-                }
-            }
             "function_closure_bits" => {
                 self.emit_unsupported_op(op);
             }

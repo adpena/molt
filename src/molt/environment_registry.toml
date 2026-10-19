@@ -848,14 +848,6 @@ owner = "tools/compat/backends.py"
 summary = "Scratch directory for cross-backend compat builds, consulted only when no differential output root is selected (the layout then sets it to <root>/compat-scratch for children); ~ expands, and unset means <MOLT_EXT_ROOT or repo>/tmp/compat_backends. Admitted Python Cargo proofs bind it to their canonical proof scratch root."
 
 [[variable]]
-name = "MOLT_COMPAT_WARNINGS"
-audience = "user"
-kind = "bool"
-default = "1"
-owner = "src/molt/compat.py"
-summary = "Controls whether the frontend prints compatibility warnings to stderr; 0, false, no, or off (case-insensitive) silences them, default on."
-
-[[variable]]
 name = "MOLT_COMPILE_GUARD_DIR"
 audience = "developer"
 kind = "path"

@@ -725,8 +725,6 @@ def test_tcl_headless_value_conversion_matches_cpython() -> None:
                 "build",
                 "--profile",
                 "dev",
-                "--fallback",
-                "error",
                 "--no-trusted",
                 "--capabilities",
                 "gui.window",

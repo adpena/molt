@@ -72,12 +72,6 @@ def add_factgraph_parser(
         help="Apply type annotations to guide lowering and specialization.",
     )
     parser.add_argument(
-        "--fallback",
-        choices=["error", "bridge"],
-        default="error",
-        help="Fallback policy for unsupported constructs.",
-    )
-    parser.add_argument(
         "--python-version",
         default=None,
         help="Target Python semantics (3.12, 3.13, or 3.14).",
@@ -439,7 +433,6 @@ def run_factgraph_command(
         file_path=args.file,
         target=target,
         type_hint_policy=args.type_hints,
-        fallback_policy=args.fallback,
         output=None,
         json_output=args.json,
         verbose=args.verbose,

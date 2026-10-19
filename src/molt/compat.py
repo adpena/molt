@@ -1,15 +1,12 @@
-"""Compatibility and fallback diagnostics for Molt."""
+"""Compatibility diagnostics for Molt."""
 
 from __future__ import annotations
 
 from dataclasses import dataclass
-import os
 import re
-import sys
 from typing import Literal
 
-FallbackPolicy = Literal["error", "bridge"]
-FallbackTier = Literal["native", "guarded", "bridge", "unsupported"]
+CompatibilityTier = Literal["unsupported"]
 Impact = Literal["low", "medium", "high"]
 
 VERIFIED_SUBSET_BOUNDARY = (
@@ -35,7 +32,7 @@ def compatibility_feature_category(feature: str) -> str:
 @dataclass(frozen=True)
 class CompatibilityIssue:
     feature: str
-    tier: FallbackTier
+    tier: CompatibilityTier
     impact: Impact
     location: str
     alternative: str | None = None
@@ -46,16 +43,6 @@ class CompatibilityIssue:
     @property
     def feature_category(self) -> str:
         return self.diagnostic_category or compatibility_feature_category(self.feature)
-
-    def format_warning(self) -> str:
-        lines = [
-            f"[MOLT_COMPAT] tier={self.tier} impact={self.impact} feature={self.feature} location={self.location}",
-        ]
-        if self.detail:
-            lines.append(f"  detail: {self.detail}")
-        if self.alternative:
-            lines.append(f"  replace: {self.alternative}")
-        return "\n".join(lines)
 
     def format_error(self) -> str:
         lines = [
@@ -74,14 +61,6 @@ class CompatibilityIssue:
             lines.append(f"  workaround: {DEFAULT_SUBSET_WORKAROUND}")
         return "\n".join(lines)
 
-    def runtime_message(self) -> str:
-        msg = (
-            f"{self.feature} requires fallback tier={self.tier} (impact={self.impact})"
-        )
-        if self.alternative:
-            msg += f". Replace with: {self.alternative}"
-        return msg
-
 
 class CompatibilityError(RuntimeError):
     def __init__(self, issue: CompatibilityIssue) -> None:
@@ -90,8 +69,7 @@ class CompatibilityError(RuntimeError):
 
 
 class CompatibilityReporter:
-    def __init__(self, policy: FallbackPolicy, source_path: str | None = None) -> None:
-        self.policy = policy
+    def __init__(self, source_path: str | None = None) -> None:
         self.source_path = source_path
 
     def _location(self, node: object) -> str:
@@ -103,21 +81,12 @@ class CompatibilityReporter:
             return f"{self.source_path}:{lineno}:{col or 0}"
         return f"<unknown>:{lineno}:{col or 0}"
 
-    def warn(self, issue: CompatibilityIssue) -> None:
-        disabled = os.environ.get("MOLT_COMPAT_WARNINGS", "").strip().lower()
-        if disabled in {"0", "false", "no", "off"}:
-            return
-        print(issue.format_warning(), file=sys.stderr)
-
-    def error(self, issue: CompatibilityIssue) -> CompatibilityError:
-        return CompatibilityError(issue)
-
     def unsupported(
         self,
         node: object,
         feature: str,
         *,
-        tier: FallbackTier = "unsupported",
+        tier: CompatibilityTier = "unsupported",
         impact: Impact = "high",
         alternative: str | None = None,
         detail: str | None = None,
@@ -135,27 +104,4 @@ class CompatibilityReporter:
             diagnostic_code=diagnostic_code,
             diagnostic_category=diagnostic_category,
         )
-        if tier in {"bridge", "guarded"}:
-            self.warn(issue)
-        return self.error(issue)
-
-    def bridge_unavailable(
-        self,
-        node: object,
-        feature: str,
-        *,
-        impact: Impact = "high",
-        alternative: str | None = None,
-        detail: str | None = None,
-    ) -> CompatibilityIssue:
-        location = self._location(node)
-        issue = CompatibilityIssue(
-            feature=feature,
-            tier="bridge",
-            impact=impact,
-            location=location,
-            alternative=alternative,
-            detail=detail,
-        )
-        self.warn(issue)
-        return issue
+        return CompatibilityError(issue)

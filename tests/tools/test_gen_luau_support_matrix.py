@@ -29,8 +29,8 @@ def test_classifies_luau_op_arms_from_fixture() -> None:
                 self.emit_line("if cond then goto label_1 end");
                 self.emit_line("error(\"[unsupported op: br_if cond missing target label]\")");
             }
-            "bridge_unavailable" => {
-                self.emit_line("local out: any = error({__type=\"RuntimeError\", __msg=\"Molt bridge unavailable: \" .. tostring(msg)})");
+            "fixture_runtime_error" => {
+                self.emit_line("local out: any = error({__type=\"RuntimeError\", __msg=\"fixture runtime error: \" .. tostring(msg)})");
             }
             "class_set_definition" => {
                 self.emit_line("if type(cls) == \"table\" then cls.__molt_class_definition = 1 end");
@@ -97,7 +97,7 @@ def test_classifies_luau_op_arms_from_fixture() -> None:
     assert rows["state_transition"].status == "not-admitted"
     assert rows["br_if"].status == "compile-error"
     assert "Checked Luau emission rejects" in rows["br_if"].note
-    assert rows["bridge_unavailable"].status == "not-admitted"
+    assert rows["fixture_runtime_error"].status == "not-admitted"
     assert rows["class_set_definition"].status == "implemented-exact"
     assert rows["object_new_bound"].status == "not-admitted"
     assert "semantic stub markers" in rows["object_new_bound"].note

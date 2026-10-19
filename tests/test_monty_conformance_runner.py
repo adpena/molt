@@ -270,7 +270,7 @@ def test_stats_summary_contains_required_fields():
     }
 
 
-def test_batch_build_params_are_native_error_fallback_and_canonical_env():
+def test_batch_build_params_are_native_and_canonical_env():
     src = Path("/tmp/corpus/alpha.py")
     out = Path("/tmp/out/alpha")
     env = {
@@ -292,7 +292,7 @@ def test_batch_build_params_are_native_error_fallback_and_canonical_env():
     assert params["file_path"] == str(src)
     assert params["output"] == str(out)
     assert params["target"] == "native"
-    assert params["fallback"] == "error"
+    assert "fallback" not in params
     assert params["trusted"] is False
     assert params["profile"] == "release"
     assert params["codec"] == "json"

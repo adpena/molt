@@ -69,7 +69,6 @@ PUBLIC_SURFACE = [
     "TryScope",
     "CompatibilityError",
     "CompatibilityReporter",
-    "FallbackPolicy",
     "CFGGraph",
     "ControlMaps",
     "build_cfg",
@@ -220,7 +219,8 @@ def test_moved_methods_resolve_on_class() -> None:
     # emission core
     assert hasattr(SimpleTIRGenerator, "emit")
     assert hasattr(SimpleTIRGenerator, "_suppress_check_exception")
-    assert hasattr(SimpleTIRGenerator, "_bridge_fallback")
+    assert not hasattr(SimpleTIRGenerator, "_bridge_fallback")
+    assert not hasattr(SimpleTIRGenerator, "_emit_bridge_unavailable")
     # expression primitives
     assert hasattr(SimpleTIRGenerator, "_emit_expr_list")
     assert hasattr(SimpleTIRGenerator, "_emit_compare_op")

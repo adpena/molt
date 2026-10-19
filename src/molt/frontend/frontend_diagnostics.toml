@@ -8,42 +8,42 @@ schema_version = 1
 name = "call_target"
 code = "MOLT-FE001"
 title = "call target cannot be lowered"
-tier = "bridge"
+tier = "unsupported"
 impact = "high"
 
 [[diagnostic]]
 name = "operand_value"
 code = "MOLT-FE003"
 title = "operand or value cannot be lowered"
-tier = "bridge"
+tier = "unsupported"
 impact = "high"
 
 [[diagnostic]]
 name = "type_form"
 code = "MOLT-FE004"
 title = "type form cannot be lowered"
-tier = "bridge"
+tier = "unsupported"
 impact = "high"
 
 [[diagnostic]]
 name = "syntax_form"
 code = "MOLT-FE005"
 title = "syntax form cannot be lowered"
-tier = "bridge"
+tier = "unsupported"
 impact = "high"
 
 [[diagnostic]]
 name = "control_flow"
 code = "MOLT-FE006"
 title = "control-flow form cannot be lowered"
-tier = "bridge"
+tier = "unsupported"
 impact = "high"
 
 [[diagnostic]]
 name = "import_resolution"
 code = "MOLT-FE007"
 title = "imported symbol cannot be resolved for lowering"
-tier = "bridge"
+tier = "unsupported"
 impact = "high"
 
 [[diagnostic]]
@@ -57,7 +57,7 @@ impact = "high"
 name = "unsupported_feature"
 code = "MOLT-FE009"
 title = "frontend capability is not implemented"
-tier = "bridge"
+tier = "unsupported"
 impact = "high"
 
 # A retired code stays reserved; no later diagnostic may reuse it.

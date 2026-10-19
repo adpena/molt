@@ -850,11 +850,6 @@ pub(crate) const IMPORT_REGISTRY: &[RuntimeImportSpec] = &[
         type_idx: 5,
     },
     RuntimeImportSpec {
-        import: WasmRuntimeImport::BridgeUnavailable,
-        name: "bridge_unavailable",
-        type_idx: 2,
-    },
-    RuntimeImportSpec {
         import: WasmRuntimeImport::CapabilitiesHas,
         name: "capabilities_has",
         type_idx: 2,
@@ -14161,8 +14156,6 @@ pub(crate) fn wasm_runtime_import(name: &str) -> Option<WasmRuntimeImport> {
         "molt_is_function_obj" => Some(WasmRuntimeImport::IsFunctionObj),
         "function_direct_call_eligible" => Some(WasmRuntimeImport::FunctionDirectCallEligible),
         "molt_function_direct_call_eligible" => Some(WasmRuntimeImport::FunctionDirectCallEligible),
-        "bridge_unavailable" => Some(WasmRuntimeImport::BridgeUnavailable),
-        "molt_bridge_unavailable" => Some(WasmRuntimeImport::BridgeUnavailable),
         "capabilities_has" => Some(WasmRuntimeImport::CapabilitiesHas),
         "molt_capabilities_has" => Some(WasmRuntimeImport::CapabilitiesHas),
         "capabilities_require" => Some(WasmRuntimeImport::CapabilitiesRequire),

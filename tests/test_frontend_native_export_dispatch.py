@@ -172,12 +172,11 @@ def test_implicit_decorator_call_family_uses_object_dispatch(definition: str) ->
 
 
 @pytest.mark.parametrize("metadata_only", [False, True])
-@pytest.mark.parametrize("fallback", ["error", "bridge"])
 @pytest.mark.parametrize(
     "call", ["ops.run(1)", "ops.run(value=1)", "ops.run(*arguments, **keywords)"]
 )
-def test_shared_native_dispatch_is_total_before_allowlist_and_bridge(
-    metadata_only: bool, fallback: str, call: str
+def test_shared_native_dispatch_is_total_before_import_refusal(
+    metadata_only: bool, call: str
 ) -> None:
     exports = (
         {
@@ -195,7 +194,6 @@ def test_shared_native_dispatch_is_total_before_allowlist_and_bridge(
         known_modules={"nativepkg", "nativepkg.ops"},
         native_python_exports=set() if metadata_only else {"nativepkg.ops.run"},
         native_callable_exports=exports,
-        fallback_policy=fallback,
     )
     generator.visit(ast.parse("import nativepkg.ops as ops\n"))
     node = ast.parse(call).body[0].value

@@ -116,7 +116,6 @@ Key flags:
 - `--backend {auto,cranelift,llvm}` (native backend fact selection)
 - `--profile {dev,release}`
 - `--type-hints {ignore,trust,check}`
-- `--fallback {error,bridge}`
 - `--python-version <ver>`
 - `--capabilities <file|profile|list>`
 - `--trusted/--no-trusted`

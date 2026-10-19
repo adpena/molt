@@ -31,7 +31,6 @@ if TYPE_CHECKING:
     from molt.cli.models import (
         BuildProfile,
         EmitMode,
-        FallbackPolicy,
         ParseCodec,
         Target,
         TypeHintPolicy,
@@ -287,7 +286,6 @@ def build(
     target: Target = "native",
     parse_codec: ParseCodec = "msgpack",
     type_hint_policy: TypeHintPolicy = "check",
-    fallback_policy: FallbackPolicy = "error",
     type_facts_path: str | None = None,
     pgo_profile: str | None = None,
     runtime_feedback: str | None = None,
@@ -444,7 +442,6 @@ def build(
                 resolved_build_entry=resolved_build_entry,
                 parse_codec=parse_codec,
                 type_hint_policy=type_hint_policy,
-                fallback_policy=fallback_policy,
                 profile=profile,
                 json_output=json_output,
                 target=target,

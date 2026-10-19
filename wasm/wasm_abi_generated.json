@@ -2692,7 +2692,6 @@
     "bit_xor": "molt_bit_xor",
     "block_on": "molt_block_on",
     "bound_method_new": "molt_bound_method_new",
-    "bridge_unavailable": "molt_bridge_unavailable",
     "buffer2d_cols": "molt_buffer2d_cols",
     "buffer2d_get": "molt_buffer2d_get",
     "buffer2d_matmul": "molt_buffer2d_matmul",
