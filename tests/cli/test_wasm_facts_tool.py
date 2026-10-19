@@ -75,10 +75,16 @@ def source_tool(tmp_path, monkeypatch):
         assert command[command.index("--bin") + 1] == name
         if product is HostToolProduct.WASM_FACTS:
             assert command[command.index("--features") + 1] == "host-tool"
+            assert command[command.index("--profile") + 1] == "release-fast"
+        else:
+            assert command[command.index("--profile") + 1] == "dev-fast"
         assert kwargs["timeout"] == 7
         state.builds.append(product)
         output = (
-            tmp_path / "target/dev-fast" / (name + (".exe" if os.name == "nt" else ""))
+            tmp_path
+            / "target"
+            / command[command.index("--profile") + 1]
+            / (name + (".exe" if os.name == "nt" else ""))
         )
         output.parent.mkdir(parents=True, exist_ok=True)
         output.write_bytes(
@@ -139,28 +145,19 @@ def _backend(root, environment):
 
 def test_facts_only_edit_rebuilds_its_generation_without_renaming_compiler(source_tool):
     root, environment, state = source_tool
-    first = wasm_facts_tool.ensure_wasm_facts_tool(
-        root, cargo_profile="dev-fast", env=environment
-    )
+    first = wasm_facts_tool.ensure_wasm_facts_tool(root, env=environment)
     compiler = _backend(root, environment)
     assert compiler, compiler.message
     original = first.read_bytes()
     assert state.builds == [HostToolProduct.WASM_FACTS, HostToolProduct.BACKEND]
-    assert (
-        wasm_facts_tool.ensure_wasm_facts_tool(
-            root, cargo_profile="dev-fast", env=environment
-        )
-        == first
-    )
+    assert wasm_facts_tool.ensure_wasm_facts_tool(root, env=environment) == first
     assert _backend(root, environment).binary == compiler.binary
     assert len(state.builds) == len(state.probes) == 2
 
     (root / "runtime/molt-wasm-facts/src/main.rs").write_text(
         "fn main() { /* changed facts */ }\n", encoding="utf-8"
     )
-    changed = wasm_facts_tool.ensure_wasm_facts_tool(
-        root, cargo_profile="dev-fast", env=environment
-    )
+    changed = wasm_facts_tool.ensure_wasm_facts_tool(root, env=environment)
     unchanged = _backend(root, environment)
     assert changed != first and changed.read_bytes() != original
     assert first.read_bytes() == original
@@ -178,24 +175,14 @@ def test_facts_only_edit_rebuilds_its_generation_without_renaming_compiler(sourc
     rebuilt = _backend(root, environment)
     assert rebuilt and rebuilt.binary != compiler.binary
     assert rebuilt.cache_compiler_fingerprint != compiler.cache_compiler_fingerprint
-    assert (
-        wasm_facts_tool.ensure_wasm_facts_tool(
-            root, cargo_profile="dev-fast", env=environment
-        )
-        == changed
-    )
+    assert wasm_facts_tool.ensure_wasm_facts_tool(root, env=environment) == changed
     assert state.builds[-1] is HostToolProduct.BACKEND
 
     # A genuine shared dependency remains in both selected source closures.
     (root / "runtime/shared/src/lib.rs").write_text(
         "pub fn changed_shared() {}\n", encoding="utf-8"
     )
-    assert (
-        wasm_facts_tool.ensure_wasm_facts_tool(
-            root, cargo_profile="dev-fast", env=environment
-        )
-        != changed
-    )
+    assert wasm_facts_tool.ensure_wasm_facts_tool(root, env=environment) != changed
     assert _backend(root, environment).binary != rebuilt.binary
 
 
@@ -204,9 +191,7 @@ def test_facts_source_rebuild_policy_uses_explicit_environment(
 ):
     root, environment, state = source_tool
     monkeypatch.setenv("MOLT_SKIP_RUNTIME_REBUILD", "1")
-    wasm_facts_tool.ensure_wasm_facts_tool(
-        root, cargo_profile="dev-fast", env=environment
-    )
+    wasm_facts_tool.ensure_wasm_facts_tool(root, env=environment)
     assert len(state.builds) == 1
     (root / "runtime/molt-wasm-facts/src/main.rs").write_text(
         "fn main() { /* new */ }\n", encoding="utf-8"
@@ -215,7 +200,6 @@ def test_facts_source_rebuild_policy_uses_explicit_environment(
     with pytest.raises(ValueError, match="MOLT_SKIP_RUNTIME_REBUILD=1"):
         wasm_facts_tool.ensure_wasm_facts_tool(
             root,
-            cargo_profile="dev-fast",
             env={**environment, "MOLT_SKIP_RUNTIME_REBUILD": "1"},
         )
     assert len(state.builds) == 1
@@ -227,24 +211,17 @@ def test_facts_observed_receipt_and_probe_use_explicit_environment(
     root, environment, state = source_tool
     monkeypatch.setenv("MOLT_TEST_BACKEND_INPUT", "ambient-poison")
     monkeypatch.setenv("MOLT_CARGO_TIMEOUT", "invalid-ambient-timeout")
-    first = wasm_facts_tool.ensure_wasm_facts_tool(
-        root, cargo_profile="dev-fast", env=environment
-    )
+    first = wasm_facts_tool.ensure_wasm_facts_tool(root, env=environment)
     monkeypatch.setenv("MOLT_TEST_BACKEND_INPUT", "other-ambient-poison")
-    assert (
-        wasm_facts_tool.ensure_wasm_facts_tool(
-            root, cargo_profile="dev-fast", env=environment
-        )
-        == first
-    )
+    assert wasm_facts_tool.ensure_wasm_facts_tool(root, env=environment) == first
     assert len(state.builds) == 1
     coordinate = (
         root
-        / "target/dev-fast"
+        / "target/release-fast"
         / ("molt-wasm-facts.host_tool" + (".exe" if os.name == "nt" else ""))
     )
     receipt_path = backend_binary._backend_fingerprint_path(
-        root, coordinate, "dev-fast"
+        root, coordinate, "release-fast"
     )
     initial = backend_binary._read_runtime_fingerprint(receipt_path)
     observation = CargoEnvironmentInputs.from_dict(initial["cargo_environment"])
@@ -254,12 +231,7 @@ def test_facts_observed_receipt_and_probe_use_explicit_environment(
     with pytest.raises(ValueError, match="MOLT_TEST_BACKEND_INPUT"):
         observation.verify(ProcessEnvironment(changed))
     # Source/output bytes stay fixed; only the observed ambient input changes.
-    assert (
-        wasm_facts_tool.ensure_wasm_facts_tool(
-            root, cargo_profile="dev-fast", env=changed
-        )
-        == first
-    )
+    assert wasm_facts_tool.ensure_wasm_facts_tool(root, env=changed) == first
     assert len(state.builds) == 2
     current = backend_binary._read_runtime_fingerprint(receipt_path)
     CargoEnvironmentInputs.from_dict(current["cargo_environment"]).verify(
@@ -271,18 +243,16 @@ def test_failed_facts_probe_is_terminal_and_selects_no_receipt(source_tool):
     root, environment, state = source_tool
     state.probe_error = "independent facts failure"
     with pytest.raises(ValueError, match="independent facts failure"):
-        wasm_facts_tool.ensure_wasm_facts_tool(
-            root, cargo_profile="dev-fast", env=environment
-        )
+        wasm_facts_tool.ensure_wasm_facts_tool(root, env=environment)
     assert state.builds == [HostToolProduct.WASM_FACTS]
     assert len(state.probes) == 1
     coordinate = (
         root
-        / "target/dev-fast"
+        / "target/release-fast"
         / ("molt-wasm-facts.host_tool" + (".exe" if os.name == "nt" else ""))
     )
     assert not backend_binary._backend_fingerprint_path(
-        root, coordinate, "dev-fast"
+        root, coordinate, "release-fast"
     ).exists()
 
 
@@ -290,9 +260,7 @@ def test_facts_probe_timeout_retains_diagnostics_and_releases_probe(source_tool)
     root, environment, state = source_tool
     state.probe_timeout = True
     with pytest.raises(ValueError) as rejected:
-        wasm_facts_tool.ensure_wasm_facts_tool(
-            root, cargo_profile="dev-fast", env=environment
-        )
+        wasm_facts_tool.ensure_wasm_facts_tool(root, env=environment)
     assert "WASM facts tool capability probe did not finish within 7.0s" in str(
         rejected.value
     )
@@ -308,7 +276,6 @@ def test_facts_timeout_diagnostic_precedes_build(source_tool, timeout):
     with pytest.raises(ValueError, match="MOLT_CARGO_TIMEOUT"):
         wasm_facts_tool.ensure_wasm_facts_tool(
             root,
-            cargo_profile="dev-fast",
             env={**environment, "MOLT_CARGO_TIMEOUT": timeout},
         )
     assert state.builds == state.probes == []
@@ -333,7 +300,7 @@ def test_installed_facts_is_verified_without_cargo_or_path(tmp_path, monkeypatch
         record={"features": ["native-backend"], "profile": "release"},
         launcher={},
         runtime={},
-        wasm_facts={"sha256": expected},
+        wasm_facts={"sha256": expected, "profile": "release"},
         binary=tmp_path / "installed-compiler",
         wasm_facts_binary=binary,
         verify_sources=lambda: None,
@@ -355,23 +322,16 @@ def test_installed_facts_is_verified_without_cargo_or_path(tmp_path, monkeypatch
         "project_cargo_target_dir",
         lambda *a, **k: pytest.fail("installed mode chose a source target"),
     )
-    assert (
-        wasm_facts_tool.ensure_wasm_facts_tool(
-            tmp_path, cargo_profile="dev-fast", env={"PATH": ""}
-        )
-        == binary
-    )
+    assert wasm_facts_tool.ensure_wasm_facts_tool(tmp_path, env={"PATH": ""}) == binary
     assert verified == [True]
     before = compiler_identity.installed_compiler_admission(tmp_path).fingerprint
-    installed.wasm_facts = {"sha256": "b" * 64}
+    installed.wasm_facts = {"sha256": "b" * 64, "profile": "release"}
     assert (
         compiler_identity.installed_compiler_admission(tmp_path).fingerprint != before
     )
     binary.write_bytes(b"changed facts")
     with pytest.raises(ValueError, match="installed facts content changed"):
-        wasm_facts_tool.ensure_wasm_facts_tool(
-            tmp_path, cargo_profile="dev-fast", env={"PATH": ""}
-        )
+        wasm_facts_tool.ensure_wasm_facts_tool(tmp_path, env={"PATH": ""})
 
 
 def test_actual_cargo_edges_separate_tool_from_codegen():

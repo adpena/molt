@@ -175,7 +175,6 @@ def _emit_backend_pipeline_outputs(
             try:
                 wasm_facts_scanner = ensure_wasm_facts_tool(
                     prepared_build_roots.molt_root,
-                    cargo_profile=prepared_build_config.backend_cargo_profile,
                     env=os.environ,
                 )
             except (OSError, ValueError) as exc:

@@ -14,23 +14,27 @@ from molt.compiler_distribution import installed_compiler
 from molt.dx import project_cargo_target_dir
 from molt.host_tool_products import HostToolProduct
 
+SOURCE_CARGO_PROFILE = "release-fast"
 
-def ensure_wasm_facts_tool(
-    root: Path, *, cargo_profile: str, env: Mapping[str, str]
-) -> Path:
+
+def ensure_wasm_facts_tool(root: Path, *, env: Mapping[str, str]) -> Path:
     """Return one admitted immutable facts executable, never a PATH candidate.
 
     Installed execution requires its manifest-owned prebuilt tool. Source
     execution shares the existing Cargo plan, source and observed-input
     receipts, generation store and capability probe with the backend compiler.
-    WASM builds select the baseline host CPU policy for both host products.
+    Source inspection uses the optimized iteration profile independently of
+    compiler development profiles; installed tools retain their release profile.
+    Both host products use the baseline CPU policy for WASM builds.
     """
     product = HostToolProduct.WASM_FACTS
     features = product.required_features
     installed = installed_compiler(root)
     if installed is not None:
+        cargo_profile = installed.wasm_facts["profile"]
         coordinate = installed.wasm_facts_binary
     else:
+        cargo_profile = SOURCE_CARGO_PROFILE
         name = product.executable_name(os_name=os.name, features=features)
         coordinate = (
             project_cargo_target_dir(root, env)
