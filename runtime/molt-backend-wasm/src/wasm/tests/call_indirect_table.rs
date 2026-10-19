@@ -33,13 +33,6 @@ fn call_indirect_exports_follow_manifest_imports() {
         .collect();
 
     assert_eq!(exported_call_indirects, manifest_call_indirects);
-    assert_eq!(
-        CALL_INDIRECT_MAX_ARITY,
-        CALL_INDIRECT_IMPORTS
-            .last()
-            .expect("generated call_indirect import family must be non-empty")
-            .arity
-    );
 }
 
 #[test]

@@ -67,5 +67,3 @@ pub(crate) const CALL_INDIRECT_IMPORTS: &[CallIndirectImportSpec] = &[
         import_name: "molt_call_indirect13",
     },
 ];
-
-pub(crate) const CALL_INDIRECT_MAX_ARITY: usize = 13;

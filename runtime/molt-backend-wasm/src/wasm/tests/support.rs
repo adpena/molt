@@ -3,10 +3,9 @@ pub(super) use super::super::{WasmBackend, WasmCompileOptions, WasmCompileOutput
 pub(super) use crate::representation_plan::ScalarRepresentationPlan;
 pub(super) use crate::wasm::lir_fast::is_production_lir_wasm_fast_path_name;
 pub(super) use crate::wasm_abi::{
-    CALL_INDIRECT_IMPORTS, CALL_INDIRECT_MAX_ARITY, POLL_TABLE_IMPORTS,
-    RESERVED_RUNTIME_CALLABLE_COUNT, RESERVED_RUNTIME_CALLABLE_SPECS,
-    ReservedRuntimeCallableDispatch, WasmRuntimeImport, wasm_runtime_export_name,
-    wasm_runtime_import,
+    CALL_INDIRECT_IMPORTS, POLL_TABLE_IMPORTS, RESERVED_RUNTIME_CALLABLE_COUNT,
+    RESERVED_RUNTIME_CALLABLE_SPECS, ReservedRuntimeCallableDispatch, WasmRuntimeImport,
+    wasm_runtime_export_name, wasm_runtime_import,
 };
 pub(super) use crate::wasm_options::RELOC_TABLE_BASE_DEFAULT;
 pub(super) use crate::wasm_plan::{

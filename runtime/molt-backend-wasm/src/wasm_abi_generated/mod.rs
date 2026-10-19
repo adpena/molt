@@ -21,7 +21,7 @@ mod static_types;
 pub(crate) use bulk_memory_ops::{
     WasmBulkMemoryInstruction, WasmBulkMemoryOpSpec, wasm_bulk_memory_op,
 };
-pub(crate) use call_indirect::{CALL_INDIRECT_IMPORTS, CALL_INDIRECT_MAX_ARITY};
+pub(crate) use call_indirect::CALL_INDIRECT_IMPORTS;
 pub(crate) use const_policy::{
     WasmConstInlineSeed, WasmConstLirFastPolicy, WasmConstOpPolicySpec, WasmConstRawIntEffect,
     WasmConstScalarValue, wasm_const_op_policy, wasm_const_op_policy_for_opcode,
