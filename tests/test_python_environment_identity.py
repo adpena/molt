@@ -1839,15 +1839,14 @@ def test_capture_authority_preserves_installed_package_and_explicit_source_owner
     assert installed / "package_import_custody.py" not in projected
 
 
-def test_promoted_default_paths_belongs_to_loaded_and_projected_python_custody(
+@pytest.mark.parametrize("name", ["default_paths", "windows_process_api"])
+def test_promoted_leaf_belongs_to_loaded_and_projected_python_custody(
     tmp_path,
+    name,
 ):
     captured = identity.python_capture_authority_paths()
-    assert Path(identity.__file__).parent / "default_paths.py" in captured
-    assert not any(
-        path.as_posix().endswith("molt/cli/default_paths.py") for path in captured
-    )
-    assert (
-        tmp_path / "src/molt/default_paths.py"
-        in identity.python_capture_authority_paths(source_root=tmp_path)
+    assert Path(identity.__file__).parent / f"{name}.py" in captured
+    assert not any(path.as_posix().endswith(f"molt/cli/{name}.py") for path in captured)
+    assert tmp_path / f"src/molt/{name}.py" in identity.python_capture_authority_paths(
+        source_root=tmp_path
     )

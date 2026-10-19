@@ -24,7 +24,7 @@ import time
 from ctypes import wintypes
 from functools import lru_cache
 from typing import Any
-from tools.windows_process_api import bind_process_query_api
+from molt.windows_process_api import bind_process_query_api
 
 _WINDOWS = sys.platform.startswith("win")
 

@@ -1,4 +1,4 @@
-"""Pointer-width-correct Win32 process query bindings shared by Molt tools."""
+"""Pointer-width-correct Win32 process queries for compiler and development tools."""
 
 from __future__ import annotations
 

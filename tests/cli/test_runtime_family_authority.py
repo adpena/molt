@@ -3233,10 +3233,11 @@ def test_provisional_backend_remains_in_plan_custody(
     final.write_bytes(b"end")
     _config(
         plan_root,
-        '[build]\nrustflags=["-C","codegen-backend=' + str(provisional) + '"]\n'
-        '[target.\'cfg(selected)\']\nrustflags=["-C","codegen-backend='
-        + str(final)
-        + '"]\n',
+        "[build]\nrustflags="
+        + json.dumps(["-C", "codegen-backend=" + str(provisional)])
+        + "\n[target.'cfg(selected)']\nrustflags="
+        + json.dumps(["-C", "codegen-backend=" + str(final)])
+        + "\n",
     )
     monkeypatch.setattr(
         plans,

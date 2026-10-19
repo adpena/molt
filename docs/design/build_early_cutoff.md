@@ -97,7 +97,10 @@ conflict:
   forked child drops the copied ledger and resets its reporting lock before
   logging its own facts. Recognized bytecode reads report both the actual
   cache file and its source in the observing interpreter, including workers
-  with a different cache prefix. They use the existing explicit file/probe
+  with a different cache prefix. Windows prefixed caches discard the source
+  drive ([CPython cache mapping](https://github.com/python/cpython/blob/v3.12.15/Lib/importlib/_bootstrap_external.py#L503-L524));
+  the observer keeps their actual cache dependency and refuses record reuse
+  when the source drive cannot be recovered. It never guesses a drive. They use the existing explicit file/probe
   reports so a consumed cache under a product root remains an input. Unmapped
   bytecode explicitly retains its actual file dependency across product roots
   without guessing a source.
@@ -192,8 +195,9 @@ fails the build; `--verbose` prints why no record was written and why a
 record did not match.
 
 **Racy rule.** `file_hashing.DIGEST_RACY_WINDOW_NS` (2 s) over
-`content_change_time_ns` (ctime on POSIX, NTFS ChangeTime on Windows; none
-fails closed), measured from the start of the recording process
+`content_change_time_ns` (ctime on POSIX, NTFS ChangeTime converted to
+Unix-epoch nanoseconds on Windows; none fails closed), measured from the start
+of the recording process
 (`molt.process_birth`: `/proc/self/stat`, `proc_pidinfo`, `GetProcessTimes`).
 A long-lived process, such as the batch build server, may hold bytes it read
 long before its build began; any input changed since it started refuses the
@@ -203,9 +207,9 @@ record. An `rsync -a` keeps an old mtime but cannot keep ctime.
 A changed token on a file with a recorded digest falls back to a digest
 compare. A hit when the output still holds the binary the build published
 does nothing else: there is no artifact store and no copy. Malformed JSON,
-including valid JSON scalars and arrays, is a cache miss. The v5 record key
-retires source-only bytecode records as well as records produced under inferred
-write ownership. There is no compatibility reader for the retired contracts.
+including valid JSON scalars and arrays, is a cache miss. The v6 record key
+retires records missing captured tool and isolated-Python inputs, including
+source-only bytecode records and records produced under inferred write ownership. There is no compatibility reader for the retired contracts.
 
 **Trimming.** A hit refreshes its record's mtime at most once an hour; records
 unused for a week are deleted, at most once an hour.

@@ -900,10 +900,15 @@ memory-guard handoff. Keep this distinction intact: making the whole checkout
 importable forces isolated Python custody to inventory artifacts and unrelated
 WIP as executable input.
 Running and terminal guard summaries share `reporting.GuardReportContext`.
-Win32 process-query signatures come from `tools/windows_process_api.py`; query-only
+Win32 process-query signatures come from `src/molt/windows_process_api.py`; query-only
 consumers share its cached table, while consumers binding additional APIs own
 their DLL table and apply the shared binder. This preserves pointer-width handles
 without allowing one consumer's ctypes structures to overwrite another's ABI.
+Compiler process-birth queries use this same owner. Microsoft's
+[`GetProcessTimes` signature](https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-getprocesstimes)
+requires a pointer-width `HANDLE`; the
+[`GetCurrentProcess` pseudo handle](https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-getcurrentprocess)
+is borrowed and needs no close. Memory observers retain their own counter types.
 Release and source identity probes use the canonical command execution boundary
 with finite deadlines. The raw-call audit follows callable aliases and static
 `getattr` capability queries as well as direct calls; lookup alone is not execution.

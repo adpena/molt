@@ -1254,13 +1254,22 @@ def _check_cached_code_and_source(tmp_path: Path, prefixed: bool, changed: str) 
     # The existing product exclusion may cover a shared cache. Actual observed
     # bytecode is an explicit potential input and cannot be discarded with it.
     build_record.resolve_observed(ledger, (cache.parent,))
-    assert {str(source), str(cache)} <= set(ledger.files)
-    assert ("file", str(source)) in ledger.observed
+    ambiguous = os.name == "nt" and prefixed
+    assert str(cache) in ledger.files
     assert ("file", str(cache)) in ledger.observed
+    if ambiguous:
+        assert any("bytecode source drive is ambiguous" in r for r in ledger.refusals)
+        assert ("file", str(source)) not in ledger.observed
+    else:
+        assert str(source) in ledger.files
+        assert ("file", str(source)) in ledger.observed
     output = tmp_path / "app"
     output.write_bytes(b"11")
     record, reason = _write(tmp_path, ledger, output)
-    assert reason is None and _current(record, output)
+    if ambiguous:
+        assert reason is not None and not record.exists()
+    else:
+        assert reason is None and _current(record, output)
     if changed == "bytecode":
         # No pyc parser or forged header: equal-size/equal-mtime source files
         # produce caches accepted by ordinary CPython timestamp validation.
@@ -1306,9 +1315,28 @@ def _check_worker_cache_prefix(tmp_path: Path, transient: Path) -> None:
                 == 11
             )
     assert ("file", str(cache)) in ledger.observed
-    assert ("file", str(source)) in ledger.observed
-    assert {str(cache), str(source)} <= set(ledger.files)
-    assert not ledger.refusals
+    assert str(cache) in ledger.files
+    if os.name == "nt":
+        assert any("bytecode source drive is ambiguous" in r for r in ledger.refusals)
+        assert ("file", str(source)) not in ledger.observed
+    else:
+        assert ("file", str(source)) in ledger.observed
+        assert str(source) in ledger.files
+        assert not ledger.refusals
+
+
+@pytest.mark.skipif(os.name != "nt", reason="CPython Windows cache layout")
+def test_prefixed_cpython_cache_discards_source_drive(tmp_path):
+    _in_fresh_interpreter(_check_prefixed_cache_discards_source_drive, tmp_path)
+
+
+def _check_prefixed_cache_discards_source_drive(tmp_path):
+    sys.pycache_prefix = str(tmp_path / "cache")
+    first = importlib.util.cache_from_source(r"C:\same\subject.py")
+    second = importlib.util.cache_from_source(r"D:\same\subject.py")
+    assert first == second
+    source = importlib.util.source_from_cache(first)
+    assert not os.path.splitdrive(source)[0]
 
 
 @pytest.mark.parametrize(

@@ -124,8 +124,9 @@ def _process_memory_bytes() -> tuple[int | None, int | None]:
 
         counters = ProcessMemoryCounters()
         counters.cb = ctypes.sizeof(counters)
+        from molt.windows_process_api import process_query_api
+
         kernel32 = ctypes.windll.kernel32
-        kernel32.GetCurrentProcess.restype = ctypes.c_void_p
         kernel32.K32GetProcessMemoryInfo.argtypes = (
             ctypes.c_void_p,
             ctypes.POINTER(ProcessMemoryCounters),
@@ -133,7 +134,7 @@ def _process_memory_bytes() -> tuple[int | None, int | None]:
         )
         kernel32.K32GetProcessMemoryInfo.restype = ctypes.c_int
         if not kernel32.K32GetProcessMemoryInfo(
-            kernel32.GetCurrentProcess(),
+            process_query_api().GetCurrentProcess(),
             ctypes.byref(counters),
             counters.cb,
         ):

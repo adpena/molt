@@ -7,7 +7,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from tools import windows_process_api
+from molt import windows_process_api
 from tools.proof_queue_pkg import custody
 from tests.process_guard_common import install_module_view
 
@@ -27,6 +27,7 @@ def test_queue_process_queries_preserve_pointer_width_and_close_handles(
         0x1234567887654321 if ctypes.sizeof(ctypes.c_void_p) == 8 else 0x12345678
     )
     observed = []
+    creation_ticks = [(0x1234 << 32) | 0x5678]
 
     @ctypes.CFUNCTYPE(ctypes.c_void_p, wintypes.DWORD, wintypes.BOOL, wintypes.DWORD)
     def open_process(_access, _inherit, _pid):
@@ -50,8 +51,8 @@ def test_queue_process_queries_preserve_pointer_width_and_close_handles(
     )
     def process_times(handle, created, _exited, _kernel, _user):
         observed.append(("times", handle))
-        created.contents.dwHighDateTime = 0x1234
-        created.contents.dwLowDateTime = 0x5678
+        created.contents.dwHighDateTime = creation_ticks[0] >> 32
+        created.contents.dwLowDateTime = creation_ticks[0] & 0xFFFFFFFF
         return 1
 
     @ctypes.CFUNCTYPE(wintypes.BOOL, wintypes.HANDLE, ctypes.POINTER(wintypes.DWORD))
@@ -90,5 +91,17 @@ def test_queue_process_queries_preserve_pointer_width_and_close_handles(
             ("exit", handle_value),
             ("close", handle_value),
         ]
+        # A fresh WinDLL defaults undeclared parameters to C int. Retain that
+        # default at the consumer boundary, so omitting the shared binder must
+        # fail for a pointer-width process handle.
+        windows_process_api.process_query_api.cache_clear()
+        process_times.argtypes = None
+        unix_ns = 1_700_000_000_123_456_700
+        creation_ticks[0] = 116_444_736_000_000_000 + unix_ns // 100
+        from molt.process_birth import current_process_started_ns
+
+        assert current_process_started_ns() == unix_ns
+        assert observed[-1] == ("times", handle_value)
+        assert len(observed) == 5, "a current-process pseudo handle is not closed"
     finally:
         windows_process_api.process_query_api.cache_clear()

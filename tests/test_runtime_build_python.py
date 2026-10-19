@@ -245,8 +245,13 @@ def test_pinned_generator_runs_shared_rust_helper_from_another_crate_cwd(
     operation.mkdir()
     crate.mkdir()
     name = "selected-python.exe" if os.name == "nt" else "selected-python"
+    # A Windows venv's sys.executable is a redirector that requires pyvenv.cfg
+    # beside it. The selected fixture must name the actual interpreter image.
+    interpreter = Path(getattr(sys, "_base_executable", sys.executable)).resolve(
+        strict=True
+    )
     try:
-        (operation / name).symlink_to(sys.executable)
+        (operation / name).symlink_to(interpreter)
         (crate / name).symlink_to(unicode_generator)
     except OSError:
         pytest.skip("host cannot create executable symlinks")

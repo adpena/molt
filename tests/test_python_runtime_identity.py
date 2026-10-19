@@ -386,21 +386,36 @@ def test_runtime_receipt_platform_version_architecture_matrix(
     }
 
 
-def test_platform_identity_loads_no_native_image() -> None:
-    """The startup selection censuses loaded images, then a verification
-    fence censuses them again. An image the identity itself loads, such as a
-    WMI provider COM frees later, changes the second census (HF-169)."""
+def test_platform_identity_makes_no_native_load_or_process_requests() -> None:
+    """Attribute native imports, library loads and spawns to the identity call.
+
+    A process image census also observes external DLL injection and cannot
+    establish which loads this Python call requested. The Windows architecture
+    selector tests separately forbid the cached platform.machine/WMI path.
+    """
 
     program = (
         "import json, sys\n"
         "from molt import python_runtime_identity as runtime\n"
-        "from molt.python_native_locations import _loaded_native_module_snapshot\n"
-        "system = {'win32': 'windows', 'darwin': 'macos', 'linux': 'linux'}"
-        "[sys.platform]\n"
-        "before = {str(path) for path in _loaded_native_module_snapshot(system).paths}\n"
-        "runtime._platform_identity()\n"
-        "after = {str(path) for path in _loaded_native_module_snapshot(system).paths}\n"
-        "print(json.dumps(sorted(after - before)))\n"
+        "from importlib.machinery import EXTENSION_SUFFIXES\n"
+        "native_suffixes = tuple(suffix.casefold() for suffix in EXTENSION_SUFFIXES)\n"
+        "requests = []\n"
+        "observing = True\n"
+        "def audit(event, args):\n"
+        "    if not observing:\n"
+        "        return\n"
+        "    if event == 'import':\n"
+        "        filename = args[1]\n"
+        "        if isinstance(filename, str) and filename.casefold().endswith(native_suffixes):\n"
+        "            requests.append([event, args[0], filename])\n"
+        "    elif event in {'ctypes.dlopen', 'subprocess.Popen'}:\n"
+        "        requests.append([event, str(args[0])])\n"
+        "sys.addaudithook(audit)\n"
+        "try:\n"
+        "    runtime._platform_identity()\n"
+        "finally:\n"
+        "    observing = False\n"
+        "print(json.dumps(requests))\n"
     )
     completed = run_custody_subject_process(
         [

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import time
 from pathlib import Path
 
 import pytest
@@ -45,6 +46,9 @@ def test_content_change_time_path_and_descriptor_agree_for_one_generation(
     tmp_path: Path,
 ) -> None:
     path = tmp_path / "content.bin"
+    # A whole-second lower bound admits filesystem timestamp rounding, while
+    # an independent clock catches an incorrect native epoch or unit.
+    before_ns = time.time_ns() // 1_000_000_000 * 1_000_000_000
     path.write_bytes(b"before")
     metadata = path.stat()
     with path.open("rb") as handle:
@@ -52,7 +56,9 @@ def test_content_change_time_path_and_descriptor_agree_for_one_generation(
         handle_change = file_hashing.content_change_time_ns_from_fd(
             handle.fileno(), os.fstat(handle.fileno())
         )
+    after_ns = time.time_ns()
     assert path_change is not None
+    assert before_ns <= path_change <= after_ns
     assert handle_change == path_change
 
 
