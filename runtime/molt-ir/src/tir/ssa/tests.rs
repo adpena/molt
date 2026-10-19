@@ -746,7 +746,7 @@ mod iter_next_fusion {
         for kind in ["async_work_poll", "check_exception"] {
             let mut ops = guarded_projection_ops();
             let mut observation = op_val(kind, 90);
-            observation.async_work_poll = true;
+            observation.async_work_poll = kind == "check_exception";
             ops.insert(3, observation);
             ops.extend([op_val("label", 90), op("ret_void")]);
 
