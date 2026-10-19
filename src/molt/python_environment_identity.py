@@ -89,6 +89,7 @@ def _parse_arguments():
     modes.add_argument("--capture-environment", type=Path, metavar="ROOT")
     modes.add_argument("--capture-active-environment", action="store_true")
     parser.add_argument("--runtime-session", action="store_true")
+    parser.add_argument("--input-report-log-dir")
     parser.add_argument("--with-custody", action="store_true")
     parser.add_argument("--hash-workers", type=int, default=1)
     parser.add_argument("--admit-virtualenv-bootstrap", action="store_true")
@@ -178,12 +179,16 @@ def python_identity_probe_arguments(
     an interpreter flag before either site startup or the authority imports.
     Interpreter/launcher selection belongs to the caller; this owns its suffix.
     """
+    from molt import input_report
+
+    log_dir = input_report.worker_log_dir()
     return [
         "-B",
         "-I",
         *(["-S"] if no_site else []),
         str(Path(__file__).resolve(strict=True)),
         *arguments,
+        *(["--input-report-log-dir", log_dir] if log_dir is not None else []),
     ]
 
 
@@ -289,6 +294,9 @@ def _serve_runtime_session(payload, context, *, requests, responses) -> None:
 def _main() -> None:
     args = _arguments
     assert args is not None
+    from molt import input_report
+
+    input_report.worker_initializer(args.input_report_log_dir)
     if args.locate_active_environment:
         payload = locate_current_python_environment()
     elif args.runtime_selection:

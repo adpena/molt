@@ -277,7 +277,11 @@ def _observe_startup_gate(capability: str) -> dict[str, object]:
                 "setuptools startup capability requires the local-distutils branch; "
                 "other SETUPTOOLS_USE_DISTUTILS modes need separate conformance"
             )
-        if Path("pybuilddir.txt").is_file():
+        from molt import input_report
+
+        build_directory = Path.cwd() / "pybuilddir.txt"
+        input_report.report_probe(build_directory)
+        if build_directory.is_file():
             raise PythonEnvironmentIdentityError(
                 "setuptools finder would take its cwd/pybuilddir.txt CPython-build branch; "
                 "that environmental suppression is outside the verified subset"

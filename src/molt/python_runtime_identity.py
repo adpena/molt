@@ -478,7 +478,10 @@ def current_python_runtime_selection() -> dict[str, object]:
     directories, archives = _runtime_import_candidates(base_prefix, platform_payload)
 
     def location(path: Path) -> dict[str, object]:
+        from molt import input_report
+
         lexical = Path(os.path.abspath(path))
+        input_report.report_probe(lexical)
         return {
             "lexical": str(lexical),
             "resolved": str(lexical.resolve(strict=False)),

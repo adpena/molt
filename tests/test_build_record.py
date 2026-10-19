@@ -116,6 +116,251 @@ def test_a_new_shadowing_module_is_stale(tmp_path: Path) -> None:
     assert not _current(record, output), "the probed path now resolves"
 
 
+@pytest.mark.parametrize("kind", ["installed-manifest", "rustup", "startup-gate"])
+def test_stat_only_selection_misses_when_an_absent_input_appears(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, kind: str
+) -> None:
+    from molt.compiler_distribution import MANIFEST_NAME, installed_compiler
+    from molt.python_external_custody import _observe_startup_gate
+    from molt.rust_toolchain import rustup_proxy_entrypoint
+
+    root = tmp_path / "project"
+    root.mkdir()
+    ledger = _future_ledger()
+    monkeypatch.setattr(input_report, "_SINK", ledger)
+    if kind == "installed-manifest":
+        subject = root / MANIFEST_NAME
+        assert installed_compiler(root) is None
+    elif kind == "rustup":
+        tool = root / ("rustc.exe" if os.name == "nt" else "rustc")
+        tool.write_bytes(b"custom compiler")
+        subject = root / ("rustup.exe" if os.name == "nt" else "rustup")
+        with rustup_proxy_entrypoint(tool) as selected:
+            assert selected is None
+    else:
+        monkeypatch.chdir(root)
+        monkeypatch.setenv("SETUPTOOLS_USE_DISTUTILS", "local")
+        subject = root / "pybuilddir.txt"
+        _observe_startup_gate("setuptools-local-distutils.v1")
+    monkeypatch.setattr(input_report, "_SINK", None)
+    output = tmp_path / "app"
+    output.write_bytes(b"compiled output")
+    record, reason = _write(tmp_path, ledger, output)
+    assert reason is None and _current(record, output)
+    subject.write_bytes(b"new selection")
+    assert not _current(record, output), "a stat-only absence is a real dependency"
+
+
+def test_captured_cargo_tool_bytes_and_resolution_are_recorded(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import shutil
+
+    from molt.cli.cargo_resource_custody import CargoExecutableCustody
+    from tests.executable_test_support import native_executable_donor
+
+    tool = tmp_path / ("tool.exe" if os.name == "nt" else "tool")
+    shutil.copyfile(native_executable_donor(), tool)
+    tool.chmod(tool.stat().st_mode | stat.S_IXUSR)
+    expected = hashlib.sha256(tool.read_bytes()).hexdigest()
+    ledger = _future_ledger()
+    monkeypatch.setattr(input_report, "_SINK", ledger)
+    captured = CargoExecutableCustody.capture("compiler", tool)
+    monkeypatch.setattr(input_report, "_SINK", None)
+    assert ledger.files[os.fspath(tool)][1] == expected
+    output = tmp_path / "app"
+    output.write_bytes(b"compiled output")
+    record, reason = _write(tmp_path, ledger, output)
+    assert reason is None and _current(record, output)
+    with tool.open("ab") as stream:
+        stream.write(b"changed compiler")
+    assert not _current(record, output)
+    with pytest.raises(ValueError, match="changed"):
+        captured.verify()
+
+
+@pytest.mark.parametrize("kind", ["executable", "resource"])
+def test_equal_byte_cargo_tool_alias_retargeting_cannot_reuse_output(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, kind: str
+) -> None:
+    import shutil
+
+    from molt.cli.cargo_resource_custody import (
+        CargoExecutableCustody,
+        CargoResourceCustody,
+        CargoResourceRoot,
+    )
+    from tests.executable_test_support import native_executable_donor
+
+    first, second, alias = (tmp_path / name for name in ("first", "second", "alias"))
+    shutil.copyfile(native_executable_donor(), first)
+    first.chmod(first.stat().st_mode | stat.S_IXUSR)
+    shutil.copyfile(first, second)
+    second.chmod(second.stat().st_mode | stat.S_IXUSR)
+    alias.symlink_to(first)
+    ledger = _future_ledger()
+    monkeypatch.setattr(input_report, "_SINK", ledger)
+    captured = (
+        CargoExecutableCustody.capture("compiler", alias)
+        if kind == "executable"
+        else CargoResourceCustody.capture((CargoResourceRoot("compiler", alias),))
+    )
+    monkeypatch.setattr(input_report, "_SINK", None)
+    output = tmp_path / "app"
+    output.write_bytes(b"compiled output")
+    record, reason = _write(tmp_path, ledger, output)
+    assert reason is None and _current(record, output)
+    alias.unlink()
+    alias.symlink_to(second)
+    assert build_record.check(record, KEY, output) == f"lookup {alias}"
+    with pytest.raises(ValueError):
+        captured.verify()
+
+
+def test_isolated_python_probe_logs_captured_files_and_negative_selectors(
+    tmp_path: Path, transient: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from molt.python_runtime_admission import BuildPythonAdmission
+
+    # This source belongs to the independently selected base interpreter,
+    # whether its isolated loader executes source or a bytecode cache.
+    subject = Path(sys.modules["pathlib"].__file__)
+    expected = hashlib.sha256(subject.read_bytes()).hexdigest()
+    environment = {
+        **os.environ,
+        "MOLT_BUILD_PYTHON": str(getattr(sys, "_base_executable", sys.executable)),
+    }
+    with BuildPythonAdmission() as admission:
+        unrecorded = admission.capture(environment)
+    with build_record.recording(transient) as ledger:
+        with BuildPythonAdmission() as admission:
+            first = admission.capture(environment)
+            assert admission.capture(environment) == first
+    assert first == unrecorded, "recording does not change the admitted runtime"
+    assert not ledger.refusals
+    assert ledger.files[os.fspath(subject)][1] == expected
+    assert any(outcome is None for outcome in ledger.probes.values())
+    assert any(Path(name).suffix == ".zip" for name in ledger.probes)
+
+
+def test_an_admission_from_before_recording_cannot_hide_its_inputs(
+    transient: Path,
+) -> None:
+    from molt.python_runtime_admission import BuildPythonAdmission
+
+    environment = {
+        **os.environ,
+        "MOLT_BUILD_PYTHON": str(getattr(sys, "_base_executable", sys.executable)),
+    }
+    with BuildPythonAdmission() as admission:
+        identity = admission.capture(environment)
+        with build_record.recording(transient) as ledger:
+            assert admission.capture(environment) == identity
+    assert ledger.refusals == [
+        "build Python admission does not belong to this input recording"
+    ]
+
+
+def test_a_rustup_candidate_becoming_the_selected_proxy_invalidates_output(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from molt.rust_toolchain import rustup_proxy_entrypoint
+
+    tool = tmp_path / ("rustc.exe" if os.name == "nt" else "rustc")
+    proxy = tmp_path / ("rustup.exe" if os.name == "nt" else "rustup")
+    tool.write_bytes(b"proxy bytes")
+    proxy.write_bytes(b"other bytes")
+    for path in (tool, proxy):
+        path.chmod(path.stat().st_mode | stat.S_IXUSR)
+    ledger = _future_ledger()
+    monkeypatch.setattr(input_report, "_SINK", ledger)
+    with rustup_proxy_entrypoint(tool) as selected:
+        assert selected is None
+    monkeypatch.setattr(input_report, "_SINK", None)
+    output = tmp_path / "app"
+    output.write_bytes(b"compiled output")
+    record, reason = _write(tmp_path, ledger, output)
+    assert reason is None and _current(record, output)
+    proxy.write_bytes(tool.read_bytes())
+    with rustup_proxy_entrypoint(tool) as selected:
+        assert selected == proxy
+    assert not _current(record, output)
+
+
+def test_incomplete_previous_record_schema_cannot_reuse_output(tmp_path: Path) -> None:
+    _source, _tool, output, record = _fixture(tmp_path)
+    payload = json.loads(record.read_text())
+    payload["schema"] = "molt-build-record-v5"
+    record.write_text(json.dumps(payload), encoding="utf-8")
+    assert not _current(record, output)
+
+
+def _capture_threaded_python_tree(root: Path) -> int:
+    from molt.python_external_custody import _observe_startup_gate
+    from molt.python_file_node_custody import (
+        PythonFileCaptureContext,
+        _FileNodePool,
+        _stable_tree_inventory,
+    )
+
+    os.chdir(root)
+    os.environ["SETUPTOOLS_USE_DISTUTILS"] = "local"
+    _observe_startup_gate("setuptools-local-distutils.v1")
+    with PythonFileCaptureContext(hash_workers=4) as context:
+        _stable_tree_inventory(
+            root,
+            root_id="test-runtime",
+            label="test runtime",
+            pool=_FileNodePool(capture_context=context),
+        )
+        context.verify()
+        return context.inventory_profile()["hashed_files"]
+
+
+def test_threaded_python_capture_records_every_file_and_tree_dependency(
+    tmp_path: Path, transient: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from molt.compiler_process import worker_context
+
+    root = tmp_path / "runtime"
+    root.mkdir()
+    expected = {}
+    for index in range(96):
+        path = root / f"module_{index:03d}.py"
+        payload = f"VALUE = {index}\n".encode()
+        path.write_bytes(payload)
+        expected[os.fspath(path)] = hashlib.sha256(payload).hexdigest()
+    monkeypatch.setattr(
+        "molt.process_birth.current_process_started_ns", lambda: time.time_ns() + 10**10
+    )
+    with build_record.recording(transient) as ledger:
+        with ProcessPoolExecutor(
+            max_workers=1,
+            mp_context=worker_context(),
+            initializer=input_report.worker_initializer,
+            initargs=(input_report.worker_log_dir(),),
+        ) as pool:
+            assert pool.submit(_capture_threaded_python_tree, root).result() == len(
+                expected
+            )
+    assert not ledger.refusals
+    assert {name: ledger.files[name][1] for name in expected} == expected
+    assert os.fspath(root) in ledger.directories
+    assert ledger.probes[os.fspath(root / "pybuilddir.txt")] is None
+    output = tmp_path / "app"
+    output.write_bytes(b"compiled output")
+    record, reason = _write(tmp_path, ledger, output)
+    assert reason is None and _current(record, output)
+    subject = root / "module_031.py"
+    original = subject.read_bytes()
+    subject.write_bytes(b"VALUE = 99\n")
+    assert not _current(record, output)
+    subject.write_bytes(original)
+    assert _current(record, output), "equal content after a touch stays reusable"
+    (root / "new.py").write_bytes(b"new member")
+    assert not _current(record, output), "the enumerated membership is an input"
+
+
 def test_a_retargeted_symlink_probe_is_stale(tmp_path: Path) -> None:
     first = tmp_path / "first"
     second = tmp_path / "second"

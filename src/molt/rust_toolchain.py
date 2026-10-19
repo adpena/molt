@@ -87,24 +87,34 @@ class RustupProxyUnavailable(ValueError):
 @contextmanager
 def rustup_proxy_entrypoint(path: Path) -> Generator[Path | None, None, None]:
     """Yield the named Rustup CLI only while its bytes match the selected proxy."""
+    from molt import input_report
+
     name = "rustup.exe" if os.name == "nt" else "rustup"
-    candidates = tuple(
-        candidate
-        for candidate in dict.fromkeys(
-            (path.parent / name, path.resolve(strict=True).parent / name)
-        )
-        if candidate.is_file()
-    )
+    candidates = []
+    for candidate in dict.fromkeys(
+        (path.parent / name, path.resolve(strict=True).parent / name)
+    ):
+        input_report.report_probe(candidate)
+        if candidate.is_file():
+            candidates.append(candidate)
     if candidates:
         with stable_executable_probe(path, label="Rust proxy selection") as (
             _,
             selected,
         ):
+            if selected.path != path:
+                input_report.report_probe(path)
+            input_report.report_captured_file(
+                selected.path, selected.stat_token(), selected.sha256
+            )
             for rustup in candidates:
                 with stable_executable_probe(rustup, label="rustup selection") as (
                     entrypoint,
                     proxy,
                 ):
+                    input_report.report_captured_file(
+                        proxy.path, proxy.stat_token(), proxy.sha256
+                    )
                     if selected.sha256 == proxy.sha256:
                         yield entrypoint
                         return

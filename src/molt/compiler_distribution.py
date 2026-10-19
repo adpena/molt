@@ -513,7 +513,10 @@ class InstalledCompiler:
 
 
 def installed_compiler(source_root: Path) -> InstalledCompiler | None:
+    from molt import input_report
+
     manifest_path = source_root / MANIFEST_NAME
+    input_report.report_probe(manifest_path)
     if not manifest_path.exists() and not is_link_like(manifest_path):
         # A damaged installation is installed damage, never source mode.
         if installed_distribution_root(source_root) is not None:

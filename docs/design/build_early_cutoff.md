@@ -21,6 +21,9 @@ programs constantly.
   (path, size, mtime, inode) (`cmd/go/internal/cache`).
 - Bazel, Buck and Salsa: dependencies are recorded where they are read, not
   enumerated afterwards.
+- [Bazel Skyframe](https://bazel.build/reference/skyframe#evaluation) distinguishes
+  file content, symlink resolution and directory membership. A read without a
+  registered dependency can make an incremental result incorrect.
 - git: the racy-git rule; a file changed within one timestamp tick of the
   index cannot be trusted by stat alone.
 - [Cargo build directories](https://doc.rust-lang.org/cargo/reference/config.html#buildbuild-dir)
@@ -129,6 +132,30 @@ conflict:
   Allocations left by an interrupted direct build stay preserved until an
   external owner establishes process-tree closure; no age-based reclaimer or
   alternate scratch lifecycle is introduced.
+
+**Captured inputs and isolated Python.** Cargo file custody reports the existing
+handle-bound token and digest, including lexical and resolved tool names. An
+indirect name also records its resolution: identical bytes at a different target
+do not preserve a loader's context. Rustup selection records rejected candidates'
+captured bytes as well as absent candidates. Installed-manifest, pinned-tool
+and startup-gate classification retain their exact lookup outcomes.
+
+The shared Python probe suffix carries the existing worker-log directory.
+The isolated facade initializes that logger after its common capture imports,
+preserving runtime identity. Its capture context reports ordered file identities
+without another hash or tree walk; the existing enumeration reports directories,
+and startup selection reports lexical lookups, including missing archives and
+configuration files. An admission created outside the current recording cannot
+justify a record: the record is refused while ordinary compilation and its live
+custody continue. No new admission, restart or interpreter fallback is introduced.
+
+Record schema v6 rejects earlier records whose inputs could be incomplete.
+Reporting adds O(captured paths + visited directories + selectors) facts and
+JSONL bytes through the existing flushed worker log, plus exact lookup probes.
+An inactive recorder retains its existing cheap reporting branch. These are
+compiler/development costs; emitted programs perform none of this work. This
+repair establishes input completeness for these authorities, not a whole-build
+speedup or release-wide performance qualification.
 
 **Rust metadata.** One Cargo plan owns its metadata answers in one frozen
 environment. Identical commands share a discovery answer; wrapped and unwrapped

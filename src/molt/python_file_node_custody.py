@@ -13,6 +13,7 @@ from collections.abc import Callable, Iterator, Mapping, Sequence
 from pathlib import Path, PurePath
 from typing import TypeVar, cast
 
+from molt import input_report
 from molt.exact_json import canonical_json_sha256
 from molt.toolchain_identity import (
     StableRegularFileIdentity,
@@ -265,6 +266,10 @@ class PythonFileCaptureContext:
                 self._remember(identity)
             else:
                 self._files[identity.path] = identity
+            if input_report.first_report(identity):
+                input_report.report_captured_file(
+                    identity.path, identity.stat_token(), identity.sha256
+                )
             identities.append(identity)
         return identities
 
@@ -691,6 +696,7 @@ def _tree_membership_snapshot(
             raise PythonEnvironmentIdentityError(
                 f"cannot enumerate {label} root {directory}: {exc}"
             ) from exc
+        input_report.report_directory(directory)
         for child in children:
             path = Path(child.path)
             name = unicodedata.normalize("NFC", child.name)
