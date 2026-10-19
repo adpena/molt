@@ -34,6 +34,22 @@ Both native and linked-WASM consumers pass. These are profiled development
 observations; backend cache reuse differs, so they do not establish a matched
 whole-build speedup or release performance acceptance.
 
+The same immutable result algebra reuses an already widened value only when
+its projection and result edges are unchanged. The reuse guard derives its
+defaults from the result schema; new nondefault facts cannot survive by
+omission. Reprojected children retain their new edges even when semantic
+equality ignores their discarded storage. A canonical unknown input returns
+directly. This adds one fixed 22-field defaults table (1,448 shallow bytes) and
+at most 22 comparisons per visited node, with no per-result cache or field.
+The existing iterative graph walk and projection constructor remain the owners.
+
+A matched `os.py` analysis preserves public source facts while reducing result
+constructions from 63,926 to 19,440 and increasing reused results from 17,354
+to 61,802 across the same 73,522 widening calls. Three alternating,
+uninstrumented samples have medians 1.254 versus 1.161 seconds; host timing
+drifts, so allocation counts are the stronger observation. This is compiler
+analysis only and does not qualify whole-build or emitted-program performance.
+
 `compiler_analysis/python_source_keys.py` owns source-text digests, typed AST
 digests, source-span keys, and exact-tree digest admission. AST identity streams
 prefix-free v3 framing into SHA-256, with separate sorted member digests only for

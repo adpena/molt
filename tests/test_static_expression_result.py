@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import ast
 import codecs
+from dataclasses import replace
 import io
 import math
 import os
@@ -916,13 +917,150 @@ def test_possible_element_widening_is_idempotent_and_stack_safe() -> None:
             kind="list", element_result=value, fresh_container=True
         )
     expired = expression_result_without_value_facts(value)
-    assert expression_result_without_value_facts(expired) == expired
+    assert expression_result_without_value_facts(expired) is expired
     for _ in range(1500):
         assert expired.kind == "unknown" and expired.length is None
         assert expired.items is None and not expired.fresh_container
         assert expired.release_may_call and expired.element_result is not None
         expired = expired.element_result
     assert expired.identities == OTHER_IDENTITY | int(PythonIdentity.BUILTINS_IMPORT)
+
+
+def test_widening_reuses_provenance_graph_without_result_allocations(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from molt.compiler_analysis.python_identity_catalog_generated import (
+        OTHER_IDENTITY,
+        PythonIdentity,
+    )
+    from molt.compiler_analysis.static_truth import (
+        DeferredExecution,
+        expression_result_without_value_facts,
+    )
+
+    source = (1, 0, 1, 8, "Lambda")
+    deferred = DeferredExecution(source, "call")
+    leaf = StaticExpressionResult(
+        identities=OTHER_IDENTITY | int(PythonIdentity.BUILTINS_IMPORT),
+        source_origins=frozenset({source}),
+        deferred=frozenset({deferred}),
+    )
+    equal_leaf = replace(leaf)
+    middle = StaticExpressionResult(element_result=leaf)
+    outer = StaticExpressionResult(element_result=middle)
+    unknown_copy = StaticExpressionResult()
+    assert equal_leaf == leaf and equal_leaf is not leaf
+
+    def forbidden_constructor(_self: StaticExpressionResult) -> None:
+        pytest.fail("already widened results must not be reconstructed")
+
+    monkeypatch.setattr(StaticExpressionResult, "__post_init__", forbidden_constructor)
+    assert expression_result_without_value_facts(outer) is outer
+    assert outer.element_result is middle and middle.element_result is leaf
+    assert expression_result_without_value_facts(leaf) is leaf
+    assert expression_result_without_value_facts(equal_leaf) is equal_leaf
+    assert (
+        expression_result_without_value_facts(unknown_copy) is UNKNOWN_EXPRESSION_RESULT
+    )
+    assert join_static_expression_results((leaf, equal_leaf)) is leaf
+    assert join_static_expression_results((equal_leaf, leaf)) is equal_leaf
+
+
+def test_widening_expires_shared_owner_and_preserves_child_provenance() -> None:
+    from molt.compiler_analysis.python_identity_catalog_generated import (
+        OTHER_IDENTITY,
+        PythonIdentity,
+    )
+    from molt.compiler_analysis.static_truth import (
+        DeferredExecution,
+        expression_result_without_value_facts,
+    )
+
+    direct_source = (1, 0, 1, 8, "Lambda")
+    child_source = (2, 0, 2, 8, "Lambda")
+    direct = DeferredExecution(direct_source, "call")
+    child = DeferredExecution(child_source, "resume")
+    leaf = StaticExpressionResult(
+        identities=OTHER_IDENTITY | int(PythonIdentity.CURRENT_GLOBALS),
+        source_origins=frozenset({child_source}),
+        deferred=frozenset({child}),
+    )
+    owner = StaticExpressionResult(
+        kind="tuple",
+        truth=True,
+        length=2,
+        items=(ExpressionSequenceItem(leaf), ExpressionSequenceItem(leaf)),
+        evaluation_required=False,
+        release_may_call=False,
+        fresh_container=True,
+        source_origins=frozenset({direct_source}),
+        deferred=frozenset({direct}),
+        deferred_complete=True,
+        attribute_hooks=frozenset({direct}),
+        instance_attribute_hooks=frozenset({child}),
+        class_instantiation_inert=True,
+    )
+    expired = expression_result_without_value_facts(owner)
+    assert expired is not owner
+    assert expired == StaticExpressionResult(
+        element_result=leaf,
+        source_origins=frozenset({direct_source}),
+        exposed_source_origins=frozenset({direct_source, child_source}),
+        deferred=frozenset({direct}),
+        exposed_deferred=frozenset({direct, child}),
+        exposes_module_globals=True,
+    )
+    assert expired.element_result is leaf
+    assert expression_result_without_value_facts(expired) is expired
+    assert owner.items is not None and owner.items[0].result is owner.items[1].result
+
+
+@pytest.mark.parametrize(
+    "changed",
+    [
+        {"truth": False},
+        {"value": 0},
+        {"value_known": True},
+        {"kind": "int"},
+        {"scalar_kinds": frozenset({"int", "float"})},
+        {"evaluation_required": False},
+        {"items": ()},
+        {"release_may_call": False},
+        {"fresh_container": True},
+        {"length": 0},
+        {"element_result": UNKNOWN_EXPRESSION_RESULT},
+        {"deferred_complete": True},
+        {"attribute_hooks": frozenset()},
+        {"instance_attribute_hooks": frozenset()},
+        {"class_instantiation_inert": True},
+        {"_publication_release_stable": True},
+    ],
+)
+def test_widening_reuse_cannot_preserve_exact_or_dispatch_facts(
+    changed: dict[str, object],
+) -> None:
+    from molt.compiler_analysis.python_identity_catalog_generated import (
+        OTHER_IDENTITY,
+        PythonIdentity,
+    )
+    from molt.compiler_analysis.static_truth import (
+        expression_result_without_value_facts,
+    )
+
+    expected = StaticExpressionResult(
+        identities=OTHER_IDENTITY | int(PythonIdentity.BUILTINS_IMPORT)
+    )
+    current = replace(expected, **changed)
+    expired = expression_result_without_value_facts(current)
+    assert expired is not current
+    assert expired == expected
+    assert expression_result_without_value_facts(expired) is expired
+    owner = StaticExpressionResult(element_result=current)
+    expired_owner = expression_result_without_value_facts(owner)
+    assert expired_owner is not owner
+    assert expired_owner.element_result is not current
+    assert expired_owner.element_result == expected
+    assert expired_owner.element_result.value is None
 
 
 @pytest.mark.parametrize(

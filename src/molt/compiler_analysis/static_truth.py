@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import ast
 from collections.abc import Callable, Iterable
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, field, fields, replace
 import math
 from typing import Final, Literal, TypeAlias, TypedDict, assert_never, cast
 
@@ -442,6 +442,30 @@ class StaticExpressionResult:
 
 UNKNOWN_EXPRESSION_RESULT = StaticExpressionResult()
 ExpressionResultLookup = Callable[[ast.expr], StaticExpressionResult | None]
+_EXPRESSION_RESULT_DEFAULTS = tuple(
+    (member.name, getattr(UNKNOWN_EXPRESSION_RESULT, member.name))
+    for member in fields(StaticExpressionResult)
+    if member.init
+)
+
+
+def _expression_result_with_default_facts(
+    current: StaticExpressionResult, **preserved: object
+) -> StaticExpressionResult:
+    # Derive expired fields from the actual normalized defaults. New fields
+    # therefore cannot silently survive this projection's reuse fast path.
+    for name, default in _EXPRESSION_RESULT_DEFAULTS:
+        actual = getattr(current, name)
+        expected = preserved.get(name, default)
+        if actual is expected:
+            continue
+        # An equal reprojected child can still have lost nonsemantic storage
+        # (for example value with value_known=False). Keep its new graph edge.
+        if isinstance(actual, StaticExpressionResult) or actual != expected:
+            return cast(Callable[..., StaticExpressionResult], StaticExpressionResult)(
+                **preserved
+            )
+    return current
 
 
 def expression_result_without_value_facts(
@@ -454,6 +478,8 @@ def expression_result_without_value_facts(
     element graph. Scalar classes and absence alone add nothing to an unknown
     value; omit empty element projections so widening does not retain dead shape.
     """
+    if result is UNKNOWN_EXPRESSION_RESULT:
+        return result
     completed: dict[int, StaticExpressionResult] = {}
     pending: list[
         tuple[StaticExpressionResult, StaticExpressionResult | None, bool]
@@ -482,7 +508,8 @@ def expression_result_without_value_facts(
             and projected is None
             and not current.exposed_source_origins
             and not current.exposed_deferred
-            else StaticExpressionResult(
+            else _expression_result_with_default_facts(
+                current,
                 identities=OTHER_IDENTITY | symbols,
                 exposes_module_globals=current.exposes_module_globals,
                 source_origins=current.source_origins,
