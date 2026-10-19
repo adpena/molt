@@ -827,6 +827,26 @@ def test_producer_edits_retain_package_and_proof_boundary_checks(drv, path):
     assert len(gates) == len(set(gates))
 
 
+def test_mixed_rust_python_change_checks_rust_before_consumer_cohorts(drv):
+    cfg = drv.GateConfig.load(COMMITTED_GATES)
+    selected, _ = cfg.select(
+        [
+            "runtime/molt-backend/src/backend_process/input/mod.rs",
+            "src/molt/cli/backend_execution.py",
+        ]
+    )
+    commands = [gate.command for gate in selected]
+    rust = next(
+        i
+        for i, command in enumerate(commands)
+        if "tools/check_changed_clippy.py" in command
+    )
+    consumers = [
+        i for i, command in enumerate(commands) if "pytest" in _gate_args(command)
+    ]
+    assert consumers and all(rust < index for index in consumers)
+
+
 def test_every_producer_trigger_also_selects_its_proof_boundary(drv):
     cfg = drv.GateConfig.load(COMMITTED_GATES)
     rules = {rule.name: rule for rule in cfg.rules}

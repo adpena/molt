@@ -357,6 +357,7 @@ fn daemon_actual_environment_scopes_compiled_module_and_function_reuse() {
             "ops":[{"kind":"ret_void"}]}], "profile":null
     });
     let lease = write_daemon_ir_fixture(&root.join("input.msgpack"), &ir);
+    let lease_bytes = std::fs::read(&lease).expect("read caller-owned fixture");
     let memory_minimum = |bytes: &[u8]| {
         let mut minimum = None;
         for payload in Parser::new(0).parse_all(bytes) {
@@ -464,7 +465,11 @@ fn daemon_actual_environment_scopes_compiled_module_and_function_reuse() {
             assert_eq!(std::fs::read(output).unwrap(), expected);
         }
         assert_eq!(cache.usage().0, 2, "only real producers insert");
-        assert!(!missing_ir.exists(), "probes never opened their absent IR");
+        assert_eq!(
+            std::fs::read(&lease).unwrap(),
+            lease_bytes,
+            "pathless probes must preserve the caller-owned input"
+        );
     }
     std::fs::remove_dir_all(root).expect("remove fixture");
 }
