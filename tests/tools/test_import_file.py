@@ -175,8 +175,107 @@ def test_repository_binding_repositions_selected_roots_ahead_of_foreign_paths(
     assert sys.path[2:] == [str(foreign), "sentinel"]
 
 
+class _ObservedSearchPath(list):
+    def __init__(self, entries):
+        super().__init__(entries)
+        self.publications = []
+
+    def __setitem__(self, key, value):
+        super().__setitem__(key, value)
+        self.publications.append(list(self))
+
+    def insert(self, index, value):
+        super().insert(index, value)
+        self.publications.append(list(self))
+
+
+@pytest.mark.parametrize(
+    "prefix", [(ROOT, ROOT / "src"), (ROOT / "src", ROOT), (ROOT, ROOT / "src", ROOT)]
+)
+def test_repository_binding_preserves_an_admitted_path_without_publication(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, prefix: tuple[Path, ...]
+) -> None:
+    entries = [*map(str, prefix), str(tmp_path / "foreign"), "sentinel"]
+    path = _ObservedSearchPath(entries)
+    monkeypatch.setattr(sys, "path", path)
+
+    for _ in range(2):
+        assert bind_repository_imports(ROOT / "tools/structural_audit.py") == ROOT
+
+    assert sys.path is path
+    assert path == entries
+    assert path.publications == []
+
+
+@pytest.mark.parametrize(
+    "damage",
+    [
+        "relative-selected",
+        "symlink-selected",
+        "bare-tools",
+        "nested-tools",
+        "foreign-first",
+        "missing-src",
+    ],
+)
+def test_repository_binding_repairs_an_unadmitted_path_in_one_publication(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, damage: str
+) -> None:
+    foreign = str(tmp_path / "foreign")
+    entries = [str(ROOT), str(ROOT / "src"), foreign, "sentinel"]
+    if damage == "relative-selected":
+        monkeypatch.chdir(ROOT)
+        entries.append("src")
+    elif damage == "symlink-selected":
+        alias = tmp_path / "selected-alias"
+        try:
+            alias.symlink_to(ROOT, target_is_directory=True)
+        except OSError as exc:
+            pytest.skip(f"host cannot create directory symlinks: {exc}")
+        entries.append(str(alias))
+    elif damage == "bare-tools":
+        entries.append(str(ROOT / "tools"))
+    elif damage == "nested-tools":
+        entries.append(str(ROOT / "tools/compat"))
+    elif damage == "foreign-first":
+        entries = [foreign, str(ROOT), str(ROOT / "src"), "sentinel"]
+    else:
+        entries.remove(str(ROOT / "src"))
+    path = _ObservedSearchPath(entries)
+    monkeypatch.setattr(sys, "path", path)
+
+    bind_repository_imports(ROOT / "tools/structural_audit.py")
+
+    expected = [str(ROOT / "src"), str(ROOT), foreign, "sentinel"]
+    assert path == expected
+    assert path.publications == [expected]
+
+
+def test_concurrent_repository_bindings_preserve_an_admitted_path(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from concurrent.futures import ThreadPoolExecutor
+
+    entries = [str(ROOT), str(ROOT / "src"), *sys.path]
+    entries = list(dict.fromkeys(entries))
+    path = _ObservedSearchPath(entries)
+    monkeypatch.setattr(sys, "path", path)
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        assert (
+            list(
+                executor.map(
+                    bind_repository_imports, [ROOT / "tools/structural_audit.py"] * 4
+                )
+            )
+            == [ROOT] * 4
+        )
+    assert path == entries
+    assert path.publications == []
+
+
+@pytest.mark.parametrize("path_admitted", [False, True])
 def test_repository_binding_canonicalizes_unexecuted_namespace_root(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, path_admitted: bool
 ) -> None:
     foreign = tmp_path / "foreign" / "tools"
     foreign.mkdir(parents=True)
@@ -187,9 +286,16 @@ def test_repository_binding_canonicalizes_unexecuted_namespace_root(
     selected.__file__ = str(ROOT / "tools" / "selected.py")
     monkeypatch.setitem(sys.modules, "tools", namespace)
     monkeypatch.setitem(sys.modules, "tools.selected", selected)
+    if path_admitted:
+        monkeypatch.setattr(
+            sys, "path", [str(ROOT), str(ROOT / "src"), str(foreign.parent)]
+        )
+    before_path = list(sys.path)
 
     bind_repository_imports(ROOT / "tools" / "structural_audit.py")
 
+    if path_admitted:
+        assert sys.path == before_path
     expected = [str((ROOT / "tools").resolve())]
     assert sys.modules["tools"] is namespace
     assert list(namespace.__path__) == expected
@@ -264,8 +370,9 @@ def test_repository_binding_publishes_selected_namespace_before_foreign_package(
     assert not marker.exists()
 
 
+@pytest.mark.parametrize("path_admitted", [False, True])
 def test_repository_binding_rejects_real_foreign_root_package(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, path_admitted: bool
 ) -> None:
     foreign = tmp_path / "foreign" / "tools"
     foreign.mkdir(parents=True)
@@ -273,20 +380,29 @@ def test_repository_binding_rejects_real_foreign_root_package(
     package.__file__ = str(foreign / "__init__.py")
     package.__path__ = [str(foreign)]
     monkeypatch.setitem(sys.modules, "tools", package)
+    if path_admitted:
+        monkeypatch.setattr(sys, "path", [str(ROOT), str(ROOT / "src")])
+    before_path = list(sys.path)
 
     with pytest.raises(RuntimeError, match="repository import custody mismatch"):
         bind_repository_imports(ROOT / "tools" / "structural_audit.py")
+    assert sys.path == before_path
 
 
+@pytest.mark.parametrize("path_admitted", [False, True])
 def test_repository_binding_rejects_loaded_foreign_package(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, path_admitted: bool
 ) -> None:
     foreign = ModuleType("molt.foreign")
     foreign.__file__ = str(tmp_path / "molt" / "foreign.py")
     monkeypatch.setitem(sys.modules, "molt.foreign", foreign)
+    if path_admitted:
+        monkeypatch.setattr(sys, "path", [str(ROOT), str(ROOT / "src")])
+    before_path = list(sys.path)
 
     with pytest.raises(RuntimeError, match="repository import custody mismatch"):
         bind_repository_imports(ROOT / "tools" / "structural_audit.py")
+    assert sys.path == before_path
 
 
 def test_load_module_registers_identity_before_dataclass_execution(tmp_path) -> None:
