@@ -69,7 +69,7 @@ class CompatibilityError(RuntimeError):
 
 
 class CompatibilityReporter:
-    def __init__(self, source_path: str | None = None) -> None:
+    def __init__(self, *, source_path: str | None = None) -> None:
         self.source_path = source_path
 
     def _location(self, node: object) -> str:

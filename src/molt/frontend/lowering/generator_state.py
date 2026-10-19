@@ -294,6 +294,7 @@ class GeneratorStateMixin(GeneratorMixinBase):
         self,
         parse_codec: Literal["msgpack", "cbor", "json"] = "msgpack",
         type_hint_policy: Literal["ignore", "trust", "check"] = "ignore",
+        *,
         source_path: str | None = None,
         type_facts: "TypeFacts | None" = None,
         type_facts_module: str | None = None,
@@ -489,7 +490,7 @@ class GeneratorStateMixin(GeneratorMixinBase):
         self.future_annotations = False
         self.defer_module_attrs = False
         self.deferred_module_attrs: set[str] = set()
-        self.compat = CompatibilityReporter(source_path)
+        self.compat = CompatibilityReporter(source_path=source_path)
         self._emitted_syntax_warnings: set[tuple[str, int, str]] = set()
         self._deferred_runtime_warnings: list[str] = []
         self._reset_control_flow_state(reset_function_exception_label=True)

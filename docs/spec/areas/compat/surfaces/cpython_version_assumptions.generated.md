@@ -171,8 +171,8 @@ The inventory includes older and future Python 3 minor spellings, full eight-dig
 | `runtime/molt-backend-rust/src/rust/prelude/system.rs` | 1 | scattered-assumption | `3.12` |
 | `runtime/molt-backend-rust/src/rust/prelude.rs` | 1 | scattered-assumption | `3.12` |
 | `runtime/molt-backend-rust/src/rust/tests/labelled_flow.rs` | 3 | scattered-assumption | `3.0` |
+| `runtime/molt-backend-rust/src/rust/tests.rs` | 2 | authority-routed | `3.13` |
 | `runtime/molt-backend-rust/tests/float_repr_cpython_parity.rs` | 3 | scattered-assumption | `3.12` |
-| `runtime/molt-backend-rust/tests/rust_transpiler_preview.rs` | 2 | authority-routed | `3.13` |
 | `runtime/molt-backend-wasm/src/wasm/lir_fast/tests/cfg_execution.rs` | 3 | scattered-assumption | `3.5` |
 | `runtime/molt-backend-wasm/src/wasm_abi.rs` | 1 | scattered-assumption | `3.6` |
 | `runtime/molt-backend-wasm/src/wasm_options.rs` | 1 | scattered-assumption | `3.0` |
