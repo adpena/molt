@@ -2,13 +2,20 @@ from __future__ import annotations
 
 from tests.cli.native_link_test_support import transport_codegen_binding
 
+import copy
+import io
 import json
 import os
+import struct
 from pathlib import Path
+from types import SimpleNamespace
 
+import msgpack
 import pytest
 
+from molt.backend_protocol import BACKEND_DAEMON_PROTOCOL_VERSION
 from molt.cli import native_symbol_inspection
+from molt.cli.backend_ir_transport import write_backend_ir
 
 from molt.cli import backend_cache, backend_execution, build_output_layout, factgraph
 from molt.cli.backend_artifact_contract import resolve_backend_artifact_contract
@@ -27,7 +34,7 @@ def test_native_output_kind_is_explicit_in_full_and_probe_requests(
     )
     stdlib_key = "stdlib-key" if kind is NativeArtifactKind.ARCHIVE else None
     payload, error = backend_execution._backend_daemon_compile_request_bytes(
-        ir=None if probe else {"functions": []},
+        ir_path=None if probe else Path("backend-ir.msgpack"),
         backend_output=Path("arbitrary.filename"),
         artifact_contract=contract,
         wasm_link=False,
@@ -39,7 +46,6 @@ def test_native_output_kind_is_explicit_in_full_and_probe_requests(
         config_digest="config",
         skip_module_output_if_synced=False,
         skip_function_output_if_synced=False,
-        probe_cache_only=probe,
         native_runtime_codegen_binding=transport_codegen_binding(
             tmp_path / "runtime-transport"
         )
@@ -49,7 +55,12 @@ def test_native_output_kind_is_explicit_in_full_and_probe_requests(
     )
     assert error is None
     assert payload is not None
-    job = json.loads(payload)["jobs"][0]
+    request = json.loads(payload)
+    assert request["version"] == BACKEND_DAEMON_PROTOCOL_VERSION
+    job = request["jobs"][0]
+    assert ("probe_cache_only" in job) is probe
+    assert ("ir_path" in job) is not probe
+    assert "ir" not in job
     assert job["native_output_kind"] == kind.value
     assert job["target_triple"] == contract.target_triple
     for field, base in (
@@ -68,7 +79,7 @@ def test_wasm_requests_omit_native_output_kind(target: str, probe: bool) -> None
         target=target, emit_mode="wasm", target_triple=None
     )
     payload, error = backend_execution._backend_daemon_compile_request_bytes(
-        ir=None if probe else {"functions": []},
+        ir_path=None if probe else Path("backend-ir.msgpack"),
         backend_output=Path("output.wasm"),
         artifact_contract=contract,
         wasm_link=True,
@@ -79,12 +90,13 @@ def test_wasm_requests_omit_native_output_kind(target: str, probe: bool) -> None
         config_digest="config",
         skip_module_output_if_synced=False,
         skip_function_output_if_synced=False,
-        probe_cache_only=probe,
         request_environment=os.environ,
     )
     assert error is None
     assert payload is not None
-    job = json.loads(payload)["jobs"][0]
+    request = json.loads(payload)
+    assert request["version"] == BACKEND_DAEMON_PROTOCOL_VERSION
+    job = request["jobs"][0]
     assert "native_output_kind" not in job
     assert job["is_wasm"] is True
     assert job["target_triple"] == (
@@ -101,7 +113,8 @@ def test_wasm_requests_omit_native_output_kind(target: str, probe: bool) -> None
     assert job["wasm_data_base"] == 1024
     assert job["wasm_table_base"] == 8
     assert ("probe_cache_only" in job) is probe
-    assert ("ir" in job) is not probe
+    assert ("ir_path" in job) is not probe
+    assert "ir" not in job
 
 
 @pytest.mark.parametrize(
@@ -131,7 +144,7 @@ def test_daemon_probe_and_full_request_preserve_cache_setup_contract(
                 "jobs": [{"ok": True, "needs_ir": True, "output_written": False}],
             }, None
         lease = Path(job["ir_path"])
-        assert json.loads(lease.read_text(encoding="utf-8")) == {"functions": []}
+        assert msgpack.unpackb(lease.read_bytes(), raw=False) == {"functions": []}
         leases.append(lease)
         return {
             "ok": True,
@@ -189,7 +202,7 @@ def test_daemon_rejects_text_contract_before_ir_lease_or_transport(
     monkeypatch.setattr(backend_execution, "_write_backend_ir_lease", forbidden)
     monkeypatch.setattr(backend_execution, "_backend_daemon_request_bytes", forbidden)
     payload, error = backend_execution._backend_daemon_compile_request_bytes(
-        ir={"functions": []},
+        ir_path=Path("backend-ir.msgpack"),
         backend_output=tmp_path / "output",
         artifact_contract=contract,
         wasm_link=False,
@@ -337,7 +350,7 @@ def test_failed_ir_lease_write_leaves_no_partial_lease(tmp_path, monkeypatch):
         tmp_path / "project", {"functions": []}
     )
     lease_dir = good.parent
-    assert json.loads(good.read_text(encoding="utf-8")) == {"functions": []}
+    assert msgpack.unpackb(good.read_bytes(), raw=False) == {"functions": []}
 
     class Unencodable:
         pass
@@ -347,3 +360,160 @@ def test_failed_ir_lease_write_leaves_no_partial_lease(tmp_path, monkeypatch):
     with pytest.raises(TypeError):
         backend_execution._write_backend_ir_lease(tmp_path / "project", ir)
     assert sorted(lease_dir.iterdir()) == [good]
+
+
+@pytest.mark.parametrize(
+    "count,map_header,array_header",
+    [
+        (15, b"\x8f", b"\x9f"),
+        (16, b"\xde\x00\x10", b"\xdc\x00\x10"),
+        (65535, b"\xde\xff\xff", b"\xdc\xff\xff"),
+        (65536, b"\xdf\x00\x01\x00\x00", b"\xdd\x00\x01\x00\x00"),
+    ],
+)
+def test_binary_ir_container_headers_follow_messagepack_boundaries(
+    count, map_header, array_header
+):
+    mapping = {str(index): index for index in range(count)}
+    output = io.BytesIO()
+    write_backend_ir(output, mapping)
+    encoded = output.getvalue()
+    assert encoded.startswith(map_header)
+    assert msgpack.unpackb(encoded, raw=False) == mapping
+
+    values = list(range(count))
+    output = io.BytesIO()
+    write_backend_ir(output, {"values": values})
+    encoded = output.getvalue()
+    # One-entry map, six-byte string key, then the actual array header.
+    assert encoded.startswith(b"\x81\xa6values" + array_header)
+    assert msgpack.unpackb(encoded, raw=False) == {"values": values}
+
+
+def test_binary_ir_function_values_preserve_exact_f64_bits():
+    bit_patterns = [
+        "0000000000000000",  # positive zero
+        "8000000000000000",  # negative zero
+        "3ff0000000000001",  # a finite value requiring all 64 bits
+        "7ff0000000000000",  # positive infinity
+        "fff0000000000000",  # negative infinity
+        "7ff8000000000001",  # distinct quiet NaN payloads
+        "fff8000000000042",
+        "7ff0000000000001",  # signaling NaN and subnormal payloads
+        "0000000000000001",
+    ]
+    values = [struct.unpack(">d", bytes.fromhex(bits))[0] for bits in bit_patterns]
+    ir = {
+        "functions": [
+            {
+                "name": "main",
+                "ops": [{"kind": "const_float", "f_value": value} for value in values],
+            }
+        ]
+    }
+    output = io.BytesIO()
+    write_backend_ir(output, ir)
+    encoded = output.getvalue()
+    decoded = msgpack.unpackb(encoded, raw=False)
+    decoded_values = [op["f_value"] for op in decoded["functions"][0]["ops"]]
+    assert [struct.pack(">d", value).hex() for value in decoded_values] == bit_patterns
+    assert [struct.pack(">d", value).hex() for value in values] == bit_patterns
+    # Independent encoder agreement also rejects f32 or JSON float projection.
+    canonical = {
+        "functions": [
+            {
+                "name": "main",
+                "ops": [{"f_value": value, "kind": "const_float"} for value in values],
+            }
+        ]
+    }
+    assert encoded == msgpack.packb(
+        canonical, use_bin_type=True, use_single_float=False
+    )
+
+
+def test_binary_ir_writes_bounded_elements_without_mutating_source():
+    functions = [
+        {
+            "name": f"function_{index}",
+            "ops": [{"args": [index], "kind": "ret"}],
+            "params": ["value"],
+        }
+        for index in range(4)
+    ]
+    ir = {
+        "functions": functions,
+        "modules": [{"name": "module", "payload": b"\x00\xff"}],
+        "profile": {"enabled": True, "label": "é"},
+        "empty": [],
+    }
+    before = copy.deepcopy(ir)
+    writes = []
+
+    class RecordingHandle:
+        def write(self, data):
+            assert isinstance(data, bytes)
+            writes.append(data)
+            return len(data)
+
+    write_backend_ir(RecordingHandle(), ir)
+    encoded = b"".join(writes)
+    assert msgpack.unpackb(encoded, raw=False) == before
+    assert ir == before
+    elements = [
+        element
+        for value in before.values()
+        for element in (value if isinstance(value, list) else [value])
+    ]
+    largest_element = max(
+        len(msgpack.packb(element, use_bin_type=True)) for element in elements
+    )
+    assert max(map(len, writes)) == largest_element < len(encoded)
+    assert len(writes) <= 1 + 2 * len(ir) + len(elements)
+    # A complete function is emitted once, rather than token by token.
+    assert all(
+        msgpack.packb(function, use_bin_type=True) in writes for function in functions
+    )
+
+
+def test_ir_leases_are_exclusive_and_preserve_an_existing_owner(tmp_path, monkeypatch):
+    monkeypatch.setenv("MOLT_EXT_ROOT", str(tmp_path / "artifacts"))
+    project = tmp_path / "project"
+    ir = {"functions": []}
+    first = backend_execution._write_backend_ir_lease(project, ir)
+    second = backend_execution._write_backend_ir_lease(project, ir)
+    assert first != second
+    assert first.suffix == second.suffix == ".msgpack"
+    assert msgpack.unpackb(first.read_bytes(), raw=False) == ir
+    assert msgpack.unpackb(second.read_bytes(), raw=False) == ir
+    original = first.read_bytes()
+    first_uuid = first.stem.rsplit("-", 1)[1]
+    monkeypatch.setattr(
+        backend_execution.uuid, "uuid4", lambda: SimpleNamespace(hex=first_uuid)
+    )
+    with pytest.raises(FileExistsError):
+        backend_execution._write_backend_ir_lease(
+            project, {"functions": [{"name": "other"}]}
+        )
+    assert first.read_bytes() == original
+    assert set(first.parent.iterdir()) == {first, second}
+
+
+def test_partial_ir_write_failure_releases_only_its_lease(tmp_path, monkeypatch):
+    monkeypatch.setenv("MOLT_EXT_ROOT", str(tmp_path / "artifacts"))
+    project = tmp_path / "project"
+    good = backend_execution._write_backend_ir_lease(project, {"functions": []})
+    original = good.read_bytes()
+
+    def fail_after_write(handle, ir):
+        handle.write(b"\x81\xa9functions\x91")
+        handle.flush()
+        raise OSError("injected write failure")
+
+    monkeypatch.setattr(backend_execution, "write_backend_ir", fail_after_write)
+    with pytest.raises(OSError, match="injected write failure"):
+        backend_execution._write_backend_ir_lease(
+            project, {"functions": [{"name": "main"}]}
+        )
+    assert good.read_bytes() == original
+    assert list(good.parent.iterdir()) == [good]

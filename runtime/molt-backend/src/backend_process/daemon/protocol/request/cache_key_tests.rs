@@ -1,10 +1,10 @@
-use super::model::{DaemonArtifactCacheKeys, DaemonJobRequest};
+use super::model::{DaemonArtifactCacheKeys, DaemonIrSource, DaemonJobRequest};
 use std::sync::Arc;
 
 fn job(module: &str, function: Option<&str>) -> DaemonJobRequest {
     DaemonJobRequest::from_json_value(
         &serde_json::json!({"id":"job", "is_wasm":cfg!(feature="wasm-backend"),
-            "output":"unused", "cache_key":module, "function_cache_key":function}),
+            "output":"unused", "cache_key":module, "function_cache_key":function, "probe_cache_only":true}),
         "job",
     )
     .expect("valid job")
@@ -15,7 +15,7 @@ fn key_take_moves_buffers_and_shares_context_without_opening_ir() {
     let _scope = molt_backend::backend_environment::enter(Arc::default());
     let mut job = job("module", Some("function"));
     job.config_namespace = Some("configuration".to_owned());
-    job.ir_path = Some("absent-input-must-not-be-opened".to_owned());
+    job.ir_source = DaemonIrSource::Lease("absent-input-must-not-be-opened".to_owned());
     let module_buffer = job.cache_key.as_ptr();
     let function_buffer = job.function_cache_key.as_ref().unwrap().as_ptr();
     let namespace_buffer = job.config_namespace.as_ref().unwrap().as_ptr();
@@ -35,8 +35,8 @@ fn key_take_moves_buffers_and_shares_context_without_opening_ir() {
     assert!(job.function_cache_key.is_none());
     assert!(job.config_namespace.is_none());
     assert_eq!(
-        job.ir_path.as_deref(),
-        Some("absent-input-must-not-be-opened")
+        job.ir_source,
+        DaemonIrSource::Lease("absent-input-must-not-be-opened".to_owned())
     );
     assert_eq!(
         job.take_artifact_cache_keys().expect("cache identity"),
@@ -94,7 +94,7 @@ fn namespace_is_structural_and_transport_fields_do_not_change_identity() {
     let mut transport = job("same", None);
     transport.id = "other-id".to_owned();
     transport.output = "other-output".to_owned();
-    transport.probe_cache_only = true;
+    transport.ir_source = DaemonIrSource::Lease("another-absent-lease".to_owned());
     transport.skip_module_output_if_synced = true;
     transport.skip_function_output_if_synced = true;
     assert_eq!(
@@ -109,8 +109,7 @@ fn namespace_is_structural_and_transport_fields_do_not_change_identity() {
 #[test]
 fn native_target_and_output_kind_both_scope_identity() {
     let _scope = molt_backend::backend_environment::enter(Arc::default());
-    let base =
-        serde_json::json!({"id":"job", "is_wasm":false, "output":"unused", "cache_key":"same"});
+    let base = serde_json::json!({"id":"job", "is_wasm":false, "output":"unused", "cache_key":"same", "probe_cache_only":true});
     let expected = DaemonJobRequest::from_json_value(&base, "job")
         .unwrap()
         .take_artifact_cache_keys()
@@ -136,8 +135,7 @@ fn native_target_and_output_kind_both_scope_identity() {
 #[test]
 fn every_wasm_layout_option_scopes_identity() {
     let _scope = molt_backend::backend_environment::enter(Arc::default());
-    let base =
-        serde_json::json!({"id":"job", "is_wasm":true, "output":"unused", "cache_key":"same"});
+    let base = serde_json::json!({"id":"job", "is_wasm":true, "output":"unused", "cache_key":"same", "probe_cache_only":true});
     let expected = DaemonJobRequest::from_json_value(&base, "job")
         .unwrap()
         .take_artifact_cache_keys()

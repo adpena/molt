@@ -54,8 +54,9 @@ def _backend_crate_source_closure(
         crate_features=backend_features,
         extra_source_paths=(
             project_root / "Cargo.toml",
-            # molt-ir embeds this catalog from outside its Cargo crate root.
+            # Rust embeds these authorities from outside its Cargo crate root.
             project_root / "src" / "molt" / "backend_environment.json",
+            project_root / "src" / "molt" / "backend_daemon_protocol_version.txt",
         ),
     )
 
@@ -93,6 +94,8 @@ def _frontend_tooling_source_paths_cached(project_root_str: str) -> tuple[Path, 
         molt_root / "frontend",
         molt_root / "backend_environment.py",
         molt_root / "backend_environment.json",
+        molt_root / "backend_protocol.py",
+        molt_root / "backend_daemon_protocol_version.txt",
         molt_root / "type_facts.py",
         molt_root / "capabilities.py",
         molt_root / "capability_manifest.py",

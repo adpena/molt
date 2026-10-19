@@ -31,9 +31,11 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, Callable, Collection, Iterator, Mapping, Sequence, cast
 
+import msgpack
 import pytest
 
 from molt.backend_environment import CodegenSelection
+from molt.backend_protocol import BACKEND_DAEMON_PROTOCOL_VERSION
 import molt.cli as cli
 from molt.backend_binary_identity import identify_backend_binary
 import molt.wasm_artifact as wasm_artifact
@@ -191,6 +193,9 @@ cli_module_graph = importlib.import_module("molt.cli.module_graph")
 
 
 ROOT = Path(__file__).resolve().parents[2]
+_BACKEND_DAEMON_VERSION_REQUEST_BYTES = (
+    f'{{"version":{BACKEND_DAEMON_PROTOCOL_VERSION}}}\n'.encode("ascii")
+)
 ARTIFACT_STATE = importlib.import_module("molt.cli.artifact_state")
 ATOMIC_IO = importlib.import_module("molt.cli.atomic_io")
 BACKEND_CACHE = importlib.import_module("molt.cli.backend_cache")
@@ -385,6 +390,7 @@ def _install_fake_backend_compile(
             assert backend_input is None or isinstance(backend_input, bytes)
             backend_inputs.append(backend_input)
         if backend_ir_files is not None:
+            assert cmd[cmd.index("--ir-format") + 1] == "msgpack"
             assert "--ir-file" in cmd
             backend_ir_files.append(Path(cmd[cmd.index("--ir-file") + 1]))
         env = cast(dict[str, str] | None, kwargs.get("env"))
@@ -12155,7 +12161,7 @@ def test_backend_ir_text_is_compact() -> None:
     assert '"functions"' in text
 
 
-def test_backend_ir_lease_streams_json_without_bytes_helper(
+def test_backend_ir_lease_streams_msgpack_without_json_bytes_helper(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setattr(
@@ -12182,11 +12188,12 @@ def test_backend_ir_lease_streams_json_without_bytes_helper(
     )
 
     assert lease_path.parent == artifacts.resolve() / "tmp" / "backend-ir-leases"
-    payload = json.loads(lease_path.read_text(encoding="utf-8"))
+    assert lease_path.suffix == ".msgpack"
+    payload = msgpack.unpackb(lease_path.read_bytes(), raw=False)
     assert payload["functions"][0]["name"] == "main"
 
 
-def _backend_ir_lease_fixture() -> dict[Any, Any]:
+def _backend_ir_json_export_fixture() -> dict[Any, Any]:
     ops = [
         {"kind": "const", "out": f"v{index}", "value": index, "args": []}
         for index in range(64)
@@ -12213,28 +12220,29 @@ def _backend_ir_lease_fixture() -> dict[Any, Any]:
     }
 
 
-def _prior_backend_ir_lease_text(ir: Mapping[str, Any]) -> str:
-    # The replaced lease writer: json.dump through CPython's Python encoder.
+def _prior_backend_ir_json_export_text(ir: Mapping[str, Any]) -> str:
+    # Independent JSON export oracle: CPython's Python encoder.
     buffer = io.StringIO()
     json.dump(ir, buffer, separators=(",", ":"), default=CACHE_KEYS._json_ir_default)
     return buffer.getvalue()
 
 
-def test_backend_ir_lease_bytes_match_prior_compact_json(tmp_path: Path) -> None:
-    ir = _backend_ir_lease_fixture()
-    expected = _prior_backend_ir_lease_text(ir)
+def test_backend_ir_json_export_bytes_match_compact_json() -> None:
+    ir = _backend_ir_json_export_fixture()
+    expected = _prior_backend_ir_json_export_text(ir)
 
-    lease_path = BACKEND_EXECUTION._write_backend_ir_lease(tmp_path, ir)
+    buffer = io.StringIO()
+    CACHE_KEYS._write_backend_ir_text(buffer, ir)
 
-    assert lease_path.read_bytes() == expected.encode("ascii")
+    assert buffer.getvalue().encode("ascii") == expected.encode("ascii")
     assert CACHE_KEYS._backend_ir_text(ir) == expected
 
 
-def test_backend_ir_lease_writes_one_c_encoded_element_at_a_time(
+def test_backend_ir_json_export_writes_one_c_encoded_element_at_a_time(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    ir = _backend_ir_lease_fixture()
-    expected = _prior_backend_ir_lease_text(ir)
+    ir = _backend_ir_json_export_fixture()
+    expected = _prior_backend_ir_json_export_text(ir)
     encode = json.JSONEncoder(
         separators=(",", ":"), default=CACHE_KEYS._json_ir_default
     ).encode
@@ -12248,7 +12256,7 @@ def test_backend_ir_lease_writes_one_c_encoded_element_at_a_time(
         json.encoder,
         "_make_iterencode",
         lambda *args, **kwargs: (_ for _ in ()).throw(
-            AssertionError("backend IR lease must use the C JSON encoder")
+            AssertionError("backend IR JSON export must use the C JSON encoder")
         ),
     )
     writes: list[str] = []
@@ -12271,7 +12279,7 @@ def test_backend_ir_lease_writes_one_c_encoded_element_at_a_time(
     [types.MappingProxyType({"functions": []}), {1: []}],
     ids=["non-dict-document", "non-str-top-level-key"],
 )
-def test_backend_ir_lease_rejects_non_object_documents(ir: Any) -> None:
+def test_backend_ir_json_export_rejects_non_object_documents(ir: Any) -> None:
     with pytest.raises(TypeError):
         CACHE_KEYS._write_backend_ir_text(io.StringIO(), ir)
 
@@ -15535,6 +15543,7 @@ def test_backend_source_paths_are_feature_aware() -> None:
         "Cargo.toml",
         # Cargo.lock is a separately admitted compiler dependency projection.
         "src/molt/backend_environment.json",
+        "src/molt/backend_daemon_protocol_version.txt",
         # Maintained [patch.crates-io] sources: molt-backend always links
         # `object`, and the lock closure is conservative over features.
         "vendor/rust/cranelift-object",
@@ -21375,7 +21384,10 @@ def test_backend_daemon_retryable_error_classification() -> None:
 
 
 def test_backend_daemon_request_payload_bytes_is_unbounded() -> None:
-    payload = {"version": 1, "jobs": [{"id": "x", "ir": "x" * 4096}]}
+    payload = {
+        "version": BACKEND_DAEMON_PROTOCOL_VERSION,
+        "jobs": [{"id": "x", "ir_path": "x" * 4096}],
+    }
     data, err = BACKEND_EXECUTION._backend_daemon_request_payload_bytes(payload)
     assert isinstance(data, bytes)
     assert data.endswith(b"\n")
@@ -27892,6 +27904,7 @@ def test_native_backend_compile_routes_stdlib_object_env(
                 target="native", emit_mode="bin"
             ).target_triple
         )
+        assert cmd[cmd.index("--ir-format") + 1] == "msgpack"
         assert "--ir-file" in cmd
         assert kwargs.get("input") is None
         output_path = Path(cmd[cmd.index("--output") + 1])
@@ -27953,7 +27966,7 @@ def test_native_backend_compile_routes_stdlib_object_env(
         molt_root=project_root,
         backend_cargo_profile="dev-fast",
         entry_module=entry_module,
-        _ensure_backend_ir_file_path=lambda: project_root / "tmp" / "ir.json",
+        _ensure_backend_ir_file_path=lambda: project_root / "tmp" / "ir.msgpack",
         cache_hit=False,
         backend_daemon_cached=None,
         backend_daemon_cache_tier=None,
@@ -28057,7 +28070,7 @@ def test_native_backend_compile_overrides_stale_ambient_partition_env(
         molt_root=project_root,
         backend_cargo_profile="dev-fast",
         entry_module=entry_module,
-        _ensure_backend_ir_file_path=lambda: project_root / "tmp" / "ir.json",
+        _ensure_backend_ir_file_path=lambda: project_root / "tmp" / "ir.msgpack",
         cache_hit=False,
         backend_daemon_cached=None,
         backend_daemon_cache_tier=None,
@@ -28157,7 +28170,7 @@ def test_native_backend_compile_clears_stale_partition_env_without_split(
         molt_root=project_root,
         backend_cargo_profile="dev-fast",
         entry_module="pkg.app",
-        _ensure_backend_ir_file_path=lambda: project_root / "tmp" / "ir.json",
+        _ensure_backend_ir_file_path=lambda: project_root / "tmp" / "ir.msgpack",
         cache_hit=False,
         backend_daemon_cached=None,
         backend_daemon_cache_tier=None,
@@ -28261,7 +28274,7 @@ def test_backend_compile_stages_one_shot_output_into_cache(
         backend_timeout=None,
         molt_root=project_root,
         backend_cargo_profile="dev-fast",
-        _ensure_backend_ir_file_path=lambda: project_root / "tmp" / "ir.json",
+        _ensure_backend_ir_file_path=lambda: project_root / "tmp" / "ir.msgpack",
         cache_hit=False,
         backend_daemon_cached=None,
         backend_daemon_cache_tier=None,
@@ -28304,18 +28317,23 @@ def test_execute_backend_compile_defers_full_daemon_request_encode_until_probe_m
     cache_path = project_root / ".molt_cache" / "cache-key.a"
     function_cache_path = project_root / ".molt_cache" / "fn-cache-key.a"
     stdlib_object_path = project_root / "build" / "main.stdlib.a"
-    request_encode_calls: list[tuple[bool, bool, bool]] = []
+    request_encode_calls: list[tuple[bool, bool]] = []
     daemon_request_bytes: list[bytes | None] = []
 
     def fake_request_bytes(**kwargs: object) -> tuple[bytes | None, str | None]:
         request_encode_calls.append(
             (
-                bool(kwargs.get("probe_cache_only")),
-                kwargs.get("ir") is not None,
-                kwargs.get("ir_path") is not None,
+                kwargs["ir_path"] is None,
+                kwargs["ir_path"] is not None,
             )
         )
-        return b'{"version":1,"jobs":[{"id":"job0"}]}\n', None
+        return (
+            json.dumps(
+                {"version": BACKEND_DAEMON_PROTOCOL_VERSION, "jobs": [{"id": "job0"}]}
+            ).encode("utf-8")
+            + b"\n",
+            None,
+        )
 
     def fake_compile_with_backend_daemon(
         socket_path: Path,
@@ -28393,7 +28411,7 @@ def test_execute_backend_compile_defers_full_daemon_request_encode_until_probe_m
         backend_timeout=None,
         molt_root=project_root,
         backend_cargo_profile="dev-fast",
-        _ensure_backend_ir_file_path=lambda: project_root / "tmp" / "ir.json",
+        _ensure_backend_ir_file_path=lambda: project_root / "tmp" / "ir.msgpack",
         cache_hit=False,
         backend_daemon_cached=None,
         backend_daemon_cache_tier=None,
@@ -28427,11 +28445,17 @@ def test_execute_backend_compile_keeps_probe_path_across_daemon_restart(
     def fake_request_bytes(**kwargs: object) -> tuple[bytes | None, str | None]:
         request_encode_calls.append(
             (
-                bool(kwargs.get("probe_cache_only")),
-                kwargs.get("ir") is not None,
+                kwargs["ir_path"] is None,
+                kwargs["ir_path"] is not None,
             )
         )
-        return b'{"version":1,"jobs":[{"id":"job0"}]}\n', None
+        return (
+            json.dumps(
+                {"version": BACKEND_DAEMON_PROTOCOL_VERSION, "jobs": [{"id": "job0"}]}
+            ).encode("utf-8")
+            + b"\n",
+            None,
+        )
 
     def fake_compile_with_backend_daemon(
         socket_path: Path,
@@ -28528,7 +28552,7 @@ def test_execute_backend_compile_keeps_probe_path_across_daemon_restart(
         backend_timeout=None,
         molt_root=project_root,
         backend_cargo_profile="dev-fast",
-        _ensure_backend_ir_file_path=lambda: project_root / "tmp" / "ir.json",
+        _ensure_backend_ir_file_path=lambda: project_root / "tmp" / "ir.msgpack",
         cache_hit=False,
         backend_daemon_cached=None,
         backend_daemon_cache_tier=None,
@@ -28652,7 +28676,7 @@ def test_execute_backend_compile_does_not_retry_after_full_daemon_request(
         backend_timeout=None,
         molt_root=project_root,
         backend_cargo_profile="dev-fast",
-        _ensure_backend_ir_file_path=lambda: project_root / "tmp" / "ir.json",
+        _ensure_backend_ir_file_path=lambda: project_root / "tmp" / "ir.msgpack",
         cache_hit=False,
         backend_daemon_cached=None,
         backend_daemon_cache_tier=None,
@@ -28762,7 +28786,7 @@ def test_execute_backend_compile_fails_closed_after_daemon_failure(
         backend_timeout=None,
         molt_root=project_root,
         backend_cargo_profile="dev-fast",
-        _ensure_backend_ir_file_path=lambda: project_root / "tmp" / "ir.json",
+        _ensure_backend_ir_file_path=lambda: project_root / "tmp" / "ir.msgpack",
         cache_hit=False,
         backend_daemon_cached=None,
         backend_daemon_cache_tier=None,
@@ -28870,7 +28894,7 @@ def test_execute_backend_compile_verbose_prints_only_fresh_daemon_log(
         backend_timeout=None,
         molt_root=project_root,
         backend_cargo_profile="dev-fast",
-        _ensure_backend_ir_file_path=lambda: project_root / "tmp" / "ir.json",
+        _ensure_backend_ir_file_path=lambda: project_root / "tmp" / "ir.msgpack",
         cache_hit=False,
         backend_daemon_cached=None,
         backend_daemon_cache_tier=None,
@@ -28959,7 +28983,7 @@ def test_execute_backend_compile_rejects_unsynced_daemon_output_skip(
         backend_timeout=None,
         molt_root=project_root,
         backend_cargo_profile="dev-fast",
-        _ensure_backend_ir_file_path=lambda: project_root / "tmp" / "ir.json",
+        _ensure_backend_ir_file_path=lambda: project_root / "tmp" / "ir.msgpack",
         cache_hit=False,
         backend_daemon_cached=None,
         backend_daemon_cache_tier=None,
@@ -28999,7 +29023,7 @@ def test_backend_daemon_compile_request_partition_env_obeys_artifact_contract(
         monkeypatch.setenv(key, "stale-ambient-value")
     monkeypatch.setenv("MOLT_ENTRY_MODULE", "ambient.entry")
     request_bytes, error = BACKEND_EXECUTION._backend_daemon_compile_request_bytes(
-        ir={"functions": []},
+        ir_path=Path("backend-ir.msgpack"),
         backend_output=backend_output,
         artifact_contract=resolve_backend_artifact_contract(
             target="native", emit_mode=emit_mode, target_triple=None
@@ -29063,7 +29087,7 @@ def test_backend_daemon_compile_request_uses_canonical_split_table_boundary(
     tmp_path: Path,
 ) -> None:
     request_bytes, error = BACKEND_EXECUTION._backend_daemon_compile_request_bytes(
-        ir={"functions": []},
+        ir_path=Path("backend-ir.msgpack"),
         backend_output=tmp_path / "output.wasm",
         artifact_contract=resolve_backend_artifact_contract(
             target="wasm", emit_mode="wasm", target_triple=None
@@ -29091,11 +29115,10 @@ def test_backend_daemon_compile_request_can_use_path_backed_ir_lease(
     tmp_path: Path,
 ) -> None:
     backend_output = tmp_path / "output.o"
-    ir_path = tmp_path / "backend-ir.json"
-    ir_path.write_text('{"functions":[]}\n', encoding="utf-8")
+    ir_path = tmp_path / "backend-ir.msgpack"
+    ir_path.write_bytes(msgpack.packb({"functions": []}, use_bin_type=True))
 
     request_bytes, error = BACKEND_EXECUTION._backend_daemon_compile_request_bytes(
-        ir=None,
         ir_path=ir_path,
         backend_output=backend_output,
         artifact_contract=resolve_backend_artifact_contract(
@@ -29122,12 +29145,13 @@ def test_backend_daemon_compile_request_can_use_path_backed_ir_lease(
     assert "ir" not in job
 
 
-def test_backend_daemon_compile_request_rejects_duplicate_ir_authority(
+@pytest.mark.parametrize("probe", [False, True])
+def test_backend_daemon_compile_request_selects_exact_compile_or_probe_state(
     tmp_path: Path,
+    probe: bool,
 ) -> None:
     request_bytes, error = BACKEND_EXECUTION._backend_daemon_compile_request_bytes(
-        ir={"functions": []},
-        ir_path=tmp_path / "backend-ir.json",
+        ir_path=None if probe else tmp_path / "backend-ir.msgpack",
         backend_output=tmp_path / "output.o",
         artifact_contract=resolve_backend_artifact_contract(
             target="native", emit_mode="obj", target_triple=None
@@ -29146,11 +29170,18 @@ def test_backend_daemon_compile_request_rejects_duplicate_ir_authority(
         request_environment=os.environ,
     )
 
-    assert request_bytes is None
-    assert (
-        error
-        == "backend daemon request must use exactly one IR custody field: ir or ir_path"
-    )
+    assert error is None
+    assert request_bytes is not None
+    payload = json.loads(request_bytes)
+    assert payload["version"] == BACKEND_DAEMON_PROTOCOL_VERSION
+    job = payload["jobs"][0]
+    assert "ir" not in job
+    assert ("ir_path" in job) is not probe
+    assert ("probe_cache_only" in job) is probe
+    if probe:
+        assert job["probe_cache_only"] is True
+    else:
+        assert job["ir_path"] == str(tmp_path / "backend-ir.msgpack")
 
 
 def test_backend_daemon_compile_request_includes_batch_op_budget_env(
@@ -29161,7 +29192,7 @@ def test_backend_daemon_compile_request_includes_batch_op_budget_env(
     monkeypatch.setenv("MOLT_BACKEND_BATCH_OP_BUDGET", "16384")
 
     request_bytes, error = BACKEND_EXECUTION._backend_daemon_compile_request_bytes(
-        ir={"functions": []},
+        ir_path=Path("backend-ir.msgpack"),
         backend_output=backend_output,
         artifact_contract=resolve_backend_artifact_contract(
             target="native", emit_mode="bin", target_triple=None
@@ -29201,7 +29232,7 @@ def test_backend_daemon_compile_request_includes_resource_env_without_codegen_di
     monkeypatch.setenv("RAYON_NUM_THREADS", "2")
 
     request_bytes, error = BACKEND_EXECUTION._backend_daemon_compile_request_bytes(
-        ir={"functions": []},
+        ir_path=Path("backend-ir.msgpack"),
         backend_output=backend_output,
         artifact_contract=resolve_backend_artifact_contract(
             target="native", emit_mode="obj", target_triple=None
@@ -30053,7 +30084,7 @@ def test_compile_with_backend_daemon_lazily_encodes_full_request_once(
             ).target_triple
         )
         lease = Path(job["ir_path"])
-        assert json.loads(lease.read_text(encoding="utf-8")) == {"functions": []}
+        assert msgpack.unpackb(lease.read_bytes(), raw=False) == {"functions": []}
         leases.append(lease)
         backend_output.write_bytes(b"\x7fELF")
         return (
@@ -30224,7 +30255,7 @@ def test_compile_with_backend_daemon_retries_with_ir_after_probe_miss(
                 job = cast(dict[str, object], payload["jobs"][0])
                 assert "ir" not in job
                 ir_path = Path(cast(str, job["ir_path"]))
-                assert json.loads(ir_path.read_text(encoding="utf-8")) == {
+                assert msgpack.unpackb(ir_path.read_bytes(), raw=False) == {
                     "functions": [{"name": "heavy"}]
                 }
                 ir_lease_paths.append(ir_path)
@@ -30344,7 +30375,7 @@ def test_compile_with_backend_daemon_sends_ir_when_shared_stdlib_cache_missing(
             assert "probe_cache_only" not in job
             assert "ir" not in job
             ir_path = Path(cast(str, job["ir_path"]))
-            assert json.loads(ir_path.read_text(encoding="utf-8")) == {
+            assert msgpack.unpackb(ir_path.read_bytes(), raw=False) == {
                 "functions": [{"name": "heavy"}]
             }
             assert payload["env"]["MOLT_STDLIB_OBJ"] == str(stdlib_object_path)
@@ -30424,8 +30455,8 @@ def test_compile_with_backend_daemon_defers_full_encode_until_probe_miss(
     ) -> tuple[bytes | None, str | None]:
         calls.append(
             (
-                bool(kwargs.get("probe_cache_only")),
-                kwargs.get("ir") is not None,
+                kwargs["ir_path"] is None,
+                kwargs["ir_path"] is not None,
             )
         )
         return original(**kwargs)
@@ -30652,13 +30683,13 @@ def test_backend_daemon_request_bytes_accumulates_partial_chunks(
 
     response, err = BACKEND_EXECUTION._backend_daemon_request_bytes(
         tmp_path / "daemon.sock",
-        b'{"version":1}\n',
+        _BACKEND_DAEMON_VERSION_REQUEST_BYTES,
         timeout=0.25,
     )
 
     assert err is None
     assert response == {"ok": True, "pong": False}
-    assert sent == [b'{"version":1}\n']
+    assert sent == [_BACKEND_DAEMON_VERSION_REQUEST_BYTES]
 
 
 def test_backend_daemon_request_bytes_waits_while_live_daemon_is_still_compiling(
@@ -30725,14 +30756,14 @@ def test_backend_daemon_request_bytes_waits_while_live_daemon_is_still_compiling
 
     response, err = BACKEND_EXECUTION._backend_daemon_request_bytes(
         socket_path,
-        b'{"version":1}\n',
+        _BACKEND_DAEMON_VERSION_REQUEST_BYTES,
         timeout=None,
         daemon_identity=daemon_identity,
     )
 
     assert err is None
     assert response == {"ok": True, "pong": False}
-    assert sent == [b'{"version":1}\n']
+    assert sent == [_BACKEND_DAEMON_VERSION_REQUEST_BYTES]
     assert identity_checks == [4321, 4321]
 
 
@@ -30754,7 +30785,7 @@ def test_backend_daemon_request_bytes_rejects_whitespace_only_response(
             assert address == str(tmp_path / "daemon.sock")
 
         def sendall(self, data: bytes) -> None:
-            assert data == b'{"version":1}\n'
+            assert data == _BACKEND_DAEMON_VERSION_REQUEST_BYTES
 
         def shutdown(self, how: int) -> None:
             assert how == socket.SHUT_WR
@@ -30772,7 +30803,7 @@ def test_backend_daemon_request_bytes_rejects_whitespace_only_response(
 
     response, err = BACKEND_EXECUTION._backend_daemon_request_bytes(
         tmp_path / "daemon.sock",
-        b'{"version":1}\n',
+        _BACKEND_DAEMON_VERSION_REQUEST_BYTES,
         timeout=0.25,
     )
 
@@ -30816,7 +30847,7 @@ def test_backend_daemon_request_bytes_reports_empty_response_with_identity_prove
             assert address == str(socket_path)
 
         def sendall(self, data: bytes) -> None:
-            assert data == b'{"version":1}\n'
+            assert data == _BACKEND_DAEMON_VERSION_REQUEST_BYTES
 
         def shutdown(self, how: int) -> None:
             assert how == socket.SHUT_WR
@@ -30835,7 +30866,7 @@ def test_backend_daemon_request_bytes_reports_empty_response_with_identity_prove
 
     response, err = BACKEND_EXECUTION._backend_daemon_request_bytes(
         socket_path,
-        b'{"version":1}\n',
+        _BACKEND_DAEMON_VERSION_REQUEST_BYTES,
         timeout=0.25,
         daemon_identity=identity,
     )
@@ -30893,13 +30924,13 @@ def test_backend_daemon_request_bytes_ignores_redirect_file(
 
     response, err = BACKEND_EXECUTION._backend_daemon_request_bytes(
         socket_path,
-        b'{"version":1}\n',
+        _BACKEND_DAEMON_VERSION_REQUEST_BYTES,
         timeout=0.25,
     )
 
     assert err is None
     assert response == {"ok": True}
-    assert sent == [b'{"version":1}\n']
+    assert sent == [_BACKEND_DAEMON_VERSION_REQUEST_BYTES]
 
 
 def test_orphaned_backend_daemon_sweep_removes_dead_identity_and_legacy_pid(
@@ -33171,7 +33202,7 @@ def test_retire_backend_daemon_requires_the_daemon_to_report_retiring(
         BACKEND_EXECUTION.retire_backend_daemon(Path("/tmp/fake.sock"), timeout=0.1)
         is retired
     )
-    assert sent == [{"version": 1, "retire": True}]
+    assert sent == [{"version": BACKEND_DAEMON_PROTOCOL_VERSION, "retire": True}]
 
 
 def test_internal_batch_build_server_ping_shutdown_roundtrip() -> None:

@@ -187,7 +187,7 @@ def test_optional_stdlib_cache_requires_distinct_owned_output(tmp_path, output, 
     from tests.cli.native_link_test_support import transport_codegen_binding
 
     payload, error = _backend_daemon_compile_request_bytes(
-        ir=None if probe else {"functions": []},
+        ir_path=None if probe else Path("backend-ir.msgpack"),
         backend_output=tmp_path / "app.a",
         artifact_contract=resolve_backend_artifact_contract(
             target="native", emit_mode="bin"
@@ -200,7 +200,6 @@ def test_optional_stdlib_cache_requires_distinct_owned_output(tmp_path, output, 
         config_digest=None,
         skip_module_output_if_synced=False,
         skip_function_output_if_synced=False,
-        probe_cache_only=probe,
         stdlib_object_path=tmp_path / output if output else None,
         native_runtime_codegen_binding=transport_codegen_binding(tmp_path / "runtime"),
         request_environment={"MOLT_STDLIB_CACHE_ENTRY": str(tmp_path / "cache.a")},

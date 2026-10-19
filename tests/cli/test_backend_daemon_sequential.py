@@ -20,6 +20,7 @@ import time
 from pathlib import Path
 
 import pytest
+from molt.backend_protocol import BACKEND_DAEMON_PROTOCOL_VERSION
 from molt.cli.rust_cpu_policy import RustCpuPolicy
 from molt.cli import backend_binary as cli_backend_binary
 
@@ -28,9 +29,6 @@ from molt.cli import backend_execution as cli_backend_execution
 
 
 ROOT = Path(__file__).resolve().parents[2]
-
-# Re-use the same protocol version constant that the CLI package uses.
-_BACKEND_DAEMON_PROTOCOL_VERSION = 1
 
 # How long to wait for a single request round-trip before declaring a stall.
 _REQUEST_TIMEOUT_S = 15.0
@@ -95,7 +93,7 @@ def _ping_daemon(socket_path: Path, *, timeout: float) -> bool:
             sock.connect(str(socket_path))
             resp = _send_request(
                 sock,
-                {"version": _BACKEND_DAEMON_PROTOCOL_VERSION, "ping": True},
+                {"version": BACKEND_DAEMON_PROTOCOL_VERSION, "ping": True},
             )
             return resp is not None and bool(resp.get("ok")) and bool(resp.get("pong"))
     except OSError:
@@ -181,7 +179,7 @@ class TestDaemonSequentialRequests:
 
     def test_sequential_pings_on_same_connection(self, daemon_socket: Path) -> None:
         """The daemon must handle multiple requests on a single persistent connection."""
-        payload = {"version": _BACKEND_DAEMON_PROTOCOL_VERSION, "ping": True}
+        payload = {"version": BACKEND_DAEMON_PROTOCOL_VERSION, "ping": True}
         with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as sock:
             sock.settimeout(_REQUEST_TIMEOUT_S)
             sock.connect(str(daemon_socket))
@@ -194,7 +192,7 @@ class TestDaemonSequentialRequests:
     def test_probe_cache_miss_returns_needs_ir(self, daemon_socket: Path) -> None:
         """A probe-cache-only request with no IR must return needs_ir=True, not stall."""
         payload = {
-            "version": _BACKEND_DAEMON_PROTOCOL_VERSION,
+            "version": BACKEND_DAEMON_PROTOCOL_VERSION,
             "jobs": [
                 {
                     "id": "probe0",
@@ -225,7 +223,7 @@ class TestDaemonSequentialRequests:
         """
         for i in range(5):
             payload = {
-                "version": _BACKEND_DAEMON_PROTOCOL_VERSION,
+                "version": BACKEND_DAEMON_PROTOCOL_VERSION,
                 "jobs": [
                     {
                         "id": f"probe{i}",
@@ -254,7 +252,7 @@ class TestDaemonSequentialRequests:
     def test_health_reported_in_ping_response(self, daemon_socket: Path) -> None:
         """Daemon health stats must be present in ping responses."""
         payload = {
-            "version": _BACKEND_DAEMON_PROTOCOL_VERSION,
+            "version": BACKEND_DAEMON_PROTOCOL_VERSION,
             "ping": True,
             "include_health": True,
         }
@@ -271,7 +269,7 @@ class TestDaemonSequentialRequests:
         assert resp.get("pong")
         health = resp.get("health")
         assert isinstance(health, dict), f"Expected health dict, got: {health!r}"
-        assert health.get("protocol_version") == _BACKEND_DAEMON_PROTOCOL_VERSION
+        assert health.get("protocol_version") == BACKEND_DAEMON_PROTOCOL_VERSION
         assert isinstance(health.get("requests_total"), int)
 
     def test_invalid_version_returns_error(self, daemon_socket: Path) -> None:
@@ -302,7 +300,7 @@ class TestDaemonSequentialRequests:
         # Open a connection, send a probe request, read the response, then
         # close WITHOUT sending a follow-up — simulates a cache-hit path.
         probe_payload = {
-            "version": _BACKEND_DAEMON_PROTOCOL_VERSION,
+            "version": BACKEND_DAEMON_PROTOCOL_VERSION,
             "jobs": [
                 {
                     "id": "probe-close",

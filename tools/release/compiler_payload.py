@@ -66,6 +66,7 @@ REQUIRED_MARKERS = frozenset(
         "runtime/molt-runtime/Cargo.toml",
         "src/molt/cli/__main__.py",
         "src/molt/backend_environment.json",
+        "src/molt/backend_daemon_protocol_version.txt",
         "src/molt/stdlib/builtins.py",
         "packaging/bootstrap.py",
         "packaging/INSTALL.md",

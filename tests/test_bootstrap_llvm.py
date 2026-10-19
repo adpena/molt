@@ -342,6 +342,48 @@ def test_download_rejects_corrupt_response_without_publishing(
     assert not tuple(tmp_path.glob("*.partial"))
 
 
+@pytest.mark.parametrize("operation", ["json", "download"])
+def test_exclusive_staging_collision_preserves_the_unowned_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, operation: str
+) -> None:
+    token = "f" * 32
+    destination = tmp_path / ("receipt.json" if operation == "json" else "llvm.tar.xz")
+    suffix = "tmp" if operation == "json" else "partial"
+    stage = destination.with_name(f".{destination.name}.{token}.{suffix}")
+    stage.write_bytes(b"another owner's stage")
+    before = stage.stat()
+    install_module_view(
+        monkeypatch,
+        "uuid",
+        uuid,
+        bootstrap_llvm,
+        uuid4=lambda: SimpleNamespace(hex=token),
+    )
+    payload = b"verified llvm source"
+    monkeypatch.setattr(
+        bootstrap_llvm.urllib.request, "urlopen", lambda _url: io.BytesIO(payload)
+    )
+    if operation == "json":
+        destination.write_bytes(b"previous output")
+
+    with pytest.raises(FileExistsError):
+        if operation == "json":
+            bootstrap_llvm._atomic_json(destination, {"new": "output"})
+        else:
+            bootstrap_llvm._download(
+                "https://llvm.example/source",
+                destination,
+                expected_sha256=hashlib.sha256(payload).hexdigest(),
+            )
+
+    assert stage.read_bytes() == b"another owner's stage"
+    assert os.path.samestat(before, stage.stat())
+    if operation == "json":
+        assert destination.read_bytes() == b"previous output"
+    else:
+        assert not destination.exists()
+
+
 def _write_test_tar(archive: Path, *, unsafe_link: bool = False) -> str:
     with tarfile.open(archive, "w:xz") as bundle:
         payload = b"project(LLVM)\n"

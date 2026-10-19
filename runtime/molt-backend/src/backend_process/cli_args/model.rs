@@ -1,3 +1,4 @@
+use crate::backend_process::input::IrFormat;
 use molt_backend::BackendIrDocument;
 use molt_backend::tir::target_info::TargetInfo;
 #[cfg(feature = "native-backend")]
@@ -33,7 +34,7 @@ pub(crate) struct BackendCompileArgs<'a> {
     pub(crate) target: BackendTarget,
     pub(crate) output_path: Option<&'a str>,
     pub(crate) ir_file_path: Option<&'a str>,
-    pub(crate) ir_format: &'a str,
+    pub(crate) ir_format: IrFormat,
     pub(crate) fact_graph: Option<FactGraphCliRequest<'a>>,
 }
 

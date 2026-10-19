@@ -4171,11 +4171,14 @@ description = "Prove selected operation settings, cache publication policy, runt
 globs = [
   "src/molt/backend_environment.py",
   "src/molt/backend_environment.json",
+  "src/molt/backend_protocol.py",
+  "src/molt/backend_daemon_protocol_version.txt",
   "src/molt/llvm_wasi_tools.py",
   "src/molt/cli/backend_cache_setup.py",
   "src/molt/cli/backend_compile.py",
   "src/molt/cli/backend_daemon_logs.py",
   "src/molt/cli/backend_execution.py",
+  "src/molt/cli/backend_ir_transport.py",
   "src/molt/cli/backend_pipeline.py",
   "src/molt/cli/models.py",
   "src/molt/cli/wasm_codegen_layout.py",
@@ -5383,15 +5386,17 @@ globs = [
   "runtime/molt-backend/src/backend_process/native_artifact.rs",
   "runtime/molt-backend/src/backend_process/daemon/**/*.rs",
   "runtime/molt-backend/src/main_tests/daemon*.rs",
+  "runtime/molt-backend/tests/daemon_server.rs",
 ]
 gates = [
-  "cargo test --locked --profile dev-fast --config profile.dev-fast.package.cranelift-codegen.opt-level=0 -p molt-backend --no-default-features --features molt-backend/native-backend,molt-backend/wasm-backend,molt-backend/luau-backend,molt-backend/rust-backend,molt-backend/cbor --bin molt-backend daemon -- --test-threads=1",
+  "cargo test --locked --profile dev-fast --config profile.dev-fast.package.cranelift-codegen.opt-level=0 -p molt-backend --no-default-features --features molt-backend/native-backend,molt-backend/wasm-backend,molt-backend/luau-backend,molt-backend/rust-backend,molt-backend/cbor --bin molt-backend -- daemon backend_process::input::tests backend_process::cli_args::parse::tests --test-threads=1",
+  "cargo test --locked --profile dev-fast --config profile.dev-fast.package.cranelift-codegen.opt-level=0 -p molt-backend --no-default-features --features molt-backend/native-backend,molt-backend/wasm-backend,molt-backend/luau-backend,molt-backend/rust-backend,molt-backend/cbor --test daemon_server -- --test-threads=1",
 ]
 
 [[rule]]
 name = "backend-ir-framing"
 toolchains = ["python", "rustc", "cargo"]
-description = "Run actual binary input receivers with CBOR enabled; the native binary family also proves disabled-feature refusal."
+description = "Share the daemon correctness binary for input framing; the native binary family also proves disabled-feature refusal."
 globs = [
   "runtime/molt-backend/Cargo.toml",
   "runtime/molt-backend/src/backend_process/input/**/*.rs",
@@ -5399,7 +5404,9 @@ globs = [
   "runtime/molt-ir/src/ir/ndjson*.rs",
 ]
 gates = [
-  "cargo test --locked --profile release-fast -p molt-backend --features native-backend,cbor --bin molt-backend backend_process::input::tests",
+  # Identical to the daemon unit command: one selected gate and one host
+  # package/feature/profile image, with libtest OR-ing the owning filters.
+  "cargo test --locked --profile dev-fast --config profile.dev-fast.package.cranelift-codegen.opt-level=0 -p molt-backend --no-default-features --features molt-backend/native-backend,molt-backend/wasm-backend,molt-backend/luau-backend,molt-backend/rust-backend,molt-backend/cbor --bin molt-backend -- daemon backend_process::input::tests backend_process::cli_args::parse::tests --test-threads=1",
 ]
 
 # --- Maintained native object emitter and actual target consumers --------

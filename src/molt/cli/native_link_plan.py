@@ -218,8 +218,8 @@ def native_link_execution_command(
                 purpose="native-link",
                 suffix=sidecar.planned_path.suffix,
             )
-            staged_sidecars.append(staged)
             with staged.open("xb") as stream:
+                staged_sidecars.append(staged)
                 stream.write(sidecar.content)
             result[sidecar.command_index] = f"{sidecar.operand_prefix}{staged}"
         yield result

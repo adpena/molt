@@ -243,7 +243,9 @@ fn compile_args<'a>(supplied: &SuppliedOptions<'a>) -> io::Result<BackendCompile
         target,
         output_path: supplied.get(BackendOption::Output),
         ir_file_path: supplied.get(BackendOption::IrFile),
-        ir_format: supplied.get(BackendOption::IrFormat).unwrap_or("json"),
+        ir_format: crate::backend_process::input::IrFormat::parse(
+            supplied.get(BackendOption::IrFormat).unwrap_or("json"),
+        )?,
         fact_graph,
     })
 }
@@ -480,7 +482,7 @@ mod tests {
                     }),
                     output_path: Some("build/app.a"),
                     ir_file_path: Some("build/app.ir.json"),
-                    ir_format: "json",
+                    ir_format: crate::backend_process::input::IrFormat::Json,
                     fact_graph: None,
                 })
             );

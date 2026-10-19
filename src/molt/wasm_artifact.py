@@ -2058,6 +2058,7 @@ def transform_wasm_publication_file(
     from molt.file_publication import durable_replace, staged_file_path
 
     staged = staged_file_path(path, purpose="wasm-transform")
+    owned_stage = False
     try:
         with (
             path.open("rb") as source,
@@ -2125,6 +2126,7 @@ def transform_wasm_publication_file(
 
             output_size = len(WASM_HEADER)
             with staged.open("xb") as output:
+                owned_stage = True
                 output.write(WASM_HEADER)
                 for section_start, section_end, replacement, keep in actions:
                     if not keep:
@@ -2166,7 +2168,8 @@ def transform_wasm_publication_file(
             max_buffer_bytes=max_buffer,
         )
     finally:
-        staged.unlink(missing_ok=True)
+        if owned_stage:
+            staged.unlink(missing_ok=True)
 
 
 def read_wasm_exports(

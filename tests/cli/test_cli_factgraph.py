@@ -7,6 +7,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, cast
 
+import msgpack
 import pytest
 
 import molt.cli as cli
@@ -29,11 +30,14 @@ def test_factgraph_source_fence_preserves_previous_publication(
     catalog = _ModuleSourceCatalog({"app": _ModuleSourceLease.path_backed(source)})
     output = tmp_path / "graph.json"
     output.write_bytes(b"previous graph")
-    ir_file = tmp_path / "input.json"
-    ir_file.write_bytes(b"{}")
+    ir_file = tmp_path / "input.msgpack"
+    ir_file.write_bytes(msgpack.packb({"functions": []}, use_bin_type=True))
     stages: list[Path] = []
 
     def backend(command, **kwargs):
+        assert command[command.index("--ir-format") + 1] == "msgpack"
+        lease = Path(command[command.index("--ir-file") + 1])
+        assert msgpack.unpackb(lease.read_bytes(), raw=False) == {"functions": []}
         candidate = Path(command[command.index("--fact-graph-output") + 1])
         assert candidate != output
         assert output.read_bytes() == b"previous graph"
@@ -174,14 +178,15 @@ def test_execute_backend_fact_graph_uses_target_prefix_and_ir_lease(
     tmp_path: Path, output_name: str
 ) -> None:
     backend_bin = tmp_path / "molt-backend"
-    ir_file = tmp_path / "backend-ir.json"
+    ir_file = tmp_path / "backend-ir.msgpack"
     output = tmp_path / "facts" / output_name
-    ir_file.write_text('{"functions":[]}\n', encoding="utf-8")
+    ir_file.write_bytes(msgpack.packb({"functions": []}, use_bin_type=True))
     seen: dict[str, object] = {}
 
     def fake_run(
         cmd: list[str], **kwargs: object
     ) -> subprocess.CompletedProcess[bytes]:
+        assert msgpack.unpackb(ir_file.read_bytes(), raw=False) == {"functions": []}
         seen["cmd"] = list(cmd)
         seen["env"] = dict(cast(dict[str, str], kwargs["env"]))
         seen["timeout"] = kwargs["timeout"]
@@ -222,6 +227,8 @@ def test_execute_backend_fact_graph_uses_target_prefix_and_ir_lease(
         str(backend_bin),
         "--target",
         "wasm",
+        "--ir-format",
+        "msgpack",
         "--ir-file",
         str(ir_file),
         "--fact-graph-output",
@@ -283,8 +290,8 @@ def test_emit_pipeline_fact_graph_reports_requested_target_and_backend(
     )
 
     output = tmp_path / "facts" / "main.json"
-    ir_file = tmp_path / "backend-ir.json"
-    ir_file.write_text('{"functions":[]}\n', encoding="utf-8")
+    ir_file = tmp_path / "backend-ir.msgpack"
+    ir_file.write_bytes(msgpack.packb({"functions": []}, use_bin_type=True))
     emitted: list[dict[str, Any]] = []
     cleaned: list[bool] = []
     produced: list[Path] = []

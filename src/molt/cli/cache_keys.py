@@ -528,15 +528,6 @@ def _backend_ir_bytes(ir: Mapping[str, Any]) -> bytes:
     return _backend_ir_text(ir).encode("utf-8")
 
 
-def _backend_ir_format_and_bytes(ir: dict[str, Any]) -> tuple[str, bytes]:
-    try:
-        import msgpack  # type: ignore[import-untyped]
-
-        return "msgpack", msgpack.packb(ir)
-    except ImportError:
-        return "json", _backend_ir_bytes(ir)
-
-
 def _function_cache_key(
     ir: Mapping[str, Any],
     target: str,

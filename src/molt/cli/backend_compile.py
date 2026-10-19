@@ -11,6 +11,7 @@ from typing import TYPE_CHECKING, Any, Callable, ContextManager, Mapping
 
 from molt.backend_environment import CodegenSelection
 from molt.backend_executable_names import CodegenBackend
+from molt.backend_protocol import BACKEND_IR_LEASE_FORMAT
 from molt.cli import backend_binary as _backend_binary
 from molt.cli import backend_cache_setup as _backend_cache_setup
 from molt.cli import factgraph as _factgraph
@@ -1026,7 +1027,16 @@ def _execute_backend_compile(
             _entry_name = entry_module or "program"
             try:
                 ir_file_path = _ensure_backend_ir_file_path()
-                cmd_with_output.extend(["--ir-file", str(ir_file_path)])
+            except (OSError, TypeError, ValueError, OverflowError) as exc:
+                return None, _fail(
+                    f"Backend IR lease write failed: {exc}",
+                    json_output,
+                    command="build",
+                )
+            cmd_with_output.extend(
+                ["--ir-format", BACKEND_IR_LEASE_FORMAT, "--ir-file", str(ir_file_path)]
+            )
+            try:
                 backend_process = _run_subprocess_captured_to_tempfiles(
                     cmd_with_output,
                     env=backend_env,
@@ -1045,7 +1055,7 @@ def _execute_backend_compile(
                 )
             except OSError as exc:
                 return None, _fail(
-                    f"Backend IR lease write failed: {exc}",
+                    f"Backend compilation could not start: {exc}",
                     json_output,
                     command="build",
                 )

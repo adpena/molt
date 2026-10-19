@@ -25,6 +25,8 @@ from molt.backend_environment import (
     request_environment_inputs,
 )
 from molt import backend_daemon_custody as _daemon_custody
+from molt.backend_protocol import BACKEND_DAEMON_PROTOCOL_VERSION
+from molt.cli.backend_ir_transport import write_backend_ir
 from molt.backend_executable_names import (
     DEFAULT_BACKEND_FEATURES as _DEFAULT_BACKEND_FEATURES,
     CodegenBackend,
@@ -64,7 +66,7 @@ from molt.cli.compiler_identity import (
     CompilerIdentityError,
     installed_compiler_admission,
 )
-from molt.cli.cache_keys import _json_ir_default, _write_backend_ir_text
+from molt.cli.cache_keys import _json_ir_default
 from molt.cli.command_runtime import (
     _load_cli_harness_memory_guard,
     _run_completed_command,
@@ -82,9 +84,6 @@ from molt.cli.runtime_paths import (
     _cargo_target_root,
     _molt_session_id,
 )
-
-
-_BACKEND_DAEMON_PROTOCOL_VERSION = 1
 
 
 _BACKEND_CODEGEN_ENV_DIGEST_SCHEMA_VERSION = 8
@@ -920,10 +919,11 @@ def _write_backend_ir_lease(project_root: Path, ir: Mapping[str, Any]) -> Path:
     """Publish one uniquely named IR lease; a failed write leaves no file."""
     lease_dir = scratch_dir(project_root, "backend-ir-leases")
     lease_dir.mkdir(parents=True, exist_ok=True)
-    lease_path = lease_dir / f"ir-{os.getpid()}-{uuid.uuid4().hex}.json"
+    lease_path = lease_dir / f"ir-{os.getpid()}-{uuid.uuid4().hex}.msgpack"
+    handle = lease_path.open("xb")
     try:
-        with lease_path.open("x", encoding="utf-8") as handle:
-            _write_backend_ir_text(handle, ir)
+        with handle:
+            write_backend_ir(handle, ir)
     except BaseException:
         # The IR streams element by element, so an encoder error can stop it
         # midway. Nothing returned the path yet, so nothing else owns it.
@@ -949,8 +949,7 @@ def _backend_daemon_artifact_contract_error(
 
 def _backend_daemon_compile_request_bytes(
     *,
-    ir: Mapping[str, Any] | None,
-    ir_path: Path | None = None,
+    ir_path: Path | None,
     backend_output: Path,
     artifact_contract: BackendArtifactContract,
     wasm_link: bool,
@@ -967,7 +966,6 @@ def _backend_daemon_compile_request_bytes(
     stdlib_object_cache_key: str | None = None,
     stdlib_object_manifest: str | None = None,
     stdlib_module_symbols_json: str | None = None,
-    probe_cache_only: bool = False,
     include_health: bool = False,
     native_runtime_codegen_binding: NativeRuntimeCodegenBinding | None = None,
     request_environment: Mapping[str, str],
@@ -1038,21 +1036,13 @@ def _backend_daemon_compile_request_bytes(
     if artifact_contract.is_native:
         assert artifact_contract.native_kind is not None
         job["native_output_kind"] = artifact_contract.native_kind.value
-    if probe_cache_only:
+    if ir_path is None:
         job["probe_cache_only"] = True
-    elif ir is not None and ir_path is not None:
-        return (
-            None,
-            "backend daemon request must use exactly one IR custody field: "
-            "ir or ir_path",
-        )
-    elif ir_path is not None:
+    else:
         job["ir_path"] = str(ir_path)
-    elif ir is not None:
-        job["ir"] = ir
     jobs: list[dict[str, Any]] = [job]
     payload: dict[str, Any] = {
-        "version": _BACKEND_DAEMON_PROTOCOL_VERSION,
+        "version": BACKEND_DAEMON_PROTOCOL_VERSION,
         "jobs": jobs,
     }
     if config_digest:
@@ -1171,7 +1161,7 @@ def _backend_daemon_response_failure_message(
 def _backend_daemon_ping_health(
     socket_path: Path, *, timeout: float | None
 ) -> tuple[bool, dict[str, Any] | None]:
-    payload = {"version": _BACKEND_DAEMON_PROTOCOL_VERSION, "ping": True}
+    payload = {"version": BACKEND_DAEMON_PROTOCOL_VERSION, "ping": True}
     response, err = _backend_daemon_request(socket_path, payload, timeout=timeout)
     if err is not None or response is None:
         return False, None
@@ -1196,7 +1186,7 @@ def retire_backend_daemon(socket_path: Path, *, timeout: float | None) -> bool:
     """Ask the daemon to retire: it unlinks its socket, so the next build starts
     a fresh daemon, finishes the connections it accepted, and exits. Work in
     flight completes; nothing is killed."""
-    payload = {"version": _BACKEND_DAEMON_PROTOCOL_VERSION, "retire": True}
+    payload = {"version": BACKEND_DAEMON_PROTOCOL_VERSION, "retire": True}
     response, err = _backend_daemon_request(socket_path, payload, timeout=timeout)
     if err is not None or response is None or not response.get("ok"):
         return False
@@ -1634,10 +1624,9 @@ def _compile_with_backend_daemon(
         if ir_lease_path is None:
             try:
                 ir_lease_path = _write_backend_ir_lease(project_root, ir)
-            except (OSError, TypeError, ValueError) as exc:
+            except (OSError, TypeError, ValueError, OverflowError) as exc:
                 return None, f"backend daemon IR lease write failed: {exc}"
         full_request_bytes, encode_err = _backend_daemon_compile_request_bytes(
-            ir=None,
             artifact_contract=artifact_contract,
             ir_path=ir_lease_path,
             backend_output=backend_output,
@@ -1679,7 +1668,7 @@ def _compile_with_backend_daemon(
         )
     if (cache_key or function_cache_key) and cache_probe_allowed:
         probe_request_bytes, probe_encode_err = _backend_daemon_compile_request_bytes(
-            ir=None,
+            ir_path=None,
             artifact_contract=artifact_contract,
             backend_output=backend_output,
             wasm_link=wasm_link,
@@ -1696,7 +1685,6 @@ def _compile_with_backend_daemon(
             stdlib_object_cache_key=stdlib_object_cache_key,
             stdlib_object_manifest=stdlib_object_manifest,
             stdlib_module_symbols_json=stdlib_module_symbols_json,
-            probe_cache_only=True,
             include_health=False,
             native_runtime_codegen_binding=native_runtime_codegen_binding,
             request_environment=request_environment,

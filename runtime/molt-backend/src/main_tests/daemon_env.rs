@@ -60,7 +60,7 @@ fn daemon_request_with_env_preserves_user_entry_archive() {
             "output": output.to_string_lossy(),
             "cache_key": "module",
             "function_cache_key": "function",
-            "ir": {
+            "ir_path": write_daemon_ir_fixture(&tmp_dir.join("input.msgpack"), &serde_json::json!({
                 "functions": [
                     {"return_abi": "void", "name": "molt_main", "params": [], "ops": [{"kind": "call", "s_value": "demo__module"}]},
                     {"return_abi": "void", "name": "demo__module", "params": [], "ops": [{"kind": "call_internal", "s_value": "molt_init_sys"}, {"kind": "ret_void"}]},
@@ -69,7 +69,7 @@ fn daemon_request_with_env_preserves_user_entry_archive() {
                     {"return_abi": "void", "name": "molt_init_sys", "params": [], "ops": [{"kind": "ret_void"}]}
                 ],
                 "profile": null
-            }
+            }))
         }]
     });
 
@@ -265,7 +265,7 @@ fn daemon_request_with_env_preserves_user_entry_archive() {
     request_json["jobs"][0]
         .as_object_mut()
         .unwrap()
-        .remove("ir");
+        .remove("ir_path");
     request_json["jobs"][0]["probe_cache_only"] = true.into();
     for (name, omit_optional) in [("evicted", false), ("omitted", true)] {
         if omit_optional {
@@ -482,7 +482,7 @@ fn concurrent_builds_of_one_shared_stdlib_entry_compile_it_once() {
                 // application and prepares the shared stdlib entry.
                 "cache_key": format!("module-{index}"),
                 "function_cache_key": format!("function-{index}"),
-                "ir": {
+                "ir_path": write_daemon_ir_fixture(&tmp_dir.join(format!("input-{index}.msgpack")), &serde_json::json!({
                     "functions": [
                         {"return_abi": "void", "name": "molt_main", "params": [], "ops": [{"kind": "call", "s_value": "demo__module"}]},
                         {"return_abi": "void", "name": "demo__module", "params": [], "ops": [{"kind": "call_internal", "s_value": "molt_init_sys"}, {"kind": "ret_void"}]},
@@ -491,7 +491,7 @@ fn concurrent_builds_of_one_shared_stdlib_entry_compile_it_once() {
                         {"return_abi": "void", "name": "molt_init_sys", "params": [], "ops": [{"kind": "ret_void"}]}
                     ],
                     "profile": null
-                }
+                }))
             }]
         })
     };

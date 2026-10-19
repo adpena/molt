@@ -2885,7 +2885,7 @@ def project_llvm_toolchain_environment(
     root: Path,
     verification: LlvmPrefixVerification,
     *,
-    environ: dict[str, str] | None = None,
+    environ: Mapping[str, str] | None = None,
 ) -> dict[str, str]:
     """Project an already verified result without rescanning the SDK.
 

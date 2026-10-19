@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
+import os
 import stat
 from pathlib import Path
 from threading import Event
@@ -168,6 +169,36 @@ def test_abandoned_readonly_copy_reclaims_private_stage(tmp_path: Path) -> None:
     assert not final.exists()
     assert source.read_bytes() == b"readonly"
     assert not source.stat().st_mode & stat.S_IWRITE
+
+
+@pytest.mark.parametrize("observed_source", [False, True])
+def test_staged_copy_collision_preserves_the_unowned_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, observed_source: bool
+) -> None:
+    from molt.toolchain_identity import stable_regular_file_identity
+
+    source = tmp_path / "source"
+    final = tmp_path / "final"
+    source.write_bytes(b"source bytes")
+    final.write_bytes(b"previous output")
+    stage = module.staged_output_path(final, purpose="copy")
+    stage.write_bytes(b"another owner's stage")
+    before = stage.stat()
+    observed = (
+        stable_regular_file_identity(source, label="copy source")
+        if observed_source
+        else None
+    )
+    monkeypatch.setattr(module, "staged_output_path", lambda *a, **k: stage)
+
+    with pytest.raises(FileExistsError):
+        with module.staged_copy_file(source, final, observed=observed):
+            pytest.fail("a colliding private stage was admitted")
+
+    assert stage.read_bytes() == b"another owner's stage"
+    assert os.path.samestat(before, stage.stat())
+    assert source.read_bytes() == b"source bytes"
+    assert final.read_bytes() == b"previous output"
 
 
 def test_atomic_write_bytes_preserves_existing_bytes_when_replace_fails(

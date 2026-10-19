@@ -10,7 +10,7 @@ from dataclasses import dataclass, replace
 from functools import cached_property
 from collections.abc import Mapping
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, BinaryIO
 
 from molt.cli.atomic_io import _atomic_write_json
 from molt.cli.generation_store import (
@@ -389,7 +389,7 @@ def runtime_wasm_generation_path(shared: Path) -> Path:
 
 def _stage_artifact(
     source: Path,
-    staged: Path,
+    staged_handle: BinaryIO,
     *,
     published_name: str,
     identity: RuntimeBuildIdentity,
@@ -398,12 +398,9 @@ def _stage_artifact(
 ) -> dict[str, object]:
     hasher = hashlib.sha256()
     size = 0
-    with (
-        open_stable_regular_file(
-            source, label="runtime generation source", observed=observed
-        ) as opened,
-        staged.open("xb") as staged_handle,
-    ):
+    with open_stable_regular_file(
+        source, label="runtime generation source", observed=observed
+    ) as opened:
         for chunk in iter_stable_regular_file_chunks(opened, chunk_bytes=1024 * 1024):
             hasher.update(chunk)
             staged_handle.write(chunk)
@@ -483,23 +480,32 @@ def publish_runtime_wasm_generation(
     staged_reloc = staged_file_path(reloc, purpose="generation")
     actual_source_shared = source_shared or shared
     actual_source_reloc = source_reloc or reloc
+    owned_stages: list[Path] = []
     try:
-        shared_record = _stage_artifact(
-            actual_source_shared,
-            staged_shared,
-            published_name=shared.name,
-            identity=shared_identity,
-            expected_record=(expected_source_receipts or {}).get("shared"),
-            observed=None if source_observations is None else source_observations[0],
-        )
-        reloc_record = _stage_artifact(
-            actual_source_reloc,
-            staged_reloc,
-            published_name=reloc.name,
-            identity=reloc_identity,
-            expected_record=(expected_source_receipts or {}).get("reloc"),
-            observed=None if source_observations is None else source_observations[1],
-        )
+        with staged_shared.open("xb") as staged_handle:
+            owned_stages.append(staged_shared)
+            shared_record = _stage_artifact(
+                actual_source_shared,
+                staged_handle,
+                published_name=shared.name,
+                identity=shared_identity,
+                expected_record=(expected_source_receipts or {}).get("shared"),
+                observed=None
+                if source_observations is None
+                else source_observations[0],
+            )
+        with staged_reloc.open("xb") as staged_handle:
+            owned_stages.append(staged_reloc)
+            reloc_record = _stage_artifact(
+                actual_source_reloc,
+                staged_handle,
+                published_name=reloc.name,
+                identity=reloc_identity,
+                expected_record=(expected_source_receipts or {}).get("reloc"),
+                observed=None
+                if source_observations is None
+                else source_observations[1],
+            )
         shared_member = shared.parent / str(shared_record["member"])
         reloc_member = reloc.parent / str(reloc_record["member"])
         # Both members share one family; the receipt stores it once.
@@ -540,8 +546,8 @@ def publish_runtime_wasm_generation(
             store.evict_idle(GENERATION_STORE_IDLE_SECONDS)
         return generation
     finally:
-        staged_shared.unlink(missing_ok=True)
-        staged_reloc.unlink(missing_ok=True)
+        for staged in owned_stages:
+            staged.unlink(missing_ok=True)
 
 
 def _member_path(manifest: Path, record: object) -> Path | None:

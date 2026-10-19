@@ -36,11 +36,11 @@ impl Drop for InputFile {
 #[test]
 fn file_receivers_reject_a_second_frame_and_accept_one_complete_frame() {
     for (format, bytes) in [
-        ("json", JSON),
-        ("msgpack", MSGPACK),
-        ("ndjson", NDJSON),
+        (IrFormat::Json, JSON),
+        (IrFormat::MessagePack, MSGPACK),
+        (IrFormat::Ndjson, NDJSON),
         #[cfg(feature = "cbor")]
-        ("cbor", CBOR),
+        (IrFormat::Cbor, CBOR),
     ] {
         let valid = InputFile::new(bytes);
         assert!(
@@ -51,7 +51,7 @@ fn file_receivers_reject_a_second_frame_and_accept_one_complete_frame() {
                 .is_empty()
         );
         let mut repeated = bytes.to_vec();
-        if format == "ndjson" {
+        if format == IrFormat::Ndjson {
             repeated.push(b'\n');
         }
         repeated.extend_from_slice(bytes);
@@ -61,14 +61,14 @@ fn file_receivers_reject_a_second_frame_and_accept_one_complete_frame() {
                 .unwrap_err()
                 .kind(),
             io::ErrorKind::InvalidData,
-            "{format}"
+            "{format:?}"
         );
         let mut truncated = bytes.to_vec();
         truncated.pop();
         let invalid = InputFile::new(&truncated);
         assert!(
             read_backend_ir_document(format, Some(invalid.path())).is_err(),
-            "{format}"
+            "{format:?}"
         );
     }
 }
@@ -78,14 +78,13 @@ fn json_whitespace_is_not_a_second_frame() {
     let mut bytes = JSON.to_vec();
     bytes.extend_from_slice(b" \n\t\r");
     let input = InputFile::new(&bytes);
-    assert!(read_backend_ir_document("json", Some(input.path())).is_ok());
+    assert!(read_backend_ir_document(IrFormat::Json, Some(input.path())).is_ok());
 }
 
 #[test]
 fn unknown_explicit_format_is_rejected_before_opening_input() {
     for format in ["", "JSON", "unknown"] {
-        let error = read_backend_ir_document(format, Some("missing-input-that-must-not-be-opened"))
-            .unwrap_err();
+        let error = IrFormat::parse(format).unwrap_err();
         assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
         assert!(error.to_string().contains("unknown IR format"));
     }
@@ -94,8 +93,11 @@ fn unknown_explicit_format_is_rejected_before_opening_input() {
 #[cfg(not(feature = "cbor"))]
 #[test]
 fn disabled_cbor_is_rejected_before_opening_input() {
-    let error = read_backend_ir_document("cbor", Some("missing-input-that-must-not-be-opened"))
-        .unwrap_err();
+    let error = read_backend_ir_document(
+        IrFormat::Cbor,
+        Some("missing-input-that-must-not-be-opened"),
+    )
+    .unwrap_err();
     assert_eq!(error.kind(), io::ErrorKind::Unsupported);
     assert!(error.to_string().contains("'cbor' feature"));
 }
@@ -202,5 +204,97 @@ fn binary_decoders_handle_short_reads_and_do_not_mask_eof_errors() {
                 assert!(result.unwrap().ir.functions.is_empty());
             }
         }
+    }
+}
+
+#[cfg(any(unix, windows))]
+#[test]
+fn ir_file_receivers_reject_directories_before_decoding() {
+    let path = molt_ir::debug_artifacts::prepare_unique_debug_artifact_path("ir-directory-test")
+        .expect("unique directory fixture");
+    std::fs::create_dir(&path).unwrap();
+    for format in [
+        IrFormat::Json,
+        IrFormat::MessagePack,
+        IrFormat::Ndjson,
+        #[cfg(feature = "cbor")]
+        IrFormat::Cbor,
+    ] {
+        assert!(
+            read_backend_ir_document(format, Some(path.to_str().unwrap())).is_err(),
+            "{format:?}"
+        );
+    }
+    std::fs::remove_dir(path).unwrap();
+}
+
+#[cfg(unix)]
+#[test]
+fn ir_file_receivers_reject_no_writer_fifos_before_reading() {
+    use std::ffi::CString;
+    use std::os::unix::ffi::OsStrExt;
+    let input = InputFile::new(&[]);
+    std::fs::remove_file(&input.0).unwrap();
+    let name = CString::new(input.0.as_os_str().as_bytes()).unwrap();
+    assert_eq!(unsafe { libc::mkfifo(name.as_ptr(), 0o600) }, 0);
+    for format in [
+        IrFormat::Json,
+        IrFormat::MessagePack,
+        IrFormat::Ndjson,
+        #[cfg(feature = "cbor")]
+        IrFormat::Cbor,
+    ] {
+        let error = read_backend_ir_document(format, Some(input.path())).unwrap_err();
+        assert!(
+            error.to_string().contains("regular file"),
+            "{format:?}: {error}"
+        );
+    }
+}
+
+#[cfg(windows)]
+#[test]
+fn ir_file_receivers_reject_character_devices_before_reading() {
+    for format in [
+        IrFormat::Json,
+        IrFormat::MessagePack,
+        IrFormat::Ndjson,
+        #[cfg(feature = "cbor")]
+        IrFormat::Cbor,
+    ] {
+        let error = read_backend_ir_document(format, Some("NUL")).unwrap_err();
+        assert!(
+            error.to_string().contains("regular disk file"),
+            "{format:?}: {error}"
+        );
+    }
+}
+
+#[test]
+fn messagepack_file_receiver_preserves_literal_float_payload_bits() {
+    // Named MessagePack maps assembled independently of Molt's encoders. Only
+    // the f64 payload changes; no JSON value can erase NaN signs or payloads.
+    for bits in [
+        0x7ff8_0000_0000_0001_u64,
+        0xfff8_0000_0000_0042,
+        0x7ff0_0000_0000_0001,
+        0xfff0_0000_0000_0042,
+        0x7ff0_0000_0000_0000,
+        0xfff0_0000_0000_0000,
+        0,
+        0x8000_0000_0000_0000,
+        1,
+        0x8000_0000_0000_0001,
+    ] {
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(b"\x81\xa9functions\x91\x84\xaareturn_abi\xa4void\xa4name\xa5float\xa6params\x90\xa3ops\x92\x83\xa4kind\xabconst_float\xa7f_value\xcb");
+        bytes.extend_from_slice(&bits.to_be_bytes());
+        bytes.extend_from_slice(b"\xa3out\xa1v\x81\xa4kind\xa8ret_void");
+        let input = InputFile::new(&bytes);
+        let document = read_backend_ir_document(IrFormat::MessagePack, Some(input.path())).unwrap();
+        assert_eq!(
+            document.ir.functions[0].ops[0].f_value.unwrap().to_bits(),
+            bits
+        );
     }
 }

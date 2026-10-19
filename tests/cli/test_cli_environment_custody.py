@@ -219,7 +219,7 @@ def test_daemon_requests_carry_the_selection_not_the_process_environment(
     clean_selection_env: None,
 ) -> None:
     payload, error = backend_execution._backend_daemon_compile_request_bytes(
-        ir={"functions": []},
+        ir_path=Path("backend-ir.msgpack"),
         backend_output=Path("out.wasm"),
         artifact_contract=resolve_backend_artifact_contract(
             target="wasm", emit_mode="wasm"

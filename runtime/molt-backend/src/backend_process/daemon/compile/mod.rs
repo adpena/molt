@@ -1,11 +1,12 @@
 mod document;
-mod ir;
 mod output;
 mod response;
 mod target;
 
 use super::cache::{DaemonCache, Flight, try_write_cached_daemon_job_output};
-use super::protocol::{DaemonArtifactCacheKeys, DaemonJobRequest, DaemonJobResponse};
+use super::protocol::{
+    DaemonArtifactCacheKeys, DaemonIrSource, DaemonJobRequest, DaemonJobResponse,
+};
 use target::ResolvedJobTarget;
 
 /// Compiles one job for a connection. A panicking compile is a compiler bug:
@@ -72,7 +73,7 @@ fn compile_job<Slot>(
         return response;
     }
 
-    if job.probe_cache_only {
+    if matches!(job.ir_source, DaemonIrSource::Probe) {
         return response::daemon_job_probe_cache_miss_response(job.id);
     }
 
@@ -102,7 +103,7 @@ fn compile_job<Slot>(
     };
     let _slot = compile_slot();
 
-    let document = match document::take_daemon_job_document(&mut job) {
+    let document = match document::read_daemon_job_document(&job) {
         Ok(document) => document,
         Err(err) => return response::daemon_job_error_response(job.id, err),
     };

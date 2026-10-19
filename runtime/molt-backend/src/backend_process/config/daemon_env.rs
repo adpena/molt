@@ -1,1 +1,0 @@
-pub(crate) const BACKEND_DAEMON_PROTOCOL_VERSION: u32 = 1;

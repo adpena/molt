@@ -1156,8 +1156,12 @@ def test_ir_input_receivers_run_with_enabled_and_disabled_cbor() -> None:
     for gate in enabled["gates"]:
         argv = shlex.split(gate)
         assert argv[argv.index("--bin") + 1] == "molt-backend"
-        assert "cbor" in argv[argv.index("--features") + 1].split(",")
+        assert "molt-backend/cbor" in argv[argv.index("--features") + 1].split(",")
         assert "backend_process::input::tests" in argv
+        daemon = next(
+            rule for rule in PLAN.local_rules if rule["name"] == "backend-daemon-cache"
+        )
+        assert gate == daemon["gates"][0]  # Reuse one selected host test image.
 
 
 def test_daemon_cache_runs_actual_native_and_wasm_binary_receivers() -> None:
@@ -1179,7 +1183,18 @@ def test_daemon_cache_runs_actual_native_and_wasm_binary_receivers() -> None:
     features = set(argv[argv.index("--features") + 1].split(","))
     assert {"molt-backend/native-backend", "molt-backend/wasm-backend"} <= features
     assert features == compiler_features
-    assert argv[argv.index("--bin") + 2 :] == ["daemon", "--", "--test-threads=1"]
+    assert argv[argv.index("--bin") + 2 :] == [
+        "--",
+        "daemon",
+        "backend_process::input::tests",
+        "backend_process::cli_args::parse::tests",
+        "--test-threads=1",
+    ]
+    assert "runtime/molt-backend/tests/daemon_server.rs" in local["globs"]
+    server = shlex.split(local["gates"][1])
+    assert server[server.index("--test") + 1] == "daemon_server"
+    assert server[server.index("--features") + 1] == argv[argv.index("--features") + 1]
+    assert server[server.index("--profile") + 1] == "dev-fast"
 
 
 def test_cpython_abi_owner_reuses_the_compiler_graph_and_registered_local_lane() -> (

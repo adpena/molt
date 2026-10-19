@@ -7,6 +7,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
+import msgpack
 import pytest
 from molt.cli.module_source import _ModuleSourceCatalog
 
@@ -103,7 +104,7 @@ def test_symbol_reader_failure_is_a_build_error_and_releases_ir_lease(
     monkeypatch.setenv("MOLT_EXT_ROOT", str(artifacts))
     lease_dir = artifacts.resolve() / "tmp" / "backend-ir-leases"
     lease_dir.mkdir(parents=True)
-    unrelated_lease = lease_dir / "other-owner.json"
+    unrelated_lease = lease_dir / "other-owner.msgpack"
     unrelated_lease.write_text("other owner", encoding="utf-8")
 
     def fail_symbol_inspection() -> None:
@@ -122,7 +123,7 @@ def test_symbol_reader_failure_is_a_build_error_and_releases_ir_lease(
         phases.append("compile")
         lease = kwargs["_ensure_backend_ir_file_path"]()
         assert lease.is_file()
-        assert json.loads(lease.read_text(encoding="utf-8")) == {"functions": []}
+        assert msgpack.unpackb(lease.read_bytes(), raw=False) == {"functions": []}
         assert kwargs["_ensure_backend_ir_file_path"]() == lease
         leases.append(lease)
         fail_symbol_inspection()

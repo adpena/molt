@@ -416,8 +416,10 @@ def _ingest_blob(transaction_root: Path, source: Path) -> tuple[str, int, Path]:
     incoming = incoming_root / f"{uuid.uuid4().hex}.blob"
     digest = hashlib.sha256()
     size = 0
+    owned_incoming = False
     try:
         with source.open("rb") as source_handle, incoming.open("xb") as blob_handle:
+            owned_incoming = True
             while chunk := source_handle.read(_COPY_CHUNK_BYTES):
                 blob_handle.write(chunk)
                 digest.update(chunk)
@@ -449,7 +451,7 @@ def _ingest_blob(transaction_root: Path, source: Path) -> tuple[str, int, Path]:
                     )
         return sha256, size, blob
     finally:
-        if incoming.exists():
+        if owned_incoming and incoming.exists():
             incoming.unlink()
 
 
