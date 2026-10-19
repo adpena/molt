@@ -1628,7 +1628,7 @@ def test_wasm_abi_manifest_owns_runtime_callable_registry() -> None:
         match="cannot set shared_runtime_callable without callable_arity",
     ):
         manifest.validate_loaded_manifest(broken_missing_arity)
-    assert imports["logging_formatter_format_time"]["callable_arity"] == 3
+    assert imports["logging_get_level_name"]["callable_arity"] == 1
     for retired in (
         "logging_stream_handler_new",
         "logging_stream_handler_emit",
@@ -2224,8 +2224,18 @@ def test_wasm_abi_runtime_callable_intrinsics_match_rust_exports() -> None:
     assert imports["molt_types_bootstrap"]["callable_arity"] == 0
     assert imports["molt_is_bound_method"]["callable_arity"] == 1
     assert imports["molt_file_exit_method"]["callable_arity"] == 4
-    assert imports["molt_logging_formatter_format_time"]["callable_arity"] == 3
+    assert imports["molt_logging_get_level_name"]["callable_arity"] == 1
     for retired in (
+        "molt_logging_formatter_drop",
+        "molt_logging_formatter_format",
+        "molt_logging_formatter_format_time",
+        "molt_logging_formatter_new",
+        "molt_logging_handler_emit",
+        "molt_logging_handler_set_formatter",
+        "molt_logging_percent_style_format",
+        "molt_logging_record_drop",
+        "molt_logging_record_get_message",
+        "molt_logging_record_new",
         "molt_logging_stream_handler_new",
         "molt_logging_stream_handler_emit",
         "molt_logging_file_handler_emit",

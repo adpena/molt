@@ -2630,18 +2630,27 @@ def test_compatibility_protocol_generation_requires_receipts_and_witnesses(
     assert protocol.projection_errors(tmp_path) == []
 
 
-def test_raw_io_compatibility_has_its_own_pinned_target_support(tmp_path):
+@pytest.mark.parametrize(
+    ("outcome_name", "source_path"),
+    [
+        ("RawIoBaseReadinto", "Modules/_io/iobase.c"),
+        ("LoggingHandlerEmit", "Lib/logging/__init__.py"),
+    ],
+)
+def test_compatibility_outcomes_have_their_own_pinned_target_support(
+    tmp_path, outcome_name, source_path
+):
     protocol = SA.compatibility_errors
     import json
 
-    assert protocol.OUTCOMES["RawIoBaseReadinto"].versions == (
+    assert protocol.OUTCOMES[outcome_name].versions == (
         "3.12",
         "3.13",
         "3.14",
         "3.15",
     )
     for outcome, facts in protocol.OUTCOMES.items():
-        if outcome != "RawIoBaseReadinto":
+        if outcome not in {"RawIoBaseReadinto", "LoggingHandlerEmit"}:
             assert "3.15" not in facts.versions
         path = tmp_path / facts.witness
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -2655,18 +2664,16 @@ def test_raw_io_compatibility_has_its_own_pinned_target_support(tmp_path):
         protocol.CPYTHON_SOURCES.read_text(encoding="utf-8"), encoding="utf-8"
     )
     assert protocol.source_errors(tmp_path) == []
-    raw_versions = [
-        row["version"]
-        for row in data["sources"]
-        if row["path"] == "Modules/_io/iobase.c"
+    source_versions = [
+        row["version"] for row in data["sources"] if row["path"] == source_path
     ]
-    assert len(raw_versions) == 4
-    for version in raw_versions:
+    assert len(source_versions) == 4
+    for version in source_versions:
         changed = json.loads(json.dumps(data))
         changed["sources"] = [
             row
             for row in changed["sources"]
-            if (row["version"], row["path"]) != (version, "Modules/_io/iobase.c")
+            if (row["version"], row["path"]) != (version, source_path)
         ]
         receipt.write_text(json.dumps(changed), encoding="utf-8")
         assert (
@@ -2674,10 +2681,10 @@ def test_raw_io_compatibility_has_its_own_pinned_target_support(tmp_path):
             in protocol.source_errors(tmp_path)
         )
     changed = json.loads(json.dumps(data))
-    raw_source = next(
-        row for row in changed["sources"] if row["path"] == "Modules/_io/iobase.c"
+    pinned_source = next(
+        row for row in changed["sources"] if row["path"] == source_path
     )
-    raw_source["revision"] = "0" * 40
+    pinned_source["revision"] = "0" * 40
     receipt.write_text(json.dumps(changed), encoding="utf-8")
     assert (
         "compatibility source coordinates are incomplete or unpinned"
@@ -2687,9 +2694,7 @@ def test_raw_io_compatibility_has_its_own_pinned_target_support(tmp_path):
     # protocol cannot silently keep its own obsolete source revision.
     receipt.write_text(json.dumps(data), encoding="utf-8")
     original_pin = next(
-        row["revision"]
-        for row in data["sources"]
-        if row["path"] == "Modules/_io/iobase.c"
+        row["revision"] for row in data["sources"] if row["path"] == source_path
     )
     pins.write_text(
         pins.read_text(encoding="utf-8").replace(original_pin, "0" * 40),

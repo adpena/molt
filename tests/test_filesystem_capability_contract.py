@@ -6,6 +6,7 @@ import ast
 import importlib.util
 import os
 import io
+import logging
 import threading
 from pathlib import Path
 import sys
@@ -80,17 +81,11 @@ LOGGING_HOOKS = (
     "molt_capabilities_require",
     "molt_logging_add_level_name",
     "molt_logging_filter_check",
-    "molt_logging_formatter_drop",
-    "molt_logging_formatter_format",
-    "molt_logging_formatter_format_time",
-    "molt_logging_formatter_new",
     "molt_logging_get_level_name",
     "molt_logging_handler_close",
     "molt_logging_handler_drop",
-    "molt_logging_handler_emit",
     "molt_logging_handler_flush",
     "molt_logging_handler_new",
-    "molt_logging_handler_set_formatter",
     "molt_logging_handler_set_level",
     "molt_logging_level_to_int",
     "molt_logging_logger_add_handler",
@@ -100,10 +95,6 @@ LOGGING_HOOKS = (
     "molt_logging_logger_new",
     "molt_logging_logger_remove_handler",
     "molt_logging_logger_set_level",
-    "molt_logging_percent_style_format",
-    "molt_logging_record_drop",
-    "molt_logging_record_get_message",
-    "molt_logging_record_new",
     "molt_logging_shutdown",
     "molt_rlock_acquire",
     "molt_rlock_drop",
@@ -192,12 +183,25 @@ def test_zipfile_preserves_complete_selected_open_denial(monkeypatch, mode):
 
 
 def _logging_module(monkeypatch):
+    def compatibility_error(outcome):
+        assert outcome == 4
+        return NotImplementedError("emit must be implemented by Handler subclasses")
+
+    _load(
+        monkeypatch,
+        "_compatibility_errors",
+        "_compatibility_errors.py",
+        ("molt_compatibility_error",),
+        {"molt_compatibility_error": compatibility_error},
+    )
     # Import-time root/lastResort construction and teardown use these concrete
     # hooks. All other hooks fail if unexpectedly exercised.
     behavior = {
         "molt_logging_logger_new": lambda *args: 1,
         "molt_logging_logger_set_level": lambda *args: None,
         "molt_logging_level_to_int": lambda value: value,
+        "molt_logging_get_level_name": logging.getLevelName,
+        "molt_thread_current_ident": threading.get_ident,
         "molt_rlock_new": threading.RLock,
         "molt_rlock_acquire": lambda lock, blocking, timeout: lock.acquire(
             blocking, timeout
@@ -205,11 +209,9 @@ def _logging_module(monkeypatch):
         "molt_rlock_release": lambda lock: lock.release(),
         "molt_logging_handler_close": lambda *args: None,
         "molt_logging_handler_new": lambda *args: 3,
-        "molt_logging_formatter_new": lambda *args: 5,
         "molt_logging_handler_set_level": lambda *args: None,
         "molt_logging_handler_drop": lambda *args: None,
         "molt_logging_logger_drop": lambda *args: None,
-        "molt_logging_formatter_drop": lambda *args: None,
         "molt_rlock_drop": lambda *args: None,
     }
     return _load(
@@ -610,10 +612,7 @@ def test_handler_default_formatter_is_shared_without_record_allocations(monkeypa
         getMessage=lambda: "selected", exc_info=None, stack_info=None
     )
     default = module._defaultFormatter
-    monkeypatch.setattr(module, "_FORMATTER_NEW", _unused)
-    monkeypatch.setattr(
-        module, "_LOGGING_PERCENT_STYLE_FORMAT", lambda fmt, values: fmt % values
-    )
+    monkeypatch.setattr(module.Formatter, "__init__", _unused)
     try:
         assert first.format(record) == second.format(record) == "selected"
         assert module._defaultFormatter is default
@@ -623,6 +622,97 @@ def test_handler_default_formatter_is_shared_without_record_allocations(monkeypa
     finally:
         first.close()
         second.close()
+
+
+def test_logging_record_and_formatter_share_live_python_fields(monkeypatch):
+    module = _logging_module(monkeypatch)
+    for owner in (logging, module):
+        record = owner.LogRecord("live", owner.INFO, "fixture", 1, "old", (), None)
+        record.msg, record.args = "updated %s", ("value",)
+        record.custom = "extra"
+        for style, fmt in (
+            ("%", "%(custom)s:%(message)s"),
+            ("{", "{custom}:{message}"),
+            ("$", "$custom:$message"),
+        ):
+            formatter = owner.Formatter(fmt, style=style)
+            assert formatter.format(record) == "extra:updated value"
+            assert record.message == "updated value"
+        record.msg, record.args = "%(value)s", ({"value": "mapping"},)
+        # A mapping passed as the sole constructor argument is unwrapped.
+        mapped = owner.LogRecord(
+            "live", owner.INFO, "fixture", 1, "%(value)s", ({"value": "mapping"},), None
+        )
+        assert mapped.getMessage() == "mapping"
+        record.args = {"value": "edited mapping"}
+        assert record.getMessage() == "edited mapping"
+        record.msg, record.args = None, ()
+        assert record.getMessage() == "None"
+        with pytest.raises(ValueError, match="Formatting field not found in record"):
+            owner.Formatter("%(missing)s").format(record)
+
+
+def test_logging_record_defers_message_callbacks_and_preserves_failure(monkeypatch):
+    module = _logging_module(monkeypatch)
+    for owner in (logging, module):
+        calls = []
+        failure = ValueError("message callback")
+
+        class Message:
+            def __str__(self):
+                calls.append("str")
+                raise failure
+
+        record = owner.LogRecord("live", owner.INFO, "fixture", 1, Message(), (), None)
+        assert calls == []
+        with pytest.raises(ValueError) as caught:
+            owner.Formatter().format(record)
+        assert caught.value is failure
+        assert calls == ["str"]
+
+
+def test_logging_record_owns_supplied_process_metadata_without_native_snapshot(
+    monkeypatch,
+):
+    module = _logging_module(monkeypatch)
+    calls = []
+
+    def getpid():
+        calls.append("getpid")
+        return 73
+
+    monkeypatch.setattr(module, "_os", ModuleView(os, getpid=getpid))
+    for enabled, expected, count in ((True, 73, 1), (False, None, 1)):
+        module.logProcesses = enabled
+        record = module.LogRecord(
+            "metadata", module.INFO, "fixture", 1, "msg", (), None
+        )
+        assert record.process == expected
+        assert module.Formatter("%(process)s").format(record) == str(expected)
+        assert len(calls) == count
+        assert not hasattr(record, "_handle")
+
+
+def test_logging_formatter_time_uses_current_fields_and_selected_converter(monkeypatch):
+    module = _logging_module(monkeypatch)
+    for owner in (logging, module):
+        record = owner.LogRecord("time", owner.INFO, "fixture", 1, "msg", (), None)
+        record.created, record.msecs = 0, 7
+        formatter = owner.Formatter("%(asctime)s:%(message)s")
+        calls = []
+
+        def converter(value):
+            calls.append(value)
+            return (2001, 2, 3, 4, 5, 6, 5, 34, 0)
+
+        formatter.converter = converter
+        assert formatter.format(record) == "2001-02-03 04:05:06,007:msg"
+        record.created = 91
+        formatter.default_time_format = "%H:%M"
+        formatter.default_msec_format = None
+        assert formatter.format(record) == "04:05:msg"
+        assert formatter.formatTime(record, "%Y") == "2001"
+        assert calls == [0, 91, 91]
 
 
 def test_pathlib_text_methods_use_selected_open_and_preserve_failure_order(

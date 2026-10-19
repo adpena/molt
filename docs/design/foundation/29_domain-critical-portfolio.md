@@ -294,9 +294,9 @@ WASM tzdata bundling depends on VFS bundle-tar feature (already present in Cargo
 
 ### Current State
 
-`/Users/adpena/Projects/molt/runtime/molt-runtime/src/builtins/functions_logging.rs:1-60+` — `molt_logging_percent_style_format` is a Rust intrinsic doing percent-style format string expansion (`%s`, `%d`, `%r`, `%f`, etc.) including mapping-key lookup (`%(key)s`). The logging module is in `stdlib_server` tier (line 73 of Cargo.toml: `stdlib_logging_ext` in `stdlib_server`). `logging.config` and `handlers` are partial per doc 16.
+Logging's Python classes compile through the shared runtime string-formatting operations. The live record dictionary owns formatting fields; native record/formatter snapshots and the duplicate percent parser are retired. See [record and filter authority](../logging_record_authority.md) for the protocol and cost model. `logging.config` and `handlers` remain partial per the canonical stdlib surface matrix.
 
-The intrinsic-backed percent formatter is a meaningful optimization for high-throughput logging (avoids Python-level string parsing on every log call). The gap: structured logging (JSON log records for log aggregators), `logging.config.dictConfig` completeness, `RotatingFileHandler`/`TimedRotatingFileHandler` in `handlers`.
+Throughput must be measured on executed artifacts; the old duplicate formatter did not preserve mutable record semantics. Remaining gaps include structured logging (JSON log records for log aggregators), `logging.config.dictConfig` completeness, and `RotatingFileHandler`/`TimedRotatingFileHandler` in `handlers`.
 
 ### Scores
 

@@ -4,59 +4,14 @@
 pub(super) fn resolve_symbol(symbol: &str) -> Option<u64> {
     match symbol {
         #[cfg(feature = "stdlib_logging_ext")]
-        "molt_logging_record_new" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_logging_record_new",
-            crate::molt_logging_record_new as *const (),
-        )),
-        #[cfg(feature = "stdlib_logging_ext")]
-        "molt_logging_record_get_message" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_logging_record_get_message",
-            crate::molt_logging_record_get_message as *const (),
-        )),
-        #[cfg(feature = "stdlib_logging_ext")]
-        "molt_logging_record_drop" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_logging_record_drop",
-            crate::molt_logging_record_drop as *const (),
-        )),
-        #[cfg(feature = "stdlib_logging_ext")]
-        "molt_logging_formatter_new" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_logging_formatter_new",
-            crate::molt_logging_formatter_new as *const (),
-        )),
-        #[cfg(feature = "stdlib_logging_ext")]
-        "molt_logging_formatter_format" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_logging_formatter_format",
-            crate::molt_logging_formatter_format as *const (),
-        )),
-        #[cfg(feature = "stdlib_logging_ext")]
-        "molt_logging_formatter_format_time" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_logging_formatter_format_time",
-            crate::molt_logging_formatter_format_time as *const (),
-        )),
-        #[cfg(feature = "stdlib_logging_ext")]
-        "molt_logging_formatter_drop" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_logging_formatter_drop",
-            crate::molt_logging_formatter_drop as *const (),
-        )),
-        #[cfg(feature = "stdlib_logging_ext")]
         "molt_logging_handler_new" => Some(crate::builtins::functions::runtime_fn_addr(
             "crate::molt_logging_handler_new",
             crate::molt_logging_handler_new as *const (),
         )),
         #[cfg(feature = "stdlib_logging_ext")]
-        "molt_logging_handler_emit" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_logging_handler_emit",
-            crate::molt_logging_handler_emit as *const (),
-        )),
-        #[cfg(feature = "stdlib_logging_ext")]
         "molt_logging_handler_set_level" => Some(crate::builtins::functions::runtime_fn_addr(
             "crate::molt_logging_handler_set_level",
             crate::molt_logging_handler_set_level as *const (),
-        )),
-        #[cfg(feature = "stdlib_logging_ext")]
-        "molt_logging_handler_set_formatter" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_logging_handler_set_formatter",
-            crate::molt_logging_handler_set_formatter as *const (),
         )),
         #[cfg(feature = "stdlib_logging_ext")]
         "molt_logging_handler_flush" => Some(crate::builtins::functions::runtime_fn_addr(

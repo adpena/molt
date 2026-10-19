@@ -58,6 +58,7 @@ class Outcome:
     predicate: str
     reference: str
     witness: str
+    pinned_source_paths: tuple[str, ...] = ()
 
 
 OUTCOMES = {
@@ -68,6 +69,16 @@ OUTCOMES = {
         "abstract default body is unconditionally undefined after receiver admission and keyword rejection, with unrestricted positional arity",
         "Modules/_io/iobase.c:rawiobase_readinto,rawiobase_methods",
         "tests/differential/stdlib/io_bufferedreader_readinto.py",
+        pinned_source_paths=("Modules/_io/iobase.c",),
+    ),
+    "LoggingHandlerEmit": Outcome(
+        ("logging.Handler.emit",),
+        (*TARGETS, "3.15"),
+        ("all",),
+        "abstract default body is unconditionally undefined after Python method argument binding",
+        "Lib/logging/__init__.py:Handler.emit",
+        "tests/differential/stdlib/logging_percent_style_intrinsic.py",
+        pinned_source_paths=("Lib/logging/__init__.py",),
     ),
     "PathGlobNonRelative": Outcome(
         ("pathlib.Path.glob", "pathlib.Path.rglob"),
@@ -153,6 +164,7 @@ PUBLISHED_OUTCOMES = {
         3,
         ("abstract_add_signal_handler_error", "abstract_remove_signal_handler_error"),
     ),
+    "LoggingHandlerEmit": (4, ("logging_handler_emit_error",)),
 }
 
 PYTHON_SOURCE = (
@@ -196,6 +208,7 @@ pub(crate) enum CompatibilityError<'a> {
     WindowsSignalHandler,
     AbstractSignalHandler,
     RawIoBaseReadinto,
+    LoggingHandlerEmit,
     MemoryviewSubView {
         rank: usize,
         indices: usize,
@@ -224,6 +237,7 @@ impl CompatibilityError<'_> {
         let target = crate::object::ops_sys::runtime_target_python_info(runtime_state(py));
         let supported_minor = match &self {
             Self::RawIoBaseReadinto => matches!(target.minor, __RAW_IO_MINORS__),
+            Self::LoggingHandlerEmit => matches!(target.minor, __LOGGING_HANDLER_MINORS__),
             _ => matches!(target.minor, __COMMON_MINORS__),
         };
         if target.major != 3 || !supported_minor {
@@ -239,6 +253,9 @@ impl CompatibilityError<'_> {
             Self::WindowsSignalHandler if cfg!(target_os = "windows") => String::new(),
             Self::AbstractSignalHandler => String::new(),
             Self::RawIoBaseReadinto => String::new(),
+            Self::LoggingHandlerEmit => {
+                "emit must be implemented by Handler subclasses".to_owned()
+            }
             Self::MemoryviewSubView {
                 rank,
                 indices,
@@ -324,7 +341,7 @@ mod tests {
     use super::CompatibilityError;
 
     #[test]
-    fn raw_readinto_target_support_does_not_widen_older_outcomes() {
+    fn raw_readinto_and_logging_emit_target_support_does_not_widen_older_outcomes() {
         let transaction = crate::test_support::RuntimeTestTransaction::new();
         crate::with_gil_entry_nopanic!(py, {
             for minor in 12..=15 {
@@ -333,12 +350,20 @@ mod tests {
                         CompatibilityError::RawIoBaseReadinto.message(py).as_deref(),
                         Ok("")
                     );
+                    assert_eq!(
+                        CompatibilityError::LoggingHandlerEmit.message(py).as_deref(),
+                        Ok("emit must be implemented by Handler subclasses")
+                    );
                 });
             }
             for minor in [11, 16] {
                 transaction.with_target_python_minor(py, minor, || {
                     assert_eq!(
                         CompatibilityError::RawIoBaseReadinto.message(py),
+                        Err("unsupported compatibility-error target"),
+                    );
+                    assert_eq!(
+                        CompatibilityError::LoggingHandlerEmit.message(py),
                         Err("unsupported compatibility-error target"),
                     );
                 });
@@ -391,6 +416,10 @@ mod tests {
         _minor_pattern(OUTCOMES["RawIoBaseReadinto"].versions),
     )
     .replace(
+        "__LOGGING_HANDLER_MINORS__",
+        _minor_pattern(OUTCOMES["LoggingHandlerEmit"].versions),
+    )
+    .replace(
         "__COMMON_MINORS__",
         _minor_pattern(TARGETS),
     )
@@ -439,13 +468,13 @@ def source_errors(root: Path) -> list[str]:
             )
         }
         pins = load_cpython_sources(root / CPYTHON_SOURCES.relative_to(_REPO_ROOT))
-        raw_io_coordinates = {
-            (pins[version].tag.removeprefix("v"), "Modules/_io/iobase.c"): pins[
-                version
-            ].revision
-            for version in OUTCOMES["RawIoBaseReadinto"].versions
+        pinned_coordinates = {
+            (pins[version].tag.removeprefix("v"), path): pins[version].revision
+            for facts in OUTCOMES.values()
+            for version in facts.versions
+            for path in facts.pinned_source_paths
         }
-        expected_coordinates.update(raw_io_coordinates)
+        expected_coordinates.update(pinned_coordinates)
         valid = (
             receipt["schema_version"] == 1
             and coordinates == expected_coordinates
@@ -455,16 +484,16 @@ def source_errors(root: Path) -> list[str]:
                 and row["url"]
                 == (
                     "https://raw.githubusercontent.com/python/cpython/"
-                    + raw_io_coordinates.get(
+                    + pinned_coordinates.get(
                         (row["version"], row["path"]), "v" + row["version"]
                     )
                     + "/"
                     + row["path"]
                 )
                 and (
-                    (row["version"], row["path"]) not in raw_io_coordinates
+                    (row["version"], row["path"]) not in pinned_coordinates
                     or row.get("revision")
-                    == raw_io_coordinates[(row["version"], row["path"])]
+                    == pinned_coordinates[(row["version"], row["path"])]
                 )
                 for row in sources
             )

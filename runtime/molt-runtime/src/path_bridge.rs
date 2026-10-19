@@ -489,60 +489,6 @@ mod path_transport_tests {
         }
     }
 
-    #[cfg(feature = "stdlib_logging_ext")]
-    #[test]
-    fn logging_record_formats_supplied_process_without_querying_host() {
-        use molt_runtime_logging::logging_ext::*;
-        crate::test_support::RuntimeTestTransaction::with_explicit_capabilities("", |py| {
-            let string = |text: &str| {
-                let ptr = alloc_string(py, text.as_bytes());
-                assert!(!ptr.is_null());
-                unsafe {
-                    molt_runtime_core::OwnedRuntimeValue::from_owned_bits(
-                        py.core_token(),
-                        MoltObject::from_ptr(ptr).bits(),
-                    )
-                }
-            };
-            let name = string("pid-metadata");
-            let format = string("%(process)s");
-            let style = string("%");
-            let none = MoltObject::none().bits();
-            let formatter = molt_logging_formatter_new(
-                format.bits(),
-                none,
-                style.bits(),
-                MoltObject::from_bool(true).bits(),
-            );
-            assert!(!exception_pending(py));
-            for (process, expected) in [(MoltObject::from_int(73).bits(), "73"), (none, "None")] {
-                let record = molt_logging_record_new(
-                    name.bits(),
-                    MoltObject::from_int(20).bits(),
-                    none,
-                    MoltObject::from_int(1).bits(),
-                    name.bits(),
-                    none,
-                    none,
-                    process,
-                );
-                assert!(!exception_pending(py));
-                let rendered = molt_logging_formatter_format(formatter, record);
-                assert!(!exception_pending(py));
-                let _owner = unsafe {
-                    molt_runtime_core::OwnedRuntimeValue::from_owned_bits(py.core_token(), rendered)
-                };
-                assert_eq!(
-                    string_obj_to_owned(obj_from_bits(rendered)).as_deref(),
-                    Some(expected)
-                );
-                molt_logging_record_drop(record);
-            }
-            molt_logging_formatter_drop(formatter);
-            assert!(!exception_pending(py));
-        });
-    }
-
     #[test]
     fn path_operation_bridges_preserve_exact_grants_and_complete_refusal() {
         for (grants, missing) in [

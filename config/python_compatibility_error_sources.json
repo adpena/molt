@@ -250,6 +250,34 @@
       "path": "Modules/_io/iobase.c",
       "url": "https://raw.githubusercontent.com/python/cpython/d220409a13b77de7a6c30abe16ea90db01528edc/Modules/_io/iobase.c",
       "sha256": "d38b6f321127cbca71700fe1587e27ff67c8db09bda54d2a92584d0ca5dd45cf"
+    },
+    {
+      "version": "3.12.13",
+      "revision": "3bb231a6a5dc02b95658877318bf61501a7209e9",
+      "path": "Lib/logging/__init__.py",
+      "url": "https://raw.githubusercontent.com/python/cpython/3bb231a6a5dc02b95658877318bf61501a7209e9/Lib/logging/__init__.py",
+      "sha256": "43f86bbc08fdd5c7b6e697abffe1381f534a92bb32e1f1aee8360d6a142592a1"
+    },
+    {
+      "version": "3.13.16",
+      "revision": "cbc944f4bc59639a444dd971c737788ba2283a91",
+      "path": "Lib/logging/__init__.py",
+      "url": "https://raw.githubusercontent.com/python/cpython/cbc944f4bc59639a444dd971c737788ba2283a91/Lib/logging/__init__.py",
+      "sha256": "4106cc3aa4e722116bbf0a3ffae3a8c7bc4981468ca7998ca35ed201a5605519"
+    },
+    {
+      "version": "3.14.8",
+      "revision": "8e6e75d9102e39bed2a2b279203a396741180f12",
+      "path": "Lib/logging/__init__.py",
+      "url": "https://raw.githubusercontent.com/python/cpython/8e6e75d9102e39bed2a2b279203a396741180f12/Lib/logging/__init__.py",
+      "sha256": "4106cc3aa4e722116bbf0a3ffae3a8c7bc4981468ca7998ca35ed201a5605519"
+    },
+    {
+      "version": "3.15.0",
+      "revision": "d220409a13b77de7a6c30abe16ea90db01528edc",
+      "path": "Lib/logging/__init__.py",
+      "url": "https://raw.githubusercontent.com/python/cpython/d220409a13b77de7a6c30abe16ea90db01528edc/Lib/logging/__init__.py",
+      "sha256": "2df2742d7132b43fcbcaa6f40c420e259130e5e8c7ad115e3764abccbe0b82d3"
     }
   ]
 }

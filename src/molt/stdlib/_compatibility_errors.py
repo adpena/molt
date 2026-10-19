@@ -24,4 +24,8 @@ def abstract_remove_signal_handler_error():
     return _MOLT_COMPATIBILITY_ERROR(3)
 
 
+def logging_handler_emit_error():
+    return _MOLT_COMPATIBILITY_ERROR(4)
+
+
 del _require_intrinsic

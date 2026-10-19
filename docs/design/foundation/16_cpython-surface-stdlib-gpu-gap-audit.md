@@ -200,7 +200,7 @@
 - **Math/numerics:** molt_math_sumprod, math floor/ceil/trunc intrinsics
 - **Pickle:** molt_pickle_dumps_core, molt_pickle_loads_core (protocols 0-5, memo, reducers, state_setter, PickleBuffer NEXT_BUFFER/READONLY_BUFFER)
 - **JSON:** molt_json_encode, molt_json_decode (fast-path; Python fallback for edge cases)
-- **Logging:** molt_logging_percent_style_format
+- **Logging:** shared string-formatting primitives over the live record dictionary; the duplicate logging percent parser and native record/formatter snapshots are retired (see [record authority](../logging_record_authority.md)).
 - **Zipfile:** molt_zipfile_crc32
 - **Socket:** molt_socket_*, molt_socket_constants
 - **Importlib:** molt_module_import, transactional compiled-module execution, compiled Python finder protocol + molt_importlib_admit_spec, molt_importlib_metadata_*, molt_importlib_resources_*

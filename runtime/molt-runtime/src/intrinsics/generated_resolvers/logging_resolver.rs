@@ -4,11 +4,6 @@
 pub(super) fn resolve_symbol(symbol: &str) -> Option<u64> {
     match symbol {
         #[cfg(feature = "stdlib_logging")]
-        "molt_logging_percent_style_format" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_logging_percent_style_format",
-            crate::molt_logging_percent_style_format as *const (),
-        )),
-        #[cfg(feature = "stdlib_logging")]
         "molt_logging_config_dict" => Some(crate::builtins::functions::runtime_fn_addr(
             "crate::molt_logging_config_dict",
             crate::molt_logging_config_dict as *const (),
