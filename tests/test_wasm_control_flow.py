@@ -72,7 +72,9 @@ def test_wasm_module_try_exception_loop_parity(
     output_wasm = build_wasm_linked(root, src, tmp_path, extra_args=["--no-cache"])
     dumps = list((debug_dir / "simpleir" / "final").glob("*consume_iterator.log"))
     assert len(dumps) == 1, "missing final backend IR for the generic for loop"
-    op_kinds = [line.split()[1] for line in dumps[0].read_text().splitlines()]
+    op_kinds = [
+        line.split()[1] for line in dumps[0].read_text(encoding="utf-8").splitlines()
+    ]
     assert op_kinds.count("iter_next_unboxed") == 1
     assert "iter_next" not in op_kinds
     assert "index" not in op_kinds
