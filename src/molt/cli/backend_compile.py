@@ -99,7 +99,7 @@ from molt import host_capacity
 
 
 if TYPE_CHECKING:
-    from molt.cli.function_records import FunctionDigestSeed
+    from molt.cli.cache_keys import FunctionDigests
 
 
 def _record_pipeline_stage_ms(
@@ -204,6 +204,7 @@ def _prepare_backend_setup(
     warnings: list[str],
     cache: bool,
     ir: Mapping[str, Any],
+    function_digests: FunctionDigests,
     entry_module: str,
     module_graph_metadata: _ModuleGraphMetadata,
     target_python: TargetPythonVersion,
@@ -215,7 +216,6 @@ def _prepare_backend_setup(
     codegen: CodegenSelection,
     rust_cpu: RustCpuPolicy,
     stage_timings_ms: dict[str, float] | None = None,
-    function_digest_seeds: tuple[FunctionDigestSeed, ...] = (),
     build_python_admission: BuildPythonAdmission | None = None,
 ) -> tuple[_PreparedBackendSetup | None, _CliFailure | None]:
     try:
@@ -337,7 +337,7 @@ def _prepare_backend_setup(
             backend_bin=backend_bin,
             cache_enabled=cache,
             ir=ir,
-            function_digest_seeds=function_digest_seeds,
+            function_digests=function_digests,
             target=target,
             artifact_contract=artifact_contract,
             profile=profile,

@@ -126,6 +126,16 @@ and locks. The sibling audit, frontend, environment and differential consumers
 share that policy, including stop-state and creating-parent custody.
 These are development/compiler changes with no emitted-program checks.
 
+Binary-image analysis and backend artifact setup now share that single digest
+owner after final IR rewrites. Analysis schema v3 retains original function
+order, source locations and headers while composing admitted body hashes; the
+replaced whole-IR JSON key is removed from the analysis layer. Its independent
+cost control fails on the original full-payload hashing path. Current bounded
+controls exercise seeded reuse, ordered invalidation, content-equal replay,
+header/analysis-authority invalidation and the actual pipeline's shared owner.
+Broader consumer, target and measured-cost acceptance remains under HF-266 and
+V1-07; this implementation does not close those findings.
+
 The storage/digest consumer migration is integrated at `4173741a6`: all 38
 selected Linux aarch64 integration gates pass, including 4,763 joined consumer
 cases with 17 explicit skips. The unchanged production storage/codec bytes

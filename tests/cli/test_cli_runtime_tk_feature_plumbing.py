@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from molt.cli.cache_keys import FunctionDigests
+
 from tests.compiler_identity_helper import (
     compiler_build_admission,
     stub_compiler_admission,
@@ -794,6 +796,7 @@ def test_prepare_backend_setup_warms_native_runtime_with_requested_stdlib_profil
     )
 
     prepared, err = cli_backend_compile._prepare_backend_setup(
+        function_digests=FunctionDigests(),
         split_runtime=False,
         is_rust_transpile=False,
         is_luau_transpile=False,
@@ -891,6 +894,7 @@ def test_prepare_backend_setup_records_backend_stage_timings(
     )
 
     prepared, err = cli_backend_compile._prepare_backend_setup(
+        function_digests=FunctionDigests(),
         split_runtime=False,
         is_rust_transpile=False,
         is_luau_transpile=False,
@@ -1010,6 +1014,7 @@ def test_prepare_backend_setup_enables_source_loader_for_native_artifacts(
     )
 
     prepared, err = cli_backend_compile._prepare_backend_setup(
+        function_digests=FunctionDigests(),
         split_runtime=False,
         is_rust_transpile=False,
         is_luau_transpile=False,

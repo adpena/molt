@@ -5,11 +5,14 @@ from pathlib import Path
 from typing import Any, Mapping
 
 from molt.cli.json_cache import _read_cached_json_object, _write_cached_json_object
+from molt.cli.cache_keys import FunctionDigests, _cache_payload_digest
 from molt.cli.runtime_paths import _build_state_root
 from molt.compiler_analysis.backend_ir import (
-    backend_ir_binary_image_analysis_cache_key,
+    BACKEND_IR_BINARY_IMAGE_ANALYSIS_CACHE_KEY_SCHEMA,
+    backend_ir_binary_image_analysis_authority_hash,
     backend_ir_binary_image_analysis_payload,
 )
+from molt.compiler_analysis.hashing import stable_payload_hash
 
 _BACKEND_IR_ANALYSIS_CACHE_SCHEMA_VERSION = 1
 
@@ -35,8 +38,17 @@ def _cached_backend_ir_binary_image_analysis_payload(
     *,
     project_root: Path,
     ir: Mapping[str, Any],
+    function_digests: FunctionDigests,
 ) -> _BackendIrAnalysisCacheResult:
-    cache_key = backend_ir_binary_image_analysis_cache_key(ir)
+    # Analysis observes function order. Share body hashes with artifact setup,
+    # but retain the original order rather than its sorted cache projection.
+    cache_key = stable_payload_hash(
+        {
+            "schema": BACKEND_IR_BINARY_IMAGE_ANALYSIS_CACHE_KEY_SCHEMA,
+            "authority": backend_ir_binary_image_analysis_authority_hash(),
+            "ir_digest": _cache_payload_digest(ir, function_digests),
+        }
+    )
     cache_path = _backend_ir_analysis_cache_path(project_root, cache_key)
     cached = _read_cached_json_object(cache_path)
     if (

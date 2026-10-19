@@ -1,3 +1,5 @@
+from molt.cli.cache_keys import FunctionDigests
+
 import json
 from pathlib import Path
 
@@ -224,6 +226,7 @@ def _native_cache_setup(
     from molt.target_python import TargetPythonVersion
 
     return backend_cache_setup._prepare_backend_cache_setup(
+        function_digests=FunctionDigests(),
         backend_bin=tmp_path / "backend",
         cache_enabled=True,
         ir={"functions": []},

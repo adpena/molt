@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import ast
+import copy
+import hashlib
+import json
 import shutil
 import time
 from dataclasses import replace
@@ -16,6 +19,8 @@ from molt.cli import module_graph as cli_module_graph
 from molt.cli import module_resolution as cli_module_resolution
 from molt.cli import module_dependencies as cli_module_dependencies
 from molt.cli import wrapper_build as cli_wrapper_build
+from molt.cli.cache_keys import FunctionDigests
+from molt.cli import function_records
 from molt.cli.config_resolution import STATIC_IMPORT_MODULES_ENV
 from molt.cli.models import (
     _ExternalPackageNativeArtifact,
@@ -779,16 +784,41 @@ def test_backend_ir_analysis_cache_reuses_identical_ir_payload(
     shutil.rmtree(build_state, ignore_errors=True)
     monkeypatch.setenv("MOLT_BUILD_STATE_DIR", str(build_state))
 
+    from molt.compiler_analysis import backend_ir as analysis
+
+    original_hash = analysis.stable_payload_hash
+
+    def bounded_hash(payload):
+        assert not (isinstance(payload, dict) and "ir" in payload), (
+            "analysis reserializes the complete IR instead of reusing body digests"
+        )
+        return original_hash(payload)
+
+    monkeypatch.setattr(analysis, "stable_payload_hash", bounded_hash)
+    monkeypatch.setattr(
+        cli_backend_ir_analysis_cache, "stable_payload_hash", bounded_hash
+    )
+    monkeypatch.delenv("MOLT_VERIFY_FUNCTION_DIGESTS", raising=False)
+    _, seeds = function_records.encode_lowering_record(b"", ir["functions"])
+    owner = FunctionDigests(seeds)
+
+    def unexpected_encode(_function):
+        pytest.fail("analysis encoded an admitted function body again")
+
+    monkeypatch.setattr(function_records, "encode_function_body", unexpected_encode)
+
     first = (
         cli_backend_ir_analysis_cache._cached_backend_ir_binary_image_analysis_payload(
             project_root=tmp_path,
             ir=ir,
+            function_digests=owner,
         )
     )
     second = (
         cli_backend_ir_analysis_cache._cached_backend_ir_binary_image_analysis_payload(
             project_root=tmp_path,
             ir=ir,
+            function_digests=owner,
         )
     )
 
@@ -798,3 +828,72 @@ def test_backend_ir_analysis_cache_reuses_identical_ir_payload(
     assert second.cache_path == first.cache_path
     assert second.cache_path.exists()
     assert second.payload == first.payload
+
+
+def test_backend_ir_analysis_cache_preserves_order_source_and_header_inputs(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("MOLT_BUILD_STATE_DIR", str(tmp_path / "state"))
+    first = {
+        "name": "first",
+        "source_file": "app.py",
+        "ops": [{"kind": "call", "args": ["value"], "source_line": 3}],
+    }
+    second = {"name": "second", "ops": []}
+    variants = [
+        {"functions": [first, second]},
+        {"functions": [second, first]},
+        {"functions": [first, second], "profile": {}},
+        {"functions": [first, second], "runtime_feedback": {}},
+        {"functions": [{**first, "source_file": "changed.py"}, second]},
+        {
+            "functions": [
+                {**first, "ops": [{**first["ops"][0], "source_line": 4}]},
+                second,
+            ]
+        },
+        {
+            "functions": [
+                {**first, "ops": [{"kind": "const", "source_line": 3}]},
+                second,
+            ]
+        },
+    ]
+    owner = FunctionDigests()
+    keys = set()
+    for ir in variants:
+        result = cli_backend_ir_analysis_cache._cached_backend_ir_binary_image_analysis_payload(
+            project_root=tmp_path, ir=ir, function_digests=owner
+        )
+        assert not result.cache_hit
+        keys.add(result.cache_key)
+        expected_order = [function["name"] for function in ir["functions"]]
+        expected_hash = hashlib.sha256(
+            json.dumps(expected_order, separators=(",", ":")).encode()
+        ).hexdigest()
+        assert result.payload["backend_ir"]["function_order_hash"] == expected_hash
+        assert result.payload["backend_ir"]["profile_attached"] == ("profile" in ir)
+        assert result.payload["backend_ir"]["runtime_feedback_attached"] == (
+            "runtime_feedback" in ir
+        )
+        # New objects with equal content must read the same cached observation.
+        replay = cli_backend_ir_analysis_cache._cached_backend_ir_binary_image_analysis_payload(
+            project_root=tmp_path,
+            ir=copy.deepcopy(ir),
+            function_digests=FunctionDigests(),
+        )
+        assert replay.cache_hit and replay.payload == result.payload
+    assert len(keys) == len(variants)
+
+    # Analysis facts, independently of IR bytes, also invalidate the cache.
+    monkeypatch.setattr(
+        cli_backend_ir_analysis_cache,
+        "backend_ir_binary_image_analysis_authority_hash",
+        lambda: "changed-analysis-authority",
+    )
+    changed = (
+        cli_backend_ir_analysis_cache._cached_backend_ir_binary_image_analysis_payload(
+            project_root=tmp_path, ir=variants[0], function_digests=owner
+        )
+    )
+    assert not changed.cache_hit and changed.cache_key not in keys

@@ -9,6 +9,8 @@ feature lane, binary path, Cargo timeout, or Rust CPU policy fails here.
 
 from __future__ import annotations
 
+from molt.cli.cache_keys import FunctionDigests
+
 import hashlib
 import json
 import os
@@ -233,6 +235,7 @@ def _build_backend_setup(
     assert error is None and config is not None
     layout = _build_layout(target, tmp_path, roots.project_root)
     return cli_backend_compile._prepare_backend_setup(
+        function_digests=FunctionDigests(),
         split_runtime=False,
         is_rust_transpile=layout.is_rust_transpile,
         is_luau_transpile=layout.is_luau_transpile,

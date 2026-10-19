@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from molt.cli.cache_keys import FunctionDigests
+
 from molt.compiler_analysis import native_support_slice
 from molt.compiler_analysis import python_import_scan as _source_import_scan
 
@@ -3187,6 +3189,7 @@ def test_collections_demanded_body_copy_reaches_backend_symbol_contract(
         module_deps=frontend_analysis.module_deps,
     )
     backend_setup = cli_backend_cache_setup._prepare_backend_cache_setup(
+        function_digests=FunctionDigests(),
         wasm_layout=None,
         backend_bin=tmp_path / "molt-backend",
         cache_enabled=False,
@@ -22014,6 +22017,7 @@ def test_prepare_backend_setup_materializes_backend_before_cache_key(
 
     prepared_backend_setup, backend_setup_error = (
         cli_backend_compile._prepare_backend_setup(
+            function_digests=FunctionDigests(),
             split_runtime=False,
             is_rust_transpile=False,
             is_wasm=is_wasm,
@@ -22144,6 +22148,7 @@ def test_prepare_backend_setup_stages_runtime_callables_before_native_cache_hit(
 
     prepared_backend_setup, backend_setup_error = (
         cli_backend_compile._prepare_backend_setup(
+            function_digests=FunctionDigests(),
             split_runtime=False,
             is_rust_transpile=False,
             is_wasm=False,
@@ -22274,6 +22279,7 @@ def test_prepare_backend_setup_stages_runtime_callables_before_native_cache_miss
 
     prepared_backend_setup, backend_setup_error = (
         cli_backend_compile._prepare_backend_setup(
+            function_digests=FunctionDigests(),
             split_runtime=False,
             is_rust_transpile=False,
             is_wasm=False,
@@ -22406,6 +22412,7 @@ def test_prepare_backend_setup_uses_runtime_callable_digest_instead_of_native_as
 
     prepared_backend_setup, backend_setup_error = (
         cli_backend_compile._prepare_backend_setup(
+            function_digests=FunctionDigests(),
             split_runtime=False,
             is_rust_transpile=False,
             is_wasm=False,
@@ -22529,6 +22536,7 @@ def test_prepare_backend_setup_stages_runtime_callables_for_object_emit_without_
 
     prepared_backend_setup, backend_setup_error = (
         cli_backend_compile._prepare_backend_setup(
+            function_digests=FunctionDigests(),
             split_runtime=False,
             is_rust_transpile=False,
             is_wasm=False,
@@ -25129,9 +25137,11 @@ def test_run_subprocess_captured_to_tempfiles_emits_keepalive(
     assert "Tempfile helper: still running" in capsys.readouterr().err
 
 
+@pytest.mark.parametrize("diagnostics_enabled", [False, True])
 def test_run_backend_pipeline_defers_native_runtime_readiness_until_after_codegen(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    diagnostics_enabled: bool,
 ) -> None:
     runtime_lib = tmp_path / "libmolt_runtime.a"
     output_artifact = tmp_path / "output.o"
@@ -25140,7 +25150,7 @@ def test_run_backend_pipeline_defers_native_runtime_readiness_until_after_codege
 
     build_preamble = cli_models._PreparedBuildPreamble(
         diagnostics_path_spec="",
-        diagnostics_enabled=False,
+        diagnostics_enabled=diagnostics_enabled,
         resolved_diagnostics_verbosity="brief",
         allocation_diagnostics_enabled=False,
         frontend_timing_raw="",
@@ -25321,10 +25331,26 @@ def test_run_backend_pipeline_defers_native_runtime_readiness_until_after_codege
         ),
     )
 
+    analysis_owners = []
+    analysis = cli_backend_pipeline._backend_ir_analysis_cache
+    cached_analysis = analysis._cached_backend_ir_binary_image_analysis_payload
+
+    def observed_analysis(**kwargs):
+        analysis_owners.append(kwargs["function_digests"])
+        return cached_analysis(**kwargs)
+
+    monkeypatch.setattr(
+        analysis, "_cached_backend_ir_binary_image_analysis_payload", observed_analysis
+    )
+
     def fake_prepare_backend_setup(
         **kwargs: object,
     ) -> tuple[cli_models._PreparedBackendSetup, None]:
-        del kwargs
+        assert isinstance(kwargs["function_digests"], FunctionDigests)
+        if diagnostics_enabled:
+            assert analysis_owners == [kwargs["function_digests"]]
+        else:
+            assert analysis_owners == []
         call_order.append("backend_setup")
         runtime_state = cli_models._RuntimeArtifactState(runtime_lib=runtime_lib)
         cache_setup = cli_models._BackendCacheSetup(
@@ -33232,6 +33258,7 @@ def test_cache_variant_differs_when_stdlib_split_toggles(tmp_path: Path) -> None
     )
 
     setup_split = cli_backend_cache_setup._prepare_backend_cache_setup(
+        function_digests=FunctionDigests(),
         wasm_layout=None,
         backend_bin=tmp_path / "molt-backend",
         emit_mode="bin",
@@ -33243,6 +33270,7 @@ def test_cache_variant_differs_when_stdlib_split_toggles(tmp_path: Path) -> None
     )
 
     setup_mono = cli_backend_cache_setup._prepare_backend_cache_setup(
+        function_digests=FunctionDigests(),
         wasm_layout=None,
         backend_bin=tmp_path / "molt-backend",
         emit_mode="obj",
@@ -33293,6 +33321,7 @@ def test_prepare_backend_cache_setup_routes_stdlib_object_to_explicit_cache_dir(
         stdlib_like_by_module={"sys": True},
     )
     setup = cli_backend_cache_setup._prepare_backend_cache_setup(
+        function_digests=FunctionDigests(),
         wasm_layout=None,
         backend_bin=tmp_path / "molt-backend",
         cache_enabled=True,
@@ -33370,6 +33399,7 @@ def test_prepare_backend_cache_setup_routes_no_cache_stdlib_object_to_explicit_c
         stdlib_like_by_module={"sys": True},
     )
     setup = cli_backend_cache_setup._prepare_backend_cache_setup(
+        function_digests=FunctionDigests(),
         wasm_layout=None,
         backend_bin=tmp_path / "molt-backend",
         cache_enabled=False,

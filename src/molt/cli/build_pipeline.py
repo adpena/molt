@@ -4,6 +4,7 @@ import time
 
 from molt.cli.build_diagnostics import _emit_build_diagnostics_for_result
 from molt.cli.config_resolution import DEFAULT_STDLIB_PROFILE
+from molt.cli.cache_keys import FunctionDigests
 from molt.cli import backend_ir as _backend_ir
 from molt.cli import backend_ir_analysis_cache as _backend_ir_analysis_cache
 from molt.cli import backend_pipeline as _backend_pipeline
@@ -169,6 +170,9 @@ def _run_build_pipeline(
             backend_ir_analysis = _backend_ir_analysis_cache._cached_backend_ir_binary_image_analysis_payload(
                 project_root=prepared_build_roots.project_root,
                 ir=prepared_backend_ir.ir,
+                function_digests=FunctionDigests(
+                    prepared_backend_ir.function_digest_seeds
+                ),
             )
             record_binary_image_analysis(
                 "backend_ir",
