@@ -100,6 +100,7 @@ jobs:
       python_unit: ${{ steps.paths.outputs.python_unit }}
       native_integration: ${{ steps.paths.outputs.native_integration }}
       rust: ${{ steps.paths.outputs.rust }}
+      browser_simd: ${{ steps.paths.outputs.browser_simd }}
       llvm: ${{ steps.paths.outputs.llvm }}
       python_security: ${{ steps.paths.outputs.python_security }}
       rust_security: ${{ steps.paths.outputs.rust_security }}
@@ -399,12 +400,45 @@ jobs:
         if: ${{ !cancelled() }}
         uses: ./.github/actions/save-cargo-cache
 
+  browser-simd:
+    name: Browser SIMD Contract
+    needs: classify-changes
+    if: needs.classify-changes.outputs.browser_simd == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Setup standalone browser toolchains
+        uses: ./.github/actions/setup-project
+        with:
+          rust-toolchain: pinned
+          rust-targets: wasm32-unknown-unknown
+          node-version: pinned
+          cache-cargo: "true"
+          sync: "true"
+          sync-frozen: "true"
+          sync-groups: dev
+      - name: Execute browser SIMD contract
+        run: python3 tools/proof_plan.py --run-family browser_simd --receipt proof-receipts/browser-simd.json
+      - name: Upload browser SIMD receipt
+        if: always() && hashFiles('proof-receipts/browser-simd.json') != ''
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: proof-receipt-browser-simd
+          path: proof-receipts/browser-simd.json
+          if-no-files-found: error
+      - name: Save Cargo dependency cache
+        if: ${{ !cancelled() }}
+        uses: ./.github/actions/save-cargo-cache
+
   rust-build-unit-smoke:
     name: Rust Build And Unit Smoke
     needs: classify-changes
     if: needs.classify-changes.outputs.rust == 'true'
     runs-on: ubuntu-latest
-    timeout-minutes: 346
+    timeout-minutes: 342
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -547,6 +581,7 @@ jobs:
       - native-integration
       - platform-portability
       - rust-build-unit-smoke
+      - browser-simd
       - llvm-backend
       - security-hardening
       - formal-verification

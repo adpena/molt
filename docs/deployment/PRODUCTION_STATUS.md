@@ -48,33 +48,19 @@ below have not been revalidated for the current revision. Use
 | INT8 weights | 270 MB (6 shards, 43-52 MB each) | models/falcon-ocr-int8-sharded/ |
 | INT4 weights | 129 MB (5 shards) | models/falcon-ocr-int4-sharded/ |
 | Tokenizer | 4.8 MB | models/falcon-ocr/tokenizer.json |
-| Zig SIMD | 5.4 KB | browser/simd-ops-zig/simd.wasm |
-| Rust SIMD | 14.0 KB | browser/simd-ops.wasm |
+| Browser SIMD | See [source/build contract](../design/browser_simd.md); remote deployment not verified | browser/simd-ops.wasm |
 | Browser JS | ~155 KB total | browser/*.js |
 
 ## WASM SIMD Backend
 
-### Binary Sizes
-| Backend | Size | Notes |
-|---------|------|-------|
-| Zig | 5.4 KB | Primary, smaller binary |
-| Rust | <5 KB target | Size-optimized shared parity artifact |
+One Rust crate produces `deploy/browser/simd-ops.wasm`. The browser consumes its
+optimized tiled matmul and fused softmax exports. Allocation starts above the
+module's exported `__heap_base`; no second SIMD binary is attempted.
 
-### Benchmark Results (64x64 matmul, Apple Silicon M-series, Node.js V8)
-| Operation | Rust ns/op | Zig ns/op | Winner | Speedup |
-|-----------|-----------|-----------|--------|---------|
-| matmul_f32_tiled 64x64 | ~14,500 | ~36,000 | Rust | 2.5x |
-| matmul_f32_tiled 16x16 | ~240 | ~560 | Rust | 2.3x |
-| softmax_f32_fused 1024 | ~2,250 | ~3,200 | Rust | 1.4x |
-| add_f32 4096 | ~350 | ~980 | Rust | 2.8x |
-| exp2_f32 1024 | ~360 | ~1,330 | Rust | 3.7x |
-| rms_norm_f32 256 | ~143 | ~167 | Rust | 1.2x |
-| reduce_sum_f32 4096 | ~600 | ~700 | Rust | 1.2x |
-
-### Optimizations in Rust SIMD
-- **matmul_f32_tiled**: 4x4 register blocking, K-loop unrolled by 4
-- **softmax**: Online 2-pass algorithm (Milakov & Gimelshein 2018), vectorized pass 2
-- **exp2**: 6th-order Cephes minimax polynomial (max relative error ~2.3e-8)
+The [owning contract](../design/browser_simd.md) defines the build, memory ABI,
+numerical order and verification. [Benchmarks](../benchmarks/simd_benchmark.md)
+record scoped measurements rather than predicted speedups. Updating the local
+artifact does not establish that R2 serves the same bytes.
 
 ## Cloudflare Services Inventory
 | Service | Usage |

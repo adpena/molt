@@ -195,7 +195,7 @@ function benchmarkConv2dJs() {
 
 async function benchmarkWasmSimd() {
   const simdPath =
-    "deploy/browser/simd-ops-rs/target/wasm32-unknown-unknown/release/simd_ops.wasm";
+    "deploy/browser/simd-ops.wasm";
   if (!fs.existsSync(simdPath)) {
     console.log("WASM SIMD:        SKIP (binary not found)");
     return;
@@ -207,10 +207,7 @@ async function benchmarkWasmSimd() {
       "SIMD WASM binary: " + (wasmBytes.length / 1024).toFixed(1) + " KB",
     );
 
-    const memory = new WebAssembly.Memory({ initial: 256 });
-    const { instance } = await WebAssembly.instantiate(wasmBytes, {
-      env: { memory },
-    });
+    const { instance } = await WebAssembly.instantiate(wasmBytes, {});
 
     const exports = Object.keys(instance.exports).filter(
       (e) => typeof instance.exports[e] === "function",

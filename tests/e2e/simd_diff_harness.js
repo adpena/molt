@@ -1,619 +1,226 @@
-// Differential testing: Zig vs Rust WASM SIMD kernels.
-//
-// Both implementations must produce identical results for identical inputs.
-// Tests every shared exported function with random, adversarial, and edge-case
-// inputs. Compares outputs BIT-FOR-BIT using DataView.getUint32 on f32 memory.
-//
-// Run: node tests/e2e/simd_diff_harness.js
-//
-// Exit code 0 = all tests pass (bit-identical).
-// Exit code 1 = at least one mismatch found.
-//
-// Stable machine-readable summary marker:
-//   @@SIMD_DIFF_JSON@@ {"version":1,...}
-
+// Independent numerical and real browser-consumer oracles for source-built SIMD.
+// node tests/e2e/simd_diff_harness.js [artifact.wasm]
 'use strict';
-
-const fs = require('fs');
-const path = require('path');
-const { performance } = require('perf_hooks');
-
-const ROOT = path.resolve(__dirname, '../..');
-const RUST_WASM = path.join(ROOT, 'deploy/browser/simd-ops-rs/target/wasm32-unknown-unknown/release/simd_ops.wasm');
-const ZIG_WASM = path.join(ROOT, 'deploy/browser/simd-ops-zig/simd.wasm');
-
-// ---------------------------------------------------------------------------
-// WASM module loader
-// ---------------------------------------------------------------------------
-
-async function loadModule(wasmPath) {
-    const bytes = fs.readFileSync(wasmPath);
-    const memory = new WebAssembly.Memory({ initial: 256 });
-    let instance;
-    try {
-        // Try with imported memory first (Zig may export its own)
-        ({ instance } = await WebAssembly.instantiate(bytes, {
-            env: { memory },
-        }));
-    } catch {
-        // Module exports its own memory (Rust does this)
-        ({ instance } = await WebAssembly.instantiate(bytes, {}));
-    }
-    const mem = instance.exports.memory || memory;
-    return { exports: instance.exports, memory: mem };
-}
-
-// ---------------------------------------------------------------------------
-// Memory helpers
-// ---------------------------------------------------------------------------
-
-function writeF32(memory, offset, arr) {
-    const view = new Float32Array(memory.buffer, offset, arr.length);
-    view.set(arr);
-}
-
-function readF32(memory, offset, n) {
-    return new Float32Array(memory.buffer, offset, n);
-}
-
-function readBitsU32(memory, offset, n) {
-    return new Uint32Array(memory.buffer, offset, n);
-}
-
-// Compare two f32 arrays bit-for-bit. Returns { pass, mismatches }.
-function compareBits(memA, offsetA, memB, offsetB, n, label) {
-    const bitsA = readBitsU32(memA, offsetA, n);
-    const bitsB = readBitsU32(memB, offsetB, n);
-    const floatsA = readF32(memA, offsetA, n);
-    const floatsB = readF32(memB, offsetB, n);
-    const mismatches = [];
-    for (let i = 0; i < n; i++) {
-        if (bitsA[i] !== bitsB[i]) {
-            // Allow both being NaN (any NaN bit pattern)
-            const isNanA = (bitsA[i] & 0x7F800000) === 0x7F800000 && (bitsA[i] & 0x007FFFFF) !== 0;
-            const isNanB = (bitsB[i] & 0x7F800000) === 0x7F800000 && (bitsB[i] & 0x007FFFFF) !== 0;
-            if (isNanA && isNanB) continue; // Both NaN — acceptable
-            mismatches.push({
-                index: i,
-                rustBits: '0x' + bitsA[i].toString(16).padStart(8, '0'),
-                zigBits: '0x' + bitsB[i].toString(16).padStart(8, '0'),
-                rustFloat: floatsA[i],
-                zigFloat: floatsB[i],
-            });
-        }
-    }
-    return { pass: mismatches.length === 0, mismatches };
-}
-
-// Generate n random f32 in [lo, hi].
-function randomF32(n, lo = -10, hi = 10) {
-    const arr = new Float32Array(n);
-    for (let i = 0; i < n; i++) {
-        arr[i] = lo + Math.random() * (hi - lo);
-    }
-    return arr;
-}
-
-// Seeded PRNG for reproducibility (xorshift32).
-function xorshift32(seed) {
-    let s = seed >>> 0 || 1;
-    return function () {
-        s ^= s << 13;
-        s ^= s >> 17;
-        s ^= s << 5;
-        return (s >>> 0) / 0x100000000;
-    };
-}
-
-// ---------------------------------------------------------------------------
-// Test framework
-// ---------------------------------------------------------------------------
-
-let totalTests = 0;
-let passedTests = 0;
-let failedTests = 0;
-let activeGroup = null;
-const caseResults = [];
-
-function report(name, result) {
-    totalTests++;
-    const entry = {
-        group: activeGroup,
-        name,
-        passed: result.pass,
-        mismatchCount: result.mismatches.length,
-        mismatches: result.mismatches,
-    };
-    caseResults.push(entry);
-    if (result.pass) {
-        passedTests++;
-        console.log(`  PASS  ${name}`);
-    } else {
-        failedTests++;
-        console.log(`  FAIL  ${name} — ${result.mismatches.length} mismatch(es):`);
-        for (const m of result.mismatches.slice(0, 5)) {
-            console.log(`        [${m.index}] Rust=${m.rustBits} (${m.rustFloat}) vs Zig=${m.zigBits} (${m.zigFloat})`);
-        }
-        if (result.mismatches.length > 5) {
-            console.log(`        ... and ${result.mismatches.length - 5} more`);
-        }
+const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const { pathToFileURL } = require('node:url');
+const path = require('node:path');
+const { DEFAULT_WASM, loadSimd, xorshift32, randArr } = require('./simd_test_support');
+const f = Math.fround;
+const MIN_SUBNORMAL = 2 ** -149;
+function exact(actual, expected) {
+    assert.equal(actual.length, expected.length);
+    for (let i = 0; i < expected.length; i++) {
+        assert.ok(Object.is(actual[i], f(expected[i])), `element ${i}: ${actual[i]} != ${expected[i]}`);
     }
 }
-
-// Memory layout: we allocate regions in linear memory for inputs/outputs.
-// Region A: 0x10000..0x20000  (input a / q)
-// Region B: 0x20000..0x30000  (input b / freqs_cos)
-// Region C: 0x30000..0x40000  (output for Rust)
-// Region D: 0x40000..0x50000  (output for Zig / freqs_sin)
-// Region E: 0x50000..0x60000  (weights for rms_norm)
-const REGION_A = 0x10000;
-const REGION_B = 0x20000;
-const REGION_C = 0x30000;
-const REGION_D = 0x40000;
-const REGION_E = 0x50000;
-
-// ---------------------------------------------------------------------------
-// Tests
-// ---------------------------------------------------------------------------
-
+function close(actual, expected, relative = 1e-5, absolute = MIN_SUBNORMAL) {
+    assert.equal(actual.length, expected.length);
+    for (let i = 0; i < expected.length; i++) {
+        const a = actual[i], b = expected[i];
+        if (!Number.isFinite(b) || b === 0) assert.ok(Object.is(a, b), `special ${i}: ${a} != ${b}`);
+        else assert.ok(Number.isFinite(a) && Math.abs(a - b) <= absolute + relative * Math.abs(b),
+            `element ${i}: ${a} != ${b} (relative ${Math.abs((a - b) / b)})`);
+    }
+}
+function matmulReference(a, b, m, k, n) {
+    const out = new Float32Array(m * n);
+    for (let i = 0; i < m; i++) for (let j = 0; j < n; j++) {
+        let sum = 0;
+        for (let p = 0; p < k; p++) sum = f(sum + f(a[i * k + p] * b[p * n + j]));
+        out[i * n + j] = sum;
+    }
+    return out;
+}
+function softmaxReference(a) {
+    const max = Math.max(...a);
+    const exp = Array.from(a, x => Math.exp(x - max));
+    const sum = exp.reduce((a, b) => a + b, 0);
+    return Float32Array.from(exp, x => x / sum);
+}
+function rmsReference(a, w, eps) {
+    const scale = 1 / Math.sqrt(Array.from(a).reduce((s, x) => s + x * x, 0) / a.length + eps);
+    return Float32Array.from(a, (x, i) => x * w[i] * scale);
+}
 async function main() {
-    console.log('Loading WASM modules...');
-    const rust = await loadModule(RUST_WASM);
-    const zig = await loadModule(ZIG_WASM);
-    console.log(`  Rust: ${Object.keys(rust.exports).filter(k => typeof rust.exports[k] === 'function').length} functions`);
-    console.log(`  Zig:  ${Object.keys(zig.exports).filter(k => typeof zig.exports[k] === 'function').length} functions`);
-    console.log('');
-
-    const rng = xorshift32(42);
-
-    // Helper: generate reproducible random f32 array
-    function randArr(n, lo = -10, hi = 10) {
-        const arr = new Float32Array(n);
-        for (let i = 0; i < n; i++) arr[i] = lo + rng() * (hi - lo);
-        return arr;
+    const artifact = process.argv[2] || DEFAULT_WASM;
+    const wasm = await loadSimd(artifact), e = wasm.exports, rng = xorshift32(42);
+    const groups = new Map();
+    async function test(group, name, run) {
+        const cases = groups.get(group) || [];
+        groups.set(group, cases);
+        wasm.reset();
+        try { await run(); cases.push({ name, passed: true }); }
+        catch (error) { cases.push({ name, passed: false, error: error.stack }); console.error(`${group}/${name}: ${error.message}`); }
     }
-
-    // Helper: generate positive random f32 array
-    function randArrPos(n, lo = 0.01, hi = 10) {
-        const arr = new Float32Array(n);
-        for (let i = 0; i < n; i++) arr[i] = lo + rng() * (hi - lo);
-        return arr;
+    function unary(name, a) {
+        const ptr = wasm.alloc(a), out = wasm.alloc(a.length);
+        e[name](ptr, out, a.length); return wasm.read(out, a.length);
     }
-
-    // -----------------------------------------------------------------------
-    // Test: add_f32
-    // -----------------------------------------------------------------------
-    activeGroup = 'add_f32';
-    console.log('--- add_f32 ---');
-    for (const n of [1, 4, 7, 16, 63, 256, 1024]) {
-        const a = randArr(n);
-        const b = randArr(n);
-        writeF32(rust.memory, REGION_A, a);
-        writeF32(rust.memory, REGION_B, b);
-        rust.exports.add_f32(REGION_A, REGION_B, REGION_C, n);
-
-        writeF32(zig.memory, REGION_A, a);
-        writeF32(zig.memory, REGION_B, b);
-        zig.exports.add_f32(REGION_A, REGION_B, REGION_D, n);
-
-        // Copy Zig output to Rust memory for comparison
-        const zigOut = readF32(zig.memory, REGION_D, n);
-        writeF32(rust.memory, REGION_D, zigOut);
-        report(`add_f32 n=${n}`, compareBits(rust.memory, REGION_C, rust.memory, REGION_D, n));
+    function binary(name, a, b) {
+        const ap = wasm.alloc(a), bp = wasm.alloc(b), out = wasm.alloc(a.length);
+        e[name](ap, bp, out, a.length); return wasm.read(out, a.length);
     }
-
-    // -----------------------------------------------------------------------
-    // Test: mul_f32
-    // -----------------------------------------------------------------------
-    activeGroup = 'mul_f32';
-    console.log('--- mul_f32 ---');
-    for (const n of [1, 4, 7, 16, 256]) {
-        const a = randArr(n);
-        const b = randArr(n);
-        writeF32(rust.memory, REGION_A, a);
-        writeF32(rust.memory, REGION_B, b);
-        rust.exports.mul_f32(REGION_A, REGION_B, REGION_C, n);
-
-        writeF32(zig.memory, REGION_A, a);
-        writeF32(zig.memory, REGION_B, b);
-        zig.exports.mul_f32(REGION_A, REGION_B, REGION_D, n);
-
-        const zigOut = readF32(zig.memory, REGION_D, n);
-        writeF32(rust.memory, REGION_D, zigOut);
-        report(`mul_f32 n=${n}`, compareBits(rust.memory, REGION_C, rust.memory, REGION_D, n));
-    }
-
-    // -----------------------------------------------------------------------
-    // Test: neg_f32
-    // -----------------------------------------------------------------------
-    activeGroup = 'neg_f32';
-    console.log('--- neg_f32 ---');
-    for (const n of [1, 4, 7, 16, 256]) {
-        const a = randArr(n);
-        writeF32(rust.memory, REGION_A, a);
-        rust.exports.neg_f32(REGION_A, REGION_C, n);
-
-        writeF32(zig.memory, REGION_A, a);
-        zig.exports.neg_f32(REGION_A, REGION_D, n);
-
-        const zigOut = readF32(zig.memory, REGION_D, n);
-        writeF32(rust.memory, REGION_D, zigOut);
-        report(`neg_f32 n=${n}`, compareBits(rust.memory, REGION_C, rust.memory, REGION_D, n));
-    }
-
-    // -----------------------------------------------------------------------
-    // Test: sqrt_f32
-    // -----------------------------------------------------------------------
-    activeGroup = 'sqrt_f32';
-    console.log('--- sqrt_f32 ---');
-    for (const n of [1, 4, 7, 16, 256]) {
-        const a = randArrPos(n);
-        writeF32(rust.memory, REGION_A, a);
-        rust.exports.sqrt_f32(REGION_A, REGION_C, n);
-
-        writeF32(zig.memory, REGION_A, a);
-        zig.exports.sqrt_f32(REGION_A, REGION_D, n);
-
-        const zigOut = readF32(zig.memory, REGION_D, n);
-        writeF32(rust.memory, REGION_D, zigOut);
-        report(`sqrt_f32 n=${n}`, compareBits(rust.memory, REGION_C, rust.memory, REGION_D, n));
-    }
-
-    // -----------------------------------------------------------------------
-    // Test: reciprocal_f32
-    // -----------------------------------------------------------------------
-    activeGroup = 'reciprocal_f32';
-    console.log('--- reciprocal_f32 ---');
-    for (const n of [1, 4, 7, 16, 256]) {
-        const a = randArrPos(n, 0.1, 100);
-        writeF32(rust.memory, REGION_A, a);
-        rust.exports.reciprocal_f32(REGION_A, REGION_C, n);
-
-        writeF32(zig.memory, REGION_A, a);
-        zig.exports.reciprocal_f32(REGION_A, REGION_D, n);
-
-        const zigOut = readF32(zig.memory, REGION_D, n);
-        writeF32(rust.memory, REGION_D, zigOut);
-        report(`reciprocal_f32 n=${n}`, compareBits(rust.memory, REGION_C, rust.memory, REGION_D, n));
-    }
-
-    // -----------------------------------------------------------------------
-    // Test: max_f32 (with NaN propagation)
-    // -----------------------------------------------------------------------
-    activeGroup = 'max_f32';
-    console.log('--- max_f32 ---');
-    for (const n of [1, 4, 7, 16, 256]) {
-        const a = randArr(n);
-        const b = randArr(n);
-        writeF32(rust.memory, REGION_A, a);
-        writeF32(rust.memory, REGION_B, b);
-        rust.exports.max_f32(REGION_A, REGION_B, REGION_C, n);
-
-        writeF32(zig.memory, REGION_A, a);
-        writeF32(zig.memory, REGION_B, b);
-        zig.exports.max_f32(REGION_A, REGION_B, REGION_D, n);
-
-        const zigOut = readF32(zig.memory, REGION_D, n);
-        writeF32(rust.memory, REGION_D, zigOut);
-        report(`max_f32 n=${n}`, compareBits(rust.memory, REGION_C, rust.memory, REGION_D, n));
-    }
-
-    // -----------------------------------------------------------------------
-    // Test: exp2_f32
-    // -----------------------------------------------------------------------
-    activeGroup = 'exp2_f32';
-    console.log('--- exp2_f32 ---');
-    for (const n of [1, 4, 7, 16, 256]) {
-        const a = randArr(n, -10, 10);
-        writeF32(rust.memory, REGION_A, a);
-        rust.exports.exp2_f32(REGION_A, REGION_C, n);
-
-        writeF32(zig.memory, REGION_A, a);
-        zig.exports.exp2_f32(REGION_A, REGION_D, n);
-
-        const zigOut = readF32(zig.memory, REGION_D, n);
-        writeF32(rust.memory, REGION_D, zigOut);
-        report(`exp2_f32 n=${n}`, compareBits(rust.memory, REGION_C, rust.memory, REGION_D, n));
-    }
-
-    // -----------------------------------------------------------------------
-    // Test: reduce_sum_f32
-    // -----------------------------------------------------------------------
-    activeGroup = 'reduce_sum_f32';
-    console.log('--- reduce_sum_f32 ---');
-    for (const n of [1, 4, 7, 16, 256]) {
-        const a = randArr(n);
-        writeF32(rust.memory, REGION_A, a);
-        const rustResult = rust.exports.reduce_sum_f32(REGION_A, n);
-
-        writeF32(zig.memory, REGION_A, a);
-        const zigResult = zig.exports.reduce_sum_f32(REGION_A, n);
-
-        const rustBits = new Uint32Array(new Float32Array([rustResult]).buffer)[0];
-        const zigBits = new Uint32Array(new Float32Array([zigResult]).buffer)[0];
-        const pass = rustBits === zigBits ||
-            (Number.isNaN(rustResult) && Number.isNaN(zigResult));
-        report(`reduce_sum_f32 n=${n}`, {
-            pass,
-            mismatches: pass ? [] : [{
-                index: 0,
-                rustBits: '0x' + rustBits.toString(16).padStart(8, '0'),
-                zigBits: '0x' + zigBits.toString(16).padStart(8, '0'),
-                rustFloat: rustResult,
-                zigFloat: zigResult,
-            }],
+    const sizes = [0, 1, 3, 4, 5, 16, 257, 4096];
+    for (const n of sizes) {
+        const a = randArr(rng, n), b = randArr(rng, n);
+        for (const [name, op] of [['add_f32', (a, b) => f(a + b)], ['mul_f32', (a, b) => f(a * b)], ['max_f32', Math.max]]) {
+            await test(name, `n=${n}`, () => exact(binary(name, a, b), Float32Array.from(a, (x, i) => op(x, b[i]))));
+        }
+        for (const [name, op] of [['neg_f32', x => -x], ['sqrt_f32', Math.sqrt], ['reciprocal_f32', x => 1 / x]]) {
+            await test(name, `n=${n}`, () => exact(unary(name, a), Float32Array.from(a, op)));
+        }
+        await test('exp2_f32', `n=${n}`, () => close(unary('exp2_f32', a), Float32Array.from(a, x => 2 ** x)));
+        await test('reduce_max_f32', `n=${n}`, () => exact([e.reduce_max_f32(wasm.alloc(a), n)], [Math.max(...a)]));
+        await test('reduce_sum_f32', `integer n=${n}`, () => {
+            const ints = Float32Array.from(a, x => Math.trunc(x * 8));
+            exact([e.reduce_sum_f32(wasm.alloc(ints), n)], [Array.from(ints).reduce((s, x) => s + x, 0)]);
+        });
+        await test('softmax_f32_fused', `n=${n}`, () => close(unary('softmax_f32_fused', a), n ? softmaxReference(a) : [], 2e-5));
+        await test('rms_norm_f32', `n=${n}`, () => {
+            const ap = wasm.alloc(a), wp = wasm.alloc(b), out = wasm.alloc(n), eps = f(1e-5);
+            e.rms_norm_f32(ap, wp, out, n, eps);
+            close(wasm.read(out, n), n ? rmsReference(a, b, eps) : [], 2e-6);
         });
     }
-
-    // -----------------------------------------------------------------------
-    // Test: reduce_max_f32
-    // -----------------------------------------------------------------------
-    activeGroup = 'reduce_max_f32';
-    console.log('--- reduce_max_f32 ---');
-    for (const n of [1, 4, 7, 16, 256]) {
-        const a = randArr(n);
-        writeF32(rust.memory, REGION_A, a);
-        const rustResult = rust.exports.reduce_max_f32(REGION_A, n);
-
-        writeF32(zig.memory, REGION_A, a);
-        const zigResult = zig.exports.reduce_max_f32(REGION_A, n);
-
-        const rustBits = new Uint32Array(new Float32Array([rustResult]).buffer)[0];
-        const zigBits = new Uint32Array(new Float32Array([zigResult]).buffer)[0];
-        const pass = rustBits === zigBits ||
-            (Number.isNaN(rustResult) && Number.isNaN(zigResult));
-        report(`reduce_max_f32 n=${n}`, {
-            pass,
-            mismatches: pass ? [] : [{
-                index: 0,
-                rustBits: '0x' + rustBits.toString(16).padStart(8, '0'),
-                zigBits: '0x' + zigBits.toString(16).padStart(8, '0'),
-                rustFloat: rustResult,
-                zigFloat: zigResult,
-            }],
+    // Each value appears in vector bodies and scalar tails, including each lane.
+    const edges = [NaN, -Infinity, Infinity, -0, 0, MIN_SUBNORMAL, -MIN_SUBNORMAL, -150, -149.9, -149, -127, -126, 127.99, 128, 129];
+    for (let shift = 0; shift < 4; shift++) {
+        const a = Float32Array.from([...edges.slice(shift), ...edges.slice(0, shift)]);
+        await test('exp2_f32', `IEEE boundaries rotation=${shift}`, () => close(unary('exp2_f32', a), Float32Array.from(a, x => 2 ** x)));
+        for (const [name, op] of [['neg_f32', x => -x], ['sqrt_f32', Math.sqrt], ['reciprocal_f32', x => 1 / x]]) {
+            await test(name, `IEEE boundaries rotation=${shift}`, () => exact(unary(name, a), Float32Array.from(a, op)));
+        }
+    }
+    for (const [name, op] of [['add_f32', (a, b) => a + b], ['mul_f32', (a, b) => a * b]]) {
+        await test(name, 'IEEE values in vector bodies and tails', () => {
+            const a = Float32Array.from(edges), b = Float32Array.from([...edges].reverse());
+            exact(binary(name, a, b), Float32Array.from(a, (x, i) => op(x, b[i])));
         });
     }
-
-    // -----------------------------------------------------------------------
-    // Test: softmax_f32_fused
-    // -----------------------------------------------------------------------
-    activeGroup = 'softmax_f32_fused';
-    console.log('--- softmax_f32_fused ---');
-    for (const n of [1, 4, 7, 16, 64, 256]) {
-        const a = randArr(n, -5, 5);
-        writeF32(rust.memory, REGION_A, a);
-        rust.exports.softmax_f32_fused(REGION_A, REGION_C, n);
-
-        writeF32(zig.memory, REGION_A, a);
-        zig.exports.softmax_f32_fused(REGION_A, REGION_D, n);
-
-        const zigOut = readF32(zig.memory, REGION_D, n);
-        writeF32(rust.memory, REGION_D, zigOut);
-        report(`softmax_f32_fused n=${n}`, compareBits(rust.memory, REGION_C, rust.memory, REGION_D, n));
-    }
-
-    // -----------------------------------------------------------------------
-    // Test: matmul_f32_tiled
-    // -----------------------------------------------------------------------
-    activeGroup = 'matmul_f32_tiled';
-    console.log('--- matmul_f32_tiled ---');
-    for (const [m, k, n] of [[4, 4, 4], [8, 8, 8], [5, 7, 3], [16, 16, 16], [1, 1, 1], [64, 64, 64]]) {
-        const a = randArr(m * k);
-        const b = randArr(k * n);
-
-        writeF32(rust.memory, REGION_A, a);
-        writeF32(rust.memory, REGION_B, b);
-        rust.exports.matmul_f32_tiled(REGION_A, REGION_B, REGION_C, m, k, n);
-
-        writeF32(zig.memory, REGION_A, a);
-        writeF32(zig.memory, REGION_B, b);
-        zig.exports.matmul_f32_tiled(REGION_A, REGION_B, REGION_D, m, k, n);
-
-        const zigOut = readF32(zig.memory, REGION_D, m * n);
-        writeF32(rust.memory, REGION_D, zigOut);
-        report(`matmul_f32_tiled ${m}x${k}x${n}`, compareBits(rust.memory, REGION_C, rust.memory, REGION_D, m * n));
-    }
-
-    // -----------------------------------------------------------------------
-    // Test: rms_norm_f32
-    // -----------------------------------------------------------------------
-    activeGroup = 'rms_norm_f32';
-    console.log('--- rms_norm_f32 ---');
-    for (const n of [4, 7, 16, 64, 256]) {
-        const a = randArr(n);
-        const w = randArr(n, 0.5, 1.5);
-        const eps = 1e-5;
-
-        writeF32(rust.memory, REGION_A, a);
-        writeF32(rust.memory, REGION_E, w);
-        rust.exports.rms_norm_f32(REGION_A, REGION_E, REGION_C, n, eps);
-
-        writeF32(zig.memory, REGION_A, a);
-        writeF32(zig.memory, REGION_E, w);
-        zig.exports.rms_norm_f32(REGION_A, REGION_E, REGION_D, n, eps);
-
-        const zigOut = readF32(zig.memory, REGION_D, n);
-        writeF32(rust.memory, REGION_D, zigOut);
-        report(`rms_norm_f32 n=${n}`, compareBits(rust.memory, REGION_C, rust.memory, REGION_D, n));
-    }
-
-    // -----------------------------------------------------------------------
-    // Test: rope_f32
-    // -----------------------------------------------------------------------
-    activeGroup = 'rope_f32';
-    console.log('--- rope_f32 ---');
-    for (const n of [4, 8, 16, 64]) {
-        const q = randArr(n);
-        const freqs_cos = randArr(n / 2, -1, 1);
-        const freqs_sin = randArr(n / 2, -1, 1);
-
-        writeF32(rust.memory, REGION_A, q);
-        writeF32(rust.memory, REGION_B, freqs_cos);
-        writeF32(rust.memory, REGION_D, freqs_sin);
-        rust.exports.rope_f32(REGION_A, REGION_B, REGION_D, REGION_C, n);
-
-        writeF32(zig.memory, REGION_A, q);
-        writeF32(zig.memory, REGION_B, freqs_cos);
-        writeF32(zig.memory, REGION_D, freqs_sin);
-        // Use REGION_E for Zig output to avoid clobbering REGION_D (freqs_sin)
-        zig.exports.rope_f32(REGION_A, REGION_B, REGION_D, REGION_E, n);
-
-        const zigOut = readF32(zig.memory, REGION_E, n);
-        writeF32(rust.memory, REGION_D, zigOut);
-        report(`rope_f32 n=${n}`, compareBits(rust.memory, REGION_C, rust.memory, REGION_D, n));
-    }
-
-    // -----------------------------------------------------------------------
-    // Adversarial inputs: NaN, inf, -0.0, subnormals
-    // -----------------------------------------------------------------------
-    activeGroup = 'adversarial_inputs';
-    console.log('--- adversarial inputs ---');
-    {
-        const edges = new Float32Array([
-            0, -0, Infinity, -Infinity, NaN,
-            1e-38,  // subnormal-ish
-            -1e-38,
-            1e38,
-            -1e38,
-            3.4028235e+38,  // f32 max
-            1.1754944e-38,  // f32 min normal
-            1.4e-45,        // f32 min subnormal
-        ]);
-        const n = edges.length;
-        const b = randArr(n);
-
-        // add_f32 with edge cases
-        writeF32(rust.memory, REGION_A, edges);
-        writeF32(rust.memory, REGION_B, b);
-        rust.exports.add_f32(REGION_A, REGION_B, REGION_C, n);
-
-        writeF32(zig.memory, REGION_A, edges);
-        writeF32(zig.memory, REGION_B, b);
-        zig.exports.add_f32(REGION_A, REGION_B, REGION_D, n);
-
-        const zigOut = readF32(zig.memory, REGION_D, n);
-        writeF32(rust.memory, REGION_D, zigOut);
-        report(`add_f32 adversarial`, compareBits(rust.memory, REGION_C, rust.memory, REGION_D, n));
-
-        // max_f32 with NaN inputs
-        const nanArr = new Float32Array([NaN, 1.0, NaN, NaN, 0, -0, Infinity, -Infinity]);
-        const nanB = new Float32Array([1.0, NaN, NaN, 0, NaN, 0, -Infinity, Infinity]);
-        writeF32(rust.memory, REGION_A, nanArr);
-        writeF32(rust.memory, REGION_B, nanB);
-        rust.exports.max_f32(REGION_A, REGION_B, REGION_C, nanArr.length);
-
-        writeF32(zig.memory, REGION_A, nanArr);
-        writeF32(zig.memory, REGION_B, nanB);
-        zig.exports.max_f32(REGION_A, REGION_B, REGION_D, nanArr.length);
-
-        const zigMaxOut = readF32(zig.memory, REGION_D, nanArr.length);
-        writeF32(rust.memory, REGION_D, zigMaxOut);
-        report(`max_f32 NaN propagation`, compareBits(rust.memory, REGION_C, rust.memory, REGION_D, nanArr.length));
-    }
-
-    // -----------------------------------------------------------------------
-    // Determinism test: same inputs 100 times, verify all outputs identical
-    // -----------------------------------------------------------------------
-    activeGroup = 'determinism';
-    console.log('--- determinism (100 runs) ---');
-    {
-        const n = 64;
-        const a = randArr(n);
-        const b = randArr(n);
-
-        // Get reference output
-        writeF32(rust.memory, REGION_A, a);
-        writeF32(rust.memory, REGION_B, b);
-        rust.exports.matmul_f32_tiled(REGION_A, REGION_B, REGION_C, 8, 8, 8);
-        const refBits = new Uint32Array(rust.memory.buffer, REGION_C, n).slice();
-
-        let allMatch = true;
-        for (let run = 0; run < 100; run++) {
-            writeF32(rust.memory, REGION_A, a);
-            writeF32(rust.memory, REGION_B, b);
-            rust.exports.matmul_f32_tiled(REGION_A, REGION_B, REGION_C, 8, 8, 8);
-            const bits = new Uint32Array(rust.memory.buffer, REGION_C, n);
-            for (let i = 0; i < n; i++) {
-                if (bits[i] !== refBits[i]) {
-                    allMatch = false;
-                    break;
-                }
+    await test('exp2_f32', 'normal and subnormal domain grid', () => {
+        const a = Float32Array.from({ length: 32769 }, (_, i) => -150 + i * 278 / 32768);
+        close(unary('exp2_f32', a), Float32Array.from(a, x => 2 ** x));
+    });
+    await test('exp2_f32', 'exact underflow and powers-of-two goldens', () => {
+        const a = Float32Array.from([-Infinity, -150, -149.9, -149, -148, -127, -126, 0, 1, 127, 128, Infinity, NaN]);
+        exact(unary('exp2_f32', a), [0, 0, MIN_SUBNORMAL, MIN_SUBNORMAL, 2 * MIN_SUBNORMAL, 2 ** -127, 2 ** -126, 1, 2, 2 ** 127, Infinity, Infinity, NaN]);
+    });
+    for (const x of [-149, -127.5, -126, -0.25, 0.5, 126.5, 127]) {
+        await test('exp2_f32', `same bits in scalar/normal/mixed lanes x=${x}`, () => {
+            const scalar = unary('exp2_f32', Float32Array.of(x));
+            for (const peers of [[0, 0, 0], [NaN, 0, 0]]) {
+                const vector = unary('exp2_f32', Float32Array.of(x, ...peers));
+                assert.equal(new Uint32Array(vector.buffer)[0], new Uint32Array(scalar.buffer)[0]);
             }
-            if (!allMatch) break;
-        }
-        report(`matmul_f32_tiled deterministic x100 (Rust)`, { pass: allMatch, mismatches: allMatch ? [] : [{ index: -1, rustBits: 'varies', zigBits: 'N/A', rustFloat: NaN, zigFloat: NaN }] });
-
-        // Same for Zig
-        writeF32(zig.memory, REGION_A, a);
-        writeF32(zig.memory, REGION_B, b);
-        zig.exports.matmul_f32_tiled(REGION_A, REGION_B, REGION_C, 8, 8, 8);
-        const refBitsZig = new Uint32Array(zig.memory.buffer, REGION_C, n).slice();
-
-        let allMatchZig = true;
-        for (let run = 0; run < 100; run++) {
-            writeF32(zig.memory, REGION_A, a);
-            writeF32(zig.memory, REGION_B, b);
-            zig.exports.matmul_f32_tiled(REGION_A, REGION_B, REGION_C, 8, 8, 8);
-            const bits = new Uint32Array(zig.memory.buffer, REGION_C, n);
-            for (let i = 0; i < n; i++) {
-                if (bits[i] !== refBitsZig[i]) {
-                    allMatchZig = false;
-                    break;
-                }
-            }
-            if (!allMatchZig) break;
-        }
-        report(`matmul_f32_tiled deterministic x100 (Zig)`, { pass: allMatchZig, mismatches: allMatchZig ? [] : [{ index: -1, rustBits: 'N/A', zigBits: 'varies', rustFloat: NaN, zigFloat: NaN }] });
-    }
-
-    // -----------------------------------------------------------------------
-    // Summary
-    // -----------------------------------------------------------------------
-    const groupedResults = [];
-    const groupIndex = new Map();
-    for (const entry of caseResults) {
-        let group = groupIndex.get(entry.group);
-        if (!group) {
-            group = {
-                name: entry.group,
-                caseCount: 0,
-                passed: 0,
-                failed: 0,
-                cases: [],
-            };
-            groupIndex.set(entry.group, group);
-            groupedResults.push(group);
-        }
-        group.caseCount++;
-        if (entry.passed) {
-            group.passed++;
-        } else {
-            group.failed++;
-        }
-        group.cases.push({
-            name: entry.name,
-            passed: entry.passed,
-            mismatchCount: entry.mismatchCount,
-            mismatches: entry.passed ? [] : entry.mismatches,
         });
     }
-    const summary = {
-        version: 1,
-        summary: {
-            total: totalTests,
-            passed: passedTests,
-            failed: failedTests,
-        },
-        groups: groupedResults,
-        results: caseResults,
+    for (const a of [[1, Infinity], [Infinity, 1, -1, 0, 2], [-Infinity], [NaN, 0], [-Infinity, -Infinity, -Infinity, -Infinity], [-Infinity, 1, 0, 2, -Infinity]]) {
+        await test('softmax_f32_fused', `IEEE row ${a}`, () => close(unary('softmax_f32_fused', Float32Array.from(a)), softmaxReference(a), 2e-5));
+    }
+    for (let position = 0; position < 9; position++) {
+        await test('max_f32', `NaN body/tail ${position}`, () => {
+            const a = new Float32Array(9).fill(-0), b = new Float32Array(9).fill(0);
+            new Uint32Array(a.buffer)[position] = 0xffc12345;
+            const result = binary('max_f32', a, b);
+            assert.equal(new Uint32Array(result.buffer)[position], 0x7fc00000);
+            exact(binary('max_f32', a, b), Float32Array.from(a, (x, i) => Math.max(x, b[i])));
+            exact(binary('max_f32', b, a), Float32Array.from(a, (x, i) => Math.max(b[i], x)));
+        });
+        await test('reduce_max_f32', `NaN body/tail ${position}`, () => {
+            const a = new Float32Array(9).fill(1); a[position] = NaN;
+            exact([e.reduce_max_f32(wasm.alloc(a), a.length)], [NaN]);
+        });
+    }
+    for (const [a, expected] of [[[-0, -0, -0, -0, -0], -0], [[-0, -0, 0, -0, -0], 0], [[], -Infinity]]) {
+        await test('reduce_max_f32', `signed zero/empty ${a.map(x => Object.is(x, -0) ? '-0' : x)}`, () => exact([e.reduce_max_f32(wasm.alloc(a), a.length)], [expected]));
+    }
+    // Goldens distinguish the specified pairwise order from the deleted left fold.
+    for (const [a, expected] of [ [[1e20, 1, -1e20, 1], 2], [Array(4).fill([1e20, 1, -1e20, 1]).flat(), 8], [[1e20, 1, -1e20, 1, 3], 5] ]) {
+        await test('reduce_sum_f32', `cancellation n=${a.length}`, () => exact([e.reduce_sum_f32(wasm.alloc(a), a.length)], [expected]));
+    }
+    for (const [m, k, n] of [[0, 3, 4], [1, 1, 1], [4, 4, 4], [5, 7, 9], [8, 0, 8], [16, 16, 16], [64, 64, 64]]) {
+        await test('matmul_f32_tiled', `${m}x${k}x${n}`, () => {
+            const a = randArr(rng, m * k), b = randArr(rng, k * n);
+            const ap = wasm.alloc(a), bp = wasm.alloc(b), out = wasm.alloc(m * n);
+            e.matmul_f32_tiled(ap, bp, out, m, k, n);
+            exact(wasm.read(out, m * n), matmulReference(a, b, m, k, n));
+        });
+    }
+    for (const n of [0, 2, 6, 16, 256]) {
+        await test('rope_f32', `pairs n=${n}`, () => {
+            const a = randArr(rng, n), c = randArr(rng, n / 2), s = randArr(rng, n / 2);
+            const ap = wasm.alloc(a), cp = wasm.alloc(c), sp = wasm.alloc(s), out = wasm.alloc(n);
+            e.rope_f32(ap, cp, sp, out, n);
+            exact(wasm.read(out, n), Float32Array.from(a, (_, i) => i % 2
+                ? f(f(a[i - 1] * s[i >> 1]) + f(a[i] * c[i >> 1]))
+                : f(f(a[i] * c[i >> 1]) - f(a[i + 1] * s[i >> 1]))));
+        });
+    }
+    await test('determinism', 'repeated special vectors and reductions', () => {
+        const a = Float32Array.from(edges);
+        const expected = unary('exp2_f32', a);
+        for (let i = 0; i < 100; i++) {
+            wasm.reset();
+            assert.deepEqual(new Uint32Array(unary('exp2_f32', a).buffer), new Uint32Array(expected.buffer));
+        }
+    });
+    const { ComputeEngine } = await import(pathToFileURL(path.resolve(__dirname, '../../deploy/browser/compute-engine.js')).href);
+    let fetches = 0;
+    globalThis.fetch = async url => {
+        assert.equal(url, 'test://source-built-simd'); fetches++;
+        const content = fs.readFileSync(artifact);
+        return { ok: true, arrayBuffer: async () => content.buffer.slice(content.byteOffset, content.byteOffset + content.byteLength) };
     };
-    console.log('');
-    console.log(`=== RESULTS: ${passedTests}/${totalTests} passed, ${failedTests} failed ===`);
-    console.log(`@@SIMD_DIFF_JSON@@ ${JSON.stringify(summary)}`);
-    process.exit(failedTests > 0 ? 1 : 0);
+    const engine = await ComputeEngine.create({ forceBackend: 'wasm-simd', wasmUrl: 'test://source-built-simd' });
+    await test('browser_consumer', 'one source artifact and persistent result copies', async () => {
+        assert.equal(engine.backendName, 'wasm-simd'); assert.equal(fetches, 1);
+        const a = randArr(rng, 300001), b = randArr(rng, a.length);
+        const originalGrow = WebAssembly.Memory.prototype.grow;
+        let growths = 0, sum;
+        WebAssembly.Memory.prototype.grow = function(pages) { growths++; return originalGrow.call(this, pages); };
+        try { sum = await engine.add(a, b, a.length); }
+        finally { WebAssembly.Memory.prototype.grow = originalGrow; }
+        assert.equal(growths, 1, 'all call buffers must reserve with one memory growth');
+        exact(sum, Float32Array.from(a, (x, i) => f(x + b[i])));
+        exact(await engine.mul(a, b, a.length), Float32Array.from(a, (x, i) => f(x * b[i])));
+        exact(sum, Float32Array.from(a, (x, i) => f(x + b[i])));
+    });
+    await test('browser_consumer', 'tiled matmul and batches', async () => {
+        const a = randArr(rng, 5 * 7), b = randArr(rng, 7 * 9), expected = matmulReference(a, b, 5, 7, 9);
+        exact(await engine.matmul(a, b, 5, 7, 9), expected);
+        const batch = await engine.matmulBatch([{ a, b, m: 5, k: 7, n: 9 }, { a, b, m: 5, k: 7, n: 9 }]);
+        batch.forEach(x => exact(x, expected));
+    });
+    await test('browser_consumer', 'multirow softmax and RMSNorm', async () => {
+        const n = 7, rows = 3, a = randArr(rng, n * rows), w = randArr(rng, n);
+        const softmax = await engine.softmax(a, n, rows), rms = await engine.rmsNorm(a, w, n, rows, f(1e-5));
+        for (let r = 0; r < rows; r++) {
+            close(softmax.subarray(r * n, (r + 1) * n), softmaxReference(a.subarray(r * n, (r + 1) * n)), 2e-5);
+            close(rms.subarray(r * n, (r + 1) * n), rmsReference(a.subarray(r * n, (r + 1) * n), w, f(1e-5)), 2e-6);
+        }
+    });
+    await test('browser_consumer', 'nonfinite softmax rows follow the scalar oracle', async () => {
+        const a = Float32Array.from([1, Infinity, 0, -Infinity, -Infinity, -Infinity]);
+        const output = await engine.softmax(a, 3, 2);
+        close(output.subarray(0, 3), softmaxReference(a.subarray(0, 3)));
+        close(output.subarray(3, 6), softmaxReference(a.subarray(3, 6)));
+    });
+    await test('browser_consumer', 'empty dimensions do no work regardless of row count', async () => {
+        const empty = new Float32Array();
+        exact(await engine.softmax(empty, 0, 0xffffffff), []);
+        exact(await engine.rmsNorm(empty, empty, 0, 0xffffffff), []);
+        exact(await engine.matmul(empty, empty, 0xffffffff, 0, 0), []);
+    });
+    await test('browser_consumer', 'unsafe shape rejection before entering WASM', async () => {
+        for (const size of [-1, 1.5, 2 ** 32, 2 ** 53]) await assert.rejects(engine.add(new Float32Array(), new Float32Array(), size), RangeError);
+        await assert.rejects(engine.matmul(new Float32Array(1), new Float32Array(4), 2, 2, 2), RangeError);
+        await assert.rejects(engine.softmax(new Float32Array(3), 2, 2), RangeError);
+        await assert.rejects(engine.rmsNorm(new Float32Array(4), new Float32Array(1), 2, 2), RangeError);
+    });
+    const report = Array.from(groups, ([name, cases]) => ({ name, cases, failed: cases.filter(x => !x.passed).length }));
+    const all = report.flatMap(x => x.cases), failed = all.filter(x => !x.passed).length;
+    console.log(`@@SIMD_DIFF_JSON@@ ${JSON.stringify({ version: 2, groups: report, summary: { total: all.length, passed: all.length - failed, failed } })}`);
+    process.exitCode = failed ? 1 : 0;
 }
-
-main().catch(err => {
-    console.error('Fatal error:', err);
-    process.exit(2);
-});
+main().catch(error => { console.error(error.stack); process.exitCode = 2; });

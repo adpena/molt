@@ -19,8 +19,7 @@ falcon-ocr-loader.js       -- Browser WASM + optional accelerated compute
   +-> webgl2-engine.js      -- WebGL2 compute engine
   +-> webgpu-matmul.js      -- Shared WebGPU matmul kernel
   +-> speculative-browser.js-- Speculative decoding support when explicitly available
-  +-> simd-ops-zig/simd.wasm-- WASM SIMD artifact
-  +-> simd-ops.wasm         -- Rust WASM SIMD parity artifact
+  +-> simd-ops.wasm         -- Source-built Rust WASM SIMD artifact
   |
   v
 R2 Storage                  -- WASM binary + INT8 sharded weights + tokenizer

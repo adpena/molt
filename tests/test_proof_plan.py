@@ -223,7 +223,7 @@ def _classes(*paths: str) -> dict[str, bool]:
 
 def test_manifest_is_complete_and_single_authority() -> None:
     assert PLAN.path.name == "proof_plan.toml"
-    assert len(PLAN.families) == 12
+    assert len(PLAN.families) == 13
     assert len(PLAN.scheduled_families) == 8
     assert len(PLAN.commands) >= 84
     assert len(PLAN.matrix_cells) >= 17
@@ -2841,6 +2841,7 @@ def test_sccache_environment_policy_covers_every_rust_proof_family(
     ]
 
     assert {command.family for command in rust_commands} == {
+        "browser_simd",
         "llvm",
         "native_integration",
         "nightly_determinism",
@@ -8432,3 +8433,33 @@ def test_executor_empty_selection_does_not_sample_memory(monkeypatch):
         lambda environment: pytest.fail("no commands need no allocation"),
     )
     assert proof_plan._command_memory_share(PLAN, ()) is None
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "deploy/browser/simd-ops-rs/src/lib.rs",
+        "deploy/browser/compute-engine.js",
+        "deploy/browser/simd-ops.wasm",
+        "tools/build_browser_simd.py",
+        "tests/e2e/test_simd_differential.py",
+    ],
+)
+def test_browser_simd_changes_have_a_standalone_source_build_proof(path: str) -> None:
+    selected = _classes(path)
+    assert selected["browser_simd"]
+    assert not selected["rust"] and not selected["llvm"]
+    commands = {
+        command.id: command
+        for command in PLAN.commands
+        if command.family == "browser_simd"
+    }
+    assert set(commands) == {"browser-simd.contract", "rust.clippy.browser-simd"}
+    contract = commands["browser-simd.contract"]
+    assert "tests/e2e/test_simd_differential.py" in contract.argv
+    assert "tests/test_browser_compute_backend_semantics.py" in contract.argv
+    assert {"python", "rustc", "cargo", "node"} <= set(
+        PLAN.required_toolchains(contract)
+    )
+    assert "wasm-ld" not in PLAN.required_toolchains(contract)
+    assert proof_plan.cargo_build_python(contract.data) is False

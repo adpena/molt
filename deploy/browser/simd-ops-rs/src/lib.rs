@@ -1,15 +1,15 @@
 //! WASM SIMD vectorized ops for Falcon-OCR inference.
 //!
 //! Rust source for the optimized SIMD operations. Compiles to wasm32-unknown-unknown
-//! with SIMD enabled, producing a < 5 KB .wasm binary.
+//! with SIMD enabled.
 //!
 //! Build (`.cargo/config.toml` enables simd128):
 //!   cargo build --target wasm32-unknown-unknown --release
 //!
-//! Optimizations over the hand-written WAT:
+//! Kernels:
 //! - Matmul: 4x4 tiled with SIMD f32x4 for cache locality
-//! - Softmax: Fused 2-pass (max+exp+sum in pass 2, normalize in pass 3)
-//! - exp2: 6th-order Cephes polynomial (vs 4th-order in WAT)
+//! - Softmax: Online max and sum, then a second pass computing normalized output
+//! - exp2: Degree-six polynomial with explicit scalar and SIMD evaluation order
 
 #![no_std]
 
@@ -30,12 +30,32 @@ fn floor_scalar(x: f32) -> f32 {
     f32x4_extract_lane::<0>(f32x4_floor(v))
 }
 
+/// WebAssembly maximum semantics, with a deterministic quiet NaN.
+#[inline(always)]
+fn max_scalar(a: f32, b: f32) -> f32 {
+    if a.is_nan() || b.is_nan() {
+        f32::from_bits(0x7fc0_0000)
+    } else if a == b {
+        // Equal nonzero values have identical bits; mixed zeros select +0.
+        f32::from_bits(a.to_bits() & b.to_bits())
+    } else if a > b {
+        a
+    } else {
+        b
+    }
+}
+
+#[inline(always)]
+fn max_v128(a: v128, b: v128) -> v128 {
+    let nan_mask = v128_or(f32x4_ne(a, a), f32x4_ne(b, b));
+    v128_bitselect(i32x4_splat(0x7fc0_0000), f32x4_max(a, b), nan_mask)
+}
+
 // ---------------------------------------------------------------------------
-// exp2 polynomial — 6th-order Cephes minimax on [0, 1).
+// exp2 polynomial — degree-six truncated exponential series on [0, 1).
 //
-// Coefficients from the Cephes math library exp2f implementation,
-// fitted via Remez exchange on the range [0, 1) for f32 precision.
-// Max relative error: ~2.3e-8 (vs ~1.5e-4 for the 4th-order WAT version).
+// Coefficients are ln(2)^k / k!. These are not a measured error bound or
+// a correctly rounded exp2 implementation.
 // ---------------------------------------------------------------------------
 const EXP2_C0: f32 = 1.0;
 const EXP2_C1: f32 = core::f32::consts::LN_2;
@@ -45,9 +65,39 @@ const EXP2_C4: f32 = 9.618_129e-3; // ln(2)^4 / 4!
 const EXP2_C5: f32 = 1.333_355_8e-3; // ln(2)^5 / 5!
 const EXP2_C6: f32 = 1.540_353e-4; // ln(2)^6 / 6!
 
-/// Scalar exp2(x) via 6th-order Cephes polynomial.
+/// Scalar exp2 approximation via a degree-six polynomial.
 #[inline(always)]
 fn exp2_scalar(x: f32) -> f32 {
+    if x.abs() < 126.0 {
+        exp2_normal_scalar(x)
+    } else {
+        exp2_special_scalar(x)
+    }
+}
+
+// Keep rare-domain classification out of every normal SIMD lane and softmax step.
+#[cold]
+#[inline(never)]
+fn exp2_special_scalar(x: f32) -> f32 {
+    if x.is_nan() {
+        return f32::from_bits(0x7fc0_0000);
+    }
+    if x >= 128.0 {
+        return f32::INFINITY;
+    }
+    if x <= -150.0 {
+        return 0.0;
+    }
+    if x < -126.0 {
+        // Keep exponent injection normal, then round into the subnormal range.
+        return exp2_normal_scalar(x + 24.0) * f32::from_bits(103 << 23);
+    }
+    exp2_normal_scalar(x)
+}
+
+/// The unchanged polynomial and exponent injection for finite [-126, 128).
+#[inline(always)]
+fn exp2_normal_scalar(x: f32) -> f32 {
     let xi = floor_scalar(x);
     let xf = x - xi;
     // Horner's method: p = c0 + xf*(c1 + xf*(c2 + xf*(c3 + xf*(c4 + xf*(c5 + xf*c6)))))
@@ -66,6 +116,9 @@ fn exp2_scalar(x: f32) -> f32 {
 /// SIMD v128 exp2 — 4 lanes, 6th-order polynomial.
 #[inline(always)]
 fn exp2_v128(x: v128) -> v128 {
+    if !i32x4_all_true(f32x4_lt(f32x4_abs(x), f32x4_splat(126.0))) {
+        return exp2_special_v128(x);
+    }
     let xi = f32x4_floor(x);
     let xf = f32x4_sub(x, xi);
 
@@ -84,12 +137,23 @@ fn exp2_v128(x: v128) -> v128 {
     f32x4_mul(p, exp_bits) // reinterpret i32x4 bits as f32x4 (same v128 type)
 }
 
+#[cold]
+#[inline(never)]
+fn exp2_special_v128(x: v128) -> v128 {
+    f32x4(
+        exp2_special_scalar(f32x4_extract_lane::<0>(x)),
+        exp2_special_scalar(f32x4_extract_lane::<1>(x)),
+        exp2_special_scalar(f32x4_extract_lane::<2>(x)),
+        exp2_special_scalar(f32x4_extract_lane::<3>(x)),
+    )
+}
+
 /// Horizontal sum of 4 f32 lanes using pairwise shuffle reduction.
 ///
 /// Stays in v128 for 2 rounds of shuffle+add before a single lane extract,
 /// reducing 4 lane extractions to 1 and exploiting SIMD pipeline throughput.
 ///   Round 1: [a,b,c,d] + [c,d,a,b] = [a+c, b+d, c+a, d+b]
-///   Round 2: [a+c, b+d, ...] + [b+d, a+c, ...] = [a+b+c+d, ...]
+///   Round 2: [a+c, b+d, ...] + [b+d, a+c, ...] = [(a+c)+(b+d), ...]
 #[inline(always)]
 fn hsum_f32x4(v: v128) -> f32 {
     // Shuffle high pair to low: [c, d, a, b]
@@ -97,7 +161,7 @@ fn hsum_f32x4(v: v128) -> f32 {
     let sum1 = f32x4_add(v, hi); // [a+c, b+d, ...]
     // Shuffle odd to even: [b+d, a+c, ...]
     let odd = i32x4_shuffle::<1, 0, 3, 2>(sum1, sum1);
-    let sum2 = f32x4_add(sum1, odd); // [a+b+c+d, ...]
+    let sum2 = f32x4_add(sum1, odd); // [(a+c)+(b+d), ...]
     f32x4_extract_lane::<0>(sum2)
 }
 
@@ -105,9 +169,9 @@ fn hsum_f32x4(v: v128) -> f32 {
 #[inline(always)]
 fn hmax_f32x4(v: v128) -> f32 {
     let hi = i32x4_shuffle::<2, 3, 0, 1>(v, v);
-    let max1 = f32x4_max(v, hi);
+    let max1 = max_v128(v, hi);
     let odd = i32x4_shuffle::<1, 0, 3, 2>(max1, max1);
-    let max2 = f32x4_max(max1, odd);
+    let max2 = max_v128(max1, odd);
     f32x4_extract_lane::<0>(max2)
 }
 
@@ -127,7 +191,7 @@ fn hmax_f32x4(v: v128) -> f32 {
 /// Tiled matmul: C = A @ B where A is [M, K] and B is [K, N].
 ///
 /// Uses 4x4 register tiling with K-loop unrolled by 4: processes 4 rows of A
-/// and 4 columns of B simultaneously with 16 f32x4 accumulators.
+/// and 4 columns of B simultaneously with four f32x4 accumulators.
 /// Inner K loop processes 4 values per iteration for reduced loop overhead
 /// and better instruction-level parallelism.
 ///
@@ -321,6 +385,8 @@ pub unsafe extern "C" fn softmax_f32_fused(a: *const f32, out: *mut f32, n: u32)
         }
 
         // --- Pass 1: Online softmax (Milakov & Gimelshein 2018) ---
+        // NaN enters sum through exp2 and propagates to every output. Tracking
+        // another maximum in that case adds work without changing the result.
         // Track running max and sum. When max increases, rescale sum.
         let mut max_val = *a;
         let mut sum = 1.0f32; // exp(a[0] - max) = exp(0) = 1
@@ -330,14 +396,20 @@ pub unsafe extern "C" fn softmax_f32_fused(a: *const f32, out: *mut f32, n: u32)
             if x > max_val {
                 // Rescale existing sum: sum * exp(old_max - new_max)
                 sum *= exp2_scalar((max_val - x) * core::f32::consts::LOG2_E);
+                sum += 1.0; // exp(x - max) = exp(0) = 1
                 max_val = x;
-                sum += 1.0; // exp(x - max_val) = exp(0) = 1
             } else {
                 sum += exp2_scalar((x - max_val) * core::f32::consts::LOG2_E);
             }
         }
 
-        let inv_sum = 1.0 / sum;
+        // Like the scalar stable-softmax reference, a +Inf maximum makes
+        // the row undefined (Inf - Inf); propagate NaN to the entire row.
+        let inv_sum = if max_val == f32::INFINITY {
+            f32::from_bits(0x7fc0_0000)
+        } else {
+            1.0 / sum
+        };
 
         // --- Pass 2: Compute exp(x - max) / sum and write output ---
         let n4 = n & !3;
@@ -367,7 +439,7 @@ pub unsafe extern "C" fn softmax_f32_fused(a: *const f32, out: *mut f32, n: u32)
 }
 
 // ---------------------------------------------------------------------------
-// exp2 — vectorized, 6th-order Cephes polynomial.
+// exp2 — vectorized, degree-six polynomial approximation.
 // ---------------------------------------------------------------------------
 
 /// exp2(x) for n elements, 6th-order polynomial.
@@ -544,28 +616,18 @@ pub unsafe extern "C" fn max_f32(a: *const f32, b: *const f32, out: *mut f32, n:
     unsafe {
         let n = n as usize;
         let n4 = n & !3;
-        let nan_bits = i32x4_splat(0x7FC00000u32 as i32);
         let mut i = 0usize;
         while i < n4 {
             let va = v128_load(a.add(i) as *const v128);
             let vb = v128_load(b.add(i) as *const v128);
-            let vmax = f32x4_max(va, vb);
-            // NaN propagation: lane is all-1s if a or b is NaN (x != x)
-            let nan_mask = v128_or(f32x4_ne(va, va), f32x4_ne(vb, vb));
-            let result = v128_bitselect(nan_bits, vmax, nan_mask);
+            let result = max_v128(va, vb);
             v128_store(out.add(i) as *mut v128, result);
             i += 4;
         }
         while i < n {
             let av = *a.add(i);
             let bv = *b.add(i);
-            *out.add(i) = if av.is_nan() || bv.is_nan() {
-                f32::NAN
-            } else if av > bv {
-                av
-            } else {
-                bv
-            };
+            *out.add(i) = max_scalar(av, bv);
             i += 1;
         }
     }
@@ -615,23 +677,16 @@ pub unsafe extern "C" fn reduce_max_f32(a: *const f32, n: u32) -> f32 {
         let n = n as usize;
         let n4 = n & !3;
         let mut acc = f32x4_splat(f32::NEG_INFINITY);
-        let nan_bits: v128 = i32x4_splat(0x7FC00000u32 as i32);
         let mut i = 0usize;
         while i < n4 {
             let v = v128_load(a.add(i) as *const v128);
-            let nan_mask = f32x4_ne(v, v);
-            acc = v128_bitselect(nan_bits, f32x4_max(acc, v), nan_mask);
+            acc = max_v128(acc, v);
             i += 4;
         }
         let mut maxval = hmax_f32x4(acc);
         while i < n {
             let v = *a.add(i);
-            if v.is_nan() {
-                return f32::NAN;
-            }
-            if v > maxval {
-                maxval = v;
-            }
+            maxval = max_scalar(maxval, v);
             i += 1;
         }
         maxval
