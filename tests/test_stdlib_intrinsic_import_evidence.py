@@ -17,7 +17,10 @@ from molt.stdlib_intrinsic_policy import (
     stdlib_module_static_imports,
 )
 from molt.target_python import _DEFAULT_TARGET_PYTHON_VERSION
-from tests.source_record_test_support import source_records
+from tests.source_record_test_support import replace_source_record, source_records
+
+
+pytestmark = pytest.mark.usefixtures("isolated_molt_cache")
 
 
 def test_intrinsic_facts_reuse_the_full_scan_namespace_authority(tmp_path):
@@ -982,12 +985,9 @@ def test_proven_import_owner_retains_runtime_warning_protocol(tmp_path):
 
 
 @pytest.fixture
-def premise_source_cache(tmp_path, monkeypatch):
+def premise_source_cache(monkeypatch, isolated_molt_cache):
     from molt.cli import module_graph_cache
 
-    monkeypatch.setattr(
-        module_graph_cache, "_build_state_root", lambda _root: tmp_path / "cache"
-    )
     monkeypatch.setattr(
         module_graph_cache, "_frontend_semantic_tooling_fingerprint", lambda: "premise"
     )
@@ -1013,7 +1013,6 @@ def test_intrinsic_source_metadata_rebinds_facts_but_reuses_syntax_summary(
 
     def facts(premise):
         return cache._stdlib_intrinsic_source_facts(
-            tmp_path,
             "entry",
             path,
             premise,
@@ -1030,7 +1029,7 @@ def test_intrinsic_source_metadata_rebinds_facts_but_reuses_syntax_summary(
         "intrinsic_source_misses": 3,
         "intrinsic_source_hits": 3,
     }
-    assert len(source_records(tmp_path, "intrinsic-facts")) == 1
+    assert len(source_records("intrinsic-facts")) == 1
     # A graph premise changes binding facts, never syntax. The warm syntax
     # projection therefore requires neither a guessed premise nor a new parse.
     original_parse = cache._parse_source_for_target
@@ -1040,7 +1039,7 @@ def test_intrinsic_source_metadata_rebinds_facts_but_reuses_syntax_summary(
         lambda *_args, **_kwargs: pytest.fail("warm namespace summary reparsed source"),
     )
     summary = cache._stdlib_intrinsic_namespace_summary(
-        tmp_path, "entry", path, target_python=_DEFAULT_TARGET_PYTHON_VERSION
+        "entry", path, target_python=_DEFAULT_TARGET_PYTHON_VERSION
     )
     assert summary.own_names == frozenset({"value"})
     assert summary == cold.namespace_summary
@@ -1049,7 +1048,7 @@ def test_intrinsic_source_metadata_rebinds_facts_but_reuses_syntax_summary(
         "def mutate():\n    global newer\n    newer = 2\n", encoding="utf-8"
     )
     changed = cache._stdlib_intrinsic_namespace_summary(
-        tmp_path, "entry", path, target_python=_DEFAULT_TARGET_PYTHON_VERSION
+        "entry", path, target_python=_DEFAULT_TARGET_PYTHON_VERSION
     )
     assert changed.own_names == frozenset({"newer"})
 
@@ -1083,34 +1082,28 @@ def test_intrinsic_source_metadata_rebinds_facts_but_reuses_syntax_summary(
 def test_malformed_cached_namespace_summary_recomputes_canonical_syntax(
     tmp_path, monkeypatch, premise_source_cache, field, invalid
 ):
-    import copy
-
     cache = premise_source_cache
     path = tmp_path / "entry.py"
     path.write_text(
         "def mutate():\n    global retained\n    retained = 1\n", encoding="utf-8"
     )
     facts = cache._stdlib_intrinsic_source_facts(
-        tmp_path, "entry", path, target_python=_DEFAULT_TARGET_PYTHON_VERSION
+        "entry", path, target_python=_DEFAULT_TARGET_PYTHON_VERSION
     )
-    read = cache._read_intrinsic_facts_payload
+    [(key, payload)] = source_records("intrinsic-facts").items()
     parse = cache._parse_source_for_target
     parses = []
 
-    def corrupt(project_root, path, key):
-        payload = copy.deepcopy(read(project_root, path, key))
-        assert payload is not None
-        payload["facts"]["namespace_summary"][field] = invalid
-        return payload
+    payload["facts"]["namespace_summary"][field] = invalid
+    replace_source_record("intrinsic-facts", key, payload)
 
     def counted(*args, **kwargs):
         parses.append(1)
         return parse(*args, **kwargs)
 
-    monkeypatch.setattr(cache, "_read_intrinsic_facts_payload", corrupt)
     monkeypatch.setattr(cache, "_parse_source_for_target", counted)
     summary = cache._stdlib_intrinsic_namespace_summary(
-        tmp_path, "entry", path, target_python=_DEFAULT_TARGET_PYTHON_VERSION
+        "entry", path, target_python=_DEFAULT_TARGET_PYTHON_VERSION
     )
     assert summary == facts.namespace_summary
     assert summary.own_names == frozenset({"retained"})
@@ -1118,7 +1111,7 @@ def test_malformed_cached_namespace_summary_recomputes_canonical_syntax(
 
 
 def test_intrinsic_warmer_transports_each_modules_namespace_premise(
-    tmp_path, monkeypatch
+    tmp_path, monkeypatch, isolated_molt_cache
 ):
     import molt.host_capacity
     from molt.cli import module_graph_cache as cache
@@ -1126,7 +1119,6 @@ def test_intrinsic_warmer_transports_each_modules_namespace_premise(
 
     # Actual spawned workers prove the frozen premise crosses the process
     # boundary and populates the same identity the serial reader will admit.
-    monkeypatch.setenv("MOLT_BUILD_STATE_DIR", str(tmp_path / "state"))
     monkeypatch.setattr(molt.host_capacity, "worker_count", lambda **_kwargs: 2)
     monkeypatch.setattr(cache, "_INTRINSIC_FACTS_MODULES_PER_WORKER", 1)
     paths = {}
@@ -1143,7 +1135,6 @@ def test_intrinsic_warmer_transports_each_modules_namespace_premise(
         "rewritten": PythonNamespacePremise(("TYPE_CHECKING",), 0),
     }
     cache.warm_stdlib_intrinsic_source_facts(
-        tmp_path,
         paths,
         target_python=_DEFAULT_TARGET_PYTHON_VERSION,
         namespace_premises=premises,
@@ -1151,7 +1142,6 @@ def test_intrinsic_warmer_transports_each_modules_namespace_premise(
     counts = {}
     for module, path in paths.items():
         facts = cache._stdlib_intrinsic_source_facts(
-            tmp_path,
             module,
             path,
             premises[module],
@@ -1167,7 +1157,6 @@ def test_intrinsic_warmer_transports_each_modules_namespace_premise(
 def test_intrinsic_metadata_rejects_boolean_namespace_member_mask(
     tmp_path, monkeypatch, premise_source_cache
 ):
-    import copy
     from molt.compiler_analysis.python_namespace_graph import PythonNamespacePremise
 
     cache = premise_source_cache
@@ -1175,25 +1164,18 @@ def test_intrinsic_metadata_rejects_boolean_namespace_member_mask(
     path.write_text("pass\n", encoding="utf-8")
     premise = PythonNamespacePremise((), 0)
     facts = cache._stdlib_intrinsic_source_facts(
-        tmp_path,
         "entry",
         path,
         premise,
         target_python=_DEFAULT_TARGET_PYTHON_VERSION,
     )
-    read = cache._read_intrinsic_facts_payload
+    [(key, payload)] = source_records("intrinsic-facts").items()
 
-    def corrupt(project_root, path, key):
-        payload = copy.deepcopy(read(project_root, path, key))
-        assert payload is not None
-        payload["identity"]["namespace_premise"]["member_writes"] = False
-        return payload
-
-    monkeypatch.setattr(cache, "_read_intrinsic_facts_payload", corrupt)
+    payload["identity"]["namespace_premise"]["member_writes"] = False
+    replace_source_record("intrinsic-facts", key, payload)
     counts = {}
     assert (
         cache._stdlib_intrinsic_source_facts(
-            tmp_path,
             "entry",
             path,
             premise,

@@ -3,7 +3,6 @@ from __future__ import annotations
 from molt.compiler_analysis import python_import_scan as _source_import_scan
 
 import ast
-import json
 from pathlib import Path
 
 import pytest
@@ -40,6 +39,9 @@ from molt.compiler_analysis.python_imports import (
     UNKNOWN_VALUE,
     _ImportScanRequests,
 )
+
+
+pytestmark = pytest.mark.usefixtures("isolated_molt_cache")
 
 
 def _custody(
@@ -798,9 +800,7 @@ def test_owner_analysis_persists_source_pure_and_completes_each_catalog(
     second = analyze(widened)
     assert second[5] is True, "a later custody generation reuses the persisted scan"
     assert set(second[1]) == set(widened.modules)
-    record = module_graph_cache._read_import_scan_payload(
-        tmp_path,
-        owner,
+    record = module_graph_cache._read_import_scan_record(
         module_graph_cache._import_scan_cache_key(
             owner,
             module_name="pkg.entry",
@@ -810,8 +810,8 @@ def test_owner_analysis_persists_source_pure_and_completes_each_catalog(
         ),
     )
     assert record is not None
-    assert "admitted.target" not in json.dumps(record)
-    assert "admitted.later" not in json.dumps(record)
+    assert b"admitted.target" not in record.payload
+    assert b"admitted.later" not in record.payload
 
 
 @pytest.mark.parametrize(
@@ -1247,7 +1247,6 @@ def test_persisted_scan_retains_explicit_dynamic_star_provenance(
     assert requests.star_modules == ()
     assert requests.dynamic_star_modules == ("bundle",)
     module_graph_cache._write_persisted_import_scan(
-        tmp_path,
         owner,
         module_name="entry",
         is_package=False,
@@ -1262,16 +1261,15 @@ def test_persisted_scan_retains_explicit_dynamic_star_provenance(
             is_package=False,
             import_scan_mode="full",
         )
-        payload = source_records(tmp_path, "import-scan")[key]
+        payload = source_records("import-scan")[key]
         if damage == "missing":
             del payload["dynamic_star_modules"]
         elif damage == "invalid":
             payload["dynamic_star_modules"] = [1]
         else:
             payload["version"] -= 1
-        replace_source_record(tmp_path, "import-scan", key, payload)
+        replace_source_record("import-scan", key, payload)
     restored = module_graph_cache._read_persisted_import_scan_record(
-        tmp_path,
         owner,
         module_name="entry",
         is_package=False,

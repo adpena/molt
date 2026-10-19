@@ -2399,8 +2399,15 @@ def _prepare_backend_ir(
     emit_ir_error = _write_emitted_ir(emit_ir_path, ir, validate_inputs=validate_inputs)
     if emit_ir_error is not None:
         return None, fail(emit_ir_error, json_output, command="build")
+    final_function_ids = {id(function) for function in ir.get("functions", ())}
+    surviving_seeds = tuple(
+        seed
+        for seed in integration_state.function_digest_seeds
+        if id(seed.function) in final_function_ids
+    )
     return _PreparedBackendIR(
         ir=ir,
+        function_digest_seeds=surviving_seeds,
         function_metadata={
             symbol: {"app_callable_bindings": row["app_callable_bindings"]}
             for symbol, row in integration_state.function_metadata.items()

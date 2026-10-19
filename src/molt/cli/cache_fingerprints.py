@@ -33,7 +33,6 @@ from molt.cli.python_source_closure import (
 
 
 if TYPE_CHECKING:
-    from molt.cli.module_graph_cache import SourceRecordStores
     from molt.cli.module_source import PythonSourceSnapshot
     from molt.cli.rust_cpu_policy import RustCpuPolicy
 
@@ -331,9 +330,8 @@ class _SourceTreeFingerprintTransaction:
     # Each path resolves once per operation; a graph keys one module under
     # many import contexts and scans it under many premises.
     resolved_paths: dict[str, Path] = field(default_factory=dict)
-    # Each project's source-record store roots resolve once per operation;
-    # one build reads about 11,000 records.
-    source_record_stores: dict[Path, SourceRecordStores] = field(default_factory=dict)
+    # Every source-record kind shares one root, resolved once per operation.
+    source_records_root: Path | None = None
 
 
 _SOURCE_TREE_FINGERPRINT_TRANSACTION: ContextVar[

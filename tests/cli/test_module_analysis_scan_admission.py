@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import ast
-import json
 import sys
 from pathlib import Path
 from typing import Any
 
 import pytest
+
+from molt.cli.source_record_store import SourceRecordStore
+from tests.source_record_test_support import source_records
 
 from molt.cli import (
     frontend_pipeline,
@@ -19,7 +21,7 @@ from molt.cli import (
 from molt.cli.models import _ModuleGraphScanAuthority, _ModuleSourceScanAuthority
 from molt.cli.module_resolution import _ModuleResolutionCache
 from molt.cli.module_source import PythonSourceSnapshot
-from molt.target_python import TargetPythonVersion
+from molt.target_python import TargetPythonVersion, _DEFAULT_TARGET_PYTHON_VERSION
 
 
 @pytest.fixture(autouse=True)
@@ -138,16 +140,15 @@ def test_native_selection_payload_rejects_other_root_scope(
 ) -> None:
     path = native_support_source
     _analyze(path, native_support_function_roots=("later",))
-    payload = json.loads(
-        module_cache._module_analysis_cache_path(
-            path.parent,
-            path,
-            module_name="app",
-            is_package=False,
-            import_scan_mode="full",
-            native_support_function_roots=("later",),
-        ).read_text(encoding="utf-8")
+    key = module_cache._module_analysis_record_key(
+        path,
+        module_name="app",
+        is_package=False,
+        import_scan_mode="full",
+        native_support_function_roots=("later",),
+        target_python=_DEFAULT_TARGET_PYTHON_VERSION,
     )
+    payload = source_records("module-analysis")[key]
     assert payload is not None
     snapshot = PythonSourceSnapshot.capture(path)
     assert (
@@ -463,9 +464,8 @@ def test_analysis_publication_rejects_a_changed_snapshot(
     def forbidden(*args: Any, **kwargs: Any) -> Any:
         raise AssertionError("changed source must not publish analysis metadata")
 
-    monkeypatch.setattr(module_cache, "_write_cached_json_object", forbidden)
+    monkeypatch.setattr(SourceRecordStore, "put", forbidden)
     module_cache._write_persisted_module_analysis(
-        tmp_path,
         path,
         module_name="app",
         is_package=False,

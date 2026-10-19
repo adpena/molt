@@ -7,7 +7,7 @@ import time
 from contextlib import nullcontext
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable, ContextManager, Mapping
+from typing import TYPE_CHECKING, Any, Callable, ContextManager, Mapping
 
 from molt.backend_environment import CodegenSelection
 from molt.backend_executable_names import CodegenBackend
@@ -96,6 +96,10 @@ from molt.cli.wasm_codegen_layout import (
 from molt.file_locks import _shared_cache_lock
 from molt.target_python import TargetPythonVersion
 from molt import host_capacity
+
+
+if TYPE_CHECKING:
+    from molt.cli.function_records import FunctionDigestSeed
 
 
 def _record_pipeline_stage_ms(
@@ -211,6 +215,7 @@ def _prepare_backend_setup(
     codegen: CodegenSelection,
     rust_cpu: RustCpuPolicy,
     stage_timings_ms: dict[str, float] | None = None,
+    function_digest_seeds: tuple[FunctionDigestSeed, ...] = (),
     build_python_admission: BuildPythonAdmission | None = None,
 ) -> tuple[_PreparedBackendSetup | None, _CliFailure | None]:
     try:
@@ -332,6 +337,7 @@ def _prepare_backend_setup(
             backend_bin=backend_bin,
             cache_enabled=cache,
             ir=ir,
+            function_digest_seeds=function_digest_seeds,
             target=target,
             artifact_contract=artifact_contract,
             profile=profile,

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-from collections.abc import Collection, Mapping
-from typing import Any
+from collections.abc import Collection, Mapping, Sequence
+from typing import TYPE_CHECKING, Any
 
 from molt.frontend import SimpleTIRGenerator
 from molt.frontend import ClassId, ClassInfo, layout_definition_symbol
@@ -12,6 +12,10 @@ from molt.frontend.module_publication import (
     reject_embedded_function_metadata,
     reject_embedded_operation_metadata,
 )
+
+
+if TYPE_CHECKING:
+    from molt.cli.function_records import FunctionDigestSeed
 
 
 def _register_global_code_id_with_state(
@@ -150,6 +154,7 @@ def _integrate_module_frontend_result_with_state(
     function_metadata: object,
     func_code_ids: dict[str, int],
     local_classes: dict[ClassId, ClassInfo],
+    function_digest_seeds: Sequence[FunctionDigestSeed] = (),
 ) -> str | None:
     class_definitions = _module_class_definitions(local_classes)
     for symbol in sorted(class_definitions):
@@ -173,6 +178,26 @@ def _integrate_module_frontend_result_with_state(
             if symbol in integration_state.function_metadata:
                 raise ValueError(f"Duplicate function metadata owner {symbol!r}")
             inspect_source_module_publication(owned_functions[symbol], row)
+        if not isinstance(function_digest_seeds, Sequence):
+            raise ValueError("Invalid module function digest evidence")
+        if function_digest_seeds:
+            from molt.cli.function_records import FunctionDigestSeed
+
+            body_identities = {id(function) for function in ir_functions}
+            seen_seed_owners: set[int] = set()
+            for seed in function_digest_seeds:
+                if (
+                    not isinstance(seed, FunctionDigestSeed)
+                    or not isinstance(seed.function, dict)
+                    or id(seed.function) not in body_identities
+                    or id(seed.function) in seen_seed_owners
+                    or not isinstance(seed.digest, bytes)
+                    or len(seed.digest) != 32
+                ):
+                    raise ValueError(
+                        "Function digest evidence does not own an admitted module body"
+                    )
+                seen_seed_owners.add(id(seed.function))
     except ValueError as exc:
         return str(exc)
     # Admission succeeded. Commit only this module's staged additions; copying
@@ -183,6 +208,7 @@ def _integrate_module_frontend_result_with_state(
         integration_state.class_definition_owners.setdefault(symbol, module_name)
     for symbol, owner in class_references.items():
         integration_state.class_definition_references.setdefault(symbol, owner)
+    integration_state.function_digest_seeds.extend(function_digest_seeds)
     integration_state.functions.extend(ir_functions)
     integration_state.function_metadata.update(metadata)
     # ClassIds are program-wide identities: one module's classes never

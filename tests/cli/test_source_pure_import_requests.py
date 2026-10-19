@@ -9,6 +9,7 @@ import copy
 import ntpath
 import os
 import posixpath
+import sqlite3
 import sys
 from pathlib import Path
 
@@ -20,10 +21,11 @@ from molt.cli import module_import_scanner as scanner
 from molt.cli.module_resolution import _ModuleResolutionCache
 from molt.cli.module_source import PythonSourceSnapshot
 from molt.target_python import TargetPythonVersion
+from tests.source_record_test_support import replace_source_record, source_records
 
 
 @pytest.fixture(autouse=True)
-def tooling_identity(monkeypatch):
+def tooling_identity(monkeypatch, isolated_molt_cache):
     monkeypatch.setattr(
         records, "_frontend_semantic_tooling_fingerprint", lambda: "requests"
     )
@@ -212,9 +214,9 @@ def test_scan_publication_never_pairs_new_bytes_with_old_requests(
     source = write(tmp_path / "entry.py", "import before\n")
     original = records._write_persisted_import_scan
 
-    def mutate(project, path, **kwargs):
+    def mutate(path, **kwargs):
         write(path, "import after\n")
-        original(project, path, **kwargs)
+        original(path, **kwargs)
 
     monkeypatch.setattr(records, "_write_persisted_import_scan", mutate)
     assert load(source).scan.imports == ("before",)
@@ -333,17 +335,14 @@ def test_malformed_path_request_misses_without_crashing(
 ):
     source = write(tmp_path / "entry.py")
     load(source)
-    original = records._read_import_scan_payload
-
-    def corrupt(project_root, path, key):
-        payload = original(project_root, path, key)
-        assert payload is not None
-        return dict(payload, source_executions=[{"module": "bad", "path": bad_path}])
-
-    monkeypatch.setattr(records, "_read_import_scan_payload", corrupt)
+    key = records._import_scan_cache_key(
+        source, module_name="entry", is_package=False, import_scan_mode="full"
+    )
+    payload = source_records("import-scan")[key]
+    payload["source_executions"] = [{"module": "bad", "path": bad_path}]
+    replace_source_record("import-scan", key, payload)
     assert (
         records._read_persisted_import_scan_record(
-            tmp_path,
             source,
             module_name="entry",
             is_package=False,
@@ -399,77 +398,70 @@ def test_malformed_source_fact_containers_force_cold_regeneration(
     cold = load(source)
     assert cold.scan.source_sites
     assert load(source).cache_hit
-    original = records._read_import_scan_payload
-
-    def corrupt(project_root, path, key):
-        payload = copy.deepcopy(original(project_root, path, key))
-        assert payload is not None
-        values = payload["source_values"]
-        if container == "sites":
-            payload["source_sites"] = invalid
-        elif container in {
-            "namespaces",
-            "attributes",
-            "elements",
-            "calls",
-            "functions",
-            "bases",
-            "completions",
-        }:
-            assert values[container]
-            values[container] = invalid
-        elif container == "namespace_names":
-            row = next(row for row in values["namespaces"] if row[1])
-            row[1] = invalid
-        elif container == "namespace_name_origins":
-            name = next(
-                name for row in values["namespaces"] for name in row[1] if name[1]
-            )
-            name[1] = invalid
-        elif container == "namespace_exposed":
-            row = next(row for row in values["namespaces"] if row[2])
-            row[2] = invalid
-        elif container == "base_origins":
-            row = next(row for row in values["bases"] if row[1])
-            row[1] = invalid
-        elif container == "attribute_origins":
-            row = next(row for row in values["attributes"] if row[2])
-            row[2] = invalid
-        elif container in {"call_origins", "element_origins", "completion_origins"}:
-            field = {
-                "call_origins": "calls",
-                "element_origins": "elements",
-                "completion_origins": "completions",
-            }[container]
-            index = 2 if container == "element_origins" else 1
-            row = next(row for row in values[field] if row[index])
-            row[index] = invalid
-        else:
-            index = {
-                "function_returned": 2,
-                "function_returned_exposed": 3,
-                "function_yielded": 4,
-                "function_yielded_exposed": 5,
-            }[container]
-            row = next(row for row in values["functions"] if row[index])
-            row[index] = invalid
-        return payload
-
-    with monkeypatch.context() as local:
-        local.setattr(records, "_read_import_scan_payload", corrupt)
-        restored = records._read_persisted_import_scan_record(
-            tmp_path,
-            source,
-            module_name="entry",
-            is_package=False,
-            import_scan_mode="full",
-            snapshot=PythonSourceSnapshot.capture(source),
-        )
-        assert restored is None
-        recovered = load(source)
-        assert not recovered.cache_hit
-        assert recovered.scan.source_sites == cold.scan.source_sites
-        assert recovered.scan.source_values == cold.scan.source_values
+    key = records._import_scan_cache_key(
+        source, module_name="entry", is_package=False, import_scan_mode="full"
+    )
+    payload = source_records("import-scan")[key]
+    values = payload["source_values"]
+    if container == "sites":
+        payload["source_sites"] = invalid
+    elif container in {
+        "namespaces",
+        "attributes",
+        "elements",
+        "calls",
+        "functions",
+        "bases",
+        "completions",
+    }:
+        assert values[container]
+        values[container] = invalid
+    elif container == "namespace_names":
+        row = next(row for row in values["namespaces"] if row[1])
+        row[1] = invalid
+    elif container == "namespace_name_origins":
+        name = next(name for row in values["namespaces"] for name in row[1] if name[1])
+        name[1] = invalid
+    elif container == "namespace_exposed":
+        row = next(row for row in values["namespaces"] if row[2])
+        row[2] = invalid
+    elif container == "base_origins":
+        row = next(row for row in values["bases"] if row[1])
+        row[1] = invalid
+    elif container == "attribute_origins":
+        row = next(row for row in values["attributes"] if row[2])
+        row[2] = invalid
+    elif container in {"call_origins", "element_origins", "completion_origins"}:
+        field = {
+            "call_origins": "calls",
+            "element_origins": "elements",
+            "completion_origins": "completions",
+        }[container]
+        index = 2 if container == "element_origins" else 1
+        row = next(row for row in values[field] if row[index])
+        row[index] = invalid
+    else:
+        index = {
+            "function_returned": 2,
+            "function_returned_exposed": 3,
+            "function_yielded": 4,
+            "function_yielded_exposed": 5,
+        }[container]
+        row = next(row for row in values["functions"] if row[index])
+        row[index] = invalid
+    replace_source_record("import-scan", key, payload)
+    restored = records._read_persisted_import_scan_record(
+        source,
+        module_name="entry",
+        is_package=False,
+        import_scan_mode="full",
+        snapshot=PythonSourceSnapshot.capture(source),
+    )
+    assert restored is None
+    recovered = load(source)
+    assert not recovered.cache_hit
+    assert recovered.scan.source_sites == cold.scan.source_sites
+    assert recovered.scan.source_values == cold.scan.source_values
     warm = load(source)
     assert warm.cache_hit
     assert warm.scan.source_sites == cold.scan.source_sites
@@ -1208,37 +1200,32 @@ def test_source_cache_rejects_retired_or_incoherent_protocol(
     )
     cold = load(source)
     assert load(source).cache_hit
-    original = records._read_import_scan_payload
-
-    def corrupt(project_root, path, key):
-        payload = copy.deepcopy(original(project_root, path, key))
-        assert payload is not None
-        if defect == "old-schema":
-            payload["version"] -= 1
-        elif defect == "retired-effects":
-            payload["source_effects"] = []
-        elif defect == "retired-site-handlers":
-            payload["source_sites"][0]["handlers"] = []
-        elif defect == "retired-site-owner":
-            payload["source_sites"][0]["owner"] = None
-        elif defect == "retired-demand-owner":
-            payload["source_demands"][0].append(None)
-        elif defect == "unknown-phase":
-            payload["source_demands"][0][1] = "invented"
-        return payload
-
-    with monkeypatch.context() as patch:
-        patch.setattr(records, "_read_import_scan_payload", corrupt)
-        decoded = records._read_persisted_import_scan_record(
-            tmp_path,
-            source,
-            module_name="entry",
-            is_package=False,
-            import_scan_mode="full",
-            snapshot=PythonSourceSnapshot.capture(source),
-        )
-        assert decoded is None
-        regenerated = load(source)
+    key = records._import_scan_cache_key(
+        source, module_name="entry", is_package=False, import_scan_mode="full"
+    )
+    payload = source_records("import-scan")[key]
+    if defect == "old-schema":
+        payload["version"] -= 1
+    elif defect == "retired-effects":
+        payload["source_effects"] = []
+    elif defect == "retired-site-handlers":
+        payload["source_sites"][0]["handlers"] = []
+    elif defect == "retired-site-owner":
+        payload["source_sites"][0]["owner"] = None
+    elif defect == "retired-demand-owner":
+        payload["source_demands"][0].append(None)
+    elif defect == "unknown-phase":
+        payload["source_demands"][0][1] = "invented"
+    replace_source_record("import-scan", key, payload)
+    decoded = records._read_persisted_import_scan_record(
+        source,
+        module_name="entry",
+        is_package=False,
+        import_scan_mode="full",
+        snapshot=PythonSourceSnapshot.capture(source),
+    )
+    assert decoded is None
+    regenerated = load(source)
     assert not regenerated.cache_hit
     assert regenerated.scan.source_requests == cold.scan.source_requests
 
@@ -1349,7 +1336,6 @@ def test_persisted_source_requests_bind_complete_namespace_premise(
             namespace_summary=python_namespace_summary(ast.parse(snapshot.content)),
         )
         records._write_persisted_import_scan(
-            tmp_path,
             path,
             **options,
             namespace_premise=premise,
@@ -1361,45 +1347,35 @@ def test_persisted_source_requests_bind_complete_namespace_premise(
             path, **options, namespace_premise=premise
         )
         paths.append(cache_key)
-        payloads.append(records._read_import_scan_payload(tmp_path, path, cache_key))
+        payloads.append(source_records("import-scan")[cache_key])
     assert len(set(paths)) == len(premises)
     for premise, request in zip(premises, requests):
         assert (
             records._read_persisted_import_scan_record(
-                tmp_path, path, **options, namespace_premise=premise, snapshot=snapshot
+                path, **options, namespace_premise=premise, snapshot=snapshot
             )
             == request
         )
-    # File naming alone cannot prove cache identity: a misplaced payload must
+    # Key naming alone cannot prove cache identity: a misplaced payload must
     # also be rejected by its complete premise, including missing-vs-unknown.
     for index, premise in enumerate(premises):
-        with monkeypatch.context() as local:
-            local.setattr(
-                records,
-                "_read_import_scan_payload",
-                lambda _root, _path, _key, payload=payloads[(index + 1) % len(premises)]: (
-                    payload
-                ),
+        replace_source_record(
+            "import-scan", paths[index], payloads[(index + 1) % len(premises)]
+        )
+        assert (
+            records._read_persisted_import_scan_record(
+                path,
+                **options,
+                namespace_premise=premise,
+                snapshot=snapshot,
             )
-            assert (
-                records._read_persisted_import_scan_record(
-                    tmp_path,
-                    path,
-                    **options,
-                    namespace_premise=premise,
-                    snapshot=snapshot,
-                )
-                is None
-            )
+            is None
+        )
     missing = dict(payloads[0])
     del missing["namespace_premise"]
-    monkeypatch.setattr(
-        records, "_read_import_scan_payload", lambda _root, _path, _key: missing
-    )
+    replace_source_record("import-scan", paths[0], missing)
     assert (
-        records._read_persisted_import_scan_record(
-            tmp_path, path, **options, snapshot=snapshot
-        )
+        records._read_persisted_import_scan_record(path, **options, snapshot=snapshot)
         is None
     )
 
@@ -1428,7 +1404,6 @@ def test_malformed_persisted_namespace_premise_is_not_an_empty_graph(
         path, project_root=None, namespace_premise=premise, source_snapshot=snapshot
     ).scan.source_requests
     records._write_persisted_import_scan(
-        tmp_path,
         path,
         **options,
         namespace_premise=premise,
@@ -1437,23 +1412,19 @@ def test_malformed_persisted_namespace_premise_is_not_an_empty_graph(
     )
     assert (
         records._read_persisted_import_scan_record(
-            tmp_path, path, **options, namespace_premise=premise, snapshot=snapshot
+            path, **options, namespace_premise=premise, snapshot=snapshot
         )
         == request
     )
     cache_key = records._import_scan_cache_key(
         path, **options, namespace_premise=premise
     )
-    payload = copy.deepcopy(
-        records._read_import_scan_payload(tmp_path, path, cache_key)
-    )
+    payload = source_records("import-scan")[cache_key]
     payload["namespace_premise"] = invalid
-    monkeypatch.setattr(
-        records, "_read_import_scan_payload", lambda _root, _path, _key: payload
-    )
+    replace_source_record("import-scan", cache_key, payload)
     assert (
         records._read_persisted_import_scan_record(
-            tmp_path, path, **options, namespace_premise=premise, snapshot=snapshot
+            path, **options, namespace_premise=premise, snapshot=snapshot
         )
         is None
     )
@@ -1474,28 +1445,25 @@ def test_source_base_cache_rejects_incoherent_provenance(tmp_path, monkeypatch, 
     cold = load(source)
     assert cold.scan.source_values.bases
     assert load(source).cache_hit
-    read = records._read_import_scan_payload
-
-    def corrupt(project_root, path, key):
-        payload = copy.deepcopy(read(project_root, path, key))
-        values = payload["source_values"]
-        if defect == "missing-bases":
-            del values["bases"]
-        elif defect == "unknown-field":
-            values["invented"] = []
-        elif defect == "duplicate-owner":
-            values["bases"].append(copy.deepcopy(values["bases"][0]))
-        elif defect == "nonclass-owner":
-            values["bases"][0][0][-1] = "FunctionDef"
-        else:
-            values["bases"][0][1] = [[1, 0, 1, 1, 42]]
-        return payload
-
-    with monkeypatch.context() as patch:
-        patch.setattr(records, "_read_import_scan_payload", corrupt)
-        recovered = load(source)
-        assert not recovered.cache_hit
-        assert recovered.scan.source_values.bases == cold.scan.source_values.bases
+    key = records._import_scan_cache_key(
+        source, module_name="entry", is_package=False, import_scan_mode="full"
+    )
+    payload = source_records("import-scan")[key]
+    values = payload["source_values"]
+    if defect == "missing-bases":
+        del values["bases"]
+    elif defect == "unknown-field":
+        values["invented"] = []
+    elif defect == "duplicate-owner":
+        values["bases"].append(copy.deepcopy(values["bases"][0]))
+    elif defect == "nonclass-owner":
+        values["bases"][0][0][-1] = "FunctionDef"
+    else:
+        values["bases"][0][1] = [[1, 0, 1, 1, 42]]
+    replace_source_record("import-scan", key, payload)
+    recovered = load(source)
+    assert not recovered.cache_hit
+    assert recovered.scan.source_values.bases == cold.scan.source_values.bases
     assert load(source).cache_hit
 
 
@@ -1774,32 +1742,29 @@ def test_function_completion_cache_rejects_retired_or_incoherent_records(
         "YieldFrom",
     }
     assert load(source).cache_hit
-    read = records._read_import_scan_payload
-
-    def corrupt(project_root, path, key):
-        payload = copy.deepcopy(read(project_root, path, key))
-        values = payload["source_values"]
-        if defect == "short-function":
-            values["functions"][0] = values["functions"][0][:4]
-        elif defect == "nonfunction-owner":
-            values["functions"][0][0][-1] = "ClassDef"
-        elif defect == "duplicate-function":
-            values["functions"].append(copy.deepcopy(values["functions"][0]))
-        elif defect == "noncompletion-owner":
-            values["completions"][0][0][-1] = "Call"
-        elif defect == "duplicate-completion":
-            values["completions"].append(copy.deepcopy(values["completions"][0]))
-        elif defect == "retired-returns":
-            values["returns"] = values.pop("functions")
-        else:
-            values["awaits"] = values.pop("completions")
-        return payload
-
-    with monkeypatch.context() as patch:
-        patch.setattr(records, "_read_import_scan_payload", corrupt)
-        recovered = load(source)
-        assert not recovered.cache_hit
-        assert recovered.scan.source_values == cold.scan.source_values
+    key = records._import_scan_cache_key(
+        source, module_name="entry", is_package=False, import_scan_mode="full"
+    )
+    payload = source_records("import-scan")[key]
+    values = payload["source_values"]
+    if defect == "short-function":
+        values["functions"][0] = values["functions"][0][:4]
+    elif defect == "nonfunction-owner":
+        values["functions"][0][0][-1] = "ClassDef"
+    elif defect == "duplicate-function":
+        values["functions"].append(copy.deepcopy(values["functions"][0]))
+    elif defect == "noncompletion-owner":
+        values["completions"][0][0][-1] = "Call"
+    elif defect == "duplicate-completion":
+        values["completions"].append(copy.deepcopy(values["completions"][0]))
+    elif defect == "retired-returns":
+        values["returns"] = values.pop("functions")
+    else:
+        values["awaits"] = values.pop("completions")
+    replace_source_record("import-scan", key, payload)
+    recovered = load(source)
+    assert not recovered.cache_hit
+    assert recovered.scan.source_values == cold.scan.source_values
     warm = load(source)
     assert warm.cache_hit
     assert warm.scan.source_values == cold.scan.source_values
@@ -1908,26 +1873,23 @@ def test_element_cache_rejects_untyped_or_incoherent_operation(
     cold = load(source)
     assert cold.scan.source_values.elements
     assert load(source).cache_hit
-    read = records._read_import_scan_payload
-
-    def corrupt(project_root, path, key):
-        payload = copy.deepcopy(read(project_root, path, key))
-        elements = payload["source_values"]["elements"]
-        if defect == "old-width":
-            elements[0] = [elements[0][0], elements[0][2]]
-        elif defect == "unknown-protocol":
-            elements[0][1] = "maybe_iterate"
-        elif defect == "duplicate-owner":
-            elements.append(copy.deepcopy(elements[0]))
-        else:
-            elements[0][2] = [[0, 0, 0, 0, 42]]
-        return payload
-
-    with monkeypatch.context() as patch:
-        patch.setattr(records, "_read_import_scan_payload", corrupt)
-        recovered = load(source)
-        assert not recovered.cache_hit
-        assert recovered.scan.source_values == cold.scan.source_values
+    key = records._import_scan_cache_key(
+        source, module_name="entry", is_package=False, import_scan_mode="full"
+    )
+    payload = source_records("import-scan")[key]
+    elements = payload["source_values"]["elements"]
+    if defect == "old-width":
+        elements[0] = [elements[0][0], elements[0][2]]
+    elif defect == "unknown-protocol":
+        elements[0][1] = "maybe_iterate"
+    elif defect == "duplicate-owner":
+        elements.append(copy.deepcopy(elements[0]))
+    else:
+        elements[0][2] = [[0, 0, 0, 0, 42]]
+    replace_source_record("import-scan", key, payload)
+    recovered = load(source)
+    assert not recovered.cache_hit
+    assert recovered.scan.source_values == cold.scan.source_values
     assert load(source).cache_hit
 
 
@@ -1968,12 +1930,20 @@ def test_a_source_execution_target_is_a_fact_of_the_operation(
         cache.import_topology.validate()
 
 
-def test_a_stdlib_scan_is_shared_by_every_project(tmp_path, isolated_molt_cache):
-    """The toolchain's stdlib records live once, for every project."""
+@pytest.mark.parametrize("source_kind", ["user", "stdlib"])
+def test_source_records_are_shared_by_every_project(
+    tmp_path, isolated_molt_cache, source_kind
+):
+    """Both user and toolchain sources reuse one row across project sessions."""
+    from molt.cli.source_record_store import shared_source_records
     from molt.cli.module_resolution import _stdlib_root_path
 
     stdlib = _stdlib_root_path()
-    source = stdlib / "keyword.py"
+    source = (
+        stdlib / "keyword.py"
+        if source_kind == "stdlib"
+        else write(tmp_path / "shared/keyword.py")
+    )
     first, second = tmp_path / "first", tmp_path / "second"
     for project in (first, second):
         project.mkdir()
@@ -1987,62 +1957,151 @@ def test_a_stdlib_scan_is_shared_by_every_project(tmp_path, isolated_molt_cache)
             stdlib_root=stdlib,
         )
 
-    scan(first)
+    assert not scan(first).cache_hit
     assert scan(second).cache_hit
-    stores = records._source_record_stores(first)
-    project_store, toolchain_store = stores.project, stores.toolchain
-    assert records._source_records(first, source) is toolchain_store
-    assert toolchain_store is records._source_record_stores(second).toolchain
-    assert toolchain_store.path.is_relative_to(isolated_molt_cache)
-    # A project's own source keeps its records in its build state.
-    own = write(first / "own.py")
-    assert records._source_records(first, own) is project_store
-    assert project_store.path.is_relative_to(records._build_state_root(first))
+    store = shared_source_records()
+    assert store.path.is_relative_to(isolated_molt_cache)
+    assert len(source_records("import-scan")) == 1
+
+
+def test_shared_requests_complete_against_each_projects_roots(tmp_path):
+    """One source row cannot preserve another project's completed star edges."""
+    source = write(tmp_path / "shared/entry.py", "from pkg import *\n")
+    first, second = tmp_path / "first", tmp_path / "second"
+    for project, child in ((first, "left"), (second, "right")):
+        write(project / "pkg/__init__.py", f"__all__ = [{child!r}]\n")
+        write(project / f"pkg/{child}.py")
+
+    def scan(project):
+        return load(source, project_root=project, roots=[project])
+
+    cold = scan(first)
+    warm = scan(second)
+    assert not cold.cache_hit and warm.cache_hit
+    assert "pkg.left" in cold.scan.imports and "pkg.right" not in cold.scan.imports
+    assert "pkg.right" in warm.scan.imports and "pkg.left" not in warm.scan.imports
+    assert cold.scan.source_requests == warm.scan.source_requests
+    assert "pkg.left" not in warm.scan.source_requests.imports
+    assert "pkg.right" not in warm.scan.source_requests.imports
+    assert scan(first).scan.imports == cold.scan.imports
+
+
+def test_source_request_recency_requires_complete_admission(tmp_path):
+    from molt.cli.source_record_store import shared_source_records
+
+    source = write(tmp_path / "entry.py", "import math\n")
+    load(source)
+    options = dict(module_name="entry", is_package=False, import_scan_mode="full")
+    key = records._import_scan_cache_key(source, **options)
+    payload = source_records("import-scan")[key]
+    store = shared_source_records()
+
+    def age_record():
+        with sqlite3.connect(store.path) as connection:
+            connection.execute(
+                "UPDATE records SET used_ns = 0 WHERE kind = ? AND key = ?",
+                ("import-scan", key),
+            )
+
+    def used_ns():
+        candidate = store.get("import-scan", key, generation="requests", max_bytes=None)
+        assert candidate is not None
+        return candidate.used_ns
+
+    malformed = copy.deepcopy(payload)
+    # This failure is reached only after identity and source admission.
+    malformed["source_values"]["invented"] = []
+    replace_source_record("import-scan", key, malformed)
+    age_record()
+    assert records._read_persisted_import_scan_record(source, **options) is None
+    assert used_ns() == 0
+
+    replace_source_record("import-scan", key, payload)
+    age_record()
+    assert records._read_persisted_import_scan_record(source, **options) is not None
+    assert used_ns() > 0
 
 
 @pytest.mark.parametrize(
-    ("root", "path"),
-    [
-        ("lib/stdlib", "lib/stdlib"),
-        ("lib/stdlib", "lib/stdlib/keyword.py"),
-        ("lib/stdlib", "lib/stdlib/asyncio/events.py"),
-        ("lib/stdlib", "lib/stdlib2/keyword.py"),
-        ("lib/stdlib", "lib/keyword.py"),
-        ("lib/stdlib", "other/lib/stdlib/keyword.py"),
-        ("", "lib/keyword.py"),
-    ],
+    ("function", "argument"),
+    [("select", "left"), ("select", "right"), ("other", "left")],
 )
-def test_record_store_owner_is_lexical_containment(tmp_path, root, path):
-    """``owner`` decides as ``Path.is_relative_to`` does, without its parents walk."""
-    anchor = Path(tmp_path.anchor) if not root else tmp_path
-    stdlib, source = anchor / root, tmp_path / path
-    stores = records.SourceRecordStores(tmp_path / "state", tmp_path / "shared", stdlib)
-    expected = stores.toolchain if source.is_relative_to(stdlib) else stores.project
-    assert stores.owner(source) is expected
+def test_shared_deferred_requests_bind_owner_and_arguments(
+    tmp_path, monkeypatch, function, argument
+):
+    import builtins
+
+    from molt.compiler_analysis.python_source_keys import python_node_source_key
+
+    source = write(
+        tmp_path / "shared/entry.py",
+        "def select(choice):\n"
+        "    if choice == 'left':\n        import left_leaf\n"
+        "    else:\n        import right_leaf\n"
+        "def other(choice):\n    import other_leaf\n",
+    )
+    namespace = {}
+    text = source.read_text(encoding="utf-8")
+    exec(compile(text, str(source), "exec", dont_inherit=True), namespace)
+    expected = []
+    with monkeypatch.context() as runtime:
+        runtime.setattr(
+            builtins,
+            "__import__",
+            lambda name, *_args, **_kwargs: expected.append(name),
+        )
+        namespace[function](argument)
+    owners = {node.name: python_node_source_key(node) for node in ast.parse(text).body}
+    first, second = tmp_path / "first", tmp_path / "second"
+    for project in (first, second):
+        project.mkdir()
+    options = dict(
+        import_scan_mode="module_init",
+        source_owner=owners[function],
+        source_arguments=(argument,),
+    )
+    cold = load(source, project_root=first, **options)
+    warm = load(source, project_root=second, **options)
+    assert not cold.cache_hit and warm.cache_hit
+    assert list(cold.scan.imports) == expected == list(warm.scan.imports)
+
+    key = records._import_scan_cache_key(
+        source, module_name="entry", is_package=False, **options
+    )
+    payload = source_records("import-scan")[key]
+    payload["source_arguments"] = [argument + "_different"]
+    replace_source_record("import-scan", key, payload)
+    recovered = load(source, project_root=second, **options)
+    assert not recovered.cache_hit
+    assert list(recovered.scan.imports) == expected
 
 
-def test_one_operation_resolves_the_record_store_roots_once(tmp_path, monkeypatch):
-    """A build reads about 11,000 records; none may resolve the roots again."""
+def test_one_operation_resolves_the_shared_record_root_once(tmp_path, monkeypatch):
+    """Thousands of record requests share one root admission per operation."""
+    from molt.cli import source_record_store as storage
     from molt.cli.cache_fingerprints import _source_tree_fingerprint_transaction
 
-    resolved: list[Path] = []
-    stores = records.SourceRecordStores
+    resolved = []
+    default_cache = storage._default_molt_cache
 
-    def counted(*roots: Path) -> records.SourceRecordStores:
-        resolved.append(roots[0])
-        return stores(*roots)
+    def cache_root():
+        root = default_cache()
+        resolved.append(root)
+        return root
 
-    monkeypatch.setattr(records, "SourceRecordStores", counted)
+    monkeypatch.setattr(storage, "_default_molt_cache", cache_root)
     sources = [write(tmp_path / f"m{index}.py") for index in range(3)]
     with _source_tree_fingerprint_transaction():
-        # The cold pass writes each record; the warm pass reads it back.
         assert not any(load(path, module_name=path.stem).cache_hit for path in sources)
         assert all(load(path, module_name=path.stem).cache_hit for path in sources)
+        first = storage.shared_source_records()
     assert len(resolved) == 1
-    # A new operation resolves again, so a changed environment reaches it.
+    monkeypatch.setenv("MOLT_CACHE", str(tmp_path / "later-cache"))
     with _source_tree_fingerprint_transaction():
-        records._source_records(tmp_path, sources[0])
+        second = storage.shared_source_records()
     assert len(resolved) == 2
+    assert second.path != first.path
+    assert second.path.is_relative_to(tmp_path / "later-cache")
 
 
 def test_module_export_fact_is_shared_by_owner_arguments_and_star_consumer(

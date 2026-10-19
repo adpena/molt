@@ -1,38 +1,27 @@
-"""Cross-session reuse of the shared, content-addressed frontend caches.
+"""Source-qualified analysis/lowering reuse through one shared record store.
 
-The per-module *analysis* cache (function defaults / kinds) and
-*lowering* cache (frontend IR result) live under a per-session ``.molt_state``
-dir, so a fresh ``MOLT_SESSION_ID`` re-runs the frontend for every module from
-cold. These tests prove the shared tier fixes that -- and, critically, that it
-is *correctness-safe*: a shared entry is only ever reused when the source content
-and full tooling/target/scan identity match, so a shared hit can never be a
-miscompile.
-
-The tests have teeth:
-
-* **Reuse** -- session B, cold ``.molt_state``, reuses session A's published
-  entry: a spy over the actual persistence-write proves session B never re-writes
-  (never re-lowers / re-analyses) the module.
-* **Correctness** -- changing the *source content* (not just mtime), flipping the
-  tooling fingerprint, or flipping the target Python must all force a cold miss:
-  the shared entry is not reused, so the stale result can never be served.
-* **exFAT-safe** -- the publish/hydrate path never calls ``os.link`` (byte copy
-  only), so it works on hard-link-less (exFAT) build volumes.
+Sessions and projects reuse admitted rows without hydration or duplicate writes;
+source, semantic context and typed body ownership remain independently qualified.
 """
 
 from __future__ import annotations
 
 import os
-import time
+import sqlite3
 import json
 from pathlib import Path
 
 import pytest
 
 from molt.cli import module_cache as MC
-from molt.cli import module_frontend_cache as MFC
+from molt.cli.source_record_store import (
+    SourceRecord,
+    SourceRecordStore,
+    shared_source_records,
+)
+from molt.target_python import _DEFAULT_TARGET_PYTHON_VERSION
+from tests.source_record_test_support import source_records, replace_source_record
 from molt.cli.module_source import PythonSourceSnapshot, _ModuleSourceLease
-from tests.process_guard_common import current_thread_only
 
 
 # --------------------------------------------------------------------------
@@ -77,71 +66,73 @@ def _write_module(project_root: Path, name: str, body: str) -> Path:
     return path
 
 
+def _record(kind, key) -> SourceRecord:
+    record = shared_source_records().get(
+        kind,
+        key,
+        generation=MC._frontend_semantic_tooling_fingerprint(),
+        max_bytes=None,
+    )
+    assert record is not None
+    return record
+
+
+def _age_record(kind, key) -> SourceRecord:
+    with sqlite3.connect(shared_source_records().path) as connection:
+        connection.execute(
+            "UPDATE records SET used_ns = 0 WHERE kind = ? AND key = ?", (kind, key)
+        )
+    return _record(kind, key)
+
+
 # --------------------------------------------------------------------------
 # Shared-slot identity: session-independent, and separating build identities.
 # --------------------------------------------------------------------------
 
 
-def test_shared_analysis_slot_is_session_independent(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_analysis_record_key_is_session_independent(tmp_path, monkeypatch):
     path = _write_module(tmp_path, "m", "def f(a, b=1):\n    return a\n")
-
+    options = dict(
+        module_name="m",
+        is_package=False,
+        import_scan_mode="module_init",
+        target_python=_DEFAULT_TARGET_PYTHON_VERSION,
+    )
     _use_session(monkeypatch, "alpha")
-    slot_alpha = MC._shared_module_analysis_cache_path_for(
-        path, module_name="m", is_package=False, import_scan_mode="module_init"
-    )
+    alpha = MC._module_analysis_record_key(path, **options)
     _use_session(monkeypatch, "beta")
-    slot_beta = MC._shared_module_analysis_cache_path_for(
-        path, module_name="m", is_package=False, import_scan_mode="module_init"
-    )
-
-    assert slot_alpha is not None and slot_alpha == slot_beta
-    assert "sessions" not in slot_alpha.parts
-    assert "alpha" not in str(slot_alpha) and "beta" not in str(slot_alpha)
-    assert slot_alpha.parent.name == "module_analysis"
+    assert MC._module_analysis_record_key(path, **options) == alpha
 
 
-def test_shared_lowering_slot_separates_context_digests(
-    tmp_path: Path,
-) -> None:
-    path = _write_module(tmp_path, "m", "def f():\n    return 1\n")
-    slot_x = MC._shared_module_lowering_cache_path_for(
-        path, module_name="m", is_package=False, context_digest="ab" * 32
-    )
-    slot_y = MC._shared_module_lowering_cache_path_for(
-        path, module_name="m", is_package=False, context_digest="cd" * 32
-    )
-    assert slot_x is not None and slot_y is not None
-    # Distinct lowering identities (different context_digest) MUST occupy distinct
-    # shared slots so one can never clobber or be mis-served for the other.
-    assert slot_x != slot_y
-    assert slot_x.parent.name == "module_lowering"
-
-
-def test_shared_slot_rejects_bad_key() -> None:
-    assert MFC._shared_module_analysis_cache_path("m", "not hex!") is None
-    assert (
-        MFC._shared_module_lowering_cache_path("m", "ab" * 12, "not-a-digest") is None
-    )
+def test_lowering_records_separate_context_digests(tmp_path):
+    path = _write_module(tmp_path, "m", "pass\n")
+    for digest, value in (("ab" * 32, 41), ("cd" * 32, 42)):
+        MC._write_persisted_module_lowering(
+            path,
+            source_lease=_ModuleSourceLease.path_backed(path),
+            context_digest=digest,
+            result={"function_metadata": {}, "functions": [], "answer": value},
+        )
+    for digest, value in (("ab" * 32, 41), ("cd" * 32, 42)):
+        loaded = MC._read_persisted_module_lowering(
+            path,
+            source_lease=_ModuleSourceLease.path_backed(path),
+            module_name="m",
+            context_digest=digest,
+        )
+        assert loaded is not None and loaded["answer"] == value
+    assert set(source_records("module-lowering")) == {"ab" * 32, "cd" * 32}
 
 
 # --------------------------------------------------------------------------
-# Reuse (teeth): session B hydrates session A's shared entry -> no re-run.
+# Reuse (teeth): session B reads session A's admitted row -> no re-run.
 # --------------------------------------------------------------------------
 
 
-def test_analysis_reuse_across_sessions_hydrates_shared(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    project_root = tmp_path / "proj"
-    project_root.mkdir()
-    path = _write_module(project_root, "m", "def f(a, b=2):\n    return a + b\n")
-
-    # Session A: cold write populates the session-local AND shared tiers.
+def test_analysis_reuse_across_sessions_uses_same_row(tmp_path, monkeypatch):
+    path = _write_module(tmp_path, "m", "def f(a, b=2):\n    return a + b\n")
     _use_session(monkeypatch, "A")
     MC._write_persisted_module_analysis(
-        project_root,
         path,
         module_name="m",
         is_package=False,
@@ -159,115 +150,71 @@ def test_analysis_reuse_across_sessions_hydrates_shared(
         func_kinds={"f": "sync"},
         snapshot=PythonSourceSnapshot.capture(path),
     )
-    shared_slot = MC._shared_module_analysis_cache_path_for(
-        path, module_name="m", is_package=False, import_scan_mode="module_init"
+    key = MC._module_analysis_record_key(
+        path,
+        module_name="m",
+        is_package=False,
+        import_scan_mode="module_init",
+        target_python=_DEFAULT_TARGET_PYTHON_VERSION,
     )
-    assert shared_slot is not None and shared_slot.is_file()
-    old = time.time() - 86400
-    os.utime(shared_slot, (old, old))
-    prior_shared = shared_slot.read_bytes()
-
-    # Session B: cold session-local dir; the ONLY way it can read a hit is by
-    # hydrating from the shared tier. Prove the session-local slot did not exist
-    # before the read, and that the read returns the correct payload.
+    before = _age_record("module-analysis", key)
     _use_session(monkeypatch, "B")
-    session_slot_b = MC._module_analysis_cache_path(
-        project_root,
-        path,
-        module_name="m",
-        is_package=False,
-        import_scan_mode="module_init",
+    monkeypatch.setattr(
+        SourceRecordStore,
+        "put",
+        lambda *_a, **_k: pytest.fail("cache hit republished a record"),
     )
-    assert not session_slot_b.exists()  # cold session-local dir
-
     result = MC._read_persisted_module_analysis(
-        project_root,
-        path,
-        module_name="m",
-        is_package=False,
-        import_scan_mode="module_init",
+        path, module_name="m", is_package=False, import_scan_mode="module_init"
     )
     assert result is not None
     defaults, kinds = result
-    assert kinds == {"f": "sync"}
-    assert defaults["f"]["params"] == 2
-    # Hydration materialized the shared entry into the cold session dir.
-    assert session_slot_b.is_file()
-    assert shared_slot.stat().st_mtime > old
-    assert shared_slot.read_bytes() == prior_shared
+    assert kinds == {"f": "sync"} and defaults["f"]["defaults"] == [2]
+    after = _record("module-analysis", key)
+    assert after.revision == before.revision and after.payload == before.payload
+    assert after.used_ns > before.used_ns
 
 
-@pytest.mark.parametrize("protected", [False, True])
-def test_lowering_reuse_across_sessions_no_relower(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, protected: bool
-) -> None:
-    project_root = tmp_path / "proj"
-    project_root.mkdir()
-    path = _write_module(project_root, "m", "def g():\n    return 41 + 1\n")
-    context_digest = "ab" * 32
-    ir_result = {
-        "function_metadata": {},
-        "functions": [{"name": "m__g", "params": [], "return_abi": "value"}],
-        "profile": "release",
-    }
-
+def test_lowering_reuse_across_sessions_no_relower(tmp_path, monkeypatch):
+    path = _write_module(tmp_path, "m", "def g():\n    return 41 + 1\n")
+    digest = "ab" * 32
+    function = {"name": "m__g", "params": [], "return_abi": "value"}
+    result = {"function_metadata": {}, "functions": [function], "profile": "release"}
     _use_session(monkeypatch, "A")
-    MC._write_persisted_module_lowering(
-        project_root,
+    writer_seeds = MC._write_persisted_module_lowering(
         path,
         source_lease=_ModuleSourceLease.path_backed(path),
-        module_name="m",
-        is_package=False,
-        context_digest=context_digest,
-        result=ir_result,
+        context_digest=digest,
+        result=result,
     )
-    shared_slot = MC._shared_module_lowering_cache_path_for(
-        path, module_name="m", is_package=False, context_digest=context_digest
-    )
-    assert shared_slot is not None and shared_slot.is_file()
-    old = time.time() - 86400
-    os.utime(shared_slot, (old, old))
-    prior_shared = shared_slot.read_bytes()
-    if protected:
-        monkeypatch.setenv("MOLT_HOME", str(shared_slot.parent))
+    assert len(writer_seeds) == 1 and writer_seeds[0].function is function
+    before = _age_record("module-lowering", digest)
+    from molt.cli.function_records import decode_lowering_record
 
-    # Teeth: in session B, a re-write must NOT happen -- if the shared tier is
-    # working, the read hits and the caller never re-lowers. Spy on the write.
+    frame = decode_lowering_record(before.payload)
+    metadata_result = json.loads(frame.metadata)["result"]
+    assert "functions" not in metadata_result
+    assert "function_digest_seeds" not in metadata_result
     _use_session(monkeypatch, "B")
-    session_slot_b = MC._module_lowering_cache_path(
-        project_root, path, module_name="m", is_package=False
+    monkeypatch.setattr(
+        SourceRecordStore,
+        "put",
+        lambda *_a, **_k: pytest.fail("cache hit republished a record"),
     )
-    assert not session_slot_b.exists()
-
-    write_calls: list[str] = []
-    original_write = MC._write_cached_json_object
-
-    def _spy_write(p, payload, *, default=None):  # type: ignore[no-untyped-def]
-        write_calls.append(str(p))
-        return original_write(p, payload, default=default)
-
-    monkeypatch.setattr(MC, "_write_cached_json_object", _spy_write)
-
-    reused = MC._read_persisted_module_lowering(
-        project_root,
+    loaded = MC._read_persisted_module_lowering(
         path,
         source_lease=_ModuleSourceLease.path_backed(path),
         module_name="m",
-        is_package=False,
-        context_digest=context_digest,
+        context_digest=digest,
     )
-    assert reused is not None
-    assert reused["functions"][0]["name"] == "m__g"
-    assert reused["profile"] == "release"
-    # The read hydrated via byte-copy (no cache-write), so no re-lowering write
-    # occurred: the frontend never ran in session B.
-    assert write_calls == []
-    assert session_slot_b.is_file()
-    if protected:
-        assert shared_slot.stat().st_mtime == old
-    else:
-        assert shared_slot.stat().st_mtime > old
-    assert shared_slot.read_bytes() == prior_shared
+    assert loaded is not None and loaded["profile"] == "release"
+    assert loaded["functions"] == [function]
+    (seed,) = loaded["function_digest_seeds"]
+    assert seed.function is loaded["functions"][0] and seed.function is not function
+    assert seed.digest == writer_seeds[0].digest and len(seed.digest) == 32
+    after = _record("module-lowering", digest)
+    assert after.revision == before.revision and after.payload == before.payload
+    assert after.used_ns > before.used_ns
 
 
 def test_lowering_reuse_across_projects_and_working_directories(
@@ -287,11 +234,8 @@ def test_lowering_reuse_across_projects_and_working_directories(
     _use_session(monkeypatch, "A")
     monkeypatch.chdir(first)
     MC._write_persisted_module_lowering(
-        first,
         path,
         source_lease=_ModuleSourceLease.path_backed(path),
-        module_name="m",
-        is_package=False,
         context_digest=context_digest,
         result={
             "function_metadata": {},
@@ -302,11 +246,9 @@ def test_lowering_reuse_across_projects_and_working_directories(
     _use_session(monkeypatch, "B")
     monkeypatch.chdir(second)
     reused = MC._read_persisted_module_lowering(
-        second,
         path,
         source_lease=_ModuleSourceLease.path_backed(path),
         module_name="m",
-        is_package=False,
         context_digest=context_digest,
     )
     assert reused is not None
@@ -336,21 +278,16 @@ def test_lowering_cache_hit_returns_fresh_decoded_payload_each_read(
 
     _use_session(monkeypatch, "A")
     MC._write_persisted_module_lowering(
-        project_root,
         path,
         source_lease=_ModuleSourceLease.path_backed(path),
-        module_name="m",
-        is_package=False,
         context_digest=context_digest,
         result=ir_result,
     )
 
     first = MC._read_persisted_module_lowering(
-        project_root,
         path,
         source_lease=_ModuleSourceLease.path_backed(path),
         module_name="m",
-        is_package=False,
         context_digest=context_digest,
     )
     assert first is not None
@@ -359,11 +296,9 @@ def test_lowering_cache_hit_returns_fresh_decoded_payload_each_read(
     first["metadata"]["shape"] = ("mutated",)
 
     second = MC._read_persisted_module_lowering(
-        project_root,
         path,
         source_lease=_ModuleSourceLease.path_backed(path),
         module_name="m",
-        is_package=False,
         context_digest=context_digest,
     )
 
@@ -460,11 +395,8 @@ def test_mtime_only_change_still_reuses_lowering_from_shared(
 
     _use_session(monkeypatch, "A")
     MC._write_persisted_module_lowering(
-        project_root,
         path,
         source_lease=_ModuleSourceLease.path_backed(path),
-        module_name="m",
-        is_package=False,
         context_digest=context_digest,
         result=ir_result,
     )
@@ -473,27 +405,21 @@ def test_mtime_only_change_still_reuses_lowering_from_shared(
     _use_session(monkeypatch, "B")
     _bump_mtime(path)
 
-    write_calls: list[str] = []
-    original_write = MC._write_cached_json_object
-
-    def _spy_write(p, payload, *, default=None):  # type: ignore[no-untyped-def]
-        write_calls.append(str(p))
-        return original_write(p, payload, default=default)
-
-    monkeypatch.setattr(MC, "_write_cached_json_object", _spy_write)
+    monkeypatch.setattr(
+        SourceRecordStore,
+        "put",
+        lambda *_a, **_k: pytest.fail("mtime-only hit republished a record"),
+    )
 
     reused = MC._read_persisted_module_lowering(
-        project_root,
         path,
         source_lease=_ModuleSourceLease.path_backed(path),
         module_name="m",
-        is_package=False,
         context_digest=context_digest,
     )
     assert reused is not None
     assert reused["functions"][0]["name"] == "m__g"
-    # Hydrated via byte-copy; no re-lowering write occurred despite the new mtime.
-    assert write_calls == []
+    # An admitted row hit does not republish despite the new source mtime.
 
 
 def test_mtime_only_change_still_reuses_analysis_from_shared(
@@ -506,7 +432,6 @@ def test_mtime_only_change_still_reuses_analysis_from_shared(
 
     _use_session(monkeypatch, "A")
     MC._write_persisted_module_analysis(
-        project_root,
         path,
         module_name="m",
         is_package=False,
@@ -528,7 +453,6 @@ def test_mtime_only_change_still_reuses_analysis_from_shared(
     _use_session(monkeypatch, "B")
     _bump_mtime(path)
     result = MC._read_persisted_module_analysis(
-        project_root,
         path,
         module_name="m",
         is_package=False,
@@ -556,11 +480,8 @@ def test_same_size_different_content_is_not_reused(
 
     _use_session(monkeypatch, "A")
     MC._write_persisted_module_lowering(
-        project_root,
         path,
         source_lease=_ModuleSourceLease.path_backed(path),
-        module_name="m",
-        is_package=False,
         context_digest=context_digest,
         result={
             "function_metadata": {},
@@ -577,11 +498,9 @@ def test_same_size_different_content_is_not_reused(
 
     assert (
         MC._read_persisted_module_lowering(
-            project_root,
             path,
             source_lease=_ModuleSourceLease.path_backed(path),
             module_name="m",
-            is_package=False,
             context_digest=context_digest,
         )
         is not None
@@ -597,11 +516,9 @@ def test_same_size_different_content_is_not_reused(
     _clear_path_caches()
 
     reused = MC._read_persisted_module_lowering(
-        project_root,
         path,
         source_lease=_ModuleSourceLease.path_backed(path),
         module_name="m",
-        is_package=False,
         context_digest=context_digest,
     )
     assert reused is None
@@ -622,11 +539,8 @@ def test_changed_source_content_is_not_reused_from_shared(
 
     _use_session(monkeypatch, "A")
     MC._write_persisted_module_lowering(
-        project_root,
         path,
         source_lease=_ModuleSourceLease.path_backed(path),
-        module_name="m",
-        is_package=False,
         context_digest=context_digest,
         result={
             "function_metadata": {},
@@ -640,19 +554,14 @@ def test_changed_source_content_is_not_reused_from_shared(
             ],
         },
     )
-    shared_slot = MC._shared_module_lowering_cache_path_for(
-        path, module_name="m", is_package=False, context_digest=context_digest
-    )
-    assert shared_slot is not None and shared_slot.is_file()
+    assert _record("module-lowering", context_digest) is not None
 
     # Session B, DIFFERENT source content at the same path (a real edit).
     assert (
         MC._read_persisted_module_lowering(
-            project_root,
             path,
             source_lease=_ModuleSourceLease.path_backed(path),
             module_name="m",
-            is_package=False,
             context_digest=context_digest,
         )
         is not None
@@ -663,11 +572,9 @@ def test_changed_source_content_is_not_reused_from_shared(
     _clear_path_caches()  # drop any cached content sha for the old bytes
 
     reused = MC._read_persisted_module_lowering(
-        project_root,
         path,
         source_lease=_ModuleSourceLease.path_backed(path),
         module_name="m",
-        is_package=False,
         context_digest=context_digest,
     )
     # A stale hit here would be a MISCOMPILE. The source-content sha256 in the
@@ -684,7 +591,6 @@ def test_changed_tooling_fingerprint_is_not_reused_from_shared(
 
     _use_session(monkeypatch, "A")
     MC._write_persisted_module_analysis(
-        project_root,
         path,
         module_name="m",
         is_package=False,
@@ -711,13 +617,7 @@ def test_changed_tooling_fingerprint_is_not_reused_from_shared(
 
     # The shared slot for the NEW fingerprint identity must be a different slot,
     # and no entry exists there -> cold miss (no cross-identity reuse).
-    new_slot = MC._shared_module_analysis_cache_path_for(
-        path, module_name="m", is_package=False, import_scan_mode="module_init"
-    )
-    assert new_slot is not None and not new_slot.is_file()
-
     result = MC._read_persisted_module_analysis(
-        project_root,
         path,
         module_name="m",
         is_package=False,
@@ -726,105 +626,93 @@ def test_changed_tooling_fingerprint_is_not_reused_from_shared(
     assert result is None
 
 
-def test_changed_target_python_is_not_reused_from_shared(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_changed_target_python_is_not_reused_from_shared(tmp_path, monkeypatch):
     from molt.target_python import TargetPythonVersion
 
-    project_root = tmp_path / "proj"
-    project_root.mkdir()
-    path = _write_module(project_root, "m", "def f():\n    return 1\n")
-    context_digest = "ab" * 32
-    py312 = TargetPythonVersion(3, 12, 0)
-    py313 = TargetPythonVersion(3, 13, 0)
-    assert py312.tag != py313.tag
+    path = _write_module(tmp_path, "m", "def f():\n    return 1\n")
 
-    _use_session(monkeypatch, "A")
+    def context(target):
+        return MC._module_lowering_context_digest_for_module(
+            "m",
+            path,
+            source_lease=_ModuleSourceLease.path_backed(path),
+            logical_source_path=str(path),
+            is_package=False,
+            target_python=target,
+            **_LOWERING_CTX,
+        )
+
+    py312, py313 = TargetPythonVersion(3, 12, 0), TargetPythonVersion(3, 13, 0)
+    first, second = context(py312), context(py313)
+    assert first is not None and second is not None and first != second
     MC._write_persisted_module_lowering(
-        project_root,
         path,
         source_lease=_ModuleSourceLease.path_backed(path),
-        module_name="m",
-        is_package=False,
-        context_digest=context_digest,
-        result={
-            "function_metadata": {},
-            "functions": [{"name": "m__f", "params": [], "return_abi": "value"}],
-        },
-        target_python=py312,
-    )
-
-    # Session B targeting a different Python -> different shared slot -> cold miss.
-    _use_session(monkeypatch, "B")
-    slot_313 = MC._shared_module_lowering_cache_path_for(
-        path,
-        module_name="m",
-        is_package=False,
-        context_digest=context_digest,
-        target_python=py313,
-    )
-    assert slot_313 is not None and not slot_313.is_file()
-
-    reused = MC._read_persisted_module_lowering(
-        project_root,
-        path,
-        source_lease=_ModuleSourceLease.path_backed(path),
-        module_name="m",
-        is_package=False,
-        context_digest=context_digest,
-        target_python=py313,
-    )
-    assert reused is None
-
-
-# --------------------------------------------------------------------------
-# exFAT-safe: the publish/hydrate path never uses os.link (byte copy only).
-# --------------------------------------------------------------------------
-
-
-def test_publish_and_hydrate_never_use_os_link(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    project_root = tmp_path / "proj"
-    project_root.mkdir()
-    path = _write_module(project_root, "m", "def f():\n    return 1\n")
-    context_digest = "ab" * 32
-
-    link_calls: list[tuple[str, str]] = []
-    real_link = os.link
-
-    def _tracking_link(src, dst, *a, **k):  # type: ignore[no-untyped-def]
-        link_calls.append((str(src), str(dst)))
-        return real_link(src, dst, *a, **k)
-
-    # A tripwire must catch this call from any module, so it stays process-wide.
-    # Only this thread meets the fake; other threads reach the real function.
-    monkeypatch.setattr(os, "link", current_thread_only(_tracking_link, real_link))
-
-    _use_session(monkeypatch, "A")
-    MC._write_persisted_module_lowering(
-        project_root,
-        path,
-        source_lease=_ModuleSourceLease.path_backed(path),
-        module_name="m",
-        is_package=False,
-        context_digest=context_digest,
+        context_digest=first,
         result={
             "function_metadata": {},
             "functions": [{"name": "m__f", "params": [], "return_abi": "value"}],
         },
     )
     _use_session(monkeypatch, "B")
-    MC._read_persisted_module_lowering(
-        project_root,
-        path,
-        source_lease=_ModuleSourceLease.path_backed(path),
-        module_name="m",
-        is_package=False,
-        context_digest=context_digest,
+    assert (
+        MC._read_persisted_module_lowering(
+            path,
+            source_lease=_ModuleSourceLease.path_backed(path),
+            module_name="m",
+            context_digest=second,
+        )
+        is None
     )
 
-    assert link_calls == []
+
+# --------------------------------------------------------------------------
+# One store publication; reads never duplicate or hydrate records.
+# --------------------------------------------------------------------------
+
+
+def test_module_cache_publishes_once_without_file_hydration(tmp_path, monkeypatch):
+    path = _write_module(tmp_path, "m", "pass\n")
+    calls = []
+    put = SourceRecordStore.put
+
+    def publish(store, kind, key, payload, *, generation):
+        calls.append((kind, key))
+        return put(store, kind, key, payload, generation=generation)
+
+    monkeypatch.setattr(SourceRecordStore, "put", publish)
+    MC._write_persisted_module_analysis(
+        path,
+        module_name="m",
+        is_package=False,
+        import_scan_mode="full",
+        func_defaults={},
+        func_kinds={},
+        snapshot=PythonSourceSnapshot.capture(path),
+    )
+    MC._write_persisted_module_lowering(
+        path,
+        source_lease=_ModuleSourceLease.path_backed(path),
+        context_digest="ab" * 32,
+        result={"function_metadata": {}, "functions": []},
+    )
+    assert [kind for kind, _ in calls] == ["module-analysis", "module-lowering"]
+    before = list(calls)
+    assert MC._read_persisted_module_analysis(
+        path, module_name="m", is_package=False, import_scan_mode="full"
+    ) == ({}, {})
+    assert (
+        MC._read_persisted_module_lowering(
+            path,
+            source_lease=_ModuleSourceLease.path_backed(path),
+            module_name="m",
+            context_digest="ab" * 32,
+        )
+        is not None
+    )
+    assert calls == before
+    assert not list(tmp_path.rglob("module_analysis"))
+    assert not list(tmp_path.rglob("module_lowering"))
 
 
 # --------------------------------------------------------------------------
@@ -832,102 +720,52 @@ def test_publish_and_hydrate_never_use_os_link(
 # --------------------------------------------------------------------------
 
 
-def test_env_optout_forces_cold_lowering_miss(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """With the opt-out set, a warm entry (session-local AND shared) is not reused.
-
-    This is the debugging lever for a suspected stale-cache miscompile: it must
-    strip *all* lowering-result reuse so the build is a true cold re-lower. A miss
-    can only ever force a recompute, so the opt-out can never itself miscompile.
-    """
-    project_root = tmp_path / "proj"
-    project_root.mkdir()
-    path = _write_module(project_root, "m", "def g():\n    return 41 + 1\n")
-    context_digest = "ab" * 32
-    ir_result = {
-        "function_metadata": {},
-        "functions": [{"name": "m__g", "params": [], "return_abi": "value"}],
-    }
-
-    # Populate BOTH tiers in session A with the cache enabled.
-    _use_session(monkeypatch, "A")
+def test_env_optout_forces_cold_lowering_miss(tmp_path, monkeypatch):
+    path = _write_module(tmp_path, "m", "pass\n")
+    digest = "ab" * 32
     MC._write_persisted_module_lowering(
-        project_root,
         path,
         source_lease=_ModuleSourceLease.path_backed(path),
-        module_name="m",
-        is_package=False,
-        context_digest=context_digest,
-        result=ir_result,
+        context_digest=digest,
+        result={"function_metadata": {}, "functions": []},
     )
-    session_slot_a = MC._module_lowering_cache_path(
-        project_root, path, module_name="m", is_package=False
-    )
-    shared_slot = MC._shared_module_lowering_cache_path_for(
-        path, module_name="m", is_package=False, context_digest=context_digest
-    )
-    assert session_slot_a.is_file()
-    assert shared_slot is not None and shared_slot.is_file()
-
-    # Same session (warm session-local slot present) but opt-out engaged.
+    before = _record("module-lowering", digest)
     monkeypatch.setenv("MOLT_DISABLE_FRONTEND_LOWERING_CACHE", "1")
     assert (
         MC._read_persisted_module_lowering(
-            project_root,
             path,
             source_lease=_ModuleSourceLease.path_backed(path),
             module_name="m",
-            is_package=False,
-            context_digest=context_digest,
+            context_digest=digest,
         )
         is None
     )
-
-    # Flipping it back off restores reuse (proves the read path is otherwise warm).
+    assert _record("module-lowering", digest).revision == before.revision
     monkeypatch.setenv("MOLT_DISABLE_FRONTEND_LOWERING_CACHE", "0")
     assert (
         MC._read_persisted_module_lowering(
-            project_root,
             path,
             source_lease=_ModuleSourceLease.path_backed(path),
             module_name="m",
-            is_package=False,
-            context_digest=context_digest,
+            context_digest=digest,
         )
         is not None
     )
 
 
-def test_env_optout_skips_shared_publish(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """With the opt-out set, a cold write must not publish into the shared tier."""
-    project_root = tmp_path / "proj"
-    project_root.mkdir()
-    path = _write_module(project_root, "m", "def g():\n    return 1\n")
-    context_digest = "ab" * 32
-
+def test_env_optout_skips_shared_publish(tmp_path, monkeypatch):
+    path = _write_module(tmp_path, "m", "pass\n")
     monkeypatch.setenv("MOLT_DISABLE_FRONTEND_LOWERING_CACHE", "1")
-    _use_session(monkeypatch, "A")
-    MC._write_persisted_module_lowering(
-        project_root,
-        path,
-        source_lease=_ModuleSourceLease.path_backed(path),
-        module_name="m",
-        is_package=False,
-        context_digest=context_digest,
-        result={
-            "function_metadata": {},
-            "functions": [{"name": "m__g", "params": [], "return_abi": "value"}],
-        },
+    assert (
+        MC._write_persisted_module_lowering(
+            path,
+            source_lease=_ModuleSourceLease.path_backed(path),
+            context_digest="ab" * 32,
+            result={"function_metadata": {}, "functions": []},
+        )
+        == ()
     )
-    shared_slot = MC._shared_module_lowering_cache_path_for(
-        path, module_name="m", is_package=False, context_digest=context_digest
-    )
-    # The session-local entry is still written (correctness isolation), but the
-    # shared, cross-session tier is NOT populated while the opt-out is engaged.
-    assert shared_slot is not None and not shared_slot.is_file()
+    assert source_records("module-lowering") == {}
 
 
 # --------------------------------------------------------------------------
@@ -985,95 +823,39 @@ def test_lowering_cache_summary_reports_hit_rate() -> None:
     assert mixed["hit_rate"] == pytest.approx(0.5)
 
 
-def test_refused_shared_lowering_does_not_refresh_recency(
-    tmp_path: Path, monkeypatch
-) -> None:
-    project = tmp_path / "project"
-    project.mkdir()
-    source = _write_module(project, "m", "def f():\n    return 1\n")
+def test_refused_shared_lowering_does_not_refresh_recency(tmp_path, monkeypatch):
+    source = _write_module(tmp_path, "m", "def f():\n    return 1\n")
     digest = "ab" * 32
-    _use_session(monkeypatch, "writer")
     MC._write_persisted_module_lowering(
-        project,
         source,
         source_lease=_ModuleSourceLease.path_backed(source),
-        module_name="m",
-        is_package=False,
         context_digest=digest,
         result={
             "function_metadata": {},
             "functions": [{"name": "m__f", "params": [], "return_abi": "value"}],
         },
     )
-    slot = MC._shared_module_lowering_cache_path_for(
-        source, module_name="m", is_package=False, context_digest=digest
-    )
-    assert slot is not None
-    payload = json.loads(slot.read_text(encoding="utf-8"))
+    payload = source_records("module-lowering")[digest]
     payload["context_digest"] = "cd" * 32
-    slot.write_text(json.dumps(payload), encoding="utf-8")
-    old = time.time() - 86400
-    os.utime(slot, (old, old))
-    before = slot.stat().st_mtime_ns
+    replace_source_record("module-lowering", digest, payload)
+    before = _age_record("module-lowering", digest)
     _use_session(monkeypatch, "reader")
     assert (
         MC._read_persisted_module_lowering(
-            project,
             source,
             source_lease=_ModuleSourceLease.path_backed(source),
             module_name="m",
-            is_package=False,
             context_digest=digest,
         )
         is None
     )
-    assert slot.stat().st_mtime_ns == before
-
-
-@pytest.mark.skipif(os.name != "posix", reason="real POSIX character-device control")
-def test_shared_frontend_hydration_refuses_special_file_before_copy(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    import stat
-
-    device = Path(os.devnull)
-    assert stat.S_ISCHR(device.lstat().st_mode)
-    monkeypatch.setattr(
-        MFC,
-        "_atomic_copy_file",
-        lambda *args: pytest.fail("special file reached copy admission"),
-    )
-    output = tmp_path / "owned.json"
-    assert MFC._hydrate_shared_frontend_cache(cache_path=device, dest=output) is None
-    assert not output.exists()
-
-
-def test_shared_cache_copies_need_no_durability_barriers(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    from molt import file_publication
-    from tests.process_guard_common import install_module_view
-
-    def unexpected_flush(_fd: int) -> None:
-        pytest.fail("shared cache copy requested a durability barrier")
-
-    install_module_view(monkeypatch, "os", os, file_publication, fsync=unexpected_flush)
-    source, shared, hydrated = (
-        tmp_path / name for name in ("local", "shared", "fresh")
-    )
-    source.write_bytes(b'{"independent_semantic_validation":"still required"}\n')
-    MFC._publish_shared_frontend_cache(src=source, cache_path=shared)
-    assert shared.read_bytes() == source.read_bytes()
-    assert (
-        MFC._hydrate_shared_frontend_cache(cache_path=shared, dest=hydrated) is not None
-    )
-    assert hydrated.read_bytes() == source.read_bytes()
-    assert not list(tmp_path.glob(".molt-*.tmp"))
+    after = _record("module-lowering", digest)
+    assert after.used_ns == before.used_ns and after.revision == before.revision
 
 
 @pytest.mark.parametrize(
     "defect",
-    [None, "missing", "orphan", "duplicate", "bad-boundary", "embedded", "schema7"],
+    [None, "missing", "orphan", "duplicate", "bad-boundary", "embedded", "schema8"],
 )
 def test_actual_frontend_sidecar_survives_cache_and_refuses_invalid_ownership(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, defect: str | None
@@ -1095,25 +877,25 @@ def test_actual_frontend_sidecar_survives_cache_and_refuses_invalid_ownership(
     context_digest = "ad" * 32
     lease = _ModuleSourceLease.path_backed(path)
     MC._write_persisted_module_lowering(
-        tmp_path,
         path,
         source_lease=lease,
-        module_name="m",
-        is_package=False,
         context_digest=context_digest,
         result=result,
     )
     _use_session(monkeypatch, "B")
     loaded = MC._read_persisted_module_lowering(
-        tmp_path,
         path,
         source_lease=lease,
         module_name="m",
-        is_package=False,
         context_digest=context_digest,
     )
-    assert loaded == expected
     assert loaded is not None
+    seeds = loaded.pop("function_digest_seeds")
+    assert loaded == expected
+    assert all(
+        seed.function is function
+        for seed, function in zip(seeds, loaded["functions"], strict=True)
+    )
     assert loaded["functions"] is not result["functions"]
     assert (
         loaded["function_metadata"]["molt_init_m"]
@@ -1141,8 +923,8 @@ def test_actual_frontend_sidecar_survives_cache_and_refuses_invalid_ownership(
         broken["functions"][0]["gpu_body_origin"] = {}
     # Exercise the actual read admission; corrupt bytes use the existing codec.
     payload = {
-        "version": 7
-        if defect == "schema7"
+        "version": 8
+        if defect == "schema8"
         else MC._MODULE_LOWERING_CACHE_SCHEMA_VERSION,
         "context_digest": context_digest,
         "source_sha256": lease.source_sha256,
@@ -1150,9 +932,9 @@ def test_actual_frontend_sidecar_survives_cache_and_refuses_invalid_ownership(
         "source_kind": lease.source_kind,
         "result": json.loads(json.dumps(broken)),
     }
+    replace_source_record("module-lowering", context_digest, payload)
     assert (
-        MC._validate_persisted_module_lowering_payload(
-            payload,
+        MC._read_persisted_module_lowering(
             path,
             source_lease=lease,
             module_name="m",
@@ -1160,3 +942,75 @@ def test_actual_frontend_sidecar_survives_cache_and_refuses_invalid_ownership(
         )
         is None
     )
+
+
+def test_valid_lowering_record_exceeds_analysis_allocation_limit(tmp_path):
+    from molt.cli.json_cache import SOURCE_ANALYSIS_CACHE_MAX_BYTES
+
+    path = _write_module(tmp_path, "m", "pass\n")
+    text = "a" * (SOURCE_ANALYSIS_CACHE_MAX_BYTES + 1)
+    function = {
+        "name": "m__f",
+        "params": [],
+        "return_abi": "value",
+        "ops": [
+            {"kind": "const_str", "s_value": text, "out": "value"},
+            {"kind": "ret", "args": ["value"]},
+        ],
+    }
+    digest = "ef" * 32
+    MC._write_persisted_module_lowering(
+        path,
+        source_lease=_ModuleSourceLease.path_backed(path),
+        context_digest=digest,
+        result={"function_metadata": {}, "functions": [function]},
+    )
+    loaded = MC._read_persisted_module_lowering(
+        path,
+        source_lease=_ModuleSourceLease.path_backed(path),
+        module_name="m",
+        context_digest=digest,
+    )
+    assert loaded is not None
+    assert loaded["functions"][0]["ops"][0]["s_value"] == text
+    assert loaded["function_digest_seeds"][0].function is loaded["functions"][0]
+
+
+@pytest.mark.parametrize(
+    "metadata_result",
+    [{"__tuple__": []}, {"__set__": []}, {"__bytes__": ""}, {"__ellipsis__": True}],
+)
+def test_nonobject_rich_metadata_refuses_without_refresh(tmp_path, metadata_result):
+    import msgspec
+
+    path = _write_module(tmp_path, "m", "pass\n")
+    lease = _ModuleSourceLease.path_backed(path)
+    digest = "bc" * 32
+    MC._write_persisted_module_lowering(
+        path,
+        source_lease=lease,
+        context_digest=digest,
+        result={"function_metadata": {}, "functions": []},
+    )
+    original = _record("module-lowering", digest)
+    # Keep the real frame, source and body identity intact. Only the rich
+    # metadata result decodes to a non-object; it must be an optional miss.
+    wire = msgspec.msgpack.decode(original.payload)
+    metadata = json.loads(wire[1])
+    metadata["result"] = metadata_result
+    wire[1] = json.dumps(metadata).encode()
+    assert shared_source_records().put(
+        "module-lowering",
+        digest,
+        msgspec.msgpack.encode(wire),
+        generation=original.generation,
+    )
+    before = _age_record("module-lowering", digest)
+    assert (
+        MC._read_persisted_module_lowering(
+            path, source_lease=lease, module_name="m", context_digest=digest
+        )
+        is None
+    )
+    after = _record("module-lowering", digest)
+    assert (after.revision, after.used_ns) == (before.revision, before.used_ns)

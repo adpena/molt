@@ -3,6 +3,7 @@ from __future__ import annotations
 import ast
 import hashlib
 import json
+import os
 from typing import Any, Iterable, Mapping, TextIO
 
 from molt.frontend import (
@@ -14,6 +15,9 @@ from molt.frontend import (
     ReceiverKind,
 )
 from molt.opcode_literal_payloads import integer_literal_bytes, literal_ast_dump
+
+from molt.cli import function_records
+from molt.cli.function_records import FunctionDigestSeed
 
 from molt.cli.cache_fingerprints import _cache_fingerprint, _cache_tooling_fingerprint
 from molt.cli.rust_cpu_policy import RustCpuPolicy
@@ -274,31 +278,54 @@ def _cache_json_payload_bytes(value: object) -> bytes:
 
 # Domain tag of the Merkle payload digest; framing is fixed so no two payloads
 # share an encoding: tag, header digest, function count, function digests.
-_PAYLOAD_DIGEST_TAG = b"molt.cache-payload.merkle.v1\0"
+_PAYLOAD_DIGEST_TAG = b"molt.cache-payload.merkle.msgpack-functions.v2\0"
 
 
 class FunctionDigests:
-    """The canonical-JSON SHA-256 of each IR function, taken once per owner.
+    """One binary-body digest per strongly held executable function identity.
 
-    A payload digest is a Merkle node over its functions' digests, so the
-    module payload and the shared stdlib key, which hold the same function
-    objects, encode each function once instead of once per payload. Bazel
-    action keys and Go's build cache combine input digests the same way.
-    The owner holds every function it digested, so an identity is never
-    reused for another object; it must not outlive an IR that a pass may
-    rewrite in place.
+    Seeds come from the admitted record producer/decoder. Replacements created
+    by copy-on-write assembly have different identities and use the same codec
+    once here. This owner starts after rewrites; functions must stay unchanged
+    for its lifetime. Optional verification re-encodes seeds once at admission.
     """
 
     __slots__ = ("_by_identity",)
 
-    def __init__(self) -> None:
-        self._by_identity: dict[int, tuple[object, bytes]] = {}
+    def __init__(self, seeds: Iterable[FunctionDigestSeed] = ()) -> None:
+        admitted: dict[int, tuple[dict[str, Any], bytes]] = {}
+        for seed in seeds:
+            if (
+                not isinstance(seed, FunctionDigestSeed)
+                or not isinstance(seed.function, dict)
+                or type(seed.digest) is not bytes
+                or len(seed.digest) != 32
+            ):
+                raise ValueError("invalid function digest seed")
+            identity = id(seed.function)
+            previous = admitted.get(identity)
+            if previous is not None and previous[1] != seed.digest:
+                raise ValueError("conflicting function digest seeds")
+            admitted[identity] = (seed.function, seed.digest)
+        if os.environ.get("MOLT_VERIFY_FUNCTION_DIGESTS") == "1":
+            for function, digest in admitted.values():
+                actual = function_records.function_body_digest(
+                    function_records.encode_function_body(function)
+                )
+                if actual != digest:
+                    raise ValueError("function digest seed verification failed")
+        # Publish only after every seed and optional verification has succeeded.
+        self._by_identity = admitted
 
     def digest(self, function: object) -> bytes:
         held = self._by_identity.get(id(function))
         if held is not None and held[0] is function:
             return held[1]
-        digest = hashlib.sha256(_cache_json_payload_bytes(function)).digest()
+        if not isinstance(function, dict):
+            raise TypeError("function digest requires a function dict")
+        digest = function_records.function_body_digest(
+            function_records.encode_function_body(function)
+        )
         self._by_identity[id(function)] = (function, digest)
         return digest
 
@@ -308,8 +335,8 @@ def _cache_payload_digest(
 ) -> str:
     """Identify a payload by its header and the digest of each function.
 
-    Two payloads share a digest exactly when their canonical JSON encodings
-    are equal (up to SHA-256 collisions).
+    Headers retain canonical rich JSON; functions use their domain-tagged
+    sorted MessagePack bytes. Function order and header/body boundaries matter.
     """
     functions = payload_ir.get("functions")
     digest = hashlib.sha256(_PAYLOAD_DIGEST_TAG)

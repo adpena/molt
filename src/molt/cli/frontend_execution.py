@@ -6,7 +6,7 @@ import time
 from concurrent.futures import ProcessPoolExecutor
 from concurrent.futures.process import BrokenProcessPool
 from pathlib import Path
-from typing import Any, Callable, Collection, Mapping, Sequence, cast
+from typing import TYPE_CHECKING, Any, Callable, Collection, Mapping, Sequence, cast
 
 from molt import compiler_process
 from molt import input_report as _input_report
@@ -53,6 +53,10 @@ from molt.cli.output import CliFailure as _CliFailure
 from molt.target_python import (
     TargetPythonVersion,
 )
+
+
+if TYPE_CHECKING:
+    from molt.cli.function_records import FunctionDigestSeed
 
 
 @_source_tree_fingerprint_transaction()
@@ -500,17 +504,17 @@ def _run_frontend_parallel_layer_batches(
                 # so a retry pays only failed-step-forward. Content-addressed and
                 # idempotent; the shared tier survives a target/ wipe.
                 if result.get("ok"):
-                    _write_parallel_persisted_module_lowering(
-                        project_root=project_root,
-                        module_path=module_graph[module_name],
-                        module_name=module_name,
-                        source_lease=module_source_catalog.lease_for(
-                            module_name, module_graph[module_name]
-                        ),
-                        worker_mode="parallel",
-                        context_digest=context_digest_by_module.get(module_name),
-                        result=result,
-                        target_python=target_python,
+                    result["function_digest_seeds"] = (
+                        _write_parallel_persisted_module_lowering(
+                            project_root=project_root,
+                            module_path=module_graph[module_name],
+                            source_lease=module_source_catalog.lease_for(
+                                module_name, module_graph[module_name]
+                            ),
+                            worker_mode="parallel",
+                            context_digest=context_digest_by_module.get(module_name),
+                            result=result,
+                        )
                     )
                 _frontend_parallel._record_parallel_worker_result(
                     layer_state,
@@ -564,31 +568,27 @@ def _write_parallel_persisted_module_lowering(
     *,
     project_root: Path | None,
     module_path: Path,
-    module_name: str,
     source_lease: _ModuleSourceLease,
     worker_mode: str,
     context_digest: str | None,
     result: Mapping[str, Any],
-    target_python: TargetPythonVersion,
-) -> None:
+) -> tuple[FunctionDigestSeed, ...]:
     _validate_frontend_module_source(source_lease, module_path, result)
     if (
         project_root is None
         or worker_mode == "parallel_cache_hit"
         or context_digest is None
     ):
-        return
+        return tuple(result.get("function_digest_seeds", ()))
     with contextlib.suppress(OSError):
-        _write_persisted_module_lowering(
-            project_root,
+        return _write_persisted_module_lowering(
             module_path,
             source_lease=source_lease,
-            module_name=module_name,
-            is_package=module_path.name == "__init__.py",
             context_digest=context_digest,
             result={key: value for key, value in result.items() if key != "ok"},
-            target_python=target_python,
         )
+
+    return ()
 
 
 def _consume_frontend_module_result(
@@ -621,6 +621,7 @@ def _consume_frontend_module_result(
         module_name,
         ir_functions=cast(list[dict[str, Any]], result["functions"]),
         function_metadata=result.get("function_metadata"),
+        function_digest_seeds=result.get("function_digest_seeds", ()),
         func_code_ids=cast(dict[str, int], result["func_code_ids"]),
         local_classes=_known_classes_from_payload(result["local_classes"]),
     )

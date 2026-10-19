@@ -260,13 +260,25 @@ def test_module_integration_refuses_invalid_sidecar_before_publishing_functions(
 
 @pytest.mark.parametrize(
     "defect",
-    [None, "invalid-sidecar", "orphan-sidecar", "late-code-owner", "class-conflict"],
+    [
+        None,
+        "invalid-sidecar",
+        "orphan-sidecar",
+        "late-code-owner",
+        "class-conflict",
+        "copied-seed-body",
+        "duplicate-seed-owner",
+        "short-seed-digest",
+        "nonbytes-seed-digest",
+        "none-seeds",
+    ],
 )
 def test_module_admission_commits_all_state_only_after_complete_validation(
     defect: str | None,
 ) -> None:
     from dataclasses import fields
     from molt.frontend import ClassId
+    from molt.cli.function_records import FunctionDigestSeed, encode_lowering_record
 
     symbol = "molt_init_incoming"
     earlier = ClassId("incoming", "A", (1, 0))
@@ -279,9 +291,11 @@ def test_module_admission_commits_all_state_only_after_complete_validation(
     }
     retained_class = {"dynamic": False}
     retained_row = {"app_callable_bindings": []}
+    _encoded, (retained_seed,) = encode_lowering_record(b"{}", [retained_function])
     state = _FrontendIntegrationState(
         functions=[retained_function],
         known_classes={seeded_class: retained_class},
+        function_digest_seeds=[retained_seed],
         global_code_ids={"seed__body": 0},
         function_metadata={"seed__body": retained_row},
         class_definition_owners={seeded_class.definition_symbol: "seed"},
@@ -312,6 +326,22 @@ def test_module_admission_commits_all_state_only_after_complete_validation(
         function["ops"].insert(-1, {"kind": "trace_enter_slot", "s_value": "absent"})
     elif defect == "class-conflict":
         state.class_definition_owners[later.definition_symbol] = "other"
+    _encoded, accepted_seeds = encode_lowering_record(b"{}", [function])
+    seeds: Any = accepted_seeds  # Deliberately malformed receiver evidence below.
+    seed = accepted_seeds[0]
+    if defect == "copied-seed-body":
+        copied = deepcopy(function)
+        assert copied == function and copied is not function
+        seeds = (FunctionDigestSeed(copied, seed.digest),)
+    elif defect == "duplicate-seed-owner":
+        seeds = (seed, FunctionDigestSeed(function, seed.digest))
+    elif defect == "short-seed-digest":
+        seeds = (FunctionDigestSeed(function, seed.digest[:-1]),)
+    elif defect == "nonbytes-seed-digest":
+        invalid_digest: Any = bytearray(seed.digest)
+        seeds = (FunctionDigestSeed(function, invalid_digest),)
+    elif defect == "none-seeds":
+        seeds = None
     before = deepcopy(state)
     owners = {field.name: getattr(state, field.name) for field in fields(state)}
     incoming = deepcopy((function, metadata))
@@ -322,6 +352,7 @@ def test_module_admission_commits_all_state_only_after_complete_validation(
         function_metadata=metadata,
         func_code_ids={symbol: 0},
         local_classes={earlier: {"dynamic": False}, later: {"dynamic": False}},
+        function_digest_seeds=seeds,
     )
     assert (function, metadata) == incoming
     for field, owner in owners.items():
@@ -329,12 +360,15 @@ def test_module_admission_commits_all_state_only_after_complete_validation(
     assert state.functions[0] is retained_function
     assert state.known_classes[seeded_class] is retained_class
     assert state.function_metadata["seed__body"] is retained_row
+    assert state.function_digest_seeds[0] is retained_seed
     if defect is not None:
         assert issue is not None
         assert state == before
     else:
         assert issue is None
         assert state.functions[-1] is function
+        assert state.function_digest_seeds[-1] is seed
+        assert state.function_digest_seeds[-1].function is state.functions[-1]
         assert state.function_metadata[symbol] is metadata[symbol]
         assert list(state.global_code_ids) == [
             "seed__body",

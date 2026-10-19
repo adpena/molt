@@ -218,7 +218,7 @@ def test_persisted_cache_admission_rejects_noncanonical_integer_metadata(
                     "constant_metadata": raw,
                 },
             }
-            # Read actual JSON carriers, as both persisted cache tiers do.
+            # Validate rich metadata JSON; lowering bodies use a separate pure codec.
             analysis_result = MC._validate_persisted_module_analysis_payload(
                 json.loads(json.dumps(analysis)),
                 source,

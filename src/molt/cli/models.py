@@ -46,6 +46,7 @@ from molt.type_facts import TypeFacts
 from molt.toolchain_identity import StableRegularFileIdentity
 
 if TYPE_CHECKING:
+    from molt.cli.function_records import FunctionDigestSeed
     from molt.frontend.module_publication import FunctionAssemblyMetadata
     from molt.cli.wasm_codegen_layout import WasmCodegenLayout
     from molt.compiler_analysis.python_namespace_graph import PythonNamespacePremise
@@ -880,6 +881,7 @@ class _SerialFrontendLoweringHooks:
 class _FrontendIntegrationState:
     functions: list[dict[str, Any]]
     known_classes: dict[ClassId, ClassInfo]
+    function_digest_seeds: list[FunctionDigestSeed] = field(default_factory=list)
     global_code_ids: dict[str, int] = field(default_factory=dict)
     function_metadata: dict[str, FunctionAssemblyMetadata] = field(default_factory=dict)
     # HF-220: the module that owns each class statement symbol, and the first
@@ -2380,6 +2382,7 @@ class _PreparedBackendRuntimeContext:
 class _PreparedBackendIR:
     ir: dict[str, Any]
     function_metadata: dict[str, FunctionAssemblyMetadata]
+    function_digest_seeds: tuple[FunctionDigestSeed, ...] = ()
     required_link_features: frozenset[str] = frozenset()
     # Import bedrock registry (molt.cli.module_registry.ModuleRegistry) on the
     # native lane; None on lanes that keep the legacy isolate dispatch.

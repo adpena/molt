@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-from molt.cache_eviction import refresh_cache_entry_recency
-
 import ast
 import contextlib
 import hashlib
@@ -22,7 +20,6 @@ from molt.frontend.sema.funcmeta import collect_module_func_defaults
 from molt.compiler_analysis.native_support_slice import canonical_native_support_roots
 from molt.type_facts import TypeFacts
 
-from molt.cli.artifact_state import _build_state_subdir_cached
 from molt.cli.cache_fingerprints import (
     _frontend_semantic_tooling_fingerprint,
     _source_tree_fingerprint_transaction,
@@ -40,8 +37,6 @@ from molt.cli.function_references import (
 )
 from molt.cli.json_cache import (
     SOURCE_ANALYSIS_CACHE_MAX_BYTES,
-    _read_cached_json_object,
-    _write_cached_json_object,
 )
 from molt.cli.models import (
     _RuntimeImportScanCustody,
@@ -58,12 +53,12 @@ from molt.cli.models import (
 )
 from molt.cli.module_dependencies import _module_dependency_closure
 from molt.cli.module_graph_discovery import _load_module_import_scan
-from molt.cli.module_frontend_cache import (
-    _frontend_lowering_cache_disabled,
-    _hydrate_shared_frontend_cache,
-    _publish_shared_frontend_cache,
-    _shared_module_analysis_cache_path,
-    _shared_module_lowering_cache_path,
+from molt.cli.source_record_store import shared_source_records
+from molt.cli.function_records import (
+    FunctionDigestSeed,
+    encode_lowering_record,
+    decode_lowering_record,
+    decode_function_records,
 )
 from molt.cli.module_graph_cache import (
     _resolved_module_cache_key,
@@ -74,7 +69,6 @@ from molt.cli.module_source import (
     _ModuleSourceLease,
     _payload_source_matches,
 )
-from molt.cli.runtime_paths import _build_state_root
 from molt.target_python import TargetPythonVersion, _DEFAULT_TARGET_PYTHON_VERSION
 
 
@@ -743,41 +737,44 @@ def _module_lowering_execution_view(
     )
 
 
+def _frontend_lowering_cache_disabled() -> bool:
+    """Disable all persistent frontend result reads and publication."""
+    return os.environ.get(
+        "MOLT_DISABLE_FRONTEND_LOWERING_CACHE", ""
+    ).strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+
+
 _MODULE_ANALYSIS_CACHE_SCHEMA_VERSION = 12
 
 
-_MODULE_LOWERING_CACHE_SCHEMA_VERSION = 8
+_MODULE_LOWERING_CACHE_SCHEMA_VERSION = 9
 
 
 _MODULE_ANALYSIS_FUNC_KINDS = frozenset({"sync", "async", "gen", "asyncgen"})
 
 
-def _module_analysis_cache_key(
+def _module_analysis_record_key(
     path: Path,
     *,
-    kind: str,
     module_name: str,
     is_package: bool | None,
     import_scan_mode: ImportScanMode,
     target_python: TargetPythonVersion,
     native_support_function_roots: tuple[str, ...] = (),
 ) -> str:
-    """Content-addressed key for one module-analysis identity.
-
-    Single authority for the analysis cache key: the session-local filename and
-    the shared-tier slot both derive from this so they can never drift. The key
-    covers the resolved source path, the module identity, the import scan mode,
-    the native support selection, the target Python tag and the frontend tooling
-    fingerprint. Runtime policy is installed after compilation and does not
-    change module analysis.
-    """
+    """Source/request identity; source bytes are qualified by the reader."""
     package_kind = "pkg" if is_package else "mod" if is_package is not None else "-"
     key_parts = [
         module_name,
         package_kind,
         import_scan_mode,
         repr(native_support_function_roots),
-        kind,
+        "module-analysis",
         target_python.tag,
         _frontend_semantic_tooling_fingerprint(),
     ]
@@ -785,111 +782,6 @@ def _module_analysis_cache_key(
         os.fspath(path),
         *key_parts,
     )
-
-
-def _module_analysis_cache_path(
-    project_root: Path,
-    path: Path,
-    *,
-    kind: str = "module_analysis_cache",
-    module_name: str,
-    is_package: bool | None = None,
-    import_scan_mode: ImportScanMode,
-    target_python: TargetPythonVersion = _DEFAULT_TARGET_PYTHON_VERSION,
-    native_support_function_roots: tuple[str, ...] = (),
-) -> Path:
-    root = _build_state_subdir_cached(
-        os.fspath(_build_state_root(project_root)),
-        kind,
-    )
-    cache_key = _module_analysis_cache_key(
-        path,
-        kind=kind,
-        module_name=module_name,
-        is_package=is_package,
-        import_scan_mode=import_scan_mode,
-        target_python=target_python,
-        native_support_function_roots=native_support_function_roots,
-    )
-    return root / f"{path.stem}.{cache_key}.json"
-
-
-def _shared_module_analysis_cache_path_for(
-    path: Path,
-    *,
-    kind: str = "module_analysis_cache",
-    module_name: str,
-    is_package: bool | None = None,
-    import_scan_mode: ImportScanMode,
-    target_python: TargetPythonVersion = _DEFAULT_TARGET_PYTHON_VERSION,
-    native_support_function_roots: tuple[str, ...] = (),
-) -> Path | None:
-    cache_key = _module_analysis_cache_key(
-        path,
-        kind=kind,
-        module_name=module_name,
-        is_package=is_package,
-        import_scan_mode=import_scan_mode,
-        target_python=target_python,
-        native_support_function_roots=native_support_function_roots,
-    )
-    return _shared_module_analysis_cache_path(path.stem, cache_key)
-
-
-def _module_lowering_cache_key(
-    *,
-    module_name: str,
-    is_package: bool,
-    target_python: TargetPythonVersion,
-) -> str:
-    """Stable slot identity; the context owns captured source-byte identity.
-
-    Locating a cache slot must neither reopen nor replace the admitted source.
-    The key names no path, so a toolchain module has one shared slot in every
-    project and working directory. The shared slot additionally includes the
-    full content-addressed context; the local slot may replace its previous
-    context without retaining history.
-    """
-    identity = "|".join(
-        ("lowering", module_name, "pkg" if is_package else "mod", target_python.tag)
-    )
-    return hashlib.sha256(identity.encode("utf-8")).hexdigest()[:24]
-
-
-def _module_lowering_cache_path(
-    project_root: Path,
-    path: Path,
-    *,
-    module_name: str,
-    is_package: bool,
-    target_python: TargetPythonVersion = _DEFAULT_TARGET_PYTHON_VERSION,
-) -> Path:
-    root = _build_state_subdir_cached(
-        os.fspath(_build_state_root(project_root)),
-        "module_lowering_cache",
-    )
-    cache_key = _module_lowering_cache_key(
-        module_name=module_name,
-        is_package=is_package,
-        target_python=target_python,
-    )
-    return root / f"{path.stem}.{cache_key}.json"
-
-
-def _shared_module_lowering_cache_path_for(
-    path: Path,
-    *,
-    module_name: str,
-    is_package: bool,
-    context_digest: str,
-    target_python: TargetPythonVersion = _DEFAULT_TARGET_PYTHON_VERSION,
-) -> Path | None:
-    cache_key = _module_lowering_cache_key(
-        module_name=module_name,
-        is_package=is_package,
-        target_python=target_python,
-    )
-    return _shared_module_lowering_cache_path(path.stem, cache_key, context_digest)
 
 
 def _validate_persisted_module_analysis_payload(
@@ -901,14 +793,7 @@ def _validate_persisted_module_analysis_payload(
     snapshot: PythonSourceSnapshot | None = None,
     native_support_function_roots: tuple[str, ...] = (),
 ) -> tuple[dict[str, dict[str, Any]], dict[str, str]] | None:
-    """Validate one analysis payload; the single correctness gate for both tiers.
-
-    Returns the decoded ``(func_defaults, func_kinds)`` pair only when
-    every schema / fingerprint / scan-mode / source-content check
-    passes. Applied identically to a session-local payload and to one hydrated
-    from the shared tier, so a shared hit can never bypass a check the
-    session-local path enforces.
-    """
+    """Admit analysis only after schema, semantic and source checks pass."""
     if payload is None:
         return None
     if (
@@ -962,7 +847,6 @@ def _validate_persisted_module_analysis_payload(
 
 @_source_tree_fingerprint_transaction()
 def _read_persisted_module_analysis(
-    project_root: Path,
     path: Path,
     *,
     module_name: str,
@@ -973,11 +857,9 @@ def _read_persisted_module_analysis(
     snapshot: PythonSourceSnapshot | None = None,
     native_support_function_roots: tuple[str, ...] = (),
 ) -> tuple[dict[str, dict[str, Any]], dict[str, str]] | None:
-    # Debug opt-out: force a cold re-analysis (no session-local or shared reuse).
     if _frontend_lowering_cache_disabled():
         return None
-    cache_path = _module_analysis_cache_path(
-        project_root,
+    key = _module_analysis_record_key(
         path,
         module_name=module_name,
         is_package=is_package,
@@ -985,8 +867,22 @@ def _read_persisted_module_analysis(
         target_python=target_python,
         native_support_function_roots=native_support_function_roots,
     )
+    record = shared_source_records().get(
+        "module-analysis",
+        key,
+        generation=_frontend_semantic_tooling_fingerprint(),
+        max_bytes=SOURCE_ANALYSIS_CACHE_MAX_BYTES,
+    )
+    if record is None:
+        return None
+    try:
+        payload = json.loads(record.payload)
+    except (ValueError, RecursionError):
+        return None
+    if not isinstance(payload, dict):
+        return None
     result = _validate_persisted_module_analysis_payload(
-        _read_cached_json_object(cache_path, max_bytes=SOURCE_ANALYSIS_CACHE_MAX_BYTES),
+        payload,
         path,
         import_scan_mode=import_scan_mode,
         path_stat=path_stat,
@@ -994,41 +890,12 @@ def _read_persisted_module_analysis(
         native_support_function_roots=native_support_function_roots,
     )
     if result is not None:
-        return result
-    # Session-local miss: hydrate from the shared, content-addressed tier so a
-    # fresh session reuses another session's analysis instead of re-parsing. The
-    # hydrated payload is re-validated through the same gate above (schema /
-    # fingerprint / scan-mode / source-content sha256), so a shared
-    # hit can never serve a stale or mismatched result.
-    shared_path = _shared_module_analysis_cache_path_for(
-        path,
-        module_name=module_name,
-        is_package=is_package,
-        import_scan_mode=import_scan_mode,
-        target_python=target_python,
-        native_support_function_roots=native_support_function_roots,
-    )
-    observed = _hydrate_shared_frontend_cache(cache_path=shared_path, dest=cache_path)
-    if observed is None:
-        return None
-    result = _validate_persisted_module_analysis_payload(
-        _read_cached_json_object(cache_path, max_bytes=SOURCE_ANALYSIS_CACHE_MAX_BYTES),
-        path,
-        import_scan_mode=import_scan_mode,
-        path_stat=path_stat,
-        snapshot=snapshot,
-        native_support_function_roots=native_support_function_roots,
-    )
-    if result is not None and shared_path is not None:
-        refresh_cache_entry_recency(
-            shared_path, cache_root=shared_path.parent.parent, observed=observed
-        )
+        record.refresh()
     return result
 
 
 @_source_tree_fingerprint_transaction()
 def _write_persisted_module_analysis(
-    project_root: Path,
     path: Path,
     *,
     module_name: str,
@@ -1040,8 +907,14 @@ def _write_persisted_module_analysis(
     target_python: TargetPythonVersion = _DEFAULT_TARGET_PYTHON_VERSION,
     native_support_function_roots: tuple[str, ...] = (),
 ) -> None:
-    cache_path = _module_analysis_cache_path(
-        project_root,
+    if _frontend_lowering_cache_disabled():
+        return
+    stat = path.stat()
+    if snapshot.path.resolve() != path.resolve() or not _payload_source_matches(
+        {"size": len(snapshot.content), "source_sha256": snapshot.sha256}, path, stat
+    ):
+        return
+    key = _module_analysis_record_key(
         path,
         module_name=module_name,
         is_package=is_package,
@@ -1049,12 +922,7 @@ def _write_persisted_module_analysis(
         target_python=target_python,
         native_support_function_roots=native_support_function_roots,
     )
-    stat = path.stat()
-    if snapshot.path.resolve() != path.resolve() or not _payload_source_matches(
-        {"size": len(snapshot.content), "source_sha256": snapshot.sha256}, path, stat
-    ):
-        return
-    payload: dict[str, Any] = {
+    payload = {
         "version": _MODULE_ANALYSIS_CACHE_SCHEMA_VERSION,
         "compiler_fingerprint": _frontend_semantic_tooling_fingerprint(),
         "module_name": module_name,
@@ -1068,23 +936,13 @@ def _write_persisted_module_analysis(
         "func_defaults": func_defaults,
         "func_kinds": func_kinds,
     }
-    cache_path.parent.mkdir(parents=True, exist_ok=True)
-    _write_cached_json_object(
-        cache_path, _cache_json_value(payload), default=_json_ir_default
-    )
-    # Publish the completed session-local entry to the shared, content-addressed
-    # tier so the next fresh session hydrates it instead of re-parsing. Best-effort
-    # byte copy (exFAT-safe): a publish failure never fails the build.
-    _publish_shared_frontend_cache(
-        src=cache_path,
-        cache_path=_shared_module_analysis_cache_path_for(
-            path,
-            module_name=module_name,
-            is_package=is_package,
-            import_scan_mode=import_scan_mode,
-            target_python=target_python,
-            native_support_function_roots=native_support_function_roots,
-        ),
+    shared_source_records().put(
+        "module-analysis",
+        key,
+        json.dumps(
+            _cache_json_value(payload), separators=(",", ":"), default=_json_ir_default
+        ).encode(),
+        generation=_frontend_semantic_tooling_fingerprint(),
     )
 
 
@@ -1275,7 +1133,6 @@ def _load_module_analysis(
         source = loaded_scan.source
     persisted_analysis = (
         _read_persisted_module_analysis(
-            project_root,
             path,
             module_name=module_name,
             is_package=is_package,
@@ -1341,7 +1198,6 @@ def _load_module_analysis(
         if project_root is not None and snapshot is not None:
             with contextlib.suppress(OSError):
                 _write_persisted_module_analysis(
-                    project_root,
                     path,
                     module_name=module_name,
                     is_package=is_package,
@@ -1743,6 +1599,26 @@ def _module_lowering_context_digest_for_module(
     return _module_lowering_context_digest(context_payload)
 
 
+def _module_lowering_payload_identity_matches(
+    payload: Mapping[str, Any],
+    path: Path,
+    *,
+    source_lease: _ModuleSourceLease,
+    context_digest: str,
+) -> bool:
+    if (
+        payload.get("version") != _MODULE_LOWERING_CACHE_SCHEMA_VERSION
+        or payload.get("context_digest") != context_digest
+    ):
+        return False
+    source_lease.validate_path(path)
+    return (
+        payload.get("source_sha256") == source_lease.source_sha256
+        and payload.get("size") == source_lease.source_size
+        and payload.get("source_kind") == source_lease.source_kind
+    )
+
+
 def _validate_persisted_module_lowering_payload(
     payload: Mapping[str, Any] | None,
     path: Path,
@@ -1752,40 +1628,26 @@ def _validate_persisted_module_lowering_payload(
     context_digest: str,
     known_modules: Iterable[str] = (),
 ) -> dict[str, Any] | None:
-    """Validate one lowering payload; the single correctness gate for both tiers.
-
-    Enforces schema version, ``context_digest`` identity (which embeds the tooling
-    fingerprint, target Python, and every scoped lowering input), source-content
-    sha256, and local-function-reference closure. Applied identically to a
-    session-local payload and to one hydrated from the shared tier, so a shared
-    hit can never bypass a check the session-local path enforces.
-    """
-    if (
-        not isinstance(payload, dict)
-        or payload.get("version") != _MODULE_LOWERING_CACHE_SCHEMA_VERSION
-    ):
-        return None
-    if payload.get("context_digest") != context_digest:
-        return None
-    source_lease.validate_path(path)
-    if (
-        payload.get("source_sha256") != source_lease.source_sha256
-        or payload.get("size") != source_lease.source_size
-        or payload.get("source_kind") != source_lease.source_kind
+    """Admit schema/context, source custody and local reference closure."""
+    if not isinstance(payload, dict) or not _module_lowering_payload_identity_matches(
+        payload, path, source_lease=source_lease, context_digest=context_digest
     ):
         return None
     raw_result = payload.get("result")
     if not isinstance(raw_result, dict):
         return None
+    raw_functions = raw_result.get("functions")
+    if not isinstance(raw_functions, list):
+        return None
     try:
-        result = _decode_cached_json_value(raw_result)
+        result = _decode_cached_json_value(
+            {key: value for key, value in raw_result.items() if key != "functions"}
+        )
     except ValueError:
         return None
     if not isinstance(result, dict):
         return None
-    raw_functions = result.get("functions")
-    if not isinstance(raw_functions, list):
-        return None
+    result["functions"] = raw_functions
     by_symbol: dict[str, dict[str, Any]] = {}
     for function in raw_functions:
         if not isinstance(function, dict):
@@ -1821,28 +1683,45 @@ def _validate_persisted_module_lowering_payload(
 
 
 def _read_persisted_module_lowering(
-    project_root: Path,
     path: Path,
     *,
     source_lease: _ModuleSourceLease,
     module_name: str,
-    is_package: bool,
     context_digest: str,
-    target_python: TargetPythonVersion = _DEFAULT_TARGET_PYTHON_VERSION,
     known_modules: Iterable[str] = (),
 ) -> dict[str, Any] | None:
-    # Debug opt-out: force a cold re-lower (no session-local or shared reuse).
     if _frontend_lowering_cache_disabled():
         return None
-    cache_path = _module_lowering_cache_path(
-        project_root,
-        path,
-        module_name=module_name,
-        is_package=is_package,
-        target_python=target_python,
+    record = shared_source_records().get(
+        "module-lowering",
+        context_digest,
+        generation=_frontend_semantic_tooling_fingerprint(),
+        max_bytes=None,
     )
+    if record is None:
+        return None
+    try:
+        view = decode_lowering_record(record.payload)
+        payload = json.loads(view.metadata)
+    except (ValueError, TypeError, RecursionError):
+        return None
+    # Source custody failures are hard errors, outside optional codec rejection.
+    if not isinstance(payload, dict) or not _module_lowering_payload_identity_matches(
+        payload, path, source_lease=source_lease, context_digest=context_digest
+    ):
+        return None
+    raw_result = payload.get("result")
+    if not isinstance(raw_result, dict) or (
+        "functions" in raw_result or "function_digest_seeds" in raw_result
+    ):
+        return None
+    try:
+        functions, seeds = decode_function_records(view)
+    except (ValueError, TypeError, RecursionError):
+        return None
+    payload["result"] = {**raw_result, "functions": functions}
     result = _validate_persisted_module_lowering_payload(
-        _read_cached_json_object(cache_path),
+        payload,
         path,
         source_lease=source_lease,
         module_name=module_name,
@@ -1850,84 +1729,48 @@ def _read_persisted_module_lowering(
         known_modules=known_modules,
     )
     if result is not None:
-        return result
-    # Session-local miss: hydrate from the shared, content-addressed tier so a
-    # fresh session reuses another session's lowering instead of re-lowering. The
-    # shared slot name embeds the context_digest, and the hydrated payload is
-    # re-validated through the same gate above (schema / context digest / source
-    # sha256 / reference closure), so a shared hit can never serve a stale or
-    # mismatched IR result.
-    shared_path = _shared_module_lowering_cache_path_for(
-        path,
-        module_name=module_name,
-        is_package=is_package,
-        context_digest=context_digest,
-        target_python=target_python,
-    )
-    observed = _hydrate_shared_frontend_cache(cache_path=shared_path, dest=cache_path)
-    if observed is None:
-        return None
-    result = _validate_persisted_module_lowering_payload(
-        _read_cached_json_object(cache_path),
-        path,
-        source_lease=source_lease,
-        module_name=module_name,
-        context_digest=context_digest,
-        known_modules=known_modules,
-    )
-    if result is not None and shared_path is not None:
-        refresh_cache_entry_recency(
-            shared_path, cache_root=shared_path.parent.parent, observed=observed
-        )
+        result["function_digest_seeds"] = seeds
+        record.refresh()
     return result
 
 
 def _write_persisted_module_lowering(
-    project_root: Path,
     path: Path,
     *,
     source_lease: _ModuleSourceLease,
-    module_name: str,
-    is_package: bool,
     context_digest: str,
     result: dict[str, Any],
-    target_python: TargetPythonVersion = _DEFAULT_TARGET_PYTHON_VERSION,
-) -> None:
-    cache_path = _module_lowering_cache_path(
-        project_root,
-        path,
-        module_name=module_name,
-        is_package=is_package,
-        target_python=target_python,
-    )
+) -> tuple[FunctionDigestSeed, ...]:
+    if _frontend_lowering_cache_disabled():
+        return ()
     source_lease.validate_path(path)
     source_lease.validate()
-    payload = {
+    functions = result["functions"]
+    metadata = {
         "version": _MODULE_LOWERING_CACHE_SCHEMA_VERSION,
         "context_digest": context_digest,
-        "target_python": target_python.tag,
         "size": source_lease.source_size,
         "source_sha256": source_lease.source_sha256,
         "source_kind": source_lease.source_kind,
-        "result": result,
+        "result": {
+            key: value
+            for key, value in result.items()
+            if key not in {"functions", "function_digest_seeds", "ok"}
+        },
     }
-    cache_path.parent.mkdir(parents=True, exist_ok=True)
-    _write_cached_json_object(
-        cache_path, _cache_json_value(payload), default=_json_ir_default
+    encoded, seeds = encode_lowering_record(
+        json.dumps(
+            _cache_json_value(metadata), separators=(",", ":"), default=_json_ir_default
+        ).encode(),
+        functions,
     )
-    # Publish the completed session-local entry to the shared, content-addressed
-    # tier (slot name embeds the context_digest) so the next fresh session
-    # hydrates it instead of re-lowering. Best-effort byte copy (exFAT-safe).
-    _publish_shared_frontend_cache(
-        src=cache_path,
-        cache_path=_shared_module_lowering_cache_path_for(
-            path,
-            module_name=module_name,
-            is_package=is_package,
-            context_digest=context_digest,
-            target_python=target_python,
-        ),
+    shared_source_records().put(
+        "module-lowering",
+        context_digest,
+        encoded,
+        generation=_frontend_semantic_tooling_fingerprint(),
     )
+    return seeds
 
 
 @_source_tree_fingerprint_transaction()
@@ -2021,13 +1864,10 @@ def _load_cached_module_lowering_result(
         if context_digest is None:
             return None
     return _read_persisted_module_lowering(
-        project_root,
         module_path,
         source_lease=source_lease,
         module_name=module_name,
-        is_package=is_package,
         context_digest=context_digest,
-        target_python=target_python,
         known_modules=known_modules,
     )
 

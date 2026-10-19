@@ -280,7 +280,6 @@ def test_persisted_import_scan_roundtrip_preserves_dynamic_discovery_fact(
     )
 
     graph_cache._write_persisted_import_scan(
-        tmp_path,
         source,
         module_name="pkg.owner",
         is_package=False,
@@ -291,7 +290,6 @@ def test_persisted_import_scan_roundtrip_preserves_dynamic_discovery_fact(
 
     assert (
         graph_cache._read_persisted_import_scan_record(
-            tmp_path,
             source,
             module_name="pkg.owner",
             is_package=False,

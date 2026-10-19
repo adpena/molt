@@ -1,24 +1,14 @@
-"""One SQLite table for a build state root's per-source records (HF-267).
+"""Opaque, process-owned source records and their SQLite lifecycle.
 
-Import scans and intrinsic source facts were one JSON file per record: a
-one-file edit-rebuild opened, hashed and parsed 10,940 of them, and one
-checkout held 185,639 files (1.4 GB) in one directory because nothing retired
-old compiler generations. They now share one WAL-mode table keyed by
-``(kind, key)``, the layout mypy's SQLite cache and Cargo's global cache
-tracker use for many small records. A read is one B-tree seek; a write is one
-small transaction without fsync, since every record is reconstructible.
+All four source record families share the existing WAL database. Raw reads
+never renew retention: consumers admit the returned bytes, then refresh the
+immutable observation. Its random revision and observed use fence replacement
+and concurrent reuse. Generation retirement remains independent of the global
+cache byte/age policy, whose metadata-only maintenance uses bounded pages.
 
-Retention is per compiler generation (the frontend tooling fingerprint each
-key already includes): a process refreshes its generation's use at most once
-an hour, and at most once an hour a process deletes the records of
-generations unused for a week and of all but the newest four, as the build
-record and Go's build cache bound their entries. An edited source overwrites
-its record, whose key names the path, not the bytes.
-
-Payloads are opaque bytes; each consumer owns its encoding and admission.
-A record is a candidate: its consumer still qualifies its semantic inputs. A
-store that SQLite reports corrupt is deleted and recreated. A busy, full or
-read-only database makes ``get`` a miss and ``put`` return False.
+Corrupt stores are unavailable to this process. Their files are never unlinked:
+SQLite peers may still own the database and WAL. Busy/full/read-only stores
+remain optional cache misses or failed writes, with no alternate cache lane.
 """
 
 from __future__ import annotations
@@ -27,12 +17,24 @@ import os
 import sqlite3
 import threading
 import time
+from collections.abc import Generator, Iterator, Sequence
+from contextlib import closing, contextmanager
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Literal
 
-RecordKind = Literal["import-scan", "intrinsic-facts"]
+from molt.default_paths import (
+    CACHE_MAINTENANCE_INTERVAL_SECONDS,
+    SHARED_SOURCE_RECORDS_DIRECTORY,
+    _default_molt_cache,
+)
 
+RecordKind = Literal[
+    "import-scan", "intrinsic-facts", "module-analysis", "module-lowering"
+]
 STORE_NAME = "source_records.sqlite"
+SOURCE_RECORD_BATCH_MAX_RECORDS = 256
+SOURCE_RECORD_BATCH_MAX_BYTES = 1 << 20
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS records (
@@ -40,6 +42,8 @@ CREATE TABLE IF NOT EXISTS records (
     key TEXT NOT NULL,
     generation TEXT NOT NULL,
     payload BLOB NOT NULL,
+    revision BLOB NOT NULL,
+    used_ns INTEGER NOT NULL,
     PRIMARY KEY (kind, key)
 ) WITHOUT ROWID;
 CREATE INDEX IF NOT EXISTS records_generation ON records (generation);
@@ -52,75 +56,343 @@ CREATE TABLE IF NOT EXISTS trims (
     trimmed_ns INTEGER NOT NULL
 );
 """
-
 _HOUR_NS = 3600 * 1_000_000_000
 _UNUSED_LIMIT_NS = 7 * 24 * _HOUR_NS
 _REFRESH_INTERVAL_NS = _HOUR_NS
+_RECORD_REFRESH_NS = int(CACHE_MAINTENANCE_INTERVAL_SECONDS * 1_000_000_000)
 _RETAINED_GENERATIONS = 4
 _BUSY_TIMEOUT_SECONDS = 60.0
+_PAGE_SIZE = 256
+
+
+@dataclass(frozen=True, slots=True)
+class SourceRecord:
+    payload: bytes
+    kind: RecordKind
+    key: str
+    generation: str
+    revision: bytes
+    used_ns: int
+    _store: SourceRecordStore = field(repr=False, compare=False)
+
+    def refresh(self) -> bool:
+        """Renew an admitted observation if due and still the same record."""
+        return self._store._refresh_record(self)
+
+
+@dataclass(frozen=True, slots=True)
+class SourceRecordMetadata:
+    """An eviction observation, containing no payload allocation."""
+
+    kind: str
+    key: str
+    revision: bytes
+    used_ns: int
+    size_bytes: int
+
+
+@dataclass(frozen=True, slots=True)
+class SourceRecordInventory:
+    entries: int
+    size_bytes: int
+
+
+class SourceRecordUnavailable(Exception):
+    """Optional source-record maintenance could not qualify its database."""
+
+
+class SourceRecordBusy(SourceRecordUnavailable):
+    """Another SQLite connection owns a required maintenance lock."""
+
+
+def _maintenance_error(error: sqlite3.Error) -> SourceRecordUnavailable:
+    # Extended SQLite result codes retain their primary category in low8 bits.
+    # LOCKED is a different same-connection/shared-cache ownership failure.
+    code = getattr(error, "sqlite_errorcode", None)
+    if type(code) is int and code & 0xFF == sqlite3.SQLITE_BUSY:
+        return SourceRecordBusy("source record maintenance is busy")
+    return SourceRecordUnavailable("source record maintenance is unavailable")
+
+
+class SourceRecordMaintenance:
+    """One nonwaiting connection for the existing global prune owner.
+
+    Bounded metadata pages share one read snapshot; a separate connection does
+    current-state CAS deletes. No cursor is live while deleting. The snapshot
+    pins WAL pages through this cold sweep, so it closes before reclamation.
+    """
+
+    def __init__(
+        self,
+        connection: sqlite3.Connection,
+        current: sqlite3.Connection,
+        *,
+        dry_run: bool,
+    ) -> None:
+        self._connection = connection
+        self._current = current
+        self._dry_run = dry_run
+        self._snapshot_closed = False
+        # True also covers a checkpoint deferred by busy preceding vacuum.
+        self.checkpoint_busy: bool | None = None
+
+    @contextmanager
+    def _cursor(
+        self, query: str, parameters: tuple[Any, ...] = (), *, current: bool = False
+    ) -> Generator[sqlite3.Cursor]:
+        cursor = None
+        try:
+            cursor = (self._current if current else self._connection).execute(
+                query, parameters
+            )
+            yield cursor
+        except sqlite3.Error as exc:
+            raise _maintenance_error(exc) from exc
+        finally:
+            if cursor is not None:
+                cursor.close()
+
+    def inventory(self) -> SourceRecordInventory:
+        with self._cursor(
+            "SELECT count(*), coalesce(sum(length(payload)), 0) FROM records"
+        ) as cursor:
+            count, size = cursor.fetchone()
+        return SourceRecordInventory(count, size)
+
+    def iter_lru(self) -> Iterator[SourceRecordMetadata]:
+        after: tuple[int, str, str] | None = None
+        while True:
+            parameters: tuple[Any, ...] = ()
+            query = "SELECT kind, key, revision, used_ns, length(payload) FROM records"
+            if after is not None:
+                query += " WHERE (used_ns, kind, key) > (?, ?, ?)"
+                parameters += after
+            with self._cursor(
+                query + " ORDER BY used_ns, kind, key LIMIT ?",
+                (*parameters, _PAGE_SIZE),
+            ) as cursor:
+                rows = cursor.fetchall()
+            if not rows:
+                return
+            for kind, key, revision, used_ns, size in rows:
+                if (
+                    not isinstance(kind, str)
+                    or not isinstance(key, str)
+                    or not isinstance(revision, bytes)
+                    or len(revision) != 16
+                    or type(used_ns) is not int
+                    or type(size) is not int
+                    or size < 0
+                ):
+                    raise SourceRecordUnavailable("invalid source record metadata")
+                yield SourceRecordMetadata(kind, key, revision, used_ns, size)
+            last = rows[-1]
+            after = (last[3], last[0], last[1])
+
+    def remove(
+        self, observed: Sequence[SourceRecordMetadata]
+    ) -> tuple[Literal["removed", "busy"], ...]:
+        """Commit one bounded batch of observation-fenced evictions.
+
+        A single oversized record remains evictable. No transaction or result
+        escapes before commit; contention refuses the whole batch, without a
+        retry. Dry-run forecasts use one read transaction and never write.
+        """
+        if len(observed) > SOURCE_RECORD_BATCH_MAX_RECORDS:
+            raise ValueError("source record eviction batch exceeds record bound")
+        batch = tuple(observed)
+        if len(batch) > SOURCE_RECORD_BATCH_MAX_RECORDS:
+            raise ValueError("source record eviction batch exceeds record bound")
+        if not batch:
+            return ()
+        if any(row.size_bytes < 0 for row in batch):
+            raise ValueError("source record eviction size must be nonnegative")
+        if (
+            len(batch) > 1
+            and sum(row.size_bytes for row in batch) > SOURCE_RECORD_BATCH_MAX_BYTES
+        ):
+            raise ValueError("source record eviction batch exceeds payload bound")
+        predicate = "kind = ? AND key = ? AND revision = ? AND used_ns = ?"
+        query = (
+            "SELECT 1 FROM records WHERE "
+            if self._dry_run
+            else "DELETE FROM records WHERE "
+        ) + predicate
+        outcomes: list[Literal["removed", "busy"]] = []
+        owns_transaction = False
+        try:
+            with self._cursor(
+                "BEGIN" if self._dry_run else "BEGIN IMMEDIATE", current=True
+            ):
+                pass
+            owns_transaction = True
+            for row in batch:
+                with self._cursor(
+                    query,
+                    (row.kind, row.key, row.revision, row.used_ns),
+                    current=True,
+                ) as cursor:
+                    present = (
+                        cursor.fetchone() is not None
+                        if self._dry_run
+                        else cursor.rowcount == 1
+                    )
+                    outcomes.append("removed" if present else "busy")
+            with self._cursor("COMMIT", current=True):
+                pass
+            owns_transaction = False
+            return tuple(outcomes)
+        except BaseException as error:
+            if owns_transaction and self._current.in_transaction:
+                try:
+                    with self._cursor("ROLLBACK", current=True):
+                        pass
+                except BaseException:
+                    # A failed rollback cannot leave an admitted write owner.
+                    self._current.close()
+                    raise
+            if isinstance(error, SourceRecordBusy):
+                return ("busy",) * len(batch)
+            raise
+
+    def close_snapshot(self) -> None:
+        if not self._snapshot_closed:
+            self._connection.close()
+            self._snapshot_closed = True
+
+    def reclaim(self) -> None:
+        self.close_snapshot()
+        if not self._dry_run:
+            try:
+                # Bound maintenance; peers keep their pages without a retry.
+                with self._cursor(
+                    f"PRAGMA incremental_vacuum({_PAGE_SIZE})", current=True
+                ) as cursor:
+                    # SQLite emits one result per step; closing early abandons
+                    # the remaining bounded page work.
+                    for _ in cursor:
+                        pass
+                with self._cursor(
+                    "PRAGMA wal_checkpoint(TRUNCATE)", current=True
+                ) as cursor:
+                    row = cursor.fetchone()
+                    self.checkpoint_busy = bool(row[0])
+            except SourceRecordBusy:
+                self.checkpoint_busy = True
 
 
 class SourceRecordStore:
-    """This process's connection to one state root's record table."""
+    """This process's connection to one shared record table."""
 
     def __init__(self, path: Path) -> None:
         self.path = path
         self._lock = threading.Lock()
         self._connection: sqlite3.Connection | None = None
-        self._refreshed: set[str] = set()
+        self._refreshed: dict[str, int] = {}
+        self._unavailable = False
 
     def get(
-        self, kind: RecordKind, key: str, *, generation: str, max_bytes: int
-    ) -> bytes | None:
-        """The stored bytes for ``(kind, key)``, bounded before materialization."""
+        self, kind: RecordKind, key: str, *, generation: str, max_bytes: int | None
+    ) -> SourceRecord | None:
+        """Observe bytes, bounded in SQL before payload materialization.
+
+        None explicitly selects uncapped lowering; other consumers retain their
+        admitted allocation bounds. No generation or row recency changes.
+        """
+        if max_bytes is not None and (type(max_bytes) is not int or max_bytes < 0):
+            raise ValueError("source record size bound must be nonnegative or None")
+        query = (
+            "SELECT payload, revision, used_ns FROM records"
+            " WHERE kind = ? AND key = ? AND generation = ?"
+            " AND typeof(payload) = 'blob' AND typeof(revision) = 'blob'"
+            " AND length(revision) = 16 AND typeof(used_ns) = 'integer'"
+        )
+        parameters: tuple[Any, ...] = (kind, key, generation)
+        if max_bytes is not None:
+            query += " AND length(payload) <= ?"
+            parameters += (max_bytes,)
+
+        def read(connection: sqlite3.Connection):
+            cursor = connection.execute(query, parameters)
+            try:
+                return cursor.fetchone()
+            finally:
+                cursor.close()
+
         with self._lock:
-            _stored, row = self._run(
-                lambda connection: connection.execute(
-                    "SELECT payload FROM records WHERE kind = ? AND key = ?"
-                    " AND typeof(payload) = 'blob' AND length(payload) <= ?",
-                    (kind, key, max_bytes),
-                ).fetchone(),
-                generation,
-            )
-        return None if row is None else row[0]
+            _ok, row = self._run(read)
+        if row is None:
+            return None
+        return SourceRecord(row[0], kind, key, generation, row[1], row[2], self)
 
     def put(
-        self,
-        kind: RecordKind,
-        key: str,
-        payload: bytes,
-        *,
-        generation: str,
+        self, kind: RecordKind, key: str, payload: bytes, *, generation: str
     ) -> bool:
-        """Store ``payload`` for ``(kind, key)``; False when it was not stored."""
         if not isinstance(payload, bytes):
             raise TypeError("source record payload must be bytes")
+        now = time.time_ns()
         with self._lock:
             stored, _result = self._run(
                 lambda connection: connection.execute(
-                    "INSERT OR REPLACE INTO records VALUES (?, ?, ?, ?)",
-                    (kind, key, generation, payload),
+                    "INSERT OR REPLACE INTO records"
+                    " (kind, key, generation, payload, revision, used_ns)"
+                    " VALUES (?, ?, ?, ?, randomblob(16), ?)",
+                    (kind, key, generation, payload, now),
                 ),
-                generation,
+                generation=generation,
+                now=now,
             )
         return stored
 
-    def _run(self, operation: Any, generation: str) -> tuple[bool, Any]:
+    def _refresh_record(self, record: SourceRecord) -> bool:
+        now = time.time_ns()
+        if now - record.used_ns < _RECORD_REFRESH_NS:
+            return False
+        with self._lock:
+            ok, changed = self._run(
+                lambda connection: (
+                    connection.execute(
+                        "UPDATE records SET used_ns = ? WHERE kind = ? AND key = ?"
+                        " AND generation = ? AND revision = ? AND used_ns = ?",
+                        (
+                            now,
+                            record.kind,
+                            record.key,
+                            record.generation,
+                            record.revision,
+                            record.used_ns,
+                        ),
+                    ).rowcount
+                )
+            )
+            if ok and changed == 1:
+                self._run(
+                    lambda _connection: None, generation=record.generation, now=now
+                )
+                return True
+        return False
+
+    def _run(
+        self, operation: Any, *, generation: str | None = None, now: int | None = None
+    ) -> tuple[bool, Any]:
         connection = self._connect()
         if connection is None:
             return False, None
         try:
-            if generation not in self._refreshed:
-                self._refresh(connection, generation)
+            if generation is not None:
+                self._refresh_generation(
+                    connection, generation, time.time_ns() if now is None else now
+                )
             return True, operation(connection)
         except sqlite3.OperationalError:
-            # Busy past the timeout, a full disk or a read-only state root.
             return False, None
         except sqlite3.DatabaseError:
-            self._quarantine()
+            self._disable()
             return False, None
 
     def _connect(self) -> sqlite3.Connection | None:
+        if self._unavailable:
+            return None
         if self._connection is not None:
             return self._connection
         try:
@@ -134,23 +406,60 @@ class SourceRecordStore:
         except (OSError, sqlite3.Error):
             return None
         try:
-            # auto_vacuum applies only before the first table exists.
-            connection.execute("PRAGMA auto_vacuum = INCREMENTAL")
-            connection.execute("PRAGMA journal_mode = WAL")
-            connection.execute("PRAGMA synchronous = NORMAL")
-            connection.executescript(_SCHEMA)
+            self._initialize(connection)
         except sqlite3.OperationalError:
             connection.close()
             return None
         except sqlite3.DatabaseError:
             connection.close()
-            self._quarantine()
+            self._disable()
             return None
         self._connection = connection
         return connection
 
-    def _refresh(self, connection: sqlite3.Connection, generation: str) -> None:
-        now = time.time_ns()
+    def _initialize(self, connection: sqlite3.Connection) -> None:
+        connection.execute("PRAGMA auto_vacuum = INCREMENTAL").close()
+        connection.execute("PRAGMA journal_mode = WAL").close()
+        connection.execute("PRAGMA synchronous = NORMAL").close()
+        connection.executescript(_SCHEMA)
+        self._migrate(connection)
+
+    def _migrate(self, connection: sqlite3.Connection) -> None:
+        columns = {row[1] for row in connection.execute("PRAGMA table_info(records)")}
+        if not {"revision", "used_ns"} <= columns:
+            connection.execute("BEGIN IMMEDIATE")
+            try:
+                columns = {
+                    row[1] for row in connection.execute("PRAGMA table_info(records)")
+                }
+                if "revision" not in columns:
+                    connection.execute(
+                        "ALTER TABLE records ADD COLUMN revision BLOB NOT NULL DEFAULT X''"
+                    )
+                    connection.execute("UPDATE records SET revision = randomblob(16)")
+                if "used_ns" not in columns:
+                    connection.execute(
+                        "ALTER TABLE records ADD COLUMN used_ns INTEGER NOT NULL DEFAULT 0"
+                    )
+                    connection.execute(
+                        "UPDATE records SET used_ns = coalesce((SELECT used_ns FROM generations"
+                        " WHERE generations.generation = records.generation), ?)",
+                        (time.time_ns(),),
+                    )
+                connection.execute("COMMIT")
+            except BaseException:
+                connection.execute("ROLLBACK")
+                raise
+        connection.execute(
+            "CREATE INDEX IF NOT EXISTS records_recency ON records (used_ns, kind, key)"
+        )
+
+    def _refresh_generation(
+        self, connection: sqlite3.Connection, generation: str, now: int
+    ) -> None:
+        checked = self._refreshed.get(generation)
+        if checked is not None and 0 <= now - checked < _REFRESH_INTERVAL_NS:
+            return
         row = connection.execute(
             "SELECT used_ns FROM generations WHERE generation = ?", (generation,)
         ).fetchone()
@@ -159,7 +468,7 @@ class SourceRecordStore:
                 "INSERT OR REPLACE INTO generations VALUES (?, ?)", (generation, now)
             )
             self._trim_if_due(connection, now)
-        self._refreshed.add(generation)
+        self._refreshed[generation] = now
 
     def _trim_if_due(self, connection: sqlite3.Connection, now: int) -> None:
         row = connection.execute("SELECT trimmed_ns FROM trims").fetchone()
@@ -167,7 +476,6 @@ class SourceRecordStore:
             return
         connection.execute("BEGIN IMMEDIATE")
         try:
-            # A peer may have trimmed while this process waited for the lock.
             row = connection.execute("SELECT trimmed_ns FROM trims").fetchone()
             if row is not None and now - row[0] < _REFRESH_INTERVAL_NS:
                 connection.execute("COMMIT")
@@ -178,42 +486,116 @@ class SourceRecordStore:
                 (now - _UNUSED_LIMIT_NS, _RETAINED_GENERATIONS),
             )
             connection.execute(
-                "DELETE FROM records WHERE generation NOT IN"
-                " (SELECT generation FROM generations)"
+                "DELETE FROM records WHERE generation NOT IN (SELECT generation FROM generations)"
             )
             connection.execute("INSERT OR REPLACE INTO trims VALUES (0, ?)", (now,))
             connection.execute("COMMIT")
         except BaseException:
             connection.execute("ROLLBACK")
             raise
-        connection.execute("PRAGMA incremental_vacuum")
+        with closing(
+            connection.execute(f"PRAGMA incremental_vacuum({_PAGE_SIZE})")
+        ) as cursor:
+            for _ in cursor:
+                pass
 
-    def _quarantine(self) -> None:
+    def _disable(self) -> None:
         connection, self._connection = self._connection, None
+        self._unavailable = True
+        self._refreshed.clear()
         if connection is not None:
             try:
                 connection.close()
             except sqlite3.Error:
                 pass
-        # The records are reconstructible; a peer that still holds the old
-        # file keeps reading it until it reconnects.
-        for suffix in ("", "-wal", "-shm"):
+
+    @contextmanager
+    def maintenance(self, *, dry_run: bool) -> Generator[SourceRecordMaintenance]:
+        if self._unavailable:
+            raise SourceRecordUnavailable("source record store is unavailable")
+        snapshot: sqlite3.Connection | None = None
+        current: sqlite3.Connection | None = None
+        maintenance: SourceRecordMaintenance | None = None
+        try:
+            current = sqlite3.connect(
+                self.path.absolute().as_uri() + ("?mode=ro" if dry_run else "?mode=rw"),
+                uri=True,
+                timeout=0,
+                isolation_level=None,
+            )
+            if not dry_run:
+                self._initialize(current)
+            snapshot = sqlite3.connect(
+                self.path.absolute().as_uri() + "?mode=ro",
+                uri=True,
+                timeout=0,
+                isolation_level=None,
+            )
+            snapshot.execute("BEGIN").close()
+            maintenance = SourceRecordMaintenance(snapshot, current, dry_run=dry_run)
+            yield maintenance
+        except SourceRecordUnavailable as exc:
+            cause = exc.__cause__
+            if isinstance(cause, sqlite3.DatabaseError) and not isinstance(
+                cause, sqlite3.OperationalError
+            ):
+                with self._lock:
+                    self._disable()
+            raise
+        except sqlite3.OperationalError as exc:
+            raise _maintenance_error(exc) from exc
+        except sqlite3.DatabaseError as exc:
+            with self._lock:
+                self._disable()
+            raise SourceRecordUnavailable("source record store is corrupt") from exc
+        finally:
+            if maintenance is not None:
+                maintenance.close_snapshot()
+            elif snapshot is not None:
+                snapshot.close()
+            if current is not None:
+                current.close()
+
+    def physical_bytes(self) -> dict[str, int | None]:
+        sizes: dict[str, int | None] = {}
+        allocated: int | None = 0
+        for label, suffix in (("database", ""), ("wal", "-wal"), ("shm", "-shm")):
             try:
-                os.unlink(f"{self.path}{suffix}")
-            except OSError:
+                metadata = Path(f"{self.path}{suffix}").lstat()
+            except FileNotFoundError:
+                sizes[label] = 0
                 continue
+            except OSError:
+                sizes[label] = None
+                allocated = None
+                continue
+            sizes[label] = metadata.st_size
+            if allocated is not None:
+                blocks = getattr(metadata, "st_blocks", None)
+                allocated = None if blocks is None else allocated + blocks * 512
+        sizes["allocated"] = allocated
+        return sizes
 
 
 _STORES: dict[tuple[str, int], SourceRecordStore] = {}
 
 
 def source_record_store(state_root: Path) -> SourceRecordStore:
-    """This process's store for ``state_root``.
-
-    A forked child opens its own connection; the parent's stays untouched.
-    """
+    """The existing process/fork-owned connection factory."""
     key = (os.fspath(state_root), os.getpid())
     store = _STORES.get(key)
     if store is None:
         store = _STORES[key] = SourceRecordStore(state_root / STORE_NAME)
     return store
+
+
+def shared_source_records() -> SourceRecordStore:
+    from molt.cli.cache_fingerprints import _SOURCE_TREE_FINGERPRINT_TRANSACTION
+
+    transaction = _SOURCE_TREE_FINGERPRINT_TRANSACTION.get()
+    root = transaction.source_records_root if transaction is not None else None
+    if root is None:
+        root = (_default_molt_cache() / SHARED_SOURCE_RECORDS_DIRECTORY).resolve()
+        if transaction is not None:
+            transaction.source_records_root = root
+    return source_record_store(root)

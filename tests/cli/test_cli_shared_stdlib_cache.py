@@ -8,11 +8,12 @@ from pathlib import Path
 import subprocess
 import sys
 import traceback
-from typing import Iterator, Mapping
+from typing import Any, Iterator, Mapping
 
 from molt.backend_environment import CodegenSelection
 from molt.cli import native_link_plan, native_symbol_inspection
 import pytest
+import msgspec
 
 from molt.backend_binary_identity import identify_backend_binary
 from molt.capability_manifest import resolve_runtime_policy_from_env
@@ -385,11 +386,12 @@ def _payload_digest_cache_key(
     functions = payload_ir["functions"]
     assert isinstance(functions, list)
     header = {key: value for key, value in payload_ir.items() if key != "functions"}
-    node = hashlib.sha256(b"molt.cache-payload.merkle.v1\0\1")
+    node = hashlib.sha256(b"molt.cache-payload.merkle.msgpack-functions.v2\0\1")
     node.update(hashlib.sha256(canonical(header)).digest())
     node.update(len(functions).to_bytes(8, "big"))
     for function in functions:
-        node.update(hashlib.sha256(canonical(function)).digest())
+        body = msgspec.msgpack.encode(function, order="sorted")
+        node.update(hashlib.sha256(b"molt.function-body.msgpack.v1\0" + body).digest())
     payload_digest = node.hexdigest()
     suffix = target_triple or target
     if variant:
@@ -1163,13 +1165,15 @@ def test_prepare_backend_cache_setup_encodes_each_function_once(
     )
 
     encoded: list[int] = []
-    original_bytes = CACHE_KEYS._cache_json_payload_bytes
+    original_bytes = CACHE_KEYS.function_records.encode_function_body
 
-    def counting_bytes(value: object) -> bytes:
+    def counting_bytes(value: dict[str, Any]) -> bytes:
         encoded.append(id(value))
         return original_bytes(value)
 
-    monkeypatch.setattr(CACHE_KEYS, "_cache_json_payload_bytes", counting_bytes)
+    monkeypatch.setattr(
+        CACHE_KEYS.function_records, "encode_function_body", counting_bytes
+    )
     timings: dict[str, float] = {}
     setup = cli_backend_cache_setup._prepare_backend_cache_setup(
         wasm_layout=None,
@@ -1184,7 +1188,9 @@ def test_prepare_backend_cache_setup_encodes_each_function_once(
     assert sorted(function_encodings) == sorted(functions)
     assert "backend_cache_stdlib_key_manifest" in timings
     # The shared digests leave the stdlib key unchanged.
-    monkeypatch.setattr(CACHE_KEYS, "_cache_json_payload_bytes", original_bytes)
+    monkeypatch.setattr(
+        CACHE_KEYS.function_records, "encode_function_body", original_bytes
+    )
     fresh = cli_backend_cache_setup._prepare_backend_cache_setup(
         wasm_layout=None, backend_bin=tmp_path / "molt-backend", **common
     )

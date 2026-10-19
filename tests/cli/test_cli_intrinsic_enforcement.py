@@ -24,11 +24,8 @@ from tests.source_record_test_support import (
 
 
 @pytest.fixture
-def intrinsic_source_cache(tmp_path, monkeypatch):
+def intrinsic_source_cache(monkeypatch, isolated_molt_cache):
     identity = {"compiler": "compiler-A"}
-    monkeypatch.setattr(
-        module_graph_cache, "_build_state_root", lambda _root: tmp_path / "cache"
-    )
     monkeypatch.setattr(
         module_graph_cache,
         "_frontend_semantic_tooling_fingerprint",
@@ -36,7 +33,6 @@ def intrinsic_source_cache(tmp_path, monkeypatch):
     )
     provider = functools.partial(
         module_graph_cache._stdlib_intrinsic_source_facts,
-        tmp_path,
         target_python=_DEFAULT_TARGET_PYTHON_VERSION,
     )
     return provider, identity
@@ -181,15 +177,15 @@ def test_intrinsic_source_cache_recomputes_malformed_payload(
     provider, _identity = intrinsic_source_cache
     path = _write_module(tmp_path, "owner.py", "VALUE = 1\n")
     first = provider("owner", path)
-    [(key, payload)] = source_records(tmp_path, "intrinsic-facts").items()
+    [(key, payload)] = source_records("intrinsic-facts").items()
     kind = "intrinsic-facts"
     if corruption == "sites":
         kind = "import-scan"
-        payload = source_records(tmp_path, kind)[key]
+        payload = source_records(kind)[key]
         payload["source_sites"] = {"poison": True}
     else:
         payload["facts"][corruption] = {"poison": True}
-    replace_source_record(tmp_path, kind, key, payload)
+    replace_source_record(kind, key, payload)
     assert provider("owner", path) == first
 
 
@@ -260,7 +256,7 @@ def test_intrinsic_source_cache_publication_failure_is_visible_and_nonfatal(
         "intrinsic_source_publication_failures": 1,
     }
     assert "cannot cache intrinsic source facts" in capsys.readouterr().err
-    assert source_records(tmp_path, "intrinsic-facts") == {}
+    assert source_records("intrinsic-facts") == {}
 
 
 def test_intrinsic_source_cache_reports_hit_and_rejected_payload(
@@ -271,9 +267,9 @@ def test_intrinsic_source_cache_reports_hit_and_rejected_payload(
     counts = {}
     provider("owner", path, operation_counts=counts)
     provider("owner", path, operation_counts=counts)
-    [(key, payload)] = source_records(tmp_path, "intrinsic-facts").items()
+    [(key, payload)] = source_records("intrinsic-facts").items()
     payload["facts"]["status"] = stdlib_intrinsic_policy.STATUS_INTRINSIC_SUPPORT
-    replace_source_record(tmp_path, "intrinsic-facts", key, payload)
+    replace_source_record("intrinsic-facts", key, payload)
     assert (
         provider("owner", path, operation_counts=counts).status
         == stdlib_intrinsic_policy.STATUS_POLICY_GATE
@@ -710,12 +706,11 @@ def test_real_tk_widgets_keep_python_ownership_across_callable_providers(
 
 
 def test_warm_intrinsic_source_facts_runs_workers_only_for_a_large_set(
-    tmp_path, monkeypatch
+    tmp_path, monkeypatch, isolated_molt_cache
 ):
     import molt.host_capacity
 
     # Spawned workers inherit the environment, not this process's patches.
-    monkeypatch.setenv("MOLT_BUILD_STATE_DIR", str(tmp_path / "state"))
     monkeypatch.setattr(molt.host_capacity, "worker_count", lambda **_: 2)
     real_pool = module_graph_cache.ProcessPoolExecutor
 
@@ -734,7 +729,6 @@ def test_warm_intrinsic_source_facts_runs_workers_only_for_a_large_set(
         lambda **_: pytest.fail("a set one worker covers must stay serial"),
     )
     module_graph_cache.warm_stdlib_intrinsic_source_facts(
-        tmp_path,
         modules("small", 2 * per_worker - 1),
         target_python=_DEFAULT_TARGET_PYTHON_VERSION,
     )
@@ -742,13 +736,12 @@ def test_warm_intrinsic_source_facts_runs_workers_only_for_a_large_set(
     monkeypatch.setattr(module_graph_cache, "ProcessPoolExecutor", real_pool)
     large = modules("large", 2 * per_worker)
     module_graph_cache.warm_stdlib_intrinsic_source_facts(
-        tmp_path, large, target_python=_DEFAULT_TARGET_PYTHON_VERSION
+        large, target_python=_DEFAULT_TARGET_PYTHON_VERSION
     )
     counts: dict[str, int] = {}
     with _source_tree_fingerprint_transaction():
         for name, path in large.items():
             module_graph_cache._stdlib_intrinsic_source_facts(
-                tmp_path,
                 name,
                 path,
                 target_python=_DEFAULT_TARGET_PYTHON_VERSION,
@@ -779,7 +772,7 @@ def test_intrinsic_source_cache_roundtrips_owner_plans(
     assert statement.plan.modules == ("pkg", "pkg.Value")
     assert opaque.request is None and opaque.unresolved
     assert opaque.line == 4
-    [payload] = source_records(tmp_path, "intrinsic-facts").values()
+    [payload] = source_records("intrinsic-facts").values()
     assert payload["identity"]["schema"] == "molt.stdlib-intrinsic-source.v8"
     assert "modules" not in payload["facts"] and "unresolved" not in payload["facts"]
     assert "blockers" not in payload["facts"]
@@ -809,8 +802,8 @@ def test_intrinsic_source_cache_rejects_malformed_site_facts(
         "__import__(unknown_name)\n",
     )
     first = provider("consumer", path)
-    [key] = source_records(tmp_path, "intrinsic-facts")
-    payload = source_records(tmp_path, "import-scan")[key]
+    [key] = source_records("intrinsic-facts")
+    payload = source_records("import-scan")[key]
     site = payload["source_sites"][0]
     if corruption == "missing-owner-plan":
         del site["owner_plan"]
@@ -829,7 +822,7 @@ def test_intrinsic_source_cache_rejects_malformed_site_facts(
     elif corruption == "opaque-no-obligation":
         site = payload["source_sites"][1]
         site["plan"]["runtime"] = False
-    replace_source_record(tmp_path, "import-scan", key, payload)
+    replace_source_record("import-scan", key, payload)
     assert provider("consumer", path) == first
 
 
@@ -902,9 +895,9 @@ def test_shared_source_cache_rejects_malformed_execution_and_export_facts(
         "__all__ = ['value']\ndef f():\n    _MOLT_OP()\ntry:\n    f()\nexcept Exception:\n    pass\n",
     )
     first = provider("consumer", path)
-    [(key, metadata)] = source_records(tmp_path, "intrinsic-facts").items()
+    [(key, metadata)] = source_records("intrinsic-facts").items()
     assert "sites" not in metadata["facts"]
-    payload = source_records(tmp_path, "import-scan")[key]
+    payload = source_records("import-scan")[key]
     if corruption == "retired-effects":
         payload["source_effects"] = []
     elif corruption == "demand-phase":
@@ -925,7 +918,7 @@ def test_shared_source_cache_rejects_malformed_execution_and_export_facts(
     elif corruption == "source-span":
         payload["source_demands"][0][0][0] = -1
     if corruption == "missing-source-record":
-        delete_source_record(tmp_path, "import-scan", key)
+        delete_source_record("import-scan", key)
     else:
-        replace_source_record(tmp_path, "import-scan", key, payload)
+        replace_source_record("import-scan", key, payload)
     assert provider("consumer", path) == first

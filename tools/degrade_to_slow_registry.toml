@@ -50,14 +50,11 @@ symbol = "_load_cached_module_lowering_result"
 signature = "def _load_cached_module_lowering_result(project_root: Path | None, module_name: str, module_path: Path, *, ...) -> dict[str, Any] | None"
 classification = "sound_keep"
 justification = """
-B1 -- session-local module LOWERING cache. RESOLVED 2026-07-06: a shared,
-content-addressed cross-session tier (src/molt/cli/module_frontend_cache.py)
-now hydrates the warm-hit path across sessions, so an unchanged module no
-longer silently re-lowers cold on every fresh session. The None-on-genuine-
-cold-miss that remains is correct (a true miss must re-lower; the persisted
-result is byte-identical to a fresh lowering, and the key is content-complete
-after the cache-fingerprint fix). fast_path_test proves cross-session reuse is
-taken on an unchanged module. No silent degrade on a handleable input remains.
+B1 -- shared module lowering records. The unified source-record store admits
+unchanged source and complete lowering contexts across sessions and projects;
+there is no session-local copy/hydration tier. A genuine miss recomputes the
+frontend. Exact body bytes and their verified digests survive cache admission;
+semantic validation and the cross-session oracle remain the authority.
 """
 fast_path_test = "test_lowering_reuse_across_sessions_no_relower"
 
@@ -67,14 +64,12 @@ symbol = "_load_module_analysis"
 signature = "def _load_module_analysis(path: Path, *, module_name: str, is_package: bool, import_scan_mode: ImportScanMode, ..., project_root: Path | None, ...) -> tuple[ast.AST | None, ...]"
 classification = "sound_keep"
 justification = """
-B2 -- session-local module ANALYSIS cache. RESOLVED 2026-07-06: symmetric to B1
--- the shared content-addressed cross-session tier hydrates the analysis warm-
-hit path across sessions, so an unchanged source no longer re-parses/re-analyzes
-cold every session. The None-on-genuine-miss that remains is correct (analysis
-is a pure function of the content-complete folded key). fast_path_test proves
-cross-session analysis reuse. No silent degrade on a handleable input remains.
+B2 -- shared module-analysis records. Every session reads the same source- and
+semantic-qualified SQLite row; no session hydration or duplicate file exists.
+A genuine miss recomputes analysis. The actual cross-session oracle traps
+re-analysis and verifies reuse of the same row without republishing it.
 """
-fast_path_test = "test_analysis_reuse_across_sessions_hydrates_shared"
+fast_path_test = "test_analysis_reuse_across_sessions_uses_same_row"
 
 
 # =============================================================================

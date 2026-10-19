@@ -16,6 +16,12 @@ from molt.cli.backend_ir import (
     _prepare_backend_ir,
 )
 from molt.cli.frontend_integration import _integrate_module_frontend_result_with_state
+from molt.cli.function_records import (
+    FunctionDigestSeed,
+    encode_function_body,
+    function_body_digest,
+)
+from molt.cli.cache_keys import FunctionDigests
 from molt.cli.models import _FrontendIntegrationState
 from molt.cli.output import fail
 from molt.frontend import SimpleTIRGenerator
@@ -233,12 +239,19 @@ def test_module_initializers_solely_own_code_and_globals_publication(
         )
         generator.visit(ast.parse("first = 1\nsecond = 2\nthird = 3\n"))
         document = generator.to_json(scope="module")
+        seeds = tuple(
+            FunctionDigestSeed(
+                function, function_body_digest(encode_function_body(function))
+            )
+            for function in document["functions"]
+        )
         issue = _integrate_module_frontend_result_with_state(
             state,
             module,
             ir_functions=document["functions"],
             func_code_ids=document["code_slots"],
             function_metadata=document["function_metadata"],
+            function_digest_seeds=seeds,
             local_classes={},
         )
         assert issue is None
@@ -276,6 +289,22 @@ def test_module_initializers_solely_own_code_and_globals_publication(
         range(len(state.global_code_ids))
     )
     functions = {function["name"]: function for function in prepared.ir["functions"]}
+    original = {seed.function["name"]: seed for seed in state.function_digest_seeds}
+    retained = {seed.function["name"]: seed for seed in prepared.function_digest_seeds}
+    assert original
+    for name, seed in original.items():
+        final = functions.get(name)
+        if final is seed.function:
+            assert retained[name] is seed
+        else:
+            assert name not in retained, "a rewritten body must lose its old digest"
+    # Independently recompute all final bytes: a seed from a pre-rewrite body
+    # must never silently qualify its replacement at the final consumer.
+    owner = FunctionDigests(prepared.function_digest_seeds)
+    for function in functions.values():
+        assert owner.digest(function) == function_body_digest(
+            encode_function_body(function)
+        )
     for name, function in functions.items():
         expected = (
             "value"

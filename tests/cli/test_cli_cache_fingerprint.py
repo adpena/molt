@@ -38,7 +38,7 @@ def _tiny_ir() -> dict[str, Any]:
 
 
 def test_cache_payload_digest_identifies_exactly_the_canonical_payload() -> None:
-    """Equal digests exactly when the canonical JSON payloads are equal."""
+    """Legal pure bodies preserve identity against independent JSON truth."""
 
     def canonical(payload: dict[str, object]) -> bytes:
         return json.dumps(
@@ -48,9 +48,9 @@ def test_cache_payload_digest_identifies_exactly_the_canonical_payload() -> None
             default=CACHE_KEYS._json_ir_default,
         ).encode("utf-8")
 
-    first = {"name": "first", "ops": [{"kind": "const", "value": (1, 2)}]}
-    second = {"name": "second", "ops": [{"kind": "ret", "args": {"b", "a"}}]}
-    payloads = [
+    first = {"name": "first", "ops": [{"kind": "const", "value": [1, 2]}]}
+    second = {"name": "second", "ops": [{"kind": "ret", "args": ["b", "a"]}]}
+    payloads: list[dict[str, Any]] = [
         {"functions": [first, second], "profile": "dev"},
         {"functions": [second, first], "profile": "dev"},
         {"functions": [first], "profile": "dev"},
@@ -62,6 +62,18 @@ def test_cache_payload_digest_identifies_exactly_the_canonical_payload() -> None
             "functions": [{"name": "first"}, {"ops": first["ops"]}, second],
             "profile": "dev",
         },
+        {
+            "functions": [
+                {"name": "literal", "ops": [{"kind": "const_float", "f_value": -0.0}]}
+            ]
+        },
+        {
+            "functions": [
+                {"name": "literal", "ops": [{"kind": "const_float", "f_value": 0.0}]}
+            ]
+        },
+        {"functions": [{"name": "literal", "ops": [{"kind": "const", "value": 1}]}]},
+        {"functions": [{"name": "literal", "ops": [{"kind": "const", "value": 1.0}]}]},
         {"functions": [], "profile": "dev"},
         {"functions": "not a list", "profile": "dev"},
         {"profile": "dev"},
