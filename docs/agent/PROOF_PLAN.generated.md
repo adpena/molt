@@ -396,7 +396,7 @@ The wrapper conflict was reconfirmed by native CI run `30211145633` job `8981749
 | `public-contract` | 19 | 1 |
 | `browser-simd` | 11 | 0 |
 | `rust-clippy-changed` | 8 | 1 |
-| `backend-native` | 9 | 1 |
+| `backend-native` | 12 | 1 |
 | `backend-daemon-cache` | 6 | 2 |
 | `backend-ir-framing` | 4 | 1 |
 | `native-object-emission` | 5 | 1 |

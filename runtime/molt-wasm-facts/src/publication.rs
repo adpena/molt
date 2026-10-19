@@ -84,6 +84,15 @@ pub fn scan_and_write_callable_table_attestation(
     let layout_payload = encode_callable_table_layout(layout);
     write_custom_section(writer, CALLABLE_TABLE_LAYOUT_SECTION_NAME, &layout_payload)?;
     write_custom_section(writer, CALLABLE_TABLE_SECTION_NAME, &attestation)?;
+    facts.custom_section_names.retain(|name| {
+        name != CALLABLE_TABLE_LAYOUT_SECTION_NAME && name != CALLABLE_TABLE_SECTION_NAME
+    });
+    facts
+        .custom_section_names
+        .push(CALLABLE_TABLE_LAYOUT_SECTION_NAME.to_string());
+    facts
+        .custom_section_names
+        .push(CALLABLE_TABLE_SECTION_NAME.to_string());
     facts.callable_table_attestation_present = true;
     facts.callable_table_layout = Some(layout);
     Ok(facts)
