@@ -875,6 +875,29 @@ def test_unrelated_activation_slots_do_not_replay_completed_history(
     assert summary.state_count == len(history)
 
 
+@pytest.mark.parametrize("admit_before_summary", [False, True])
+def test_present_history_binding_retains_prior_exposure_and_clean_rebind(
+    admit_before_summary: bool,
+) -> None:
+    pool = flow._StatePool()
+    original = int(PythonIdentity.IMPORTLIB_IMPORT_MODULE)
+    stored = pool.set_binding(0, 0, original)
+    exposed = pool.taint_exposed_bindings(stored)
+    later = pool.invalidate_members(exposed, 1)
+    rebound = pool.set_binding(later, 0, INERT, 1)
+    history = [stored, exposed, later, rebound]
+    if admit_before_summary:
+        pool.set_taint_domain(1)
+    summary = flow._HistorySummary.build(pool, history)
+    pool.set_taint_domain(1)
+    expected = (original | OTHER_IDENTITY | INERT,) * 3 + (INERT,)
+    for start, identities in enumerate(expected):
+        reference = 0
+        for state in history[start:]:
+            reference |= pool.binding(state, 0)
+        assert summary.binding(pool, start, 0) == reference == identities
+
+
 @pytest.mark.parametrize("admitted", [(), (1, 33), tuple(range(64))])
 def test_projection_frontier_matches_full_slot_oracle_across_storage_and_epochs(
     admitted: tuple[int, ...],
