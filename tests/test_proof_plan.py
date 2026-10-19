@@ -671,45 +671,6 @@ def test_local_pytest_units_preserve_path_and_node_ownership_boundaries() -> Non
         assert units.memory_gb(iter(targets)) == expected
 
 
-def test_local_pytest_cohorts_preserve_ownership_and_literal_target_union() -> None:
-    literal = "tests/heavy.py::test_literal[x::y & 'quotes' {value} [nested]]"
-    commands = [
-        {"argv": ["--molt-worker-memory-gb=0.5", "tests/light/"]},
-        {"argv": ["--molt-worker-memory-gb=6.25", "tests/heavy.py"]},
-        {"argv": ["--molt-worker-memory-gb=1.5", "tests/medium.py"]},
-    ]
-    units = proof_plan.PytestMemoryUnits(commands)
-    targets = [
-        "tests/light/first.py",
-        literal,
-        "tests/medium.py",
-        "tests/unknown.py",
-        "tests/light/second.py",
-        literal,
-    ]
-    cohorts = proof_plan.local_pytest_cohorts(iter(targets), memory_units=units)
-    assert cohorts == (
-        (literal,),
-        ("tests/unknown.py",),
-        ("tests/medium.py",),
-        ("tests/light/first.py", "tests/light/second.py"),
-    )
-    flattened = [target for group in cohorts for target in group]
-    assert len(flattened) == len(set(targets))
-    assert set(flattened) == set(targets)
-    assert [units.memory_gb(group) for group in cohorts] == [6.25, 2.5, 1.5, 0.5]
-    assert proof_plan.local_pytest_cohorts((), memory_units=units) == ()
-
-
-def test_local_pytest_cohorts_keep_overlapping_targets_in_one_collection() -> None:
-    units = proof_plan.PytestMemoryUnits(
-        [{"argv": ["--molt-worker-memory-gb=0.5", "tests/file.py::test_one"]}]
-    )
-    targets = ("tests/file.py::test_one", "tests/file.py", "tests/file.py::test_two")
-    assert units.memory_gb((targets[0],)) == 0.5
-    assert proof_plan.local_pytest_cohorts(targets, memory_units=units) == (targets,)
-
-
 def test_local_pytest_cohort_keeps_literal_selection_and_parameter_argv() -> None:
     target = "tests/nodes.py::test_literal[x::y & 'quotes' {value} [nested]]"
     units = proof_plan.PytestMemoryUnits(
@@ -1435,11 +1396,10 @@ def test_installed_product_changes_select_complete_distribution_consumers(change
     rule = next(r for r in config.rules if r.name == "installed-compiler-distribution")
     gates, matched = replace(config, rules=[rule], always=[]).select([changed])
     assert [r.name for r in matched] == [rule.name]
-    assert gates and all(isinstance(gate.command, tuple) for gate in gates)
-    targets = [
-        arg for gate in gates for arg in gate.command if arg.startswith("tests/")
-    ]
-    expected = {
+    assert len(gates) == 1
+    command = gates[0].command
+    argv = shlex.split(command) if isinstance(command, str) else command
+    assert {arg for arg in argv if arg.startswith("tests/")} == {
         "tests/cli/test_installed_compiler.py",
         "tests/cli/test_installed_runtime.py",
         "tests/cli/test_installed_toolchain_rules.py",
@@ -1447,9 +1407,7 @@ def test_installed_product_changes_select_complete_distribution_consumers(change
         "tests/tools/test_release_native_build.py",
         "tests/tools/test_release_supply_chain.py",
     }
-    assert set(targets) == expected
-    assert len(targets) == len(expected)
-    assert all(gate.toolchains == ("python",) for gate in gates)
+    assert gates[0].toolchains == ("python",)
     assert replace(config, rules=[rule], always=[]).select(
         ["runtime/molt-wasm-facts/src/main.rs"]
     ) == ([], [])
@@ -1555,13 +1513,8 @@ def test_maintained_zlib_changes_prove_real_provider_and_consumer_custody(
     assert _classes(path)["rust"] is True
     assert set(rule.gates) <= {gate.command for gate in gates}
     assert "tests/cli/test_runtime_source_closure.py" in rule.pytest
-    consumers = [
-        gate
-        for gate in gates
-        if isinstance(gate.command, tuple)
-        and "tests/cli/test_runtime_source_closure.py" in gate.command
-    ]
-    assert len(consumers) == 1
+    merged = next(gate.command for gate in gates if isinstance(gate.command, tuple))
+    assert "tests/cli/test_runtime_source_closure.py" in merged
     local = tuple(next(g for g in rule.gates if g.startswith("cargo test")).split())
     ci = next(
         command.argv

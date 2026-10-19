@@ -626,46 +626,6 @@ class PytestMemoryUnits:
         return maximum or default
 
 
-@dataclass(slots=True)
-class _PytestTargetNode:
-    children: dict[str, _PytestTargetNode] = dataclass_field(default_factory=dict)
-    unit_gb: float | None = None
-
-
-def local_pytest_cohorts(
-    targets: Iterable[str], *, memory_units: PytestMemoryUnits
-) -> tuple[tuple[str, ...], ...]:
-    """Group existing targets by their measured owning worker envelope.
-
-    Keep literal targets intact, including parameter IDs, and retain their
-    first-occurrence order within each group. Larger envelopes run first;
-    lower-memory targets need not inherit an unrelated group's worker limit.
-    No collection, filesystem discovery or new resource policy is involved.
-    """
-    targets = tuple(dict.fromkeys(targets))
-    root = _PytestTargetNode()
-    for target in targets:
-        node = root
-        for part in _pytest_target_parts(target):
-            if part not in node.children:
-                node.children[part] = _PytestTargetNode()
-            node = node.children[part]
-        node.unit_gb = memory_units.memory_gb((target,))
-    groups: dict[float, list[str]] = {}
-    for target in targets:
-        node = root
-        for part in _pytest_target_parts(target):
-            if node.unit_gb is not None:
-                break
-            node = node.children[part]
-        assert node.unit_gb is not None
-        # A file/directory and an explicitly named child must stay together:
-        # pytest deduplicates them within one collection, not across runs.
-        unit = node.unit_gb
-        groups.setdefault(unit, []).append(target)
-    return tuple(tuple(groups[unit]) for unit in sorted(groups, reverse=True))
-
-
 def local_pytest_argv(
     targets: Iterable[str],
     select: tuple[str, ...] = (),
@@ -674,8 +634,9 @@ def local_pytest_argv(
 ) -> tuple[str, ...]:
     """The one pytest invocation for local gate test targets.
 
-    Integration groups selected targets by their owning worker envelope.
-    ``-n auto`` sizes the workers from the host using that envelope. A
+    Integration merges every selected rule's targets into one run, so the
+    interpreter, guard and collection costs are paid once. ``-n auto`` sizes
+    the workers from the host using the largest owning target envelope. A
     selection (``-k`` or ``-m``) applies
     to every target of its run, so each one runs on its own.
     """

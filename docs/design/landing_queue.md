@@ -6,9 +6,11 @@ Main advances only to a commit that passed its selected proofs on every
 required cell. One queue on the owner's own machines enforces that rule; no
 agent pushes to main by hand.
 
-The current local driver implements immutable candidate custody, measured
-resource cohorts and selected-volume readiness through the existing proof plan.
-It still uses local rules and runs gates sequentially; the family queue,
+The current local driver implements immutable candidate custody and
+selected-volume readiness through the existing proof plan. Unfiltered pytest
+targets share one invocation using the largest declared owning envelope.
+The driver still uses local rules and runs gates sequentially; scheduling
+migration belongs to the existing proof executor and HF-334. The family queue,
 cross-host scheduling and reusable action receipts below remain release work.
 The [integration contract](../ops/INTEGRATION.md) owns implemented local
 behavior. Input-closed action reuse requires finer declared dependencies and

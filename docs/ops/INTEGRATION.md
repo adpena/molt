@@ -146,14 +146,13 @@ self-gate that runs `tests/test_molt_dev.py`), and CI/pyproject wiring. Local
 rules have one closed field set; unknown or retired policy fields fail
 admission rather than becoming unused promises.
 
-Unfiltered pytest targets share a run only when their existing measured worker
-envelopes match. File/directory requests and explicitly requested children stay
-in one collection, so a test cannot run again in a different resource cohort.
-Literal selectors and parameter IDs retain their meaning; each `-k`/`-m`
-selection remains separate. Each cohort receives the union of its targets'
-declared toolchains. Larger envelopes run first, and lower-memory groups use
-their own host-derived worker count. This trades one pytest startup per distinct
-envelope for greater concurrency without lowering any resource allowance.
+Unfiltered pytest targets from selected rules share one invocation, so
+interpreter, guard and collection startup are paid once. The largest declared
+owning target envelope sizes the host-derived worker count, and the invocation
+receives the union of its contributing rules' declared toolchains. Literal
+targets retain first-occurrence order and parameter IDs; file/directory requests
+and explicitly requested children remain in one collection. Each `-k`/`-m`
+selection stays separate.
 The repository pytest configuration reports only the ten slowest durations
 above 0.25 seconds, including setup and teardown, to expose stragglers.
 

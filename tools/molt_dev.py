@@ -555,14 +555,14 @@ class GateConfig:
         to the merged pytest invocation supply its tools; each selector cohort
         keeps its own. Command binding happens after this policy selection.
         """
-        from tools.proof_plan import local_pytest_argv, local_pytest_cohorts
+        from tools.proof_plan import local_pytest_argv
 
         selected: list[SelectedGate] = []
         indices: dict[str, int] = {}
         seen_pytest: set[str] = set()
         matched_rules: list[GateRule] = []
         pytest_targets: list[str] = []
-        pytest_tools: dict[str, dict[str, None]] = {}
+        pytest_tools: dict[str, None] = {}
         pytest_index: int | None = None
         pytest_commands: set[str] = set()
 
@@ -597,10 +597,7 @@ class GateConfig:
             if rule.pytest:
                 if pytest_index is None:
                     pytest_index = len(selected)
-                for target in rule.pytest:
-                    pytest_tools.setdefault(target, {}).update(
-                        dict.fromkeys(tools(f"{owner}.pytest"))
-                    )
+                pytest_tools.update(dict.fromkeys(tools(f"{owner}.pytest")))
             for index, (select, targets) in enumerate(rule.pytest_select):
                 command = local_pytest_argv(
                     targets, select, memory_units=self.pytest_memory_units
@@ -631,23 +628,14 @@ class GateConfig:
                 tuple(dict.fromkeys(name for owner in owners for name in owner)),
             )
         if pytest_index is not None:
-            for targets in local_pytest_cohorts(
+            command = local_pytest_argv(
                 pytest_targets, memory_units=self.pytest_memory_units
-            ):
-                command = local_pytest_argv(
-                    targets, memory_units=self.pytest_memory_units
-                )
-                pytest_commands.add(command_key(command))
-                cohort_tools = tuple(
-                    dict.fromkeys(
-                        tool for target in targets for tool in pytest_tools[target]
-                    )
-                )
-                size = len(selected)
-                add(command, cohort_tools)
-                if len(selected) != size:
-                    selected.insert(pytest_index, selected.pop())
-                    pytest_index += 1
+            )
+            pytest_commands.add(command_key(command))
+            size = len(selected)
+            add(command, tuple(pytest_tools))
+            if len(selected) != size:
+                selected.insert(pytest_index, selected.pop())
         # Preserve declared source-check and Cargo command order. Only early
         # consumer cohorts move behind the selected Rust compilation check.
         lint_commands = {
