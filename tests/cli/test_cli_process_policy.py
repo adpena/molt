@@ -98,30 +98,77 @@ def test_cli_entry_matches_interpreter_shutdown() -> None:
         assert _run(entry) == oracle
 
 
+def _worker_process_observation() -> dict[str, object]:
+    import gc
+    import multiprocessing
+    import os
+
+    from molt import compiler_process
+
+    lock = getattr(compiler_process, "_test_parent_lock", None)
+    lock_inherited = lock is not None
+    lock_acquired = lock.acquire(blocking=False) if lock_inherited else None
+    if lock_acquired:
+        lock.release()
+    parent = multiprocessing.parent_process()
+    assert parent is not None
+    return {
+        "parent_marker": getattr(compiler_process, "_test_parent_marker", None),
+        "lock_inherited": lock_inherited,
+        "lock_acquired": lock_acquired,
+        "thresholds": gc.get_threshold(),
+        "method": multiprocessing.get_start_method(),
+        "creating_parent": parent.pid,
+        "parent_alive": parent.is_alive(),
+        "environment": os.environ.get("PARENT_PROCESS_CONTEXT_TEST_VALUE"),
+    }
+
+
 def test_workers_use_the_compiler_collector_pacing() -> None:
-    # Spawned workers start a fresh interpreter, so only the initializer can
-    # give them the command process's collector pacing.
+    # The actual worker must not inherit a marker or locked mutex added only
+    # to the parent. Raw fork fails both independent observations.
     probe = textwrap.dedent(
         """
-        import gc, json, multiprocessing
+        import json, os, threading
         from concurrent.futures import ProcessPoolExecutor
         from molt import compiler_process
+        from tests.cli.test_cli_process_policy import _worker_process_observation
 
         if __name__ == "__main__":
+            compiler_process._test_parent_marker = "parent-only"
+            compiler_process._test_parent_lock = threading.Lock()
+            compiler_process._test_parent_lock.acquire()
+            os.environ["PARENT_PROCESS_CONTEXT_TEST_VALUE"] = "first"
             with ProcessPoolExecutor(
                 max_workers=1,
-                mp_context=multiprocessing.get_context("spawn"),
+                mp_context=compiler_process.worker_context(),
                 initializer=compiler_process.worker_initializer,
                 initargs=(None,),
             ) as pool:
-                worker = pool.submit(gc.get_threshold).result()
-            print(json.dumps([list(worker), list(compiler_process.GC_THRESHOLDS)]))
+                worker = pool.submit(_worker_process_observation).result()
+            os.environ["PARENT_PROCESS_CONTEXT_TEST_VALUE"] = "second"
+            with ProcessPoolExecutor(
+                max_workers=1,
+                mp_context=compiler_process.worker_context(),
+                initializer=compiler_process.worker_initializer,
+                initargs=(None,),
+            ) as pool:
+                later = pool.submit(_worker_process_observation).result()
+            print(json.dumps([worker, later, list(compiler_process.GC_THRESHOLDS), os.getpid()]))
         """
     )
     status, stdout, stderr = _run(probe)
     assert status == 0, stderr
-    worker, expected = json.loads(stdout)
-    assert worker == expected != [700, 10, 10]
+    worker, later, expected, parent_pid = json.loads(stdout)
+    for observed in (worker, later):
+        assert observed["thresholds"] == expected != [700, 10, 10]
+        assert observed["parent_marker"] is None
+        assert observed["lock_inherited"] is False and observed["lock_acquired"] is None
+        assert observed["method"] == "spawn"
+        assert observed["creating_parent"] == parent_pid
+        assert observed["parent_alive"] is True
+    assert worker["environment"] == "first"
+    assert later["environment"] == "second"
 
 
 def test_a_profiler_hosting_the_cli_keeps_control_after_it(tmp_path) -> None:

@@ -65,10 +65,16 @@ def native_support_source(tmp_path: Path) -> Path:
     return path
 
 
+@pytest.mark.parametrize("newline", ["\n", "\r\n", "\r"], ids=["lf", "crlf", "cr"])
 def test_native_selection_keeps_imports_and_function_facts_in_one_cache_scope(
     native_support_source: Path,
+    newline: str,
 ) -> None:
     path = native_support_source
+    # Python's text reader is the independent universal-newline oracle. Keep
+    # byte custody separate: analysis must not rewrite the input file.
+    source = path.read_text(encoding="utf-8")
+    path.write_bytes(source.replace("\n", newline).encode("utf-8"))
     original = path.read_bytes()
     cases = (
         (("later",), ("beta",), {"later": "async"}),
@@ -83,7 +89,7 @@ def test_native_selection_keeps_imports_and_function_facts_in_one_cache_scope(
         if "later" in kinds:
             assert result[2]["later"]["defaults"] == [{"const": True, "value": 29}]
             assert result[2]["later"]["has_decorators"] is (not roots)
-        assert result[4] == original.decode()
+        assert result[4] == source
         assert path.read_bytes() == original
         assert result[5] is (index >= len(cases))
 

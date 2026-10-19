@@ -4,7 +4,6 @@ import contextlib
 import hashlib
 import io
 import json
-import multiprocessing
 import os
 import re
 import shutil
@@ -52,7 +51,7 @@ from molt.dx import (  # noqa: E402
     proof_scratch_root,
     scratch_root,
 )
-from molt import host_capacity  # noqa: E402
+from molt import compiler_process, host_capacity  # noqa: E402
 from molt.file_publication import resolve_owned_path  # noqa: E402
 from molt.portable_paths import portable_relative_path  # noqa: E402
 from molt import backend_daemon_custody as daemon_custody  # noqa: E402
@@ -1945,17 +1944,19 @@ def _install_worker_orphan_guard() -> None:
     global _WORKER_ORPHAN_GUARD_INSTALLED
     if _WORKER_ORPHAN_GUARD_INSTALLED:
         return
-    _WORKER_ORPHAN_GUARD_INSTALLED = True
-    if os.name != "posix":
+    import multiprocessing
+
+    parent = multiprocessing.parent_process()
+    if parent is None:
         return
+    _WORKER_ORPHAN_GUARD_INSTALLED = True
 
     def _watch_parent() -> None:
         while True:
             time.sleep(1.0)
-            # If the harness process dies abruptly (app reset/kill), worker
-            # processes become orphaned under init/launchd (ppid=1). Exit
-            # proactively so they do not accumulate and consume memory.
-            if os.getppid() == 1:
+            # Observe the creating process's sentinel, rather than inferring
+            # its lifetime from a changing or reused OS parent identifier.
+            if not parent.is_alive():
                 os._exit(0)
 
     threading.Thread(
@@ -4823,7 +4824,8 @@ def run_diff(
     # Stopping the suite also stops the commands already running, here and in
     # every worker, so they return interrupted receipts at once and the suite
     # writes its summary instead of waiting out their budgets (HF-232).
-    suite_stop = multiprocessing.RawValue("i", 0)
+    worker_context = compiler_process.worker_context()
+    suite_stop = worker_context.RawValue("i", 0)
     compat_backends.bind_suite_stop(suite_stop)
 
     def defer_suite_signal(signum: int, _frame: object) -> None:
@@ -5009,6 +5011,7 @@ def run_diff(
                     if max_tasks_per_child is not None:
                         executor_kwargs["max_tasks_per_child"] = max_tasks_per_child
                     executor_params = {
+                        "mp_context": worker_context,
                         "initializer": _install_worker_state,
                         "initargs": (suite_stop,),
                     }

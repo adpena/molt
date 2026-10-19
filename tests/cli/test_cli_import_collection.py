@@ -24,6 +24,7 @@ import time
 import types
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
+from multiprocessing.context import BaseContext
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, Callable, Collection, Iterator, Mapping, Sequence, cast
@@ -18890,10 +18891,12 @@ def test_parallel_build_reuses_cached_lowering_across_parallel_builds(
             self,
             *,
             max_workers: int,
+            mp_context: BaseContext,
             initializer: Callable[..., object] | None = None,
             initargs: tuple[object, ...] = (),
         ) -> None:
             self.max_workers = max_workers
+            assert mp_context.get_start_method() == "spawn"
             # Its in-process worker starts the way a pool worker does.
             if initializer is not None:
                 initializer(*initargs)
@@ -19055,10 +19058,12 @@ def test_parallel_build_reuses_dependent_cache_after_stable_interface_change(
             self,
             *,
             max_workers: int,
+            mp_context: BaseContext,
             initializer: Callable[..., object] | None = None,
             initargs: tuple[object, ...] = (),
         ) -> None:
             self.max_workers = max_workers
+            assert mp_context.get_start_method() == "spawn"
             # Its in-process worker starts the way a pool worker does.
             if initializer is not None:
                 initializer(*initargs)
@@ -19209,10 +19214,12 @@ def test_parallel_build_allows_scoped_type_facts(
             self,
             *,
             max_workers: int,
+            mp_context: BaseContext,
             initializer: Callable[..., object] | None = None,
             initargs: tuple[object, ...] = (),
         ) -> None:
             self.max_workers = max_workers
+            assert mp_context.get_start_method() == "spawn"
             # Its in-process worker starts the way a pool worker does.
             if initializer is not None:
                 initializer(*initargs)

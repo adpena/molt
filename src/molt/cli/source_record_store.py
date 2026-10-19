@@ -22,6 +22,7 @@ from contextlib import closing, contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Literal
+from weakref import WeakValueDictionary, finalize
 
 from molt.default_paths import (
     CACHE_MAINTENANCE_INTERVAL_SECONDS,
@@ -63,6 +64,18 @@ _RECORD_REFRESH_NS = int(CACHE_MAINTENANCE_INTERVAL_SECONDS * 1_000_000_000)
 _RETAINED_GENERATIONS = 4
 _BUSY_TIMEOUT_SECONDS = 60.0
 _PAGE_SIZE = 256
+
+# Foreign fork children keep inherited handles inert until process exit. Even a
+# PID-fenced callback must retain its argument: dropping it could invoke the
+# SQLite connection's C finalizer in that child.
+_INHERITED_CONNECTIONS: list[sqlite3.Connection] = []
+
+
+def _close_connection(connection: sqlite3.Connection, pid: int) -> None:
+    if pid != os.getpid():
+        _INHERITED_CONNECTIONS.append(connection)
+    else:
+        connection.close()
 
 
 @dataclass(frozen=True, slots=True)
@@ -129,6 +142,7 @@ class SourceRecordMaintenance:
         *,
         dry_run: bool,
     ) -> None:
+        self._pid = os.getpid()
         self._connection = connection
         self._current = current
         self._dry_run = dry_run
@@ -140,6 +154,10 @@ class SourceRecordMaintenance:
     def _cursor(
         self, query: str, parameters: tuple[Any, ...] = (), *, current: bool = False
     ) -> Generator[sqlite3.Cursor]:
+        if self._pid != os.getpid():
+            raise SourceRecordUnavailable(
+                "source record maintenance belongs to another process"
+            )
         cursor = None
         try:
             cursor = (self._current if current else self._connection).execute(
@@ -249,7 +267,7 @@ class SourceRecordMaintenance:
                         pass
                 except BaseException:
                     # A failed rollback cannot leave an admitted write owner.
-                    self._current.close()
+                    _close_connection(self._current, self._pid)
                     raise
             if isinstance(error, SourceRecordBusy):
                 return ("busy",) * len(batch)
@@ -257,7 +275,7 @@ class SourceRecordMaintenance:
 
     def close_snapshot(self) -> None:
         if not self._snapshot_closed:
-            self._connection.close()
+            _close_connection(self._connection, self._pid)
             self._snapshot_closed = True
 
     def reclaim(self) -> None:
@@ -286,10 +304,26 @@ class SourceRecordStore:
 
     def __init__(self, path: Path) -> None:
         self.path = path
+        self._pid = os.getpid()
         self._lock = threading.Lock()
         self._connection: sqlite3.Connection | None = None
+        self._connection_finalizer: finalize | None = None
         self._refreshed: dict[str, int] = {}
         self._unavailable = False
+
+    def close(self) -> None:
+        """Release this process's connection; later operations may reopen it."""
+        if self._pid != os.getpid():
+            return
+        with self._lock:
+            self._release_connection()
+            self._refreshed.clear()
+
+    def _release_connection(self) -> None:
+        finalizer, self._connection_finalizer = self._connection_finalizer, None
+        self._connection = None
+        if finalizer is not None:
+            finalizer()
 
     def get(
         self, kind: RecordKind, key: str, *, generation: str, max_bytes: int | None
@@ -301,6 +335,8 @@ class SourceRecordStore:
         """
         if max_bytes is not None and (type(max_bytes) is not int or max_bytes < 0):
             raise ValueError("source record size bound must be nonnegative or None")
+        if self._pid != os.getpid():
+            return None
         query = (
             "SELECT payload, revision, used_ns FROM records"
             " WHERE kind = ? AND key = ? AND generation = ?"
@@ -330,6 +366,8 @@ class SourceRecordStore:
     ) -> bool:
         if not isinstance(payload, bytes):
             raise TypeError("source record payload must be bytes")
+        if self._pid != os.getpid():
+            return False
         now = time.time_ns()
         with self._lock:
             stored, _result = self._run(
@@ -345,6 +383,8 @@ class SourceRecordStore:
         return stored
 
     def _refresh_record(self, record: SourceRecord) -> bool:
+        if self._pid != os.getpid():
+            return False
         now = time.time_ns()
         if now - record.used_ns < _RECORD_REFRESH_NS:
             return False
@@ -391,7 +431,7 @@ class SourceRecordStore:
             return False, None
 
     def _connect(self) -> sqlite3.Connection | None:
-        if self._unavailable:
+        if self._pid != os.getpid() or self._unavailable:
             return None
         if self._connection is not None:
             return self._connection
@@ -415,6 +455,12 @@ class SourceRecordStore:
             self._disable()
             return None
         self._connection = connection
+        # The callback owns no reference to this store. Weak references have
+        # already cleared when it runs, so a concurrent factory lookup cannot
+        # resurrect a store while SQLite releases the GIL during close.
+        self._connection_finalizer = finalize(
+            self, _close_connection, connection, self._pid
+        )
         return connection
 
     def _initialize(self, connection: sqlite3.Connection) -> None:
@@ -500,18 +546,16 @@ class SourceRecordStore:
                 pass
 
     def _disable(self) -> None:
-        connection, self._connection = self._connection, None
         self._unavailable = True
         self._refreshed.clear()
-        if connection is not None:
-            try:
-                connection.close()
-            except sqlite3.Error:
-                pass
+        try:
+            self._release_connection()
+        except sqlite3.Error:
+            pass
 
     @contextmanager
     def maintenance(self, *, dry_run: bool) -> Generator[SourceRecordMaintenance]:
-        if self._unavailable:
+        if self._pid != os.getpid() or self._unavailable:
             raise SourceRecordUnavailable("source record store is unavailable")
         snapshot: sqlite3.Connection | None = None
         current: sqlite3.Connection | None = None
@@ -552,9 +596,9 @@ class SourceRecordStore:
             if maintenance is not None:
                 maintenance.close_snapshot()
             elif snapshot is not None:
-                snapshot.close()
+                _close_connection(snapshot, self._pid)
             if current is not None:
-                current.close()
+                _close_connection(current, self._pid)
 
     def physical_bytes(self) -> dict[str, int | None]:
         sizes: dict[str, int | None] = {}
@@ -577,15 +621,26 @@ class SourceRecordStore:
         return sizes
 
 
-_STORES: dict[tuple[str, int], SourceRecordStore] = {}
+_STORES: WeakValueDictionary[tuple[str, int], SourceRecordStore] = WeakValueDictionary()
+_STORES_LOCK = threading.Lock()
+
+
+def _after_fork() -> None:
+    global _STORES_LOCK
+    _STORES_LOCK = threading.Lock()
+
+
+if hasattr(os, "register_at_fork"):
+    os.register_at_fork(after_in_child=_after_fork)
 
 
 def source_record_store(state_root: Path) -> SourceRecordStore:
-    """The existing process/fork-owned connection factory."""
+    """Share a process-owned store only while a caller still owns it."""
     key = (os.fspath(state_root), os.getpid())
-    store = _STORES.get(key)
-    if store is None:
-        store = _STORES[key] = SourceRecordStore(state_root / STORE_NAME)
+    with _STORES_LOCK:
+        store = _STORES.get(key)
+        if store is None:
+            store = _STORES[key] = SourceRecordStore(state_root / STORE_NAME)
     return store
 
 
@@ -593,9 +648,14 @@ def shared_source_records() -> SourceRecordStore:
     from molt.cli.cache_fingerprints import _SOURCE_TREE_FINGERPRINT_TRANSACTION
 
     transaction = _SOURCE_TREE_FINGERPRINT_TRANSACTION.get()
-    root = transaction.source_records_root if transaction is not None else None
-    if root is None:
-        root = (_default_molt_cache() / SHARED_SOURCE_RECORDS_DIRECTORY).resolve()
+    store = transaction.source_records if transaction is not None else None
+    if store is None or store._pid != os.getpid():
+        root = (
+            store.path.parent
+            if store is not None
+            else (_default_molt_cache() / SHARED_SOURCE_RECORDS_DIRECTORY).resolve()
+        )
+        store = source_record_store(root)
         if transaction is not None:
-            transaction.source_records_root = root
-    return source_record_store(root)
+            transaction.source_records = store
+    return store

@@ -21,7 +21,10 @@ import gc
 import os
 import sys
 import threading
-from typing import NoReturn
+from typing import TYPE_CHECKING, NoReturn
+
+if TYPE_CHECKING:
+    from multiprocessing.context import BaseContext
 
 GC_THRESHOLDS = (200_000, 30, 30)
 
@@ -36,6 +39,17 @@ def configure() -> None:
     """Pace CPython's cyclic collector for a compiler-sized heap."""
     if sys.implementation.name == "cpython":
         gc.set_threshold(*GC_THRESHOLDS)
+
+
+def worker_context() -> BaseContext:
+    """Use fresh heaps/locks and the current parent's environment per pool.
+
+    A retained forkserver also retains its first startup environment, which
+    cannot represent later embedded compiler invocations selecting new inputs.
+    """
+    import multiprocessing
+
+    return multiprocessing.get_context("spawn")
 
 
 def worker_initializer(log_dir: str | None) -> None:

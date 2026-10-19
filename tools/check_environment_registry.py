@@ -2599,7 +2599,12 @@ def scan_repository(*, workers: int | None = None, root: Path = ROOT) -> Scan:
         results.extend(r for r in map(_scan_rust_file, rust_paths) if r is not None)
         writer_violations = check_process_environment_writers(root)
     else:
-        with ProcessPoolExecutor(max_workers=worker_count) as pool:
+        from molt import compiler_process
+
+        with ProcessPoolExecutor(
+            max_workers=worker_count,
+            mp_context=compiler_process.worker_context(),
+        ) as pool:
             for result in pool.map(_scan_python_file, jobs, chunksize=16):
                 if result is not None:
                     results.append(result)

@@ -704,6 +704,7 @@ def warm_stdlib_intrinsic_source_facts(
     batches = [tuple(work[index::workers]) for index in range(workers)]
     with ProcessPoolExecutor(
         max_workers=workers,
+        mp_context=compiler_process.worker_context(),
         initializer=compiler_process.worker_initializer,
         initargs=(_input_report.worker_log_dir(),),
     ) as pool:

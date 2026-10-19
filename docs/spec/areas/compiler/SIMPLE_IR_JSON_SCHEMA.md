@@ -246,6 +246,21 @@ semantic inputs, and import requests complete against the current project
 roots and custody after reuse. SQL applies each reader's byte bound before
 payload allocation; lowering explicitly retains its uncapped role. There is
 one decode per hit, no retained parsed-document cache, and no per-project copy.
+The frontend operation owns its store connection; admitted record observations
+and concurrent operations pin that same owner. A weak identity registry holds no
+abandoned root alive, and the last owner closes its connection and statement
+cache. Normal per-record calls reuse the operation's connection without another
+registry lookup. This follows [CPython's weak-value ownership model](https://docs.python.org/3.12/library/weakref.html).
+Connection release uses a weak finalizer that captures the connection and its
+PID, never its store. The weak identity cannot resurrect a finalizing store
+while SQLite closes outside the GIL. Explicit foreign-fork children refuse
+inherited store and maintenance operations before locks or SQL. Their release
+callbacks retain inherited connections inertly until process exit, including
+directly constructed owners and maintenance cleanup; dropping a callback's last
+connection argument could otherwise invoke CPython's C finalizer. This is
+resource custody for quiescent foreign fork boundaries, not support for forking
+in the middle of an SQLite operation. Normal compiler workers use fresh spawn
+contexts. See [SQLite's fork restrictions](https://sqlite.org/howtocorrupt.html).
 An admitted use refreshes a revision-fenced observation at most once per five
 minutes; invalid, stale and replaced observations cannot renew another row.
 The existing byte/age prune merges bounded metadata pages with file entries
