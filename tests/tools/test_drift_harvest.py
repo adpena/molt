@@ -96,6 +96,31 @@ def test_classify_computes_uniq_lazily(monkeypatch):
     assert called == ["oc"]
 
 
+def test_classify_protects_executing_repository_without_name_conventions(
+    monkeypatch, tmp_path
+):
+    repository = tmp_path / "ordinary-checkout"
+    sibling = tmp_path / "ordinary-retired-checkout"
+    repository.mkdir()
+    sibling.mkdir()
+    monkeypatch.setattr(dh, "REPO_ROOT", repository)
+    monkeypatch.setattr(
+        dh,
+        "_worktrees",
+        lambda: [{"path": str(path)} for path in (repository, sibling)],
+    )
+    monkeypatch.setattr(dh, "_dirty_count", lambda _path: 0)
+    monkeypatch.setattr(dh, "_last_commit_epoch", lambda _path: 0)
+    monkeypatch.setattr(dh, "_unique_commit_count", lambda _ref: 0)
+
+    states = {row["path"]: row["state"] for row in dh.classify(24.0, 1_000_000.0)}
+
+    assert states[str(repository)] == "PROTECTED"
+    assert states[str(sibling)] == "SUPERSEDED"
+    assert dh._protected(str(repository / ".." / repository.name))
+    assert dh._protected(str(repository.parent))
+
+
 def test_only_superseded_and_stale_are_prunable_without_include_signal(monkeypatch):
     # The prune path must never touch FRESH/PROTECTED/LOCKED, and SIGNAL only with
     # --include-signal (after its commits are bundled).

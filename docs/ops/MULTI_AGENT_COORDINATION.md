@@ -47,6 +47,14 @@ identity checks, ordinary non-fast-forward rejection and fetch/ancestor push
 confirmation therefore remain mandatory. A publication race is a refusal,
 never permission to force-push or reuse qualification for changed inputs.
 
+Retirement uses [Git's worktree removal](https://git-scm.com/docs/git-worktree#Documentation/git-worktree.txt-remove-fworktree)
+to retire the directory and its registration together. Launch the removal
+subprocess from the surviving main checkout as well as selecting it with `-C`:
+the Windows executable shim can retain the initial cwd while Git removes the
+target. Drift harvesting protects its executing source checkout by resolved
+containment, so its default Git cwd survives every prune. These are development
+tooling rules and add no work to emitted programs.
+
 ## Startup Discovery
 
 Every agent that may run builds, differential tests, conformance, regrtest,

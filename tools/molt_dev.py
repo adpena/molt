@@ -1551,6 +1551,9 @@ def _cleanup_worktree(
     remove_args.append(str(repo))
     proc = _run_fast_captured_command(
         ["git", "-C", str(main_repo), *remove_args],
+        # Git for Windows may retain the launch cwd in its executable shim.
+        # Both that cwd and Git's -C must outlive the worktree being removed.
+        cwd=main_repo,
         timeout=120.0,
     )
     if proc.returncode != 0:

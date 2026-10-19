@@ -159,7 +159,11 @@ def _dirty_count(path: str) -> int:
 
 
 def _protected(path: str) -> bool:
-    return any(s in path for s in _PROTECTED_SUBSTRINGS)
+    # Every cleanup Git subprocess starts in REPO_ROOT. Keep that repository
+    # alive even when its commits are old and already landed.
+    return _contains_path(Path(path), REPO_ROOT) or any(
+        s in path for s in _PROTECTED_SUBSTRINGS
+    )
 
 
 def _worktree_exists(path: str) -> bool:
