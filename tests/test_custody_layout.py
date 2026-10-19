@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import tempfile
+import os
 from pathlib import Path
 
 import pytest
@@ -95,3 +96,167 @@ def test_a_symlinked_spelling_resolves_to_the_physical_family(tmp_path: Path) ->
         pytest.skip(f"host cannot create directory symlinks: {exc}")
 
     assert custody_layout.custody_root(alias) == root.resolve()
+
+
+@pytest.fixture
+def git_checkout(tmp_path: Path) -> Path:
+    from tests.test_dx_run_context import _git
+
+    root = tmp_path / "family with spaces" / "molt-src"
+    root.mkdir(parents=True)
+    _git(root, "init", "-q", "-b", "main")
+    (root / "tracked").write_text("source\n", encoding="utf-8")
+    _git(root, "add", "tracked")
+    _git(root, "commit", "-q", "-m", "source")
+    return root
+
+
+@pytest.mark.parametrize("main_name", ["molt-src", "plain-clone"])
+@pytest.mark.parametrize(
+    "manager", [".claude/worktrees/agent", ".codex/worktrees/id/molt-src"]
+)
+def test_nested_git_worktree_custody_is_outside_every_enclosing_checkout(
+    git_checkout: Path, monkeypatch: pytest.MonkeyPatch, main_name: str, manager: str
+) -> None:
+    from tests.test_dx_run_context import _git
+
+    root = git_checkout
+    if main_name != root.name:
+        root = root.rename(root.with_name(main_name))
+    lane = root / manager
+    _git(root, "worktree", "add", "-q", "--detach", str(lane))
+    assert Path(_git(lane, "rev-parse", "--show-toplevel")).resolve() == lane
+    expected_git = Path(_git(lane, "rev-parse", "--absolute-git-dir")).resolve()
+    expected_common = Path(
+        _git(lane, "rev-parse", "--path-format=absolute", "--git-common-dir")
+    ).resolve()
+    # Placement and HEAD inspection must not launch Git, even for a linked tree.
+    monkeypatch.setenv("PATH", str(root.parent / "absent-tools"))
+    assert custody_layout.git_directories(lane) == (expected_git, expected_common)
+    assert custody_layout.enclosing_checkouts(lane) == (lane, root)
+    assert custody_layout.custody_root(lane) == root.parent
+
+
+@pytest.mark.parametrize("shape", ["sibling", "external-managed", "external-plain"])
+def test_safe_linked_worktree_keeps_its_existing_layout(
+    git_checkout: Path, tmp_path: Path, shape: str
+) -> None:
+    from tests.test_dx_run_context import _git
+
+    if shape == "sibling":
+        lane = git_checkout.parent / "worktrees" / "lane"
+        expected = git_checkout.parent
+    elif shape == "external-managed":
+        lane = tmp_path / "codex" / "worktrees" / "id" / "molt-src"
+        expected = lane.parent
+    else:
+        lane = tmp_path / "external" / "lane"
+        expected = lane
+    _git(git_checkout, "worktree", "add", "-q", "--detach", str(lane))
+    assert custody_layout.custody_root(lane) == expected
+
+
+def test_nested_independent_clone_does_not_put_outputs_in_its_parent_source(
+    git_checkout: Path,
+) -> None:
+    from tests.test_dx_run_context import _git
+
+    nested = git_checkout / "independent"
+    nested.mkdir()
+    _git(nested, "init", "-q")
+    assert custody_layout.custody_root(nested) == git_checkout.parent
+
+
+@pytest.mark.parametrize(
+    "damage",
+    ["pointer", "missing-target", "encoding", "common", "oversized", "symlink-loop"],
+)
+def test_present_broken_git_metadata_never_falls_back_to_a_lexical_root(
+    git_checkout: Path, damage: str
+) -> None:
+    from tests.test_dx_run_context import _git
+
+    lane = git_checkout / ".claude" / "worktrees" / "lane"
+    _git(git_checkout, "worktree", "add", "-q", "--detach", str(lane))
+    if damage == "common":
+        git_dir = Path(_git(lane, "rev-parse", "--absolute-git-dir"))
+        (git_dir / "commondir").write_text("\n", encoding="utf-8")
+    elif damage == "symlink-loop":
+        loop = git_checkout.parent / "metadata-loop"
+        try:
+            loop.symlink_to(loop, target_is_directory=True)
+        except OSError as exc:
+            pytest.skip(f"host cannot create directory symlinks: {exc}")
+        (lane / ".git").write_text(f"gitdir: {loop}\n", encoding="utf-8")
+    else:
+        pointer = lane / ".git"
+        pointer.write_bytes(
+            {
+                "pointer": b"not a Git directory pointer\n",
+                "missing-target": b"gitdir: absent-administration\n",
+                "encoding": b"\xff\n",
+                "oversized": b"gitdir: " + b"x" * (64 * 1024),
+            }[damage]
+        )
+    with pytest.raises(ValueError, match="Git .*metadata|Git common directory"):
+        custody_layout.custody_root(lane)
+
+
+def test_bare_repository_is_not_a_source_checkout_boundary(tmp_path: Path) -> None:
+    from tests.test_dx_run_context import _git
+
+    bare = tmp_path / "repository.git"
+    bare.mkdir()
+    _git(bare, "init", "-q", "--bare")
+    assert _git(bare, "rev-parse", "--is-bare-repository") == "true"
+    assert custody_layout.git_directories(bare) is None
+    assert custody_layout.enclosing_checkouts(bare) == ()
+    assert custody_layout.custody_root(bare) == bare
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        "agent two words",
+        "agent-α-é",
+        pytest.param(
+            " agent ",
+            marks=pytest.mark.skipif(
+                os.name == "nt", reason="Win32 normalizes trailing path spaces"
+            ),
+        ),
+        pytest.param(
+            "agent\nline",
+            marks=pytest.mark.skipif(
+                os.name == "nt", reason="Win32 forbids LF in path components"
+            ),
+        ),
+        pytest.param(
+            "agent\rline",
+            marks=pytest.mark.skipif(
+                os.name == "nt", reason="Win32 forbids CR in path components"
+            ),
+        ),
+    ],
+)
+def test_git_path_metadata_preserves_legal_path_bytes(
+    git_checkout: Path, name: str
+) -> None:
+    from tests.test_dx_run_context import _git
+    from tests.process_guard_common import run_guarded_test_process
+    from tools.git_identity import repository_source_paths
+
+    lane = git_checkout / ".claude" / "worktrees" / name
+    _git(git_checkout, "worktree", "add", "-q", "--detach", str(lane))
+
+    def run_git(root, arguments):
+        result = run_guarded_test_process(
+            ["git", "-C", str(root), *arguments], text=False, check=True, timeout=30
+        )
+        assert isinstance(result.stdout, bytes)
+        return result.stdout
+
+    # Git's own source-root/inventory framing is the oracle for these paths;
+    # no parser-owned expected gitdir spelling is copied into the test.
+    assert repository_source_paths(lane, run_git=run_git) == [lane / "tracked"]
+    assert custody_layout.custody_root(lane) == git_checkout.parent

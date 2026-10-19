@@ -491,8 +491,12 @@ Supervisor bootstrap builds share one source-path-bound store below the selected
 output root, or the implementation checkout's verified custody root when no
 output tier was declared. A fresh result directory never creates another Cargo
 build directory. If that store overlaps source or receipt custody, select an
-external output root; there is no placement fallback. One existing file lock
-serializes input capture, Cargo freshness and immutable publication. The atomic
+external output root; there is no placement fallback. Automatic custody and
+bootstrap sibling roots stay outside enclosing Git source checkouts, including
+unrelated nested clones. Explicit output roots are not relocated; a supervisor
+store inside another source checkout refuses before publication. Existing
+stores at former addresses require their own retirement custody. One existing
+file lock serializes input capture, Cargo freshness and immutable publication. The atomic
 publication pin covers file operations only, since it forbids subprocess entry.
 One existing repository-observer scope covers the complete supervisor setup
 transaction and borrows an already active scope when present. Its nested metadata

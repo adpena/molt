@@ -453,7 +453,16 @@ def run_in_fresh_guard_observer(request: Any) -> bool:
     for key in ("PYTEST_ADDOPTS", "PYTEST_XDIST_WORKER", "PYTEST_XDIST_WORKER_COUNT"):
         env.pop(key, None)
     env["PYTHONPATH"] = os.pathsep.join((str(root / "src"), str(root)))
-    args = ["-q", "-n", "0", "-o", "addopts=", request.node.nodeid]
+    # Clearing project addopts also removes its explicit custody plugin.
+    # Programmatic pytest.main() does not pass through the CLI bootstrap.
+    args = [
+        "-q",
+        "-p",
+        "molt.pytest_memory_guard_config_plugin",
+        "-o",
+        "addopts=",
+        request.node.nodeid,
+    ]
     source = (
         "import pytest; "
         "from tests.process_guard_common import _FreshGuardObserver; "

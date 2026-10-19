@@ -79,6 +79,14 @@ settings. Run the configured hooks before landing; ignored files must not be
 force-added to bypass this boundary. This path check supplements review of a
 document's purpose; it does not classify maintained specifications as scratch.
 
+Automatic artifact roots for a checkout nested inside another Git checkout must
+sit outside every enclosing source checkout. `molt.custody_layout` owns that
+boundary and the shared Git metadata reader; safe external worktrees retain
+their existing roots. Explicit artifact and execution-root selections keep
+their declared semantics. Supervisor stores refuse any overlap with a source
+checkout or receipt custody, including an enclosing checkout. Changing placement
+does not adopt or retire artifacts at a previous address.
+
 If a new file is about to land in root, ask:
 
 1. Is it a stable project entrypoint, manifest, or top-level doc?

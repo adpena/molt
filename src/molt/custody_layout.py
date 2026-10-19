@@ -7,14 +7,16 @@ custody root; its scratch then goes to a per-checkout folder under the host
 temp root, never into the source tree, where runtime fixtures and source
 custody reject it.
 
-This module is path logic only. It reads no environment: `molt.dx` resolves
-the artifact root and the scratch storage from the environment and passes
-them here.
+Git metadata fences automatic roots out of enclosing checkouts. This module
+reads no environment and launches no Git process: `molt.dx` resolves artifact
+and scratch overrides separately.
 """
 
 from __future__ import annotations
 
 import hashlib
+import os
+import stat
 import tempfile
 from pathlib import Path
 
@@ -24,17 +26,102 @@ MAIN_CHECKOUT_DIRNAME = "molt-src"
 WORKTREES_DIRNAME = "worktrees"
 # Disk scratch is this child of the artifact root.
 SCRATCH_DIRNAME = "tmp"
+_GIT_PATH_BYTES = 64 * 1024
+
+
+def _read_git_path(path: Path) -> str:
+    with path.open("rb") as stream:
+        raw = stream.read(_GIT_PATH_BYTES + 1)
+    if len(raw) > _GIT_PATH_BYTES:
+        raise ValueError(
+            f"Git path metadata exceeds {_GIT_PATH_BYTES} byte limit: {path}"
+        )
+    # Git path records end with LF (or CRLF), not arbitrary whitespace.
+    # Filesystem decoding preserves non-ASCII and Unix path bytes.
+    return os.fsdecode(raw.removesuffix(b"\n").removesuffix(b"\r"))
+
+
+def git_directories(repo_root: Path) -> tuple[Path, Path] | None:
+    """Read the checkout's Git/common directories without launching Git.
+
+    Absence is a plain source tree. Present but unreadable, malformed or stale
+    metadata cannot authorize an automatic output placement.
+    """
+    dot_git = repo_root / ".git"
+    try:
+        try:
+            metadata = dot_git.lstat()
+        except FileNotFoundError:
+            return None
+        if stat.S_ISDIR(metadata.st_mode):
+            git_dir = dot_git
+        elif dot_git.is_dir():
+            git_dir = dot_git.resolve()
+        else:
+            if not dot_git.is_file():
+                raise ValueError(
+                    f"Git checkout metadata is not a regular file: {dot_git}"
+                )
+            pointer = _read_git_path(dot_git)
+            if not pointer.startswith("gitdir: ") or not (
+                target := pointer.removeprefix("gitdir: ")
+            ):
+                raise ValueError(f"malformed Git checkout metadata: {dot_git}")
+            git_dir = (repo_root / target).resolve()
+        if not git_dir.is_dir() or not (git_dir / "HEAD").is_file():
+            raise ValueError(f"stale Git checkout metadata: {dot_git}")
+        commondir = git_dir / "commondir"
+        try:
+            commondir.lstat()
+        except FileNotFoundError:
+            common = git_dir
+        else:
+            if not commondir.is_file():
+                raise ValueError(
+                    f"Git common directory metadata is not a regular file: {commondir}"
+                )
+            common_target = _read_git_path(commondir)
+            if not common_target:
+                raise ValueError(f"malformed Git common directory: {commondir}")
+            common = (git_dir / common_target).resolve()
+            if not common.is_dir():
+                raise ValueError(f"stale Git common directory: {commondir}")
+    except (OSError, UnicodeError, RuntimeError) as exc:
+        raise ValueError(f"cannot read Git checkout metadata: {dot_git}") from exc
+    return git_dir, common
+
+
+def enclosing_checkouts(path: str | Path) -> tuple[Path, ...]:
+    """Return Git checkout boundaries from the given path outwards.
+
+    A linked worktree's .git pointer is admitted by the same reader as DX HEAD
+    inspection. Bare repositories have no working-tree marker and are not
+    source checkout boundaries.
+    """
+    root = Path(path).expanduser().resolve()
+    return tuple(
+        candidate
+        for candidate in (root, *root.parents)
+        if git_directories(candidate) is not None
+    )
 
 
 def custody_root(repo_root: str | Path) -> Path:
-    """Return the durable custody root of a checkout or worktree."""
-
+    """Return automatic custody without entering another source checkout."""
     root = Path(repo_root).expanduser().resolve()
     if root.name == MAIN_CHECKOUT_DIRNAME:
-        return root.parent
-    if root.parent.name == WORKTREES_DIRNAME:
-        return root.parent.parent
-    return root
+        custody = root.parent
+    elif root.parent.name == WORKTREES_DIRNAME:
+        custody = root.parent.parent
+    else:
+        custody = root
+    for checkout in enclosing_checkouts(root):
+        # A standalone plain clone retains Cargo's repo-local output norm.
+        # An enclosing checkout is another source owner, even for an unrelated
+        # nested clone rather than a Git-linked worktree.
+        if checkout != root and host_path_is_within(custody, checkout):
+            custody = checkout.parent
+    return custody
 
 
 def _identity_name(path: str | Path) -> str:

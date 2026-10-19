@@ -527,28 +527,6 @@ def _git_object_id(text: str) -> str | None:
     return value if _GIT_OBJECT_ID.fullmatch(value) else None
 
 
-def _git_directories(repo_root: Path) -> tuple[Path, Path] | None:
-    """The checkout's own Git directory and the repository's common directory."""
-    dot_git = repo_root / ".git"
-    try:
-        if dot_git.is_dir():
-            git_dir = dot_git
-        else:
-            pointer = dot_git.read_text(encoding="utf-8").strip()
-            if not pointer.startswith("gitdir:"):
-                return None
-            git_dir = (repo_root / pointer.removeprefix("gitdir:").strip()).resolve()
-        commondir = git_dir / "commondir"
-        common = (
-            (git_dir / commondir.read_text(encoding="utf-8").strip()).resolve()
-            if commondir.is_file()
-            else git_dir
-        )
-    except OSError:
-        return None
-    return git_dir, common
-
-
 def git_checkout_head(repo_root: Path) -> str | None:
     """The checkout's HEAD commit, read from the repository's own files.
 
@@ -557,7 +535,10 @@ def git_checkout_head(repo_root: Path) -> str | None:
     ``packed-refs`` and linked worktrees are read; any other ref storage
     returns None, which hosted custody refuses.
     """
-    directories = _git_directories(repo_root)
+    try:
+        directories = custody_layout.git_directories(repo_root)
+    except ValueError:
+        return None
     if directories is None:
         return None
     git_dir, common = directories
@@ -749,10 +730,14 @@ def canonical_molt_root(repo_root: str | Path, *, require_exists: bool = True) -
     The authority is derived from the invoking checkout family (``molt-src`` or
     a sibling under ``worktrees``). It never consults artifact-output
     environment, volume labels, free-space policy, or preservation switches.
-    The same checkout-family rule applies on every filesystem; drive letters
-    and directory names carry no custody authority.
+    The same checkout-family rule applies on every filesystem. Git metadata
+    keeps a nested checkout's automatic outputs out of enclosing source trees;
+    drive letters and directory names carry no custody authority.
     """
-    root = custody_layout.custody_root(repo_root)
+    try:
+        root = custody_layout.custody_root(repo_root)
+    except ValueError as exc:
+        raise DxConfigError(str(exc)) from exc
     if require_exists and not root.is_dir():
         raise DxConfigError(f"canonical Molt custody root does not exist: {root}")
     return root

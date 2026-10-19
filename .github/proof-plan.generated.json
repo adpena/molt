@@ -9317,6 +9317,7 @@
       "local.build-output-identity.pytest": "python -m pytest -q -n auto --molt-worker-memory-gb=1.0 tests/cli/test_cli_build_identity.py tests/cli/test_cli_build_output_layout_authority.py tests/cli/test_cli_frontend_pipeline_authority.py",
       "local.builtin-binding-guard-authority.0": "cargo test --locked -p molt-runtime --lib binding_guards",
       "local.builtin-binding-guard-authority.pytest": "python -m pytest -q -n auto --molt-worker-memory-gb=1.75 tests/test_gen_builtin_binding_guards.py tests/test_frontend_builtin_binding_guards.py",
+      "local.checkout-output-custody.pytest": "python -m pytest -q -n auto --molt-worker-memory-gb=1.0 tests/test_custody_layout.py tests/test_dx_run_context.py tests/tools/test_proof_queue_output_layout.py",
       "local.ci-wiring.pytest": "python -m pytest -q -n auto --molt-worker-memory-gb=2.5 tests/test_proof_plan.py tests/test_ci_workflow_topology.py tests/test_dependabot_config.py tests/test_ci_cargo_cache.py tests/test_generator_manifest.py tests/test_resource_pressure.py tests/test_translation_validate_roots.py tests/tools/test_ci_resource_env.py tests/tools/test_fuzz_compiler_cli.py tests/tools/test_formal_correspondence_truth.py tests/tools/test_nightly_prepare.py tests/tools/test_nightly_profile_feedback.py tests/tools/test_nightly_runtime_bundle.py tests/tools/test_nightly_shard_profile.py tests/tools/test_nightly_sharding.py tests/tools/test_reproducible_build_truth.py",
       "local.codec-tables.pytest": "python -m pytest -q -n auto --molt-worker-memory-gb=0.75 tests/test_gen_codecs.py",
       "local.compression-stream-state.0": "cargo test --locked --profile dev-fast --no-fail-fast -p molt-runtime-compression -p molt-lang-cpython-abi --lib --test test_numbers -- --test-threads=4",
@@ -9326,6 +9327,7 @@
       "local.ecosystem-compat.0": "python tools/check_ecosystem_compat.py",
       "local.encoding-diagnostics.pytest": "python -m pytest -q -n auto --molt-worker-memory-gb=0.75 tests/tools/test_encoding_gate.py",
       "local.findings-registry.pytest": "python -m pytest -q -n auto --molt-worker-memory-gb=0.75 tests/tools/test_findings_registry.py",
+      "local.fresh-guard-observer.pytest": "python -m pytest -q -n auto --molt-worker-memory-gb=2.5 tests/test_process_guard_common.py tests/test_backend_daemon_suite_custody.py::test_guarded_protocol_daemon_transfer_and_failure_cleanup tests/test_memory_guard_tool.py::test_run_guarded_marks_child_environment_as_guarded tests/test_memory_guard_tool.py::test_run_guarded_scratch_cleanup_failure_preserves_primary_result tests/test_memory_guard_tool.py::test_run_guarded_retention_sweep_health_preserves_primary_result tests/test_memory_guard_tool.py::test_run_guarded_exports_backend_memory_contract tests/tools/test_memory_guard_spawn_callback.py::test_on_spawn_observes_custodied_child_and_result_owns_tree_peak tests/tools/test_memory_guard_spawn_callback.py::test_guard_polls_read_the_tree_not_the_host_table",
       "local.frontend-diagnostics.pytest": "python -m pytest -q -n auto --molt-worker-memory-gb=0.75 tests/test_frontend_diagnostics.py",
       "local.frontend-ir-assembly.0": "python -m pytest -q tests/tools/test_check_ir_structure.py::test_strict_verifier_rejects_frontend_publication_envelope tests/tools/test_check_ir_structure.py::test_frontend_verifier_projects_publication_envelope_without_mutation tests/tools/test_check_ir_structure.py::test_source_runner_real_frontend_to_strict_verifier",
       "local.frontend-ir-assembly.pytest": "python -m pytest -q -n auto --molt-worker-memory-gb=6.25 tests/cli/test_function_records.py tests/cli/test_cli_cache_fingerprint.py tests/cli/test_cli_frontend_partial_progress.py tests/cli/test_module_analysis_scan_admission.py tests/cli/test_source_pure_import_requests.py tests/cli/test_runtime_import_scan_custody.py tests/cli/test_source_scan_authority_closure.py tests/cli/test_cli_intrinsic_enforcement.py tests/test_stdlib_intrinsic_import_evidence.py tests/cli/test_cli_frontend_integration_authority.py tests/cli/test_cli_frontend_worker_authority.py tests/cli/test_cli_frontend_execution_authority.py tests/test_frontend_literal_identity.py tests/cli/test_cli_module_cache_authority.py tests/cli/test_backend_initialization_contract.py tests/test_module_registry_gates.py tests/test_frontend_module_publication.py tests/cli/test_cli_shared_stdlib_cache.py tests/cli/test_cli_module_frontend_shared_cache.py tests/cli/test_cli_module_graph_cache_authority.py tests/cli/test_source_record_store.py tests/cli/test_frontend_source_snapshot_authority.py tests/tools/test_molt_cache_prune.py tests/cli/test_cli_import_collection.py::test_native_callable_publication_augments_existing_source_init_once tests/cli/test_cli_import_collection.py::test_compiled_source_init_publishes_before_capture_and_rebinding tests/cli/test_cli_import_collection.py::test_entry_source_identity_survives_json_and_explicit_main_registry_alias tests/cli/test_cli_import_collection.py::test_persisted_module_lowering_rejects_incomplete_parameter_declarations tests/cli/test_cli_import_collection.py::test_persisted_module_lowering_returns_isolated_mutable_results tests/cli/test_cli_import_collection.py::test_malformed_cached_values_are_rejected_by_both_frontend_validators tests/cli/test_cli_lowering_context_ast_idempotent.py::test_persisted_cache_admission_rejects_noncanonical_integer_metadata tests/cli/test_cli_import_collection.py::test_load_cached_module_lowering_result_needs_no_module_stat tests/cli/test_cli_import_collection.py::test_load_cached_module_lowering_result_reuses_precomputed_views tests/cli/test_cli_import_collection.py::test_persisted_module_lowering_rejects_missing_local_function_reference tests/cli/test_cli_import_collection.py::test_persisted_module_lowering_decodes_once_per_hit tests/cli/test_cli_import_collection.py::test_persisted_module_lowering_roundtrip_respects_context_digest tests/cli/test_cli_import_collection.py::test_persisted_module_lowering_tracks_source_content tests/cli/test_cli_lowering_context_ast_idempotent.py::test_source_producers_round_trip_tag_names_and_large_literal_container_keys tests/cli/test_app_export_contract.py tests/cli/test_runtime_wasm_single_compile.py::test_app_path_default_routes_through_combined_ensure tests/cli/test_runtime_wasm_single_compile.py::test_app_path_fails_closed_when_combined_authority_is_absent tests/cli/test_runtime_wasm_single_compile.py::test_app_path_freestanding_also_requires_atomic_pair tests/cli/test_runtime_wasm_single_compile.py::test_wasm_deployment_fences_source_after_private_link tests/cli/test_runtime_wasm_single_compile.py::test_plain_wasm_deployment_and_reuse_never_select_a_precompile_host tests/cli/test_runtime_wasm_single_compile.py::test_precompile_build_routes_linked_manifest_to_host_and_consumes_receipt tests/cli/test_runtime_wasm_single_compile.py::test_precompile_deployment_cache_covers_host_outputs_without_rewriting tests/cli/test_runtime_wasm_single_compile.py::test_precompile_build_failures_reach_exact_routing_boundary tests/test_wasm_link_validation.py::test_app_export_adapters_sweep_arity_and_forward_owned_result_boundary tests/test_wasm_link_validation.py::test_app_export_adapter_validator_replaces_raw_target_identity tests/test_wasm_link_validation.py::test_app_export_adapter_identity_survives_metadata_strip_and_rejects_wrong_call tests/test_wasm_link_validation.py::test_app_export_adapters_have_no_ownership_import_dependency tests/test_wasm_link_validation.py::test_app_export_adapters_fail_closed_on_noncanonical_target_signature tests/test_wasm_link_validation.py::test_run_wasm_ld_split_runtime_uses_explicit_deploy_runtime_over_stale_env tests/test_wasm_link_validation.py::test_run_wasm_ld_admits_relocatable_member_independent_of_filename tests/test_wasm_link_validation.py::test_run_wasm_ld_rejects_shared_primary_before_publication tests/test_wasm_link_validation.py::test_native_provider_planning_uses_primary_linking_definitions tests/test_wasm_link_validation.py::test_run_wasm_ld_links_staged_native_objects tests/test_wasm_link_validation.py::test_run_wasm_ld_rejects_signature_mismatch_warning tests/test_wasm_link_validation.py::test_run_wasm_ld_links_rewritten_native_runtime_imports tests/test_wasm_link_validation.py::test_run_wasm_ld_rejects_missing_native_object tests/test_wasm_link_validation.py::test_split_native_app_uses_unique_molt_main_restoration_alias tests/test_wasm_link_validation.py::test_run_wasm_ld_split_runtime_links_native_objects_into_app tests/test_wasm_link_validation.py::test_run_wasm_ld_split_runtime_forces_native_direct_symbols tests/test_wasm_link_validation.py::test_run_wasm_ld_split_runtime_uses_linked_and_deploy_import_namespaces tests/test_wasm_link_validation.py::test_run_wasm_ld_preserves_runtime_entrypoint_without_prelink_alias_object tests/test_wasm_link_validation.py::test_run_wasm_ld_force_exports_user_module_exports tests/test_wasm_link_validation.py::test_run_wasm_ld_repairs_linked_host_init_export tests/test_wasm_link_validation.py::test_run_wasm_ld_split_runtime_preserves_old_outputs_if_linked_validation_fails tests/test_wasm_link_validation.py::test_run_wasm_ld_preserves_old_output_if_linked_validation_fails tests/test_wasm_link_validation.py::test_run_wasm_ld_enabled_then_disabled_retires_optimizer_attestation tests/test_wasm_link_validation.py::test_run_wasm_ld_split_runtime_reuses_one_optimizer_identity_and_publishes_atomically tests/test_wasm_link_validation.py::test_relocatable_input_has_one_admission_and_retains_failure_timings tests/test_wasm_link_validation.py::test_run_wasm_ld_preserves_ordered_staged_native_plan tests/test_wasm_link_validation.py::test_run_wasm_ld_rejects_native_plan_for_wrong_wasm_target tests/test_wasm_link_validation.py::test_run_wasm_ld_rejects_conflicting_repeated_input_digests tests/test_wasm_link_validation.py::test_run_wasm_ld_publishes_receipt_with_validated_candidates tests/test_wasm_link_validation.py::test_wasm_scanner_copy_uses_owned_scratch_not_cached_platform_temp tests/cli/test_required_features_reachability.py tests/cli/test_native_object_publication.py tests/cli/test_native_symbol_build_errors.py tests/tools/test_representation_report.py tests/determinism/test_ir_determinism.py::test_determinism_child_failure_cannot_be_a_stable_outcome tests/determinism/test_ir_determinism.py::test_production_serializers_and_cache_payloads_ignore_host_seed",
@@ -10366,6 +10368,55 @@
         "toolchains": [
           "python",
           "uv"
+        ]
+      },
+      {
+        "command_ids": [
+          "local.checkout-output-custody.pytest"
+        ],
+        "description": "Checkout boundaries, execution-root overrides and supervisor output placement share one custody authority.",
+        "gates": [],
+        "globs": [
+          "src/molt/custody_layout.py",
+          "src/molt/dx.py",
+          "tools/proof_queue_pkg/cargo_output_layout.py",
+          "tests/test_custody_layout.py",
+          "tests/test_dx_run_context.py",
+          "tests/tools/test_proof_queue_output_layout.py"
+        ],
+        "name": "checkout-output-custody",
+        "pytest": [
+          "tests/test_custody_layout.py",
+          "tests/test_dx_run_context.py",
+          "tests/tools/test_proof_queue_output_layout.py"
+        ],
+        "toolchains": [
+          "python"
+        ]
+      },
+      {
+        "command_ids": [
+          "local.fresh-guard-observer.pytest"
+        ],
+        "description": "Fresh observer recursion, exact-node execution, guard admission and cache placement through every current protocol consumer.",
+        "gates": [],
+        "globs": [
+          "tests/process_guard_common.py",
+          "tests/test_process_guard_common.py"
+        ],
+        "name": "fresh-guard-observer",
+        "pytest": [
+          "tests/test_process_guard_common.py",
+          "tests/test_backend_daemon_suite_custody.py::test_guarded_protocol_daemon_transfer_and_failure_cleanup",
+          "tests/test_memory_guard_tool.py::test_run_guarded_marks_child_environment_as_guarded",
+          "tests/test_memory_guard_tool.py::test_run_guarded_scratch_cleanup_failure_preserves_primary_result",
+          "tests/test_memory_guard_tool.py::test_run_guarded_retention_sweep_health_preserves_primary_result",
+          "tests/test_memory_guard_tool.py::test_run_guarded_exports_backend_memory_contract",
+          "tests/tools/test_memory_guard_spawn_callback.py::test_on_spawn_observes_custodied_child_and_result_owns_tree_peak",
+          "tests/tools/test_memory_guard_spawn_callback.py::test_guard_polls_read_the_tree_not_the_host_table"
+        ],
+        "toolchains": [
+          "python"
         ]
       },
       {
@@ -12144,6 +12195,9 @@
         "git",
         "rustfmt"
       ],
+      "local.checkout-output-custody.pytest": [
+        "python"
+      ],
       "local.ci-wiring.pytest": [
         "python"
       ],
@@ -12178,6 +12232,9 @@
         "python"
       ],
       "local.findings-registry.pytest": [
+        "python"
+      ],
+      "local.fresh-guard-observer.pytest": [
         "python"
       ],
       "local.frontend-diagnostics.pytest": [
