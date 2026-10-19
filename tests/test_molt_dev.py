@@ -1282,15 +1282,45 @@ def _worktree_off(origin: Path, base: Path, name: str) -> Path:
     return wt
 
 
-def test_cleanup_allows_clean_pushed(drv, origin_and_clone, tmp_path):
+def test_cleanup_allows_clean_pushed(drv, origin_and_clone, tmp_path, monkeypatch):
+    from tools import molt_dev_common
+
     origin, _work = origin_and_clone
     wt = _worktree_off(origin, tmp_path, "wt_clean")
+    main = tmp_path / "mainclone"
+    original_readme = (main / "README.md").read_bytes()
+    # Model a driver loaded from the disposable checkout. The actual launch
+    # boundary must leave it before removal, even on POSIX where Git may allow
+    # deleting a process cwd and conceal this Windows shim failure.
+    monkeypatch.setattr(molt_dev_common, "DEFAULT_REPO", wt)
+    executor_type = type(molt_dev_common._COMMANDS)
+    run = executor_type.run
+    removal_cwds: list[Path] = []
+
+    def check_removal_cwd(self, command, **kwargs):
+        if command[3:5] == ["worktree", "remove"]:
+            cwd = Path(kwargs["cwd"]).resolve()
+            assert cwd == main.resolve(), (
+                "retirement must launch from the surviving tree"
+            )
+            removal_cwds.append(cwd)
+        return run(self, command, **kwargs)
+
+    monkeypatch.setattr(executor_type, "run", check_removal_cwd)
     # No commits beyond origin/main, no dirty tree -> cleanup proceeds.
     rc = drv._cleanup_worktree(
         drv.Git(wt), wt, "origin/main", drv.DEFAULT_IGNORE_GLOBS, force_sha=None
     )
     assert rc == drv.EXIT_OK
+    assert removal_cwds == [main.resolve()]
     assert not wt.exists()
+    assert (main / "README.md").read_bytes() == original_readme
+    registered = [
+        Path(line.removeprefix("worktree ")).resolve()
+        for line in _git(main, "worktree", "list", "--porcelain").stdout.splitlines()
+        if line.startswith("worktree ")
+    ]
+    assert registered == [main.resolve()]
 
 
 def test_cleanup_retires_the_checkout_daemons_before_removing_it(
