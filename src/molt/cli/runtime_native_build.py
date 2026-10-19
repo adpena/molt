@@ -52,7 +52,6 @@ from molt.cli.installed_runtime import (
     select_installed_native_runtime,
 )
 from molt.cli.models import (
-    _NativeRuntimeBuildFailure,
     _RuntimeArtifactState,
 )
 from molt.cli.native_link_custody import NativeLinkCustodyError
@@ -90,6 +89,38 @@ from molt.cli.runtime_paths import (
     _cargo_target_root,
     _runtime_cargo_scratch_lib_path,
 )
+
+
+@dataclass
+class _NativeRuntimeBuildFailure:
+    stage: str
+    summary: str
+    evidence_path: Path | None = None
+    returncode: int | None = None
+    timed_out: bool = False
+    signal: dict[str, object] | None = None
+    duration_seconds: float | None = None
+    peak_process_rss_bytes: int | None = None
+    peak_tree_rss_bytes: int | None = None
+    attempt_count: int = 0
+    retry_reason: str | None = None
+
+    def json_payload(self) -> dict[str, object]:
+        return {
+            "stage": self.stage,
+            "summary": self.summary,
+            "evidence_path": (
+                None if self.evidence_path is None else str(self.evidence_path)
+            ),
+            "returncode": self.returncode,
+            "timed_out": self.timed_out,
+            "signal": self.signal,
+            "duration_seconds": self.duration_seconds,
+            "peak_process_rss_bytes": self.peak_process_rss_bytes,
+            "peak_tree_rss_bytes": self.peak_tree_rss_bytes,
+            "attempt_count": self.attempt_count,
+            "retry_reason": self.retry_reason,
+        }
 
 
 _NATIVE_RUNTIME_READY_EXECUTOR: ThreadPoolExecutor | None = None

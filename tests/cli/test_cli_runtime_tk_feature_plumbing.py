@@ -57,6 +57,7 @@ from molt.cli.rust_cpu_policy import RustCpuPolicy
 from molt.cli import artifact_state as cli_artifact_state
 from molt.cli import models as cli_models
 from molt.cli import runtime_paths as cli_runtime_paths
+from molt.cli.external_native import _ExternalPackageNativeArtifact
 
 COMPILER_METADATA = importlib.import_module("molt.cli.compiler_metadata")
 RUNTIME_FEATURES = importlib.import_module("molt.cli.runtime_features")
@@ -982,7 +983,7 @@ def test_prepare_backend_setup_enables_source_loader_for_native_artifacts(
         cache_hit_tier=None,
     )
     captured_extra_features: list[tuple[str, ...]] = []
-    artifact = cli_models._ExternalPackageNativeArtifact(
+    artifact = _ExternalPackageNativeArtifact(
         package="nativepkg",
         module="nativepkg._native",
         package_dir=tmp_path / "nativepkg",

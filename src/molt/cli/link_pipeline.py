@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
+
 import contextlib
 import os
 import subprocess
@@ -24,8 +26,8 @@ from molt.cli.external_native import (
 from molt.cli.models import (
     BuildProfile,
     _ExternalPackageNativeArtifactPlan,
-    _PreparedNativeLink,
     _EMPTY_EXTERNAL_PACKAGE_NATIVE_ARTIFACT_PLAN,
+    _StagedExternalPackageNativeArtifact,
 )
 from molt.cli.native_binary import (
     _darwin_binary_imports_validation_error,
@@ -51,6 +53,25 @@ from molt.cli.link_selection_admission import (
 )
 from molt.cli.runtime_native_codegen import NativeRuntimeCodegenBinding
 from molt.cli.atomic_io import _write_text_if_changed
+
+
+@dataclass(frozen=True)
+class _PreparedNativeLink:
+    output_obj: Path
+    stub_path: Path
+    runtime_lib: Path
+    output_binary: Path
+    link_output: Path
+    external_native_artifacts: tuple[_StagedExternalPackageNativeArtifact, ...]
+    link_cmd: list[str]
+    linker_hint: str | None
+    normalized_target: str | None
+    link_fingerprint_path: Path
+    link_fingerprint: dict[str, str | None] | None
+    link_skipped: bool
+    link_process: subprocess.CompletedProcess[str]
+    strip_after_link: bool
+    link_selection: tuple[Path, Path] | None = None
 
 
 def _run_native_link_command(

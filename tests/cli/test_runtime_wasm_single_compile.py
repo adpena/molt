@@ -52,12 +52,11 @@ from molt.cli import (
 from molt.cli.compiler_metadata import _compiler_root
 from molt.cli.app_export_contract import build_app_export_contract
 from molt.cli.models import (
-    _ExternalNativeAbiSymbol,
-    _ExternalNativeCapiSymbol,
     _ExternalPackageNativeArtifactPlan,
     _RuntimeArtifactState,
     _PreparedNonNativeResult,
 )
+from molt.cli.external_native import _ExternalNativeAbiSymbol, _ExternalNativeCapiSymbol
 from molt.cli.runtime_artifact_selection import (
     RUNTIME_CDYLIB_ARTIFACTS,
     RUNTIME_STATICLIB_ARTIFACTS,

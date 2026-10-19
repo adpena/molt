@@ -26,10 +26,10 @@ from molt.cli.models import (
     _EMPTY_EXTERNAL_PACKAGE_NATIVE_ARTIFACT_PLAN,
     _FrontendIntegrationState,
     _ModuleGraphMetadata,
-    _PreparedBackendIR,
     _PreparedBackendRuntimeContext,
     _RuntimeArtifactState,
 )
+from molt.cli.backend_ir import _PreparedBackendIR
 from molt.cli.build_output_layout import _BuildOutputLayout
 from molt.cli.output import JSON_SCHEMA_VERSION
 from molt.target_python import _DEFAULT_TARGET_PYTHON_VERSION

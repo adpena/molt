@@ -39,11 +39,8 @@ from molt.cli.external_link_providers import (
 )
 from molt.cli.models import (
     _EMPTY_EXTERNAL_PACKAGE_NATIVE_ARTIFACT_PLAN,
-    _ExternalPackageNativeArtifact,
     _ExternalPackageNativeArtifactPlan,
-    _ExternalNativeAbiSymbol,
     _ExternalNativeCallableExport,
-    _ExternalNativeCapiSymbol,
     _ImportAdmissionPolicy,
     _StagedExternalPackageNativeArtifact,
 )
@@ -90,6 +87,105 @@ from molt.target_python import (
     _DEFAULT_TARGET_PYTHON_VERSION,
     _parse_source_for_target,
 )
+
+
+@dataclass(frozen=True)
+class _ExternalPackageNativeArtifact:
+    package: str
+    module: str
+    package_dir: Path
+    path: Path
+    manifest_path: Path
+    extension_sha256: str
+    manifest_sha256: str
+    capabilities: tuple[str, ...]
+    abi_tag: str
+    target_triple: str
+    platform_tag: str
+    runtime_linkage: str
+    artifact_kind: str
+    link_requirements: SourceExtensionLinkRequirements
+    init_symbol: str = ""
+    support_file_sha256: tuple[tuple[str, str], ...] = ()
+    provided_capsules: tuple[str, ...] = ()
+    required_capsules: tuple[str, ...] = ()
+    python_exports: tuple[str, ...] = ()
+    callable_exports: tuple["_ExternalNativeCallableExport", ...] = ()
+    abi_symbols: tuple["_ExternalNativeAbiSymbol", ...] = ()
+    c_api_symbols: tuple["_ExternalNativeCapiSymbol", ...] = ()
+    # Dotted module names the extension imports dynamically at runtime
+    # (PyImport_ImportModule and import-macro literals scanned from its C
+    # sources). They must join the AOT import graph or module init fails
+    # at runtime on tree-shaken modules. Non-package names (stdlib) ride
+    # the import-graph closure; package-internal names ride sidecar
+    # support custody and are recorded separately as compile roots.
+    runtime_python_imports: tuple[str, ...] = ()
+    runtime_python_import_modules: tuple[str, ...] = ()
+
+    def digest_payload(self) -> dict[str, Any]:
+        return {
+            "package": self.package,
+            "module": self.module,
+            "package_dir": str(self.package_dir),
+            "path": str(self.path),
+            "manifest_path": str(self.manifest_path),
+            "runtime_python_imports": list(self.runtime_python_imports),
+            "runtime_python_import_modules": list(self.runtime_python_import_modules),
+            "extension_sha256": self.extension_sha256,
+            "manifest_sha256": self.manifest_sha256,
+            "capabilities": list(self.capabilities),
+            "abi_tag": self.abi_tag,
+            "target_triple": self.target_triple,
+            "platform_tag": self.platform_tag,
+            "init_symbol": self.init_symbol,
+            "runtime_linkage": self.runtime_linkage,
+            "artifact_kind": self.artifact_kind,
+            "link_requirements": self.link_requirements.manifest_payload(),
+            "support_file_sha256": [
+                {"path": rel_path, "sha256": digest}
+                for rel_path, digest in self.support_file_sha256
+            ],
+            "provided_capsules": list(self.provided_capsules),
+            "required_capsules": list(self.required_capsules),
+            "python_exports": list(self.python_exports),
+            "callable_exports": [
+                export.digest_payload() for export in self.callable_exports
+            ],
+            "abi_symbols": [symbol.digest_payload() for symbol in self.abi_symbols],
+            "c_api_symbols": [symbol.digest_payload() for symbol in self.c_api_symbols],
+        }
+
+
+@dataclass(frozen=True)
+class _ExternalNativeAbiSymbol:
+    symbol: str
+    status: str
+    primitive_class: str
+    source: str
+
+    def digest_payload(self) -> dict[str, Any]:
+        return {
+            "symbol": self.symbol,
+            "status": self.status,
+            "primitive_class": self.primitive_class,
+            "source": self.source,
+        }
+
+
+@dataclass(frozen=True)
+class _ExternalNativeCapiSymbol:
+    symbol: str
+    status: str
+    primitive_class: str
+    source: str
+
+    def digest_payload(self) -> dict[str, Any]:
+        return {
+            "symbol": self.symbol,
+            "status": self.status,
+            "primitive_class": self.primitive_class,
+            "source": self.source,
+        }
 
 
 def _parse_external_static_packages(raw: str) -> tuple[frozenset[str], str | None]:

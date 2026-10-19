@@ -75,20 +75,18 @@ from molt.cli.models import (
     _BinaryImageScope,
     _ExternalPackageNativeArtifactPlan,
     _FrontendIntegrationState,
+    _FrontendParallelConfig,
     _FrontendTimingRecorderConfig,
     _ImportPlan,
     _ModuleGraphMetadata,
     _ModuleGraphScanAuthority,
-    _PreparedBuildCallbacks,
     _PreparedBuildConfig,
-    _PreparedBuildModuleOutputs,
     _PreparedBuildPreamble,
     _PreparedBuildRoots,
     _PreparedEntryModuleGraph,
-    _PreparedFrontendAnalysis,
-    _PreparedFrontendLoweringConfig,
     _PreparedFrontendRunTicket,
     _ResolvedBuildEntry,
+    _ScopedLoweringInputs,
 )
 from molt.cli.build_output_layout import _BuildOutputLayout
 from molt.cli.output import CliFailure as _CliFailure
@@ -98,6 +96,55 @@ from molt.target_python import TargetPythonVersion
 if TYPE_CHECKING:
     from molt.frontend.lowering.exception_lowering import SyntaxErrorName
     from molt.frontend import ClassId, ClassInfo
+
+
+@dataclass(frozen=True)
+class _PreparedBuildModuleOutputs:
+    import_plan: "_ImportPlan"
+    output_layout: _BuildOutputLayout
+
+
+@dataclass(frozen=True)
+class _PreparedFrontendAnalysis:
+    module_graph_metadata: _ModuleGraphMetadata
+    module_deps: dict[str, set[str]]
+    module_sources: dict[str, str]
+    module_source_catalog: _ModuleSourceCatalog
+    known_func_defaults: dict[str, dict[str, dict[str, Any]]]
+    known_func_kinds: dict[str, dict[str, str]]
+    module_trees: dict[str, ast.AST]
+    module_path_stats: dict[str, os.stat_result | None]
+    syntax_error_modules: dict[str, "ModuleSyntaxErrorInfo"]
+    module_order: list[str]
+    reverse_module_deps: dict[str, set[str]]
+    has_back_edges: bool
+    module_layers: list[list[str]]
+    module_dep_closures: dict[str, frozenset[str]]
+    scc_serial_modules: frozenset[str] = frozenset()
+
+
+@dataclass(frozen=True)
+class _PreparedFrontendLoweringConfig:
+    type_facts: TypeFacts | None
+    known_classes: dict[ClassId, ClassInfo]
+    scoped_lowering_inputs: _ScopedLoweringInputs
+    module_graph_metadata: _ModuleGraphMetadata
+    frontend_module_costs: Mapping[str, float]
+    stdlib_like_by_module: Mapping[str, bool]
+    enable_phi: bool
+    module_chunk_max_ops: int
+    module_chunking: bool
+    frontend_parallel_config: _FrontendParallelConfig
+    frontend_parallel_layers: list[dict[str, Any]]
+    frontend_parallel_worker_timings: list[dict[str, Any]]
+
+
+@dataclass(frozen=True)
+class _PreparedBuildCallbacks:
+    record_frontend_timing: Callable[..., None]
+    build_diagnostics_payload: Callable[[], tuple[dict[str, Any] | None, Path | None]]
+    set_binary_image_closure_payload: Callable[[Mapping[str, Any] | None], None]
+    record_binary_image_analysis: Callable[[str, Mapping[str, Any] | None], None]
 
 
 @dataclass(frozen=True, slots=True)

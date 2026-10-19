@@ -221,6 +221,32 @@ capture and build-capacity admission retain their existing owners. This removes
 duplicate development-side work and adds no emitted-program work. Actual image
 custody and the complete release matrix remain under V1-01/V1-28.
 
+### 2.5 CLI records follow their execution owner
+
+Records constructed and consumed by one CLI stage live in that stage's module.
+`models.py` retains records shared across stages; an annotation alone does not
+create a runtime import edge. The HF-234 migration moves 35 definitions into
+their 19 existing owners, removes the old definitions, and moves consumers to
+the owning modules. Class bodies, defaults and field order are preserved.
+There is no registry, factory, compatibility export or additional cache.
+
+This removes class construction and transitive imports from commands that do
+not use those stages. Work is proportional to the definitions in modules the
+command actually loads; a full compiler invocation still constructs the records
+its stages need. Type-only backreferences remain under `TYPE_CHECKING`, so the
+shared records do not import their consumers at runtime. Worker exceptions keep
+one module identity, qualified by a fresh interpreter unpickling both ordinary
+and timeout failures without preloading their owner.
+
+Five fresh CPython 3.12 observations on macOS arm64, with bytecode writes
+disabled on both sides, put the timing helper's cumulative import median at
+132.3 ms before and 2.7 ms after. Shared-model self time falls from 25.4 to
+16.9 ms; frontend-worker cumulative import changes only from 407.5 to 392.4 ms.
+These are import diagnostics, not whole-build speedups. Ordinary unchanged
+builds have their own early-cutoff path and require separate observations.
+This is compiler startup work; emitted native and WASM programs acquire no
+record machinery or additional runtime work.
+
 ## 3. The structural facts/mechanisms to build (each tied to the class it retires)
 
 ### FACT-A: The recompile-blast-radius ratchet (retires DX-1)

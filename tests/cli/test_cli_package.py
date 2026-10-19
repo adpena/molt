@@ -83,6 +83,24 @@ _BUILD_STAGES = {
 }
 
 
+def test_command_timing_imports_no_compiler_records() -> None:
+    loaded = _molt_modules_loaded_by("import molt.cli.process_execution")
+    assert "molt.cli.process_execution" in loaded
+    assert not loaded & _BUILD_STAGES
+
+
+def test_command_timing_has_one_record_owner() -> None:
+    ownership = _fresh_interpreter(
+        "from molt.cli import models, process_execution",
+        "{'owner': process_execution._TimedResult.__module__,"
+        " 'shared_export': hasattr(models, '_TimedResult')}",
+    )
+    assert ownership == {
+        "owner": "molt.cli.process_execution",
+        "shared_export": False,
+    }
+
+
 def test_build_reaches_its_build_function_without_other_commands() -> None:
     # `molt build` checks its early-cutoff record before any build stage
     # runs, so the path from `main` to the build function loads no build stage

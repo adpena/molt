@@ -6,7 +6,7 @@ import os
 import shlex
 import sys
 import time
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
@@ -54,7 +54,6 @@ from molt.cli.json_contract import (
 )
 from molt.cli.models import (
     _ResolvedBuildEntry,
-    _WrapperBuildContract,
 )
 from molt.cli.module_graph import _materialize_import_plan, _prepare_entry_module_graph
 from molt.cli.module_resolution import _stdlib_root_path
@@ -71,6 +70,14 @@ from molt.target_python import (
     _resolve_target_python_version,
 )
 from molt.file_hashing import _sha256_file
+
+
+@dataclass(frozen=True)
+class _WrapperBuildContract:
+    output: Path
+    consumer_output: Path
+    bundle_root: Path | None
+    artifacts: dict[str, Path]
 
 
 def _build_args_has_json_flag(args: Sequence[str]) -> bool:

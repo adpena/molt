@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping, MutableMapping, Sequence
 import os
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from pathlib import Path
 import time
 import tracemalloc
@@ -52,13 +52,13 @@ from molt.cli.config_resolution import (
 from molt.cli.lockfiles import _check_lockfiles
 from molt.cli.models import (
     BinaryImageKind,
+    BuildEntrySelectorOrigin,
+    BuildEntrySelectorTarget,
     BuildProfile,
     PgoProfileSummary,
     RuntimeFeedbackSummary,
     Target,
     _BinaryImageScope,
-    _BuildEntrySelector,
-    _ModuleRootResolution,
     _PreparedBuildConfig,
     _PreparedBuildPreamble,
     _PreparedBuildRoots,
@@ -91,6 +91,35 @@ from molt.target_python import (
     _parse_source_for_target,
     _resolve_target_python_version,
 )
+
+
+@dataclass(frozen=True)
+class _BuildEntrySelector:
+    origin: BuildEntrySelectorOrigin
+    target: BuildEntrySelectorTarget
+    value: str
+    source: str
+    config_key: str | None = None
+
+    @property
+    def file_path(self) -> str | None:
+        return self.value if self.target == "file" else None
+
+    @property
+    def module(self) -> str | None:
+        return self.value if self.target == "module" else None
+
+
+@dataclass(frozen=True)
+class _ModuleRootResolution:
+    roots: tuple[Path, ...]
+    external_roots: tuple[Path, ...]
+    # MOLT_MODULE_ROOTS entries whose paths do not exist. Explicit env roots
+    # are operator intent; dropping one silently turns a one-line config error
+    # into an unattributable downstream custody failure, so callers fail
+    # closed on any missing entry.
+    missing_env_roots: tuple[str, ...] = ()
+    module_root_aliases: tuple[tuple[str, Path], ...] = ()
 
 
 def _collect_env_overrides(file_path: str) -> dict[str, str]:

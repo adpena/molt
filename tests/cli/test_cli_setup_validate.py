@@ -21,11 +21,12 @@ from molt.llvm_toolchain import LlvmBackendPin
 from tests.cli.process_guard import run_cli_test_process
 from tests.process_guard_common import install_module_view
 from molt.cli import deps as cli_deps
-from molt.cli import models as cli_models
 from molt.cli import debug_helpers as cli_debug_helpers
 from molt.cli import backend_cache as cli_backend_cache
 from molt.cli import wrapper_build as cli_wrapper_build
 from molt import toolchain_identity
+from molt.cli.toolchain_validation import _MaintenanceStep, _ValidationStep
+from molt.cli.wrapper_build import _WrapperBuildContract
 
 # These cases build synthetic projects and assert developer-host roots and
 # guard limits; hosted custody has its own cases in
@@ -893,7 +894,7 @@ def test_cli_cross_run_uses_cross_memory_guard(
     def fake_run_wrapper_build(**kwargs: object):
         build_calls.append(kwargs)
         return (
-            cli_models._WrapperBuildContract(
+            _WrapperBuildContract(
                 output=artifact,
                 consumer_output=artifact,
                 bundle_root=None,
@@ -1016,7 +1017,7 @@ def test_cli_validate_uses_family_memory_guard_prefixes(
 
     calls: list[dict[str, object]] = []
     steps = [
-        cli_models._ValidationStep(
+        _ValidationStep(
             "conformance-step",
             ["python3", "-c", "pass"],
             ROOT,
@@ -1025,7 +1026,7 @@ def test_cli_validate_uses_family_memory_guard_prefixes(
             ("dev",),
             "smoke",
         ),
-        cli_models._ValidationStep(
+        _ValidationStep(
             "bench-step",
             ["python3", "-c", "pass"],
             ROOT,
@@ -1034,7 +1035,7 @@ def test_cli_validate_uses_family_memory_guard_prefixes(
             ("dev",),
             "smoke",
         ),
-        cli_models._ValidationStep(
+        _ValidationStep(
             "correctness-step",
             ["python3", "-c", "pass"],
             ROOT,
@@ -1121,7 +1122,7 @@ def test_cli_validate_defaults_execution_summary_to_logs(
 
     calls: list[dict[str, object]] = []
     steps = [
-        cli_models._ValidationStep(
+        _ValidationStep(
             "correctness-step",
             ["python3", "-c", "pass"],
             tmp_path,
@@ -1233,7 +1234,7 @@ def test_cli_lint_uses_shared_dx_planner(monkeypatch: pytest.MonkeyPatch) -> Non
 def test_cli_update_steps_use_memory_guard(monkeypatch: pytest.MonkeyPatch) -> None:
 
     calls: list[dict[str, object]] = []
-    step = cli_models._MaintenanceStep(
+    step = _MaintenanceStep(
         "probe",
         ["python3", "-c", "print('ok')"],
         ROOT,

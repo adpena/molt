@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
+
 import os
 import platform
 import re
@@ -19,7 +21,6 @@ from molt.cli.backend_daemon_config import _backend_daemon_enabled
 from molt.default_paths import _default_molt_cache
 from molt.cli.installation_diagnostics import installation_checks
 from molt.cli.wasm_link_cache import _default_wasm_link_cache
-from molt.cli.models import _ToolchainReport
 from molt.cli.output import emit_json as _emit_json
 from molt.cli.output import json_payload as _json_payload
 from molt.cli.project_roots import (
@@ -40,6 +41,17 @@ from molt.llvm_toolchain import (
     verify_available_llvm_toolchain,
 )
 from molt.process_guard import run_completed_command as _run_completed_command
+
+
+@dataclass(frozen=True)
+class _ToolchainReport:
+    checks: list[dict[str, Any]]
+    warnings: list[str]
+    errors: list[str]
+    environment: dict[str, str]
+    actions: list[dict[str, str]]
+    backends: dict[str, bool]
+    profiles: dict[str, bool]
 
 
 def _required_llvm_backend_pin(root: Path) -> LlvmBackendPin | None:

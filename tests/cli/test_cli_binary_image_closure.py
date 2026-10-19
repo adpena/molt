@@ -22,10 +22,8 @@ from molt.cli import wrapper_build as cli_wrapper_build
 from molt.cli.cache_keys import FunctionDigests
 from molt.cli import function_records
 from molt.cli.config_resolution import STATIC_IMPORT_MODULES_ENV
-from molt.cli.models import (
-    _ExternalPackageNativeArtifact,
-    _ExternalPackageNativeArtifactPlan,
-)
+from molt.cli.models import _ExternalPackageNativeArtifactPlan
+from molt.cli.external_native import _ExternalPackageNativeArtifact
 from molt.cli.source_extension_link_requirements import (
     SourceExtensionLinkRequirements,
 )

@@ -91,16 +91,18 @@ from molt.cli.models import (
     _ModuleGraphScanAuthority,
     _ModuleSourceScanAuthority,
     _EMPTY_EXTERNAL_PACKAGE_NATIVE_ARTIFACT_PLAN,
-    _ExternalNativeAbiSymbol,
     _ExternalNativeCallableExport,
-    _ExternalNativeCapiSymbol,
     _ExternalNativeModuleAttrPublishSpec,
     _ExternalNativeModuleInitSpec,
-    _ExternalPackageNativeArtifact,
     _ExternalPackageNativeArtifactPlan,
-    _FrontendWorkerResourceDecision,
     _StagedExternalPackageNativeArtifact,
 )
+from molt.cli.external_native import (
+    _ExternalNativeAbiSymbol,
+    _ExternalNativeCapiSymbol,
+    _ExternalPackageNativeArtifact,
+)
+from molt.cli.frontend_parallel import _FrontendWorkerResourceDecision
 from molt.compiler_analysis.python_imports import (
     _ImportScanRequests,
     _StaticSourceExecutionRequest,
@@ -194,6 +196,13 @@ from molt.cli import backend_daemon_logs as cli_backend_daemon_logs
 from molt.cli import backend_daemon_startup as cli_backend_daemon_startup
 from molt.cli import cargo_profiles as cli_cargo_profiles
 from molt.cli import native_main_stub as cli_native_main_stub
+from molt.cli.backend_execution import _BackendDaemonCompileResult
+from molt.cli.backend_ir import _PreparedBackendIR
+from molt.cli.frontend_execution import (
+    _FrontendLayerExecutionContext,
+    _FrontendLayerRuntimeHooks,
+)
+from molt.cli.process_execution import _TimedResult
 
 cli_deps = importlib.import_module("molt.cli.deps")
 cli_frontend_worker = importlib.import_module("molt.cli.frontend_worker")
@@ -19388,14 +19397,14 @@ def test_build_skips_daemon_preflight_when_socket_exists(
     def fake_compile_with_backend_daemon(
         socket_path: Path,
         **kwargs: object,
-    ) -> cli_models._BackendDaemonCompileResult:
+    ) -> _BackendDaemonCompileResult:
         nonlocal compile_calls
         compile_calls += 1
         assert socket_path == daemon_socket
         backend_output = cast(Path, kwargs["backend_output"])
         backend_output.parent.mkdir(parents=True, exist_ok=True)
         backend_output.write_bytes(native_relocatable_object(symbols=("molt_main",)))
-        return cli_models._BackendDaemonCompileResult(
+        return _BackendDaemonCompileResult(
             ok=True,
             error=None,
             health=None,
@@ -19618,7 +19627,7 @@ def _compile_with_backend_daemon_non_wasm(
     stdlib_module_symbols: set[str] | frozenset[str] | None = None,
     timeout: float | None,
     daemon_identity: BACKEND_EXECUTION._BackendDaemonIdentity | None = None,
-) -> cli_models._BackendDaemonCompileResult:
+) -> _BackendDaemonCompileResult:
     return BACKEND_EXECUTION._compile_with_backend_daemon(
         socket_path,
         project_root=backend_output.parent,
@@ -25253,7 +25262,7 @@ def test_run_backend_pipeline_defers_native_runtime_readiness_until_after_codege
         frontend_parallel_layers=[],
         frontend_parallel_worker_timings=[],
         frontend_parallel_details={},
-        frontend_layer_execution_context=cli_models._FrontendLayerExecutionContext(
+        frontend_layer_execution_context=_FrontendLayerExecutionContext(
             syntax_error_modules={},
             module_graph={},
             module_source_catalog=cli_module_source._ModuleSourceCatalog(leases={}),
@@ -25288,7 +25297,7 @@ def test_run_backend_pipeline_defers_native_runtime_readiness_until_after_codege
             target_python=TARGET_PYTHON._DEFAULT_TARGET_PYTHON_VERSION,
             target_sys_platform=None,
         ),
-        frontend_layer_runtime_hooks=cli_models._FrontendLayerRuntimeHooks(
+        frontend_layer_runtime_hooks=_FrontendLayerRuntimeHooks(
             warnings=[],
             frontend_parallel_details={},
             record_frontend_parallel_worker_timing=lambda **kwargs: {},
@@ -25324,7 +25333,7 @@ def test_run_backend_pipeline_defers_native_runtime_readiness_until_after_codege
         "_prepare_backend_ir",
         lambda **kwargs: (
             call_order.append("backend_ir")
-            or cli_models._PreparedBackendIR(ir={}, function_metadata={}),
+            or _PreparedBackendIR(ir={}, function_metadata={}),
             None,
         ),
     )
@@ -28342,7 +28351,7 @@ def test_execute_backend_compile_defers_full_daemon_request_encode_until_probe_m
     def fake_compile_with_backend_daemon(
         socket_path: Path,
         **kwargs: object,
-    ) -> cli_models._BackendDaemonCompileResult:
+    ) -> _BackendDaemonCompileResult:
         assert socket_path == tmp_path / "daemon.sock"
         daemon_request_bytes.append(cast(bytes | None, kwargs.get("request_bytes")))
         backend_output = cast(Path, kwargs["backend_output"])
@@ -28350,7 +28359,7 @@ def test_execute_backend_compile_defers_full_daemon_request_encode_until_probe_m
         backend_output.write_bytes(
             static_archive_bytes(native_relocatable_object(symbols=("molt_main",)))
         )
-        return cli_models._BackendDaemonCompileResult(
+        return _BackendDaemonCompileResult(
             True,
             None,
             {"pid": 42},
@@ -28464,13 +28473,13 @@ def test_execute_backend_compile_keeps_probe_path_across_daemon_restart(
     def fake_compile_with_backend_daemon(
         socket_path: Path,
         **kwargs: object,
-    ) -> cli_models._BackendDaemonCompileResult:
+    ) -> _BackendDaemonCompileResult:
         nonlocal compile_attempts
         assert socket_path == tmp_path / "daemon.sock"
         compile_attempts += 1
         daemon_request_bytes.append(cast(bytes | None, kwargs.get("request_bytes")))
         if compile_attempts == 1:
-            return cli_models._BackendDaemonCompileResult(
+            return _BackendDaemonCompileResult(
                 False,
                 "backend daemon connection failed: boom",
                 None,
@@ -28482,7 +28491,7 @@ def test_execute_backend_compile_keeps_probe_path_across_daemon_restart(
         backend_output = cast(Path, kwargs["backend_output"])
         backend_output.parent.mkdir(parents=True, exist_ok=True)
         backend_output.write_bytes(native_relocatable_object(symbols=("molt_main",)))
-        return cli_models._BackendDaemonCompileResult(
+        return _BackendDaemonCompileResult(
             True,
             None,
             {"pid": 42},
@@ -28590,12 +28599,12 @@ def test_execute_backend_compile_does_not_retry_after_full_daemon_request(
     def fake_compile_with_backend_daemon(
         socket_path: Path,
         **kwargs: object,
-    ) -> cli_models._BackendDaemonCompileResult:
+    ) -> _BackendDaemonCompileResult:
         nonlocal compile_attempts
         assert socket_path == tmp_path / "daemon.sock"
         assert kwargs["ir"] == {"functions": [{"name": "heavy"}]}
         compile_attempts += 1
-        return cli_models._BackendDaemonCompileResult(
+        return _BackendDaemonCompileResult(
             False,
             "backend daemon connection failed: timed out",
             {"pid": 42},
@@ -28713,9 +28722,9 @@ def test_execute_backend_compile_fails_closed_after_daemon_failure(
     def fake_compile_with_backend_daemon(
         socket_path: Path,
         **kwargs: object,
-    ) -> cli_models._BackendDaemonCompileResult:
+    ) -> _BackendDaemonCompileResult:
         assert socket_path == tmp_path / "daemon.sock"
-        return cli_models._BackendDaemonCompileResult(
+        return _BackendDaemonCompileResult(
             False,
             "backend daemon compile request failed: rss limit exceeded",
             {"pid": 42},
@@ -28829,14 +28838,14 @@ def test_execute_backend_compile_verbose_prints_only_fresh_daemon_log(
     def fake_compile_with_backend_daemon(
         socket_path: Path,
         **kwargs: object,
-    ) -> cli_models._BackendDaemonCompileResult:
+    ) -> _BackendDaemonCompileResult:
         assert socket_path == tmp_path / "daemon.sock"
         with log_path.open("a", encoding="utf-8") as handle:
             handle.write("fresh incremental compile line\n")
         backend_output = cast(Path, kwargs["backend_output"])
         backend_output.parent.mkdir(parents=True, exist_ok=True)
         backend_output.write_bytes(native_relocatable_object(symbols=("molt_main",)))
-        return cli_models._BackendDaemonCompileResult(
+        return _BackendDaemonCompileResult(
             True,
             None,
             {"pid": 42},
@@ -28928,7 +28937,7 @@ def test_execute_backend_compile_rejects_unsynced_daemon_output_skip(
     monkeypatch.setattr(
         cli_backend_compile,
         "_compile_with_backend_daemon",
-        lambda socket_path, **kwargs: cli_models._BackendDaemonCompileResult(
+        lambda socket_path, **kwargs: _BackendDaemonCompileResult(
             True,
             None,
             {"pid": 42},
@@ -29284,21 +29293,19 @@ def test_compare_uses_build_profile_flag_for_nested_build(
 
     seen_cmds: list[list[str]] = []
 
-    def fake_run_command_timed(
-        cmd: list[str], **kwargs: object
-    ) -> cli_models._TimedResult:
+    def fake_run_command_timed(cmd: list[str], **kwargs: object) -> _TimedResult:
         del kwargs
         seen_cmds.append(list(cmd))
         if len(seen_cmds) == 1:
-            return cli_models._TimedResult(0, "ok\n", "", 0.01)
+            return _TimedResult(0, "ok\n", "", 0.01)
         if len(seen_cmds) == 2:
-            return cli_models._TimedResult(
+            return _TimedResult(
                 0,
                 json.dumps({"data": {"output": str(built_binary)}}),
                 "",
                 0.02,
             )
-        return cli_models._TimedResult(0, "ok\n", "", 0.01)
+        return _TimedResult(0, "ok\n", "", 0.01)
 
     monkeypatch.setattr(cli_commands, "_find_project_root", lambda start: project)
     monkeypatch.setattr(cli_commands, "compiler_source_root", lambda: ROOT)

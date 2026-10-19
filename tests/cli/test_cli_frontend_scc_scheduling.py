@@ -328,7 +328,7 @@ def _make_execution_context(
     *,
     scc_serial_modules: frozenset[str] = frozenset(),
 ):
-    from molt.cli.models import _FrontendLayerExecutionContext
+    from molt.cli.frontend_execution import _FrontendLayerExecutionContext
     from molt.cli.module_source import _ModuleSourceCatalog, _ModuleSourceLease
 
     names = list(module_graph)
@@ -568,7 +568,7 @@ def _make_config():
 
 
 def _make_runtime_hooks(warnings: list[str], details: dict[str, Any]):
-    from molt.cli.models import _FrontendLayerRuntimeHooks
+    from molt.cli.frontend_execution import _FrontendLayerRuntimeHooks
 
     def _record_timing(**kwargs):
         return {}

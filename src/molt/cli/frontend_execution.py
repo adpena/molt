@@ -1,12 +1,23 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
+
 import contextlib
 import functools
 import time
 from concurrent.futures import ProcessPoolExecutor
 from concurrent.futures.process import BrokenProcessPool
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Callable, Collection, Mapping, Sequence, cast
+from typing import (
+    TYPE_CHECKING,
+    Any,
+    Callable,
+    Collection,
+    Mapping,
+    Sequence,
+    cast,
+    MutableMapping,
+)
 
 from molt import compiler_process
 from molt import input_report as _input_report
@@ -22,16 +33,12 @@ from molt.cli.models import (
     ParseCodec,
     TypeHintPolicy,
     _FrontendIntegrationState,
-    _FrontendLayerExecutionContext,
     _FrontendLayerPlan,
-    _FrontendLayerRunResult,
-    _FrontendLayerRuntimeHooks,
     _FrontendModuleResultTimings,
     _FrontendParallelConfig,
     _FrontendParallelLayerState,
     _MidendDiagnosticsState,
     _ModuleGraphMetadata,
-    _ParallelWorkerSubmission,
     _PreparedFrontendRunTicket,
     _ScopedLoweringInputs,
     _SerialFrontendLoweringContext,
@@ -56,6 +63,78 @@ from molt.target_python import (
 
 if TYPE_CHECKING:
     from molt.cli.function_records import FunctionDigestSeed
+
+
+@dataclass(frozen=True)
+class _ParallelWorkerSubmission:
+    module_name: str
+    submitted_ns: int
+    future: Any
+
+
+@dataclass(frozen=True)
+class _FrontendLayerRunResult:
+    layer_state: _FrontendParallelLayerState
+    layer_plan: _FrontendLayerPlan
+    parallel_pool_usable: bool
+
+
+@dataclass(frozen=True)
+class _FrontendLayerExecutionContext:
+    syntax_error_modules: Mapping[str, "ModuleSyntaxErrorInfo"]
+    module_graph: Mapping[str, Path]
+    module_source_catalog: _ModuleSourceCatalog
+    project_root: Path | None
+    parse_codec: "ParseCodec"
+    type_hint_policy: "TypeHintPolicy"
+    type_facts: TypeFacts | None
+    enable_phi: bool
+    known_modules: Collection[str]
+    direct_call_modules: Collection[str]
+    stdlib_allowlist: Collection[str]
+    known_func_defaults: dict[str, dict[str, dict[str, Any]]]
+    known_func_kinds: dict[str, dict[str, str]]
+    native_callable_exports: Mapping[str, Mapping[str, Any]]
+    native_python_exports: Collection[str]
+    module_deps: dict[str, set[str]]
+    source_modules: Collection[str]
+    module_chunk_max_ops: int
+    optimization_profile: str
+    pgo_hot_function_names: Collection[str]
+    known_modules_sorted: tuple[str, ...]
+    stdlib_allowlist_sorted: tuple[str, ...]
+    pgo_hot_function_names_sorted: tuple[str, ...]
+    module_dep_closures: dict[str, frozenset[str]]
+    module_graph_metadata: "_ModuleGraphMetadata"
+    module_chunking: bool
+    scoped_lowering_inputs: "_ScopedLoweringInputs | None"
+    frontend_module_costs: Mapping[str, float]
+    stdlib_like_by_module: Mapping[str, bool]
+    known_classes: Mapping[ClassId, ClassInfo]
+    target_python: TargetPythonVersion
+    target_sys_platform: str | None
+    frontend_phase_timeout: float | None
+    scc_serial_modules: frozenset[str] = frozenset()
+
+
+@dataclass(frozen=True)
+class _FrontendLayerRuntimeHooks:
+    warnings: list[str]
+    frontend_parallel_details: MutableMapping[str, Any]
+    record_frontend_parallel_worker_timing: Callable[..., dict[str, Any]]
+    record_frontend_timing: Callable[..., None]
+    integrate_module_frontend_result: Callable[..., str | None]
+    accumulate_midend_diagnostics: Callable[..., None]
+    fail: Callable[..., _CliFailure]
+    json_output: bool
+    run_serial_frontend_lower: Callable[
+        [str, Path],
+        tuple[
+            dict[str, Any] | None,
+            "_FrontendModuleResultTimings | None",
+            _CliFailure | None,
+        ],
+    ]
 
 
 @_source_tree_fingerprint_transaction()
