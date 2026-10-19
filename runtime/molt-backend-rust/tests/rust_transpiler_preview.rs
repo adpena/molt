@@ -50,17 +50,9 @@ fn rust_backend_rejects_class_slots_without_object_representation() {
     call_init.args = Some(vec!["bound_init".to_string(), "call_args".to_string()]);
     call_init.out = Some("init_result".to_string());
 
-    let mut x = op("const");
-    x.value = Some(10);
-    x.out = Some("x".to_string());
-
     let mut store0 = op("store");
     store0.args = Some(vec!["point_obj".to_string(), "x".to_string()]);
     store0.value = Some(0);
-
-    let mut y = op("const");
-    y.value = Some(32);
-    y.out = Some("y".to_string());
 
     let mut store1 = op("store");
     store1.args = Some(vec!["point_obj".to_string(), "y".to_string()]);
@@ -76,18 +68,14 @@ fn rust_backend_rejects_class_slots_without_object_representation() {
     load1.value = Some(8);
     load1.out = Some("loaded_y".to_string());
 
-    let mut add = op("add");
-    add.args = Some(vec!["loaded_x".to_string(), "loaded_y".to_string()]);
-    add.out = Some("sum".to_string());
-
     let mut ret = op("ret");
-    ret.args = Some(vec!["sum".to_string()]);
+    ret.args = Some(vec!["loaded_y".to_string()]);
 
     let ir = SimpleIR {
         functions: vec![FunctionIR {
             return_abi: molt_ir::FunctionReturnAbi::Value,
             name: "molt_test_class_slots".to_string(),
-            params: vec!["point_cls".to_string()],
+            params: vec!["point_cls".to_string(), "x".to_string(), "y".to_string()],
             ops: vec![
                 alloc_obj,
                 none0,
@@ -99,13 +87,10 @@ fn rust_backend_rejects_class_slots_without_object_representation() {
                 bind_init,
                 call_args,
                 call_init,
-                x,
                 store0,
-                y,
                 store1,
                 load0,
                 load1,
-                add,
                 ret,
             ],
             param_types: None,
@@ -123,11 +108,19 @@ fn rust_backend_rejects_class_slots_without_object_representation() {
         .compile_checked(&ir)
         .expect_err("class slot IR requires a real Rust object/type representation");
 
-    assert!(err.contains("alloc_class requires a Rust backend class instance representation"));
+    assert!(err.contains("rejected before source generation"), "{err}");
+    assert!(
+        err.contains("molt_test_class_slots:op#0 `alloc_class`"),
+        "{err}"
+    );
+    assert!(
+        err.contains("Python aliasing, cycles, None storage, hashing, and object protocols"),
+        "{err}"
+    );
 }
 
 #[test]
-fn rust_backend_lowers_module_attr_round_trip() {
+fn rust_backend_rejects_module_attrs_without_python_object_protocols() {
     let mut module_new = op("module_new");
     module_new.out = Some("module_obj".to_string());
 
@@ -172,112 +165,61 @@ fn rust_backend_lowers_module_attr_round_trip() {
     };
 
     let mut backend = RustBackend::new();
-    let source = backend
+    let error = backend
         .compile_checked(&ir)
-        .expect("preview rust backend should lower module attr IR");
-
-    assert!(!source.contains("compile_error!"));
+        .expect_err("module source helpers do not implement Python object protocols");
     assert!(
-        source.contains(
-            "molt_set_attr_name(&mut module_obj, attr_name.clone(), point_value.clone());"
-        )
+        error.contains("rejected before source generation"),
+        "{error}"
     );
-    assert!(source.contains("molt_get_attr_name(&module_obj, &attr_name)"));
+    assert!(
+        error.contains("molt_test_module_attrs:op#0 `module_new`"),
+        "{error}"
+    );
+    assert!(
+        error.contains("Python aliasing, cycles, None storage, hashing, and object protocols"),
+        "{error}"
+    );
 }
 
 #[test]
-fn rust_backend_lowers_admitted_runtime_value_surface_ops() {
-    let mut word = op("const_str");
-    word.s_value = Some("cafe\u{301}".to_string());
-    word.out = Some("word".to_string());
-
-    let mut string = op("str_from_obj");
-    string.args = Some(vec!["word".to_string()]);
-    string.out = Some("string_word".to_string());
-
-    let mut repr = op("repr_from_obj");
-    repr.args = Some(vec!["word".to_string()]);
-    repr.out = Some("repr_word".to_string());
-
-    let mut ascii = op("ascii_from_obj");
-    ascii.args = Some(vec!["word".to_string()]);
-    ascii.out = Some("ascii_word".to_string());
-
-    let mut ret = op("ret");
-    ret.args = Some(vec!["ascii_word".to_string()]);
-
-    let ir = SimpleIR {
-        functions: vec![FunctionIR {
-            return_abi: molt_ir::FunctionReturnAbi::Value,
-            name: "molt_test_runtime_surface".to_string(),
-            params: Vec::new(),
-            ops: vec![word, string, repr, ascii, ret],
-            param_types: None,
-            source_file: None,
-            is_extern: false,
-            codegen_partition: false,
-            parameter_custody: Vec::new(),
-            execution_context: Default::default(),
-        }],
-        profile: None,
-    };
-
-    let mut backend = RustBackend::new();
-    let source = backend
-        .compile_checked(&ir)
-        .expect("admitted runtime-surface ops should lower without stubs");
-
-    assert!(source.contains("let mut string_word: MoltValue = molt_str_from_obj(&word);"));
-    assert!(source.contains("let mut repr_word: MoltValue = molt_repr(&word);"));
-    assert!(source.contains("let mut ascii_word: MoltValue = molt_ascii_from_obj(&word);"));
-    assert!(source.contains("fn molt_str_from_obj(x: &MoltValue) -> MoltValue"));
-    assert!(source.contains("fn molt_repr(x: &MoltValue) -> MoltValue"));
-    assert!(source.contains("fn molt_ascii_from_obj(x: &MoltValue) -> MoltValue"));
-    assert!(source.contains("fn molt_escape_non_ascii(text: &str) -> String"));
-    assert!(!source.contains("MOLT_STUB: str_from_obj"));
-    assert!(!source.contains("MOLT_STUB: repr_from_obj"));
-    assert!(!source.contains("MOLT_STUB: ascii_from_obj"));
+fn rust_backend_rejects_runtime_value_surface_without_catchable_exceptions() {
+    for kind in ["str_from_obj", "repr_from_obj", "ascii_from_obj"] {
+        let mut call = op(kind);
+        call.args = Some(vec!["word".to_string()]);
+        call.out = Some("converted".to_string());
+        let mut ret = op("ret");
+        ret.args = Some(vec!["converted".to_string()]);
+        let ir = SimpleIR {
+            functions: vec![FunctionIR {
+                return_abi: molt_ir::FunctionReturnAbi::Value,
+                name: "runtime_value_surface".to_string(),
+                params: vec!["word".to_string()],
+                ops: vec![call, ret],
+                ..FunctionIR::default()
+            }],
+            profile: None,
+        };
+        let error = RustBackend::new()
+            .compile_checked(&ir)
+            .expect_err("well-shaped runtime calls still require catchable Python exceptions");
+        assert!(
+            error.contains("rejected before source generation"),
+            "{error}"
+        );
+        assert!(
+            error.contains(&format!("runtime_value_surface:op#0 `{kind}`")),
+            "{error}"
+        );
+        assert!(
+            error.contains("structured catchable Python exceptions"),
+            "{error}"
+        );
+    }
 }
 
 #[test]
-fn rust_backend_runtime_value_surface_rejects_wrong_arity() {
-    let mut string = op("str_from_obj");
-    string.out = Some("string_word".to_string());
-
-    let ir = SimpleIR {
-        functions: vec![FunctionIR {
-            return_abi: molt_ir::FunctionReturnAbi::Void,
-            name: "molt_test_runtime_surface_wrong_arity".to_string(),
-            params: Vec::new(),
-            ops: vec![string],
-            param_types: None,
-            source_file: None,
-            is_extern: false,
-            codegen_partition: false,
-            parameter_custody: Vec::new(),
-            execution_context: Default::default(),
-        }],
-        profile: None,
-    };
-
-    let mut backend = RustBackend::new();
-    let err = backend
-        .compile_checked(&ir)
-        .expect_err("runtime-surface calls must fail closed on missing operands");
-
-    assert!(
-        err.contains("refuses to emit fail-open codegen"),
-        "error must come from the fail-closed accumulator, got: {err}"
-    );
-    assert!(
-        err.contains("str_from_obj"),
-        "diagnostic must name the op kind, got: {err}"
-    );
-    assert!(err.contains("str_from_obj requires 1 runtime-surface argument(s), got 0"));
-}
-
-#[test]
-fn rust_backend_keeps_unstructured_branch_fail_closed() {
+fn rust_backend_rejects_valid_branch_without_python_truthiness() {
     let mut cond = op("const_bool");
     cond.value = Some(1);
     cond.out = Some("cond".to_string());
@@ -286,12 +228,15 @@ fn rust_backend_keeps_unstructured_branch_fail_closed() {
     branch.args = Some(vec!["cond".to_string()]);
     branch.value = Some(1);
 
+    let mut label = op("label");
+    label.value = Some(1);
+
     let ir = SimpleIR {
         functions: vec![FunctionIR {
             return_abi: molt_ir::FunctionReturnAbi::Void,
             name: "molt_test_branch_gap".to_string(),
             params: Vec::new(),
-            ops: vec![cond, branch],
+            ops: vec![cond, branch, label, op("ret_void")],
             param_types: None,
             source_file: None,
             is_extern: false,
@@ -303,140 +248,72 @@ fn rust_backend_keeps_unstructured_branch_fail_closed() {
     };
 
     let mut backend = RustBackend::new();
-    let err = backend
+    let error = backend
         .compile_checked(&ir)
-        .expect_err("unstructured branch must stay fail-closed without CFG lowering");
-
+        .expect_err("a valid graph cannot claim unavailable Python truthiness");
     assert!(
-        err.contains("refuses to emit fail-open codegen"),
-        "error must come from the fail-closed accumulator, got: {err}"
+        error.contains("rejected before source generation"),
+        "{error}"
     );
     assert!(
-        err.contains("br_if"),
-        "diagnostic must name the op kind, got: {err}"
+        error.contains("molt_test_branch_gap:op#1 `br_if`"),
+        "{error}"
     );
-    assert!(err.contains("br_if requires Rust backend CFG/block lowering"));
+    assert!(error.contains("Python truthiness"), "{error}");
 }
 
 #[test]
-fn rust_backend_stamps_target_python_version_state() {
-    let mut major_raw = op("const");
-    major_raw.value = Some(3);
-    major_raw.out = Some("major_raw".to_string());
-
-    let mut major = op("box");
-    major.args = Some(vec!["major_raw".to_string()]);
-    major.out = Some("major".to_string());
-
-    let mut minor_raw = op("const");
-    minor_raw.value = Some(13);
-    minor_raw.out = Some("minor_raw".to_string());
-
-    let mut minor = op("box");
-    minor.args = Some(vec!["minor_raw".to_string()]);
-    minor.out = Some("minor".to_string());
-
-    let mut micro_raw = op("const");
-    micro_raw.value = Some(0);
-    micro_raw.out = Some("micro_raw".to_string());
-
-    let mut micro = op("box");
-    micro.args = Some(vec!["micro_raw".to_string()]);
-    micro.out = Some("micro".to_string());
-
-    let mut releaselevel = op("const_str");
-    releaselevel.s_value = Some("final".to_string());
-    releaselevel.out = Some("releaselevel".to_string());
-
-    let mut serial_raw = op("const");
-    serial_raw.value = Some(0);
-    serial_raw.out = Some("serial_raw".to_string());
-
-    let mut serial = op("box");
-    serial.args = Some(vec!["serial_raw".to_string()]);
-    serial.out = Some("serial".to_string());
-
-    let mut version = op("const_str");
-    version.s_value = Some("3.13.0 (molt)".to_string());
-    version.out = Some("version".to_string());
-
-    let mut set_version = op("call");
-    set_version.s_value = Some("molt_sys_set_version_info".to_string());
-    set_version.args = Some(vec![
-        "major".to_string(),
-        "minor".to_string(),
-        "micro".to_string(),
-        "releaselevel".to_string(),
-        "serial".to_string(),
-        "version".to_string(),
-    ]);
-    set_version.out = Some("set_result".to_string());
-
-    let mut get_version_info = op("call");
-    get_version_info.s_value = Some("molt_sys_version_info".to_string());
-    get_version_info.out = Some("version_info".to_string());
-
-    let mut get_version = op("call");
-    get_version.s_value = Some("molt_sys_version".to_string());
-    get_version.out = Some("version_text".to_string());
-
-    let mut get_hexversion = op("call");
-    get_hexversion.s_value = Some("molt_sys_hexversion".to_string());
-    get_hexversion.out = Some("hexversion".to_string());
-
+fn rust_backend_rejects_sys_version_call_without_catchable_exceptions() {
+    let mut call = op("call");
+    call.s_value = Some("molt_sys_version".to_string());
+    call.out = Some("version".to_string());
     let mut ret = op("ret");
-    ret.args = Some(vec!["version_text".to_string()]);
-
+    ret.args = Some(vec!["version".to_string()]);
     let ir = SimpleIR {
         functions: vec![FunctionIR {
             return_abi: molt_ir::FunctionReturnAbi::Value,
-            name: "molt_target_python_probe".to_string(),
-            params: Vec::new(),
-            ops: vec![
-                major_raw,
-                major,
-                minor_raw,
-                minor,
-                micro_raw,
-                micro,
-                releaselevel,
-                serial_raw,
-                serial,
-                version,
-                set_version,
-                get_version_info,
-                get_version,
-                get_hexversion,
-                ret,
-            ],
-            param_types: None,
-            source_file: None,
-            is_extern: false,
-            codegen_partition: false,
-            parameter_custody: Vec::new(),
-            execution_context: Default::default(),
+            name: "sys_version_probe".to_string(),
+            ops: vec![call, ret],
+            ..FunctionIR::default()
         }],
         profile: None,
     };
-
-    let mut backend = RustBackend::new();
-    let source = backend
+    let error = RustBackend::new()
         .compile_checked(&ir)
-        .expect("preview rust backend should lower sys version intrinsics");
-
-    assert!(!source.contains(
-        "fn molt_sys_set_version_info(_args: &mut Vec<MoltValue>) -> MoltValue { MoltValue::None }"
-    ));
-    assert!(!source.contains("compile_error!"));
-    assert!(source.contains("struct MoltSysVersionInfo"));
+        .expect_err("a prelude helper does not supply catchable Python call semantics");
     assert!(
-        source.contains("fn molt_sys_set_version_info(args: &mut Vec<MoltValue>) -> MoltValue")
+        error.contains("rejected before source generation"),
+        "{error}"
     );
-    assert!(source.contains("fn molt_sys_version_info(_args: &mut Vec<MoltValue>) -> MoltValue"));
-    assert!(source.contains("fn molt_sys_version(_args: &mut Vec<MoltValue>) -> MoltValue"));
-    assert!(source.contains("fn molt_sys_hexversion(_args: &mut Vec<MoltValue>) -> MoltValue"));
-    assert!(source.contains("MoltValue::Str(state.version.clone().into())"));
-    assert!(source.contains("MoltValue::List(vec!["));
+    assert!(error.contains("sys_version_probe:op#0 `call`"), "{error}");
+    assert!(
+        error.contains("structured catchable Python exceptions"),
+        "{error}"
+    );
+}
+
+#[test]
+fn rust_backend_keeps_admitted_float_programs_available() {
+    let mut value = op("const_float");
+    value.f_value = Some(1.5);
+    value.out = Some("answer".to_string());
+    let mut ret = op("ret");
+    ret.args = Some(vec!["answer".to_string()]);
+    let ir = SimpleIR {
+        functions: vec![FunctionIR {
+            return_abi: molt_ir::FunctionReturnAbi::Value,
+            name: "float_probe".to_string(),
+            ops: vec![value, ret],
+            ..FunctionIR::default()
+        }],
+        profile: None,
+    };
+    let source = RustBackend::new()
+        .compile_checked(&ir)
+        .expect("the exact fixed-width float subset remains admitted");
+    assert!(source.contains("MoltValue::Float(f64::from_bits(4609434218613702656u64))"));
+    assert!(source.contains("return answer.clone();"));
+    assert!(!source.contains("compile_error!") && !source.contains("MOLT_STUB"));
 }
 
 #[test]

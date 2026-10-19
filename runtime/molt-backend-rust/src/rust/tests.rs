@@ -2185,3 +2185,312 @@ fn symbolic_module_slots_resolve_from_the_program_registry() {
         );
     }
 }
+
+// Source assembly and late refusal controls belong behind the private test-only
+// entry point, independently of public semantic capability admission.
+mod preview_source {
+    use super::*;
+
+    fn op(kind: &str) -> OpIR {
+        OpIR {
+            kind: kind.to_string(),
+            ..OpIR::default()
+        }
+    }
+
+    #[test]
+    fn module_attr_round_trip_keeps_its_source_oracle() {
+        let mut module_new = op("module_new");
+        module_new.out = Some("module_obj".to_string());
+
+        let mut attr_name = op("const_str");
+        attr_name.s_value = Some("Point".to_string());
+        attr_name.out = Some("attr_name".to_string());
+
+        let mut attr_value = op("const_str");
+        attr_value.s_value = Some("Point".to_string());
+        attr_value.out = Some("point_value".to_string());
+
+        let mut module_set = op("module_set_attr");
+        module_set.args = Some(vec![
+            "module_obj".to_string(),
+            "attr_name".to_string(),
+            "point_value".to_string(),
+        ]);
+
+        let mut module_get = op("module_get_attr");
+        module_get.args = Some(vec!["module_obj".to_string(), "attr_name".to_string()]);
+        module_get.out = Some("loaded_cls".to_string());
+
+        let mut ret = op("ret");
+        ret.args = Some(vec!["loaded_cls".to_string()]);
+
+        let ir = SimpleIR {
+            functions: vec![FunctionIR {
+                return_abi: molt_ir::FunctionReturnAbi::Value,
+                name: "molt_test_module_attrs".to_string(),
+                params: Vec::new(),
+                ops: vec![
+                    module_new, attr_name, attr_value, module_set, module_get, ret,
+                ],
+                param_types: None,
+                source_file: None,
+                is_extern: false,
+                codegen_partition: false,
+                parameter_custody: Vec::new(),
+                execution_context: Default::default(),
+            }],
+            profile: None,
+        };
+
+        let mut backend = RustBackend::new();
+        // Public admission rejects the incomplete Python runtime semantics. This
+        // private unit owns only the existing emitter's source assembly contract.
+        let source = backend.compile(&ir);
+        assert!(
+            backend.unsupported_ops.is_empty(),
+            "{:?}",
+            backend.unsupported_ops
+        );
+
+        assert!(!source.contains("compile_error!"));
+        assert!(source.contains(
+            "molt_set_attr_name(&mut module_obj, attr_name.clone(), point_value.clone());"
+        ));
+        assert!(source.contains("molt_get_attr_name(&module_obj, &attr_name)"));
+    }
+
+    #[test]
+    fn runtime_value_surface_keeps_unicode_source_oracles() {
+        let mut word = op("const_str");
+        word.s_value = Some("cafe\u{301}".to_string());
+        word.out = Some("word".to_string());
+
+        let mut string = op("str_from_obj");
+        string.args = Some(vec!["word".to_string()]);
+        string.out = Some("string_word".to_string());
+
+        let mut repr = op("repr_from_obj");
+        repr.args = Some(vec!["word".to_string()]);
+        repr.out = Some("repr_word".to_string());
+
+        let mut ascii = op("ascii_from_obj");
+        ascii.args = Some(vec!["word".to_string()]);
+        ascii.out = Some("ascii_word".to_string());
+
+        let mut ret = op("ret");
+        ret.args = Some(vec!["ascii_word".to_string()]);
+
+        let ir = SimpleIR {
+            functions: vec![FunctionIR {
+                return_abi: molt_ir::FunctionReturnAbi::Value,
+                name: "molt_test_runtime_surface".to_string(),
+                params: Vec::new(),
+                ops: vec![word, string, repr, ascii, ret],
+                param_types: None,
+                source_file: None,
+                is_extern: false,
+                codegen_partition: false,
+                parameter_custody: Vec::new(),
+                execution_context: Default::default(),
+            }],
+            profile: None,
+        };
+
+        let mut backend = RustBackend::new();
+        // Public admission rejects the incomplete Python runtime semantics. This
+        // private unit owns only the existing emitter's source assembly contract.
+        let source = backend.compile(&ir);
+        assert!(
+            backend.unsupported_ops.is_empty(),
+            "{:?}",
+            backend.unsupported_ops
+        );
+
+        assert!(source.contains("let mut string_word: MoltValue = molt_str_from_obj(&word);"));
+        assert!(source.contains("let mut repr_word: MoltValue = molt_repr(&word);"));
+        assert!(source.contains("let mut ascii_word: MoltValue = molt_ascii_from_obj(&word);"));
+        assert!(source.contains("fn molt_str_from_obj(x: &MoltValue) -> MoltValue"));
+        assert!(source.contains("fn molt_repr(x: &MoltValue) -> MoltValue"));
+        assert!(source.contains("fn molt_ascii_from_obj(x: &MoltValue) -> MoltValue"));
+        assert!(source.contains("fn molt_escape_non_ascii(text: &str) -> String"));
+        assert!(!source.contains("MOLT_STUB: str_from_obj"));
+        assert!(!source.contains("MOLT_STUB: repr_from_obj"));
+        assert!(!source.contains("MOLT_STUB: ascii_from_obj"));
+    }
+
+    #[test]
+    fn target_python_version_state_keeps_its_source_oracle() {
+        let mut major_raw = op("const");
+        major_raw.value = Some(3);
+        major_raw.out = Some("major_raw".to_string());
+
+        let mut major = op("box");
+        major.args = Some(vec!["major_raw".to_string()]);
+        major.out = Some("major".to_string());
+
+        let mut minor_raw = op("const");
+        minor_raw.value = Some(13);
+        minor_raw.out = Some("minor_raw".to_string());
+
+        let mut minor = op("box");
+        minor.args = Some(vec!["minor_raw".to_string()]);
+        minor.out = Some("minor".to_string());
+
+        let mut micro_raw = op("const");
+        micro_raw.value = Some(0);
+        micro_raw.out = Some("micro_raw".to_string());
+
+        let mut micro = op("box");
+        micro.args = Some(vec!["micro_raw".to_string()]);
+        micro.out = Some("micro".to_string());
+
+        let mut releaselevel = op("const_str");
+        releaselevel.s_value = Some("final".to_string());
+        releaselevel.out = Some("releaselevel".to_string());
+
+        let mut serial_raw = op("const");
+        serial_raw.value = Some(0);
+        serial_raw.out = Some("serial_raw".to_string());
+
+        let mut serial = op("box");
+        serial.args = Some(vec!["serial_raw".to_string()]);
+        serial.out = Some("serial".to_string());
+
+        let mut version = op("const_str");
+        version.s_value = Some("3.13.0 (molt)".to_string());
+        version.out = Some("version".to_string());
+
+        let mut set_version = op("call");
+        set_version.s_value = Some("molt_sys_set_version_info".to_string());
+        set_version.args = Some(vec![
+            "major".to_string(),
+            "minor".to_string(),
+            "micro".to_string(),
+            "releaselevel".to_string(),
+            "serial".to_string(),
+            "version".to_string(),
+        ]);
+        set_version.out = Some("set_result".to_string());
+
+        let mut get_version_info = op("call");
+        get_version_info.s_value = Some("molt_sys_version_info".to_string());
+        get_version_info.out = Some("version_info".to_string());
+
+        let mut get_version = op("call");
+        get_version.s_value = Some("molt_sys_version".to_string());
+        get_version.out = Some("version_text".to_string());
+
+        let mut get_hexversion = op("call");
+        get_hexversion.s_value = Some("molt_sys_hexversion".to_string());
+        get_hexversion.out = Some("hexversion".to_string());
+
+        let mut ret = op("ret");
+        ret.args = Some(vec!["version_text".to_string()]);
+
+        let ir = SimpleIR {
+            functions: vec![FunctionIR {
+                return_abi: molt_ir::FunctionReturnAbi::Value,
+                name: "molt_target_python_probe".to_string(),
+                params: Vec::new(),
+                ops: vec![
+                    major_raw,
+                    major,
+                    minor_raw,
+                    minor,
+                    micro_raw,
+                    micro,
+                    releaselevel,
+                    serial_raw,
+                    serial,
+                    version,
+                    set_version,
+                    get_version_info,
+                    get_version,
+                    get_hexversion,
+                    ret,
+                ],
+                param_types: None,
+                source_file: None,
+                is_extern: false,
+                codegen_partition: false,
+                parameter_custody: Vec::new(),
+                execution_context: Default::default(),
+            }],
+            profile: None,
+        };
+
+        let mut backend = RustBackend::new();
+        // Public admission rejects the incomplete Python runtime semantics. This
+        // private unit owns only the existing emitter's source assembly contract.
+        let source = backend.compile(&ir);
+        assert!(
+            backend.unsupported_ops.is_empty(),
+            "{:?}",
+            backend.unsupported_ops
+        );
+
+        assert!(!source.contains(
+            "fn molt_sys_set_version_info(_args: &mut Vec<MoltValue>) -> MoltValue { MoltValue::None }"
+        ));
+        assert!(!source.contains("compile_error!"));
+        assert!(source.contains("struct MoltSysVersionInfo"));
+        assert!(
+            source.contains("fn molt_sys_set_version_info(args: &mut Vec<MoltValue>) -> MoltValue")
+        );
+        assert!(
+            source.contains("fn molt_sys_version_info(_args: &mut Vec<MoltValue>) -> MoltValue")
+        );
+        assert!(source.contains("fn molt_sys_version(_args: &mut Vec<MoltValue>) -> MoltValue"));
+        assert!(source.contains("fn molt_sys_hexversion(_args: &mut Vec<MoltValue>) -> MoltValue"));
+        assert!(source.contains("MoltValue::Str(state.version.clone().into())"));
+        assert!(source.contains("MoltValue::List(vec!["));
+    }
+
+    #[test]
+    fn runtime_value_surface_records_wrong_arity_without_a_substitute() {
+        let mut string = op("str_from_obj");
+        string.out = Some("string_word".to_string());
+
+        let ir = SimpleIR {
+            functions: vec![FunctionIR {
+                return_abi: molt_ir::FunctionReturnAbi::Void,
+                name: "molt_test_runtime_surface_wrong_arity".to_string(),
+                params: Vec::new(),
+                ops: vec![string],
+                param_types: None,
+                source_file: None,
+                is_extern: false,
+                codegen_partition: false,
+                parameter_custody: Vec::new(),
+                execution_context: Default::default(),
+            }],
+            profile: None,
+        };
+
+        let mut backend = RustBackend::new();
+        let source = backend.compile(&ir);
+        assert_eq!(backend.unsupported_ops.len(), 1);
+        assert!(
+            backend.unsupported_ops[0]
+                .contains("str_from_obj requires 1 runtime-surface argument(s), got 0")
+        );
+        assert!(!source.contains("let mut string_word: MoltValue"));
+        assert!(!source.contains("MOLT_STUB"));
+    }
+
+    #[test]
+    fn naked_branch_dispatch_records_unsupported_instead_of_emitting_a_noop() {
+        let mut backend = RustBackend::new();
+        let mut branch = op("br_if");
+        branch.args = Some(vec!["cond".to_string()]);
+        branch.value = Some(1);
+
+        // Canonical labelled-flow assembly owns supported branch emission. A branch
+        // routed directly to scalar dispatch must still record its unmet obligation.
+        backend.emit_op(&branch);
+        assert!(backend.output.is_empty());
+        assert_eq!(backend.unsupported_ops.len(), 1);
+        assert!(backend.unsupported_ops[0].contains("unsupported Rust backend op `br_if`"));
+    }
+}
