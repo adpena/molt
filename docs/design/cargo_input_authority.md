@@ -170,7 +170,9 @@ frozen effective `ProcessEnvironment`, after Cargo configuration and execution
 policy, to both Cargo and the reader. No ambient environment default is allowed.
 
 The reader requires Cargo's complete successful JSON transcript, including its
-terminal `build-finished` message. Malformed JSON candidates, duplicate terminal
+terminal `build-finished` message. Cargo JSON, dep-info and script readers use
+LF/CRLF boundaries, preserving literal Unicode separators inside data.
+Malformed JSON candidates, duplicate terminal
 messages and records after completion refuse before publication; tool text is
 not mistaken for protocol data. The execution boundary retains full stdout,
 separately from bounded diagnostic excerpts.

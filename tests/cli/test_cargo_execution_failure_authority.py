@@ -922,6 +922,28 @@ def test_cargo_admits_explicit_build_dir_as_a_second_output_root(
     ]
 
 
+def test_cargo_json_diagnostic_keeps_literal_unicode_line_separators() -> None:
+    rendered = "error: source\u2028text\u2029context\n"
+    stdout = (
+        json.dumps(
+            {
+                "reason": "compiler-message",
+                "message": {"level": "error", "message": "short", "rendered": rendered},
+            },
+            ensure_ascii=False,
+        )
+        + "\r\n"
+    )
+    assert (
+        RUNTIME._native_runtime_first_error(
+            cargo_stdout=stdout,
+            cargo_stderr="error: wrong later stderr diagnostic",
+            fallback="wrong fallback",
+        )
+        == rendered.strip()
+    )
+
+
 def test_terminal_cargo_summary_preserves_signal_after_long_command() -> None:
     command = "/usr/bin/sccache /usr/bin/rustc " + ("--extern dependency " * 500)
     summary = RUNTIME._native_runtime_first_error(

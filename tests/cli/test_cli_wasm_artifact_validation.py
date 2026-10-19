@@ -22,6 +22,7 @@ from molt._wasm_runtime_exports import wasm_split_runtime_export_rename_map
 from molt.cli import wasm_link_inputs
 from molt.wasi_sysroot import normalize_wasi_sysroot
 from molt.cli.models import _RuntimeArtifactState
+from molt.cli.runtime_artifact_selection import RuntimeCrateType
 from molt.cli import runtime_wasm_pair_build as RUNTIME_WASM_PAIR
 from molt.cli import artifact_state as ARTIFACT_STATE
 from molt.cli import runtime_identity_schema as RUNTIME_SCHEMA
@@ -60,6 +61,61 @@ def _valid_wasm_bytes(label: bytes = b"") -> bytes:
         return wasm_artifact._build_wasm_sections([])
     payload = wasm_artifact._write_wasm_string("molt.test") + label
     return wasm_artifact._build_wasm_sections([(0, payload)])
+
+
+@pytest.mark.parametrize("provider", ["runtime", "cpython-abi"])
+@pytest.mark.parametrize("ending", ["\n", "\r\n"])
+def test_cargo_artifact_selection_preserves_literal_unicode_filename_separators(
+    tmp_path: Path, provider: str, ending: str
+) -> None:
+    target_root = tmp_path / "target"
+    directory = target_root / "dep\u2028info\u0085state\u2029"
+    runtime = provider == "runtime"
+    package = "molt-runtime" if runtime else "molt-lang-cpython-abi"
+    target_name = "molt_runtime" if runtime else "molt_cpython_abi"
+    names = (
+        ("molt_runtime.wasm", "libmolt_runtime.a")
+        if runtime
+        else ("libmolt_cpython_abi.a",)
+    )
+    paths = [directory / name for name in names]
+
+    def report(*, package_name=package, target=target_name, filenames=paths):
+        return {
+            "reason": "compiler-artifact",
+            "package_id": f"path+file:///workspace/{package_name}#{package_name}@1.0.0",
+            "target": {"name": target},
+            "filenames": list(map(str, filenames)),
+        }
+
+    def transcript(records):
+        return ending.join(
+            json.dumps(record, ensure_ascii=False)
+            for record in [*records, {"reason": "build-finished", "success": True}]
+        )
+
+    def selected(stdout):
+        if runtime:
+            return RUNTIME_WASM_BUILD_SUPPORT._reported_runtime_artifacts_from_cargo_stdout(
+                stdout, target_root=target_root
+            )
+        return RUNTIME_WASM_BUILD_SUPPORT._reported_cpython_abi_staticlib_from_cargo_stdout(
+            stdout, target_root=target_root
+        )
+
+    unrelated = [
+        report(package_name="unrelated-package"),
+        report(target="unrelated_target"),
+        report(filenames=[tmp_path / "outside\u2028target" / name for name in names]),
+        {**report(), "reason": "compiler-message"},
+    ]
+    expected = (
+        {RuntimeCrateType.CDYLIB: paths[0], RuntimeCrateType.STATICLIB: paths[1]}
+        if runtime
+        else paths[0]
+    )
+    assert selected(transcript([report(), *unrelated])) == expected
+    assert selected(transcript(unrelated)) == ({} if runtime else None)
 
 
 @pytest.fixture(autouse=True)
