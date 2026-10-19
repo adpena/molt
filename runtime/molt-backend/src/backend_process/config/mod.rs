@@ -1,8 +1,6 @@
 mod constants;
 
 pub(crate) use constants::DEFAULT_STDIN_REQUEST_LIMIT_BYTES;
-#[cfg(test)]
-pub(crate) use constants::GIB;
 #[cfg(feature = "native-backend")]
 pub(crate) use constants::{
     DEFAULT_BACKEND_BATCH_OP_BUDGET, DEFAULT_BACKEND_BATCH_SIZE, DEFAULT_STDLIB_BATCH_SIZE,

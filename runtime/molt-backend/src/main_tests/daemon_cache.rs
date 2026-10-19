@@ -709,6 +709,7 @@ fn daemon_replacement_releases_equal_keys_with_different_allocation_capacity() {
 
 #[test]
 fn daemon_default_cache_limit_scales_with_host_memory() {
+    const GIB: u64 = 1024 * 1024 * 1024;
     assert_eq!(
         default_daemon_cache_bytes_from_physical_mem_bytes(Some(8 * GIB)),
         128 * MIB
