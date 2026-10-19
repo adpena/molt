@@ -243,7 +243,11 @@ disabled on both sides, put the timing helper's cumulative import median at
 132.3 ms before and 2.7 ms after. Shared-model self time falls from 25.4 to
 16.9 ms; frontend-worker cumulative import changes only from 407.5 to 392.4 ms.
 These are import diagnostics, not whole-build speedups. Ordinary unchanged
-builds have their own early-cutoff path and require separate observations.
+builds have their own early-cutoff path. Linux aarch64 native 3.12/dev/full
+observations, retaining the same compiler target and output path, take 0.594 s
+before and 0.590/0.583 s after, including the command guard. Both binaries run
+with an empty execution PATH and print the expected result. Initial cache
+admission is excluded; these few observations establish no whole-build speedup.
 This is compiler startup work; emitted native and WASM programs acquire no
 record machinery or additional runtime work.
 
