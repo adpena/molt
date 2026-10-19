@@ -842,7 +842,9 @@ def test_mixed_rust_python_change_checks_rust_before_consumer_cohorts(drv):
         if "tools/check_changed_clippy.py" in command
     )
     consumers = [
-        i for i, command in enumerate(commands) if "pytest" in _gate_args(command)
+        i
+        for i, command in enumerate(commands)
+        if isinstance(command, tuple) and "pytest" in _gate_args(command)
     ]
     assert consumers and all(rust < index for index in consumers)
 
