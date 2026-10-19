@@ -318,8 +318,11 @@ def test_resolved_cargo_plan_consumes_c_resource_custody(
 
 
 @pytest.fixture
-def external_header_cargo_project(tmp_path: Path):
+def external_header_cargo_project(tmp_path_factory: pytest.TempPathFactory):
     """One real registry-free graph whose HOST build input lives outside Cargo."""
+    # The full generation digest and MSVC build-script suffix must fit within
+    # MAX_PATH too. Keep pytest's allocation custody with a short fixture name.
+    tmp_path = tmp_path_factory.mktemp("cr")
     if shutil.which("cargo") is None or shutil.which("rustc") is None:
         pytest.skip("real Cargo/Rust compiler capability is unavailable")
     project = tmp_path / "crate"
