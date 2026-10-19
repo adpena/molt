@@ -16,7 +16,7 @@ from molt.python_private_names import (
     python_import_binding,
     resolve_python_private_names,
 )
-from bisect import bisect_left, bisect_right
+from bisect import bisect_left
 from collections import OrderedDict, deque
 from collections.abc import Callable, Iterable, Iterator, Mapping
 from dataclasses import dataclass, field, fields, replace
@@ -2251,13 +2251,13 @@ class _HistorySummary:
         tuple[
             tuple[int, ...],
             tuple[IdentityMask, ...],
-            tuple[IdentityMask, ...],
         ],
     ]
-    initial_values: dict[int, IdentityMask]
     result_suffixes: dict[int, tuple[StaticExpressionResult, ...]]
     domain_generation: int
     state_count: int
+    stored_slot_limit: int
+    domain_mask: int
 
     @classmethod
     def build(cls, pool: _StatePool, states: Sequence[int]) -> _HistorySummary:
@@ -2270,8 +2270,12 @@ class _HistorySummary:
         definitely = ALL_INVALID_MEMBERS
         taint_epoch = 0
         namespace_unknown = False
+        stored_chunks = 0
         for index in range(count - 1, -1, -1):
             state = pool.get(states[index])
+            stored_chunks = max(
+                stored_chunks, pool._binding_environments[states[index]].chunk_count
+            )
             maybe |= state.maybe_invalidated_members
             definitely &= state.definitely_invalidated_members
             taint_epoch = max(taint_epoch, state.taint_epoch)
@@ -2296,7 +2300,6 @@ class _HistorySummary:
             tuple[
                 tuple[int, ...],
                 tuple[IdentityMask, ...],
-                tuple[IdentityMask, ...],
             ],
         ] = {}
         result_suffixes: dict[int, tuple[StaticExpressionResult, ...]] = {}
@@ -2320,7 +2323,6 @@ class _HistorySummary:
             result_suffixes[slot] = tuple(suffix_results)
             slot_events[slot] = (
                 tuple(row[0] for row in rows),
-                tuple(row[1] for row in rows),
                 tuple(suffix_values),
             )
         return cls(
@@ -2331,18 +2333,25 @@ class _HistorySummary:
             tuple(namespace_unknown_suffix),
             tuple(taint_indices),
             slot_events,
-            {},
             result_suffixes,
             pool.taint_domain_generation,
             count,
+            stored_chunks << _BINDING_CHUNK_SHIFT,
+            pool._taint_domain_mask,
         )
 
     def refresh(self, pool: _StatePool) -> None:
-        if (
-            self.domain_generation == pool.taint_domain_generation
-            and self.state_count == len(self.states)
-        ):
-            return
+        if self.state_count == len(self.states):
+            if self.domain_generation == pool.taint_domain_generation:
+                return
+            added = pool._taint_domain_mask & ~self.domain_mask
+            if not added or (added & -added).bit_length() > self.stored_slot_limit:
+                # New activation slots cannot alter this completed history's
+                # immutable storage. Absent slots project exposure on query;
+                # their admission must not replay every historical transition.
+                self.domain_generation = pool.taint_domain_generation
+                self.domain_mask = pool._taint_domain_mask
+                return
         current = type(self).build(pool, self.states)
         for item in fields(self):
             setattr(self, item.name, getattr(current, item.name))
@@ -2358,16 +2367,12 @@ class _HistorySummary:
     def binding(self, pool: _StatePool, start: int, slot: int) -> IdentityMask:
         self.refresh(pool)
         rows = self.slot_events.get(slot)
-        if slot not in self.initial_values:
-            self.initial_values[slot] = pool.binding(self.states[0], slot)
-        base_value = self.initial_values[slot]
-        value = base_value
+        # Start at the actual query position: exposure before start is still
+        # live even when no write event records it. Namespace membership can
+        # change this projection, so keep no second cache of live bindings.
+        value = pool.binding(self.states[start], slot)
         if rows is not None:
-            indices, event_values, suffix_values = rows
-            previous_event = bisect_right(indices, start) - 1
-            if previous_event >= 0:
-                base_value = event_values[previous_event]
-                value = base_value
+            indices, suffix_values = rows
             event_index = bisect_left(indices, start)
             if event_index < len(indices):
                 value |= suffix_values[event_index]
