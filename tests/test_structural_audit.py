@@ -2513,6 +2513,26 @@ def test_rust_admitted_domain_unknown_wire_requires_fail_closed_admission(tmp_pa
     assert any(finding.probe == "rust_backend_lowering_gap" for finding in findings)
 
 
+def test_compatibility_protocol_rust_projection_uses_canonical_format(monkeypatch):
+    from tools import check_rustfmt
+
+    protocol = SA.compatibility_errors
+    canonical = (ROOT / protocol.RUST_PATH).read_text(encoding="utf-8")
+    # This valid but deliberately unformatted declaration must not reach the
+    # generated consumer, or demand a second, manual rustfmt mutation.
+    source = protocol.RUST_SOURCE.replace(
+        "pub(crate) enum CompatibilityError<'a> {",
+        "pub(crate) enum CompatibilityError<'a>   {",
+    )
+    assert source != protocol.RUST_SOURCE
+    monkeypatch.setattr(protocol, "RUST_SOURCE", source)
+    assert protocol.projections()[protocol.RUST_PATH] == canonical
+    assert check_rustfmt.is_generated_rust(ROOT / protocol.RUST_PATH)
+    assert check_rustfmt.generated_owner(ROOT / protocol.RUST_PATH) == (
+        "python tools/compatibility_error_protocol.py --check"
+    )
+
+
 def test_compatibility_protocol_inventory_fails_closed(tmp_path):
     protocol = SA.compatibility_errors
     # The same byte-exact projection used by the gate must match the committed
