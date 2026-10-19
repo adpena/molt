@@ -301,7 +301,7 @@ def _module_graph_needs_runtime_import_support(
     """Whether the closed graph needs the runtime import protocol.
 
     Each scan records whether its reached code imports or may call an import
-    entry point (`_uses_runtime_import_protocol`), and discovery ORs that bit
+    entry point in its execution-region visitor, and discovery ORs that bit
     into the module's scan authority; a source that was not scanned claims
     it. The decision reads those bits and no source.
     """

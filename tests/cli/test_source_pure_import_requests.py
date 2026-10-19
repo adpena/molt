@@ -1306,6 +1306,60 @@ def test_runtime_import_protocol_follows_the_namespace_premise() -> None:
     assert uses(PythonNamespacePremise(("flag",), 0))
 
 
+@pytest.mark.parametrize(
+    "source,mode,expected",
+    [
+        ("values = [i for i in range(2)]\n", "full", False),
+        ("import leaf\n", "full", True),
+        ("raise RuntimeError()\nimport leaf\n", "full", False),
+        ("from __future__ import annotations\n", "full", False),
+        ("import _intrinsics\n", "full", False),
+        ("from pkg._intrinsics import item\n", "full", False),
+        ("from ._intrinsics import item\n", "full", True),
+        ("import pkg._intrinsics\n", "full", True),
+        ("loader = __import__ if flag else None\nloader('leaf')\n", "full", True),
+        ("def __import__(*args):\n    pass\n__import__('leaf')\n", "full", False),
+        ("def invoke():\n    import leaf\n", "module_init", False),
+        ("def invoke():\n    import leaf\n", "full", True),
+    ],
+)
+def test_protocol_and_import_demands_share_execution_regions(
+    monkeypatch, source, mode, expected
+):
+    from molt.compiler_analysis.python_source_keys import _PythonAstDigestAdmission
+
+    tree = ast.parse(source)
+    admission = _PythonAstDigestAdmission(tree)
+    original = _source_import_scan._collect_imports_for_graph(
+        tree,
+        "pkg.entry",
+        import_scan_mode=mode,
+        ast_digest_admission=admission,
+    )
+    assert original.uses_runtime_import_protocol is expected
+    # Keep immutable binding/export facts warm. Count real execution traversal,
+    # not a helper name, so moving or renaming a second walk cannot pass.
+    walks = 0
+    regions = _source_import_scan.python_execution_regions
+
+    def observe(*args, **kwargs):
+        nonlocal walks
+        walks += 1
+        return regions(*args, **kwargs)
+
+    monkeypatch.setattr(_source_import_scan, "python_execution_regions", observe)
+    assert (
+        _source_import_scan._collect_imports_for_graph(
+            tree,
+            "pkg.entry",
+            import_scan_mode=mode,
+            ast_digest_admission=admission,
+        )
+        == original
+    )
+    assert walks == 1
+
+
 def test_persisted_source_requests_bind_complete_namespace_premise(
     tmp_path, monkeypatch
 ):

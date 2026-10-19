@@ -2513,7 +2513,7 @@ class _ImportScanRequests(NamedTuple):
     # Set only by a runtime-import owner's scan; completion requires the catalog.
     runtime_catalog: RuntimeCatalogDeferral | None = None
     # A reached import statement or import-capable call: the program needs the
-    # runtime import protocol (`_uses_runtime_import_protocol`).
+    # runtime import protocol; collected by the same execution-region visitor.
     uses_runtime_import_protocol: bool = False
 
 
