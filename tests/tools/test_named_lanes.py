@@ -478,7 +478,9 @@ def test_queue_sdk_role_launch_and_attestation_share_absolute_selection(
     monkeypatch.setattr(command_identity, "_run_captured", run)
     envelope = {"argv": ["wasm-ld", "--version"], "python": None}
     exact = command_identity._exact_command(envelope, cwd=tmp_path, env=environment)
-    assert exact == [custody_spelling(selected), "--version"]
+    # Launch selection retains the resolver's spelling; captured image identity
+    # and its version probe use custody spelling.
+    assert exact == [str(selected), "--version"]
     # An enclosing uv environment cannot send the role back through its PATH.
     assert (
         command_identity._which_in_command_environment(
@@ -875,7 +877,8 @@ def test_sdk_role_and_generation_use_request_cwd_separately_from_probe_cwd(
     assert identity["path"] == custody_spelling(
         installation.sdk / installation.tool_fact("clang")["path"]
     )
-    assert identity["wasi_sdk"]["sdk"] == custody_spelling(installation.sdk)
+    # The SDK closure reports the installation, not an executable custody key.
+    assert identity["wasi_sdk"]["sdk"] == str(installation.sdk)
     assert identity["probe_cwd"] == str(proof_plan.ROOT / "tools")
     assert probes == [
         (
