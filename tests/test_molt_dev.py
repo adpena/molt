@@ -2937,7 +2937,8 @@ def test_integrate_admission_projects_the_selected_checkout_into_real_gate(
     executable.symlink_to("/bin/cat")
     observed_roots = []
 
-    def discover(name, root, *, environ):
+    def discover(name, root, *, environ, cwd):
+        assert cwd is None
         assert name == "cat"
         assert root == work
         observed_roots.append(root)
@@ -3222,7 +3223,7 @@ toolchains = ["sdk"]
     _commit_file(work, "tools/proof_plan.toml", policy, "command scoped tools")
     calls = []
 
-    def project(policies, names, *, environ, root):
+    def project(policies, names, *, environ, root, cwd=None):
         assert root == work
         assert environ.get(flag_key) == (user_flags if explicit_sdk_flags else None)
         calls.append(names)

@@ -18701,42 +18701,65 @@ def test_tool_release_provision_and_read_share_frozen_child_state(
     assert not (cwd / "target-root").exists()
 
 
-def test_native_llvm_proof_prefix_uses_compiler_source_and_request_cwd(
+def test_native_llvm_proof_projection_uses_compiler_source_and_request_cwd(
     tmp_path, monkeypatch
 ):
     from molt import llvm_toolchain
+    from tools.proof_queue_pkg import execution_environment
 
-    source = tmp_path / "compiler-source"
+    source = Path(__file__).resolve().parents[2]
     guest = tmp_path / "guest"
     selected = guest / "tools/llvm"
+    config = guest / "external/bin/llvm-config"
     monkeypatch.setattr(state, "ROOT", source)
-    monkeypatch.setattr(
-        guarded_execution,
-        "llvm_family_toolchains",
-        lambda _plan: frozenset({"clang", "llvm-sdk"}),
-    )
+    pin = llvm_toolchain.required_llvm_backend_pin(source)
+    assert pin is not None
     seen = []
 
-    def discover(root, *, environ, cwd):
-        seen.append((root, environ, cwd))
+    def verify(root, *, environ, cwd):
+        seen.append((root, dict(environ), cwd))
         return SimpleNamespace(
-            prefix=selected, llvm_config=guest / "external/llvm-config"
+            prefix=selected, llvm_config=config, version=pin.default_release
         )
 
-    monkeypatch.setattr(llvm_toolchain, "discover_llvm_toolchain", discover)
+    monkeypatch.setattr(llvm_toolchain, "verify_available_llvm_toolchain", verify)
+    if llvm_toolchain.sys.platform == "darwin":
+        from molt import platform_toolchain
+
+        monkeypatch.setattr(
+            platform_toolchain,
+            "select_darwin_toolchain",
+            lambda _env: SimpleNamespace(
+                environment=lambda: {
+                    "SDKROOT": "/selected Apple SDK",
+                    "DEVELOPER_DIR": "/selected Xcode",
+                }
+            ),
+        )
     env = {"MOLT_TARGET_ROOT": "tools", "PATH": ""}
-    resolved, prefix = guarded_execution.prefer_canonical_llvm_prefix(
+    resolved = guarded_execution.project_declared_sdk_environment(
         env, ["clang"], cwd=guest
     )
     assert seen == [(source, env, guest)]
-    assert prefix == str(selected)
     assert resolved["PATH"].split(os.pathsep)[0] == str(selected / "bin")
-
-    pinned, _ = guarded_execution.prefer_canonical_llvm_prefix(
-        env, ["llvm-sdk"], cwd=guest
+    assert resolved["MOLT_LLVM_PREFIX"] == str(selected)
+    assert resolved["LLVM_CONFIG_PATH"] == str(config)
+    assert resolved[pin.env_var] == str(config.parent.parent)
+    assert resolved[llvm_toolchain.mlir_sys_prefix_env_var(pin.major)] == str(selected)
+    assert resolved[llvm_toolchain.tablegen_prefix_env_var(pin.major)] == str(selected)
+    captured, contract = execution_environment._deterministic_execution_environment(
+        resolved, override_names=[]
     )
-    assert pinned["LLVM_CONFIG_PATH"] == str(guest / "external/llvm-config")
-    assert "LLVM_CONFIG_PATH" not in resolved
+    for key in (
+        "MOLT_LLVM_PREFIX",
+        "LLVM_CONFIG_PATH",
+        pin.env_var,
+        llvm_toolchain.mlir_sys_prefix_env_var(pin.major),
+        llvm_toolchain.tablegen_prefix_env_var(pin.major),
+    ):
+        assert captured[key] == resolved[key]
+        assert key in contract["passed_names"]
+    assert env == {"MOLT_TARGET_ROOT": "tools", "PATH": ""}
 
 
 @pytest.mark.usefixtures("admitted_build_capacity")

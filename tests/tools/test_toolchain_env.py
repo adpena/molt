@@ -43,8 +43,8 @@ def _fake_providers(monkeypatch: pytest.MonkeyPatch, *, installed: bool) -> None
         del environ
         return {"WASI_SDK_PATH": "/wasi/sdk", "CC_wasm32_wasip1": "/wasi/bin/clang"}
 
-    def discover(name, _root, *, environ):
-        del environ
+    def discover(name, _root, *, environ, cwd):
+        del environ, cwd
         executable = Path(f"/tools/{name}/bin/{name}")
         return SimpleNamespace(executable=executable) if installed else None
 
@@ -54,13 +54,13 @@ def _fake_providers(monkeypatch: pytest.MonkeyPatch, *, installed: bool) -> None
     monkeypatch.setattr(
         llvm_toolchain,
         "verify_available_llvm_toolchain",
-        lambda _root: object() if installed else None,
+        lambda _root, *, environ, cwd: object() if installed else None,
     )
     monkeypatch.setattr(llvm_toolchain, "llvm_toolchain_environment_delta", llvm_delta)
     monkeypatch.setattr(
         llvm_toolchain,
         "selected_wasi_sdk_installation",
-        lambda _root, *, environ: object() if installed else None,
+        lambda _root, *, environ, cwd: object() if installed else None,
     )
     monkeypatch.setattr(llvm_toolchain, "wasm_toolchain_environment_delta", wasm_delta)
     monkeypatch.setattr(tool_releases, "discover_pinned_tool", discover)
@@ -83,6 +83,62 @@ def _delta(**selection: object) -> dict[str, str]:
     return toolchain_env.toolchain_environment(
         PLAN, names, environ={"PATH": "/usr/bin"}
     )
+
+
+def test_projection_selects_native_and_release_tools_in_the_request_context(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = tmp_path / "compiler source"
+    request_cwd = tmp_path / "request"
+    environment = {"PATH": "caller-bin", "MOLT_TARGET_ROOT": "request-tools"}
+    verification = object()
+    calls = []
+
+    def verify(selected_root, *, environ, cwd):
+        assert selected_root == root
+        assert environ == environment
+        assert cwd == request_cwd
+        calls.append("native")
+        return verification
+
+    def llvm_delta(selected_root, selected, *, environ):
+        assert selected_root == root
+        assert selected is verification
+        assert environ == environment
+        return {"MOLT_LLVM_PREFIX": "selected-native", "PATH": "native-bin"}
+
+    def discover(name, selected_root, *, environ, cwd):
+        assert name == "wasm-tools"
+        assert selected_root == root
+        assert environ == {
+            **environment,
+            "MOLT_LLVM_PREFIX": "selected-native",
+            "PATH": "native-bin",
+        }
+        assert cwd == request_cwd
+        calls.append("release")
+        return SimpleNamespace(executable=tmp_path / "release-bin" / "wasm-tools")
+
+    monkeypatch.setattr(llvm_toolchain, "verify_available_llvm_toolchain", verify)
+    monkeypatch.setattr(llvm_toolchain, "llvm_toolchain_environment_delta", llvm_delta)
+    monkeypatch.setattr(tool_releases, "discover_pinned_tool", discover)
+    monkeypatch.setenv("MOLT_TARGET_ROOT", "unrelated controller tools")
+
+    projected = proof_plan.project_toolchains(
+        PLAN.toolchain_policies,
+        ("clang", "wasm-tools"),
+        environ=environment,
+        root=root,
+        cwd=request_cwd,
+    )
+
+    assert projected.missing == ()
+    assert projected.delta["MOLT_LLVM_PREFIX"] == "selected-native"
+    assert projected.delta["PATH"] == os.pathsep.join(
+        (str(tmp_path / "release-bin"), "native-bin")
+    )
+    assert calls == ["native", "release"]
+    assert environment == {"PATH": "caller-bin", "MOLT_TARGET_ROOT": "request-tools"}
 
 
 def test_wasi_variables_appear_only_when_the_selection_needs_the_wasi_sdk(

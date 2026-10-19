@@ -4700,7 +4700,7 @@ def test_executor_admits_toolchains_from_the_selected_plan_root(
     plan = replace(PLAN, path=selected_root / "tools" / "proof_plan.toml")
     monkeypatch.setenv("MOLT_LLVM_PREFIX", "unrelated driver SDK")
 
-    def project(_policies, _names, *, environ, root):
+    def project(_policies, _names, *, environ, root, cwd=None):
         assert environ["MOLT_LLVM_PREFIX"] == "unrelated driver SDK"
         return proof_plan.ToolchainProjection(
             {"MOLT_LLVM_PREFIX": (root / "sdk-selector").read_text(encoding="utf-8")},
@@ -4748,7 +4748,8 @@ def test_executor_projects_each_command_from_immutable_pre_admission_environment
     projections = []
     real_project = proof_plan.project_toolchains
 
-    def selected_sdk(root, *, environ):
+    def selected_sdk(root, *, environ, cwd):
+        assert cwd is None
         assert root == selected_root
         assert environ["RUSTFLAGS"] == baseline["RUSTFLAGS"]
         return (root / "sdk-selector").read_text(encoding="utf-8")
@@ -4765,13 +4766,19 @@ def test_executor_projects_each_command_from_immutable_pre_admission_environment
             "MOLT_PROJECTION_ORDER": "projection",
         }
 
-    def project(policies, names, *, environ, root):
+    def project(policies, names, *, environ, root, cwd=None):
         if admissions:
             assert dict(environ) == baseline
             with pytest.raises(TypeError):
                 environ["MOLT_PROJECTION_ORDER"] = "mutated"
         projections.append(names)
-        return real_project(policies, names, environ=environ, root=root)
+        return real_project(
+            policies,
+            names,
+            environ=environ,
+            root=root,
+            cwd=cwd,
+        )
 
     def fingerprints(_policies, names, **_admission):
         admissions.append(names)

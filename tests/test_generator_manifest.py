@@ -1211,7 +1211,8 @@ def test_generator_admission_projects_its_explicit_source_root(tmp_path, monkeyp
     )
     observed_roots = []
 
-    def discover(name, root, *, environ):
+    def discover(name, root, *, environ, cwd):
+        assert cwd is None
         assert name == "cat"
         assert root == tmp_path
         observed_roots.append(root)

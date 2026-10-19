@@ -215,23 +215,10 @@ def test_guarded_exec_family_timeout_can_disable_fallback(monkeypatch) -> None:
     assert captured["timeout"] is None
 
 
-def test_guarded_exec_preflights_backend_llvm_toolchain(monkeypatch, capsys) -> None:
-    module = guarded_exec
-    captured = _install_fake_context(module, monkeypatch)
-    monkeypatch.setattr(
-        module,
-        "mlir_toolchain_environment",
-        lambda *_args, **_kwargs: (_ for _ in ()).throw(
-            module.LlvmToolchainConfigError("missing SDK")
-        ),
-        raising=True,
-    )
-
-    rc = module.main(
+@pytest.mark.parametrize(
+    "command",
+    [
         [
-            "--prefix",
-            "MOLT_TEST_SUITE",
-            "--",
             "cargo",
             "test",
             "-p",
@@ -239,75 +226,47 @@ def test_guarded_exec_preflights_backend_llvm_toolchain(monkeypatch, capsys) -> 
             "--features",
             "native-backend llvm",
             "--lib",
-        ]
-    )
-
-    assert rc == 2
-    assert "command" not in captured
-    err = capsys.readouterr().err
-    assert "guarded_exec preflight" in err
-    assert "missing SDK" in err
-
-
-def test_guarded_exec_projects_verified_llvm_environment_into_cargo(
-    monkeypatch,
+        ],
+        ["cargo", "clippy", "--workspace", "--all-features"],
+        ["cargo.exe", "check", "--package=molt-backend", "--features=llvm"],
+        ["cargo", "clippy", "-p", "molt-tir", "--all-features"],
+    ],
+)
+@pytest.mark.parametrize("selected", [False, True])
+def test_guarded_exec_preserves_caller_toolchains_without_sdk_discovery(
+    monkeypatch: pytest.MonkeyPatch, command: list[str], selected: bool
 ) -> None:
+    from molt import llvm_toolchain
+
     module = guarded_exec
     captured = _install_fake_context(module, monkeypatch)
+    pin = llvm_toolchain.required_llvm_backend_pin(module.ROOT)
+    assert pin is not None
+    sdk_environment = {
+        "MOLT_LLVM_PREFIX": "/selected SDK",
+        pin.env_var: "/external config search root",
+        "LLVM_CONFIG_PATH": "/external config search root/bin/llvm-config",
+        llvm_toolchain.mlir_sys_prefix_env_var(pin.major): "/selected SDK",
+        llvm_toolchain.tablegen_prefix_env_var(pin.major): "/selected SDK",
+    }
+    for name, value in sdk_environment.items():
+        if selected:
+            monkeypatch.setenv(name, value)
+        else:
+            monkeypatch.delenv(name, raising=False)
 
-    def project(_root, *, environ):
-        return dict(environ) | {
-            "LLVM_SYS_221_PREFIX": "/usr",
-            "LLVM_CONFIG_PATH": "/usr/bin/llvm-config-22",
-            "MOLT_LLVM_PREFIX": "/usr/lib/llvm-22",
-        }
+    def unexpected_discovery(*_args, **_kwargs):
+        pytest.fail("the command guard must not discover or reselect a caller's SDK")
 
-    monkeypatch.setattr(module, "mlir_toolchain_environment", project, raising=True)
-
-    rc = module.main(
-        [
-            "--prefix",
-            "MOLT_TEST_SUITE",
-            "--",
-            "cargo",
-            "check",
-            "-p",
-            "molt-backend",
-            "--features",
-            "llvm",
-        ]
+    monkeypatch.setattr(
+        llvm_toolchain, "verify_available_llvm_toolchain", unexpected_discovery
     )
-
-    assert rc == 0
-    assert captured["run_env"]["LLVM_SYS_221_PREFIX"] == "/usr"
-    assert captured["run_env"]["LLVM_CONFIG_PATH"] == "/usr/bin/llvm-config-22"
-    assert captured["run_env"]["MOLT_LLVM_PREFIX"] == "/usr/lib/llvm-22"
-
-
-def test_guarded_exec_does_not_preflight_tir_all_features(monkeypatch) -> None:
-    module = guarded_exec
-    captured = _install_fake_context(module, monkeypatch)
-    rc = module.main(
-        [
-            "--prefix",
-            "MOLT_TEST_SUITE",
-            "--",
-            "cargo",
-            "clippy",
-            "-p",
-            "molt-tir",
-            "--all-features",
-        ]
-    )
-
-    assert rc == 0
-    assert captured["command"] == [
-        "cargo",
-        "clippy",
-        "-p",
-        "molt-tir",
-        "--all-features",
-    ]
+    assert module.main(["--prefix", "MOLT_TEST_SUITE", "--", *command]) == 0
+    assert captured["command"] == command
+    projected = captured["run_env"]
+    assert {name: projected.get(name) for name in sdk_environment} == {
+        name: value if selected else None for name, value in sdk_environment.items()
+    }
 
 
 def test_guarded_exec_metrics_preserve_deadline_and_cargo_ownership(

@@ -3393,8 +3393,9 @@ def project_toolchains(
     *,
     environ: Mapping[str, str],
     root: Path = ROOT,
+    cwd: Path | None = None,
 ) -> ToolchainProjection:
-    """Project every installed provider the selection declares; never download."""
+    """Project declared providers in the request context; never download."""
 
     from molt.dx import canonical_toolchain_root
     from molt.llvm_toolchain import (
@@ -3424,7 +3425,7 @@ def project_toolchains(
         env.update(values)
 
     if "llvm-sdk" in kinds:
-        verification = verify_available_llvm_toolchain(root)
+        verification = verify_available_llvm_toolchain(root, environ=env, cwd=cwd)
         if verification is None:
             pin = required_llvm_backend_pin(root)
             command = "" if pin is None else f": {llvm_bootstrap_command(pin)}"
@@ -3432,7 +3433,7 @@ def project_toolchains(
         else:
             apply(llvm_toolchain_environment_delta(root, verification, environ=env))
     if "wasi-sdk" in kinds:
-        installation = selected_wasi_sdk_installation(root, environ=env)
+        installation = selected_wasi_sdk_installation(root, environ=env, cwd=cwd)
         if installation is None:
             missing.append(
                 f"wasi-sdk ({', '.join(kinds['wasi-sdk'])}): "
@@ -3446,7 +3447,7 @@ def project_toolchains(
             )
     for name in kinds.get("tool-release", ()):
         tool = str(policies[name].data["executable"])
-        discovery = discover_pinned_tool(tool, root, environ=env)
+        discovery = discover_pinned_tool(tool, root, environ=env, cwd=cwd)
         if discovery is None:
             missing.append(f"{tool}: python3 -m molt.tool_releases provision {tool}")
             continue
@@ -3461,7 +3462,7 @@ def project_toolchains(
             from molt.binaryen_toolchain import binaryen_host_asset
 
             install = (
-                canonical_toolchain_root(root, env, require_exists=False)
+                canonical_toolchain_root(root, env, require_exists=False, cwd=cwd)
                 / "toolchains"
                 / binaryen_host_asset(root).archive_root
             )

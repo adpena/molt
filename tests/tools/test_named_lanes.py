@@ -249,103 +249,136 @@ def test_rust_target_is_only_read_from_rust_tool_argv(tmp_path) -> None:
     )
 
 
-def test_llvm_family_lanes_prefer_the_canonical_sdk_prefix(
+def test_llvm_family_lanes_project_the_complete_declared_sdk(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    import os
-
+    from molt import llvm_toolchain
     from tools.proof_queue_pkg import guarded_execution as ge
 
-    prefix = tmp_path / "llvm-22.1.8"
-    (prefix / "bin").mkdir(parents=True)
-
-    class Discovery:
-        pass
-
-    Discovery.prefix = prefix
-    import molt.llvm_toolchain as llvm_toolchain
-
-    monkeypatch.setattr(
-        llvm_toolchain,
-        "discover_llvm_toolchain",
-        lambda root, environ=None, cwd=None: Discovery(),
-    )
+    prefix = tmp_path / "llvm SDK"
+    config = tmp_path / "external config/bin/llvm-config"
     ambient = os.pathsep.join(
-        [str(tmp_path / "system-llvm" / "bin"), str(tmp_path / "other")]
+        [str(tmp_path / "system-llvm/bin"), str(tmp_path / "other")]
     )
-    env, found = ge.prefer_canonical_llvm_prefix(
-        {"PATH": ambient}, ["python", "clang"], cwd=tmp_path
+    pin = llvm_toolchain.required_llvm_backend_pin(ge.state.ROOT)
+    assert pin is not None
+    verification = SimpleNamespace(
+        prefix=prefix, llvm_config=config, version=pin.default_release
     )
-    assert found == str(prefix)
-    assert env["PATH"].split(os.pathsep)[0] == str((prefix / "bin").resolve())
-    assert env["PATH"].split(os.pathsep)[1:] == ambient.split(os.pathsep)
+    observed = []
 
-    untouched, found = ge.prefer_canonical_llvm_prefix(
-        {"PATH": ambient}, ["python", "uv"], cwd=tmp_path
+    def verify(root, *, environ, cwd):
+        observed.append((root, dict(environ), cwd))
+        return verification
+
+    monkeypatch.setattr(llvm_toolchain, "verify_available_llvm_toolchain", verify)
+    if llvm_toolchain.sys.platform == "darwin":
+        from molt import platform_toolchain
+
+        monkeypatch.setattr(
+            platform_toolchain,
+            "select_darwin_toolchain",
+            lambda _env: SimpleNamespace(
+                environment=lambda: {
+                    "SDKROOT": "/selected Apple SDK",
+                    "DEVELOPER_DIR": "/selected Xcode",
+                }
+            ),
+        )
+    selected = {"PATH": ambient}
+    actual = ge.project_declared_sdk_environment(
+        selected, ["python", "clang", "llvm-config", "llvm-sdk"], cwd=tmp_path
     )
-    assert found is None and untouched["PATH"] == ambient
+    assert observed == [(ge.state.ROOT, selected, tmp_path)]
+    assert actual["PATH"].split(os.pathsep) == [
+        str(prefix / "bin"),
+        *ambient.split(os.pathsep),
+    ]
+    assert actual["MOLT_LLVM_PREFIX"] == str(prefix)
+    assert actual["LLVM_CONFIG_PATH"] == str(config)
+    assert actual[pin.env_var] == str(config.parent.parent)
+    assert actual[llvm_toolchain.mlir_sys_prefix_env_var(pin.major)] == str(prefix)
+    assert actual[llvm_toolchain.tablegen_prefix_env_var(pin.major)] == str(prefix)
+    assert selected == {"PATH": ambient}
+    assert (
+        ge.project_declared_sdk_environment(selected, ["python", "uv"], cwd=tmp_path)
+        == selected
+    )
+    assert len(observed) == 1
 
     monkeypatch.setattr(
         llvm_toolchain,
-        "discover_llvm_toolchain",
-        lambda root, environ=None, cwd=None: None,
+        "verify_available_llvm_toolchain",
+        lambda _root, *, environ, cwd: None,
     )
-    untouched, found = ge.prefer_canonical_llvm_prefix(
-        {"PATH": ambient}, ["python", "ld.lld"], cwd=tmp_path
-    )
-    assert found is None and untouched["PATH"] == ambient
+    with pytest.raises(ValueError, match="LLVM SDK.*ld.lld"):
+        ge.project_declared_sdk_environment(
+            selected, ["python", "ld.lld"], cwd=tmp_path
+        )
 
 
 @pytest.mark.parametrize("with_native", [False, True])
 def test_sdk_role_selection_does_not_promote_sdk_tools_to_native_path(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, with_native: bool
 ) -> None:
-    import molt.llvm_toolchain as llvm_toolchain
+    from molt import llvm_toolchain
+    from tests.test_llvm_toolchain import _write_wasi_sdk_installation
     from tools.proof_queue_pkg import guarded_execution as ge
 
+    sdk_prefix = _write_wasi_sdk_installation(tmp_path / "toolchains")
+    installation = llvm_toolchain.load_wasi_sdk_installation(
+        ge.state.ROOT, sdk_prefix, verify_tree=False
+    )
     native = tmp_path / "llvm-native"
-    (native / "bin").mkdir(parents=True)
-    sdk_linker = tmp_path / "sdk" / "bin" / "wasm-ld"
     ambient = str(tmp_path / "ambient")
-    selected = {"PATH": ambient, "WASI_SDK_PATH": str(sdk_linker.parent.parent)}
-    seen = []
-
-    def sdk_role(root, role, *, environ, cwd):
-        assert cwd == tmp_path
-        assert root == ge.state.ROOT
-        assert role == "wasm-ld"
-        assert environ == selected
-        seen.append("sdk")
-        return sdk_linker
+    selected = {"PATH": ambient, "WASI_SDK_PATH": str(installation.sdk)}
+    pin = llvm_toolchain.required_llvm_backend_pin(ge.state.ROOT)
+    assert pin is not None
+    observed = []
 
     def native_sdk(root, *, environ, cwd):
         assert cwd == tmp_path
         assert with_native, "a WASM-only declaration must not discover native LLVM"
         assert root == ge.state.ROOT
-        assert environ["MOLT_WASM_LD"] == str(sdk_linker)
-        seen.append("native")
-        return SimpleNamespace(prefix=native)
+        assert environ == {**selected, "MOLT_WASM_LD": str(installation.wasm_ld)}
+        observed.append("native")
+        return SimpleNamespace(
+            prefix=native,
+            llvm_config=native / "bin/llvm-config",
+            version=pin.default_release,
+        )
 
-    monkeypatch.setattr(llvm_toolchain, "resolve_wasi_sdk_tool", sdk_role)
-    monkeypatch.setattr(llvm_toolchain, "discover_llvm_toolchain", native_sdk)
+    monkeypatch.setattr(llvm_toolchain, "verify_available_llvm_toolchain", native_sdk)
+    if llvm_toolchain.sys.platform == "darwin":
+        from molt import platform_toolchain
+
+        monkeypatch.setattr(
+            platform_toolchain,
+            "select_darwin_toolchain",
+            lambda _env: SimpleNamespace(
+                environment=lambda: {
+                    "SDKROOT": "/selected Apple SDK",
+                    "DEVELOPER_DIR": "/selected Xcode",
+                }
+            ),
+        )
     declared = ["wasm-ld", "ld.lld"] if with_native else ["wasm-ld"]
-    actual, found = ge.prefer_canonical_llvm_prefix(selected, declared, cwd=tmp_path)
-    assert actual["MOLT_WASM_LD"] == str(sdk_linker)
-    assert actual["WASI_SDK_PATH"] == selected["WASI_SDK_PATH"]
+    actual = ge.project_declared_sdk_environment(selected, declared, cwd=tmp_path)
+    assert actual["MOLT_WASM_LD"] == str(installation.wasm_ld)
+    assert actual["WASI_SDK_PATH"] == str(installation.sdk)
     assert actual["PATH"] == (
-        os.pathsep.join((str((native / "bin").resolve()), ambient))
-        if with_native
-        else ambient
+        os.pathsep.join((str(native / "bin"), ambient)) if with_native else ambient
     )
-    assert found == (str(native) if with_native else None)
-    assert seen == (["sdk", "native"] if with_native else ["sdk"])
-    assert selected == {"PATH": ambient, "WASI_SDK_PATH": str(sdk_linker.parent.parent)}
+    assert not any(name.startswith("CARGO_TARGET_WASM32_") for name in actual)
+    assert "CC" not in actual and "CXX" not in actual and "RUSTFLAGS" not in actual
+    assert observed == (["native"] if with_native else [])
+    assert selected == {"PATH": ambient, "WASI_SDK_PATH": str(installation.sdk)}
 
 
 def test_missing_declared_sdk_role_fails_without_native_path_fallback(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    import molt.llvm_toolchain as llvm_toolchain
+    from molt import llvm_toolchain
     from tools.proof_queue_pkg import guarded_execution as ge
 
     def missing(*_args, **_kwargs):
@@ -356,15 +389,46 @@ def test_missing_declared_sdk_role_fails_without_native_path_fallback(
     monkeypatch.setattr(llvm_toolchain, "resolve_wasi_sdk_tool", missing)
     monkeypatch.setattr(
         llvm_toolchain,
-        "discover_llvm_toolchain",
-        lambda *_a, **_k: pytest.fail("native LLVM cannot supply the SDK role"),
+        "verify_available_llvm_toolchain",
+        lambda *_args, **_kwargs: pytest.fail("native LLVM cannot supply the SDK role"),
     )
     with pytest.raises(
         llvm_toolchain.LlvmToolchainConfigError, match="provisioned explicitly"
     ):
-        ge.prefer_canonical_llvm_prefix(
+        ge.project_declared_sdk_environment(
             {"PATH": "native-llvm"}, ["wasm-ld"], cwd=tmp_path
         )
+
+
+def test_declared_external_wasm_role_needs_no_native_or_managed_sdk(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from molt import llvm_toolchain
+    from tools.proof_queue_pkg import guarded_execution as ge
+
+    request = tmp_path / "request"
+    tool = request / "external" / "wasm-ld"
+    tool.parent.mkdir(parents=True)
+    tool.write_bytes(b"selected external linker")
+    environment = {"MOLT_WASM_LD": "external/wasm-ld", "PATH": "ambient"}
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(
+        llvm_toolchain,
+        "verify_available_llvm_toolchain",
+        lambda *_args, **_kwargs: pytest.fail(
+            "a WASM role must not discover native LLVM"
+        ),
+    )
+    monkeypatch.setattr(
+        llvm_toolchain,
+        "selected_wasi_sdk_installation",
+        lambda *_args, **_kwargs: pytest.fail(
+            "an explicit role must not require a managed SDK"
+        ),
+    )
+    actual = ge.project_declared_sdk_environment(environment, ["wasm-ld"], cwd=request)
+    assert actual == {**environment, "MOLT_WASM_LD": str(tool)}
+    assert environment["MOLT_WASM_LD"] == "external/wasm-ld"
 
 
 @pytest.mark.parametrize("selected_sdk_version", [True, False])
@@ -479,14 +543,6 @@ def test_sdk_projection_survives_queue_environment_and_binds_tool_bytes(
         before[name]["executable"]["sha256"] != after[name]["executable"]["sha256"]
         for name in executable_names
     )
-
-
-def test_llvm_family_is_derived_from_the_release_manifest_evidence() -> None:
-    from tools.proof_queue_pkg import guarded_execution as ge
-
-    family = ge.llvm_family_toolchains(PLAN)
-    assert {"clang", "wasm-ld", "llvm-config", "ld.lld"} <= family
-    assert "python" not in family and "cargo" not in family
 
 
 def test_tool_release_lanes_run_the_pinned_release_first_on_path(
