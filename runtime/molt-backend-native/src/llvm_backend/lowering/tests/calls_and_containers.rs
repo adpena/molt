@@ -11,6 +11,12 @@ fn direct_runtime_calls_use_classified_boxed_abi() {
         ("molt_cell_eq", 2),
         ("molt_chan_new", 1),
         ("molt_spawn", 1),
+        ("molt_get_awaitable", 1),
+        ("molt_exception_match_handler", 2),
+        ("molt_iterator_throw", 2),
+        ("molt_importlib_import_transaction", 5),
+        ("molt_importlib_import_module", 2),
+        ("molt_types_bootstrap", 0),
     ] {
         let ctx = Context::create();
         let mut backend = make_backend(&ctx);
@@ -53,6 +59,12 @@ fn direct_runtime_calls_use_classified_boxed_abi() {
             "raw integer must be boxed: {ir}"
         );
         assert!(!ir.contains("@molt_call_bind"), "{ir}");
+        assert!(!ir.contains("@molt_func_new_builtin_named"), "{ir}");
+        assert_eq!(
+            backend.module.get_function(symbol).unwrap().count_params(),
+            arity as u32,
+            "direct symbol must retain its complete positional ABI"
+        );
     }
 }
 

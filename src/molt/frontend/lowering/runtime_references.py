@@ -29,6 +29,23 @@ from molt.frontend.diagnostics import FrontendDiagnostic as Diagnostic
 from molt.frontend.diagnostics import FrontendRejection
 
 
+def _callable_intrinsic_signature(runtime_name: str) -> tuple[str, int]:
+    # The WASM ABI generator imports frontend types while regenerating this
+    # fact; importing it on first use avoids a generated-source bootstrap cycle.
+    from molt._wasm_abi_generated import WASM_NON_RUNTIME_CALLABLE_INTRINSICS
+
+    signature = _intrinsic_signature(runtime_name)
+    if signature is None:
+        raise KeyError(runtime_name)
+    canonical_name, _arity = signature
+    if canonical_name in WASM_NON_RUNTIME_CALLABLE_INTRINSICS:
+        raise FrontendRejection(
+            Diagnostic.OPERAND_VALUE,
+            f"Intrinsic {canonical_name!r} is a raw non-callable ABI",
+        )
+    return signature
+
+
 class RuntimeReferenceMixin(GeneratorMixinBase):
     def _builtin_exception_is_available(self, name: str) -> bool:
         """Target-gated builtin exception namespace authority.
@@ -106,25 +123,32 @@ class RuntimeReferenceMixin(GeneratorMixinBase):
         )
 
     def _emit_intrinsic_function(self, runtime_name: str) -> MoltValue:
-        # Lazy by construction: the WASM ABI generator imports frontend type
-        # metadata while regenerating this fact, so eager module import would
-        # create a generated-source bootstrap cycle.
-        from molt._wasm_abi_generated import WASM_NON_RUNTIME_CALLABLE_INTRINSICS
-
-        signature = _intrinsic_signature(runtime_name)
-        if signature is None:
-            raise KeyError(runtime_name)
-        canonical_name, arity = signature
-        if canonical_name in WASM_NON_RUNTIME_CALLABLE_INTRINSICS:
-            raise FrontendRejection(
-                Diagnostic.OPERAND_VALUE,
-                f"Intrinsic {canonical_name!r} is a raw non-callable ABI",
-            )
+        canonical_name, arity = _callable_intrinsic_signature(runtime_name)
         # The manifest-backed runtime constructor owns callable defaults.
         # Public attribute mutation is neither initialization nor permitted on
         # builtin_function_or_method objects.
         return self._emit_runtime_function(
             canonical_name, arity, declaration_name=runtime_name
+        )
+
+    def _emit_intrinsic_call(
+        self,
+        runtime_name: str,
+        args: Sequence[MoltValue],
+        *,
+        type_hint: TypeHint = "Any",
+        result: MoltValue | None = None,
+    ) -> MoltValue:
+        """Call a compiler-owned intrinsic with its complete positional ABI."""
+        canonical_name, arity = _callable_intrinsic_signature(runtime_name)
+        if len(args) != arity:
+            raise FrontendRejection(
+                Diagnostic.OPERAND_VALUE,
+                f"Intrinsic {canonical_name!r} requires {arity} ABI arguments, "
+                f"got {len(args)}",
+            )
+        return self._emit_runtime_call(
+            canonical_name, args, type_hint=type_hint, result=result
         )
 
     def _emit_runtime_function(
@@ -150,8 +174,13 @@ class RuntimeReferenceMixin(GeneratorMixinBase):
         args: Sequence[MoltValue],
         *,
         type_hint: TypeHint = "Any",
+        result: MoltValue | None = None,
     ) -> MoltValue:
-        res = MoltValue(self.next_var(), type_hint=type_hint)
+        res = (
+            result
+            if result is not None
+            else MoltValue(self.next_var(), type_hint=type_hint)
+        )
         self.emit(MoltOp(kind="CALL", args=[runtime_name, *args], result=res))
         return res
 

@@ -817,24 +817,18 @@ def _frontend_import_transaction_calls(
         for op in ops
         if op.get("kind") == "tuple_new" and isinstance(op.get("out"), str)
     }
-    transaction_funcs = {
-        op["out"]
-        for op in ops
-        if op.get("kind") == "builtin_func"
-        and op.get("s_value") == "molt_importlib_import_transaction"
-        and isinstance(op.get("out"), str)
-    }
 
     calls: set[tuple[str, tuple[str, ...], int, bool]] = set()
     for op in ops:
-        if op.get("kind") != "call_func":
+        if (
+            op.get("kind") != "call"
+            or op.get("s_value") != "molt_importlib_import_transaction"
+        ):
             continue
         args = op.get("args")
-        if not isinstance(args, list) or len(args) != 6:
+        if not isinstance(args, list) or len(args) != 5:
             continue
-        callee, name_var, globals_var, _locals_var, fromlist_var, level_var = args
-        if callee not in transaction_funcs:
-            continue
+        name_var, globals_var, _locals_var, fromlist_var, level_var = args
         name = const_str.get(name_var)
         level = const_int.get(level_var)
         fromlist_vars = tuple_args.get(fromlist_var)
@@ -859,23 +853,18 @@ def _frontend_import_module_calls(ops: list[dict[str, object]]) -> set[str]:
         and isinstance(op.get("out"), str)
         and isinstance(op.get("s_value"), str)
     }
-    import_module_funcs = {
-        op["out"]
-        for op in ops
-        if op.get("kind") == "builtin_func"
-        and op.get("s_value") == "molt_importlib_import_module"
-        and isinstance(op.get("out"), str)
-    }
+
     calls: set[str] = set()
     for op in ops:
-        if op.get("kind") != "call_func":
+        if (
+            op.get("kind") != "call"
+            or op.get("s_value") != "molt_importlib_import_module"
+        ):
             continue
         args = op.get("args")
-        if not isinstance(args, list) or len(args) != 3:
+        if not isinstance(args, list) or len(args) != 2:
             continue
-        callee, name_var, _package_var = args
-        if callee not in import_module_funcs:
-            continue
+        name_var, _package_var = args
         name = const_str.get(name_var)
         if isinstance(name, str):
             calls.add(name)

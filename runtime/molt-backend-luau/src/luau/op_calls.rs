@@ -136,6 +136,34 @@ fn checked_call_expr(callable: &str, args: &str) -> String {
     }
 }
 
+/// The existing direct builtin lowering owns both its executable target and
+/// provider admission. Compiled definitions take precedence over this mapping.
+pub(super) fn direct_builtin_target(symbol: &str) -> Option<&'static str> {
+    Some(match symbol {
+        "len" | "molt_len" => "molt_len",
+        "int" | "molt_int" => "molt_int",
+        "float" | "molt_float" => "molt_float",
+        "str" | "molt_str" => "molt_str",
+        "bool" | "molt_bool" => "molt_bool",
+        "range" | "molt_range" => "molt_range",
+        "abs" => "math.abs",
+        "min" => "math.min",
+        "max" => "math.max",
+        "round" => "math.round",
+        "enumerate" | "molt_enumerate" => "molt_enumerate",
+        "zip" | "molt_zip" => "molt_zip",
+        "sorted" | "molt_sorted" => "molt_sorted",
+        "reversed" | "molt_reversed" => "molt_reversed",
+        "sum" | "molt_sum" => "molt_sum",
+        "any" | "molt_any" => "molt_any",
+        "all" | "molt_all" => "molt_all",
+        "map" | "molt_map" => "molt_map",
+        "filter" | "molt_filter" => "molt_filter",
+        "print" => "molt_print",
+        _ => return None,
+    })
+}
+
 impl LuauBackend {
     pub(super) fn emit_call_op(&mut self, op: &OpIR) -> bool {
         match op.kind.as_str() {
@@ -319,29 +347,14 @@ impl LuauBackend {
                         call_args.push(self.frame_context_expr().to_string());
                     }
                     let call_args = call_args.join(", ");
-                    // Map Python builtins to Luau equivalents.
-                    let mapped = match func_name.as_str() {
-                        "len" | "molt_len" => format!("molt_len({call_args})"),
-                        "int" | "molt_int" => format!("molt_int({call_args})"),
-                        "float" | "molt_float" => format!("molt_float({call_args})"),
-                        "str" | "molt_str" => format!("molt_str({call_args})"),
-                        "bool" | "molt_bool" => format!("molt_bool({call_args})"),
-                        "range" | "molt_range" => format!("molt_range({call_args})"),
-                        "abs" => format!("math.abs({call_args})"),
-                        "min" => format!("math.min({call_args})"),
-                        "max" => format!("math.max({call_args})"),
-                        "round" => format!("math.round({call_args})"),
-                        "enumerate" | "molt_enumerate" => format!("molt_enumerate({call_args})"),
-                        "zip" | "molt_zip" => format!("molt_zip({call_args})"),
-                        "sorted" | "molt_sorted" => format!("molt_sorted({call_args})"),
-                        "reversed" | "molt_reversed" => format!("molt_reversed({call_args})"),
-                        "sum" | "molt_sum" => format!("molt_sum({call_args})"),
-                        "any" | "molt_any" => format!("molt_any({call_args})"),
-                        "all" | "molt_all" => format!("molt_all({call_args})"),
-                        "map" | "molt_map" => format!("molt_map({call_args})"),
-                        "filter" | "molt_filter" => format!("molt_filter({call_args})"),
-                        "print" => format!("molt_print({call_args})"),
-                        _ => checked_call_expr(&func_name, &call_args),
+                    let builtin = if self.function_symbols.contains(raw_func_name) {
+                        None
+                    } else {
+                        direct_builtin_target(raw_func_name)
+                    };
+                    let mapped = match builtin {
+                        Some(target) => format!("{target}({call_args})"),
+                        None => checked_call_expr(&func_name, &call_args),
                     };
                     self.emit_line(&format!("local {out} = {mapped}"));
                 } else {

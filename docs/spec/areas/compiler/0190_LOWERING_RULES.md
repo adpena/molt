@@ -486,6 +486,31 @@ the live helper, preserve its effects and bind its actual result. Its string
 arguments neither reserve external symbols nor fabricate runtime-function type
 facts. Intrinsic lowering uses the explicit imported intrinsic protocol instead.
 
+Compiler-owned protocol invocations use a direct `call` to the canonical
+manifest symbol, with every positional ABI argument supplied explicitly. The
+frontend checks intrinsic identity, callable representation and exact arity
+before emitting the operation. Awaitable admission, exception-handler matching,
+delegated iterator throws, import transactions and dynamic-class bootstrap do
+not construct temporary Python callable objects. The ordinary call operation
+retains its exception effects and result ownership, including existing loop
+result destinations. Observable intrinsic references still construct callable
+objects with their declared names and runtime-owned defaults.
+
+This follows CPython's direct
+[`GET_AWAITABLE` protocol call](https://github.com/python/cpython/blob/v3.12.0/Python/bytecodes.c#L792-L814)
+and MLIR's distinction between
+[symbol callees and callable SSA values](https://mlir.llvm.org/docs/Dialects/LLVM/#llvmcall-llvmcallop).
+Molt keeps the runtime protocol implementation: direct invocation removes the
+per-execution callable allocation, intrinsic-name resolution and argument
+binding, rather than duplicating Python protocol semantics in the compiler.
+Compiler-side validation uses existing generated facts; no admission check is
+added to the guest. Python-callable trampoline dispatch and compiler direct-call
+ABI are independent facts: explicitly declared boxed transport may authorize a
+direct call while the observable callable retains its trampoline. A trampoline
+declaration alone does not authorize boxed transport. Every backend must resolve
+a direct callee to an admitted provider or compiled definition, or reject it
+before emission; an undefined helper name is not an implementation.
+
 Namespace identity and exact dictionary kind are separate facts. Lexical module
 bootstrap pins an exact builtin namespace, so exact `CURRENT_GLOBALS` aliases
 in module scope carry dictionary kind without content, truth or freshness facts.

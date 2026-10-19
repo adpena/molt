@@ -3360,7 +3360,7 @@ type = 0
 
 [[import]]
 name = "importlib_import_transaction"
-return_contract = "owned_object"
+boxed_call = true
 type = 10
 
 [[import]]

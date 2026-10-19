@@ -230,12 +230,9 @@ class ExceptionLoweringMixin(GeneratorMixinBase):
         # Exception handlers validate every top-level tuple item before matching
         # canonical inheritance; isinstance permits invalid handlers and invokes
         # user metaclass hooks that the exception protocol must not call.
-        matcher = self._emit_intrinsic_function("molt_exception_match_handler")
-        res = MoltValue(self.next_var(), type_hint="bool")
-        self.emit(
-            MoltOp(kind="CALL_FUNC", args=[matcher, exc_val, class_val], result=res)
+        return self._emit_intrinsic_call(
+            "molt_exception_match_handler", [exc_val, class_val], type_hint="bool"
         )
-        return res
 
     def _active_exception_value(self, exc: ActiveException) -> MoltValue:
         if self.is_async() and exc.slot is not None:
