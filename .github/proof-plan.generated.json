@@ -9354,7 +9354,8 @@
       "local.tir-midend.0": "cargo clippy --locked --profile dev-fast -p molt-ir -p molt-passes -p molt-tir -p molt-backend-wasm --all-targets --all-features -- -D warnings",
       "local.tir-midend.1": "cargo test --locked --profile dev-fast -p molt-ir -p molt-passes -p molt-tir -p molt-backend-wasm --all-features --no-fail-fast",
       "local.wasm-abi-registry.pytest": "python -m pytest -q -n auto --molt-worker-memory-gb=1.75 tests/test_gen_wasm_abi.py",
-      "local.wasm-host.0": "cargo build --locked --profile release-fast -p molt-wasm-host"
+      "local.wasm-host.0": "cargo build --locked --profile release-fast -p molt-wasm-host",
+      "local.wasm-optimizer-policy.0": "python -m pytest -q tests/test_wasm_optimization_policy.py tests/test_wasm_optimization_imported_memory.py"
     },
     "rules": [
       {
@@ -11467,6 +11468,30 @@
       },
       {
         "command_ids": [
+          "local.wasm-optimizer-policy.0"
+        ],
+        "description": "Prove shared optimizer policy and actual imported-memory semantics without compiling a runtime.",
+        "gates": [
+          "python -m pytest -q tests/test_wasm_optimization_policy.py tests/test_wasm_optimization_imported_memory.py"
+        ],
+        "globs": [
+          "src/molt/wasm_optimization.py",
+          "src/molt/wasm_optimizer_identity.py",
+          "tools/wasm_optimize.py",
+          "tools/wasm_link_optimizer_policy.py",
+          "tests/test_wasm_optimization_policy.py",
+          "tests/test_wasm_optimization_imported_memory.py"
+        ],
+        "name": "wasm-optimizer-policy",
+        "toolchains": [
+          "python",
+          "uv",
+          "node",
+          "wasm-opt"
+        ]
+      },
+      {
+        "command_ids": [
           "local.native-callable-abi.0",
           "local.native-callable-abi.pytest"
         ],
@@ -12374,6 +12399,12 @@
         "rustc",
         "cargo",
         "git"
+      ],
+      "local.wasm-optimizer-policy.0": [
+        "python",
+        "uv",
+        "node",
+        "wasm-opt"
       ]
     }
   },

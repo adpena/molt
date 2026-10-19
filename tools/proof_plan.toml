@@ -5721,6 +5721,23 @@ pytest = [
   "tests/test_frontend_builtin_binding_guards.py",
 ]
 
+# --- Shared WASM optimizer policy ---------------------------------------
+[[rule]]
+name = "wasm-optimizer-policy"
+toolchains = ["python", "uv", "node", "wasm-opt"]
+description = "Prove shared optimizer policy and actual imported-memory semantics without compiling a runtime."
+globs = [
+  "src/molt/wasm_optimization.py",
+  "src/molt/wasm_optimizer_identity.py",
+  "tools/wasm_optimize.py",
+  "tools/wasm_link_optimizer_policy.py",
+  "tests/test_wasm_optimization_policy.py",
+  "tests/test_wasm_optimization_imported_memory.py",
+]
+gates = [
+  "python -m pytest -q tests/test_wasm_optimization_policy.py tests/test_wasm_optimization_imported_memory.py",
+]
+
 # --- Native-callable ABI authority --------------------------------------
 [[rule]]
 name = "native-callable-abi"
