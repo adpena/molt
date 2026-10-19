@@ -246,9 +246,10 @@ Analysis cache schema v3 hashes the original ordered payload through the same
 Merkle composition, plus its generated analysis authority. It cannot reuse the
 sorted artifact key: function order contributes to the reported function-order,
 source-site and allocation-event digests. Header changes and source locations
-also remain identity inputs. Cache hits hash only the small header and ordered
-body digests; admitted bodies are not serialized again. Cold analysis still
-walks the operations it reports. This compiler-only reuse follows rustc's
+also remain identity inputs. Key composition hashes the header and ordered body
+digests; unchanged admitted bodies are not serialized again. A new or rewritten
+body is encoded once by the shared owner. Cold analysis still walks the
+operations it reports. This compiler-only reuse follows rustc's
 immutable query-result fingerprint model linked above and adds no guest work.
 
 All four source fact kinds share the existing SQLite database under
