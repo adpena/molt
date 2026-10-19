@@ -6,6 +6,7 @@ import json
 import multiprocessing
 import os
 import py_compile
+import shutil
 import stat
 import sys
 import time
@@ -261,6 +262,63 @@ def test_an_admission_from_before_recording_cannot_hide_its_inputs(
     ]
 
 
+@pytest.mark.skipif(os.name != "nt", reason="Windows observer bootstrap")
+@pytest.mark.parametrize("activation", ["sink", "worker"])
+def test_cold_windows_observer_can_capture_its_first_file(
+    tmp_path: Path, activation: str
+) -> None:
+    from tests.process_guard_common import run_custody_subject_process
+
+    root = Path(__file__).resolve().parents[1]
+    # The ordinary guarded Python bootstrap queries Windows process metadata,
+    # which prewarms wintypes and hides this first-observation boundary.
+    program = f"""
+import sys
+sys.path.insert(0, {str(root / "src")!r})
+import hashlib, os, time
+from pathlib import Path
+from molt import build_record, file_hashing, input_report
+assert 'ctypes.wintypes' not in sys.modules
+assert file_hashing._windows_file_api.cache_info().currsize == 0
+root = Path({str(tmp_path)!r})
+subject = root / 'input.bin'
+before = time.time_ns()
+subject.write_bytes(b'first observed input')
+logs = root / 'reads'
+logs.mkdir()
+ledger = build_record.InputLedger(time.time_ns() + 10**10)
+if {activation!r} == 'sink':
+    input_report.install_sink(ledger, str(logs))
+else:
+    input_report.worker_initializer(str(logs))
+import ctypes.wintypes
+fd = file_hashing.open_stable_read_descriptor(subject)
+try:
+    metadata = os.fstat(fd)
+    change = file_hashing.content_change_time_ns_from_fd(fd, metadata)
+    data = os.read(fd, 100)
+finally:
+    os.close(fd)
+token = input_report.stat_token(subject)
+assert token is not None and before <= change <= time.time_ns(), (token, change)
+assert token[5] == change
+digest = hashlib.sha256(data).hexdigest()
+input_report.report_captured_file(subject, token, digest)
+input_report.remove_sink()
+if {activation!r} == 'worker':
+    input_report.merge_worker_logs(ledger, str(logs))
+assert not ledger.refusals, ledger.refusals
+assert ledger.files[str(subject)] == (token, digest)
+assert data == b'first observed input'
+"""
+    completed = run_custody_subject_process(
+        [sys.executable, "-I", "-S", "-B", "-c", program],
+        capture_output=True,
+        text=True,
+    )
+    assert completed.returncode == 0, completed.stdout + completed.stderr
+
+
 def test_a_rustup_candidate_becoming_the_selected_proxy_invalidates_output(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -289,7 +347,7 @@ def test_a_rustup_candidate_becoming_the_selected_proxy_invalidates_output(
 
 def test_incomplete_previous_record_schema_cannot_reuse_output(tmp_path: Path) -> None:
     _source, _tool, output, record = _fixture(tmp_path)
-    payload = json.loads(record.read_text())
+    payload = json.loads(record.read_text(encoding="utf-8"))
     payload["schema"] = "molt-build-record-v5"
     record.write_text(json.dumps(payload), encoding="utf-8")
     assert not _current(record, output)
@@ -482,14 +540,13 @@ def test_the_audit_hook_observes_reads_listings_and_programs(
         os.listdir(tmp_path)
         (tmp_path / "written.txt").write_text("not an input", encoding="utf-8")
         # The event `subprocess.Popen` raises before it starts a program.
-        sys.audit("subprocess.Popen", "true", ["true"], None, None)
+        program = str(Path(getattr(sys, "_base_executable", sys.executable)).resolve())
+        sys.audit("subprocess.Popen", program, [program], None, None)
     assert ("file", os.fspath(data)) in ledger.observed
     assert ("directory", os.fspath(tmp_path)) in ledger.observed
     assert ("file", os.fspath(tmp_path / "written.txt")) not in ledger.observed
     assert not any(kind == "written" for kind, _name in ledger.observed)
-    assert any(name.endswith(f"{os.sep}true") for name in ledger.files), (
-        "the started program is selected through PATH"
-    )
+    assert program in ledger.files, "the started process image is an input"
 
 
 @pytest.mark.usefixtures("fresh_process")
@@ -498,8 +555,11 @@ def test_a_started_program_records_its_search(tmp_path: Path, transient: Path) -
     early, late, missing = tmp_path / "early", tmp_path / "late", tmp_path / "none"
     early.mkdir()
     late.mkdir()
-    tool = late / "cc"
-    tool.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    from tests.executable_test_support import native_executable_donor
+
+    name = "cc.EXE" if os.name == "nt" else "cc"
+    tool = late / name
+    shutil.copyfile(native_executable_donor(), tool)
     tool.chmod(0o755)
     search = os.pathsep.join(map(os.fspath, (missing, early, late)))
     with build_record.recording(transient) as ledger:
@@ -513,8 +573,8 @@ def test_a_started_program_records_its_search(tmp_path: Path, transient: Path) -
     output.write_bytes(b"x")
     record, reason = _write(tmp_path, ledger, output)
     assert reason is None and _current(record, output)
-    shadow = early / "cc"
-    shadow.write_text("#!/bin/sh\n", encoding="utf-8")
+    shadow = early / name
+    shutil.copyfile(tool, shadow)
     shadow.chmod(0o755)
     assert not _current(record, output)
 

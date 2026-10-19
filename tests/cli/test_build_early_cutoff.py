@@ -83,7 +83,10 @@ def project(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
 def _run(build, project: Path, output: Path, *, first: bool = True) -> None:
     # Each call is the first build of a new process.
     build_record._BUILDS_ENTERED = 0 if first else 1
-    assert build(os.fspath(project / "app.py"), output=os.fspath(output)) == 0
+    assert (
+        build(os.fspath(project / "app.py"), output=os.fspath(output), verbose=True)
+        == 0
+    )
 
 
 def test_an_unchanged_build_reuses_its_output(

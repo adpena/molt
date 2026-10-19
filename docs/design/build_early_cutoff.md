@@ -152,6 +152,12 @@ configuration files. An admission created outside the current recording cannot
 justify a record: the record is refused while ordinary compilation and its live
 custody continue. No new admission, restart or interpreter fallback is introduced.
 
+On Windows, observer activation initializes its existing file-metadata API
+before enabling either the sink or worker log. Importing `ctypes.wintypes`
+while observing its own bytecode reads would otherwise recursively initialize
+that API from a partial module. This is a one-time reporting setup cost;
+ordinary imports and emitted binaries do not initialize the observer.
+
 Record schema v6 rejects earlier records whose inputs could be incomplete.
 Reporting adds O(captured paths + visited directories + selectors) facts and
 JSONL bytes through the existing flushed worker log, plus exact lookup probes.
