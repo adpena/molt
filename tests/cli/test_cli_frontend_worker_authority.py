@@ -4,7 +4,9 @@ import inspect
 import importlib
 import ast
 import hashlib
+import json
 import os
+import pickle
 import sys
 from pathlib import Path
 from types import SimpleNamespace
@@ -21,8 +23,36 @@ from molt.cli.module_resolution import _ModuleResolutionCache
 from molt.cli.module_source import _ModuleSourceCatalog, _ModuleSourceLease
 from molt.frontend import SimpleTIRGenerator
 from molt.target_python import TargetPythonVersion
+from tests.process_guard_common import run_guarded_test_process
 
 frontend_worker = importlib.import_module("molt.cli.frontend_worker")
+
+
+@pytest.mark.parametrize("timed_out", [False, True])
+def test_module_lower_error_survives_fresh_worker_pickle(timed_out: bool) -> None:
+    error = frontend_worker._ModuleLowerError(
+        "module lowering failed", timed_out=timed_out
+    )
+    result = run_guarded_test_process(
+        [
+            sys.executable,
+            "-c",
+            "import json, pickle, sys\n"
+            "error = pickle.loads(bytes.fromhex(sys.stdin.read()))\n"
+            "print(json.dumps([type(error).__module__, type(error).__name__,"
+            " error.args, error.timed_out]))\n",
+        ],
+        input=pickle.dumps(error).hex(),
+        timeout=120,
+        check=True,
+    )
+    assert json.loads(result.stdout) == [
+        "molt.cli.frontend_worker",
+        "_ModuleLowerError",
+        ["module lowering failed"],
+        timed_out,
+    ]
+
 
 _FRONTEND_WORKER_NAMES = (
     "_frontend_lower_module_worker",

@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
+
 import hashlib
 import json
 from pathlib import Path
-from typing import Any, Callable, Collection, Mapping, Sequence, cast
+from typing import Any, Callable, Collection, Mapping, Sequence, cast, TYPE_CHECKING
 
 from molt.frontend import SimpleTIRGenerator
 from molt.frontend.lowering.function_metadata import (
@@ -39,7 +41,6 @@ from molt.cli.models import (
     _ExternalNativeModuleInitSpec,
     _ExternalPackageNativeArtifactPlan,
     _EMPTY_EXTERNAL_PACKAGE_NATIVE_ARTIFACT_PLAN,
-    _PreparedBackendIR,
 )
 from molt.cli.module_cache import _normalize_backend_ir_functions
 from molt.cli.module_graph import ENTRY_OVERRIDE_SPAWN
@@ -53,6 +54,20 @@ from molt.cli.output import CliFailure as _CliFailure
 from molt.cli import required_features as _required_features
 from molt.cli import runtime_features as _runtime_features
 from molt.target_python import TargetPythonVersion
+
+if TYPE_CHECKING:
+    from molt.cli.function_records import FunctionDigestSeed
+
+
+@dataclass(frozen=True)
+class _PreparedBackendIR:
+    ir: dict[str, Any]
+    function_metadata: dict[str, FunctionAssemblyMetadata]
+    function_digest_seeds: tuple[FunctionDigestSeed, ...] = ()
+    required_link_features: frozenset[str] = frozenset()
+    # Import bedrock registry (molt.cli.module_registry.ModuleRegistry) on the
+    # native lane; None on lanes that keep the legacy isolate dispatch.
+    module_registry: Any | None = None
 
 
 def _python_version_display(

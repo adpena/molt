@@ -6,15 +6,19 @@ import shlex
 import sys
 import time
 from pathlib import Path
-from typing import Any
+from typing import Any, NamedTuple
 from molt.cli.command_runtime import (
     _run_completed_command,
 )
-from molt.cli.models import (
-    _TimedResult,
-)
 from molt.cli.output import emit_json as _emit_json
 from molt.cli.output import json_payload as _json_payload
+
+
+class _TimedResult(NamedTuple):
+    returncode: int
+    stdout: str
+    stderr: str
+    duration_s: float
 
 
 def _run_command(

@@ -13,7 +13,6 @@ import ast
 import hashlib
 import json
 import os
-import subprocess
 from concurrent.futures import Future
 from dataclasses import asdict, dataclass, field, replace
 from pathlib import Path
@@ -24,7 +23,6 @@ from typing import (
     Collection,
     Literal,
     Mapping,
-    MutableMapping,
     NamedTuple,
     Sequence,
     TYPE_CHECKING,
@@ -46,6 +44,18 @@ from molt.type_facts import TypeFacts
 from molt.toolchain_identity import StableRegularFileIdentity
 
 if TYPE_CHECKING:
+    from molt.cli.external_native import (
+        _ExternalNativeAbiSymbol,
+        _ExternalNativeCapiSymbol,
+        _ExternalPackageNativeArtifact,
+    )
+    from molt.cli.frontend_execution import (
+        _FrontendLayerExecutionContext,
+        _FrontendLayerRuntimeHooks,
+    )
+    from molt.cli.frontend_parallel import _FrontendWorkerResourceDecision
+    from molt.cli.runtime_native_build import _NativeRuntimeBuildFailure
+    from molt.cli.runtime_wasm_failure import _RuntimeWasmBuildFailure
     from molt.cli.function_records import FunctionDigestSeed
     from molt.frontend.module_publication import FunctionAssemblyMetadata
     from molt.cli.wasm_codegen_layout import WasmCodegenLayout
@@ -60,7 +70,6 @@ if TYPE_CHECKING:
     from molt.cli.runtime_native_codegen import NativeRuntimeCodegenBinding
     from molt.cli.runtime_native_generation import NativeRuntimeGeneration
     from molt.cli.installed_runtime_contract import InstalledNativeAdmission
-    from molt.cli.build_output_layout import _BuildOutputLayout
     from molt.cli.module_resolution import _ModuleResolutionCache
     from molt.cli.module_graph_discovery import _ModuleGraphDiscovery
     from molt.cli.module_source import _ModuleSourceCatalog, PythonSourceSnapshot
@@ -368,37 +377,6 @@ class _PrecomputedModuleImportScan:
 
 
 @dataclass(frozen=True)
-class _DiscoveredModuleGraph:
-    graph: dict[str, Path]
-    explicit_imports: set[str]
-    scan_authority: _ModuleGraphScanAuthority
-    discovery: "_ModuleGraphDiscovery | None" = field(
-        default=None, compare=False, repr=False
-    )
-    revised_sources: tuple[_ModuleSourceScanAuthority, ...] = ()
-
-    def __post_init__(self) -> None:
-        self.scan_authority.validate_graph(self.graph)
-
-
-@dataclass(frozen=True)
-class _BuildEntrySelector:
-    origin: BuildEntrySelectorOrigin
-    target: BuildEntrySelectorTarget
-    value: str
-    source: str
-    config_key: str | None = None
-
-    @property
-    def file_path(self) -> str | None:
-        return self.value if self.target == "file" else None
-
-    @property
-    def module(self) -> str | None:
-        return self.value if self.target == "module" else None
-
-
-@dataclass(frozen=True)
 class PgoProfileSummary:
     version: str
     hash: str
@@ -413,52 +391,6 @@ class RuntimeFeedbackSummary:
     schema_version: int
     hash: str
     hot_functions: list[str]
-
-
-class _TimedResult(NamedTuple):
-    returncode: int
-    stdout: str
-    stderr: str
-    duration_s: float
-
-
-class _BackendDaemonCompileResult(NamedTuple):
-    ok: bool
-    error: str | None
-    health: dict[str, Any] | None
-    cached: bool | None
-    cache_tier: str | None
-    output_written: bool
-    output_exists: bool
-    full_request_sent: bool = False
-
-
-class _MaintenanceStep(NamedTuple):
-    name: str
-    cmd: list[str]
-    cwd: Path
-    category: Literal["toolchain", "lock", "manifest"]
-
-
-class _ValidationStep(NamedTuple):
-    name: str
-    cmd: list[str]
-    cwd: Path
-    category: Literal["command", "correctness", "conformance", "benchmark"]
-    backends: tuple[str, ...]
-    profiles: tuple[str, ...]
-    suite: Literal["full", "smoke"]
-
-
-@dataclass(frozen=True)
-class _ToolchainReport:
-    checks: list[dict[str, Any]]
-    warnings: list[str]
-    errors: list[str]
-    environment: dict[str, str]
-    actions: list[dict[str, str]]
-    backends: dict[str, bool]
-    profiles: dict[str, bool]
 
 
 @dataclass(frozen=True)
@@ -666,63 +598,12 @@ class _BinaryImageScope:
 
 
 @dataclass(frozen=True)
-class _ModuleLoweringMetadataView:
-    logical_source_path: str
-    module_is_namespace: bool
-    is_package: bool
-    module_execution_kind: ModuleExecutionKind
-
-
-@dataclass(frozen=True)
-class _ModuleLoweringExecutionView:
-    metadata: _ModuleLoweringMetadataView
-    scoped_inputs: _ScopedLoweringInputView
-    scoped_known_classes: dict[ClassId, ClassInfo]
-
-
-@dataclass(frozen=True)
-class _ParallelWorkerSubmission:
-    module_name: str
-    submitted_ns: int
-    future: Any
-
-
-@dataclass(frozen=True)
-class _WorkerTimingSummary:
-    count: int
-    queue_ms_total: float
-    queue_ms_max: float
-    wait_ms_total: float
-    wait_ms_max: float
-    exec_ms_total: float
-    exec_ms_max: float
-    roundtrip_ms_total: float
-    reused_ms_total: float
-
-
-@dataclass(frozen=True)
-class _FrontendLayerStaticMetrics:
-    predicted_cost_total: float
-    stdlib_candidates: int
-
-
-@dataclass(frozen=True)
 class _FrontendModuleResultTimings:
     visit_s: float
     lower_s: float
     total_s: float
     cache_hit: bool = False
     reused_s: float = 0.0
-
-
-@dataclass(frozen=True)
-class _FrontendLayerPolicySummary:
-    enabled: bool
-    workers: int
-    reason: str
-    predicted_cost_total: float
-    effective_min_predicted_cost: float
-    stdlib_candidates: int
 
 
 @dataclass
@@ -732,17 +613,6 @@ class _FrontendParallelLayerState:
     worker_timings_by_module: dict[str, dict[str, Any]] = field(default_factory=dict)
     recorded_worker_timings: list[dict[str, Any]] = field(default_factory=list)
     fallback_reason: str | None = None
-
-
-@dataclass(frozen=True)
-class _FrontendWorkerResourceDecision:
-    workers: int
-    selection_source: str
-    requested_workers: int | None
-    cpu_count: int
-    total_memory_bytes: int | None
-    available_memory_bytes: int | None
-    memory_ceiling: int
 
 
 @dataclass(frozen=True)
@@ -766,71 +636,6 @@ class _FrontendLayerPlan:
     workers: int
     policy_reason: str
     mode: str
-
-
-@dataclass(frozen=True)
-class _FrontendLayerRunResult:
-    layer_state: _FrontendParallelLayerState
-    layer_plan: _FrontendLayerPlan
-    parallel_pool_usable: bool
-
-
-@dataclass(frozen=True)
-class _FrontendLayerExecutionContext:
-    syntax_error_modules: Mapping[str, "ModuleSyntaxErrorInfo"]
-    module_graph: Mapping[str, Path]
-    module_source_catalog: _ModuleSourceCatalog
-    project_root: Path | None
-    parse_codec: "ParseCodec"
-    type_hint_policy: "TypeHintPolicy"
-    type_facts: TypeFacts | None
-    enable_phi: bool
-    known_modules: Collection[str]
-    direct_call_modules: Collection[str]
-    stdlib_allowlist: Collection[str]
-    known_func_defaults: dict[str, dict[str, dict[str, Any]]]
-    known_func_kinds: dict[str, dict[str, str]]
-    native_callable_exports: Mapping[str, Mapping[str, Any]]
-    native_python_exports: Collection[str]
-    module_deps: dict[str, set[str]]
-    source_modules: Collection[str]
-    module_chunk_max_ops: int
-    optimization_profile: str
-    pgo_hot_function_names: Collection[str]
-    known_modules_sorted: tuple[str, ...]
-    stdlib_allowlist_sorted: tuple[str, ...]
-    pgo_hot_function_names_sorted: tuple[str, ...]
-    module_dep_closures: dict[str, frozenset[str]]
-    module_graph_metadata: "_ModuleGraphMetadata"
-    module_chunking: bool
-    scoped_lowering_inputs: "_ScopedLoweringInputs | None"
-    frontend_module_costs: Mapping[str, float]
-    stdlib_like_by_module: Mapping[str, bool]
-    known_classes: Mapping[ClassId, ClassInfo]
-    target_python: TargetPythonVersion
-    target_sys_platform: str | None
-    frontend_phase_timeout: float | None
-    scc_serial_modules: frozenset[str] = frozenset()
-
-
-@dataclass(frozen=True)
-class _FrontendLayerRuntimeHooks:
-    warnings: list[str]
-    frontend_parallel_details: MutableMapping[str, Any]
-    record_frontend_parallel_worker_timing: Callable[..., dict[str, Any]]
-    record_frontend_timing: Callable[..., None]
-    integrate_module_frontend_result: Callable[..., str | None]
-    accumulate_midend_diagnostics: Callable[..., None]
-    fail: Callable[..., _CliFailure]
-    json_output: bool
-    run_serial_frontend_lower: Callable[
-        [str, Path],
-        tuple[
-            dict[str, Any] | None,
-            "_FrontendModuleResultTimings | None",
-            _CliFailure | None,
-        ],
-    ]
 
 
 @dataclass(frozen=True)
@@ -892,60 +697,6 @@ class _FrontendIntegrationState:
 class _MidendDiagnosticsState:
     policy_outcomes_by_function: dict[str, dict[str, Any]]
     pass_stats_by_function: dict[str, dict[str, dict[str, Any]]]
-
-
-@dataclass
-class _NativeRuntimeBuildFailure:
-    stage: str
-    summary: str
-    evidence_path: Path | None = None
-    returncode: int | None = None
-    timed_out: bool = False
-    signal: dict[str, object] | None = None
-    duration_seconds: float | None = None
-    peak_process_rss_bytes: int | None = None
-    peak_tree_rss_bytes: int | None = None
-    attempt_count: int = 0
-    retry_reason: str | None = None
-
-    def json_payload(self) -> dict[str, object]:
-        return {
-            "stage": self.stage,
-            "summary": self.summary,
-            "evidence_path": (
-                None if self.evidence_path is None else str(self.evidence_path)
-            ),
-            "returncode": self.returncode,
-            "timed_out": self.timed_out,
-            "signal": self.signal,
-            "duration_seconds": self.duration_seconds,
-            "peak_process_rss_bytes": self.peak_process_rss_bytes,
-            "peak_tree_rss_bytes": self.peak_tree_rss_bytes,
-            "attempt_count": self.attempt_count,
-            "retry_reason": self.retry_reason,
-        }
-
-
-@dataclass
-class _RuntimeWasmBuildFailure:
-    stage: str
-    summary: str
-    evidence_path: Path | None = None
-    returncode: int | None = None
-    timed_out: bool = False
-    details: dict[str, object] | None = None
-
-    def json_payload(self) -> dict[str, object]:
-        return {
-            "stage": self.stage,
-            "summary": self.summary,
-            "evidence_path": (
-                None if self.evidence_path is None else str(self.evidence_path)
-            ),
-            "returncode": self.returncode,
-            "timed_out": self.timed_out,
-            "details": self.details,
-        }
 
 
 @dataclass
@@ -1041,21 +792,6 @@ class _FrontendTimingRecorderConfig:
     raw: bool
     threshold: float
     json_output: bool
-
-
-@dataclass(frozen=True)
-class _SupportModuleAugmentation:
-    namespace_module_names: frozenset[str]
-    generated_module_source_paths: dict[str, str]
-    explicit_imports: frozenset[str] = frozenset()
-
-
-@dataclass(frozen=True)
-class _ModuleGraphAugmentation:
-    spawn_enabled: bool
-    explicit_imports: set[str]
-    runtime_import_dispatch_roots: set[str]
-    stub_parents: set[str]
 
 
 @dataclass(frozen=True)
@@ -1166,117 +902,6 @@ class _RuntimeImportScanCustody:
         for name, path in self.catalog:
             if not name or not path.is_absolute() or not path.is_file():
                 raise ValueError(f"runtime import custody requires a source: {name!r}")
-
-
-@dataclass(frozen=True)
-class _ModuleRootResolution:
-    roots: tuple[Path, ...]
-    external_roots: tuple[Path, ...]
-    # MOLT_MODULE_ROOTS entries whose paths do not exist. Explicit env roots
-    # are operator intent; dropping one silently turns a one-line config error
-    # into an unattributable downstream custody failure, so callers fail
-    # closed on any missing entry.
-    missing_env_roots: tuple[str, ...] = ()
-    module_root_aliases: tuple[tuple[str, Path], ...] = ()
-
-
-@dataclass(frozen=True)
-class _ExternalPackageNativeArtifact:
-    package: str
-    module: str
-    package_dir: Path
-    path: Path
-    manifest_path: Path
-    extension_sha256: str
-    manifest_sha256: str
-    capabilities: tuple[str, ...]
-    abi_tag: str
-    target_triple: str
-    platform_tag: str
-    runtime_linkage: str
-    artifact_kind: str
-    link_requirements: SourceExtensionLinkRequirements
-    init_symbol: str = ""
-    support_file_sha256: tuple[tuple[str, str], ...] = ()
-    provided_capsules: tuple[str, ...] = ()
-    required_capsules: tuple[str, ...] = ()
-    python_exports: tuple[str, ...] = ()
-    callable_exports: tuple["_ExternalNativeCallableExport", ...] = ()
-    abi_symbols: tuple["_ExternalNativeAbiSymbol", ...] = ()
-    c_api_symbols: tuple["_ExternalNativeCapiSymbol", ...] = ()
-    # Dotted module names the extension imports dynamically at runtime
-    # (PyImport_ImportModule and import-macro literals scanned from its C
-    # sources). They must join the AOT import graph or module init fails
-    # at runtime on tree-shaken modules. Non-package names (stdlib) ride
-    # the import-graph closure; package-internal names ride sidecar
-    # support custody and are recorded separately as compile roots.
-    runtime_python_imports: tuple[str, ...] = ()
-    runtime_python_import_modules: tuple[str, ...] = ()
-
-    def digest_payload(self) -> dict[str, Any]:
-        return {
-            "package": self.package,
-            "module": self.module,
-            "package_dir": str(self.package_dir),
-            "path": str(self.path),
-            "manifest_path": str(self.manifest_path),
-            "runtime_python_imports": list(self.runtime_python_imports),
-            "runtime_python_import_modules": list(self.runtime_python_import_modules),
-            "extension_sha256": self.extension_sha256,
-            "manifest_sha256": self.manifest_sha256,
-            "capabilities": list(self.capabilities),
-            "abi_tag": self.abi_tag,
-            "target_triple": self.target_triple,
-            "platform_tag": self.platform_tag,
-            "init_symbol": self.init_symbol,
-            "runtime_linkage": self.runtime_linkage,
-            "artifact_kind": self.artifact_kind,
-            "link_requirements": self.link_requirements.manifest_payload(),
-            "support_file_sha256": [
-                {"path": rel_path, "sha256": digest}
-                for rel_path, digest in self.support_file_sha256
-            ],
-            "provided_capsules": list(self.provided_capsules),
-            "required_capsules": list(self.required_capsules),
-            "python_exports": list(self.python_exports),
-            "callable_exports": [
-                export.digest_payload() for export in self.callable_exports
-            ],
-            "abi_symbols": [symbol.digest_payload() for symbol in self.abi_symbols],
-            "c_api_symbols": [symbol.digest_payload() for symbol in self.c_api_symbols],
-        }
-
-
-@dataclass(frozen=True)
-class _ExternalNativeAbiSymbol:
-    symbol: str
-    status: str
-    primitive_class: str
-    source: str
-
-    def digest_payload(self) -> dict[str, Any]:
-        return {
-            "symbol": self.symbol,
-            "status": self.status,
-            "primitive_class": self.primitive_class,
-            "source": self.source,
-        }
-
-
-@dataclass(frozen=True)
-class _ExternalNativeCapiSymbol:
-    symbol: str
-    status: str
-    primitive_class: str
-    source: str
-
-    def digest_payload(self) -> dict[str, Any]:
-        return {
-            "symbol": self.symbol,
-            "status": self.status,
-            "primitive_class": self.primitive_class,
-            "source": self.source,
-        }
 
 
 @dataclass(frozen=True)
@@ -2073,12 +1698,6 @@ class _ResolvedBuildEntry:
 
 
 @dataclass(frozen=True)
-class _PreparedBuildModuleOutputs:
-    import_plan: "_ImportPlan"
-    output_layout: _BuildOutputLayout
-
-
-@dataclass(frozen=True)
 class _ImportPlan:
     image_scope: _BinaryImageScope
     stdlib_allowlist: frozenset[str]
@@ -2268,41 +1887,6 @@ class _PreparedBuildRoots:
 
 
 @dataclass(frozen=True)
-class _PreparedFrontendAnalysis:
-    module_graph_metadata: _ModuleGraphMetadata
-    module_deps: dict[str, set[str]]
-    module_sources: dict[str, str]
-    module_source_catalog: _ModuleSourceCatalog
-    known_func_defaults: dict[str, dict[str, dict[str, Any]]]
-    known_func_kinds: dict[str, dict[str, str]]
-    module_trees: dict[str, ast.AST]
-    module_path_stats: dict[str, os.stat_result | None]
-    syntax_error_modules: dict[str, "ModuleSyntaxErrorInfo"]
-    module_order: list[str]
-    reverse_module_deps: dict[str, set[str]]
-    has_back_edges: bool
-    module_layers: list[list[str]]
-    module_dep_closures: dict[str, frozenset[str]]
-    scc_serial_modules: frozenset[str] = frozenset()
-
-
-@dataclass(frozen=True)
-class _PreparedFrontendLoweringConfig:
-    type_facts: TypeFacts | None
-    known_classes: dict[ClassId, ClassInfo]
-    scoped_lowering_inputs: _ScopedLoweringInputs
-    module_graph_metadata: _ModuleGraphMetadata
-    frontend_module_costs: Mapping[str, float]
-    stdlib_like_by_module: Mapping[str, bool]
-    enable_phi: bool
-    module_chunk_max_ops: int
-    module_chunking: bool
-    frontend_parallel_config: _FrontendParallelConfig
-    frontend_parallel_layers: list[dict[str, Any]]
-    frontend_parallel_worker_timings: list[dict[str, Any]]
-
-
-@dataclass(frozen=True)
 class _PreparedFrontendRunTicket:
     module_order: list[str]
     module_layers: list[list[str]]
@@ -2330,23 +1914,6 @@ class _PreparedBackendSetup:
     cache_candidates: list[tuple[str, Path]]
     runtime_callable_symbols_digest: str = ""
     backend_compiler_fingerprint: str | None = None
-
-
-@dataclass(frozen=True)
-class _PreparedBackendDispatch:
-    backend_env: dict[str, str]
-    reloc_requested: bool
-    backend_bin: Path
-    daemon_socket: Path | None
-    daemon_ready: bool
-    backend_daemon_config_digest: str | None
-
-
-@dataclass(frozen=True)
-class _BackendExecutionResult:
-    backend_daemon_cached: bool | None
-    backend_daemon_cache_tier: str | None
-    backend_daemon_health: dict[str, Any] | None
 
 
 @dataclass(frozen=True)
@@ -2379,17 +1946,6 @@ class _PreparedBackendRuntimeContext:
 
 
 @dataclass(frozen=True)
-class _PreparedBackendIR:
-    ir: dict[str, Any]
-    function_metadata: dict[str, FunctionAssemblyMetadata]
-    function_digest_seeds: tuple[FunctionDigestSeed, ...] = ()
-    required_link_features: frozenset[str] = frozenset()
-    # Import bedrock registry (molt.cli.module_registry.ModuleRegistry) on the
-    # native lane; None on lanes that keep the legacy isolate dispatch.
-    module_registry: Any | None = None
-
-
-@dataclass(frozen=True)
 class _PreparedNonNativeResult:
     primary_output: Path
     consumer_output: Path
@@ -2398,44 +1954,3 @@ class _PreparedNonNativeResult:
     success_messages: list[str]
     extra_fields: dict[str, Any]
     artifacts: dict[str, str] | None
-
-
-@dataclass(frozen=True)
-class _WrapperBuildContract:
-    output: Path
-    consumer_output: Path
-    bundle_root: Path | None
-    artifacts: dict[str, Path]
-
-
-@dataclass(frozen=True)
-class _PreparedNativeLink:
-    output_obj: Path
-    stub_path: Path
-    runtime_lib: Path
-    output_binary: Path
-    link_output: Path
-    external_native_artifacts: tuple[_StagedExternalPackageNativeArtifact, ...]
-    link_cmd: list[str]
-    linker_hint: str | None
-    normalized_target: str | None
-    link_fingerprint_path: Path
-    link_fingerprint: dict[str, str | None] | None
-    link_skipped: bool
-    link_process: subprocess.CompletedProcess[str]
-    strip_after_link: bool
-    link_selection: tuple[Path, Path] | None = None
-
-
-@dataclass(frozen=True)
-class _PreparedBuildCallbacks:
-    record_frontend_timing: Callable[..., None]
-    build_diagnostics_payload: Callable[[], tuple[dict[str, Any] | None, Path | None]]
-    set_binary_image_closure_payload: Callable[[Mapping[str, Any] | None], None]
-    record_binary_image_analysis: Callable[[str, Mapping[str, Any] | None], None]
-
-
-class _ModuleLowerError(RuntimeError):
-    def __init__(self, message: str, *, timed_out: bool = False) -> None:
-        super().__init__(message)
-        self.timed_out = timed_out

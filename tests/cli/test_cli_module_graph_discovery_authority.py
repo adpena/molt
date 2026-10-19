@@ -6,7 +6,7 @@ import ast
 import inspect
 from pathlib import Path
 
-from molt.cli.models import _DiscoveredModuleGraph
+from molt.cli.module_graph_discovery import _DiscoveredModuleGraph
 
 import pytest
 from tests.process_guard_common import run_guarded_test_process

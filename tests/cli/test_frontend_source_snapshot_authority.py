@@ -10,7 +10,7 @@ import json
 import os
 from pathlib import Path
 
-from molt.cli.models import _DiscoveredModuleGraph
+from molt.cli.module_graph_discovery import _DiscoveredModuleGraph
 from typing import Any, Mapping, NoReturn, TypedDict
 from molt.target_python import _DEFAULT_TARGET_PYTHON_VERSION
 

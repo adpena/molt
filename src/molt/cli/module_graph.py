@@ -31,11 +31,9 @@ from molt.cli.models import (
     _BinaryImageScope,
     _ImportAdmissionPolicy,
     _ImportPlan,
-    _ModuleGraphAugmentation,
     _ModuleGraphMetadata,
     _PreparedEntryModuleGraph,
     _RuntimeImportScanCustody,
-    _SupportModuleAugmentation,
 )
 from molt.cli.output import CliFailure as _CliFailure
 from molt.cli.output import fail as _fail
@@ -56,6 +54,21 @@ from molt.compiler_analysis.python_imports import (
     plan_static_import_request,
     require_static_import_modules,
 )
+
+
+@dataclass(frozen=True)
+class _SupportModuleAugmentation:
+    namespace_module_names: frozenset[str]
+    generated_module_source_paths: dict[str, str]
+    explicit_imports: frozenset[str] = frozenset()
+
+
+@dataclass(frozen=True)
+class _ModuleGraphAugmentation:
+    spawn_enabled: bool
+    explicit_imports: set[str]
+    runtime_import_dispatch_roots: set[str]
+    stub_parents: set[str]
 
 
 STUB_PARENT_MODULES = {"molt"}

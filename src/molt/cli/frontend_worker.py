@@ -24,7 +24,6 @@ from molt.cli.models import (
     TypeHintPolicy,
     _FrontendModuleResultTimings,
     _ModuleGraphMetadata,
-    _ModuleLowerError,
     _ScopedLoweringInputView,
     _ScopedLoweringInputs,
     _SerialFrontendLoweringContext,
@@ -53,6 +52,12 @@ from molt.target_python import (
     _parse_source_for_target,
     _parse_target_python_version,
 )
+
+
+class _ModuleLowerError(RuntimeError):
+    def __init__(self, message: str, *, timed_out: bool = False) -> None:
+        super().__init__(message)
+        self.timed_out = timed_out
 
 
 def _syntax_error_stub_ast(info: ModuleSyntaxErrorInfo) -> ast.Module:

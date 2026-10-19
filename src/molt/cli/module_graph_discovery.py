@@ -25,7 +25,6 @@ from molt.cli import module_source as _module_source
 from molt.cli.models import (
     ImportScanMode,
     _CompleteImportScan,
-    _DiscoveredModuleGraph,
     _ModuleGraphScanAuthority,
     _ModuleSourceScanAuthority,
     _PrecomputedModuleImportScan,
@@ -51,6 +50,20 @@ from molt.target_python import (
     TargetPythonVersion,
     _DEFAULT_TARGET_PYTHON_VERSION,
 )
+
+
+@dataclass(frozen=True)
+class _DiscoveredModuleGraph:
+    graph: dict[str, Path]
+    explicit_imports: set[str]
+    scan_authority: _ModuleGraphScanAuthority
+    discovery: "_ModuleGraphDiscovery | None" = field(
+        default=None, compare=False, repr=False
+    )
+    revised_sources: tuple[_ModuleSourceScanAuthority, ...] = ()
+
+    def __post_init__(self) -> None:
+        self.scan_authority.validate_graph(self.graph)
 
 
 # Submodule prefixes excluded from the module graph because they target

@@ -56,12 +56,10 @@ from molt.cli.models import (
     _EMPTY_EXTERNAL_PACKAGE_NATIVE_ARTIFACT_PLAN,
     BuildProfile,
     _BackendCacheSetup,
-    _BackendExecutionResult,
     _CliFailure,
     _ExternalPackageNativeArtifactPlan,
     _ModuleGraphMetadata,
     _PreparedBackendCompile,
-    _PreparedBackendDispatch,
     _PreparedBackendRuntimeContext,
     _PreparedBackendSetup,
     _RuntimeArtifactState,
@@ -101,6 +99,23 @@ from molt import host_capacity
 
 if TYPE_CHECKING:
     from molt.cli.cache_keys import FunctionDigests
+
+
+@dataclass(frozen=True)
+class _PreparedBackendDispatch:
+    backend_env: dict[str, str]
+    reloc_requested: bool
+    backend_bin: Path
+    daemon_socket: Path | None
+    daemon_ready: bool
+    backend_daemon_config_digest: str | None
+
+
+@dataclass(frozen=True)
+class _BackendExecutionResult:
+    backend_daemon_cached: bool | None
+    backend_daemon_cache_tier: str | None
+    backend_daemon_health: dict[str, Any] | None
 
 
 def _record_pipeline_stage_ms(

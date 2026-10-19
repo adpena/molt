@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
+
 import ast
 import contextlib
 import hashlib
@@ -45,8 +47,6 @@ from molt.cli.models import (
     ParseCodec,
     TypeHintPolicy,
     _ModuleGraphMetadata,
-    _ModuleLoweringExecutionView,
-    _ModuleLoweringMetadataView,
     _ScopedLoweringInputView,
     _ScopedLoweringInputs,
 )
@@ -69,6 +69,21 @@ from molt.cli.module_source import (
     _payload_source_matches,
 )
 from molt.target_python import TargetPythonVersion, _DEFAULT_TARGET_PYTHON_VERSION
+
+
+@dataclass(frozen=True)
+class _ModuleLoweringMetadataView:
+    logical_source_path: str
+    module_is_namespace: bool
+    is_package: bool
+    module_execution_kind: ModuleExecutionKind
+
+
+@dataclass(frozen=True)
+class _ModuleLoweringExecutionView:
+    metadata: _ModuleLoweringMetadataView
+    scoped_inputs: _ScopedLoweringInputView
+    scoped_known_classes: dict[ClassId, ClassInfo]
 
 
 def _collect_func_defaults(tree: ast.AST) -> dict[str, dict[str, Any]]:

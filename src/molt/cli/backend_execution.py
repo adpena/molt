@@ -11,7 +11,7 @@ import subprocess
 import sys
 import tempfile
 import time
-from typing import Any, Collection, Mapping, Sequence, cast
+from typing import Any, Collection, Mapping, Sequence, cast, NamedTuple
 import uuid
 
 from molt.default_paths import (
@@ -72,7 +72,6 @@ from molt.cli.command_runtime import (
     _run_completed_command,
 )
 from molt.cli.env_paths import _resolve_env_path
-from molt.cli.models import _BackendDaemonCompileResult
 from molt.cli.runtime_native_codegen import (
     NativeRuntimeCodegenBinding,
     native_runtime_codegen_environment,
@@ -84,6 +83,17 @@ from molt.cli.runtime_paths import (
     _cargo_target_root,
     _molt_session_id,
 )
+
+
+class _BackendDaemonCompileResult(NamedTuple):
+    ok: bool
+    error: str | None
+    health: dict[str, Any] | None
+    cached: bool | None
+    cache_tier: str | None
+    output_written: bool
+    output_exists: bool
+    full_request_sent: bool = False
 
 
 _BACKEND_CODEGEN_ENV_DIGEST_SCHEMA_VERSION = 8

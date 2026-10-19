@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
+
 import os
 import sys
 import uuid
@@ -9,7 +11,30 @@ from typing import Mapping, Sequence
 from molt.cli.artifact_state import _build_state_root
 from molt.cli.atomic_io import _atomic_write_json
 from molt.cli.diagnostic_text import strip_terminal_decoration
-from molt.cli.models import _RuntimeArtifactState, _RuntimeWasmBuildFailure
+from molt.cli.models import _RuntimeArtifactState
+
+
+@dataclass
+class _RuntimeWasmBuildFailure:
+    stage: str
+    summary: str
+    evidence_path: Path | None = None
+    returncode: int | None = None
+    timed_out: bool = False
+    details: dict[str, object] | None = None
+
+    def json_payload(self) -> dict[str, object]:
+        return {
+            "stage": self.stage,
+            "summary": self.summary,
+            "evidence_path": (
+                None if self.evidence_path is None else str(self.evidence_path)
+            ),
+            "returncode": self.returncode,
+            "timed_out": self.timed_out,
+            "details": self.details,
+        }
+
 
 _SUMMARY_LIMIT = 4096
 _EVIDENCE_TEXT_LIMIT = 128 * 1024

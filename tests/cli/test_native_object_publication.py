@@ -26,11 +26,11 @@ from molt.cli.backend_artifact_contract import resolve_backend_artifact_contract
 from molt.cli.models import (
     _BackendCacheSetup,
     _EMPTY_EXTERNAL_PACKAGE_NATIVE_ARTIFACT_PLAN,
-    _PreparedBackendIR,
     _PreparedBackendSetup,
     _PreparedBuildConfig,
     _RuntimeArtifactState,
 )
+from molt.cli.backend_ir import _PreparedBackendIR
 from molt.cli.build_output_layout import _BuildOutputLayout
 from molt.cli.output import fail
 from molt.cli.module_source import _ModuleSourceCatalog, _ModuleSourceLease

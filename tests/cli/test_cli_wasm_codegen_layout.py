@@ -10,11 +10,8 @@ from molt.cli.backend_artifact_contract import (
     BackendArtifactContract,
     BackendArtifactKind,
 )
-from molt.cli.models import (
-    _BackendCacheSetup,
-    _BackendExecutionResult,
-    _RuntimeArtifactState,
-)
+from molt.cli.models import _BackendCacheSetup, _RuntimeArtifactState
+from molt.cli.backend_compile import _BackendExecutionResult
 from molt.cli.runtime_wasm_generation import (
     RuntimeWasmCodegenBinding,
     bind_runtime_wasm_codegen,

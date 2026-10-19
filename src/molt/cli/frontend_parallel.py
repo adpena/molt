@@ -2,20 +2,16 @@ from __future__ import annotations
 
 import os
 import time
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Callable, Mapping, MutableMapping, Sequence, TYPE_CHECKING, cast
 
 from molt.cli.build_diagnostics import _duration_ms_from_ns
 from molt.cli.models import (
     _FrontendLayerPlan,
-    _FrontendLayerPolicySummary,
-    _FrontendLayerStaticMetrics,
     _FrontendModuleResultTimings,
     _FrontendParallelConfig,
     _FrontendParallelLayerState,
-    _FrontendWorkerResourceDecision,
-    _WorkerTimingSummary,
 )
 from molt.cli.module_source import _ModuleSourceCatalog
 from molt.cli.module_stdlib_policy import _looks_like_stdlib_module_name
@@ -24,6 +20,46 @@ from molt import host_capacity
 if TYPE_CHECKING:
     from molt.cli.models import ModuleSyntaxErrorInfo
     from molt.frontend import ClassId, ClassInfo
+
+
+@dataclass(frozen=True)
+class _WorkerTimingSummary:
+    count: int
+    queue_ms_total: float
+    queue_ms_max: float
+    wait_ms_total: float
+    wait_ms_max: float
+    exec_ms_total: float
+    exec_ms_max: float
+    roundtrip_ms_total: float
+    reused_ms_total: float
+
+
+@dataclass(frozen=True)
+class _FrontendLayerStaticMetrics:
+    predicted_cost_total: float
+    stdlib_candidates: int
+
+
+@dataclass(frozen=True)
+class _FrontendLayerPolicySummary:
+    enabled: bool
+    workers: int
+    reason: str
+    predicted_cost_total: float
+    effective_min_predicted_cost: float
+    stdlib_candidates: int
+
+
+@dataclass(frozen=True)
+class _FrontendWorkerResourceDecision:
+    workers: int
+    selection_source: str
+    requested_workers: int | None
+    cpu_count: int
+    total_memory_bytes: int | None
+    available_memory_bytes: int | None
+    memory_ceiling: int
 
 
 _FRONTEND_WORKER_MEMORY_BYTES = 768 * 1024 * 1024

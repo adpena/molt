@@ -8,7 +8,7 @@ import subprocess
 import sys
 import time
 from pathlib import Path
-from typing import Any, Literal, Mapping, Sequence
+from typing import Any, Literal, Mapping, Sequence, NamedTuple
 
 from molt.cargo_execution_policy import admit_cargo_build
 from molt.source_root import compiler_source_root
@@ -20,7 +20,6 @@ from molt.cli.command_runtime import (
     _run_completed_command,
 )
 from molt.cli.env_paths import _base_env
-from molt.cli.models import _MaintenanceStep, _ValidationStep
 from molt.cli.output import emit_json as _emit_json
 from molt.cli.output import fail as _fail
 from molt.cli.output import json_payload as _json_payload
@@ -38,6 +37,24 @@ from molt.cli.setup_readiness import (
 )
 from molt.llvm_toolchain import llvm_bootstrap_command
 from molt.tool_releases import pinned_executable
+
+
+class _MaintenanceStep(NamedTuple):
+    name: str
+    cmd: list[str]
+    cwd: Path
+    category: Literal["toolchain", "lock", "manifest"]
+
+
+class _ValidationStep(NamedTuple):
+    name: str
+    cmd: list[str]
+    cwd: Path
+    category: Literal["command", "correctness", "conformance", "benchmark"]
+    backends: tuple[str, ...]
+    profiles: tuple[str, ...]
+    suite: Literal["full", "smoke"]
+
 
 _VALIDATE_PROOF_BYPASS_ENV = frozenset(
     {

@@ -14,6 +14,7 @@ from molt.cli import (
 
 _COMMAND_AUTHORITIES = {
     process_execution: (
+        "_TimedResult",
         "_format_duration",
         "_run_command",
         "_run_command_timed",
