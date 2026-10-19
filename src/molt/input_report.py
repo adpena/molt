@@ -22,7 +22,7 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import Any, Protocol
 
-# (device, inode, mode, size, mtime_ns, content-change ns)
+# (device, inode, mode, file size or POSIX directory size, mtime_ns, content-change ns)
 StatToken = tuple[int, int, int, int, int, int]
 # A lookup's resolved target and file type; an empty target carries the errno
 # of a lookup that failed for a reason other than absence; None is absent.
@@ -50,7 +50,10 @@ def stat_token(
         metadata.st_dev,
         metadata.st_ino,
         metadata.st_mode,
-        metadata.st_size,
+        # Windows by-name and handle metadata can report 4096 and 0 for
+        # the same unchanged directory. Its allocation length is not a
+        # namespace generation; retain object identity and both change clocks.
+        0 if os.name == "nt" and stat.S_ISDIR(metadata.st_mode) else metadata.st_size,
         metadata.st_mtime_ns,
         change,
     )

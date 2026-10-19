@@ -158,6 +158,21 @@ while observing its own bytecode reads would otherwise recursively initialize
 that API from a partial module. This is a one-time reporting setup cost;
 ordinary imports and emitted binaries do not initialize the observer.
 
+Product comparisons use the shared path identity authority after filesystem
+resolution. Windows DOS/UNC and verbatim spellings compare in one namespace,
+including case and component boundaries; the recorded input spellings remain
+unchanged. Comparison keys are never opened, so unusual verbatim names retain
+their identity. Root keys are computed once and each observation is resolved
+once, with no additional filesystem traversal.
+
+Windows directory tokens retain identity, type, modification time and NTFS
+ChangeTime, with a zero length field. Consecutive live queries returned 4096
+and 0 for unchanged directories: CPython's
+[by-name and handle stat conversions](https://github.com/python/cpython/blob/v3.12.15/Python/fileutils.c#L1100-L1165)
+obtain lengths from different Windows metadata structures. Directory allocation
+length is not a namespace generation. Regular-file lengths remain exact, and
+the existing timestamp race rule and namespace mutation controls still apply.
+
 Record schema v6 rejects earlier records whose inputs could be incomplete.
 Reporting adds O(captured paths + visited directories + selectors) facts and
 JSONL bytes through the existing flushed worker log, plus exact lookup probes.
