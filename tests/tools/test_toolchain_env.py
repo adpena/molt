@@ -36,7 +36,10 @@ def _fake_providers(monkeypatch: pytest.MonkeyPatch, *, installed: bool) -> None
     """Fake each provider where the command reads it; a fake never installs."""
 
     def llvm_delta(_root, _verification, *, environ):
-        return {"MOLT_LLVM_PREFIX": "/llvm", "PATH": f"/llvm/bin:{environ['PATH']}"}
+        return {
+            "MOLT_LLVM_PREFIX": "/llvm",
+            "PATH": os.pathsep.join((str(Path("/llvm/bin")), environ["PATH"])),
+        }
 
     def wasm_delta(_installation, *, environ, rust_target):
         assert rust_target == "wasm32-wasip1"
@@ -81,7 +84,7 @@ def _delta(**selection: object) -> dict[str, str]:
         toolchains=list(selection.get("toolchains", [])),
     )
     return toolchain_env.toolchain_environment(
-        PLAN, names, environ={"PATH": "/usr/bin"}
+        PLAN, names, environ={"PATH": str(Path("/usr/bin"))}
     )
 
 
@@ -147,9 +150,10 @@ def test_wasi_variables_appear_only_when_the_selection_needs_the_wasi_sdk(
     _fake_providers(monkeypatch, installed=True)
     native = _delta(toolchains=["ld.lld", "wasm-tools"])
     assert native["MOLT_LLVM_PREFIX"] == "/llvm"
-    assert native["PATH"].split(os.pathsep)[:2] == [
-        "/tools/wasm-tools/bin",
-        "/llvm/bin",
+    assert native["PATH"].split(os.pathsep) == [
+        str(Path("/tools/wasm-tools/bin")),
+        str(Path("/llvm/bin")),
+        str(Path("/usr/bin")),
     ]
     assert not [key for key in native if WASI_KEY.search(key)]
     wasm = _delta(commands=["wasm.build.backend"])

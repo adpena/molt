@@ -310,7 +310,12 @@ def test_discovery_accepts_versioned_llvm_config_outside_matching_prefix(
     _write_facade(tmp_path, '"molt-backend-native/llvm"')
     _write_native(tmp_path, '"llvm22-1"', "221.0.1")
     prefix = tmp_path / "usr" / "lib" / "llvm-22"
-    external_config = tmp_path / "usr" / "bin" / "llvm-config-22"
+    external_config = (
+        tmp_path
+        / "usr"
+        / "bin"
+        / ("llvm-config-22.exe" if os.name == "nt" else "llvm-config-22")
+    )
     _write(external_config, "")
     external_config.chmod(0o755)
     monkeypatch.setattr(
@@ -329,6 +334,7 @@ def test_discovery_accepts_versioned_llvm_config_outside_matching_prefix(
         environ={
             "LLVM_SYS_221_PREFIX": str(prefix),
             "PATH": str(external_config.parent),
+            "PATHEXT": ".EXE",
         },
     )
 
@@ -345,7 +351,11 @@ def test_discovery_rejects_unrelated_llvm_sys_search_root(
     _write_native(tmp_path, '"llvm22-1"', "221.0.1")
     configured = tmp_path / "configured"
     other = tmp_path / "other"
-    external_config = tmp_path / "bin" / "llvm-config-22"
+    external_config = (
+        tmp_path
+        / "bin"
+        / ("llvm-config-22.exe" if os.name == "nt" else "llvm-config-22")
+    )
     _write(external_config, "")
     external_config.chmod(0o755)
     monkeypatch.setattr(
@@ -365,6 +375,7 @@ def test_discovery_rejects_unrelated_llvm_sys_search_root(
             environ={
                 "LLVM_SYS_221_PREFIX": str(configured),
                 "PATH": str(external_config.parent),
+                "PATHEXT": ".EXE",
             },
         )
 
@@ -1310,7 +1321,7 @@ def test_wasm_llvm_nm_checks_resolved_entrypoint_and_content_custody(
     if selection == "bare":
 
         def find_executable(command, *, environment, cwd):
-            assert command == "llvm-nm"
+            assert command == selected.name
             assert environment == {"MOLT_LLVM_NM": raw, "PATH": str(selected.parent)}
             assert cwd is None
             return selected
