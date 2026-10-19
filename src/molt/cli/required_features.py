@@ -21,9 +21,12 @@ The name-based resolver path (``load_intrinsic`` / ``require_optional_intrinsic`
 instead emits a ``const_str`` intrinsic name that the per-app resolver resolves at
 runtime; that name is likewise a reached-intrinsic candidate.
 
-``ReachedIntrinsics`` is therefore: every ``builtin_func``/``const_str`` op whose
-``s_value`` is a runtime intrinsic symbol, scanned over the set of **reachable**
-SimpleIR functions. Reachability is the same call-graph closure the native/WASM
+``ReachedIntrinsics`` includes named external/runtime calls and first-class
+function addresses whose targets are runtime intrinsics rather than compiled
+definitions. ``builtin_func`` always names a runtime intrinsic, independently
+of compiled definitions; ``const_str`` preserves conservative resolver candidates.
+These references are scanned over **reachable** SimpleIR functions.
+Reachability is the same call-graph closure the native/WASM
 backends use to dead-strip functions (``molt-tir`` ``eliminate_dead_functions``):
 a BFS from the program entry (``molt_main``), protected runtime entrypoints and
 registry relocation roots, following reference-bearing op kinds. This is static
@@ -65,6 +68,10 @@ from molt._runtime_feature_gates import (
     unsupported_target_arches_for_symbol,
 )
 from molt.cli import function_references as _function_references
+from molt.frontend.lowering.op_kinds_generated import (
+    SIMPLEIR_CALL_TARGET_ROLES,
+    SIMPLEIR_FUNCTION_REFERENCE_S_VALUE_KINDS,
+)
 
 _PROTECTED_RUNTIME_ENTRYPOINT_PREFIXES = (
     _function_references.PROTECTED_RUNTIME_ENTRYPOINT_PREFIXES
@@ -89,8 +96,9 @@ _RUNTIME_INTRINSIC_SYMBOL_NAMES: frozenset[str] = frozenset(
 #: link reference (``func_addr`` / ``Linkage::Import`` -> ``.refptr.molt_*``);
 #: ``const_str`` is the name the per-app resolver may resolve dynamically (the
 #: ``compute_app_callable_manifest`` candidate shape). Both are validated
-#: against the feature-gate authority, so non-intrinsic strings/builtins
-#: contribute nothing.
+#: against intrinsic membership, so non-intrinsic strings/builtins contribute
+#: nothing. Unlike general named calls/function addresses, these runtime-only
+#: and conservative resolver references are not shadowed by compiled definitions.
 _INTRINSIC_SYMBOL_OP_KINDS: frozenset[str] = frozenset({"builtin_func", "const_str"})
 
 
@@ -127,6 +135,12 @@ def reached_intrinsic_symbols(
     closure without re-scanning source modules.
     """
     reachable = reachable_function_names(functions, extra_roots=extra_roots)
+    compiled = {
+        name
+        for func in functions
+        if isinstance((name := func.get("name")), str)
+        and not func.get("is_extern", False)
+    }
     symbols: set[str] = set()
     for func in functions:
         name = func.get("name")
@@ -138,11 +152,20 @@ def reached_intrinsic_symbols(
         for op in ops:
             if not isinstance(op, Mapping):
                 continue
-            if op.get("kind") not in _INTRINSIC_SYMBOL_OP_KINDS:
+            kind = op.get("kind")
+            if not isinstance(kind, str):
                 continue
             symbol = op.get("s_value")
             if not isinstance(symbol, str):
                 continue
+            if kind not in _INTRINSIC_SYMBOL_OP_KINDS:
+                if symbol in compiled:
+                    continue
+                if (
+                    SIMPLEIR_CALL_TARGET_ROLES.get(kind) != "external_or_runtime"
+                    and kind not in SIMPLEIR_FUNCTION_REFERENCE_S_VALUE_KINDS
+                ):
+                    continue
             canonical = intrinsic_runtime_symbol_name(symbol)
             if canonical not in _RUNTIME_INTRINSIC_SYMBOL_NAMES:
                 continue

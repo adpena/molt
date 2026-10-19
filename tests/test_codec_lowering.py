@@ -395,17 +395,16 @@ async def main():
     assert definitions[argument_values[0]]["kind"] == "const"
     assert definitions[argument_values[0]]["value"] == 0
     assert definitions[argument_values[1]]["kind"] == "const_none"
-    helpers = {
-        op["out"]
+    assert not any(
+        op["kind"] == "builtin_func" and op.get("s_value") == "molt_get_awaitable"
         for op in function_ops
-        if op["kind"] == "builtin_func" and op.get("s_value") == "molt_get_awaitable"
-    }
+    )
     acquisitions = [
         op
         for op in function_ops
-        if op["kind"] == "call_func"
-        and op["args"][0] in helpers
-        and op["args"][1:] == [call["out"]]
+        if op["kind"] == "call"
+        and op.get("s_value") == "molt_get_awaitable"
+        and op["args"] == [call["out"]]
     ]
     assert len(acquisitions) == 1
     stores = [

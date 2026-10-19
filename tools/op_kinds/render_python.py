@@ -23,6 +23,7 @@ from .primitive_effects import (
 from .validate import (
     _frontend_effect_class_map,
 )
+from .schema import _SIMPLEIR_CALL_TARGET_ROLES
 
 
 def _canonical_kinds_for_opcodes(data: dict, opcodes: set[str]) -> list[str]:
@@ -232,6 +233,28 @@ def _render_py_frontend_effect_sets(data: dict) -> str:
             data["simpleir_defined_function_reference_s_value_kinds"],
         )
     )
+    out.append(
+        _render_py_frozenset(
+            "SIMPLEIR_FUNCTION_REFERENCE_S_VALUE_KINDS",
+            data["simpleir_function_reference_s_value_kinds"],
+        )
+    )
+    out.append(
+        "# Executable named targets remain distinct from opaque callable hints.\n"
+    )
+    out.append("SimpleIrCallTargetRole = Literal[\n")
+    for role in sorted(_SIMPLEIR_CALL_TARGET_ROLES):
+        out.append(f'    "{role}",\n')
+    out.append("]\n\n")
+    out.append("SIMPLEIR_CALL_TARGET_ROLES: dict[str, SimpleIrCallTargetRole] = {\n")
+    target_roles = {
+        entry["spelling"]: entry["role"]
+        for row in data.get("kind", [])
+        for entry in row.get("simpleir_call_target_roles", [])
+    }
+    for kind, role in sorted(target_roles.items()):
+        out.append(f'    "{kind}": "{role}",\n')
+    out.append("}\n\n")
     protected_gateway_callables = sorted(
         set(data.get("simpleir_runtime_protected_gateway_callables", []))
     )
@@ -379,6 +402,8 @@ _PY_HEADER = """\
 #                                [[binary_op]] (EXHAUSTIVE over ast.operator).
 
 from __future__ import annotations
+
+from typing import Literal
 
 """
 

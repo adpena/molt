@@ -20,8 +20,12 @@ For fixed prepared SimpleIR and explicit roots:
 
 1. Retain the first entry, protected runtime entries, and registry relocation roots.
 2. Follow defined-function references to a fixed point.
-3. Collect known runtime intrinsic symbols from retained `builtin_func` and
-   `const_str` operations.
+3. Collect known runtime intrinsic symbols from retained named external/runtime
+   calls and first-class function addresses, using the generated op-kind target
+   roles. Compiled definitions take precedence over same-spelling runtime
+   symbols; extern declarations do not. Runtime-only `builtin_func` references
+   and conservative `const_str` resolver candidates remain requirements
+   independently of compiled definitions.
 4. Map those symbols to link-affecting features and compare against the target's
    available profile features.
 

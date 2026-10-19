@@ -636,7 +636,6 @@ def _literal_plain_import_transaction_name(
     op: Mapping[str, Any],
     *,
     const_str_by_var: Mapping[str, str],
-    builtin_func_by_var: Mapping[str, str],
     const_none_vars: Collection[str],
     empty_tuple_vars: Collection[str],
     const_int_by_var: Mapping[str, int],
@@ -645,26 +644,24 @@ def _literal_plain_import_transaction_name(
     literal absolute module name.
 
     The shape (``_emit_import_transaction`` with empty fromlist, level 0):
-    ``call_func [<transaction builtin>, <const_str name>, <globals>,
+    ``call molt_importlib_import_transaction [<const_str name>, <globals>,
     <const_none locals>, <empty tuple_new fromlist>, <const 0 level>]``.
     Anything else (fromlist imports, relative levels, computed names) keeps
     the CPython-parity transaction lane.
     """
-    if op.get("kind") != "call_func":
+    if op.get("kind") != "call" or op.get("s_value") != _IMPORT_TRANSACTION_SYMBOL:
         return None
     args = op.get("args")
-    if not isinstance(args, list) or len(args) != 6:
+    if not isinstance(args, list) or len(args) != 5:
         return None
-    if builtin_func_by_var.get(args[0]) != _IMPORT_TRANSACTION_SYMBOL:
-        return None
-    name = const_str_by_var.get(args[1])
+    name = const_str_by_var.get(args[0])
     if name is None:
         return None
-    if args[3] not in const_none_vars:
+    if args[2] not in const_none_vars:
         return None
-    if args[4] not in empty_tuple_vars:
+    if args[3] not in empty_tuple_vars:
         return None
-    if const_int_by_var.get(args[5]) != 0:
+    if const_int_by_var.get(args[4]) != 0:
         return None
     return name
 
@@ -673,9 +670,9 @@ def _has_import_lane_site(ops: list[Any]) -> bool:
     """Whether ``ops`` hold an op that ``_rewrite_native_import_lanes`` reads.
 
     The rewrite changes a direct ``molt_init_*`` call, a ``module_import`` or a
-    plain-import transaction call, and that call's callee is a
-    ``builtin_func`` of the transaction symbol in the same function. Most
-    functions hold none of these, so one scan of their kinds skips them.
+    direct compiler-owned plain-import transaction call. Observable intrinsic
+    callable references keep their ordinary transaction semantics. Most functions
+    hold none of these sites, so one scan of their kinds skips them.
     """
     for op in ops:
         if not isinstance(op, dict):
@@ -685,10 +682,9 @@ def _has_import_lane_site(ops: list[Any]) -> bool:
             return True
         if kind == "call":
             symbol = op.get("s_value")
-            if isinstance(symbol, str) and symbol.startswith("molt_init_"):
-                return True
-        elif kind == "builtin_func":
-            if op.get("s_value") == _IMPORT_TRANSACTION_SYMBOL:
+            if isinstance(symbol, str) and (
+                symbol.startswith("molt_init_") or symbol == _IMPORT_TRANSACTION_SYMBOL
+            ):
                 return True
     return False
 
@@ -722,12 +718,16 @@ def _rewrite_native_import_lanes(
     replace borrowed function records without mutating their operations.
     """
     rewrite_map = _registry_init_symbol_rewrite_map(registry)
+    rewrite_plain_imports = not any(
+        func.get("name") == _IMPORT_TRANSACTION_SYMBOL
+        and not func.get("is_extern", False)
+        for func in functions
+    )
     for function_index, func in enumerate(functions):
         ops = func.get("ops")
         if not isinstance(ops, list) or not _has_import_lane_site(ops):
             continue
         const_str_by_var: dict[str, str] = {}
-        builtin_func_by_var: dict[str, str] = {}
         const_none_vars: set[str] = set()
         empty_tuple_vars: set[str] = set()
         const_int_by_var: dict[str, int] = {}
@@ -738,8 +738,6 @@ def _rewrite_native_import_lanes(
             out = op["out"]
             if kind == "const_str" and isinstance(op.get("s_value"), str):
                 const_str_by_var[out] = op["s_value"]
-            elif kind == "builtin_func" and isinstance(op.get("s_value"), str):
-                builtin_func_by_var[out] = op["s_value"]
             elif kind == "const_none":
                 const_none_vars.add(out)
             elif kind == "tuple_new" and not op.get("args"):
@@ -754,34 +752,33 @@ def _rewrite_native_import_lanes(
                 new_ops.append(op)
                 continue
             kind = op.get("kind")
-            if kind == "call":
-                symbol = op.get("s_value")
-                if isinstance(symbol, str) and symbol.startswith("molt_init_"):
-                    module_name = rewrite_map.get(symbol)
-                    if module_name is None:
-                        return (
-                            "direct module-init call targets a symbol outside "
-                            f"the module registry: {symbol} in "
-                            f"{func.get('name')!r}; init bodies are reachable "
-                            "only through MODULE_INIT_TABLE"
-                        )
-                    id_var = f"v{next_var}"
-                    boxed_var = f"v{next_var + 1}"
-                    next_var += 2
-                    out_var = op.get("out")
-                    out_name = out_var if isinstance(out_var, str) else f"v{next_var}"
-                    if not isinstance(out_var, str):
-                        next_var += 1
-                    new_ops.extend(
-                        _module_ensure_call_ops(
-                            module_name,
-                            id_var=id_var,
-                            boxed_var=boxed_var,
-                            out_var=out_name,
-                        )
+            symbol = op.get("s_value") if kind == "call" else None
+            if isinstance(symbol, str) and symbol.startswith("molt_init_"):
+                module_name = rewrite_map.get(symbol)
+                if module_name is None:
+                    return (
+                        "direct module-init call targets a symbol outside "
+                        f"the module registry: {symbol} in "
+                        f"{func.get('name')!r}; init bodies are reachable "
+                        "only through MODULE_INIT_TABLE"
                     )
-                    changed = True
-                    continue
+                id_var = f"v{next_var}"
+                boxed_var = f"v{next_var + 1}"
+                next_var += 2
+                out_var = op.get("out")
+                out_name = out_var if isinstance(out_var, str) else f"v{next_var}"
+                if not isinstance(out_var, str):
+                    next_var += 1
+                new_ops.extend(
+                    _module_ensure_call_ops(
+                        module_name,
+                        id_var=id_var,
+                        boxed_var=boxed_var,
+                        out_var=out_name,
+                    )
+                )
+                changed = True
+                continue
             elif kind == "module_import":
                 args = op.get("args")
                 name = (
@@ -810,11 +807,10 @@ def _rewrite_native_import_lanes(
                     )
                     changed = True
                     continue
-            elif kind == "call_func":
+            elif kind == "call" and rewrite_plain_imports:
                 name = _literal_plain_import_transaction_name(
                     op,
                     const_str_by_var=const_str_by_var,
-                    builtin_func_by_var=builtin_func_by_var,
                     const_none_vars=const_none_vars,
                     empty_tuple_vars=empty_tuple_vars,
                     const_int_by_var=const_int_by_var,

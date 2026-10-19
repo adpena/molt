@@ -6168,6 +6168,10 @@ def test_defined_function_reference_authority_is_distinct_and_generated() -> Non
     projected: dict[str, object] = {}
     exec(gen.render_py(data), projected)
     assert projected["SIMPLEIR_DEFINED_FUNCTION_REFERENCE_S_VALUE_KINDS"] == expected
+    assert projected["SIMPLEIR_FUNCTION_REFERENCE_S_VALUE_KINDS"] == {
+        "func_new",
+        "func_new_closure",
+    }
     rendered = gen.render_rs(data)
     table = rendered.split(
         "pub const SIMPLEIR_DEFINED_FUNCTION_REFERENCE_S_VALUE_KINDS", 1
@@ -6185,6 +6189,47 @@ def test_defined_function_reference_authority_is_distinct_and_generated() -> Non
         "func_new",
         "func_new_closure",
     }
+
+
+def test_call_target_roles_are_closed_and_shared_by_python_and_rust() -> None:
+    from typing import get_args
+
+    gen = _gen()
+    data = gen.load_table()
+    projected: dict[str, object] = {}
+    exec(gen.render_py(data), projected)
+    expected = {
+        "call": "external_or_runtime",
+        "call_internal": "internal_required",
+        "call_func": "opaque",
+        "call_function": "opaque",
+        "call_guarded": "opaque",
+        "call_indirect": "opaque",
+        "call_bind": "opaque",
+        "invoke_ffi": "opaque",
+    }
+    assert projected["SIMPLEIR_CALL_TARGET_ROLES"] == expected
+    assert set(get_args(projected["SimpleIrCallTargetRole"])) == {
+        "external_or_runtime",
+        "internal_required",
+        "opaque",
+    }
+    rendered = gen.render_rs(data)
+    rust_roles = {
+        "external_or_runtime": "ExternalOrRuntime",
+        "internal_required": "InternalRequired",
+        "opaque": "Opaque",
+    }
+    for kind, role in expected.items():
+        assert (
+            f'"{kind}" => Some(SimpleIrCallTargetRole::{rust_roles[role]})' in rendered
+        )
+    call = next(row for row in data["kind"] if row["canonical"] == "call")
+    call["simpleir_call_target_roles"][0]["role"] = "opaque"
+    mutated: dict[str, object] = {}
+    exec(gen.render_py(data), mutated)
+    assert mutated["SIMPLEIR_CALL_TARGET_ROLES"] == {**expected, "call": "opaque"}
+    assert '"call" => Some(SimpleIrCallTargetRole::Opaque)' in gen.render_rs(data)
 
 
 @pytest.mark.parametrize(

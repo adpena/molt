@@ -25,6 +25,8 @@
 
 from __future__ import annotations
 
+from typing import Literal
+
 # Exact primitive effects share the Rust operation matrix.
 FRONTEND_OPERATOR_OPCODE: dict[str, str] = {
     'ABS': 'Neg',
@@ -2720,6 +2722,31 @@ SIMPLEIR_DEFINED_FUNCTION_REFERENCE_S_VALUE_KINDS: frozenset[str] = frozenset(
         "yield_from",
     }
 )
+
+SIMPLEIR_FUNCTION_REFERENCE_S_VALUE_KINDS: frozenset[str] = frozenset(
+    {
+        "func_new",
+        "func_new_closure",
+    }
+)
+
+# Executable named targets remain distinct from opaque callable hints.
+SimpleIrCallTargetRole = Literal[
+    "external_or_runtime",
+    "internal_required",
+    "opaque",
+]
+
+SIMPLEIR_CALL_TARGET_ROLES: dict[str, SimpleIrCallTargetRole] = {
+    "call": "external_or_runtime",
+    "call_bind": "opaque",
+    "call_func": "opaque",
+    "call_function": "opaque",
+    "call_guarded": "opaque",
+    "call_indirect": "opaque",
+    "call_internal": "internal_required",
+    "invoke_ffi": "opaque",
+}
 
 SIMPLEIR_RUNTIME_PROTECTED_GATEWAY_CALLABLES: frozenset[str] = frozenset(
     {
