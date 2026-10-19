@@ -68,21 +68,24 @@ class Template:
     def _substitute(self, mapping: object, *, safe: bool) -> str:
         segments = _molt_template_scan(self.template, self.delimiter)
         out: list[str] = []
-        for literal, var_name, original in segments:
+        for literal, var_name, original, invalid_index in segments:
             if literal:
                 out.append(literal)
-            if var_name is None:
+            if invalid_index is not None:
+                if not safe:
+                    self._invalid(invalid_index)
+                out.append(cast(str, original))
                 continue
-            if safe:
-                try:
+            if var_name is not None:
+                if safe:
+                    try:
+                        out.append(str(mapping[var_name]))  # type: ignore[index]
+                    except KeyError:
+                        out.append(cast(str, original))
+                else:
                     out.append(str(mapping[var_name]))  # type: ignore[index]
-                except KeyError:
-                    out.append(original)  # type: ignore[arg-type]
-            else:
-                try:
-                    out.append(str(mapping[var_name]))  # type: ignore[index]
-                except KeyError:
-                    self._invalid(self.template.find(original))  # type: ignore[arg-type]
+            elif original is not None:
+                out.append(self.delimiter)
         return "".join(out)
 
     def substitute(self, mapping: object = _sentinel_dict, /, **kws) -> str:
