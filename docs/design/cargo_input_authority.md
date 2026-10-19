@@ -78,8 +78,9 @@ JSON messages:
    its `out_dir`: the `rerun-if-changed` paths (relative to the package root)
    and the `rerun-if-env-changed` names. A script that declares neither counts
    its whole package, including an obligation to cover future additions there.
-3. Registry and git units contribute their variables; Cargo.lock identifies
-   their sources.
+3. Registry and git units currently contribute their variables; Cargo.lock
+   identifies the requested source archives, not the bytes of a mutable unpacked
+   source tree. Complete file attestation must bind those consumed bytes too.
 
 The uplifted dep-info beside a final artifact is not enough: Cargo's
 `output_depinfo` recurses only through local dependencies, so a local package
@@ -246,22 +247,38 @@ variables to check; it never vouches for their bytes. This is a proposed cost
 reduction, not a measured implementation win. Windows must retain content
 verification where its metadata does not support the existing cache contract.
 
-Three rules keep the record honest:
+The migration must establish these prerequisites before replacing tree identities:
 
-- **Cargo must agree.** Cargo decides by mtime, so an input whose bytes changed
-  under an old mtime (`cp -p`, `rsync -a`, archives, a skewed clock) leaves its
-  unit Fresh with the old bytes. After Cargo returns, every unit that read an
-  input Molt saw change must report `"fresh": false`; otherwise publication
-  refuses, or forces the unit through the existing `MOLT_CARGO_INPUT_*`
-  env-dep mechanism.
-- **Racy rows.** An input whose change time falls inside the build is recorded
-  without a digest and never matches. A release takes those digests from the
-  Git inventory it already verifies after the build, so its identity does not
-  depend on timing. On a mount whose clock may differ from the process clock,
-  the stat shortcut is off.
-- **No aliases.** An entry whose real path differs from its lexical path (apart
-  from `..`) is refused; roots compare by (st_dev, st_ino) on case-insensitive
-  volumes.
+- **Per-unit provenance.** Preserve the bound dep-info path, package/target/output
+  identity, Cargo's `fresh` fact and build-script directory declarations before
+  flattening paths. The current reader discards these facts. Require a bound
+  record for each actual unit and the selected root target. The manifest graph
+  supplies a conservative local-package lower bound; declared optional, dev and
+  target dependencies are not proof that Cargo compiled those units.
+- **Consumed bytes, including bootstrap.** Hashing current sources after Cargo
+  succeeds cannot attest bytes consumed by a Fresh artifact. A prior trusted
+  per-unit content record must match the current inputs and output; without one,
+  bootstrap reuse refuses or needs proven rebuilding. A change-time predating
+  the build does not close that gap. Cargo's mtime freshness is distinct from a
+  content proof; see [racy Git](https://www.kernel.org/pub/software/scm/git/docs/technical/racy-git.html).
+  `MOLT_CARGO_INPUT_*` currently forces the proof supervisor and artifact publisher,
+  not every runtime, backend and transitive unit. It cannot be assumed to force
+  arbitrary Fresh units. Nightly checksum freshness is not a stable toolchain
+  contract.
+- **Complete source custody.** Bind actual registry/git source bytes or establish
+  authenticated immutable source custody; Cargo.lock alone does not attest a
+  modified unpacked cache. Preserve watched empty directories and recursive
+  listings. Apply lexical alias fences before resolving paths, since `realpath`
+  erases the evidence. Retain stable-file handle and host-specific digest-cache
+  protections rather than adding a second registry or a weak Windows stat cache.
+- **A stable build interval.** A post-build Git inventory proves current source
+  bytes, not which bytes a previously Fresh unit consumed. A frozen checkpoint
+  or equivalent proven input-stability boundary must cover compilation and
+  publication; a release inventory cannot substitute for that boundary.
+
+These are remaining requirements, not implemented guarantees. The existing
+coverage guard and environment observation remain in force while the complete
+producer, adopter, cached verifier and release replay migration is open.
 
 `MOLT_VERIFY_CARGO_INPUTS=1` hashes every recorded input on each check and
 fails on a stat-cache disagreement, as rustc's `-Zincremental-verify-ich` does.

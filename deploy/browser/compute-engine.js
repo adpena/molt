@@ -44,6 +44,7 @@ const AVAILABLE_BACKENDS = new Set(['webnn', 'webgpu', 'webgl2', 'wasm-simd', 's
  */
 function _cpuSoftmax(input, n, rows = 1) {
     const out = new Float32Array(rows * n);
+    if (out.length === 0) return out;
     for (let r = 0; r < rows; r++) {
         const offset = r * n;
         let maxVal = -Infinity;
@@ -76,6 +77,7 @@ function _cpuSoftmax(input, n, rows = 1) {
  */
 function _cpuRmsNorm(input, weight, n, rows = 1, eps = 1e-6) {
     const out = new Float32Array(rows * n);
+    if (out.length === 0) return out;
     for (let r = 0; r < rows; r++) {
         const offset = r * n;
         let sumSq = 0;
@@ -282,6 +284,7 @@ class WebGL2Engine {
      * @returns {Promise<Float32Array>}
      */
     async softmax(input, n, rows = 1) {
+        if (n === 0 || rows === 0) return new Float32Array();
         if (rows === 1) {
             return this.#engine.softmax(input, n);
         }
@@ -307,6 +310,7 @@ class WebGL2Engine {
      * @returns {Promise<Float32Array>}
      */
     async rmsNorm(input, weight, n, rows = 1, eps = 1e-6) {
+        if (n === 0 || rows === 0) return new Float32Array();
         if (rows === 1) {
             return this.#engine.rmsNorm(input, weight, n, eps);
         }
@@ -351,304 +355,159 @@ class WebGL2Engine {
 }
 
 // ---------------------------------------------------------------------------
-// WASM SIMD backend — loads simd-ops-zig.wasm for vectorized CPU inference.
-//
-// Primary: Zig SIMD binary (1.1 KB, 47% smaller per-op than Rust version).
-// Fallback: Rust SIMD binary (simd-ops.wasm) if Zig binary fails to load.
-// Last resort: scalar JS if neither WASM module loads.
-//
-// Both binaries provide f32x4 vectorized implementations of all hot-path ops.
+// WASM SIMD backend. One Rust crate owns the binary and its memory ABI.
+// See docs/design/browser_simd.md for numerical and allocation contracts.
 // ---------------------------------------------------------------------------
 
 class WasmSimdEngine {
-    /** @type {WebAssembly.Instance | null} */
     #instance;
-    /** @type {WebAssembly.Memory} */
     #memory;
-    /** @type {number} */
-    #bumpPtr = 0;
-    /** @type {boolean} */
-    #simdAvailable;
+    #heapBase;
 
-    constructor(instance, memory, simdAvailable) {
+    constructor(instance, memory, heapBase) {
         this.#instance = instance;
         this.#memory = memory;
-        this.#simdAvailable = simdAvailable;
+        this.#heapBase = heapBase;
     }
 
     static requiredExports() {
         return Object.freeze([
-            'matmul_f32',
-            'softmax_f32',
-            'rms_norm_f32',
-            'add_f32',
-            'mul_f32',
+            'matmul_f32_tiled', 'softmax_f32_fused', 'rms_norm_f32',
+            'add_f32', 'mul_f32',
         ]);
     }
 
     static async probe() {
         if (typeof WebAssembly === 'undefined') return false;
-        // Feature-detect WASM SIMD by attempting to compile a minimal SIMD module.
-        // The magic bytes encode: (module (func (result v128) (v128.const i32x4 0 0 0 0)))
-        try {
-            const simdTest = new Uint8Array([
-                0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00,
-                0x01, 0x05, 0x01, 0x60, 0x00, 0x01, 0x7b,
-                0x03, 0x02, 0x01, 0x00,
-                0x0a, 0x17, 0x01, 0x15, 0x00,
-                0xfd, 0x0c,
-                0x00, 0x00, 0x00, 0x00,
-                0x00, 0x00, 0x00, 0x00,
-                0x00, 0x00, 0x00, 0x00,
-                0x00, 0x00, 0x00, 0x00,
-                0x0b,
-            ]);
-            await WebAssembly.compile(simdTest);
-            return true;
-        } catch {
-            return false;
-        }
+        // (module (func (result v128) (v128.const i32x4 0 0 0 0)))
+        return WebAssembly.validate(new Uint8Array([
+            0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00,
+            0x01, 0x05, 0x01, 0x60, 0x00, 0x01, 0x7b,
+            0x03, 0x02, 0x01, 0x00,
+            0x0a, 0x16, 0x01, 0x14, 0x00, 0xfd, 0x0c,
+            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+            0x0b,
+        ]));
     }
 
-    /**
-     * Load the WASM SIMD module and create the engine.
-     *
-     * @param {string} [wasmUrl] - URL to simd-ops.wasm. Defaults to relative
-     *   path from this module.
-     * @returns {Promise<WasmSimdEngine>}
-     */
-    /**
-     * Load the WASM SIMD module with Zig-first, Rust-fallback strategy.
-     *
-     * @param {string} [wasmUrl] - Override URL. If not set, tries Zig binary
-     *   first (simd-ops-zig.wasm, 1.1 KB), then Rust binary (simd-ops.wasm).
-     * @returns {Promise<WasmSimdEngine>}
-     */
     static async create(wasmUrl) {
-        const simd = await WasmSimdEngine.probe();
+        if (!await WasmSimdEngine.probe() || typeof fetch === 'undefined') return null;
+        const url = wasmUrl || new URL('./simd-ops.wasm', import.meta.url).href;
+        const response = await fetch(url);
+        if (!response.ok) throw new Error(`WASM SIMD fetch failed: ${response.status}`);
+        const { instance } = await WebAssembly.instantiate(await response.arrayBuffer(), {});
+        const missing = WasmSimdEngine.requiredExports().filter(
+            name => typeof instance.exports[name] !== 'function',
+        );
+        if (!(instance.exports.memory instanceof WebAssembly.Memory)) missing.push('memory');
+        if (!(instance.exports.__heap_base instanceof WebAssembly.Global)) missing.push('__heap_base');
+        if (missing.length) throw new Error(`WASM SIMD module missing exports: ${missing.join(', ')}`);
+        const heapBase = instance.exports.__heap_base.value;
+        if (!Number.isSafeInteger(heapBase) || heapBase <= 0 || heapBase % 16 !== 0
+            || heapBase > instance.exports.memory.buffer.byteLength) {
+            throw new Error('WASM SIMD module has invalid __heap_base');
+        }
+        return new WasmSimdEngine(instance, instance.exports.memory, heapBase);
+    }
 
-        if (simd && typeof fetch !== 'undefined') {
-            // Try Zig SIMD binary first (47% smaller per-op than Rust version)
-            const zigUrl = wasmUrl || new URL('./simd-ops-zig/simd.wasm', import.meta.url).href;
-            const rustUrl = new URL('./simd-ops.wasm', import.meta.url).href;
-
-            for (const url of [zigUrl, rustUrl]) {
-                try {
-                    const response = await fetch(url);
-                    if (!response.ok) continue;
-                    const memory = new WebAssembly.Memory({ initial: 256, maximum: 4096 });
-                    const module = await WebAssembly.compile(await response.arrayBuffer());
-                    const instance = await WebAssembly.instantiate(module, {});
-                    const wasmMemory = instance.exports.memory || memory;
-                    const missing = WasmSimdEngine.requiredExports().filter(
-                        (name) => typeof instance.exports[name] !== 'function',
-                    );
-                    if (missing.length) {
-                        throw new Error(`WASM SIMD module missing exports: ${missing.join(', ')}`);
-                    }
-                    return new WasmSimdEngine(instance, wasmMemory, true);
-                } catch {
-                    // This binary failed — try the next one
-                    continue;
-                }
+    // Validate the unsafe kernel's dimensions before converting them to wasm32.
+    #count(...dimensions) {
+        let count = 1;
+        for (const size of dimensions) {
+            if (!Number.isSafeInteger(size) || size < 0 || size > 0xffffffff) {
+                throw new RangeError('WASM SIMD dimensions must be nonnegative wasm32 integers');
             }
+            count *= size;
         }
-
-        // No SIMD or both WASM binaries failed — use scalar fallback
-        return new WasmSimdEngine(null, null, simd);
+        if (!Number.isSafeInteger(count) || count > 0x3fffffff) {
+            throw new RangeError('WASM SIMD array exceeds wasm32 memory');
+        }
+        return count;
     }
 
-    /**
-     * Bump allocate in WASM linear memory, aligned to 16 bytes for SIMD.
-     * @param {number} bytes
-     * @returns {number} Pointer offset.
-     */
-    #alloc(bytes) {
-        bytes = (bytes + 15) & ~15;
+    #input(array, size) {
+        if (!(array instanceof Float32Array) || array.length !== size) {
+            throw new RangeError(`WASM SIMD input requires ${size} float32 elements`);
+        }
+    }
+
+    // Reserve the complete call once; no partial growth or mutable arena cursor.
+    #buffers(...counts) {
+        let end = this.#heapBase;
+        for (let i = 0; i < counts.length; i++) {
+            const bytes = Math.ceil(counts[i] / 4) * 16;
+            counts[i] = end;
+            end += bytes;
+        }
+        if (!Number.isSafeInteger(end) || end > 0x100000000) {
+            throw new RangeError('WASM SIMD allocation exceeds wasm32 memory');
+        }
         const currentBytes = this.#memory.buffer.byteLength;
-        if (this.#bumpPtr + bytes > currentBytes) {
-            const growPages = Math.ceil((this.#bumpPtr + bytes - currentBytes) / 65536);
-            this.#memory.grow(growPages);
-        }
-        const ptr = this.#bumpPtr;
-        this.#bumpPtr += bytes;
-        return ptr;
+        if (end > currentBytes) this.#memory.grow(Math.ceil((end - currentBytes) / 65536));
+        return counts;
     }
 
-    #resetAlloc() {
-        this.#bumpPtr = 0;
-    }
+    async uploadWeights(_weightsBuffer) {}
 
-    async uploadWeights(_weightsBuffer) {
-        // No GPU memory; weights accessed directly from JS ArrayBuffers.
-    }
-
-    /**
-     * @param {Float32Array} a
-     * @param {Float32Array} b
-     * @param {number} m
-     * @param {number} k
-     * @param {number} n
-     * @returns {Promise<Float32Array>}
-     */
     async matmul(a, b, m, k, n) {
-        if (!this.#instance) return cpuMatmul(a, b, m, k, n);
-
-        this.#resetAlloc();
-        const aPtr = this.#alloc(m * k * 4);
-        const bPtr = this.#alloc(k * n * 4);
-        const outPtr = this.#alloc(m * n * 4);
-
-        new Float32Array(this.#memory.buffer, aPtr, m * k).set(a);
-        new Float32Array(this.#memory.buffer, bPtr, k * n).set(b);
-
-        this.#instance.exports.matmul_f32(aPtr, bPtr, outPtr, m, k, n);
-
-        return new Float32Array(this.#memory.buffer.slice(outPtr, outPtr + m * n * 4));
+        const aSize = this.#count(m, k), bSize = this.#count(k, n), outSize = this.#count(m, n);
+        this.#input(a, aSize);
+        this.#input(b, bSize);
+        if (outSize === 0) return new Float32Array();
+        const [aPtr, bPtr, outPtr] = this.#buffers(aSize, bSize, outSize);
+        new Float32Array(this.#memory.buffer, aPtr, aSize).set(a);
+        new Float32Array(this.#memory.buffer, bPtr, bSize).set(b);
+        this.#instance.exports.matmul_f32_tiled(aPtr, bPtr, outPtr, m, k, n);
+        return new Float32Array(this.#memory.buffer.slice(outPtr, outPtr + outSize * 4));
     }
 
     async matmulBatch(ops) {
         const results = [];
-        for (const { a, b, m, k, n } of ops) {
-            results.push(await this.matmul(a, b, m, k, n));
-        }
+        for (const { a, b, m, k, n } of ops) results.push(await this.matmul(a, b, m, k, n));
         return results;
     }
 
-    /**
-     * Softmax via WASM SIMD module.
-     * @param {Float32Array} input
-     * @param {number} n
-     * @param {number} [rows=1]
-     * @returns {Promise<Float32Array>}
-     */
     async softmax(input, n, rows = 1) {
-        if (!this.#instance) {
-            return _cpuSoftmax(input, n, rows);
-        }
-        if (typeof this.#instance.exports.softmax_f32 !== 'function') {
-            throw new Error('WASM SIMD backend missing required export: softmax_f32');
-        }
-
-        const out = new Float32Array(rows * n);
+        const size = this.#count(n, rows);
+        this.#input(input, size);
+        if (size === 0) return new Float32Array();
+        const [inPtr, outPtr] = this.#buffers(size, size);
+        new Float32Array(this.#memory.buffer, inPtr, size).set(input);
         for (let r = 0; r < rows; r++) {
-            this.#resetAlloc();
-            const inPtr = this.#alloc(n * 4);
-            const outPtr = this.#alloc(n * 4);
-
-            new Float32Array(this.#memory.buffer, inPtr, n).set(
-                input.subarray(r * n, (r + 1) * n),
-            );
-            this.#instance.exports.softmax_f32(inPtr, outPtr, n);
-
-            const result = new Float32Array(this.#memory.buffer.slice(outPtr, outPtr + n * 4));
-            out.set(result, r * n);
+            this.#instance.exports.softmax_f32_fused(inPtr + r * n * 4, outPtr + r * n * 4, n);
         }
-        return out;
+        return new Float32Array(this.#memory.buffer.slice(outPtr, outPtr + size * 4));
     }
 
-    /**
-     * RMSNorm via WASM SIMD module.
-     * @param {Float32Array} input
-     * @param {Float32Array} weight
-     * @param {number} n
-     * @param {number} [rows=1]
-     * @param {number} [eps=1e-6]
-     * @returns {Promise<Float32Array>}
-     */
     async rmsNorm(input, weight, n, rows = 1, eps = 1e-6) {
-        if (!this.#instance) {
-            return _cpuRmsNorm(input, weight, n, rows, eps);
-        }
-        if (typeof this.#instance.exports.rms_norm_f32 !== 'function') {
-            throw new Error('WASM SIMD backend missing required export: rms_norm_f32');
-        }
-
-        const out = new Float32Array(rows * n);
+        const size = this.#count(n, rows);
+        this.#input(input, size);
+        this.#input(weight, n);
+        if (size === 0) return new Float32Array();
+        const [inPtr, wPtr, outPtr] = this.#buffers(size, n, size);
+        new Float32Array(this.#memory.buffer, inPtr, size).set(input);
+        new Float32Array(this.#memory.buffer, wPtr, n).set(weight);
         for (let r = 0; r < rows; r++) {
-            this.#resetAlloc();
-            const aPtr = this.#alloc(n * 4);
-            const wPtr = this.#alloc(n * 4);
-            const outPtr = this.#alloc(n * 4);
-
-            new Float32Array(this.#memory.buffer, aPtr, n).set(
-                input.subarray(r * n, (r + 1) * n),
-            );
-            new Float32Array(this.#memory.buffer, wPtr, n).set(weight);
-            this.#instance.exports.rms_norm_f32(aPtr, wPtr, outPtr, n, eps);
-
-            const result = new Float32Array(this.#memory.buffer.slice(outPtr, outPtr + n * 4));
-            out.set(result, r * n);
+            this.#instance.exports.rms_norm_f32(inPtr + r * n * 4, wPtr, outPtr + r * n * 4, n, eps);
         }
-        return out;
-    }
-
-    /**
-     * Elementwise add via WASM SIMD.
-     * @param {Float32Array} a
-     * @param {Float32Array} b
-     * @param {number} size
-     * @returns {Promise<Float32Array>}
-     */
-    async add(a, b, size) {
-        if (!this.#instance) {
-            const out = new Float32Array(size);
-            for (let i = 0; i < size; i++) out[i] = a[i] + b[i];
-            return out;
-        }
-        if (typeof this.#instance.exports.add_f32 !== 'function') {
-            throw new Error('WASM SIMD backend missing required export: add_f32');
-        }
-
-        this.#resetAlloc();
-        const aPtr = this.#alloc(size * 4);
-        const bPtr = this.#alloc(size * 4);
-        const outPtr = this.#alloc(size * 4);
-
-        new Float32Array(this.#memory.buffer, aPtr, size).set(a);
-        new Float32Array(this.#memory.buffer, bPtr, size).set(b);
-        this.#instance.exports.add_f32(aPtr, bPtr, outPtr, size);
-
         return new Float32Array(this.#memory.buffer.slice(outPtr, outPtr + size * 4));
     }
 
-    /**
-     * Elementwise mul via WASM SIMD.
-     * @param {Float32Array} a
-     * @param {Float32Array} b
-     * @param {number} size
-     * @returns {Promise<Float32Array>}
-     */
-    async mul(a, b, size) {
-        if (!this.#instance) {
-            const out = new Float32Array(size);
-            for (let i = 0; i < size; i++) out[i] = a[i] * b[i];
-            return out;
-        }
-        if (typeof this.#instance.exports.mul_f32 !== 'function') {
-            throw new Error('WASM SIMD backend missing required export: mul_f32');
-        }
-
-        this.#resetAlloc();
-        const aPtr = this.#alloc(size * 4);
-        const bPtr = this.#alloc(size * 4);
-        const outPtr = this.#alloc(size * 4);
-
+    #binary(name, a, b, size) {
+        this.#count(size);
+        this.#input(a, size);
+        this.#input(b, size);
+        const [aPtr, bPtr, outPtr] = this.#buffers(size, size, size);
         new Float32Array(this.#memory.buffer, aPtr, size).set(a);
         new Float32Array(this.#memory.buffer, bPtr, size).set(b);
-        this.#instance.exports.mul_f32(aPtr, bPtr, outPtr, size);
-
+        this.#instance.exports[name](aPtr, bPtr, outPtr, size);
         return new Float32Array(this.#memory.buffer.slice(outPtr, outPtr + size * 4));
     }
 
-    get backendName() {
-        if (this.#instance) return 'wasm-simd';
-        return 'scalar';
-    }
-
-    destroy() {
-        this.#instance = null;
-    }
+    async add(a, b, size) { return this.#binary('add_f32', a, b, size); }
+    async mul(a, b, size) { return this.#binary('mul_f32', a, b, size); }
+    get backendName() { return 'wasm-simd'; }
+    destroy() { this.#instance = null; }
 }
 
 // ---------------------------------------------------------------------------
@@ -778,9 +637,9 @@ export class ComputeEngine {
         if (!forceBackend || forceBackend === 'wasm-simd') {
             try {
                 const engine = await WasmSimdEngine.create(wasmUrl);
-                if (engine && engine.backendName === 'wasm-simd') return engine;
-            } catch {
-                // WASM not available
+                if (engine) return engine;
+            } catch (error) {
+                if (forceBackend === 'wasm-simd') throw error;
             }
             if (forceBackend === 'wasm-simd') {
                 throw new Error('ComputeEngine: WASM SIMD requested but not available');

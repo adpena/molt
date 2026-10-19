@@ -894,6 +894,42 @@
       "workflow": ".github/workflows/ci.yml"
     },
     {
+      "admission_job": "browser-simd",
+      "admission_needs": [
+        "classify-changes"
+      ],
+      "admission_workflow": ".github/workflows/ci.yml",
+      "dependencies": [],
+      "description": "Standalone browser SIMD source, artifact, numeric and consumer contracts without compiler/runtime builds.",
+      "executor": "github-job",
+      "inputs": [
+        ".github/workflows/ci.yml",
+        "rust-toolchain.toml",
+        "src/molt/wasm_artifact.py",
+        "deploy/browser/compute-engine.js",
+        "deploy/browser/simd-ops-rs/**",
+        "deploy/browser/simd-ops.wasm",
+        "tools/build_browser_simd.py",
+        "tests/e2e/simd_test_support.js",
+        "tests/e2e/simd_diff_harness.js",
+        "tests/tools/test_build_browser_simd.py/**",
+        "tests/e2e/test_simd_differential.py/**",
+        "tests/test_browser_compute_backend_semantics.py/**"
+      ],
+      "job": "browser-simd",
+      "job_reserve_seconds": 120,
+      "name": "browser_simd",
+      "required": true,
+      "resource_class": "compiler-build-resource",
+      "tiers": [
+        "pre-push",
+        "pr",
+        "main"
+      ],
+      "timeout_minutes": 10,
+      "workflow": ".github/workflows/ci.yml"
+    },
+    {
       "admission_job": "rust-build-unit-smoke",
       "admission_needs": [
         "classify-changes"
@@ -936,7 +972,7 @@
         "pr",
         "main"
       ],
-      "timeout_minutes": 346,
+      "timeout_minutes": 342,
       "workflow": ".github/workflows/ci.yml"
     },
     {
@@ -5833,7 +5869,6 @@
         "tests/test_binaryen_toolchain.py",
         "tests/test_blake2_private_module_surface.py",
         "tests/test_bootstrap_llvm.py",
-        "tests/test_browser_compute_backend_semantics.py",
         "tests/test_browser_target_feature_metadata.py",
         "tests/test_call_argument_schedule.py",
         "tests/test_capability_manifest_e2e.py",
@@ -6232,7 +6267,6 @@
         "tests/test_binaryen_toolchain.py",
         "tests/test_blake2_private_module_surface.py",
         "tests/test_bootstrap_llvm.py",
-        "tests/test_browser_compute_backend_semantics.py",
         "tests/test_browser_target_feature_metadata.py",
         "tests/test_call_argument_schedule.py",
         "tests/test_capability_manifest_e2e.py",
@@ -7258,9 +7292,46 @@
     },
     {
       "argv": [
+        "uv",
+        "run",
+        "--python",
+        "3.12",
+        "python",
+        "-m",
+        "pytest",
+        "-q",
+        "tests/tools/test_build_browser_simd.py",
+        "tests/e2e/test_simd_differential.py",
+        "tests/test_browser_compute_backend_semantics.py"
+      ],
+      "cache_domain": "cargo-workspace",
+      "cargo_build_python": false,
+      "cell": "linux-x86_64-py312-browser-simd-release",
+      "dependencies": [],
+      "family": "browser_simd",
+      "id": "browser-simd.contract",
+      "resource_class": "compiler-build-resource",
+      "tiers": [
+        "pre-push",
+        "pr",
+        "main"
+      ],
+      "timeout_budget": "cross-check",
+      "timeout_seconds": 240,
+      "toolchains": [
+        "python",
+        "uv",
+        "rustc",
+        "cargo",
+        "node"
+      ]
+    },
+    {
+      "argv": [
         "cargo",
         "clippy",
         "--locked",
+        "--release",
         "--target",
         "wasm32-unknown-unknown",
         "--",
@@ -7269,10 +7340,10 @@
       ],
       "cache_domain": "cargo-workspace",
       "cargo_build_python": false,
-      "cell": "linux-x86_64-rust-wasi-dev",
+      "cell": "linux-x86_64-py312-browser-simd-release",
       "cwd": "deploy/browser/simd-ops-rs",
       "dependencies": [],
-      "family": "rust",
+      "family": "browser_simd",
       "id": "rust.clippy.browser-simd",
       "resource_class": "compiler-build-resource",
       "tiers": [
@@ -8769,6 +8840,17 @@
   ],
   "executor": {
     "github_job_timeout_envelopes": {
+      "browser_simd": {
+        "budget_seconds": 600,
+        "critical_path_seconds": 240,
+        "headroom_seconds": 0,
+        "job_reserve_seconds": 120,
+        "projected_makespan_seconds": 480,
+        "required_job_seconds": 600,
+        "resource_capacity_floor_seconds": {
+          "compiler-build-resource": 480
+        }
+      },
       "llvm": {
         "budget_seconds": 4500,
         "critical_path_seconds": 3300,
@@ -8827,14 +8909,14 @@
         }
       },
       "rust": {
-        "budget_seconds": 20760,
+        "budget_seconds": 20520,
         "critical_path_seconds": 9000,
         "headroom_seconds": 0,
         "job_reserve_seconds": 240,
-        "projected_makespan_seconds": 20520,
-        "required_job_seconds": 20760,
+        "projected_makespan_seconds": 20280,
+        "required_job_seconds": 20520,
         "resource_capacity_floor_seconds": {
-          "compiler-build-resource": 20520
+          "compiler-build-resource": 20280
         }
       },
       "rust_security": {
@@ -9190,6 +9272,7 @@
       "local.bootstrap-stdlib.0": "python tools/check_stdlib_intrinsics.py --critical-allowlist",
       "local.browser-loader-deployment.pytest": "python -m pytest -q -n auto --molt-worker-memory-gb=2.5 tests/test_driver_layout.py tests/test_browser_asset_closure.py tests/test_driver_cloudflare_verify.py tests/test_driver_cloudflare_worker.py tests/test_falcon_ocr_prompt_contract.py",
       "local.browser-loader-deployment.pytest-select-0": "python -m pytest -q -n auto --molt-worker-memory-gb=2.5 -k 'not (test_falcon_browser_driver_init_and_ocr_tokens_roundtrip or test_falcon_browser_driver_reuses_cached_weights_on_second_init or test_falcon_browser_driver_init_from_manifest_roundtrip)' tests/test_falcon_driver_scaffold.py",
+      "local.browser-simd.pytest": "python -m pytest -q -n auto --molt-worker-memory-gb=2.5 tests/tools/test_build_browser_simd.py tests/e2e/test_simd_differential.py tests/test_browser_compute_backend_semantics.py",
       "local.build-output-identity.pytest": "python -m pytest -q -n auto --molt-worker-memory-gb=1.0 tests/cli/test_cli_build_identity.py tests/cli/test_cli_build_output_layout_authority.py tests/cli/test_cli_frontend_pipeline_authority.py",
       "local.builtin-binding-guard-authority.0": "python tools/gen_builtin_binding_guards.py --check",
       "local.builtin-binding-guard-authority.1": "cargo test --locked -p molt-runtime --lib binding_guards",
@@ -10991,6 +11074,38 @@
       },
       {
         "command_ids": [
+          "local.browser-simd.pytest"
+        ],
+        "description": "Source-built browser SIMD, independent numerical oracles and the actual browser ABI consumer.",
+        "gates": [],
+        "globs": [
+          "deploy/browser/compute-engine.js",
+          "deploy/browser/simd-ops-rs/**",
+          "deploy/browser/simd-ops.wasm",
+          "tools/build_browser_simd.py",
+          "tests/tools/test_build_browser_simd.py",
+          "tests/e2e/simd_test_support.js",
+          "tests/e2e/simd_diff_harness.js",
+          "tests/e2e/test_simd_differential.py",
+          "tests/test_browser_compute_backend_semantics.py",
+          "tests/e2e/bench_simd.js",
+          "tests/e2e/bench_paddleocr_compiled.js"
+        ],
+        "name": "browser-simd",
+        "pytest": [
+          "tests/tools/test_build_browser_simd.py",
+          "tests/e2e/test_simd_differential.py",
+          "tests/test_browser_compute_backend_semantics.py"
+        ],
+        "toolchains": [
+          "python",
+          "rustc",
+          "cargo",
+          "node"
+        ]
+      },
+      {
+        "command_ids": [
           "local.rust-clippy-changed.0"
         ],
         "description": "Clippy -D warnings with the proof plan's feature, target and profile cells for every Cargo package a change reaches.",
@@ -11892,6 +12007,13 @@
         "node",
         "browser-acorn"
       ],
+      "local.browser-simd.pytest": [
+        "python",
+        "rustc",
+        "cargo",
+        "git",
+        "node"
+      ],
       "local.build-output-identity.pytest": [
         "python",
         "uv",
@@ -12444,6 +12566,16 @@
       "python": "none",
       "runner": "ubuntu-latest",
       "target": "x86_64-unknown-linux-gnu"
+    },
+    {
+      "arch": "x86_64",
+      "backend": "rust",
+      "id": "linux-x86_64-py312-browser-simd-release",
+      "os": "linux",
+      "profile": "release-output",
+      "python": "3.12",
+      "runner": "ubuntu-latest",
+      "target": "wasm32-unknown-unknown"
     },
     {
       "arch": "x86_64",

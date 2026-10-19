@@ -923,6 +923,7 @@ def test_ci_proof_families_are_admitted_independently() -> None:
     assert all(family["dependencies"] == [] for family in families)
     admission_jobs = {family["admission_job"] for family in families}
     assert admission_jobs == {
+        "browser-simd",
         "docs-gates",
         "formal-verification",
         "llvm-backend",
@@ -2027,6 +2028,7 @@ def test_node_toolchain_consumers_provision_the_canonical_version() -> None:
         if "node" in plan.required_toolchains(command)
     }
     consumers = {
+        "browser_simd": (".github/workflows/ci.yml", "browser-simd"),
         "repository_policy": (".github/workflows/ci.yml", "docs-gates"),
         "rust": (".github/workflows/ci.yml", "rust-build-unit-smoke"),
         "wasm": (".github/workflows/molt-wasm-ci.yml", "wasm-build"),
