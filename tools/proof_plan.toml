@@ -5474,10 +5474,10 @@ globs = [
   "tools/wasm_link_fact_provider.py",
 ]
 gates = [
-  "cargo test --locked --profile release-fast -p molt-backend -p molt-backend-native -p molt-artifact-publish -p molt-wasm-facts --features molt-backend/native-backend --lib --bins --test wasm_link_facts_cli --no-fail-fast",
-]
-pytest_select = [
-  { k = "rust_facts or wasm_artifact_state", targets = ["tests/test_wasm_link_validation.py"] },
+  "cargo test --locked --profile release-fast -p molt-backend -p molt-backend-native -p molt-artifact-publish -p molt-wasm-facts --features molt-backend/native-backend,molt-backend/wasm-backend --lib --bins --test wasm_link_facts_cli --no-fail-fast",
+  # Keep this small fake-scanner cohort in one interpreter; the real
+  # producer/CLI controls share the Cargo solve above.
+  "python -m pytest -q tests/test_wasm_link_validation.py -k 'rust_facts or wasm_artifact_state'",
 ]
 
 [[rule]]

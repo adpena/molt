@@ -209,3 +209,55 @@ fn failed_publication_never_exposes_partial_destination() {
         b"sentinel-generation"
     );
 }
+
+#[test]
+fn final_publication_rejects_scannable_linker_metadata_atomically() {
+    for (name, metadata) in [
+        ("linking", b"\0\x09\x07linking\x02".as_slice()),
+        // Type/function/code are ordinals 0/1/2; the empty symbol table
+        // supplies the scanner's authority for the zero-entry code relocation.
+        (
+            "reloc.CODE",
+            b"\0\x0c\x07linking\x02\x08\x01\x00\0\x0d\x0areloc.CODE\x02\x00".as_slice(),
+        ),
+        // A different relocation kind independently exercises the prefix guard.
+        ("reloc.TYPE", b"\0\x0d\x0areloc.TYPE\x00\x00".as_slice()),
+    ] {
+        let mut module = clean_module();
+        module.extend_from_slice(metadata);
+        let fixture = temp_wasm(name, &module);
+        let destination = temp_wasm("linked-generation", b"sentinel-generation");
+        let scan = Command::new(env!("CARGO_BIN_EXE_molt-backend"))
+            .arg("--scan-wasm-link-facts")
+            .arg(&fixture.0)
+            .output()
+            .expect("scan valid linker metadata");
+        assert!(
+            scan.status.success(),
+            "{name}: {}",
+            String::from_utf8_lossy(&scan.stdout)
+        );
+
+        let publication = Command::new(env!("CARGO_BIN_EXE_molt-backend"))
+            .arg("--publish-wasm-link-facts")
+            .arg(&fixture.0)
+            .arg("--output")
+            .arg(&destination.0)
+            .output()
+            .expect("refuse final publication of linker metadata");
+        assert_eq!(publication.status.code(), Some(2));
+        let error: Value = serde_json::from_slice(&publication.stdout).expect("structured refusal");
+        assert_eq!(error["ok"], false);
+        assert!(
+            error["error"]
+                .as_str()
+                .expect("error diagnostic")
+                .contains("requires a linked module without linker metadata")
+        );
+        assert_eq!(
+            fs::read(&destination.0).expect("prior output"),
+            b"sentinel-generation"
+        );
+        assert_eq!(fs::read(&fixture.0).expect("original input"), module);
+    }
+}

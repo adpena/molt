@@ -34,6 +34,15 @@ pub fn scan_and_write_callable_table_attestation(
         let mut emit_section = |id, payload: &[u8]| write_raw_section(writer, id, payload);
         scan_wasm_link_facts_with_sections(bytes, Some(&mut emit_section))?
     };
+    if facts
+        .custom_section_names
+        .iter()
+        .any(|name| name == "linking" || name.starts_with("reloc."))
+    {
+        return Err(
+            "final WASM publication requires a linked module without linker metadata".into(),
+        );
+    }
     validate_callable_table_topology(&facts)?;
     if !facts.forbidden_callable_alias_exports.is_empty() {
         return Err(format!(

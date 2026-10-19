@@ -474,7 +474,9 @@ that phase once. Cache restoration does not replay historical timings, and a
 failure before split processing is not charged to the split phase. These are
 development measurements and add no end-user runtime work.
 
-Callable-table publication returns the complete facts for its committed output,
+Final callable-table publication requires linked modules without unconsumed
+linking or relocation metadata; input scanning still accepts relocatable
+objects. Publication returns the complete facts for its committed output,
 including the final custom-section order. That exact generation enters the
 existing bounded invocation-local facts cache, so export and structural
 validators reuse the publication result. A changed generation must be scanned

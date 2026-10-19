@@ -176,8 +176,24 @@ fn linking_direct_global_symbol_attests_split_runtime_got_without_debug_names() 
     );
 }
 
-fn relocated_data_symbol_module(flags: wasmparser::SymbolFlags) -> Vec<u8> {
+fn relocated_data_symbol_module(
+    flags: wasmparser::SymbolFlags,
+    early_owned_layout: bool,
+) -> Vec<u8> {
     let mut module = Module::new();
+    if early_owned_layout {
+        module.section(&CustomSection {
+            name: Cow::Borrowed(CALLABLE_TABLE_LAYOUT_SECTION_NAME),
+            data: Cow::Owned(crate::layout::encode_callable_table_layout(
+                CallableTableLayout {
+                    fixed_prefix_base: 0,
+                    fixed_prefix_len: 0,
+                    finalized_app_base: 0,
+                    app_entry_count: 0,
+                },
+            )),
+        });
+    }
     let mut types = TypeSection::new();
     types.ty().function([], [ValType::I32]);
     module.section(&types);
@@ -214,7 +230,7 @@ fn relocated_data_symbol_module(flags: wasmparser::SymbolFlags) -> Vec<u8> {
         data: Cow::Owned(linking_data_symbol_payload("molt_PyType_Type", 208, flags)),
     });
     let mut relocation = Vec::new();
-    4u32.encode(&mut relocation); // code section ordinal
+    (if early_owned_layout { 5u32 } else { 4u32 }).encode(&mut relocation);
     1u32.encode(&mut relocation); // relocation count
     relocation.push(7); // R_WASM_GLOBAL_INDEX_LEB
     4u32.encode(&mut relocation); // code-payload offset of global index
@@ -228,7 +244,7 @@ fn relocated_data_symbol_module(flags: wasmparser::SymbolFlags) -> Vec<u8> {
 
 #[test]
 fn linking_data_symbol_and_code_relocation_attest_real_wasm_ld_got_shape() {
-    let module = relocated_data_symbol_module(wasmparser::SymbolFlags::EXPLICIT_NAME);
+    let module = relocated_data_symbol_module(wasmparser::SymbolFlags::EXPLICIT_NAME, false);
 
     let facts = scan_wasm_link_facts(&module).expect("scan real linker GOT shape");
 
@@ -246,13 +262,54 @@ fn linking_data_symbol_and_code_relocation_attest_real_wasm_ld_got_shape() {
 }
 
 #[test]
+fn final_publication_refuses_valid_relocatable_inputs_in_every_role() {
+    for early_owned_layout in [false, true] {
+        let module = relocated_data_symbol_module(
+            wasmparser::SymbolFlags::EXPLICIT_NAME,
+            early_owned_layout,
+        );
+        let facts = scan_wasm_link_facts(&module).expect("relocatable scanning remains supported");
+        assert!(facts.linking_symbol_table_present);
+        assert_eq!(facts.split_runtime_got_data_globals.len(), 1);
+        assert_eq!(
+            facts
+                .custom_section_names
+                .contains(&"molt.callable_table.layout".to_string()),
+            early_owned_layout
+        );
+        for role in [
+            CallableTableArtifactRole::Monolithic,
+            CallableTableArtifactRole::App,
+            CallableTableArtifactRole::Runtime,
+        ] {
+            let error = scan_and_write_callable_table_attestation(
+                &module,
+                Some(CallableTableLayout {
+                    fixed_prefix_base: 0,
+                    fixed_prefix_len: 0,
+                    finalized_app_base: 0,
+                    app_entry_count: 0,
+                }),
+                role,
+                &mut Vec::new(),
+            )
+            .expect_err("final publication must not move sections in a relocatable module");
+            assert!(
+                error.contains("requires a linked module without linker metadata"),
+                "{error}"
+            );
+        }
+    }
+}
+
+#[test]
 fn linking_data_symbol_got_relocation_records_binding_for_consumer_policy() {
     for flags in [
         wasmparser::SymbolFlags::EXPLICIT_NAME | wasmparser::SymbolFlags::BINDING_WEAK,
         wasmparser::SymbolFlags::EXPLICIT_NAME | wasmparser::SymbolFlags::BINDING_LOCAL,
         wasmparser::SymbolFlags::EXPLICIT_NAME | wasmparser::SymbolFlags::UNDEFINED,
     ] {
-        let facts = scan_wasm_link_facts(&relocated_data_symbol_module(flags))
+        let facts = scan_wasm_link_facts(&relocated_data_symbol_module(flags, false))
             .expect("record GOT binding evidence");
         let got = &facts.split_runtime_got_data_globals[0];
         assert_eq!(got.flags, flags.bits());

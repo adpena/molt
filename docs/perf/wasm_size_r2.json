@@ -63,5 +63,7 @@
         "zero_bytes": 407401
       }
     }
-  }
+  },
+  "scope": "Historical Binaryen 130 size observation, not current policy or semantic release acceptance. The imported-zero-memory assumption was removed in 0ba8d40dd after an independently executed initialized-memory counterexample.",
+  "current_policy_authority": "src/molt/wasm_optimization.py"
 }
