@@ -42,6 +42,7 @@ from tests.process_guard_common import (
     install_module_os_view,
     install_module_view,
     install_thread_module_view,
+    run_in_fresh_guard_observer,
     start_owned_test_process,
 )
 from molt.memory_guard_paths import (
@@ -7773,8 +7774,10 @@ def test_main_reexec_hides_guarded_command_from_guard_argv(
 
 @pytest.mark.parametrize("temproot_mode", ["managed", "explicit", "unset"])
 def test_run_guarded_marks_child_environment_as_guarded(
-    tmp_path, temproot_mode
+    request, tmp_path, temproot_mode
 ) -> None:
+    if run_in_fresh_guard_observer(request):
+        return
     env = dict(os.environ)
     env["MOLT_GUARD_SCRATCH_ROOT"] = str(tmp_path / "outer-scratch")
     if temproot_mode == "managed":
@@ -7840,11 +7843,15 @@ def test_run_guarded_marks_child_environment_as_guarded(
     [(0, memory_guard.INFRASTRUCTURE_RETURN_CODE), (7, 7), (137, 137)],
 )
 def test_run_guarded_scratch_cleanup_failure_preserves_primary_result(
+    request: pytest.FixtureRequest,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     child_returncode: int,
     expected_returncode: int,
 ) -> None:
+    if run_in_fresh_guard_observer(request):
+        return
+
     class FakeLease:
         target = tmp_path / "guard-scratch"
         generation = tmp_path / "guard-generation"
@@ -7931,12 +7938,16 @@ def test_run_guarded_scratch_cleanup_failure_preserves_primary_result(
     ],
 )
 def test_run_guarded_retention_sweep_health_preserves_primary_result(
+    request: pytest.FixtureRequest,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     child_returncode: int,
     retention_errors: list[str],
     expected_returncode: int,
 ) -> None:
+    if run_in_fresh_guard_observer(request):
+        return
+
     class FakeLease:
         target = tmp_path / "guard-scratch"
         release_calls = 0
@@ -8135,8 +8146,10 @@ def test_run_guarded_exception_releases_lease_and_updates_marker(
 
 @pytest.mark.parametrize("raw_available", [None, "7.5"])
 def test_run_guarded_exports_backend_memory_contract(
-    raw_available, monkeypatch
+    request, raw_available, monkeypatch
 ) -> None:
+    if run_in_fresh_guard_observer(request):
+        return
     if raw_available is None:
         monkeypatch.delenv("MOLT_BACKEND_MEMORY_AVAILABLE_GB", raising=False)
     else:

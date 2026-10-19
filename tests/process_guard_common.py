@@ -424,6 +424,51 @@ def run_isolated_python_probe(
     return json.loads(result.stdout)
 
 
+class _FreshGuardObserver:
+    """Child-local identity and proof that the selected case actually ran."""
+
+    def __init__(self) -> None:
+        self.passed_calls = 0
+
+    def pytest_runtest_logreport(self, report: Any) -> None:
+        if report.when == "call" and report.passed:
+            self.passed_calls += 1
+
+
+def run_in_fresh_guard_observer(request: Any) -> bool:
+    """Isolate small-cap guard controls from a loaded runner's lifetime RSS.
+
+    Linux preserves ru_maxrss across exec, including the inherited pre-exec
+    image. Run the exact pytest node with its real fixtures in a fresh observer
+    before it launches the small-cap subject. The existing guard still owns
+    the observer, and the subject's limits and rusage enforcement stay intact.
+    """
+    if os.name != "posix" or any(
+        isinstance(plugin, _FreshGuardObserver)
+        for plugin in request.config.pluginmanager.get_plugins()
+    ):
+        return False
+    root = Path(request.config.rootpath)
+    env = dict(os.environ)
+    for key in ("PYTEST_ADDOPTS", "PYTEST_XDIST_WORKER", "PYTEST_XDIST_WORKER_COUNT"):
+        env.pop(key, None)
+    env["PYTHONPATH"] = os.pathsep.join((str(root / "src"), str(root)))
+    args = ["-q", "-n", "0", "-o", "addopts=", request.node.nodeid]
+    source = (
+        "import pytest; "
+        "from tests.process_guard_common import _FreshGuardObserver; "
+        "observer = _FreshGuardObserver(); "
+        f"status = pytest.main({args!r}, plugins=[observer]); "
+        "raise SystemExit(int(status) if status else "
+        "(0 if observer.passed_calls == 1 else 1))"
+    )
+    result = run_guarded_test_process(
+        [sys.executable, "-B", "-c", source], cwd=root, env=env, timeout=60.0
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    return True
+
+
 def check_output_guarded_test_process(
     args: Sequence[str],
     **kwargs: object,
