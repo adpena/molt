@@ -19,6 +19,7 @@ from tests.process_guard_common import (
     install_module_view,
     run_custody_subject_process,
     run_guarded_test_process,
+    run_in_fresh_guard_observer,
 )
 
 # These tests fake process data the session sentinel also reads.
@@ -837,8 +838,12 @@ def test_birth_probe_snapshot_error_is_unavailable(monkeypatch):
     os.name != "posix", reason="real guarded daemon-scope transfer requires POSIX"
 )
 @pytest.mark.parametrize("exit_code", [0, 7])
-def test_guarded_protocol_daemon_transfer_and_failure_cleanup(tmp_path, exit_code):
+def test_guarded_protocol_daemon_transfer_and_failure_cleanup(
+    tmp_path, exit_code, request
+):
     """Exercise actual guard/guardian protocol; this is not a compiler benchmark."""
+    if run_in_fresh_guard_observer(request):
+        return
     import textwrap
 
     root = Path(__file__).resolve().parents[1]

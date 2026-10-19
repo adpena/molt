@@ -2,12 +2,57 @@ from __future__ import annotations
 
 import subprocess
 import json
+from pathlib import Path
+import sys
 from typing import Any
 
 import pytest
 
 from molt.cargo_execution_policy import PROOF_COMMAND_TIMEOUT_ENV
 from tests import process_guard_common
+
+
+@pytest.mark.skipif(sys.platform != "linux", reason="Linux exec lifetime RSS")
+def test_fresh_guard_observer_excludes_the_inherited_parent_image(tmp_path) -> None:
+    root = Path(__file__).resolve().parents[1]
+    case = tmp_path / "test_fresh_observer.py"
+    case.write_text(
+        "import os, sys\n"
+        "from tools import memory_guard\n"
+        "from tests.process_guard_common import run_in_fresh_guard_observer\n"
+        "def test_subject(request, monkeypatch, tmp_path):\n"
+        "    if run_in_fresh_guard_observer(request): return\n"
+        "    monkeypatch.setenv('GUARD_OBSERVER_FIXTURE', str(tmp_path))\n"
+        "    result = memory_guard.run_guarded(\n"
+        "        [sys.executable, '-c', 'import os; print(os.environ[\"GUARD_OBSERVER_FIXTURE\"])'],\n"
+        "        max_rss_kb=256*1024, max_total_rss_kb=512*1024,\n"
+        "        poll_interval=0.01, timeout=10)\n"
+        "    assert result.returncode == 0, result.stderr\n"
+        "    assert result.stdout.strip() == str(tmp_path)\n"
+        "    assert result.violation is None\n",
+        encoding="utf-8",
+    )
+    source = (
+        "import sys; from types import SimpleNamespace; "
+        "from tools import memory_guard; "
+        "from tests.process_guard_common import run_in_fresh_guard_observer; "
+        "allocation = bytearray(384*1024*1024); "
+        "direct = memory_guard.run_guarded([sys.executable, '-c', 'pass'], "
+        "max_rss_kb=256*1024, max_total_rss_kb=512*1024, "
+        "poll_interval=0.01, timeout=10); "
+        "assert direct.child_returncode == 0, direct; "
+        "assert direct.returncode == 137, direct; "
+        "assert direct.violation.scope == 'process_rusage', direct; "
+        f"config = SimpleNamespace(rootpath={str(root)!r}, "
+        "pluginmanager=SimpleNamespace(get_plugins=lambda: [])); "
+        f"node = SimpleNamespace(nodeid={str(case) + '::test_subject'!r}); "
+        "assert run_in_fresh_guard_observer(SimpleNamespace(config=config, node=node)); "
+        "assert len(allocation) == 384*1024*1024"
+    )
+    result = process_guard_common.run_guarded_test_process(
+        [sys.executable, "-B", "-c", source], cwd=root, timeout=90.0
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
 
 
 def test_run_guarded_test_process_preserves_prefix_and_timeout(monkeypatch) -> None:

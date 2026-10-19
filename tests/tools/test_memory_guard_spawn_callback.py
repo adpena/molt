@@ -9,6 +9,7 @@ import time
 import pytest
 
 from tools import memory_guard
+from tests.process_guard_common import run_in_fresh_guard_observer
 
 
 def _run(command: list[str], *, on_spawn=None):
@@ -25,7 +26,9 @@ def _run(command: list[str], *, on_spawn=None):
     )
 
 
-def test_on_spawn_observes_custodied_child_and_result_owns_tree_peak() -> None:
+def test_on_spawn_observes_custodied_child_and_result_owns_tree_peak(request) -> None:
+    if run_in_fresh_guard_observer(request):
+        return
     spawned: list[int] = []
 
     result = _run(
@@ -135,7 +138,9 @@ def test_windows_job_sampling_automatically_avoids_global_process_table() -> Non
     not memory_guard._process_model.posix_custody_reads_partial_rows(),
     reason="this host reads the process table for custody",
 )
-def test_guard_polls_read_the_tree_not_the_host_table() -> None:
+def test_guard_polls_read_the_tree_not_the_host_table(request) -> None:
+    if run_in_fresh_guard_observer(request):
+        return
     # Each poll once read every process of the host (about 1,300 kern.proc rows
     # on a developer Mac, or every /proc entry) to keep the few of this tree.
     grandchild = "import time; x=bytearray(20_000_000); time.sleep(0.3)"
