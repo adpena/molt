@@ -21,7 +21,6 @@
   "tests/e2e/test_production_deployment.py",
   "tests/e2e/test_quality_benchmark.py",
   "tests/e2e/test_real_invoice_ocr.py",
-  "tests/e2e/test_simd_differential.py",
   "tests/e2e/test_wasm_ocr_quality.py",
   "tests/e2e/test_webgpu_correctness.py",
   "tests/e2e/test_workers_ai_retry.py",
