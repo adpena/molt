@@ -43,6 +43,20 @@ calls. A logging format no longer enters a second record/formatter state owner
 or queries its registries. The required message conversion occurs when requested,
 so unused messages cause no eager `str` callback.
 
+The `$` style consumes the shared `string.Template` lexical authority. One Rust
+token iterator serves substitution, validation and ordered identifier discovery.
+The intrinsic manifest declares its four fields: literal text, optional name,
+optional original spelling and optional invalid-character offset. Syntax failure
+is distinct from mapping failure: strict substitution propagates lookup and
+conversion errors, while safe substitution preserves the placeholder on
+`KeyError`, including one raised during conversion, as CPython does.
+Invalid offsets count Python characters as the scanner advances. Braced names
+must end at the closing brace; no parser searches the remaining suffix for one.
+Identifier discovery uses a membership set and preserves first-seen order.
+Projection ownership uses the runtime's existing drop guards until aggregate
+construction retains each field and row. Custom Template pattern/flag semantics
+remain partial in the stdlib matrix.
+
 The existing `logging_filters_propagation.py` and
 `logging_percent_style_intrinsic.py` differential cases own callback order,
 replacement scope, exceptions, lock release, mutable fields, styles and time
@@ -52,3 +66,27 @@ executing the actual Python classes against the host CPython behavior. Generated
 ABI tests prove the private exports are removed. Numerical performance and
 release-cell qualification require actual executed artifacts; source cost
 removal alone establishes no wall-clock speedup.
+
+An advisory Linux/AArch64 development-profile probe at `f91d0cf42` and
+`fb7a4c9b3` constructs 20,000 records, retrieves their unchanged messages and
+formats them. Three alternating executions of each retained binary, with an
+empty guest PATH and Python environment selectors removed, produce these median
+costs. The CPython column uses 3.12.13 on the same host.
+
+| Operation | Previous Molt, µs | Unified Molt, µs | CPython, µs |
+| --- | ---: | ---: | ---: |
+| Record construction | 803.636 | 626.177 | 1.096 |
+| `getMessage` | 49.130 | 30.912 | 0.035 |
+| Formatting an existing record | 52.948 | 200.707 | 0.251 |
+
+The median sum of all three costs is 906.885 versus 859.303 µs. The unstripped
+development executable is 76,942,160 versus 68,795,072 bytes. Earlier sequential
+samples showed substantial host-speed drift and cannot establish the relative
+timing. The alternating result is a narrow development observation, not release
+performance acceptance or a claim about other workloads. Correct formatting now
+pays the compiled Python method-dispatch path instead of rendering a stale
+native snapshot. Its isolated regression and the remaining gap to CPython must
+be recovered through shared dispatch, representation and inlining mechanisms
+(HF-198/HF-202 and V1-07), without restoring a duplicate state owner or lowering
+logging by spelled names. Release profiles and the full performance matrix
+remain unqualified.

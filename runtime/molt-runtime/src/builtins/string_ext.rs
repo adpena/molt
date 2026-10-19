@@ -9,7 +9,8 @@
 use crate::*;
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Helpers
+// Template lexical authority: default ASCII identifiers and literal delimiters.
+// Custom subclass regex patterns/flags are outside this token protocol.
 // ─────────────────────────────────────────────────────────────────────────────
 
 #[inline]
@@ -33,290 +34,268 @@ fn scan_identifier(text: &[u8], start: usize) -> Option<(usize, usize)> {
     Some((start, end))
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Template scanning
-// ─────────────────────────────────────────────────────────────────────────────
+fn scan_template_name(text: &[u8], start: usize) -> Option<(usize, usize, usize)> {
+    if text.get(start) == Some(&b'{') {
+        scan_identifier(text, start + 1).and_then(|(name_start, end)| {
+            (text.get(end) == Some(&b'}')).then_some((name_start, end, end + 1))
+        })
+    } else {
+        scan_identifier(text, start).map(|(name_start, end)| (name_start, end, end))
+    }
+}
 
-/// Scan a Template string and return a list of segments.
-///
-/// Each segment is a 3-tuple: (literal_text: str, var_name: str|None, original: str|None)
-/// - `literal_text`: text before the variable (always present)
-/// - `var_name`: the variable name if a $-variable was found, or None for the final segment
-/// - `original`: the original $var or ${var} text for safe_substitute fallback
-///
-/// `template_bits` must be a str, `delimiter_bits` must be a str (usually "$").
+enum TemplateToken<'a> {
+    Literal(&'a str),
+    Placeholder {
+        literal: &'a str,
+        name: &'a str,
+        original: &'a str,
+    },
+    Escaped {
+        literal: &'a str,
+        original: &'a str,
+    },
+    Invalid {
+        literal: &'a str,
+        original: &'a str,
+        character: usize,
+    },
+}
+
+impl<'a> TemplateToken<'a> {
+    fn fields(self) -> (&'a str, Option<&'a str>, Option<&'a str>, Option<usize>) {
+        match self {
+            Self::Literal(text) => (text, None, None, None),
+            Self::Placeholder {
+                literal,
+                name,
+                original,
+            } => (literal, Some(name), Some(original), None),
+            Self::Escaped { literal, original } => (literal, None, Some(original), None),
+            Self::Invalid {
+                literal,
+                original,
+                character,
+            } => (literal, None, Some(original), Some(character)),
+        }
+    }
+}
+
+struct TemplateScanner<'a> {
+    text: &'a str,
+    delimiter: &'a str,
+    offset: usize,
+    characters: usize,
+    retry_nonempty: bool,
+}
+
+impl<'a> TemplateScanner<'a> {
+    fn new(text: &'a str, delimiter: &'a str) -> Self {
+        Self {
+            text,
+            delimiter,
+            offset: 0,
+            characters: 0,
+            retry_nonempty: false,
+        }
+    }
+
+    fn advance(&mut self, end: usize) {
+        // Count each consumed slice once. Error coordinates are Python character
+        // offsets, never repeated prefix counts or UTF-8 byte offsets.
+        self.characters += self.text[self.offset..end].chars().count();
+        self.offset = end;
+    }
+}
+
+impl<'a> Iterator for TemplateScanner<'a> {
+    type Item = TemplateToken<'a>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        let text = self.text;
+        let start = self.offset;
+        if self.delimiter.is_empty() {
+            // After an empty escaped match, re allows a nonempty named/braced
+            // match at the same position. If neither matches, it advances one
+            // character before trying the next empty escape, including at EOF.
+            if !self.retry_nonempty {
+                self.retry_nonempty = true;
+                return Some(TemplateToken::Escaped {
+                    literal: "",
+                    original: "",
+                });
+            }
+            if let Some((name_start, name_end, end)) = scan_template_name(text.as_bytes(), start) {
+                self.advance(end);
+                self.retry_nonempty = false;
+                return Some(TemplateToken::Placeholder {
+                    literal: "",
+                    name: &text[name_start..name_end],
+                    original: &text[start..end],
+                });
+            }
+            let character = text[start..].chars().next()?;
+            let end = start + character.len_utf8();
+            self.advance(end);
+            self.retry_nonempty = false;
+            return Some(TemplateToken::Literal(&text[start..end]));
+        }
+        if start == text.len() {
+            return None;
+        }
+        // str::find uses the standard linear substring search. Every successful
+        // search consumes its delimiter; there is no unbounded suffix rescan.
+        let Some(relative) = text[start..].find(self.delimiter) else {
+            self.advance(text.len());
+            return Some(TemplateToken::Literal(&text[start..]));
+        };
+        let delimiter_start = start + relative;
+        let after = delimiter_start + self.delimiter.len();
+        let literal = &text[start..delimiter_start];
+        if text[after..].starts_with(self.delimiter) {
+            let end = after + self.delimiter.len();
+            self.advance(end);
+            return Some(TemplateToken::Escaped {
+                literal,
+                original: &text[delimiter_start..end],
+            });
+        }
+        if let Some((name_start, name_end, end)) = scan_template_name(text.as_bytes(), after) {
+            self.advance(end);
+            return Some(TemplateToken::Placeholder {
+                literal,
+                name: &text[name_start..name_end],
+                original: &text[delimiter_start..end],
+            });
+        }
+        // CPython's invalid match consumes only the delimiter. Leave subsequent
+        // text (including other placeholders) for the next token, and report
+        // the empty invalid group's position immediately AFTER the delimiter.
+        self.advance(after);
+        Some(TemplateToken::Invalid {
+            literal,
+            original: &text[delimiter_start..after],
+            character: self.characters,
+        })
+    }
+}
+
+fn template_token_tuple(py: &PyToken<'_>, token: TemplateToken<'_>) -> Option<(u64, PtrDropGuard)> {
+    let (literal, name, original, character) = token.fields();
+    let none = MoltObject::none().bits();
+    let mut fields = [none; 4];
+    let mut owners: [PtrDropGuard; 4] =
+        std::array::from_fn(|_| PtrDropGuard::new(std::ptr::null_mut()));
+    for (index, text) in [Some(literal), name, original].into_iter().enumerate() {
+        if let Some(text) = text {
+            let ptr = alloc_string(py, text.as_bytes());
+            if ptr.is_null() {
+                return None;
+            }
+            owners[index] = PtrDropGuard::new(ptr);
+            fields[index] = MoltObject::from_ptr(ptr).bits();
+        }
+    }
+    if let Some(character) = character {
+        fields[3] = int_bits_from_i64(py, character as i64);
+        owners[3] = PtrDropGuard::new(
+            obj_from_bits(fields[3])
+                .as_ptr()
+                .unwrap_or(std::ptr::null_mut()),
+        );
+        if exception_pending(py) {
+            return None;
+        }
+    }
+    let ptr = alloc_tuple(py, &fields);
+    if ptr.is_null() {
+        return None;
+    }
+    Some((MoltObject::from_ptr(ptr).bits(), PtrDropGuard::new(ptr)))
+}
+
+/// Return (literal, name, original, invalid_character_offset) token tuples.
+/// A non-None invalid offset is explicit syntax failure; a name is a lookup;
+/// an original without either denotes an escaped delimiter. Only literal
+/// tokens have neither name, original nor invalid offset. The Python owner
+/// chooses strict/safe behavior and performs every lookup/str callback.
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_string_template_scan(template_bits: u64, delimiter_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+    crate::with_gil_entry_nopanic!(py, {
         let Some(template) = string_obj_to_owned(obj_from_bits(template_bits)) else {
-            return raise_exception::<_>(_py, "TypeError", "template must be str");
+            return raise_exception::<_>(py, "TypeError", "template must be str");
         };
         let Some(delimiter) = string_obj_to_owned(obj_from_bits(delimiter_bits)) else {
-            return raise_exception::<_>(_py, "TypeError", "delimiter must be str");
+            return raise_exception::<_>(py, "TypeError", "delimiter must be str");
         };
-        let text = template.as_bytes();
-        let delim = delimiter.as_bytes();
-        if delim.is_empty() {
-            // No delimiter → entire string is literal.
-            let lit_ptr = alloc_string(_py, text);
-            let none = MoltObject::none().bits();
-            let tup = alloc_tuple(_py, &[MoltObject::from_ptr(lit_ptr).bits(), none, none]);
-            let list = alloc_list(_py, &[MoltObject::from_ptr(tup).bits()]);
-            return MoltObject::from_ptr(list).bits();
-        }
-
-        let delim_len = delim.len();
-        let length = text.len();
-        let mut segments: Vec<u64> = Vec::new();
-        let mut idx = 0usize;
-
-        while idx < length {
-            // Find next delimiter.
-            let next_idx = text[idx..]
-                .windows(delim_len)
-                .position(|w| w == delim)
-                .map(|p| p + idx);
-            let Some(di) = next_idx else {
-                // No more delimiters — emit final literal segment.
-                let lit = &text[idx..];
-                let lit_ptr = alloc_string(_py, lit);
-                let none = MoltObject::none().bits();
-                let tup = alloc_tuple(_py, &[MoltObject::from_ptr(lit_ptr).bits(), none, none]);
-                segments.push(MoltObject::from_ptr(tup).bits());
-                break;
+        let mut segments = Vec::new();
+        let mut owners = Vec::new();
+        for token in TemplateScanner::new(&template, &delimiter) {
+            let Some((bits, owner)) = template_token_tuple(py, token) else {
+                return MoltObject::none().bits();
             };
-            // Literal before delimiter.
-            let literal = &text[idx..di];
-
-            // Check what follows the delimiter.
-            let after = di + delim_len;
-            if after > length - 1 {
-                // Delimiter at very end — emit as literal.
-                let lit = &text[idx..];
-                let lit_ptr = alloc_string(_py, lit);
-                let none = MoltObject::none().bits();
-                let tup = alloc_tuple(_py, &[MoltObject::from_ptr(lit_ptr).bits(), none, none]);
-                segments.push(MoltObject::from_ptr(tup).bits());
-                break;
-            }
-
-            // Escaped delimiter: $$
-            if text[after..].starts_with(delim) {
-                let mut combined = literal.to_vec();
-                combined.extend_from_slice(delim);
-                let lit_ptr = alloc_string(_py, &combined);
-                let none = MoltObject::none().bits();
-                let tup = alloc_tuple(_py, &[MoltObject::from_ptr(lit_ptr).bits(), none, none]);
-                segments.push(MoltObject::from_ptr(tup).bits());
-                idx = after + delim_len;
-                continue;
-            }
-
-            // ${name} form.
-            if text[after] == b'{' {
-                let brace_start = after + 1;
-                if let Some(brace_end_rel) = text[brace_start..].iter().position(|&b| b == b'}') {
-                    let brace_end = brace_start + brace_end_rel;
-                    let name_bytes = &text[brace_start..brace_end];
-                    if !name_bytes.is_empty() && scan_identifier(name_bytes, 0).is_some() {
-                        let lit_ptr = alloc_string(_py, literal);
-                        let name_ptr = alloc_string(_py, name_bytes);
-                        let orig = &text[di..brace_end + 1];
-                        let orig_ptr = alloc_string(_py, orig);
-                        let tup = alloc_tuple(
-                            _py,
-                            &[
-                                MoltObject::from_ptr(lit_ptr).bits(),
-                                MoltObject::from_ptr(name_ptr).bits(),
-                                MoltObject::from_ptr(orig_ptr).bits(),
-                            ],
-                        );
-                        segments.push(MoltObject::from_ptr(tup).bits());
-                        idx = brace_end + 1;
-                        continue;
-                    }
-                }
-                // Invalid brace pattern — emit delimiter as literal.
-                let lit = &text[idx..after];
-                let lit_ptr = alloc_string(_py, lit);
-                let none = MoltObject::none().bits();
-                let tup = alloc_tuple(_py, &[MoltObject::from_ptr(lit_ptr).bits(), none, none]);
-                segments.push(MoltObject::from_ptr(tup).bits());
-                idx = after;
-                continue;
-            }
-
-            // $name form.
-            if let Some((start, end)) = scan_identifier(text, after) {
-                let lit_ptr = alloc_string(_py, literal);
-                let name_ptr = alloc_string(_py, &text[start..end]);
-                let orig = &text[di..end];
-                let orig_ptr = alloc_string(_py, orig);
-                let tup = alloc_tuple(
-                    _py,
-                    &[
-                        MoltObject::from_ptr(lit_ptr).bits(),
-                        MoltObject::from_ptr(name_ptr).bits(),
-                        MoltObject::from_ptr(orig_ptr).bits(),
-                    ],
-                );
-                segments.push(MoltObject::from_ptr(tup).bits());
-                idx = end;
-                continue;
-            }
-
-            // Not a valid variable — emit delimiter as literal.
-            let lit = &text[idx..after];
-            let lit_ptr = alloc_string(_py, lit);
-            let none = MoltObject::none().bits();
-            let tup = alloc_tuple(_py, &[MoltObject::from_ptr(lit_ptr).bits(), none, none]);
-            segments.push(MoltObject::from_ptr(tup).bits());
-            idx = after;
+            segments.push(bits);
+            owners.push(owner);
         }
-
-        if segments.is_empty() {
-            // Empty template.
-            let lit_ptr = alloc_string(_py, b"");
-            let none = MoltObject::none().bits();
-            let tup = alloc_tuple(_py, &[MoltObject::from_ptr(lit_ptr).bits(), none, none]);
-            segments.push(MoltObject::from_ptr(tup).bits());
+        let ptr = alloc_list(py, &segments);
+        if ptr.is_null() {
+            MoltObject::none().bits()
+        } else {
+            MoltObject::from_ptr(ptr).bits()
         }
-
-        let list_ptr = alloc_list(_py, &segments);
-        MoltObject::from_ptr(list_ptr).bits()
     })
 }
 
-/// Check whether a template string is valid (all $-placeholders are well-formed).
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_string_template_is_valid(template_bits: u64, delimiter_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+    crate::with_gil_entry_nopanic!(py, {
         let Some(template) = string_obj_to_owned(obj_from_bits(template_bits)) else {
-            return raise_exception::<_>(_py, "TypeError", "template must be str");
+            return raise_exception::<_>(py, "TypeError", "template must be str");
         };
         let Some(delimiter) = string_obj_to_owned(obj_from_bits(delimiter_bits)) else {
-            return raise_exception::<_>(_py, "TypeError", "delimiter must be str");
+            return raise_exception::<_>(py, "TypeError", "delimiter must be str");
         };
-        let text = template.as_bytes();
-        let delim = delimiter.as_bytes();
-        if delim.is_empty() {
-            return MoltObject::from_bool(true).bits();
-        }
-        let delim_len = delim.len();
-        let length = text.len();
-        let mut idx = 0usize;
-        while idx < length {
-            let next_idx = text[idx..]
-                .windows(delim_len)
-                .position(|w| w == delim)
-                .map(|p| p + idx);
-            let Some(di) = next_idx else {
-                return MoltObject::from_bool(true).bits();
-            };
-            let after = di + delim_len;
-            if after > length - 1 {
-                return MoltObject::from_bool(false).bits();
-            }
-            if text[after..].starts_with(delim) {
-                idx = after + delim_len;
-                continue;
-            }
-            if text[after] == b'{' {
-                let brace_start = after + 1;
-                let Some(brace_end_rel) = text[brace_start..].iter().position(|&b| b == b'}')
-                else {
-                    return MoltObject::from_bool(false).bits();
-                };
-                let brace_end = brace_start + brace_end_rel;
-                let name_bytes = &text[brace_start..brace_end];
-                if name_bytes.is_empty() || scan_identifier(name_bytes, 0).is_none() {
-                    return MoltObject::from_bool(false).bits();
-                }
-                idx = brace_end + 1;
-                continue;
-            }
-            if scan_identifier(text, after).is_none() {
-                return MoltObject::from_bool(false).bits();
-            }
-            let (_, end) = scan_identifier(text, after).unwrap();
-            idx = end;
-        }
-        MoltObject::from_bool(true).bits()
+        MoltObject::from_bool(
+            TemplateScanner::new(&template, &delimiter)
+                .all(|token| !matches!(token, TemplateToken::Invalid { .. })),
+        )
+        .bits()
     })
 }
 
-/// Extract all $-variable identifiers from a template string.
-/// Returns a list of unique identifier strings in order of first appearance.
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_string_template_get_identifiers(
     template_bits: u64,
     delimiter_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+    crate::with_gil_entry_nopanic!(py, {
         let Some(template) = string_obj_to_owned(obj_from_bits(template_bits)) else {
-            return raise_exception::<_>(_py, "TypeError", "template must be str");
+            return raise_exception::<_>(py, "TypeError", "template must be str");
         };
         let Some(delimiter) = string_obj_to_owned(obj_from_bits(delimiter_bits)) else {
-            return raise_exception::<_>(_py, "TypeError", "delimiter must be str");
+            return raise_exception::<_>(py, "TypeError", "delimiter must be str");
         };
-        let text = template.as_bytes();
-        let delim = delimiter.as_bytes();
-        if delim.is_empty() {
-            let list_ptr = alloc_list(_py, &[]);
-            return MoltObject::from_ptr(list_ptr).bits();
-        }
-        let delim_len = delim.len();
-        let length = text.len();
-        let mut seen: Vec<Vec<u8>> = Vec::new();
-        let mut result_bits: Vec<u64> = Vec::new();
-        let mut idx = 0usize;
-        while idx < length {
-            let next_idx = text[idx..]
-                .windows(delim_len)
-                .position(|w| w == delim)
-                .map(|p| p + idx);
-            let Some(di) = next_idx else { break };
-            let after = di + delim_len;
-            if after > length - 1 {
-                break;
-            }
-            if text[after..].starts_with(delim) {
-                idx = after + delim_len;
-                continue;
-            }
-            if text[after] == b'{' {
-                let brace_start = after + 1;
-                if let Some(brace_end_rel) = text[brace_start..].iter().position(|&b| b == b'}') {
-                    let brace_end = brace_start + brace_end_rel;
-                    let name = &text[brace_start..brace_end];
-                    if !name.is_empty()
-                        && scan_identifier(name, 0).is_some()
-                        && !seen.iter().any(|s| s == name)
-                    {
-                        seen.push(name.to_vec());
-                        let ptr = alloc_string(_py, name);
-                        result_bits.push(MoltObject::from_ptr(ptr).bits());
-                    }
-                    idx = brace_end + 1;
-                    continue;
+        let mut seen = std::collections::HashSet::new();
+        let mut identifiers = Vec::new();
+        let mut owners = Vec::new();
+        for token in TemplateScanner::new(&template, &delimiter) {
+            if let TemplateToken::Placeholder { name, .. } = token
+                && seen.insert(name)
+            {
+                let ptr = alloc_string(py, name.as_bytes());
+                if ptr.is_null() {
+                    return MoltObject::none().bits();
                 }
-                idx = after;
-                continue;
+                owners.push(PtrDropGuard::new(ptr));
+                identifiers.push(MoltObject::from_ptr(ptr).bits());
             }
-            if let Some((start, end)) = scan_identifier(text, after) {
-                let name = &text[start..end];
-                if !seen.iter().any(|s| s == name) {
-                    seen.push(name.to_vec());
-                    let ptr = alloc_string(_py, name);
-                    result_bits.push(MoltObject::from_ptr(ptr).bits());
-                }
-                idx = end;
-                continue;
-            }
-            idx = after;
         }
-        let list_ptr = alloc_list(_py, &result_bits);
-        MoltObject::from_ptr(list_ptr).bits()
+        let ptr = alloc_list(py, &identifiers);
+        if ptr.is_null() {
+            MoltObject::none().bits()
+        } else {
+            MoltObject::from_ptr(ptr).bits()
+        }
     })
 }
 
