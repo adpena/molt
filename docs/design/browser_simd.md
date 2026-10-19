@@ -66,21 +66,49 @@ supply the Python standard library's scalar math contract.
   `(lane0 + lane2) + (lane1 + lane3)` before scalar tails. Cancellation goldens
   distinguish it from a left fold. Empty sum is +0. No reassociation or relaxed
   SIMD instructions are enabled.
-- `exp2` retains its degree-six truncated exponential polynomial and f32 Horner
-  order. It is an approximation: the independent domain grid permits relative
-  error 1e-5 plus one minimum f32 subnormal of absolute rounding error. NaN,
-  infinities, overflow, underflow and subnormal powers have explicit policies and
-  exact goldens. Scalar tails, normal vectors and mixed exceptional vectors must
-  agree bitwise for the same input. The common `abs(x) < 126` path has one range
-  check; exceptional handling is shared out of line to bound code growth.
-- Softmax retains the [online normalizer algorithm](https://arxiv.org/abs/1805.02867)
-  and tiled matmul retains its 4x4 kernel. Finite softmax rows are checked against
-  a mathematical stable-softmax reference (relative tolerance 2e-5 plus one minimum
-  subnormal); rows whose maximum is +Infinity or all -Infinity yield all NaNs,
-  as does a row containing NaN. RMSNorm uses a mathematical reference at relative
-  tolerance 2e-6 plus one minimum subnormal. Matmul is checked against independently
-  indexed scalar f32 multiply/accumulate in ascending K order. RoPE operates on
-  complete adjacent pairs.
+- `exp2` uses a positive degree-four interpolant on [0, 1]. Its Chebyshev-Lobatto
+  nodes are 0, (2-sqrt(2))/4, 1/2, (2+sqrt(2))/4 and 1. Coefficients are obtained
+  by interpolating 2^x at those nodes with 80-digit arithmetic, rounding C1..C3
+  to f32 and taking C4 as the exact compile-time endpoint residual. The owning
+  Rust constants are the sole coefficient authority; there is no runtime table.
+  Positive argument/coefficient Horner evaluation is monotone in f32. Reverse
+  Horner evaluation at 1 sums exact dyadic residuals to 2, so integer boundaries
+  cannot jump downward. Exact endpoint and adjacent-float tests enforce this
+  invariant across scalar and vector bodies. The relative-error limit remains
+  1e-5 plus one minimum f32 subnormal of absolute rounding error. NaN, infinities,
+  overflow, underflow and powers have explicit policies and exact goldens.
+  The common `abs(x) < 126` path has one range check; exceptional handling is
+  shared out of line to bound code growth.
+- Softmax uses SIMD maximum, one fused exponent/store/sum pass, and SIMD output
+  normalization. It accumulates positive exponents in f64 SIMD lanes, bounding
+  summation error on long rows without another allocation. Storing exponents
+  temporarily in the result buffer trades one extra result read/write for
+  eliminating repeated scalar exponent evaluation and online-rescaling error.
+  Gradually increasing rows exposed 0.35% error in the previous algorithm; the
+  independent stable-softmax reference enforces relative tolerance 2e-5 plus
+  one minimum subnormal. Nonfinite rows follow that reference: a +Infinity
+  maximum, all -Infinity or any NaN yields all NaNs.
+- Tiled matmul retains its 4x4 kernel, checked against independently indexed
+  scalar f32 multiply/accumulate in ascending K order. RMSNorm uses a mathematical
+  reference at relative tolerance 2e-6 plus one minimum subnormal. RoPE operates
+  on complete adjacent pairs.
+
+The degree-four interpolation remainder is bounded by
+`(ln(2)^5 / 120) * |product(x-node)| * 2^(1-x)`. On [0, 1/4], the nodal product
+is at most 0.002929688; on [1/4, 1] it is below 0.00363 and the exponential factor
+is at most 2^(3/4). The real relative error is therefore below 8.15e-6. Coefficient
+rounding, eight Horner operations and fractional subtraction add conservative
+allowances below 0.06e-6, 0.954e-6 and 0.042e-6 respectively; the total normal-range
+bound remains below 1e-5. Subnormal output rounding has the separate absolute term.
+The numerical oracle independently checks the domain against `Math.pow`, with
+exact boundaries and monotonicity controls.
+
+[Arm's optimized exp2f](https://github.com/ARM-software/optimized-routines/blob/master/math/exp2f.c)
+uses range reduction, a table and polynomial approximation; this smaller,
+positive-interval polynomial chooses the inference accuracy contract and avoids
+SIMD table gathers. [Online softmax](https://arxiv.org/abs/1805.02867) is useful
+when avoiding materialization dominates. Here the output buffer already exists;
+measuring the stable vector passes justified replacing the online scalar loop.
 
 The independent oracles include special values, signed zeros, vector bodies,
 tails, cancellation, degenerate dimensions, repeated execution, heap growth and

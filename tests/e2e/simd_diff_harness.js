@@ -102,9 +102,34 @@ async function main() {
         const a = Float32Array.from({ length: 32769 }, (_, i) => -150 + i * 278 / 32768);
         close(unary('exp2_f32', a), Float32Array.from(a, x => 2 ** x));
     });
+    await test('exp2_f32', 'half-integer and exponent boundaries', () => {
+        const a = Float32Array.from([-149.5, -148.5, -127.5, -126.5, -125.5, -0.5, 0.5,
+            125.5, 126.5, 127.5 - 2 ** -17, 127.5, 127.5 + 2 ** -17, 128 - 2 ** -17]);
+        close(unary('exp2_f32', a), Float32Array.from(a, x => 2 ** x));
+        for (const x of a) {
+            wasm.reset();
+            const scalar = unary('exp2_f32', Float32Array.of(x));
+            exact(scalar, [unary('exp2_f32', Float32Array.of(x, NaN, 0, 0))[0]]);
+        }
+    });
+    await test('exp2_f32', 'monotone adjacent floats at every integer and half-integer boundary', () => {
+        function neighbor(x, direction) {
+            if (x === 0) return direction * MIN_SUBNORMAL;
+            const value = Float32Array.of(x), bits = new Uint32Array(value.buffer);
+            bits[0] += x > 0 ? direction : -direction;
+            return value[0];
+        }
+        for (let x = -150; x <= 128; x += 0.5) {
+            wasm.reset();
+            const a = Float32Array.of(neighbor(x, -1), x, neighbor(x, 1), neighbor(x, 1));
+            const output = unary('exp2_f32', a);
+            assert.ok(output[0] <= output[1] && output[1] <= output[2], `exp2 decreased at ${x}: ${[...output]}`);
+            exact(unary('exp2_f32', a.subarray(0, 3)), output.subarray(0, 3));
+        }
+    });
     await test('exp2_f32', 'exact underflow and powers-of-two goldens', () => {
-        const a = Float32Array.from([-Infinity, -150, -149.9, -149, -148, -127, -126, 0, 1, 127, 128, Infinity, NaN]);
-        exact(unary('exp2_f32', a), [0, 0, MIN_SUBNORMAL, MIN_SUBNORMAL, 2 * MIN_SUBNORMAL, 2 ** -127, 2 ** -126, 1, 2, 2 ** 127, Infinity, Infinity, NaN]);
+        const a = Float32Array.from([-Infinity, -150, -149.9, -149, -148, -127, -126, -MIN_SUBNORMAL, 0, MIN_SUBNORMAL, 1, 127, 128, Infinity, NaN]);
+        exact(unary('exp2_f32', a), [0, 0, MIN_SUBNORMAL, MIN_SUBNORMAL, 2 * MIN_SUBNORMAL, 2 ** -127, 2 ** -126, 1, 1, 1, 2, 2 ** 127, Infinity, Infinity, NaN]);
     });
     for (const x of [-149, -127.5, -126, -0.25, 0.5, 126.5, 127]) {
         await test('exp2_f32', `same bits in scalar/normal/mixed lanes x=${x}`, () => {
@@ -115,6 +140,23 @@ async function main() {
             }
         });
     }
+    await test('softmax_f32_fused', 'finite shifted, monotone and wide rows', () => {
+        const inputs = [
+            randArr(rng, 1024, -20, 20),
+            Float32Array.from({length:1024}, (_,i) => i * 0.001),
+            Float32Array.from({length:1024}, (_,i) => i * 0.01),
+            Float32Array.from({length:1024}, (_,i) => (1023 - i) * 0.01),
+            Float32Array.from({length: 257}, (_, i) => -1000 + i * 2000 / 256),
+            Float32Array.from({length: 17}, (_, i) => i % 2 ? 100 : -100),
+        ];
+        for (const a of inputs) {
+            for (const shift of [-1000, 0, 1000]) {
+                wasm.reset();
+                const shifted = Float32Array.from(a, x => x + shift);
+                close(unary('softmax_f32_fused', shifted), softmaxReference(shifted), 2e-5);
+            }
+        }
+    });
     for (const a of [[1, Infinity], [Infinity, 1, -1, 0, 2], [-Infinity], [NaN, 0], [-Infinity, -Infinity, -Infinity, -Infinity], [-Infinity, 1, 0, 2, -Infinity]]) {
         await test('softmax_f32_fused', `IEEE row ${a}`, () => close(unary('softmax_f32_fused', Float32Array.from(a)), softmaxReference(a), 2e-5));
     }

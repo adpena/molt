@@ -1,5 +1,5 @@
 // Matched source-built browser SIMD hot-kernel benchmark (no JS copy timings).
-// node tests/e2e/bench_simd.js [artifact.wasm]
+// node --no-liftoff tests/e2e/bench_simd.js [artifact.wasm]
 'use strict';
 const fs = require('node:fs');
 const { performance } = require('node:perf_hooks');
@@ -37,6 +37,6 @@ async function main() {
     a = wasm.alloc(randArr(rng, 4096));
     results.push(benchmark('reduce_sum_f32 4096', () => e.reduce_sum_f32(a, 4096)));
     for (const result of results) console.log(`${result.name}: ${result.nsPerOp.toFixed(0)} ns/op`);
-    console.log(`@@SIMD_BENCH_JSON@@ ${JSON.stringify({ version: 2, benchmarks: results, binaryBytes: fs.statSync(artifact).size })}`);
+    console.log(`@@SIMD_BENCH_JSON@@ ${JSON.stringify({ version: 2, runtime: { node: process.version, v8: process.versions.v8, platform: process.platform, arch: process.arch, flags: process.execArgv }, benchmarks: results, binaryBytes: fs.statSync(artifact).size })}`);
 }
 main().catch(error => { console.error(error); process.exitCode = 2; });
