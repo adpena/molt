@@ -696,6 +696,7 @@
         "tests/test_wasm_runner_table_base.py/**",
         "tests/cli/test_cli_import_collection.py/**",
         "tests/test_wasm_startup_failures.py/**",
+        "tests/test_wasm_optimization_imported_memory.py/**",
         "tests/test_generate_worker.py/**",
         "tests/test_browser_asset_closure.py/**",
         "tests/test_wasm_reserved_callable_arity.py/**",
@@ -4289,6 +4290,7 @@
         "pytest",
         "-q",
         "tests/test_wasm_startup_failures.py",
+        "tests/test_wasm_optimization_imported_memory.py",
         "tests/test_generate_worker.py",
         "tests/test_browser_asset_closure.py",
         "tests/test_wasm_reserved_callable_arity.py",
@@ -4317,7 +4319,8 @@
         "python",
         "uv",
         "node",
-        "browser-acorn"
+        "browser-acorn",
+        "wasm-opt"
       ]
     },
     {

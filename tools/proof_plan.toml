@@ -2764,8 +2764,8 @@ dependencies = ["wasm.compile.sieve", "wasm.build.host"]
 argv = ["python3", "tools/venv_exec.py", "python3", "tools/run_wasm_host.py", "--cargo-profile", "dev-fast", "--", "/tmp/molt-wasm-ci/sieve/manifest.json"]
 toolchains = ["python"]
 
-# Shared loader lifecycle and publication consumers execute real JavaScript
-# without compiling a runtime. Keep this Node admission separate from Cargo.
+# Shared loader lifecycle, publication and optimizer memory semantics execute
+# real JavaScript without compiling a runtime. Keep admission separate from Cargo.
 [[command]]
 id = "wasm.test.startup-lifecycle"
 family = "wasm"
@@ -2776,8 +2776,8 @@ timeout_seconds = 120
 timeout_env = ["MOLT_WASM_TEST_TIMEOUT_SEC"]
 cache_domain = "pytest"
 dependencies = []
-argv = ["python3", "tools/venv_exec.py", "python3", "-m", "pytest", "-q", "tests/test_wasm_startup_failures.py", "tests/test_generate_worker.py", "tests/test_browser_asset_closure.py", "tests/test_wasm_reserved_callable_arity.py", "tests/test_wasm_split_runtime.py::test_split_failure_retains_distinct_bytes_and_publication", "tests/test_wasm_split_runtime.py::test_split_runtime_size_record_is_content_addressed_evidence", "tests/test_wasm_browser_embed.py::test_all_hosts_bind_exact_runtime_exports_once", "tests/test_driver_cloudflare_verify.py", "tests/test_driver_cloudflare_worker.py", "tests/test_falcon_ocr_prompt_contract.py"]
-toolchains = ["python", "uv", "node", "browser-acorn"]
+argv = ["python3", "tools/venv_exec.py", "python3", "-m", "pytest", "-q", "tests/test_wasm_startup_failures.py", "tests/test_wasm_optimization_imported_memory.py", "tests/test_generate_worker.py", "tests/test_browser_asset_closure.py", "tests/test_wasm_reserved_callable_arity.py", "tests/test_wasm_split_runtime.py::test_split_failure_retains_distinct_bytes_and_publication", "tests/test_wasm_split_runtime.py::test_split_runtime_size_record_is_content_addressed_evidence", "tests/test_wasm_browser_embed.py::test_all_hosts_bind_exact_runtime_exports_once", "tests/test_driver_cloudflare_verify.py", "tests/test_driver_cloudflare_worker.py", "tests/test_falcon_ocr_prompt_contract.py"]
+toolchains = ["python", "uv", "node", "browser-acorn", "wasm-opt"]
 
 [[command]]
 id = "wasm.test.linker-admission"

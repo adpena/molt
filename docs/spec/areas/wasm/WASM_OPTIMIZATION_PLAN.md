@@ -458,6 +458,22 @@ the current shared-runtime body optimization; app linking only performs cached
 structural cleanup over its canonical full export graph. Any future Binaryen
 runtime policy belongs in runtime-generation custody, never a per-app linker lane.
 
+Imported memory may already contain host or runtime data. Active zero data
+segments must initialize their declared ranges without clearing unrelated bytes;
+the shared policy therefore makes no imported-zero-memory assumption. Binaryen
+already knows newly allocated module-owned memory is zero. Its
+[`zeroFilledMemory` contract](https://github.com/WebAssembly/binaryen/blob/version_133/src/pass.h)
+explicitly requires proof before assuming imported memory is zero. The execution
+proof covers both linked and split-reference policies over zero and nonzero
+prefilled memory without compiling a Molt runtime.
+
+Optimizer telemetry describes only the current invocation and is separate from
+deterministic optimization attestations. Fresh-link diagnostics expose the
+optimizer phase and optional guarded process RSS; residual link cost subtracts
+that phase once. Cache restoration does not replay historical timings, and a
+failure before split processing is not charged to the split phase. These are
+development measurements and add no end-user runtime work.
+
 `--preserve-debug-sections` is a linked-publication policy across monolithic,
 split-app, and shared-runtime artifacts. It suppresses Binaryen debug/name
 stripping, requests Binaryen debug output, and partitions optimizer caches.
