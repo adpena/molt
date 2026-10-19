@@ -515,9 +515,7 @@ def test_committed_gate_manifest_is_valid(drv):
     assert "wasm-host" in names
 
 
-def test_selected_rules_share_one_pytest_invocation_for_equal_memory_units(
-    drv, tmp_path
-):
+def test_selected_rules_run_their_pytest_targets_in_one_invocation(drv, tmp_path):
     source = """
 always = ["python tools/check_a.py"]
 [[rule]]
@@ -542,12 +540,11 @@ toolchains = ["python"]
     (tmp_path / "tests").mkdir()
     for name in ("a", "b", "c", "shared"):
         (tmp_path / "tests" / f"test_{name}.py").write_text("", encoding="utf-8")
-    cfg = drv.GateConfig.parse(source, "equal-memory pytest fixture", root=tmp_path)
+    cfg = drv.GateConfig.parse(source, "merged pytest fixture", root=tmp_path)
     gates, matched = cfg.select(["src/a/x.py", "src/b/y.py"])
     gates = [gate.command for gate in gates]
     assert [rule.name for rule in matched] == ["first", "second"]
-    # Equal default envelopes share one run at the first contributing rule's
-    # place, with each literal target once.
+    # One pytest run at the first contributing rule's place, each target once.
     assert gates == [
         "python tools/check_a.py",
         "python tools/check_first.py",
@@ -602,7 +599,7 @@ toolchains = ["python"]
         "--molt-worker-memory-gb=2.5",
     )
     # A selection applies to every target of its run, so it never merges
-    # into an unfiltered memory cohort; an identical selection runs once.
+    # into the shared run; an identical selection runs once.
     assert gates == [
         (*prefix, "tests/test_a.py"),
         (*prefix, "-k", "fast or quick", "tests/test_b.py"),
@@ -676,7 +673,7 @@ def test_structured_gate_preserves_node_ids_without_a_shell(
     ]
 
 
-def test_landing_pytest_keeps_measured_owning_units_in_separate_cohorts(drv):
+def test_landing_pytest_inherits_actual_larger_owning_units(drv):
     cfg = drv.GateConfig.load(COMMITTED_GATES)
     gates, _rules = cfg.select(
         [
@@ -697,43 +694,13 @@ def test_landing_pytest_keeps_measured_owning_units_in_separate_cohorts(drv):
         for gate in gates
         if isinstance(gate, tuple) and "tests/test_table_drift_gate.py" in gate
     )
-    # This lightweight owner keeps its measured half-GiB envelope even when
-    # frontend assembly controls need 6.25 GiB in another selected cohort.
-    assert "--molt-worker-memory-gb=0.5" in merged
+    # Backend preparation consumes admitted frontend digest seeds, so its joined
+    # assembly proof includes CLI controls and inherits that cell's declared unit.
+    # Compiled heavy-regression cells remain separate below.
+    assert "--molt-worker-memory-gb=6.25" in merged
     assert "tests/test_resource_enforcement_e2e.py" not in merged
     assert "tests/test_wasm_runtime_heavy_regressions.py" not in merged
     assert "-k" not in merged and "-m" not in merged[3:]
-
-
-def test_landing_cohorts_preserve_each_targets_toolchain_owners(drv, tmp_path):
-    (tmp_path / "tests").mkdir()
-    for name in ("light", "heavy"):
-        (tmp_path / "tests" / f"{name}.py").write_text("", encoding="utf-8")
-    source = """
-[[command]]
-argv = ["--molt-worker-memory-gb=0.5", "tests/light.py"]
-[[command]]
-argv = ["--molt-worker-memory-gb=6.25", "tests/heavy.py"]
-[[rule]]
-name = "light"
-globs = ["src/**"]
-gates = []
-pytest = ["tests/light.py"]
-toolchains = ["python"]
-[[rule]]
-name = "heavy"
-globs = ["src/**"]
-gates = []
-pytest = ["tests/heavy.py"]
-toolchains = ["python", "node"]
-"""
-    cfg = drv.GateConfig.parse(source, "resource cohorts", root=tmp_path)
-    gates, _ = cfg.select(["src/changed.py"])
-    assert len(gates) == 2
-    assert gates[0].command[-1] == "tests/heavy.py"
-    assert gates[0].toolchains == ("python", "node")
-    assert gates[1].command[-1] == "tests/light.py"
-    assert gates[1].toolchains == ("python",)
 
 
 @pytest.mark.parametrize(
@@ -1102,14 +1069,8 @@ def test_committed_gate_manifest_selects_codec_table_registry(drv):
     ]
     assert gates.count("python tools/generators.py check") == 1
     assert "python tools/gen_codecs.py --check" not in gates
-    assert (
-        sum(
-            "tests/test_gen_codecs.py" in gate
-            for gate in gates
-            if isinstance(gate, tuple)
-        )
-        == 1
-    )
+    merged = next(gate for gate in gates if isinstance(gate, tuple))
+    assert "tests/test_gen_codecs.py" in merged
 
     gates, matched = cfg.select(["src/molt/stdlib/encodings/cp1252.py"])
     gates = [gate.command for gate in gates]
@@ -1144,14 +1105,8 @@ def test_committed_gate_manifest_selects_codec_table_registry(drv):
     assert "codec-tables" in {r.name for r in matched}
     assert gates.count("python tools/generators.py check") == 1
     assert "python tools/gen_codecs.py --check" not in gates
-    assert (
-        sum(
-            "tests/test_gen_codecs.py" in gate
-            for gate in gates
-            if isinstance(gate, tuple)
-        )
-        == 1
-    )
+    merged = next(gate for gate in gates if isinstance(gate, tuple))
+    assert "tests/test_gen_codecs.py" in merged
 
 
 def test_committed_gate_manifest_selects_wasm_host_ratchet(drv):
