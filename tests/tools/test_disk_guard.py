@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import io
 import json
+import errno
 import os
 import sys
 import tokenize
@@ -101,18 +102,24 @@ def _cfg(**over) -> dg.GuardConfig:
     return dg.GuardConfig(**base)
 
 
-def _fake_registered_worktree_scope(tmp_path: Path) -> tuple[Path, Path, Path]:
-    """Build the filesystem metadata written by ``git worktree add``."""
+def _registered_worktree_scope(
+    tmp_path: Path, *, separate_git_dir: Path | None = None
+) -> tuple[Path, Path, Path]:
+    """Produce registrations through the actual Git worktree boundary."""
+    from tests.test_dx_run_context import _git
+
     scope = tmp_path
     main = scope / "molt-src"
     linked = scope / "worktrees" / "lane"
-    common = main / ".git"
-    admin = common / "worktrees" / "lane"
     main.mkdir(parents=True)
-    linked.mkdir(parents=True)
-    admin.mkdir(parents=True)
-    (linked / ".git").write_text(f"gitdir: {admin}\n", encoding="utf-8")
-    (admin / "gitdir").write_text(str(linked / ".git") + "\n", encoding="utf-8")
+    options = (
+        [] if separate_git_dir is None else [f"--separate-git-dir={separate_git_dir}"]
+    )
+    _git(main, "init", "-q", "-b", "main", *options)
+    (main / "tracked").write_text("source\n", encoding="utf-8")
+    _git(main, "add", "tracked")
+    _git(main, "commit", "-q", "-m", "source")
+    _git(main, "worktree", "add", "-q", "--detach", str(linked))
     return scope, main, linked
 
 
@@ -278,15 +285,15 @@ def test_shared_target_parent_does_not_protect_independent_session_child(tmp_pat
     assert {Path(item["path"]) for item in result.reclaimed} == {session.resolve()}
 
 
-def test_registered_worktree_discovery_is_filesystem_only_and_scope_bounded(tmp_path):
-    scope, main, linked = _fake_registered_worktree_scope(tmp_path)
-    outside = tmp_path.parent / "outside-worktree"
-    outside.mkdir(exist_ok=True)
-    outside_admin = main / ".git" / "worktrees" / "outside"
-    outside_admin.mkdir()
-    (outside_admin / "gitdir").write_text(
-        str(outside / ".git") + "\n", encoding="utf-8"
-    )
+def test_registered_worktree_discovery_is_filesystem_only_and_scope_bounded(
+    tmp_path, monkeypatch
+):
+    from tests.test_dx_run_context import _git
+
+    scope, main, linked = _registered_worktree_scope(tmp_path)
+    outside = tmp_path.parent / f"{tmp_path.name}-outside-worktree"
+    _git(main, "worktree", "add", "-q", "--detach", str(outside))
+    monkeypatch.setenv("PATH", str(tmp_path / "no-git-tools"))
 
     assert set(dg.registered_worktree_roots(main)) == {
         main.resolve(),
@@ -299,8 +306,116 @@ def test_registered_worktree_discovery_is_filesystem_only_and_scope_bounded(tmp_
     }
 
 
+@pytest.mark.parametrize(
+    "name",
+    [
+        "metadata-α-é",
+        pytest.param(
+            " metadata ",
+            marks=pytest.mark.skipif(os.name == "nt", reason="Win32 trims path spaces"),
+        ),
+        pytest.param(
+            "metadata\r\nline",
+            marks=pytest.mark.skipif(os.name == "nt", reason="Win32 forbids CR/LF"),
+        ),
+        pytest.param(
+            os.fsdecode(b"metadata-\xff"),
+            marks=pytest.mark.skipif(os.name == "nt", reason="POSIX filesystem bytes"),
+        ),
+    ],
+)
+def test_separate_git_registration_preserves_path_bytes_without_guessing_main(
+    tmp_path, monkeypatch, name
+):
+    from tests.test_dx_run_context import _git
+
+    original = tmp_path / "initial-metadata"
+    scope, main, linked = _registered_worktree_scope(
+        tmp_path, separate_git_dir=original
+    )
+    common = tmp_path / name
+    try:
+        original.rename(common)
+    except OSError as exc:
+        if exc.errno == errno.EILSEQ and any(
+            0xDC80 <= ord(char) <= 0xDCFF for char in name
+        ):
+            pytest.skip(f"fixture filesystem rejects non-UTF8 path bytes: {exc}")
+        raise
+    for checkout in (main, linked):
+        pointer = checkout / ".git"
+        recorded = pointer.read_bytes()
+        assert recorded.count(os.fsencode(original)) == 1
+        pointer.write_bytes(
+            recorded.replace(os.fsencode(original), os.fsencode(common))
+        )
+    # Git validates the relocated records from ordinary checkout argv. This
+    # also exercises POSIX bytes unsupported by the command-JSON transport.
+    assert _git(main, "status", "--porcelain") == ""
+    assert _git(linked, "status", "--porcelain") == ""
+    monkeypatch.setenv("PATH", str(tmp_path / "no-git-tools"))
+
+    # A separate common directory does not declare its parent as a checkout.
+    assert dg.registered_worktree_roots(main) == (linked.resolve(),)
+    assert dg.registered_worktree_roots(linked) == (linked.resolve(),)
+    assert set(dg.reclaim_roots(main)) == {
+        scope.resolve(),
+        main.resolve(),
+        linked.resolve(),
+    }
+
+
+@pytest.mark.parametrize("broken", ["forward", "reverse", "common"])
+def test_broken_worktree_registration_never_authorizes_its_target_deletion(
+    tmp_path, broken
+):
+    _, main, linked = _registered_worktree_scope(tmp_path)
+    admin = dg.git_directories(linked)[0]
+    if broken == "forward":
+        (linked / ".git").write_bytes(b"GITDIR: " + os.fsencode(admin) + b"\n")
+    elif broken == "reverse":
+        (admin / "gitdir").write_bytes(os.fsencode(linked / "wrong-leaf") + b"\n")
+    else:
+        other = tmp_path / "unrelated-common"
+        other.mkdir()
+        (admin / "commondir").write_bytes(os.fsencode(other) + b"\n")
+    now = 2_000_000.0
+    target = linked / "target" / "sessions" / "keep"
+    _make_dir(target, size_bytes=100 * _GB, age_s=100_000, now=now)
+
+    assert linked.resolve() not in dg.registered_worktree_roots(main)
+    result = dg.ensure_free(
+        root=main,
+        config=_cfg(),
+        free_bytes_fn=_SimulatedVolume(1 * _GB, {target: 100 * _GB}),
+        now_fn=lambda: now,
+        env={},
+    )
+    assert result.reclaimed == []
+    assert (target / "artifact.bin").read_bytes() == b"\0" * 4096
+    assert (linked / "tracked").read_text(encoding="utf-8") == "source\n"
+
+
+def test_malformed_root_git_metadata_refuses_before_deleting_any_target(tmp_path):
+    _, main, _ = _registered_worktree_scope(tmp_path)
+    (main / ".git" / "HEAD").unlink()
+    now = 2_000_000.0
+    target = main / "target" / "sessions" / "keep"
+    _make_dir(target, size_bytes=100 * _GB, age_s=100_000, now=now)
+
+    with pytest.raises(ValueError, match="stale Git checkout metadata"):
+        dg.ensure_free(
+            root=main,
+            config=_cfg(),
+            free_bytes_fn=_SimulatedVolume(1 * _GB, {target: 100 * _GB}),
+            now_fn=lambda: now,
+            env={},
+        )
+    assert (target / "artifact.bin").read_bytes() == b"\0" * 4096
+
+
 def test_ensure_free_reclaims_across_registered_worktrees_only(tmp_path):
-    scope, main, linked = _fake_registered_worktree_scope(tmp_path)
+    scope, main, linked = _registered_worktree_scope(tmp_path)
     now = 2_000_000.0
     main_session = main / "target" / "sessions" / "main-old"
     linked_session = linked / "target" / "sessions" / "linked-old"
@@ -336,7 +451,7 @@ def test_ensure_free_reclaims_across_registered_worktrees_only(tmp_path):
 
 
 def test_live_guard_protects_its_worktree_but_terminal_marker_does_not(tmp_path):
-    _, main, linked = _fake_registered_worktree_scope(tmp_path)
+    _, main, linked = _registered_worktree_scope(tmp_path)
     now = 2_000_000.0
     main_session = main / "target" / "sessions" / "main-old"
     linked_session = linked / "target" / "sessions" / "linked-active"
@@ -617,7 +732,7 @@ def test_gc_collects_registered_dir_past_ttl(tmp_path):
 
 
 def test_gc_compacts_each_registered_worktree_registry(tmp_path):
-    _, main, linked = _fake_registered_worktree_scope(tmp_path)
+    _, main, linked = _registered_worktree_scope(tmp_path)
     now = 3_000_000.0
     main_done = main / "target" / "codex-main-done"
     linked_done = linked / "target" / "codex-linked-done"

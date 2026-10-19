@@ -86,7 +86,11 @@ from molt.disk_capacity import (  # noqa: E402
     DISK_GUARD_HIGH_WATER_ENV,
     minimum_headroom_bytes,
 )
-from molt.custody_layout import custody_root  # noqa: E402
+from molt.custody_layout import (  # noqa: E402
+    _read_git_path,
+    custody_root,
+    git_directories,
+)
 from molt.dx import (  # noqa: E402
     # noqa: E402,
     configured_artifact_root,
@@ -438,59 +442,33 @@ def _path_within(path: Path, parent: Path) -> bool:
         return False
 
 
-def _gitdir_pointer(checkout: Path) -> Path | None:
-    dotgit = checkout / ".git"
-    if dotgit.is_dir():
-        return dotgit.resolve()
-    try:
-        text = dotgit.read_text(encoding="utf-8", errors="replace").strip()
-    except OSError:
-        return None
-    prefix = "gitdir:"
-    if not text.lower().startswith(prefix):
-        return None
-    raw = text[len(prefix) :].strip()
-    if not raw:
-        return None
-    gitdir = Path(raw)
-    if not gitdir.is_absolute():
-        gitdir = checkout / gitdir
-    return gitdir.resolve(strict=False)
-
-
-def _git_common_dir(checkout: Path) -> Path | None:
-    """Resolve Git's common metadata directory using filesystem state only."""
-    gitdir = _gitdir_pointer(checkout)
-    if gitdir is None:
-        return None
-    if gitdir.parent.name == "worktrees":
-        return gitdir.parent.parent
-    return gitdir
-
-
 def _registered_worktrees_from_common(common: Path) -> set[Path]:
     roots: set[Path] = set()
-    main = common.parent.resolve(strict=False)
-    if main.is_dir():
-        roots.add(main)
+    # A separate Git directory does not identify its main source checkout.
+    if common.name == ".git":
+        main = common.parent.resolve(strict=False)
+        if git_directories(main) == (common, common):
+            roots.add(main)
     for admin in _iter_dir(common / "worktrees"):
         if not admin.is_dir():
             continue
         try:
-            raw = (
-                (admin / "gitdir").read_text(encoding="utf-8", errors="replace").strip()
-            )
-        except OSError:
+            # This reverse registration is an unprefixed path record, not a
+            # checkout's `gitdir: ...` pointer. Share only its bounded decoding.
+            raw = _read_git_path(admin / "gitdir")
+            if not raw:
+                continue
+            gitfile = Path(raw)
+            if not gitfile.is_absolute():
+                gitfile = admin / gitfile
+            gitfile = gitfile.resolve(strict=False)
+            if gitfile.name != ".git":
+                continue
+            checkout = gitfile.parent
+            directories = git_directories(checkout)
+        except (OSError, ValueError, RuntimeError):
             continue
-        if not raw:
-            continue
-        gitfile = Path(raw)
-        if not gitfile.is_absolute():
-            gitfile = admin / gitfile
-        checkout = gitfile.resolve(strict=False).parent
-        if checkout.is_dir() and _gitdir_pointer(checkout) == admin.resolve(
-            strict=False
-        ):
+        if directories == (admin.resolve(strict=False), common):
             roots.add(checkout)
     return roots
 
@@ -506,7 +484,9 @@ def registered_worktree_roots(root: Path) -> tuple[Path, ...]:
     scope = custody_root(root)
     probes: list[Path] = [root, scope, scope / "molt-src"]
     common_dirs = {
-        common for probe in probes if (common := _git_common_dir(probe)) is not None
+        directories[1]
+        for probe in probes
+        if (directories := git_directories(probe)) is not None
     }
     registered: set[Path] = set()
     for common in common_dirs:

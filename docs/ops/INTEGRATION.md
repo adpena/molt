@@ -146,6 +146,29 @@ self-gate that runs `tests/test_molt_dev.py`), and CI/pyproject wiring. Local
 rules have one closed field set; unknown or retired policy fields fail
 admission rather than becoming unused promises.
 
+Unfiltered pytest targets share a run only when their existing measured worker
+envelopes match. File/directory requests and explicitly requested children stay
+in one collection, so a test cannot run again in a different resource cohort.
+Literal selectors and parameter IDs retain their meaning; each `-k`/`-m`
+selection remains separate. Each cohort receives the union of its targets'
+declared toolchains. Larger envelopes run first, and lower-memory groups use
+their own host-derived worker count. This trades one pytest startup per distinct
+envelope for greater concurrency without lowering any resource allowance.
+The repository pytest configuration reports only the ten slowest durations
+above 0.25 seconds, including setup and teardown, to expose stragglers.
+
+After aggregate prerequisite admission, the driver checks current capacity on
+the output volumes of gate owners explicitly declaring Cargo before executing
+any gate. Transitive Cargo availability for read-only metadata is not a build
+requirement. Python-only
+and dry-run plans acquire no new disk requirement. This is readiness against
+the existing floor: remaining campaign growth is unknown and no bytes are
+reserved. Canonical probes before and after Cargo-capable gates retain signed
+raw free-byte changes; these are interval observations, not exclusive gate
+allocations. Diagnostic probe failure cannot replace the original gate result.
+Actual child output admission remains mandatory. This development telemetry
+provides the measurements needed for operation budgets without guessing them.
+
 Source-extension production and proof policy have separate dependency edges.
 Producer, registry and source-build environment changes select production tests
 and their proof bridge and receipt consumers. Proof-plan, queue admission and

@@ -515,7 +515,9 @@ def test_committed_gate_manifest_is_valid(drv):
     assert "wasm-host" in names
 
 
-def test_selected_rules_run_their_pytest_targets_in_one_invocation(drv, tmp_path):
+def test_selected_rules_share_one_pytest_invocation_for_equal_memory_units(
+    drv, tmp_path
+):
     source = """
 always = ["python tools/check_a.py"]
 [[rule]]
@@ -540,11 +542,12 @@ toolchains = ["python"]
     (tmp_path / "tests").mkdir()
     for name in ("a", "b", "c", "shared"):
         (tmp_path / "tests" / f"test_{name}.py").write_text("", encoding="utf-8")
-    cfg = drv.GateConfig.parse(source, "merged pytest fixture", root=tmp_path)
+    cfg = drv.GateConfig.parse(source, "equal-memory pytest fixture", root=tmp_path)
     gates, matched = cfg.select(["src/a/x.py", "src/b/y.py"])
     gates = [gate.command for gate in gates]
     assert [rule.name for rule in matched] == ["first", "second"]
-    # One pytest run at the first contributing rule's place, each target once.
+    # Equal default envelopes share one run at the first contributing rule's
+    # place, with each literal target once.
     assert gates == [
         "python tools/check_a.py",
         "python tools/check_first.py",
@@ -599,7 +602,7 @@ toolchains = ["python"]
         "--molt-worker-memory-gb=2.5",
     )
     # A selection applies to every target of its run, so it never merges
-    # into the shared run; an identical selection runs once.
+    # into an unfiltered memory cohort; an identical selection runs once.
     assert gates == [
         (*prefix, "tests/test_a.py"),
         (*prefix, "-k", "fast or quick", "tests/test_b.py"),
@@ -673,7 +676,7 @@ def test_structured_gate_preserves_node_ids_without_a_shell(
     ]
 
 
-def test_landing_pytest_inherits_actual_larger_owning_units(drv):
+def test_landing_pytest_keeps_measured_owning_units_in_separate_cohorts(drv):
     cfg = drv.GateConfig.load(COMMITTED_GATES)
     gates, _rules = cfg.select(
         [
@@ -694,13 +697,43 @@ def test_landing_pytest_inherits_actual_larger_owning_units(drv):
         for gate in gates
         if isinstance(gate, tuple) and "tests/test_table_drift_gate.py" in gate
     )
-    # Backend preparation consumes admitted frontend digest seeds, so its joined
-    # assembly proof includes CLI controls and inherits that cell's declared unit.
-    # Compiled heavy-regression cells remain separate below.
-    assert "--molt-worker-memory-gb=6.25" in merged
+    # This lightweight owner keeps its measured half-GiB envelope even when
+    # frontend assembly controls need 6.25 GiB in another selected cohort.
+    assert "--molt-worker-memory-gb=0.5" in merged
     assert "tests/test_resource_enforcement_e2e.py" not in merged
     assert "tests/test_wasm_runtime_heavy_regressions.py" not in merged
     assert "-k" not in merged and "-m" not in merged[3:]
+
+
+def test_landing_cohorts_preserve_each_targets_toolchain_owners(drv, tmp_path):
+    (tmp_path / "tests").mkdir()
+    for name in ("light", "heavy"):
+        (tmp_path / "tests" / f"{name}.py").write_text("", encoding="utf-8")
+    source = """
+[[command]]
+argv = ["--molt-worker-memory-gb=0.5", "tests/light.py"]
+[[command]]
+argv = ["--molt-worker-memory-gb=6.25", "tests/heavy.py"]
+[[rule]]
+name = "light"
+globs = ["src/**"]
+gates = []
+pytest = ["tests/light.py"]
+toolchains = ["python"]
+[[rule]]
+name = "heavy"
+globs = ["src/**"]
+gates = []
+pytest = ["tests/heavy.py"]
+toolchains = ["python", "node"]
+"""
+    cfg = drv.GateConfig.parse(source, "resource cohorts", root=tmp_path)
+    gates, _ = cfg.select(["src/changed.py"])
+    assert len(gates) == 2
+    assert gates[0].command[-1] == "tests/heavy.py"
+    assert gates[0].toolchains == ("python", "node")
+    assert gates[1].command[-1] == "tests/light.py"
+    assert gates[1].toolchains == ("python",)
 
 
 @pytest.mark.parametrize(
@@ -1069,8 +1102,14 @@ def test_committed_gate_manifest_selects_codec_table_registry(drv):
     ]
     assert gates.count("python tools/generators.py check") == 1
     assert "python tools/gen_codecs.py --check" not in gates
-    merged = next(gate for gate in gates if isinstance(gate, tuple))
-    assert "tests/test_gen_codecs.py" in merged
+    assert (
+        sum(
+            "tests/test_gen_codecs.py" in gate
+            for gate in gates
+            if isinstance(gate, tuple)
+        )
+        == 1
+    )
 
     gates, matched = cfg.select(["src/molt/stdlib/encodings/cp1252.py"])
     gates = [gate.command for gate in gates]
@@ -1105,8 +1144,14 @@ def test_committed_gate_manifest_selects_codec_table_registry(drv):
     assert "codec-tables" in {r.name for r in matched}
     assert gates.count("python tools/generators.py check") == 1
     assert "python tools/gen_codecs.py --check" not in gates
-    merged = next(gate for gate in gates if isinstance(gate, tuple))
-    assert "tests/test_gen_codecs.py" in merged
+    assert (
+        sum(
+            "tests/test_gen_codecs.py" in gate
+            for gate in gates
+            if isinstance(gate, tuple)
+        )
+        == 1
+    )
 
 
 def test_committed_gate_manifest_selects_wasm_host_ratchet(drv):
@@ -3005,6 +3050,192 @@ version_pattern = '^ok$'
     message = str(caught.value)
     for expected in ("one", "two", "OSError", "local.always.0", "executed=0"):
         assert expected in message
+
+
+def _capacity_integration_policy(drv, work, monkeypatch):
+    _commit_file(
+        work,
+        "tools/proof_plan.toml",
+        """
+always = ["echo non-cargo-prefix"]
+[[rule]]
+name = "cargo-capability"
+globs = ["**"]
+gates = ["echo opaque-cargo-wrapper"]
+toolchains = ["cargo"]
+[[toolchain_policy]]
+name = "cargo"
+executable = "cargo"
+version_pattern = '.*'
+""",
+        "selected Cargo capability",
+    )
+    # Tool installation/version projection is outside the capacity contract.
+    # Selection, explicit capability, output resolution, and admission stay real.
+    monkeypatch.setattr(drv.GateConfig, "admit", lambda *args: None)
+    monkeypatch.setattr(
+        drv.GateConfig,
+        "environments",
+        lambda self, gates, *, baseline: {
+            gate.toolchains: dict(baseline) for gate in gates
+        },
+    )
+
+
+def _capacity_measurement(monkeypatch, measure):
+    from molt import disk_capacity
+
+    # The measurement is the independent oracle on every host, including
+    # Darwin's important-usage estimate when observed raw free is too small.
+    monkeypatch.setattr(disk_capacity, "_default_measure_free_bytes", measure)
+    monkeypatch.setattr(disk_capacity, "_darwin_important_usage_bytes", measure)
+
+
+def test_integrate_selected_output_capacity_refuses_before_gate_prefix(
+    drv, origin_and_clone, monkeypatch, tmp_path
+):
+    _origin, work = origin_and_clone
+    _capacity_integration_policy(drv, work, monkeypatch)
+    target = tmp_path / "selected-target"
+    build = tmp_path / "selected-build"
+    monkeypatch.setenv("CARGO_TARGET_DIR", str(target))
+    monkeypatch.setenv("CARGO_BUILD_BUILD_DIR", str(build))
+    monkeypatch.delenv("MOLT_DISK_GUARD_HIGH_WATER_GB", raising=False)
+    _capacity_measurement(monkeypatch, lambda path: 25 * 1024**3 - 1)
+    monkeypatch.setattr(
+        drv, "run_gate", lambda *args: pytest.fail("expensive prefix started")
+    )
+    with pytest.raises(drv.DriverError, match="capacity failed; executed=0") as caught:
+        drv.cmd_integrate(_integrate_ns(drv, repo=str(work), no_push=True))
+    assert str(target) in str(caught.value)
+    assert str(build) in str(caught.value)
+    assert "26843545600" in str(caught.value)
+    assert not target.exists() and not build.exists()
+
+
+@pytest.mark.parametrize("gate_rc", [0, 19])
+def test_integrate_capacity_observes_interval_without_campaign_guarantee(
+    drv, origin_and_clone, monkeypatch, tmp_path, capsys, gate_rc
+):
+    _origin, work = origin_and_clone
+    _capacity_integration_policy(drv, work, monkeypatch)
+    target = tmp_path / "selected-target"
+    monkeypatch.setenv("CARGO_TARGET_DIR", str(target))
+    monkeypatch.delenv("CARGO_BUILD_BUILD_DIR", raising=False)
+    monkeypatch.delenv("MOLT_DISK_GUARD_HIGH_WATER_GB", raising=False)
+    available = 25 * 1024**3 + 426_721_280
+    _capacity_measurement(monkeypatch, lambda path: available)
+    ran = []
+
+    def gate(command, repo, env):
+        nonlocal available
+        ran.append(command)
+        if command == "echo opaque-cargo-wrapper":
+            available -= 1_420_288_000
+            return gate_rc
+        return 0
+
+    monkeypatch.setattr(drv, "run_gate", gate)
+    if gate_rc:
+        with pytest.raises(drv.DriverError, match="gate failed \\(exit 19\\)"):
+            drv.cmd_integrate(_integrate_ns(drv, repo=str(work), no_push=True))
+    else:
+        assert drv.cmd_integrate(_integrate_ns(drv, repo=str(work), no_push=True)) == 0
+    assert ran == ["echo non-cargo-prefix", "echo opaque-cargo-wrapper"]
+    output = capsys.readouterr().err
+    readiness = json.loads(
+        next(
+            line.split("selected output capacity: ", 1)[1]
+            for line in output.splitlines()
+            if "selected output capacity: " in line
+        )
+    )
+    assert readiness["remaining_campaign_growth_bytes"] is None
+    assert readiness["reserved_bytes"] == 0
+    assert "remaining campaign growth unknown; capacity is not reserved" in output
+    observations = [
+        json.loads(line.split("gate capacity: ", 1)[1])
+        for line in output.splitlines()
+        if "gate capacity: " in line
+    ]
+    assert [row["phase"] for row in observations] == ["before", "after"]
+    assert observations[1]["free_bytes_delta"] == {str(target): -1_420_288_000}
+    assert observations[0]["probes"][0]["free_bytes"] == 27_270_266_880
+    assert observations[1]["probes"][0]["free_bytes"] == 25_849_978_880
+    for row in observations:
+        assert row["gate"] == "echo opaque-cargo-wrapper"
+        assert "not exclusive allocation" in row["scope"]
+        assert row["probes"][0]["required_bytes"] == 26_843_545_600
+        assert "measurement" in row["probes"][0]
+        assert "available_bytes" in row["probes"][0]
+
+
+@pytest.mark.parametrize("dry", [False, True])
+def test_integrate_no_cargo_or_dry_run_has_no_new_capacity_requirement(
+    drv, origin_and_clone, monkeypatch, dry
+):
+    from molt import disk_capacity
+
+    _origin, work = origin_and_clone
+    if dry:
+        _capacity_integration_policy(drv, work, monkeypatch)
+    else:
+        _commit_file(work, "source.txt", "source\n", "non-Cargo change")
+
+    def forbidden(*args, **kwargs):
+        pytest.fail("non-build path acquired a capacity requirement")
+
+    monkeypatch.setattr(disk_capacity, "require_build_capacity", forbidden)
+    monkeypatch.setattr(disk_capacity, "probe_capacity", forbidden)
+    monkeypatch.setattr(drv, "run_gate", forbidden if dry else lambda *args: 0)
+    assert (
+        drv.cmd_integrate(_integrate_ns(drv, repo=str(work), no_push=True, dry_run=dry))
+        == 0
+    )
+
+
+def test_transitive_cargo_metadata_availability_adds_no_build_requirement(drv):
+    cfg = drv.GateConfig.load(COMMITTED_GATES)
+    gates, _ = cfg.select(["docs/agent/V1_HANDOFF_FINDINGS.md"])
+    # This is the real ledger-only policy, including its generator dependency.
+    assert ("python", "git", "generators") in [gate.toolchains for gate in gates]
+    environments = {gate.toolchains: {} for gate in gates}
+    assert cfg.cargo_outputs(environments) == {}
+
+
+@pytest.mark.parametrize("gate_rc", [0, 19])
+def test_integrate_capacity_observer_failure_preserves_gate_result(
+    drv, origin_and_clone, monkeypatch, capsys, gate_rc
+):
+    from molt import disk_capacity
+
+    _origin, work = origin_and_clone
+    _capacity_integration_policy(drv, work, monkeypatch)
+    _capacity_measurement(monkeypatch, lambda path: 30 * 1024**3)
+    after = False
+    probe = disk_capacity.probe_capacity
+
+    def observe(*args, **kwargs):
+        if after:
+            raise RuntimeError("independent observer failure")
+        return probe(*args, **kwargs)
+
+    def gate(command, repo, env):
+        nonlocal after
+        if command == "echo opaque-cargo-wrapper":
+            after = True
+            return gate_rc
+        return 0
+
+    monkeypatch.setattr(disk_capacity, "probe_capacity", observe)
+    monkeypatch.setattr(drv, "run_gate", gate)
+    if gate_rc:
+        with pytest.raises(drv.DriverError, match="gate failed \\(exit 19\\)"):
+            drv.cmd_integrate(_integrate_ns(drv, repo=str(work), no_push=True))
+    else:
+        assert drv.cmd_integrate(_integrate_ns(drv, repo=str(work), no_push=True)) == 0
+    output = capsys.readouterr()
+    assert "independent observer failure" in output.out + output.err
 
 
 @pytest.mark.skipif(os.name == "nt", reason="POSIX executable fixture")

@@ -6,6 +6,14 @@ Main advances only to a commit that passed its selected proofs on every
 required cell. One queue on the owner's own machines enforces that rule; no
 agent pushes to main by hand.
 
+The current local driver implements immutable candidate custody, measured
+resource cohorts and selected-volume readiness through the existing proof plan.
+It still uses local rules and runs gates sequentially; the family queue,
+cross-host scheduling and reusable action receipts below remain release work.
+The [integration contract](../ops/INTEGRATION.md) owns implemented local
+behavior. Input-closed action reuse requires finer declared dependencies and
+hermetic execution; a passing log or unchanged command label cannot authorize it.
+
 ## Problem
 
 Measured 2026-10-14 to 2026-10-17:
@@ -19,7 +27,7 @@ Measured 2026-10-14 to 2026-10-17:
   HF-334. HF-339 and the Windows cluster fail only on a host other than this
   Mac. The frontend fix itself changed four test files, and its landing ran
   none of them.
-- `tools/molt_dev.py integrate` selects landing tests from 58 hand-written
+- `tools/molt_dev.py integrate` selects landing tests from hand-written
   `[[rule]]` globs in `tools/proof_plan.toml`. CI selects proof families from
   the families' declared inputs. These are two selection authorities, and
   the landing one misses tests by construction.

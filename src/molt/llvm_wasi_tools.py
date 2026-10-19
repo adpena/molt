@@ -8,6 +8,7 @@ from pathlib import Path
 import subprocess
 from typing import Literal
 
+from molt import custody_layout
 from molt.default_paths import executable_environment_value, expand_user_path
 
 from molt.dx import (
@@ -138,38 +139,18 @@ def _dedupe_paths(paths: Iterable[Path]) -> tuple[Path, ...]:
     return tuple(result)
 
 
-@functools.lru_cache(maxsize=8)
-def _cached_source_checkout_roots(module_file: str) -> tuple[Path, ...]:
-    """Return the loaded checkout and its Git common checkout, if worktree-backed."""
-    checkout = Path(module_file).resolve().parents[2]
-    roots = [checkout]
-    git_marker = checkout / ".git"
-    if git_marker.is_file():
-        try:
-            marker = git_marker.read_text(encoding="utf-8", errors="strict").strip()
-        except (OSError, UnicodeDecodeError):
-            marker = ""
-        if marker.startswith("gitdir:"):
-            raw_git_dir = marker.removeprefix("gitdir:").strip()
-            git_dir = Path(raw_git_dir)
-            if not git_dir.is_absolute():
-                git_dir = checkout / git_dir
-            resolved_git_dir = git_dir.resolve(strict=False)
-            common_dot_git = next(
-                (
-                    candidate
-                    for candidate in (resolved_git_dir, *resolved_git_dir.parents)
-                    if candidate.name == ".git"
-                ),
-                None,
-            )
-            if common_dot_git is not None:
-                roots.append(common_dot_git.parent)
-    return _dedupe_paths(roots)
-
-
 def _source_checkout_roots() -> tuple[Path, ...]:
-    return _cached_source_checkout_roots(os.path.abspath(__file__))
+    """Return the loaded checkout and its Git common checkout, if worktree-backed."""
+    checkout = Path(__file__).resolve().parents[2]
+    roots = [checkout]
+    directories = custody_layout.git_directories(checkout)
+    if directories is not None:
+        _git_dir, common = directories
+        # A separate Git directory can live anywhere. Only an admitted common
+        # .git directory identifies its parent as the conventional main tree.
+        if common.name == ".git":
+            roots.append(common.parent)
+    return _dedupe_paths(roots)
 
 
 def _directory_identity(path: Path) -> tuple[int, int, int, int, int]:
@@ -618,7 +599,6 @@ def _cached_llvm_named_tool_candidates(
 
 def clear_llvm_tool_candidate_cache() -> None:
     """Invalidate process-local tool selection after an explicit tool mutation."""
-    _cached_source_checkout_roots.cache_clear()
     _cached_managed_llvm_bin_directories.cache_clear()
     _observed_search_directories.cache_clear()
     _cached_llvm_named_tool_candidates.cache_clear()

@@ -139,6 +139,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
+    from molt.disk_capacity import DiskCapacityProbe
     from tools.proof_plan import PytestMemoryUnits
 
 # Bind both tools and molt before loading any repository module; an editable
@@ -554,14 +555,14 @@ class GateConfig:
         to the merged pytest invocation supply its tools; each selector cohort
         keeps its own. Command binding happens after this policy selection.
         """
-        from tools.proof_plan import local_pytest_argv
+        from tools.proof_plan import local_pytest_argv, local_pytest_cohorts
 
         selected: list[SelectedGate] = []
         indices: dict[str, int] = {}
         seen_pytest: set[str] = set()
         matched_rules: list[GateRule] = []
         pytest_targets: list[str] = []
-        pytest_tools: dict[str, None] = {}
+        pytest_tools: dict[str, dict[str, None]] = {}
         pytest_index: int | None = None
         pytest_commands: set[str] = set()
 
@@ -596,7 +597,10 @@ class GateConfig:
             if rule.pytest:
                 if pytest_index is None:
                     pytest_index = len(selected)
-                pytest_tools.update(dict.fromkeys(tools(f"{owner}.pytest")))
+                for target in rule.pytest:
+                    pytest_tools.setdefault(target, {}).update(
+                        dict.fromkeys(tools(f"{owner}.pytest"))
+                    )
             for index, (select, targets) in enumerate(rule.pytest_select):
                 command = local_pytest_argv(
                     targets, select, memory_units=self.pytest_memory_units
@@ -627,14 +631,23 @@ class GateConfig:
                 tuple(dict.fromkeys(name for owner in owners for name in owner)),
             )
         if pytest_index is not None:
-            command = local_pytest_argv(
+            for targets in local_pytest_cohorts(
                 pytest_targets, memory_units=self.pytest_memory_units
-            )
-            pytest_commands.add(command_key(command))
-            size = len(selected)
-            add(command, tuple(pytest_tools))
-            if len(selected) != size:
-                selected.insert(pytest_index, selected.pop())
+            ):
+                command = local_pytest_argv(
+                    targets, memory_units=self.pytest_memory_units
+                )
+                pytest_commands.add(command_key(command))
+                cohort_tools = tuple(
+                    dict.fromkeys(
+                        tool for target in targets for tool in pytest_tools[target]
+                    )
+                )
+                size = len(selected)
+                add(command, cohort_tools)
+                if len(selected) != size:
+                    selected.insert(pytest_index, selected.pop())
+                    pytest_index += 1
         # Preserve declared source-check and Cargo command order. Only early
         # consumer cohorts move behind the selected Rust compilation check.
         lint_commands = {
@@ -699,6 +712,25 @@ class GateConfig:
             raise DriverError(
                 f"selected gate environment failed; executed=0: {exc}"
             ) from exc
+
+    def cargo_outputs(
+        self,
+        environments: dict[tuple[str, ...], dict[str, str]],
+    ) -> dict[tuple[str, ...], tuple[Path, ...]]:
+        """Outputs of gate owners explicitly declaring Cargo capability.
+
+        Declared capability is conservative: it does not prove that a Cargo
+        child launches. Actual argv/output admission remains with each child.
+        Transitive tool availability (for example generator metadata queries)
+        does not impose a compilation-space requirement.
+        """
+        from molt.cargo_execution_policy import cargo_output_paths
+
+        outputs = {}
+        for tools, environment in environments.items():
+            if "cargo" in tools:
+                outputs[tools] = cargo_output_paths((), cwd=self.root, env=environment)
+        return outputs
 
 
 # --------------------------------------------------------------------------
@@ -970,6 +1002,87 @@ def gate_time_summary(gate_seconds: list[tuple[float, str]], *, top: int = 8) ->
     return "\n".join(lines)
 
 
+def _admit_selected_output_capacity(
+    outputs: dict[tuple[str, ...], tuple[Path, ...]],
+    environments: dict[tuple[str, ...], dict[str, str]],
+) -> dict[tuple[str, ...], int]:
+    """Check current volumes before any gate, without forecasting growth."""
+    from molt.disk_capacity import minimum_headroom_bytes, require_build_capacity
+
+    requirements = {}
+    observed: set[tuple[tuple[Path, ...], int]] = set()
+    for tools, paths in outputs.items():
+        environment = environments[tools]
+        required = minimum_headroom_bytes(environment)
+        requirements[tools] = required
+        key = (paths, required)
+        if key in observed:
+            continue
+        receipt = require_build_capacity(paths, env=environment)
+        observed.add(key)
+        _say(
+            "    selected output capacity: "
+            + json.dumps(
+                {
+                    **receipt.as_dict(),
+                    "scope": "current Cargo-capable selected outputs",
+                    "remaining_campaign_growth_bytes": None,
+                    "reserved_bytes": 0,
+                },
+                sort_keys=True,
+            )
+        )
+    if outputs:
+        _say("    remaining campaign growth unknown; capacity is not reserved")
+    return requirements
+
+
+def _observe_gate_capacity(
+    paths: tuple[Path, ...],
+    *,
+    required_bytes: int,
+    phase: str,
+    gate: str,
+    before: tuple[DiskCapacityProbe, ...] = (),
+) -> tuple[DiskCapacityProbe, ...]:
+    """Record interval observations; telemetry cannot change a gate verdict."""
+    from molt.disk_capacity import probe_capacity
+
+    try:
+        probes = tuple(
+            probe_capacity(path, required_bytes=required_bytes) for path in paths
+        )
+        previous = {probe.requested_path: probe.free_bytes for probe in before}
+        changes = {
+            str(probe.requested_path): (
+                probe.free_bytes - prior
+                if isinstance(prior := previous.get(probe.requested_path), int)
+                and isinstance(probe.free_bytes, int)
+                else None
+            )
+            for probe in probes
+        }
+        _say(
+            "    gate capacity: "
+            + json.dumps(
+                {
+                    "scope": "Cargo-capable gate interval; not exclusive allocation",
+                    "phase": phase,
+                    "gate": gate,
+                    "probes": [probe.as_dict() for probe in probes],
+                    "free_bytes_delta": changes if phase == "after" else {},
+                },
+                sort_keys=True,
+            )
+        )
+        return probes
+    except Exception as exc:
+        _warn(
+            f"gate capacity observation unavailable ({phase}): {type(exc).__name__}: {exc}"
+        )
+        return ()
+
+
 def cmd_integrate(args: argparse.Namespace) -> int:
     if args.dry_run:
         return _integrate_exclusive(args)
@@ -1171,10 +1284,21 @@ def _integrate_exclusive(args: argparse.Namespace) -> int:
     # Bare Cargo would compile cold into the worktree's ./target, which the
     # worktree cleanup then deletes, so every landing paid a full build.
     env.setdefault("CARGO_TARGET_DIR", str(project_cargo_target_dir(repo, env)))
+    cargo_outputs: dict[tuple[str, ...], tuple[Path, ...]] = {}
+    capacity_requirements: dict[tuple[str, ...], int] = {}
     if not dry:
         _assert_integration_source(git, selected_commit)
         config.admit(touched, matched_rules, list(args.extra_gate or []))
         environments = config.environments(gate_cmds, baseline=env)
+        try:
+            cargo_outputs = config.cargo_outputs(environments)
+            capacity_requirements = _admit_selected_output_capacity(
+                cargo_outputs, environments
+            )
+        except (ValueError, OSError, KeyError) as exc:
+            raise DriverError(
+                f"selected output capacity failed; executed=0: {exc}"
+            ) from exc
         _assert_integration_source(git, selected_commit)
     gate_seconds: list[tuple[float, str]] = []
     for gate in gate_cmds:
@@ -1184,9 +1308,30 @@ def _integrate_exclusive(args: argparse.Namespace) -> int:
         if dry:
             _say(f"    would-run gate: {display}")
             continue
+        paths = cargo_outputs.get(gate.toolchains, ())
+        before = (
+            _observe_gate_capacity(
+                paths,
+                required_bytes=capacity_requirements[gate.toolchains],
+                phase="before",
+                gate=display,
+            )
+            if paths
+            else ()
+        )
         started = time.monotonic()
-        rc = run_gate(cmd, repo, environments[gate.toolchains])
-        elapsed = time.monotonic() - started
+        try:
+            rc = run_gate(cmd, repo, environments[gate.toolchains])
+        finally:
+            elapsed = time.monotonic() - started
+            if paths:
+                _observe_gate_capacity(
+                    paths,
+                    required_bytes=capacity_requirements[gate.toolchains],
+                    phase="after",
+                    gate=display,
+                    before=before,
+                )
         gate_seconds.append((elapsed, display))
         _assert_integration_source(git, selected_commit)
         if rc != 0:

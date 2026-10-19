@@ -4817,9 +4817,9 @@ pytest = [
 name = "checkout-output-custody"
 toolchains = ["python"]
 description = "Checkout boundaries, execution-root overrides and supervisor output placement share one custody authority."
-globs = ["src/molt/custody_layout.py", "src/molt/dx.py", "tools/proof_queue_pkg/cargo_output_layout.py", "tests/test_custody_layout.py", "tests/test_dx_run_context.py", "tests/tools/test_proof_queue_output_layout.py"]
+globs = ["src/molt/custody_layout.py", "src/molt/dx.py", "src/molt/llvm_wasi_tools.py", "tools/proof_queue_pkg/cargo_output_layout.py", "tools/disk_guard.py", "tools/lane_maturity.py", "tests/test_custody_layout.py", "tests/test_dx_run_context.py", "tests/tools/test_proof_queue_output_layout.py", "tests/cli/test_llvm_wasi_tools.py", "tests/tools/test_disk_guard.py", "tests/tools/test_lane_maturity.py", "tests/tools/test_proof_queue_lane_maturity.py"]
 gates = []
-pytest = ["tests/test_custody_layout.py", "tests/test_dx_run_context.py", "tests/tools/test_proof_queue_output_layout.py"]
+pytest = ["tests/test_custody_layout.py", "tests/test_dx_run_context.py", "tests/tools/test_proof_queue_output_layout.py", "tests/cli/test_llvm_wasi_tools.py", "tests/tools/test_disk_guard.py", "tests/tools/test_lane_maturity.py", "tests/tools/test_proof_queue_lane_maturity.py"]
 
 [[rule]]
 name = "fresh-guard-observer"

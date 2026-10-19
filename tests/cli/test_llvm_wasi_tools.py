@@ -845,12 +845,20 @@ def test_worktree_resolver_reuses_common_checkout_managed_toolchain(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    from tests.test_dx_run_context import _git
+
     canonical = tmp_path / "canonical"
     worktree = tmp_path / "worktree"
-    git_dir = canonical / ".git" / "worktrees" / "lane"
-    git_dir.mkdir(parents=True)
+    canonical.mkdir()
+    _git(canonical, "init", "-q", "-b", "main")
+    _git(canonical, "commit", "--allow-empty", "-q", "-m", "source")
+    _git(canonical, "worktree", "add", "-q", "--detach", str(worktree))
+    assert Path(_git(worktree, "rev-parse", "--show-toplevel")) == worktree
+    common_git = Path(
+        _git(worktree, "rev-parse", "--path-format=absolute", "--git-common-dir")
+    )
+    assert common_git == canonical / ".git"
     (worktree / "src" / "molt" / "cli").mkdir(parents=True)
-    (worktree / ".git").write_text(f"gitdir: {git_dir}\n", encoding="utf-8")
     # The common checkout's durable toolchain custody (molt.dx): a checkout
     # outside a family keeps it in its own target-root.
     managed = _write_tool_family(
@@ -868,6 +876,68 @@ def test_worktree_resolver_reuses_common_checkout_managed_toolchain(
     )
 
     assert llvm_wasi_tools.llvm_tool_candidates("cc")[0] == managed["cc"].resolve()
+
+
+@pytest.mark.parametrize("checkout_kind", ["plain", "separate-main", "separate-linked"])
+def test_source_checkout_roots_do_not_invent_a_separate_git_directory_owner(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, checkout_kind: str
+) -> None:
+    from tests.test_dx_run_context import _git
+
+    source = tmp_path / "source α with spaces"
+    source.mkdir()
+    if checkout_kind != "plain":
+        # A .git ancestor of the real common directory grants no checkout
+        # ownership. Git permits an external directory with this shape.
+        common = tmp_path / "external é" / ".git" / "administration"
+        common.parent.mkdir(parents=True)
+        _git(source, "init", "-q", "--separate-git-dir", str(common))
+        _git(source, "commit", "--allow-empty", "-q", "-m", "source")
+        if checkout_kind == "separate-linked":
+            lane = tmp_path / "linked β with spaces"
+            _git(source, "worktree", "add", "-q", "--detach", str(lane))
+            source = lane
+        assert (
+            Path(
+                _git(source, "rev-parse", "--path-format=absolute", "--git-common-dir")
+            )
+            == common
+        )
+    monkeypatch.setattr(
+        llvm_wasi_tools, "__file__", str(source / "src/molt/llvm_wasi_tools.py")
+    )
+    assert llvm_wasi_tools._source_checkout_roots() == (source,)
+
+
+def test_source_checkout_roots_follow_real_worktree_metadata_repair(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from tests.test_dx_run_context import _git
+
+    canonical = tmp_path / "original α with spaces"
+    canonical.mkdir()
+    _git(canonical, "init", "-q", "-b", "main")
+    _git(canonical, "commit", "--allow-empty", "-q", "-m", "source")
+    worktree = tmp_path / "linked β with spaces"
+    _git(canonical, "worktree", "add", "-q", "--detach", str(worktree))
+    monkeypatch.setattr(
+        llvm_wasi_tools, "__file__", str(worktree / "src/molt/llvm_wasi_tools.py")
+    )
+    assert llvm_wasi_tools._source_checkout_roots() == (worktree, canonical)
+
+    moved = canonical.rename(tmp_path / "moved é with spaces")
+    _git(moved, "worktree", "repair", str(worktree))
+    common = Path(
+        _git(worktree, "rev-parse", "--path-format=absolute", "--git-common-dir")
+    )
+    assert common == moved / ".git"
+    # No explicit cache clear: the module path did not change, but its actual
+    # Git ownership did. A path-only cache would keep the removed checkout.
+    assert llvm_wasi_tools._source_checkout_roots() == (worktree, common.parent)
+
+    (worktree / ".git").write_bytes(b"not Git metadata\n")
+    with pytest.raises(ValueError, match="malformed Git checkout metadata"):
+        llvm_wasi_tools._source_checkout_roots()
 
 
 def test_sdk_provenance_reuses_resolution_and_layout_across_roles_and_warm_hits(

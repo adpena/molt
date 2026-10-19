@@ -20,6 +20,8 @@ from tools.import_file import bind_repository_imports  # noqa: E402
 
 bind_repository_imports(__file__)
 
+from molt.custody_layout import git_directories  # noqa: E402
+
 LEVELS = tuple(f"L{i}" for i in range(8))
 REQUIRED_EVIDENCE = {
     "L0": (),
@@ -105,20 +107,9 @@ def decide_transition(*, target: str, evidence: Sequence[str]) -> Decision:
 
 
 def registry_owner_root(repo_root: Path) -> Path:
-    dot_git = repo_root / ".git"
-    if dot_git.is_dir():
-        return repo_root
-    if dot_git.is_file():
-        text = dot_git.read_text(encoding="utf-8").strip()
-        if text.lower().startswith("gitdir:"):
-            git_dir = Path(text.split(":", 1)[1].strip())
-            if not git_dir.is_absolute():
-                git_dir = (repo_root / git_dir).resolve()
-            common = (
-                git_dir.parents[1] if git_dir.parent.name == "worktrees" else git_dir
-            )
-            if common.name == ".git":
-                return common.parent
+    directories = git_directories(repo_root)
+    if directories is not None and directories[1].name == ".git":
+        return directories[1].parent
     return repo_root
 
 
