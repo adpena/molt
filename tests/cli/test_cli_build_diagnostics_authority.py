@@ -195,7 +195,7 @@ def test_optimizer_cost_reaches_cli_json_without_entering_operation_wall_counts(
     build_diagnostics._emit_build_diagnostics(
         diagnostics=payload, diagnostics_path=path, json_output=True
     )
-    emitted = json.loads((tmp_path / "diagnostics.json").read_text())
+    emitted = json.loads((tmp_path / "diagnostics.json").read_text(encoding="utf-8"))
     assert emitted["phase_attribution"]["phase_sec"]["wasm_link_optimizer"] == 1.25
     assert emitted["phase_attribution"]["phase_sec"]["wasm_link_core"] == 4.75
     assert emitted["wasm_link_operation_counts"] == {
@@ -222,7 +222,9 @@ def test_final_link_replay_excludes_historical_optimizer_cost(
     for role, path in produced.items():
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_bytes(role.encode())
-    historical_timings.write_text('{"wasm_link_optimizer_wall_ms": 999000}')
+    historical_timings.write_text(
+        '{"wasm_link_optimizer_wall_ms": 999000}', encoding="utf-8"
+    )
     assert historical_timings not in produced.values()
     entry = wasm_final_link_cache.final_link_cache_entry("f" * 64)
     wasm_final_link_cache.publish_final_link_result(entry, produced)
