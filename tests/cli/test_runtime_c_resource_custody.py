@@ -402,6 +402,9 @@ fn main() {
         CARGO_TARGET_DIR=str(tmp_path / "target"),
         CARGO_INCREMENTAL="0",
         CARGO_BUILD_JOBS="1",
+        # Keep Cargo's actual dirty reason when a strict Fresh oracle fails;
+        # guard retirement can move the fixture's fingerprint files afterward.
+        CARGO_LOG="cargo::core::compiler::fingerprint=info",
         # Two registry-free fixture crates keep real capacity admission with
         # their own headroom, independently of full-runtime build policy.
         MOLT_DISK_GUARD_HIGH_WATER_GB="1",
@@ -469,7 +472,13 @@ def test_real_cargo_reuses_only_matching_external_resource_generation(
             and row.get("target", {}).get("name") == "molt-resource-reuse"
             and row.get("executable")
         )
-        assert artifact["fresh"] is fresh
+        assert artifact["fresh"] is fresh, (
+            f"Cargo freshness: expected {fresh!r}, observed {artifact['fresh']!r}\n"
+            f"project={project}, target={plan.target!r}\n"
+            f"target_dir={plan.environment['CARGO_TARGET_DIR']!r}\n"
+            f"build_dir={plan.environment['CARGO_BUILD_BUILD_DIR']!r}\n"
+            f"Cargo stdout:\n{result.stdout}\nCargo stderr:\n{result.stderr}"
+        )
         binary = Path(artifact["executable"])
         assert binary.is_relative_to(Path(environment["CARGO_TARGET_DIR"]))
         output = run_rust_test_process(
