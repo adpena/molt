@@ -794,14 +794,15 @@ def test_only_named_products_are_excluded_and_explicit_inputs_win(
 
 
 @pytest.mark.parametrize("extended_side", ["neither", "observed", "products"])
+@pytest.mark.parametrize("output_name", ["app", "MixedCase.exe"])
 def test_the_outputs_publication_custody_is_a_product(
-    tmp_path: Path, extended_side: str
+    tmp_path: Path, extended_side: str, output_name: str
 ) -> None:
     if extended_side != "neither" and os.name != "nt":
         pytest.skip("Windows verbatim path spelling")
     from molt import artifact_publication, file_publication
 
-    output = tmp_path / "out" / "app"
+    output = tmp_path / "out" / output_name
     output.parent.mkdir()
     output.write_bytes(b"binary")
     receipt = artifact_publication.publication_receipt_path(output)

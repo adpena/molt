@@ -579,14 +579,17 @@ def is_publication_family_member(path: Path, final: Path) -> bool:
     ``final`` or its receipt are products of the publication, never inputs of
     the artifact. Reads only names; it touches no file.
     """
+    from molt.path_custody import resolved_host_path_key
+
     path = Path(path)
     final = Path(final)
-    if path.parent != final.parent:
+    if resolved_host_path_key(path.parent) != resolved_host_path_key(final.parent):
         return False
     receipt = final.parent / _publication_receipt_name(final.name)
     name = path.name.casefold()
     return (
-        path.name in {final.name, receipt.name}
+        os.path.normcase(path.name)
+        in {os.path.normcase(final.name), os.path.normcase(receipt.name)}
         or name == _PUBLICATION_LOCK_NAME
         or _PUBLICATION_JOURNAL_NAME_RE.fullmatch(name) is not None
         or _PUBLICATION_JOURNAL_STAGE_NAME_RE.fullmatch(name) is not None
