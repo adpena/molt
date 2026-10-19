@@ -181,6 +181,11 @@ receiver behavior.
    process launch. A bounded macOS/CPython 3.12 control measured about 1.17 us
    added per closed-policy construction; it establishes no build-time gain.
    These are compiler/development costs, with no emitted-program work.
+   The proof plan's `python-source-dependencies` rule selects the existing
+   namespace, tooling-closure, source-request and scoped-key consumer families
+   for their source authorities and tests. Targets join the existing local
+   pytest cohort; toolchain admission and memory envelopes remain owned by the
+   current planner. No Cargo command or second test runner is introduced.
    This follows [rustc's explicit query-input and invalidation model](https://rustc-dev-guide.rust-lang.org/queries/incremental-compilation-in-detail.html):
    every fact that changes a query's result must participate in its authority.
    Further premise slicing must account for implicit module metadata, export

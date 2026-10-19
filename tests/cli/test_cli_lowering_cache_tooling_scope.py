@@ -135,7 +135,7 @@ def test_non_orthogonal_cli_edit_still_changes_scoped_fingerprint(
     assert scoped_after != scoped_before
 
 
-def test_analysis_and_lowering_cache_keys_ignore_orthogonal_cli_edit(
+def test_module_analysis_record_key_tracks_scoped_tooling_identity(
     fake_tree: Path,
 ) -> None:
     """The real per-module cache key (module_cache authority) is wired to the
@@ -148,9 +148,8 @@ def test_analysis_and_lowering_cache_keys_ignore_orthogonal_cli_edit(
 
     def analysis_key() -> str:
         CF._SOURCE_TREE_CONTENT_DIGEST_CACHE.clear()
-        return MC._module_analysis_cache_key(
+        return MC._module_analysis_record_key(
             module_path,
-            kind="module_analysis_cache",
             module_name="pkg.mod",
             is_package=False,
             import_scan_mode="full",
@@ -172,6 +171,10 @@ def test_analysis_and_lowering_cache_keys_ignore_orthogonal_cli_edit(
     assert key_after == key_before
     # Teeth: had the key kept using the broad fingerprint it would have moved.
     assert broad_after != broad_before
+    (fake_tree / "cli" / _NON_ORTHOGONAL_CLI).write_text(
+        "# frontend driver (edited)\nMARKER = 7\n", encoding="utf-8"
+    )
+    assert analysis_key() != key_after
 
 
 def test_frontend_drivers_and_explicit_local_coverage_scope() -> None:
