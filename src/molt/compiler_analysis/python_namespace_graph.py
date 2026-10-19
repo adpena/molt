@@ -10,7 +10,7 @@ when its premise has converged.
 from __future__ import annotations
 
 from collections.abc import Callable, Iterable, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from types import MappingProxyType
 
@@ -19,7 +19,10 @@ from molt.compiler_analysis.python_identity_catalog_generated import (
     NO_INVALID_MEMBERS,
     ALL_INVALID_MEMBERS,
 )
-from molt.compiler_analysis.python_binding_flow import python_canonical_member_writes
+from molt.compiler_analysis.python_binding_flow import (
+    PythonBindingFlowPolicy,
+    python_canonical_member_writes,
+)
 from molt.compiler_analysis.python_namespace_writes import PythonNamespaceWrite
 from molt.compiler_analysis.python_value_identity import (
     canonical_import_binding_write_mask,
@@ -39,6 +42,25 @@ class PythonNamespacePremise:
 
     foreign_writes: tuple[str, ...] | None
     member_writes: MemberMask
+
+
+def python_namespace_binding_policy[P: PythonBindingFlowPolicy](
+    policy: P, premise: PythonNamespacePremise | None
+) -> P:
+    """Apply a closed graph's initial and future uncertainty together.
+
+    A reached writer may already have run before the first acquisition. Its
+    entry mask must travel with callback writes through every graph consumer.
+    Standalone callers keep their explicit policy when no graph was proved.
+    """
+    if premise is None:
+        return policy
+    return replace(
+        policy,
+        foreign_namespace_writes=premise.foreign_writes,
+        callback_member_writes=premise.member_writes,
+        entry_invalid_members=premise.member_writes,
+    )
 
 
 @dataclass(frozen=True, slots=True)

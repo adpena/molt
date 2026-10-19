@@ -1981,6 +1981,79 @@ def test_type_only_imports_stay_out_after_callbacks(tmp_path: Path) -> None:
     assert typeonly not in _eager_closure(tmp_path, seed)
 
 
+@pytest.mark.parametrize("foreign_write", [False, True])
+def test_foreign_member_write_precedes_first_tooling_acquisition(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, foreign_write: bool
+) -> None:
+    import sys
+
+    from tests.process_guard_common import run_guarded_test_process
+
+    seed = tmp_path / "entry.py"
+    seed.write_text("import writer\nimport reader\n", encoding="utf-8")
+    (tmp_path / "writer.py").write_text(
+        "import typing\n" + ("typing.TYPE_CHECKING = True\n" if foreign_write else ""),
+        encoding="utf-8",
+    )
+    (tmp_path / "reader.py").write_text(
+        "from typing import TYPE_CHECKING\nif TYPE_CHECKING:\n    import selected\n",
+        encoding="utf-8",
+    )
+    selected = tmp_path / "selected.py"
+    selected.write_text("VALUE = 'selected'\n", encoding="utf-8")
+    executed = run_guarded_test_process(
+        [
+            sys.executable,
+            "-I",
+            "-B",
+            "-c",
+            "import json,sys\nsys.path.insert(0,sys.argv[1])\n"
+            "import entry\nprint(json.dumps('selected' in sys.modules))\n",
+            str(tmp_path),
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    imported = json.loads(executed.stdout)
+    assert imported is foreign_write
+    # The closed graph sees the foreign write even before the reader's first
+    # acquisition. Its eager closure must not prune an actually executed edge.
+    closure = _eager_closure(tmp_path, seed)
+    assert (selected in closure) is imported
+    if not foreign_write:
+        return
+
+    # Schema 20 could persist the pruned reader even under the grown graph
+    # premise. Preserve every other receipt field so this exercises the retired
+    # semantic generation rather than rejection of a malformed record.
+    cache_path = graph.python_source_closure_cache_path(tmp_path)
+    cache = json.loads(cache_path.read_text(encoding="utf-8"))
+    cache["schema_version"] = 20
+    removed = 0
+    for row in cache["entries"]["reader.py"].values():
+        requests = row["requests"]
+        row["requests"] = [
+            request for request in requests if "selected" not in request["candidates"]
+        ]
+        removed += len(requests) - len(row["requests"])
+    assert removed > 0
+    cache_path.write_text(json.dumps(cache), encoding="utf-8")
+    # Model a fresh compiler process: remembered correct rows must not hide
+    # acceptance of the old on-disk result.
+    graph._PROCESS_GRAPH_ENTRIES.pop(tmp_path.resolve(), None)
+    analyzed = []
+    analyze = graph.analyze_local_imports
+
+    def observe(snapshot, *args, **kwargs):
+        analyzed.append(snapshot.path)
+        return analyze(snapshot, *args, **kwargs)
+
+    monkeypatch.setattr(graph, "analyze_local_imports", observe)
+    assert selected in _eager_closure(tmp_path, seed)
+    assert tmp_path / "reader.py" in analyzed
+
+
 def test_a_named_foreign_write_keeps_the_guarded_import(tmp_path: Path) -> None:
     # The peer writes the entry's flag while the entry imports it, so CPython
     # executes the guarded import. The fixpoint finds the write and walks again.

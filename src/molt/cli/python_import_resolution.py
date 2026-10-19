@@ -19,7 +19,10 @@ from molt.cli.python_import_topology import (
     PythonImportTopology,
 )
 from molt.compiler_analysis import python_binding_flow, python_namespace_writes
-from molt.compiler_analysis.python_namespace_graph import PythonNamespacePremise
+from molt.compiler_analysis.python_namespace_graph import (
+    PythonNamespacePremise,
+    python_namespace_binding_policy,
+)
 from molt.compiler_analysis.python_binding_flow import (
     PythonBindingPolicy,
     PythonBindingIndex,
@@ -728,20 +731,17 @@ def analyze_local_imports(
             binding_index = analyze_python_bindings(
                 tree,
                 source_digest=source.ast_digest,
-                policy=replace(
-                    binding_policy,
-                    module_name=module,
-                    module_spec_name=module,
-                    module_is_package=path.name == "__init__.py",
-                    module_execution_kind="imported",
-                    analyze_deferred_bodies=not policy.module_level_only,
-                    include_import_discovery=policy.purpose == "source_dependency",
-                    foreign_namespace_writes=namespace_premise.foreign_writes
-                    if namespace_premise is not None
-                    else None,
-                    callback_member_writes=namespace_premise.member_writes
-                    if namespace_premise is not None
-                    else binding_policy.callback_member_writes,
+                policy=python_namespace_binding_policy(
+                    replace(
+                        binding_policy,
+                        module_name=module,
+                        module_spec_name=module,
+                        module_is_package=path.name == "__init__.py",
+                        module_execution_kind="imported",
+                        analyze_deferred_bodies=not policy.module_level_only,
+                        include_import_discovery=policy.purpose == "source_dependency",
+                    ),
+                    namespace_premise,
                 ),
             )
         return binding_index
