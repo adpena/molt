@@ -14,8 +14,12 @@ mod native_batch;
 mod shared_stdlib_cache;
 
 pub(crate) use cli_args::*;
-#[cfg(test)]
-pub(crate) use config::*;
+#[cfg(all(test, molt_backend_daemon))]
+pub(crate) use config::{BACKEND_DAEMON_PROTOCOL_VERSION, MIB};
+#[cfg(all(test, feature = "native-backend"))]
+pub(crate) use config::{
+    DEFAULT_BACKEND_BATCH_OP_BUDGET, DEFAULT_BACKEND_BATCH_SIZE, DEFAULT_STDLIB_BATCH_SIZE,
+};
 #[cfg(molt_backend_daemon)]
 pub(crate) use daemon::*;
 pub(crate) use emit::*;
