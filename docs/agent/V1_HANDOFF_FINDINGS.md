@@ -133,7 +133,7 @@ also passed 201 Windows x64 cases with three POSIX-only skips. A six-build
 Linux aarch64/CPython 3.12 development cohort executes native cold, unchanged,
 comment and body edits plus linked WASM before/after the body edit. Every
 product matches the independent CPython output with Python removed from its
-execution path. This is source-build qualification, not installed delivery or
+execution path. This is semantic source-build evidence, not installed delivery or
 release-matrix acceptance. Native unchanged/comment builds take 3.41/3.49 s;
 WASM linking accounts for 52.1 of 137.5 measured build-phase seconds. There is
 no matched baseline or general speedup claim. These remaining costs belong to
@@ -149,9 +149,13 @@ and avoiding a new helper import for commands without workers. The owning
 controls pass on Darwin arm64, and a pure-standard-library mechanism probe
 passes on CPython 3.12.15, 3.13.12, 3.14.3 and 3.15.0 there. Its measured terminal
 join takes 5.4–7.1 ms in that bounded cohort. This does not qualify arbitrary
-raw-fork custody, whole-version support or all platform cells. Actual Linux
-consumer/lifecycle qualification remains required under V1-12/HF-334; output
-parity and eventual guard cleanup do not close that obligation.
+raw-fork custody, whole-version support or all platform cells. At `364a126e0`,
+all 13 owning controls and actual native/linked-WASM consumers pass on Linux aarch64/CPython 3.12.15. Both products match CPython
+with Python removed from their execution path; all five command guards reclaim
+scratch and close with no termination reports or tracked-orphan cleanup. This
+qualifies that compiler exit cell, not the broader V1-12/HF-334 custody and
+performance obligations. Output parity and eventual guard cleanup alone do not
+close those obligations.
 
 The current compiler-cost work reuses the cross-project lowering-cache repair
 (HF-327) and one shared fast-profile Cargo cohort for the native-callable ABI
