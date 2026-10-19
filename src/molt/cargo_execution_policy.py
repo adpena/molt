@@ -195,14 +195,18 @@ def validate_cargo_native_dependency_environment(
         )
 
 
-def source_build_disabled_reason(artifact: str) -> str | None:
+def source_build_disabled_reason(
+    artifact: str, *, environment: Mapping[str, str] | None = None
+) -> str | None:
     """Restrict source builds without changing artifact admission requirements.
 
     Call after compatible artifact reuse/hydration, before invoking Cargo.
     Provenance refresh through Cargo is also a source build, even if Cargo
     could discover that none of its inputs changed.
     """
-    if os.environ.get("MOLT_SKIP_RUNTIME_REBUILD") != "1":
+    if (os.environ if environment is None else environment).get(
+        "MOLT_SKIP_RUNTIME_REBUILD"
+    ) != "1":
         return None
     return (
         f"{artifact} requires a source build or provenance refresh, but "

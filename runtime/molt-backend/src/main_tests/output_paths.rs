@@ -101,23 +101,3 @@ fn default_backend_output_paths_use_dist_root() {
     #[cfg(feature = "rust-backend")]
     assert_eq!(BackendTarget::Rust.default_output_path(), "dist/output.rs");
 }
-
-#[test]
-fn backend_rss_default_scales_with_host_memory() {
-    assert_eq!(
-        default_backend_max_rss_gb_from_physical_mem_bytes(Some(8 * GIB)),
-        4
-    );
-    assert_eq!(
-        default_backend_max_rss_gb_from_physical_mem_bytes(Some(16 * GIB)),
-        8
-    );
-    assert_eq!(
-        default_backend_max_rss_gb_from_physical_mem_bytes(Some(32 * GIB)),
-        12
-    );
-    assert_eq!(
-        default_backend_max_rss_gb_from_physical_mem_bytes(Some(64 * GIB)),
-        16
-    );
-}

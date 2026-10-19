@@ -1,7 +1,7 @@
 use std::env;
 
 use super::super::super::config::MIB;
-use super::super::super::config::detect_physical_memory_bytes;
+use molt_host_process::detect_physical_memory_bytes;
 
 #[derive(Default)]
 pub(crate) struct DaemonStats {

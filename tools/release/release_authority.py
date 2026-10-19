@@ -27,6 +27,7 @@ from molt.exact_json import canonical_json_sha256, read_exact  # noqa: E402
 from molt.compiler_distribution import (  # noqa: E402
     validate_compiler_record,
     validate_launcher_record,
+    validate_wasm_facts_record,
     validate_runtime_inventory,
 )
 from molt.file_publication import durable_publish_directory_exclusive  # noqa: E402
@@ -41,6 +42,7 @@ from tools.release.build_bundle import build_bundle  # noqa: E402
 from tools.release.compiler_payload import (  # noqa: E402
     compiler_record,
     launcher_record,
+    wasm_facts_record,
     source_snapshot,
 )
 from tools.release.runtime_cells import read_runtime_inventory  # noqa: E402
@@ -90,9 +92,9 @@ from tools.release.release_model import (  # noqa: E402
 _COMMANDS = CommandExecutor.for_file(__file__)
 
 
-CANDIDATE_SCHEMA = "molt.release-candidate.v5"
+CANDIDATE_SCHEMA = "molt.release-candidate.v6"
 CONSUMER_EXPECTED_OUTPUT = "MOLT_RELEASE_CONSUMER_OK"
-CONSUMER_SCHEMA = "molt.release-consumer-proof.v8"
+CONSUMER_SCHEMA = "molt.release-consumer-proof.v9"
 
 
 def consumer_lanes() -> tuple[ReleaseLane, ...]:
@@ -365,13 +367,13 @@ def assemble_candidate(
         arch=target.arch,
     ):
         raise ValueError(f"{target_id}: native build receipts are not reproducible")
-    primary_worker, primary_compiler, primary_launcher = (
+    primary_worker, primary_compiler, primary_launcher, primary_facts = (
         primary_native_build / native["artifacts"][role]["path"]
-        for role in ("worker", "compiler", "launcher")
+        for role in ("worker", "compiler", "launcher", "wasm_facts")
     )
-    secondary_worker, secondary_compiler, secondary_launcher = (
+    secondary_worker, secondary_compiler, secondary_launcher, secondary_facts = (
         secondary_native_build / native["artifacts"][role]["path"]
-        for role in ("worker", "compiler", "launcher")
+        for role in ("worker", "compiler", "launcher", "wasm_facts")
     )
     compiler = compiler_record(
         primary_compiler, platform=target.platform, arch=target.arch
@@ -387,6 +389,13 @@ def assemble_candidate(
         secondary_launcher, platform=target.platform, arch=target.arch
     ):
         raise ValueError(f"{target_id}: production launcher is not reproducible")
+    wasm_facts = wasm_facts_record(
+        primary_facts, platform=target.platform, arch=target.arch
+    )
+    if wasm_facts != wasm_facts_record(
+        secondary_facts, platform=target.platform, arch=target.arch
+    ):
+        raise ValueError(f"{target_id}: production WASM facts tool is not reproducible")
     runtime = read_runtime_inventory(
         primary_runtime_cells, platform=target.platform, arch=target.arch
     )
@@ -418,6 +427,7 @@ def assemble_candidate(
                 worker,
                 compiler_binary,
                 launcher_binary,
+                facts_binary,
                 runtime_cells,
                 destination,
             ) in (
@@ -425,6 +435,7 @@ def assemble_candidate(
                     primary_worker,
                     primary_compiler,
                     primary_launcher,
+                    primary_facts,
                     primary_runtime_cells,
                     primary_bundle,
                 ),
@@ -432,6 +443,7 @@ def assemble_candidate(
                     secondary_worker,
                     secondary_compiler,
                     secondary_launcher,
+                    secondary_facts,
                     secondary_runtime_cells,
                     repeat_bundle,
                 ),
@@ -446,6 +458,7 @@ def assemble_candidate(
                     arch=target.arch,
                     compiler=compiler_binary if kind == "molt" else None,
                     launcher=launcher_binary if kind == "molt" else None,
+                    wasm_facts=facts_binary if kind == "molt" else None,
                     snapshot=snapshot if kind == "molt" else None,
                     runtime_cells=runtime_cells if kind == "molt" else None,
                     pure_wheel=wheel if kind == "molt" else None,
@@ -506,15 +519,18 @@ def assemble_candidate(
         "wheel": wheel_record,
         "compiler": compiler,
         "launcher": launcher,
+        "wasm_facts": wasm_facts,
         "runtime": runtime,
         "native_build": native,
         "artifacts": sorted(artifacts, key=lambda item: str(item["filename"])),
         "reproducibility": {
             "worker_sha256": worker_primary["sha256"],
             "launcher_sha256": launcher["sha256"],
+            "wasm_facts_sha256": wasm_facts["sha256"],
             "independent_worker_builds": 2,
             "independent_compiler_builds": 2,
             "independent_launcher_builds": 2,
+            "independent_wasm_facts_builds": 2,
             "independent_runtime_builds": 2,
             "independent_bundle_assemblies": 2,
             "matched": True,
@@ -539,6 +555,7 @@ def _load_candidate(path: Path) -> dict[str, Any]:
             "wheel",
             "compiler",
             "launcher",
+            "wasm_facts",
             "runtime",
             "native_build",
             "artifacts",
@@ -584,10 +601,16 @@ def _load_candidate(path: Path) -> dict[str, Any]:
     proof = payload["reproducibility"]
     compiler = validate_compiler_record(payload["compiler"])
     launcher = validate_launcher_record(payload["launcher"])
+    wasm_facts = validate_wasm_facts_record(payload["wasm_facts"])
     if (compiler["platform"], compiler["arch"]) != (target["platform"], target["arch"]):
         raise ValueError("release compiler target differs from candidate")
     if (launcher["platform"], launcher["arch"]) != (target["platform"], target["arch"]):
         raise ValueError("release launcher target differs from candidate")
+    if (wasm_facts["platform"], wasm_facts["arch"]) != (
+        target["platform"],
+        target["arch"],
+    ):
+        raise ValueError("release WASM facts target differs from candidate")
     runtime = validate_runtime_inventory(
         payload["runtime"], platform=target["platform"], arch=target["arch"]
     )
@@ -600,7 +623,11 @@ def _load_candidate(path: Path) -> dict[str, Any]:
         or any(
             (native["artifacts"][role]["sha256"], native["artifacts"][role]["size"])
             != (record["sha256"], record["size"])
-            for role, record in (("compiler", compiler), ("launcher", launcher))
+            for role, record in (
+                ("compiler", compiler),
+                ("launcher", launcher),
+                ("wasm_facts", wasm_facts),
+            )
         )
     ):
         raise ValueError("native build receipt differs from candidate inputs")
@@ -614,9 +641,11 @@ def _load_candidate(path: Path) -> dict[str, Any]:
         != {
             "worker_sha256",
             "launcher_sha256",
+            "wasm_facts_sha256",
             "independent_worker_builds",
             "independent_compiler_builds",
             "independent_launcher_builds",
+            "independent_wasm_facts_builds",
             "independent_runtime_builds",
             "independent_bundle_assemblies",
             "matched",
@@ -627,6 +656,7 @@ def _load_candidate(path: Path) -> dict[str, Any]:
                 "independent_worker_builds",
                 "independent_compiler_builds",
                 "independent_launcher_builds",
+                "independent_wasm_facts_builds",
                 "independent_runtime_builds",
                 "independent_bundle_assemblies",
             )
@@ -636,6 +666,7 @@ def _load_candidate(path: Path) -> dict[str, Any]:
         or re.fullmatch(r"[0-9a-f]{64}", proof["worker_sha256"]) is None
         or proof["worker_sha256"] != native["artifacts"]["worker"]["sha256"]
         or proof.get("launcher_sha256") != launcher["sha256"]
+        or proof.get("wasm_facts_sha256") != wasm_facts["sha256"]
     ):
         raise ValueError(f"{target['id']}: reproducibility proof is incomplete")
     return payload
@@ -927,6 +958,7 @@ def validate_consumer_proof(
             "errors",
             "compiler",
             "launcher",
+            "wasm_facts",
             "runtime",
             "pip_proof",
             "guest_cells",
@@ -955,6 +987,7 @@ def validate_consumer_proof(
         or consumer.get("uninstall_verified") is not True
         or consumer.get("compiler") != candidate["compiler"]
         or consumer.get("launcher") != candidate["launcher"]
+        or consumer.get("wasm_facts") != candidate["wasm_facts"]
         or consumer.get("runtime") != candidate["runtime"]
         or consumer.get("guest_cells") != [lane.as_record() for lane in lanes]
         or consumer.get("expected_stdout") != CONSUMER_EXPECTED_STDOUT
@@ -1065,6 +1098,7 @@ def _validate_consumer_pip_proof(proof: object, candidate: dict[str, Any]) -> No
             "source",
             "source_sha256",
             "compiler_sha256",
+            "wasm_facts_sha256",
         }
     ):
         raise ValueError("release consumer pip proof is incomplete")
@@ -1074,6 +1108,7 @@ def _validate_consumer_pip_proof(proof: object, candidate: dict[str, Any]) -> No
         (proof["python"], proof["reference_python"]) != coordinates[0]
         or proof["wheel"] != {key: wheel[key] for key in ("filename", "sha256", "size")}
         or proof["compiler_sha256"] != candidate["compiler"]["sha256"]
+        or proof["wasm_facts_sha256"] != candidate["wasm_facts"]["sha256"]
         or not isinstance(proof["source"], str)
         or not path_type(proof["source"]).is_absolute()
         or proof["source_sha256"]
@@ -1694,7 +1729,7 @@ def main() -> None:
         commit_epoch = int(_git("show", "-s", "--format=%ct", "HEAD"))
         if args.source_date_epoch <= 0 or args.source_date_epoch != commit_epoch:
             raise ValueError("release evidence epoch differs from source commit")
-        common = dict(
+        common: dict[str, Any] = dict(
             source_sha=args.source_sha,
             source_date_epoch=args.source_date_epoch,
             output=args.output,

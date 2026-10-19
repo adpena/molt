@@ -16,6 +16,7 @@ from molt.cli import compiler_identity
 from molt.cli import wrapper_build
 from molt.cli.rust_cpu_policy import RustCpuPolicy
 from molt.exact_json import canonical_json_sha256
+from molt.host_tool_products import HostToolProduct
 from tests.compiler_identity_helper import compiler_build_admission, write_compiler_lock
 
 
@@ -207,7 +208,7 @@ def test_cargo_mutation_rejected_before_any_alias_probe_or_receipt(
         backend_binary, "backend_build_admission", lambda *args, **kw: admission
     )
     monkeypatch.setattr(
-        backend_binary, "_backend_source_paths", lambda *args: [source.parent]
+        backend_binary, "_backend_source_paths", lambda *args, **kwargs: [source.parent]
     )
     monkeypatch.setattr(
         backend_binary, "_compiler_clean_source_state", lambda *args: None
@@ -306,8 +307,9 @@ def test_daemon_identity_uses_admitted_compiler_and_request_environment(
     assert first != second
 
 
+@pytest.mark.parametrize("product", list(HostToolProduct))
 def test_prepared_cargo_environment_and_configuration_govern_identity(
-    tmp_path, monkeypatch
+    tmp_path, monkeypatch, product
 ):
     from molt.cli import cargo_execution, runtime_cargo_plan
 
@@ -326,6 +328,8 @@ def test_prepared_cargo_environment_and_configuration_govern_identity(
         rustflags_transform,
     ):
         assert "--message-format=json-render-diagnostics" in cargo_command
+        assert cargo_command[cargo_command.index("--package") + 1] == product.value
+        assert cargo_command[cargo_command.index("--bin") + 1] == product.value
         env = environment_transform(env)
         seen.append(dict(env))
         config_digest = canonical_json_sha256(configuration.read_text(encoding="utf-8"))
@@ -355,7 +359,14 @@ def test_prepared_cargo_environment_and_configuration_govern_identity(
 
     def admission(env, rust_cpu=RustCpuPolicy.BASELINE):
         return compiler_identity.backend_build_admission(
-            tmp_path, ("native-backend",), "release", env, rust_cpu=rust_cpu
+            tmp_path,
+            ("native-backend",)
+            if product is HostToolProduct.BACKEND
+            else product.required_features,
+            "release",
+            env,
+            rust_cpu=rust_cpu,
+            product=product,
         )
 
     with cache_fingerprints._source_tree_fingerprint_transaction():

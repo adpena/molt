@@ -267,6 +267,7 @@ def _installed_with_package(tmp_path: Path, files: dict[str, bytes]):
         "a" * 40,
         {},
         {},
+        {},
         inventory,
         {},
     )

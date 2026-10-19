@@ -32,6 +32,7 @@
     "tools/memory_guard_core/active_custody.py",
     "src/molt/backend_daemon_custody.py",
     "src/molt/backend_executable_names.py",
+    "src/molt/host_tool_products.py",
     "src/molt/python_private_names.py",
     "config/python_numeric_errors.toml",
     "tools/gen_python_numeric_errors.py",
@@ -1022,6 +1023,7 @@
         "tools/release/verify_consumer.py",
         "vendor/llvm/**",
         "tests/cli/test_compiler_identity.py",
+        "tests/cli/test_wasm_facts_tool.py",
         "tests/cli/test_installed_runtime.py",
         "tests/tools/test_release_native_build.py",
         "tests/test_release_lanes.py",
@@ -5577,6 +5579,7 @@
         "tests/cli/test_cli_version.py",
         "tests/cli/test_cli_wasm_authority.py",
         "tests/cli/test_compiler_identity.py",
+        "tests/cli/test_wasm_facts_tool.py",
         "tests/cli/test_degrade_to_slow_gate.py",
         "tests/cli/test_dependency_project.py",
         "tests/cli/test_extension_wheel.py",
@@ -5736,6 +5739,7 @@
         "tests/cli/test_cli_version.py",
         "tests/cli/test_cli_wasm_authority.py",
         "tests/cli/test_compiler_identity.py",
+        "tests/cli/test_wasm_facts_tool.py",
         "tests/cli/test_degrade_to_slow_gate.py",
         "tests/cli/test_dependency_project.py",
         "tests/cli/test_extension_wheel.py",
@@ -6704,6 +6708,7 @@
         "tests/test_llvm_toolchain.py",
         "tests/test_bootstrap_llvm.py",
         "tests/cli/test_compiler_identity.py",
+        "tests/cli/test_wasm_facts_tool.py",
         "tests/cli/test_installed_compiler.py",
         "tests/cli/test_installed_runtime.py",
         "tests/cli/test_installed_toolchain_rules.py",
@@ -6796,6 +6801,7 @@
         "tests/test_llvm_toolchain.py",
         "tests/test_bootstrap_llvm.py",
         "tests/cli/test_compiler_identity.py",
+        "tests/cli/test_wasm_facts_tool.py",
         "tests/cli/test_installed_compiler.py",
         "tests/cli/test_installed_runtime.py",
         "tests/cli/test_installed_toolchain_rules.py",
@@ -7469,6 +7475,8 @@
         "-p",
         "molt-artifact-publish",
         "-p",
+        "molt-host-process",
+        "-p",
         "molt-wasm-facts",
         "-p",
         "molt-codegen-abi",
@@ -7490,7 +7498,7 @@
         "molt-backend-rust",
         "--no-default-features",
         "--features",
-        "molt-backend/native-backend,molt-backend/wasm-backend,molt-backend/luau-backend,molt-backend/rust-backend,molt-backend/cbor",
+        "molt-backend/native-backend,molt-backend/wasm-backend,molt-backend/luau-backend,molt-backend/rust-backend,molt-backend/cbor,molt-wasm-facts/host-tool",
         "--",
         "--include-ignored",
         "--skip",
@@ -9275,8 +9283,7 @@
       "local.backend-environment-contract.pytest-select-0": "python -m pytest -q -n auto --molt-worker-memory-gb=6.25 -k 'backend_codegen or backend_daemon or backend_cache_setup or backend_setup or backend_compile or backend_pipeline or backend_dispatch or codegen_selection or fingerprint_env' tests/cli/test_cli_import_collection.py",
       "local.backend-ir-framing.0": "cargo test --locked --profile dev-fast --config profile.dev-fast.package.cranelift-codegen.opt-level=0 -p molt-backend --no-default-features --features molt-backend/native-backend,molt-backend/wasm-backend,molt-backend/luau-backend,molt-backend/rust-backend,molt-backend/cbor --bin molt-backend -- daemon backend_process::input::tests backend_process::cli_args::parse::tests --test-threads=1",
       "local.backend-llvm.0": "cargo test --locked --profile release-fast -p molt-backend-native -p molt-backend --features molt-backend/native-backend,molt-backend/llvm --lib --test ir_contract_validation --no-fail-fast",
-      "local.backend-native.0": "cargo test --locked --profile release-fast -p molt-backend -p molt-backend-native -p molt-artifact-publish -p molt-wasm-facts --features molt-backend/native-backend,molt-backend/wasm-backend --lib --bins --test wasm_link_facts_cli --no-fail-fast",
-      "local.backend-native.1": "python -m pytest -q tests/test_wasm_link_validation.py -k 'rust_facts or wasm_artifact_state'",
+      "local.backend-native.0": "cargo test --locked --profile release-fast -p molt-backend -p molt-backend-native -p molt-artifact-publish --features molt-backend/native-backend,molt-backend/wasm-backend --lib --bins --no-fail-fast",
       "local.bootstrap-stdlib.0": "python tools/check_stdlib_intrinsics.py --critical-allowlist",
       "local.browser-loader-deployment.pytest": "python -m pytest -q -n auto --molt-worker-memory-gb=2.5 tests/test_driver_layout.py tests/test_browser_asset_closure.py tests/test_driver_cloudflare_verify.py tests/test_driver_cloudflare_worker.py tests/test_falcon_ocr_prompt_contract.py",
       "local.browser-loader-deployment.pytest-select-0": "python -m pytest -q -n auto --molt-worker-memory-gb=2.5 -k 'not (test_falcon_browser_driver_init_and_ocr_tokens_roundtrip or test_falcon_browser_driver_reuses_cached_weights_on_second_init or test_falcon_browser_driver_init_from_manifest_roundtrip)' tests/test_falcon_driver_scaffold.py",
@@ -9330,7 +9337,7 @@
       "local.python-effect-capability-authority.pytest": "python -m pytest -q -n auto --molt-worker-memory-gb=1.75 tests/test_gen_python_effects.py",
       "local.python-identity-catalog-authority.pytest": "python -m pytest -q -n auto --molt-worker-memory-gb=1.75 tests/test_gen_python_identity_catalog.py tests/test_python_binding_flow.py tests/test_python_builtin_shape_facts.py",
       "local.python-source-dependencies.pytest": "python -m pytest -q -n auto --molt-worker-memory-gb=1.75 tests/test_python_namespace_graph.py tests/cli/test_cli_python_source_closure.py tests/cli/test_cli_python_import_authority.py tests/cli/test_cli_lowering_cache_tooling_scope.py tests/cli/test_source_pure_import_requests.py",
-      "local.runtime-cargo-input-custody.pytest-select-0": "python -m pytest -q -n auto --molt-worker-memory-gb=2.5 -m 'not slow' tests/cli/test_cargo_build_reads.py tests/cli/test_cargo_environment_inputs.py tests/cli/test_runtime_source_identity.py tests/cli/test_runtime_c_resource_custody.py tests/cli/test_runtime_build_identity.py tests/cli/test_runtime_native_generation.py tests/cli/test_runtime_wasm_single_compile.py tests/test_wasm_link_runtime_generation.py tests/cli/test_compiler_identity.py tests/cli/test_runtime_family_authority.py tests/cli/test_cargo_execution_failure_authority.py tests/test_toolchain_identity.py tests/test_runtime_build_python.py",
+      "local.runtime-cargo-input-custody.pytest-select-0": "python -m pytest -q -n auto --molt-worker-memory-gb=2.5 -m 'not slow' tests/cli/test_cargo_build_reads.py tests/cli/test_cargo_environment_inputs.py tests/cli/test_runtime_source_identity.py tests/cli/test_runtime_c_resource_custody.py tests/cli/test_runtime_build_identity.py tests/cli/test_runtime_native_generation.py tests/cli/test_runtime_wasm_single_compile.py tests/test_wasm_link_runtime_generation.py tests/cli/test_compiler_identity.py tests/cli/test_wasm_facts_tool.py tests/cli/test_runtime_family_authority.py tests/cli/test_cargo_execution_failure_authority.py tests/test_toolchain_identity.py tests/test_runtime_build_python.py",
       "local.runtime-lib.0": "python tools/run_runtime_test_gate.py --profile release-output --build-timeout-seconds 6300 --child-timeout-seconds 120 --parallel-threads 8",
       "local.runtime-profile-schema-authority.pytest": "python -m pytest -q -n auto --molt-worker-memory-gb=0.75 tests/test_gen_runtime_profile_schema.py tests/test_runtime_profile_schema.py",
       "local.runtime-regex.0": "cargo test --locked --profile dev-fast -p molt-runtime-regex -p molt-runtime-core -p molt-stdlib-text --no-default-features --no-fail-fast --lib -- regex:: text_storage::",
@@ -9359,6 +9366,8 @@
       "local.tir-midend.0": "cargo clippy --locked --profile dev-fast -p molt-ir -p molt-passes -p molt-tir -p molt-backend-wasm --all-targets --all-features -- -D warnings",
       "local.tir-midend.1": "cargo test --locked --profile dev-fast -p molt-ir -p molt-passes -p molt-tir -p molt-backend-wasm --all-features --no-fail-fast",
       "local.wasm-abi-registry.pytest": "python -m pytest -q -n auto --molt-worker-memory-gb=1.75 tests/test_gen_wasm_abi.py",
+      "local.wasm-facts-host-tool.0": "cargo test --locked --profile release-fast -p molt-wasm-facts -p molt-artifact-publish -p molt-host-process --features molt-wasm-facts/host-tool --lib --bins --test wasm_link_facts_cli --no-fail-fast",
+      "local.wasm-facts-host-tool.1": "python -m pytest -q tests/test_wasm_link_validation.py -k 'rust_facts or wasm_artifact_state'",
       "local.wasm-host.0": "cargo build --locked --profile release-fast -p molt-wasm-host",
       "local.wasm-optimizer-policy.0": "python -m pytest -q tests/test_wasm_optimization_policy.py tests/test_wasm_optimization_imported_memory.py"
     },
@@ -10481,6 +10490,8 @@
           "src/molt/cli/cargo_execution.py",
           "src/molt/cli/cargo_resource_custody.py",
           "src/molt/cli/compiler_identity.py",
+          "src/molt/cli/wasm_facts_tool.py",
+          "src/molt/host_tool_products.py",
           "src/molt/cli/runtime_build_identity.py",
           "src/molt/cli/runtime_build_python.py",
           "src/molt/cli/runtime_cargo_plan.py",
@@ -10515,6 +10526,7 @@
           "tests/cli/test_runtime_wasm_single_compile.py",
           "tests/test_wasm_link_runtime_generation.py",
           "tests/cli/test_compiler_identity.py",
+          "tests/cli/test_wasm_facts_tool.py",
           "tests/cli/test_runtime_family_authority.py",
           "tests/cli/test_cargo_execution_failure_authority.py"
         ],
@@ -10532,6 +10544,7 @@
               "tests/cli/test_runtime_wasm_single_compile.py",
               "tests/test_wasm_link_runtime_generation.py",
               "tests/cli/test_compiler_identity.py",
+              "tests/cli/test_wasm_facts_tool.py",
               "tests/cli/test_runtime_family_authority.py",
               "tests/cli/test_cargo_execution_failure_authority.py",
               "tests/test_toolchain_identity.py",
@@ -11113,13 +11126,11 @@
       },
       {
         "command_ids": [
-          "local.backend-native.0",
-          "local.backend-native.1"
+          "local.backend-native.0"
         ],
-        "description": "Host backend driver, native generation and WASM facts publication: owning release-fast library, binary and facts CLI tests.",
+        "description": "Host backend driver and native generation: owning release-fast library and binary tests.",
         "gates": [
-          "cargo test --locked --profile release-fast -p molt-backend -p molt-backend-native -p molt-artifact-publish -p molt-wasm-facts --features molt-backend/native-backend,molt-backend/wasm-backend --lib --bins --test wasm_link_facts_cli --no-fail-fast",
-          "python -m pytest -q tests/test_wasm_link_validation.py -k 'rust_facts or wasm_artifact_state'"
+          "cargo test --locked --profile release-fast -p molt-backend -p molt-backend-native -p molt-artifact-publish --features molt-backend/native-backend,molt-backend/wasm-backend --lib --bins --no-fail-fast"
         ],
         "globs": [
           "runtime/test_support/native_object_execution.rs",
@@ -11130,12 +11141,35 @@
           "runtime/molt-backend-native/src/native_backend/**/*.rs",
           "runtime/molt-backend-native/src/simple_backend/**/*.rs",
           "runtime/molt-artifact-publish/**/*.rs",
-          "runtime/molt-artifact-publish/Cargo.toml",
-          "runtime/molt-wasm-facts/**/*.rs",
-          "runtime/molt-wasm-facts/Cargo.toml",
-          "tools/wasm_link_fact_provider.py"
+          "runtime/molt-artifact-publish/Cargo.toml"
         ],
         "name": "backend-native",
+        "toolchains": [
+          "python",
+          "rustc",
+          "cargo"
+        ]
+      },
+      {
+        "command_ids": [
+          "local.wasm-facts-host-tool.0",
+          "local.wasm-facts-host-tool.1"
+        ],
+        "description": "Standalone host facts protocol and atomic publication, with no compiler codegen build for facts-only changes.",
+        "gates": [
+          "cargo test --locked --profile release-fast -p molt-wasm-facts -p molt-artifact-publish -p molt-host-process --features molt-wasm-facts/host-tool --lib --bins --test wasm_link_facts_cli --no-fail-fast",
+          "python -m pytest -q tests/test_wasm_link_validation.py -k 'rust_facts or wasm_artifact_state'"
+        ],
+        "globs": [
+          "runtime/molt-wasm-facts/**/*.rs",
+          "runtime/molt-wasm-facts/Cargo.toml",
+          "runtime/molt-artifact-publish/**/*.rs",
+          "runtime/molt-artifact-publish/Cargo.toml",
+          "runtime/molt-host-process/**/*.rs",
+          "runtime/molt-host-process/Cargo.toml",
+          "tools/wasm_link_fact_provider.py"
+        ],
+        "name": "wasm-facts-host-tool",
         "toolchains": [
           "python",
           "rustc",
@@ -11994,12 +12028,6 @@
         "cargo",
         "git"
       ],
-      "local.backend-native.1": [
-        "python",
-        "rustc",
-        "cargo",
-        "git"
-      ],
       "local.bootstrap-stdlib.0": [
         "python"
       ],
@@ -12409,6 +12437,18 @@
       "local.wasm-abi-registry.pytest": [
         "python",
         "rustfmt"
+      ],
+      "local.wasm-facts-host-tool.0": [
+        "python",
+        "rustc",
+        "cargo",
+        "git"
+      ],
+      "local.wasm-facts-host-tool.1": [
+        "python",
+        "rustc",
+        "cargo",
+        "git"
       ],
       "local.wasm-host.0": [
         "python",

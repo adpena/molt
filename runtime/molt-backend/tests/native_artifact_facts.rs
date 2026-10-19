@@ -446,21 +446,6 @@ fn no_writer_fifo_is_rejected_before_read_for_each_inspector() {
     let facts: Value = serde_json::from_slice(&result.stdout).unwrap();
     assert_eq!(facts["ok"], false);
     assert!(facts["error"].as_str().unwrap().contains("regular file"));
-    #[cfg(feature = "wasm-backend")]
-    for mode in ["--scan-wasm-link-facts", "--publish-wasm-link-facts"] {
-        let output = temporary(b"preserve");
-        let mut cmd = Command::new(env!("CARGO_BIN_EXE_molt-backend"));
-        cmd.arg(mode).arg(&input.0);
-        if mode == "--publish-wasm-link-facts" {
-            cmd.arg("--output").arg(&output.0);
-        }
-        let result = cmd.output().unwrap();
-        assert!(!result.status.success());
-        assert_eq!(fs::read(&output.0).unwrap(), b"preserve");
-        let facts: Value = serde_json::from_slice(&result.stdout).unwrap();
-        assert_eq!(facts["ok"], false);
-        assert!(facts["error"].as_str().unwrap().contains("regular file"));
-    }
 }
 
 #[cfg(windows)]

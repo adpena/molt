@@ -1262,8 +1262,9 @@ def _finish_results(
 RUST_READ_CALLS = frozenset({"var", "var_os", "option_env!", "env!", "required_env"})
 # Generated closed key types name a variable as `Type::MOLT_X`: `BackendEnv`
 # for compiler-crate settings (src/molt/backend_environment.json) and
-# `RuntimeFlag` for molt-runtime flags (src/molt/environment_registry.toml).
-RUST_TYPED_KEY_TYPES = frozenset({"BackendEnv", "RuntimeFlag"})
+# `RuntimeFlag` and `HostProcessEnv` project runtime and host-tool keys from
+# src/molt/environment_registry.toml.
+RUST_TYPED_KEY_TYPES = frozenset({"BackendEnv", "RuntimeFlag", "HostProcessEnv"})
 FORM_TYPED_KEY = "typed-key"
 RUST_SET_CALLS = frozenset({"set_var", "env"})
 RUST_UNSET_CALLS = frozenset({"remove_var", "env_remove"})

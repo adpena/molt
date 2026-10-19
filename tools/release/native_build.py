@@ -27,6 +27,7 @@ from molt.cargo_execution_policy import (  # noqa: E402
 )
 from molt.cli.native_binary import validate_native_binary_architecture  # noqa: E402
 from molt.flag_strings import FlagStringRule  # noqa: E402
+from molt.host_tool_products import HostToolProduct  # noqa: E402
 from molt.cli.compiler_identity import LlvmCompilerInputs, admit_llvm_compiler_inputs  # noqa: E402
 from molt.llvm_toolchain import (  # noqa: E402
     llvm_release,
@@ -77,15 +78,21 @@ from tools.release.git_source_snapshot import (  # noqa: E402
 )
 from tools.release.release_model import ROOT, target_by_id  # noqa: E402
 
-SCHEMA = "molt.release-native-build.v3"
+SCHEMA = "molt.release-native-build.v4"
 RECEIPT_NAME = "native-build.json"
 _COMMANDS = CommandExecutor.for_file(__file__)
 _COMPONENTS = {
     "compiler": (
-        "molt-backend",
-        "molt-backend",
+        HostToolProduct.BACKEND.value,
+        HostToolProduct.BACKEND.value,
         PRODUCTION_COMPILER_PROFILE,
         PRODUCTION_COMPILER_FEATURES,
+    ),
+    "wasm_facts": (
+        HostToolProduct.WASM_FACTS.value,
+        HostToolProduct.WASM_FACTS.value,
+        PRODUCTION_COMPILER_PROFILE,
+        HostToolProduct.WASM_FACTS.required_features,
     ),
     "launcher": ("molt-launcher", "molt", PRODUCTION_COMPILER_PROFILE, ()),
     "worker": ("molt-worker", "molt-worker", "release-output", ()),
@@ -648,7 +655,12 @@ def _tool_paths(
             timeout=30,
             encoding="utf-8",
         ).strip()
-        if not selected or "\n" in selected or "\r" in selected:
+        if (
+            not isinstance(selected, str)
+            or not selected
+            or "\n" in selected
+            or "\r" in selected
+        ):
             raise ValueError("native linker must select one backend path")
         paths["linker_backend"] = resolve_executable(
             selected, environment=env, label="native linker backend"

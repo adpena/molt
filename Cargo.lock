@@ -2543,6 +2543,7 @@ dependencies = [
 name = "molt-artifact-publish"
 version = "0.1.0"
 dependencies = [
+ "libc",
  "windows-sys 0.61.2",
 ]
 
@@ -2560,10 +2561,10 @@ dependencies = [
  "molt-backend-rust",
  "molt-backend-wasm",
  "molt-codegen-abi",
+ "molt-host-process",
  "molt-ir",
  "molt-passes",
  "molt-tir",
- "molt-wasm-facts",
  "object 0.39.1",
  "rmp-serde",
  "rustc-demangle",
@@ -2700,6 +2701,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "molt-host-process"
+version = "0.1.0"
+dependencies = [
+ "libc",
+ "windows-sys 0.61.2",
+]
+
+[[package]]
 name = "molt-ir"
 version = "0.1.0"
 dependencies = [
@@ -2752,6 +2761,7 @@ version = "0.1.0"
 dependencies = [
  "hashlink",
  "libc",
+ "molt-host-process",
  "molt-ir",
  "num-integer",
  "rmp-serde",
@@ -3122,7 +3132,12 @@ dependencies = [
 name = "molt-wasm-facts"
 version = "0.1.0"
 dependencies = [
+ "libc",
+ "memmap2",
+ "molt-artifact-publish",
+ "molt-host-process",
  "serde",
+ "serde_json",
  "wasm-encoder 0.261.0",
  "wasmparser 0.261.0",
 ]

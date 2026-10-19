@@ -23289,7 +23289,7 @@ def test_prepare_non_native_build_result_skips_unchanged_linked_wasm_relink(
         "molt_root": tmp_path,
         "split_runtime": False,
         "precompile": False,
-        "wasm_facts_scanner": tmp_path / "molt-backend",
+        "wasm_facts_scanner": tmp_path / "molt-wasm-facts",
         "app_export_contract_path": _empty_app_export_contract(tmp_path),
     }
 
@@ -23497,7 +23497,7 @@ def test_wasm_deployment_interleaving_keeps_producer_bytes_and_policy_together(
         molt_root=tmp_path,
         split_runtime=True,
         wasm_table_base=8192,
-        wasm_facts_scanner=tmp_path / "molt-backend",
+        wasm_facts_scanner=tmp_path / "molt-wasm-facts",
         app_export_contract_path=_empty_app_export_contract(tmp_path),
     )
     real_exports = cli_non_native_output._app_export_manifest
@@ -23683,7 +23683,7 @@ def test_prepare_non_native_build_result_keeps_shared_runtime_canonical_for_link
         molt_root=tmp_path,
         split_runtime=False,
         precompile=False,
-        wasm_facts_scanner=tmp_path / "molt-backend",
+        wasm_facts_scanner=tmp_path / "molt-wasm-facts",
         app_export_contract_path=_empty_app_export_contract(tmp_path),
     )
 
@@ -23866,7 +23866,7 @@ def test_prepare_non_native_build_result_split_runtime_reuses_shared_runtime_sur
         split_runtime=True,
         wasm_table_base=8192,
         precompile=False,
-        wasm_facts_scanner=tmp_path / "molt-backend",
+        wasm_facts_scanner=tmp_path / "molt-wasm-facts",
         app_export_contract_path=_empty_app_export_contract(tmp_path),
         native_artifact_plan=native_artifact_plan,
     )
@@ -24219,7 +24219,7 @@ def test_prepare_non_native_build_result_split_runtime_relinks_stale_native_app(
         split_runtime=True,
         wasm_table_base=8192,
         precompile=False,
-        wasm_facts_scanner=tmp_path / "molt-backend",
+        wasm_facts_scanner=tmp_path / "molt-wasm-facts",
         app_export_contract_path=_empty_app_export_contract(tmp_path),
         native_artifact_plan=native_artifact_plan,
     )
@@ -24419,7 +24419,7 @@ def test_prepare_non_native_build_result_uses_runtime_cpython_abi_provider(
         molt_root=tmp_path,
         split_runtime=False,
         precompile=False,
-        wasm_facts_scanner=tmp_path / "molt-backend",
+        wasm_facts_scanner=tmp_path / "molt-wasm-facts",
         app_export_contract_path=_empty_app_export_contract(tmp_path),
         native_artifact_plan=native_artifact_plan,
     )
@@ -24567,7 +24567,7 @@ def test_prepare_non_native_build_result_split_runtime_uses_runtime_cpython_abi(
         split_runtime=True,
         wasm_table_base=8192,
         precompile=False,
-        wasm_facts_scanner=tmp_path / "molt-backend",
+        wasm_facts_scanner=tmp_path / "molt-wasm-facts",
         app_export_contract_path=_empty_app_export_contract(tmp_path),
         native_artifact_plan=native_artifact_plan,
     )
@@ -24840,7 +24840,7 @@ def test_prepare_non_native_build_result_split_runtime_rejects_unbacked_native_i
         split_runtime=True,
         wasm_table_base=8192,
         precompile=False,
-        wasm_facts_scanner=tmp_path / "molt-backend",
+        wasm_facts_scanner=tmp_path / "molt-wasm-facts",
         app_export_contract_path=_empty_app_export_contract(tmp_path),
         native_artifact_plan=_EMPTY_EXTERNAL_PACKAGE_NATIVE_ARTIFACT_PLAN,
     )
@@ -24926,7 +24926,7 @@ def test_prepare_non_native_build_result_split_runtime_does_not_export_runtime_t
         split_runtime=True,
         wasm_table_base=8192,
         precompile=False,
-        wasm_facts_scanner=tmp_path / "molt-backend",
+        wasm_facts_scanner=tmp_path / "molt-wasm-facts",
         app_export_contract_path=_empty_app_export_contract(tmp_path),
     )
 
@@ -34669,7 +34669,7 @@ def test_failed_wasm_link_evidence_survives_private_deployment_cleanup(
         molt_root=tmp_path,
         split_runtime=split_runtime,
         wasm_table_base=8192,
-        wasm_facts_scanner=tmp_path / "molt-backend",
+        wasm_facts_scanner=tmp_path / "molt-wasm-facts",
         app_export_contract_path=_empty_app_export_contract(tmp_path),
         resolved_capability_policy=CapabilityManifest().resolve(),
     )

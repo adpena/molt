@@ -7,7 +7,7 @@
 
 use molt_ir::backend_environment::{self as backend_env, BackendEnv};
 
-const GIB_BYTES: u64 = 1024 * 1024 * 1024;
+use molt_host_process::parse_nonnegative_gb;
 
 /// Raw memory availability, most specific first. The admitted process cap is
 /// separate: its host reserve has already been deducted.
@@ -23,17 +23,6 @@ const RESERVE_GB_ENV: [BackendEnv; 3] = [
     BackendEnv::MOLT_CLI_MEMORY_RESERVE_GB,
     BackendEnv::MOLT_MEMORY_RESERVE_GB,
 ];
-
-/// Parse a non-negative, possibly fractional GB value into bytes, saturating
-/// at `u64::MAX`.
-pub fn parse_nonnegative_gb(raw: &str) -> Option<u64> {
-    let gb = raw
-        .trim()
-        .parse::<f64>()
-        .ok()
-        .filter(|value| value.is_finite() && *value >= 0.0)?;
-    Some((gb * GIB_BYTES as f64).min(u64::MAX as f64) as u64)
-}
 
 fn first_gb_env(keys: &[BackendEnv]) -> Option<u64> {
     keys.iter().find_map(|key| {
@@ -99,7 +88,7 @@ pub fn backend_memory_limit_bytes() -> Option<u64> {
 
 #[cfg(test)]
 mod tests {
-    use super::{GIB_BYTES, memory_budget_bytes, parse_nonnegative_gb};
+    use super::memory_budget_bytes;
 
     #[test]
     fn admitted_cap_and_raw_availability_have_distinct_reserve_semantics() {
@@ -112,21 +101,6 @@ mod tests {
             (None, 30, None, None),
         ] {
             assert_eq!(memory_budget_bytes(available, reserve, cap), expected);
-        }
-    }
-
-    #[test]
-    fn fractional_guard_values_parse_to_bytes() {
-        assert_eq!(parse_nonnegative_gb("1.500000"), Some(3 * GIB_BYTES / 2));
-        assert_eq!(parse_nonnegative_gb(" 12 "), Some(12 * GIB_BYTES));
-        assert_eq!(parse_nonnegative_gb("0"), Some(0));
-        assert_eq!(parse_nonnegative_gb("1e30"), Some(u64::MAX));
-    }
-
-    #[test]
-    fn negative_non_finite_and_malformed_values_are_absent() {
-        for raw in ["-1", "inf", "NaN", "", "2G", "not-a-number"] {
-            assert_eq!(parse_nonnegative_gb(raw), None, "{raw:?}");
         }
     }
 }

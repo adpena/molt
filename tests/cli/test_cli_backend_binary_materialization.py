@@ -26,6 +26,7 @@ from molt.cli.backend_generation import (
     backend_generation_store_root,
 )
 from molt.backend_executable_names import backend_executable_name
+from molt.host_tool_products import HostToolProduct
 from molt.cli.backend_execution import _backend_environment_with_compiler_fingerprint
 from molt.exact_json import canonical_json_sha256
 from molt.toolchain_identity import (
@@ -330,9 +331,12 @@ def test_backend_refresh_distinguishes_source_metadata_from_content(
 
     source = tmp_path / "backend.rs"
     source.write_text("fn main() {}\n", encoding="utf-8")
-    monkeypatch.setattr(
-        cli_backend_binary, "_backend_source_paths", lambda *args: [source]
-    )
+
+    def source_paths(_root, _features, *, product):
+        assert product is HostToolProduct.BACKEND
+        return [source]
+
+    monkeypatch.setattr(cli_backend_binary, "_backend_source_paths", source_paths)
     monkeypatch.setattr(
         cli_backend_binary, "_compiler_clean_source_state", lambda *args: None
     )

@@ -1,7 +1,7 @@
 {
   "blast_radius": {
     "cranelift-object": 2,
-    "molt-artifact-publish": 2,
+    "molt-artifact-publish": 3,
     "molt-backend": 0,
     "molt-backend-luau": 1,
     "molt-backend-native": 1,
@@ -14,6 +14,7 @@
     "molt-gpu": 3,
     "molt-gpu-runtime": 2,
     "molt-harness": 0,
+    "molt-host-process": 9,
     "molt-ir": 7,
     "molt-lang-cpython-abi": 7,
     "molt-lang-obj-model": 24,
@@ -48,7 +49,7 @@
     "molt-stdlib-graphlib": 2,
     "molt-stdlib-text": 2,
     "molt-tir": 5,
-    "molt-wasm-facts": 2,
+    "molt-wasm-facts": 1,
     "molt-wasm-host": 0,
     "molt-worker": 0,
     "zlib-rs": 3

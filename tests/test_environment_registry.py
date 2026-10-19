@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import io
 import os
+import re
 import sys
 import tomllib
 from pathlib import Path
@@ -46,6 +47,28 @@ def test_generator_is_idempotent() -> None:
     payload = G.build_payload(G.load_source())
     assert G.render_python(payload) == G.render_python(payload)
     assert G.render_doc(payload) == G.render_doc(payload)
+
+
+def test_host_process_selectors_follow_their_declared_owner() -> None:
+    payload = G.build_payload(G.load_source())
+    selected = {
+        row["name"]
+        for row in payload["variables"]
+        if row["owner"] == "runtime/molt-wasm-facts/src/main.rs"
+    }
+    assert selected == {"MOLT_BACKEND_MAX_PROCESS_RSS_GB", "MOLT_DEBUG_RLIMIT"}
+    rendered = G.render_host_process_environment(payload)
+    assert (
+        set(re.findall(r"^    (MOLT_[A-Z0-9_]+),$", rendered, re.MULTILINE)) == selected
+    )
+    # Moving ownership changes the projection; there is no handwritten name list.
+    rows = [dict(row) for row in payload["variables"]]
+    next(row for row in rows if row["name"] == "MOLT_DEBUG_RLIMIT")["owner"] = (
+        "runtime/molt-backend/src/backend_process/memory_guard.rs"
+    )
+    assert "MOLT_DEBUG_RLIMIT" not in G.render_host_process_environment(
+        {**payload, "variables": rows}
+    )
 
 
 def test_authority_rows_are_sorted_unique_and_shipped_loader_agrees() -> None:

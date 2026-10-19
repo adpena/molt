@@ -2,7 +2,7 @@
 
 Ordinary ``pip install molt`` on a released platform receives the same ready
 distribution as a bundle/package-manager install: the production compiler,
-launcher, declared runtime cells and signed source manifest. The wheel carries
+launcher, standalone WASM facts tool, declared runtime cells and signed source manifest. The wheel carries
 the exact bundle tree in its data scheme at ``share/molt/distribution`` and the
 unchanged ``molt`` package from the canonical pure wheel. At run time the CLI
 selects that packaged distribution (``molt.source_root``), admits it through

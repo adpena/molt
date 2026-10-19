@@ -52,6 +52,10 @@ def installation(tmp_path: Path, monkeypatch) -> Path:
     binary.write_bytes(b"compiler")
     launcher = binary.parent / ("molt.exe" if system == "windows" else "molt")
     launcher.write_bytes(b"launcher")
+    facts = binary.parent / (
+        "molt-wasm-facts.exe" if system == "windows" else "molt-wasm-facts"
+    )
+    facts.write_bytes(b"facts")
     payload = {
         "schema": distribution.MANIFEST_SCHEMA,
         "git": {"object_format": "sha1", "commit": "a" * 40, "tree": "b" * 40},
@@ -69,6 +73,14 @@ def installation(tmp_path: Path, monkeypatch) -> Path:
             "path": "bin/" + launcher.name,
             "size": 8,
             "sha256": hashlib.sha256(b"launcher").hexdigest(),
+            "platform": system,
+            "arch": arch,
+        },
+        "wasm_facts": {
+            "path": "bin/" + facts.name,
+            "size": 5,
+            "sha256": hashlib.sha256(b"facts").hexdigest(),
+            "profile": "release",
             "platform": system,
             "arch": arch,
         },
@@ -260,6 +272,83 @@ def test_installed_source_admits_only_matching_launcher(installation):
     launcher.write_bytes(b"tampered")
     with pytest.raises(ValueError, match="Installed launcher differs"):
         installed.verify_sources()
+
+
+@pytest.mark.parametrize("damage", [None, "missing", "changed", "host"])
+def test_installed_wasm_facts_admits_live_shipped_bytes(
+    installation, monkeypatch, damage
+):
+    installed = distribution.installed_compiler(installation)
+    assert installed is not None
+    assert (
+        installed.wasm_facts_binary
+        == installation.parent / installed.wasm_facts["path"]
+    )
+    if damage == "missing":
+        installed.wasm_facts_binary.unlink()
+    elif damage == "changed":
+        installed.wasm_facts_binary.write_bytes(b"other")
+    elif damage == "host":
+        monkeypatch.setattr(
+            distribution, "current_host_coordinate", lambda: ("other", "host")
+        )
+    if damage is None:
+        assert (
+            installed.verify_wasm_facts()["sha256"]
+            == hashlib.sha256(b"facts").hexdigest()
+        )
+    else:
+        with pytest.raises((OSError, ValueError)):
+            installed.verify_wasm_facts()
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("path", "bin/molt-backend"),
+        ("path", "../molt-wasm-facts"),
+        ("sha256", "invalid"),
+        ("size", True),
+        ("size", 0),
+        ("profile", "dev-fast"),
+        ("platform", []),
+        ("arch", []),
+    ],
+)
+def test_installed_wasm_facts_manifest_rejects_invalid_records(
+    installation, field, value
+):
+    manifest = installation / distribution.MANIFEST_NAME
+    payload = json.loads(manifest.read_text(encoding="utf-8"))
+    payload["wasm_facts"][field] = value
+    manifest.write_text(json.dumps(payload), encoding="utf-8")
+    with pytest.raises(ValueError, match="invalid production WASM facts identity"):
+        distribution.installed_compiler(installation)
+
+
+@pytest.mark.parametrize("damage", ["v5", "absent", "extra", "target"])
+def test_installed_manifest_requires_the_exact_wasm_facts_contract(
+    installation, damage
+):
+    manifest = installation / distribution.MANIFEST_NAME
+    payload = json.loads(manifest.read_text(encoding="utf-8"))
+    if damage == "v5":
+        payload["schema"] = "molt.release-compiler-source.v5"
+    elif damage == "absent":
+        del payload["wasm_facts"]
+    elif damage == "extra":
+        payload["wasm_facts"]["features"] = []
+    else:
+        payload["wasm_facts"].update(
+            platform="windows", arch="x86_64", path="bin/molt-wasm-facts.exe"
+        )
+        if payload["compiler"]["platform"] == "windows":
+            payload["wasm_facts"].update(
+                platform="linux", arch="x86_64", path="bin/molt-wasm-facts"
+            )
+    manifest.write_text(json.dumps(payload), encoding="utf-8")
+    with pytest.raises(ValueError):
+        distribution.installed_compiler(installation)
 
 
 def test_release_consumer_selects_native_launcher(tmp_path):

@@ -1,7 +1,7 @@
 use std::io;
 
 pub(super) fn open_ir_file(ir_path: &str) -> io::Result<std::fs::File> {
-    crate::backend_process::io_limits::open_regular_artifact(std::path::Path::new(ir_path))
+    molt_artifact_publish::open_regular_artifact(std::path::Path::new(ir_path))
         .map_err(|err| io::Error::other(format!("failed to open IR file '{ir_path}': {err}")))
 }
 

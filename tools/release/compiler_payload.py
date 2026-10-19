@@ -15,7 +15,9 @@ from molt.compiler_distribution import (
     PRODUCTION_COMPILER_FEATURES,
     validate_compiler_record,
     validate_launcher_record,
+    validate_wasm_facts_record,
 )
+from molt.host_tool_products import HostToolProduct
 from molt.exact_json import write_exact
 from molt.toolchain_identity import (
     resolve_executable,
@@ -63,6 +65,7 @@ REQUIRED_MARKERS = frozenset(
         "uv.lock",
         "rust-toolchain.toml",
         "runtime/molt-backend/Cargo.toml",
+        "runtime/molt-wasm-facts/Cargo.toml",
         "runtime/molt-runtime/Cargo.toml",
         "src/molt/cli/__main__.py",
         "src/molt/backend_environment.json",
@@ -123,7 +126,7 @@ def compiler_record(binary: Path, *, platform: str, arch: str) -> dict[str, Any]
     identity = stable_regular_file_content_identity(
         binary, label="production compiler input"
     )
-    name = "molt-backend.exe" if platform == "windows" else "molt-backend"
+    name = HostToolProduct.BACKEND.value + (".exe" if platform == "windows" else "")
     return validate_compiler_record(
         {
             "path": f"bin/{name}",
@@ -155,6 +158,26 @@ def launcher_record(binary: Path, *, platform: str, arch: str) -> dict[str, Any]
     )
 
 
+def wasm_facts_record(binary: Path, *, platform: str, arch: str) -> dict[str, Any]:
+    validate_native_binary_architecture(
+        binary, RUST_TARGET_BY_COORDINATE[(platform, arch)]
+    )
+    identity = stable_regular_file_content_identity(
+        binary, label="production WASM facts input"
+    )
+    name = HostToolProduct.WASM_FACTS.value + (".exe" if platform == "windows" else "")
+    return validate_wasm_facts_record(
+        {
+            "path": f"bin/{name}",
+            "sha256": identity["sha256"],
+            "size": identity["size"],
+            "profile": PRODUCTION_COMPILER_PROFILE,
+            "platform": platform,
+            "arch": arch,
+        }
+    )
+
+
 def materialize_sources(
     root: Path,
     *,
@@ -162,6 +185,7 @@ def materialize_sources(
     snapshot: GitSourceSnapshot,
     compiler: dict[str, Any],
     launcher: dict[str, Any],
+    wasm_facts: dict[str, Any],
     runtime: dict[str, Any],
 ) -> Path:
     env = source_environment()
@@ -184,6 +208,7 @@ def materialize_sources(
             "files": [entry.as_record() for entry in snapshot.files],
             "compiler": compiler,
             "launcher": launcher,
+            "wasm_facts": wasm_facts,
             "runtime": runtime,
         },
     )

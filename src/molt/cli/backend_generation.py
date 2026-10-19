@@ -1,4 +1,4 @@
-"""Immutable, content-addressed generations of the backend compiler executable.
+"""Immutable, content-addressed generations of compiler and host-tool executables.
 
 A backend variant's coordinate (``<target>/<profile>/molt-backend.<features>``)
 names a selection, not a file a build runs. Each published executable lives at
@@ -9,6 +9,8 @@ captured executable; idle retention is a separate store policy. The variant's
 backend receipt is the selection. Its byte identity names the selected generation, and
 publishing a new selection replaces only that receipt. Bazel and Nix publish
 outputs the same way: content-addressed paths and an atomic pointer switch.
+The standalone WASM facts product reuses this store and receipt authority with
+its own product coordinate; the historical directory name is not a tool kind.
 
 The generation keeps the variant's basename, so process discovery and the
 executable's content identity read the same name a variant always had.

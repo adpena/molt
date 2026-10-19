@@ -146,7 +146,7 @@ or colliding archive names fail with a diagnostic before replacing prior output.
 
 These profiles select optimization of **your program**, not the compiler itself.
 Release bundles, package-manager installs and platform wheels ship a
-production-optimized compiler and prebuilt runtimes for the required
+production-optimized compiler, WASM inspection tool and prebuilt runtimes for the required
 [release lanes](config/release_acceptance_matrix.toml). Native and LLVM share
 physical runtime cells while retaining distinct compiled products. Installed
 compilation never builds Rust or provisions an LLVM SDK. Compiler developers can opt

@@ -1,4 +1,4 @@
-"""Build the production compiler, launcher and worker through one authority."""
+"""Build the declared release executables through one authority."""
 
 from pathlib import Path
 import sys

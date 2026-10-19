@@ -9,6 +9,8 @@ from __future__ import annotations
 from collections.abc import Sequence
 from typing import Literal, get_args
 
+from molt.host_tool_products import HostToolProduct
+
 
 CodegenBackend = Literal["cranelift", "llvm"]
 CODEGEN_BACKENDS: tuple[CodegenBackend, ...] = get_args(CodegenBackend)
@@ -53,11 +55,7 @@ def backend_executable_name(
     *, os_name: str, features: Sequence[str] | None = None
 ) -> str:
     """Name the Cargo output (None), or an independently published variant."""
-    stem = "molt-backend"
-    if features is not None:
-        tag = "_".join(sorted(features)).replace("-", "_") or "default"
-        stem += f".{tag}"
-    return stem + (".exe" if os_name == "nt" else "")
+    return HostToolProduct.BACKEND.executable_name(os_name=os_name, features=features)
 
 
 _BACKEND_IMAGES = frozenset(
@@ -75,3 +73,17 @@ _BACKEND_IMAGES = frozenset(
 def is_backend_executable_name(name: str) -> bool:
     """Recognize a backend image basename for sampling and quiescence only."""
     return name.strip().casefold() in _BACKEND_IMAGES
+
+
+_HOST_TOOL_IMAGES = _BACKEND_IMAGES | frozenset(
+    product.executable_name(os_name=os_name, features=features)
+    for product in HostToolProduct
+    if product is not HostToolProduct.BACKEND
+    for os_name in ("nt", "posix")
+    for features in (None, product.required_features)
+)
+
+
+def is_host_tool_executable_name(name: str) -> bool:
+    """Recognize host-tool candidates for sampling, never process ownership."""
+    return name.strip().casefold() in _HOST_TOOL_IMAGES

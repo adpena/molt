@@ -7,6 +7,9 @@ rust-version.workspace = true
 license = "Apache-2.0"
 description = "Shared atomic artifact publication for Molt's Rust producers"
 
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.61", features = [
     "Win32_Foundation",

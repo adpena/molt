@@ -16,4 +16,4 @@ pub(crate) use output::write_cached_output;
 pub(crate) use output::write_output;
 #[cfg(feature = "native-backend")]
 pub(crate) use output::write_output_path;
-pub(crate) use request::{RequestBoundedRead, open_regular_artifact, read_bounded_request_bytes};
+pub(crate) use request::{RequestBoundedRead, read_bounded_request_bytes};

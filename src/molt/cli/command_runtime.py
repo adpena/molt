@@ -38,8 +38,10 @@ def _with_memory_guard_env(
     return _process_guard.with_memory_guard_env(env, memory_guard_prefix)
 
 
-def _resolve_timeout_env(env_name: str) -> tuple[float | None, str | None]:
-    raw = os.environ.get(env_name)
+def _resolve_timeout_env(
+    env_name: str, *, environment: Mapping[str, str] | None = None
+) -> tuple[float | None, str | None]:
+    raw = (os.environ if environment is None else environment).get(env_name)
     if raw is None:
         return None, None
     try:

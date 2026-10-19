@@ -1052,6 +1052,13 @@ def test_windows_sampler_limits_full_command_line_reads_to_launcher_processes() 
     )
     assert module._windows_process_needs_full_command_line("explorer.exe") is False
     assert module._windows_process_needs_full_command_line("svchost.exe") is False
+    assert (
+        module._windows_process_needs_full_command_line("molt-wasm-facts.exe") is True
+    )
+    assert (
+        module._windows_process_needs_full_command_line("molt-wasm-facts.host_tool.exe")
+        is True
+    )
 
 
 def test_command_executable_name_handles_windows_paths() -> None:

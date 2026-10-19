@@ -25,6 +25,9 @@ use std::io::{self, BufWriter, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
+mod regular_file;
+pub use regular_file::open_regular_artifact;
+
 static PUBLICATION_NONCE: AtomicU64 = AtomicU64::new(0);
 
 /// Replacement and durability are separate state transitions. A failed parent

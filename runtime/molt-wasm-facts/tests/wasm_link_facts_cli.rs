@@ -1,5 +1,3 @@
-#![cfg(feature = "wasm-backend")]
-
 use std::fs;
 use std::path::PathBuf;
 use std::process::Command;
@@ -55,7 +53,7 @@ fn clean_module() -> Vec<u8> {
 fn cli_emits_versioned_success_json() {
     let fixture = temp_wasm("ok", &clean_module());
 
-    let output = Command::new(env!("CARGO_BIN_EXE_molt-backend"))
+    let output = Command::new(env!("CARGO_BIN_EXE_molt-wasm-facts"))
         .arg("--scan-wasm-link-facts")
         .arg(&fixture.0)
         .output()
@@ -91,7 +89,7 @@ fn cli_emits_versioned_success_json() {
 fn cli_emits_versioned_error_json_and_nonzero_exit() {
     let fixture = temp_wasm("bad", b"\0asm\x01\0\0");
 
-    let output = Command::new(env!("CARGO_BIN_EXE_molt-backend"))
+    let output = Command::new(env!("CARGO_BIN_EXE_molt-wasm-facts"))
         .arg("--scan-wasm-link-facts")
         .arg(&fixture.0)
         .output()
@@ -110,7 +108,7 @@ fn cli_emits_versioned_error_json_and_nonzero_exit() {
 
 #[test]
 fn cli_missing_path_is_a_structured_error() {
-    let output = Command::new(env!("CARGO_BIN_EXE_molt-backend"))
+    let output = Command::new(env!("CARGO_BIN_EXE_molt-wasm-facts"))
         .arg("--scan-wasm-link-facts")
         .output()
         .expect("run facts CLI");
@@ -130,7 +128,7 @@ fn cli_publishes_and_validates_rust_owned_attestation() {
     let fixture = temp_wasm("publish-input", &clean_module());
     let published = temp_wasm("publish-output", b"");
 
-    let output = Command::new(env!("CARGO_BIN_EXE_molt-backend"))
+    let output = Command::new(env!("CARGO_BIN_EXE_molt-wasm-facts"))
         .arg("--publish-wasm-link-facts")
         .arg(&fixture.0)
         .arg("--output")
@@ -147,7 +145,7 @@ fn cli_publishes_and_validates_rust_owned_attestation() {
     assert_eq!(payload["ok"], true);
     assert_eq!(payload["facts"]["callable_table_attestation_present"], true);
     assert!(fs::metadata(&published.0).expect("published wasm").len() > 8);
-    let rescanned = Command::new(env!("CARGO_BIN_EXE_molt-backend"))
+    let rescanned = Command::new(env!("CARGO_BIN_EXE_molt-wasm-facts"))
         .arg("--scan-wasm-link-facts")
         .arg(&published.0)
         .output()
@@ -161,7 +159,7 @@ fn cli_publishes_and_validates_rust_owned_attestation() {
 fn cli_publishes_in_place_through_one_atomic_commit() {
     let fixture = temp_wasm("publish-in-place", &clean_module());
 
-    let output = Command::new(env!("CARGO_BIN_EXE_molt-backend"))
+    let output = Command::new(env!("CARGO_BIN_EXE_molt-wasm-facts"))
         .arg("--publish-wasm-link-facts")
         .arg(&fixture.0)
         .arg("--output")
@@ -174,7 +172,7 @@ fn cli_publishes_in_place_through_one_atomic_commit() {
         "stderr={}",
         String::from_utf8_lossy(&output.stderr)
     );
-    let rescanned = Command::new(env!("CARGO_BIN_EXE_molt-backend"))
+    let rescanned = Command::new(env!("CARGO_BIN_EXE_molt-wasm-facts"))
         .arg("--scan-wasm-link-facts")
         .arg(&fixture.0)
         .output()
@@ -195,7 +193,7 @@ fn failed_publication_never_exposes_partial_destination() {
     let fixture = temp_wasm("publish-malformed", &malformed);
     let destination = temp_wasm("publish-existing", b"sentinel-generation");
 
-    let output = Command::new(env!("CARGO_BIN_EXE_molt-backend"))
+    let output = Command::new(env!("CARGO_BIN_EXE_molt-wasm-facts"))
         .arg("--publish-wasm-link-facts")
         .arg(&fixture.0)
         .arg("--output")
@@ -227,7 +225,7 @@ fn final_publication_rejects_scannable_linker_metadata_atomically() {
         module.extend_from_slice(metadata);
         let fixture = temp_wasm(name, &module);
         let destination = temp_wasm("linked-generation", b"sentinel-generation");
-        let scan = Command::new(env!("CARGO_BIN_EXE_molt-backend"))
+        let scan = Command::new(env!("CARGO_BIN_EXE_molt-wasm-facts"))
             .arg("--scan-wasm-link-facts")
             .arg(&fixture.0)
             .output()
@@ -238,7 +236,7 @@ fn final_publication_rejects_scannable_linker_metadata_atomically() {
             String::from_utf8_lossy(&scan.stdout)
         );
 
-        let publication = Command::new(env!("CARGO_BIN_EXE_molt-backend"))
+        let publication = Command::new(env!("CARGO_BIN_EXE_molt-wasm-facts"))
             .arg("--publish-wasm-link-facts")
             .arg(&fixture.0)
             .arg("--output")
@@ -260,4 +258,81 @@ fn final_publication_rejects_scannable_linker_metadata_atomically() {
         );
         assert_eq!(fs::read(&fixture.0).expect("original input"), module);
     }
+}
+
+fn assert_nonregular_input_refused(input: &std::path::Path) {
+    for mode in ["--scan-wasm-link-facts", "--publish-wasm-link-facts"] {
+        let output = temp_wasm("nonregular-output", b"preserve");
+        let mut command = Command::new(env!("CARGO_BIN_EXE_molt-wasm-facts"));
+        command.arg(mode).arg(input);
+        if mode == "--publish-wasm-link-facts" {
+            command.arg("--output").arg(&output.0);
+        }
+        let result = command.output().expect("reject nonregular facts input");
+        assert_eq!(result.status.code(), Some(2));
+        assert_eq!(fs::read(&output.0).expect("prior publication"), b"preserve");
+        let facts: Value = serde_json::from_slice(&result.stdout).expect("structured refusal");
+        assert_eq!(facts["ok"], false);
+        assert!(facts.get("facts").is_none());
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn no_writer_fifo_is_rejected_before_read_for_each_mode() {
+    use std::ffi::CString;
+    use std::os::unix::ffi::OsStrExt;
+    let input = temp_wasm("fifo", &[]);
+    fs::remove_file(&input.0).unwrap();
+    let name = CString::new(input.0.as_os_str().as_bytes()).unwrap();
+    assert_eq!(unsafe { libc::mkfifo(name.as_ptr(), 0o600) }, 0);
+    assert_nonregular_input_refused(&input.0);
+    let alias = temp_wasm("fifo-alias", &[]);
+    fs::remove_file(&alias.0).unwrap();
+    std::os::unix::fs::symlink(&input.0, &alias.0).unwrap();
+    assert_nonregular_input_refused(&alias.0);
+}
+
+#[cfg(unix)]
+#[test]
+fn regular_file_symlink_is_admitted_without_changing_its_target() {
+    let target = temp_wasm("symlink-target", &clean_module());
+    let input = temp_wasm("symlink", &[]);
+    fs::remove_file(&input.0).unwrap();
+    std::os::unix::fs::symlink(&target.0, &input.0).unwrap();
+    for mode in ["--scan-wasm-link-facts", "--publish-wasm-link-facts"] {
+        let output = temp_wasm("symlink-output", b"preserve");
+        let mut command = Command::new(env!("CARGO_BIN_EXE_molt-wasm-facts"));
+        command.arg(mode).arg(&input.0);
+        if mode == "--publish-wasm-link-facts" {
+            command.arg("--output").arg(&output.0);
+        }
+        let result = command.output().expect("admit regular file alias");
+        assert!(
+            result.status.success(),
+            "{}",
+            String::from_utf8_lossy(&result.stdout)
+        );
+        let facts: Value = serde_json::from_slice(&result.stdout).expect("facts for regular alias");
+        assert_eq!(facts["ok"], true);
+        assert!(facts["facts"].is_object());
+    }
+    assert!(
+        fs::symlink_metadata(&input.0)
+            .expect("retained alias")
+            .is_symlink()
+    );
+    assert_eq!(fs::read(&target.0).expect("symlink target"), clean_module());
+}
+
+#[cfg(unix)]
+#[test]
+fn unix_character_device_is_not_a_regular_artifact() {
+    assert_nonregular_input_refused(std::path::Path::new("/dev/null"));
+}
+
+#[cfg(windows)]
+#[test]
+fn windows_character_device_is_not_a_regular_artifact() {
+    assert_nonregular_input_refused(std::path::Path::new("NUL"));
 }

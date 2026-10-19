@@ -29,6 +29,7 @@ import molt.cli as cli
 from molt.cli import backend_output_pipeline as cli_backend_output_pipeline
 from molt.cli import build_pipeline as cli_build_pipeline
 from molt.cli.rust_cpu_policy import RustCpuPolicy
+from molt.cli import wasm_facts_tool
 from tests.process_guard_common import install_module_view
 
 
@@ -314,6 +315,16 @@ def terminal_build(
     state.snapshot = snapshot
     state.parallel = parallel
     state.binding = binding
+    state.wasm_facts_scanner = tmp_path / "molt-wasm-facts"
+    state.wasm_facts_requests = []
+
+    def admit_facts(root, *, cargo_profile, env):
+        assert root == args["prepared_build_roots"].molt_root
+        assert cargo_profile == "release"
+        state.wasm_facts_requests.append(dict(env))
+        return state.wasm_facts_scanner
+
+    monkeypatch.setattr(wasm_facts_tool, "ensure_wasm_facts_tool", admit_facts)
     return state
 
 
@@ -493,7 +504,12 @@ def test_wasm_terminal_snapshot_follows_requested_snapshot_header(
     case.args["snapshot"] = header
     case.args["output_layout"] = replace(case.args["output_layout"], is_wasm=True)
 
-    def prepare(**_):
+    def prepare(**kwargs):
+        assert kwargs["wasm_facts_scanner"] == case.wasm_facts_scanner
+        assert (
+            kwargs["wasm_facts_scanner"]
+            != case.args["prepared_backend_setup"].backend_bin
+        )
         case.events.append("wasm_publish")
         case.phases["wasm_publish"] = case.clock.now
         case.clock.now += 5.0
@@ -548,6 +564,52 @@ def test_wasm_terminal_snapshot_follows_requested_snapshot_header(
         assert diagnostics["total_sec"] == (23.0 if header else 16.0)
         assert case.events[-3:] == ["analysis", "snapshot", "compiler_identity"]
     assert ("snapshot_header" in case.events) is header
+
+
+@pytest.mark.parametrize(
+    ("linked", "split"), [(False, False), (True, False), (False, True)]
+)
+def test_wasm_inspection_admission_is_lazy_and_failure_preserves_diagnostics(
+    terminal_build, monkeypatch, capsys, linked, split
+):
+    case = terminal_build
+    case.args["target"] = "wasm"
+    case.args["output_layout"] = replace(
+        case.args["output_layout"], is_wasm=True, linked=linked, split_runtime=split
+    )
+    case.args["prepared_backend_setup"].backend = "wasm"
+
+    def refuse(*_, **__):
+        if not (linked or split):
+            pytest.fail("raw WASM emission must not admit the inspection tool")
+        raise ValueError("inspection generation changed")
+
+    monkeypatch.setattr(wasm_facts_tool, "ensure_wasm_facts_tool", refuse)
+
+    def prepare(**kwargs):
+        assert kwargs["wasm_facts_scanner"] is None
+        return SimpleNamespace(
+            primary_output=kwargs["output_artifact"],
+            consumer_output=kwargs["output_artifact"],
+            bundle_root=None,
+            extra_fields={},
+            artifacts={},
+            success_messages=[],
+        ), None
+
+    monkeypatch.setattr(
+        cli_backend_output_pipeline._non_native_output,
+        "_prepare_non_native_build_result",
+        prepare,
+    )
+    result = cli_backend_output_pipeline._emit_backend_pipeline_outputs(**case.args)
+    assert result == (2 if linked or split else 0)
+    payload = json.loads(capsys.readouterr().out)
+    if linked or split:
+        assert payload["errors"] == [
+            "Cannot admit WASM inspection tool: inspection generation changed"
+        ]
+    assert case.snapshots
 
 
 @pytest.mark.parametrize(

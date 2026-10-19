@@ -839,6 +839,7 @@ def test_bundle_archives_are_byte_reproducible(
             arch="x86_64",
             compiler=worker,
             launcher=worker,
+            wasm_facts=worker,
             snapshot=release_source,
             runtime_cells=cells,
             pure_wheel=pure_wheel,
@@ -1282,6 +1283,7 @@ def _consumer_transport_receipt(candidate):
         "uninstall_verified": True,
         "compiler": candidate["compiler"],
         "launcher": candidate["launcher"],
+        "wasm_facts": candidate["wasm_facts"],
         "runtime": candidate["runtime"],
         "pip_proof": {
             "wheel": {key: wheel_record[key] for key in ("filename", "sha256", "size")},
@@ -1292,6 +1294,7 @@ def _consumer_transport_receipt(candidate):
             "source_sha256": first["source_sha256"],
             "cells": pip_products["cells"],
             "compiler_sha256": candidate["compiler"]["sha256"],
+            "wasm_facts_sha256": candidate["wasm_facts"]["sha256"],
         },
         "guest_cells": [
             dict(zip(LANE_FIELDS, values, strict=True)) for values in EXPECTED_LANES
@@ -1597,6 +1600,8 @@ def test_homebrew_projection_preserves_admissible_bundle_layout(tmp_path, monkey
     launcher = tmp_path / f"molt{suffix}"
     compiler.write_bytes(b"transport-compiler")
     launcher.write_bytes(b"transport-launcher")
+    facts = tmp_path / f"molt-wasm-facts{suffix}"
+    facts.write_bytes(b"transport-facts")
     cells = _runtime_cells(
         tmp_path / "cells", platform=platform, arch=arch, snapshot=snapshot
     )
@@ -1611,6 +1616,7 @@ def test_homebrew_projection_preserves_admissible_bundle_layout(tmp_path, monkey
         worker=None,
         compiler=compiler,
         launcher=launcher,
+        wasm_facts=facts,
         snapshot=snapshot,
         runtime_cells=cells,
     )
@@ -1885,6 +1891,16 @@ def test_candidate_admission_is_typed_and_never_publishes_malformed_proofs(
     payload = copy.deepcopy(valid)
     payload["native_build"]["artifacts"]["compiler"]["sha256"] = "d" * 64
     variants.append(payload)
+    for mutate in (
+        lambda p: p.pop("wasm_facts"),
+        lambda p: p["native_build"]["artifacts"].pop("wasm_facts"),
+        lambda p: p["wasm_facts"].update(sha256="f" * 64),
+        lambda p: p["reproducibility"].update(wasm_facts_sha256="f" * 64),
+        lambda p: p["reproducibility"].update(independent_wasm_facts_builds=True),
+    ):
+        payload = copy.deepcopy(valid)
+        mutate(payload)
+        variants.append(payload)
     for i, payload in enumerate(variants):
         candidate_path.write_text(json.dumps(payload), encoding="utf-8")
         output = tmp_path / f"invalid-{i}"
@@ -1893,7 +1909,7 @@ def test_candidate_admission_is_typed_and_never_publishes_malformed_proofs(
         assert not output.exists()
 
 
-@pytest.mark.parametrize("changed", ["worker", "source"])
+@pytest.mark.parametrize("changed", ["worker", "source", "wasm_facts"])
 def test_installed_consumer_rejects_extracted_native_receipt_substitution(
     tmp_path, monkeypatch, release_inputs, changed
 ):
@@ -1921,14 +1937,21 @@ def test_installed_consumer_rejects_extracted_native_receipt_substitution(
             source_file.write_bytes(data)
             record.update(sha256=hashlib.sha256(data).hexdigest(), size=len(data))
             manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+        elif changed == "wasm_facts" and destination.name == "bundle":
+            manifest_path = next(destination.rglob(compiler_payload.MANIFEST_NAME))
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            binary = manifest_path.parent.parent / manifest["wasm_facts"]["path"]
+            binary.write_bytes(binary.read_bytes() + b"substituted facts")
 
     monkeypatch.setattr(verify_consumer, "_extract", extract)
     monkeypatch.setattr(
         verify_consumer, "consumer_python_policy", lambda *_: ([], "unused")
     )
-    message = (
-        "Bundle worker identity" if changed == "worker" else "Bundle source inventory"
-    )
+    message = {
+        "worker": "Bundle worker identity",
+        "source": "Bundle source inventory",
+        "wasm_facts": "Installed WASM facts tool differs",
+    }[changed]
     # This is a fresh verifier output, not the prebuilt transport-only receipt.
     receipt = candidate_dir / "consumer-verification.json"
     receipt.unlink()

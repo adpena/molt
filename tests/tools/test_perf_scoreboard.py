@@ -1628,6 +1628,8 @@ def test_gather_quiescence_not_quiet_when_build_active(monkeypatch) -> None:
         "molt-backend.native_backend.exe",
         "molt-backend.wasm_backend",
         "molt-backend.llvm_native_backend.exe",
+        "molt-wasm-facts",
+        "molt-wasm-facts.host_tool.exe",
     ],
 )
 def test_feature_variant_compilers_are_build_processes(image) -> None:

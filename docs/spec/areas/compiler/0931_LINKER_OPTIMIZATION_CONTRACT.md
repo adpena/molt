@@ -83,6 +83,35 @@ in `runtime/molt-wasm-facts/src/{model,scan}.rs` are the schema and parsing
 authorities; schema changes must update the Rust producer and its exact consumer
 contract together.
 
+The `molt-wasm-facts` host executable exposes scanning and final publication;
+the codegen backend exposes neither mode and has no dependency on the facts
+package. This follows the separation of object inspection in
+[LLVM's llvm-readobj](https://www.llvm.org/docs/CommandGuide/llvm-readobj.html)
+and the library/CLI boundary of
+[wasm-tools](https://github.com/bytecodealliance/wasm-tools/blob/main/README.md).
+Source admission selects the closed `HostToolProduct` through the same Cargo
+plan, observed-input receipts and immutable executable-generation store as the
+compiler. A facts-only Rust edit changes tool/link identity without changing
+the codegen dependency closure. Installed archives and platform wheels carry
+the manifest-owned prebuilt tool; missing, damaged or wrong-host tools fail
+admission, with no source build or PATH discovery.
+
+Only linked and split WASM output admits this executable. Raw WASM, native and
+source-emitter output do not pay its admission cost. The scanner protocol and
+required validation work are unchanged. `molt-host-process` owns the shared
+host process-budget scalar/default/OS policy; guest runtimes do not depend on
+it. Artifact publication and opened-regular-file admission remain shared in
+`molt-artifact-publish`, including nonblocking FIFO/device refusal and existing
+regular-file symlink behavior. Every mapping closes before output replacement.
+
+The dependency trade is explicit: the publication crate gains one host
+consumer (reverse dependency count 2→3), facts loses the compiler consumer
+(2→1), and the guest resource crate remains at 3. The new host budget primitive
+has 9 host consumers and no guest-runtime edge; maximum workspace reverse
+dependency count remains 29. These are graph facts, not a whole-build speedup.
+The extraction does not change the independent preserved-mtime Cargo freshness
+frontier tracked by HF-300.
+
 `tools/wasm_link_fact_provider.py` owns the only Python boundary. It validates
 the exact schema-v7 JSON field set, freezes the decoded data, and projects
 linker-facing `WasmImportFact`, `WasmExportFact`, and `WasmLinkFacts` values.

@@ -21,6 +21,7 @@ from typing import Any
 
 from molt.exact_json import canonical_json_sha256, read_exact
 from molt.file_publication import is_link_like, resolve_owned_path
+from molt.host_tool_products import HostToolProduct
 from molt.portable_paths import (
     portable_path_component,
     portable_path_identity,
@@ -35,7 +36,7 @@ from molt.toolchain_identity import (
 )
 from molt.verified_subset import current_host_coordinate
 
-MANIFEST_SCHEMA = "molt.release-compiler-source.v5"
+MANIFEST_SCHEMA = "molt.release-compiler-source.v6"
 PRODUCTION_COMPILER_PROFILE = "release"
 PRODUCTION_COMPILER_FEATURES = (
     "llvm",
@@ -150,8 +151,8 @@ def validate_compiler_record(record: object) -> dict[str, Any]:
         or (record["platform"], record["arch"]) not in RUST_TARGET_BY_COORDINATE
     ):
         raise ValueError("invalid production compiler identity")
-    expected_name = (
-        "molt-backend.exe" if record["platform"] == "windows" else "molt-backend"
+    expected_name = HostToolProduct.BACKEND.value + (
+        ".exe" if record["platform"] == "windows" else ""
     )
     if record["path"] != f"bin/{expected_name}":
         raise ValueError("invalid production compiler executable path")
@@ -172,6 +173,27 @@ def validate_launcher_record(record: object) -> dict[str, Any]:
         != ("bin/molt.exe" if record["platform"] == "windows" else "bin/molt")
     ):
         raise ValueError("invalid production launcher identity")
+    return record
+
+
+def validate_wasm_facts_record(record: object) -> dict[str, Any]:
+    if (
+        not isinstance(record, dict)
+        or set(record) != {"path", "sha256", "size", "platform", "arch", "profile"}
+        or not _digest(record.get("sha256"))
+        or type(record.get("size")) is not int
+        or record["size"] <= 0
+        or record.get("profile") != PRODUCTION_COMPILER_PROFILE
+        or not isinstance(record.get("platform"), str)
+        or not isinstance(record.get("arch"), str)
+        or (record["platform"], record["arch"]) not in RUST_TARGET_BY_COORDINATE
+    ):
+        raise ValueError("invalid production WASM facts identity")
+    name = HostToolProduct.WASM_FACTS.value + (
+        ".exe" if record["platform"] == "windows" else ""
+    )
+    if record["path"] != f"bin/{name}":
+        raise ValueError("invalid production WASM facts identity")
     return record
 
 
@@ -412,12 +434,33 @@ class InstalledCompiler:
     source_sha: str
     record: dict[str, Any]
     launcher: dict[str, Any]
+    wasm_facts: dict[str, Any]
     files: tuple[dict[str, Any], ...]
     runtime: dict[str, Any]
 
     @property
     def binary(self) -> Path:
         return self.source_root.parent / self.record["path"]
+
+    @property
+    def wasm_facts_binary(self) -> Path:
+        return self.source_root.parent / self.wasm_facts["path"]
+
+    def verify_wasm_facts(self) -> dict[str, str | int]:
+        if current_host_coordinate() != (
+            self.wasm_facts["platform"],
+            self.wasm_facts["arch"],
+        ):
+            raise ValueError("Installed WASM facts tool does not match this host")
+        identity = stable_regular_file_content_identity(
+            resolve_owned_path(self.wasm_facts_binary),
+            label="installed WASM facts tool",
+        )
+        if any(identity[key] != self.wasm_facts[key] for key in ("sha256", "size")):
+            raise ValueError(
+                "Installed WASM facts tool differs from its release manifest"
+            )
+        return identity
 
     def verify_launcher(self) -> dict[str, str | int]:
         if current_host_coordinate() != (
@@ -528,7 +571,8 @@ def installed_compiler(source_root: Path) -> InstalledCompiler | None:
     )
     if (
         not isinstance(payload, dict)
-        or set(payload) != {"schema", "git", "files", "compiler", "launcher", "runtime"}
+        or set(payload)
+        != {"schema", "git", "files", "compiler", "launcher", "wasm_facts", "runtime"}
         or payload["schema"] != MANIFEST_SCHEMA
     ):
         raise ValueError("Invalid installed compiler manifest")
@@ -579,6 +623,12 @@ def installed_compiler(source_root: Path) -> InstalledCompiler | None:
         seen.add(identity)
         last = path
     compiler = validate_compiler_record(payload["compiler"])
+    wasm_facts = validate_wasm_facts_record(payload["wasm_facts"])
+    if (wasm_facts["platform"], wasm_facts["arch"]) != (
+        compiler["platform"],
+        compiler["arch"],
+    ):
+        raise ValueError("Installed WASM facts tool target differs from compiler")
     runtime = validate_runtime_inventory(
         payload["runtime"], platform=compiler["platform"], arch=compiler["arch"]
     )
@@ -589,6 +639,7 @@ def installed_compiler(source_root: Path) -> InstalledCompiler | None:
         git["commit"],
         compiler,
         validate_launcher_record(payload["launcher"]),
+        wasm_facts,
         tuple(files),
         runtime,
     )
