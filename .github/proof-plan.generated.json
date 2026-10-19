@@ -9315,6 +9315,7 @@
       "local.host-entrypoint-imports.pytest": "python -m pytest -q -n auto --molt-worker-memory-gb=0.75 tests/tools/test_import_file.py",
       "local.import-symbol-gate.0": "python tools/import_symbol_gate.py",
       "local.import-symbol-gate.pytest": "python -m pytest -q -n auto --molt-worker-memory-gb=1.75 tests/tools/test_import_symbol_gate.py",
+      "local.installed-compiler-distribution.pytest": "python -m pytest -q -n auto --molt-worker-memory-gb=2.5 tests/cli/test_installed_compiler.py tests/cli/test_installed_runtime.py tests/cli/test_installed_toolchain_rules.py tests/tools/test_release_installed_distribution.py tests/tools/test_release_native_build.py tests/tools/test_release_supply_chain.py",
       "local.intrinsic-registry.pytest": "python -m pytest -q -n auto --molt-worker-memory-gb=2.5 tests/test_gen_intrinsics.py tests/test_frontend_builtin_call_lowering.py::test_intrinsic_alias_preserves_declaration_and_canonical_executable tests/test_frontend_builtin_call_lowering.py::test_intrinsic_lowering_uses_isolated_python_package_without_runtime_sources tests/test_frontend_builtin_call_lowering.py::test_frontend_intrinsic_function_objects_use_runtime_default_authority tests/test_frontend_builtin_call_lowering.py::test_frontend_builtin_func_specs_are_wasm_manifest_backed tests/test_stdlib_intrinsic_registry.py tests/test_stdlib_inspect_coroutine_marking.py tests/cli/test_required_features_reachability.py tests/cli/test_wasm_runtime_exports.py tests/cli/test_cli_lowering_cache_tooling_scope.py::test_kept_analysis_and_intrinsic_edits_still_invalidate",
       "local.llvm-runtime-abi.0": "python tools/llvm_runtime_abi_audit.py --check",
       "local.llvm-runtime-abi.pytest": "python -m pytest -q -n auto --molt-worker-memory-gb=1.75 tests/test_llvm_runtime_abi_audit.py",
@@ -11069,6 +11070,43 @@
       },
       {
         "command_ids": [
+          "local.installed-compiler-distribution.pytest"
+        ],
+        "description": "Installed executable admission, provenance and complete bundle/wheel consumer projections move together.",
+        "gates": [],
+        "globs": [
+          "src/molt/compiler_distribution.py",
+          "src/molt/host_tool_products.py",
+          "src/molt/cli/wasm_facts_tool.py",
+          "tools/release/build_compiler.py",
+          "tools/release/native_build.py",
+          "tools/release/compiler_payload.py",
+          "tools/release/build_bundle.py",
+          "tools/release/platform_wheel.py",
+          "tools/release/release_authority.py",
+          "tools/release/verify_consumer.py",
+          "tests/cli/test_installed_compiler.py",
+          "tests/cli/test_installed_runtime.py",
+          "tests/cli/test_installed_toolchain_rules.py",
+          "tests/tools/test_release_installed_distribution.py",
+          "tests/tools/test_release_native_build.py",
+          "tests/tools/test_release_supply_chain.py"
+        ],
+        "name": "installed-compiler-distribution",
+        "pytest": [
+          "tests/cli/test_installed_compiler.py",
+          "tests/cli/test_installed_runtime.py",
+          "tests/cli/test_installed_toolchain_rules.py",
+          "tests/tools/test_release_installed_distribution.py",
+          "tests/tools/test_release_native_build.py",
+          "tests/tools/test_release_supply_chain.py"
+        ],
+        "toolchains": [
+          "python"
+        ]
+      },
+      {
+        "command_ids": [
           "local.browser-simd.pytest"
         ],
         "description": "Source-built browser SIMD, independent numerical oracles and the actual browser ABI consumer.",
@@ -12170,6 +12208,9 @@
         "python"
       ],
       "local.import-symbol-gate.pytest": [
+        "python"
+      ],
+      "local.installed-compiler-distribution.pytest": [
         "python"
       ],
       "local.intrinsic-registry.pytest": [

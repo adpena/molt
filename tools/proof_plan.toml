@@ -5409,6 +5409,38 @@ pytest = [
 ]
 
 [[rule]]
+name = "installed-compiler-distribution"
+toolchains = ["python"]
+description = "Installed executable admission, provenance and complete bundle/wheel consumer projections move together."
+globs = [
+  "src/molt/compiler_distribution.py",
+  "src/molt/host_tool_products.py",
+  "src/molt/cli/wasm_facts_tool.py",
+  "tools/release/build_compiler.py",
+  "tools/release/native_build.py",
+  "tools/release/compiler_payload.py",
+  "tools/release/build_bundle.py",
+  "tools/release/platform_wheel.py",
+  "tools/release/release_authority.py",
+  "tools/release/verify_consumer.py",
+  "tests/cli/test_installed_compiler.py",
+  "tests/cli/test_installed_runtime.py",
+  "tests/cli/test_installed_toolchain_rules.py",
+  "tests/tools/test_release_installed_distribution.py",
+  "tests/tools/test_release_native_build.py",
+  "tests/tools/test_release_supply_chain.py",
+]
+gates = []
+pytest = [
+  "tests/cli/test_installed_compiler.py",
+  "tests/cli/test_installed_runtime.py",
+  "tests/cli/test_installed_toolchain_rules.py",
+  "tests/tools/test_release_installed_distribution.py",
+  "tests/tools/test_release_native_build.py",
+  "tests/tools/test_release_supply_chain.py",
+]
+
+[[rule]]
 name = "browser-simd"
 toolchains = ["python", "rustc", "cargo", "node"]
 description = "Source-built browser SIMD, independent numerical oracles and the actual browser ABI consumer."
