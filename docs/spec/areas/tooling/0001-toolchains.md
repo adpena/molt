@@ -298,6 +298,26 @@ still requires upstream repair and cold concurrent-client qualification.
 Statistics, a hashed TCP port, or a private operational server do not close
 the general race.
 
+## Canonical LLVM SDK readiness
+
+`tools/bootstrap_llvm.py` validates the requested release, projects, targets,
+custody paths and numeric budgets, then checks an existing canonical SDK under
+the build lock. A complete attested prefix returns before CMake/Ninja selection,
+MSVC/ATL activation, source download/extraction, construction resource admission
+or default job sizing. Verification retains the same version, content,
+attestation and target requirements, including every explicitly requested target;
+a missing or invalid prefix proceeds to
+the existing build admission. `--check` retains its explicit full verification.
+
+The publisher rechecks readiness after obtaining its build lock, so a producer
+that finishes during source preparation prevents a second build. A cold miss
+can therefore pay two readiness checks; a warm hit pays one and performs no
+source preparation. This separates consuming an installed SDK from
+[LLVM's source-build prerequisites](https://llvm.org/docs/GettingStarted.html#requirements),
+with construction and installation still owned by the existing
+[CMake workflow](https://llvm.org/docs/CMake.html). These are development and
+packaging costs; emitted programs acquire no checks or dependencies.
+
 ## macOS
 - Install Xcode CLT: `xcode-select --install`
 - Homebrew recommended: `brew install llvm mlir cmake ninja pkg-config`

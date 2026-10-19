@@ -18,6 +18,7 @@ import uuid
 import platform
 
 import pytest
+from tests.executable_test_support import native_executable_name
 from tests.process_guard_common import start_owned_test_process
 
 from molt import disk_capacity
@@ -1388,6 +1389,237 @@ def test_bootstrap_check_uses_selected_tool_state_for_default_prefix(
     assert not selected.exists()
 
 
+@pytest.fixture
+def attested_canonical_llvm_prefix(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> bootstrap_llvm.LlvmManagedPaths:
+    from tests.test_llvm_toolchain import (
+        _mock_llvm_config,
+        _mock_tool_process_versions,
+        _write_complete_llvm_prefix,
+    )
+
+    # Share the verifier suite's SDK layout and process boundary. Verification,
+    # content hashing, custody selection and attestation publication stay real.
+    monkeypatch.setenv("MOLT_TARGET_ROOT", str(tmp_path / "selected tools"))
+    paths = managed_llvm_paths(ROOT)
+    _write_complete_llvm_prefix(paths.prefix)
+    _mock_tool_process_versions(monkeypatch)
+    targets = bootstrap_llvm.required_llvm_targets_for_host(ROOT)
+    _mock_llvm_config(paths.prefix, monkeypatch, targets=" ".join(targets))
+    monkeypatch.setattr(
+        "molt.platform_toolchain.select_darwin_toolchain",
+        lambda _env: SimpleNamespace(
+            environment=lambda: {
+                "DEVELOPER_DIR": str(tmp_path / "Developer"),
+                "SDKROOT": str(tmp_path / "MacOSX.sdk"),
+            }
+        ),
+    )
+    verification = bootstrap_llvm.verify_llvm_toolchain_prefix(
+        ROOT,
+        paths.prefix,
+        expected_targets=targets,
+        content_policy="full",
+    )
+    attestation = bootstrap_llvm.write_llvm_toolchain_attestation(
+        ROOT,
+        verification,
+        projects=load_llvm_architecture_contract(ROOT).required_projects,
+    )
+    assert json.loads(attestation.read_text(encoding="utf-8"))["custody"] == (
+        "canonical-managed-release"
+    )
+    return paths
+
+
+def _forbid_cold_bootstrap_prerequisites(monkeypatch: pytest.MonkeyPatch) -> None:
+    for name in (
+        "_default_llvm_jobs",
+        "_compatible_cmake",
+        "_required_build_tool",
+        "activate_msvc_environment",
+        "_require_windows_atl",
+        "_preflight_resources",
+        "_download",
+        "_safe_extract_tar_xz",
+        "_run",
+    ):
+        monkeypatch.setattr(
+            bootstrap_llvm,
+            name,
+            lambda *_args, _name=name, **_kwargs: pytest.fail(
+                f"verified canonical LLVM prefix reached cold prerequisite {_name}"
+            ),
+        )
+
+
+@pytest.mark.parametrize("system", ["Linux", "Darwin", "Windows"])
+def test_bootstrap_warm_canonical_prefix_skips_cold_prerequisites(
+    attested_canonical_llvm_prefix: bootstrap_llvm.LlvmManagedPaths,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    system: str,
+) -> None:
+    paths = attested_canonical_llvm_prefix
+    attestation = paths.prefix / ".molt-llvm-toolchain.json"
+    before = attestation.read_bytes()
+    install_module_view(
+        monkeypatch, "platform", platform, bootstrap_llvm, system=lambda: system
+    )
+    _forbid_cold_bootstrap_prerequisites(monkeypatch)
+
+    assert bootstrap_llvm.main([]) == 0
+
+    output = capsys.readouterr().out
+    assert f"MOLT_LLVM_PREFIX={paths.prefix}" in output
+    llvm_config = paths.prefix / "bin" / native_executable_name("llvm-config")
+    assert f"LLVM_CONFIG_PATH={llvm_config}" in output
+    assert attestation.read_bytes() == before
+    assert not paths.archive.exists()
+    assert not paths.source_root.exists()
+    assert not paths.build_dir.exists()
+
+
+@pytest.mark.parametrize(
+    "fault",
+    [
+        "missing-prefix",
+        "missing-attestation",
+        "malformed-attestation",
+        "tampered-attestation",
+        "content-drift",
+        "missing-requested-target",
+    ],
+)
+def test_bootstrap_invalid_canonical_prefix_keeps_cold_resource_admission(
+    attested_canonical_llvm_prefix: bootstrap_llvm.LlvmManagedPaths,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    fault: str,
+) -> None:
+    paths = attested_canonical_llvm_prefix
+    attestation = paths.prefix / ".molt-llvm-toolchain.json"
+    if fault == "missing-prefix":
+        paths.prefix.rename(paths.prefix.with_name("retained-sdk-generation"))
+    elif fault == "missing-attestation":
+        attestation.unlink()
+    elif fault == "malformed-attestation":
+        attestation.write_text("{\n", encoding="utf-8")
+    elif fault == "tampered-attestation":
+        payload = json.loads(attestation.read_text(encoding="utf-8"))
+        payload["architecture_contract_sha256"] = "0" * 64
+        attestation.write_text(json.dumps(payload), encoding="utf-8")
+    elif fault == "content-drift":
+        (paths.prefix / "include/llvm/Test.h").write_text(
+            "changed since attestation", encoding="utf-8"
+        )
+    monkeypatch.setattr(bootstrap_llvm, "_default_llvm_jobs", lambda: 1)
+    monkeypatch.setattr(bootstrap_llvm, "_compatible_cmake", lambda *_args: CMAKE_TOOL)
+    monkeypatch.setattr(
+        bootstrap_llvm, "_required_build_tool", lambda *_args: NINJA_TOOL
+    )
+    monkeypatch.setattr(
+        bootstrap_llvm,
+        "activate_msvc_environment",
+        lambda _env, **_kwargs: {"VSINSTALLDIR": str(paths.root / "Visual Studio")},
+    )
+    monkeypatch.setattr(bootstrap_llvm, "_require_windows_atl", lambda *_args: None)
+    observed = []
+
+    def no_capacity(
+        path: Path, *, required_bytes: int
+    ) -> disk_capacity.DiskCapacityProbe:
+        observed.append((path, required_bytes))
+        return disk_capacity.DiskCapacityProbe(path, path, 0, required_bytes)
+
+    monkeypatch.setattr(bootstrap_llvm, "probe_capacity", no_capacity)
+    monkeypatch.setattr(
+        bootstrap_llvm,
+        "_download",
+        lambda *_args, **_kwargs: pytest.fail(
+            "invalid SDK bypassed resource admission"
+        ),
+    )
+
+    argv = []
+    if fault == "missing-requested-target":
+        targets = (*bootstrap_llvm.required_llvm_targets_for_host(ROOT), "RISCV")
+        argv = ["--targets", ";".join(targets)]
+    with pytest.raises(SystemExit, match="only 0.0 GiB is available"):
+        bootstrap_llvm.main(argv)
+
+    assert observed == [(paths.root, 40 * 1024**3)]
+    assert "[bootstrap-llvm] installed" not in capsys.readouterr().out
+    assert not paths.archive.exists()
+    assert not paths.source_root.exists()
+    assert not paths.build_dir.exists()
+
+
+@pytest.mark.parametrize("mode", ["--check", "--reattest"])
+def test_bootstrap_existing_prefix_requires_every_requested_target(
+    attested_canonical_llvm_prefix: bootstrap_llvm.LlvmManagedPaths,
+    monkeypatch: pytest.MonkeyPatch,
+    mode: str,
+) -> None:
+    paths = attested_canonical_llvm_prefix
+    attestation = paths.prefix / ".molt-llvm-toolchain.json"
+    before = attestation.read_bytes()
+    _forbid_cold_bootstrap_prerequisites(monkeypatch)
+    targets = (*bootstrap_llvm.required_llvm_targets_for_host(ROOT), "RISCV")
+
+    with pytest.raises(bootstrap_llvm.LlvmToolchainConfigError, match="RISCV"):
+        bootstrap_llvm.main([mode, "--targets", ";".join(targets)])
+
+    assert attestation.read_bytes() == before
+
+
+@pytest.mark.parametrize(
+    ("option", "value", "diagnostic"),
+    [
+        ("--projects", "clang", "complete toolchain contract"),
+        ("--targets", "WebAssembly", "complete toolchain contract"),
+        ("--build-type", "Debug", "complete toolchain contract"),
+        ("--archive", "unexpected", "canonical managed archive is fixed"),
+        ("--source-root", "unexpected", "canonical managed source root is fixed"),
+        ("--build-dir", "unexpected", "canonical managed build directory is fixed"),
+        ("--required-free-gb", "-1", "invalid --required-free-gb"),
+        ("--required-free-gb", "nan", "invalid --required-free-gb"),
+        ("--required-memory-gb", "-1", "invalid --required-memory-gb"),
+        ("--required-memory-gb", "inf", "invalid --required-memory-gb"),
+        ("--jobs", "0", "--jobs must be a positive integer"),
+        ("--jobs", "-1", "--jobs must be a positive integer"),
+        (
+            "--development-source-sha256",
+            "0" * 64,
+            "cannot override a canonical release checksum",
+        ),
+    ],
+)
+def test_bootstrap_warm_canonical_prefix_refuses_malformed_request(
+    attested_canonical_llvm_prefix: bootstrap_llvm.LlvmManagedPaths,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    option: str,
+    value: str,
+    diagnostic: str,
+) -> None:
+    paths = attested_canonical_llvm_prefix
+    attestation = paths.prefix / ".molt-llvm-toolchain.json"
+    before = attestation.read_bytes()
+    _forbid_cold_bootstrap_prerequisites(monkeypatch)
+    if value == "unexpected":
+        value = str(tmp_path / value)
+
+    with pytest.raises(SystemExit, match=diagnostic):
+        bootstrap_llvm.main([f"{option}={value}"])
+
+    assert attestation.read_bytes() == before
+    assert not paths.archive.exists()
+    assert not paths.source_root.exists()
+    assert not paths.build_dir.exists()
+
+
 @pytest.mark.parametrize(
     "estimated", [0, 40 * 1024**3 - 1, 40 * 1024**3, OSError("capacity unavailable")]
 )
@@ -1422,8 +1654,9 @@ def test_resource_preflight_uses_native_capacity_at_llvm_budget(
 @pytest.mark.parametrize(
     "gib", [-1.0, float("nan"), float("inf"), -float("inf"), 1e308, 8589934592.0]
 )
-def test_llvm_capacity_budget_rejects_invalid_value_before_probe(
-    tmp_path, monkeypatch, gib
+@pytest.mark.parametrize("option", ["required-free-gb", "required-memory-gb"])
+def test_llvm_capacity_budgets_reject_invalid_value_before_probe(
+    tmp_path, monkeypatch, gib, option
 ):
     monkeypatch.setattr(
         bootstrap_llvm,
@@ -1432,10 +1665,10 @@ def test_llvm_capacity_budget_rejects_invalid_value_before_probe(
             "invalid LLVM budget reached capacity probe"
         ),
     )
-    with pytest.raises(SystemExit, match="invalid --required-free-gb"):
-        bootstrap_llvm._preflight_resources(
-            tmp_path, required_free_gb=gib, required_memory_gb=0
-        )
+    budgets = {"required_free_gb": 0, "required_memory_gb": 0}
+    budgets[option.replace("-", "_")] = gib
+    with pytest.raises(SystemExit, match=f"invalid --{option}"):
+        bootstrap_llvm._preflight_resources(tmp_path, **budgets)
 
 
 @pytest.mark.parametrize(
