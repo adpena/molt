@@ -65,6 +65,7 @@ from molt.cli.runtime_wasm_build_support import (
     _current_runtime_target_artifact,
     _reported_runtime_artifacts_from_cargo_stdout,
     _run_runtime_wasm_cargo_build,
+    _wasm_cargo_toolchain_input_paths,
     _wasm_runtime_staticlib_candidates,
     _wasm_runtime_wasm_candidates,
 )
@@ -241,11 +242,7 @@ def _publish_combined_runtime_wasm_target(
                 for name in ("CARGO_TARGET_DIR", "CARGO_BUILD_BUILD_DIR")
                 if plan.environment.get(name)
             ),
-            toolchain_roots=tuple(
-                item.identity.path
-                for custody in (plan.rust_resources, plan.link_resources)
-                for item in custody.files
-            ),
+            toolchain_roots=_wasm_cargo_toolchain_input_paths(plan),
             environment=plan.environment,
         )
         plan.verify()
