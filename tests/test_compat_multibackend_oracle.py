@@ -2084,7 +2084,7 @@ def test_operator_signal_stops_case_before_semantic_overlay_or_next_backend(
     assert result["reason_tag"] == "guard_interrupted"
     if backend == "cpython":
         assert native_contexts == []
-        assert all(not adapter.contexts for adapter in registry.values())
+        assert all(not registry[name].contexts for name in targets if name != "native")
         assert result["cpython_guard_signal"] == 15
     else:
         index = targets.index(backend)

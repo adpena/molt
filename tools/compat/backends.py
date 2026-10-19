@@ -328,8 +328,8 @@ class ItemBudgetExpired(RuntimeError):
 class ItemBudget:
     """One dispatch-pinned monotonic deadline, including queued/startup time.
 
-    It is plain typed worker data, never an environment variable. Recovery,
-    startup ping and subprocess fallback spend the same remaining time.
+    It is plain typed worker data, never an environment variable. Startup ping,
+    the selected build and guest execution spend the same remaining time.
     """
 
     policy: TimeoutPolicy
