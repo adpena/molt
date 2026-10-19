@@ -200,6 +200,27 @@ These are development-only costs and add no work to emitted programs.
 
 ---
 
+### 2.4 Declared toolchains before execution capture
+
+The proof plan declares providers; its shared projection owns their environment.
+The queue applies declared SDK availability before filtering and capturing the
+execution environment. Native LLVM, MLIR and TableGen receive the same verified
+SDK, while an external `llvm-config` keeps its distinct executable-search root.
+Compiler source and request working directory are separate inputs, including
+managed-install attestation for relative state-root selectors. The queue's WASI
+role selection preserves explicit external tools without requiring an unrelated
+SDK or selecting target linker/libc/CRT flags. The Cargo/runtime plan owns that
+C ABI. The generic command guard preserves the admitted
+environment and does no Cargo-feature parsing or SDK discovery.
+
+This follows [Bazel's declared toolchain dependencies](https://bazel.build/extending/toolchains)
+and respects [Cargo's explicit environment inputs](https://doc.rust-lang.org/cargo/reference/environment-variables.html).
+Availability groups declared tools by provider and verifies a selected native
+SDK once per projection; the guard does no second SDK discovery. Provisioning, exact tool
+capture and build-capacity admission retain their existing owners. This removes
+duplicate development-side work and adds no emitted-program work. Actual image
+custody and the complete release matrix remain under V1-01/V1-28.
+
 ## 3. The structural facts/mechanisms to build (each tied to the class it retires)
 
 ### FACT-A: The recompile-blast-radius ratchet (retires DX-1)

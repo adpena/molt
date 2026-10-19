@@ -561,6 +561,48 @@ def test_complete_prefix_verifier_and_attestation_share_one_contract(
     assert all(fact.sha256 for fact in full_verification.content_facts)
 
 
+def test_available_verifier_uses_request_cwd_for_managed_attestation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    request_cwd = tmp_path / "request"
+    controller_cwd = tmp_path / "controller"
+    controller_cwd.mkdir()
+    prefix = request_cwd / "tools" / "toolchains" / "llvm-22.1.8"
+    prefix.mkdir(parents=True)
+    config = request_cwd / "external" / "llvm-config-22"
+    _write(config, "external config")
+    environment = {"MOLT_TARGET_ROOT": "tools", "LLVM_CONFIG_PATH": str(config)}
+    monkeypatch.chdir(controller_cwd)
+    verification = object()
+
+    def discover(root, *, environ, cwd, probe_timeout):
+        assert root == ROOT
+        assert environ == environment
+        assert cwd == request_cwd
+        assert probe_timeout is None
+        return SimpleNamespace(prefix=prefix, llvm_config=config)
+
+    def verify(root, selected_prefix, **kwargs):
+        assert root == ROOT
+        assert selected_prefix == prefix
+        assert kwargs["require_attestation"] is True
+        assert kwargs["llvm_config_override"] == config
+        assert kwargs["environ"] == environment
+        assert kwargs["cwd"] == request_cwd
+        return verification
+
+    monkeypatch.setattr(llvm_toolchain, "discover_llvm_toolchain", discover)
+    monkeypatch.setattr(llvm_toolchain, "verify_llvm_toolchain_prefix", verify)
+
+    assert (
+        llvm_toolchain.verify_available_llvm_toolchain(
+            ROOT, environ=environment, cwd=request_cwd
+        )
+        is verification
+    )
+    assert not (controller_cwd / "tools").exists()
+
+
 def test_prefix_verifier_preserves_external_llvm_config_identity(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

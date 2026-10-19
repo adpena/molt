@@ -1911,15 +1911,16 @@ def _llvm_attestation_custody(
     release: LlvmRelease | None,
     *,
     environ: Mapping[str, str] | None = None,
+    cwd: Path | None = None,
 ) -> str:
     if release is None:
         return "development-noncanonical"
     from molt.dx import selected_toolchain_contains
 
-    if not selected_toolchain_contains(root, prefix, environ):
+    if not selected_toolchain_contains(root, prefix, environ, cwd=cwd):
         return "manifest-release-noncanonical-prefix"
     managed = managed_llvm_paths(
-        root, version=release.version, environ=environ
+        root, version=release.version, environ=environ, cwd=cwd
     ).prefix.resolve()
     return (
         "canonical-managed-release"
@@ -1999,11 +2000,12 @@ def verify_llvm_toolchain_prefix(
     llvm_config_override: Path | None = None,
     content_policy: Literal["cached", "full"] = "cached",
     environ: Mapping[str, str] | None = None,
+    cwd: Path | None = None,
     probe_timeout: Callable[[float], float] | None = None,
 ) -> LlvmPrefixVerification:
     """Verify the complete compiler/linker/MLIR prefix consumed by Molt."""
 
-    resolved = _normalized_prefix(prefix, environ=environ)
+    resolved = _normalized_prefix(prefix, environ=environ, cwd=cwd)
     pin = required_llvm_backend_pin(root)
     if pin is None:
         raise LlvmToolchainConfigError(
@@ -2011,7 +2013,7 @@ def verify_llvm_toolchain_prefix(
         )
     contract = load_llvm_architecture_contract(root)
     llvm_config = (
-        _normalized_prefix(llvm_config_override, environ=environ)
+        _normalized_prefix(llvm_config_override, environ=environ, cwd=cwd)
         if llvm_config_override is not None
         else llvm_config_executable(resolved)
     )
@@ -2026,7 +2028,7 @@ def verify_llvm_toolchain_prefix(
     release = llvm_release(expected_version, root)
     canonical_contract = (
         require_attestation
-        or _llvm_attestation_custody(root, resolved, release, environ=environ)
+        or _llvm_attestation_custody(root, resolved, release, environ=environ, cwd=cwd)
         == "canonical-managed-release"
     )
     actual_version = _run_llvm_config(
@@ -2175,7 +2177,7 @@ def verify_llvm_toolchain_prefix(
             "link_probe": list(link_probe),
             "release": asdict(release) if release is not None else None,
             "custody": _llvm_attestation_custody(
-                root, resolved, release, environ=environ
+                root, resolved, release, environ=environ, cwd=cwd
             ),
             "build_config": {
                 "projects": sorted(contract.required_projects),
@@ -2497,13 +2499,14 @@ def verify_available_llvm_toolchain(
     root: Path,
     *,
     environ: dict[str, str] | None = None,
+    cwd: Path | None = None,
     content_policy: Literal["cached", "full"] = "cached",
     probe_timeout: Callable[[float], float] | None = None,
 ) -> LlvmPrefixVerification | None:
     """Discover and verify the complete host LLVM/MLIR/LLD/Polly SDK."""
 
     discovery = discover_llvm_toolchain(
-        root, environ=environ, probe_timeout=probe_timeout
+        root, environ=environ, cwd=cwd, probe_timeout=probe_timeout
     )
     if discovery is None:
         return None
@@ -2511,7 +2514,9 @@ def verify_available_llvm_toolchain(
     assert pin is not None
     release = llvm_release(pin.default_release, root)
     managed = (
-        _llvm_attestation_custody(root, discovery.prefix, release, environ=environ)
+        _llvm_attestation_custody(
+            root, discovery.prefix, release, environ=environ, cwd=cwd
+        )
         == "canonical-managed-release"
     )
     return verify_llvm_toolchain_prefix(
@@ -2523,6 +2528,7 @@ def verify_available_llvm_toolchain(
         llvm_config_override=discovery.llvm_config,
         content_policy=content_policy,
         environ=environ,
+        cwd=cwd,
         probe_timeout=probe_timeout,
     )
 

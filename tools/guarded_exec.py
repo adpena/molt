@@ -20,14 +20,9 @@ from tools import harness_memory_guard  # noqa: E402
 
 
 ROOT = Path(__file__).resolve().parents[1]
-SRC = ROOT / "src"
 
 
 from molt.cargo_execution_policy import admit_cargo_build  # noqa: E402
-from molt.llvm_toolchain import (  # noqa: E402
-    LlvmToolchainConfigError,
-    mlir_toolchain_environment,
-)
 
 
 def _timeout_from_env(name: str | None, env: Mapping[str, str]) -> float | None:
@@ -41,87 +36,6 @@ def _timeout_from_env(name: str | None, env: Mapping[str, str]) -> float | None:
     except ValueError:
         return None
     return parsed if parsed > 0 else None
-
-
-def _cargo_args(command: list[str]) -> list[str] | None:
-    if not command:
-        return None
-    exe = Path(command[0]).name.lower()
-    if exe in {"cargo", "cargo.exe"}:
-        return command[1:]
-    return None
-
-
-def _cargo_args_before_passthrough(args: list[str]) -> list[str]:
-    try:
-        stop = args.index("--")
-    except ValueError:
-        return args
-    return args[:stop]
-
-
-def _cargo_packages(args: list[str]) -> set[str]:
-    packages: set[str] = set()
-    scan = _cargo_args_before_passthrough(args)
-    i = 0
-    while i < len(scan):
-        arg = scan[i]
-        if arg in {"-p", "--package"}:
-            if i + 1 < len(scan):
-                packages.add(scan[i + 1])
-                i += 2
-                continue
-        elif arg.startswith("--package="):
-            packages.add(arg.split("=", 1)[1])
-        elif arg.startswith("-p") and len(arg) > 2:
-            packages.add(arg[2:])
-        i += 1
-    return packages
-
-
-def _cargo_feature_tokens(args: list[str]) -> set[str]:
-    features: set[str] = set()
-    scan = _cargo_args_before_passthrough(args)
-    i = 0
-    while i < len(scan):
-        arg = scan[i]
-        if arg == "--all-features":
-            features.add("*")
-        elif arg in {"--features", "-F"}:
-            if i + 1 < len(scan):
-                features.update(_split_feature_arg(scan[i + 1]))
-                i += 2
-                continue
-        elif arg.startswith("--features="):
-            features.update(_split_feature_arg(arg.split("=", 1)[1]))
-        i += 1
-    return features
-
-
-def _split_feature_arg(raw: str) -> set[str]:
-    return {part for part in raw.replace(",", " ").split() if part}
-
-
-def _cargo_requests_backend_llvm(command: list[str]) -> bool:
-    args = _cargo_args(command)
-    if args is None:
-        return False
-    packages = _cargo_packages(args)
-    if packages and "molt-backend" not in packages:
-        return False
-    features = _cargo_feature_tokens(args)
-    return "*" in features or "llvm" in features
-
-
-def _project_toolchain_environment(
-    command: list[str], env: Mapping[str, str]
-) -> tuple[dict[str, str], str | None]:
-    if not _cargo_requests_backend_llvm(command):
-        return dict(env), None
-    try:
-        return mlir_toolchain_environment(ROOT, environ=dict(env)), None
-    except LlvmToolchainConfigError as exc:
-        return dict(env), str(exc)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -147,14 +61,6 @@ def main(argv: list[str] | None = None) -> int:
         parser.error("command is required after --")
 
     env = harness_memory_guard.canonical_harness_env(os.environ, repo_root=ROOT)
-    env, preflight_error = _project_toolchain_environment(command, env)
-    if preflight_error is not None:
-        print(
-            "guarded_exec preflight: backend LLVM toolchain is not ready.",
-            file=sys.stderr,
-        )
-        print(preflight_error, file=sys.stderr)
-        return 2
     try:
         admit_cargo_build(command, cwd=args.cwd, env=env)
     except ValueError as exc:  # DiskCapacityError, or an inconsistent target

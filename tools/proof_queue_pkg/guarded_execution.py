@@ -178,36 +178,13 @@ def _supervisor_build_environment(
     return build_env
 
 
-LLVM_RELEASE_MANIFEST = "config/llvm_toolchain_releases.toml"
-
-
-def llvm_family_toolchains(plan: "proof_plan.ProofPlan") -> frozenset[str]:
-    """Toolchain policies whose setup evidence is the LLVM release manifest."""
-    names: set[str] = set()
-    for policy in plan.toolchain_policies:
-        evidence = policy.data.get("setup_evidence")
-        if isinstance(evidence, list) and any(
-            isinstance(item, str) and item.startswith(LLVM_RELEASE_MANIFEST + "::")
-            for item in evidence
-        ):
-            names.add(policy.name)
-    return frozenset(names)
-
-
-TOOL_RELEASES_MANIFEST = "config/tool_releases.toml"
-
-
 def tool_release_toolchains(plan: "proof_plan.ProofPlan") -> frozenset[str]:
-    """Toolchain policies whose setup evidence is the pinned tool-release manifest."""
-    names: set[str] = set()
-    for policy in plan.toolchain_policies:
-        evidence = policy.data.get("setup_evidence")
-        if isinstance(evidence, list) and any(
-            isinstance(item, str) and item.startswith(TOOL_RELEASES_MANIFEST + "::")
-            for item in evidence
-        ):
-            names.add(policy.name)
-    return frozenset(names)
+    """Policies whose declared provider owns pinned-release provisioning."""
+    return frozenset(
+        policy.name
+        for policy in plan.toolchain_policies
+        if policy.projection == "tool-release"
+    )
 
 
 def prefer_tool_release_prefixes(
@@ -249,52 +226,45 @@ def prefer_tool_release_prefixes(
     return resolved, prefixes
 
 
-def prefer_canonical_llvm_prefix(
+def project_declared_sdk_environment(
     env: Mapping[str, str], toolchains: object, *, cwd: Path
-) -> tuple[dict[str, str], str | None]:
-    """Select declared SDK WASM roles and the independent native LLVM prefix.
+) -> dict[str, str]:
+    """Project declared SDK availability before execution identity is captured.
 
-    Native toolchains are located through the execution PATH, so an ambient
-    system LLVM (a different point release) used to shadow the canonical SDK
-    that molt.llvm_toolchain discovers under the checkout custody root and the
-    proof then failed closed on the version policy. The discovery authority is
-    the same one `molt doctor` reports; without a native SDK, PATH is unchanged
-    and the native policy check still fails closed. A declared WASM role must
-    independently resolve its SDK entrypoint before capture; lookup never
-    provisions either SDK.
+    The plan owns provider selection and the SDK authorities own every projected
+    variable. WASM tool roles retain explicit external-tool selection; a role
+    does not select a target C ABI. Pinned release provisioning is independent.
     """
-    resolved = dict(env)
     declared = (
         {str(name) for name in toolchains} if isinstance(toolchains, list) else set()
     )
-    llvm_tools = declared & llvm_family_toolchains(proof_plan.ProofPlan.load())
-    if not llvm_tools:
-        return resolved, None
-    from molt.llvm_toolchain import discover_llvm_toolchain, resolve_wasi_sdk_tool
+    plan = proof_plan.ProofPlan.load()
+    selected = tuple(
+        policy for policy in plan.toolchain_policies if policy.name in declared
+    )
+    resolved = dict(env)
+    if any(
+        policy.projection == "wasi-sdk" and policy.data.get("executable") == "wasm-ld"
+        for policy in selected
+    ):
+        from molt.llvm_toolchain import resolve_wasi_sdk_tool
 
-    if "wasm-ld" in llvm_tools:
-        # Select and later attest the real SDK entrypoint. Never copy it into a
-        # PATH lane or promote the WebAssembly-only SDK's native-looking tools.
         resolved["MOLT_WASM_LD"] = str(
             resolve_wasi_sdk_tool(state.ROOT, "wasm-ld", environ=resolved, cwd=cwd)
         )
-    if not llvm_tools - {"wasm-ld"}:
-        return resolved, None
-
-    discovery = discover_llvm_toolchain(state.ROOT, environ=dict(resolved), cwd=cwd)
-    if discovery is None:
-        return resolved, None
-    if "llvm-sdk" in declared:
-        resolved["LLVM_CONFIG_PATH"] = str(discovery.llvm_config)
-    bin_dir = str((Path(discovery.prefix) / "bin").resolve())
-    entries = [entry for entry in resolved.get("PATH", "").split(os.pathsep) if entry]
-    if not entries or os.path.normcase(entries[0]) != os.path.normcase(bin_dir):
-        entries = [
-            bin_dir,
-            *[e for e in entries if os.path.normcase(e) != os.path.normcase(bin_dir)],
-        ]
-    resolved["PATH"] = os.pathsep.join(entries)
-    return resolved, str(discovery.prefix)
+    names = tuple(policy.name for policy in selected if policy.projection == "llvm-sdk")
+    if not names:
+        return resolved
+    projection = proof_plan.project_toolchains(
+        plan.toolchain_policies,
+        names,
+        environ=resolved,
+        root=state.ROOT,
+        cwd=cwd,
+    )
+    if projection.missing:
+        raise ValueError(proof_plan._not_provisioned(projection.missing))
+    return {**resolved, **projection.delta}
 
 
 def execute_guarded_request(request_path: Path) -> int:
@@ -425,10 +395,10 @@ def execute_guarded_request(request_path: Path) -> int:
         inherited_env[supervisor.PROOF_SCRATCH_ROOT_ENV] = str(
             run_scratch.resolve(strict=True)
         )
-        inherited_env, _llvm_prefix = prefer_canonical_llvm_prefix(
+        inherited_env, _tool_release_prefixes = prefer_tool_release_prefixes(
             inherited_env, envelope.get("toolchains", []), cwd=cwd
         )
-        inherited_env, _tool_release_prefixes = prefer_tool_release_prefixes(
+        inherited_env = project_declared_sdk_environment(
             inherited_env, envelope.get("toolchains", []), cwd=cwd
         )
         canonical_env = dict(command_identity.CANONICAL_EXECUTION_ENV)
