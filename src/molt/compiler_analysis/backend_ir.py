@@ -16,7 +16,7 @@ from molt.frontend.lowering import op_kinds_generated as op_kind_facts
 from molt.exact_json import string_keyed_mapping
 
 BACKEND_IR_BINARY_IMAGE_ANALYSIS_CACHE_KEY_SCHEMA = (
-    "backend-ir-binary-image-analysis-cache-key-v2"
+    "backend-ir-binary-image-analysis-cache-key-v3"
 )
 
 
@@ -300,16 +300,6 @@ def backend_ir_binary_image_analysis_authority_hash() -> str:
             "local_only_operand_kinds": _sorted_strings(
                 op_kind_facts.BINARY_IMAGE_LOCAL_ONLY_OPERAND_KINDS
             ),
-        }
-    )
-
-
-def backend_ir_binary_image_analysis_cache_key(ir: Mapping[str, Any]) -> str:
-    return stable_payload_hash(
-        {
-            "schema": BACKEND_IR_BINARY_IMAGE_ANALYSIS_CACHE_KEY_SCHEMA,
-            "authority": backend_ir_binary_image_analysis_authority_hash(),
-            "ir": ir,
         }
     )
 

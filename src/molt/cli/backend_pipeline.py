@@ -28,6 +28,7 @@ from molt.cli.backend_execution import _write_backend_ir_lease
 from molt.cli.command_runtime import _run_subprocess_captured_to_tempfiles
 from molt.cli.build_diagnostics import _emit_build_diagnostics_for_result
 from molt.cli.config_resolution import DEFAULT_STDLIB_PROFILE, ENTRY_OVERRIDE_ENV
+from molt.cli.cache_keys import FunctionDigests
 from molt.cli.external_native import _external_native_artifact_output_custody_error
 from molt.cli.models import (
     BuildProfile,
@@ -182,6 +183,7 @@ def _run_backend_pipeline(
         return return_after_build_diagnostics(prepared_backend_ir_error)
     assert prepared_backend_ir is not None
     ir = prepared_backend_ir.ir
+    function_digests = FunctionDigests(prepared_backend_ir.function_digest_seeds)
     required_link_features = prepared_backend_ir.required_link_features
     app_export_contract_path: Path | None = None
     if prepared_backend_ir.module_registry is not None and artifacts_root is not None:
@@ -236,6 +238,7 @@ def _run_backend_pipeline(
             _backend_ir_analysis_cache._cached_backend_ir_binary_image_analysis_payload(
                 project_root=prepared_build_roots.project_root,
                 ir=ir,
+                function_digests=function_digests,
             )
         )
         record_binary_image_analysis(
@@ -326,7 +329,7 @@ def _run_backend_pipeline(
                 warnings=prepared_build_preamble.warnings,
                 cache=cache,
                 ir=ir,
-                function_digest_seeds=prepared_backend_ir.function_digest_seeds,
+                function_digests=function_digests,
                 entry_module=resolved_build_entry.entry_module,
                 module_graph_metadata=prepared_frontend_run_ticket.frontend_layer_execution_context.module_graph_metadata,
                 target_python=prepared_build_config.target_python,

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from molt.cli.cache_keys import FunctionDigests
+
 import hashlib
 import inspect
 from pathlib import Path
@@ -505,6 +507,7 @@ def test_callable_dispatch_and_all_cache_tiers_are_operation_owned(
 
     def cache_for(binding):
         return backend_cache_setup._prepare_backend_cache_setup(
+            function_digests=FunctionDigests(),
             wasm_layout=None,
             backend_bin=backend,
             cache_enabled=True,
