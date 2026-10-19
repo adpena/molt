@@ -808,6 +808,7 @@ def test_compiler_runtime_partition_preserves_disjoint_test_and_tool_ownership()
         "zlib-rs@0.6.8",
     }
     assert not test_packages(core) & test_packages(complement)
+    assert "molt-wasm-facts" in test_packages(complement)
     assert core.dependencies == complement.dependencies == ()
     assert {"regex::", "text_storage::"} <= set(core.argv[core.argv.index("--") + 1 :])
     assert set(core.toolchains) == {"rustc", "cargo", "node", "wasm-ld"}
@@ -836,6 +837,7 @@ def test_compiler_runtime_partition_preserves_disjoint_test_and_tool_ownership()
         "basic",
         "native_extern_linkage",
         "rust_transpiler_preview",
+        "wasm_link_facts_cli",
     }
     for command in (core, complement):
         assert "--nocapture" in command.argv[command.argv.index("--") + 1 :]
@@ -2255,6 +2257,7 @@ def test_wasm_lifecycle_consumers_are_enrolled_with_required_node() -> None:
     startup = rows["wasm.test.startup-lifecycle"]
     assert set(startup.argv[6:]) == {
         "tests/test_wasm_startup_failures.py",
+        "tests/test_wasm_optimization_imported_memory.py",
         "tests/test_generate_worker.py",
         "tests/test_browser_asset_closure.py",
         "tests/test_wasm_reserved_callable_arity.py",
@@ -2266,7 +2269,9 @@ def test_wasm_lifecycle_consumers_are_enrolled_with_required_node() -> None:
         "tests/test_falcon_ocr_prompt_contract.py",
     }
     assert {"pr", "main"} <= set(startup.data["tiers"])
-    assert {"node", "browser-acorn"} <= set(PLAN.required_toolchains(startup))
+    assert {"node", "browser-acorn", "wasm-opt"} <= set(
+        PLAN.required_toolchains(startup)
+    )
     for receiver in (
         "tests/test_driver_cloudflare_verify.py",
         "tests/test_driver_cloudflare_worker.py",
