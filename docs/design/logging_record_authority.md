@@ -43,7 +43,8 @@ calls. A logging format no longer enters a second record/formatter state owner
 or queries its registries. The required message conversion occurs when requested,
 so unused messages cause no eager `str` callback.
 
-The `$` style consumes the shared `string.Template` lexical authority. One Rust
+The `$` style follows [CPython's Template protocol](https://github.com/python/cpython/blob/v3.12.13/Lib/string.py)
+through the shared `string.Template` lexical authority. One Rust
 token iterator serves substitution, validation and ordered identifier discovery.
 The intrinsic manifest declares its four fields: literal text, optional name,
 optional original spelling and optional invalid-character offset. Syntax failure
@@ -71,7 +72,7 @@ An advisory Linux/AArch64 development-profile probe at `f91d0cf42` and
 `fb7a4c9b3` constructs 20,000 records, retrieves their unchanged messages and
 formats them. Three alternating executions of each retained binary, with an
 empty guest PATH and Python environment selectors removed, produce these median
-costs. The CPython column uses 3.12.13 on the same host.
+costs. The CPython column uses 3.12.15 on the same host.
 
 | Operation | Previous Molt, µs | Unified Molt, µs | CPython, µs |
 | --- | ---: | ---: | ---: |

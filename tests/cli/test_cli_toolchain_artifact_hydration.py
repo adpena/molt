@@ -47,6 +47,7 @@ from tests.runtime_build_identity_helper import (
 from molt.cli import artifact_state as cli_artifact_state
 from molt.cli import runtime_paths as cli_runtime_paths
 from molt.cli import runtime_fingerprints as cli_runtime_fingerprints
+from molt.wasi_sdk_identity import wasi_c_abi_projection
 
 _FAKE_STATICLIB = static_archive_bytes(b"fake-staticlib")
 
@@ -98,9 +99,62 @@ def _cargo_runtime_artifact_stdout(path: Path) -> bytes:
     ).encode("utf-8")
 
 
-def _cargo_cpython_abi_artifact_stdout(path: Path, *, root: Path, environment) -> bytes:
-    return runtime_cargo_stdout(
+def _cargo_wasi_declared_inputs_stdout(
+    stdout: str,
+    *,
+    root: Path,
+    output: Path,
+    environment,
+    undeclared_sdk_sibling: bool = False,
+) -> str:
+    """Represent the Rust C-ABI declarations in Cargo build-script metadata."""
+    wasi = wasi_c_abi_projection(environment)
+    assert wasi is not None
+    # The SDK must be external to the source root: otherwise even an omitted
+    # declaration is correctly admitted as a repository source by the reader.
+    assert not wasi.sdk.resolve().is_relative_to(root.resolve())
+    assert not root.resolve().is_relative_to(wasi.sdk.resolve())
+    # runtime/build_support/wasi_sysroot.rs declares all five members and the
+    # include directory. This fixture does not ask the publication helper which
+    # paths it intends to admit: omitting any declaration must fail the reader.
+    paths = [path for _role, path, _size, _digest in wasi.files]
+    assert len(paths) == 5
+    paths.append(wasi.include)
+    if undeclared_sdk_sibling:
+        sibling = wasi.sdk / "VERSION"
+        assert sibling.is_file()
+        paths.append(sibling)
+    out_dir = output.parent / "build-input-fixture" / "out"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    (out_dir.parent / "output").write_text(
+        "".join(f"cargo:rerun-if-changed={path}\n" for path in paths),
+        encoding="utf-8",
+    )
+    messages = [json.loads(line) for line in stdout.split("\n") if line]
+    messages.insert(
+        -1,
+        {
+            "reason": "build-script-executed",
+            "package_id": messages[0]["package_id"],
+            "out_dir": os.fspath(out_dir),
+            "env": [],
+        },
+    )
+    return "".join(json.dumps(message) + "\n" for message in messages)
+
+
+def _cargo_cpython_abi_artifact_stdout(
+    path: Path, *, root: Path, environment, undeclared_sdk_sibling: bool = False
+) -> bytes:
+    stdout = runtime_cargo_stdout(
         root, (path,), environment, package="molt-lang-cpython-abi"
+    )
+    return _cargo_wasi_declared_inputs_stdout(
+        stdout,
+        root=root,
+        output=path,
+        environment=environment,
+        undeclared_sdk_sibling=undeclared_sdk_sibling,
     ).encode("utf-8")
 
 
@@ -396,17 +450,23 @@ def test_runtime_wasm_cargo_build_preserves_staticlibs_and_uses_reported_staticl
     assert reported.read_bytes() == b"new-staticlib"
 
 
-@pytest.mark.parametrize("report_artifact", [True, False])
+@pytest.mark.parametrize(
+    "report_artifact,undeclared_sdk_sibling",
+    [(True, False), (False, False), (True, True)],
+)
 def test_cpython_abi_build_requires_and_fingerprints_only_reported_staticlib(
     runtime_fixture_root: RuntimeFixtureRoot,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     report_artifact: bool,
+    undeclared_sdk_sibling: bool,
 ) -> None:
-    source = tmp_path / "runtime/molt-cpython-abi/src/lib.rs"
+    root = tmp_path / "repo"
+    root.mkdir()
+    source = root / "runtime/molt-cpython-abi/src/lib.rs"
     source.parent.mkdir(parents=True)
     source.write_text("pub fn provider() {}\n", encoding="utf-8")
-    target_root = tmp_path / "target"
+    target_root = root / "target"
     profile_dir = cli_runtime_paths._cargo_profile_dir("dev-fast")
     primary = RUNTIME_WASM_BUILD_SUPPORT._wasm_cpython_abi_staticlib_path(
         target_root, profile_dir
@@ -421,6 +481,10 @@ def test_cpython_abi_build_requires_and_fingerprints_only_reported_staticlib(
     ):
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_bytes(payload)
+    products_before = {
+        path: (path.read_bytes(), path.stat().st_mtime_ns)
+        for path in (primary, reported)
+    }
 
     cargo_calls = []
     monkeypatch.setenv("MOLT_TEST_RUNTIME_INPUT", "first")
@@ -431,7 +495,10 @@ def test_cpython_abi_build_requires_and_fingerprints_only_reported_staticlib(
         cargo_calls.append(list(cmd))
         stdout = (
             _cargo_cpython_abi_artifact_stdout(
-                reported, root=tmp_path, environment=kwargs["env"]
+                reported,
+                root=root,
+                environment=kwargs["env"],
+                undeclared_sdk_sibling=undeclared_sdk_sibling,
             )
             if report_artifact
             else b'{"reason":"build-finished","success":true}\n'
@@ -442,7 +509,7 @@ def test_cpython_abi_build_requires_and_fingerprints_only_reported_staticlib(
         cargo_profile="dev-fast", target_triple="wasm32-wasip1"
     )
     monkeypatch.setenv("CARGO_TARGET_DIR", str(target_root))
-    state_root = RUNTIME_WASM_BUILD_SUPPORT._build_state_root(tmp_path)
+    state_root = RUNTIME_WASM_BUILD_SUPPORT._build_state_root(root)
     monkeypatch.setattr(
         RUNTIME_WASM_BUILD_SUPPORT,
         "resolve_wasm_cpython_abi_build_identity",
@@ -459,7 +526,7 @@ def test_cpython_abi_build_requires_and_fingerprints_only_reported_staticlib(
         lambda: {
             "CARGO_TARGET_DIR": str(target_root),
             "MOLT_BUILD_PYTHON": sys.executable,
-            "MOLT_WASI_SYSROOT": str(tmp_path / "sysroot"),
+            "MOLT_WASI_SYSROOT": str(root / "sysroot"),
             "MOLT_TEST_RUNTIME_INPUT": os.environ["MOLT_TEST_RUNTIME_INPUT"],
         },
     )
@@ -470,13 +537,21 @@ def test_cpython_abi_build_requires_and_fingerprints_only_reported_staticlib(
         RUNTIME_WASM_BUILD_SUPPORT, "_run_subprocess_captured_to_tempfiles", fake_run
     )
 
+    runtime_state = _RuntimeArtifactState()
     provider = RUNTIME_WASM_BUILD_SUPPORT._ensure_wasm_cpython_abi_staticlib(
-        project_root=tmp_path,
+        project_root=root,
         json_output=True,
         cargo_profile="dev-fast",
         cargo_timeout=1.0,
+        runtime_state=runtime_state,
     )
-    assert provider == (reported if report_artifact else None)
+    published = report_artifact and not undeclared_sdk_sibling
+    assert provider == (reported if published else None)
+    if undeclared_sdk_sibling:
+        failure = runtime_state.runtime_wasm_build_failure
+        assert failure is not None
+        assert failure.stage == "cpython-abi-cargo-input-observation"
+        assert "outside" in failure.summary and "VERSION" in failure.summary
     assert primary.read_bytes() == b"stale-primary"
     reported_fp = cli_artifact_state._runtime_target_fingerprint_path(
         state_root,
@@ -490,9 +565,13 @@ def test_cpython_abi_build_requires_and_fingerprints_only_reported_staticlib(
         cargo_profile="dev-fast",
         target_label="wasm32-wasip1.cpython-abi",
     )
-    assert reported_fp.exists() is report_artifact
-    assert primary_fp.exists() is report_artifact
-    if report_artifact:
+    assert reported_fp.exists() is published
+    assert primary_fp.exists() is published
+    assert {
+        path: (path.read_bytes(), path.stat().st_mtime_ns)
+        for path in (primary, reported)
+    } == products_before
+    if published:
         # The canonical requested-output sidecar may be named for the primary,
         # but its artifact identity must attest the exact Cargo-reported path.
         stored = cli_runtime_fingerprints._read_runtime_fingerprint(primary_fp)
@@ -508,7 +587,7 @@ def test_cpython_abi_build_requires_and_fingerprints_only_reported_staticlib(
         monkeypatch.setenv("MOLT_SKIP_RUNTIME_REBUILD", "1")
         assert (
             RUNTIME_WASM_BUILD_SUPPORT._ensure_wasm_cpython_abi_staticlib(
-                project_root=tmp_path,
+                project_root=root,
                 json_output=True,
                 cargo_profile="dev-fast",
                 cargo_timeout=1.0,
@@ -520,7 +599,7 @@ def test_cpython_abi_build_requires_and_fingerprints_only_reported_staticlib(
         monkeypatch.setenv("MOLT_TEST_RUNTIME_INPUT", "second")
         assert (
             RUNTIME_WASM_BUILD_SUPPORT._ensure_wasm_cpython_abi_staticlib(
-                project_root=tmp_path,
+                project_root=root,
                 json_output=True,
                 cargo_profile="dev-fast",
                 cargo_timeout=1.0,
@@ -549,6 +628,7 @@ def test_cpython_abi_build_requires_and_fingerprints_only_reported_staticlib(
         ("build_failure", "cargo-execution"),
         ("missing_artifact", "cargo-artifact"),
         ("post_identity", "post-build-identity"),
+        ("input_plan_drift", "cargo-input-observation"),
         ("metadata_publish", "metadata-publication"),
     ],
 )
@@ -561,16 +641,18 @@ def test_cpython_abi_failures_publish_consumable_evidence_in_json_mode(
     expected_stage: str,
     with_state: bool,
 ) -> None:
+    root = tmp_path / "repo"
+    root.mkdir()
     from molt.cli import runtime_wasm_failure
     from molt.cli.cargo_execution import CargoExecutionResult, CargoPlanExecutionError
     from molt.cli.models import _RuntimeArtifactState
 
     support = RUNTIME_WASM_BUILD_SUPPORT
-    source = tmp_path / "runtime/molt-cpython-abi/src/lib.rs"
+    source = root / "runtime/molt-cpython-abi/src/lib.rs"
     source.parent.mkdir(parents=True)
     source.write_text("pub fn provider() {}\n", encoding="utf-8")
-    target_root = tmp_path / "target"
-    evidence_root = tmp_path / "state"
+    target_root = root / "target"
+    evidence_root = root / "state"
     provider = target_root / "wasm32-wasip1" / "dev-fast" / "libmolt_cpython_abi.a"
     provider.parent.mkdir(parents=True)
     provider.write_bytes(_FAKE_STATICLIB)
@@ -598,7 +680,7 @@ def test_cpython_abi_failures_publish_consumable_evidence_in_json_mode(
             if failure == "missing_sdk"
             else {
                 "MOLT_BUILD_PYTHON": sys.executable,
-                "MOLT_WASI_SYSROOT": str(tmp_path / "sysroot"),
+                "MOLT_WASI_SYSROOT": str(root / "sysroot"),
             }
         ),
     )
@@ -646,8 +728,8 @@ def test_cpython_abi_failures_publish_consumable_evidence_in_json_mode(
                 env={
                     **env,
                     "RUSTC": sys.executable,
-                    "CARGO_HOME": str(tmp_path / "empty-cargo-home"),
-                    "WASI_SDK_PATH": str(tmp_path / "absent-sdk"),
+                    "CARGO_HOME": str(root / "empty-cargo-home"),
+                    "WASI_SDK_PATH": str(root / "absent-sdk"),
                 },
                 host_target="x86_64-unknown-linux-gnu",
                 **kwargs,
@@ -703,7 +785,7 @@ def test_cpython_abi_failures_publish_consumable_evidence_in_json_mode(
             "unreported stdout"
             if failure == "missing_artifact"
             else _cargo_cpython_abi_artifact_stdout(
-                provider, root=tmp_path, environment=plan.environment
+                provider, root=root, environment=plan.environment
             ).decode("utf-8")
         )
         result = CargoExecutionResult(
@@ -716,6 +798,10 @@ def test_cpython_abi_failures_publish_consumable_evidence_in_json_mode(
             attempts=(),
             retry_reason=None,
         )
+        if failure == "input_plan_drift":
+            config = root / ".cargo" / "config.toml"
+            config.parent.mkdir(exist_ok=True)
+            config.write_text("[build]\njobs = 2\n", encoding="utf-8")
         if failure == "execute_drift":
             raise CargoPlanExecutionError("injected configuration drift", result)
         return result
@@ -723,7 +809,7 @@ def test_cpython_abi_failures_publish_consumable_evidence_in_json_mode(
     monkeypatch.setattr(support, "_run_resolved_cargo_plan", execute)
     assert (
         support._ensure_wasm_cpython_abi_staticlib(
-            project_root=tmp_path,
+            project_root=root,
             json_output=True,
             cargo_profile="dev-fast",
             cargo_timeout=1.0,
@@ -737,7 +823,7 @@ def test_cpython_abi_failures_publish_consumable_evidence_in_json_mode(
     assert len(paths) == 1
     evidence = json.loads(paths[0].read_text(encoding="utf-8"))
     assert evidence["stage"] == f"cpython-abi-{expected_stage}"
-    assert evidence["cwd"] == str(tmp_path)
+    assert evidence["cwd"] == str(root)
     if state is not None:
         assert state.runtime_wasm_build_failure is not None
         assert state.runtime_wasm_build_failure.evidence_path == paths[0]
@@ -946,7 +1032,17 @@ def test_canonical_native_generation_keeps_portable_dependency_custody(
 
 
 @pytest.mark.parametrize("reloc", (False, True), ids=("shared", "reloc"))
-@pytest.mark.parametrize("placement", ("primary", "deps", "hashed", "reported"))
+@pytest.mark.parametrize(
+    "placement",
+    (
+        "primary",
+        "deps",
+        "hashed",
+        "reported",
+        "reported-undeclared-sdk",
+        "reported-plan-drift",
+    ),
+)
 def test_runtime_member_hydration_selects_attested_target_and_replays_without_cargo(
     runtime_fixture_root: RuntimeFixtureRoot,
     monkeypatch: pytest.MonkeyPatch,
@@ -954,6 +1050,8 @@ def test_runtime_member_hydration_selects_attested_target_and_replays_without_ca
     reloc: bool,
     placement: str,
 ) -> None:
+    root = tmp_path / "repo"
+    root.mkdir()
     from molt.cli import runtime_wasm_pair_build as pair_build
     from molt.cli.models import _RuntimeArtifactState
     from tests.runtime_build_identity_helper import (
@@ -961,8 +1059,8 @@ def test_runtime_member_hydration_selects_attested_target_and_replays_without_ca
         write_runtime_crate,
     )
 
-    write_runtime_crate(tmp_path)
-    target = tmp_path / "target"
+    write_runtime_crate(root)
+    target = root / "target"
     state = target / ".molt_state"
     monkeypatch.setenv("CARGO_TARGET_DIR", str(target))
     monkeypatch.setattr(
@@ -996,12 +1094,12 @@ def test_runtime_member_hydration_selects_attested_target_and_replays_without_ca
         required_link_features=frozenset(),
     )
     shared = RUNTIME_WASM_BUILD_SPEC._compute_runtime_wasm_build_spec(
-        tmp_path, tmp_path / "out/molt_runtime.wasm", reloc=False, **common
+        root, root / "out/molt_runtime.wasm", reloc=False, **common
     )
     relative = RUNTIME_WASM_BUILD_SPEC._compute_runtime_wasm_build_spec(
-        tmp_path, tmp_path / "out/molt_runtime_reloc.wasm", reloc=True, **common
+        root, root / "out/molt_runtime_reloc.wasm", reloc=True, **common
     )
-    shared, relative = bind_runtime_wasm_specs(shared, relative, root=tmp_path)
+    shared, relative = bind_runtime_wasm_specs(shared, relative, root=root)
     spec = relative if reloc else shared
     primary_shared = RUNTIME_WASM_BUILD_SUPPORT._wasm_runtime_artifact_path(
         target, spec.profile_dir
@@ -1013,7 +1111,7 @@ def test_runtime_member_hydration_selects_attested_target_and_replays_without_ca
     selected = primary
     if placement != "primary":
         selected = primary.parent / "deps" / primary.name
-    if placement in {"hashed", "reported"}:
+    if placement == "hashed" or placement.startswith("reported"):
         selected = selected.with_name(
             "libmolt_runtime-feedface.a" if reloc else "molt_runtime-feedface.wasm"
         )
@@ -1030,22 +1128,63 @@ def test_runtime_member_hydration_selects_attested_target_and_replays_without_ca
     selected_fp = cli_artifact_state._runtime_target_fingerprint_path(
         state, selected, cargo_profile=spec.cargo_profile, target_label="wasm32-wasip1"
     )
-    if placement == "reported":
+    if placement.startswith("reported"):
         other = primary_shared if reloc else primary_reloc
         other.write_bytes(_valid_wasm_bytes() if reloc else _FAKE_STATICLIB)
         # The combined producer, not mtime/candidate ordering, chooses both files.
         assert shared.cargo_plan is not None
         stdout = runtime_cargo_stdout(
-            tmp_path, (selected, other), shared.cargo_plan.environment
+            root, (selected, other), shared.cargo_plan.environment
+        )
+        stdout = _cargo_wasi_declared_inputs_stdout(
+            stdout,
+            root=root,
+            output=selected,
+            environment=shared.cargo_plan.environment,
+            undeclared_sdk_sibling=placement == "reported-undeclared-sdk",
         )
         ctx = pair_build._CombinedRuntimeWasmBuild(
-            _RuntimeArtifactState(), shared, relative, True, 1.0, tmp_path, True, False
+            _RuntimeArtifactState(), shared, relative, True, 1.0, root, True, False
         )
-        assert pair_build._publish_combined_runtime_wasm_target(
+        if placement == "reported-plan-drift":
+            observe = pair_build.cargo_build_reads
+
+            def observe_then_change_configuration(*args, **kwargs):
+                result = observe(*args, **kwargs)
+                config = root / ".cargo" / "config.toml"
+                config.parent.mkdir(exist_ok=True)
+                config.write_text("[build]\njobs = 2\n", encoding="utf-8")
+                return result
+
+            monkeypatch.setattr(
+                pair_build, "cargo_build_reads", observe_then_change_configuration
+            )
+        published = pair_build._publish_combined_runtime_wasm_target(
             ctx,
             subprocess.CompletedProcess(["cargo"], 0, stdout, ""),
             other if reloc else selected,
         )
+        if placement != "reported":
+            assert published is None
+            assert ctx.runtime_state.runtime_wasm_build_failure is not None
+            assert (
+                ctx.runtime_state.runtime_wasm_build_failure.stage
+                == "combined-target-fingerprint-publication"
+            )
+            if placement == "reported-undeclared-sdk":
+                summary = ctx.runtime_state.runtime_wasm_build_failure.summary
+                assert "outside" in summary and "VERSION" in summary
+            assert not selected_fp.exists()
+            assert not cli_artifact_state._runtime_target_fingerprint_path(
+                state,
+                other,
+                cargo_profile=spec.cargo_profile,
+                target_label="wasm32-wasip1",
+            ).exists()
+            assert selected.read_bytes() == new_bytes
+            assert primary.read_bytes() == old_bytes
+            return
+        assert published is not None
     else:
         selected_fp.parent.mkdir(parents=True, exist_ok=True)
         cli_runtime_fingerprints._write_runtime_fingerprint(
@@ -1073,7 +1212,7 @@ def test_runtime_member_hydration_selects_attested_target_and_replays_without_ca
 
     monkeypatch.setattr(pair_build, "_run_runtime_wasm_cargo_build", forbidden_cargo)
     destination = (
-        tmp_path
+        root
         / "hydrated"
         / ("molt_runtime_reloc.wasm" if reloc else "molt_runtime.wasm")
     )
@@ -1083,7 +1222,7 @@ def test_runtime_member_hydration_selects_attested_target_and_replays_without_ca
             reloc=reloc,
             json_output=True,
             cargo_timeout=1.0,
-            project_root=tmp_path,
+            project_root=root,
             required_exports=None,
             resolved_modules=None,
             spec=spec,

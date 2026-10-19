@@ -103,6 +103,25 @@ def _wasm_cpython_abi_staticlib_path(target_root: Path, profile_dir: str) -> Pat
     return target_root / "wasm32-wasip1" / profile_dir / "libmolt_cpython_abi.a"
 
 
+def _wasm_cargo_toolchain_input_paths(plan: RuntimeCargoPlan) -> tuple[Path, ...]:
+    """The captured resources and managed C-ABI inputs owned by this plan.
+
+    The shared Rust build-script authority declares each C-ABI member and its
+    include directory. Their existing managed generation owns those bytes;
+    they are not repository sources or permission to read other SDK siblings.
+    """
+    wasi = plan.wasi_c_abi
+    return (
+        *(
+            item.identity.path
+            for custody in (plan.rust_resources, plan.link_resources)
+            for item in custody.files
+        ),
+        *((path for _role, path, _size, _digest in wasi.files) if wasi else ()),
+        *((wasi.include,) if wasi else ()),
+    )
+
+
 def _runtime_target_candidates(primary: Path) -> list[Path]:
     """Enumerate Cargo primary/deps/hash shapes; receipts alone admit reuse."""
     deps = primary.parent / "deps"
@@ -345,11 +364,7 @@ def _ensure_wasm_cpython_abi_staticlib(
                         for name in ("CARGO_TARGET_DIR", "CARGO_BUILD_BUILD_DIR")
                         if plan.environment.get(name)
                     ),
-                    toolchain_roots=tuple(
-                        item.identity.path
-                        for custody in (plan.rust_resources, plan.link_resources)
-                        for item in custody.files
-                    ),
+                    toolchain_roots=_wasm_cargo_toolchain_input_paths(plan),
                     environment=plan.environment,
                 )
                 plan.verify()
