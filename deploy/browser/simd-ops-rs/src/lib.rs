@@ -8,8 +8,8 @@
 //!
 //! Kernels:
 //! - Matmul: 4x4 tiled with SIMD f32x4 for cache locality
-//! - Softmax: Online max and sum, then a second pass computing normalized output
-//! - exp2: Degree-six polynomial with explicit scalar and SIMD evaluation order
+//! - Softmax: SIMD maximum, fused exp/store/double sum, SIMD normalization
+//! - exp2: Degree-four polynomial with explicit scalar and SIMD evaluation order
 
 #![no_std]
 
@@ -52,20 +52,23 @@ fn max_v128(a: v128, b: v128) -> v128 {
 }
 
 // ---------------------------------------------------------------------------
-// exp2 polynomial — degree-six truncated exponential series on [0, 1).
+// exp2 polynomial — positive degree-four interpolant on [0, 1].
 //
-// Coefficients are ln(2)^k / k!. These are not a measured error bound or
-// a correctly rounded exp2 implementation.
+// Chebyshev-Lobatto nodes: 0, (2-sqrt(2))/4, 1/2, (2+sqrt(2))/4, 1.
+// C1..C3 are the interpolant rounded to f32; C4 is its endpoint residual.
+// Positive coefficients and exact P(1)=2 retain monotonicity in f32 Horner
+// evaluation. See docs/design/browser_simd.md for derivation/error policy.
+// This is not a correctly rounded exp2 implementation.
 // ---------------------------------------------------------------------------
 const EXP2_C0: f32 = 1.0;
-const EXP2_C1: f32 = core::f32::consts::LN_2;
-const EXP2_C2: f32 = 2.402_265e-1; // ln(2)^2 / 2!
-const EXP2_C3: f32 = 5.550_411e-2; // ln(2)^3 / 3!
-const EXP2_C4: f32 = 9.618_129e-3; // ln(2)^4 / 4!
-const EXP2_C5: f32 = 1.333_355_8e-3; // ln(2)^5 / 5!
-const EXP2_C6: f32 = 1.540_353e-4; // ln(2)^6 / 6!
+const EXP2_C1: f32 = 0.693_035_3;
+const EXP2_C2: f32 = 0.241_444_51;
+const EXP2_C3: f32 = 0.051_836_18;
+// f64 represents this sum of f32 coefficients exactly. Compile-time only.
+const EXP2_C4: f32 =
+    (2.0 - (EXP2_C0 as f64 + EXP2_C1 as f64 + EXP2_C2 as f64 + EXP2_C3 as f64)) as f32;
 
-/// Scalar exp2 approximation via a degree-six polynomial.
+/// Scalar exp2 approximation via a monotone degree-four polynomial.
 #[inline(always)]
 fn exp2_scalar(x: f32) -> f32 {
     if x.abs() < 126.0 {
@@ -95,15 +98,13 @@ fn exp2_special_scalar(x: f32) -> f32 {
     exp2_normal_scalar(x)
 }
 
-/// The unchanged polynomial and exponent injection for finite [-126, 128).
+/// The positive-coefficient polynomial and exponent injection for finite [-126, 128).
 #[inline(always)]
 fn exp2_normal_scalar(x: f32) -> f32 {
     let xi = floor_scalar(x);
     let xf = x - xi;
-    // Horner's method: p = c0 + xf*(c1 + xf*(c2 + xf*(c3 + xf*(c4 + xf*(c5 + xf*c6)))))
-    let mut p = EXP2_C6;
-    p = p * xf + EXP2_C5;
-    p = p * xf + EXP2_C4;
+    // Positive argument/coefficient Horner evaluation is monotone in f32.
+    let mut p = EXP2_C4;
     p = p * xf + EXP2_C3;
     p = p * xf + EXP2_C2;
     p = p * xf + EXP2_C1;
@@ -113,7 +114,7 @@ fn exp2_normal_scalar(x: f32) -> f32 {
     p * f32::from_bits(exp_bits as u32)
 }
 
-/// SIMD v128 exp2 — 4 lanes, 6th-order polynomial.
+/// SIMD v128 exp2 — 4 lanes, monotone degree-four polynomial.
 #[inline(always)]
 fn exp2_v128(x: v128) -> v128 {
     if !i32x4_all_true(f32x4_lt(f32x4_abs(x), f32x4_splat(126.0))) {
@@ -122,10 +123,8 @@ fn exp2_v128(x: v128) -> v128 {
     let xi = f32x4_floor(x);
     let xf = f32x4_sub(x, xi);
 
-    // Horner's method with 6th-order polynomial
-    let mut p = f32x4_splat(EXP2_C6);
-    p = f32x4_add(f32x4_mul(p, xf), f32x4_splat(EXP2_C5));
-    p = f32x4_add(f32x4_mul(p, xf), f32x4_splat(EXP2_C4));
+    // The same positive-coefficient Horner order as the scalar lane.
+    let mut p = f32x4_splat(EXP2_C4);
     p = f32x4_add(f32x4_mul(p, xf), f32x4_splat(EXP2_C3));
     p = f32x4_add(f32x4_mul(p, xf), f32x4_splat(EXP2_C2));
     p = f32x4_add(f32x4_mul(p, xf), f32x4_splat(EXP2_C1));
@@ -354,21 +353,14 @@ pub unsafe extern "C" fn matmul_f32_tiled(
 }
 
 // ---------------------------------------------------------------------------
-// Fused softmax — 2-pass instead of 3-pass.
+// Stable softmax: SIMD max, fused exp/store/sum, SIMD normalization.
 //
-// Pass 1: Find max AND compute shifted exp + sum in one pass over data.
-//         Uses online softmax (Milakov & Gimelshein 2018): maintain running
-//         max, and when max changes, rescale the accumulated sum.
-// Pass 2: Divide by sum.
-//
-// The WAT version uses 3 passes: max, exp+sum, divide. This fused version
-// eliminates one full pass over the data, reducing memory traffic by ~33%.
+// Computing exponents once avoids repeated approximation during online
+// rescaling. f64 SIMD accumulation bounds positive-sum error for long rows.
+// The output buffer stores the unnormalized exponents; no scratch allocation.
 // ---------------------------------------------------------------------------
 
-/// Fused softmax using online algorithm (2 passes instead of 3).
-///
-/// Pass 1: Online max tracking + exp accumulation with rescaling.
-/// Pass 2: Normalize by 1/sum.
+/// Stable softmax with one exponent evaluation per element.
 ///
 /// # Safety
 ///
@@ -376,73 +368,58 @@ pub unsafe extern "C" fn matmul_f32_tiled(
 /// and writes that the element counts above imply.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn softmax_f32_fused(a: *const f32, out: *mut f32, n: u32) {
-    // SAFETY: the caller passes pointers valid for the element counts this
-    // export documents, as its C ABI contract states.
+    // SAFETY: both ranges contain n f32 elements as the caller promises.
     unsafe {
-        let n = n as usize;
         if n == 0 {
             return;
         }
-
-        // --- Pass 1: Online softmax (Milakov & Gimelshein 2018) ---
-        // NaN enters sum through exp2 and propagates to every output. Tracking
-        // another maximum in that case adds work without changing the result.
-        // Track running max and sum. When max increases, rescale sum.
-        let mut max_val = *a;
-        let mut sum = 1.0f32; // exp(a[0] - max) = exp(0) = 1
-
-        for i in 1..n {
-            let x = *a.add(i);
-            if x > max_val {
-                // Rescale existing sum: sum * exp(old_max - new_max)
-                sum *= exp2_scalar((max_val - x) * core::f32::consts::LOG2_E);
-                sum += 1.0; // exp(x - max) = exp(0) = 1
-                max_val = x;
-            } else {
-                sum += exp2_scalar((x - max_val) * core::f32::consts::LOG2_E);
-            }
-        }
-
-        // Like the scalar stable-softmax reference, a +Inf maximum makes
-        // the row undefined (Inf - Inf); propagate NaN to the entire row.
-        let inv_sum = if max_val == f32::INFINITY {
-            f32::from_bits(0x7fc0_0000)
-        } else {
-            1.0 / sum
-        };
-
-        // --- Pass 2: Compute exp(x - max) / sum and write output ---
+        let max_val = reduce_max_f32(a, n);
+        let n = n as usize;
         let n4 = n & !3;
         let max_splat = f32x4_splat(max_val);
-        let inv_sum_splat = f32x4_splat(inv_sum);
         let log2e_splat = f32x4_splat(core::f32::consts::LOG2_E);
-
+        let mut sum_low = f64x2_splat(0.0);
+        let mut sum_high = f64x2_splat(0.0);
         let mut i = 0usize;
         while i < n4 {
             let x = v128_load(a.add(i) as *const v128);
-            // exp(x - max) = exp2((x - max) * log2(e))
             let shifted = f32x4_mul(f32x4_sub(x, max_splat), log2e_splat);
             let exp_val = exp2_v128(shifted);
-            let result = f32x4_mul(exp_val, inv_sum_splat);
-            v128_store(out.add(i) as *mut v128, result);
+            v128_store(out.add(i) as *mut v128, exp_val);
+            sum_low = f64x2_add(sum_low, f64x2_promote_low_f32x4(exp_val));
+            let high = i32x4_shuffle::<2, 3, 2, 3>(exp_val, exp_val);
+            sum_high = f64x2_add(sum_high, f64x2_promote_low_f32x4(high));
             i += 4;
         }
-
-        // Scalar tail
+        let sum_lanes = f64x2_add(sum_low, sum_high);
+        let mut sum = f64x2_extract_lane::<0>(sum_lanes) + f64x2_extract_lane::<1>(sum_lanes);
         while i < n {
-            let x = *a.add(i);
-            let exp_val = exp2_scalar((x - max_val) * core::f32::consts::LOG2_E);
-            *out.add(i) = exp_val * inv_sum;
+            let value = exp2_scalar((*a.add(i) - max_val) * core::f32::consts::LOG2_E);
+            *out.add(i) = value;
+            sum += value as f64;
+            i += 1;
+        }
+        let inv_sum = (1.0 / sum) as f32;
+        let inv_splat = f32x4_splat(inv_sum);
+        i = 0;
+        while i < n4 {
+            let value = v128_load(out.add(i) as *const v128);
+            v128_store(out.add(i) as *mut v128, f32x4_mul(value, inv_splat));
+            i += 4;
+        }
+        while i < n {
+            *out.add(i) *= inv_sum;
             i += 1;
         }
     }
 }
 
 // ---------------------------------------------------------------------------
-// exp2 — vectorized, degree-six polynomial approximation.
+// ---------------------------------------------------------------------------
+// exp2 — vectorized, endpoint-constrained degree-four approximation.
 // ---------------------------------------------------------------------------
 
-/// exp2(x) for n elements, 6th-order polynomial.
+/// exp2(x) for n elements, monotone degree-four approximation.
 ///
 /// # Safety
 ///

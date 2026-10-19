@@ -3,7 +3,10 @@ from __future__ import annotations
 from pathlib import Path
 import re
 import tomllib
+from types import SimpleNamespace
 from typing import Any
+
+import pytest
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -320,9 +323,6 @@ def test_runtime_wasm_shipping_has_no_fallback_compiler_authority() -> None:
     runtime_wasm_build = (runtime_cli / "runtime_wasm_build.py").read_text(
         encoding="utf-8"
     )
-    runtime_wasm_pair_build = (runtime_cli / "runtime_wasm_pair_build.py").read_text(
-        encoding="utf-8"
-    )
     non_native_output = (
         ROOT / "src" / "molt" / "cli" / "non_native_output.py"
     ).read_text(encoding="utf-8")
@@ -337,15 +337,107 @@ def test_runtime_wasm_shipping_has_no_fallback_compiler_authority() -> None:
         assert deleted_authority not in runtime_sources
         assert deleted_authority not in non_native_output
 
-    assert "_materialize_runtime_wasm_member_from_target(" in runtime_wasm_pair_build
-    assert (
-        "if not _prepopulate_combined_runtime_wasm_target(" in runtime_wasm_pair_build
-    )
     assert "def _ensure_runtime_wasm(" not in runtime_wasm_build
-    assert "def _materialize_runtime_wasm_member_from_target(" in runtime_wasm_build
-    assert "ensure_runtime_wasm_both is None or not ensure_runtime_wasm_both(" in (
-        non_native_output
+
+
+@pytest.mark.parametrize("failure", [None, "combined", "shared", "reloc"])
+def test_runtime_wasm_pair_materializes_only_from_one_combined_observation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, failure: str | None
+) -> None:
+    from molt.cli import runtime_wasm_pair_build as pair
+    from molt.cli.models import _RuntimeArtifactState
+    from molt.process_environment import ProcessEnvironment
+    from tests.runtime_build_identity_helper import (
+        runtime_build_identity,
+        runtime_cargo_environment_inputs,
     )
+
+    monkeypatch.delenv("MOLT_SKIP_RUNTIME_REBUILD", raising=False)
+    environment = ProcessEnvironment({"MOLT_TEST_RUNTIME_INPUT": "pair-source"})
+    observed = runtime_cargo_environment_inputs(environment)
+    shared = runtime_build_identity("shared", "manifest-pair-contract")
+    reloc = runtime_build_identity("reloc", "manifest-pair-contract")
+    # This tests orchestration, not Cargo-plan resolution. The real pair owner
+    # stages members, records failures and threads the typed compile observation.
+    shared_spec = SimpleNamespace(cargo_plan=SimpleNamespace(environment=environment))
+    reloc_spec = SimpleNamespace()
+    ctx = pair._RuntimeWasmPairBuild(
+        runtime_state=_RuntimeArtifactState(),
+        json_output=True,
+        cargo_profile="release",
+        cargo_timeout=5,
+        project_root=tmp_path,
+        simd_enabled=True,
+        freestanding=False,
+        stdlib_profile="micro",
+        resolved_modules=None,
+        required_link_features=frozenset(),
+        required_exports=None,
+        runtime_wasm=tmp_path / "molt_runtime.wasm",
+        runtime_reloc_wasm=tmp_path / "molt_runtime_reloc.wasm",
+        shared_spec=shared_spec,
+        reloc_spec=reloc_spec,
+        toolchain_manifest_path=tmp_path / "toolchain.json",
+        generation_manifest=tmp_path / "molt_runtime.generation.json",
+        pre_identity=pair._RuntimeWasmPairIdentity(
+            shared.toolchain_manifest, shared, reloc
+        ),
+    )
+    ctx.runtime_wasm.write_bytes(b"published shared")
+    ctx.runtime_reloc_wasm.write_bytes(b"published reloc")
+    events: list[str] = []
+
+    def combined(**kwargs):
+        events.append("combined")
+        assert kwargs["shared_spec"] is shared_spec
+        assert kwargs["reloc_spec"] is reloc_spec
+        assert kwargs["force_build"] is False
+        return None if failure == "combined" else observed
+
+    def materialize(path, *, reloc, spec, cargo_environment, **_kwargs):
+        member = "reloc" if reloc else "shared"
+        events.append(member)
+        assert cargo_environment is observed
+        assert spec is (reloc_spec if reloc else shared_spec)
+        assert path == ctx.staging_member(reloc=reloc)
+        assert path not in (ctx.runtime_wasm, ctx.runtime_reloc_wasm)
+        if failure == member:
+            return False
+        path.write_bytes(member.encode())
+        return True
+
+    monkeypatch.setattr(pair, "_build_state_root", lambda _root: tmp_path / "state")
+    monkeypatch.setattr(
+        pair, "hydrate_runtime_wasm_pair_from_shared_cache", lambda **_k: None
+    )
+    monkeypatch.setattr(pair, "_prepopulate_combined_runtime_wasm_target", combined)
+    monkeypatch.setattr(
+        pair, "_materialize_runtime_wasm_member_from_target", materialize
+    )
+    monkeypatch.setattr(
+        pair,
+        "_run_runtime_wasm_cargo_build",
+        lambda **_k: pytest.fail("pair attempted an independent fallback compile"),
+    )
+    try:
+        outcome = pair._materialize_runtime_wasm_pair(ctx)
+        assert outcome is (
+            pair._PairBuildOutcome.BUILT
+            if failure is None
+            else pair._PairBuildOutcome.FAILED
+        )
+        expected = ["combined"]
+        if failure != "combined":
+            expected.append("shared")
+        if failure not in ("combined", "shared"):
+            expected.append("reloc")
+        assert events == expected
+        assert ctx.cargo_environment is (None if failure == "combined" else observed)
+        assert ctx.runtime_wasm.read_bytes() == b"published shared"
+        assert ctx.runtime_reloc_wasm.read_bytes() == b"published reloc"
+        assert not ctx.generation_manifest.exists()
+    finally:
+        ctx.cleanup_staging()
 
 
 def test_runtime_manifest_uses_flate2_zip_deflate_only() -> None:
