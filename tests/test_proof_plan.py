@@ -1374,6 +1374,45 @@ def test_runtime_leaf_change_runs_rust_without_llvm_or_formal() -> None:
     assert classes["formal"] is False
 
 
+@pytest.mark.parametrize(
+    "changed",
+    [
+        "src/molt/compiler_distribution.py",
+        "src/molt/host_tool_products.py",
+        "src/molt/cli/wasm_facts_tool.py",
+        "tools/release/build_compiler.py",
+        "tools/release/native_build.py",
+        "tools/release/compiler_payload.py",
+        "tools/release/build_bundle.py",
+        "tools/release/platform_wheel.py",
+        "tools/release/release_authority.py",
+        "tools/release/verify_consumer.py",
+    ],
+)
+def test_installed_product_changes_select_complete_distribution_consumers(changed):
+    from tools import molt_dev
+
+    config = molt_dev.GateConfig.load(PLAN.path)
+    rule = next(r for r in config.rules if r.name == "installed-compiler-distribution")
+    gates, matched = replace(config, rules=[rule], always=[]).select([changed])
+    assert [r.name for r in matched] == [rule.name]
+    assert len(gates) == 1
+    command = gates[0].command
+    argv = shlex.split(command) if isinstance(command, str) else command
+    assert {arg for arg in argv if arg.startswith("tests/")} == {
+        "tests/cli/test_installed_compiler.py",
+        "tests/cli/test_installed_runtime.py",
+        "tests/cli/test_installed_toolchain_rules.py",
+        "tests/tools/test_release_installed_distribution.py",
+        "tests/tools/test_release_native_build.py",
+        "tests/tools/test_release_supply_chain.py",
+    }
+    assert gates[0].toolchains == ("python",)
+    assert replace(config, rules=[rule], always=[]).select(
+        ["runtime/molt-wasm-facts/src/main.rs"]
+    ) == ([], [])
+
+
 def test_docs_architecture_local_gate_uses_project_python() -> None:
     from tools import molt_dev
 
