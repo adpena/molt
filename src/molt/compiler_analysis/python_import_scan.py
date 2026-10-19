@@ -59,7 +59,6 @@ from molt.compiler_analysis.python_namespace_writes import (
 from molt.compiler_analysis.python_identity_catalog_generated import (
     PythonIdentity,
 )
-from molt.compiler_analysis.python_binding_facts import PythonBindingIndex
 from molt.compiler_analysis.python_binding_flow import (
     PythonBindingPolicy,
     analyze_python_binding_facts,
@@ -649,61 +648,6 @@ def _scan_nodes_for_import_mode(
     )
 
 
-def _uses_runtime_import_protocol(
-    binding_index: PythonBindingIndex,
-    tree: ast.AST,
-    *,
-    import_scan_mode: ImportScanMode,
-    module_name: str | None,
-    source_owner: PythonSourceKey | None,
-    source_arguments: tuple[str, ...],
-    namespace_premise: PythonNamespacePremise | None,
-    target_python: TargetPythonVersion,
-    ast_digest_admission: _PythonAstDigestAdmission,
-) -> bool:
-    """Whether reached code needs the runtime import protocol.
-
-    It does when it reaches an import statement (other than ``__future__`` and
-    the intrinsics module) or a call that may import or find a module spec.
-    The scan answers from its own binding index, so the answer shares the
-    scan's policy and costs no second analysis.
-    """
-    import_flow = binding_index.module_import_flow
-    for node in _scan_nodes_for_import_mode(
-        tree,
-        import_scan_mode,
-        module_name=module_name,
-        source_owner=source_owner,
-        source_arguments=source_arguments,
-        namespace_premise=namespace_premise,
-        target_python=target_python,
-        ast_digest_admission=ast_digest_admission,
-    ):
-        if not import_flow.states_for(node):
-            continue
-        if isinstance(node, ast.Import):
-            if any(alias.name != "_intrinsics" for alias in node.names):
-                return True
-        elif isinstance(node, ast.ImportFrom):
-            if node.module == "__future__":
-                continue
-            if node.level == 0 and (
-                node.module == "_intrinsics"
-                or node.module is not None
-                and node.module.endswith("._intrinsics")
-            ):
-                continue
-            return True
-        if isinstance(node, ast.Call):
-            fact = binding_index.call_fact(node)
-            if fact is not None and (
-                fact.possible_import_call_kinds()
-                or fact.callee_may_be(PythonIdentity.IMPORTLIB_FIND_SPEC)
-            ):
-                return True
-    return False
-
-
 def _collect_imports(
     tree: ast.AST,
     module_name: str | None = None,
@@ -761,20 +705,7 @@ def _collect_imports(
         ),
     )
     import_flow = binding_index.module_import_flow
-    if _runtime_import_protocol is not None:
-        _runtime_import_protocol.append(
-            _uses_runtime_import_protocol(
-                binding_index,
-                tree,
-                import_scan_mode=import_scan_mode,
-                module_name=module_name,
-                source_owner=source_owner,
-                source_arguments=source_arguments,
-                namespace_premise=namespace_premise,
-                target_python=target_python,
-                ast_digest_admission=ast_digest_admission,
-            )
-        )
+    uses_runtime_import_protocol = False
     if _source_values is not None and source_owner is None:
         _source_values.append(
             _SourceValueSummary(
@@ -1667,7 +1598,7 @@ def _collect_imports(
     def _visit(
         node: ast.AST,
     ) -> None:
-        nonlocal needs_string_templatelib, needs_typing
+        nonlocal needs_string_templatelib, needs_typing, uses_runtime_import_protocol
         if isinstance(node, (ast.stmt, ast.Call)) and not import_flow.states_for(node):
             return
         fact = (
@@ -1690,6 +1621,15 @@ def _collect_imports(
             for generator in node.generators:
                 demand_iteration(generator)
         if isinstance(node, ast.Call):
+            if (
+                _runtime_import_protocol is not None
+                and not uses_runtime_import_protocol
+            ):
+                call = binding_index.call_fact(node)
+                uses_runtime_import_protocol = call is not None and bool(
+                    call.possible_import_call_kinds()
+                    or call.callee_may_be(PythonIdentity.IMPORTLIB_FIND_SPEC)
+                )
             demand(binding_index.expression_result(node.func), "call")
             for value in (*node.args, *(keyword.value for keyword in node.keywords)):
                 demand(
@@ -1767,6 +1707,23 @@ def _collect_imports(
                 binding_index.expression_result(node.subject), "escape", contents=True
             )
         if isinstance(node, (ast.Import, ast.ImportFrom)):
+            if (
+                _runtime_import_protocol is not None
+                and not uses_runtime_import_protocol
+            ):
+                uses_runtime_import_protocol = (
+                    any(alias.name != "_intrinsics" for alias in node.names)
+                    if isinstance(node, ast.Import)
+                    else node.module != "__future__"
+                    and not (
+                        node.level == 0
+                        and (
+                            node.module == "_intrinsics"
+                            or node.module is not None
+                            and node.module.endswith("._intrinsics")
+                        )
+                    )
+                )
             _record_import_statement(node)
             if isinstance(node, ast.ImportFrom) and _source_demands is not None:
                 _source_demands.extend(
@@ -1814,6 +1771,8 @@ def _collect_imports(
         else:
             assert isinstance(region.node, ast.expr)
             demand(binding_index.expression_result(region.node), region.phase)
+    if _runtime_import_protocol is not None:
+        _runtime_import_protocol.append(uses_runtime_import_protocol)
     if needs_typing:
         imports.append("typing")
     if needs_string_templatelib:

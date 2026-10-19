@@ -297,6 +297,25 @@ and keep original identities; a retracting incremental engine adds no benefit to
 this operation. Changed source bytes fail custody and start a fresh operation.
 All of this is compiler-side analysis; emitted programs perform none of it.
 
+Runtime-import support is a projection of that same reached execution walk.
+The import visitor records ordinary import statements and possible canonical
+import or `find_spec` calls after its reachability check, before static-target,
+helper or runtime-catalog resolution. Intrinsic and future-import exclusions
+retain their existing semantics. Synthetic support imports do not imply a
+reached Python import operation. Initialization, full inventory and deferred
+owner/argument scans therefore use their actual execution regions and namespace
+premise for both requests and the protocol bit.
+
+This removes the former protocol prepass: one additional O(R) execution-region
+walk, its evaluate-node tuple and a binding-core lookup for every computed scan
+of R regions. Existing persisted hits already contain the bit and do not pay
+this computation. There is no new memo, changed cache protocol or narrowed
+premise. Sharing the existing operation-local analysis follows
+[LLVM's analysis reuse and pass locality](https://llvm.org/docs/NewPassManager.html#using-analyses).
+The bounded matched production-projection measurements and remaining graph
+work are recorded under HF-285 in the findings ledger; they do not establish
+whole-build or emitted-program performance.
+
 ## Remaining consumers
 
 - **Package topology**: package-child topology changes must be fenced before frontend
