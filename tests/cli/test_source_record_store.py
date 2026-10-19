@@ -842,6 +842,18 @@ def _exercise_inherited_owner(store, maintenance, pipe):
     pipe.close()
 
 
+def _close_fork_observer(child):
+    """Reap only the native child created by a bounded fork metadata oracle."""
+    if child.is_alive():
+        child.terminate()
+    child.join(10)
+    if child.is_alive():
+        child.kill()
+        child.join(10)
+    assert not child.is_alive(), "owned fork observer did not stop"
+    child.close()
+
+
 @pytest.mark.skipif(
     "fork" not in multiprocessing.get_all_start_methods(), reason="requires fork"
 )
@@ -863,11 +875,8 @@ def test_inherited_owner_refuses_before_a_parent_lock_and_fresh_owner_works(tmp_
                 child.join(10)
                 assert child.exitcode == 0
             finally:
-                if child.is_alive():
-                    child.terminate()
-                    child.join(10)
                 receive.close()
-                child.close()
+                _close_fork_observer(child)
         assert maintenance.inventory().entries == 1
     assert (
         store.get("import-scan", "k", generation="g", max_bytes=16).payload == b"body"
@@ -970,10 +979,7 @@ def test_fork_finalization_keeps_a_directly_constructed_handle_inert(
         child.join(10)
         assert child.exitcode == 0
     finally:
-        if child.is_alive():
-            child.terminate()
-            child.join(10)
         receive.close()
-        child.close()
+        _close_fork_observer(child)
     holder.clear()
     assert connection_ref() is None
