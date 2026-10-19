@@ -7382,6 +7382,8 @@
         "basic",
         "--test",
         "native_extern_linkage",
+        "--test",
+        "rust_transpiler_preview",
         "-p",
         "object@0.39.1",
         "-p",

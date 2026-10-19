@@ -203,6 +203,7 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
         self,
         parse_codec: Literal["msgpack", "cbor", "json"] = ...,
         type_hint_policy: Literal["ignore", "trust", "check"] = ...,
+        *,
         source_path: str | None = ...,
         type_facts: "TypeFacts | None" = ...,
         type_facts_module: str | None = ...,

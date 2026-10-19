@@ -60,7 +60,9 @@ No speedup for successfully compiled programs is claimed from removing a fatal
 placeholder.
 
 CLI requests, frontend worker payloads and lowering contexts carry no selectable
-fallback policy. Removing that field changes the lowering-context digest;
+fallback policy. Source-location options on the lowering/reporting APIs are
+keyword-only, so an old positional policy cannot become a filename. Removing
+the policy field changes the lowering-context digest;
 semantic compiler fingerprints bind the changed producers and generated
 operation registry. Old module records cannot satisfy the new context. Wire IR
 containing the removed marker fails the existing checked-operation boundary.

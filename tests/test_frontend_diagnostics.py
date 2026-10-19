@@ -124,7 +124,7 @@ def test_consumer_gate_rejects_stringly_rejection(tmp_path: Path) -> None:
 
 def test_rejection_conversion_has_stable_code_and_location() -> None:
     node = ast.parse("value = getattr(obj, name)\n").body[0]
-    reporter = CompatibilityReporter("probe.py")
+    reporter = CompatibilityReporter(source_path="probe.py")
     rejection = FrontendRejection(
         FrontendDiagnostic.OPERAND_VALUE, "getattr expects object and name"
     )
@@ -154,6 +154,17 @@ def test_frontend_api_rejects_the_retired_fallback_policy(
     arguments = ("pass\n",) if factory is compile_to_tir else ()
     with pytest.raises(TypeError, match="fallback_policy"):
         factory(*arguments, fallback_policy="bridge")
+
+
+@pytest.mark.parametrize("policy", ("error", "bridge"))
+def test_removed_positional_policy_cannot_be_reinterpreted_as_a_source_path(
+    policy: str,
+) -> None:
+    with pytest.raises(TypeError):
+        SimpleTIRGenerator("json", "ignore", policy)
+    with pytest.raises(TypeError):
+        CompatibilityReporter(policy)
+    assert CompatibilityReporter(source_path=policy).source_path == policy
 
 
 @pytest.mark.parametrize(
