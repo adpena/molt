@@ -36,7 +36,7 @@ open work.
 
 ### One authoritative execution attempt
 
-Every selected backend runs once through the same adapter registry. Its first
+Every selected backend comparison runs once through the same adapter registry. Its first
 build or execution outcome reaches the existing raw/backend JSONL rows, cohort
 summary and failure list. A failed native or batch build cannot silently become
 a passing cell by disabling the daemon, ignoring caches, rebuilding, selecting
@@ -51,7 +51,12 @@ Nextest also distinguishes a flaky retry from an initial pass. Molt acceptance
 keeps one attempt; an operator's explicitly reconfigured rerun is a separate
 invocation and does not replace the earlier evidence.
 
-The cost is one selected build/run per item, with no failure-driven scratch
+Optional requested build-only cache warming is a separate phase; it does not
+establish CPython parity. Its selection is retained in the cohort configuration,
+and infrastructure failures abort before comparison. An ordinary compile error
+can still conform to CPython and is judged by the comparison oracle.
+
+The cost is one comparison attempt per selected backend, with no failure-driven scratch
 generation, persistent incident marker or second result to reconcile. Ordinary
 explicit cache, rebuild, target-root and daemon selections still apply before
 execution. Resource, interruption, timeout and cleanup facts retain the shared
