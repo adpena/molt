@@ -249,6 +249,13 @@ def _install_hook() -> None:
     if not _HOOK_INSTALLED:
         import sys
 
+        if os.name == "nt":
+            from molt.file_hashing import _windows_file_api
+
+            # Metadata queries must be ready before observing their own
+            # imports. Otherwise a bytecode-open audit can reenter the lazy
+            # binder with a partially initialized ctypes.wintypes module.
+            _windows_file_api()
         sys.addaudithook(_audit_hook)
         _HOOK_INSTALLED = True
 
@@ -279,8 +286,8 @@ def worker_initializer(log_dir: str | None) -> None:
     """ProcessPoolExecutor initializer: log this worker's facts."""
     global _WORKER_LOG_DIR
     if log_dir is not None:
-        _WORKER_LOG_DIR = log_dir
         _install_hook()
+        _WORKER_LOG_DIR = log_dir
 
 
 def merge_worker_logs(sink: FactSink, log_dir: str) -> None:
