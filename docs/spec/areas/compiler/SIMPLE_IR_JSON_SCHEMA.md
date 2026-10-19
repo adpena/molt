@@ -216,8 +216,64 @@ Molt's assembly facts can change native publication and export policy, so they
 remain required, qualified compiler inputs; they are not discardable debug
 annotations. The cost is one small sidecar entry per function that owns such
 facts. It removes repeated body scans and metadata-only function replacements,
-without a second IR, optimizer or runtime check. Binary records and persisted
-body digests remain separate migrations under HF-266.
+without a second IR, optimizer or runtime check. Lowering cache schema 9 stores these inputs in one tagged binary frame:
+`["molt.lowering-record.v1", metadata_bytes, [[body_bytes, digest], ...]]`.
+`molt.cli.function_records` owns sorted MessagePack encoding through msgspec.
+Metadata retains the existing rich JSON value codec; executable functions never
+pass through that codec. The outer decoder captures raw function records and
+admits the source lease, context and metadata before materializing bodies.
+Each body is verified against SHA-256 over the explicit
+`molt.function-body.msgpack.v1\0` domain and its exact stored bytes. Older JSON
+records are misses; there is no compatibility reader or hydration tier.
+
+The writer encodes and hashes each function once. The reader materializes it
+once and supplies a typed seed holding that exact object and its verified
+digest. Assembly admits seed ownership before committing shared state. Backend
+preparation retains seeds only for unchanged objects after copy-on-write
+rewrites. One `FunctionDigests` owner then reuses those seeds and computes
+new/replaced bodies on demand through the same codec. No symbol-name lookup or
+child-process identity table can transfer ownership. The payload Merkle domain
+is `molt.cache-payload.merkle.msgpack-functions.v2\0`; rich header encoding is
+unchanged. `MOLT_VERIFY_FUNCTION_DIGESTS=1` deliberately re-encodes seeded bodies
+once for compiler debugging, following
+[rustc's incremental fingerprint verification](https://rustc-dev-guide.rust-lang.org/queries/incremental-compilation-in-detail.html).
+Normal builds pay no such verification walk. Whole-backend JSON/optional
+MessagePack transport and worker object IPC remain distinct measured costs.
+
+All four source fact kinds share the existing SQLite database under
+`<Molt cache>/toolchain_source_records`; record keys retain their complete
+semantic inputs, and import requests complete against the current project
+roots and custody after reuse. SQL applies each reader's byte bound before
+payload allocation; lowering explicitly retains its uncapped role. There is
+one decode per hit, no retained parsed-document cache, and no per-project copy.
+An admitted use refreshes a revision-fenced observation at most once per five
+minutes; invalid, stale and replaced observations cannot renew another row.
+The existing byte/age prune merges bounded metadata pages with file entries
+under one budget. It holds one SQLite read snapshot while a separate nonwaiting
+connection performs current-state CAS deletion in batches of at most 256 rows
+and 1 MiB of logical payload (one larger record remains evictable). A batch
+commits before file eviction or any iterator yield; only confirmed removals
+reduce the budget. SQLite's typed BUSY family defers work without a retry;
+LOCKED, read-only and other failures remain distinct. This removes per-row
+transaction publication while bounding writer-lock scope. Later cold sweeps
+continue reclamation even when they delete no new rows, draining up to 256
+incremental-vacuum pages each time. Closing that cursor early would abandon
+remaining page work, as [SQLite's pragma implementation](https://github.com/sqlite/sqlite/blob/version-3.53.1/src/pragma.c#L807-L823)
+shows. The read snapshot pins WAL pages during the cold sweep; logical payload eviction and physical reclamation are separate
+metrics, and peers can defer the latter. Corruption disables the optional cache
+without unlinking files another process may own. See
+[SQLite WAL snapshot and checkpoint semantics](https://sqlite.org/wal.html) and
+[isolation](https://sqlite.org/isolation.html), and
+[msgspec's typed decoding](https://msgspec.dev/usage).
+
+The codec is an installed compiler dependency, never a dependency or check in
+an emitted program. Its native-module closure and actual host SQLite library
+belong to installed-delivery qualification under V1-06. In particular, concurrent
+WAL users require the upstream WAL-reset fix (SQLite 3.51.3+, or the 3.44.6 and
+3.50.7 backports); Python's version alone does not establish that library.
+Available wheels do not qualify every supported Python/OS/architecture/ABI
+cell. HF-266 remains open until actual consumers, build costs, and those
+installed-delivery cells pass; bounded codec timings are not whole-build gains.
 
 CLI assembly borrows the lowered function records and their operation lists.
 The serializer emits two explicit artifact scopes. A standalone `program`

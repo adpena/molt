@@ -2,21 +2,25 @@
 from __future__ import annotations
 
 import argparse
+import heapq
 import os
 import shutil
 import stat
 import time
 from collections.abc import Mapping
+from contextlib import ExitStack
 from dataclasses import dataclass, field
 from functools import lru_cache
 from pathlib import Path
-from typing import Any, Literal, TypedDict
+from typing import TYPE_CHECKING, Any, Literal, TypedDict
 
 from molt.default_paths import (
+    CACHE_MAINTENANCE_INTERVAL_SECONDS as AUTOMATIC_PRUNE_INTERVAL_SECONDS,
     DEFAULT_MOLT_CACHE_MAX_AGE_DAYS,
     DEFAULT_MOLT_CACHE_MAX_GB,
     NATIVE_STDLIB_OBJECT_CACHE_DIRECTORY,
     SHARED_STDLIB_CACHE_DIRECTORY,
+    SHARED_SOURCE_RECORDS_DIRECTORY,
     WASM_LINK_CACHE_DIRECTORY,
     WASM_LINK_CACHE_FAMILIES,
     _default_molt_cache,
@@ -35,6 +39,10 @@ from molt.file_locks import (
     _release_file_lock,
     _try_acquire_file_lock,
 )
+
+
+if TYPE_CHECKING:
+    from molt.cli.source_record_store import SourceRecordMetadata
 
 
 def _default_cache_root() -> Path:
@@ -67,6 +75,16 @@ class PruneCompleted(TypedDict):
     bytes_remaining: int
     bytes_removed: int
     bytes_removed_human: str
+    bytes_basis: Literal["file-bytes-plus-source-record-payload-bytes"]
+    source_records_before: int
+    source_records_removed: int
+    source_record_payload_bytes_before: int
+    source_record_payload_bytes_removed: int
+    source_record_physical_before: dict[str, int | None] | None
+    source_record_physical_after: dict[str, int | None] | None
+    source_record_maintenance_failed: bool
+    source_record_maintenance_busy: bool
+    source_record_checkpoint_busy: bool | None
     protected_state: list[str]
     legacy_native_state: list[str]
 
@@ -204,8 +222,8 @@ def _collect_entries(
             "module_analysis",
             "module_lowering",
         } and _is_direct_directory(child):
-            # Published JSON leaves are immutable; readers copy on hydration and
-            # treat disappearance as a cache miss. Staging files remain owned.
+            # Retired file tiers remain cleanup-only namespaces. Older processes
+            # admit immutable leaves and tolerate a miss; stages remain owned.
             for leaf in _children(child):
                 if leaf.suffix == ".json" and leaf.is_file() and not leaf.is_symlink():
                     append(leaf)
@@ -276,10 +294,6 @@ def _collect_entries(
         # Unknown namespaces may own live mutable stages or persistent controls.
         # Their root is never an inferred recursive eviction unit.
     return entries
-
-
-# Match the maintenance cadence: hot readers need no metadata write per access.
-AUTOMATIC_PRUNE_INTERVAL_SECONDS = 300.0
 
 
 def _same_cache_generation(left: os.stat_result, right: os.stat_result) -> bool:
@@ -486,54 +500,196 @@ def _prune_locked(
 ) -> PruneCompleted:
     started = time.monotonic()
     entries = _collect_entries(cache_root, environ=environ)
-    inventory_elapsed = time.monotonic() - started
     before_bytes = sum(item.size_bytes for item in entries)
-    remaining = {entry.path: entry for entry in entries}
-    removed: list[CacheEntry] = []
-    attempted: set[Path] = set()
-    busy = failures = 0
+    before_count = len(entries)
+    total = before_bytes
+    removed_count = removed_bytes = busy = failures = 0
+    row_count = row_bytes = removed_rows = removed_row_bytes = 0
+    store_failed = store_busy = False
+    row_enabled = True
+    record_batch_rows = record_batch_bytes = 0
+    physical_before = physical_after = None
+    checkpoint_busy = None
+    store = maintenance = inventory = None
+    store_errors: tuple[type[Exception], ...] = ()
+    store_busy_errors: tuple[type[Exception], ...] = ()
+    with ExitStack() as stack:
+        record_root = cache_root / SHARED_SOURCE_RECORDS_DIRECTORY
+        if _is_direct_directory(record_root):
+            # Keep the ordinary file-only pruner lightweight and never create a
+            # database just to discover that there are no source records.
+            from molt.cli.source_record_store import (
+                STORE_NAME,
+                SOURCE_RECORD_BATCH_MAX_RECORDS,
+                SOURCE_RECORD_BATCH_MAX_BYTES,
+                SourceRecordUnavailable,
+                SourceRecordBusy,
+                source_record_store,
+            )
 
-    def remove(entry: CacheEntry) -> bool:
-        nonlocal busy, failures
-        attempted.add(entry.path)
-        outcome = _remove_entry(entry, dry_run)
-        if outcome == "removed":
-            removed.append(entry)
-            remaining.pop(entry.path)
-            return True
-        busy += outcome == "busy"
-        failures += outcome == "failed"
-        return False
+            database = record_root / STORE_NAME
+            if database.is_file() and not database.is_symlink():
+                record_batch_rows = SOURCE_RECORD_BATCH_MAX_RECORDS
+                record_batch_bytes = SOURCE_RECORD_BATCH_MAX_BYTES
+                store_errors = (SourceRecordUnavailable,)
+                store_busy_errors = (SourceRecordBusy,)
+                store = source_record_store(record_root)
+                physical_before = store.physical_bytes()
+                try:
+                    maintenance = stack.enter_context(
+                        store.maintenance(dry_run=dry_run)
+                    )
+                    inventory = maintenance.inventory()
+                    row_count, row_bytes = inventory.entries, inventory.size_bytes
+                except SourceRecordBusy:
+                    store_busy = True
+                    maintenance = None
+                except SourceRecordUnavailable:
+                    store_failed = True
+                    failures += 1
+                    maintenance = None
+        total += row_bytes
+        before_bytes += row_bytes
+        before_count += row_count
+        inventory_elapsed = time.monotonic() - started
 
-    if max_age_days is not None and max_age_days >= 0:
-        cutoff = time.time() - (max_age_days * 86400)
-        for entry in entries:
-            if entry.mtime < cutoff:
-                remove(entry)
+        def rows():
+            nonlocal store_failed, store_busy, failures
+            if maintenance is None or inventory is None:
+                return
+            try:
+                for observed in maintenance.iter_lru():
+                    if not row_enabled:
+                        return
+                    yield observed
+            except store_busy_errors:
+                store_busy = True
+            except store_errors:
+                store_failed = True
+                failures += 1
 
-    total = sum(item.size_bytes for item in remaining.values())
-    if max_bytes is not None and max_bytes >= 0 and total > max_bytes:
-        for entry in sorted(remaining.values(), key=_eviction_order):
-            if total <= max_bytes:
-                break
-            if entry.path not in attempted and remove(entry):
-                total -= entry.size_bytes
+        def order(entry):
+            if isinstance(entry, CacheEntry):
+                return _eviction_order(entry)
+            assert store is not None
+            return (
+                entry.used_ns / 1_000_000_000,
+                os.path.normcase(os.fspath(store.path / entry.kind / entry.key)),
+            )
 
-    removed_bytes = sum(item.size_bytes for item in removed)
+        cutoff = (
+            time.time() - max_age_days * 86400
+            if max_age_days is not None and max_age_days >= 0
+            else None
+        )
+        # SQL metadata and pending CAS decisions stay bounded; no write lock
+        # crosses a yield or filesystem operation. Only committed removals
+        # reduce the budget. A refused observation leaves later candidates live.
+        pending: list[SourceRecordMetadata] = []
+        pending_bytes = 0
+
+        def flush_rows() -> None:
+            nonlocal pending_bytes, total, removed_count, removed_bytes
+            nonlocal removed_rows, removed_row_bytes, busy, failures
+            nonlocal store_failed, row_enabled
+            if not pending:
+                return
+            assert maintenance is not None
+            batch = tuple(pending)
+            pending.clear()
+            pending_bytes = 0
+            try:
+                outcomes = maintenance.remove(batch)
+            except store_errors:
+                store_failed = True
+                row_enabled = False
+                failures += len(batch)
+                return
+            for observed, outcome in zip(batch, outcomes, strict=True):
+                if outcome == "removed":
+                    removed_count += 1
+                    removed_rows += 1
+                    removed_bytes += observed.size_bytes
+                    removed_row_bytes += observed.size_bytes
+                    total -= observed.size_bytes
+                else:
+                    busy += 1
+
+        budget_limit = max_bytes if max_bytes is not None and max_bytes >= 0 else None
+
+        def over_budget(size: int) -> bool:
+            return budget_limit is not None and size > budget_limit
+
+        for entry in heapq.merge(sorted(entries, key=order), rows(), key=order):
+            is_file = isinstance(entry, CacheEntry)
+            if is_file:
+                flush_rows()
+            elif not row_enabled:
+                continue
+            mtime = entry.mtime if is_file else entry.used_ns / 1e9
+            expired = cutoff is not None and mtime < cutoff
+            if not expired and not over_budget(total - pending_bytes):
+                flush_rows()
+                if not over_budget(total):
+                    break
+            if is_file:
+                outcome = _remove_entry(entry, dry_run)
+                if outcome == "removed":
+                    removed_count += 1
+                    removed_bytes += entry.size_bytes
+                    total -= entry.size_bytes
+                else:
+                    busy += outcome == "busy"
+                    failures += outcome == "failed"
+                continue
+            if pending and pending_bytes + entry.size_bytes > record_batch_bytes:
+                flush_rows()
+                if not row_enabled:
+                    continue
+            pending.append(entry)
+            pending_bytes += entry.size_bytes
+            if (
+                len(pending) >= record_batch_rows
+                or pending_bytes >= record_batch_bytes
+                or (budget_limit is not None and not over_budget(total - pending_bytes))
+            ):
+                flush_rows()
+        flush_rows()
+        if maintenance is not None:
+            try:
+                # Later sweeps must continue bounded freelist reclamation even
+                # when this sweep selected no new rows for removal.
+                maintenance.reclaim()
+                checkpoint_busy = maintenance.checkpoint_busy
+            except store_errors:
+                store_failed = True
+                failures += 1
+    if store is not None:
+        physical_after = store.physical_bytes()
     return {
         "status": "completed",
         "cache_root": str(cache_root),
-        "entries_before": len(entries),
+        "entries_before": before_count,
         "inventory_elapsed_seconds": inventory_elapsed,
         "elapsed_seconds": time.monotonic() - started,
-        "entries_removed": len(removed),
-        "entries_remaining": len(remaining),
+        "entries_removed": removed_count,
+        "entries_remaining": before_count - removed_count,
         "entries_busy": busy,
         "entries_failed": failures,
         "bytes_before": before_bytes,
-        "bytes_remaining": sum(item.size_bytes for item in remaining.values()),
+        "bytes_remaining": total,
         "bytes_removed": removed_bytes,
         "bytes_removed_human": _format_bytes(removed_bytes),
+        "bytes_basis": "file-bytes-plus-source-record-payload-bytes",
+        "source_records_before": row_count,
+        "source_records_removed": removed_rows,
+        "source_record_payload_bytes_before": row_bytes,
+        "source_record_payload_bytes_removed": removed_row_bytes,
+        "source_record_physical_before": physical_before,
+        "source_record_physical_after": physical_after,
+        "source_record_maintenance_failed": store_failed,
+        "source_record_maintenance_busy": store_busy,
+        "source_record_checkpoint_busy": checkpoint_busy,
         "protected_state": [
             str(path) for path in protected_cache_roots(cache_root, environ=environ)
         ],
@@ -592,7 +748,8 @@ def _prune(
 
     The persistent control lock records automatic attempts and completed sweeps.
     Automatic callers coalesce here before inventory, including failed attempts.
-    Explicit sweeps are unthrottled; dry runs do not change control state.
+    Explicit sweeps are unthrottled; dry runs do not write retention control
+    or payload state. SQLite may use its own WAL read-coordination sidecars.
     """
     if automatic and dry_run:
         raise ValueError("automatic cache retention cannot be a dry run")
@@ -660,7 +817,7 @@ def parse_args() -> argparse.Namespace:
         "--max-gb",
         type=float,
         default=None,
-        help="Maximum cache size in GiB after pruning.",
+        help="Maximum evictable file and source-payload budget in GiB.",
     )
     parser.add_argument(
         "--max-age-days",
@@ -671,7 +828,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--dry-run",
         action="store_true",
-        help="Compute what would be removed without deleting files.",
+        help="Compute removals without changing cached payloads.",
     )
     return parser.parse_args()
 
@@ -711,6 +868,31 @@ def main() -> int:
     print(f"failed.entries={result['entries_failed']}")
     print(f"removed.entries={result['entries_removed']}")
     print(f"removed.bytes={result['bytes_removed_human']}")
+    if (
+        result["source_records_before"]
+        or result["source_record_maintenance_failed"]
+        or result["source_record_maintenance_busy"]
+    ):
+        print(f"policy.bytes_basis={result['bytes_basis']}")
+        print(
+            f"source_records.maintenance_busy={result['source_record_maintenance_busy']}"
+        )
+        print(f"source_records.removed={result['source_records_removed']}")
+        print(
+            f"source_records.removed_payload_bytes={result['source_record_payload_bytes_removed']}"
+        )
+        print(
+            f"source_records.maintenance_failed={result['source_record_maintenance_failed']}"
+        )
+        print(
+            f"source_records.checkpoint_busy={result['source_record_checkpoint_busy']}"
+        )
+        for phase, measurements in (
+            ("before", result["source_record_physical_before"]),
+            ("after", result["source_record_physical_after"]),
+        ):
+            for name, size in (measurements or {}).items():
+                print(f"source_records.physical_{phase}.{name}={size}")
     print(f"dry_run={args.dry_run}")
     return 1 if result["entries_failed"] else 0
 

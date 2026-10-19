@@ -23,9 +23,9 @@ import pytest
 
 from molt.cli import frontend_execution as FE
 from molt.cli import frontend_worker as FW
-from molt.cli import module_cache as MC
 from molt.cli.models import _ModuleGraphMetadata
-from molt.cli.module_source import _ModuleSourceLease, _build_module_source_catalog
+from molt.cli.module_source import _build_module_source_catalog
+from tests.source_record_test_support import source_records
 from molt.target_python import _DEFAULT_TARGET_PYTHON_VERSION
 
 
@@ -41,8 +41,7 @@ def _clear_path_caches() -> None:
 @pytest.fixture(autouse=True)
 def _isolated(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setenv("MOLT_CACHE", str(tmp_path / "molt_cache"))
-    # Lowering slots live under the build-state root, which otherwise follows
-    # the shared Cargo target; a slot left there breaks the next run (HF-107).
+    # Source-qualified records must stay private to this test's cache.
     monkeypatch.setenv("MOLT_BUILD_STATE_DIR", str(tmp_path / "build_state"))
     monkeypatch.setenv("MOLT_SESSION_ID", "partial-progress")
     monkeypatch.delenv("MOLT_EXT_ROOT", raising=False)
@@ -115,12 +114,6 @@ def _run_batch(project_root: Path, module_graph: dict[str, Path]):
     )
 
 
-def _lowering_slot(project_root: Path, path: Path, name: str) -> Path:
-    return MC._module_lowering_cache_path(
-        project_root, path, module_name=name, is_package=False
-    )
-
-
 def test_completed_module_is_persisted_before_consume_loop(tmp_path: Path) -> None:
     """The good module's lowering is on disk right after the batch returns.
 
@@ -134,14 +127,18 @@ def test_completed_module_is_persisted_before_consume_loop(tmp_path: Path) -> No
     good.write_text("x = 1\ny = x + 2\n", encoding="utf-8")
     module_graph = {"good": good}
 
-    good_slot = _lowering_slot(project_root, good, "good")
-    assert not good_slot.exists()
+    assert source_records("module-lowering") == {}
 
     layer_state, batch_error, _detail, _broken = _run_batch(project_root, module_graph)
     assert batch_error is None
     assert layer_state.results["good"]["ok"] is True
     # Persisted THE MOMENT it succeeded -- no consume loop was run.
-    assert good_slot.is_file()
+    records = source_records("module-lowering")
+    assert list(records) == [layer_state.context_digests["good"]]
+    assert (
+        records[layer_state.context_digests["good"]]["result"]["functions"]
+        == layer_state.results["good"]["functions"]
+    )
 
 
 def test_sibling_failure_does_not_forfeit_completed_module(tmp_path: Path) -> None:
@@ -159,69 +156,49 @@ def test_sibling_failure_does_not_forfeit_completed_module(tmp_path: Path) -> No
     boom.write_text("def broken(:\n    pass\n", encoding="utf-8")  # SyntaxError
     module_graph = {"good": good, "boom": boom}
 
-    good_slot = _lowering_slot(project_root, good, "good")
-    boom_slot = _lowering_slot(project_root, boom, "boom")
-
     layer_state, batch_error, _detail, _broken = _run_batch(project_root, module_graph)
     assert batch_error is None
     assert layer_state.results["good"]["ok"] is True
     assert layer_state.results["boom"]["ok"] is False  # syntax error
 
     # Completed module persisted; failed module did not (nothing to reuse).
-    assert good_slot.is_file()
-    assert not boom_slot.exists()
+    records = source_records("module-lowering")
+    assert list(records) == [layer_state.context_digests["good"]]
+    assert (
+        records[layer_state.context_digests["good"]]["result"]["functions"]
+        == layer_state.results["good"]["functions"]
+    )
+    assert (
+        "boom" not in layer_state.context_digests
+        or layer_state.context_digests["boom"] not in records
+    )
 
 
-def test_persisted_completed_module_reused_on_retry(tmp_path: Path) -> None:
-    """After a partial batch, a fresh session hydrates the completed module.
-
-    Proves the eager write reaches the SHARED tier too, so a retry in a new
-    session pays zero re-lower for the already-completed module.
-    """
+def test_persisted_completed_module_reused_on_retry(tmp_path, monkeypatch):
     project_root = tmp_path / "proj"
     (project_root / "src").mkdir(parents=True)
-    good = project_root / "src" / "good.py"
+    good = project_root / "src/good.py"
     good.write_text("value = 7\nsquared = value * value\n", encoding="utf-8")
-
-    _run_batch(project_root, {"good": good})
-
-    shared = MC._shared_module_lowering_cache_path_for(
-        good,
-        module_name="good",
-        is_package=False,
-        context_digest=_context_digest(project_root, good, "good"),
+    first, error, detail, broken = _run_batch(project_root, {"good": good})
+    assert error is None and detail is None and not broken
+    assert first.context_digests["good"] in source_records("module-lowering")
+    monkeypatch.setenv("MOLT_SESSION_ID", "partial-progress-retry")
+    _clear_path_caches()
+    monkeypatch.setattr(
+        FW,
+        "_frontend_lower_module_worker",
+        lambda *_a, **_k: pytest.fail("completed module lowered again on retry"),
     )
-    assert shared is not None and shared.is_file()
-
-
-def _context_digest(project_root: Path, path: Path, name: str) -> str:
-    digest = MC._module_lowering_context_digest_for_module(
-        name,
-        path,
-        source_lease=_ModuleSourceLease.path_backed(path),
-        logical_source_path=str(path),
-        module_execution_kind="imported",
-        is_package=False,
-        known_classes_snapshot={},
-        parse_codec="msgpack",
-        type_hint_policy="ignore",
-        fallback_policy="error",
-        type_facts=None,
-        enable_phi=True,
-        known_modules={name},
-        stdlib_allowlist=(),
-        known_func_defaults={},
-        known_func_kinds={},
-        module_deps={name: set()},
-        module_is_namespace=False,
-        module_chunking=False,
-        module_chunk_max_ops=0,
-        optimization_profile="dev",
-        pgo_hot_function_names=(),
-        module_dep_closures={name: frozenset({name})},
+    retry, error, detail, broken = _run_batch(project_root, {"good": good})
+    assert error is None and detail is None and not broken
+    assert retry.results["good"]["functions"] == first.results["good"]["functions"]
+    seeds = retry.results["good"]["function_digest_seeds"]
+    assert seeds and all(
+        seed.function is function
+        for seed, function in zip(
+            seeds, retry.results["good"]["functions"], strict=True
+        )
     )
-    assert digest is not None
-    return digest
 
 
 @pytest.mark.parametrize("defect", ["source", "stamp"])
@@ -231,7 +208,7 @@ def test_changed_worker_generation_is_terminal_and_never_persisted(
     path = tmp_path / "good.py"
     path.write_text("VALUE = 1\n", encoding="utf-8")
     original_stat = path.stat()
-    slot = _lowering_slot(tmp_path, path, "good")
+    assert source_records("module-lowering") == {}
     lower = FW._frontend_lower_module_worker
 
     def changed_worker(payload: dict[str, Any]) -> dict[str, Any]:
@@ -251,4 +228,4 @@ def test_changed_worker_generation_is_terminal_and_never_persisted(
     assert detail is None
     assert broken is False
     assert "good" not in state.results
-    assert not slot.exists()
+    assert source_records("module-lowering") == {}

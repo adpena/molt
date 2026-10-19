@@ -2355,8 +2355,8 @@ name = "MOLT_DISABLE_FRONTEND_LOWERING_CACHE"
 audience = "user"
 kind = "bool"
 default = "0"
-owner = "src/molt/cli/module_frontend_cache.py"
-summary = "Disables the persistent frontend analysis and lowering cache so every module is re-analysed and re-lowered from source; 1, true, yes or on disables both the shared content-addressed tier and session-local reads, default off."
+owner = "src/molt/cli/module_cache.py"
+summary = "Disables the persistent frontend analysis and lowering cache so every module is re-analysed and re-lowered from source; 1, true, yes or on disables shared source-store analysis/lowering reads and writes, default off."
 
 [[variable]]
 name = "MOLT_DISABLE_GUARD_ELIM"
@@ -5550,6 +5550,14 @@ kind = "bool"
 default = "0"
 owner = "runtime/molt-passes/src/tir/pass_manager.rs"
 summary = "Set to exactly 1 to run the per-pass analysis self-check after every TIR pass in the pass manager; unset or any other value skips the check."
+
+[[variable]]
+name = "MOLT_VERIFY_FUNCTION_DIGESTS"
+audience = "developer"
+kind = "bool"
+default = "0"
+owner = "src/molt/cli/cache_keys.py"
+summary = "Set to exactly 1 to re-encode and verify admitted function digest seeds once when constructing the compiler cache digest owner; unset or any other value uses the verified persisted digest directly. Adds no emitted-program checks."
 
 [[variable]]
 name = "MOLT_VERIFY_SIGNATURE"

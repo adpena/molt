@@ -902,11 +902,26 @@ fail closed; the inventory itself makes no claim about current file bytes.
   builds across a whole differential run.
 - `MOLT_CLI_PROFILE=<dir>/{pid}.prof` writes a cProfile of each `molt` command;
   `{pid}` keeps parallel builds apart. Read it with `python -m pstats`.
-- Import scans and intrinsic source facts persist in one SQLite table,
-  `source_records.sqlite` (`molt.cli.source_record_store`). A project's own sources
-  keep their records in its build state root; the toolchain stdlib's records live
-  once in `<Molt cache>/toolchain_source_records`, shared by every project. Each
-  store keeps the four newest compiler generations used within a week.
+- Import scans, intrinsic source facts, module analyses and binary module
+  lowerings share `source_records.sqlite` under
+  `<Molt cache>/toolchain_source_records` (`molt.cli.source_record_store`). Every
+  project/session uses that store; no project copy is hydrated. Source/context
+  admission precedes recency refresh. Existing generation retirement keeps at
+  most four generations used within a week; the global byte/age cache budget
+  also includes all four record kinds. Run the existing `molt_cache_prune.py`
+  command to inspect or apply it. Its totals combine file bytes and logical
+  source payload bytes; separate DB/WAL/SHM measurements report physical storage.
+  A peer snapshot can defer physical reclamation. Row deletion uses bounded
+  transactions (256 rows/1 MiB, with one oversized row allowed), and later sweeps
+  continue bounded vacuum work even when no new rows are removed. BUSY deferral
+  is reported separately from maintenance failure. Dry-run never changes rows,
+  schema or checkpoints, though SQLite may manage WAL coordination sidecars.
+  Corruption makes this optional cache unavailable without deleting peer-owned
+  database files. Lowering schema and digest ownership are defined in
+  [the IR contract](spec/areas/compiler/SIMPLE_IR_JSON_SCHEMA.md).
+- `MOLT_VERIFY_FUNCTION_DIGESTS=1` re-encodes persisted function digest seeds once
+  during compiler cache setup for debugging. Ordinary builds reuse admitted
+  unchanged bodies without that walk. It adds no emitted-program work.
 - A `molt` process paces the collector for its large heap and ends without
   freeing it (`molt.compiler_process`). A profiler or debugger that runs the
   module, such as `python -m cProfile -o out.prof -m molt.cli build ...`, still

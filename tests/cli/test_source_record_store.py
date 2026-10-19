@@ -1,11 +1,14 @@
-"""The per-source record store keeps, replaces, retires and recovers records."""
+"""Source records retain opaque values and fail without unlinking peer state."""
 
 from __future__ import annotations
 
+import json
 import multiprocessing
 import os
 import sqlite3
 import time
+from concurrent.futures import ThreadPoolExecutor
+from contextlib import closing
 from pathlib import Path
 
 import pytest
@@ -28,11 +31,12 @@ def test_records_round_trip_per_kind_and_key(tmp_path: Path) -> None:
     assert store.put("intrinsic-facts", "k1", b"[1,2]", generation="g")
 
     assert (
-        store.get("import-scan", "k1", generation="g", max_bytes=_LIMIT)
+        store.get("import-scan", "k1", generation="g", max_bytes=_LIMIT).payload
         == b"\x00\xffopaque\n"
     )
     assert (
-        store.get("intrinsic-facts", "k1", generation="g", max_bytes=_LIMIT) == b"[1,2]"
+        store.get("intrinsic-facts", "k1", generation="g", max_bytes=_LIMIT).payload
+        == b"[1,2]"
     )
     assert store.get("import-scan", "k2", generation="g", max_bytes=_LIMIT) is None
 
@@ -42,7 +46,10 @@ def test_a_later_record_replaces_the_earlier_one(tmp_path: Path) -> None:
     store.put("import-scan", "k", b"old", generation="g")
     store.put("import-scan", "k", b"new", generation="g")
 
-    assert store.get("import-scan", "k", generation="g", max_bytes=_LIMIT) == b"new"
+    assert (
+        store.get("import-scan", "k", generation="g", max_bytes=_LIMIT).payload
+        == b"new"
+    )
     with sqlite3.connect(tmp_path / records.STORE_NAME) as connection:
         assert connection.execute("SELECT count(*) FROM records").fetchone() == (1,)
 
@@ -64,9 +71,11 @@ def test_size_limit_rejects_before_materializing_payload(tmp_path: Path) -> None
     connection.row_factory = observe_payload
     assert store.get("import-scan", "big", generation="g", max_bytes=63) is None
     assert materialized == []
-    assert store.get("import-scan", "big", generation="g", max_bytes=64) == payload
+    assert (
+        store.get("import-scan", "big", generation="g", max_bytes=64).payload == payload
+    )
     assert materialized == [payload]
-    assert store.get("import-scan", "empty", generation="g", max_bytes=0) == b""
+    assert store.get("import-scan", "empty", generation="g", max_bytes=0).payload == b""
 
 
 def test_non_blob_rows_are_misses_and_non_bytes_writes_refused(tmp_path: Path) -> None:
@@ -79,16 +88,42 @@ def test_non_blob_rows_are_misses_and_non_bytes_writes_refused(tmp_path: Path) -
     assert store.get("import-scan", "text", generation="g", max_bytes=_LIMIT) is None
 
 
-def test_another_process_reads_what_this_process_wrote(tmp_path: Path) -> None:
-    _store(tmp_path).put("import-scan", "k", b"\x00child\xff", generation="g")
-    with multiprocessing.get_context("spawn").Pool(1) as pool:
-        seen = pool.apply(_read_in_child, (str(tmp_path),))
-    assert seen == b"\x00child\xff"
+@pytest.mark.parametrize(
+    "method",
+    [
+        name
+        for name in ("spawn", "fork")
+        if name in multiprocessing.get_all_start_methods()
+    ],
+)
+def test_another_process_reads_what_this_process_wrote(
+    tmp_path: Path, method: str
+) -> None:
+    parent = records.source_record_store(tmp_path)
+    assert parent.put("import-scan", "k", b"\x00child\xff", generation="g")
+    connection = parent._connect()
+    assert connection is not None
+    # An inherited parent connection would incorrectly retain this transaction.
+    connection.execute("BEGIN").close()
+    try:
+        with multiprocessing.get_context(method).Pool(1) as pool:
+            seen, in_transaction, pid = pool.apply(_read_in_child, (str(tmp_path),))
+        assert seen == b"\x00child\xff"
+        assert not in_transaction and pid != os.getpid()
+    finally:
+        connection.execute("ROLLBACK").close()
 
 
 def _read_in_child(root: str) -> object:
     store = records.source_record_store(Path(root))
-    return store.get("import-scan", "k", generation="g", max_bytes=_LIMIT)
+    record = store.get("import-scan", "k", generation="g", max_bytes=_LIMIT)
+    connection = store._connect()
+    assert connection is not None
+    return (
+        record.payload if record is not None else None,
+        connection.in_transaction,
+        os.getpid(),
+    )
 
 
 def test_retired_generations_lose_their_records(
@@ -108,7 +143,7 @@ def test_retired_generations_lose_their_records(
         index
         for index in range(6)
         if _store(tmp_path).get(
-            "import-scan", f"k{index}", generation="probe", max_bytes=_LIMIT
+            "import-scan", f"k{index}", generation=f"g{index}", max_bytes=_LIMIT
         )
         is not None
     }
@@ -127,19 +162,40 @@ def test_retired_generations_lose_their_records(
     assert survivors == {"fresh"}
 
 
-def test_a_corrupt_store_is_recreated(tmp_path: Path) -> None:
+def test_corrupt_store_is_unavailable_without_unlinking_peer_files(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     path = tmp_path / records.STORE_NAME
-    path.write_bytes(b"not a database" * 512)
+    original = b"not a database" * 512
+    path.write_bytes(original)
+    before = (path.stat().st_ino, path.read_bytes())
+    # SQLite owns its WAL/SHM lifecycle and may remove malformed sidecars on
+    # close. Trap application-level unlinking; a real live-peer test below
+    # independently proves that a database error preserves admitted peer data.
+    original_unlink = Path.unlink
+    protected = {
+        path,
+        path.with_name(path.name + "-wal"),
+        path.with_name(path.name + "-shm"),
+    }
 
+    def refuse_application_unlink(candidate, *args, **kwargs):
+        assert candidate not in protected, "Molt must not unlink a peer-owned store"
+        return original_unlink(candidate, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "unlink", refuse_application_unlink)
     store = _store(tmp_path)
-    assert store.get("import-scan", "k", generation="g", max_bytes=_LIMIT) is None
-    store.put("import-scan", "k", b"recovered", generation="g")
-    assert (
-        store.get("import-scan", "k", generation="g", max_bytes=_LIMIT) == b"recovered"
-    )
-    assert sqlite3.connect(path).execute(
-        "SELECT typeof(payload), payload FROM records"
-    ).fetchone() == ("blob", b"recovered")
+    with path.open("rb") as peer:
+        assert store.get("import-scan", "k", generation="g", max_bytes=_LIMIT) is None
+        assert peer.read() == original
+
+        def no_reconnect(*args, **kwargs):
+            pytest.fail("known corrupt optional store must not repeatedly reconnect")
+
+        monkeypatch.setattr(records.sqlite3, "connect", no_reconnect)
+        assert store.put("import-scan", "k", b"recovered", generation="g") is False
+        assert store.get("import-scan", "k", generation="g", max_bytes=_LIMIT) is None
+    assert (path.stat().st_ino, path.read_bytes()) == before
 
 
 @pytest.mark.skipif(
@@ -156,3 +212,524 @@ def test_an_unwritable_state_root_refuses_records(tmp_path: Path) -> None:
         assert store.get("import-scan", "k", generation="g", max_bytes=_LIMIT) is None
     finally:
         root.chmod(0o700)
+
+
+@pytest.mark.parametrize(
+    "kind", ["import-scan", "intrinsic-facts", "module-analysis", "module-lowering"]
+)
+def test_all_kinds_return_immutable_observations(
+    tmp_path: Path, kind: records.RecordKind
+) -> None:
+    from dataclasses import FrozenInstanceError
+
+    store = _store(tmp_path)
+    assert store.put(kind, "key", b"opaque", generation="g")
+    observed = store.get(kind, "key", generation="g", max_bytes=None)
+    assert observed is not None
+    assert (observed.kind, observed.key, observed.generation, observed.payload) == (
+        kind,
+        "key",
+        "g",
+        b"opaque",
+    )
+    assert len(observed.revision) == 16 and observed.used_ns > 0
+    with pytest.raises(FrozenInstanceError):
+        setattr(observed, "payload", b"changed")
+    assert store.get(kind, "key", generation="other", max_bytes=None) is None
+
+
+def test_uncapped_lowering_exceeds_analysis_allocation_bound(tmp_path: Path) -> None:
+    store = _store(tmp_path)
+    payload = b"x" * ((16 << 20) + 1)
+    assert store.put("module-lowering", "large", payload, generation="g")
+    assert (
+        store.get("module-lowering", "large", generation="g", max_bytes=16 << 20)
+        is None
+    )
+    admitted = store.get("module-lowering", "large", generation="g", max_bytes=None)
+    assert admitted is not None and admitted.payload == payload
+
+
+def test_only_admitted_use_refreshes_and_stale_observations_cannot_renew(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    clock = [100 * _DAY]
+    install_module_view(monkeypatch, "time", time, records, time_ns=lambda: clock[0])
+    store = _store(tmp_path)
+    assert store.put("module-lowering", "k", b'{"valid": true}', generation="g")
+    assert store.put("module-lowering", "invalid", b"{invalid", generation="g")
+    original = store.get("module-lowering", "k", generation="g", max_bytes=None)
+    assert original is not None
+    clock[0] += 301 * 1_000_000_000
+    invalid = store.get("module-lowering", "invalid", generation="g", max_bytes=None)
+    assert invalid is not None
+    with pytest.raises(json.JSONDecodeError):
+        json.loads(invalid.payload)
+    connection = store._connect()
+    assert connection is not None
+    assert connection.execute(
+        "SELECT used_ns FROM records WHERE key = 'invalid'"
+    ).fetchone() == (original.used_ns,)
+    stale = store.get("module-lowering", "k", generation="g", max_bytes=None)
+    assert stale is not None
+    # Successful independent semantic admission precedes either refresh.
+    assert json.loads(original.payload) == json.loads(stale.payload) == {"valid": True}
+    assert original.refresh()
+    assert not stale.refresh()
+    refreshed = store.get("module-lowering", "k", generation="g", max_bytes=None)
+    assert refreshed is not None and refreshed.used_ns == clock[0]
+    assert not refreshed.refresh()
+    assert store.put("module-lowering", "k", b"replacement", generation="g")
+    replacement = store.get("module-lowering", "k", generation="g", max_bytes=None)
+    assert replacement is not None and replacement.revision != refreshed.revision
+    clock[0] += 301 * 1_000_000_000
+    assert not refreshed.refresh()
+    latest = store.get("module-lowering", "k", generation="g", max_bytes=None)
+    assert latest is not None and latest.used_ns == replacement.used_ns
+    assert connection.execute(
+        "SELECT used_ns FROM records WHERE key = 'invalid'"
+    ).fetchone() == (original.used_ns,)
+
+
+def test_metadata_pages_do_not_select_payload_and_deletion_is_observation_fenced(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    clock = [100 * _DAY]
+    install_module_view(monkeypatch, "time", time, records, time_ns=lambda: clock[0])
+    monkeypatch.setattr(records, "_PAGE_SIZE", 2)
+    store = _store(tmp_path)
+    for index in range(5):
+        assert store.put(
+            "module-analysis", str(index), bytes([index]) * 10000, generation="g"
+        )
+    with store.maintenance(dry_run=False) as maintenance:
+
+        def metadata_only(cursor, row):
+            assert "payload" not in {column[0] for column in cursor.description}
+            assert all(
+                not isinstance(value, bytes) or len(value) == 16 for value in row
+            )
+            return row
+
+        maintenance._connection.row_factory = metadata_only
+        inventory = maintenance.inventory()
+        observed = list(maintenance.iter_lru())
+        assert [row.key for row in observed] == [str(i) for i in range(5)]
+        assert inventory.entries == 5 and inventory.size_bytes == 50000
+        candidate = store.get("module-analysis", "0", generation="g", max_bytes=None)
+        assert candidate is not None
+        clock[0] += 301 * 1_000_000_000
+        assert candidate.refresh()
+        assert store.put("module-analysis", "1", b"replacement", generation="g")
+        assert maintenance.remove(observed[:3]) == ("busy", "busy", "removed")
+    assert store.get("module-analysis", "0", generation="g", max_bytes=None) is not None
+    assert (
+        store.get("module-analysis", "1", generation="g", max_bytes=None).payload
+        == b"replacement"
+    )
+    assert store.get("module-analysis", "2", generation="g", max_bytes=None) is None
+
+
+def test_old_four_column_store_migrates_without_losing_opaque_payload(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / records.STORE_NAME
+    with sqlite3.connect(path) as connection:
+        connection.execute("PRAGMA auto_vacuum=INCREMENTAL")
+        connection.execute("PRAGMA journal_mode=WAL")
+        connection.executescript(
+            "CREATE TABLE records(kind TEXT NOT NULL, key TEXT NOT NULL, generation TEXT NOT NULL, payload BLOB NOT NULL, PRIMARY KEY(kind,key)) WITHOUT ROWID; CREATE TABLE generations(generation TEXT PRIMARY KEY, used_ns INTEGER NOT NULL) WITHOUT ROWID;"
+        )
+        connection.execute(
+            "INSERT INTO generations VALUES (?,?)", ("g", time.time_ns())
+        )
+        connection.execute(
+            "INSERT INTO records VALUES (?,?,?,?)",
+            ("import-scan", "old", "g", b"\x00old\xff"),
+        )
+    store = _store(tmp_path)
+    observed = store.get("import-scan", "old", generation="g", max_bytes=_LIMIT)
+    assert (
+        observed is not None
+        and observed.payload == b"\x00old\xff"
+        and len(observed.revision) == 16
+    )
+    assert store.put("module-lowering", "new", b"new", generation="g")
+    with sqlite3.connect(path) as connection:
+        assert {row[1] for row in connection.execute("PRAGMA table_info(records)")} == {
+            "kind",
+            "key",
+            "generation",
+            "payload",
+            "revision",
+            "used_ns",
+        }
+        assert connection.execute("SELECT count(*) FROM records").fetchone() == (2,)
+        assert connection.execute("PRAGMA auto_vacuum").fetchone() == (2,)
+
+
+def test_concurrent_connections_keep_all_record_kinds(tmp_path: Path) -> None:
+    kinds: tuple[records.RecordKind, ...] = (
+        "import-scan",
+        "intrinsic-facts",
+        "module-analysis",
+        "module-lowering",
+    )
+
+    def write(index):
+        store = _store(tmp_path)
+        return store.put(
+            kinds[index % 4], str(index), str(index).encode(), generation="g"
+        )
+
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        assert all(pool.map(write, range(20)))
+    with _store(tmp_path).maintenance(dry_run=True) as maintenance:
+        assert maintenance.inventory().entries == 20
+
+
+def test_database_error_closes_only_owned_connection_and_preserves_live_peer(
+    tmp_path: Path,
+) -> None:
+    store = _store(tmp_path)
+    assert store.put("module-analysis", "k", b"peer payload", generation="g")
+    identity = store.path.stat().st_ino
+    with sqlite3.connect(store.path) as peer:
+        own = store._connect()
+        assert own is not None
+        own.set_authorizer(
+            lambda action, *_args: (
+                sqlite3.SQLITE_DENY
+                if action == sqlite3.SQLITE_SELECT
+                else sqlite3.SQLITE_OK
+            )
+        )
+        assert store.get("module-analysis", "k", generation="g", max_bytes=None) is None
+        assert (
+            store.put("module-analysis", "k", b"must not replace", generation="g")
+            is False
+        )
+        assert peer.execute("SELECT payload FROM records").fetchone() == (
+            b"peer payload",
+        )
+        assert store.path.stat().st_ino == identity
+
+
+@pytest.mark.parametrize("failure", ["readonly", "full"])
+def test_sqlite_write_refusal_preserves_existing_records(
+    tmp_path: Path, failure: str
+) -> None:
+    store = _store(tmp_path)
+    assert store.put("module-lowering", "old", b"preserved", generation="g")
+    connection = store._connect()
+    assert connection is not None
+    if failure == "readonly":
+        connection.execute("PRAGMA query_only = ON").close()
+    else:
+        pages = connection.execute("PRAGMA page_count").fetchone()[0]
+        connection.execute(f"PRAGMA max_page_count = {pages}").close()
+    assert not store.put("module-lowering", "new", b"x" * 100000, generation="g")
+    old = store.get("module-lowering", "old", generation="g", max_bytes=None)
+    assert old is not None and old.payload == b"preserved"
+    assert connection.execute("SELECT count(*) FROM records").fetchone() == (1,)
+
+
+def test_busy_writer_remains_optional_and_does_not_block_wal_reads(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    assert _store(tmp_path).put("module-analysis", "k", b"preserved", generation="g")
+    monkeypatch.setattr(records, "_BUSY_TIMEOUT_SECONDS", 0)
+    store = _store(tmp_path)
+    assert store._connect() is not None
+    with sqlite3.connect(store.path, isolation_level=None) as peer:
+        peer.execute("BEGIN IMMEDIATE").close()
+        try:
+            assert not store.put(
+                "module-analysis", "new", b"not stored", generation="other"
+            )
+            observed = store.get("module-analysis", "k", generation="g", max_bytes=None)
+            assert observed is not None and observed.payload == b"preserved"
+        finally:
+            peer.execute("ROLLBACK").close()
+
+
+@pytest.mark.parametrize("operation", ["remove", "reclaim"])
+def test_maintenance_refuses_a_live_writer_without_failure_or_retry(
+    tmp_path: Path, operation: str
+) -> None:
+    store = _store(tmp_path)
+    assert store.put("module-analysis", "k", b"preserved", generation="g")
+    with store.maintenance(dry_run=False) as maintenance:
+        observed = next(maintenance.iter_lru())
+        assert maintenance._current.execute("PRAGMA busy_timeout").fetchone() == (0,)
+        statements = []
+        maintenance._current.set_trace_callback(statements.append)
+        with closing(sqlite3.connect(store.path, isolation_level=None)) as peer:
+            peer.execute("BEGIN IMMEDIATE").close()
+            try:
+                # Independent engine oracle: a real conflicting writer owns the
+                # lock, not a mocked operational-error spelling.
+                with pytest.raises(sqlite3.OperationalError) as engine:
+                    maintenance._current.execute("DELETE FROM records")
+                assert engine.value.sqlite_errorcode & 0xFF == sqlite3.SQLITE_BUSY
+                statements.clear()
+                if operation == "remove":
+                    assert maintenance.remove([observed]) == ("busy",)
+                    assert sum(sql == "BEGIN IMMEDIATE" for sql in statements) == 1
+                    assert not any(sql.startswith("DELETE") for sql in statements)
+                else:
+                    maintenance.reclaim()
+                    assert maintenance._snapshot_closed
+                    assert maintenance.checkpoint_busy is True
+                    assert sum("incremental_vacuum" in sql for sql in statements) == 1
+                    assert sum("wal_checkpoint" in sql for sql in statements) <= 1
+                assert peer.execute("SELECT payload FROM records").fetchall() == [
+                    (b"preserved",)
+                ]
+            finally:
+                peer.execute("ROLLBACK").close()
+    assert not store._unavailable
+    current = store.get("module-analysis", "k", generation="g", max_bytes=None)
+    assert current is not None and current.payload == b"preserved"
+
+
+def test_extended_busy_snapshot_is_a_refusal_and_preserves_the_new_record(
+    tmp_path: Path,
+) -> None:
+    store = _store(tmp_path)
+    assert store.put("module-analysis", "k", b"old", generation="g")
+    with store.maintenance(dry_run=False) as maintenance:
+        # Force a real stale read-to-write promotion on the current connection
+        # to exercise SQLite's extended BUSY category, not an invented error.
+        maintenance._current.execute("BEGIN").close()
+        cursor = maintenance._current.execute("SELECT payload FROM records")
+        assert cursor.fetchone() == (b"old",)
+        cursor.close()
+        assert store.put("module-analysis", "k", b"replacement", generation="g")
+        with pytest.raises(sqlite3.OperationalError) as engine:
+            maintenance._current.execute("DELETE FROM records")
+        assert engine.value.sqlite_errorcode == sqlite3.SQLITE_BUSY_SNAPSHOT
+        with pytest.raises(records.SourceRecordBusy) as refused:
+            with maintenance._cursor("DELETE FROM records", current=True):
+                pass
+        assert refused.value.__cause__.sqlite_errorcode == sqlite3.SQLITE_BUSY_SNAPSHOT
+    current = store.get("module-analysis", "k", generation="g", max_bytes=None)
+    assert current is not None and current.payload == b"replacement"
+
+
+@pytest.mark.parametrize("operation", ["remove", "reclaim"])
+def test_other_operational_errors_remain_failures(
+    tmp_path: Path, operation: str
+) -> None:
+    store = _store(tmp_path)
+    assert store.put("module-analysis", "keep", b"preserved", generation="g")
+    assert store.put("module-analysis", "victim", b"x" * 100000, generation="g")
+    with store.maintenance(dry_run=False) as maintenance:
+        observed = {row.key: row for row in maintenance.iter_lru()}
+        if operation == "reclaim":
+            assert maintenance.remove([observed["victim"]]) == ("removed",)
+            assert maintenance._current.execute("PRAGMA freelist_count").fetchone()[0]
+        maintenance._current.execute("PRAGMA query_only = ON").close()
+        with pytest.raises(records.SourceRecordUnavailable) as refused:
+            if operation == "remove":
+                maintenance.remove([observed["keep"]])
+            else:
+                maintenance.reclaim()
+        assert not isinstance(refused.value, records.SourceRecordBusy)
+        cause = refused.value.__cause__
+        assert isinstance(cause, sqlite3.OperationalError)
+        assert cause.sqlite_errorcode & 0xFF == sqlite3.SQLITE_READONLY
+        assert maintenance.checkpoint_busy is None
+    current = store.get("module-analysis", "keep", generation="g", max_bytes=None)
+    assert current is not None and current.payload == b"preserved"
+
+
+def test_same_connection_locked_error_is_not_classified_as_writer_contention(
+    tmp_path: Path,
+) -> None:
+    store = _store(tmp_path)
+    for number in range(3):
+        assert store.put("module-analysis", str(number), b"preserved", generation="g")
+    with store.maintenance(dry_run=False) as maintenance:
+        cursor = maintenance._current.execute("SELECT key FROM records")
+        assert cursor.fetchone() is not None
+        try:
+            with pytest.raises(records.SourceRecordUnavailable) as refused:
+                with maintenance._cursor("DROP TABLE records", current=True):
+                    pass
+            assert not isinstance(refused.value, records.SourceRecordBusy)
+            cause = refused.value.__cause__
+            assert isinstance(cause, sqlite3.OperationalError)
+            assert cause.sqlite_errorcode == sqlite3.SQLITE_LOCKED
+        finally:
+            cursor.close()
+    with store.maintenance(dry_run=True) as maintenance:
+        assert maintenance.inventory().entries == 3
+
+
+def test_batch_admission_and_single_oversized_record(
+    tmp_path: Path,
+) -> None:
+    store = _store(tmp_path)
+    assert store.put("module-lowering", "large", b"x" * ((1 << 20) + 1), generation="g")
+    assert store.put("module-analysis", "small", b"preserved", generation="g")
+    with store.maintenance(dry_run=False) as maintenance:
+        observed = {row.key: row for row in maintenance.iter_lru()}
+        statements = []
+        maintenance._current.set_trace_callback(statements.append)
+        assert maintenance.remove([]) == ()
+        with pytest.raises(ValueError, match="record bound"):
+            maintenance.remove([observed["small"]] * 257)
+        with pytest.raises(ValueError, match="payload bound"):
+            maintenance.remove([observed["large"], observed["small"]])
+        assert statements == [], "oversized batches must fail before any SQL"
+        assert maintenance.remove([observed["large"]]) == ("removed",)
+        assert statements.count("BEGIN IMMEDIATE") == 1
+        assert statements.count("COMMIT") == 1
+        assert not maintenance._current.in_transaction
+    current = store.get("module-analysis", "small", generation="g", max_bytes=None)
+    assert current is not None and current.payload == b"preserved"
+
+
+def test_dry_run_batch_forecasts_in_order_without_writing(tmp_path: Path) -> None:
+    store = _store(tmp_path)
+    for key in ("first", "second", "third"):
+        assert store.put("module-analysis", key, key.encode(), generation="g")
+    with store.maintenance(dry_run=True) as maintenance:
+        observed = {row.key: row for row in maintenance.iter_lru()}
+        assert store.put("module-analysis", "second", b"replacement", generation="g")
+        statements = []
+        maintenance._current.set_trace_callback(statements.append)
+        assert maintenance.remove(
+            [observed["third"], observed["second"], observed["first"]]
+        ) == ("removed", "busy", "removed")
+        assert statements.count("BEGIN") == 1
+        assert statements.count("COMMIT") == 1
+        assert not maintenance._current.in_transaction
+        assert not any(
+            sql.startswith(("INSERT", "UPDATE", "DELETE", "BEGIN IMMEDIATE"))
+            for sql in statements
+        )
+    with closing(sqlite3.connect(store.path)) as connection:
+        assert connection.execute(
+            "SELECT key,payload FROM records ORDER BY key"
+        ).fetchall() == [
+            ("first", b"first"),
+            ("second", b"replacement"),
+            ("third", b"third"),
+        ]
+
+
+@pytest.mark.parametrize("phase", ["statement", "commit"])
+def test_batch_failures_roll_back_every_staged_deletion(
+    tmp_path: Path, phase: str
+) -> None:
+    store = _store(tmp_path)
+    for key in ("first", "second", "third"):
+        assert store.put("module-analysis", key, key.encode(), generation="g")
+    with store.maintenance(dry_run=False) as maintenance:
+        observed = {row.key: row for row in maintenance.iter_lru()}
+        if phase == "statement":
+            maintenance._current.execute(
+                "CREATE TRIGGER refuse_second BEFORE DELETE ON records"
+                " WHEN old.key='second' BEGIN SELECT RAISE(ABORT,'refused'); END"
+            ).close()
+            expected_code = sqlite3.SQLITE_CONSTRAINT_TRIGGER
+        else:
+            maintenance._current.execute("PRAGMA foreign_keys=ON").close()
+            maintenance._current.executescript(
+                "CREATE TABLE parent(id INTEGER PRIMARY KEY);"
+                "CREATE TABLE child(id INTEGER REFERENCES parent(id)"
+                " DEFERRABLE INITIALLY DEFERRED);"
+                "CREATE TRIGGER refuse_commit AFTER DELETE ON records"
+                " WHEN old.key='second' BEGIN INSERT INTO child VALUES(1); END;"
+            )
+            expected_code = sqlite3.SQLITE_CONSTRAINT_FOREIGNKEY
+        statements = []
+        maintenance._current.set_trace_callback(statements.append)
+        with pytest.raises(records.SourceRecordUnavailable) as refused:
+            maintenance.remove(
+                [observed["first"], observed["second"], observed["third"]]
+            )
+        assert not isinstance(refused.value, records.SourceRecordBusy)
+        assert refused.value.__cause__.sqlite_errorcode == expected_code
+        assert statements.count("BEGIN IMMEDIATE") == 1
+        assert statements.count("ROLLBACK") == 1
+        assert not maintenance._current.in_transaction
+        assert maintenance._current.execute(
+            "SELECT key,payload FROM records ORDER BY key"
+        ).fetchall() == [
+            ("first", b"first"),
+            ("second", b"second"),
+            ("third", b"third"),
+        ]
+        if phase == "commit":
+            assert maintenance._current.execute("SELECT * FROM child").fetchall() == []
+
+
+@pytest.mark.parametrize("consumer", ["maintenance", "generation-trim"])
+def test_bounded_vacuum_drains_pages_and_later_passes_converge(
+    tmp_path: Path, consumer: str
+) -> None:
+    store = _store(tmp_path)
+    assert store.put("module-lowering", "discard", b"x" * (3 << 20), generation="g")
+    assert store.put("module-analysis", "keep", b"preserved", generation="g")
+    connection = store._connect()
+    assert connection is not None
+    with closing(connection.execute("PRAGMA wal_checkpoint(TRUNCATE)")) as cursor:
+        assert cursor.fetchone()[0] == 0
+    with store.maintenance(dry_run=False) as maintenance:
+        observed = {row.key: row for row in maintenance.iter_lru()}
+        assert maintenance.remove([observed["discard"]]) == ("removed",)
+
+    def page_state():
+        values = []
+        for name in ("page_count", "freelist_count", "page_size"):
+            with closing(connection.execute(f"PRAGMA {name}")) as cursor:
+                values.append(cursor.fetchone()[0])
+        return tuple(values)
+
+    initial_pages, free, page_size = page_state()
+    assert 512 < free < 1024, "known3MiB fixture must span several bounded passes"
+    initial_physical = store.path.stat().st_size
+    now = time.time_ns()
+    previous_pages = initial_pages
+    passes = (free + 255) // 256
+    for number in range(passes):
+        expected = min(256, free)
+        if consumer == "maintenance":
+            with store.maintenance(dry_run=False) as maintenance:
+                # No new deletion here: later cold passes must finish backlog.
+                maintenance.reclaim()
+                assert maintenance.checkpoint_busy is False
+        else:
+            store._trim_if_due(connection, now + (number + 1) * 2 * _HOUR)
+            with closing(
+                connection.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+            ) as cursor:
+                assert cursor.fetchone()[0] == 0
+        pages, remaining, observed_page_size = page_state()
+        assert observed_page_size == page_size
+        assert free - remaining == expected
+        assert previous_pages - pages >= expected
+        assert store.path.stat().st_size == pages * page_size
+        free, previous_pages = remaining, pages
+    assert free == 0
+    assert initial_physical - store.path.stat().st_size >= 512 * page_size
+    current = store.get("module-analysis", "keep", generation="g", max_bytes=None)
+    assert current is not None and current.payload == b"preserved"
+
+
+def test_malformed_metadata_refuses_maintenance_without_loading_payload(
+    tmp_path: Path,
+) -> None:
+    store = _store(tmp_path)
+    assert store.put("module-analysis", "k", b"opaque", generation="g")
+    with sqlite3.connect(store.path) as connection:
+        connection.execute("UPDATE records SET used_ns = 'not a timestamp'")
+    assert store.get("module-analysis", "k", generation="g", max_bytes=None) is None
+    with store.maintenance(dry_run=True) as maintenance:
+        with pytest.raises(
+            records.SourceRecordUnavailable, match="invalid source record metadata"
+        ):
+            list(maintenance.iter_lru())

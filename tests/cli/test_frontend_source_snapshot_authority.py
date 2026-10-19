@@ -26,6 +26,7 @@ from molt.cli import module_graph
 from molt.cli import python_source_closure as source_closure
 from molt.cli.module_source import PythonSourceSnapshot
 from molt.cli.source_record_store import SourceRecordStore
+from tests.source_record_test_support import replace_source_record, source_records
 from molt.cli.models import (
     ImportScanMode,
     _CompleteImportScan,
@@ -38,6 +39,9 @@ from molt.compiler_analysis import python_source_keys
 from molt.compiler_analysis.python_source_keys import python_ast_digest
 from molt.compiler_analysis.python_namespace_graph import PythonNamespacePremise
 from molt.compiler_analysis.python_identity_catalog_generated import ALL_INVALID_MEMBERS
+
+
+pytestmark = pytest.mark.usefixtures("isolated_molt_cache")
 
 
 def test_discovery_authority_retains_raw_source_generation(
@@ -354,7 +358,6 @@ def test_direct_scan_operations_share_identity_but_not_application_bytes(
     counts = _count_semantic_work(monkeypatch)
     options = _scan_options("entry")
     scans._write_persisted_import_scan(
-        tmp_path,
         source,
         scan=_ImportScanRequests(
             **_source_import_scan._collect_imports_for_graph(
@@ -369,24 +372,15 @@ def test_direct_scan_operations_share_identity_but_not_application_bytes(
     )
     assert counts == {"paths": 1, "bytes": 1}
     counts.update(paths=0, bytes=0)
-    assert (
-        scans._read_persisted_import_scan_record(tmp_path, source, **options)
-        is not None
-    )
+    assert scans._read_persisted_import_scan_record(source, **options) is not None
     assert counts == {"paths": 1, "bytes": 1}
     with fingerprints._source_tree_fingerprint_transaction():
-        assert (
-            scans._read_persisted_import_scan_record(tmp_path, source, **options)
-            is not None
-        )
+        assert scans._read_persisted_import_scan_record(source, **options) is not None
         stat = source.stat()
         source.write_text("VALUE = 2\n", encoding="utf-8")
         os.utime(source, ns=(stat.st_atime_ns, stat.st_mtime_ns))
         # Only compiler tooling is frozen, never the scanned application.
-        assert (
-            scans._read_persisted_import_scan_record(tmp_path, source, **options)
-            is None
-        )
+        assert scans._read_persisted_import_scan_record(source, **options) is None
 
 
 @pytest.mark.parametrize("warm_operation", ["scan", "native_support"])
@@ -417,15 +411,13 @@ def test_imports_only_consumers_warm_complete_scan_before_graph_discovery(
     read_record = scans._read_persisted_import_scan_record
     write_record = scans._write_persisted_import_scan
 
-    def record_read(
-        project_root: Path, path: Path, **kwargs: Any
-    ) -> _ImportScanRequests | None:
+    def record_read(path: Path, **kwargs: Any) -> _ImportScanRequests | None:
         reads.append(path)
-        return read_record(project_root, path, **kwargs)
+        return read_record(path, **kwargs)
 
-    def record_write(project_root: Path, path: Path, **kwargs: Any) -> None:
+    def record_write(path: Path, **kwargs: Any) -> None:
         writes.append(path)
-        write_record(project_root, path, **kwargs)
+        write_record(path, **kwargs)
 
     monkeypatch.setattr(scans, "_read_persisted_import_scan_record", record_read)
     monkeypatch.setattr(scans, "_write_persisted_import_scan", record_write)
@@ -528,15 +520,13 @@ def test_cold_discovery_produces_complete_scan_once(
     read_record = scans._read_persisted_import_scan_record
     write_record = scans._write_persisted_import_scan
 
-    def read(
-        project_root: Path, path: Path, **kwargs: Any
-    ) -> _ImportScanRequests | None:
+    def read(path: Path, **kwargs: Any) -> _ImportScanRequests | None:
         counts["reads"] += 1
-        return read_record(project_root, path, **kwargs)
+        return read_record(path, **kwargs)
 
-    def write(project_root: Path, path: Path, **kwargs: Any) -> None:
+    def write(path: Path, **kwargs: Any) -> None:
         counts["writes"] += 1
-        write_record(project_root, path, **kwargs)
+        write_record(path, **kwargs)
 
     monkeypatch.setattr(scans, "_read_persisted_import_scan_record", read)
     monkeypatch.setattr(scans, "_write_persisted_import_scan", write)
@@ -620,7 +610,6 @@ def test_malformed_execution_projection_rejects_entire_scan(
     ).scan.source_requests
     with fingerprints._source_tree_fingerprint_transaction():
         scans._write_persisted_import_scan(
-            tmp_path,
             source,
             snapshot=snapshot,
             scan=request,
@@ -628,23 +617,16 @@ def test_malformed_execution_projection_rejects_entire_scan(
         )
         assert (
             scans._read_persisted_import_scan_record(
-                tmp_path, source, **options, snapshot=snapshot
+                source, **options, snapshot=snapshot
             )
             == request
         )
         key = scans._import_scan_cache_key(source, **options)
-        payload = scans._read_import_scan_payload(tmp_path, source, key)
-        assert payload is not None
+        payload = source_records("import-scan")[key]
         malformed = dict(payload, source_executions=[{"module": "child", "path": 17}])
 
-        def read_malformed(_root: Path, _path: Path, _key: str) -> dict[str, Any]:
-            return malformed
-
-        monkeypatch.setattr(scans, "_read_import_scan_payload", read_malformed)
-        assert (
-            scans._read_persisted_import_scan_record(tmp_path, source, **options)
-            is None
-        )
+        replace_source_record("import-scan", key, malformed)
+        assert scans._read_persisted_import_scan_record(source, **options) is None
     assert not hasattr(scans, "_read_persisted_source_executions")
     assert not hasattr(scans, "_read_persisted_import_scan")
     assert not hasattr(scans, "_read_persisted_import_scan_payload")
@@ -683,16 +665,16 @@ def test_runtime_custody_persists_only_source_pure_owner_scans(
     read_record = scans._read_persisted_import_scan_record
     write_record = scans._write_persisted_import_scan
 
-    def read(project_root: Path, path: Path, **kwargs: Any) -> Any:
-        record = read_record(project_root, path, **kwargs)
+    def read(path: Path, **kwargs: Any) -> Any:
+        record = read_record(path, **kwargs)
         owner_mode = kwargs.get("runtime_catalog_owner", False)
         calls.append(("read", path.resolve(), owner_mode, record))
         return record
 
-    def write(project_root: Path, path: Path, **kwargs: Any) -> None:
+    def write(path: Path, **kwargs: Any) -> None:
         owner_mode = kwargs.get("runtime_catalog_owner", False)
         calls.append(("write", path.resolve(), owner_mode, kwargs["scan"]))
-        write_record(project_root, path, **kwargs)
+        write_record(path, **kwargs)
 
     monkeypatch.setattr(scans, "_read_persisted_import_scan_record", read)
     monkeypatch.setattr(scans, "_write_persisted_import_scan", write)
@@ -755,7 +737,6 @@ def test_direct_operation_failure_preserves_outer_and_releases_owned_transaction
 
     def write() -> None:
         scans._write_persisted_import_scan(
-            tmp_path,
             source,
             snapshot=snapshot,
             scan=request,
@@ -1018,87 +999,61 @@ def test_frontend_analysis_keeps_the_snapshot_that_supplied_its_facts(
 
 @pytest.mark.parametrize("change", ["same-stat", "remove"])
 def test_lowering_cache_cannot_publish_or_serve_a_different_source_generation(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    compiler_sources: Path,
-    change: str,
-) -> None:
+    tmp_path, monkeypatch, compiler_sources, change
+):
     import contextlib
-    import json
+    from molt.cli.source_record_store import shared_source_records
 
     monkeypatch.setenv("MOLT_CACHE", str(tmp_path / "cache"))
     path = tmp_path / "owner.py"
-    content = b"VALUE = 1\n"
-    path.write_bytes(content)
+    path.write_bytes(b"VALUE = 1\n")
     metadata = path.stat()
     lease = module_source._ModuleSourceLease.path_backed(path)
-    options = dict(
-        source_lease=lease,
-        module_name="owner",
-        is_package=False,
-        context_digest="a" * 64,
-    )
+    digest = "a" * 64
     result = {"functions": [], "function_metadata": {}}
-    module_cache._write_persisted_module_lowering(
-        tmp_path, path, result=result, **options
+    MC = module_cache
+    MC._write_persisted_module_lowering(
+        path, source_lease=lease, context_digest=digest, result=result
     )
-    local = module_cache._module_lowering_cache_path(
-        tmp_path, path, module_name="owner", is_package=False
-    )
-    before = local.read_bytes()
-    assert json.loads(before)["source_sha256"] == lease.source_sha256
+
+    def observation():
+        record = shared_source_records().get(
+            "module-lowering",
+            digest,
+            generation=MC._frontend_semantic_tooling_fingerprint(),
+            max_bytes=None,
+        )
+        assert record is not None
+        return record
+
+    before = observation()
     assert (
-        module_cache._read_persisted_module_lowering(tmp_path, path, **options)
-        == result
+        source_records("module-lowering")[digest]["source_sha256"]
+        == lease.source_sha256
     )
+    loaded = MC._read_persisted_module_lowering(
+        path, source_lease=lease, module_name="owner", context_digest=digest
+    )
+    assert loaded is not None and loaded.pop("function_digest_seeds") == ()
+    assert loaded == result
     if change == "same-stat":
         path.write_bytes(b"VALUE = 2\n")
         os.utime(path, ns=(metadata.st_atime_ns, metadata.st_mtime_ns))
     else:
         path.unlink()
-    # Cache writes are optional IO. Losing the admitted input is not optional:
-    # the ordinary producer's OSError suppression must not hide that failure.
     with pytest.raises(module_source.PythonSourceChangedError):
         with contextlib.suppress(OSError):
-            module_cache._write_persisted_module_lowering(
-                tmp_path,
+            MC._write_persisted_module_lowering(
                 path,
+                source_lease=lease,
+                context_digest=digest,
                 result={"functions": [{"name": "stale"}], "function_metadata": {}},
-                **options,
             )
-    assert local.read_bytes() == before
+    assert observation().payload == before.payload
+    assert observation().revision == before.revision
     with pytest.raises(module_source.PythonSourceChangedError):
-        module_cache._read_persisted_module_lowering(tmp_path, path, **options)
-    assert local.read_bytes() == before
-
-
-def test_lowering_slot_lookup_never_opens_the_input(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    def unowned_read(*args: Any, **kwargs: Any) -> NoReturn:
-        raise AssertionError("locating a cache slot reopened an admitted source")
-
-    original_stat = Path.stat
-
-    def guarded_stat(path: Path, *args: Any, **kwargs: Any) -> os.stat_result:
-        if path.name == "owner.py":
-            unowned_read()
-        return original_stat(path, *args, **kwargs)
-
-    monkeypatch.setattr(Path, "stat", guarded_stat)
-    for path in (
-        tmp_path / "generation-a" / "owner.py",
-        tmp_path / "generation-b" / "owner.py",
-    ):
-        key = module_cache._module_lowering_cache_key(
-            module_name="owner",
-            is_package=False,
-            target_python=_DEFAULT_TARGET_PYTHON_VERSION,
+        MC._read_persisted_module_lowering(
+            path, source_lease=lease, module_name="owner", context_digest=digest
         )
-        assert key
-        assert (
-            module_cache._shared_module_lowering_cache_path_for(
-                path, module_name="owner", is_package=False, context_digest="a" * 64
-            )
-            is not None
-        )
+    assert observation().payload == before.payload
+    assert observation().revision == before.revision

@@ -4713,6 +4713,7 @@ def test_from_import_graph_does_not_admit_case_mismatched_attribute_child(
     assert "tinygrad.Tensor" in explicit_imports
 
 
+@pytest.mark.usefixtures("isolated_frontend_state")
 def test_from_import_star_graph_admits_static_all_child_module(
     tmp_path: Path,
 ) -> None:
@@ -13962,6 +13963,7 @@ def test_discover_module_graph_reuses_persisted_import_scan_cache(
     assert "pkg" in graph
 
 
+@pytest.mark.usefixtures("isolated_molt_cache")
 @pytest.mark.parametrize("mode", ["module_init", "full"])
 def test_persisted_module_scan_requires_summary_before_publication(
     tmp_path: Path, mode: ImportScanMode
@@ -13979,37 +13981,37 @@ def test_persisted_module_scan_requires_summary_before_publication(
     ).scan.source_requests
     assert scan.imports == ("math",) and scan.namespace_summary is not None
     cli_module_graph_cache._write_persisted_import_scan(
-        tmp_path, module_path, **options, scan=scan, snapshot=snapshot
+        module_path, **options, scan=scan, snapshot=snapshot
     )
     assert (
         cli_module_graph_cache._read_persisted_import_scan_record(
-            tmp_path, module_path, **options, snapshot=snapshot
+            module_path, **options, snapshot=snapshot
         )
         == scan
     )
     key = cli_module_graph_cache._import_scan_cache_key(module_path, **options)
-    published = source_records(tmp_path, "import-scan")[key]
+    published = source_records("import-scan")[key]
 
     with pytest.raises(ValueError, match="requires a namespace summary"):
         cli_module_graph_cache._write_persisted_import_scan(
-            tmp_path,
             module_path,
             **options,
             scan=scan._replace(namespace_summary=None),
             snapshot=snapshot,
         )
-    assert source_records(tmp_path, "import-scan")[key] == published
+    assert source_records("import-scan")[key] == published
 
     malformed = dict(published, namespace_summary=None)
-    replace_source_record(tmp_path, "import-scan", key, malformed)
+    replace_source_record("import-scan", key, malformed)
     assert (
         cli_module_graph_cache._read_persisted_import_scan_record(
-            tmp_path, module_path, **options, snapshot=snapshot
+            module_path, **options, snapshot=snapshot
         )
         is None
     )
 
 
+@pytest.mark.usefixtures("isolated_molt_cache")
 def test_persisted_deferred_scan_keeps_its_owner_without_module_summary(
     tmp_path: Path,
 ) -> None:
@@ -14030,7 +14032,6 @@ def test_persisted_deferred_scan_keeps_its_owner_without_module_summary(
     ).scan.source_requests
     assert scan.imports == ("math",) and scan.namespace_summary is None
     cli_module_graph_cache._write_persisted_import_scan(
-        tmp_path,
         module_path,
         **options,
         source_owner=owner,
@@ -14039,12 +14040,13 @@ def test_persisted_deferred_scan_keeps_its_owner_without_module_summary(
     )
     assert (
         cli_module_graph_cache._read_persisted_import_scan_record(
-            tmp_path, module_path, **options, source_owner=owner, snapshot=snapshot
+            module_path, **options, source_owner=owner, snapshot=snapshot
         )
         == scan
     )
 
 
+@pytest.mark.usefixtures("isolated_molt_cache")
 def test_persisted_import_scan_cache_tracks_tooling_fingerprint(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -14069,7 +14071,6 @@ def test_persisted_import_scan_cache_tracks_tooling_fingerprint(
     ).scan.source_requests
     assert scan.imports == ("json",)
     cli_module_graph_cache._write_persisted_import_scan(
-        tmp_path,
         module_path,
         module_name="pkg.mod",
         is_package=False,
@@ -14078,7 +14079,6 @@ def test_persisted_import_scan_cache_tracks_tooling_fingerprint(
         snapshot=snapshot,
     )
     record = cli_module_graph_cache._read_persisted_import_scan_record(
-        tmp_path,
         module_path,
         module_name="pkg.mod",
         is_package=False,
@@ -14093,7 +14093,6 @@ def test_persisted_import_scan_cache_tracks_tooling_fingerprint(
     )
     assert (
         cli_module_graph_cache._read_persisted_import_scan_record(
-            tmp_path,
             module_path,
             module_name="pkg.mod",
             is_package=False,
@@ -14103,6 +14102,7 @@ def test_persisted_import_scan_cache_tracks_tooling_fingerprint(
     )
 
 
+@pytest.mark.usefixtures("isolated_molt_cache")
 def test_persisted_import_scan_cache_tracks_source_content(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -14128,7 +14128,6 @@ def test_persisted_import_scan_cache_tracks_source_content(
     ).scan.source_requests
     assert scan.imports == ("json",)
     cli_module_graph_cache._write_persisted_import_scan(
-        tmp_path,
         module_path,
         module_name="pkg.mod",
         is_package=False,
@@ -14138,7 +14137,6 @@ def test_persisted_import_scan_cache_tracks_source_content(
     )
     assert (
         cli_module_graph_cache._read_persisted_import_scan_record(
-            tmp_path,
             module_path,
             module_name="pkg.mod",
             is_package=False,
@@ -14151,7 +14149,6 @@ def test_persisted_import_scan_cache_tracks_source_content(
 
     assert (
         cli_module_graph_cache._read_persisted_import_scan_record(
-            tmp_path,
             module_path,
             module_name="pkg.mod",
             is_package=False,
@@ -14228,6 +14225,7 @@ def test_source_content_sha256_rehashes_preserved_mtime_content_change(
     assert hash_calls == 2
 
 
+@pytest.mark.usefixtures("isolated_frontend_state")
 def test_persisted_module_analysis_cache_tracks_tooling_fingerprint(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -14239,7 +14237,6 @@ def test_persisted_module_analysis_cache_tracks_tooling_fingerprint(
         cli_module_cache, "_frontend_semantic_tooling_fingerprint", lambda: "tool-a"
     )
     cli_module_cache._write_persisted_module_analysis(
-        tmp_path,
         module_path,
         module_name="pkg.mod",
         is_package=False,
@@ -14249,7 +14246,6 @@ def test_persisted_module_analysis_cache_tracks_tooling_fingerprint(
         snapshot=cli_module_source.PythonSourceSnapshot.capture(module_path),
     )
     assert cli_module_cache._read_persisted_module_analysis(
-        tmp_path,
         module_path,
         module_name="pkg.mod",
         is_package=False,
@@ -14261,7 +14257,6 @@ def test_persisted_module_analysis_cache_tracks_tooling_fingerprint(
     )
     assert (
         cli_module_cache._read_persisted_module_analysis(
-            tmp_path,
             module_path,
             module_name="pkg.mod",
             is_package=False,
@@ -14271,6 +14266,7 @@ def test_persisted_module_analysis_cache_tracks_tooling_fingerprint(
     )
 
 
+@pytest.mark.usefixtures("isolated_frontend_state")
 def test_persisted_module_analysis_cache_tracks_source_content(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -14283,7 +14279,6 @@ def test_persisted_module_analysis_cache_tracks_source_content(
         cli_module_cache, "_frontend_semantic_tooling_fingerprint", lambda: "tool-a"
     )
     cli_module_cache._write_persisted_module_analysis(
-        tmp_path,
         module_path,
         module_name="pkg.mod",
         is_package=False,
@@ -14297,7 +14292,6 @@ def test_persisted_module_analysis_cache_tracks_source_content(
 
     assert (
         cli_module_cache._read_persisted_module_analysis(
-            tmp_path,
             module_path,
             module_name="pkg.mod",
             is_package=False,
@@ -14896,44 +14890,6 @@ def test_build_state_subdir_is_cached(tmp_path: Path) -> None:
     assert info.currsize >= 1
 
 
-def test_module_analysis_cache_path_uses_cached_build_state_subdir(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    cli_module_cache._build_state_subdir_cached.cache_clear()
-
-    calls = 0
-    original = cli_module_cache._build_state_subdir_cached
-
-    def wrapped(build_state_root_str: str, subdir: str) -> Path:
-        nonlocal calls
-        calls += 1
-        return original(build_state_root_str, subdir)
-
-    monkeypatch.setattr(
-        cli_module_cache, "_build_state_subdir_cached", wrapped, raising=True
-    )
-
-    first = cli_module_cache._module_analysis_cache_path(
-        tmp_path,
-        tmp_path / "pkg.py",
-        module_name="pkg",
-        is_package=False,
-        import_scan_mode="full",
-    )
-    second = cli_module_cache._module_analysis_cache_path(
-        tmp_path,
-        tmp_path / "pkg.py",
-        module_name="pkg",
-        is_package=False,
-        import_scan_mode="full",
-    )
-
-    info = original.cache_info()
-    assert first == second
-    assert calls == 2
-    assert info.hits >= 1
-
-
 def test_module_cache_keys_resolve_each_path_once_per_operation(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -14961,62 +14917,53 @@ def test_module_cache_keys_resolve_each_path_once_per_operation(
     assert len(resolved) == 2, "a new operation resolves afresh"
 
 
-def test_module_analysis_cache_path_uses_the_module_key(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    module_path = tmp_path / "pkg" / "mod.py"
-
-    calls = 0
-    original = cli_module_cache._resolved_module_cache_key
-
-    def wrapped(path_str: str, *parts: str) -> str:
-        nonlocal calls
-        calls += 1
-        return original(path_str, *parts)
-
-    monkeypatch.setattr(
-        cli_module_cache, "_resolved_module_cache_key", wrapped, raising=True
-    )
-
-    first = cli_module_cache._module_analysis_cache_path(
-        tmp_path,
-        module_path,
-        module_name="pkg.mod",
+def test_module_analysis_record_key_separates_source_and_module_roles(tmp_path):
+    path = tmp_path / "pkg/mod.py"
+    options = dict(
         is_package=False,
         import_scan_mode="full",
+        target_python=TARGET_PYTHON._DEFAULT_TARGET_PYTHON_VERSION,
     )
-    second = cli_module_cache._module_analysis_cache_path(
-        tmp_path,
-        module_path,
+    first = cli_module_cache._module_analysis_record_key(
+        path, module_name="pkg.mod", **options
+    )
+    assert (
+        cli_module_cache._module_analysis_record_key(
+            path, module_name="pkg.mod", **options
+        )
+        == first
+    )
+    assert (
+        cli_module_cache._module_analysis_record_key(
+            path, module_name="other.mod", **options
+        )
+        != first
+    )
+    assert (
+        cli_module_cache._module_analysis_record_key(
+            tmp_path / "other/mod.py", module_name="pkg.mod", **options
+        )
+        != first
+    )
+
+
+def test_module_analysis_record_key_tracks_import_scan_mode(tmp_path):
+    path = tmp_path / "pkg/mod.py"
+    options = dict(
         module_name="pkg.mod",
         is_package=False,
-        import_scan_mode="full",
+        target_python=TARGET_PYTHON._DEFAULT_TARGET_PYTHON_VERSION,
     )
-
-    assert first == second
-    assert calls == 2
-
-
-def test_module_analysis_cache_path_tracks_import_scan_mode(tmp_path: Path) -> None:
-    module_path = tmp_path / "pkg" / "mod.py"
-    full = cli_module_cache._module_analysis_cache_path(
-        tmp_path,
-        module_path,
-        module_name="pkg.mod",
-        is_package=False,
-        import_scan_mode="full",
+    full = cli_module_cache._module_analysis_record_key(
+        path, import_scan_mode="full", **options
     )
-    module_init = cli_module_cache._module_analysis_cache_path(
-        tmp_path,
-        module_path,
-        module_name="pkg.mod",
-        is_package=False,
-        import_scan_mode="module_init",
+    module_init = cli_module_cache._module_analysis_record_key(
+        path, import_scan_mode="module_init", **options
     )
-
     assert full != module_init
 
 
+@pytest.mark.usefixtures("isolated_molt_cache")
 @pytest.mark.parametrize(
     "first_grants,second_grants", [("fs.read", ""), ("", "fs.read")]
 )
@@ -15043,14 +14990,12 @@ def test_source_caches_reuse_across_runtime_grants(
     ).scan.source_requests
     assert scan.imports == ("os",)
     cli_module_graph_cache._write_persisted_import_scan(
-        tmp_path,
         module_path,
         **common,
         scan=scan,
         snapshot=snapshot,
     )
     cli_module_cache._write_persisted_module_analysis(
-        tmp_path,
         module_path,
         **common,
         func_defaults={"f": _func_metadata(params=1)},
@@ -15061,7 +15006,6 @@ def test_source_caches_reuse_across_runtime_grants(
     monkeypatch.setenv("MOLT_CAPABILITIES", second_grants)
     assert (
         cli_module_graph_cache._read_persisted_import_scan_record(
-            tmp_path,
             module_path,
             **common,
             snapshot=snapshot,
@@ -15069,7 +15013,6 @@ def test_source_caches_reuse_across_runtime_grants(
         == scan
     )
     assert cli_module_cache._read_persisted_module_analysis(
-        tmp_path,
         module_path,
         **common,
         snapshot=snapshot,
@@ -15082,7 +15025,6 @@ def test_source_caches_reuse_across_runtime_grants(
     changed = cli_module_source.PythonSourceSnapshot.capture(module_path)
     assert (
         cli_module_graph_cache._read_persisted_import_scan_record(
-            tmp_path,
             module_path,
             **common,
             snapshot=changed,
@@ -15091,7 +15033,6 @@ def test_source_caches_reuse_across_runtime_grants(
     )
     assert (
         cli_module_cache._read_persisted_module_analysis(
-            tmp_path,
             module_path,
             **common,
             snapshot=changed,
@@ -15100,6 +15041,7 @@ def test_source_caches_reuse_across_runtime_grants(
     )
 
 
+@pytest.mark.usefixtures("isolated_frontend_state")
 def test_persisted_module_analysis_cache_rejects_import_scan_mode_mismatch(
     tmp_path: Path,
 ) -> None:
@@ -15110,7 +15052,6 @@ def test_persisted_module_analysis_cache_rejects_import_scan_mode_mismatch(
     )
 
     cli_module_cache._write_persisted_module_analysis(
-        tmp_path,
         module_path,
         module_name="pkg.mod",
         is_package=False,
@@ -15119,31 +15060,19 @@ def test_persisted_module_analysis_cache_rejects_import_scan_mode_mismatch(
         func_kinds={},
         snapshot=cli_module_source.PythonSourceSnapshot.capture(module_path),
     )
-    cache_path = cli_module_cache._module_analysis_cache_path(
-        tmp_path,
+    key = cli_module_cache._module_analysis_record_key(
         module_path,
         module_name="pkg.mod",
         is_package=False,
         import_scan_mode="full",
+        target_python=TARGET_PYTHON._DEFAULT_TARGET_PYTHON_VERSION,
     )
-    payload = json.loads(cache_path.read_text(encoding="utf-8"))
+    payload = source_records("module-analysis")[key]
     payload["import_scan_mode"] = "module_init"
-    cache_path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
-    shared_path = cli_module_cache._shared_module_analysis_cache_path_for(
-        module_path,
-        module_name="pkg.mod",
-        is_package=False,
-        import_scan_mode="full",
-    )
-    shared_payload = json.loads(shared_path.read_text(encoding="utf-8"))
-    shared_payload["import_scan_mode"] = "module_init"
-    shared_path.write_text(
-        json.dumps(shared_payload, indent=2) + "\n", encoding="utf-8"
-    )
+    replace_source_record("module-analysis", key, payload)
 
     assert (
         cli_module_cache._read_persisted_module_analysis(
-            tmp_path,
             module_path,
             module_name="pkg.mod",
             is_package=False,
@@ -15948,6 +15877,7 @@ def test_load_module_imports_reuses_persisted_cache(
     assert cached_imports.cache_hit
 
 
+@pytest.mark.usefixtures("isolated_frontend_state")
 def test_load_module_analysis_reuses_persisted_cache(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -16016,6 +15946,7 @@ def test_load_module_analysis_reuses_persisted_cache(
     assert cached_path_stat is not None
 
 
+@pytest.mark.usefixtures("isolated_frontend_state")
 def test_load_module_analysis_persists_bytes_defaults(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -16092,6 +16023,7 @@ def test_load_module_analysis_persists_bytes_defaults(
     assert cached_path_stat is not None
 
 
+@pytest.mark.usefixtures("isolated_frontend_state")
 def test_load_module_analysis_rejects_persisted_defaults_without_function_kind(
     tmp_path: Path,
 ) -> None:
@@ -16101,30 +16033,34 @@ def test_load_module_analysis_rejects_persisted_defaults_without_function_kind(
     stat = module_path.stat()
     source_sha256 = cli_module_source._source_content_sha256(module_path, stat)
     assert source_sha256 is not None
-    cache_path = cli_module_cache._module_analysis_cache_path(
-        tmp_path,
+    from molt.cli.source_record_store import shared_source_records
+
+    key = cli_module_cache._module_analysis_record_key(
         module_path,
         module_name="pkg",
         is_package=False,
         import_scan_mode="full",
+        target_python=TARGET_PYTHON._DEFAULT_TARGET_PYTHON_VERSION,
     )
-    cache_path.parent.mkdir(parents=True, exist_ok=True)
-    cli_json_cache._write_cached_json_object(
-        cache_path,
-        {
-            "version": cli_module_cache._MODULE_ANALYSIS_CACHE_SCHEMA_VERSION,
-            "compiler_fingerprint": CACHE_FINGERPRINTS._frontend_semantic_tooling_fingerprint(),
-            "module_name": "pkg",
-            "is_package": False,
-            "import_scan_mode": "full",
-            "native_support_function_roots": [],
-            "target_python": TARGET_PYTHON._DEFAULT_TARGET_PYTHON_VERSION.tag,
-            "size": stat.st_size,
-            "mtime_ns": stat.st_mtime_ns,
-            "source_sha256": source_sha256,
-            "func_defaults": {"g": {"params": 0, "defaults": []}},
-        },
-        default=CACHE_KEYS._json_ir_default,
+    assert shared_source_records().put(
+        "module-analysis",
+        key,
+        json.dumps(
+            {
+                "version": cli_module_cache._MODULE_ANALYSIS_CACHE_SCHEMA_VERSION,
+                "compiler_fingerprint": CACHE_FINGERPRINTS._frontend_semantic_tooling_fingerprint(),
+                "module_name": "pkg",
+                "is_package": False,
+                "import_scan_mode": "full",
+                "native_support_function_roots": [],
+                "target_python": TARGET_PYTHON._DEFAULT_TARGET_PYTHON_VERSION.tag,
+                "size": stat.st_size,
+                "mtime_ns": stat.st_mtime_ns,
+                "source_sha256": source_sha256,
+                "func_defaults": {"g": {"params": 0, "defaults": []}},
+            }
+        ).encode(),
+        generation=CACHE_FINGERPRINTS._frontend_semantic_tooling_fingerprint(),
     )
 
     (
@@ -16162,6 +16098,7 @@ def test_load_module_analysis_rejects_persisted_defaults_without_function_kind(
     assert path_stat is not None
 
 
+@pytest.mark.usefixtures("isolated_frontend_state")
 def test_load_module_analysis_reuses_facts_but_always_admits_import_scan(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -16233,6 +16170,7 @@ def test_load_module_analysis_reuses_facts_but_always_admits_import_scan(
     assert cached_path_stat is not None
 
 
+@pytest.mark.usefixtures("isolated_frontend_state")
 def test_load_module_analysis_keeps_full_and_module_init_caches_disjoint(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -16305,6 +16243,7 @@ def test_load_module_analysis_keeps_full_and_module_init_caches_disjoint(
     assert module_init_cached[5] is True
 
 
+@pytest.mark.usefixtures("isolated_frontend_state")
 def test_load_module_analysis_keeps_module_init_and_full_caches_disjoint_reverse(
     tmp_path: Path,
 ) -> None:
@@ -16344,6 +16283,7 @@ def test_load_module_analysis_keeps_module_init_and_full_caches_disjoint_reverse
     assert second[5] is False
 
 
+@pytest.mark.usefixtures("isolated_frontend_state")
 def test_load_module_analysis_reuses_single_module_stat_for_persisted_hits(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -16424,6 +16364,7 @@ def test_load_module_analysis_reuses_single_module_stat_for_persisted_hits(
     assert cached_path_stat is not None
 
 
+@pytest.mark.usefixtures("isolated_frontend_state")
 def test_load_module_analysis_misses_after_body_only_edit(
     tmp_path: Path,
 ) -> None:
@@ -16509,64 +16450,79 @@ def test_persisted_module_lowering_roundtrip_respects_context_digest(
     }
 
     cli_module_cache._write_persisted_module_lowering(
-        tmp_path,
         module_path,
         source_lease=cli_module_source._ModuleSourceLease.path_backed(module_path),
-        module_name="pkg",
-        is_package=False,
         context_digest=context_digest,
         result=result,
     )
 
     cached = cli_module_cache._read_persisted_module_lowering(
-        tmp_path,
         module_path,
         source_lease=cli_module_source._ModuleSourceLease.path_backed(module_path),
         module_name="pkg",
-        is_package=False,
         context_digest=context_digest,
     )
     assert cached is not None
     assert cached["default_marker"] is Ellipsis
 
     miss = cli_module_cache._read_persisted_module_lowering(
-        tmp_path,
         module_path,
         source_lease=cli_module_source._ModuleSourceLease.path_backed(module_path),
         module_name="pkg",
-        is_package=False,
         context_digest="other",
     )
     assert miss is None
 
 
-def test_module_lowering_cache_key_ignores_generated_output_path(
-    tmp_path: Path,
-) -> None:
-    first = tmp_path / "run-a" / "namespace_pkg.py"
-    second = tmp_path / "run-b" / "namespace_pkg.py"
-    first.parent.mkdir()
-    second.parent.mkdir()
+@pytest.mark.usefixtures("isolated_frontend_state")
+def test_module_lowering_reuses_generated_source_across_output_paths(tmp_path):
     source = "__path__ = []\n"
-    first.write_text(source, encoding="utf-8")
-    second.write_text(source, encoding="utf-8")
+    first, second = (
+        tmp_path / "run-a/namespace_pkg.py",
+        tmp_path / "run-b/namespace_pkg.py",
+    )
 
-    first_slot = cli_module_cache._module_lowering_cache_path(
-        tmp_path,
+    def context(path):
+        return cli_module_cache._module_lowering_context_digest_for_module(
+            "pkg",
+            path,
+            source_lease=cli_module_source._ModuleSourceLease.inline(path, source),
+            logical_source_path="/__molt_generated__/namespace/pkg.py",
+            module_execution_kind="imported",
+            is_package=True,
+            known_classes_snapshot={},
+            parse_codec="json",
+            type_hint_policy="ignore",
+            fallback_policy="error",
+            type_facts=None,
+            enable_phi=True,
+            known_modules={"pkg"},
+            stdlib_allowlist=(),
+            known_func_defaults={},
+            known_func_kinds={},
+            module_deps={"pkg": set()},
+            module_is_namespace=True,
+            module_chunking=False,
+            module_chunk_max_ops=0,
+            optimization_profile="dev",
+            pgo_hot_function_names=(),
+        )
+
+    first_key, second_key = context(first), context(second)
+    assert first_key is not None and first_key == second_key
+    cli_module_cache._write_persisted_module_lowering(
         first,
-        module_name="pkg",
-        is_package=False,
-        target_python=TARGET_PYTHON._DEFAULT_TARGET_PYTHON_VERSION,
+        source_lease=cli_module_source._ModuleSourceLease.inline(first, source),
+        context_digest=first_key,
+        result={"functions": [], "function_metadata": {}, "value": 42},
     )
-    second_slot = cli_module_cache._module_lowering_cache_path(
-        tmp_path,
+    loaded = cli_module_cache._read_persisted_module_lowering(
         second,
+        source_lease=cli_module_source._ModuleSourceLease.inline(second, source),
         module_name="pkg",
-        is_package=False,
-        target_python=TARGET_PYTHON._DEFAULT_TARGET_PYTHON_VERSION,
+        context_digest=second_key,
     )
-
-    assert second_slot == first_slot
+    assert loaded is not None and loaded["value"] == 42
 
 
 @pytest.mark.usefixtures("isolated_frontend_state")
@@ -16630,22 +16586,17 @@ def test_persisted_module_lowering_rejects_missing_local_function_reference(
     )
 
     cli_module_cache._write_persisted_module_lowering(
-        tmp_path,
         module_path,
         source_lease=cli_module_source._ModuleSourceLease.path_backed(module_path),
-        module_name="pkg",
-        is_package=False,
         context_digest=context_digest,
         result=result,
     )
 
     assert (
         cli_module_cache._read_persisted_module_lowering(
-            tmp_path,
             module_path,
             source_lease=cli_module_source._ModuleSourceLease.path_backed(module_path),
             module_name="pkg",
-            is_package=False,
             context_digest=context_digest,
         )
         is None
@@ -16739,11 +16690,8 @@ def test_persisted_module_lowering_tracks_source_content(
     assert context_digest is not None
 
     cli_module_cache._write_persisted_module_lowering(
-        tmp_path,
         module_path,
         source_lease=cli_module_source._ModuleSourceLease.path_backed(module_path),
-        module_name="pkg",
-        is_package=False,
         context_digest=context_digest,
         result={
             "function_metadata": {},
@@ -16760,11 +16708,9 @@ def test_persisted_module_lowering_tracks_source_content(
 
     assert (
         cli_module_cache._read_persisted_module_lowering(
-            tmp_path,
             module_path,
             source_lease=cli_module_source._ModuleSourceLease.path_backed(module_path),
             module_name="pkg",
-            is_package=False,
             context_digest=context_digest,
         )
         is None
@@ -16772,7 +16718,7 @@ def test_persisted_module_lowering_tracks_source_content(
 
 
 @pytest.mark.usefixtures("isolated_frontend_state")
-def test_persisted_module_lowering_reuses_process_cache(
+def test_persisted_module_lowering_decodes_once_per_hit(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     module_path = tmp_path / "pkg.py"
@@ -16781,13 +16727,9 @@ def test_persisted_module_lowering_reuses_process_cache(
         {"module": "pkg", "v": 1}
     )
     assert context_digest is not None
-    cli_json_cache._PERSISTED_JSON_OBJECT_CACHE.clear()
     cli_module_cache._write_persisted_module_lowering(
-        tmp_path,
         module_path,
         source_lease=cli_module_source._ModuleSourceLease.path_backed(module_path),
-        module_name="pkg",
-        is_package=False,
         context_digest=context_digest,
         result={
             "function_metadata": {},
@@ -16800,28 +16742,30 @@ def test_persisted_module_lowering_reuses_process_cache(
         },
     )
 
+    decode_calls = []
+    decode = cli_module_cache.decode_lowering_record
+
+    def observed_decode(payload):
+        decode_calls.append(payload)
+        return decode(payload)
+
+    monkeypatch.setattr(cli_module_cache, "decode_lowering_record", observed_decode)
     first = cli_module_cache._read_persisted_module_lowering(
-        tmp_path,
         module_path,
         source_lease=cli_module_source._ModuleSourceLease.path_backed(module_path),
         module_name="pkg",
-        is_package=False,
         context_digest=context_digest,
     )
 
-    def fail_capture(*args: object, **kwargs: object) -> str:
-        raise AssertionError("unexpected persisted-lowering file read")
-
-    monkeypatch.setattr(cli_json_cache, "capture_stable_regular_file", fail_capture)
     second = cli_module_cache._read_persisted_module_lowering(
-        tmp_path,
         module_path,
         source_lease=cli_module_source._ModuleSourceLease.path_backed(module_path),
         module_name="pkg",
-        is_package=False,
         context_digest=context_digest,
     )
 
+    assert len(decode_calls) == 2 and decode_calls[0] == decode_calls[1]
+    assert first is not None and second is not None
     assert first == second
     assert first is not second
 
@@ -16836,13 +16780,9 @@ def test_persisted_module_lowering_returns_isolated_mutable_results(
         {"module": "pkg", "v": 1}
     )
     assert context_digest is not None
-    cli_json_cache._PERSISTED_JSON_OBJECT_CACHE.clear()
     cli_module_cache._write_persisted_module_lowering(
-        tmp_path,
         module_path,
         source_lease=cli_module_source._ModuleSourceLease.path_backed(module_path),
-        module_name="pkg",
-        is_package=False,
         context_digest=context_digest,
         result={
             "function_metadata": {},
@@ -16869,19 +16809,15 @@ def test_persisted_module_lowering_returns_isolated_mutable_results(
     )
 
     first = cli_module_cache._read_persisted_module_lowering(
-        tmp_path,
         module_path,
         source_lease=cli_module_source._ModuleSourceLease.path_backed(module_path),
         module_name="pkg",
-        is_package=False,
         context_digest=context_digest,
     )
     second = cli_module_cache._read_persisted_module_lowering(
-        tmp_path,
         module_path,
         source_lease=cli_module_source._ModuleSourceLease.path_backed(module_path),
         module_name="pkg",
-        is_package=False,
         context_digest=context_digest,
     )
 
@@ -16929,13 +16865,9 @@ def test_persisted_module_lowering_rejects_incomplete_parameter_declarations(
         {"module": "pkg", "v": 1}
     )
     assert context_digest is not None
-    cli_json_cache._PERSISTED_JSON_OBJECT_CACHE.clear()
     cli_module_cache._write_persisted_module_lowering(
-        tmp_path,
         module_path,
         source_lease=cli_module_source._ModuleSourceLease.path_backed(module_path),
-        module_name="pkg",
-        is_package=False,
         context_digest=context_digest,
         result={
             "function_metadata": {},
@@ -16957,11 +16889,9 @@ def test_persisted_module_lowering_rejects_incomplete_parameter_declarations(
     )
 
     cached = cli_module_cache._read_persisted_module_lowering(
-        tmp_path,
         module_path,
         source_lease=cli_module_source._ModuleSourceLease.path_backed(module_path),
         module_name="pkg",
-        is_package=False,
         context_digest=context_digest,
     )
 
@@ -16999,26 +16929,26 @@ def test_prepare_frontend_parallel_batch_reuses_precomputed_context_digest(
     )
 
     def fake_read(
-        root: Path,
         path: Path,
         *,
         source_lease: cli_module_source._ModuleSourceLease,
         module_name: str,
-        is_package: bool,
         context_digest: str,
-        target_python: TARGET_PYTHON.TargetPythonVersion = TARGET_PYTHON._DEFAULT_TARGET_PYTHON_VERSION,
         known_modules: Collection[str] | None = None,
     ) -> dict[str, object] | None:
-        assert root == project_root
         assert path == module_path
         source_lease.validate_path(path)
         source_lease.validate()
         assert module_name == "alpha"
-        assert is_package is False
         assert context_digest == "digest"
-        assert target_python == TARGET_PYTHON._DEFAULT_TARGET_PYTHON_VERSION
         assert known_modules == {"alpha"}
-        return {"module": module_name, "kind": "cached"}
+        return {
+            "module": module_name,
+            "kind": "cached",
+            "functions": [],
+            "function_metadata": {},
+            "function_digest_seeds": (),
+        }
 
     monkeypatch.setattr(cli_module_cache, "_read_persisted_module_lowering", fake_read)
     module_graph_metadata = cli_module_graph._build_module_graph_metadata(
@@ -17068,6 +16998,9 @@ def test_prepare_frontend_parallel_batch_reuses_precomputed_context_digest(
         "alpha": {
             "module": "alpha",
             "kind": "cached",
+            "functions": [],
+            "function_metadata": {},
+            "function_digest_seeds": (),
             "source_sha256": hashlib.sha256(module_path.read_bytes()).hexdigest(),
         }
     }
@@ -17093,27 +17026,27 @@ def test_prepare_frontend_parallel_batch_reuses_content_and_context_matched_cach
     )
 
     def fake_read(
-        root: Path,
         path: Path,
         *,
         source_lease: cli_module_source._ModuleSourceLease,
         module_name: str,
-        is_package: bool,
         context_digest: str,
-        target_python: TARGET_PYTHON.TargetPythonVersion = TARGET_PYTHON._DEFAULT_TARGET_PYTHON_VERSION,
         known_modules: Collection[str] | None = None,
     ) -> dict[str, object] | None:
-        assert root == project_root
         assert path == module_path
         source_lease.validate_path(path)
         source_lease.validate()
         assert module_name == "alpha"
-        assert is_package is False
         assert context_digest == "digest"
-        assert target_python == TARGET_PYTHON._DEFAULT_TARGET_PYTHON_VERSION
         assert known_modules == {"alpha"}
         reads.append(module_name)
-        return {"module": module_name, "kind": "cached"}
+        return {
+            "module": module_name,
+            "kind": "cached",
+            "functions": [],
+            "function_metadata": {},
+            "function_digest_seeds": (),
+        }
 
     monkeypatch.setattr(cli_module_cache, "_read_persisted_module_lowering", fake_read)
     module_graph_metadata = cli_module_graph._build_module_graph_metadata(
@@ -17163,6 +17096,9 @@ def test_prepare_frontend_parallel_batch_reuses_content_and_context_matched_cach
         "alpha": {
             "module": "alpha",
             "kind": "cached",
+            "functions": [],
+            "function_metadata": {},
+            "function_digest_seeds": (),
             "source_sha256": hashlib.sha256(module_path.read_bytes()).hexdigest(),
         }
     }
@@ -17209,6 +17145,7 @@ def test_frontend_lowering_cache_summary_attests_hits_and_relowered_work() -> No
     }
 
 
+@pytest.mark.usefixtures("isolated_frontend_state")
 def test_load_cached_module_lowering_result_needs_no_module_stat(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -17221,11 +17158,8 @@ def test_load_cached_module_lowering_result_needs_no_module_stat(
     assert context_digest is not None
 
     cli_module_cache._write_persisted_module_lowering(
-        tmp_path,
         module_path,
         source_lease=cli_module_source._ModuleSourceLease.path_backed(module_path),
-        module_name="alpha",
-        is_package=False,
         context_digest=context_digest,
         result={
             "function_metadata": {},
@@ -18392,6 +18326,7 @@ def test_module_worker_payload_reuses_precomputed_scoped_inputs(
     assert payload["native_python_exports"] == ["alpha.native_call"]
 
 
+@pytest.mark.usefixtures("isolated_frontend_state")
 def test_load_cached_module_lowering_result_reuses_precomputed_views(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -18403,11 +18338,8 @@ def test_load_cached_module_lowering_result_reuses_precomputed_views(
     assert context_digest is not None
 
     cli_module_cache._write_persisted_module_lowering(
-        tmp_path,
         module_path,
         source_lease=cli_module_source._ModuleSourceLease.path_backed(module_path),
-        module_name="alpha",
-        is_package=False,
         context_digest=context_digest,
         result={
             "function_metadata": {},

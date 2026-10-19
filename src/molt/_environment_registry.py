@@ -3740,8 +3740,8 @@ _REGISTRY_JSON = r"""{
       "kind": "bool",
       "name": "MOLT_DISABLE_FRONTEND_LOWERING_CACHE",
       "output_neutral": false,
-      "owner": "src/molt/cli/module_frontend_cache.py",
-      "summary": "Disables the persistent frontend analysis and lowering cache so every module is re-analysed and re-lowered from source; 1, true, yes or on disables both the shared content-addressed tier and session-local reads, default off.",
+      "owner": "src/molt/cli/module_cache.py",
+      "summary": "Disables the persistent frontend analysis and lowering cache so every module is re-analysed and re-lowered from source; 1, true, yes or on disables shared source-store analysis/lowering reads and writes, default off.",
       "values": []
     },
     {
@@ -7801,6 +7801,16 @@ _REGISTRY_JSON = r"""{
       "output_neutral": false,
       "owner": "runtime/molt-passes/src/tir/pass_manager.rs",
       "summary": "Set to exactly 1 to run the per-pass analysis self-check after every TIR pass in the pass manager; unset or any other value skips the check.",
+      "values": []
+    },
+    {
+      "audience": "developer",
+      "default": "0",
+      "kind": "bool",
+      "name": "MOLT_VERIFY_FUNCTION_DIGESTS",
+      "output_neutral": false,
+      "owner": "src/molt/cli/cache_keys.py",
+      "summary": "Set to exactly 1 to re-encode and verify admitted function digest seeds once when constructing the compiler cache digest owner; unset or any other value uses the verified persisted digest directly. Adds no emitted-program checks.",
       "values": []
     },
     {

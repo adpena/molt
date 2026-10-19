@@ -1119,3 +1119,283 @@ def test_recency_never_refreshes_a_junction_target(tmp_path: Path) -> None:
     # turn the no-follow handle into authority over the junction's target.
     module.refresh_cache_entry_recency(path, observed=before)
     assert outside.stat().st_mtime_ns == before.st_mtime_ns
+
+
+def test_global_budget_combines_all_source_record_kinds_and_file_entries(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from molt.cli import source_record_store as records
+    from molt.default_paths import SHARED_SOURCE_RECORDS_DIRECTORY
+
+    module = _load_molt_cache_prune()
+    cache = tmp_path / "cache"
+    store = records.source_record_store(cache / SHARED_SOURCE_RECORDS_DIRECTORY)
+    clock = [100 * 86400 * 1_000_000_000]
+    install_module_view(monkeypatch, "time", time, records, time_ns=lambda: clock[0])
+    kinds: tuple[records.RecordKind, ...] = (
+        "import-scan",
+        "intrinsic-facts",
+        "module-analysis",
+        "module-lowering",
+    )
+    for kind, size in zip(kinds, (40, 30, 20, 10), strict=True):
+        assert store.put(kind, "shared-key", b"x" * size, generation="g")
+        clock[0] += 1_000_000_000
+    entry = _cache_entry(cache, "old-file")
+    with _locked_wasm_link_cache_entry(entry):
+        _publish_wasm_link_cache_entry(entry, WASM_BYTES)
+    file_time = 99 * 86400
+    os.utime(entry.root, (file_time, file_time))
+    physical_file_bytes = sum(
+        path.stat().st_size for path in entry.root.rglob("*") if path.is_file()
+    )
+    database_identity = store.path.stat().st_ino
+
+    result = module._prune(cache, max_bytes=60, max_age_days=None, dry_run=False)
+
+    assert result["entries_before"] == 5
+    assert result["entries_removed"] == 2
+    assert result["entries_failed"] == 0
+    assert result["bytes_before"] == physical_file_bytes + 100
+    assert result["bytes_remaining"] == 60
+    assert result["bytes_removed"] == physical_file_bytes + 40
+    assert result["source_records_before"] == 4
+    assert result["source_records_removed"] == 1
+    assert result["source_record_payload_bytes_removed"] == 40
+    assert result["source_record_physical_before"] is not None
+    assert result["source_record_physical_after"] is not None
+    assert not result["source_record_maintenance_failed"]
+    assert store.path.stat().st_ino == database_identity
+    assert not entry.root.exists()
+    for kind in kinds:
+        observed = store.get(kind, "shared-key", generation="g", max_bytes=None)
+        assert (observed is None) == (kind == "import-scan")
+
+
+def test_source_record_dry_run_and_age_policy_preserve_database_owner(
+    tmp_path: Path,
+) -> None:
+    import sqlite3
+    from molt.cli import source_record_store as records
+    from molt.default_paths import SHARED_SOURCE_RECORDS_DIRECTORY
+
+    cache = tmp_path / "cache"
+    store = records.source_record_store(cache / SHARED_SOURCE_RECORDS_DIRECTORY)
+    assert store.put("module-lowering", "old", b"payload", generation="g")
+    with sqlite3.connect(store.path) as connection:
+        connection.execute(
+            "UPDATE records SET used_ns = ?",
+            (time.time_ns() - 2 * 86400 * 1_000_000_000,),
+        )
+        before = connection.execute("SELECT * FROM records").fetchall()
+    identity = store.path.stat().st_ino
+    dry = _load_molt_cache_prune()._prune(
+        cache, max_bytes=None, max_age_days=1, dry_run=True
+    )
+    assert dry["source_records_removed"] == 1
+    with sqlite3.connect(store.path) as connection:
+        assert connection.execute("SELECT * FROM records").fetchall() == before
+    actual = _load_molt_cache_prune()._prune(
+        cache, max_bytes=None, max_age_days=1, dry_run=False
+    )
+    assert actual["source_records_removed"] == 1
+    assert store.path.stat().st_ino == identity
+    assert store.get("module-lowering", "old", generation="g", max_bytes=None) is None
+
+
+@pytest.mark.parametrize("change", ["refresh", "replace"])
+@pytest.mark.parametrize("future_timestamp", [False, True])
+def test_source_record_prune_cannot_delete_a_changed_observation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, change: str, future_timestamp: bool
+) -> None:
+    from molt.cli import source_record_store as records
+    from molt.default_paths import SHARED_SOURCE_RECORDS_DIRECTORY
+
+    cache = tmp_path / "cache"
+    store = records.source_record_store(cache / SHARED_SOURCE_RECORDS_DIRECTORY)
+    clock = [100 * 86400 * 1_000_000_000]
+    install_module_view(monkeypatch, "time", time, records, time_ns=lambda: clock[0])
+    assert store.put("module-analysis", "k", b"observed", generation="g")
+    candidate = store.get("module-analysis", "k", generation="g", max_bytes=None)
+    assert candidate is not None
+    if future_timestamp:
+        clock[0] += 100 * 86400 * 1_000_000_000
+        assert store.put("intrinsic-facts", "future", b"future", generation="g")
+        clock[0] -= 100 * 86400 * 1_000_000_000
+    remove = records.SourceRecordMaintenance.remove
+    injected = False
+
+    def racing_remove(maintenance, observed):
+        nonlocal injected
+        if not any(row.key == "k" for row in observed):
+            return remove(maintenance, observed)
+        assert not injected, "a refreshed/replaced row must not reenter the sweep"
+        injected = True
+        clock[0] += 301 * 1_000_000_000
+        if change == "refresh":
+            assert candidate.refresh()
+        else:
+            assert store.put("module-analysis", "k", b"replacement", generation="g")
+        return remove(maintenance, observed)
+
+    monkeypatch.setattr(records.SourceRecordMaintenance, "remove", racing_remove)
+    result = _load_molt_cache_prune()._prune(
+        cache, max_bytes=0, max_age_days=None, dry_run=False
+    )
+    assert result["source_records_removed"] == int(future_timestamp)
+    assert result["entries_busy"] == 1
+    assert result["entries_failed"] == 0
+    remaining = store.get("module-analysis", "k", generation="g", max_bytes=None)
+    assert remaining is not None
+    assert remaining.payload == (b"replacement" if change == "replace" else b"observed")
+
+
+def test_corrupt_source_database_is_reported_and_never_unlinked(tmp_path: Path) -> None:
+    from molt.cli import source_record_store as records
+    from molt.default_paths import SHARED_SOURCE_RECORDS_DIRECTORY
+
+    root = tmp_path / "cache"
+    database = root / SHARED_SOURCE_RECORDS_DIRECTORY / records.STORE_NAME
+    database.parent.mkdir(parents=True)
+    database.write_bytes(b"corrupt optional records")
+    before = (database.stat().st_ino, database.read_bytes())
+    result = _load_molt_cache_prune()._prune(
+        root, max_bytes=0, max_age_days=0, dry_run=False
+    )
+    assert result["source_record_maintenance_failed"]
+    assert result["entries_failed"] == 1
+    assert result["entries_removed"] == 0
+    assert (database.stat().st_ino, database.read_bytes()) == before
+
+
+def test_source_record_busy_migration_is_reported_separately(tmp_path: Path) -> None:
+    import sqlite3
+    from molt.cli.source_record_store import STORE_NAME
+    from molt.default_paths import SHARED_SOURCE_RECORDS_DIRECTORY
+
+    cache = tmp_path / "cache"
+    record_root = cache / SHARED_SOURCE_RECORDS_DIRECTORY
+    record_root.mkdir(parents=True)
+    database = record_root / STORE_NAME
+    connection = sqlite3.connect(database, isolation_level=None)
+    try:
+        connection.execute("PRAGMA auto_vacuum=INCREMENTAL")
+        connection.execute("PRAGMA journal_mode=WAL")
+        # An actual historical store awaiting the metadata migration. A peer
+        # writer owns its transaction; the nonwaiting pruner must defer it.
+        connection.executescript("""
+            CREATE TABLE records(kind TEXT,key TEXT,generation TEXT,payload BLOB,
+                PRIMARY KEY(kind,key)) WITHOUT ROWID;
+            CREATE INDEX records_generation ON records(generation);
+            CREATE TABLE generations(generation TEXT PRIMARY KEY,used_ns INTEGER) WITHOUT ROWID;
+            CREATE TABLE trims(singleton INTEGER PRIMARY KEY,trimmed_ns INTEGER);
+            INSERT INTO records VALUES('module-lowering','old','g',X'616263');
+        """)
+        identity = database.stat().st_ino
+        connection.execute("BEGIN IMMEDIATE")
+        result = _load_molt_cache_prune()._prune(
+            cache, max_bytes=0, max_age_days=None, dry_run=False
+        )
+        assert result["source_record_maintenance_busy"] is True
+        assert result["source_record_maintenance_failed"] is False
+        assert result["entries_failed"] == result["entries_removed"] == 0
+        assert connection.execute("SELECT payload FROM records").fetchall() == [
+            (b"abc",)
+        ]
+        assert database.stat().st_ino == identity
+        connection.execute("COMMIT")
+        completed = _load_molt_cache_prune()._prune(
+            cache, max_bytes=0, max_age_days=None, dry_run=False
+        )
+        assert completed["source_record_maintenance_busy"] is False
+        assert completed["entries_failed"] == 0
+        assert completed["source_records_removed"] == 1
+        assert connection.execute("SELECT payload FROM records").fetchall() == []
+        assert database.stat().st_ino == identity
+    finally:
+        connection.close()
+
+
+def test_row_batches_commit_before_interleaved_file_eviction(tmp_path, monkeypatch):
+    import sqlite3
+    from molt.cli import source_record_store as records
+    from molt.default_paths import SHARED_SOURCE_RECORDS_DIRECTORY
+
+    cache = tmp_path / "cache"
+    store = records.source_record_store(cache / SHARED_SOURCE_RECORDS_DIRECTORY)
+    for key in ("first", "second", "third"):
+        assert store.put("module-lowering", key, key.encode(), generation="g")
+    peer = sqlite3.connect(store.path, isolation_level=None)
+    try:
+        for key, stamp in (("first", 10), ("second", 30), ("third", 50)):
+            peer.execute(
+                "UPDATE records SET used_ns=? WHERE key=?", (stamp * 10**9, key)
+            )
+        entry = _cache_entry(cache, "middle-file")
+        with _locked_wasm_link_cache_entry(entry):
+            _publish_wasm_link_cache_entry(entry, WASM_BYTES)
+        os.utime(entry.root, (20, 20))
+        module = _load_molt_cache_prune()
+        remove_file = module._remove_entry
+        observed = []
+
+        def observe_file(candidate, dry_run):
+            assert candidate.path == entry.root
+            # This real competing writer must acquire immediately. The earlier
+            # row is committed and later rows have not been reordered past us.
+            peer.execute("BEGIN IMMEDIATE")
+            try:
+                remaining = peer.execute(
+                    "SELECT key FROM records ORDER BY key"
+                ).fetchall()
+                assert remaining == [("second",), ("third",)]
+                observed.append(remaining)
+            finally:
+                peer.execute("ROLLBACK")
+            return remove_file(candidate, dry_run)
+
+        monkeypatch.setattr(module, "_remove_entry", observe_file)
+        result = module._prune(cache, max_bytes=None, max_age_days=0, dry_run=False)
+        assert result["entries_removed"] == 4 and result["entries_failed"] == 0
+        assert result["source_records_removed"] == 3
+        assert len(observed) == 1 and not entry.root.exists()
+        assert peer.execute("SELECT key FROM records").fetchall() == []
+    finally:
+        peer.close()
+
+
+def test_later_zero_delete_sweep_continues_bounded_physical_reclamation(tmp_path):
+    import sqlite3
+    from molt.cli import source_record_store as records
+    from molt.default_paths import SHARED_SOURCE_RECORDS_DIRECTORY
+
+    cache = tmp_path / "cache"
+    store = records.source_record_store(cache / SHARED_SOURCE_RECORDS_DIRECTORY)
+    for index in range(256):
+        assert store.put("module-lowering", str(index), b"x" * 8192, generation="g")
+    peer = sqlite3.connect(store.path)
+    try:
+
+        def pages():
+            cursor = peer.execute("PRAGMA page_count")
+            try:
+                return cursor.fetchone()[0]
+            finally:
+                cursor.close()
+
+        before = pages()
+        first = _load_molt_cache_prune()._prune(
+            cache, max_bytes=0, max_age_days=None, dry_run=False
+        )
+        middle = pages()
+        assert first["source_records_removed"] == 256 and first["entries_failed"] == 0
+        assert 0 < before - middle <= 256
+        second = _load_molt_cache_prune()._prune(
+            cache, max_bytes=0, max_age_days=None, dry_run=False
+        )
+        after = pages()
+        assert second["source_records_removed"] == 0 and second["entries_failed"] == 0
+        assert 0 < middle - after <= 256
+        assert peer.execute("SELECT count(*) FROM records").fetchone() == (0,)
+    finally:
+        peer.close()

@@ -4,6 +4,7 @@ import ast
 from functools import partial
 import inspect
 from pathlib import Path
+from typing import NoReturn
 
 import pytest
 
@@ -205,3 +206,135 @@ def test_result_generation_refusal_precedes_integration(
     assert "source" in failures[0].lower()
     assert integrated == []
     assert diagnosed == []
+
+
+def test_parallel_persistence_seeds_follow_parent_received_body_owners(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, isolated_molt_cache: Path
+) -> None:
+    import pickle
+
+    from molt.cli.function_records import FunctionDigestSeed
+    from molt.cli import module_cache
+
+    path = tmp_path / "m.py"
+    path.write_bytes(b"def answer(value):\n    return value + 1\n")
+    lease = _ModuleSourceLease.path_backed(path)
+    generator = SimpleTIRGenerator(module_name="m")
+    generator.visit(ast.parse(path.read_bytes()))
+    document = generator.to_json(scope="module")
+    worker_result = frontend_worker._module_frontend_payload(
+        generator,
+        document,
+        source_sha256=lease.source_sha256,
+        visit_s=0.0,
+        lower_s=0.0,
+        total_s=0.0,
+    )
+    # ProcessPool transports values; a child's object identities are not a
+    # reusable digest map in its receiving parent.
+    result = pickle.loads(pickle.dumps(worker_result))
+    assert any(function["name"] == "m__answer" for function in result["functions"])
+    assert all(
+        parent is not child
+        for parent, child in zip(
+            result["functions"], worker_result["functions"], strict=True
+        )
+    )
+    digest = "ad" * 32
+    seeds = frontend_execution._write_parallel_persisted_module_lowering(
+        project_root=tmp_path,
+        module_path=path,
+        source_lease=lease,
+        worker_mode="parallel",
+        context_digest=digest,
+        result=result,
+    )
+    assert isinstance(seeds, tuple) and len(seeds) == len(result["functions"])
+    assert all(isinstance(seed, FunctionDigestSeed) for seed in seeds)
+    for seed, function in zip(seeds, result["functions"], strict=True):
+        assert seed.function is function
+        assert isinstance(seed.digest, bytes) and len(seed.digest) == 32
+    loaded = module_cache._read_persisted_module_lowering(
+        path,
+        source_lease=lease,
+        module_name="m",
+        context_digest=digest,
+    )
+    assert loaded is not None
+    assert loaded["functions"] == result["functions"]
+    assert [seed.digest for seed in loaded["function_digest_seeds"]] == [
+        seed.digest for seed in seeds
+    ]
+    assert all(
+        seed.function is function
+        for seed, function in zip(
+            loaded["function_digest_seeds"], loaded["functions"], strict=True
+        )
+    )
+
+    result["function_digest_seeds"] = seeds
+    state = _FrontendIntegrationState(functions=[], known_classes={})
+    issue = frontend_execution._consume_frontend_module_result(
+        "m",
+        path,
+        result,
+        source_lease=lease,
+        record_frontend_timing=None,
+        integrate_module_frontend_result=partial(
+            frontend_integration._integrate_module_frontend_result_with_state, state
+        ),
+        accumulate_midend_diagnostics=lambda *_a, **_k: None,
+        fail=lambda *args, **kwargs: pytest.fail(f"seed consumption failed: {args!r}"),
+        json_output=True,
+    )
+    assert issue is None
+    assert all(
+        integrated is seed and integrated.function is function
+        for integrated, seed, function in zip(
+            state.function_digest_seeds, seeds, state.functions, strict=True
+        )
+    )
+
+    monkeypatch.setattr(
+        frontend_execution,
+        "_write_persisted_module_lowering",
+        lambda *_a, **_k: pytest.fail("a cache-hit result was published again"),
+    )
+    reused = frontend_execution._write_parallel_persisted_module_lowering(
+        project_root=tmp_path,
+        module_path=path,
+        source_lease=lease,
+        worker_mode="parallel_cache_hit",
+        context_digest=digest,
+        result=result,
+    )
+    assert isinstance(reused, tuple)
+    assert len(reused) == len(seeds)
+    assert all(
+        actual is expected for actual, expected in zip(reused, seeds, strict=True)
+    )
+
+
+def test_optional_parallel_persistence_refusal_returns_empty_seed_tuple(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = tmp_path / "m.py"
+    path.write_bytes(b"VALUE = 1\n")
+    lease = _ModuleSourceLease.path_backed(path)
+
+    def unavailable(*_args: object, **_kwargs: object) -> NoReturn:
+        raise OSError("injected optional cache publication refusal")
+
+    monkeypatch.setattr(
+        frontend_execution, "_write_persisted_module_lowering", unavailable
+    )
+    result = frontend_execution._write_parallel_persisted_module_lowering(
+        project_root=tmp_path,
+        module_path=path,
+        source_lease=lease,
+        worker_mode="parallel",
+        context_digest="ad" * 32,
+        result={"source_sha256": lease.source_sha256, "functions": []},
+    )
+    assert result == ()
+    assert isinstance(result, tuple)

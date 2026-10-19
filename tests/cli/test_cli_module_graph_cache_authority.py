@@ -75,20 +75,23 @@ def test_source_record_json_admission_belongs_to_graph_cache(
     from molt.cli.source_record_store import SourceRecordStore
 
     store = SourceRecordStore(tmp_path / "records.sqlite")
-    monkeypatch.setattr(module_graph_cache, "_source_records", lambda *_args: store)
+    monkeypatch.setattr(module_graph_cache, "shared_source_records", lambda: store)
     monkeypatch.setattr(
         module_graph_cache, "_frontend_semantic_tooling_fingerprint", lambda: "g"
     )
     assert store.put(kind, "key", payload, generation="g")
     # Opaque storage retains even malformed/non-object JSON unchanged.
-    assert store.get(kind, "key", generation="g", max_bytes=10000) == payload
+    observation = store.get(kind, "key", generation="g", max_bytes=10000)
+    assert observation is not None and observation.payload == payload
     reader = (
-        module_graph_cache._read_import_scan_payload
+        module_graph_cache._read_import_scan_record
         if kind == "import-scan"
-        else module_graph_cache._read_intrinsic_facts_payload
+        else module_graph_cache._read_intrinsic_facts_record
     )
-    assert reader(tmp_path, tmp_path / "source.py", "key") == expected
-    assert reader(tmp_path, tmp_path / "source.py", "absent") is None
+    candidate = reader("key")
+    assert candidate is not None
+    assert module_graph_cache._decode_source_record_json(candidate.payload) == expected
+    assert reader("absent") is None
 
 
 def test_json_record_producers_preserve_compact_ascii_blob_encoding(
@@ -98,7 +101,7 @@ def test_json_record_producers_preserve_compact_ascii_blob_encoding(
     from molt.target_python import _DEFAULT_TARGET_PYTHON_VERSION
 
     store = SourceRecordStore(tmp_path / "records.sqlite")
-    monkeypatch.setattr(module_graph_cache, "_source_records", lambda *_args: store)
+    monkeypatch.setattr(module_graph_cache, "shared_source_records", lambda: store)
     monkeypatch.setattr(
         module_graph_cache, "_frontend_semantic_tooling_fingerprint", lambda: "g"
     )
@@ -106,7 +109,7 @@ def test_json_record_producers_preserve_compact_ascii_blob_encoding(
     source.write_bytes(b"raise ImportError\n")
     # This actual producer publishes both its source import scan and its facts.
     module_graph_cache._stdlib_intrinsic_source_facts(
-        tmp_path, "café", source, target_python=_DEFAULT_TARGET_PYTHON_VERSION
+        "café", source, target_python=_DEFAULT_TARGET_PYTHON_VERSION
     )
     with sqlite3.connect(store.path) as connection:
         rows = connection.execute(

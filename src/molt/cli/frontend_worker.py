@@ -249,6 +249,7 @@ def _frontend_lower_module_worker(payload: dict[str, Any]) -> dict[str, Any]:
         "source_sha256": source_lease.source_sha256,
         "functions": ir["functions"],
         "function_metadata": ir["function_metadata"],
+        "function_digest_seeds": (),
         "func_code_ids": ir["code_slots"],
         "local_classes": {
             class_id: gen.classes[class_id] for class_id in gen.local_class_ids
@@ -283,6 +284,7 @@ def _module_frontend_payload(
         "source_sha256": source_sha256,
         "functions": ir["functions"],
         "function_metadata": ir["function_metadata"],
+        "function_digest_seeds": (),
         "func_code_ids": ir["code_slots"],
         "local_classes": {
             class_id: gen.classes[class_id] for class_id in gen.local_class_ids
@@ -467,13 +469,10 @@ def _lower_module_serial_with_context(
         )
         if context_digest is not None:
             cached_payload = _read_persisted_module_lowering(
-                lowering_context.project_root,
                 module_path,
                 source_lease=source_lease,
                 module_name=module_name,
-                is_package=is_package,
                 context_digest=context_digest,
-                target_python=lowering_context.target_python,
                 known_modules=lowering_context.known_modules,
             )
             if cached_payload is not None:
@@ -574,15 +573,11 @@ def _lower_module_serial_with_context(
         raise _ModuleLowerError(f"Invalid lowered module {module_name}: {issue}")
     if lowering_context.project_root is not None and context_digest is not None:
         with contextlib.suppress(OSError):
-            _write_persisted_module_lowering(
-                lowering_context.project_root,
+            payload["function_digest_seeds"] = _write_persisted_module_lowering(
                 module_path,
                 source_lease=source_lease,
-                module_name=module_name,
-                is_package=is_package,
                 context_digest=context_digest,
                 result=payload,
-                target_python=lowering_context.target_python,
             )
     return payload, visit_s, lower_s, total_s, False, 0.0
 

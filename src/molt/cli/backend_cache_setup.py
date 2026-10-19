@@ -6,7 +6,7 @@ import json
 import os
 import time
 from pathlib import Path
-from typing import Any, Mapping
+from typing import TYPE_CHECKING, Any, Mapping
 
 from molt.backend_environment import CodegenSelection, compilation_diagnostics_requested
 from molt.cli.config_resolution import DEFAULT_RUNTIME_STDLIB_PROFILE
@@ -64,6 +64,10 @@ from molt.cli.runtime_native_codegen import (
 )
 
 _BACKEND_CACHE_STDLIB_KEY_MATERIAL_SCHEMA_VERSION = 3
+
+
+if TYPE_CHECKING:
+    from molt.cli.function_records import FunctionDigestSeed
 
 
 @dataclass(frozen=True)
@@ -359,6 +363,7 @@ def _prepare_backend_cache_setup(
     codegen: CodegenSelection,
     rust_cpu: RustCpuPolicy,
     stage_timings_ms: dict[str, float] | None = None,
+    function_digest_seeds: tuple[FunctionDigestSeed, ...] = (),
 ) -> _BackendCacheSetup:
     # Cache identities and archive manifests must use the same admitted target
     # as daemon and direct code generation, including implicit host requests.
@@ -496,7 +501,7 @@ def _prepare_backend_cache_setup(
     module_cache_payload_digest: str | None = None
     # Every payload digest of this setup shares one encoding per function. The
     # IR is not rewritten while the setup runs.
-    function_digests = FunctionDigests()
+    function_digests = FunctionDigests(function_digest_seeds)
 
     def module_cache_payload_inputs() -> tuple[dict[str, Any], str]:
         nonlocal module_cache_payload_ir, module_cache_payload_digest

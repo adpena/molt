@@ -680,7 +680,6 @@ def _intrinsic_source_facts(
 ) -> StdlibModuleIntrinsicFacts:
     """The compiler's content-keyed facts cache: builds and this gate share it."""
     return module_graph_cache._stdlib_intrinsic_source_facts(
-        ROOT,
         module_name,
         path,
         target_python=target_python,
@@ -697,12 +696,10 @@ def _classify_stdlib_modules(
             target_python=target_python,
             namespace_provider=functools.partial(
                 module_graph_cache._stdlib_intrinsic_namespace_summary,
-                ROOT,
                 target_python=target_python,
             ),
         )
         module_graph_cache.warm_stdlib_intrinsic_source_facts(
-            ROOT,
             module_paths,
             target_python=target_python,
             namespace_premises=inventory.premises,

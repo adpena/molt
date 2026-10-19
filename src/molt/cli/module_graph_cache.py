@@ -13,7 +13,7 @@ import hashlib
 import json
 import os
 import sys
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict
 from molt.compiler_analysis.python_imports import (
     RuntimeCatalogDeferral,
     SourceImportSite,
@@ -26,11 +26,9 @@ from pathlib import Path
 from itertools import pairwise
 from typing import Any, cast, get_args
 
-from molt.cli.source_record_store import SourceRecordStore, source_record_store
-from molt.default_paths import _default_molt_cache
+from molt.cli.source_record_store import SourceRecord, shared_source_records
 from molt.cli.json_cache import SOURCE_ANALYSIS_CACHE_MAX_BYTES
 from molt.cli.cache_fingerprints import (
-    _SOURCE_TREE_FINGERPRINT_TRANSACTION,
     _frontend_semantic_tooling_fingerprint,
     _operation_resolved,
     _source_tree_fingerprint_transaction,
@@ -59,7 +57,6 @@ from molt.compiler_analysis.python_imports import (
     _StaticSourceExecutionRequest,
     _StaticSourcePath,
 )
-from molt.cli.runtime_paths import _build_state_root
 from molt.target_python import (
     TargetPythonVersion,
     _DEFAULT_TARGET_PYTHON_VERSION,
@@ -477,7 +474,6 @@ def _intrinsic_source_identity(
 
 @_source_tree_fingerprint_transaction()
 def _stdlib_intrinsic_namespace_summary(
-    project_root: Path,
     module_name: str,
     path: Path,
     *,
@@ -499,7 +495,8 @@ def _stdlib_intrinsic_namespace_summary(
         target_python=target_python,
     )
     expected = _intrinsic_source_identity(snapshot, module_name, target_python, None)
-    payload = _read_intrinsic_facts_payload(project_root, path, record_key)
+    record = _read_intrinsic_facts_record(record_key)
+    payload = _decode_source_record_json(None if record is None else record.payload)
     if payload is not None:
         identity = payload.get("identity")
         if (
@@ -515,10 +512,14 @@ def _stdlib_intrinsic_namespace_summary(
                 facts = payload.get("facts")
                 if not isinstance(facts, dict):
                     raise ValueError("invalid intrinsic source facts")
-                return _decode_namespace_summary(facts.get("namespace_summary"))
+                summary = _decode_namespace_summary(facts.get("namespace_summary"))
             except ValueError:
                 # Malformed syntax facts are a miss, never an empty summary.
                 pass
+            else:
+                assert record is not None
+                record.refresh()
+                return summary
     try:
         tree = _parse_source_for_target(
             snapshot.content, filename=str(path), target_python=target_python
@@ -537,7 +538,6 @@ def _stdlib_intrinsic_namespace_summary(
 
 @_source_tree_fingerprint_transaction()
 def _stdlib_intrinsic_source_facts(
-    project_root: Path,
     module_name: str,
     path: Path,
     namespace_premise: PythonNamespacePremise | None = None,
@@ -570,7 +570,8 @@ def _stdlib_intrinsic_source_facts(
     identity = _intrinsic_source_identity(
         snapshot, module_name, target_python, namespace_premise
     )
-    payload = _read_intrinsic_facts_payload(project_root, path, record_key)
+    record = _read_intrinsic_facts_record(record_key)
+    payload = _decode_source_record_json(None if record is None else record.payload)
     if payload is not None and payload.get("identity") == identity:
         try:
             if (
@@ -581,7 +582,6 @@ def _stdlib_intrinsic_source_facts(
             ):
                 raise ValueError("intrinsic metadata namespace premise mismatch")
             scan = _read_persisted_import_scan_record(
-                project_root,
                 path,
                 module_name=module_name,
                 is_package=path.name == "__init__.py",
@@ -598,6 +598,8 @@ def _stdlib_intrinsic_source_facts(
             count("rejected")
         else:
             count("hits")
+            assert record is not None
+            record.refresh()
             return facts
     count("misses")
     facts = _intrinsic_policy.stdlib_module_intrinsic_facts(
@@ -609,10 +611,9 @@ def _stdlib_intrinsic_source_facts(
     )
     # The key and result describe the same captured bytes even if the pathname
     # changes during analysis. A subsequent read admits only its fresh digest.
-    store = _source_records(project_root, path)
+    store = shared_source_records()
     try:
         _write_persisted_import_scan(
-            project_root,
             path,
             module_name=module_name,
             is_package=path.name == "__init__.py",
@@ -653,7 +654,6 @@ _INTRINSIC_FACTS_MEMORY_HEADROOM_BYTES = 1024 * 1024 * 1024
 
 
 def _warm_stdlib_intrinsic_source_facts_batch(
-    project_root: str,
     batch: tuple[tuple[str, str, PythonNamespacePremise | None], ...],
     target_python: TargetPythonVersion,
 ) -> None:
@@ -661,7 +661,6 @@ def _warm_stdlib_intrinsic_source_facts_batch(
     with _source_tree_fingerprint_transaction():
         for module_name, path, namespace_premise in batch:
             _stdlib_intrinsic_source_facts(
-                Path(project_root),
                 module_name,
                 Path(path),
                 target_python=target_python,
@@ -670,7 +669,6 @@ def _warm_stdlib_intrinsic_source_facts_batch(
 
 
 def warm_stdlib_intrinsic_source_facts(
-    project_root: Path,
     module_paths: Mapping[str, Path],
     *,
     target_python: TargetPythonVersion,
@@ -712,7 +710,6 @@ def warm_stdlib_intrinsic_source_facts(
         for _ in pool.map(
             functools.partial(
                 _warm_stdlib_intrinsic_source_facts_batch,
-                os.fspath(project_root),
                 target_python=target_python,
             ),
             batches,
@@ -728,78 +725,6 @@ def _resolved_module_cache_key(path_str: str, *parts: str) -> str:
 
 # Completed projections from older schemas are never admitted as source requests.
 _IMPORT_SCAN_CACHE_SCHEMA_VERSION = 35
-
-
-# Toolchain stdlib records live in the user-wide cache, beside the shared
-# module-lowering slot.
-_TOOLCHAIN_SOURCE_RECORDS = "toolchain_source_records"
-
-
-@dataclass(frozen=True, slots=True)
-class SourceRecordStores:
-    """The two stores a build reads: its project's, then the toolchain's.
-
-    A toolchain stdlib source is the same file, with the same records, in
-    every project, so its records live in the user-wide cache, as a toolchain
-    ships one prebuilt standard library; a project's own sources stay in its
-    build state. Keys hold the absolute path and every read checks the
-    captured source digest, so sharing admits nothing stale.
-    """
-
-    project_root: Path
-    toolchain_root: Path
-    stdlib_root: Path
-    # ``owner`` tests containment lexically, as ``Path.is_relative_to`` does,
-    # without building every parent of each record's path (6-12 us a call).
-    _stdlib_key: str = field(init=False, repr=False, compare=False)
-    _stdlib_prefix: str = field(init=False, repr=False, compare=False)
-
-    def __post_init__(self) -> None:
-        key = os.path.normcase(os.fspath(self.stdlib_root))
-        object.__setattr__(self, "_stdlib_key", key)
-        object.__setattr__(
-            self, "_stdlib_prefix", key if key.endswith(os.sep) else key + os.sep
-        )
-
-    # The factory, not this operation, owns each connection: a forked worker
-    # inherits the operation but must open its own.
-    @property
-    def project(self) -> SourceRecordStore:
-        return source_record_store(self.project_root)
-
-    @property
-    def toolchain(self) -> SourceRecordStore:
-        return source_record_store(self.toolchain_root)
-
-    def owner(self, path: Path) -> SourceRecordStore:
-        key = os.path.normcase(os.fspath(path))
-        if key == self._stdlib_key or key.startswith(self._stdlib_prefix):
-            return self.toolchain
-        return self.project
-
-
-def _source_record_stores(project_root: Path) -> SourceRecordStores:
-    """The store roots of ``project_root``, resolved once per frontend operation."""
-    transaction = _SOURCE_TREE_FINGERPRINT_TRANSACTION.get()
-    if transaction is not None:
-        stores = transaction.source_record_stores.get(project_root)
-        if stores is not None:
-            return stores
-    from molt.cli.module_resolution import _stdlib_root_path
-
-    stores = SourceRecordStores(
-        _build_state_root(project_root),
-        _default_molt_cache() / _TOOLCHAIN_SOURCE_RECORDS,
-        _stdlib_root_path(),
-    )
-    if transaction is not None:
-        transaction.source_record_stores[project_root] = stores
-    return stores
-
-
-def _source_records(project_root: Path, path: Path) -> SourceRecordStore:
-    """The store that owns the per-source records of ``path``."""
-    return _source_record_stores(project_root).owner(path)
 
 
 def _import_scan_cache_key(
@@ -841,30 +766,24 @@ def _decode_source_record_json(payload: bytes | None) -> Mapping[str, Any] | Non
     return decoded if isinstance(decoded, Mapping) else None
 
 
-def _read_intrinsic_facts_payload(
-    project_root: Path, path: Path, record_key: str
-) -> Mapping[str, Any] | None:
-    """The stored intrinsic facts for ``record_key``; its reader qualifies them."""
-    payload = _source_records(project_root, path).get(
+def _read_intrinsic_facts_record(record_key: str) -> SourceRecord | None:
+    """Read a candidate; only its admitted consumer may refresh recency."""
+    return shared_source_records().get(
         "intrinsic-facts",
         record_key,
         generation=_frontend_semantic_tooling_fingerprint(),
         max_bytes=SOURCE_ANALYSIS_CACHE_MAX_BYTES,
     )
-    return _decode_source_record_json(payload)
 
 
-def _read_import_scan_payload(
-    project_root: Path, path: Path, record_key: str
-) -> Mapping[str, Any] | None:
-    """The stored import-scan payload for ``record_key``; its reader qualifies it."""
-    payload = _source_records(project_root, path).get(
+def _read_import_scan_record(record_key: str) -> SourceRecord | None:
+    """Read a candidate; only its admitted consumer may refresh recency."""
+    return shared_source_records().get(
         "import-scan",
         record_key,
         generation=_frontend_semantic_tooling_fingerprint(),
         max_bytes=SOURCE_ANALYSIS_CACHE_MAX_BYTES,
     )
-    return _decode_source_record_json(payload)
 
 
 def _encode_source_path(path: str | _StaticSourcePath) -> Any:
@@ -908,7 +827,6 @@ def _decode_source_path(payload: Any) -> str | _StaticSourcePath:
 
 @_source_tree_fingerprint_transaction()
 def _read_persisted_import_scan_record(
-    project_root: Path,
     path: Path,
     *,
     module_name: str,
@@ -935,7 +853,8 @@ def _read_persisted_import_scan_record(
         target_python=target_python,
         runtime_catalog_owner=runtime_catalog_owner,
     )
-    payload = _read_import_scan_payload(project_root, path, record_key)
+    record = _read_import_scan_record(record_key)
+    payload = _decode_source_record_json(None if record is None else record.payload)
     if payload is None:
         return None
     # Source records are a closed versioned protocol. Retired projections and
@@ -1221,7 +1140,7 @@ def _read_persisted_import_scan_record(
             return None
     except (KeyError, TypeError, ValueError, IndexError):
         return None
-    return _ImportScanRequests(
+    scan = _ImportScanRequests(
         tuple(payload["imports"]),
         tuple(executions),
         tuple(payload["star_modules"]),
@@ -1237,6 +1156,9 @@ def _read_persisted_import_scan_record(
         runtime_catalog,
         uses_runtime_import_protocol=uses_protocol,
     )
+    assert record is not None
+    record.refresh()
+    return scan
 
 
 def _encode_runtime_catalog_deferral(
@@ -1271,7 +1193,6 @@ def _decode_runtime_catalog_deferral(value: object) -> RuntimeCatalogDeferral | 
 
 @_source_tree_fingerprint_transaction()
 def _write_persisted_import_scan(
-    project_root: Path,
     path: Path,
     *,
     module_name: str,
@@ -1395,7 +1316,7 @@ def _write_persisted_import_scan(
         target_python=target_python,
         runtime_catalog_owner=runtime_catalog_owner,
     )
-    _source_records(project_root, path).put(
+    shared_source_records().put(
         "import-scan",
         record_key,
         json.dumps(payload, separators=(",", ":")).encode(),

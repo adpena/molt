@@ -1324,7 +1324,6 @@ def _load_module_import_scan(
 
     if project_root is not None:
         persisted = _module_graph_cache._read_persisted_import_scan_record(
-            project_root,
             path,
             module_name=module_name,
             is_package=is_package,
@@ -1401,7 +1400,6 @@ def _load_module_import_scan(
     if project_root is not None and snapshot is not None:
         with contextlib.suppress(OSError):
             _module_graph_cache._write_persisted_import_scan(
-                project_root,
                 path,
                 module_name=module_name,
                 is_package=is_package,
