@@ -133,8 +133,15 @@ replaced whole-IR JSON key is removed from the analysis layer. Its independent
 cost control fails on the original full-payload hashing path. Current bounded
 controls exercise seeded reuse, ordered invalidation, content-equal replay,
 header/analysis-authority invalidation and the actual pipeline's shared owner.
-Broader consumer, target and measured-cost acceptance remains under HF-266 and
-V1-07; this implementation does not close those findings.
+At `c0bb75420`, all 36 selected Linux aarch64 integration gates pass, including
+3,422 joined Python consumer cases with nine explicit skips. Actual native and
+linked-WASM source builds match the retained CPython 3.12.15 reference with
+Python removed from their execution path; all five command guards close without
+orphan cleanup. One warm profiled before/after pair measures analysis-cache
+lookup at 52.2/5.37 ms. This attributes the removed full-body serialization,
+not a general wall-clock improvement. Broader target, installed-delivery and
+performance acceptance remains under HF-266 and V1-07; these observations do
+not close those findings.
 
 The storage/digest consumer migration is integrated at `4173741a6`: all 38
 selected Linux aarch64 integration gates pass, including 4,763 joined consumer
