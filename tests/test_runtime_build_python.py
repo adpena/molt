@@ -244,18 +244,25 @@ def test_pinned_generator_runs_shared_rust_helper_from_another_crate_cwd(
     operation, crate = tmp_path / "operation", tmp_path / "crate"
     operation.mkdir()
     crate.mkdir()
-    name = "selected-python.exe" if os.name == "nt" else "selected-python"
-    # A Windows venv's sys.executable is a redirector that requires pyvenv.cfg
-    # beside it. The selected fixture must name the actual interpreter image.
-    interpreter = Path(getattr(sys, "_base_executable", sys.executable)).resolve(
-        strict=True
-    )
-    try:
-        (operation / name).symlink_to(interpreter)
-        (crate / name).symlink_to(unicode_generator)
-    except OSError:
-        pytest.skip("host cannot create executable symlinks")
-    environment = {**os.environ, "MOLT_BUILD_PYTHON": f"./{name}"}
+    if os.name == "nt":
+        from tests.python_environment_test_support import create_test_venv
+
+        # Preserve the standard copied Windows launcher/configuration layout.
+        name = create_test_venv(operation).relative_to(operation)
+        poison = crate / name
+        poison.parent.mkdir(parents=True)
+        shutil.copyfile(unicode_generator, poison)
+    else:
+        name = Path("selected-python")
+        interpreter = Path(getattr(sys, "_base_executable", sys.executable)).resolve(
+            strict=True
+        )
+        try:
+            (operation / name).symlink_to(interpreter)
+            (crate / name).symlink_to(unicode_generator)
+        except OSError:
+            pytest.skip("host cannot create executable symlinks")
+    environment = {**os.environ, "MOLT_BUILD_PYTHON": f"./{name.as_posix()}"}
     pinned = pin_runtime_build_python_environment(environment, cwd=operation)
     assert pinned["MOLT_BUILD_PYTHON"] == str(operation / name)
     result = run_rust_test_process(
