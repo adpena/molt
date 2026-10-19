@@ -2,7 +2,7 @@ use super::super::lir_context::LirLowerCtx;
 use super::super::lir_scalar::emit_get_boxed_for_repr;
 use super::super::runtime_calls::{LirFixedRuntimeCall, LirRuntimeCall};
 use crate::wasm::body::WasmLirFallbackReason;
-use crate::wasm_abi_generated::{STATIC_FUNC_TYPES, WasmRuntimeReturn};
+use crate::wasm_abi_generated::WasmRuntimeReturn;
 use molt_tir::tir::lir::{LirOp, LirRepr};
 use molt_tir::tir::ops::AttrValue;
 use molt_tir::tir::values::ValueId;
@@ -187,14 +187,14 @@ pub(in crate::wasm::lir_fast) fn emit_lir_runtime_result(
         return;
     };
     if contract == WasmRuntimeReturn::RawBits {
-        let signature = &STATIC_FUNC_TYPES[call.import().type_idx() as usize];
+        let (_, results) = call.import().machine_signature();
         let raw_type = match result.repr {
             LirRepr::I64 => Some(ValType::I64),
             LirRepr::F64 => Some(ValType::F64),
             LirRepr::Bool1 => Some(ValType::I32),
             LirRepr::DynBox | LirRepr::Ref64 => None,
         };
-        if raw_type.is_some_and(|ty| signature.results == [ty]) {
+        if raw_type.is_some_and(|ty| results == [ty]) {
             ctx.emit_set(result.id);
         } else {
             ctx.instructions.push(Instruction::Drop);

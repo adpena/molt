@@ -69,6 +69,12 @@ fn call_indirect_type_layout_and_sentinel_table_slot_are_pinned() {
     let function_type_indices = wasm_function_section_type_indices(&wasm);
     let export_indices = wasm_function_export_indices(&wasm);
     let signatures = wasm_type_section_signatures(&wasm);
+    let value_signatures = wasm_type_section_value_signatures(&wasm);
+    assert_eq!(
+        value_signatures.iter().collect::<BTreeSet<_>>().len(),
+        value_signatures.len(),
+        "runtime imports, users and indirect-call wrappers must share function types"
+    );
 
     let first_call_indirect_import = CALL_INDIRECT_IMPORTS
         .first()

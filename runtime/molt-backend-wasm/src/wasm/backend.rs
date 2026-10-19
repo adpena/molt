@@ -1,19 +1,19 @@
 use crate::ir::ModuleRegistryIR;
 use crate::wasm_data::DataSegmentRef;
 use crate::wasm_data::WasmDataSegments;
+use crate::wasm_function_types::WasmFunctionTypes;
 use crate::wasm_import_tracking::TrackedImportIds;
 use crate::wasm_options::WasmCompileOptions;
 use crate::wasm_table::WasmTableRelocations;
 use std::collections::BTreeMap;
 use wasm_encoder::{
-    CodeSection, ExportSection, FunctionSection, ImportSection, MemorySection, Module,
-    TableSection, TypeSection,
+    CodeSection, ExportSection, FunctionSection, ImportSection, MemorySection, Module, TableSection,
 };
 
 pub struct WasmBackend {
     pub(in crate::wasm) code_slots: molt_ir::code_slots::CodeSlotBindings,
     pub(in crate::wasm) module: Module,
-    pub(in crate::wasm) types: TypeSection,
+    pub(in crate::wasm) types: WasmFunctionTypes,
     pub(in crate::wasm) funcs: FunctionSection,
     pub(in crate::wasm) codes: CodeSection,
     pub(in crate::wasm) exports: ExportSection,
@@ -137,7 +137,7 @@ impl WasmBackend {
         Self {
             code_slots: molt_ir::code_slots::CodeSlotBindings::default(),
             module: Module::new(),
-            types: TypeSection::new(),
+            types: WasmFunctionTypes::new(),
             funcs: FunctionSection::new(),
             codes: CodeSection::new(),
             exports: ExportSection::new(),

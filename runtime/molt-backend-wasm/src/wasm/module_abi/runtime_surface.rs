@@ -13,7 +13,6 @@ use molt_ir::runtime_callable_abi_generated::runtime_callable_abi;
 use molt_tir::passes::collect_app_callable_requirements;
 
 pub(super) struct WasmRuntimeSurfacePlan {
-    pub(super) max_func_arity: usize,
     pub(super) max_call_arity: usize,
     pub(super) max_class_def_words: usize,
     pub(super) builtin_trampoline_specs: BTreeMap<String, usize>,
@@ -41,7 +40,6 @@ impl WasmRuntimeSurfacePlan {
             }
         }
         let mut plan = Self {
-            max_func_arity: 0,
             max_call_arity: 0,
             max_class_def_words: 0,
             builtin_trampoline_specs,
@@ -123,13 +121,8 @@ impl WasmRuntimeSurfacePlan {
         known_imports: &BTreeSet<WasmRuntimeImport>,
     ) {
         if func_ir.is_extern {
-            let signature = func_ir.extern_signature().unwrap_or_else(|error| {
-                panic!("invalid WASM extern function declaration: {error}")
-            });
-            self.max_func_arity = self.max_func_arity.max(signature.arity);
             return;
         }
-        self.max_func_arity = self.max_func_arity.max(func_ir.params.len());
         for op in &func_ir.ops {
             self.observe_op(op, defined_function_names, known_imports);
         }
@@ -552,7 +545,6 @@ mod tests {
     #[test]
     fn auto_imports_root_the_complete_reserved_runtime_callable_family() {
         let plan = WasmRuntimeSurfacePlan {
-            max_func_arity: 0,
             max_call_arity: 0,
             max_class_def_words: 0,
             builtin_trampoline_specs: BTreeMap::new(),

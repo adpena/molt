@@ -30,7 +30,6 @@ impl WasmPollTableLayout {
         &self,
         backend: &mut WasmBackend,
         reloc_enabled: bool,
-        user_type_map: &BTreeMap<usize, u32>,
     ) -> BTreeMap<String, u32> {
         let mut table_import_wrappers = BTreeMap::new();
         if !reloc_enabled {
@@ -40,9 +39,7 @@ impl WasmPollTableLayout {
         for spec in POLL_TABLE_IMPORTS {
             let import_name = spec.import.name();
             let arity = 1usize;
-            let type_idx = *user_type_map
-                .get(&arity)
-                .unwrap_or_else(|| panic!("missing wrapper signature for arity {arity}"));
+            let type_idx = backend.types.boxed(arity, true);
             let import_idx = backend.import_ids[spec.import];
             backend.funcs.function(type_idx);
             let func_index = backend.func_count;

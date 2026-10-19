@@ -352,9 +352,7 @@ def _render_rs_mod() -> str:
             "    RUNTIME_CALLABLE_IMPORTS, ReservedRuntimeCallableDispatch,\n",
             "    poll_table_import_slot, runtime_callable_import,\n",
             "};\n",
-            "pub(crate) use static_types::{\n",
-            "    STATIC_FUNC_TYPES, STATIC_TYPE_COUNT,\n",
-            "};\n",
+            "pub(crate) use static_types::STATIC_FUNC_TYPES;\n",
         ]
     )
     return "".join(lines)
@@ -620,12 +618,7 @@ def _render_rs_static_types(data: dict) -> str:
                 "    },\n",
             ]
         )
-    lines.extend(
-        [
-            "];\n\n",
-            f"pub(crate) const STATIC_TYPE_COUNT: u32 = {len(data['static_type'])};\n\n",
-        ]
-    )
+    lines.append("];\n")
     return "".join(lines)
 
 
@@ -687,8 +680,8 @@ def _render_rs_import_metadata(data: dict, import_variants: Mapping[str, str]) -
         [
             "        }\n",
             "    }\n\n",
-            "    pub(crate) const fn type_idx(self) -> u32 {\n",
-            "        match self {\n",
+            "    pub(crate) fn machine_signature(self) -> (&'static [wasm_encoder::ValType], &'static [wasm_encoder::ValType]) {\n",
+            "        let signature = &super::STATIC_FUNC_TYPES[match self {\n",
         ]
     )
     for entry in data["import"]:
@@ -697,7 +690,8 @@ def _render_rs_import_metadata(data: dict, import_variants: Mapping[str, str]) -
         )
     lines.extend(
         [
-            "        }\n",
+            "        }];\n",
+            "        (signature.params, signature.results)\n",
             "    }\n\n",
             "    pub(crate) const fn return_contract(self) -> WasmRuntimeReturn {\n",
             "        match self {\n",
@@ -728,7 +722,6 @@ def _render_rs_import_registry(data: dict, import_variants: Mapping[str, str]) -
             "pub(crate) struct RuntimeImportSpec {\n",
             "    pub(crate) import: WasmRuntimeImport,\n",
             "    pub(crate) name: &'static str,\n",
-            "    pub(crate) type_idx: u32,\n",
             "}\n\n",
             "pub(crate) const IMPORT_REGISTRY: &[RuntimeImportSpec] = &[\n",
         ]
@@ -740,7 +733,6 @@ def _render_rs_import_registry(data: dict, import_variants: Mapping[str, str]) -
                 "        import: "
                 f"{_rust_runtime_import(import_variants, entry['name'])},\n",
                 f'        name: "{entry["name"]}",\n',
-                f"        type_idx: {entry['type']},\n",
                 "    },\n",
             ]
         )

@@ -1,12 +1,10 @@
-use std::iter::ExactSizeIterator;
-use wasm_encoder::{TypeSection, ValType};
+use wasm_encoder::ValType;
 
 pub(crate) use crate::wasm_abi_generated::{
     CALL_INDIRECT_IMPORTS, CALL_INDIRECT_MAX_ARITY, IMPORT_REGISTRY, POLL_TABLE_IMPORTS,
     RESERVED_RUNTIME_CALLABLE_COUNT, RESERVED_RUNTIME_CALLABLE_SPECS, RUNTIME_CALLABLE_IMPORTS,
-    ReservedRuntimeCallableDispatch, RuntimeImportSpec, STATIC_FUNC_TYPES, STATIC_TYPE_COUNT,
-    WasmRuntimeImport, poll_table_import_slot, runtime_callable_import, wasm_runtime_export_name,
-    wasm_runtime_import,
+    ReservedRuntimeCallableDispatch, RuntimeImportSpec, WasmRuntimeImport, poll_table_import_slot,
+    runtime_callable_import, wasm_runtime_export_name, wasm_runtime_import,
 };
 pub(crate) use molt_codegen_abi::{
     GENERATOR_CONTROL_BYTES as GEN_CONTROL_SIZE, TASK_KIND_COROUTINE, TASK_KIND_FUTURE,
@@ -30,8 +28,7 @@ pub(crate) const USER_FUNCTION_IMPORT_MODULE: &str = "env";
 // standardized WASM exception handling instructions (try_table/throw/catch).
 //
 // The exception tag carries a single i64 payload: the exception object
-// handle.  This matches type index 1 in the static type section:
-// (i64) -> ().
+// handle. Its (i64) -> () signature is interned in the module type space.
 //
 // Current host-call exception model:
 //   try block entry:  call exception_push   (push handler frame)
@@ -52,66 +49,21 @@ pub(crate) const USER_FUNCTION_IMPORT_MODULE: &str = "env";
 // Enabled by default; set MOLT_WASM_NATIVE_EH=0 to disable.
 // ---------------------------------------------------------------------------
 
-/// Type index for the exception tag payload: (i64) -> ()
-/// This is type 1 in the static type section.
-pub(crate) const TAG_EXCEPTION_FUNC_TYPE: u32 = 1;
-
 /// Tag index for the molt exception tag (first and only tag in the module).
 pub(crate) const TAG_EXCEPTION_INDEX: u32 = 0;
-
-pub(crate) trait TypeSectionExt {
-    fn function<P, R>(&mut self, params: P, results: R)
-    where
-        P: IntoIterator<Item = ValType>,
-        P::IntoIter: ExactSizeIterator,
-        R: IntoIterator<Item = ValType>,
-        R::IntoIter: ExactSizeIterator;
-}
-
-impl TypeSectionExt for TypeSection {
-    fn function<P, R>(&mut self, params: P, results: R)
-    where
-        P: IntoIterator<Item = ValType>,
-        P::IntoIter: ExactSizeIterator,
-        R: IntoIterator<Item = ValType>,
-        R::IntoIter: ExactSizeIterator,
-    {
-        self.ty().function(params, results);
-    }
-}
-
-/// First dynamic type index; must equal the count of all statically-defined types.
-///
-/// Static signatures occupy manifest indices `0..STATIC_TYPE_COUNT`. Dynamic
-/// user arity signatures and wrapper signatures must start after that fixed set.
-pub(crate) fn emit_static_type_section(types: &mut TypeSection) {
-    for static_type in STATIC_FUNC_TYPES {
-        types.function(
-            static_type.params.iter().copied(),
-            static_type.results.iter().copied(),
-        );
-    }
-}
-
-pub(crate) fn static_func_type_idx(params: &[ValType], results: &[ValType]) -> Option<u32> {
-    STATIC_FUNC_TYPES
-        .iter()
-        .position(|spec| spec.params == params && spec.results == results)
-        .map(|idx| idx as u32)
-}
 
 /// Generic direct calls transport i64 locals only. Dedicated emitters own
 /// mixed-width runtime ABIs; return ownership never authorizes a width cast.
 pub(crate) fn assert_runtime_i64_call(import: WasmRuntimeImport, arg_count: usize) {
-    let signature = &STATIC_FUNC_TYPES[import.type_idx() as usize];
+    let (params, results) = import.machine_signature();
     assert!(
-        signature.params.len() == arg_count
-            && signature.params.iter().all(|param| *param == ValType::I64)
-            && (signature.results.is_empty() || signature.results == [ValType::I64]),
+        params.len() == arg_count
+            && params.iter().all(|param| *param == ValType::I64)
+            && (results.is_empty() || results == [ValType::I64]),
         "generic direct runtime call {} supplies {arg_count} i64 operands; canonical ABI {:?} -> {:?} requires exact arity and i64-only operands with an i64 or void result",
         import.runtime_export_name(),
-        signature.params,
-        signature.results
+        params,
+        results
     );
 }
 
@@ -119,13 +71,13 @@ pub(crate) fn assert_runtime_i64_call(import: WasmRuntimeImport, arg_count: usiz
 
 #[cfg(test)]
 mod tests {
-    use super::{IMPORT_REGISTRY, STATIC_TYPE_COUNT, WasmRuntimeImport, emit_static_type_section};
+    use super::{IMPORT_REGISTRY, WasmRuntimeImport};
+    use crate::wasm_abi_generated::STATIC_FUNC_TYPES;
     use crate::wasm_abi_generated::{
         RUNTIME_CALLABLE_IMPORTS, op_loop_runtime_call, runtime_callable_import,
         wasm_runtime_import,
     };
-    use wasm_encoder::{Module, TypeSection};
-    use wasmparser::{CompositeInnerType, Parser, Payload};
+    use wasm_encoder::ValType;
 
     #[test]
     fn generic_runtime_calls_validate_the_canonical_machine_signature() {
@@ -157,23 +109,21 @@ mod tests {
 
     #[test]
     fn import_return_contracts_agree_with_machine_and_shared_boxed_abis() {
-        use super::STATIC_FUNC_TYPES;
         use crate::wasm_abi_generated::WasmRuntimeReturn;
         use molt_ir::runtime_boxed_abi_generated::{RuntimeBoxedReturn, runtime_boxed_abi};
         use wasm_encoder::ValType;
 
         for spec in IMPORT_REGISTRY {
-            let signature = &STATIC_FUNC_TYPES[spec.type_idx as usize];
+            let (params, results) = spec.import.machine_signature();
             let contract = spec.import.return_contract();
-            if signature.results.is_empty() {
+            if results.is_empty() {
                 assert_eq!(contract, WasmRuntimeReturn::Void, "{}", spec.name);
-            } else if signature.results != [ValType::I64] {
+            } else if results != [ValType::I64] {
                 assert_eq!(contract, WasmRuntimeReturn::RawBits, "{}", spec.name);
             } else {
                 assert_ne!(contract, WasmRuntimeReturn::Void, "{}", spec.name);
             }
-            if let Some(boxed) =
-                runtime_boxed_abi(spec.import.runtime_export_name(), signature.params.len())
+            if let Some(boxed) = runtime_boxed_abi(spec.import.runtime_export_name(), params.len())
             {
                 let expected = match boxed.result {
                     RuntimeBoxedReturn::OwnedValue => WasmRuntimeReturn::OwnedObject,
@@ -285,38 +235,16 @@ mod tests {
         }
     }
 
-    fn static_type_section_signatures() -> Vec<(usize, usize)> {
-        let mut types = TypeSection::new();
-        emit_static_type_section(&mut types);
-        let mut module = Module::new();
-        module.section(&types);
-        let wasm = module.finish();
-
-        let mut sigs = Vec::new();
-        for payload in Parser::new(0).parse_all(&wasm) {
-            if let Payload::TypeSection(reader) = payload.expect("valid payload") {
-                for rec_group in reader.into_iter() {
-                    let rec_group = rec_group.expect("valid rec group");
-                    for sub_type in rec_group.into_types() {
-                        if let CompositeInnerType::Func(func_type) = &sub_type.composite_type.inner
-                        {
-                            sigs.push((func_type.params().len(), func_type.results().len()));
-                        }
-                    }
-                }
-            }
-        }
-        sigs
-    }
-
     #[test]
     fn module_cache_del_is_registered_as_on_demand_wasm_import() {
-        let import_type = IMPORT_REGISTRY.iter().find_map(|spec| {
-            (spec.import == WasmRuntimeImport::ModuleCacheDel).then_some(spec.type_idx)
-        });
+        assert!(
+            IMPORT_REGISTRY
+                .iter()
+                .any(|spec| spec.import == WasmRuntimeImport::ModuleCacheDel)
+        );
         assert_eq!(
-            import_type,
-            Some(2),
+            WasmRuntimeImport::ModuleCacheDel.machine_signature(),
+            (&[ValType::I64][..], &[ValType::I64][..]),
             "module_cache_del must use the unary i64 -> i64 host import ABI"
         );
 
@@ -370,12 +298,14 @@ mod tests {
 
     #[test]
     fn object_new_bound_declares_wasm_imports() {
-        let bound_type = IMPORT_REGISTRY.iter().find_map(|spec| {
-            (spec.import == WasmRuntimeImport::ObjectNewBound).then_some(spec.type_idx)
-        });
+        assert!(
+            IMPORT_REGISTRY
+                .iter()
+                .any(|spec| spec.import == WasmRuntimeImport::ObjectNewBound)
+        );
         assert_eq!(
-            bound_type,
-            Some(2),
+            WasmRuntimeImport::ObjectNewBound.machine_signature(),
+            (&[ValType::I64][..], &[ValType::I64][..]),
             "object_new_bound must use the unary i64 -> i64 host import ABI"
         );
 
@@ -386,33 +316,23 @@ mod tests {
     }
 
     #[test]
-    fn static_type_section_signatures_are_pinned_to_static_type_count() {
-        let sigs = static_type_section_signatures();
-
-        assert_eq!(
-            sigs.len(),
-            STATIC_TYPE_COUNT as usize,
-            "static type table must emit exactly STATIC_TYPE_COUNT entries"
-        );
-        assert!(
-            sigs.iter().all(|(_, results)| *results <= 1),
-            "Python-callable WASM ABI must not reserve a second multi-result return authority: {sigs:?}"
-        );
-
-        let pinned: &[(usize, (usize, usize))] = &[
-            (0, (0, 1)),   // () -> i64
-            (1, (1, 0)),   // (i64) -> ()
-            (8, (0, 0)),   // () -> ()
-            (31, (9, 1)),  // high arity
-            (34, (12, 1)), // high arity
-            (37, (5, 1)),  // load_method
-            (38, (6, 1)),  // load_super_method
-        ];
-        for &(idx, expected) in pinned {
-            assert_eq!(
-                sigs[idx], expected,
-                "static WASM type {idx} drifted to {:?}, expected {expected:?}",
-                sigs[idx]
+    fn import_signature_catalog_is_unique_and_has_no_unproduced_entries() {
+        let mut signatures = std::collections::HashSet::new();
+        for signature in STATIC_FUNC_TYPES {
+            assert!(
+                signatures.insert((signature.params, signature.results)),
+                "duplicate import signature"
+            );
+            assert!(
+                signature.results.len() <= 1,
+                "Python-callable ABI has at most one result"
+            );
+            assert!(
+                IMPORT_REGISTRY
+                    .iter()
+                    .any(|spec| spec.import.machine_signature()
+                        == (signature.params, signature.results)),
+                "signature has no import producer"
             );
         }
     }

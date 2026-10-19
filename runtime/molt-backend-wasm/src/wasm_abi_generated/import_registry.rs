@@ -10,13754 +10,11004 @@ use super::runtime_surface::RUNTIME_HOST_EXPORTS;
 pub(crate) struct RuntimeImportSpec {
     pub(crate) import: WasmRuntimeImport,
     pub(crate) name: &'static str,
-    pub(crate) type_idx: u32,
 }
 
 pub(crate) const IMPORT_REGISTRY: &[RuntimeImportSpec] = &[
     RuntimeImportSpec {
         import: WasmRuntimeImport::TypesBootstrap,
         name: "types_bootstrap",
-        type_idx: 0,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::AbcBootstrap,
         name: "abc_bootstrap",
-        type_idx: 0,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::CollectionsAbcRuntimeTypes,
         name: "collections_abc_runtime_types",
-        type_idx: 0,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::AbcGetCacheToken,
         name: "abc_get_cache_token",
-        type_idx: 0,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::AbcInit,
         name: "abc_init",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::AbcRegister,
         name: "abc_register",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::AbcInstancecheck,
         name: "abc_instancecheck",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::AbcSubclasscheck,
         name: "abc_subclasscheck",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::AbcGetDump,
         name: "abc_get_dump",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::AbcResetRegistry,
         name: "abc_reset_registry",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::AbcResetCaches,
         name: "abc_reset_caches",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::AbcUpdateAbstractmethods,
         name: "abc_update_abstractmethods",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ArrayNew,
         name: "array_new",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ArrayFromList,
         name: "array_from_list",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ArrayAppend,
         name: "array_append",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ArrayBufferInfo,
         name: "array_buffer_info",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ArrayDeclareBuffer,
         name: "array_declare_buffer",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ArrayCount,
         name: "array_count",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ArrayDelitem,
         name: "array_delitem",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ArrayExtend,
         name: "array_extend",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ArrayFrombytes,
         name: "array_frombytes",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ArrayGetitem,
         name: "array_getitem",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ArrayIndex,
         name: "array_index",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ArrayInsert,
         name: "array_insert",
-        type_idx: 5,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ArrayItemsize,
         name: "array_itemsize",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ArrayLen,
         name: "array_len",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ArrayPop,
         name: "array_pop",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ArrayRepeat,
         name: "array_repeat",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ArrayRepeatInPlace,
         name: "array_repeat_in_place",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ArrayRemove,
         name: "array_remove",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ArrayReverse,
         name: "array_reverse",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ArraySetitem,
         name: "array_setitem",
-        type_idx: 5,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ArrayTobytes,
         name: "array_tobytes",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ArrayTolist,
         name: "array_tolist",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ArrayTypecode,
         name: "array_typecode",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::Alloc,
         name: "alloc",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::AllocClass,
         name: "alloc_class",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ObjectPublishInitialized,
         name: "object_publish_initialized",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ArenaNew,
         name: "arena_new",
-        type_idx: 40,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ArenaAllocObject,
         name: "arena_alloc_object",
-        type_idx: 16,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ArenaFree,
         name: "arena_free",
-        type_idx: 15,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::DecRefObj,
         name: "dec_ref_obj",
-        type_idx: 1,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::IncRefObj,
         name: "inc_ref_obj",
-        type_idx: 1,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ObjGetState,
         name: "obj_get_state",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ObjSetState,
         name: "obj_set_state",
-        type_idx: 6,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ResourceOnAllocate,
         name: "resource_on_allocate",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ResourceOnFree,
         name: "resource_on_free",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ModuleCacheGet,
         name: "module_cache_get",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ModuleCacheDel,
         name: "module_cache_del",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ModuleCacheSet,
         name: "module_cache_set",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ModuleRegistryInstall,
         name: "module_registry_install",
-        type_idx: 14,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ModuleEnsure,
         name: "module_ensure",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ModuleDelGlobal,
         name: "module_del_global",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ModuleDelGlobalIfPresent,
         name: "module_del_global_if_present",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ModuleGetAttr,
         name: "module_get_attr",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ModuleImportFrom,
         name: "module_import_from",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ModuleGetGlobal,
         name: "module_get_global",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ModuleGetName,
         name: "module_get_name",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ModuleImport,
         name: "module_import",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ModuleImportStar,
         name: "module_import_star",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ModuleNew,
         name: "module_new",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ModuleSetAttr,
         name: "module_set_attr",
-        type_idx: 5,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::FrameContextSet,
         name: "frame_context_set",
-        type_idx: 5,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::FrameLocalsBegin,
         name: "frame_locals_begin",
-        type_idx: 0,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::FrameHomes,
         name: "frame_homes",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::FrameHomeLoad,
         name: "frame_home_load",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::FrameHomeTake,
         name: "frame_home_take",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::LocalsBuiltin,
         name: "locals_builtin",
-        type_idx: 0,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::FrameCellPublish,
         name: "frame_cell_publish",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ExceptionPrepareRaise,
         name: "exception_prepare_raise",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ExceptionTracePrepend,
         name: "exception_trace_prepend",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ExceptionActive,
         name: "exception_active",
-        type_idx: 0,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ExceptionCurrent,
         name: "exception_current",
-        type_idx: 0,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ExceptionEnterHandler,
         name: "exception_enter_handler",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ExceptionClass,
         name: "exception_class",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ExceptionClear,
         name: "exception_clear",
-        type_idx: 0,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ExceptionContextSet,
         name: "exception_context_set",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ExceptionKind,
         name: "exception_kind",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ExceptionLast,
         name: "exception_last",
-        type_idx: 0,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ExceptionLastPending,
         name: "exception_last_pending",
-        type_idx: 0,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::AsyncWorkPollAndExceptionLastPending,
         name: "async_work_poll_and_exception_last_pending",
-        type_idx: 0,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ExceptionMatchBuiltin,
         name: "exception_match_builtin",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ExceptionResolveCaptured,
         name: "exception_resolve_captured",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ExceptionMessage,
         name: "exception_message",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ExceptionNew,
         name: "exception_new",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ExceptionNewBuiltin,
         name: "exception_new_builtin",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ExceptionNewBuiltinEmpty,
         name: "exception_new_builtin_empty",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ExceptionNewBuiltinOne,
         name: "exception_new_builtin_one",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ExceptionNewFromClass,
         name: "exception_new_from_class",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ExceptionPending,
         name: "exception_pending",
-        type_idx: 0,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::AsyncWorkPollAndExceptionPending,
         name: "async_work_poll_and_exception_pending",
-        type_idx: 0,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ExceptionPop,
         name: "exception_pop",
-        type_idx: 0,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ExceptionPush,
         name: "exception_push",
-        type_idx: 0,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ExceptionSetLast,
         name: "exception_set_last",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ExceptionSetValue,
         name: "exception_set_value",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ExceptionStackClear,
         name: "exception_stack_clear",
-        type_idx: 0,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ExceptionStackDepth,
         name: "exception_stack_depth",
-        type_idx: 0,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ExceptionStackEnter,
         name: "exception_stack_enter",
-        type_idx: 0,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ExceptionStackExit,
         name: "exception_stack_exit",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ExceptionStackSetDepth,
         name: "exception_stack_set_depth",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ExceptiongroupCombine,
         name: "exceptiongroup_combine",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ExceptiongroupMatch,
         name: "exceptiongroup_match",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::Raise,
         name: "raise",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::BuiltinType,
         name: "builtin_type",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ClassApplySetName,
         name: "class_apply_set_name",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ClassLayoutVersion,
         name: "class_layout_version",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ClassNew,
         name: "class_new",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ClassSetBase,
         name: "class_set_base",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ClassSetDefinition,
         name: "class_set_definition",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ClassmethodNew,
         name: "classmethod_new",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::Isinstance,
         name: "isinstance",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::Issubclass,
         name: "issubclass",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ObjectFieldGet,
         name: "object_field_get",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ObjectFieldGetPtr,
         name: "object_field_get_ptr",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ObjectFieldInit,
         name: "object_field_init",
-        type_idx: 5,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ObjectFieldInitPtr,
         name: "object_field_init_ptr",
-        type_idx: 5,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ObjectFieldSet,
         name: "object_field_set",
-        type_idx: 5,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ObjectFieldSetPtr,
         name: "object_field_set_ptr",
-        type_idx: 5,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ObjectNew,
         name: "object_new",
-        type_idx: 0,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ObjectNewBound,
         name: "object_new_bound",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ObjectSetClass,
         name: "object_set_class",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::PropertyNew,
         name: "property_new",
-        type_idx: 5,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::StaticmethodNew,
         name: "staticmethod_new",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::SuperBuiltin,
         name: "super_builtin",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::SuperNew,
         name: "super_new",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::TypeOf,
         name: "type_of",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::BoundMethodNew,
         name: "bound_method_new",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ClosureLoad,
         name: "closure_load",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ClosureStore,
         name: "closure_store",
-        type_idx: 5,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::FuncNew,
         name: "func_new",
-        type_idx: 7,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::FuncNewBuiltin,
         name: "func_new_builtin",
-        type_idx: 5,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::FuncNewBuiltinNamed,
         name: "func_new_builtin_named",
-        type_idx: 7,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::FuncNewClosure,
         name: "func_new_closure",
-        type_idx: 12,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::FunctionClosureBits,
         name: "function_closure_bits",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::FunctionDefaultKind,
         name: "function_default_kind",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::FunctionDefaultsVersion,
         name: "function_defaults_version",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::FunctionIsCoroutine,
         name: "function_is_coroutine",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::FunctionIsGenerator,
         name: "function_is_generator",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::FunctionInitMetadataPacked,
         name: "function_init_metadata_packed",
-        type_idx: 7,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::CellNew,
         name: "cell_new",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::CellGet,
         name: "cell_get",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::CellSet,
         name: "cell_set",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::CellEq,
         name: "cell_eq",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::CellNe,
         name: "cell_ne",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::CellLt,
         name: "cell_lt",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::CellLe,
         name: "cell_le",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::CellGt,
         name: "cell_gt",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::CellGe,
         name: "cell_ge",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::GuardBuiltinBindings,
         name: "guard_builtin_bindings",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::TypesCellContentsGet,
         name: "types_cell_contents_get",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::TypesCellContentsSet,
         name: "types_cell_contents_set",
-        type_idx: 5,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::TypesCellContentsDelete,
         name: "types_cell_contents_delete",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::FunctionSetBuiltin,
         name: "function_set_builtin",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::FunctionSetDefaults,
         name: "function_set_defaults",
-        type_idx: 5,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::GpuKernelDescriptorSet,
         name: "gpu_kernel_descriptor_set",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::GpuThreadId,
         name: "gpu_thread_id",
-        type_idx: 0,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::GpuBlockId,
         name: "gpu_block_id",
-        type_idx: 0,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::GpuBlockDim,
         name: "gpu_block_dim",
-        type_idx: 0,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::GpuGridDim,
         name: "gpu_grid_dim",
-        type_idx: 0,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::GpuBarrier,
         name: "gpu_barrier",
-        type_idx: 0,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::RequireIntrinsicRuntime,
         name: "require_intrinsic_runtime",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::LoadIntrinsicRuntime,
         name: "load_intrinsic_runtime",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::SetAppCallableResolver,
         name: "set_app_callable_resolver",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::RuntimeActiveRuntime,
         name: "runtime_active_runtime",
-        type_idx: 0,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::IsBoundMethod,
         name: "is_bound_method",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::IsFunctionObj,
         name: "is_function_obj",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::FunctionDirectCallEligible,
         name: "function_direct_call_eligible",
-        type_idx: 5,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::CapabilitiesHas,
         name: "capabilities_has",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::CapabilitiesRequire,
         name: "capabilities_require",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::CapabilitiesRequireOperation,
         name: "capabilities_require_operation",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::CapabilitiesTrusted,
         name: "capabilities_trusted",
-        type_idx: 0,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::CallArityError,
         name: "call_arity_error",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::CallBind,
         name: "call_bind",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::CallBindIc,
         name: "call_bind_ic",
-        type_idx: 5,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::CallBindIcOwned,
         name: "call_bind_ic_owned",
-        type_idx: 5,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::LoadMethod,
         name: "load_method",
-        type_idx: 37,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::LoadSuperMethod,
         name: "load_super_method",
-        type_idx: 38,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::CallLoadedMethod0,
         name: "call_loaded_method0",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::CallLoadedMethod1,
         name: "call_loaded_method1",
-        type_idx: 5,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::CallLoadedMethod2,
         name: "call_loaded_method2",
-        type_idx: 7,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::CallLoadedMethod3,
         name: "call_loaded_method3",
-        type_idx: 12,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::CallLoadedMethod4,
         name: "call_loaded_method4",
-        type_idx: 9,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::CallLoadedMethodSpilled,
         name: "call_loaded_method_spilled",
-        type_idx: 7,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::CallFuncDispatch,
         name: "call_func_dispatch",
-        type_idx: 7,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::CallFuncOwned,
         name: "call_func_owned",
-        type_idx: 7,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::CallInputsRelease,
         name: "call_inputs_release",
-        type_idx: 30,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::CallIndirectIc,
         name: "call_indirect_ic",
-        type_idx: 5,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::CallargsExpandKwstar,
         name: "callargs_expand_kwstar",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::CallargsExpandStar,
         name: "callargs_expand_star",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::CallargsNew,
         name: "callargs_new",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::CallargsNewExpanded,
         name: "callargs_new_expanded",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::CallargsPushKw,
         name: "callargs_push_kw",
-        type_idx: 5,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::CallargsPushPos,
         name: "callargs_push_pos",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::HandleResolve,
         name: "handle_resolve",
-        type_idx: 13,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::InvokeFfiIc,
         name: "invoke_ffi_ic",
-        type_idx: 7,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::FastDictGet,
         name: "fast_dict_get",
-        type_idx: 5,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::FastListAppend,
         name: "fast_list_append",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::FastStrJoin,
         name: "fast_str_join",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::FastStrStartswith,
         name: "fast_str_startswith",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::FastStrUpper,
         name: "fast_str_upper",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::FastStrLower,
         name: "fast_str_lower",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::FastStrStrip,
         name: "fast_str_strip",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::GuardLayout,
         name: "guard_layout",
-        type_idx: 5,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ProfileEnabled,
         name: "profile_enabled",
-        type_idx: 0,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::GuardType,
         name: "guard_type",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::GuardedFieldGet,
         name: "guarded_field_get",
-        type_idx: 9,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::GuardedFieldSet,
         name: "guarded_field_set",
-        type_idx: 10,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::GuardedClassDef,
         name: "guarded_class_def",
-        type_idx: 28,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::AbsBuiltin,
         name: "abs_builtin",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::Add,
         name: "add",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::IntFromI64,
         name: "int_from_i64",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::IntAsI64,
         name: "int_as_i64",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::StrConcat,
         name: "str_concat",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::StrContains,
         name: "str_contains",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::BitAnd,
         name: "bit_and",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::BitOr,
         name: "bit_or",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::BitXor,
         name: "bit_xor",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::Div,
         name: "div",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::DivmodBuiltin,
         name: "divmod_builtin",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::Floordiv,
         name: "floordiv",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::InplaceAdd,
         name: "inplace_add",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::InplaceBitAnd,
         name: "inplace_bit_and",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::InplaceBitOr,
         name: "inplace_bit_or",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::InplaceBitXor,
         name: "inplace_bit_xor",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::InplaceDiv,
         name: "inplace_div",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::InplaceFloordiv,
         name: "inplace_floordiv",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::InplaceLshift,
         name: "inplace_lshift",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::InplaceMatmul,
         name: "inplace_matmul",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::InplaceMod,
         name: "inplace_mod",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::InplaceMul,
         name: "inplace_mul",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::InplacePow,
         name: "inplace_pow",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::InplaceRshift,
         name: "inplace_rshift",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::InplaceSub,
         name: "inplace_sub",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::Invert,
         name: "invert",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::Lshift,
         name: "lshift",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::Matmul,
         name: "matmul",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::Mod,
         name: "mod",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::Mul,
         name: "mul",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::Pow,
         name: "pow",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::PowMod,
         name: "pow_mod",
-        type_idx: 5,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::Neg,
         name: "neg",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::Pos,
         name: "pos",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::Round,
         name: "round",
-        type_idx: 5,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::Rshift,
         name: "rshift",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::Sub,
         name: "sub",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::Trunc,
         name: "trunc",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::Eq,
         name: "eq",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::Ge,
         name: "ge",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::Gt,
         name: "gt",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::Is,
         name: "is",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::Le,
         name: "le",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::Lt,
         name: "lt",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::Ne,
         name: "ne",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::Ellipsis,
         name: "ellipsis",
-        type_idx: 0,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::Missing,
         name: "missing",
-        type_idx: 0,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::NotImplemented,
         name: "not_implemented",
-        type_idx: 0,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::Pending,
         name: "pending",
-        type_idx: 0,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::IsCallable,
         name: "is_callable",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::IsGenerator,
         name: "is_generator",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::IsNativeAwaitable,
         name: "is_native_awaitable",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::IsTruthy,
         name: "is_truthy",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::IsTruthyBool,
         name: "is_truthy_bool",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::IsTruthyBoolNogil,
         name: "is_truthy_bool_nogil",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::IsTruthyInt,
         name: "is_truthy_int",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::IsTruthyIntNogil,
         name: "is_truthy_int_nogil",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::Not,
         name: "not",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ContextClosing,
         name: "context_closing",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ContextDepth,
         name: "context_depth",
-        type_idx: 0,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ContextEnter,
         name: "context_enter",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ContextExit,
         name: "context_exit",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ContextNull,
         name: "context_null",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ContextUnwind,
         name: "context_unwind",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ContextUnwindTo,
         name: "context_unwind_to",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::CodeNew,
         name: "code_new",
-        type_idx: 31,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::CodeSlotSet,
         name: "code_slot_set",
-        type_idx: 5,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::CodeSlotsInit,
         name: "code_slots_init",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::FrameLocalsSet,
         name: "frame_locals_set",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::FrameInvocationEnter,
         name: "frame_invocation_enter",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::FrameInvocationExit,
         name: "frame_invocation_exit",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::TraceEnterSlot,
         name: "trace_enter_slot",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::TraceExit,
         name: "trace_exit",
-        type_idx: 0,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::TraceSetLine,
         name: "trace_set_line",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::RuntimeInit,
         name: "runtime_init",
-        type_idx: 0,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::RuntimeExecutionEnter,
         name: "runtime_execution_enter",
-        type_idx: 0,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::RuntimeExecutionLeave,
         name: "runtime_execution_leave",
-        type_idx: 1,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::RuntimeShutdown,
         name: "runtime_shutdown",
-        type_idx: 0,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::SysSetVersionInfo,
         name: "sys_set_version_info",
-        type_idx: 29,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::PrintBuiltin,
         name: "print_builtin",
-        type_idx: 12,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::PrintNewline,
         name: "print_newline",
-        type_idx: 8,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::PrintObj,
         name: "print_obj",
-        type_idx: 1,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::GenLocals,
         name: "gen_locals",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::StatefulLocalsRegister,
         name: "stateful_locals_register",
-        type_idx: 5,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::FutureCancel,
         name: "future_cancel",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::FutureCancelClear,
         name: "future_cancel_clear",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::FutureCancelMsg,
         name: "future_cancel_msg",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::FutureFeatures,
         name: "future_features",
-        type_idx: 0,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::FuturePoll,
         name: "future_poll",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::GeneratorClose,
         name: "generator_close",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::GeneratorSend,
         name: "generator_send",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::GeneratorThrow,
         name: "generator_throw",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::PromiseNew,
         name: "promise_new",
-        type_idx: 0,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::PromisePoll,
         name: "promise_poll",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::PromiseSetResult,
         name: "promise_set_result",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::BlockOn,
         name: "block_on",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::SleepRegister,
         name: "sleep_register",
-        type_idx: 27,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::Spawn,
         name: "spawn",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::TaskNew,
         name: "task_new",
-        type_idx: 5,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::TaskRegisterExecution,
         name: "task_register_execution",
-        type_idx: 5,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::RecursionGuardEnter,
         name: "recursion_guard_enter",
-        type_idx: 0,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::RecursionGuardExit,
         name: "recursion_guard_exit",
-        type_idx: 8,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::SetIntrinsicManifest,
         name: "set_intrinsic_manifest",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::DelAttrGeneric,
         name: "del_attr_generic",
-        type_idx: 23,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::DelAttrName,
         name: "del_attr_name",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::DelAttrObject,
         name: "del_attr_object",
-        type_idx: 18,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::DelAttrPtr,
         name: "del_attr_ptr",
-        type_idx: 23,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::GetAttrGeneric,
         name: "get_attr_generic",
-        type_idx: 23,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::GetAttrName,
         name: "get_attr_name",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::GetAttrNameDefault,
         name: "get_attr_name_default",
-        type_idx: 5,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::GetAttrObject,
         name: "get_attr_object",
-        type_idx: 18,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::GetAttrObjectIc,
         name: "get_attr_object_ic",
-        type_idx: 25,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::GetAttrSpecial,
         name: "get_attr_special",
-        type_idx: 18,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::GetattrBuiltin,
         name: "getattr_builtin",
-        type_idx: 5,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::HasAttrName,
         name: "has_attr_name",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::SetAttrGeneric,
         name: "set_attr_generic",
-        type_idx: 24,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::SetAttrName,
         name: "set_attr_name",
-        type_idx: 5,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::SetAttrObjectIc,
         name: "set_attr_object_ic",
-        type_idx: 41,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::SetAttrPtr,
         name: "set_attr_ptr",
-        type_idx: 24,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::Contains,
         name: "contains",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::DelIndex,
         name: "del_index",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::DictClear,
         name: "dict_clear",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::DictContains,
         name: "dict_contains",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::DictCopy,
         name: "dict_copy",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::DictFromObj,
         name: "dict_from_obj",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::DictGet,
         name: "dict_get",
-        type_idx: 5,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::DictGetitem,
         name: "dict_getitem",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::DictGetitemBorrowed,
         name: "dict_getitem_borrowed",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::DictItems,
         name: "dict_items",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::DictKeys,
         name: "dict_keys",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::DictFromPairs,
         name: "dict_from_pairs",
-        type_idx: 23,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::DictNew,
         name: "dict_new",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::DictPop,
         name: "dict_pop",
-        type_idx: 7,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::DictPopitem,
         name: "dict_popitem",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::DictSet,
         name: "dict_set",
-        type_idx: 5,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::DictSetdefault,
         name: "dict_setdefault",
-        type_idx: 5,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::DictSetitem,
         name: "dict_setitem",
-        type_idx: 5,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::DictSetdefaultEmptyList,
         name: "dict_setdefault_empty_list",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::DictStrIntInc,
         name: "dict_str_int_inc",
-        type_idx: 5,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::DictUpdate,
         name: "dict_update",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::DictUpdateKwstar,
         name: "dict_update_kwstar",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::DictUpdateMissing,
         name: "dict_update_missing",
-        type_idx: 5,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::DictValues,
         name: "dict_values",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::Enumerate,
         name: "enumerate",
-        type_idx: 5,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::EnumerateBuiltin,
         name: "enumerate_builtin",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::FilterBuiltin,
         name: "filter_builtin",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::FrozensetAdd,
         name: "frozenset_add",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::FrozensetNew,
         name: "frozenset_new",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::Index,
         name: "index",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::UnpackSequence,
         name: "unpack_sequence",
-        type_idx: 5,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::Iter,
         name: "iter",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::IterNext,
         name: "iter_next",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::IterNextUnboxed,
         name: "iter_next_unboxed",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::IterSentinel,
         name: "iter_sentinel",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::Len,
         name: "len",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::LenDict,
         name: "len_dict",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::LenList,
         name: "len_list",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::LenSet,
         name: "len_set",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::LenStr,
         name: "len_str",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::LenTuple,
         name: "len_tuple",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ListAppend,
         name: "list_append",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ListGetitemBorrowed,
         name: "list_getitem_borrowed",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ListContains,
         name: "list_contains",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ListClear,
         name: "list_clear",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ListIntGetitem,
         name: "list_int_getitem",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ListIntGetitemRaw,
         name: "list_int_getitem_raw",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ListIntGetitemRawChecked,
         name: "list_int_getitem_raw_checked",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ListIntGetitemTruthy,
         name: "list_int_getitem_truthy",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ListIntLen,
         name: "list_int_len",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ListIntNew,
         name: "list_int_new",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ListFillNew,
         name: "list_fill_new",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ListIntSetitem,
         name: "list_int_setitem",
-        type_idx: 5,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ListCopy,
         name: "list_copy",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ListCount,
         name: "list_count",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ListExtend,
         name: "list_extend",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ListFromRange,
         name: "list_from_range",
-        type_idx: 5,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ListIndex,
         name: "list_index",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ListIndexRange,
         name: "list_index_range",
-        type_idx: 7,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ListInsert,
         name: "list_insert",
-        type_idx: 5,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ListPop,
         name: "list_pop",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ListRemove,
         name: "list_remove",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ListReverse,
         name: "list_reverse",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ListSort,
         name: "list_sort",
-        type_idx: 5,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::MapBuiltin,
         name: "map_builtin",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::RangeNew,
         name: "range_new",
-        type_idx: 5,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ReversedBuiltin,
         name: "reversed_builtin",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::SetAdd,
         name: "set_add",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::SetAddProbe,
         name: "set_add_probe",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::SetContains,
         name: "set_contains",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::SetDifferenceUpdate,
         name: "set_difference_update",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::SetDiscard,
         name: "set_discard",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::SetIntersectionUpdate,
         name: "set_intersection_update",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::SetNew,
         name: "set_new",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::SiteHelp0,
         name: "site_help0",
-        type_idx: 0,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::SiteHelp1,
         name: "site_help1",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::SetPop,
         name: "set_pop",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::SetRemove,
         name: "set_remove",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::SetSymdiffUpdate,
         name: "set_symdiff_update",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::SetUpdate,
         name: "set_update",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::Slice,
         name: "slice",
-        type_idx: 5,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::SliceNew,
         name: "slice_new",
-        type_idx: 5,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::SortedBuiltin,
         name: "sorted_builtin",
-        type_idx: 5,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ScratchAlloc,
         name: "scratch_alloc",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ScratchFree,
         name: "scratch_free",
-        type_idx: 6,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::StoreIndex,
         name: "store_index",
-        type_idx: 5,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::TupleCount,
         name: "tuple_count",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::TupleFromList,
         name: "tuple_from_list",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::TupleFromValues,
         name: "tuple_from_values",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ListFromValues,
         name: "list_from_values",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::TupleGetitem,
         name: "tuple_getitem",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::TupleGetitemBorrowed,
         name: "tuple_getitem_borrowed",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::TupleIndex,
         name: "tuple_index",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ZipBuiltin,
         name: "zip_builtin",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::AsciiFromObj,
         name: "ascii_from_obj",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::BigintFromBytes,
         name: "bigint_from_bytes",
-        type_idx: 16,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::BinBuiltin,
         name: "bin_builtin",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::CallableBuiltin,
         name: "callable_builtin",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::Chr,
         name: "chr",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ComplexFromObj,
         name: "complex_from_obj",
-        type_idx: 5,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::FloatFromObj,
         name: "float_from_obj",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::FormatBuiltin,
         name: "format_builtin",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::HexBuiltin,
         name: "hex_builtin",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::IntFromObj,
         name: "int_from_obj",
-        type_idx: 5,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::IntFromStrOfObj,
         name: "int_from_str_of_obj",
-        type_idx: 5,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::OctBuiltin,
         name: "oct_builtin",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::OperatorIndex,
         name: "operator_index",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::Ord,
         name: "ord",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::OrdAt,
         name: "ord_at",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::StrFromObj,
         name: "str_from_obj",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::Aiter,
         name: "aiter",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::AllBuiltin,
         name: "all_builtin",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::Anext,
         name: "anext",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::AnextBuiltin,
         name: "anext_builtin",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::AnextDefaultPoll,
         name: "anext_default_poll",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::AnyBuiltin,
         name: "any_builtin",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::CompileBuiltin,
         name: "compile_builtin",
-        type_idx: 9,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::DirBuiltin,
         name: "dir_builtin",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::EnvMappingInit,
         name: "env_mapping_init",
-        type_idx: 0,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::EnvMappingGet,
         name: "env_mapping_get",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::EnvMappingSet,
         name: "env_mapping_set",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::EnvMappingDelete,
         name: "env_mapping_delete",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::EnvMappingKeys,
         name: "env_mapping_keys",
-        type_idx: 0,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::EnvMappingLen,
         name: "env_mapping_len",
-        type_idx: 0,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::EnvMappingItemsIter,
         name: "env_mapping_items_iter",
-        type_idx: 0,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::StartupEntryIsSpawn,
         name: "startup_entry_is_spawn",
-        type_idx: 0,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::StartupMpSpawnEnabled,
         name: "startup_mp_spawn_enabled",
-        type_idx: 0,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::CapabilitiesList,
         name: "capabilities_list",
-        type_idx: 0,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ErrnoConstants,
         name: "errno_constants",
-        type_idx: 0,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::Getargv,
         name: "getargv",
-        type_idx: 0,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::Getframe,
         name: "getframe",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::Getrecursionlimit,
         name: "getrecursionlimit",
-        type_idx: 0,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::HashBuiltin,
         name: "hash_builtin",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::Id,
         name: "id",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::MaxBuiltin,
         name: "max_builtin",
-        type_idx: 5,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::MinBuiltin,
         name: "min_builtin",
-        type_idx: 5,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::NextBuiltin,
         name: "next_builtin",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::OpenBuiltin,
         name: "open_builtin",
-        type_idx: 28,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ReprBuiltin,
         name: "repr_builtin",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ReprFromObj,
         name: "repr_from_obj",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::RoundBuiltin,
         name: "round_builtin",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::Setrecursionlimit,
         name: "setrecursionlimit",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::SumBuiltin,
         name: "sum_builtin",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::VarsBuiltin,
         name: "vars_builtin",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::MemoryviewCast,
         name: "memoryview_cast",
-        type_idx: 7,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::MemoryviewNew,
         name: "memoryview_new",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::MemoryviewTobytes,
         name: "memoryview_tobytes",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::SysAbiflags,
         name: "sys_abiflags",
-        type_idx: 0,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::SysApiVersion,
         name: "sys_api_version",
-        type_idx: 0,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::SysAudit,
         name: "sys_audit",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::SysExecutable,
         name: "sys_executable",
-        type_idx: 0,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::SysHexversion,
         name: "sys_hexversion",
-        type_idx: 0,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::SysImplementationPayload,
         name: "sys_implementation_payload",
-        type_idx: 0,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::SysPlatform,
         name: "sys_platform",
-        type_idx: 0,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::SysStderr,
         name: "sys_stderr",
-        type_idx: 0,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::SysStdin,
         name: "sys_stdin",
-        type_idx: 0,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::SysStdout,
         name: "sys_stdout",
-        type_idx: 0,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::SysVersion,
         name: "sys_version",
-        type_idx: 0,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::SysVersionInfo,
         name: "sys_version_info",
-        type_idx: 0,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::DataclassGet,
         name: "dataclass_get",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::DataclassNew,
         name: "dataclass_new",
-        type_idx: 7,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::DataclassNewFromValues,
         name: "dataclass_new_from_values",
-        type_idx: 12,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::DataclassSet,
         name: "dataclass_set",
-        type_idx: 5,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::DataclassSetClass,
         name: "dataclass_set_class",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ChanDrop,
         name: "chan_drop",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ChanNew,
         name: "chan_new",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ChanRecv,
         name: "chan_recv",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ChanRecvBlocking,
         name: "chan_recv_blocking",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ChanSend,
         name: "chan_send",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ChanSendBlocking,
         name: "chan_send_blocking",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ChanTryRecv,
         name: "chan_try_recv",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ChanTrySend,
         name: "chan_try_send",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::CborParseScalar,
         name: "cbor_parse_scalar",
-        type_idx: 19,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::CborParseScalarObj,
         name: "cbor_parse_scalar_obj",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::CodecsDecode,
         name: "codecs_decode",
-        type_idx: 7,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::CodecsEncode,
         name: "codecs_encode",
-        type_idx: 7,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::MsgpackParseScalar,
         name: "msgpack_parse_scalar",
-        type_idx: 19,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::MsgpackParseScalarObj,
         name: "msgpack_parse_scalar_obj",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::VecMax,
         name: "vec_max",
-        type_idx: 5,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::VecMin,
         name: "vec_min",
-        type_idx: 5,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::VecProd,
         name: "vec_prod",
-        type_idx: 5,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::VecSum,
         name: "vec_sum",
-        type_idx: 5,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::HeapqHeapify,
         name: "heapq_heapify",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::HeapqHeappop,
         name: "heapq_heappop",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::HeapqHeappush,
         name: "heapq_heappush",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::HeapqHeappushpop,
         name: "heapq_heappushpop",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::HeapqHeapreplace,
         name: "heapq_heapreplace",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::StatisticsMeanSlice,
         name: "statistics_mean_slice",
-        type_idx: 12,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::StatisticsStdevSlice,
         name: "statistics_stdev_slice",
-        type_idx: 12,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::IoWaitNew,
         name: "io_wait_new",
-        type_idx: 5,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::AsyncSleep,
         name: "async_sleep",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::AsyncSleepPoll,
         name: "async_sleep_poll",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::AsyncgenHooksGet,
         name: "asyncgen_hooks_get",
-        type_idx: 0,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::AsyncgenHooksSet,
         name: "asyncgen_hooks_set",
-        type_idx: 5,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::AsyncgenLocals,
         name: "asyncgen_locals",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::AsyncgenNew,
         name: "asyncgen_new",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::AsyncgenPoll,
         name: "asyncgen_poll",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::AsyncioFdWatcherPoll,
         name: "asyncio_fd_watcher_poll",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::AsyncioServerAcceptLoopPoll,
         name: "asyncio_server_accept_loop_poll",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::AsyncioSockAcceptPoll,
         name: "asyncio_sock_accept_poll",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::AsyncioSockConnectPoll,
         name: "asyncio_sock_connect_poll",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::AsyncioSockRecvIntoPoll,
         name: "asyncio_sock_recv_into_poll",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::AsyncioSockRecvPoll,
         name: "asyncio_sock_recv_poll",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::AsyncioSockRecvfromIntoPoll,
         name: "asyncio_sock_recvfrom_into_poll",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::AsyncioSockRecvfromPoll,
         name: "asyncio_sock_recvfrom_poll",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::AsyncioSockSendallPoll,
         name: "asyncio_sock_sendall_poll",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::AsyncioSockSendtoPoll,
         name: "asyncio_sock_sendto_poll",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::AsyncioSocketReaderReadPoll,
         name: "asyncio_socket_reader_read_poll",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::AsyncioSocketReaderReadlinePoll,
         name: "asyncio_socket_reader_readline_poll",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::AsyncioStreamReaderReadPoll,
         name: "asyncio_stream_reader_read_poll",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::AsyncioStreamReaderReadlinePoll,
         name: "asyncio_stream_reader_readline_poll",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::AsyncioStreamSendAllPoll,
         name: "asyncio_stream_send_all_poll",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::Buffer2dCols,
         name: "buffer2d_cols",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::Buffer2dGet,
         name: "buffer2d_get",
-        type_idx: 5,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::Buffer2dMatmul,
         name: "buffer2d_matmul",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::Buffer2dNew,
         name: "buffer2d_new",
-        type_idx: 5,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::Buffer2dRows,
         name: "buffer2d_rows",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::Buffer2dSet,
         name: "buffer2d_set",
-        type_idx: 7,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::BytearrayCount,
         name: "bytearray_count",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::BytearrayCountSlice,
         name: "bytearray_count_slice",
-        type_idx: 9,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::BytearrayEndswith,
         name: "bytearray_endswith",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::BytearrayEndswithSlice,
         name: "bytearray_endswith_slice",
-        type_idx: 9,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::BytearrayFind,
         name: "bytearray_find",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::BytearrayFindSlice,
         name: "bytearray_find_slice",
-        type_idx: 9,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::BytearrayFillRange,
         name: "bytearray_fill_range",
-        type_idx: 7,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::BytearrayFromObj,
         name: "bytearray_from_obj",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::BytearrayFromStr,
         name: "bytearray_from_str",
-        type_idx: 5,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::BytearrayReplace,
         name: "bytearray_replace",
-        type_idx: 7,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::BytearraySplit,
         name: "bytearray_split",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::BytearraySplitMax,
         name: "bytearray_split_max",
-        type_idx: 5,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::BytearrayStartswith,
         name: "bytearray_startswith",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::BytearrayStartswithSlice,
         name: "bytearray_startswith_slice",
-        type_idx: 9,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::BytesCount,
         name: "bytes_count",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::BytesCountSlice,
         name: "bytes_count_slice",
-        type_idx: 9,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::BytesEndswith,
         name: "bytes_endswith",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::BytesEndswithSlice,
         name: "bytes_endswith_slice",
-        type_idx: 9,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::BytesFind,
         name: "bytes_find",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::BytesFindSlice,
         name: "bytes_find_slice",
-        type_idx: 9,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::BytesFromBytes,
         name: "bytes_from_bytes",
-        type_idx: 19,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::BytesAsPtr,
         name: "bytes_as_ptr",
-        type_idx: 39,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::BytesFromObj,
         name: "bytes_from_obj",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::BytesFromStr,
         name: "bytes_from_str",
-        type_idx: 5,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::BytesReplace,
         name: "bytes_replace",
-        type_idx: 7,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::BytesSplit,
         name: "bytes_split",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::BytesSplitMax,
         name: "bytes_split_max",
-        type_idx: 5,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::BytesStartswith,
         name: "bytes_startswith",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::BytesStartswithSlice,
         name: "bytes_startswith_slice",
-        type_idx: 9,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::CancelTokenCancel,
         name: "cancel_token_cancel",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::CancelTokenClone,
         name: "cancel_token_clone",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::CancelTokenDrop,
         name: "cancel_token_drop",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::CancelTokenGetCurrent,
         name: "cancel_token_get_current",
-        type_idx: 0,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::CancelTokenIsCancelled,
         name: "cancel_token_is_cancelled",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::CancelTokenNew,
         name: "cancel_token_new",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::CancelTokenSetCurrent,
         name: "cancel_token_set_current",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ContextlibAsyncExitstackEnterContextPoll,
         name: "contextlib_async_exitstack_enter_context_poll",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ContextlibAsyncExitstackExitPoll,
         name: "contextlib_async_exitstack_exit_poll",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ContextlibAsyncgenEnterPoll,
         name: "contextlib_asyncgen_enter_poll",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ContextlibAsyncgenExitPoll,
         name: "contextlib_asyncgen_exit_poll",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ImportlibBootstrapPayload,
         name: "importlib_bootstrap_payload",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ImportlibCacheFromSource,
         name: "importlib_cache_from_source",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ImportlibCoerceModuleName,
         name: "importlib_coerce_module_name",
-        type_idx: 5,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ImportlibDecodeSource,
         name: "importlib_decode_source",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ImportlibEnsureDefaultMetaPath,
         name: "importlib_ensure_default_meta_path",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ImportlibExtensionLoaderPayload,
         name: "importlib_extension_loader_payload",
-        type_idx: 5,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ImportlibAdmitSpec,
         name: "importlib_admit_spec",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ImportlibFilefinderFindSpec,
         name: "importlib_filefinder_find_spec",
-        type_idx: 5,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ImportlibFindInPathPackageContext,
         name: "importlib_find_in_path_package_context",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ImportlibFrozenExternalPayload,
         name: "importlib_frozen_external_payload",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ImportlibFrozenPayload,
         name: "importlib_frozen_payload",
-        type_idx: 0,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ImportlibImportTransaction,
         name: "importlib_import_transaction",
-        type_idx: 12,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ImportlibImportOptional,
         name: "importlib_import_optional",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ImportlibImportOrFallback,
         name: "importlib_import_or_fallback",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ImportlibImportRequired,
         name: "importlib_import_required",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ImportlibLoadModuleShim,
         name: "importlib_load_module_shim",
-        type_idx: 5,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ImportlibMetadataDistPaths,
         name: "importlib_metadata_dist_paths",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ImportlibMetadataDistributionsPayload,
         name: "importlib_metadata_distributions_payload",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ImportlibMetadataEntryPointsFilterPayload,
         name: "importlib_metadata_entry_points_filter_payload",
-        type_idx: 12,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ImportlibMetadataNormalizeName,
         name: "importlib_metadata_normalize_name",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ImportlibMetadataPackagesDistributionsPayload,
         name: "importlib_metadata_packages_distributions_payload",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ImportlibMetadataPayload,
         name: "importlib_metadata_payload",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ImportlibMetadataRecordPayload,
         name: "importlib_metadata_record_payload",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ImportlibMetadataTypesPayload,
         name: "importlib_metadata_types_payload",
-        type_idx: 7,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ImportlibModuleFromSpec,
         name: "importlib_module_from_spec",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ImportlibPackageRootFromOrigin,
         name: "importlib_package_root_from_origin",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ImportlibReadFile,
         name: "importlib_read_file",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ImportlibReload,
         name: "importlib_reload",
-        type_idx: 5,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ImportlibResolveName,
         name: "importlib_resolve_name",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ImportlibResourcesAsFileEnter,
         name: "importlib_resources_as_file_enter",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ImportlibResourcesAsFileExit,
         name: "importlib_resources_as_file_exit",
-        type_idx: 5,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ImportlibResourcesContentsFromPackage,
         name: "importlib_resources_contents_from_package",
-        type_idx: 5,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ImportlibResourcesContentsFromPackageParts,
         name: "importlib_resources_contents_from_package_parts",
-        type_idx: 7,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ImportlibResourcesFilesPayload,
         name: "importlib_resources_files_payload",
-        type_idx: 7,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ImportlibResourcesIsResourceFromPackage,
         name: "importlib_resources_is_resource_from_package",
-        type_idx: 7,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ImportlibResourcesIsResourceFromPackageParts,
         name: "importlib_resources_is_resource_from_package_parts",
-        type_idx: 7,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ImportlibResourcesJoinpath,
         name: "importlib_resources_joinpath",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ImportlibResourcesLoaderReader,
         name: "importlib_resources_loader_reader",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ImportlibResourcesModuleName,
         name: "importlib_resources_module_name",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ImportlibResourcesNormalizePath,
         name: "importlib_resources_normalize_path",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ImportlibResourcesOnly,
         name: "importlib_resources_only",
-        type_idx: 5,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ImportlibResourcesOpenModeIsText,
         name: "importlib_resources_open_mode_is_text",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ImportlibResourcesOpenResourceBytesFromPackage,
         name: "importlib_resources_open_resource_bytes_from_package",
-        type_idx: 7,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ImportlibResourcesPackageInfo,
         name: "importlib_resources_package_info",
-        type_idx: 5,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ImportlibResourcesPackageLeafName,
         name: "importlib_resources_package_leaf_name",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ImportlibResourcesPathPayload,
         name: "importlib_resources_path_payload",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ImportlibResourcesReadTextFromPackage,
         name: "importlib_resources_read_text_from_package",
-        type_idx: 9,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ImportlibResourcesReadTextFromPackageParts,
         name: "importlib_resources_read_text_from_package_parts",
-        type_idx: 9,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ImportlibResourcesReaderChildNames,
         name: "importlib_resources_reader_child_names",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ImportlibResourcesReaderContents,
         name: "importlib_resources_reader_contents",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ImportlibResourcesReaderContentsFromRoots,
         name: "importlib_resources_reader_contents_from_roots",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ImportlibResourcesReaderExists,
         name: "importlib_resources_reader_exists",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ImportlibResourcesReaderFilesTraversable,
         name: "importlib_resources_reader_files_traversable",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ImportlibResourcesReaderIsDir,
         name: "importlib_resources_reader_is_dir",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ImportlibResourcesReaderIsResource,
         name: "importlib_resources_reader_is_resource",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ImportlibResourcesReaderIsResourceFromRoots,
         name: "importlib_resources_reader_is_resource_from_roots",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ImportlibResourcesReaderOpenResourceBytes,
         name: "importlib_resources_reader_open_resource_bytes",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ImportlibResourcesReaderResourcePath,
         name: "importlib_resources_reader_resource_path",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ImportlibResourcesReaderResourcePathFromRoots,
         name: "importlib_resources_reader_resource_path_from_roots",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ImportlibResourcesReaderRoots,
         name: "importlib_resources_reader_roots",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ImportlibResourcesResourcePathFromPackage,
         name: "importlib_resources_resource_path_from_package",
-        type_idx: 7,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ImportlibResourcesResourcePathFromPackageParts,
         name: "importlib_resources_resource_path_from_package_parts",
-        type_idx: 7,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ImportlibSourceFromCache,
         name: "importlib_source_from_cache",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ImportlibSourceHash,
         name: "importlib_source_hash",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ImportlibSpecFromFileLocation,
         name: "importlib_spec_from_file_location",
-        type_idx: 12,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ImportlibSpecFromLoader,
         name: "importlib_spec_from_loader",
-        type_idx: 12,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ImportlibStabilizeModuleState,
         name: "importlib_stabilize_module_state",
-        type_idx: 9,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ImportlibValidateResourceName,
         name: "importlib_validate_resource_name",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ImportlibZipArchivePath,
         name: "importlib_zip_archive_path",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ImportlibZipReadEntry,
         name: "importlib_zip_read_entry",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ImportlibZipSourceExecPayload,
         name: "importlib_zip_source_exec_payload",
-        type_idx: 7,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::FileClose,
         name: "file_close",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::FileDetach,
         name: "file_detach",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::FileFileno,
         name: "file_fileno",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::FileFlush,
         name: "file_flush",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::FileIsatty,
         name: "file_isatty",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::FileOpen,
         name: "file_open",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::FileRead,
         name: "file_read",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::FileReadable,
         name: "file_readable",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::FileReadinto,
         name: "file_readinto",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::FileReadinto1,
         name: "file_readinto1",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::FileReadline,
         name: "file_readline",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::FileReadlines,
         name: "file_readlines",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::FileReconfigure,
         name: "file_reconfigure",
-        type_idx: 9,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::FileSeek,
         name: "file_seek",
-        type_idx: 5,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::FileSeekable,
         name: "file_seekable",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::FileTell,
         name: "file_tell",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::FileTruncate,
         name: "file_truncate",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::FileWritable,
         name: "file_writable",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::FileWrite,
         name: "file_write",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::FileWritelines,
         name: "file_writelines",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::IoWait,
         name: "io_wait",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::StreamClone,
         name: "stream_clone",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::StreamClose,
         name: "stream_close",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::StreamDrop,
         name: "stream_drop",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::StreamNew,
         name: "stream_new",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::StreamReaderRead,
         name: "stream_reader_read",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::StreamReaderReadline,
         name: "stream_reader_readline",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::StreamRecv,
         name: "stream_recv",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::StreamSend,
         name: "stream_send",
-        type_idx: 18,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::StreamSendObj,
         name: "stream_send_obj",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::JsonParseScalar,
         name: "json_parse_scalar",
-        type_idx: 19,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::JsonParseScalarObj,
         name: "json_parse_scalar_obj",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::LockAcquire,
         name: "lock_acquire",
-        type_idx: 5,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::LockDrop,
         name: "lock_drop",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::LockLocked,
         name: "lock_locked",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::LockNew,
         name: "lock_new",
-        type_idx: 0,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::LockRelease,
         name: "lock_release",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::RlockAcquire,
         name: "rlock_acquire",
-        type_idx: 5,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::RlockDrop,
         name: "rlock_drop",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::RlockLocked,
         name: "rlock_locked",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::RlockNew,
         name: "rlock_new",
-        type_idx: 0,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::RlockRelease,
         name: "rlock_release",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::MathAcos,
         name: "math_acos",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::MathCos,
         name: "math_cos",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::MathExp,
         name: "math_exp",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::MathLgamma,
         name: "math_lgamma",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::MathLog,
         name: "math_log",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::MathLog2,
         name: "math_log2",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::MathSin,
         name: "math_sin",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::OsAccess,
         name: "os_access",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::OsAltsep,
         name: "os_altsep",
-        type_idx: 0,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::OsChdir,
         name: "os_chdir",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::OsChmod,
         name: "os_chmod",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::OsClose,
         name: "os_close",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::OsCpuCount,
         name: "os_cpu_count",
-        type_idx: 0,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::OsCurdir,
         name: "os_curdir",
-        type_idx: 0,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::OsDevnull,
         name: "os_devnull",
-        type_idx: 0,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::OsDup,
         name: "os_dup",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::OsDup2,
         name: "os_dup2",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::OsExtsep,
         name: "os_extsep",
-        type_idx: 0,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::OsFdopen,
         name: "os_fdopen",
-        type_idx: 5,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::OsFspath,
         name: "os_fspath",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::OsFstat,
         name: "os_fstat",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::OsFtruncate,
         name: "os_ftruncate",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::OsGetInheritable,
         name: "os_get_inheritable",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::OsGetTerminalSize,
         name: "os_get_terminal_size",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::OsGetcwd,
         name: "os_getcwd",
-        type_idx: 0,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::OsGetegid,
         name: "os_getegid",
-        type_idx: 0,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::OsGeteuid,
         name: "os_geteuid",
-        type_idx: 0,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::OsGetgid,
         name: "os_getgid",
-        type_idx: 0,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::OsGetloadavg,
         name: "os_getloadavg",
-        type_idx: 0,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::OsGetlogin,
         name: "os_getlogin",
-        type_idx: 0,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::OsGetpgrp,
         name: "os_getpgrp",
-        type_idx: 0,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::OsGetpid,
         name: "os_getpid",
-        type_idx: 0,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::OsGetppid,
         name: "os_getppid",
-        type_idx: 0,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::OsGetuid,
         name: "os_getuid",
-        type_idx: 0,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::OsIsatty,
         name: "os_isatty",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::OsKill,
         name: "os_kill",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::OsLinesep,
         name: "os_linesep",
-        type_idx: 0,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::OsLink,
         name: "os_link",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::OsListdir,
         name: "os_listdir",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::OsLseek,
         name: "os_lseek",
-        type_idx: 5,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::OsLstat,
         name: "os_lstat",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::OsMkdir,
         name: "os_mkdir",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::OsName,
         name: "os_name",
-        type_idx: 0,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::OsOpen,
         name: "os_open",
-        type_idx: 5,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::OsOpenFlags,
         name: "os_open_flags",
-        type_idx: 0,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::OsPardir,
         name: "os_pardir",
-        type_idx: 0,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::OsPathCommonpath,
         name: "os_path_commonpath",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::OsPathCommonprefix,
         name: "os_path_commonprefix",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::OsPathGetatime,
         name: "os_path_getatime",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::OsPathGetctime,
         name: "os_path_getctime",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::OsPathGetmtime,
         name: "os_path_getmtime",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::OsPathGetsize,
         name: "os_path_getsize",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::OsPathRealpath,
         name: "os_path_realpath",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::OsPathSamefile,
         name: "os_path_samefile",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::OsPathsep,
         name: "os_pathsep",
-        type_idx: 0,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::OsPipe,
         name: "os_pipe",
-        type_idx: 0,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::OsRead,
         name: "os_read",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::OsRemovedirs,
         name: "os_removedirs",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::OsRename,
         name: "os_rename",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::OsReplace,
         name: "os_replace",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::OsRmdir,
         name: "os_rmdir",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::OsScandir,
         name: "os_scandir",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::OsSendfile,
         name: "os_sendfile",
-        type_idx: 7,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::OsSep,
         name: "os_sep",
-        type_idx: 0,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::OsSetInheritable,
         name: "os_set_inheritable",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::OsSetpgrp,
         name: "os_setpgrp",
-        type_idx: 0,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::OsSetsid,
         name: "os_setsid",
-        type_idx: 0,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::OsStat,
         name: "os_stat",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::OsSymlink,
         name: "os_symlink",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::OsSysconf,
         name: "os_sysconf",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::OsSysconfNames,
         name: "os_sysconf_names",
-        type_idx: 0,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::OsTruncate,
         name: "os_truncate",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::OsUmask,
         name: "os_umask",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::OsUname,
         name: "os_uname",
-        type_idx: 0,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::OsUrandom,
         name: "os_urandom",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::OsUtime,
         name: "os_utime",
-        type_idx: 5,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::OsWaitpid,
         name: "os_waitpid",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::OsWalk,
         name: "os_walk",
-        type_idx: 5,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::OsWexitstatus,
         name: "os_wexitstatus",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::OsWifexited,
         name: "os_wifexited",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::OsWifsignaled,
         name: "os_wifsignaled",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::OsWifstopped,
         name: "os_wifstopped",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::OsWrite,
         name: "os_write",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::OsWstopsig,
         name: "os_wstopsig",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::OsWtermsig,
         name: "os_wtermsig",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::PathChmod,
         name: "path_chmod",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::PathExists,
         name: "path_exists",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::PathMkdir,
         name: "path_mkdir",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::PathRmdir,
         name: "path_rmdir",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::PathUnlink,
         name: "path_unlink",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::SocketAccept,
         name: "socket_accept",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::SocketBind,
         name: "socket_bind",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::SocketClone,
         name: "socket_clone",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::SocketClose,
         name: "socket_close",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::SocketConnect,
         name: "socket_connect",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::SocketConnectEx,
         name: "socket_connect_ex",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::SocketConstants,
         name: "socket_constants",
-        type_idx: 0,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::SocketDetach,
         name: "socket_detach",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::SocketDrop,
         name: "socket_drop",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::SocketFileno,
         name: "socket_fileno",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::SocketGetaddrinfo,
         name: "socket_getaddrinfo",
-        type_idx: 9,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::SocketGetblocking,
         name: "socket_getblocking",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::SocketGethostname,
         name: "socket_gethostname",
-        type_idx: 0,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::SocketGetnameinfo,
         name: "socket_getnameinfo",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::SocketGetpeername,
         name: "socket_getpeername",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::SocketGetservbyname,
         name: "socket_getservbyname",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::SocketGetservbyport,
         name: "socket_getservbyport",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::SocketGetsockname,
         name: "socket_getsockname",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::SocketGetsockopt,
         name: "socket_getsockopt",
-        type_idx: 7,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::SocketGettimeout,
         name: "socket_gettimeout",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::SocketHasIpv6,
         name: "socket_has_ipv6",
-        type_idx: 0,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::SocketInetNtop,
         name: "socket_inet_ntop",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::SocketInetPton,
         name: "socket_inet_pton",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::SocketListen,
         name: "socket_listen",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::SocketNew,
         name: "socket_new",
-        type_idx: 7,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::SocketRecv,
         name: "socket_recv",
-        type_idx: 5,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::SocketRecvInto,
         name: "socket_recv_into",
-        type_idx: 7,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::SocketRecvfrom,
         name: "socket_recvfrom",
-        type_idx: 5,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::SocketSend,
         name: "socket_send",
-        type_idx: 5,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::SocketSendall,
         name: "socket_sendall",
-        type_idx: 5,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::SocketSendto,
         name: "socket_sendto",
-        type_idx: 7,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::SocketSetsockopt,
         name: "socket_setsockopt",
-        type_idx: 7,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::SocketSettimeout,
         name: "socket_settimeout",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::SocketShutdown,
         name: "socket_shutdown",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::Socketpair,
         name: "socketpair",
-        type_idx: 5,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::DbExec,
         name: "db_exec",
-        type_idx: 26,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::DbExecObj,
         name: "db_exec_obj",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::DbQuery,
         name: "db_query",
-        type_idx: 26,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::DbQueryObj,
         name: "db_query_obj",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::StringCapitalize,
         name: "string_capitalize",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::StringCount,
         name: "string_count",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::StringCountSlice,
         name: "string_count_slice",
-        type_idx: 9,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::StringEndswith,
         name: "string_endswith",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::StringEndswithSlice,
         name: "string_endswith_slice",
-        type_idx: 9,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::StringEq,
         name: "string_eq",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::StringFind,
         name: "string_find",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::StringFindSlice,
         name: "string_find_slice",
-        type_idx: 9,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::StringFormat,
         name: "string_format",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::StringFromBytes,
         name: "string_from_bytes",
-        type_idx: 19,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::StringJoin,
         name: "string_join",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::StringLower,
         name: "string_lower",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::StringLstrip,
         name: "string_lstrip",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::StringReplace,
         name: "string_replace",
-        type_idx: 7,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::StringRstrip,
         name: "string_rstrip",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::StringSplit,
         name: "string_split",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::StringSplitFieldEq,
         name: "string_split_field_eq",
-        type_idx: 7,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::StringSplitField,
         name: "string_split_field",
-        type_idx: 5,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::StringSplitFieldEnd,
         name: "string_split_field_end",
-        type_idx: 5,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::StringSplitFieldIsAscii,
         name: "string_split_field_is_ascii",
-        type_idx: 5,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::StringSplitFieldLen,
         name: "string_split_field_len",
-        type_idx: 5,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::StringSplitFieldLenFromBounds,
         name: "string_split_field_len_from_bounds",
-        type_idx: 7,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::StringSplitFieldOrdAtBounds,
         name: "string_split_field_ord_at_bounds",
-        type_idx: 12,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::StringSplitFieldStart,
         name: "string_split_field_start",
-        type_idx: 5,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::StringSplitFieldToInt,
         name: "string_split_field_to_int",
-        type_idx: 5,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::StringSplitMax,
         name: "string_split_max",
-        type_idx: 5,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::StringSplitSepDictInc,
         name: "string_split_sep_dict_inc",
-        type_idx: 12,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::StringSplitValidate,
         name: "string_split_validate",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::StringSplitWsDictInc,
         name: "string_split_ws_dict_inc",
-        type_idx: 7,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::StringStartswith,
         name: "string_startswith",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::StringStartswithSlice,
         name: "string_startswith_slice",
-        type_idx: 9,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::StringStrip,
         name: "string_strip",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::StringUpper,
         name: "string_upper",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::StructCalcsize,
         name: "struct_calcsize",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::StructIterUnpack,
         name: "struct_iter_unpack",
-        type_idx: 7,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::StructPack,
         name: "struct_pack",
-        type_idx: 5,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::StructPackInto,
         name: "struct_pack_into",
-        type_idx: 12,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::StructUnpack,
         name: "struct_unpack",
-        type_idx: 5,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::StructUnpackFrom,
         name: "struct_unpack_from",
-        type_idx: 7,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ProcessDrop,
         name: "process_drop",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ProcessKill,
         name: "process_kill",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ProcessPid,
         name: "process_pid",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ProcessPoll,
         name: "process_poll",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ProcessReturncode,
         name: "process_returncode",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ProcessSpawn,
         name: "process_spawn",
-        type_idx: 9,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ProcessStderr,
         name: "process_stderr",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ProcessStdin,
         name: "process_stdin",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ProcessStdout,
         name: "process_stdout",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ProcessTerminate,
         name: "process_terminate",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ProcessWaitFuture,
         name: "process_wait_future",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ThreadCurrentIdent,
         name: "thread_current_ident",
-        type_idx: 0,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ThreadCurrentNativeId,
         name: "thread_current_native_id",
-        type_idx: 0,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ThreadDrop,
         name: "thread_drop",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ThreadIdent,
         name: "thread_ident",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ThreadIsAlive,
         name: "thread_is_alive",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ThreadJoin,
         name: "thread_join",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ThreadNativeId,
         name: "thread_native_id",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ThreadPoll,
         name: "thread_poll",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ThreadSpawn,
         name: "thread_spawn",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ThreadSubmit,
         name: "thread_submit",
-        type_idx: 5,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::TimeGmtime,
         name: "time_gmtime",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::TimeLocaltime,
         name: "time_localtime",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::TimeMonotonic,
         name: "time_monotonic",
-        type_idx: 0,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::TimeMonotonicNs,
         name: "time_monotonic_ns",
-        type_idx: 0,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::TimePerfCounter,
         name: "time_perf_counter",
-        type_idx: 0,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::TimePerfCounterNs,
         name: "time_perf_counter_ns",
-        type_idx: 0,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::TimeProcessTime,
         name: "time_process_time",
-        type_idx: 0,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::TimeProcessTimeNs,
         name: "time_process_time_ns",
-        type_idx: 0,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::TimeStrftime,
         name: "time_strftime",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::TimeTime,
         name: "time_time",
-        type_idx: 0,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::TimeTimeNs,
         name: "time_time_ns",
-        type_idx: 0,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::TimeTimezone,
         name: "time_timezone",
-        type_idx: 0,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::TimeTzname,
         name: "time_tzname",
-        type_idx: 0,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::WeakcontainerClear,
         name: "weakcontainer_clear",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::WeakcontainerContains,
         name: "weakcontainer_contains",
-        type_idx: 5,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::WeakcontainerDead,
         name: "weakcontainer_dead",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::WeakcontainerGet,
         name: "weakcontainer_get",
-        type_idx: 5,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::WeakcontainerIter,
         name: "weakcontainer_iter",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::WeakcontainerLen,
         name: "weakcontainer_len",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::WeakcontainerNew,
         name: "weakcontainer_new",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::WeakcontainerPop,
         name: "weakcontainer_pop",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::WeakcontainerRefs,
         name: "weakcontainer_refs",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::WeakcontainerStoreCommit,
         name: "weakcontainer_store_commit",
-        type_idx: 12,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::WeakcontainerStoreProbe,
         name: "weakcontainer_store_probe",
-        type_idx: 7,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::WeakcontainerTake,
         name: "weakcontainer_take",
-        type_idx: 7,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::WeakrefCallback,
         name: "weakref_callback",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::WeakrefCall,
         name: "weakref_call",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::WeakrefCallbackGet,
         name: "weakref_callback_get",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::WeakrefCount,
         name: "weakref_count",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::WeakrefFinalizeTrack,
         name: "weakref_finalize_track",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::WeakrefFinalizeUntrack,
         name: "weakref_finalize_untrack",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::WeakrefFindNocallback,
         name: "weakref_find_nocallback",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::WeakrefGet,
         name: "weakref_get",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::WeakrefHash,
         name: "weakref_hash",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::WeakrefInit,
         name: "weakref_init",
-        type_idx: 5,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::WeakrefNew,
         name: "weakref_new",
-        type_idx: 5,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::WeakrefPeek,
         name: "weakref_peek",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::WeakrefRefs,
         name: "weakref_refs",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::WeakrefRegister,
         name: "weakref_register",
-        type_idx: 5,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::WeakrefEq,
         name: "weakref_eq",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::WeakrefNe,
         name: "weakref_ne",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::WeakrefRepr,
         name: "weakref_repr",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::WsClose,
         name: "ws_close",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::WsConnect,
         name: "ws_connect",
-        type_idx: 19,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::WsConnectObj,
         name: "ws_connect_obj",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::WsDrop,
         name: "ws_drop",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::WsPair,
         name: "ws_pair",
-        type_idx: 20,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::WsPairObj,
         name: "ws_pair_obj",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::WsRecv,
         name: "ws_recv",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::WsSend,
         name: "ws_send",
-        type_idx: 18,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::WsSendObj,
         name: "ws_send_obj",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::WsWait,
         name: "ws_wait",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::WsWaitNew,
         name: "ws_wait_new",
-        type_idx: 5,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::AwaitIteratorPoll,
         name: "await_iterator_poll",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::CoroutineWrapperPoll,
         name: "coroutine_wrapper_poll",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::CoroutineSendMethod,
         name: "coroutine_send_method",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::CoroutineThrowMethod,
         name: "coroutine_throw_method",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::CoroutineCloseMethod,
         name: "coroutine_close_method",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::AwaitableAwait,
         name: "awaitable_await",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::CoroutineWrapperIter,
         name: "coroutine_wrapper_iter",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::CoroutineWrapperNext,
         name: "coroutine_wrapper_next",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::AsyncgenAwaitableSelf,
         name: "asyncgen_awaitable_self",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::AsyncgenAwaitableNext,
         name: "asyncgen_awaitable_next",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::AsyncgenAwaitableSend,
         name: "asyncgen_awaitable_send",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::AsyncgenAwaitableThrow,
         name: "asyncgen_awaitable_throw",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::AsyncgenAwaitableClose,
         name: "asyncgen_awaitable_close",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::GeneratorThrowMethod,
         name: "generator_throw_method",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ContextvarsTypes,
         name: "contextvars_types",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ContextvarsCopyCurrent,
         name: "contextvars_copy_current",
-        type_idx: 0,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ContextvarsNew,
         name: "contextvars_new",
-        type_idx: 5,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ContextvarsTokenNew,
         name: "contextvars_token_new",
-        type_idx: 5,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ContextvarsMissingNew,
         name: "contextvars_missing_new",
-        type_idx: 5,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ContextvarsKeysNew,
         name: "contextvars_keys_new",
-        type_idx: 5,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ContextvarsValuesNew,
         name: "contextvars_values_new",
-        type_idx: 5,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ContextvarsItemsNew,
         name: "contextvars_items_new",
-        type_idx: 5,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ContextvarsVarNew,
         name: "contextvars_var_new",
-        type_idx: 5,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ContextvarsVarGet,
         name: "contextvars_var_get",
-        type_idx: 5,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ContextvarsVarSet,
         name: "contextvars_var_set",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ContextvarsVarReset,
         name: "contextvars_var_reset",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ContextvarsVarHash,
         name: "contextvars_var_hash",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ContextvarsCopy,
         name: "contextvars_copy",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ContextvarsLen,
         name: "contextvars_len",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ContextvarsGetitem,
         name: "contextvars_getitem",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ContextvarsContains,
         name: "contextvars_contains",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ContextvarsGet,
         name: "contextvars_get",
-        type_idx: 5,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ContextvarsRun,
         name: "contextvars_run",
-        type_idx: 5,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ContextvarsKeys,
         name: "contextvars_keys",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ContextvarsValues,
         name: "contextvars_values",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ContextvarsItems,
         name: "contextvars_items",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ContextvarsIterSelf,
         name: "contextvars_iter_self",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ContextvarsIterNext,
         name: "contextvars_iter_next",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ContextvarsEq,
         name: "contextvars_eq",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ContextvarsNe,
         name: "contextvars_ne",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ContextvarsProperty,
         name: "contextvars_property",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ContextvarsTokenEnter,
         name: "contextvars_token_enter",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ContextvarsTokenExit,
         name: "contextvars_token_exit",
-        type_idx: 7,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ContextvarsVarRepr,
         name: "contextvars_var_repr",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ContextvarsTokenRepr,
         name: "contextvars_token_repr",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ContextvarsMissingRepr,
         name: "contextvars_missing_repr",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::StructUnpackIteratorType,
         name: "struct_unpack_iterator_type",
-        type_idx: 0,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::TypeCall,
         name: "type_call",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::TypeNew,
         name: "type_new",
-        type_idx: 12,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::TypeInit,
         name: "type_init",
-        type_idx: 12,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ObjectInit,
         name: "object_init",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ObjectInitSubclass,
         name: "object_init_subclass",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ExceptionNewBound,
         name: "exception_new_bound",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ExceptionInit,
         name: "exception_init",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ExceptiongroupInit,
         name: "exceptiongroup_init",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::TypesMappingproxyNew,
         name: "types_mappingproxy_new",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::TypesMappingproxyInit,
         name: "types_mappingproxy_init",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::TypesMethodNew,
         name: "types_method_new",
-        type_idx: 5,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::TypesMethodInit,
         name: "types_method_init",
-        type_idx: 5,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::TypesSimplenamespaceInit,
         name: "types_simplenamespace_init",
-        type_idx: 5,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::TypesCapsuleNew,
         name: "types_capsule_new",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::TypesCellNew,
         name: "types_cell_new",
-        type_idx: 5,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::TypesDynamicClassAttrInit,
         name: "types_dynamic_class_attr_init",
-        type_idx: 5,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::TypesCoroutine,
         name: "types_coroutine",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::TypesGetOriginalBases,
         name: "types_get_original_bases",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::TypesPrepareClass,
         name: "types_prepare_class",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::TypesResolveBases,
         name: "types_resolve_bases",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::TypesNewClass,
         name: "types_new_class",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::CpythonAbiCextCallTrampoline,
         name: "cpython_abi_cext_call_trampoline",
-        type_idx: 5,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ImportlibModuleSpecInit,
         name: "importlib_module_spec_init",
-        type_idx: 12,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ImportlibCompiledLoaderCreateModule,
         name: "importlib_compiled_loader_create_module",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ImportlibCompiledLoaderExecModule,
         name: "importlib_compiled_loader_exec_module",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ImportlibCompiledLoaderLoadModule,
         name: "importlib_compiled_loader_load_module",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ImportlibModuleSpecRepr,
         name: "importlib_module_spec_repr",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ImportlibModuleSpecParent,
         name: "importlib_module_spec_parent",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ImportlibCompiledLoaderFindSpec,
         name: "importlib_compiled_loader_find_spec",
-        type_idx: 7,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::CompatibilityError,
         name: "compatibility_error",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::TkAvailable,
         name: "tk_available",
-        type_idx: 0,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::TkAppNew,
         name: "tk_app_new",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::TkQuit,
         name: "tk_quit",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::TkMainloop,
         name: "tk_mainloop",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::TkDoOneEvent,
         name: "tk_do_one_event",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::TkAfter,
         name: "tk_after",
-        type_idx: 5,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::TkAfterIdle,
         name: "tk_after_idle",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::TkAfterCancel,
         name: "tk_after_cancel",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::TkAfterInfo,
         name: "tk_after_info",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::TkCall,
         name: "tk_call",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::TkTraceAdd,
         name: "tk_trace_add",
-        type_idx: 7,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::TkTraceRemove,
         name: "tk_trace_remove",
-        type_idx: 7,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::TkTraceInfo,
         name: "tk_trace_info",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::TkTraceClear,
         name: "tk_trace_clear",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::TkTkwaitVariable,
         name: "tk_tkwait_variable",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::TkTkwaitWindow,
         name: "tk_tkwait_window",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::TkTkwaitVisibility,
         name: "tk_tkwait_visibility",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::TkBindCallbackRegister,
         name: "tk_bind_callback_register",
-        type_idx: 12,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::TkBindCallbackUnregister,
         name: "tk_bind_callback_unregister",
-        type_idx: 7,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::TkWidgetBindCallbackRegister,
         name: "tk_widget_bind_callback_register",
-        type_idx: 29,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::TkWidgetBindCallbackUnregister,
         name: "tk_widget_bind_callback_unregister",
-        type_idx: 12,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::TkTextTagBindCallbackRegister,
         name: "tk_text_tag_bind_callback_register",
-        type_idx: 29,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::TkTextTagBindCallbackUnregister,
         name: "tk_text_tag_bind_callback_unregister",
-        type_idx: 12,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::TkTreeviewTagBindCallbackRegister,
         name: "tk_treeview_tag_bind_callback_register",
-        type_idx: 12,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::TkTreeviewTagBindCallbackUnregister,
         name: "tk_treeview_tag_bind_callback_unregister",
-        type_idx: 12,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::TkBindCommand,
         name: "tk_bind_command",
-        type_idx: 5,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::TkUnbindCommand,
         name: "tk_unbind_command",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::TkFilehandlerCreate,
         name: "tk_filehandler_create",
-        type_idx: 12,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::TkFilehandlerDelete,
         name: "tk_filehandler_delete",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::TkDestroyWidget,
         name: "tk_destroy_widget",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::TkLastError,
         name: "tk_last_error",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::TkGetboolean,
         name: "tk_getboolean",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::TkGetdouble,
         name: "tk_getdouble",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::TkSplitlist,
         name: "tk_splitlist",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::TkEventSubstParse,
         name: "tk_event_subst_parse",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::TkBindScriptRemoveCommand,
         name: "tk_bind_script_remove_command",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::TkErrorinfoAppend,
         name: "tk_errorinfo_append",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::TkDialogShow,
         name: "tk_dialog_show",
-        type_idx: 10,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::TkCommondialogShow,
         name: "tk_commondialog_show",
-        type_idx: 7,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::TkMessageboxShow,
         name: "tk_messagebox_show",
-        type_idx: 5,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::TkFiledialogShow,
         name: "tk_filedialog_show",
-        type_idx: 7,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::TkSimpledialogQuery,
         name: "tk_simpledialog_query",
-        type_idx: 28,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::AtexitRegister,
         name: "atexit_register",
-        type_idx: 5,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::AtexitUnregister,
         name: "atexit_unregister",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::AtexitClear,
         name: "atexit_clear",
-        type_idx: 0,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::AtexitRunExitfuncs,
         name: "atexit_run_exitfuncs",
-        type_idx: 0,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::AtexitNcallbacks,
         name: "atexit_ncallbacks",
-        type_idx: 0,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::WeakrefReferenceType,
         name: "weakref_reference_type",
-        type_idx: 0,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ProtocolCheck,
         name: "protocol_check",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ProtocolGetStructuralMembers,
         name: "protocol_get_structural_members",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ProtocolRegister,
         name: "protocol_register",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::GpuLinearContiguous,
         name: "gpu_linear_contiguous",
-        type_idx: 28,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::GpuLinearSplitLastDimContiguous,
         name: "gpu_linear_split_last_dim_contiguous",
-        type_idx: 28,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::GpuTensorTensorLinearSplitLastDim,
         name: "gpu_tensor__tensor_linear_split_last_dim",
-        type_idx: 5,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::GpuTensorTensorScaledDotProductAttention,
         name: "gpu_tensor__tensor_scaled_dot_product_attention",
-        type_idx: 12,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::GpuTurboquantAttentionPacked,
         name: "gpu_turboquant_attention_packed",
-        type_idx: 12,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::GpuTensorTensorConcatFirstDim,
         name: "gpu_tensor__tensor_concat_first_dim",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::GpuTensorTensorScatterRows,
         name: "gpu_tensor__tensor_scatter_rows",
-        type_idx: 7,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::GpuTensorTensorTakeRows,
         name: "gpu_tensor__tensor_take_rows",
-        type_idx: 5,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::GpuLinearSquaredReluGateInterleavedContiguous,
         name: "gpu_linear_squared_relu_gate_interleaved_contiguous",
-        type_idx: 10,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::GpuTensorFromParts,
         name: "gpu_tensor_from_parts",
-        type_idx: 28,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::GpuRepeatAxisContiguous,
         name: "gpu_repeat_axis_contiguous",
-        type_idx: 29,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::GpuTensorFromBuffer,
         name: "gpu_tensor_from_buffer",
-        type_idx: 7,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::GpuTensorZeros,
         name: "gpu_tensor__zeros",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::GpuKernelLaunchPython,
         name: "gpu_kernel_launch_python",
-        type_idx: 7,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::GpuBufferToList,
         name: "gpu_buffer_to_list",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::GpuInteropDecodeBf16BytesToF32,
         name: "gpu_interop_decode_bf16_bytes_to_f32",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::GpuInteropDecodeF16BytesToF32,
         name: "gpu_interop_decode_f16_bytes_to_f32",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::GpuBroadcastBinaryContiguous,
         name: "gpu_broadcast_binary_contiguous",
-        type_idx: 28,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::GpuMatmulContiguous,
         name: "gpu_matmul_contiguous",
-        type_idx: 10,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::GpuRopeApplyContiguous,
         name: "gpu_rope_apply_contiguous",
-        type_idx: 33,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::GpuPermuteContiguous,
         name: "gpu_permute_contiguous",
-        type_idx: 12,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::GpuSoftmaxLastAxisContiguous,
         name: "gpu_softmax_last_axis_contiguous",
-        type_idx: 7,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::GpuRmsNormLastAxisContiguous,
         name: "gpu_rms_norm_last_axis_contiguous",
-        type_idx: 12,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::GpuSquaredReluGateInterleavedContiguous,
         name: "gpu_squared_relu_gate_interleaved_contiguous",
-        type_idx: 7,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::EnumInitMember,
         name: "enum_init_member",
-        type_idx: 5,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ReGroupValues,
         name: "re_group_values",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ReExpandReplacement,
         name: "re_expand_replacement",
-        type_idx: 5,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ReSubjectSnapshot,
         name: "re_subject_snapshot",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ReSubjectView,
         name: "re_subject_view",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ShlexQuote,
         name: "shlex_quote",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ShlexSplitEx,
         name: "shlex_split_ex",
-        type_idx: 10,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ShlexJoin,
         name: "shlex_join",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::Fnmatch,
         name: "fnmatch",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::Fnmatchcase,
         name: "fnmatchcase",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::FnmatchFilter,
         name: "fnmatch_filter",
-        type_idx: 5,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::FnmatchTranslate,
         name: "fnmatch_translate",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::BisectLeft,
         name: "bisect_left",
-        type_idx: 12,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::BisectRight,
         name: "bisect_right",
-        type_idx: 12,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::BisectInsortLeft,
         name: "bisect_insort_left",
-        type_idx: 12,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::BisectInsortRight,
         name: "bisect_insort_right",
-        type_idx: 12,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::PkgutilIterModules,
         name: "pkgutil_iter_modules",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::PkgutilWalkPackages,
         name: "pkgutil_walk_packages",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::SiteCredits,
         name: "site_credits",
-        type_idx: 0,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::SiteLicense,
         name: "site_license",
-        type_idx: 0,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::SiteCopyright,
         name: "site_copyright",
-        type_idx: 0,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::SiteQuitterCall,
         name: "site_quitter_call",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ShutilCopyfile,
         name: "shutil_copyfile",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ShutilWhich,
         name: "shutil_which",
-        type_idx: 5,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::PyCompileCompile,
         name: "py_compile_compile",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::CompileallCompileFile,
         name: "compileall_compile_file",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::CompileallCompileDir,
         name: "compileall_compile_dir",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::CompileallCompilePath,
         name: "compileall_compile_path",
-        type_idx: 5,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::StatConstants,
         name: "stat_constants",
-        type_idx: 0,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::StatIfmt,
         name: "stat_ifmt",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::StatImode,
         name: "stat_imode",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::StatIsdir,
         name: "stat_isdir",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::StatIsreg,
         name: "stat_isreg",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::StatIschr,
         name: "stat_ischr",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::StatIsblk,
         name: "stat_isblk",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::StatIsfifo,
         name: "stat_isfifo",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::StatIslnk,
         name: "stat_islnk",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::StatIssock,
         name: "stat_issock",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::StatIsdoor,
         name: "stat_isdoor",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::StatIsport,
         name: "stat_isport",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::StatIswht,
         name: "stat_iswht",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::StatFilemode,
         name: "stat_filemode",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::UrllibQuote,
         name: "urllib_quote",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::UrllibQuotePlus,
         name: "urllib_quote_plus",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::UrllibUnquote,
         name: "urllib_unquote",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::UrllibUnquotePlus,
         name: "urllib_unquote_plus",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::UrllibParseQsl,
         name: "urllib_parse_qsl",
-        type_idx: 5,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::UrllibParseQs,
         name: "urllib_parse_qs",
-        type_idx: 5,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::UrllibUrlencode,
         name: "urllib_urlencode",
-        type_idx: 5,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::UrllibUrlsplit,
         name: "urllib_urlsplit",
-        type_idx: 5,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::UrllibUrlparse,
         name: "urllib_urlparse",
-        type_idx: 5,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::UrllibUrlunsplit,
         name: "urllib_urlunsplit",
-        type_idx: 12,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::UrllibUrlunparse,
         name: "urllib_urlunparse",
-        type_idx: 29,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::UrllibUrldefrag,
         name: "urllib_urldefrag",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::UrllibUrljoin,
         name: "urllib_urljoin",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::UrllibErrorUrlerrorInit,
         name: "urllib_error_urlerror_init",
-        type_idx: 5,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::UrllibErrorUrlerrorStr,
         name: "urllib_error_urlerror_str",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::UrllibErrorHttperrorInit,
         name: "urllib_error_httperror_init",
-        type_idx: 29,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::UrllibErrorHttperrorStr,
         name: "urllib_error_httperror_str",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::UrllibErrorContentTooShortInit,
         name: "urllib_error_content_too_short_init",
-        type_idx: 5,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::UrllibRequestRequestInit,
         name: "urllib_request_request_init",
-        type_idx: 12,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::UrllibRequestOpenerInit,
         name: "urllib_request_opener_init",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::UrllibRequestAddHandler,
         name: "urllib_request_add_handler",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::UrllibRequestOpen,
         name: "urllib_request_open",
-        type_idx: 7,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::UrllibRequestProcessHttpError,
         name: "urllib_request_process_http_error",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::UrllibRequestResponseRead,
         name: "urllib_request_response_read",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::UrllibRequestResponseReadinto,
         name: "urllib_request_response_readinto",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::UrllibRequestResponseRead1,
         name: "urllib_request_response_read1",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::UrllibRequestResponseReadinto1,
         name: "urllib_request_response_readinto1",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::UrllibRequestResponseReadline,
         name: "urllib_request_response_readline",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::UrllibRequestResponseReadlines,
         name: "urllib_request_response_readlines",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::UrllibRequestResponseReadable,
         name: "urllib_request_response_readable",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::UrllibRequestResponseWritable,
         name: "urllib_request_response_writable",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::UrllibRequestResponseSeekable,
         name: "urllib_request_response_seekable",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::UrllibRequestResponseTell,
         name: "urllib_request_response_tell",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::UrllibRequestResponseSeek,
         name: "urllib_request_response_seek",
-        type_idx: 5,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::UrllibRequestResponseClose,
         name: "urllib_request_response_close",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::UrllibRequestResponseDrop,
         name: "urllib_request_response_drop",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::UrllibRequestResponseGeturl,
         name: "urllib_request_response_geturl",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::UrllibRequestResponseGetcode,
         name: "urllib_request_response_getcode",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::UrllibRequestResponseGetreason,
         name: "urllib_request_response_getreason",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::UrllibRequestResponseGetheader,
         name: "urllib_request_response_getheader",
-        type_idx: 5,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::UrllibRequestResponseGetheadersList,
         name: "urllib_request_response_getheaders_list",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::UrllibRequestResponseMessage,
         name: "urllib_request_response_message",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::HttpCookiejarNew,
         name: "http_cookiejar_new",
-        type_idx: 0,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::HttpCookiejarLen,
         name: "http_cookiejar_len",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::HttpCookiejarClear,
         name: "http_cookiejar_clear",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::HttpCookiejarExtract,
         name: "http_cookiejar_extract",
-        type_idx: 5,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::HttpCookiejarHeaderForUrl,
         name: "http_cookiejar_header_for_url",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::HttpCookiesParse,
         name: "http_cookies_parse",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::HttpCookiesRenderMorsel,
         name: "http_cookies_render_morsel",
-        type_idx: 10,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::CtypesRequireFfi,
         name: "ctypes_require_ffi",
-        type_idx: 0,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::CtypesCoerceValue,
         name: "ctypes_coerce_value",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::CtypesDefaultValue,
         name: "ctypes_default_value",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::CtypesSizeof,
         name: "ctypes_sizeof",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::HttpClientConnectionNew,
         name: "http_client_connection_new",
-        type_idx: 5,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::HttpClientConnectionNewHttps,
         name: "http_client_connection_new_https",
-        type_idx: 5,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::HttpClientConnectionPutrequest,
         name: "http_client_connection_putrequest",
-        type_idx: 5,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::HttpClientValidateHeaderName,
         name: "http_client_validate_header_name",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::HttpClientValidateHeaderValue,
         name: "http_client_validate_header_value",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::HttpClientConnectionSend,
         name: "http_client_connection_send",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::HttpClientConnectionGetresponse,
         name: "http_client_connection_getresponse",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::HttpClientConnectionClose,
         name: "http_client_connection_close",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::HttpClientConnectionDrop,
         name: "http_client_connection_drop",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::HttpMessageNew,
         name: "http_message_new",
-        type_idx: 0,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::HttpMessageParse,
         name: "http_message_parse",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::HttpMessageSetRaw,
         name: "http_message_set_raw",
-        type_idx: 5,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::HttpMessageGet,
         name: "http_message_get",
-        type_idx: 5,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::HttpMessageGetAll,
         name: "http_message_get_all",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::HttpMessageItems,
         name: "http_message_items",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::HttpMessageContains,
         name: "http_message_contains",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::HttpMessageLen,
         name: "http_message_len",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::HttpMessageDrop,
         name: "http_message_drop",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::HttpParseHeaderPairs,
         name: "http_parse_header_pairs",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::HttpClientUrlsplit,
         name: "http_client_urlsplit",
-        type_idx: 5,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::HttpClientResponseRead,
         name: "http_client_response_read",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::HttpClientResponseClose,
         name: "http_client_response_close",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::HttpClientResponseDrop,
         name: "http_client_response_drop",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::HttpClientResponseGetstatus,
         name: "http_client_response_getstatus",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::HttpClientResponseGetreason,
         name: "http_client_response_getreason",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::HttpClientResponseGetheader,
         name: "http_client_response_getheader",
-        type_idx: 5,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::HttpClientResponseGetheaders,
         name: "http_client_response_getheaders",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::HttpClientResponseMessage,
         name: "http_client_response_message",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::SocketserverRegister,
         name: "socketserver_register",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::SocketserverUnregister,
         name: "socketserver_unregister",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::SocketserverDispatchBegin,
         name: "socketserver_dispatch_begin",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::SocketserverDispatchPoll,
         name: "socketserver_dispatch_poll",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::SocketserverDispatchCancel,
         name: "socketserver_dispatch_cancel",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::SocketserverGetRequestPoll,
         name: "socketserver_get_request_poll",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::SocketserverServeForever,
         name: "socketserver_serve_forever",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::SocketserverHandleRequest,
         name: "socketserver_handle_request",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::SocketserverShutdown,
         name: "socketserver_shutdown",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::HttpServerHandleOneRequest,
         name: "http_server_handle_one_request",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::HttpServerSendResponse,
         name: "http_server_send_response",
-        type_idx: 5,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::HttpServerSendResponseOnly,
         name: "http_server_send_response_only",
-        type_idx: 5,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::HttpServerSendHeader,
         name: "http_server_send_header",
-        type_idx: 5,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::HttpServerEndHeaders,
         name: "http_server_end_headers",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::HttpServerSendError,
         name: "http_server_send_error",
-        type_idx: 5,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::HttpServerVersionString,
         name: "http_server_version_string",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::HttpServerDateTimeString,
         name: "http_server_date_time_string",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::HttpStatusReason,
         name: "http_status_reason",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::HttpStatusConstants,
         name: "http_status_constants",
-        type_idx: 0,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::HttpStatusResponses,
         name: "http_status_responses",
-        type_idx: 0,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ContextlibClosing,
         name: "contextlib_closing",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ContextlibAclosingEnter,
         name: "contextlib_aclosing_enter",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ContextlibAclosingExit,
         name: "contextlib_aclosing_exit",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ContextlibAbstractEnter,
         name: "contextlib_abstract_enter",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ContextlibAbstractAenter,
         name: "contextlib_abstract_aenter",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ContextlibAbstractSubclasshook,
         name: "contextlib_abstract_subclasshook",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ContextlibAbstractAsyncSubclasshook,
         name: "contextlib_abstract_async_subclasshook",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ContextlibContextdecoratorCall,
         name: "contextlib_contextdecorator_call",
-        type_idx: 7,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ContextlibChdirEnter,
         name: "contextlib_chdir_enter",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ContextlibChdirExit,
         name: "contextlib_chdir_exit",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ContextlibGeneratorEnter,
         name: "contextlib_generator_enter",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ContextlibGeneratorExit,
         name: "contextlib_generator_exit",
-        type_idx: 7,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ContextlibAsyncgenEnter,
         name: "contextlib_asyncgen_enter",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ContextlibAsyncgenExit,
         name: "contextlib_asyncgen_exit",
-        type_idx: 7,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ContextlibSuppressMatch,
         name: "contextlib_suppress_match",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ContextlibRedirectEnter,
         name: "contextlib_redirect_enter",
-        type_idx: 5,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ContextlibRedirectExit,
         name: "contextlib_redirect_exit",
-        type_idx: 5,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ContextlibExitstackNew,
         name: "contextlib_exitstack_new",
-        type_idx: 0,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ContextlibExitstackDrop,
         name: "contextlib_exitstack_drop",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ContextlibExitstackPush,
         name: "contextlib_exitstack_push",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ContextlibExitstackPushCallback,
         name: "contextlib_exitstack_push_callback",
-        type_idx: 7,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ContextlibExitstackPopAll,
         name: "contextlib_exitstack_pop_all",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ContextlibExitstackEnterContext,
         name: "contextlib_exitstack_enter_context",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ContextlibExitstackExit,
         name: "contextlib_exitstack_exit",
-        type_idx: 7,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ContextlibAsyncExitstackPushCallback,
         name: "contextlib_async_exitstack_push_callback",
-        type_idx: 7,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ContextlibAsyncExitstackPushExit,
         name: "contextlib_async_exitstack_push_exit",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ContextlibAsyncExitstackEnterContext,
         name: "contextlib_async_exitstack_enter_context",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ContextlibAsyncExitstackExit,
         name: "contextlib_async_exitstack_exit",
-        type_idx: 7,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::EmailMessageNew,
         name: "email_message_new",
-        type_idx: 0,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::EmailMessageSet,
         name: "email_message_set",
-        type_idx: 5,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::EmailMessageSetContent,
         name: "email_message_set_content",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::EmailMessageAddAlternative,
         name: "email_message_add_alternative",
-        type_idx: 5,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::EmailMessageAddAttachment,
         name: "email_message_add_attachment",
-        type_idx: 12,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::EmailMessageAsString,
         name: "email_message_as_string",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::EmailMessageDrop,
         name: "email_message_drop",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::EmailUtilsMakeMsgid,
         name: "email_utils_make_msgid",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::EmailUtilsGetaddresses,
         name: "email_utils_getaddresses",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::EmailUtilsParsedateTz,
         name: "email_utils_parsedate_tz",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::EmailUtilsFormatDatetime,
         name: "email_utils_format_datetime",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::EmailUtilsParsedateToDatetime,
         name: "email_utils_parsedate_to_datetime",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::EmailHeaderregistryValue,
         name: "email_headerregistry_value",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::EmailHeaderEncodeWord,
         name: "email_header_encode_word",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::EmailAddressAddrSpec,
         name: "email_address_addr_spec",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::EmailAddressFormat,
         name: "email_address_format",
-        type_idx: 5,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::AsyncioCancelPending,
         name: "asyncio_cancel_pending",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::AsyncioWaitersNotify,
         name: "asyncio_waiters_notify",
-        type_idx: 5,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::AsyncioWaitersNotifyException,
         name: "asyncio_waiters_notify_exception",
-        type_idx: 5,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::AsyncioWaitersRemove,
         name: "asyncio_waiters_remove",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::AsyncioBarrierRelease,
         name: "asyncio_barrier_release",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::AsyncioConditionWaitForStep,
         name: "asyncio_condition_wait_for_step",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::AsyncioFutureTransfer,
         name: "asyncio_future_transfer",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::AsyncioEventWaitersCleanup,
         name: "asyncio_event_waiters_cleanup",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::AsyncioTaskRegistrySet,
         name: "asyncio_task_registry_set",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::AsyncioTaskRegistryGet,
         name: "asyncio_task_registry_get",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::AsyncioTaskRegistryContains,
         name: "asyncio_task_registry_contains",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::AsyncioTaskRegistryCurrent,
         name: "asyncio_task_registry_current",
-        type_idx: 0,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::AsyncioTaskRegistryCurrentForLoop,
         name: "asyncio_task_registry_current_for_loop",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::AsyncioTaskRegistryPop,
         name: "asyncio_task_registry_pop",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::AsyncioTaskLastExceptionClear,
         name: "asyncio_task_last_exception_clear",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::AsyncioTaskRegistryMove,
         name: "asyncio_task_registry_move",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::AsyncioTaskRegistryValues,
         name: "asyncio_task_registry_values",
-        type_idx: 0,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::AsyncioTaskRegistryLiveSet,
         name: "asyncio_task_registry_live_set",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::AsyncioEventWaitersRegister,
         name: "asyncio_event_waiters_register",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::AsyncioEventWaitersUnregister,
         name: "asyncio_event_waiters_unregister",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::AsyncioEventWaitersCleanupToken,
         name: "asyncio_event_waiters_cleanup_token",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::AsyncioChildWatcherAdd,
         name: "asyncio_child_watcher_add",
-        type_idx: 7,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::AsyncioChildWatcherRemove,
         name: "asyncio_child_watcher_remove",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::AsyncioChildWatcherClear,
         name: "asyncio_child_watcher_clear",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::AsyncioChildWatcherPop,
         name: "asyncio_child_watcher_pop",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::AsyncioSslTransportOrchestrate,
         name: "asyncio_ssl_transport_orchestrate",
-        type_idx: 7,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::AsyncioTlsClientConnectNew,
         name: "asyncio_tls_client_connect_new",
-        type_idx: 5,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::AsyncioTlsClientFromFdNew,
         name: "asyncio_tls_client_from_fd_new",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::AsyncioTlsServerPayload,
         name: "asyncio_tls_server_payload",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::AsyncioTlsServerFromFdNew,
         name: "asyncio_tls_server_from_fd_new",
-        type_idx: 5,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::AsyncioRequireUnixSocketSupport,
         name: "asyncio_require_unix_socket_support",
-        type_idx: 0,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::AsyncioRequireChildWatcherSupport,
         name: "asyncio_require_child_watcher_support",
-        type_idx: 0,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::AsyncioRunningLoopGet,
         name: "asyncio_running_loop_get",
-        type_idx: 0,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::AsyncioRunningLoopSet,
         name: "asyncio_running_loop_set",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::AsyncioEventLoopGet,
         name: "asyncio_event_loop_get",
-        type_idx: 0,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::AsyncioEventLoopGetCurrent,
         name: "asyncio_event_loop_get_current",
-        type_idx: 0,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::AsyncioEventLoopSet,
         name: "asyncio_event_loop_set",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::AsyncioEventLoopPolicyGet,
         name: "asyncio_event_loop_policy_get",
-        type_idx: 0,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::AsyncioEventLoopPolicySet,
         name: "asyncio_event_loop_policy_set",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::AsyncioEnterTask,
         name: "asyncio_enter_task",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::AsyncioLeaveTask,
         name: "asyncio_leave_task",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::AsyncioRegisterTask,
         name: "asyncio_register_task",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::AsyncioUnregisterTask,
         name: "asyncio_unregister_task",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::AsyncioTasksAddDoneCallback,
         name: "asyncio_tasks_add_done_callback",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::AsyncioTaskCancelApply,
         name: "asyncio_task_cancel_apply",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::AsyncioTaskUncancelApply,
         name: "asyncio_task_uncancel_apply",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::AsyncioEventSetWaiters,
         name: "asyncio_event_set_waiters",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::AsyncioFdWatcherNew,
         name: "asyncio_fd_watcher_new",
-        type_idx: 12,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::AsyncioFdWatcherRegister,
         name: "asyncio_fd_watcher_register",
-        type_idx: 29,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::AsyncioFdWatcherUnregister,
         name: "asyncio_fd_watcher_unregister",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::AsyncioSubprocessStdioNormalize,
         name: "asyncio_subprocess_stdio_normalize",
-        type_idx: 33,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::AsyncioServerAcceptLoopNew,
         name: "asyncio_server_accept_loop_new",
-        type_idx: 29,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::AsyncioStreamReaderReadNew,
         name: "asyncio_stream_reader_read_new",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::AsyncioStreamReaderReadlineNew,
         name: "asyncio_stream_reader_readline_new",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::AsyncioStreamSendAllNew,
         name: "asyncio_stream_send_all_new",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::AsyncioStreamBufferSnapshot,
         name: "asyncio_stream_buffer_snapshot",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::AsyncioStreamBufferConsume,
         name: "asyncio_stream_buffer_consume",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::AsyncioSocketReaderReadNew,
         name: "asyncio_socket_reader_read_new",
-        type_idx: 5,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::AsyncioSocketReaderReadlineNew,
         name: "asyncio_socket_reader_readline_new",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::AsyncioSockRecvNew,
         name: "asyncio_sock_recv_new",
-        type_idx: 5,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::AsyncioSockConnectNew,
         name: "asyncio_sock_connect_new",
-        type_idx: 5,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::AsyncioSockAcceptNew,
         name: "asyncio_sock_accept_new",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::AsyncioSockRecvIntoNew,
         name: "asyncio_sock_recv_into_new",
-        type_idx: 7,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::AsyncioSockSendallNew,
         name: "asyncio_sock_sendall_new",
-        type_idx: 5,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::AsyncioSockRecvfromNew,
         name: "asyncio_sock_recvfrom_new",
-        type_idx: 5,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::AsyncioSockRecvfromIntoNew,
         name: "asyncio_sock_recvfrom_into_new",
-        type_idx: 7,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::AsyncioSockSendtoNew,
         name: "asyncio_sock_sendto_new",
-        type_idx: 7,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::TimeSleep,
         name: "time_sleep",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::TimeDaylight,
         name: "time_daylight",
-        type_idx: 0,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::TimeAltzone,
         name: "time_altzone",
-        type_idx: 0,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::TimeAsctime,
         name: "time_asctime",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::TimeMktime,
         name: "time_mktime",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::TimeTimegm,
         name: "time_timegm",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::TimeGetClockInfo,
         name: "time_get_clock_info",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::HeapqNsmallest,
         name: "heapq_nsmallest",
-        type_idx: 5,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::HeapqNlargest,
         name: "heapq_nlargest",
-        type_idx: 5,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::HeapqMerge,
         name: "heapq_merge",
-        type_idx: 5,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::MathLog10,
         name: "math_log10",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::MathLog1p,
         name: "math_log1p",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::MathExpm1,
         name: "math_expm1",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::MathFma,
         name: "math_fma",
-        type_idx: 5,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::MathGamma,
         name: "math_gamma",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::MathErf,
         name: "math_erf",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::MathErfc,
         name: "math_erfc",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::MathIsfinite,
         name: "math_isfinite",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::MathIsinf,
         name: "math_isinf",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::MathIsnan,
         name: "math_isnan",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::MathFabs,
         name: "math_fabs",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::MathCopysign,
         name: "math_copysign",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::MathSqrt,
         name: "math_sqrt",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::MathFloor,
         name: "math_floor",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::MathCeil,
         name: "math_ceil",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::MathTrunc,
         name: "math_trunc",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::MathFmod,
         name: "math_fmod",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::MathModf,
         name: "math_modf",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::MathFrexp,
         name: "math_frexp",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::MathLdexp,
         name: "math_ldexp",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::MathIsclose,
         name: "math_isclose",
-        type_idx: 7,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::MathProd,
         name: "math_prod",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::MathFsum,
         name: "math_fsum",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::MathGcd,
         name: "math_gcd",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::MathLcm,
         name: "math_lcm",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::MathFactorial,
         name: "math_factorial",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::MathComb,
         name: "math_comb",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::MathPerm,
         name: "math_perm",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::MathDegrees,
         name: "math_degrees",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::MathRadians,
         name: "math_radians",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::MathHypot,
         name: "math_hypot",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::MathDist,
         name: "math_dist",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::MathIsqrt,
         name: "math_isqrt",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::MathNextafter,
         name: "math_nextafter",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::MathUlp,
         name: "math_ulp",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::MathRemainder,
         name: "math_remainder",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::MathTan,
         name: "math_tan",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::MathAsin,
         name: "math_asin",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::MathAtan,
         name: "math_atan",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::MathAtan2,
         name: "math_atan2",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::MathSinh,
         name: "math_sinh",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::MathCosh,
         name: "math_cosh",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::MathTanh,
         name: "math_tanh",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::MathAsinh,
         name: "math_asinh",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::MathAcosh,
         name: "math_acosh",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::MathAtanh,
         name: "math_atanh",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::StatisticsMean,
         name: "statistics_mean",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::StatisticsFmean,
         name: "statistics_fmean",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::StatisticsStdev,
         name: "statistics_stdev",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::StatisticsVariance,
         name: "statistics_variance",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::StatisticsPvariance,
         name: "statistics_pvariance",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::StatisticsPstdev,
         name: "statistics_pstdev",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::StatisticsMedian,
         name: "statistics_median",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::StatisticsMedianLow,
         name: "statistics_median_low",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::StatisticsMedianHigh,
         name: "statistics_median_high",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::StatisticsMedianGrouped,
         name: "statistics_median_grouped",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::StatisticsMode,
         name: "statistics_mode",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::StatisticsMultimode,
         name: "statistics_multimode",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::StatisticsQuantiles,
         name: "statistics_quantiles",
-        type_idx: 5,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::StatisticsHarmonicMean,
         name: "statistics_harmonic_mean",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::StatisticsGeometricMean,
         name: "statistics_geometric_mean",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::StatisticsCovariance,
         name: "statistics_covariance",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::StatisticsCorrelation,
         name: "statistics_correlation",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::StatisticsLinearRegression,
         name: "statistics_linear_regression",
-        type_idx: 5,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::StatisticsNormalDistNew,
         name: "statistics_normal_dist_new",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::StatisticsNormalDistSamples,
         name: "statistics_normal_dist_samples",
-        type_idx: 12,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::StatisticsNormalDistInvCdf,
         name: "statistics_normal_dist_inv_cdf",
-        type_idx: 5,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::StatisticsNormalDistPdf,
         name: "statistics_normal_dist_pdf",
-        type_idx: 5,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::StatisticsNormalDistCdf,
         name: "statistics_normal_dist_cdf",
-        type_idx: 5,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::StatisticsNormalDistZscore,
         name: "statistics_normal_dist_zscore",
-        type_idx: 5,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::StatisticsNormalDistOverlap,
         name: "statistics_normal_dist_overlap",
-        type_idx: 7,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::DecimalContextNew,
         name: "decimal_context_new",
-        type_idx: 0,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::DecimalContextGetCurrent,
         name: "decimal_context_get_current",
-        type_idx: 0,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::DecimalContextSetCurrent,
         name: "decimal_context_set_current",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::DecimalContextCopy,
         name: "decimal_context_copy",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::DecimalContextDrop,
         name: "decimal_context_drop",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::DecimalContextGetPrec,
         name: "decimal_context_get_prec",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::DecimalContextSetPrec,
         name: "decimal_context_set_prec",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::DecimalContextGetRounding,
         name: "decimal_context_get_rounding",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::DecimalContextSetRounding,
         name: "decimal_context_set_rounding",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::DecimalContextGetEmin,
         name: "decimal_context_get_emin",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::DecimalContextSetEmin,
         name: "decimal_context_set_emin",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::DecimalContextGetEmax,
         name: "decimal_context_get_emax",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::DecimalContextSetEmax,
         name: "decimal_context_set_emax",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::DecimalContextGetClamp,
         name: "decimal_context_get_clamp",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::DecimalContextSetClamp,
         name: "decimal_context_set_clamp",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::DecimalContextGetCapitals,
         name: "decimal_context_get_capitals",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::DecimalContextSetCapitals,
         name: "decimal_context_set_capitals",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::DecimalContextEtiny,
         name: "decimal_context_etiny",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::DecimalContextEtop,
         name: "decimal_context_etop",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::DecimalContextClearFlags,
         name: "decimal_context_clear_flags",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::DecimalContextGetFlag,
         name: "decimal_context_get_flag",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::DecimalContextSetFlag,
         name: "decimal_context_set_flag",
-        type_idx: 5,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::DecimalContextGetTrap,
         name: "decimal_context_get_trap",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::DecimalContextSetTrap,
         name: "decimal_context_set_trap",
-        type_idx: 5,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::DecimalFromStr,
         name: "decimal_from_str",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::DecimalFromInt,
         name: "decimal_from_int",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::DecimalClone,
         name: "decimal_clone",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::DecimalDrop,
         name: "decimal_drop",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::DecimalToString,
         name: "decimal_to_string",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::DecimalAsTuple,
         name: "decimal_as_tuple",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::DecimalToFloat,
         name: "decimal_to_float",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::DecimalDiv,
         name: "decimal_div",
-        type_idx: 5,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::DecimalQuantize,
         name: "decimal_quantize",
-        type_idx: 5,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::DecimalCompare,
         name: "decimal_compare",
-        type_idx: 5,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::DecimalCompareTotal,
         name: "decimal_compare_total",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::DecimalNormalize,
         name: "decimal_normalize",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::DecimalExp,
         name: "decimal_exp",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::HashNew,
         name: "hash_new",
-        type_idx: 7,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::HashUpdate,
         name: "hash_update",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::HashCopy,
         name: "hash_copy",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::HashDigest,
         name: "hash_digest",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::HmacNew,
         name: "hmac_new",
-        type_idx: 10,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::HmacUpdate,
         name: "hmac_update",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::HmacCopy,
         name: "hmac_copy",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::HmacDigest,
         name: "hmac_digest",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::CompareDigest,
         name: "compare_digest",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::CompressionStreamsBufferSize,
         name: "compression_streams_buffer_size",
-        type_idx: 0,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::Pbkdf2Hmac,
         name: "pbkdf2_hmac",
-        type_idx: 29,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::Scrypt,
         name: "scrypt",
-        type_idx: 10,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::OsStatAt,
         name: "os_stat_at",
-        type_idx: 5,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::OsLstatAt,
         name: "os_lstat_at",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::OsReadlinkAt,
         name: "os_readlink_at",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::OsSymlinkAt,
         name: "os_symlink_at",
-        type_idx: 5,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::OsRenameAt,
         name: "os_rename_at",
-        type_idx: 7,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::OsReplaceAt,
         name: "os_replace_at",
-        type_idx: 7,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::OsLinkAt,
         name: "os_link_at",
-        type_idx: 12,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::OsUtimeAt,
         name: "os_utime_at",
-        type_idx: 10,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::EnvPutenv,
         name: "env_putenv",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::EnvUnsetenv,
         name: "env_unsetenv",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::LocaleSetlocale,
         name: "locale_setlocale",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::LocaleGetencoding,
         name: "locale_getencoding",
-        type_idx: 0,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::LocaleConstants,
         name: "locale_constants",
-        type_idx: 0,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::GettextGettext,
         name: "gettext_gettext",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::GettextNgettext,
         name: "gettext_ngettext",
-        type_idx: 5,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::PathIsdir,
         name: "path_isdir",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::PathIsfile,
         name: "path_isfile",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::PathIslink,
         name: "path_islink",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::PathReadlink,
         name: "path_readlink",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::PathSymlink,
         name: "path_symlink",
-        type_idx: 5,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::PathJoinMany,
         name: "path_join_many",
-        type_idx: 5,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::PathIsabs,
         name: "path_isabs",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::PathDirname,
         name: "path_dirname",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::PathBasename,
         name: "path_basename",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::PathSplit,
         name: "path_split",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::PathSplitext,
         name: "path_splitext",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::PathNormpath,
         name: "path_normpath",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::PathAbspath,
         name: "path_abspath",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::PathAsUri,
         name: "path_as_uri",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::PathRelpath,
         name: "path_relpath",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::PathMakedirs,
         name: "path_makedirs",
-        type_idx: 5,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::PathMatch,
         name: "path_match",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::PathGlob,
         name: "path_glob",
-        type_idx: 12,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::GlobHasMagic,
         name: "glob_has_magic",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::GlobEscape,
         name: "glob_escape",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::GlobTranslate,
         name: "glob_translate",
-        type_idx: 7,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::Glob,
         name: "glob",
-        type_idx: 12,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::GlobIter,
         name: "glob_iter",
-        type_idx: 12,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::IoClass,
         name: "io_class",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::IoDefaultBufferSize,
         name: "io_default_buffer_size",
-        type_idx: 0,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::IoTextEncoding,
         name: "io_text_encoding",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::FileOpenEx,
         name: "file_open_ex",
-        type_idx: 28,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::FileRead1,
         name: "file_read1",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::FileReadall,
         name: "file_readall",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::FilePeek,
         name: "file_peek",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::FileGetvalue,
         name: "file_getvalue",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::FileGetbuffer,
         name: "file_getbuffer",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::FileIter,
         name: "file_iter",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::FileNext,
         name: "file_next",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::FileEnter,
         name: "file_enter",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::FileExit,
         name: "file_exit",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::FileExitMethod,
         name: "file_exit_method",
-        type_idx: 7,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::FileIoNew,
         name: "file_io_new",
-        type_idx: 12,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::FileIoInit,
         name: "file_io_init",
-        type_idx: 12,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::BufferedNew,
         name: "buffered_new",
-        type_idx: 5,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::BufferedInit,
         name: "buffered_init",
-        type_idx: 5,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::TextIoWrapperNew,
         name: "text_io_wrapper_new",
-        type_idx: 10,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::TextIoWrapperInit,
         name: "text_io_wrapper_init",
-        type_idx: 10,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::IoMemberGet,
         name: "io_member_get",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::BytesioNew,
         name: "bytesio_new",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::BytesioInit,
         name: "bytesio_init",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::StringioNew,
         name: "stringio_new",
-        type_idx: 5,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::StringioInit,
         name: "stringio_init",
-        type_idx: 5,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::StringTemplateScan,
         name: "string_template_scan",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::StringTemplateIsValid,
         name: "string_template_is_valid",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::StringTemplateGetIdentifiers,
         name: "string_template_get_identifiers",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::StringFormatterParse,
         name: "string_formatter_parse",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::StringFormatterFieldNameSplit,
         name: "string_formatter_field_name_split",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::CodecsLookupName,
         name: "codecs_lookup_name",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::EncodingsAliasesMap,
         name: "encodings_aliases_map",
-        type_idx: 0,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::BinasciiA2bBase64,
         name: "binascii_a2b_base64",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::BinasciiErrorType,
         name: "binascii_error_type",
-        type_idx: 0,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::BinasciiIncompleteType,
         name: "binascii_incomplete_type",
-        type_idx: 0,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::BinasciiB2aBase64,
         name: "binascii_b2a_base64",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::BinasciiA2bHex,
         name: "binascii_a2b_hex",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::BinasciiB2aHex,
         name: "binascii_b2a_hex",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::BinasciiA2bQp,
         name: "binascii_a2b_qp",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::BinasciiB2aQp,
         name: "binascii_b2a_qp",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::BinasciiA2bUu,
         name: "binascii_a2b_uu",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::BinasciiB2aUu,
         name: "binascii_b2a_uu",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::BinasciiCrc32,
         name: "binascii_crc32",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::BinasciiCrcHqx,
         name: "binascii_crc_hqx",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::UuCodecEncode,
         name: "uu_codec_encode",
-        type_idx: 5,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::UuCodecDecode,
         name: "uu_codec_decode",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::PunycodeEncode,
         name: "punycode_encode",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::PunycodeDecode,
         name: "punycode_decode",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::StringprepInTable,
         name: "stringprep_in_table",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::StringprepMapTableB2,
         name: "stringprep_map_table_b2",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::StringprepMapTableB3,
         name: "stringprep_map_table_b3",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::DeflateRaw,
         name: "deflate_raw",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::InflateRaw,
         name: "inflate_raw",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::GetAwaitable,
         name: "get_awaitable",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::SelectSelect,
         name: "select_select",
-        type_idx: 7,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::SelectConstants,
         name: "select_constants",
-        type_idx: 0,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::SelectPoll,
         name: "select_poll",
-        type_idx: 0,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::SelectEpoll,
         name: "select_epoll",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::SelectDevpoll,
         name: "select_devpoll",
-        type_idx: 0,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::SelectFileno,
         name: "select_fileno",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::SelectDefaultSelectorKind,
         name: "select_default_selector_kind",
-        type_idx: 0,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::SelectBackendAvailable,
         name: "select_backend_available",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::SelectSelectorNew,
         name: "select_selector_new",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::SelectSelectorFileno,
         name: "select_selector_fileno",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::SelectSelectorLen,
         name: "select_selector_len",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::SelectSelectorEvents,
         name: "select_selector_events",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::SelectSelectorRegister,
         name: "select_selector_register",
-        type_idx: 5,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::SelectSelectorRegisterFd,
         name: "select_selector_register_fd",
-        type_idx: 5,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::SelectSelectorUnregister,
         name: "select_selector_unregister",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::SelectSelectorUnregisterObj,
         name: "select_selector_unregister_obj",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::SelectSelectorModify,
         name: "select_selector_modify",
-        type_idx: 5,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::SelectSelectorModifyObj,
         name: "select_selector_modify_obj",
-        type_idx: 5,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::SelectSelectorPoll,
         name: "select_selector_poll",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::SelectSelectorClose,
         name: "select_selector_close",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::SelectSelectorDrop,
         name: "select_selector_drop",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ThreadSpawnShared,
         name: "thread_spawn_shared",
-        type_idx: 5,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ThreadTimeoutMax,
         name: "thread_timeout_max",
-        type_idx: 0,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ThreadStackSizeGet,
         name: "thread_stack_size_get",
-        type_idx: 0,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ThreadStackSizeSet,
         name: "thread_stack_size_set",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ThreadRegistrySetMain,
         name: "thread_registry_set_main",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ThreadRegistryRegister,
         name: "thread_registry_register",
-        type_idx: 5,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ThreadRegistryForget,
         name: "thread_registry_forget",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ThreadRegistrySnapshot,
         name: "thread_registry_snapshot",
-        type_idx: 0,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ThreadRegistryCurrent,
         name: "thread_registry_current",
-        type_idx: 0,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ThreadRegistryActiveCount,
         name: "thread_registry_active_count",
-        type_idx: 0,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::RlockIsOwned,
         name: "rlock_is_owned",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::RlockReleaseSave,
         name: "rlock_release_save",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::RlockAcquireRestore,
         name: "rlock_acquire_restore",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ConditionNew,
         name: "condition_new",
-        type_idx: 0,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ConditionWait,
         name: "condition_wait",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ConditionNotify,
         name: "condition_notify",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ConditionDrop,
         name: "condition_drop",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::EventNew,
         name: "event_new",
-        type_idx: 0,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::EventSet,
         name: "event_set",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::EventClear,
         name: "event_clear",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::EventIsSet,
         name: "event_is_set",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::EventWait,
         name: "event_wait",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::EventDrop,
         name: "event_drop",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::SemaphoreNew,
         name: "semaphore_new",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::SemaphoreAcquire,
         name: "semaphore_acquire",
-        type_idx: 5,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::SemaphoreRelease,
         name: "semaphore_release",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::SemaphoreDrop,
         name: "semaphore_drop",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::BarrierNew,
         name: "barrier_new",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::BarrierWait,
         name: "barrier_wait",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::BarrierAbort,
         name: "barrier_abort",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::BarrierReset,
         name: "barrier_reset",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::BarrierParties,
         name: "barrier_parties",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::BarrierNWaiting,
         name: "barrier_n_waiting",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::BarrierBroken,
         name: "barrier_broken",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::BarrierDrop,
         name: "barrier_drop",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::LocalNew,
         name: "local_new",
-        type_idx: 0,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::LocalGetDict,
         name: "local_get_dict",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::LocalDrop,
         name: "local_drop",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::QueueNew,
         name: "queue_new",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::QueueLifoNew,
         name: "queue_lifo_new",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::QueuePriorityNew,
         name: "queue_priority_new",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::QueueQsize,
         name: "queue_qsize",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::QueueEmpty,
         name: "queue_empty",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::QueueFull,
         name: "queue_full",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::QueuePut,
         name: "queue_put",
-        type_idx: 7,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::QueueGet,
         name: "queue_get",
-        type_idx: 7,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::QueueShutdown,
         name: "queue_shutdown",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::QueueIsShutdown,
         name: "queue_is_shutdown",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::QueueTaskDone,
         name: "queue_task_done",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::QueueJoin,
         name: "queue_join",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::QueueDrop,
         name: "queue_drop",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::GraphlibNew,
         name: "graphlib_new",
-        type_idx: 0,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::GraphlibAdd,
         name: "graphlib_add",
-        type_idx: 5,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::GraphlibPrepare,
         name: "graphlib_prepare",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::GraphlibGetReady,
         name: "graphlib_get_ready",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::GraphlibIsActive,
         name: "graphlib_is_active",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::GraphlibDone,
         name: "graphlib_done",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::GraphlibStaticOrder,
         name: "graphlib_static_order",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::GraphlibDrop,
         name: "graphlib_drop",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ZipfileCrc32,
         name: "zipfile_crc32",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ZipfileParseCentralDirectory,
         name: "zipfile_parse_central_directory",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ZipfileBuildZip64Extra,
         name: "zipfile_build_zip64_extra",
-        type_idx: 5,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ZipfilePathImpliedDirs,
         name: "zipfile_path_implied_dirs",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ZipfilePathResolveDir,
         name: "zipfile_path_resolve_dir",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ZipfilePathIsChild,
         name: "zipfile_path_is_child",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ZipfilePathTranslateGlob,
         name: "zipfile_path_translate_glob",
-        type_idx: 5,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ZipfileNormalizeMemberPath,
         name: "zipfile_normalize_member_path",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::LoggingConfigDict,
         name: "logging_config_dict",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::LoggingConfigValidIdent,
         name: "logging_config_valid_ident",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::LoggingConfigFileConfig,
         name: "logging_config_file_config",
-        type_idx: 7,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::LoggingConfigListen,
         name: "logging_config_listen",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::LoggingConfigStopListening,
         name: "logging_config_stop_listening",
-        type_idx: 0,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ProcessSpawnEx,
         name: "process_spawn_ex",
-        type_idx: 28,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::MultiprocessingCodecDumps,
         name: "multiprocessing_codec_dumps",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::MultiprocessingCodecLoads,
         name: "multiprocessing_codec_loads",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::StreamReaderNew,
         name: "stream_reader_new",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::StreamReaderAtEof,
         name: "stream_reader_at_eof",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::StreamReaderDrop,
         name: "stream_reader_drop",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::SocketReaderNew,
         name: "socket_reader_new",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::SocketReaderRead,
         name: "socket_reader_read",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::SocketReaderReadline,
         name: "socket_reader_readline",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::SocketReaderReadlineLimit,
         name: "socket_reader_readline_limit",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::SocketReaderAtEof,
         name: "socket_reader_at_eof",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::SocketReaderDrop,
         name: "socket_reader_drop",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::JsonEncodeBasestringObj,
         name: "json_encode_basestring_obj",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::JsonEncodeBasestringAsciiObj,
         name: "json_encode_basestring_ascii_obj",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::JsonScanstringObj,
         name: "json_scanstring_obj",
-        type_idx: 5,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::SocketRecvfromInto,
         name: "socket_recvfrom_into",
-        type_idx: 7,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::SocketSendmsg,
         name: "socket_sendmsg",
-        type_idx: 12,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::SocketRecvmsg,
         name: "socket_recvmsg",
-        type_idx: 7,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::SocketRecvmsgInto,
         name: "socket_recvmsg_into",
-        type_idx: 7,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::SocketGethostbyname,
         name: "socket_gethostbyname",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::SocketGethostbyaddr,
         name: "socket_gethostbyaddr",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::SocketGetfqdn,
         name: "socket_getfqdn",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::SocketHtons,
         name: "socket_htons",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::SocketNtohs,
         name: "socket_ntohs",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::SocketHtonl,
         name: "socket_htonl",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::SocketNtohl,
         name: "socket_ntohl",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::SocketGetprotobyname,
         name: "socket_getprotobyname",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::SocketGethostbynameEx,
         name: "socket_gethostbyname_ex",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::SocketIfNameindex,
         name: "socket_if_nameindex",
-        type_idx: 0,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::SocketIfNametoindex,
         name: "socket_if_nametoindex",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::SocketIfIndextoname,
         name: "socket_if_indextoname",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::SocketCmsgLen,
         name: "socket_cmsg_len",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::SocketCmsgSpace,
         name: "socket_cmsg_space",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::SocketHasDualstackIpv6,
         name: "socket_has_dualstack_ipv6",
-        type_idx: 0,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::SocketSendFds,
         name: "socket_send_fds",
-        type_idx: 12,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::SocketRecvFds,
         name: "socket_recv_fds",
-        type_idx: 7,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::SocketSendfile,
         name: "socket_sendfile",
-        type_idx: 7,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::SocketSethostname,
         name: "socket_sethostname",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::SocketSendmsgAfalg,
         name: "socket_sendmsg_afalg",
-        type_idx: 29,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::CodeopCompile,
         name: "codeop_compile",
-        type_idx: 12,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::CodeopCompileCommand,
         name: "codeop_compile_command",
-        type_idx: 7,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::InputBuiltin,
         name: "input_builtin",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::GlobalsBuiltin,
         name: "globals_builtin",
-        type_idx: 0,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ModuleTypeNew,
         name: "module_type_new",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ModuleInit,
         name: "module_init",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ModuleGetattribute,
         name: "module_getattribute",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ModuleSetattr,
         name: "module_setattr",
-        type_idx: 5,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ModuleDelattr,
         name: "module_delattr",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ModuleDir,
         name: "module_dir",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ModuleRepr,
         name: "module_repr",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::NamespaceGet,
         name: "namespace_get",
-        type_idx: 5,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::NamespaceDel,
         name: "namespace_del",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::RunpyRunModule,
         name: "runpy_run_module",
-        type_idx: 7,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::RunpyRunPath,
         name: "runpy_run_path",
-        type_idx: 5,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::UuidGetnode,
         name: "uuid_getnode",
-        type_idx: 0,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::UuidUuid4Bytes,
         name: "uuid_uuid4_bytes",
-        type_idx: 0,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::UuidUuid1Bytes,
         name: "uuid_uuid1_bytes",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::UuidUuid3Bytes,
         name: "uuid_uuid3_bytes",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::UuidUuid5Bytes,
         name: "uuid_uuid5_bytes",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ImportlibExtensionLoaderTypeDeclare,
         name: "importlib_extension_loader_type_declare",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ImportlibSourcefileloaderExecModule,
         name: "importlib_sourcefileloader_exec_module",
-        type_idx: 7,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ImportlibZipSourceLoaderExecModule,
         name: "importlib_zip_source_loader_exec_module",
-        type_idx: 12,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ImportlibExtensionLoaderCreateModule,
         name: "importlib_extension_loader_create_module",
-        type_idx: 5,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ImportlibExtensionLoaderExecModule,
         name: "importlib_extension_loader_exec_module",
-        type_idx: 7,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ImportlibSourcelessLoaderExecModule,
         name: "importlib_sourceless_loader_exec_module",
-        type_idx: 7,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ImportlibResourcesReaderOpenResourceBytesFromRoots,
         name: "importlib_resources_reader_open_resource_bytes_from_roots",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ImportlibImportModule,
         name: "importlib_import_module",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ImportlibLoadModuleFromSpec,
         name: "importlib_load_module_from_spec",
-        type_idx: 5,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ImportlibModuleSpecType,
         name: "importlib_module_spec_type",
-        type_idx: 0,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ImportlibCompiledLoader,
         name: "importlib_compiled_loader",
-        type_idx: 0,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ImportlibCompiledLoaderTypes,
         name: "importlib_compiled_loader_types",
-        type_idx: 0,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ImportlibResourcesOpenResourceBytesFromPackageParts,
         name: "importlib_resources_open_resource_bytes_from_package_parts",
-        type_idx: 7,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::LinecacheLoaderGetSource,
         name: "linecache_loader_get_source",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::CopyregBootstrap,
         name: "copyreg_bootstrap",
-        type_idx: 0,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::CopyregPickle,
         name: "copyreg_pickle",
-        type_idx: 5,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::CopyregNewobj,
         name: "copyreg_newobj",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::CopyregNewobjEx,
         name: "copyreg_newobj_ex",
-        type_idx: 5,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::CopyregReconstructor,
         name: "copyreg_reconstructor",
-        type_idx: 5,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::CopyregReduceEx,
         name: "copyreg_reduce_ex",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::PickleDumpsProtocol01,
         name: "pickle_dumps_protocol01",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::PickleLoadsProtocol01,
         name: "pickle_loads_protocol01",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::PickleDumpsCore,
         name: "pickle_dumps_core",
-        type_idx: 29,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::PickleLoadsCore,
         name: "pickle_loads_core",
-        type_idx: 10,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::CopyregConstructor,
         name: "copyreg_constructor",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::CopyregAddExtension,
         name: "copyreg_add_extension",
-        type_idx: 5,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::CopyregRemoveExtension,
         name: "copyreg_remove_extension",
-        type_idx: 5,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::CopyregClearExtensionCache,
         name: "copyreg_clear_extension_cache",
-        type_idx: 0,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::CpythonAbiRunStaticExtensionInit,
         name: "cpython_abi_run_static_extension_init",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ExceptionMatchHandler,
         name: "exception_match_handler",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::UnraisableHookArgsIsExact,
         name: "unraisable_hook_args_is_exact",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::GcCollect,
         name: "gc_collect",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::GcEnable,
         name: "gc_enable",
-        type_idx: 0,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::GcDisable,
         name: "gc_disable",
-        type_idx: 0,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::GcIsenabled,
         name: "gc_isenabled",
-        type_idx: 0,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::GcSetThreshold,
         name: "gc_set_threshold",
-        type_idx: 5,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::GcGetThreshold,
         name: "gc_get_threshold",
-        type_idx: 0,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::GcSetDebug,
         name: "gc_set_debug",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::GcGetDebug,
         name: "gc_get_debug",
-        type_idx: 0,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::GcGetCount,
         name: "gc_get_count",
-        type_idx: 0,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::GcGetStats,
         name: "gc_get_stats",
-        type_idx: 0,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::GcIsTracked,
         name: "gc_is_tracked",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::GcIsFinalized,
         name: "gc_is_finalized",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::GcGetObjects,
         name: "gc_get_objects",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::GcGetReferents,
         name: "gc_get_referents",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::GcGetReferrers,
         name: "gc_get_referrers",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::GcCallbacks,
         name: "gc_callbacks",
-        type_idx: 0,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::GcGarbage,
         name: "gc_garbage",
-        type_idx: 0,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::GcFreeze,
         name: "gc_freeze",
-        type_idx: 0,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::GcUnfreeze,
         name: "gc_unfreeze",
-        type_idx: 0,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::GcGetFreezeCount,
         name: "gc_get_freeze_count",
-        type_idx: 0,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::TracebackFormatExceptionOnly,
         name: "traceback_format_exception_only",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::TracebackFormatException,
         name: "traceback_format_exception",
-        type_idx: 12,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::TracebackFormatTb,
         name: "traceback_format_tb",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::TracebackFormatStack,
         name: "traceback_format_stack",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::TracebackExtractTb,
         name: "traceback_extract_tb",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::TracebackExceptionChainPayload,
         name: "traceback_exception_chain_payload",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::TracebackExceptionSuppressContext,
         name: "traceback_exception_suppress_context",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::TracebackPayload,
         name: "traceback_payload",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::AstParse,
         name: "ast_parse",
-        type_idx: 29,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::AstWalk,
         name: "ast_walk",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::AstGetDocstring,
         name: "ast_get_docstring",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::InspectCleandoc,
         name: "inspect_cleandoc",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::InspectCurrentframe,
         name: "inspect_currentframe",
-        type_idx: 0,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::SuperFromFrame,
         name: "super_from_frame",
-        type_idx: 0,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::InspectGetdoc,
         name: "inspect_getdoc",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::InspectGetmembers,
         name: "inspect_getmembers",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::InspectIsfunction,
         name: "inspect_isfunction",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::InspectIsclass,
         name: "inspect_isclass",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::InspectIsmodule,
         name: "inspect_ismodule",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::InspectIscoroutine,
         name: "inspect_iscoroutine",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::InspectIscoroutinefunction,
         name: "inspect_iscoroutinefunction",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::InspectIsasyncgenfunction,
         name: "inspect_isasyncgenfunction",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::InspectIsgeneratorfunction,
         name: "inspect_isgeneratorfunction",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::InspectIsnativeawaitable,
         name: "inspect_isnativeawaitable",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::InspectGetgeneratorstate,
         name: "inspect_getgeneratorstate",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::InspectGetasyncgenstate,
         name: "inspect_getasyncgenstate",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::InspectGetcoroutinestate,
         name: "inspect_getcoroutinestate",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::InspectSignatureData,
         name: "inspect_signature_data",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::BuiltinClassLookup,
         name: "builtin_class_lookup",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::DataclassesMakeDataclass,
         name: "dataclasses_make_dataclass",
-        type_idx: 10,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::DataclassesIsDataclass,
         name: "dataclasses_is_dataclass",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::DataclassesFields,
         name: "dataclasses_fields",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::DataclassesAsdict,
         name: "dataclasses_asdict",
-        type_idx: 5,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::DataclassesAstuple,
         name: "dataclasses_astuple",
-        type_idx: 5,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::DataclassesReplace,
         name: "dataclasses_replace",
-        type_idx: 7,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::DataclassesPostInit,
         name: "dataclasses_post_init",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::DataclassesSetFieldMetadata,
         name: "dataclasses_set_field_metadata",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::DataclassesIsInitvar,
         name: "dataclasses_is_initvar",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::DataclassesIsKwOnlySentinel,
         name: "dataclasses_is_kw_only_sentinel",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::StaticmethodTypeNew,
         name: "staticmethod_type_new",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::StaticmethodInit,
         name: "staticmethod_init",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::StaticmethodGet,
         name: "staticmethod_get",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::StaticmethodCall,
         name: "staticmethod_call",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ClassmethodTypeNew,
         name: "classmethod_type_new",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ClassmethodInit,
         name: "classmethod_init",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ClassmethodGet,
         name: "classmethod_get",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::PropertyTypeNew,
         name: "property_type_new",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::PropertyInit,
         name: "property_init",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::PropertyGet,
         name: "property_get",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::PropertySet,
         name: "property_set",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::PropertyDelete,
         name: "property_delete",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::PropertySetName,
         name: "property_set_name",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::NativeDescriptorNew,
         name: "native_descriptor_new",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::NativeDescriptorGet,
         name: "native_descriptor_get",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::NativeDescriptorSet,
         name: "native_descriptor_set",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::NativeDescriptorDelete,
         name: "native_descriptor_delete",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::NativeDescriptorRepr,
         name: "native_descriptor_repr",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::NativeDescriptorReduce,
         name: "native_descriptor_reduce",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::WrapperMemberGet,
         name: "wrapper_member_get",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::WrapperMemberSet,
         name: "wrapper_member_set",
-        type_idx: 5,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::WrapperMemberDelete,
         name: "wrapper_member_delete",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::MemoryviewFromFlags,
         name: "memoryview_from_flags",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::MemoryviewTolist,
         name: "memoryview_tolist",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::MemoryviewCount,
         name: "memoryview_count",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::MemoryviewIndex,
         name: "memoryview_index",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::MemoryviewHex,
         name: "memoryview_hex",
-        type_idx: 5,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::MemoryviewRelease,
         name: "memoryview_release",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::MemoryviewToreadonly,
         name: "memoryview_toreadonly",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::GenericAliasNew,
         name: "generic_alias_new",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::TypingTypeParam,
         name: "typing_type_param",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::TypingPrivatePayload,
         name: "typing_private_payload",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::SysFlagsPayload,
         name: "sys_flags_payload",
-        type_idx: 0,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::SysIsFinalizing,
         name: "sys_is_finalizing",
-        type_idx: 0,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::SysGetrefcount,
         name: "sys_getrefcount",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::SysSettrace,
         name: "sys_settrace",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::SysGettrace,
         name: "sys_gettrace",
-        type_idx: 0,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::SysSetprofile,
         name: "sys_setprofile",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::SysGetprofile,
         name: "sys_getprofile",
-        type_idx: 0,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::SysGetfilesystemencodeerrors,
         name: "sys_getfilesystemencodeerrors",
-        type_idx: 0,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::SysMaxsize,
         name: "sys_maxsize",
-        type_idx: 0,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::SysMaxunicode,
         name: "sys_maxunicode",
-        type_idx: 0,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::SysByteorder,
         name: "sys_byteorder",
-        type_idx: 0,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::SysPrefix,
         name: "sys_prefix",
-        type_idx: 0,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::SysExecPrefix,
         name: "sys_exec_prefix",
-        type_idx: 0,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::SysBasePrefix,
         name: "sys_base_prefix",
-        type_idx: 0,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::SysBaseExecPrefix,
         name: "sys_base_exec_prefix",
-        type_idx: 0,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::SysPlatlibdir,
         name: "sys_platlibdir",
-        type_idx: 0,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::SysFloatInfo,
         name: "sys_float_info",
-        type_idx: 0,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::SysIntInfo,
         name: "sys_int_info",
-        type_idx: 0,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::SysHashInfo,
         name: "sys_hash_info",
-        type_idx: 0,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::SysThreadInfo,
         name: "sys_thread_info",
-        type_idx: 0,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::SysIntern,
         name: "sys_intern",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::SysGetsizeof,
         name: "sys_getsizeof",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::SysStdlibModuleNames,
         name: "sys_stdlib_module_names",
-        type_idx: 0,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::SysBuiltinModuleNames,
         name: "sys_builtin_module_names",
-        type_idx: 0,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::SysOrigArgv,
         name: "sys_orig_argv",
-        type_idx: 0,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::SysCopyright,
         name: "sys_copyright",
-        type_idx: 0,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::OperatorAbs,
         name: "operator_abs",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::OperatorAdd,
         name: "operator_add",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::OperatorSub,
         name: "operator_sub",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::OperatorMul,
         name: "operator_mul",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::OperatorMatmul,
         name: "operator_matmul",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::OperatorTruediv,
         name: "operator_truediv",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::OperatorFloordiv,
         name: "operator_floordiv",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::OperatorMod,
         name: "operator_mod",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::OperatorPow,
         name: "operator_pow",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::OperatorLshift,
         name: "operator_lshift",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::OperatorRshift,
         name: "operator_rshift",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::OperatorAnd,
         name: "operator_and",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::OperatorOr,
         name: "operator_or",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::OperatorXor,
         name: "operator_xor",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::OperatorNeg,
         name: "operator_neg",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::OperatorPos,
         name: "operator_pos",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::OperatorInvert,
         name: "operator_invert",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::OperatorNot,
         name: "operator_not",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::OperatorTruth,
         name: "operator_truth",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::OperatorEq,
         name: "operator_eq",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::OperatorNe,
         name: "operator_ne",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::OperatorLt,
         name: "operator_lt",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::OperatorLe,
         name: "operator_le",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::OperatorGt,
         name: "operator_gt",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::OperatorGe,
         name: "operator_ge",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::OperatorIs,
         name: "operator_is",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::OperatorIsNot,
         name: "operator_is_not",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::OperatorContains,
         name: "operator_contains",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::OperatorGetitem,
         name: "operator_getitem",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::OperatorSetitem,
         name: "operator_setitem",
-        type_idx: 5,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::OperatorDelitem,
         name: "operator_delitem",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::OperatorCountof,
         name: "operator_countof",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::OperatorLengthHint,
         name: "operator_length_hint",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::OperatorConcat,
         name: "operator_concat",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::OperatorIconcat,
         name: "operator_iconcat",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::OperatorIadd,
         name: "operator_iadd",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::OperatorIsub,
         name: "operator_isub",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::OperatorImul,
         name: "operator_imul",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::OperatorImatmul,
         name: "operator_imatmul",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::OperatorItruediv,
         name: "operator_itruediv",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::OperatorIfloordiv,
         name: "operator_ifloordiv",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::OperatorImod,
         name: "operator_imod",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::OperatorIpow,
         name: "operator_ipow",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::OperatorIlshift,
         name: "operator_ilshift",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::OperatorIrshift,
         name: "operator_irshift",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::OperatorIand,
         name: "operator_iand",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::OperatorIor,
         name: "operator_ior",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::OperatorIxor,
         name: "operator_ixor",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::OperatorItemgetterType,
         name: "operator_itemgetter_type",
-        type_idx: 0,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::OperatorAttrgetterType,
         name: "operator_attrgetter_type",
-        type_idx: 0,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::OperatorMethodcallerType,
         name: "operator_methodcaller_type",
-        type_idx: 0,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ItertoolsKwdMark,
         name: "itertools_kwd_mark",
-        type_idx: 0,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ItertoolsChain,
         name: "itertools_chain",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ItertoolsChainFromIterable,
         name: "itertools_chain_from_iterable",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ItertoolsIslice,
         name: "itertools_islice",
-        type_idx: 7,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ItertoolsRepeat,
         name: "itertools_repeat",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ItertoolsRepeatType,
         name: "itertools_repeat_type",
-        type_idx: 0,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ItertoolsCount,
         name: "itertools_count",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ItertoolsCycle,
         name: "itertools_cycle",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ItertoolsAccumulate,
         name: "itertools_accumulate",
-        type_idx: 5,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ItertoolsBatched,
         name: "itertools_batched",
-        type_idx: 5,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ItertoolsCompress,
         name: "itertools_compress",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ItertoolsCombinationsWithReplacement,
         name: "itertools_combinations_with_replacement",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ItertoolsDropwhile,
         name: "itertools_dropwhile",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ItertoolsFilterfalse,
         name: "itertools_filterfalse",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ItertoolsPairwise,
         name: "itertools_pairwise",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ItertoolsProduct,
         name: "itertools_product",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ItertoolsPermutations,
         name: "itertools_permutations",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ItertoolsCombinations,
         name: "itertools_combinations",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ItertoolsGroupby,
         name: "itertools_groupby",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ItertoolsStarmap,
         name: "itertools_starmap",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ItertoolsTakewhile,
         name: "itertools_takewhile",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ItertoolsTee,
         name: "itertools_tee",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ItertoolsZipLongest,
         name: "itertools_zip_longest",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::FunctoolsKwdMark,
         name: "functools_kwd_mark",
-        type_idx: 0,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::FunctoolsUpdateWrapper,
         name: "functools_update_wrapper",
-        type_idx: 7,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::FunctoolsWraps,
         name: "functools_wraps",
-        type_idx: 5,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::FunctoolsCmpToKey,
         name: "functools_cmp_to_key",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::FunctoolsTotalOrdering,
         name: "functools_total_ordering",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::FunctoolsPartial,
         name: "functools_partial",
-        type_idx: 5,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::FunctoolsReduce,
         name: "functools_reduce",
-        type_idx: 5,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::FunctoolsLruCache,
         name: "functools_lru_cache",
-        type_idx: 7,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::KeywordLists,
         name: "keyword_lists",
-        type_idx: 0,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::KeywordIskeyword,
         name: "keyword_iskeyword",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::KeywordIssoftkeyword,
         name: "keyword_issoftkeyword",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ThisPayload,
         name: "this_payload",
-        type_idx: 0,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::QuopriEncode,
         name: "quopri_encode",
-        type_idx: 5,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::QuopriDecode,
         name: "quopri_decode",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::QuopriNeedsQuoting,
         name: "quopri_needs_quoting",
-        type_idx: 5,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::QuopriQuote,
         name: "quopri_quote",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::QuopriIshex,
         name: "quopri_ishex",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::QuopriUnhex,
         name: "quopri_unhex",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::EmailQuoprimimeHeaderCheck,
         name: "email_quoprimime_header_check",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::EmailQuoprimimeBodyCheck,
         name: "email_quoprimime_body_check",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::EmailQuoprimimeHeaderLength,
         name: "email_quoprimime_header_length",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::EmailQuoprimimeBodyLength,
         name: "email_quoprimime_body_length",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::EmailQuoprimimeQuote,
         name: "email_quoprimime_quote",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::EmailQuoprimimeUnquote,
         name: "email_quoprimime_unquote",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::EmailQuoprimimeHeaderEncode,
         name: "email_quoprimime_header_encode",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::EmailQuoprimimeHeaderDecode,
         name: "email_quoprimime_header_decode",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::EmailQuoprimimeBodyEncode,
         name: "email_quoprimime_body_encode",
-        type_idx: 5,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::EmailQuoprimimeDecode,
         name: "email_quoprimime_decode",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::OpcodePayload312Json,
         name: "opcode_payload_312_json",
-        type_idx: 0,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::TokenPayload312,
         name: "token_payload_312",
-        type_idx: 0,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::OpcodeMetadataPayload314Json,
         name: "opcode_metadata_payload_314_json",
-        type_idx: 0,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::OpcodeGetSpecializationStats,
         name: "opcode_get_specialization_stats",
-        type_idx: 0,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::OpcodeStackEffect,
         name: "opcode_stack_effect",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ImghdrTest,
         name: "imghdr_test",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ImghdrWhat,
         name: "imghdr_what",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::Bz2Compress,
         name: "bz2_compress",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::Bz2CompressorCompress,
         name: "bz2_compressor_compress",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::Bz2CompressorFlush,
         name: "bz2_compressor_flush",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::Bz2CompressorNew,
         name: "bz2_compressor_new",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::Bz2Decompress,
         name: "bz2_decompress",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::Bz2DecompressorDecompress,
         name: "bz2_decompressor_decompress",
-        type_idx: 5,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::Bz2DecompressorEof,
         name: "bz2_decompressor_eof",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::Bz2DecompressorNeedsInput,
         name: "bz2_decompressor_needs_input",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::Bz2DecompressorNew,
         name: "bz2_decompressor_new",
-        type_idx: 0,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::Bz2DecompressorUnusedData,
         name: "bz2_decompressor_unused_data",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::Bz2FileClose,
         name: "bz2_file_close",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::Bz2FileOpen,
         name: "bz2_file_open",
-        type_idx: 5,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::Bz2FileRead,
         name: "bz2_file_read",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::Bz2FileWrite,
         name: "bz2_file_write",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::CmathAcos,
         name: "cmath_acos",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::CmathAcosh,
         name: "cmath_acosh",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::CmathAsin,
         name: "cmath_asin",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::CmathAsinh,
         name: "cmath_asinh",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::CmathAtan,
         name: "cmath_atan",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::CmathAtanh,
         name: "cmath_atanh",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::CmathConstants,
         name: "cmath_constants",
-        type_idx: 0,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::CmathCos,
         name: "cmath_cos",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::CmathCosh,
         name: "cmath_cosh",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::CmathExp,
         name: "cmath_exp",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::CmathIsclose,
         name: "cmath_isclose",
-        type_idx: 7,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::CmathIsfinite,
         name: "cmath_isfinite",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::CmathIsinf,
         name: "cmath_isinf",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::CmathIsnan,
         name: "cmath_isnan",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::CmathLog,
         name: "cmath_log",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::CmathLog10,
         name: "cmath_log10",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::CmathPhase,
         name: "cmath_phase",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::CmathPolar,
         name: "cmath_polar",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::CmathRect,
         name: "cmath_rect",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::CmathSin,
         name: "cmath_sin",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::CmathSinh,
         name: "cmath_sinh",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::CmathSqrt,
         name: "cmath_sqrt",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::CmathTan,
         name: "cmath_tan",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::CmathTanh,
         name: "cmath_tanh",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::CodecsBomUtf16Be,
         name: "codecs_bom_utf16_be",
-        type_idx: 0,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::CodecsBomUtf16Le,
         name: "codecs_bom_utf16_le",
-        type_idx: 0,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::CodecsBomUtf32Be,
         name: "codecs_bom_utf32_be",
-        type_idx: 0,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::CodecsBomUtf32Le,
         name: "codecs_bom_utf32_le",
-        type_idx: 0,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::CodecsBomUtf8,
         name: "codecs_bom_utf8",
-        type_idx: 0,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::CodecsIncrementalDecoderDecode,
         name: "codecs_incremental_decoder_decode",
-        type_idx: 5,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::CodecsIncrementalDecoderDrop,
         name: "codecs_incremental_decoder_drop",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::CodecsIncrementalDecoderNew,
         name: "codecs_incremental_decoder_new",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::CodecsIncrementalDecoderReset,
         name: "codecs_incremental_decoder_reset",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::CodecsIncrementalEncoderDrop,
         name: "codecs_incremental_encoder_drop",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::CodecsIncrementalEncoderEncode,
         name: "codecs_incremental_encoder_encode",
-        type_idx: 5,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::CodecsIncrementalEncoderNew,
         name: "codecs_incremental_encoder_new",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::CodecsIncrementalEncoderReset,
         name: "codecs_incremental_encoder_reset",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::CodecsLookupError,
         name: "codecs_lookup_error",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::CodecsNormalizeEncoding,
         name: "codecs_normalize_encoding",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::CodecsRegisterError,
         name: "codecs_register_error",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::CodecsStreamReaderDrop,
         name: "codecs_stream_reader_drop",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::CodecsStreamReaderNew,
         name: "codecs_stream_reader_new",
-        type_idx: 5,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::CodecsStreamReaderRead,
         name: "codecs_stream_reader_read",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::CodecsStreamReaderReadline,
         name: "codecs_stream_reader_readline",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ConcurrentAsCompleted,
         name: "concurrent_as_completed",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ConcurrentFutureAddDoneCallback,
         name: "concurrent_future_add_done_callback",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ConcurrentFutureCancel,
         name: "concurrent_future_cancel",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ConcurrentFutureCancelled,
         name: "concurrent_future_cancelled",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ConcurrentFutureDone,
         name: "concurrent_future_done",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ConcurrentFutureDrop,
         name: "concurrent_future_drop",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ConcurrentFutureException,
         name: "concurrent_future_exception",
-        type_idx: 7,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ConcurrentFutureResult,
         name: "concurrent_future_result",
-        type_idx: 7,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ConcurrentFutureRunning,
         name: "concurrent_future_running",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ConcurrentThreadpoolDrop,
         name: "concurrent_threadpool_drop",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ConcurrentThreadpoolNew,
         name: "concurrent_threadpool_new",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ConcurrentThreadpoolShutdown,
         name: "concurrent_threadpool_shutdown",
-        type_idx: 5,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ConcurrentThreadpoolSubmit,
         name: "concurrent_threadpool_submit",
-        type_idx: 5,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ConcurrentWait,
         name: "concurrent_wait",
-        type_idx: 5,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ConfigparserAddSection,
         name: "configparser_add_section",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ConfigparserDrop,
         name: "configparser_drop",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ConfigparserGet,
         name: "configparser_get",
-        type_idx: 7,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ConfigparserGetboolean,
         name: "configparser_getboolean",
-        type_idx: 7,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ConfigparserGetfloat,
         name: "configparser_getfloat",
-        type_idx: 7,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ConfigparserGetint,
         name: "configparser_getint",
-        type_idx: 7,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ConfigparserHasOption,
         name: "configparser_has_option",
-        type_idx: 5,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ConfigparserHasSection,
         name: "configparser_has_section",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ConfigparserItems,
         name: "configparser_items",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ConfigparserNew,
         name: "configparser_new",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ConfigparserOptions,
         name: "configparser_options",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ConfigparserRead,
         name: "configparser_read",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ConfigparserReadString,
         name: "configparser_read_string",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ConfigparserRemoveOption,
         name: "configparser_remove_option",
-        type_idx: 5,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ConfigparserRemoveSection,
         name: "configparser_remove_section",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ConfigparserSections,
         name: "configparser_sections",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ConfigparserSet,
         name: "configparser_set",
-        type_idx: 7,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::DbmDumbOpen,
         name: "dbm_dumb_open",
-        type_idx: 5,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::DbmDumbGetitem,
         name: "dbm_dumb_getitem",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::DbmDumbSetitem,
         name: "dbm_dumb_setitem",
-        type_idx: 5,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::DbmDumbDelitem,
         name: "dbm_dumb_delitem",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::DbmDumbContains,
         name: "dbm_dumb_contains",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::DbmDumbKeys,
         name: "dbm_dumb_keys",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::DbmDumbSync,
         name: "dbm_dumb_sync",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::DbmDumbClose,
         name: "dbm_dumb_close",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::CsvDictProject,
         name: "csv_dict_project",
-        type_idx: 7,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::CsvFieldSizeLimit,
         name: "csv_field_size_limit",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::CsvGetDialect,
         name: "csv_get_dialect",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::CsvHasHeader,
         name: "csv_has_header",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::CsvListDialects,
         name: "csv_list_dialects",
-        type_idx: 0,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::CsvQuoteAll,
         name: "csv_quote_all",
-        type_idx: 0,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::CsvQuoteMinimal,
         name: "csv_quote_minimal",
-        type_idx: 0,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::CsvQuoteNone,
         name: "csv_quote_none",
-        type_idx: 0,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::CsvQuoteNonnumeric,
         name: "csv_quote_nonnumeric",
-        type_idx: 0,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::CsvQuoteNotnull,
         name: "csv_quote_notnull",
-        type_idx: 0,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::CsvQuoteStrings,
         name: "csv_quote_strings",
-        type_idx: 0,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::CsvRegisterDialect,
         name: "csv_register_dialect",
-        type_idx: 31,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::CsvReaderDrop,
         name: "csv_reader_drop",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::CsvReaderNew,
         name: "csv_reader_new",
-        type_idx: 10,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::CsvReaderParseLine,
         name: "csv_reader_parse_line",
-        type_idx: 7,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::CsvSniff,
         name: "csv_sniff",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::CsvUnregisterDialect,
         name: "csv_unregister_dialect",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::CsvWriterDrop,
         name: "csv_writer_drop",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::CsvWriterNew,
         name: "csv_writer_new",
-        type_idx: 29,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::CsvWriterWriterow,
         name: "csv_writer_writerow",
-        type_idx: 5,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::CsvWriterWriterows,
         name: "csv_writer_writerows",
-        type_idx: 5,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::DatetimeCtime,
         name: "datetime_ctime",
-        type_idx: 29,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::DatetimeDaysInMonth,
         name: "datetime_days_in_month",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::DatetimeFormatIsodate,
         name: "datetime_format_isodate",
-        type_idx: 5,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::DatetimeFormatIsodatetime,
         name: "datetime_format_isodatetime",
-        type_idx: 32,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::DatetimeFormatIsotime,
         name: "datetime_format_isotime",
-        type_idx: 12,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::DatetimeFromtimestampLocal,
         name: "datetime_fromtimestamp_local",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::DatetimeFromtimestampUtc,
         name: "datetime_fromtimestamp_utc",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::DatetimeHashDate,
         name: "datetime_hash_date",
-        type_idx: 5,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::DatetimeHashDatetime,
         name: "datetime_hash_datetime",
-        type_idx: 28,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::DatetimeHashTime,
         name: "datetime_hash_time",
-        type_idx: 12,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::DatetimeHashTimedelta,
         name: "datetime_hash_timedelta",
-        type_idx: 5,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::DatetimeIsLeap,
         name: "datetime_is_leap",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::DatetimeIsocalendar,
         name: "datetime_isocalendar",
-        type_idx: 5,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::DatetimeIsoweekday,
         name: "datetime_isoweekday",
-        type_idx: 5,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::DatetimeNowLocal,
         name: "datetime_now_local",
-        type_idx: 0,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::DatetimeNowUtc,
         name: "datetime_now_utc",
-        type_idx: 0,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::DatetimeOrdinalToYmd,
         name: "datetime_ordinal_to_ymd",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::DatetimeParseIsoformat,
         name: "datetime_parse_isoformat",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::DatetimeParseIsoformatDate,
         name: "datetime_parse_isoformat_date",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::DatetimeParseIsoformatTime,
         name: "datetime_parse_isoformat_time",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::DatetimeStrftime,
         name: "datetime_strftime",
-        type_idx: 31,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::DatetimeStrptime,
         name: "datetime_strptime",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::DatetimeTdNormalize,
         name: "datetime_td_normalize",
-        type_idx: 10,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::DatetimeTdTotalSeconds,
         name: "datetime_td_total_seconds",
-        type_idx: 5,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::DatetimeToTimestamp,
         name: "datetime_to_timestamp",
-        type_idx: 28,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::DatetimeValidateDate,
         name: "datetime_validate_date",
-        type_idx: 5,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::DatetimeValidateTime,
         name: "datetime_validate_time",
-        type_idx: 12,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::DatetimeCombine,
         name: "datetime_combine",
-        type_idx: 28,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::DateFromisocalendar,
         name: "date_fromisocalendar",
-        type_idx: 5,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::TimedeltaTruedivScalar,
         name: "timedelta_truediv_scalar",
-        type_idx: 7,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::TimedeltaTruedivTd,
         name: "timedelta_truediv_td",
-        type_idx: 29,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::TimedeltaFloordivTd,
         name: "timedelta_floordiv_td",
-        type_idx: 29,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::TimedeltaModTd,
         name: "timedelta_mod_td",
-        type_idx: 29,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::TimedeltaFloordivScalar,
         name: "timedelta_floordiv_scalar",
-        type_idx: 7,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::TimedeltaAbs,
         name: "timedelta_abs",
-        type_idx: 5,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::DatetimeWeekday,
         name: "datetime_weekday",
-        type_idx: 5,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::DatetimeYmdToOrdinal,
         name: "datetime_ymd_to_ordinal",
-        type_idx: 5,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::DecimalAbs,
         name: "decimal_abs",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::DecimalAdd,
         name: "decimal_add",
-        type_idx: 5,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::DecimalAdjusted,
         name: "decimal_adjusted",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::DecimalAsIntegerRatio,
         name: "decimal_as_integer_ratio",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::DecimalCopyAbs,
         name: "decimal_copy_abs",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::DecimalCopyNegate,
         name: "decimal_copy_negate",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::DecimalCopySign,
         name: "decimal_copy_sign",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::DecimalFloordiv,
         name: "decimal_floordiv",
-        type_idx: 5,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::DecimalFma,
         name: "decimal_fma",
-        type_idx: 7,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::DecimalFromFloat,
         name: "decimal_from_float",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::DecimalHash,
         name: "decimal_hash",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::DecimalIsFinite,
         name: "decimal_is_finite",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::DecimalIsInfinite,
         name: "decimal_is_infinite",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::DecimalIsNan,
         name: "decimal_is_nan",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::DecimalIsNormal,
         name: "decimal_is_normal",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::DecimalIsSigned,
         name: "decimal_is_signed",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::DecimalIsSubnormal,
         name: "decimal_is_subnormal",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::DecimalIsZero,
         name: "decimal_is_zero",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::DecimalLn,
         name: "decimal_ln",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::DecimalLog10,
         name: "decimal_log10",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::DecimalMax,
         name: "decimal_max",
-        type_idx: 5,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::DecimalMin,
         name: "decimal_min",
-        type_idx: 5,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::DecimalMod,
         name: "decimal_mod",
-        type_idx: 5,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::DecimalMul,
         name: "decimal_mul",
-        type_idx: 5,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::DecimalNeg,
         name: "decimal_neg",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::DecimalNextMinus,
         name: "decimal_next_minus",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::DecimalNextPlus,
         name: "decimal_next_plus",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::DecimalNumberClass,
         name: "decimal_number_class",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::DecimalPos,
         name: "decimal_pos",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::DecimalPow,
         name: "decimal_pow",
-        type_idx: 5,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::DecimalRemainderNear,
         name: "decimal_remainder_near",
-        type_idx: 5,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::DecimalSameQuantum,
         name: "decimal_same_quantum",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::DecimalScaleb,
         name: "decimal_scaleb",
-        type_idx: 5,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::DecimalSqrt,
         name: "decimal_sqrt",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::DecimalSub,
         name: "decimal_sub",
-        type_idx: 5,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::DecimalToEngString,
         name: "decimal_to_eng_string",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::DecimalToInt,
         name: "decimal_to_int",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::DecimalToIntegralExact,
         name: "decimal_to_integral_exact",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::DecimalToIntegralValue,
         name: "decimal_to_integral_value",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::EnumAutoValue,
         name: "enum_auto_value",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::EnumFlagAnd,
         name: "enum_flag_and",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::EnumFlagContains,
         name: "enum_flag_contains",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::EnumFlagDecompose,
         name: "enum_flag_decompose",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::EnumFlagInvert,
         name: "enum_flag_invert",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::EnumFlagOr,
         name: "enum_flag_or",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::EnumFlagXor,
         name: "enum_flag_xor",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::EnumStrValue,
         name: "enum_str_value",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::FractionAbs,
         name: "fraction_abs",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::FractionAdd,
         name: "fraction_add",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::FractionAsIntegerRatio,
         name: "fraction_as_integer_ratio",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::FractionDenominator,
         name: "fraction_denominator",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::FractionDrop,
         name: "fraction_drop",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::FractionEq,
         name: "fraction_eq",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::FractionFloordiv,
         name: "fraction_floordiv",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::FractionFromFloat,
         name: "fraction_from_float",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::FractionFromStr,
         name: "fraction_from_str",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::FractionHash,
         name: "fraction_hash",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::FractionLe,
         name: "fraction_le",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::FractionLimitDenominator,
         name: "fraction_limit_denominator",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::FractionLt,
         name: "fraction_lt",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::FractionMod,
         name: "fraction_mod",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::FractionMul,
         name: "fraction_mul",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::FractionNeg,
         name: "fraction_neg",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::FractionNew,
         name: "fraction_new",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::FractionNumerator,
         name: "fraction_numerator",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::FractionPow,
         name: "fraction_pow",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::FractionSub,
         name: "fraction_sub",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::FractionToFloat,
         name: "fraction_to_float",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::FractionToStr,
         name: "fraction_to_str",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::FractionTruediv,
         name: "fraction_truediv",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::GzipClose,
         name: "gzip_close",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::GzipOpen,
         name: "gzip_open",
-        type_idx: 5,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::GzipRead,
         name: "gzip_read",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::HtmlEntitiesCodepoint2name,
         name: "html_entities_codepoint2name",
-        type_idx: 0,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::HtmlEntitiesHtml5,
         name: "html_entities_html5",
-        type_idx: 0,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::HtmlEntitiesName2codepoint,
         name: "html_entities_name2codepoint",
-        type_idx: 0,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::HtmlEscape,
         name: "html_escape",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::HtmlParserClose,
         name: "html_parser_close",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::HtmlParserDrop,
         name: "html_parser_drop",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::HtmlParserFeed,
         name: "html_parser_feed",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::HtmlParserNew,
         name: "html_parser_new",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::HtmlUnescape,
         name: "html_unescape",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::IpaddressDrop,
         name: "ipaddress_drop",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::IpaddressV4Int,
         name: "ipaddress_v4_int",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::IpaddressV4IsGlobal,
         name: "ipaddress_v4_is_global",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::IpaddressV4IsLinkLocal,
         name: "ipaddress_v4_is_link_local",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::IpaddressV4IsLoopback,
         name: "ipaddress_v4_is_loopback",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::IpaddressV4IsMulticast,
         name: "ipaddress_v4_is_multicast",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::IpaddressV4IsPrivate,
         name: "ipaddress_v4_is_private",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::IpaddressV4IsReserved,
         name: "ipaddress_v4_is_reserved",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::IpaddressV4MaxPrefixlen,
         name: "ipaddress_v4_max_prefixlen",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::IpaddressV4NetworkBroadcast,
         name: "ipaddress_v4_network_broadcast",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::IpaddressV4NetworkContains,
         name: "ipaddress_v4_network_contains",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::IpaddressV4NetworkDrop,
         name: "ipaddress_v4_network_drop",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::IpaddressV4NetworkHosts,
         name: "ipaddress_v4_network_hosts",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::IpaddressV4NetworkNew,
         name: "ipaddress_v4_network_new",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::IpaddressV4NetworkPrefixlen,
         name: "ipaddress_v4_network_prefixlen",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::IpaddressV4NetworkStr,
         name: "ipaddress_v4_network_str",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::IpaddressV4New,
         name: "ipaddress_v4_new",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::IpaddressV4Packed,
         name: "ipaddress_v4_packed",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::IpaddressV4Str,
         name: "ipaddress_v4_str",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::IpaddressV4Version,
         name: "ipaddress_v4_version",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::IpaddressV6Drop,
         name: "ipaddress_v6_drop",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::IpaddressV6Int,
         name: "ipaddress_v6_int",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::IpaddressV6IsGlobal,
         name: "ipaddress_v6_is_global",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::IpaddressV6IsLinkLocal,
         name: "ipaddress_v6_is_link_local",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::IpaddressV6IsLoopback,
         name: "ipaddress_v6_is_loopback",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::IpaddressV6IsMulticast,
         name: "ipaddress_v6_is_multicast",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::IpaddressV6IsPrivate,
         name: "ipaddress_v6_is_private",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::IpaddressV6New,
         name: "ipaddress_v6_new",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::IpaddressV6Packed,
         name: "ipaddress_v6_packed",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::IpaddressV6Str,
         name: "ipaddress_v6_str",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::IpaddressV6Version,
         name: "ipaddress_v6_version",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::JsonDumps,
         name: "json_dumps",
-        type_idx: 7,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::JsonDumpsEx,
         name: "json_dumps_ex",
-        type_idx: 32,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::JsonLoadsEx,
         name: "json_loads_ex",
-        type_idx: 10,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::JsonRawDecodeEx,
         name: "json_raw_decode_ex",
-        type_idx: 28,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::LzmaCheckCrc32,
         name: "lzma_check_crc32",
-        type_idx: 0,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::LzmaCheckCrc64,
         name: "lzma_check_crc64",
-        type_idx: 0,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::LzmaCheckNone,
         name: "lzma_check_none",
-        type_idx: 0,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::LzmaCheckSha256,
         name: "lzma_check_sha256",
-        type_idx: 0,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::LzmaCompress,
         name: "lzma_compress",
-        type_idx: 12,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::LzmaCompressorCompress,
         name: "lzma_compressor_compress",
-        type_idx: 5,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::LzmaCompressorFlush,
         name: "lzma_compressor_flush",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::LzmaCompressorNew,
         name: "lzma_compressor_new",
-        type_idx: 5,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::LzmaDecompress,
         name: "lzma_decompress",
-        type_idx: 7,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::LzmaDecompressorDecompress,
         name: "lzma_decompressor_decompress",
-        type_idx: 7,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::LzmaDecompressorEof,
         name: "lzma_decompressor_eof",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::LzmaDecompressorNeedsInput,
         name: "lzma_decompressor_needs_input",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::LzmaDecompressorNew,
         name: "lzma_decompressor_new",
-        type_idx: 5,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::LzmaDecompressorUnusedData,
         name: "lzma_decompressor_unused_data",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::LzmaFormatAlone,
         name: "lzma_format_alone",
-        type_idx: 0,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::LzmaFormatAuto,
         name: "lzma_format_auto",
-        type_idx: 0,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::LzmaFormatRaw,
         name: "lzma_format_raw",
-        type_idx: 0,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::LzmaFormatXz,
         name: "lzma_format_xz",
-        type_idx: 0,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::LzmaPresetDefault,
         name: "lzma_preset_default",
-        type_idx: 0,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::LzmaPresetExtreme,
         name: "lzma_preset_extreme",
-        type_idx: 0,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::OrdereddictClear,
         name: "ordereddict_clear",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::OrdereddictContains,
         name: "ordereddict_contains",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::OrdereddictCopy,
         name: "ordereddict_copy",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::OrdereddictDelitem,
         name: "ordereddict_delitem",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::OrdereddictDrop,
         name: "ordereddict_drop",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::OrdereddictFromPairs,
         name: "ordereddict_from_pairs",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::OrdereddictGetitem,
         name: "ordereddict_getitem",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::OrdereddictItems,
         name: "ordereddict_items",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::OrdereddictKeys,
         name: "ordereddict_keys",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::OrdereddictLen,
         name: "ordereddict_len",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::OrdereddictMoveToEnd,
         name: "ordereddict_move_to_end",
-        type_idx: 5,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::OrdereddictNew,
         name: "ordereddict_new",
-        type_idx: 0,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::OrdereddictPop,
         name: "ordereddict_pop",
-        type_idx: 5,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::OrdereddictPopitem,
         name: "ordereddict_popitem",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::OrdereddictSetitem,
         name: "ordereddict_setitem",
-        type_idx: 5,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::OrdereddictUpdate,
         name: "ordereddict_update",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::OrdereddictValues,
         name: "ordereddict_values",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::OsNeedCurrentDirectoryForExePath,
         name: "os_need_current_directory_for_exe_path",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::PlatformArchitecture,
         name: "platform_architecture",
-        type_idx: 0,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::PlatformMachine,
         name: "platform_machine",
-        type_idx: 0,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::PlatformNode,
         name: "platform_node",
-        type_idx: 0,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::PlatformPlatform,
         name: "platform_platform",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::PlatformProcessor,
         name: "platform_processor",
-        type_idx: 0,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::PlatformPythonCompiler,
         name: "platform_python_compiler",
-        type_idx: 0,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::PlatformPythonImplementation,
         name: "platform_python_implementation",
-        type_idx: 0,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::PlatformPythonVersion,
         name: "platform_python_version",
-        type_idx: 0,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::PlatformPythonVersionTuple,
         name: "platform_python_version_tuple",
-        type_idx: 0,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::PlatformRelease,
         name: "platform_release",
-        type_idx: 0,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::PlatformSystem,
         name: "platform_system",
-        type_idx: 0,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::PlatformUname,
         name: "platform_uname",
-        type_idx: 0,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::PlatformVersion,
         name: "platform_version",
-        type_idx: 0,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ReCompile,
         name: "re_compile",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ReExecute,
         name: "re_execute",
-        type_idx: 12,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ReScannerNew,
         name: "re_scanner_new",
-        type_idx: 7,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ReFinditerNext,
         name: "re_finditer_next",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::RePatternInfo,
         name: "re_pattern_info",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::SecretsBelow,
         name: "secrets_below",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::SecretsChoice,
         name: "secrets_choice",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::SecretsRandbits,
         name: "secrets_randbits",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::SecretsTokenBytes,
         name: "secrets_token_bytes",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::SecretsTokenHex,
         name: "secrets_token_hex",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::SecretsTokenUrlsafe,
         name: "secrets_token_urlsafe",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::RandomNew,
         name: "random_new",
-        type_idx: 0,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::RandomSeed,
         name: "random_seed",
-        type_idx: 5,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::RandomRandom,
         name: "random_random",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::RandomGetrandbits,
         name: "random_getrandbits",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::RandomRandbelow,
         name: "random_randbelow",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::RandomGetstate,
         name: "random_getstate",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::RandomSetstate,
         name: "random_setstate",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::RandomShuffle,
         name: "random_shuffle",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::RandomGauss,
         name: "random_gauss",
-        type_idx: 5,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::RandomUniform,
         name: "random_uniform",
-        type_idx: 5,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::RandomTriangular,
         name: "random_triangular",
-        type_idx: 7,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::RandomExpovariate,
         name: "random_expovariate",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::RandomNormalvariate,
         name: "random_normalvariate",
-        type_idx: 5,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::RandomLognormvariate,
         name: "random_lognormvariate",
-        type_idx: 5,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::RandomVonmisesvariate,
         name: "random_vonmisesvariate",
-        type_idx: 5,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::RandomParetovariate,
         name: "random_paretovariate",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::RandomWeibullvariate,
         name: "random_weibullvariate",
-        type_idx: 5,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::RandomGammavariate,
         name: "random_gammavariate",
-        type_idx: 5,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::RandomBetavariate,
         name: "random_betavariate",
-        type_idx: 5,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::RandomChoices,
         name: "random_choices",
-        type_idx: 7,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::RandomSample,
         name: "random_sample",
-        type_idx: 5,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ShutilChown,
         name: "shutil_chown",
-        type_idx: 5,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ShutilCopy,
         name: "shutil_copy",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ShutilCopy2,
         name: "shutil_copy2",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ShutilCopymode,
         name: "shutil_copymode",
-        type_idx: 5,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ShutilCopystat,
         name: "shutil_copystat",
-        type_idx: 5,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ShutilCopytree,
         name: "shutil_copytree",
-        type_idx: 5,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ShutilDiskUsage,
         name: "shutil_disk_usage",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ShutilGetTerminalSize,
         name: "shutil_get_terminal_size",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ShutilMakeArchive,
         name: "shutil_make_archive",
-        type_idx: 5,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ShutilMove,
         name: "shutil_move",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ShutilRmtree,
         name: "shutil_rmtree",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ShutilUnpackArchive,
         name: "shutil_unpack_archive",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::SignalAlarm,
         name: "signal_alarm",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::SignalDefaultIntHandler,
         name: "signal_default_int_handler",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::SignalGetsignal,
         name: "signal_getsignal",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::SignalNsig,
         name: "signal_nsig",
-        type_idx: 0,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::SignalPause,
         name: "signal_pause",
-        type_idx: 0,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::SignalPthreadKill,
         name: "signal_pthread_kill",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::SignalPthreadSigmask,
         name: "signal_pthread_sigmask",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::SignalRaiseSignal,
         name: "signal_raise_signal",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::SignalSetInterrupt,
         name: "signal_set_interrupt",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::SignalSetWakeupFd,
         name: "signal_set_wakeup_fd",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::SignalSigDfl,
         name: "signal_sig_dfl",
-        type_idx: 0,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::SignalSigIgn,
         name: "signal_sig_ign",
-        type_idx: 0,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::SignalSigabrt,
         name: "signal_sigabrt",
-        type_idx: 0,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::SignalSigalrm,
         name: "signal_sigalrm",
-        type_idx: 0,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::SignalSigBlock,
         name: "signal_sig_block",
-        type_idx: 0,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::SignalSigbus,
         name: "signal_sigbus",
-        type_idx: 0,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::SignalSigchld,
         name: "signal_sigchld",
-        type_idx: 0,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::SignalSigcont,
         name: "signal_sigcont",
-        type_idx: 0,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::SignalSigfpe,
         name: "signal_sigfpe",
-        type_idx: 0,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::SignalSighup,
         name: "signal_sighup",
-        type_idx: 0,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::SignalSigill,
         name: "signal_sigill",
-        type_idx: 0,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::SignalSigint,
         name: "signal_sigint",
-        type_idx: 0,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::SignalSignal,
         name: "signal_signal",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::SignalSigpending,
         name: "signal_sigpending",
-        type_idx: 0,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::SignalSigpipe,
         name: "signal_sigpipe",
-        type_idx: 0,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::SignalSigprof,
         name: "signal_sigprof",
-        type_idx: 0,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::SignalSigquit,
         name: "signal_sigquit",
-        type_idx: 0,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::SignalSigsegv,
         name: "signal_sigsegv",
-        type_idx: 0,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::SignalSigSetmask,
         name: "signal_sig_setmask",
-        type_idx: 0,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::SignalSigstop,
         name: "signal_sigstop",
-        type_idx: 0,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::SignalSigsys,
         name: "signal_sigsys",
-        type_idx: 0,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::SignalSigterm,
         name: "signal_sigterm",
-        type_idx: 0,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::SignalSigtstp,
         name: "signal_sigtstp",
-        type_idx: 0,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::SignalSigttin,
         name: "signal_sigttin",
-        type_idx: 0,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::SignalSigttou,
         name: "signal_sigttou",
-        type_idx: 0,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::SignalSigusr1,
         name: "signal_sigusr1",
-        type_idx: 0,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::SignalSigusr2,
         name: "signal_sigusr2",
-        type_idx: 0,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::SignalSigUnblock,
         name: "signal_sig_unblock",
-        type_idx: 0,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::SignalSigvtalrm,
         name: "signal_sigvtalrm",
-        type_idx: 0,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::SignalSigwait,
         name: "signal_sigwait",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::SignalSigwinch,
         name: "signal_sigwinch",
-        type_idx: 0,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::SignalSigxcpu,
         name: "signal_sigxcpu",
-        type_idx: 0,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::SignalSigxfsz,
         name: "signal_sigxfsz",
-        type_idx: 0,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::SignalStrsignal,
         name: "signal_strsignal",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::SignalValidSignals,
         name: "signal_valid_signals",
-        type_idx: 0,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::SslCertNone,
         name: "ssl_cert_none",
-        type_idx: 0,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::SslCertOptional,
         name: "ssl_cert_optional",
-        type_idx: 0,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::SslCertRequired,
         name: "ssl_cert_required",
-        type_idx: 0,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::SslContextCheckHostnameGet,
         name: "ssl_context_check_hostname_get",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::SslContextCheckHostnameSet,
         name: "ssl_context_check_hostname_set",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::SslContextDrop,
         name: "ssl_context_drop",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::SslContextGetProtocol,
         name: "ssl_context_get_protocol",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::SslContextLoadCertChain,
         name: "ssl_context_load_cert_chain",
-        type_idx: 5,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::SslContextLoadVerifyLocations,
         name: "ssl_context_load_verify_locations",
-        type_idx: 7,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::SslContextNew,
         name: "ssl_context_new",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::SslContextSetCiphers,
         name: "ssl_context_set_ciphers",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::SslContextSetDefaultVerifyPaths,
         name: "ssl_context_set_default_verify_paths",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::SslContextVerifyModeGet,
         name: "ssl_context_verify_mode_get",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::SslContextVerifyModeSet,
         name: "ssl_context_verify_mode_set",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::SslCreateDefaultContext,
         name: "ssl_create_default_context",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::SslHasSni,
         name: "ssl_has_sni",
-        type_idx: 0,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::SslOpensslVersion,
         name: "ssl_openssl_version",
-        type_idx: 0,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::SslProtocolTlsClient,
         name: "ssl_protocol_tls_client",
-        type_idx: 0,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::SslProtocolTlsServer,
         name: "ssl_protocol_tls_server",
-        type_idx: 0,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::SslSocketCipher,
         name: "ssl_socket_cipher",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::SslSocketClose,
         name: "ssl_socket_close",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::SslSocketDoHandshake,
         name: "ssl_socket_do_handshake",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::SslSocketDrop,
         name: "ssl_socket_drop",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::SslSocketGetpeercert,
         name: "ssl_socket_getpeercert",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::SslSocketRead,
         name: "ssl_socket_read",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::SslSocketUnwrap,
         name: "ssl_socket_unwrap",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::SslSocketVersion,
         name: "ssl_socket_version",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::SslSocketWrite,
         name: "ssl_socket_write",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::SslWrapSocket,
         name: "ssl_wrap_socket",
-        type_idx: 7,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::SubprocessCheckCall,
         name: "subprocess_check_call",
-        type_idx: 7,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::SubprocessCheckOutput,
         name: "subprocess_check_output",
-        type_idx: 12,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::SubprocessDevnullConst,
         name: "subprocess_devnull_const",
-        type_idx: 0,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::SubprocessPipeConst,
         name: "subprocess_pipe_const",
-        type_idx: 0,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::SubprocessRun,
         name: "subprocess_run",
-        type_idx: 10,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::SubprocessStdoutConst,
         name: "subprocess_stdout_const",
-        type_idx: 0,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::TarfileAdd,
         name: "tarfile_add",
-        type_idx: 5,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::TarfileClose,
         name: "tarfile_close",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::TarfileDrop,
         name: "tarfile_drop",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::TarfileExtract,
         name: "tarfile_extract",
-        type_idx: 5,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::TarfileExtractall,
         name: "tarfile_extractall",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::TarfileExtractfile,
         name: "tarfile_extractfile",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::TarfileGetmembers,
         name: "tarfile_getmembers",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::TarfileGetnames,
         name: "tarfile_getnames",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::TarfileIsTarfile,
         name: "tarfile_is_tarfile",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::TarfileOpen,
         name: "tarfile_open",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::UnicodedataBidirectional,
         name: "unicodedata_bidirectional",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::UnicodedataCategory,
         name: "unicodedata_category",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::UnicodedataCombining,
         name: "unicodedata_combining",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::UnicodedataDecimal,
         name: "unicodedata_decimal",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::UnicodedataDecomposition,
         name: "unicodedata_decomposition",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::UnicodedataDigit,
         name: "unicodedata_digit",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::UnicodedataEastAsianWidth,
         name: "unicodedata_east_asian_width",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::UnicodedataIsNormalized,
         name: "unicodedata_is_normalized",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::UnicodedataLookup,
         name: "unicodedata_lookup",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::UnicodedataMirrored,
         name: "unicodedata_mirrored",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::UnicodedataName,
         name: "unicodedata_name",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::UnicodedataNormalize,
         name: "unicodedata_normalize",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::UnicodedataNumeric,
         name: "unicodedata_numeric",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::UnicodedataUnidataVersion,
         name: "unicodedata_unidata_version",
-        type_idx: 0,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ZlibAdler32,
         name: "zlib_adler32",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ZlibCompress,
         name: "zlib_compress",
-        type_idx: 7,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ZlibCompressobjCompress,
         name: "zlib_compressobj_compress",
-        type_idx: 5,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ZlibCompressobjFlush,
         name: "zlib_compressobj_flush",
-        type_idx: 5,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ZlibCompressobjNew,
         name: "zlib_compressobj_new",
-        type_idx: 28,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ZlibCrc32,
         name: "zlib_crc32",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ZlibDecompress,
         name: "zlib_decompress",
-        type_idx: 7,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ZlibDecompressobjDecompress,
         name: "zlib_decompressobj_decompress",
-        type_idx: 7,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ZlibDecompressobjEof,
         name: "zlib_decompressobj_eof",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ZlibDecompressobjFlush,
         name: "zlib_decompressobj_flush",
-        type_idx: 5,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ZlibDecompressobjNew,
         name: "zlib_decompressobj_new",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ZlibDecompressobjUnconsumedTail,
         name: "zlib_decompressobj_unconsumed_tail",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ZlibDecompressobjUnusedData,
         name: "zlib_decompressobj_unused_data",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ZlibDefBufSize,
         name: "zlib_def_buf_size",
-        type_idx: 0,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ZlibDefMemLevel,
         name: "zlib_def_mem_level",
-        type_idx: 0,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ZlibMaxWbits,
         name: "zlib_max_wbits",
-        type_idx: 0,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ZlibZBestCompression,
         name: "zlib_z_best_compression",
-        type_idx: 0,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ZlibZBestSpeed,
         name: "zlib_z_best_speed",
-        type_idx: 0,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ZlibZDefaultCompression,
         name: "zlib_z_default_compression",
-        type_idx: 0,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ZlibZDefaultStrategy,
         name: "zlib_z_default_strategy",
-        type_idx: 0,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ZlibZFiltered,
         name: "zlib_z_filtered",
-        type_idx: 0,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ZlibZFinish,
         name: "zlib_z_finish",
-        type_idx: 0,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ZlibZFullFlush,
         name: "zlib_z_full_flush",
-        type_idx: 0,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ZlibZHuffmanOnly,
         name: "zlib_z_huffman_only",
-        type_idx: 0,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ZlibZNoCompression,
         name: "zlib_z_no_compression",
-        type_idx: 0,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ZlibZNoFlush,
         name: "zlib_z_no_flush",
-        type_idx: 0,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ZlibZSyncFlush,
         name: "zlib_z_sync_flush",
-        type_idx: 0,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ZoneinfoAvailableTimezones,
         name: "zoneinfo_available_timezones",
-        type_idx: 0,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ZoneinfoDrop,
         name: "zoneinfo_drop",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ZoneinfoDst,
         name: "zoneinfo_dst",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ZoneinfoKey,
         name: "zoneinfo_key",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ZoneinfoNew,
         name: "zoneinfo_new",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ZoneinfoTzname,
         name: "zoneinfo_tzname",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ZoneinfoUtcoffset,
         name: "zoneinfo_utcoffset",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::DefaultdictDrop,
         name: "defaultdict_drop",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::DefaultdictFactory,
         name: "defaultdict_factory",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::DefaultdictMissing,
         name: "defaultdict_missing",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::DefaultdictNew,
         name: "defaultdict_new",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::DequeAppend,
         name: "deque_append",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::DequeAppendleft,
         name: "deque_appendleft",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::DequeClear,
         name: "deque_clear",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::DequeContains,
         name: "deque_contains",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::DequeCopy,
         name: "deque_copy",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::DequeCount,
         name: "deque_count",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::DequeDelitem,
         name: "deque_delitem",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::DequeDrop,
         name: "deque_drop",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::DequeExtend,
         name: "deque_extend",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::DequeExtendleft,
         name: "deque_extendleft",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::DequeFromIterable,
         name: "deque_from_iterable",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::DequeGetitem,
         name: "deque_getitem",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::DequeIndex,
         name: "deque_index",
-        type_idx: 7,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::DequeInsert,
         name: "deque_insert",
-        type_idx: 5,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::DequeLen,
         name: "deque_len",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::DequeMaxlen,
         name: "deque_maxlen",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::DequeNew,
         name: "deque_new",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::DequePop,
         name: "deque_pop",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::DequePopleft,
         name: "deque_popleft",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::DequeRemove,
         name: "deque_remove",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::DequeReverse,
         name: "deque_reverse",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::DequeRotate,
         name: "deque_rotate",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::DequeSetitem,
         name: "deque_setitem",
-        type_idx: 5,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::FunctoolsSingledispatchNew,
         name: "functools_singledispatch_new",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::FunctoolsSingledispatchRegister,
         name: "functools_singledispatch_register",
-        type_idx: 5,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::FunctoolsSingledispatchCall,
         name: "functools_singledispatch_call",
-        type_idx: 5,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::FunctoolsSingledispatchDispatch,
         name: "functools_singledispatch_dispatch",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::FunctoolsSingledispatchRegistry,
         name: "functools_singledispatch_registry",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::FunctoolsSingledispatchDrop,
         name: "functools_singledispatch_drop",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::EventLoopSpawn,
         name: "event_loop_spawn",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::EventLoopNew,
         name: "event_loop_new",
-        type_idx: 0,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::EventLoopCallSoon,
         name: "event_loop_call_soon",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::EventLoopCallLater,
         name: "event_loop_call_later",
-        type_idx: 5,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::EventLoopCallAt,
         name: "event_loop_call_at",
-        type_idx: 5,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::EventLoopCancelTimer,
         name: "event_loop_cancel_timer",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::EventLoopAddReader,
         name: "event_loop_add_reader",
-        type_idx: 5,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::EventLoopRemoveReader,
         name: "event_loop_remove_reader",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::EventLoopAddWriter,
         name: "event_loop_add_writer",
-        type_idx: 5,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::EventLoopRemoveWriter,
         name: "event_loop_remove_writer",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::EventLoopRunOnce,
         name: "event_loop_run_once",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::EventLoopTime,
         name: "event_loop_time",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::EventLoopWait,
         name: "event_loop_wait",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::EventLoopWake,
         name: "event_loop_wake",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::EventLoopStart,
         name: "event_loop_start",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::EventLoopStop,
         name: "event_loop_stop",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::EventLoopIsRunning,
         name: "event_loop_is_running",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::EventLoopIsClosed,
         name: "event_loop_is_closed",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::EventLoopClose,
         name: "event_loop_close",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::EventLoopDrop,
         name: "event_loop_drop",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::EventLoopSetDebug,
         name: "event_loop_set_debug",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::EventLoopGetDebug,
         name: "event_loop_get_debug",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::EventLoopSetExceptionHandler,
         name: "event_loop_set_exception_handler",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::EventLoopGetExceptionHandler,
         name: "event_loop_get_exception_handler",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::EventLoopSetTaskFactory,
         name: "event_loop_set_task_factory",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::EventLoopGetTaskFactory,
         name: "event_loop_get_task_factory",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::EventLoopNotifyReaderReady,
         name: "event_loop_notify_reader_ready",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::EventLoopNotifyWriterReady,
         name: "event_loop_notify_writer_ready",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::PipeTransportNew,
         name: "pipe_transport_new",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::PipeTransportGetFd,
         name: "pipe_transport_get_fd",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::PipeTransportIsClosing,
         name: "pipe_transport_is_closing",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::PipeTransportClose,
         name: "pipe_transport_close",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::PipeTransportPauseReading,
         name: "pipe_transport_pause_reading",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::PipeTransportResumeReading,
         name: "pipe_transport_resume_reading",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::PipeTransportWrite,
         name: "pipe_transport_write",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::PipeTransportGetWriteBufferSize,
         name: "pipe_transport_get_write_buffer_size",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::PipeTransportDrop,
         name: "pipe_transport_drop",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::Base64B64encode,
         name: "base64_b64encode",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::Base64B64decode,
         name: "base64_b64decode",
-        type_idx: 5,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::Base64StandardB64encode,
         name: "base64_standard_b64encode",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::Base64StandardB64decode,
         name: "base64_standard_b64decode",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::Base64UrlsafeB64encode,
         name: "base64_urlsafe_b64encode",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::Base64UrlsafeB64decode,
         name: "base64_urlsafe_b64decode",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::Base64B32encode,
         name: "base64_b32encode",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::Base64B32decode,
         name: "base64_b32decode",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::Base64B32hexencode,
         name: "base64_b32hexencode",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::Base64B32hexdecode,
         name: "base64_b32hexdecode",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::Base64B16encode,
         name: "base64_b16encode",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::Base64B16decode,
         name: "base64_b16decode",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::Base64A85encode,
         name: "base64_a85encode",
-        type_idx: 12,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::Base64A85decode,
         name: "base64_a85decode",
-        type_idx: 5,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::Base64B85encode,
         name: "base64_b85encode",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::Base64B85decode,
         name: "base64_b85decode",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::Base64Encodebytes,
         name: "base64_encodebytes",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::Base64Decodebytes,
         name: "base64_decodebytes",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::CopyCopy,
         name: "copy_copy",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::CopyDeepcopy,
         name: "copy_deepcopy",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::CopyMemoNew,
         name: "copy_memo_new",
-        type_idx: 0,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::CopyMemoDrop,
         name: "copy_memo_drop",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::CopyError,
         name: "copy_error",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::PprintSafeRepr,
         name: "pprint_safe_repr",
-        type_idx: 5,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::PprintIsreadable,
         name: "pprint_isreadable",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::PprintIsrecursive,
         name: "pprint_isrecursive",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::PprintPformat,
         name: "pprint_pformat",
-        type_idx: 10,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::WarningsWarn,
         name: "warnings_warn",
-        type_idx: 5,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::WarningsWarnExplicit,
         name: "warnings_warn_explicit",
-        type_idx: 10,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::WarningsFormatwarning,
         name: "warnings_formatwarning",
-        type_idx: 12,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::WarningsShowwarning,
         name: "warnings_showwarning",
-        type_idx: 29,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::WarningsSimplefilter,
         name: "warnings_simplefilter",
-        type_idx: 7,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::WarningsFilterwarnings,
         name: "warnings_filterwarnings",
-        type_idx: 29,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::WarningsResetwarnings,
         name: "warnings_resetwarnings",
-        type_idx: 0,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::WarningsFiltersGet,
         name: "warnings_filters_get",
-        type_idx: 0,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::LoggingHandlerNew,
         name: "logging_handler_new",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::LoggingHandlerSetLevel,
         name: "logging_handler_set_level",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::LoggingHandlerFlush,
         name: "logging_handler_flush",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::LoggingHandlerClose,
         name: "logging_handler_close",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::LoggingHandlerDrop,
         name: "logging_handler_drop",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::LoggingLoggerNew,
         name: "logging_logger_new",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::LoggingLoggerSetLevel,
         name: "logging_logger_set_level",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::LoggingLoggerAddHandler,
         name: "logging_logger_add_handler",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::LoggingLoggerRemoveHandler,
         name: "logging_logger_remove_handler",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::LoggingLoggerIsEnabledFor,
         name: "logging_logger_is_enabled_for",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::LoggingLoggerGetEffectiveLevel,
         name: "logging_logger_get_effective_level",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::LoggingLoggerDrop,
         name: "logging_logger_drop",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::LoggingShutdown,
         name: "logging_shutdown",
-        type_idx: 0,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::LoggingGetLevelName,
         name: "logging_get_level_name",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::LoggingAddLevelName,
         name: "logging_add_level_name",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::LoggingLevelToInt,
         name: "logging_level_to_int",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::AsyncioFutureNew,
         name: "asyncio_future_new",
-        type_idx: 0,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::AsyncioFutureResult,
         name: "asyncio_future_result",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::AsyncioFutureException,
         name: "asyncio_future_exception",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::AsyncioFutureSetResultFast,
         name: "asyncio_future_set_result_fast",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::AsyncioFutureSetExceptionFast,
         name: "asyncio_future_set_exception_fast",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::AsyncioFutureCancelFast,
         name: "asyncio_future_cancel_fast",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::AsyncioFutureDone,
         name: "asyncio_future_done",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::AsyncioFutureCancelled,
         name: "asyncio_future_cancelled",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::AsyncioFutureDrop,
         name: "asyncio_future_drop",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::AsyncioEventNew,
         name: "asyncio_event_new",
-        type_idx: 0,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::AsyncioEventIsSet,
         name: "asyncio_event_is_set",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::AsyncioEventSetFast,
         name: "asyncio_event_set_fast",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::AsyncioEventClear,
         name: "asyncio_event_clear",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::AsyncioEventDrop,
         name: "asyncio_event_drop",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::AsyncioLockNew,
         name: "asyncio_lock_new",
-        type_idx: 0,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::AsyncioLockLocked,
         name: "asyncio_lock_locked",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::AsyncioLockAcquireFast,
         name: "asyncio_lock_acquire_fast",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::AsyncioLockReleaseFast,
         name: "asyncio_lock_release_fast",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::AsyncioLockDrop,
         name: "asyncio_lock_drop",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::AsyncioSemaphoreNew,
         name: "asyncio_semaphore_new",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::AsyncioSemaphoreAcquireFast,
         name: "asyncio_semaphore_acquire_fast",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::AsyncioSemaphoreReleaseFast,
         name: "asyncio_semaphore_release_fast",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::AsyncioSemaphoreValue,
         name: "asyncio_semaphore_value",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::AsyncioSemaphoreDrop,
         name: "asyncio_semaphore_drop",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::AsyncioQueueNew,
         name: "asyncio_queue_new",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::AsyncioQueuePutNowait,
         name: "asyncio_queue_put_nowait",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::AsyncioQueueGetNowait,
         name: "asyncio_queue_get_nowait",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::AsyncioQueueQsize,
         name: "asyncio_queue_qsize",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::AsyncioQueueMaxsize,
         name: "asyncio_queue_maxsize",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::AsyncioQueueEmpty,
         name: "asyncio_queue_empty",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::AsyncioQueueFull,
         name: "asyncio_queue_full",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::AsyncioQueueTaskDone,
         name: "asyncio_queue_task_done",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::AsyncioQueueUnfinishedTasks,
         name: "asyncio_queue_unfinished_tasks",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::AsyncioQueueShutdown,
         name: "asyncio_queue_shutdown",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::AsyncioQueueIsShutdown,
         name: "asyncio_queue_is_shutdown",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::AsyncioQueueDrop,
         name: "asyncio_queue_drop",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::TkEventBuildFromArgs,
         name: "tk_event_build_from_args",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::TkEventInt,
         name: "tk_event_int",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::TkEventStateDecode,
         name: "tk_event_state_decode",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::TkSplitdict,
         name: "tk_splitdict",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::TkFlattenArgs,
         name: "tk_flatten_args",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::TkCnfmerge,
         name: "tk_cnfmerge",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::TkHexToRgb,
         name: "tk_hex_to_rgb",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::PathlibParts,
         name: "pathlib_parts",
-        type_idx: 5,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::PathSplitroot,
         name: "path_splitroot",
-        type_idx: 7,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::PathlibCwd,
         name: "pathlib_cwd",
-        type_idx: 0,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::PathlibResolve,
         name: "pathlib_resolve",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::PathlibIsMount,
         name: "pathlib_is_mount",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::PathlibIterdir,
         name: "pathlib_iterdir",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::PathlibTouch,
         name: "pathlib_touch",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::PathlibHardlinkTo,
         name: "pathlib_hardlink_to",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::PathlibReadBytes,
         name: "pathlib_read_bytes",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::PathlibWriteBytes,
         name: "pathlib_write_bytes",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::PathlibOwner,
         name: "pathlib_owner",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::PathlibGroup,
         name: "pathlib_group",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::PathlibSamefile,
         name: "pathlib_samefile",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::TempfileGettempdir,
         name: "tempfile_gettempdir",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::TempfileMkdtemp,
         name: "tempfile_mkdtemp",
-        type_idx: 5,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::TempfileMkstemp,
         name: "tempfile_mkstemp",
-        type_idx: 7,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::TempfileCleanup,
         name: "tempfile_cleanup",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::SysGetdefaultencoding,
         name: "sys_getdefaultencoding",
-        type_idx: 0,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::SysGetfilesystemencoding,
         name: "sys_getfilesystemencoding",
-        type_idx: 0,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::SysGetswitchinterval,
         name: "sys_getswitchinterval",
-        type_idx: 0,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::SysSetswitchinterval,
         name: "sys_setswitchinterval",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::SysGetIntMaxStrDigits,
         name: "sys_get_int_max_str_digits",
-        type_idx: 0,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::SysSetIntMaxStrDigits,
         name: "sys_set_int_max_str_digits",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::SysCallTracingValidate,
         name: "sys_call_tracing_validate",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::SysAddaudithook,
         name: "sys_addaudithook",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::SysExit,
         name: "sys_exit",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::SysDisplayhookWrite,
         name: "sys_displayhook_write",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::SysExcepthookWrite,
         name: "sys_excepthook_write",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::OsMakedirs,
         name: "os_makedirs",
-        type_idx: 5,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::SysPath,
         name: "sys_path",
-        type_idx: 0,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::TokenizeScan,
         name: "tokenize_scan",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::CodecsCharmapBuild,
         name: "codecs_charmap_build",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::CodecsCharmapDecode,
         name: "codecs_charmap_decode",
-        type_idx: 5,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::CodecsCharmapEncode,
         name: "codecs_charmap_encode",
-        type_idx: 5,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::CodecsMakeIdentityDict,
         name: "codecs_make_identity_dict",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::AstIterFields,
         name: "ast_iter_fields",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::AstIterChildNodes,
         name: "ast_iter_child_nodes",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::LinecacheDetectEncoding,
         name: "linecache_detect_encoding",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::CsvNormalizeRow,
         name: "csv_normalize_row",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::DataclassesEq,
         name: "dataclasses_eq",
-        type_idx: 5,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::DataclassesHashFn,
         name: "dataclasses_hash_fn",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::DataclassesRepr,
         name: "dataclasses_repr",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::DatetimeAsInt,
         name: "datetime_as_int",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::DatetimeDateRepr,
         name: "datetime_date_repr",
-        type_idx: 5,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::DatetimeFormatTime,
         name: "datetime_format_time",
-        type_idx: 12,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::DatetimeTimeRepr,
         name: "datetime_time_repr",
-        type_idx: 7,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::DatetimeTimetuple,
         name: "datetime_timetuple",
-        type_idx: 31,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::EnumIsAuto,
         name: "enum_is_auto",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::EnumIsDescriptor,
         name: "enum_is_descriptor",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::JsonCalcLinenoCol,
         name: "json_calc_lineno_col",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::JsonCoerceText,
         name: "json_coerce_text",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::LoggingFilterCheck,
         name: "logging_filter_check",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::LzmaFileClose,
         name: "lzma_file_close",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::LzmaFileOpen,
         name: "lzma_file_open",
-        type_idx: 29,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::LzmaFileRead,
         name: "lzma_file_read",
-        type_idx: 5,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::LzmaFileWrite,
         name: "lzma_file_write",
-        type_idx: 5,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::RandomRandbytes,
         name: "random_randbytes",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::RandomRandrange,
         name: "random_randrange",
-        type_idx: 7,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ReEscape,
         name: "re_escape",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ReSplit,
         name: "re_split",
-        type_idx: 5,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ReSub,
         name: "re_sub",
-        type_idx: 7,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::TimedeltaRepr,
         name: "timedelta_repr",
-        type_idx: 5,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::TimedeltaStr,
         name: "timedelta_str",
-        type_idx: 5,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::TimezoneTzname,
         name: "timezone_tzname",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::TimezoneValidate,
         name: "timezone_validate",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::TypingCast,
         name: "typing_cast",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::TypingGetOrigin,
         name: "typing_get_origin",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::TypingGetArgs,
         name: "typing_get_args",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ConfigparserDefaults,
         name: "configparser_defaults",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ConfigparserGetRaw,
         name: "configparser_get_raw",
-        type_idx: 5,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ConfigparserInterpolateBasic,
         name: "configparser_interpolate_basic",
-        type_idx: 5,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ConfigparserInterpolateExtended,
         name: "configparser_interpolate_extended",
-        type_idx: 5,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ConfigparserReadFile,
         name: "configparser_read_file",
-        type_idx: 5,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ConfigparserWriteString,
         name: "configparser_write_string",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::CsvDialectLookupName,
         name: "csv_dialect_lookup_name",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::CsvValidateDialect,
         name: "csv_validate_dialect",
-        type_idx: 32,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::CsvValidateFmtparams,
         name: "csv_validate_fmtparams",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::DataclassesCheckDefaultOrder,
         name: "dataclasses_check_default_order",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::DataclassesFieldFlags,
         name: "dataclasses_field_flags",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::JsonDefaultSeparators,
         name: "json_default_separators",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::JsonFormatDecodeError,
         name: "json_format_decode_error",
-        type_idx: 5,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::JsonParseErrorMsg,
         name: "json_parse_error_msg",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::NamedtupleValidateFields,
         name: "namedtuple_validate_fields",
-        type_idx: 5,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::RandomBinomialvariate,
         name: "random_binomialvariate",
-        type_idx: 5,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::Fcntl,
         name: "fcntl",
-        type_idx: 5,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::FcntlFGetfl,
         name: "fcntl_f_getfl",
-        type_idx: 0,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::FcntlFSetfl,
         name: "fcntl_f_setfl",
-        type_idx: 0,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::FcntlFGetfd,
         name: "fcntl_f_getfd",
-        type_idx: 0,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::FcntlFSetfd,
         name: "fcntl_f_setfd",
-        type_idx: 0,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::FcntlFdCloexec,
         name: "fcntl_fd_cloexec",
-        type_idx: 0,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::FcntlONonblock,
         name: "fcntl_o_nonblock",
-        type_idx: 0,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ProfileEpochReset,
         name: "profile_epoch_reset",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ProfileEpochDump,
         name: "profile_epoch_dump",
-        type_idx: 0,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::XmlElementTag,
         name: "xml_element_tag",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::XmlElementText,
         name: "xml_element_text",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::XmlElementTail,
         name: "xml_element_tail",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::XmlElementAttribItems,
         name: "xml_element_attrib_items",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::XmlElementChildren,
         name: "xml_element_children",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::XmlElementDrop,
         name: "xml_element_drop",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::XmlFromstring,
         name: "xml_fromstring",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::XmlRegisterNamespace,
         name: "xml_register_namespace",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::IteratorThrow,
         name: "iterator_throw",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::DictCountElements,
         name: "dict_count_elements",
-        type_idx: 3,
     },
 ];
 

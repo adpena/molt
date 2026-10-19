@@ -565,9 +565,7 @@ fn owned_runtime_and_constructor_results_release_every_discard_shape() {
 
 #[test]
 fn numeric_runtime_results_follow_generated_ownership_for_every_result_shape() {
-    use crate::wasm_abi_generated::{
-        STATIC_FUNC_TYPES, WASM_NUMERIC_RUNTIME_SELECTORS, WasmRuntimeReturn,
-    };
+    use crate::wasm_abi_generated::{WASM_NUMERIC_RUNTIME_SELECTORS, WasmRuntimeReturn};
 
     let node = PathBuf::from("node");
     let (temp, _remove_temp) = wasm_test_temp_dir();
@@ -575,14 +573,9 @@ fn numeric_runtime_results_follow_generated_ownership_for_every_result_shape() {
     assert!(!WASM_NUMERIC_RUNTIME_SELECTORS.is_empty());
     for spec in WASM_NUMERIC_RUNTIME_SELECTORS {
         let import = spec.selection.import;
-        let signature = &STATIC_FUNC_TYPES[import.type_idx() as usize];
+        let (params, _) = import.machine_signature();
         assert_eq!(import.return_contract(), WasmRuntimeReturn::OwnedObject);
-        assert!(
-            signature
-                .params
-                .iter()
-                .all(|ty| *ty == wasm_encoder::ValType::I64)
-        );
+        assert!(params.iter().all(|ty| *ty == wasm_encoder::ValType::I64));
         for (shape, out) in [
             ("absent", None),
             ("none", Some("none")),
@@ -597,7 +590,7 @@ fn numeric_runtime_results_follow_generated_ownership_for_every_result_shape() {
                         vec!["value"],
                         None,
                         vec![
-                            wasm_test_op(spec.kind, out, vec!["value"; signature.params.len()]),
+                            wasm_test_op(spec.kind, out, vec!["value"; params.len()]),
                             wasm_test_op("ret", None, vec![if bound { "result" } else { "none" }]),
                         ],
                     )],
@@ -612,7 +605,7 @@ fn numeric_runtime_results_follow_generated_ownership_for_every_result_shape() {
             fs::write(&path, wasm).unwrap();
             cases.push(json!({
                 "name": format!("{}-{shape}", spec.kind), "import": import.name(),
-                "arity": signature.params.len(), "bound": bound, "path": path,
+                "arity": params.len(), "bound": bound, "path": path,
                 "memory_pages": memory_pages, "table_entries": table_entries,
             }));
         }

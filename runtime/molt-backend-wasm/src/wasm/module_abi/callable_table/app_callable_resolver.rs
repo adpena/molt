@@ -2,7 +2,6 @@ use wasm_encoder::{BlockType, Function, Instruction, MemArg, ValType};
 
 use super::{WasmAppCallableResolverEntry, WasmCallableTablePlan};
 use crate::wasm::WasmBackend;
-use crate::wasm_abi::static_func_type_idx;
 
 impl WasmBackend {
     pub(in crate::wasm::module_abi) fn emit_app_callable_resolver(
@@ -19,10 +18,9 @@ impl WasmBackend {
                 resolver.resolver_func_index, self.func_count
             );
         }
-        let type_idx = static_func_type_idx(&[ValType::I32, ValType::I32], &[ValType::I64])
-            .unwrap_or_else(|| {
-                panic!("WASM ABI static types missing app callable resolver signature")
-            });
+        let type_idx = self
+            .types
+            .function(&[ValType::I32, ValType::I32], &[ValType::I64]);
         self.funcs.function(type_idx);
         self.func_count += 1;
         let candidate_ptr_local = 2;

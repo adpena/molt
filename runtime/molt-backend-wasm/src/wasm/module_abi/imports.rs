@@ -6,22 +6,16 @@ use crate::wasm::WasmBackend;
 use crate::wasm_abi::{
     IMPORT_REGISTRY, RUNTIME_IMPORT_MODULE, RuntimeImportSpec, WasmRuntimeImport,
 };
+use crate::wasm_function_types::WasmFunctionTypes;
 use crate::wasm_import_tracking::TrackedImportIds;
 use crate::wasm_options::WasmProfile;
 
-pub(super) struct WasmRuntimeImportEmission {
-    pub(super) runtime_surface: WasmRuntimeSurfacePlan,
-    pub(super) next_type_idx: u32,
-}
-
 impl WasmBackend {
-    pub(super) fn emit_runtime_import_surface(
-        &mut self,
-        ir: &SimpleIR,
-    ) -> WasmRuntimeImportEmission {
+    pub(super) fn emit_runtime_import_surface(&mut self, ir: &SimpleIR) -> WasmRuntimeSurfacePlan {
         let runtime_surface = WasmRuntimeSurfacePlan::build(ir, self.options.wasm_profile);
         let mut registrar = RuntimeImportRegistrar {
             imports: &mut self.imports,
+            types: &mut self.types,
             import_ids: &mut self.import_ids,
             import_idx: 0,
             profile: self.options.wasm_profile,
@@ -39,21 +33,18 @@ impl WasmBackend {
             registrar.add_spec(*spec);
         }
 
-        let next_type_idx = crate::wasm_abi::STATIC_TYPE_COUNT;
         for import in runtime_surface.auto_imports(registrar.import_ids) {
             registrar.add_import(import);
         }
 
         self.func_count = registrar.import_idx;
-        WasmRuntimeImportEmission {
-            runtime_surface,
-            next_type_idx,
-        }
+        runtime_surface
     }
 }
 
 struct RuntimeImportRegistrar<'a> {
     imports: &'a mut ImportSection,
+    types: &'a mut WasmFunctionTypes,
     import_ids: &'a mut TrackedImportIds,
     import_idx: u32,
     profile: WasmProfile,
@@ -70,10 +61,12 @@ impl RuntimeImportRegistrar<'_> {
             self.import_ids.insert(import, u32::MAX);
             return;
         }
+        let (params, results) = import.machine_signature();
+        let type_index = self.types.function(params, results);
         self.imports.import(
             RUNTIME_IMPORT_MODULE,
             name,
-            EntityType::Function(import.type_idx()),
+            EntityType::Function(type_index),
         );
         self.import_ids.insert(import, self.import_idx);
         self.import_idx += 1;

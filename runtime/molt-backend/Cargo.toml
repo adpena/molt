@@ -133,10 +133,6 @@ name = "wasm_data_segments"
 required-features = ["wasm-backend"]
 
 [[test]]
-name = "wasm_type_section"
-required-features = ["wasm-backend"]
-
-[[test]]
 name = "wasm_link_facts_cli"
 required-features = ["wasm-backend"]
 
