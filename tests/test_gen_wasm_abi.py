@@ -599,7 +599,9 @@ def test_import_transaction_direct_boxed_entry_preserves_callable_trampoline() -
         "results": ["i64"],
     }
     assert next(
-        row for row in data["reserved_runtime_callable"] if row["runtime_name"] == symbol
+        row
+        for row in data["reserved_runtime_callable"]
+        if row["runtime_name"] == symbol
     ) == {
         "index": 23,
         "runtime_name": symbol,
