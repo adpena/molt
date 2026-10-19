@@ -504,6 +504,7 @@ def _post_link_transform_stage(
     split_runtime: bool,
     optimizer_attestation: dict[str, object],
     optimizer_identity: WasmOptimizerExecutableIdentity | None,
+    operation_counts: dict[str, int | float],
     contract_app_exports: Sequence[str],
     app_adapter_identity_map: Mapping[str, str],
     app_target_identity_map: Mapping[str, str],
@@ -530,6 +531,10 @@ def _post_link_transform_stage(
             file=sys.stderr,
         )
     if optimize:
+        optimizer_telemetry: dict[str, object] = {}
+        _optimizer._cache_metric_add(
+            operation_counts, "wasm_link_optimizer_requests", 1
+        )
         optimized = artifact.apply_atomic_path_mutation(
             lambda path: _optimizer._run_wasm_opt_via_optimize(
                 path,
@@ -540,9 +545,13 @@ def _post_link_transform_stage(
                     set(artifact.facts().function_exports) & preserve_exports
                 ),
                 attestation=optimizer_attestation,
+                telemetry=optimizer_telemetry,
                 optimizer_identity=optimizer_identity,
                 preserve_debug=preserve_debug,
             )
+        )
+        _optimizer._record_wasm_opt_telemetry_cache_metrics(
+            operation_counts, "wasm_link", optimizer_telemetry
         )
         if not optimized:
             print("Required linked WASM optimization failed.", file=sys.stderr)
@@ -1168,6 +1177,7 @@ def _prepare_linked_artifact_stage(
     facts_provider: _facts.WasmFactsProvider,
     optimizer_attestation: dict[str, object],
     optimizer_identity: WasmOptimizerExecutableIdentity | None,
+    operation_counts: dict[str, int | float],
 ) -> _PreparedLinkedArtifact | None:
     """Admit, canonicalize, optimize, and normalize wasm-ld's main output."""
 
@@ -1284,6 +1294,7 @@ def _prepare_linked_artifact_stage(
         split_runtime=plan.split_runtime,
         optimizer_attestation=optimizer_attestation,
         optimizer_identity=optimizer_identity,
+        operation_counts=operation_counts,
         contract_app_exports=plan.contract_app_exports,
         app_adapter_identity_map=plan.adapter_identity_map,
         app_target_identity_map=plan.target_identity_map,
@@ -1778,9 +1789,8 @@ def run_wasm_ld_with_custodied_inputs(
             (time.perf_counter() - identity_started) * 1000.0,
             6,
         )
-    # The finally block records partial-failure timing even when lld rejects an
-    # input before split processing begins.
-    split_runtime_start = total_start
+    # Earlier failures belong to link core; split timing starts only on entry.
+    split_runtime_start: float | None = None
     expected_target = "wasm32-unknown-unknown" if freestanding else "wasm32-wasip1"
     native_link_requirements = (
         native_link_requirements or SourceExtensionLinkRequirements(expected_target)
@@ -2010,6 +2020,7 @@ def run_wasm_ld_with_custodied_inputs(
             facts_provider=facts_provider,
             optimizer_attestation=optimizer_attestation,
             optimizer_identity=optimizer_identity,
+            operation_counts=operation_counts,
         )
         if prepared_linked is None:
             return 1
@@ -2187,7 +2198,11 @@ def run_wasm_ld_with_custodied_inputs(
         return 0
     finally:
         try:
-            if split_runtime and "split_runtime_processing" not in phase_timings_ms:
+            if (
+                split_runtime
+                and split_runtime_start is not None
+                and "split_runtime_processing" not in phase_timings_ms
+            ):
                 phase_timings_ms["split_runtime_processing"] = round(
                     max(0.0, (time.perf_counter() - split_runtime_start) * 1000.0),
                     6,

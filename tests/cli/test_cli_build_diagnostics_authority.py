@@ -1,10 +1,16 @@
 from __future__ import annotations
 
 import inspect
+import json
 from pathlib import Path
+
+import pytest
 
 import molt.cli as cli
 from molt.cli import build_diagnostics
+from molt.cli.models import _BuildDiagnosticsContext
+from molt.cli import wasm_final_link_cache
+from molt.link_outputs import wasm_link_output_paths
 
 _BUILD_DIAGNOSTICS_NAMES = (
     "_build_allocation_diagnostics_enabled",
@@ -114,6 +120,128 @@ def test_wasm_link_operation_counts_preserve_all_build_time_rungs() -> None:
         "wasm_whole_artifact_reserializations": 11,
         "wasm_whole_artifact_section_walks": 29,
     }
+
+
+@pytest.mark.parametrize("optimizer_wall_ms", [None, 0.0, 1250.0])
+def test_optimizer_phase_is_observed_and_subtracted_once(
+    optimizer_wall_ms: float | None,
+) -> None:
+    stages = {
+        "wasm_link_total": 6000.0,
+        "split_runtime_processing": 1000.0,
+        "wasm_strip": 500.0,
+        "fail_closed_validation": 500.0,
+        # A split cache hit has its own current lookup cost and does not replay
+        # the original optimizer cost into either the combined or split phase.
+        "split_app_optimize_cache_hits": 1.0,
+        "split_app_optimize_cache_wall_ms": 10.0,
+    }
+    if optimizer_wall_ms is not None:
+        stages["wasm_link_optimizer_wall_ms"] = optimizer_wall_ms
+    attribution = build_diagnostics._build_phase_attribution(
+        total_sec=20.0, phase_sec={"wasm_link": 6.0}, pipeline_stage_ms=stages
+    )
+    phases = attribution["phase_sec"]
+    if optimizer_wall_ms is None:
+        assert "wasm_link_optimizer" not in phases
+        assert phases["wasm_link_core"] == 4.0
+    else:
+        assert phases["wasm_link_optimizer"] == optimizer_wall_ms / 1000.0
+        assert phases["wasm_link_core"] == 4.0 - optimizer_wall_ms / 1000.0
+    assert phases["split_runtime_processing"] == 1.0
+
+
+def test_optimizer_cost_reaches_cli_json_without_entering_operation_wall_counts(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(build_diagnostics.time, "perf_counter", lambda: 20.0)
+    context = _BuildDiagnosticsContext(
+        diagnostics_enabled=True,
+        diagnostics_start=0.0,
+        phase_starts={"wasm_link": 10.0},
+        image_scope=None,
+        binary_image_closure=None,
+        binary_image_analysis=None,
+        module_graph={},
+        module_graph_operation_counts={},
+        module_reasons={},
+        frontend_module_timings=(),
+        allocation_diagnostics_enabled=False,
+        frontend_parallel_details={
+            "pipeline_stage_ms": {
+                "wasm_link_total": 6000.0,
+                "wasm_link_optimizer_requests": 1,
+                "wasm_link_optimizer_wall_ms": 1250.0,
+                "wasm_link_optimizer_peak_rss_kb": 800,
+                "wasm_link_optimizer_peak_total_rss_kb": 1200,
+                "wasm_link_timeouts": 1,
+                "wasm_link_failures": 1,
+                "wasm_link_identity_errors": 1,
+            }
+        },
+        profile="dev",
+        midend_policy_outcomes_by_function={},
+        midend_pass_stats_by_function={},
+        backend_daemon_health=None,
+        backend_daemon_cached=None,
+        backend_daemon_cache_tier=None,
+        backend_daemon_config_digest=None,
+        diagnostics_path_spec="diagnostics.json",
+        artifacts_root=tmp_path,
+        entry_module="fixture",
+        entry_path=tmp_path / "fixture.py",
+    )
+    payload, path = build_diagnostics._build_build_diagnostics_payload(context)
+    build_diagnostics._emit_build_diagnostics(
+        diagnostics=payload, diagnostics_path=path, json_output=True
+    )
+    emitted = json.loads((tmp_path / "diagnostics.json").read_text())
+    assert emitted["phase_attribution"]["phase_sec"]["wasm_link_optimizer"] == 1.25
+    assert emitted["phase_attribution"]["phase_sec"]["wasm_link_core"] == 4.75
+    assert emitted["wasm_link_operation_counts"] == {
+        "wasm_link_optimizer_requests": 1,
+        "wasm_link_optimizer_peak_rss_kb": 800,
+        "wasm_link_optimizer_peak_total_rss_kb": 1200,
+        "wasm_link_timeouts": 1,
+        "wasm_link_failures": 1,
+        "wasm_link_identity_errors": 1,
+    }
+
+
+@pytest.mark.parametrize("split", [False, True])
+def test_final_link_replay_excludes_historical_optimizer_cost(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, split: bool
+) -> None:
+    monkeypatch.setenv("MOLT_CACHE", str(tmp_path / "cache"))
+    produced = wasm_link_output_paths(
+        tmp_path / "old" / "linked.wasm",
+        split_output_dir=tmp_path / "old" if split else None,
+        optimize=True,
+    )
+    historical_timings = tmp_path / "old" / "link-timings.json"
+    for role, path in produced.items():
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(role.encode())
+    historical_timings.write_text('{"wasm_link_optimizer_wall_ms": 999000}')
+    assert historical_timings not in produced.values()
+    entry = wasm_final_link_cache.final_link_cache_entry("f" * 64)
+    wasm_final_link_cache.publish_final_link_result(entry, produced)
+    restored = wasm_link_output_paths(
+        tmp_path / "current" / "linked.wasm",
+        split_output_dir=tmp_path / "current" if split else None,
+        optimize=True,
+    )
+    assert wasm_final_link_cache.restore_final_link_result(entry, restored)
+    assert {role: path.read_bytes() for role, path in restored.items()} == {
+        role: path.read_bytes() for role, path in produced.items()
+    }
+    assert not (tmp_path / "current" / historical_timings.name).exists()
+    attribution = build_diagnostics._build_phase_attribution(
+        total_sec=1.0,
+        phase_sec={"wasm_link": 0.1},
+        pipeline_stage_ms={"wasm_link_result_cache_hits": 1},
+    )
+    assert "wasm_link_optimizer" not in attribution["phase_sec"]
 
 
 def test_warm_cache_phases_keep_runtime_and_backend_work_out_of_frontend():
