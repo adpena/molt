@@ -764,9 +764,10 @@ def test_manifest_profile_follows_cargo_plan_after_storage_relocation(
     runtime = tmp_path / "retained-storage" / "runtime.a"
     runtime.parent.mkdir()
     runtime.write_bytes(b"runtime")
+    diagnostic = json.loads(_cargo_output("", "-lc"))
+    diagnostic["message"]["rendered"] = "note: source\u0085text\u2028and\u2029context"
     receipt = write_native_link_dependency_manifest(
-        "",
-        cargo_stderr="note: native-static-libs: -lc\n",
+        json.dumps(diagnostic, ensure_ascii=False) + "\r\n\r\n",
         runtime_lib=runtime,
         cargo_profile=profile,
         target_triple=None,
@@ -779,9 +780,9 @@ def test_manifest_profile_follows_cargo_plan_after_storage_relocation(
         "profile_dir": profile_dir,
         "target_triple": None,
     }
-    payload = json.loads(receipt.read_text())
+    payload = json.loads(receipt.read_text(encoding="utf-8"))
     payload["cargo"]["profile_dir"] = runtime.parent.name
-    receipt.write_text(json.dumps(payload))
+    receipt.write_text(json.dumps(payload), encoding="utf-8")
     with pytest.raises(
         NativeLinkDependencyManifestError, match="profile identity is inconsistent"
     ):

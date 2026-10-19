@@ -515,7 +515,8 @@ def manifest_from_cargo_json(
     declared_dynamic_libraries: set[str] = set()
     declared_static_libraries: set[str] = set()
     native_static_lib_records: list[str] = []
-    for line_number, raw in enumerate(cargo_stdout.splitlines(), start=1):
+    for line_number, raw in enumerate(cargo_stdout.split("\n"), start=1):
+        raw = raw.removesuffix("\r")
         if not raw:
             continue
         message = _strict_json_line(raw, context=f"Cargo stdout line {line_number}")

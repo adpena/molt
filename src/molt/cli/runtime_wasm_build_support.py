@@ -508,7 +508,8 @@ def _reported_cargo_artifact_paths_from_stdout(
         resolved_root = target_root.resolve(strict=False)
     except OSError:
         return ()
-    for line in stdout.splitlines():
+    # Cargo's JSON records use LF; Unicode separators can be filename data.
+    for line in stdout.split("\n"):
         try:
             message = json.loads(line)
         except json.JSONDecodeError:

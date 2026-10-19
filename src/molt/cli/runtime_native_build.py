@@ -116,7 +116,7 @@ def _native_runtime_first_error(
     fallback: str,
 ) -> str:
     """Extract one bounded actionable diagnostic from Cargo's machine output."""
-    for raw in cargo_stdout.splitlines():
+    for raw in cargo_stdout.split("\n"):
         try:
             payload = json.loads(raw)
         except json.JSONDecodeError:
