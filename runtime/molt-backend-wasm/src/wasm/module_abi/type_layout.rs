@@ -11,52 +11,6 @@ pub(super) struct WasmModuleTypeLayout {
     function_type_map: BTreeMap<String, u32>,
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use wasmparser::{CompositeInnerType, Parser, Payload};
-
-    #[test]
-    fn function_layout_does_not_materialize_unobserved_arities() {
-        let ir = SimpleIR {
-            functions: [0, 512]
-                .into_iter()
-                .map(|arity| FunctionIR {
-                    name: format!("arity_{arity}"),
-                    params: (0..arity).map(|i| format!("arg{i}")).collect(),
-                    ..Default::default()
-                })
-                .collect(),
-            profile: None,
-        };
-        let mut backend = WasmBackend::new();
-        let layout = WasmModuleTypeLayout::build(&mut backend, &ir);
-        let mut module = wasm_encoder::Module::new();
-        module.section(&backend.types);
-        let bytes = module.finish();
-        let mut arities = Vec::new();
-        for payload in Parser::new(0).parse_all(&bytes) {
-            if let Payload::TypeSection(reader) = payload.unwrap() {
-                for group in reader {
-                    for ty in group.unwrap().into_types() {
-                        let CompositeInnerType::Func(function) = ty.composite_type.inner else {
-                            panic!("expected function signature");
-                        };
-                        arities.push(function.params().len());
-                    }
-                }
-            }
-        }
-        assert_eq!(arities, [0, 512]);
-        for function in &ir.functions {
-            assert_eq!(
-                arities[layout.type_idx_for_function(function) as usize],
-                function.params.len()
-            );
-        }
-    }
-}
-
 impl WasmModuleTypeLayout {
     pub(super) fn build(backend: &mut WasmBackend, ir: &SimpleIR) -> Self {
         let mut function_type_map = BTreeMap::new();
@@ -124,5 +78,51 @@ impl WasmModuleTypeLayout {
         backend.codes.function(&sentinel);
         backend.func_count += 1;
         sentinel_func_idx
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use wasmparser::{CompositeInnerType, Parser, Payload};
+
+    #[test]
+    fn function_layout_does_not_materialize_unobserved_arities() {
+        let ir = SimpleIR {
+            functions: [0, 512]
+                .into_iter()
+                .map(|arity| FunctionIR {
+                    name: format!("arity_{arity}"),
+                    params: (0..arity).map(|i| format!("arg{i}")).collect(),
+                    ..Default::default()
+                })
+                .collect(),
+            profile: None,
+        };
+        let mut backend = WasmBackend::new();
+        let layout = WasmModuleTypeLayout::build(&mut backend, &ir);
+        let mut module = wasm_encoder::Module::new();
+        module.section(&backend.types);
+        let bytes = module.finish();
+        let mut arities = Vec::new();
+        for payload in Parser::new(0).parse_all(&bytes) {
+            if let Payload::TypeSection(reader) = payload.unwrap() {
+                for group in reader {
+                    for ty in group.unwrap().into_types() {
+                        let CompositeInnerType::Func(function) = ty.composite_type.inner else {
+                            panic!("expected function signature");
+                        };
+                        arities.push(function.params().len());
+                    }
+                }
+            }
+        }
+        assert_eq!(arities, [0, 512]);
+        for function in &ir.functions {
+            assert_eq!(
+                arities[layout.type_idx_for_function(function) as usize],
+                function.params.len()
+            );
+        }
     }
 }

@@ -318,9 +318,7 @@ def _render_rs_mod() -> str:
             "pub(crate) use bulk_memory_ops::{\n",
             "    WasmBulkMemoryInstruction, WasmBulkMemoryOpSpec, wasm_bulk_memory_op,\n",
             "};\n",
-            "pub(crate) use call_indirect::{\n",
-            "    CALL_INDIRECT_IMPORTS, CALL_INDIRECT_MAX_ARITY,\n",
-            "};\n",
+            "pub(crate) use call_indirect::CALL_INDIRECT_IMPORTS;\n",
             "pub(crate) use container_runtime_selector::{\n",
             "    WasmContainerRuntimeFact, WasmContainerRuntimeOp, WasmContainerRuntimeSelection,\n",
             "    wasm_container_runtime_op, wasm_container_runtime_selection,\n",
@@ -360,7 +358,6 @@ def _render_rs_mod() -> str:
 
 def _render_rs_call_indirect(data: dict) -> str:
     call_indirect_imports = _call_indirect_imports(data)
-    max_arity = call_indirect_imports[-1][0]
     lines: list[str] = [_header("//")]
     lines.extend(
         [
@@ -381,12 +378,7 @@ def _render_rs_call_indirect(data: dict) -> str:
                 "    },\n",
             ]
         )
-    lines.extend(
-        [
-            "];\n\n",
-            f"pub(crate) const CALL_INDIRECT_MAX_ARITY: usize = {max_arity};\n",
-        ]
-    )
+    lines.append("];\n")
     return "".join(lines)
 
 

@@ -3208,7 +3208,7 @@ def test_wasm_abi_manifest_owns_host_import_policy() -> None:
     rendered_rs = _rendered_rs(gen, data)
     assert "CallIndirectImportSpec" in rendered_rs
     assert "CALL_INDIRECT_IMPORTS" in rendered_rs
-    assert "CALL_INDIRECT_MAX_ARITY" in rendered_rs
+    assert "CALL_INDIRECT_MAX_ARITY" not in rendered_rs
     assert "WASM_LINK_ALLOWED_IMPORTS" in rendered_py
     assert "WASM_LINK_ALLOWED_IMPORT_PRIMITIVE_CLASSES" in rendered_py
     assert "WASM_EXTERNAL_NATIVE_LINK_IMPORTS" in rendered_py
