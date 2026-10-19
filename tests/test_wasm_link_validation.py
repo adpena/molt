@@ -1050,6 +1050,129 @@ def test_wasm_artifact_state_atomic_path_mutation_invalidates_facts(
     assert calls == [initial, changed, committed_before_error]
 
 
+@pytest.mark.parametrize(
+    ("status", "elapsed_s", "peak_rss_kb", "expected_counts"),
+    [
+        (
+            "success",
+            1.25,
+            800,
+            {
+                "wasm_link_optimizer_requests": 1,
+                "wasm_link_optimizer_wall_ms": 1250.0,
+                "wasm_link_optimizer_peak_rss_kb": 800,
+                "wasm_link_optimizer_peak_total_rss_kb": 1200,
+            },
+        ),
+        (
+            "timeout",
+            0.25,
+            800,
+            {
+                "wasm_link_optimizer_requests": 1,
+                "wasm_link_optimizer_wall_ms": 250.0,
+                "wasm_link_optimizer_peak_rss_kb": 800,
+                "wasm_link_optimizer_peak_total_rss_kb": 1200,
+                "wasm_link_timeouts": 1,
+            },
+        ),
+        (
+            "identity-error",
+            0.0,
+            None,
+            {
+                "wasm_link_optimizer_requests": 1,
+                "wasm_link_optimizer_wall_ms": 0.0,
+                "wasm_link_failures": 1,
+                "wasm_link_identity_errors": 1,
+            },
+        ),
+        ("disabled", 0.0, None, {}),
+    ],
+)
+def test_post_link_optimizer_projects_only_current_request_cost(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    status: str,
+    elapsed_s: float,
+    peak_rss_kb: int | None,
+    expected_counts: dict[str, int | float],
+) -> None:
+    initial = b"\0asm\x01\0\0\0"
+    changed = initial + b"\0\x05\x01xabc"
+    path = tmp_path / "linked.wasm"
+    path.write_bytes(initial)
+    artifact = wasm_link_transaction.WasmArtifactState.from_bytes(
+        path, initial, facts_provider=_facts_provider
+    )
+    monkeypatch.setattr(
+        wasm_link_optimize, "_post_link_optimize", lambda data, **_: data
+    )
+    calls = []
+
+    def optimize(candidate: Path, **kwargs: object) -> dict[str, object]:
+        assert status != "disabled", "disabled optimizer must not be requested"
+        calls.append(kwargs)
+        # The canonical optimizer publishes its staged output only on success.
+        if status == "success":
+            candidate.write_bytes(changed)
+        return {
+            "ok": status == "success",
+            "status": status,
+            "error": "fixture optimizer failure",
+            "output_bytes": len(changed),
+            "elapsed_s": elapsed_s,
+            "peak_rss_kb": peak_rss_kb,
+            "peak_total_rss_kb": 1200 if peak_rss_kb is not None else None,
+            "wasm_opt_path": "/fixture/wasm-opt",
+            "wasm_opt_sha256": "a" * 64,
+            "binaryen_version": "fixture-version",
+            "pipeline": ["-Oz"],
+            "before": {"sha256": hashlib.sha256(initial).hexdigest()},
+            "after": {"sha256": hashlib.sha256(changed).hexdigest()},
+        }
+
+    monkeypatch.setattr(wasm_link_optimizer_policy, "optimize_wasm", optimize)
+    counts: dict[str, int | float] = {}
+    attestation: dict[str, object] = {}
+    ok = wasm_link_pipeline._post_link_transform_stage(
+        artifact,
+        reference_data=None,
+        preserve_exports=set(),
+        preserve_debug=False,
+        optimize=status != "disabled",
+        optimize_level="Oz",
+        split_runtime=False,
+        optimizer_attestation=attestation,
+        optimizer_identity=None,
+        operation_counts=counts,
+        contract_app_exports=(),
+        app_adapter_identity_map={},
+        app_target_identity_map={},
+    )
+
+    assert ok is (status in {"success", "disabled"})
+    assert len(calls) == (0 if status == "disabled" else 1)
+    assert counts == expected_counts
+    assert (
+        artifact.data
+        == path.read_bytes()
+        == (changed if status == "success" else initial)
+    )
+    if status == "success":
+        assert (
+            attestation["optimizer_input_sha256"] == hashlib.sha256(initial).hexdigest()
+        )
+        assert (
+            attestation["optimizer_output_sha256"]
+            == hashlib.sha256(changed).hexdigest()
+        )
+        assert attestation["optimization_level"] == "Oz"
+        assert not any("wall" in key or "rss" in key for key in attestation)
+    else:
+        assert attestation == {}
+
+
 def test_rust_facts_publication_is_admitted_through_artifact_state(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -5715,9 +5838,11 @@ def test_split_app_optimization_fails_closed_without_invocation_identity(
     assert not list((tmp_path / "cache").rglob("artifact.wasm"))
 
 
+@pytest.mark.parametrize("split_runtime", [False, True])
 def test_link_transaction_cleans_owned_resources_when_command_planning_fails(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    split_runtime: bool,
 ) -> None:
     class CountingTemporaryDirectory(OwnedTemporaryDirectory):
         cleanup_calls = 0
@@ -5808,6 +5933,8 @@ def test_link_transaction_cleans_owned_resources_when_command_planning_fails(
         linked,
         failure_evidence_dir=tmp_path / "evidence",
         phase_timings_ms=timings,
+        split_runtime=split_runtime,
+        deploy_runtime_imports=() if split_runtime else None,
         wasm_facts_scanner=tmp_path / "facts-scanner",
         app_export_contract_path=tmp_path / "app-export-contract.json",
         facts_provider=_facts_provider,
@@ -5819,6 +5946,8 @@ def test_link_transaction_cleans_owned_resources_when_command_planning_fails(
     assert not staged_linked.exists()
     assert timings["wasm_link_total"] >= 0
     assert timings["wasm_whole_artifact_section_walks"] == 0
+    assert "split_runtime_processing" not in timings
+    assert "wasm_link_optimizer_wall_ms" not in timings
 
 
 def test_run_wasm_ld_split_runtime_uses_explicit_deploy_runtime_over_stale_env(

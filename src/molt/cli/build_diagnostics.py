@@ -107,6 +107,14 @@ def _build_phase_attribution(
         "fail_closed_validation",
     ):
         phases.setdefault(name, 0.0)
+    optimizer_wall_ms = pipeline_stage_ms.get("wasm_link_optimizer_wall_ms")
+    if isinstance(optimizer_wall_ms, (int, float)):
+        # This is the observed combined-artifact optimizer invocation, outside
+        # split_runtime_processing. Missing means unobserved/disabled (including
+        # final-link reuse); an observed early failure can have zero elapsed time.
+        phases["wasm_link_optimizer"] = round(
+            max(0.0, float(optimizer_wall_ms)) / 1000.0, 6
+        )
     link_total = phases.get("wasm_link_total")
     if link_total is not None:
         children = sum(
@@ -115,6 +123,7 @@ def _build_phase_attribution(
                 "split_runtime_processing",
                 "wasm_strip",
                 "fail_closed_validation",
+                "wasm_link_optimizer",
             )
         )
         phases["wasm_link_core"] = round(max(0.0, link_total - children), 6)
@@ -1206,7 +1215,17 @@ def _wasm_link_operation_counts(
                     str(name).startswith("split_app_")
                     or str(name).startswith("runtime_tree_shake_cache_")
                     or str(name).startswith("wasm_whole_artifact_")
-                    or name == "wasm_reloc_preflight_invocations"
+                    or (
+                        str(name).startswith("wasm_link_optimizer_")
+                        and not str(name).endswith("_wall_ms")
+                    )
+                    or name
+                    in {
+                        "wasm_reloc_preflight_invocations",
+                        "wasm_link_timeouts",
+                        "wasm_link_failures",
+                        "wasm_link_identity_errors",
+                    }
                 )
                 and isinstance(value, (int, float))
                 and not isinstance(value, bool)
