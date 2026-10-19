@@ -5,6 +5,7 @@ from tests.compiler_identity_helper import (
     compiler_build_admission,
     stub_compiler_admission,
     write_compiler_lock,
+    write_compiler_source,
 )
 
 import importlib
@@ -390,6 +391,9 @@ def _write_backend_identity_fixture(
     catalog.write_text('{"schema": 1, "diagnostic": []}\n', encoding="utf-8")
     protocol = catalog.parent / "backend_daemon_protocol_version.txt"
     protocol.write_text("2\n", encoding="ascii")
+    # Both direct source receipts and stubbed Cargo admission consume this
+    # fixture. Complete its executable source before either first capture.
+    write_compiler_source(root)
     return {
         "backend": backend,
         "native": native,
