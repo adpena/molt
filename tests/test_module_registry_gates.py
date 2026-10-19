@@ -628,20 +628,16 @@ def test_rewrite_lowers_a_lone_plain_import_and_keeps_siteless_functions() -> No
 
     registry = _sample_registry()
     # `import pkg.sub` is this function's only import site: the transaction
-    # call names its builtin callee and nothing else marks the function.
+    # call names its direct runtime callee and nothing else marks the function.
     plain_import: list[dict[str, Any]] = [
-        {
-            "kind": "builtin_func",
-            "s_value": "molt_importlib_import_transaction",
-            "out": "v0",
-        },
         {"kind": "const_str", "s_value": "pkg.sub", "out": "v1"},
         {"kind": "const_none", "out": "v2"},
         {"kind": "tuple_new", "args": [], "out": "v3"},
         {"kind": "const", "value": 0, "out": "v4"},
         {
-            "kind": "call_func",
-            "args": ["v0", "v1", "v2", "v2", "v3", "v4"],
+            "kind": "call",
+            "s_value": "molt_importlib_import_transaction",
+            "args": ["v1", "v2", "v2", "v3", "v4"],
             "out": "v5",
         },
         {"kind": "ret_void"},
@@ -668,6 +664,144 @@ def test_rewrite_lowers_a_lone_plain_import_and_keeps_siteless_functions() -> No
     assert functions[1]["ops"] is siteless
 
 
+@pytest.mark.parametrize(
+    ("module", "expected_owners"),
+    [("pkg", ["pkg"]), ("pkg.sub", ["pkg.sub", "pkg"])],
+)
+def test_frontend_plain_imports_lower_to_symbolic_ensure_slots(
+    module: str, expected_owners: list[str]
+) -> None:
+    import ast
+    from copy import deepcopy
+    from molt.cli import backend_ir
+
+    generator = SimpleTIRGenerator(
+        module_name="consumer",
+        known_modules={"pkg", "pkg.sub"},
+        stdlib_allowlist={"pkg", "pkg.sub"},
+    )
+    generator.visit(ast.parse(f"def probe():\n    import {module}\n"))
+    functions = [
+        function
+        for function in generator.to_json()["functions"]
+        if any(
+            op.get("kind") == "call"
+            and op.get("s_value") == "molt_importlib_import_transaction"
+            for op in function["ops"]
+        )
+    ]
+    (original,) = functions
+    before = deepcopy(original)
+    (transaction,) = [
+        op
+        for op in original["ops"]
+        if op.get("s_value") == "molt_importlib_import_transaction"
+    ]
+    assert (
+        backend_ir._rewrite_native_import_lanes(functions, _sample_registry()) is None
+    )
+    assert original == before
+    assert functions[0] is not original
+    ops = functions[0]["ops"]
+    ensures = [op for op in ops if op.get("s_value") == "molt_module_ensure"]
+    assert [_ensure_call_module_name(ops, op) for op in ensures] == expected_owners
+    assert ensures[-1]["out"] == transaction["out"]
+    assert not any(
+        op.get("s_value") == "molt_importlib_import_transaction" for op in ops
+    )
+    assert [op for op in ops if op["kind"] == "check_exception"] == [
+        op for op in before["ops"] if op["kind"] == "check_exception"
+    ]
+
+
+@pytest.mark.parametrize("statement", ["from pkg import sub", "import missing"])
+def test_frontend_non_plain_or_unregistered_imports_keep_transactions(
+    statement: str,
+) -> None:
+    import ast
+    from copy import deepcopy
+    from molt.cli import backend_ir
+
+    generator = SimpleTIRGenerator(
+        module_name="consumer", known_modules={"pkg", "pkg.sub", "missing"}
+    )
+    generator.visit(ast.parse(f"def probe():\n    {statement}\n"))
+    functions = generator.to_json()["functions"]
+    before = deepcopy(functions)
+    assert any(
+        op.get("s_value") == "molt_importlib_import_transaction"
+        for function in functions
+        for op in function["ops"]
+    )
+    assert (
+        backend_ir._rewrite_native_import_lanes(functions, _sample_registry()) is None
+    )
+    assert functions == before
+
+
+def test_observable_intrinsic_import_calls_keep_transaction_semantics() -> None:
+    import ast
+    from copy import deepcopy
+    from molt.cli import backend_ir
+
+    generator = SimpleTIRGenerator(module_name="consumer")
+    generator.visit(
+        ast.parse(
+            "from _intrinsics import require_intrinsic\n"
+            "transaction = require_intrinsic('molt_importlib_import_transaction')\n"
+            "transaction('pkg.sub', globals(), None, (), 0)\n"
+        )
+    )
+    functions = generator.to_json()["functions"]
+    before = deepcopy(functions)
+    assert any(
+        op["kind"] == "builtin_func"
+        and op.get("s_value") == "molt_importlib_import_transaction"
+        for function in functions
+        for op in function["ops"]
+    )
+    assert (
+        backend_ir._rewrite_native_import_lanes(functions, _sample_registry()) is None
+    )
+    assert functions == before
+
+
+def test_compiled_import_transaction_spelling_keeps_its_definition() -> None:
+    from copy import deepcopy
+    from molt.cli import backend_ir
+
+    symbol = "molt_importlib_import_transaction"
+    functions = [
+        {
+            "name": "caller",
+            "params": [],
+            "ops": [
+                {"kind": "const_str", "s_value": "pkg", "out": "name"},
+                {"kind": "const_none", "out": "none"},
+                {"kind": "tuple_new", "args": [], "out": "fromlist"},
+                {"kind": "const", "value": 0, "out": "level"},
+                {
+                    "kind": "call",
+                    "s_value": symbol,
+                    "args": ["name", "none", "none", "fromlist", "level"],
+                    "out": "result",
+                },
+                {"kind": "ret", "args": ["result"]},
+            ],
+        },
+        {
+            "name": symbol,
+            "params": ["name", "globals", "locals", "fromlist", "level"],
+            "ops": [{"kind": "ret", "args": ["name"]}],
+        },
+    ]
+    before = deepcopy(functions)
+    assert (
+        backend_ir._rewrite_native_import_lanes(functions, _sample_registry()) is None
+    )
+    assert functions == before
+
+
 def test_literal_import_owner_survives_registry_growth_and_aliases() -> None:
     from copy import deepcopy
     from molt.cli import backend_ir
@@ -692,17 +826,13 @@ def test_literal_import_owner_survives_registry_growth_and_aliases() -> None:
                 {"kind": "module_import", "args": ["v0"], "out": "v1"},
                 {"kind": "call", "s_value": "molt_init_entry", "args": [], "out": "v2"},
                 {"kind": "const_none", "out": "v3"},
-                {
-                    "kind": "builtin_func",
-                    "s_value": "molt_importlib_import_transaction",
-                    "out": "v4",
-                },
                 {"kind": "const_str", "s_value": "pkg.sub", "out": "v5"},
                 {"kind": "tuple_new", "args": [], "out": "v6"},
                 {"kind": "const", "value": 0, "out": "v7"},
                 {
-                    "kind": "call_func",
-                    "args": ["v4", "v5", "v3", "v3", "v6", "v7"],
+                    "kind": "call",
+                    "s_value": "molt_importlib_import_transaction",
+                    "args": ["v5", "v3", "v3", "v6", "v7"],
                     "out": "v8",
                 },
                 {"kind": "ret_void"},

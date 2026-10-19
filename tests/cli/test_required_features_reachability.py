@@ -5,7 +5,9 @@ Pins the ``molt.cli.required_features`` authority that replaces whole-file
 refusal driver (docs/design/foundation/feature_reachability_tree_shaking.md).
 
 The fact under test: a runtime intrinsic becomes a hard link dependency exactly
-when a REACHED SimpleIR ``builtin_func``/``const_str`` op references its symbol,
+when reached SimpleIR names its external/runtime entry or takes its function
+address. Runtime-only ``builtin_func`` and conservative ``const_str`` resolver
+candidates remain requirements independently of compiled same-spelling functions,
 where reachability is the call-graph closure the native/WASM backends dead-strip
 with (``molt-tir`` ``eliminate_dead_functions``). These tests use synthetic
 merged-IR function lists so the reachability rules are pinned directly, plus a
@@ -281,6 +283,142 @@ def test_builtin_func_direct_symbol_is_a_requirement() -> None:
         RF.reached_intrinsic_symbols(functions)
     )
     assert by_feature == {"stdlib_regex": {"molt_re_compile"}}
+
+
+@pytest.mark.parametrize("kind", ["call", "func_new", "func_new_closure"])
+def test_named_runtime_entries_and_addresses_contribute_reached_features(
+    kind: str,
+) -> None:
+    functions = [
+        {"name": "molt_main", "ops": [_call("retained")]},
+        {
+            "name": "retained",
+            "ops": [{"kind": kind, "s_value": "molt_re_compile", "out": "runtime"}],
+        },
+        {
+            "name": "dead",
+            "ops": [{"kind": kind, "s_value": "molt_ast_parse", "out": "unused"}],
+        },
+    ]
+    symbols = RF.reached_intrinsic_symbols(functions)
+    assert symbols == frozenset({"molt_re_compile"})
+    assert RF.required_link_features(symbols) == frozenset({"stdlib_regex"})
+    assert RF.reached_intrinsic_symbols(functions, extra_roots={"dead"}) == frozenset(
+        {"molt_re_compile", "molt_ast_parse"}
+    )
+    message = RF.reachability_profile_feature_refusal(
+        symbols, profile_name="micro", profile_features=frozenset()
+    )
+    assert message is not None
+    assert "stdlib_regex" in message and "molt_re_compile" in message
+    assert "molt_ast_parse" not in message
+
+
+@pytest.mark.parametrize("kind", ["call", "func_new", "func_new_closure"])
+@pytest.mark.parametrize("external", [False, True])
+def test_compiled_definitions_take_precedence_but_extern_declarations_do_not(
+    kind: str, external: bool
+) -> None:
+    functions = [
+        {
+            "name": "molt_main",
+            "ops": [{"kind": kind, "s_value": "molt_re_compile", "out": "result"}],
+        },
+        {"name": "molt_re_compile", "is_extern": external, "ops": []},
+    ]
+    assert RF.reached_intrinsic_symbols(functions) == (
+        frozenset({"molt_re_compile"}) if external else frozenset()
+    )
+
+
+@pytest.mark.parametrize("kind", ["builtin_func", "const_str"])
+def test_runtime_constructor_and_resolver_candidates_ignore_compiled_shadowing(
+    kind: str,
+) -> None:
+    functions = [
+        {
+            "name": "molt_main",
+            "ops": [{"kind": kind, "s_value": "molt_re_compile", "out": "runtime"}],
+        },
+        {"name": "molt_re_compile", "ops": []},
+    ]
+    assert RF.reached_intrinsic_symbols(functions) == frozenset({"molt_re_compile"})
+
+
+@pytest.mark.parametrize(
+    "kind",
+    [
+        "call_internal",
+        "call_func",
+        "call_function",
+        "call_guarded",
+        "call_indirect",
+        "call_bind",
+        "invoke_ffi",
+        "code_new",
+        "module_get_attr",
+        "import_name",
+        "const",
+    ],
+)
+def test_opaque_internal_and_metadata_spellings_do_not_invent_runtime_targets(
+    kind: str,
+) -> None:
+    functions = [
+        {
+            "name": "molt_main",
+            "ops": [
+                {
+                    "kind": kind,
+                    "s_value": "molt_re_compile",
+                    "args": ["selected_callable"],
+                    "out": "result",
+                }
+            ],
+        }
+    ]
+    assert RF.reached_intrinsic_symbols(functions) == frozenset()
+
+
+def test_direct_reference_membership_is_distinct_from_python_callability() -> None:
+    functions = [
+        {
+            "name": "molt_main",
+            "ops": [
+                _call("molt_dict_getitem_borrowed"),
+                _call("molt_int_from_i64"),
+                _call("molt_runtime_init"),
+                _call("molt_list_append"),
+                _call("molt_no_such_intrinsic"),
+                {"kind": "call", "args": ["molt_re_compile"], "out": "dynamic"},
+            ],
+        }
+    ]
+    # The borrowed raw intrinsic is manifest-declared and can impose a link
+    # dependency without being publishable as a Python callable. The other raw
+    # runtime helpers and a callable-value operand are not intrinsic declarations.
+    assert RF.reached_intrinsic_symbols(functions) == frozenset(
+        {"molt_dict_getitem_borrowed"}
+    )
+    assert (
+        RF.required_link_features(RF.reached_intrinsic_symbols(functions))
+        == frozenset()
+    )
+
+
+def test_compiler_internal_intrinsic_direct_calls_remain_reached() -> None:
+    symbols = {
+        "molt_get_awaitable",
+        "molt_exception_match_handler",
+        "molt_iterator_throw",
+        "molt_importlib_import_transaction",
+        "molt_importlib_import_module",
+        "molt_types_bootstrap",
+    }
+    functions = [
+        {"name": "molt_main", "ops": [_call(symbol) for symbol in sorted(symbols)]}
+    ]
+    assert RF.reached_intrinsic_symbols(functions) == frozenset(symbols)
 
 
 def test_const_str_resolver_name_is_a_requirement() -> None:
