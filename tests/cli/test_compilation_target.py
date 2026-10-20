@@ -260,3 +260,71 @@ def test_run_rejects_nonexecutable_target_before_workload(
     )
     assert entrypoint.main() != 0
     assert "cannot execute target" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize(
+    "field,value", [("os", "windows"), ("arch", "aarch64"), ("object_format", "coff")]
+)
+def test_native_target_derived_facts_cannot_be_supplied_or_replaced(field, value):
+    from dataclasses import replace
+
+    target = NativeTargetSpec("x86_64-unknown-linux-gnu")
+    with pytest.raises(TypeError):
+        NativeTargetSpec(target.triple, **{field: value})
+    with pytest.raises(ValueError, match="init=False"):
+        replace(target, **{field: value})
+
+
+@pytest.mark.parametrize("host", [None, 0, 1, "false", []])
+def test_native_target_host_intent_requires_actual_bool(host):
+    with pytest.raises(TypeError, match="is_host must be a bool"):
+        NativeTargetSpec("x86_64-unknown-linux-gnu", is_host=host)
+
+
+@pytest.mark.parametrize(
+    "triple", [None, 1, False, [], "wasm32-wasip1", "x-notlinux-gnu"]
+)
+def test_native_target_direct_construction_admits_triple(triple):
+    with pytest.raises((TypeError, RuntimeError)):
+        NativeTargetSpec(triple)
+
+
+@pytest.mark.parametrize(
+    "triple,expected_os,expected_arch,expected_format,suffix",
+    [
+        ("aarch64-apple-darwin", "macos", "aarch64", "macho", ".o"),
+        ("x86_64-pc-windows-msvc", "windows", "x86_64", "coff", ".obj"),
+        ("futurearch-unknown-linux-musl", "linux", "futurearch", "elf", ".o"),
+    ],
+)
+def test_native_target_replacement_recomputes_facts_and_preserves_wire_identity(
+    monkeypatch, triple, expected_os, expected_arch, expected_format, suffix
+):
+    from dataclasses import replace
+    from molt.cli.build_request import build_request_to_payload
+    from molt.native_target import NativeArtifactKind
+
+    def forbidden(*args, **kwargs):
+        pytest.fail("explicit target construction probed host")
+
+    monkeypatch.setattr("molt.native_target._host_target_triple", forbidden)
+    original = NativeTargetSpec("x86_64-unknown-linux-gnu")
+    target = replace(original, triple=triple.upper())
+    assert (target.triple, target.os, target.arch, target.object_format.value) == (
+        triple,
+        expected_os,
+        expected_arch,
+        expected_format,
+    )
+    request = BuildRequest(file_path="main.py", target=target)
+    restored = build_request_from_payload(build_request_to_payload(request))
+    assert restored == request
+    assert NativeArtifactKind.OBJECT.suffix(target) == suffix
+    assert NativeArtifactKind.OBJECT.suffix(restored.target) == suffix
+    assert target.cargo_target == triple
+
+    # Once admitted, direct request and artifact consumers reuse stored facts.
+    monkeypatch.setattr("molt.native_target._admit_native_triple", forbidden)
+    assert BuildRequest(file_path="main.py", target=target).target is target
+    assert NativeArtifactKind.OBJECT.suffix(target) == suffix
+    assert target_name(target) == triple

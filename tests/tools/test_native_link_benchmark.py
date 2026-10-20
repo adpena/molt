@@ -43,9 +43,6 @@ def _plan(tmp_path: Path) -> NativeLinkPlan:
         target=NativeTargetSpec(
             triple="x86_64-pc-windows-msvc",
             is_host=True,
-            os="windows",
-            arch="x86_64",
-            object_format=NativeObjectFormat.COFF,
         ),
         capabilities=NativeLinkCapabilities(
             linker=NativeLinkerKind.LLD,
