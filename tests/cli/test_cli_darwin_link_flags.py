@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+from molt.compilation_target import admit_target
+
 from tests.runtime_build_identity_helper import runtime_cargo_environment_inputs
 
-from molt.cli.native_link_plan import resolve_native_target_spec
+from molt.native_target import resolve_native_target_spec
 
 import json
 import os
@@ -451,7 +453,7 @@ def test_native_compile_and_link_use_the_explicit_sdk(tmp_path, monkeypatch):
     monkeypatch.delenv("CFLAGS", raising=False)
     monkeypatch.delenv("MOLT_MACOSX_DEPLOYMENT_TARGET", raising=False)
     monkeypatch.delenv("MACOSX_DEPLOYMENT_TARGET", raising=False)
-    target = resolve_source_extension_target_plan("native")
+    target = resolve_source_extension_target_plan(admit_target("native"))
     assert target.native_target is not None
     environment = source_extension_compiler_environment(os.environ)
     command, _, _ = native_link_command._build_native_link_driver_command(

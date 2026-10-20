@@ -59,6 +59,7 @@ from tools import bench_reporting  # noqa: E402
 
 MAX_FAILURE_DETAIL_RECORDS = bench_reporting.MAX_FAILURE_DETAIL_RECORDS
 from tools import perf_authority  # noqa: E402
+from molt.compilation_target import admit_target  # noqa: E402
 from molt.process_environment import ProcessEnvironment, ProcessEnvironmentBuilder  # noqa: E402
 from molt.cli.build_request import (  # noqa: E402
     BuildProfile,
@@ -787,7 +788,7 @@ def _molt_build_params(
     request = BuildRequest(
         file_path=script,
         profile=cast(BuildProfile, build_profile),
-        target=build_target,
+        target=admit_target(build_target),
         trusted=build_target == "native",
         json_output=True,
         out_dir=str(out_dir),
@@ -831,7 +832,7 @@ def _molt_build_params(
             backend_choice = None
         if backend_choice is not None:
             target, backend, error = _select_codegen_backend(
-                request.target, backend_choice
+                build_target, backend_choice
             )
             if error is not None:
                 raise ValueError(error)

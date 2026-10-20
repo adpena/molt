@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from molt.compilation_target import TargetKind, target_name
+
 import argparse
 import contextlib
 import os
@@ -467,10 +469,21 @@ def _dispatch_entrypoint_command(
         capabilities = _select_capability_input(
             args.capabilities, run_cfg.get("capabilities"), cfg_capabilities
         )
-        if run_target in ("wasm", "luau"):
+        if run_target in {
+            TargetKind.WASM_FREESTANDING,
+            TargetKind.WASM_UNKNOWN,
+            TargetKind.RUST,
+        }:
+            return _fail(
+                f"molt run cannot execute target {target_name(run_target)!r}; "
+                "use molt build to produce its artifact.",
+                args.json,
+                command="run",
+            )
+        if run_target in {TargetKind.WASM, TargetKind.WASI, TargetKind.LUAU}:
             # Inject --target into build_args so run_script_cross handles it
             if not any(a.startswith("--target") for a in build_args):
-                build_args.extend(["--target", run_target])
+                build_args.extend(["--target", target_name(run_target)])
             return run_cross(
                 run_target,
                 args.file,
@@ -488,7 +501,7 @@ def _dispatch_entrypoint_command(
                 audit_log=getattr(args, "audit_log", None),
                 io_mode=getattr(args, "io_mode", None),
             )
-        if run_target == "mlir":
+        if run_target is TargetKind.MLIR:
             # MLIR target: build to get MLIR text (no JIT in run mode yet).
             if not any(a.startswith("--target") for a in build_args):
                 build_args.extend(["--target", "mlir"])

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from molt.compilation_target import admit_target
+
 from molt.compiler_analysis import python_import_scan as _source_import_scan
 
 import ast
@@ -662,7 +664,7 @@ def test_real_asyncio_and_importlib_dynamic_sources_join_runtime_custody(
         diagnostics_enabled=False,
         module_reasons=reasons,
         json_output=False,
-        target="native",
+        target=admit_target("native"),
     )
 
     assert error is None and prepared is not None
@@ -850,7 +852,7 @@ def test_graph_import_plan_and_full_frontend_share_runtime_custody(
         diagnostics_enabled=False,
         module_reasons=reasons,
         json_output=False,
-        target="native",
+        target=admit_target("native"),
         stdlib_profile="micro",
     )
     assert error is None and graph is not None

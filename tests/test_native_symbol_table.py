@@ -739,7 +739,7 @@ def _paired_bitcode_tools() -> tuple[Path, Path]:
 
 def test_bitcode_members_are_read_by_the_admitted_llvm_nm(tmp_path, monkeypatch):
     from molt.cli import native_symbol_inspection
-    from molt.cli.native_link_plan import resolve_native_target_spec
+    from molt.native_target import resolve_native_target_spec
     from tests.cli.native_link_test_support import static_archive_bytes
 
     compiler, reader = _paired_bitcode_tools()

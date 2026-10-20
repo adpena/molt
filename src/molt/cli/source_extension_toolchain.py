@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+from molt.compilation_target import target_name
+
+from molt.compilation_target import admit_target
+
 from molt.process_environment import ProcessEnvironment, ProcessEnvironmentBuilder
 
 from molt.default_paths import executable_environment_value, expand_user_path
@@ -1236,7 +1240,7 @@ def _materialize_source_extension_target_metadata_with_toolchain(
             "WASI source-extension target metadata requires the selected SDK "
             "compiler-rt archive for Meson configure links"
         ]
-    host_plan = resolve_source_extension_target_plan("native")
+    host_plan = resolve_source_extension_target_plan(admit_target("native"))
     if host_plan.target_triple == target_plan.target_triple:
         build_toolchain = toolchain
     else:
@@ -1281,7 +1285,7 @@ def _materialize_source_extension_target_metadata_with_toolchain(
         "kind": "molt-source-extension-target-metadata",
         "target_triple": resolved_target,
         "target": {
-            "requested": target_plan.requested,
+            "requested": target_name(target_plan.requested),
             "compiler_target_triple": target_plan.compiler_target_triple,
             "artifact_kind": target_plan.artifact_kind,
         },

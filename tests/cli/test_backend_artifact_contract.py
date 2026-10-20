@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from molt.compilation_target import admit_target
+
 from contextlib import contextmanager
 from dataclasses import replace
 from typing import BinaryIO
@@ -9,7 +11,7 @@ import pytest
 from molt.cli import backend_artifact_contract as contracts
 from molt.cli import runtime_wasm_validation
 from molt.cli import static_archive_identity as archive_identity
-from molt.cli.native_link_plan import NativeArtifactKind, _host_target_triple
+from molt.native_target import NativeArtifactKind, _host_target_triple
 from molt.cli.static_archive_identity import (
     StaticArchiveMember,
     static_archive_identity,
@@ -39,7 +41,7 @@ from tests.native_artifact_fixtures import elf_header, native_relocatable_object
 )
 def test_contract_resolves_requested_kind_suffix_and_flags(target, emit, kind, suffix):
     contract = contracts.resolve_backend_artifact_contract(
-        target=target, emit_mode=emit
+        target=admit_target(target), emit_mode=emit
     )
     assert contract.kind is contracts.BackendArtifactKind[kind]
     assert contract.suffix == suffix
@@ -66,7 +68,7 @@ def test_cache_identity_distinguishes_all_requested_output_families_and_targets(
     )
     identities = {
         contracts.resolve_backend_artifact_contract(
-            target=target, emit_mode=emit
+            target=admit_target(target), emit_mode=emit
         ).cache_identity
         for target, emit in requests
     }
@@ -75,47 +77,54 @@ def test_cache_identity_distinguishes_all_requested_output_families_and_targets(
         len(value) == 64 and set(value) <= set("0123456789abcdef")
         for value in identities
     )
-    host = contracts.resolve_backend_artifact_contract(target="native", emit_mode="bin")
+    host = contracts.resolve_backend_artifact_contract(
+        target=admit_target("native"), emit_mode="bin"
+    )
     explicit = contracts.resolve_backend_artifact_contract(
-        target="native", emit_mode="bin", target_triple=_host_target_triple()
+        target=admit_target(_host_target_triple() or "native"), emit_mode="bin"
     )
     assert host.cache_identity == explicit.cache_identity
     normalized = contracts.resolve_backend_artifact_contract(
-        target=" NATIVE ",
+        target=admit_target(" " + _host_target_triple().upper() + " " or "native"),
         emit_mode="bin",
-        target_triple=" " + _host_target_triple().upper() + " ",
     )
     assert normalized.cache_identity == explicit.cache_identity
     linux = contracts.resolve_backend_artifact_contract(
-        target="native", emit_mode="bin", target_triple="x86_64-unknown-linux-gnu"
+        target=admit_target("x86_64-unknown-linux-gnu" or "native"), emit_mode="bin"
     )
     windows = contracts.resolve_backend_artifact_contract(
-        target="native", emit_mode="bin", target_triple="x86_64-pc-windows-msvc"
+        target=admit_target("x86_64-pc-windows-msvc" or "native"), emit_mode="bin"
     )
     assert linux.cache_identity != windows.cache_identity
 
 
 @pytest.mark.parametrize(
-    "target,emit,triple",
+    "target,emit",
     [
-        ("native", "wasm", None),
-        ("wasm", "bin", None),
-        ("wasm", "obj", None),
-        ("rust", "obj", None),
-        ("luau", "wasm", None),
-        ("mlir", "obj", None),
-        ("native", "bin", ""),
-        ("native", "obj", "wasm32-wasip1"),
-        ("wasm", "wasm", "x86_64-pc-windows-msvc"),
-        ("wasm32-wasip1", "wasm", "wasm32-unknown-unknown"),
-        ("aarch64-apple-darwin", "bin", "x86_64-unknown-linux-gnu"),
-        ("unrecognized-target", "bin", None),
+        ("native", "wasm"),
+        ("wasm", "bin"),
+        ("wasm", "obj"),
+        ("rust", "obj"),
+        ("luau", "wasm"),
+        ("mlir", "obj"),
+        ("", "bin"),
+        ("wasm32-wasip1", "obj"),
+        ("unrecognized-target", "bin"),
     ],
 )
-def test_incompatible_request_is_rejected_before_any_file_read(target, emit, triple):
+def test_incompatible_request_is_rejected_before_any_file_read(target, emit):
     with pytest.raises((ValueError, RuntimeError)):
         contracts.resolve_backend_artifact_contract(
-            target=target, emit_mode=emit, target_triple=triple
+            target=admit_target(target), emit_mode=emit
+        )
+
+
+def test_artifact_projection_has_no_second_target_selector():
+    with pytest.raises(TypeError, match="target_triple"):
+        contracts.resolve_backend_artifact_contract(
+            target=admit_target("aarch64-apple-darwin"),
+            emit_mode="bin",
+            **{"target_triple": "x86_64-unknown-linux-gnu"},
         )
 
 
@@ -142,7 +151,7 @@ def test_only_native_archive_can_have_shared_stdlib(kind):
 @pytest.mark.parametrize("emit", ["obj", "bin"])
 def test_native_admission_uses_requested_shape_not_path_suffix(tmp_path, target, emit):
     contract = contracts.resolve_backend_artifact_contract(
-        target=target, emit_mode=emit
+        target=admit_target(target), emit_mode=emit
     )
     artifact = tmp_path / "misleading.rs"
     # Empty symbol tables are legitimate object shape, not an inspection failure.
@@ -167,7 +176,7 @@ def test_native_admission_rejects_every_incompatible_member(
 ):
     target = "x86_64-unknown-linux-gnu"
     contract = contracts.resolve_backend_artifact_contract(
-        target=target, emit_mode=emit
+        target=admit_target(target), emit_mode=emit
     )
     invalid = {
         "wrong_arch": native_relocatable_object(
@@ -196,7 +205,7 @@ def test_native_admission_rejects_every_incompatible_member(
 )
 def test_backend_archive_requires_self_contained_relocatable_members(tmp_path, data):
     contract = contracts.resolve_backend_artifact_contract(
-        target="native", emit_mode="bin"
+        target=admit_target("native"), emit_mode="bin"
     )
     path = tmp_path / "application.a"
     path.write_bytes(data)
@@ -246,7 +255,7 @@ def test_shared_archive_visitor_resolves_metadata_and_exact_payload_extent(
     assert visit_static_archive_members(path, visit_member=visit) == 1
     assert observed == [(name, len(payload), payload)]
     contracts.resolve_backend_artifact_contract(
-        target=target, emit_mode="bin"
+        target=admit_target(target), emit_mode="bin"
     ).validate(path)
 
 
@@ -255,7 +264,7 @@ def test_text_admission_is_incremental_utf8_and_never_native(
     tmp_path, monkeypatch, target
 ):
     contract = contracts.resolve_backend_artifact_contract(
-        target=target, emit_mode="bin"
+        target=admit_target(target), emit_mode="bin"
     )
 
     def native_reader_forbidden(*args, **kwargs):
@@ -277,7 +286,7 @@ def test_text_admission_is_incremental_utf8_and_never_native(
 )
 def test_text_admission_rejects_empty_binary_or_truncated_utf8(tmp_path, target, data):
     contract = contracts.resolve_backend_artifact_contract(
-        target=target, emit_mode="bin"
+        target=admit_target(target), emit_mode="bin"
     )
     path = tmp_path / "output"
     path.write_bytes(data)
@@ -304,7 +313,7 @@ def test_wasm_contract_uses_existing_structural_validation(
         runtime_wasm_validation, "_reusable_wasm_artifact_validation_error", validate
     )
     contract = contracts.resolve_backend_artifact_contract(
-        target=target, emit_mode="wasm"
+        target=admit_target(target), emit_mode="wasm"
     )
     if validation_error is None:
         contract.validate(path)
@@ -321,7 +330,7 @@ def test_wasm_contract_uses_existing_structural_validation(
 )
 def test_missing_output_fails_with_artifact_context(tmp_path, target, emit):
     contract = contracts.resolve_backend_artifact_contract(
-        target=target, emit_mode=emit
+        target=admit_target(target), emit_mode=emit
     )
     path = tmp_path / "missing"
     with pytest.raises(contracts.BackendArtifactValidationError, match="missing"):
@@ -373,7 +382,7 @@ def test_archive_shape_skips_payload_hash_and_reads_only_required_header_bytes(
     monkeypatch.setattr(archive_identity, "open_stable_regular_file", metered_open)
     monkeypatch.setattr(archive_identity, "_hash_exact", metered_hash)
     contracts.resolve_backend_artifact_contract(
-        target=target, emit_mode="bin"
+        target=admit_target(target), emit_mode="bin"
     ).validate(path)
     assert hashed_sizes == []
     assert len(streams) == 1
@@ -386,9 +395,11 @@ def test_archive_shape_skips_payload_hash_and_reads_only_required_header_bytes(
 
 
 def test_host_selection_is_preserved_separately_from_explicit_artifact_identity():
-    host = contracts.resolve_backend_artifact_contract(target="native", emit_mode="bin")
+    host = contracts.resolve_backend_artifact_contract(
+        target=admit_target("native"), emit_mode="bin"
+    )
     explicit = contracts.resolve_backend_artifact_contract(
-        target=host.target_triple, emit_mode="bin"
+        target=admit_target(host.target_triple), emit_mode="bin"
     )
     assert host.native_target.is_host
     assert host.native_target.cargo_target is None

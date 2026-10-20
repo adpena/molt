@@ -7,6 +7,7 @@ from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any
 from molt.cli.build_request import BuildRequest
+from molt.compilation_target import TargetKind
 from molt.cli.build_output_layout import (
     _BUILD_PROFILE_CHOICES,
     _DEPLOY_PROFILE_DEFAULTS,
@@ -27,7 +28,9 @@ _DEFAULT_REQUEST = BuildRequest(file_path=None)
 
 
 def _configured_build_target(target: str | None, build_cfg: Mapping[str, Any]) -> str:
-    return target or build_cfg.get("target") or _DEFAULT_REQUEST.target
+    if target is not None:
+        return target
+    return build_cfg.get("target", TargetKind.NATIVE.value)
 
 
 def resolve_build_request(
@@ -238,7 +241,7 @@ def resolve_build_request(
             default_wasm_profile = defaults.get("wasm_profile")
             if isinstance(default_wasm_profile, str):
                 wasm_profile = default_wasm_profile
-    target, codegen_backend, backend_error = _select_codegen_backend(
+    selected_target, codegen_backend, backend_error = _select_codegen_backend(
         target, backend_choice
     )
     if backend_error is not None:
@@ -246,7 +249,7 @@ def resolve_build_request(
     bolt_requested = getattr(args, "bolt", False)
     return BuildRequest(
         file_path=args.file,
-        target=target,
+        target=selected_target,
         parse_codec=codec,
         type_hint_policy=type_hints,
         type_facts_path=type_facts,

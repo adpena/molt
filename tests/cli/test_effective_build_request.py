@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+from molt.compilation_target import admit_target
+
+from molt.compilation_target import target_name
+
 from types import SimpleNamespace
 from pathlib import Path
 
@@ -63,7 +67,11 @@ def test_public_and_wrapper_request_select_same_literal_coordinate(
     )
     assert reads == [tmp_path]
     assert wrapped == public
-    assert (wrapped.target, wrapped.codegen_backend, wrapped.python_version) == (
+    assert (
+        target_name(wrapped.target),
+        wrapped.codegen_backend,
+        wrapped.python_version,
+    ) == (
         target,
         backend,
         python,
@@ -222,7 +230,7 @@ def test_actual_cache_and_admission_consumers_use_effective_target(
         )
         is None
     )
-    assert observed == ["wasm"]
+    assert [target_name(item) for item in observed] == ["wasm"]
     monkeypatch.setattr(
         wrapper_build,
         "_wrapper_build_dependency_fingerprints",
@@ -305,7 +313,7 @@ def test_run_runtime_route_follows_effective_build_request(
     monkeypatch.setattr(
         script_commands,
         "_run_script_cross",
-        lambda *a, **kw: seen.append((a[0], a[12])) or 0,
+        lambda *a, **kw: seen.append((target_name(a[0]), a[12])) or 0,
     )
     monkeypatch.setattr("sys.argv", ["molt", "run", *flags, str(source)])
     assert entrypoint.main() == 0
@@ -492,7 +500,7 @@ def test_run_capability_temporary_custody(monkeypatch, tmp_path, route, failure)
 
         def invoke():
             return scripts._run_script_cross(
-                route, str(source), None, [], capabilities={"allow": []}
+                admit_target(route), str(source), None, [], capabilities={"allow": []}
             )
 
     if failure in {"exception", "notice"}:

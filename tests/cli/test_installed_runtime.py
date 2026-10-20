@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from molt.cli.native_link_plan import resolve_native_target_spec
+from molt.native_target import resolve_native_target_spec
 
 from contextlib import contextmanager
 import hashlib

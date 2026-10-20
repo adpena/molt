@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+
+from molt.compilation_target import admit_target, TargetKind
+
 import pytest
 from dataclasses import replace
 from pathlib import Path
@@ -12,7 +15,7 @@ from molt.cli.source_extensions import (
 )
 
 from molt.cli.extension_manifest import _extension_binary_suffix
-from molt.cli.native_link_plan import _host_target_triple, resolve_native_target_spec
+from molt.native_target import _host_target_triple, resolve_native_target_spec
 from molt.cli.source_extension_link_projection import SourceExtensionLinkProjection
 from molt.cli.source_extension_link_requirements import (
     parse_source_extension_link_requirements,
@@ -41,12 +44,12 @@ from molt.cli.source_extension_target import (
 )
 def test_native_host_facts_have_one_projection(host_platform, arch, triple, dialect):
     facts = {"host_platform": host_platform, "host_arch": arch}
-    plan = resolve_source_extension_target_plan(" NATIVE ", **facts)
+    plan = resolve_source_extension_target_plan(admit_target(" NATIVE "), **facts)
     native = resolve_native_target_spec(None, **facts)
     assert plan.target_triple == _host_target_triple(**facts) == triple
     assert plan.native_target == native
     assert plan.compiler_target_triple is None
-    assert plan.requested == "native"
+    assert plan.requested is TargetKind.NATIVE
     assert source_extension_link_dialect(triple).value == dialect
     assert source_extension_artifact_suffix(triple) == ".molt.a"
     assert _extension_binary_suffix(triple) == (
@@ -65,7 +68,7 @@ def test_native_host_facts_have_one_projection(host_platform, arch, triple, dial
 )
 def test_wasm_target_does_not_consult_native_host(requested, triple):
     plan = resolve_source_extension_target_plan(
-        requested, host_platform="unsupported", host_arch=""
+        admit_target(requested), host_platform="unsupported", host_arch=""
     )
     assert plan.target_triple == plan.compiler_target_triple == triple
     assert plan.native_target is None
@@ -103,7 +106,11 @@ def test_target_rejection_is_shared_by_all_artifact_consumers(target):
         source_extension_link_dialect,
     ):
         with pytest.raises(ValueError):
-            consumer(target)
+            consumer(
+                admit_target(target)
+                if consumer is resolve_source_extension_target_plan
+                else target
+            )
     requirements, errors = parse_source_extension_link_requirements(
         {
             "link_requirements": {
@@ -125,7 +132,7 @@ def test_target_rejection_is_shared_by_all_artifact_consumers(target):
 def test_native_target_requires_usable_host_facts(host_platform, host_arch):
     with pytest.raises(ValueError):
         resolve_source_extension_target_plan(
-            "native", host_platform=host_platform, host_arch=host_arch
+            admit_target("native"), host_platform=host_platform, host_arch=host_arch
         )
 
 
@@ -142,7 +149,7 @@ def test_native_target_requires_usable_host_facts(host_platform, host_arch):
 )
 def test_explicit_target_policy_is_host_independent(target, dialect):
     plan = resolve_source_extension_target_plan(
-        target.upper(), host_platform="other", host_arch=""
+        admit_target(target.upper()), host_platform="other", host_arch=""
     )
     assert plan.target_triple == plan.compiler_target_triple == target
     assert source_extension_link_dialect(target).value == dialect
@@ -151,8 +158,8 @@ def test_explicit_target_policy_is_host_independent(target, dialect):
 
 
 def test_none_is_not_an_inner_target_authority():
-    with pytest.raises(ValueError, match="explicit"):
-        resolve_source_extension_target_plan(None)  # type: ignore[arg-type]
+    with pytest.raises(ValueError, match="target must"):
+        resolve_source_extension_target_plan(admit_target(None))  # type: ignore[arg-type]
 
 
 @pytest.mark.parametrize(
@@ -163,10 +170,10 @@ def test_recorded_native_target_uses_artifact_not_inspector(triple, monkeypatch)
     def no_host(**_kwargs):
         raise AssertionError("recorded target must not query inspector host")
 
-    monkeypatch.setattr("molt.cli.source_extension_target._host_target_triple", no_host)
+    monkeypatch.setattr("molt.native_target._host_target_triple", no_host)
     plan = source_extension_recorded_target_plan("native", target_triple=triple)
     assert plan.target_triple == triple
-    assert plan.requested == "native"
+    assert plan.requested is TargetKind.NATIVE
     assert plan.compiler_target_triple is None
     assert plan.native_target is not None
 

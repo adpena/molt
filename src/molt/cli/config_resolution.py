@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from molt.compilation_target import Target, TargetKind, admit_target
+
 import os
 import tomllib
 from pathlib import Path
@@ -178,27 +180,17 @@ def _select_capability_input(
     return next((candidate for candidate in candidates if candidate is not None), None)
 
 
-def runtime_target(target: str) -> str:
-    """Project a compiler target onto its runtime platform.
-
-    ``llvm`` selects the LLVM backend for the native host. Keep this projection
-    beside backend selection so platform and wrapper consumers share that rule
-    without importing the compiler's model graph.
-    """
-    return "native" if target == "llvm" else target
-
-
 def _select_codegen_backend(
     target: str, backend_choice: str
-) -> tuple[str, CodegenBackend, str | None]:
+) -> tuple[Target, CodegenBackend, str | None]:
     """Canonicalize ``--target llvm``/``--backend``; return target and backend.
 
     `--target llvm` is an alias for "native binary, LLVM backend": the LLVM
     backend emits host-native objects, so the runtime staticlib and the entire
     native link path are identical to `--target native`; the only difference
-    is the codegen backend. Canonicalize it to the `native` target (so every
-    downstream `target == "native"` branch - runtime triple, stdlib object
-    split, native link driver - fires) and return the backend separately.
+    is the codegen backend. Canonicalize it to `TargetKind.NATIVE`, preserving
+    the shared runtime triple, stdlib object and native link policies, and
+    return the backend separately.
     Without this, "llvm" leaks into the cargo `--target` slot, which expects a
     rustc target triple, and the runtime build fails with "could not find
     specification for target \"llvm\"".
@@ -214,7 +206,7 @@ def _select_codegen_backend(
     if target == "llvm":
         if backend_choice not in {"auto", "llvm"}:
             return (
-                target,
+                TargetKind.NATIVE,
                 DEFAULT_CODEGEN_BACKEND,
                 (
                     "`--target llvm` selects the LLVM backend; it conflicts "
@@ -223,14 +215,18 @@ def _select_codegen_backend(
                 ),
             )
         backend_choice = "llvm"
-        target = runtime_target(target)
+        target = "native"
     if backend_choice == "auto":
-        return target, DEFAULT_CODEGEN_BACKEND, None
+        backend_choice = DEFAULT_CODEGEN_BACKEND
     if backend_choice not in CODEGEN_BACKENDS:
         choices = ", ".join(("auto", *CODEGEN_BACKENDS))
         return (
-            target,
+            TargetKind.NATIVE,
             DEFAULT_CODEGEN_BACKEND,
             (f"Unknown backend {backend_choice!r}; expected one of: {choices}."),
         )
-    return target, backend_choice, None
+    try:
+        selected_target = admit_target(target)
+    except ValueError as exc:
+        return TargetKind.NATIVE, backend_choice, str(exc)
+    return selected_target, backend_choice, None

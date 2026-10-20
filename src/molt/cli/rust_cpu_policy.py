@@ -14,6 +14,10 @@ build) cannot inherit the flag.
 
 from __future__ import annotations
 
+from molt.compilation_target import target_name
+
+from molt.compilation_target import Target, TargetKind
+
 import enum
 from collections.abc import Mapping
 
@@ -41,7 +45,7 @@ class RustCpuPolicy(enum.Enum):
 
 
 def resolve_rust_cpu_policy(
-    target: str, env: Mapping[str, str]
+    target: Target, env: Mapping[str, str]
 ) -> tuple[RustCpuPolicy, str | None]:
     """Resolve the policy of one build from its target and its environment.
 
@@ -58,9 +62,9 @@ def resolve_rust_cpu_policy(
             f"{PERF_PROFILE_ENV} must be {NATIVE_ARCH_PERF_PROFILE!r} or unset, "
             f"not {raw!r}."
         )
-    if target != "native":
+    if target is not TargetKind.NATIVE:
         return RustCpuPolicy.BASELINE, (
             "Native-arch perf profile requested, but non-native target "
-            f"{target!r} selected; using the baseline CPU."
+            f"{target_name(target)!r} selected; using the baseline CPU."
         )
     return RustCpuPolicy.NATIVE, None

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from molt.compilation_target import admit_target
+
 import os
 import re
 import tomllib
@@ -364,7 +366,7 @@ def scientific_extension_variant(
     target: str, *, stack: ScientificStackVersion | None = None
 ) -> SourceExtensionVariant:
     selected = resolve_scientific_stack() if stack is None else stack
-    target_plan = resolve_source_extension_target_plan(target)
+    target_plan = resolve_source_extension_target_plan(admit_target(target))
     variant = SourceExtensionVariant(
         target_python=_parse_target_python_version(selected.cpython),
         abi_tier=SCIENTIFIC_EXTENSION_ABI_TIER,

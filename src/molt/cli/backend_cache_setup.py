@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from molt.compilation_target import Target
+
 from dataclasses import dataclass
 import hashlib
 import json
@@ -334,7 +336,7 @@ def _prepare_backend_cache_setup(
     cache_enabled: bool,
     ir: Mapping[str, Any],
     function_digests: FunctionDigests,
-    target: str,
+    target: Target,
     artifact_contract: BackendArtifactContract,
     profile: str,
     runtime_cargo_profile: str,

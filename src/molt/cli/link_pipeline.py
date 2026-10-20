@@ -37,11 +37,10 @@ from molt.cli.native_link_command import (
     _build_native_link_plan,
 )
 from molt.cli.native_link_plan import (
-    NativeTargetSpec,
-    NativeArtifactKind,
     native_link_execution_command as _native_link_execution_command,
     validate_native_object_artifact,
 )
+from molt.native_target import NativeTargetSpec, NativeArtifactKind
 from molt.cli.native_link_tool_identity import native_link_cache_tool_facts
 from molt.cli.native_main_stub import _render_native_main_stub
 from molt.cli.output import CliFailure as _CliFailure

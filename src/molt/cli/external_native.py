@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from molt.compilation_target import Target, TargetKind, target_name, is_wasm_target
+
 from molt.compiler_analysis import python_import_scan as _source_import_scan
 
 import contextlib
@@ -77,7 +79,7 @@ from molt.cli.source_extension_target import (
     source_extension_link_dialect,
     resolve_source_extension_target_plan,
 )
-from molt.cli.native_link_plan import _host_target_triple
+from molt.native_target import _host_target_triple
 from molt.cli.source_extension_object_closure import (
     SourceExtensionObjectClosureError,
     validate_source_extension_object_closure,
@@ -1480,9 +1482,9 @@ def _load_external_artifact_manifest(
     )
 
 
-def _external_artifact_requested_target_triple(target: str | None) -> str:
+def _external_artifact_requested_target_triple(target: Target | None) -> str:
     return resolve_source_extension_target_plan(
-        "native" if target is None else target,
+        TargetKind.NATIVE if target is None else target,
         host_platform=sys.platform,
         host_arch=platform.machine(),
     ).target_triple
@@ -1785,7 +1787,7 @@ def _resolve_external_package_native_artifact_plan(
     *,
     external_module_roots: Sequence[Path],
     admitted_packages: Collection[str],
-    target: str | None,
+    target: Target | None,
     target_python: TargetPythonVersion = _DEFAULT_TARGET_PYTHON_VERSION,
     required_modules: Collection[str] | None = None,
 ) -> tuple[_ExternalPackageNativeArtifactPlan | None, list[str]]:
@@ -1838,7 +1840,7 @@ def _resolve_external_package_native_artifact_plan(
                     except (RuntimeError, ValueError) as exc:
                         return None, [
                             "external native artifacts do not support compiler "
-                            f"target {target!r}: {exc}"
+                            f"target {target_name(TargetKind.NATIVE if target is None else target)!r}: {exc}"
                         ]
                 module_name = _external_extension_module_name(
                     package=package,
@@ -2272,7 +2274,7 @@ def _resolve_import_admission_policy(
     external_module_roots: Sequence[Path],
     json_output: bool,
     defer_native_artifacts: bool = False,
-    target: str | None = None,
+    target: Target | None = None,
     target_python: TargetPythonVersion = _DEFAULT_TARGET_PYTHON_VERSION,
 ) -> tuple[_ImportAdmissionPolicy | None, _CliFailure | None]:
     packages, error = _parse_external_static_packages(
@@ -2291,7 +2293,7 @@ def _resolve_import_admission_policy(
             json_output,
             command="build",
         )
-    if target == "wasm":
+    if target is not None and is_wasm_target(target):
         wasm_native_source_errors = _wasm_external_package_native_source_errors(
             external_module_roots=external_module_roots,
             admitted_packages=packages,
@@ -2777,7 +2779,7 @@ def _external_native_artifact_output_custody_error(
     *,
     native_artifact_plan: _ExternalPackageNativeArtifactPlan,
     output_layout: _BuildOutputLayout,
-    target: str,
+    target: Target,
 ) -> str | None:
     if not native_artifact_plan.artifacts:
         return None
@@ -2837,6 +2839,6 @@ def _external_native_artifact_output_custody_error(
         "External static packages require native binary output with target-matched "
         "static_link archives, or linked WASM output with wasm32 static_link "
         "artifacts. "
-        f"Unsupported target/emit combination: target={target}, "
+        f"Unsupported target/emit combination: target={target_name(target)}, "
         f"emit={output_layout.emit_mode}, packages={packages}."
     )

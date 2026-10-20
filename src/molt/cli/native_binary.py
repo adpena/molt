@@ -9,7 +9,7 @@ import subprocess
 import sys
 
 from molt.cli.command_runtime import _run_completed_command
-from molt.cli.native_link_plan import resolve_native_target_spec
+from molt.native_target import resolve_native_target_spec
 from molt.native_artifact_header import (
     LINKED_IMAGE_KINDS,
     NativeArtifactError,

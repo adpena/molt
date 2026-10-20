@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+from molt.compilation_target import admit_target
+from molt.cli.config_resolution import _select_codegen_backend
+
 import inspect
 import importlib
 import sys
@@ -281,12 +284,18 @@ def test_venv_root_selection_custodies_version_and_site_misses(
     ],
 )
 def test_frontend_platform_fact_uses_selected_runtime_target(target, expected):
-    assert build_inputs._target_sys_platform(target) == expected
+    assert (
+        build_inputs._target_sys_platform(_select_codegen_backend(target, "auto")[0])
+        == expected
+    )
 
 
 @pytest.mark.parametrize("target", ["native", "llvm"])
 def test_frontend_native_platform_fact_uses_the_actual_host(target):
-    assert build_inputs._target_sys_platform(target) == sys.platform
+    assert (
+        build_inputs._target_sys_platform(_select_codegen_backend(target, "auto")[0])
+        == sys.platform
+    )
 
 
 @pytest.mark.parametrize("target", ["native", "llvm"])
@@ -297,7 +306,7 @@ def test_native_build_configuration_preserves_host_platform(tmp_path, target):
         project_root=tmp_path,
         warnings=[],
         json_output=True,
-        target=target,
+        target=_select_codegen_backend(target, "auto")[0],
         profile="dev",
         pgo_profile=None,
         runtime_feedback=None,
@@ -311,5 +320,5 @@ def test_native_build_configuration_preserves_host_platform(tmp_path, target):
 
 
 def test_frontend_platform_fact_refuses_an_unadmitted_target():
-    with pytest.raises(RuntimeError, match="no object-format policy"):
-        build_inputs._target_sys_platform("x86_64-notlinux-unknown")
+    with pytest.raises(ValueError, match="no object-format policy"):
+        build_inputs._target_sys_platform(admit_target("x86_64-notlinux-unknown"))

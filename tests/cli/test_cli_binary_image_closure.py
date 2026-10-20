@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from molt.compilation_target import admit_target
+
 from molt.cli.build_request import BuildRequest
 
 
@@ -89,7 +91,7 @@ def _materialize_plan(
         diagnostics_enabled=False,
         module_reasons=module_reasons,
         json_output=False,
-        target="native",
+        target=admit_target("native"),
         image_scope=image_scope,
     )
     assert error is None

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from molt.compilation_target import Target, TargetKind, is_wasm_target
+
 from dataclasses import dataclass
 
 import hashlib
@@ -435,7 +437,7 @@ def _isolate_import_module_order(
 _MODULE_ENSURE_SYMBOL = "molt_module_ensure"
 
 
-def _module_registry_target_enabled(target: str) -> bool:
+def _module_registry_target_enabled(target: Target) -> bool:
     """Select the binary representation of the shared finite import catalog.
 
     Native projects it as a relocated init table; WASM projects the same rows
@@ -443,7 +445,7 @@ def _module_registry_target_enabled(target: str) -> bool:
     runtime/catalog ABI and retain their textual dispatch shape. This is not
     source-scan custody or admission of runtime import semantics.
     """
-    if target in {"luau", "rust", "mlir"}:
+    if target in {TargetKind.LUAU, TargetKind.RUST, TargetKind.MLIR}:
         return False
     return True
 
@@ -1943,7 +1945,7 @@ def _reachability_feature_refusal(
     reached_symbols: frozenset[str],
     *,
     stdlib_profile: str | None,
-    target: str,
+    target: Target,
     target_triple: str | None = None,
 ) -> str | None:
     """Refuse when the reached SimpleIR needs a feature the profile excludes.
@@ -1958,11 +1960,11 @@ def _reachability_feature_refusal(
     against the native surface. ``RequiredLinkFeatures`` itself is
     target-independent (a property of the reached IR).
     """
-    is_wasm = target in {"wasm", "wasm-freestanding"} or target.startswith("wasm32")
+    is_wasm = is_wasm_target(target)
     if target_triple is None and is_wasm:
         target_triple = (
             "wasm32-unknown-unknown"
-            if target == "wasm-freestanding"
+            if target in {TargetKind.WASM_FREESTANDING, TargetKind.WASM_UNKNOWN}
             else "wasm32-wasip1"
         )
     # The ceiling is the SAME per-target available-feature authority the build
@@ -2093,7 +2095,7 @@ def _prepare_backend_ir(
     validate_inputs: Callable[[], None],
     target_python: TargetPythonVersion,
     stdlib_profile: str | None = DEFAULT_STDLIB_PROFILE,
-    target: str = "native",
+    target: Target = TargetKind.NATIVE,
     target_triple: str | None = None,
     native_artifact_plan: _ExternalPackageNativeArtifactPlan = (
         _EMPTY_EXTERNAL_PACKAGE_NATIVE_ARTIFACT_PLAN

@@ -613,7 +613,7 @@ def test_weak_undefined_and_indirect_facts_have_explicit_semantics():
 
 
 def test_symbol_normalization_uses_requested_target_not_host():
-    from molt.cli.native_link_plan import _host_target_triple
+    from molt.native_target import _host_target_triple
 
     assert native_symbol_inspection._symbol_normalization_target(None) == (
         native_symbol_inspection._symbol_normalization_target(_host_target_triple())

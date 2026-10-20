@@ -12,6 +12,8 @@ checkout, so a transport never derives or trusts a layout of its own.
 
 from __future__ import annotations
 
+from molt.compilation_target import TargetKind
+
 import os
 from collections.abc import Mapping
 from dataclasses import dataclass
@@ -92,7 +94,7 @@ class NativeToolchainSelection:
         if runtime_error or backend_error:
             raise NativeToolchainTransferError(str(runtime_error or backend_error))
         try:
-            rust_cpu, _warning = resolve_rust_cpu_policy("native", os.environ)
+            rust_cpu, _warning = resolve_rust_cpu_policy(TargetKind.NATIVE, os.environ)
         except ValueError as exc:
             raise NativeToolchainTransferError(str(exc)) from exc
         if rust_cpu is not RustCpuPolicy.BASELINE:

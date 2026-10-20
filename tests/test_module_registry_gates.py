@@ -18,6 +18,8 @@ G7  test_module_registry_schema_authority_is_synchronized — the blob layout
 """
 
 from __future__ import annotations
+
+from molt.cli.config_resolution import _select_codegen_backend
 from tests.process_guard_common import run_guarded_test_process
 
 import json
@@ -399,7 +401,7 @@ def _prepare_binary_ir(
         emit_ir_path=None,
         target_python=_DEFAULT_TARGET_PYTHON_VERSION,
         stdlib_profile="full",
-        target=target,
+        target=_select_codegen_backend(target, "auto")[0],
     )
     assert error is None, error
     assert prepared is not None

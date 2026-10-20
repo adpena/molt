@@ -11,6 +11,10 @@ identity it computed and the selected binary's bytes.
 
 from __future__ import annotations
 
+from molt.compilation_target import target_name
+
+from molt.compilation_target import Target, TargetKind, is_wasm_target
+
 import os
 import sys
 from pathlib import Path
@@ -176,13 +180,13 @@ def _verified_backend_receipts(
 def _prebuild_backend_binary(
     *,
     project_root: Path,
-    target: str,
+    target: Target,
     codegen_backend: CodegenBackend,
     json_output: bool,
     cargo_timeout: float | None,
     verbose: bool = False,
 ) -> int:
-    if target == "mlir":
+    if target is TargetKind.MLIR:
         # `build_pipeline` routes MLIR builds around the backend pipeline.
         return _fail_prebuild(
             "Target 'mlir' builds through molt-backend-mlir and never admits "
@@ -190,9 +194,9 @@ def _prebuild_backend_binary(
             json_output,
         )
     # Same lane classification as `_resolve_build_output_layout`.
-    is_wasm = target in {"wasm", "wasm-freestanding"}
-    is_luau_transpile = target == "luau"
-    is_rust_transpile = target in {"rust", "luau"}
+    is_wasm = is_wasm_target(target)
+    is_luau_transpile = target is TargetKind.LUAU
+    is_rust_transpile = target in {TargetKind.RUST, TargetKind.LUAU}
     try:
         # A target `molt build` rejects must not prewarm some other lane.
         resolve_backend_artifact_contract(
@@ -200,7 +204,7 @@ def _prebuild_backend_binary(
         )
     except ValueError as exc:
         return _fail_prebuild(
-            f"Unsupported build target {target!r}: {exc}", json_output
+            f"Unsupported build target {target_name(target)!r}: {exc}", json_output
         )
     if cargo_timeout is None:
         cargo_timeout, timeout_error = _resolve_timeout_env("MOLT_CARGO_TIMEOUT")
@@ -336,7 +340,7 @@ def _prebuild_backend_binary(
     compiler.update(identity)
     compiler["fingerprint"] = result.cache_compiler_fingerprint
     data = {
-        "target": target,
+        "target": target_name(target),
         "admission": "installed" if installed else "receipts",
         "compiler": compiler,
         "receipts": receipts,

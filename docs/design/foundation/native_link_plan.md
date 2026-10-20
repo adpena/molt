@@ -13,6 +13,37 @@ Main executables and source-built native extensions consume the same dead-strip
 and function-identity flags. User and upstream link arguments are inputs to the
 plan, not permission to weaken its correctness invariants.
 
+## Target admission
+
+`src/molt/compilation_target.py` owns compilation target identity: a plain closed
+`TargetKind` enum or an admitted `NativeTargetSpec`. `src/molt/native_target.py`
+owns native triple parsing, host facts, object-format policy and link dialects;
+it imports no linker execution or artifact publication machinery. Open native
+triples retain toolchain-owned architecture support. A symbolic native host
+request performs no host discovery until a native consumer needs its spec.
+An explicitly spelled host triple remains an explicit Cargo/toolchain request
+and does not opt into the host-only native CPU policy. Resolved host specs are
+not compilation intents: library callers use `TargetKind.NATIVE`; the shared
+target boundary rejects `NativeTargetSpec(is_host=True)` before discovery or
+serialization. Resolved native consumers may still carry that host spec.
+
+CLI/config and JSON admission resolve strings once. Backend selection consumes
+the `llvm` alias before target admission. Artifact contracts carry admitted
+native specs without reparsing; their resolver has no second target selector.
+Source-extension plans carry the same typed request and project strings only
+into compiler commands and recorded metadata. Generic WASM intent and explicit
+WASI/freestanding triples remain distinct when selecting runtime/provider ABI.
+The request cache projection retains public target spellings. Shared native
+stdlib objects use the ordinary native target plus a `native-stdlib` variant
+namespace; replacing the old pseudo-target invalidates that cache namespace
+once without admitting a second target identity.
+
+The representation follows [LLVM Triple](https://llvm.org/doxygen/classllvm_1_1Triple.html)
+for structured platform facts and [rustc target descriptions](https://doc.rust-lang.org/nightly/nightly-rustc/rustc_target/spec/enum.TargetTuple.html)
+for typed target intent at the compiler boundary. Artifact kind and backend
+choice remain separate from target identity. This is an internal ownership
+contract, not a broader target-support claim.
+
 ## Function identity
 
 Molt runtime behavior can observe function-pointer identity. Until code objects

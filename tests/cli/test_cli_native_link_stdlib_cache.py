@@ -11,11 +11,8 @@ import pytest
 from molt.capability_manifest import CapabilityManifest
 from molt.cli import link_pipeline as cli_link_pipeline
 from molt.cli import native_link_command
-from molt.cli.native_link_plan import (
-    NativeArtifactKind,
-    native_artifact_link_arguments,
-    resolve_native_target_spec,
-)
+from molt.cli.native_link_plan import native_artifact_link_arguments
+from molt.native_target import NativeArtifactKind, resolve_native_target_spec
 from tests.cli.native_link_test_support import (
     static_archive_bytes,
     write_test_native_link_manifest,

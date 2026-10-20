@@ -15,7 +15,7 @@ from molt.source_root import compiler_source_root
 from molt.exact_json import string_keyed_mapping
 from molt.file_hashing import _sha256_file
 from molt.cli.models import _ExternalNativeCallableExport
-from molt.cli.native_link_plan import _host_target_triple, resolve_native_target_spec
+from molt.native_target import _host_target_triple, resolve_native_target_spec
 from molt.python_module_names import (
     canonical_python_module_name,
     canonical_python_module_names,

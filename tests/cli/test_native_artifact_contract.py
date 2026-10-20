@@ -13,11 +13,10 @@ from tests.native_artifact_fixtures import (
 
 from molt.cli import link_pipeline
 from molt.cli.native_link_plan import (
-    NativeArtifactKind,
     native_artifact_link_arguments,
-    resolve_native_target_spec,
     validate_native_object_artifact,
 )
+from molt.native_target import NativeArtifactKind, resolve_native_target_spec
 
 
 @pytest.mark.parametrize(

@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+from molt.compilation_target import target_name
+
+from molt.compilation_target import Target
+
 import os
 import subprocess
 import sys
@@ -64,7 +68,7 @@ from molt.cli.models import (
     _PreparedBackendSetup,
     _RuntimeArtifactState,
 )
-from molt.cli.native_link_plan import NativeArtifactKind
+from molt.native_target import NativeArtifactKind
 from molt.cli.native_symbol_inspection import (
     NativeSymbolInspectionError,
 )
@@ -209,7 +213,7 @@ def _prepare_backend_setup(
     target_triple: str | None,
     json_output: bool,
     cargo_timeout: float | None,
-    target: str,
+    target: Target,
     profile: BuildProfile,
     backend_cargo_profile: str,
     linked: bool,
@@ -236,7 +240,7 @@ def _prepare_backend_setup(
 ) -> tuple[_PreparedBackendSetup | None, _CliFailure | None]:
     try:
         artifact_contract = resolve_backend_artifact_contract(
-            target=target, emit_mode=emit_mode, target_triple=target_triple
+            target=target, emit_mode=emit_mode
         )
     except ValueError as exc:
         return None, _fail(str(exc), json_output, command="build")
@@ -400,7 +404,7 @@ def _prepare_backend_setup(
             resolved_modules=resolved_modules,
         )
     return _PreparedBackendSetup(
-        backend="llvm" if "llvm" in backend_selection.features else target,
+        backend="llvm" if "llvm" in backend_selection.features else target_name(target),
         runtime_state=runtime_state,
         backend_bin=backend_bin,
         cache_setup=cache_setup,

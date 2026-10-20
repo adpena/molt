@@ -1,13 +1,14 @@
 from __future__ import annotations
 
-from molt.cli.native_link_plan import resolve_native_target_spec
+from molt.native_target import resolve_native_target_spec
 
 from types import SimpleNamespace
 
 from pathlib import Path
 
 from molt.cli import native_link_command
-from molt.cli.native_link_plan import NativeLinkPlan, _host_target_triple
+from molt.cli.native_link_plan import NativeLinkPlan
+from molt.native_target import _host_target_triple
 from molt.cli.source_extension_link_requirements import (
     SourceExtensionLinkRequirements,
     SourceExtensionLinkLoadingPolicy,

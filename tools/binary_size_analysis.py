@@ -25,6 +25,7 @@ Usage::
 
 from __future__ import annotations
 
+
 import argparse
 import ast
 from collections import Counter
@@ -48,6 +49,7 @@ SRC_ROOT = REPO_ROOT / "src"
 
 
 from tools import harness_memory_guard  # noqa: E402
+from molt.compilation_target import TargetKind  # noqa: E402
 from molt.cargo_workspace import workspace_member_manifests  # noqa: E402
 from molt.exact_json import loads_exact  # noqa: E402
 from molt.native_artifact_header import (  # noqa: E402
@@ -185,7 +187,7 @@ def _native_scanner(explicit: Path | None) -> tuple[Path, tuple[str, int] | None
         codegen_backend=DEFAULT_CODEGEN_BACKEND,
     )
     coordinate = _backend_bin_path(REPO_ROOT, profile, features)
-    rust_cpu, _warning = resolve_rust_cpu_policy("native", os.environ)
+    rust_cpu, _warning = resolve_rust_cpu_policy(TargetKind.NATIVE, os.environ)
     try:
         selected, receipt_path = admitted_backend_binary(
             REPO_ROOT,

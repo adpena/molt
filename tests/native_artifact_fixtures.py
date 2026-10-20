@@ -37,7 +37,7 @@ def native_relocatable_object(
     therefore bind the same definitions and references asserted by reader mocks.
     ELF ``weak_symbols`` may name a definition (``W``) or a reference (``w``).
     """
-    from molt.cli.native_link_plan import resolve_native_target_spec
+    from molt.native_target import resolve_native_target_spec
     from molt.native_target_shape import NativeObjectFormat, native_artifact_shape
 
     target = resolve_native_target_spec(target_triple)

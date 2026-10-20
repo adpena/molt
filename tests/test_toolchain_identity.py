@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from molt.compilation_target import admit_target
+
 import hashlib
 import os
 from pathlib import Path
@@ -1214,7 +1216,7 @@ def test_retained_file_consumers_bound_growth_before_acceptance(
             return static_archive_identity.artifact_content_identity(source)
         if consumer == "text":
             contract = backend_artifact_contract.resolve_backend_artifact_contract(
-                target="rust", emit_mode="bin"
+                target=admit_target("rust"), emit_mode="bin"
             )
             return contract.validate(source)
         if consumer == "runtime-stage":

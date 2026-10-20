@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+from molt.compilation_target import admit_target
+from molt import native_target
+
 import inspect
 from pathlib import Path
 import subprocess
@@ -65,9 +68,16 @@ def test_bolt_success_without_optimized_artifact_fails_closed(
     binary = tmp_path / "program"
     binary.write_bytes(b"input")
     monkeypatch.setattr(native_toolchain, "_compiler_root", lambda: tmp_path)
-    install_module_view(monkeypatch, "sys", sys, native_toolchain, platform="linux")
     install_module_view(
-        monkeypatch, "platform", platform, native_toolchain, machine=lambda: "x86_64"
+        monkeypatch, "sys", sys, native_toolchain, native_target, platform="linux"
+    )
+    install_module_view(
+        monkeypatch,
+        "platform",
+        platform,
+        native_toolchain,
+        native_target,
+        machine=lambda: "x86_64",
     )
     monkeypatch.setattr(
         native_toolchain,
@@ -78,7 +88,7 @@ def test_bolt_success_without_optimized_artifact_fails_closed(
         native_toolchain._run_bolt_post_link(
             bolt_requested=True,
             bolt_training_cmd=None,
-            target="native",
+            target=admit_target("native"),
             output=str(binary),
             out_dir=None,
             build_rc=0,
@@ -108,9 +118,16 @@ def test_bolt_finalizes_candidate_before_atomic_publication(
     )
     received: dict[str, object] = {}
     monkeypatch.setattr(native_toolchain, "_compiler_root", lambda: tmp_path)
-    install_module_view(monkeypatch, "sys", sys, native_toolchain, platform="linux")
     install_module_view(
-        monkeypatch, "platform", platform, native_toolchain, machine=lambda: "x86_64"
+        monkeypatch, "sys", sys, native_toolchain, native_target, platform="linux"
+    )
+    install_module_view(
+        monkeypatch,
+        "platform",
+        platform,
+        native_toolchain,
+        native_target,
+        machine=lambda: "x86_64",
     )
     monkeypatch.setattr(
         native_toolchain,
@@ -131,7 +148,7 @@ def test_bolt_finalizes_candidate_before_atomic_publication(
         native_toolchain._run_bolt_post_link(
             bolt_requested=True,
             bolt_training_cmd=None,
-            target="native",
+            target=admit_target("native"),
             output=str(binary),
             out_dir=None,
             build_rc=0,
@@ -187,9 +204,16 @@ def test_bolt_source_rejection_reclaims_admitted_private_candidates(
     tools.mkdir()
     (tools / "bolt_optimize.sh").write_text("#!/usr/bin/env bash\n", encoding="utf-8")
     monkeypatch.setattr(native_toolchain, "_compiler_root", lambda: tmp_path)
-    install_module_view(monkeypatch, "sys", sys, native_toolchain, platform="linux")
     install_module_view(
-        monkeypatch, "platform", platform, native_toolchain, machine=lambda: "x86_64"
+        monkeypatch, "sys", sys, native_toolchain, native_target, platform="linux"
+    )
+    install_module_view(
+        monkeypatch,
+        "platform",
+        platform,
+        native_toolchain,
+        native_target,
+        machine=lambda: "x86_64",
     )
     monkeypatch.setenv("MOLT_KEEP_SYMBOLS", "1")
     monkeypatch.delenv("MOLT_SKIP_BINARY_VALIDITY_CHECK", raising=False)
@@ -225,7 +249,7 @@ def test_bolt_source_rejection_reclaims_admitted_private_candidates(
         native_toolchain._run_bolt_post_link(
             bolt_requested=True,
             bolt_training_cmd=None,
-            target="x86_64-unknown-linux-gnu",
+            target=admit_target("x86_64-unknown-linux-gnu"),
             input_binary=str(original) if owned_input else None,
             output=str(output),
             out_dir=None,
@@ -250,16 +274,23 @@ def test_bolt_helper_never_emits_json_outside_build_result_authority(
     binary = tmp_path / "program"
     binary.write_bytes(b"input")
     monkeypatch.setattr(native_toolchain, "_compiler_root", lambda: tmp_path)
-    install_module_view(monkeypatch, "sys", sys, native_toolchain, platform="linux")
     install_module_view(
-        monkeypatch, "platform", platform, native_toolchain, machine=lambda: "x86_64"
+        monkeypatch, "sys", sys, native_toolchain, native_target, platform="linux"
+    )
+    install_module_view(
+        monkeypatch,
+        "platform",
+        platform,
+        native_toolchain,
+        native_target,
+        machine=lambda: "x86_64",
     )
 
     assert (
         native_toolchain._run_bolt_post_link(
             bolt_requested=True,
             bolt_training_cmd=None,
-            target="native",
+            target=admit_target("native"),
             output=str(binary),
             out_dir=None,
             build_rc=0,

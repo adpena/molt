@@ -1,3 +1,4 @@
+from molt.compilation_target import admit_target
 from molt.cli.cache_keys import FunctionDigests
 
 import json
@@ -190,7 +191,7 @@ def test_optional_stdlib_cache_requires_distinct_owned_output(tmp_path, output, 
         ir_path=None if probe else Path("backend-ir.msgpack"),
         backend_output=tmp_path / "app.a",
         artifact_contract=resolve_backend_artifact_contract(
-            target="native", emit_mode="bin"
+            target=admit_target("native"), emit_mode="bin"
         ),
         wasm_link=False,
         wasm_data_base=None,
@@ -229,9 +230,9 @@ def _native_cache_setup(
         backend_bin=tmp_path / "backend",
         cache_enabled=True,
         ir={"functions": []},
-        target="native",
+        target=admit_target("native"),
         artifact_contract=resolve_backend_artifact_contract(
-            target="native", emit_mode="bin"
+            target=admit_target("native"), emit_mode="bin"
         ),
         profile=profile,
         runtime_cargo_profile="dev-fast",

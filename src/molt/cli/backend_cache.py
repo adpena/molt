@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from molt.compilation_target import Target, TargetKind
+
 import contextlib
 import hashlib
 import json
@@ -1691,10 +1693,10 @@ def _shared_stdlib_cache_validation_token_matches(
     )
 
 
-def _native_stdlib_object_split_enabled(*, target: str, emit_mode: str) -> bool:
+def _native_stdlib_object_split_enabled(*, target: Target, emit_mode: str) -> bool:
     # An explicit object is one complete relocatable compilation unit, not
     # an archive disguised as an object after merging a cached stdlib.
-    return target == "native" and emit_mode != "obj"
+    return target is TargetKind.NATIVE and emit_mode != "obj"
 
 
 def _stdlib_module_symbols(
@@ -1879,9 +1881,9 @@ def _shared_stdlib_cache_key(
     )
     return _cache_key(
         cast(dict[str, Any], ir),
-        "native-stdlib",
+        TargetKind.NATIVE,
         target_triple,
-        cache_variant,
+        f"native-stdlib:{cache_variant}",
         payload_ir=payload_ir,
         compiler_fingerprint=cache_compiler_fingerprint,
         tooling_fingerprint=cache_tooling_fingerprint,

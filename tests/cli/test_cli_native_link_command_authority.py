@@ -4,7 +4,7 @@ import inspect
 
 import molt.cli as cli
 from molt.cli import native_link_command
-from molt.cli.native_link_plan import resolve_native_target_spec
+from molt.native_target import resolve_native_target_spec
 from molt import toolchain_identity
 
 _NATIVE_LINK_COMMAND_NAMES = (

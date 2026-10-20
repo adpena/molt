@@ -18,7 +18,7 @@ from molt.cli.native_link_custody import (
     publish_native_link_custody,
     validate_native_link_custody,
 )
-from molt.cli.native_link_plan import resolve_native_target_spec
+from molt.native_target import resolve_native_target_spec
 from molt.cli.runtime_artifact_selection import RUNTIME_STATICLIB_ARTIFACTS
 from molt.cli.runtime_paths import _cargo_profile_dir
 from molt.cli.runtime_identity_schema import (

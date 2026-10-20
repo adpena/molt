@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from molt.compilation_target import admit_target
+
 import inspect
 from dataclasses import replace
 import json
@@ -165,7 +167,7 @@ def terminal_build(
     cache_setup = _BackendCacheSetup(
         backend_environment={},
         artifact_contract=resolve_backend_artifact_contract(
-            target="native", emit_mode="bin"
+            target=admit_target("native"), emit_mode="bin"
         ),
         cache_enabled=True,
         cache_key="app-key",

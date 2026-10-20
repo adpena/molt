@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from molt.compilation_target import admit_target
+
 import hashlib
 import json
 import os
@@ -370,7 +372,7 @@ def _write_target_metadata(root: Path) -> dict[str, object]:
         "strip": ["llvm-strip"],
     }
     build_commands = {role: argv for role, argv in commands.items() if role != "ld"}
-    target_plan = resolve_source_extension_target_plan("wasm")
+    target_plan = resolve_source_extension_target_plan(admit_target("wasm"))
     compiler_rt = "@toolchain/compiler-rt.a"
     pkg_config_dir = "@target/pkgconfig"
     include_dirs = ["@molt/include"]

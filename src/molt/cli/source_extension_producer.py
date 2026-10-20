@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from molt.compilation_target import admit_target
+
 from molt.process_environment import ProcessEnvironment, ProcessEnvironmentBuilder
 
 import contextlib
@@ -1314,7 +1316,7 @@ def _build_extension(
     inventory: SourceBuildInventory | None = None,
 ) -> _ProducedExtension:
     target_plan = resolve_source_extension_target_plan(
-        target,
+        admit_target(target),
         host_platform=sys.platform,
         host_arch=platform.machine(),
     )
@@ -2275,7 +2277,9 @@ def _build_source_extension_set(
             registry=registry,
         )
         target_plan = resolve_source_extension_target_plan(
-            target, host_platform=sys.platform, host_arch=platform.machine()
+            admit_target(target),
+            host_platform=sys.platform,
+            host_arch=platform.machine(),
         )
         variant = SourceExtensionVariant(
             target_python=_parse_target_python_version(python_version),

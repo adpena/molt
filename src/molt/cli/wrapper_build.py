@@ -1,6 +1,9 @@
 from __future__ import annotations
 
-from molt.cli.build_request import BuildRequest
+
+from molt.compilation_target import TargetKind, is_wasm_target
+
+from molt.cli.build_request import BuildRequest, build_request_values
 from molt.cli.build_request_resolution import resolve_build_arguments
 from molt.process_environment import ProcessEnvironment
 
@@ -10,7 +13,7 @@ import os
 import shlex
 import sys
 import time
-from dataclasses import dataclass, fields, replace
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
@@ -305,9 +308,9 @@ def _wrapper_build_cache_input(
         "runtime_backend_fingerprint": _cache_fingerprint(
             env=env,
             backend_features=backend_features_for_target(
-                is_wasm=target.startswith("wasm"),
-                is_luau_transpile=target == "luau",
-                is_rust_transpile=target == "rust",
+                is_wasm=is_wasm_target(target),
+                is_luau_transpile=target is TargetKind.LUAU,
+                is_rust_transpile=target is TargetKind.RUST,
                 codegen_backend=request.codegen_backend,
             ),
             rust_cpu=rust_cpu,
@@ -315,9 +318,7 @@ def _wrapper_build_cache_input(
         "frontend_tooling_fingerprint": _cache_tooling_fingerprint(),
         "python_cache_tag": sys.implementation.cache_tag,
         "target_python": resolved_build_entry.target_python.tag,
-        "request": {
-            field.name: getattr(request, field.name) for field in fields(request)
-        },
+        "request": build_request_values(request),
     }
     try:
         encoded = json.dumps(
@@ -568,7 +569,8 @@ def _run_wrapper_build(
         return None, 0.0, _fail(str(exc), json_output, command=command)
     if (
         command == "run"
-        and request.target not in {"wasm", "luau", "mlir"}
+        and not is_wasm_target(request.target)
+        and request.target not in {TargetKind.LUAU, TargetKind.MLIR}
         and request.emit not in {None, "bin"}
     ):
         return (

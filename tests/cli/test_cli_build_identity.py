@@ -7,6 +7,8 @@ Two different programs whose entries share a file name once shared
 
 from __future__ import annotations
 
+from molt.compilation_target import admit_target
+
 from concurrent.futures import ThreadPoolExecutor
 import os
 from pathlib import Path
@@ -22,7 +24,10 @@ ROOT = Path(__file__).resolve().parents[2]
 
 def _identity(project: Path, source: Path, target="native", profile="dev") -> str:
     return layout.artifacts_identity(
-        project_root=project, source_path=source, target=target, profile=profile
+        project_root=project,
+        source_path=source,
+        target=admit_target(target),
+        profile=profile,
     )
 
 

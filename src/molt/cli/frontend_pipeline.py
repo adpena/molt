@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from molt.compilation_target import Target, is_wasm_target
+
 import ast
 import json
 import os
@@ -68,7 +70,6 @@ from molt.cli.build_request import (
     BuildProfile,
     EmitMode,
     ParseCodec,
-    Target,
     TypeHintPolicy,
 )
 from molt.cli.models import (
@@ -199,7 +200,7 @@ def _prepare_build_module_outputs(
     artifacts_root: Path,
     entry_module: str,
     diagnostics_enabled: bool,
-    target: str,
+    target: Target,
     trusted: bool,
     split_runtime: bool,
     require_linked: bool,
@@ -1063,7 +1064,7 @@ def _prepare_frontend_pipeline(
     tree_shake: bool,
     stdlib_profile: str,
 ) -> tuple[_PreparedFrontendPipelineBundle | None, _CliFailure | None]:
-    if target in {"wasm", "wasm-freestanding"} and split_runtime:
+    if is_wasm_target(target) and split_runtime:
         from molt.browser_asset_closure import (
             BROWSER_WASM_ENTRY_ASSETS,
             wasm_loader_asset_closure,

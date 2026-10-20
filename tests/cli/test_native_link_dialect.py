@@ -12,16 +12,18 @@ from molt.cli import (
     source_extension_target,
 )
 from molt.cli.native_link_plan import (
-    LinkDialect,
-    NativeArtifactKind,
     NativeLinkPlan,
     native_artifact_link_arguments,
     native_link_capabilities,
     native_link_policy,
     native_link_policy_flags,
-    resolve_link_dialect,
+)
+from molt.native_target import (
+    LinkDialect,
+    NativeArtifactKind,
     resolve_native_target_spec,
 )
+from molt.compilation_target import resolve_link_dialect
 from tests.cli.native_link_test_support import RUNTIME_BUILD_IDENTITY
 from molt.cli.source_extension_link_requirements import (
     SourceExtensionLinkRequirements,
