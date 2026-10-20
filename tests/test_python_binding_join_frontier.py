@@ -1011,3 +1011,66 @@ def test_absent_domain_projection_is_resolved_once_not_per_slot(
     resolutions = 0
     assert tuple(pool._binding_differences(exposed, twice, semantic=True)) == ()
     assert resolutions == 2
+
+
+@pytest.mark.parametrize("slot_count", (1, 32, 256))
+@pytest.mark.parametrize("parent_count", (2, 3))
+def test_join_copies_only_changed_payload_fields(
+    monkeypatch: pytest.MonkeyPatch, slot_count: int, parent_count: int
+) -> None:
+    pool = flow._StatePool()
+    result = StaticExpressionResult.scalar(7)
+    base = pool.set_bindings(
+        0, tuple((slot, INERT, 7, result, 11) for slot in range(slot_count))
+    )
+    parents = (base,) + tuple(
+        pool.set_binding(base, slot_count - 1, INERT, 7, result, owner)
+        for owner in (17, 19)[: parent_count - 1]
+    )
+    copied_fields: list[tuple[object, ...]] = []
+
+    def observe_list(values):
+        # Observe real fixed-size payload copies; return a real builtin list.
+        if isinstance(values, tuple) and len(values) == flow._BINDING_CHUNK_SIZE:
+            copied_fields.append(values)
+        return list(values)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(flow, "list", observe_list, raising=False)
+        joined = pool.join(*parents)
+
+    prior = pool._chunk_at(
+        pool._binding_environments[base], (slot_count - 1) >> flow._BINDING_CHUNK_SHIFT
+    )
+    current = pool._chunk_at(
+        pool._binding_environments[joined],
+        (slot_count - 1) >> flow._BINDING_CHUNK_SHIFT,
+    )
+    # Changing only ownership should not copy four unchanged payload arrays,
+    # irrespective of sibling count or unchanged bindings in the radix tree.
+    assert len(copied_fields) == 1
+    assert copied_fields[0] is prior.owner_tokens
+    for name in ("identities", "static_values", "results", "clean_epochs"):
+        assert getattr(current, name) is getattr(prior, name)
+    assert pool.owner_token(joined, slot_count - 1) == 0
+    assert pool.get(joined).parents == parents
+    assert pool.slot_updated_between(base, joined, slot_count - 1)
+    slots = tuple(range(slot_count + 1))
+    _assert_dense_join(pool, parents, joined, slots)
+    # Unvisited offsets retain canonical raw empties, including namespace epochs.
+    present = current.active_mask | current.clean_mask
+    for offset in range(flow._BINDING_CHUNK_SIZE):
+        if not present & (1 << offset):
+            for name in (
+                "identities",
+                "static_values",
+                "results",
+                "owner_tokens",
+                "clean_epochs",
+            ):
+                assert (
+                    getattr(current, name)[offset]
+                    == getattr(flow._EMPTY_BINDING_CHUNK, name)[offset]
+                )
+    pool.set_taint_domain(sum(1 << slot for slot in slots))
+    _assert_dense_join(pool, parents, joined, slots)
