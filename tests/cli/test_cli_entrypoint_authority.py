@@ -263,3 +263,71 @@ def test_remainder_commands_forward_options_after_their_positional(
     assert getattr(before, tail) == []
     assert after.json is False
     assert getattr(after, tail) == ["--json"]
+
+
+def _old_cache_entry(cache: Path) -> Path:
+    entry = cache / "module_lowering" / "entry.json"
+    entry.parent.mkdir(parents=True, exist_ok=True)
+    entry.write_bytes(b"old immutable cache payload")
+    import os
+
+    os.utime(entry, (1, 1))
+    return entry
+
+
+def test_cli_build_applies_the_cache_budget_to_its_cache_once_a_day(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # HF-184: a CLI build applies the budget to the cache it used, after it
+    # succeeded, at most once a day; failures, --no-cache builds and
+    # MOLT_CACHE_PRUNE=0 leave the cache alone.
+    from molt import cache_eviction
+
+    cache = tmp_path / "cache"
+    entry = _old_cache_entry(cache)
+    monkeypatch.setenv("MOLT_CACHE_MAX_GB", "0")
+    monkeypatch.delenv("MOLT_CACHE_PRUNE", raising=False)
+    returncode = 1
+    monkeypatch.setattr(build_command, "build", lambda _request: returncode)
+    request = BuildRequest(file_path="app.py", cache_dir=str(cache))
+
+    assert entrypoint._build(request) == 1
+    assert entrypoint._build(BuildRequest(file_path="app.py", cache=False)) == 1
+    assert entry.exists()
+    returncode = 0
+    assert entrypoint._build(BuildRequest(file_path="app.py", cache=False)) == 0
+    monkeypatch.setenv("MOLT_CACHE_PRUNE", "0")
+    assert entrypoint._build(request) == 0
+    assert entry.exists()
+
+    monkeypatch.delenv("MOLT_CACHE_PRUNE")
+    assert entrypoint._build(request) == 0
+    assert not entry.exists()
+    entry = _old_cache_entry(cache)
+
+    def no_second_sweep(*_args: object, **_kwargs: object) -> None:
+        pytest.fail("a build within a day of the last sweep must not sweep")
+
+    monkeypatch.setattr(cache_eviction, "automatic_retention", no_second_sweep)
+    assert entrypoint._build(request) == 0
+    assert entry.exists()
+
+
+def test_cache_prune_command_applies_the_budget_and_reports_bytes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture
+) -> None:
+    cache = tmp_path / "cache"
+    entry = _old_cache_entry(cache)
+    for argv in (
+        ["molt", "cache", "prune", "--cache-dir", str(cache), "--max-gb", "0",
+         "--dry-run", "--json"],
+        ["molt", "cache", "prune", "--cache-dir", str(cache), "--max-gb", "0",
+         "--json"],
+    ):  # fmt: skip
+        monkeypatch.setattr(sys, "argv", argv)
+        assert entrypoint.main() == 0
+        payload = json.loads(capsys.readouterr().out)
+        assert payload["command"] == "cache prune" and payload["status"] == "ok"
+        assert payload["data"]["entries_removed"] == 1
+        assert payload["data"]["bytes_removed"] == len(b"old immutable cache payload")
+        assert entry.exists() is ("--dry-run" in argv)

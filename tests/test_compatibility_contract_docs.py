@@ -98,14 +98,22 @@ def test_source_quickstart_commands_use_uv_and_match_cli(rel_path: str) -> None:
             if words[1:2] == ["sync"]:
                 assert words[-2:] == ["--python", "3.12"]
                 continue
-            assert words[:4] == ["uv", "run", "--python", "3.12"]
+            # The frontend is CPython 3.12+ and at least as new as the target
+            # a command selects with --python-version.
+            assert words[:3] == ["uv", "run", "--python"]
+            frontend = tuple(int(part) for part in words[3].split("."))
+            assert frontend >= (3, 12), line
             payload = words[4:]
             if payload[:3] == ["python", "-m", "molt.cli"]:
                 payload = payload[3:]
             else:
                 assert payload[:1] == ["molt"]
                 payload = payload[1:]
-            commands.append(parser.parse_args(payload).command)
+            args = parser.parse_args(payload)
+            target = getattr(args, "python_version", None)
+            if target is not None:
+                assert frontend >= tuple(int(part) for part in target.split(".")), line
+            commands.append(args.command)
     assert {"doctor", "run", "compare"} <= set(commands)
 
 

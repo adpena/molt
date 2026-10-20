@@ -96,6 +96,11 @@ since = "1.0.0"
 
 # Toolchain surface.
 [[command]]
+name = "cache"
+tier = "stable"
+since = "1.0.0"
+
+[[command]]
 name = "clean"
 tier = "stable"
 since = "1.0.0"

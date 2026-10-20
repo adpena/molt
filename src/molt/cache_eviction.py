@@ -24,8 +24,8 @@ from molt.default_paths import (
     WASM_LINK_CACHE_DIRECTORY,
     WASM_LINK_CACHE_FAMILIES,
     _default_molt_cache,
-    cache_control_root,
     protected_cache_roots,
+    shared_cache_lock_path,
     is_backend_cache_artifact_name,
     native_stdlib_object_cache_entry,
     shared_stdlib_cache_entry,
@@ -84,6 +84,7 @@ class PruneCompleted(TypedDict):
     source_record_physical_after: dict[str, int | None] | None
     source_record_maintenance_failed: bool
     source_record_maintenance_busy: bool
+    source_record_store_unmigrated: bool
     source_record_checkpoint_busy: bool | None
     protected_state: list[str]
     legacy_native_state: list[str]
@@ -428,7 +429,7 @@ def refresh_cache_entry_recency(
                 for root in protected_cache_roots(cache_root)
             ):
                 return
-            lock_path = cache_control_root(cache_root) / "prune.lock"
+            lock_path = shared_cache_lock_path(cache_root, "prune")
             handle = _try_acquire_file_lock(lock_path)
             if handle is None:
                 return
@@ -505,7 +506,7 @@ def _prune_locked(
     total = before_bytes
     removed_count = removed_bytes = busy = failures = 0
     row_count = row_bytes = removed_rows = removed_row_bytes = 0
-    store_failed = store_busy = False
+    store_failed = store_busy = store_unmigrated = False
     row_enabled = True
     record_batch_rows = record_batch_bytes = 0
     physical_before = physical_after = None
@@ -523,6 +524,7 @@ def _prune_locked(
                 SOURCE_RECORD_BATCH_MAX_RECORDS,
                 SOURCE_RECORD_BATCH_MAX_BYTES,
                 SourceRecordUnavailable,
+                SourceRecordUnmigrated,
                 SourceRecordBusy,
                 source_record_store,
             )
@@ -543,6 +545,11 @@ def _prune_locked(
                     row_count, row_bytes = inventory.entries, inventory.size_bytes
                 except SourceRecordBusy:
                     store_busy = True
+                    maintenance = None
+                except SourceRecordUnmigrated:
+                    # A dry run cannot migrate a legacy store; report it rather
+                    # than count a failure. A writing sweep migrates it.
+                    store_unmigrated = True
                     maintenance = None
                 except SourceRecordUnavailable:
                     store_failed = True
@@ -689,6 +696,7 @@ def _prune_locked(
         "source_record_physical_after": physical_after,
         "source_record_maintenance_failed": store_failed,
         "source_record_maintenance_busy": store_busy,
+        "source_record_store_unmigrated": store_unmigrated,
         "source_record_checkpoint_busy": checkpoint_busy,
         "protected_state": [
             str(path) for path in protected_cache_roots(cache_root, environ=environ)
@@ -742,18 +750,20 @@ def _prune(
     max_age_days: int | None,
     dry_run: bool,
     automatic: bool = False,
+    automatic_interval_seconds: float = AUTOMATIC_PRUNE_INTERVAL_SECONDS,
     environ: Mapping[str, str] | None = None,
 ) -> PruneCompleted | PruneSkipped:
     """Serialize inventory/eviction across every entry point without waiting.
 
     The persistent control lock records automatic attempts and completed sweeps.
-    Automatic callers coalesce here before inventory, including failed attempts.
+    Automatic callers coalesce here before inventory, including failed attempts,
+    and skip a sweep that any caller ran within ``automatic_interval_seconds``.
     Explicit sweeps are unthrottled; dry runs do not write retention control
     or payload state. SQLite may use its own WAL read-coordination sidecars.
     """
     if automatic and dry_run:
         raise ValueError("automatic cache retention cannot be a dry run")
-    lock_path = cache_control_root(cache_root) / "prune.lock"
+    lock_path = shared_cache_lock_path(cache_root, "prune")
     try:
         handle = _try_acquire_file_lock(lock_path, create=not dry_run)
     except FileNotFoundError:
@@ -778,8 +788,8 @@ def _prune(
                     try:
                         elapsed = now - float(stamp)
                     except ValueError:
-                        elapsed = AUTOMATIC_PRUNE_INTERVAL_SECONDS
-                    if 0 <= elapsed < AUTOMATIC_PRUNE_INTERVAL_SECONDS:
+                        elapsed = automatic_interval_seconds
+                    if 0 <= elapsed < automatic_interval_seconds:
                         return {"status": "recent", "cache_root": str(cache_root)}
                 # Persist admission before inventory so a failed or interrupted
                 # sweep is not immediately repeated by another completed proof.
@@ -833,6 +843,107 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
+def automatic_retention(
+    environ: Mapping[str, str],
+    *,
+    cache_root: Path | None = None,
+    min_interval_seconds: float = AUTOMATIC_PRUNE_INTERVAL_SECONDS,
+) -> dict[str, object] | None:
+    """Apply the budget to one cache root once, as an automatic caller.
+
+    ``cache_root`` defaults to the environment's cache (``MOLT_CACHE`` or the
+    platform default); a build passes the root it actually used.
+
+    Proof payloads and CLI builds call this after they publish their output. It
+    starts no process; the canonical prune lock coalesces callers across
+    checkouts, and a sweep any caller ran within ``min_interval_seconds`` skips
+    this one. ``MOLT_CACHE_PRUNE=0`` disables it. Ordinary retention errors are
+    returned as diagnostics, never raised into the caller's result.
+    """
+    if environ.get("MOLT_CACHE_PRUNE", "1") == "0":
+        return None
+    try:
+        root = (cache_root or _default_molt_cache(environ=environ)).resolve(
+            strict=False
+        )
+        if not root.is_dir():
+            return None
+        max_gb, max_age = resolve_budget(None, None, environ)
+        report = _prune(
+            root,
+            max_bytes=int(max_gb * 1024**3),
+            max_age_days=max_age,
+            dry_run=False,
+            automatic=True,
+            automatic_interval_seconds=min_interval_seconds,
+            environ=environ,
+        )
+        # Callers keep bounded diagnostics, not a second cache inventory; the
+        # canonical pruner still owns all protected-state rules.
+        return {
+            name: value
+            for name, value in report.items()
+            if name not in {"protected_state", "legacy_native_state"}
+        }
+    except (OSError, ValueError, RuntimeError) as exc:
+        return {"status": "failed", "error": f"{type(exc).__name__}: {exc}"}
+
+
+def prune_report_lines(
+    cache_root: Path,
+    result: PruneCompleted | PruneSkipped,
+    *,
+    max_gb: float,
+    max_age_days: int,
+    dry_run: bool,
+) -> list[str]:
+    """The ``key=value`` report every explicit prune entry point prints."""
+    lines = [f"cache_root={cache_root}"]
+    if result["status"] != "completed":
+        lines.append(f"prune.status={result['status']}")
+        return lines
+    lines += [
+        f"policy.max_gb={max_gb}",
+        f"policy.max_age_days={max_age_days}",
+        f"evictable.before={_format_bytes(result['bytes_before'])}",
+        f"evictable.after={_format_bytes(result['bytes_remaining'])}",
+        f"protected_state.roots={len(result['protected_state'])}",
+        f"legacy_native.protected={len(result['legacy_native_state'])}",
+        f"inventory.elapsed_s={result['inventory_elapsed_seconds']:.6f}",
+        f"prune.elapsed_s={result['elapsed_seconds']:.6f}",
+        f"remaining.entries={result['entries_remaining']}",
+        f"busy.entries={result['entries_busy']}",
+        f"failed.entries={result['entries_failed']}",
+        f"removed.entries={result['entries_removed']}",
+        f"removed.bytes={result['bytes_removed_human']}",
+    ]
+    if (
+        result["source_records_before"]
+        or result["source_record_maintenance_failed"]
+        or result["source_record_maintenance_busy"]
+        or result["source_record_store_unmigrated"]
+    ):
+        lines += [
+            f"policy.bytes_basis={result['bytes_basis']}",
+            f"source_records.maintenance_busy={result['source_record_maintenance_busy']}",
+            f"source_records.unmigrated={result['source_record_store_unmigrated']}",
+            f"source_records.removed={result['source_records_removed']}",
+            "source_records.removed_payload_bytes="
+            f"{result['source_record_payload_bytes_removed']}",
+            "source_records.maintenance_failed="
+            f"{result['source_record_maintenance_failed']}",
+            f"source_records.checkpoint_busy={result['source_record_checkpoint_busy']}",
+        ]
+        for phase, measurements in (
+            ("before", result["source_record_physical_before"]),
+            ("after", result["source_record_physical_after"]),
+        ):
+            for name, size in (measurements or {}).items():
+                lines.append(f"source_records.physical_{phase}.{name}={size}")
+    lines.append(f"dry_run={dry_run}")
+    return lines
+
+
 def main() -> int:
     args = parse_args()
     cache_root = (
@@ -850,50 +961,16 @@ def main() -> int:
         max_age_days=max_age_days,
         dry_run=args.dry_run,
     )
-
-    print(f"cache_root={cache_root}")
-    if result["status"] != "completed":
-        print(f"prune.status={result['status']}")
-        return 0
-    print(f"policy.max_gb={max_gb}")
-    print(f"policy.max_age_days={max_age_days}")
-    print(f"evictable.before={_format_bytes(result['bytes_before'])}")
-    print(f"evictable.after={_format_bytes(result['bytes_remaining'])}")
-    print(f"protected_state.roots={len(result['protected_state'])}")
-    print(f"legacy_native.protected={len(result['legacy_native_state'])}")
-    print(f"inventory.elapsed_s={result['inventory_elapsed_seconds']:.6f}")
-    print(f"prune.elapsed_s={result['elapsed_seconds']:.6f}")
-    print(f"remaining.entries={result['entries_remaining']}")
-    print(f"busy.entries={result['entries_busy']}")
-    print(f"failed.entries={result['entries_failed']}")
-    print(f"removed.entries={result['entries_removed']}")
-    print(f"removed.bytes={result['bytes_removed_human']}")
-    if (
-        result["source_records_before"]
-        or result["source_record_maintenance_failed"]
-        or result["source_record_maintenance_busy"]
+    for line in prune_report_lines(
+        cache_root,
+        result,
+        max_gb=max_gb,
+        max_age_days=max_age_days,
+        dry_run=args.dry_run,
     ):
-        print(f"policy.bytes_basis={result['bytes_basis']}")
-        print(
-            f"source_records.maintenance_busy={result['source_record_maintenance_busy']}"
-        )
-        print(f"source_records.removed={result['source_records_removed']}")
-        print(
-            f"source_records.removed_payload_bytes={result['source_record_payload_bytes_removed']}"
-        )
-        print(
-            f"source_records.maintenance_failed={result['source_record_maintenance_failed']}"
-        )
-        print(
-            f"source_records.checkpoint_busy={result['source_record_checkpoint_busy']}"
-        )
-        for phase, measurements in (
-            ("before", result["source_record_physical_before"]),
-            ("after", result["source_record_physical_after"]),
-        ):
-            for name, size in (measurements or {}).items():
-                print(f"source_records.physical_{phase}.{name}={size}")
-    print(f"dry_run={args.dry_run}")
+        print(line)
+    if result["status"] != "completed":
+        return 0
     return 1 if result["entries_failed"] else 0
 
 

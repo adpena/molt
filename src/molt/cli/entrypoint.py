@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import sys
+import time
 from collections.abc import Generator
 from contextlib import contextmanager
 from pathlib import Path
@@ -48,7 +49,49 @@ def _build(request: BuildRequest) -> int:
     """
     from molt.cli import build_command
 
-    return build_command.build(request)
+    returncode = build_command.build(request)
+    if returncode == 0 and request.cache:
+        _apply_cache_budget_after_build(
+            Path(request.cache_dir).expanduser() if request.cache_dir else None,
+            verbose=request.verbose,
+        )
+    return returncode
+
+
+def _apply_cache_budget_after_build(cache_root: Path | None, *, verbose: bool) -> None:
+    """Apply the cache budget once a day, after a build published its output.
+
+    It prunes the cache the build used. The common case reads one lock stamp
+    and imports nothing more; a due sweep runs the canonical automatic
+    retention. Retention never changes the build's result.
+    """
+    from molt.default_paths import (
+        CLI_CACHE_RETENTION_INTERVAL_SECONDS,
+        _default_molt_cache,
+        shared_cache_lock_path,
+    )
+
+    if os.environ.get("MOLT_CACHE_PRUNE", "1") == "0":
+        return
+    root = cache_root or _default_molt_cache(environ=os.environ)
+    stamp = shared_cache_lock_path(root, "prune")
+    try:
+        age = time.time() - stamp.stat().st_mtime
+    except FileNotFoundError:
+        age = None
+    except OSError:
+        return
+    if age is not None and 0 <= age < CLI_CACHE_RETENTION_INTERVAL_SECONDS:
+        return
+    from molt.cache_eviction import automatic_retention
+
+    report = automatic_retention(
+        os.environ,
+        cache_root=root,
+        min_interval_seconds=CLI_CACHE_RETENTION_INTERVAL_SECONDS,
+    )
+    if verbose and report is not None and report.get("status") != "recent":
+        print(f"molt: cache retention: {report}", file=sys.stderr)
 
 
 def main(build_fn: Callable[[BuildRequest], int] | None = None) -> int:

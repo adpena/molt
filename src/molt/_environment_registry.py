@@ -1516,33 +1516,33 @@ _REGISTRY_JSON = r"""{
       "values": []
     },
     {
-      "audience": "developer",
+      "audience": "user",
       "default": "30",
       "kind": "int",
       "name": "MOLT_CACHE_MAX_AGE_DAYS",
       "output_neutral": false,
       "owner": "src/molt/cache_eviction.py",
-      "summary": "Age in days after which cache retention evicts inactive entries; automatic development proof-queue maintenance and tools/molt_cache_prune.py share this budget, default 30.",
+      "summary": "Age in days after which cache retention evicts inactive entries, default 30. CLI builds (at most once a day), `molt cache prune` and proof-queue maintenance share this budget.",
       "values": []
     },
     {
-      "audience": "developer",
+      "audience": "user",
       "default": "30",
       "kind": "float",
       "name": "MOLT_CACHE_MAX_GB",
       "output_neutral": false,
       "owner": "src/molt/cache_eviction.py",
-      "summary": "Logical cache-entry size budget in GiB for automatic development proof-queue maintenance and tools/molt_cache_prune.py, default 30; active entries, durable state and protected legacy native generations are retained.",
+      "summary": "Logical cache-entry size budget in GiB, default 30. CLI builds apply it at most once a day after they succeed, `molt cache prune` applies it on demand, and proof-queue maintenance after each closed payload; active entries, durable state and protected legacy native generations are retained.",
       "values": []
     },
     {
-      "audience": "developer",
+      "audience": "user",
       "default": "1",
       "kind": "bool",
       "name": "MOLT_CACHE_PRUNE",
       "output_neutral": false,
-      "owner": "tools/proof_queue_pkg/cache_retention.py",
-      "summary": "Enable automatic cache maintenance after closed source-development proof payloads and throughput environment setup; only exact 0 disables automatic retention. The existing guarded controller prunes in process under its remaining time and memory budget; the canonical prune lock throttles attempts to five minutes per cache root, and explicit molt.cache_eviction remains operator-directed.",
+      "owner": "src/molt/cache_eviction.py",
+      "summary": "Enable automatic cache retention: after a successful CLI build (at most once a day per cache root, as Go and Cargo trim theirs), after closed proof payloads (at most every five minutes) and in throughput environment setup. Only exact 0 disables it. The canonical prune lock coalesces callers; `molt cache prune` applies the budget on demand.",
       "values": []
     },
     {

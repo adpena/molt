@@ -124,6 +124,10 @@ class SourceRecordBusy(SourceRecordUnavailable):
     """Another SQLite connection owns a required maintenance lock."""
 
 
+class SourceRecordUnmigrated(SourceRecordUnavailable):
+    """A dry run met a legacy schema that only a writing sweep may migrate."""
+
+
 def _maintenance_error(error: sqlite3.Error) -> SourceRecordUnavailable:
     # Extended SQLite result codes retain their primary category in low8 bits.
     # LOCKED is a different same-connection/shared-cache ownership failure.
@@ -617,7 +621,7 @@ class SourceRecordStore:
             )
             if dry_run:
                 if not self._schema_ready(current):
-                    raise SourceRecordUnavailable(
+                    raise SourceRecordUnmigrated(
                         "source record schema is not initialized"
                     )
             else:

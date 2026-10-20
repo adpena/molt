@@ -961,6 +961,16 @@ def _dispatch_entrypoint_command(
             extra_paths=args.extra_path,
             list_paths=args.list_paths,
         )
+    if args.command == "cache":
+        from molt.cli.maintenance import cache_prune
+
+        return cache_prune(
+            args.json,
+            cache_dir=args.cache_dir,
+            max_gb=args.max_gb,
+            max_age_days=args.max_age_days,
+            dry_run=args.dry_run,
+        )
     if args.command == "config":
         from molt.cli.maintenance import show_config
 

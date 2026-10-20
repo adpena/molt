@@ -86,6 +86,59 @@ def clean(
     return int(artifact_cleanup.main(argv))
 
 
+def cache_prune(
+    json_output: bool,
+    *,
+    cache_dir: str | None,
+    max_gb: float | None,
+    max_age_days: int | None,
+    dry_run: bool,
+) -> int:
+    """Apply the cache budget now: the documented, unthrottled user entry point."""
+    import os
+
+    from molt.cache_eviction import (
+        _default_cache_root,
+        _prune,
+        prune_report_lines,
+        resolve_budget,
+    )
+
+    root = (
+        Path(cache_dir).expanduser().resolve() if cache_dir else _default_cache_root()
+    )
+    gb, days = resolve_budget(max_gb, max_age_days, os.environ)
+    try:
+        result = _prune(
+            root, max_bytes=int(gb * 1024**3), max_age_days=days, dry_run=dry_run
+        )
+    except (OSError, ValueError, RuntimeError) as exc:
+        return _fail(str(exc), json_output, command="cache prune")
+    failed = result["status"] == "completed" and bool(result["entries_failed"])
+    if json_output:
+        data = {
+            "cache_root": str(root),
+            "max_gb": gb,
+            "max_age_days": days,
+            "dry_run": dry_run,
+            **{
+                name: value
+                for name, value in result.items()
+                if name not in {"protected_state", "legacy_native_state"}
+            },
+        }
+        _emit_json(
+            _json_payload("cache prune", "error" if failed else "ok", data=data),
+            json_output=True,
+        )
+    else:
+        for line in prune_report_lines(
+            root, result, max_gb=gb, max_age_days=days, dry_run=dry_run
+        ):
+            print(line)
+    return 1 if failed else 0
+
+
 def show_config(
     config_root: Path,
     config: Mapping[str, Any],

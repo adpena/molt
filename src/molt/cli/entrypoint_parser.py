@@ -2107,6 +2107,33 @@ def _build_entrypoint_parser() -> argparse.ArgumentParser:
         "--verbose", action="store_true", help="Emit verbose diagnostics."
     )
 
+    cache_parser = subparsers.add_parser("cache", help="Manage the Molt build cache")
+    cache_subparsers = cache_parser.add_subparsers(dest="cache_command", required=True)
+    cache_prune_parser = cache_subparsers.add_parser(
+        "prune",
+        help=(
+            "Apply the cache budget now (MOLT_CACHE_MAX_GB, MOLT_CACHE_MAX_AGE_DAYS); "
+            "builds also apply it at most once a day"
+        ),
+    )
+    cache_prune_parser.add_argument(
+        "--cache-dir", help="Cache root to prune (default: MOLT_CACHE or the default)."
+    )
+    cache_prune_parser.add_argument(
+        "--max-gb", type=float, help="Budget for evictable cache bytes, in GiB."
+    )
+    cache_prune_parser.add_argument(
+        "--max-age-days",
+        type=int,
+        help="Remove inactive entries older than this many days.",
+    )
+    cache_prune_parser.add_argument(
+        "--dry-run", action="store_true", help="Report what would be removed."
+    )
+    cache_prune_parser.add_argument(
+        "--json", action="store_true", help="Emit JSON output for tooling."
+    )
+
     config_parser = subparsers.add_parser("config", help="Show/set configuration")
     config_parser.add_argument(
         "--file",

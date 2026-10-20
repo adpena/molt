@@ -45,7 +45,6 @@ from molt.process_environment import ProcessEnvironment, ProcessEnvironmentBuild
 from molt.python_environment_identity import python_capture_authority_paths  # noqa: E402
 from tools import proof_plan, proof_receipts  # noqa: E402
 from tools.proof_queue_pkg import (  # noqa: E402
-    cache_retention,
     command_admission as admission,
     command_identity,
     cargo_cache_custody,
@@ -599,7 +598,6 @@ def execute_guarded_request(request_path: Path) -> int:
             Path(command_identity.__file__).resolve(strict=True),
             Path(environment.__file__).resolve(strict=True),
             Path(file_locks.__file__).resolve(strict=True),
-            Path(cache_retention.__file__).resolve(strict=True),
             Path(cache_eviction.__file__).resolve(strict=True),
             Path(default_paths.__file__).resolve(strict=True),
             Path(file_publication.__file__).resolve(strict=True),
@@ -1212,7 +1210,7 @@ def execute_guarded_request(request_path: Path) -> int:
             supervisor.supervisor_receipt_is_complete(supervisor_receipt)
             and time.monotonic() < execution_deadline - shutdown_reserve
         ):
-            retention = cache_retention.prune_after_payload(execution_env)
+            retention = cache_eviction.automatic_retention(execution_env)
             if retention is not None:
                 result["cache_retention"] = retention
                 print(

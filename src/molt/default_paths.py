@@ -184,6 +184,10 @@ def _default_molt_cache(
 DEFAULT_MOLT_CACHE_MAX_GB = "30"
 DEFAULT_MOLT_CACHE_MAX_AGE_DAYS = "30"
 CACHE_MAINTENANCE_INTERVAL_SECONDS = 300.0
+# A CLI build applies the cache budget at most once a day, as Go trims its build
+# cache and Cargo runs automatic gc: a sweep costs a full inventory, and an
+# interactive build loop must not pay it every few minutes.
+CLI_CACHE_RETENTION_INTERVAL_SECONDS = 24 * 3600.0
 SHARED_SOURCE_RECORDS_DIRECTORY = "toolchain_source_records"
 WASM_LINK_CACHE_DIRECTORY = "wasm_link"
 WASM_LINK_CACHE_FAMILIES = frozenset(
