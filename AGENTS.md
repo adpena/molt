@@ -117,8 +117,8 @@ prefer live code, tests, measurements and explicit user direction over stale pro
   landed.
 - Generated files are projections. Change their declarative source or generator and regenerate them
   in the same arc.
-- Reuse project commands, repairing stale, ambiguous or wasteful helpers. Select the CPython 3.12+ frontend
-  through uv; record its version separately from the CLI/project target (`docs/getting-started.md`).
+- Reuse project commands, repairing stale, ambiguous or wasteful helpers. The frontend is CPython 3.12+, including 3.15;
+  reuse uv selection and record its version separately from the CLI/project target (`docs/getting-started.md`).
 - Keep operational history, incidents, long procedures and tutorials out of this always-loaded file;
   put durable detail in the owning design, spec, runbook, skill, test or live board. Keep per-run
   logs, scratch plans and worker handoffs out of tracked source (`docs/ROOT_LAYOUT.md`); preserve

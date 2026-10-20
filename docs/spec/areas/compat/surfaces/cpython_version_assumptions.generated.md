@@ -6,8 +6,8 @@ The inventory includes older and future Python 3 minor spellings, full eight-dig
 
 ## Counts
 
-- `authority-routed` files: 62
-- `operational-tooling` files: 59
+- `authority-routed` files: 63
+- `operational-tooling` files: 58
 - `scattered-assumption` files: 344
 
 ## Files
@@ -34,7 +34,7 @@ The inventory includes older and future Python 3 minor spellings, full eight-dig
 | `src/molt/compiler_analysis/python_imports.py` | 2 | authority-routed | `3.15` |
 | `src/molt/compiler_analysis/python_lexical_scope.py` | 2 | authority-routed | `3.12` |
 | `src/molt/debug/contracts.py` | 2 | operational-tooling | `sys.version_info` |
-| `src/molt/dx.py` | 4 | scattered-assumption | `3.12` |
+| `src/molt/dx.py` | 1 | scattered-assumption | `3.12` |
 | `src/molt/environment_registry.toml` | 2 | scattered-assumption | `3.12` |
 | `src/molt/file_locks.py` | 3 | scattered-assumption | `3.12` |
 | `src/molt/frontend/_types.py` | 2 | authority-routed | `3.13` |
@@ -413,7 +413,7 @@ The inventory includes older and future Python 3 minor spellings, full eight-dig
 | `tools/cpython_regrtest.py` | 13 | scattered-assumption | `3.12` |
 | `tools/cross_run.py` | 3 | scattered-assumption | `3.11` |
 | `tools/dashboard_delta.py` | 1 | operational-tooling | `3.12` |
-| `tools/dev.py` | 7 | operational-tooling | `sys.version_info` |
+| `tools/dev.py` | 7 | authority-routed | `sys.version_info` |
 | `tools/fail_closed_gate.py` | 1 | scattered-assumption | `3.12` |
 | `tools/fail_closed_registry.toml` | 1 | scattered-assumption | `3.12` |
 | `tools/fast_frontier_cycle.py` | 1 | scattered-assumption | `3.12` |
