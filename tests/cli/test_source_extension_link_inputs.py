@@ -9,6 +9,7 @@ import pytest
 from molt import source_extension_link_inputs as link_inputs_contract
 from molt.cli import source_extension_link_inputs as link_inputs_resolver
 from molt.cli import wasm_link_inputs
+from molt.process_environment import NameRule, ProcessEnvironment
 from tools.proof_queue_pkg import execution_environment, toolchain_capture
 from tests.runtime_build_identity_helper import (
     RuntimeFixtureRoot,
@@ -129,8 +130,9 @@ def test_rust_archive_selection_is_unambiguous(tmp_path):
         wasm_link_inputs.wasm_compiler_builtins_archive(target_libdir=tmp_path)
 
 
+@pytest.mark.parametrize("rule", [NameRule.EXACT, NameRule.WINDOWS])
 def test_rust_target_libdir_cache_owns_environment_and_compiler_generation(
-    tmp_path, monkeypatch
+    tmp_path, monkeypatch, rule
 ):
     rustc = tmp_path / "rustc"
     rustc.write_bytes(b"compiler1")
@@ -150,6 +152,8 @@ def test_rust_target_libdir_cache_owns_environment_and_compiler_generation(
     )
 
     def query(argv, **kwargs):
+        assert isinstance(kwargs["env"], ProcessEnvironment)
+        assert kwargs["env"].rule is rule
         calls.append(kwargs["env"])
         assert kwargs["cwd"] == source
         return subprocess.CompletedProcess(
@@ -158,7 +162,7 @@ def test_rust_target_libdir_cache_owns_environment_and_compiler_generation(
 
     monkeypatch.setattr(wasm_link_inputs, "_run_completed_command", query)
     wasm_link_inputs.clear_rust_target_libdir_cache()
-    selected = {"SELECTED_LIBDIR": str(first)}
+    selected = ProcessEnvironment({"SELECTED_LIBDIR": str(first)}, rule=rule)
     assert (
         wasm_link_inputs.rust_target_libdir("wasm32-wasip1", environment=selected)
         == first
@@ -168,7 +172,7 @@ def test_rust_target_libdir_cache_owns_environment_and_compiler_generation(
         == first
     )
     assert len(calls) == 1
-    changed = {"SELECTED_LIBDIR": str(second)}
+    changed = ProcessEnvironment({"SELECTED_LIBDIR": str(second)}, rule=rule)
     assert (
         wasm_link_inputs.rust_target_libdir("wasm32-wasip1", environment=changed)
         == second
@@ -178,7 +182,11 @@ def test_rust_target_libdir_cache_owns_environment_and_compiler_generation(
         wasm_link_inputs.rust_target_libdir("wasm32-wasip1", environment=changed)
         == second
     )
-    assert calls == [selected, changed, changed]
+    assert [dict(environment) for environment in calls] == [
+        {"SELECTED_LIBDIR": str(first)},
+        {"SELECTED_LIBDIR": str(second)},
+        {"SELECTED_LIBDIR": str(second)},
+    ]
 
 
 @pytest.mark.parametrize(

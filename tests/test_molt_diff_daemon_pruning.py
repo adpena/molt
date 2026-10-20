@@ -10,7 +10,7 @@ from tests.process_guard_common import install_module_os_view, install_module_vi
 import sys
 
 from molt import backend_daemon_custody as custody
-from molt.cli.backend_daemon_paths import _backend_daemon_paths
+from molt.backend_daemon_paths import _backend_daemon_paths
 import os
 
 # These tests fake process data the session sentinel also reads.

@@ -55,7 +55,7 @@ from molt.cli.backend_daemon_logs import (
     _backend_daemon_log_tail,
     _rotate_backend_daemon_log_if_large,
 )
-from molt.cli.backend_daemon_paths import (
+from molt.backend_daemon_paths import (
     _backend_daemon_paths as _backend_daemon_paths_bundle,
     _backend_daemon_socket_path_error,
     _short_backend_daemon_socket_dir as _short_backend_daemon_socket_dir_impl,

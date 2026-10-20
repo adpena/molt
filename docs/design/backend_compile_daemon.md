@@ -25,6 +25,13 @@ one-shot mode. Mach-O validation and actual guest execution retain their first
 failure instead of treating daemon selection as a binary-validity check. This
 is development/compiler work and adds no work to emitted programs.
 
+Socket and sidecar paths belong to the shared core module
+`src/molt/backend_daemon_paths.py`. DX, the CLI and differential pruning import
+that authority directly; core execution and interpreter-capture authorities
+load no CLI facade. The complete module is included in Python capture and
+proof-source identity. This changes ownership without another path registry,
+probe or emitted-program operation.
+
 DX derives socket directories with the same Unix path-length policy as the CLI;
 long default temporary roots cannot turn an enabled daemon into one-shot
 compilation. Its default also excludes guarded command scratch, which can be

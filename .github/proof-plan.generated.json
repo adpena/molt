@@ -196,6 +196,7 @@
     "src/molt/artifact_publication.py",
     "src/molt/portable_paths.py",
     "src/molt/dx.py",
+    "src/molt/backend_daemon_paths.py",
     "src/molt/default_paths.py",
     "src/molt/environment_registry.py",
     "src/molt/_environment_registry.py",

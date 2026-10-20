@@ -22,6 +22,7 @@ def test_compiler_environment_removes_hidden_command_overrides_not_sdk_inputs(ru
     sdk = {
         "INCLUDE": "sdk/include",
         "LIB": "sdk/lib",
+        "Path": "first/bin",
         "PATH": "owned/bin",
         "SDKROOT": "sdk/macos",
     }
@@ -35,13 +36,19 @@ def test_compiler_environment_removes_hidden_command_overrides_not_sdk_inputs(ru
         "CXX_LD_FOR_BUILD": "build-cpp-linker",
     }
     captured = ProcessEnvironment({**sdk, **overrides}, rule=rule)
+    before = dict(captured)
     observed = source_extension_compiler_environment(captured)
     expected = dict(sdk)
-    if rule is NameRule.EXACT:
-        expected.update({"_cl_": "/Foother.obj", "cxx_ld": "another-linker"})
+    if rule is NameRule.WINDOWS:
+        expected = {
+            "INCLUDE": "sdk/include",
+            "LIB": "sdk/lib",
+            "Path": "owned/bin",
+            "SDKROOT": "sdk/macos",
+        }
     assert isinstance(observed, ProcessEnvironment) and observed.rule is rule
     assert dict(observed) == expected
-    assert dict(captured) == {**sdk, **overrides}
+    assert dict(captured) == before
 
 
 def test_compiler_grammar_admits_matching_target_sysroot_and_codegen_flags() -> None:
