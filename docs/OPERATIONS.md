@@ -771,35 +771,33 @@ When throughput regresses unexpectedly:
 3. Run `tools/throughput_matrix.py` to isolate profile/wrapper/concurrency regressions.
 
 ## Remote Access and Persistent Sessions
-This project assumes persistent terminal sessions and remote access.
-Contributors are expected to use tmux + mosh (or equivalent) for long-running
-work.
 
-### Why this exists
-Molt involves:
-- compilation pipelines
-- benchmarking loops
-- WASM builds
-- profiling and fuzzing
+SSH transports commands and observations; the remote host owns execution,
+resource limits and cleanup. A local SSH timeout or disconnected session does
+not establish that its remote descendants exited.
 
-These workflows do not fit fragile, single-terminal sessions.
+Use the existing [proof queue](agent/PROOF_QUEUE.md#detached-long-runs) for
+long-running remote builds and proofs, with an explicit timeout, detached
+custody and durable terminal evidence. Reconnect to that owner to inspect or
+cancel the run. Use the canonical
+[detached integration protocol](ops/INTEGRATION.md#the-detached-run-protocol-hazard-11)
+for integration. Terminal multiplexers are optional interfaces to those owners;
+they do not establish process custody or resource bounds.
 
-### Required baseline
-All contributors should have:
-- tmux (or screen)
-- SSH access
-- a way to reconnect safely (mosh recommended)
+Potentially expensive inspections need the same protection. Run process-table
+queries, filesystem walks and PowerShell pipelines through remote
+`tools/guarded_exec.py` with a finite `--timeout`, a `--cancel-file` and
+`--metrics-json`. Inspect its terminal return code and `descendants_closed`
+before retiring scratch files or treating the operation as finished. The
+Windows guard assigns its child tree to the existing kill-on-close Job; do not
+replace it with a bare SSH timeout or a second process supervisor. Keep metadata
+queries narrow and retain only the evidence needed for the decision.
 
-### Expected behaviors
-- Long jobs should be run inside tmux
-- Logs should be written to disk, not just stdout
-- Partial progress should be preserved
-- It must be safe to detach and resume
-
-### What this enables
-- Asynchronous contribution
-- Background compilation and testing
-- Phone-based monitoring of progress
+An interrupted inspection can consume enough memory to invalidate later proof
+results. Preserve its ownership evidence and use the existing guarded cleanup
+boundary; shell hosts and ambiguous processes still require explicit operator
+authorization. Do not start another inspection of the same family while its
+previous execution has unknown closure.
 
 ## Logging and Benchmark Conventions
 Persistent sessions are only useful if output is durable and inspectable.

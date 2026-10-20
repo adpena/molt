@@ -2009,7 +2009,7 @@ from pathlib import Path
 from tools import molt_dev
 
 assert Path(molt_dev.__file__).resolve() == Path(sys.argv[3]).resolve()
-def exclusive(args):
+def exclusive(args, *, progress):
     Path(sys.argv[2]).write_text("entered", encoding="utf-8")
     return 73
 molt_dev._integrate_exclusive = exclusive
@@ -2041,9 +2041,9 @@ print(json.dumps(result))
             timeout=30,
         )
         assert result.returncode == 0, result.stdout + result.stderr
-        return json.loads(result.stdout)
+        return json.loads(result.stdout.splitlines()[-1])
 
-    def exclusive(args):
+    def exclusive(args, *, progress):
         assert Path(args.repo) == work
         observed = contend()
         assert observed["busy"] is True
@@ -2075,7 +2075,7 @@ def test_integrate_lock_released_on_every_exclusive_exit(
     lock_path = work / ".git" / "molt-integrate.lock"
     held_identity = None
 
-    def exclusive(args):
+    def exclusive(args, *, progress):
         nonlocal held_identity
         assert Path(args.repo) == work
         stat = lock_path.stat()
@@ -2191,6 +2191,134 @@ def test_integrate_gates_build_into_the_checkouts_cargo_target(
         }
         assert target == str(project_cargo_target_dir(work.resolve(), without))
         assert not Path(target).is_relative_to(work.resolve())
+
+
+@pytest.mark.parametrize("outcome", ["success", "nonzero", "interrupt", "exception"])
+def test_integration_progress_preserves_gate_outcomes(
+    drv, origin_and_clone, monkeypatch, capsys, outcome
+):
+    from datetime import datetime
+
+    _, work = origin_and_clone
+    tip = _commit_file(work, "change.txt", "changed\n", "candidate")
+    upstream = _git(work, "rev-parse", "origin/main").stdout.strip()
+    shell = "printf '%s\\n' 'literal shell text'"
+    argv = ("python", "-c", "print('literal [argument]')", "line\nbreak")
+    commands = [shell, argv, "echo final-gate"]
+    selected = [drv.SelectedGate(command, ()) for command in commands]
+    monkeypatch.setattr(drv.GateConfig, "select", lambda *a, **kw: (selected, []))
+    seen = []
+
+    def run_gate(command, repo, environment):
+        seen.append(command)
+        if command == argv:
+            if outcome == "interrupt":
+                raise KeyboardInterrupt("independent interrupted child")
+            if outcome == "exception":
+                raise drv.DriverError("independent launch failure")
+            if outcome == "nonzero":
+                return 7
+        return 0
+
+    monkeypatch.setattr(drv, "run_gate", run_gate)
+    monkeypatch.setenv("MOLT_EVENT_SECRET_CONTROL", "must-not-appear-in-events")
+    args = _integrate_ns(drv, repo=str(work), no_push=True)
+    if outcome == "interrupt":
+        with pytest.raises(KeyboardInterrupt, match="independent interrupted child"):
+            drv.cmd_integrate(args)
+    elif outcome in {"exception", "nonzero"}:
+        with pytest.raises(drv.DriverError):
+            drv.cmd_integrate(args)
+    else:
+        try:
+            raise LookupError("unrelated caller exception")
+        except LookupError:
+            assert drv.cmd_integrate(args) == 0
+    output = capsys.readouterr().out
+    events = [json.loads(line) for line in output.splitlines()]
+    expected_commands = commands if outcome == "success" else commands[:2]
+    assert seen == expected_commands
+    assert [event["event"] for event in events] == [
+        "candidate_selected",
+        *[
+            name
+            for _ in expected_commands
+            for name in ("gate_started", "gate_finished")
+        ],
+        "integration_finished",
+    ]
+    assert "must-not-appear-in-events" not in output
+    assert all(event["schema"] == "molt.integration-progress.v1" for event in events)
+    assert all(event["advisory"] is True for event in events)
+    assert all(event["source_commit"] == tip for event in events)
+    assert all(event["upstream_commit"] == upstream for event in events)
+    assert all(event["gate_total"] == 3 for event in events)
+    assert all(
+        datetime.fromisoformat(event["recorded_at"]).utcoffset().total_seconds() == 0
+        for event in events
+    )
+    clocks = [event["monotonic_seconds"] for event in events]
+    assert clocks == sorted(clocks)
+    assert all(event["elapsed_seconds"] >= 0 for event in events)
+    for ordinal, command in enumerate(expected_commands, 1):
+        start, finish = events[ordinal * 2 - 1 : ordinal * 2 + 1]
+        expected = (
+            {"kind": "shell", "source": command}
+            if isinstance(command, str)
+            else {"kind": "argv", "argv": list(command)}
+        )
+        assert start["command"] == finish["command"] == expected
+        assert start["gate_ordinal"] == finish["gate_ordinal"] == ordinal
+        assert start["toolchains"] == finish["toolchains"] == []
+        assert finish["duration_seconds"] >= 0
+    final_gate = events[-2]
+    terminal = events[-1]
+    expected_gate_rc = {
+        "success": 0,
+        "nonzero": 7,
+        "interrupt": None,
+        "exception": None,
+    }
+    assert final_gate["returncode"] == expected_gate_rc[outcome]
+    assert (
+        terminal["returncode"]
+        == {"success": 0, "nonzero": 1, "interrupt": 130, "exception": 1}[outcome]
+    )
+    assert (
+        terminal["status"]
+        == {
+            "success": "completed",
+            "nonzero": "failed",
+            "interrupt": "interrupted",
+            "exception": "failed",
+        }[outcome]
+    )
+    assert terminal["dry_run"] is False
+    # A start event or successful prefix never claims whole-integration success.
+    assert not any(event.get("status") == "completed" for event in events[:-1])
+    assert _git(work, "rev-parse", "origin/main").stdout.strip() == upstream
+
+
+def test_integration_progress_flushes_and_does_not_mask_output_failure(
+    drv, monkeypatch
+):
+    writes = []
+
+    def capture(value, *, flush):
+        writes.append((json.loads(value), flush))
+
+    monkeypatch.setattr(drv, "print", capture, raising=False)
+    progress = drv._IntegrationProgress()
+    progress.emit("candidate_selected")
+    assert len(writes) == 1 and writes[0][1] is True
+    assert writes[0][0]["source_commit"] is None
+    assert writes[0][0]["upstream_commit"] is None
+
+    def unavailable(*args, **kwargs):
+        raise BrokenPipeError("closed diagnostics consumer")
+
+    monkeypatch.setattr(drv, "print", unavailable)
+    progress.emit("integration_finished", returncode=7)
 
 
 def test_gate_time_summary_names_the_total_and_the_slowest_gates(drv):
