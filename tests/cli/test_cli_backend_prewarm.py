@@ -9,7 +9,7 @@ feature lane, binary path, Cargo timeout, or Rust CPU policy fails here.
 
 from __future__ import annotations
 
-from molt.compilation_target import admit_target
+from molt.compilation_target import Target, TargetKind, admit_target
 
 from molt.cli.cache_keys import FunctionDigests
 
@@ -85,6 +85,8 @@ _TARGETS = (
     "llvm",
     "wasm",
     "wasm-freestanding",
+    "wasm32-wasip1",
+    "wasm32-unknown-unknown",
     "luau",
     "rust",
     "x86_64-unknown-linux-gnu",
@@ -203,9 +205,9 @@ def _record_backend_admission(
     return admissions
 
 
-def _build_layout(target: str, tmp_path: Path, project_root: Path) -> Any:
+def _build_layout(target: Target, tmp_path: Path, project_root: Path) -> Any:
     return _resolve_build_output_layout(
-        target=admit_target(target),
+        target=target,
         trusted=False,
         require_linked=False,
         linked=False,
@@ -223,7 +225,7 @@ def _build_layout(target: str, tmp_path: Path, project_root: Path) -> Any:
 
 
 def _build_backend_setup(
-    target: str, tmp_path: Path, codegen_backend: str
+    target: Target, tmp_path: Path, codegen_backend: str
 ) -> tuple[Any, Any]:
     """Run `molt build --build-profile dev` from its preamble to backend setup."""
     codegen = CodegenSelection(backend=codegen_backend)  # type: ignore[arg-type]
@@ -232,7 +234,7 @@ def _build_backend_setup(
         diagnostics_file=None,
         diagnostics_verbosity=None,
         json_output=True,
-        target=admit_target(target),
+        target=target,
     )
     assert error is None and preamble is not None
     roots, error = cli_build_inputs._prepare_build_roots(
@@ -248,7 +250,7 @@ def _build_backend_setup(
         project_root=roots.project_root,
         warnings=preamble.warnings,
         json_output=True,
-        target=admit_target(target),
+        target=target,
         profile="dev",
         pgo_profile=None,
         runtime_feedback=None,
@@ -270,7 +272,7 @@ def _build_backend_setup(
         target_triple=layout.target_triple,
         json_output=True,
         cargo_timeout=config.cargo_timeout,
-        target=admit_target(target),
+        target=target,
         profile="dev",
         backend_cargo_profile=config.backend_cargo_profile,
         linked=layout.linked,
@@ -380,13 +382,13 @@ def _fake_backend_toolchain(
 
 
 def _stub_backend_cache_setup(
-    monkeypatch: pytest.MonkeyPatch, target: str
+    monkeypatch: pytest.MonkeyPatch, target: Target
 ) -> list[dict[str, Any]]:
     calls: list[dict[str, Any]] = []
     cache_setup = _BackendCacheSetup(
         backend_environment={},
         artifact_contract=resolve_backend_artifact_contract(
-            target=admit_target(target), emit_mode="bin"
+            target=target, emit_mode="bin"
         ),
         cache_enabled=False,
         cache_key=None,
@@ -430,7 +432,7 @@ def test_prewarm_admits_the_backend_the_build_selects(
         "_stage_runtime_callable_symbols_for_native_codegen",
         lambda *_args, **_kwargs: ("", None),
     )
-    build_targets: list[str] = []
+    build_targets: list[Target] = []
     build_backends: list[str] = []
 
     def build_fn(request: BuildRequest) -> int:
@@ -523,7 +525,7 @@ def test_prewarm_defaults_to_the_configured_build_target(
 ) -> None:
     root = _isolated_molt_root(tmp_path, monkeypatch)
     admissions = _record_backend_admission(monkeypatch)
-    build_targets: list[str] = []
+    build_targets: list[Target] = []
 
     def build_fn(request: BuildRequest) -> int:
         build_targets.append(request.target)
@@ -536,7 +538,7 @@ def test_prewarm_defaults_to_the_configured_build_target(
     prewarm_rc = _dispatch(["internal-backend-build", "--json"], build_cfg=build_cfg)
 
     assert (build_rc, prewarm_rc) == (0, 2)
-    assert build_targets == ["wasm"]
+    assert build_targets == [TargetKind.WASM]
     [admission] = admissions
     assert admission["features"] == ("wasm-backend",)
     assert admission["binary"] == (
@@ -563,7 +565,7 @@ def test_prewarm_cargo_timeout_flag_overrides_environment(
     assert payload["errors"] == ["--cargo-timeout must be greater than zero, not 0.0."]
 
 
-@pytest.mark.parametrize("target", ["wasm32-wasip1", "wasm64-unknown-unknown"])
+@pytest.mark.parametrize("target", ["wasm64-unknown-unknown", "not-a-target"])
 def test_prewarm_rejects_targets_the_build_layout_rejects(
     target: str,
     tmp_path: Path,
@@ -573,13 +575,15 @@ def test_prewarm_rejects_targets_the_build_layout_rejects(
     root = _isolated_molt_root(tmp_path, monkeypatch)
     admissions = _record_backend_admission(monkeypatch)
     with pytest.raises(ValueError):
-        _build_layout(target, tmp_path, root)
+        _build_layout(admit_target(target), tmp_path, root)
 
     assert _dispatch(["internal-backend-build", "--target", target, "--json"]) == 2
 
     payload = json.loads(capsys.readouterr().out)
     assert payload["status"] == "error"
-    assert payload["errors"][0].startswith(f"Unsupported build target {target!r}")
+    assert payload["errors"] == [
+        f"Native linking has no object-format policy for target {target!r}."
+    ]
     assert admissions == []
 
 
@@ -591,7 +595,7 @@ def test_prewarm_rejects_mlir_which_never_admits_the_backend_compiler(
     root = _isolated_molt_root(tmp_path, monkeypatch)
     admissions = _record_backend_admission(monkeypatch)
     # The build routes MLIR layouts to molt-backend-mlir before backend setup.
-    assert _build_layout("mlir", tmp_path, root).is_mlir_emit
+    assert _build_layout(TargetKind.MLIR, tmp_path, root).is_mlir_emit
 
     assert _dispatch(["internal-backend-build", "--target", "mlir", "--json"]) == 2
 
@@ -642,8 +646,8 @@ def test_prewarm_receipts_let_the_next_build_skip_cargo_until_removed(
     # The next `--build-profile dev` build admits the prewarmed compiler from
     # those receipts: no Cargo, no re-probe, and its cache identity binds the
     # prewarmed bytes.
-    cache_inputs = _stub_backend_cache_setup(monkeypatch, "luau")
-    prepared, error = _build_backend_setup("luau", tmp_path, "cranelift")
+    cache_inputs = _stub_backend_cache_setup(monkeypatch, TargetKind.LUAU)
+    prepared, error = _build_backend_setup(TargetKind.LUAU, tmp_path, "cranelift")
     assert error is None and prepared is not None
     assert prepared.backend_bin.samefile(binary)
     assert prepared.backend_compiler_fingerprint == compiler["fingerprint"]
@@ -655,7 +659,7 @@ def test_prewarm_receipts_let_the_next_build_skip_cargo_until_removed(
     # build must establish provenance with Cargo again.
     source_receipt.unlink()
     cargo_output_receipt.unlink()
-    prepared, error = _build_backend_setup("luau", tmp_path, "cranelift")
+    prepared, error = _build_backend_setup(TargetKind.LUAU, tmp_path, "cranelift")
     assert error is None and prepared is not None
     assert len(cargo_calls) == 2
     assert prepared.backend_bin.read_bytes() == b"backend build 2"

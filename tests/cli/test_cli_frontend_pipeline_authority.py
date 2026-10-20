@@ -8,6 +8,8 @@ from types import SimpleNamespace
 
 import pytest
 
+from molt.compilation_target import admit_target
+
 import molt.cli as cli
 from molt.cli import frontend_pipeline
 from molt.browser_asset_closure import (
@@ -47,7 +49,7 @@ def _frontend_args(source_root: Path, *, target: str, split_runtime: bool):
         type_hint_policy="ignore",
         profile="dev",
         json_output=True,
-        target=target,
+        target=admit_target(target),
         verbose=False,
         out_dir=None,
         trusted=False,
