@@ -89,6 +89,24 @@ do not infer skipped compiler work or a universal complexity bound from one
 lower total. Before/after profiles must use the same validated thread-aware
 method, and uninstrumented latency remains separate.
 
+## Persistent join payload ownership
+
+The shared binding-state pool preserves first-parent payload tuples until a
+joined field actually changes. Both two-parent and wider joins copy each
+changed field once per chunk; an ownership-only change therefore copies one
+fixed-size payload array instead of all five. Unchanged static-value tuple
+identity also avoids repeating its element comparison in chunk publication.
+Identity, value, expression result, owner and clean epoch remain separate facts;
+active/clean masks and the original parent history retain their existing
+semantics. Offsets outside those masks retain canonical empty payloads.
+
+This reduces allocation work in sparse joins without adding a cache or changing
+the abstract interpretation. It adds per-field comparisons, so dense and tainted
+cases must be measured alongside sparse wins. The independent dense-join oracle,
+late taint-domain projection, mutation and changed-field-copy controls live in
+`tests/test_python_binding_join_frontier.py` and the existing mutation suite.
+These costs belong to compilation and development checks, not emitted guests.
+
 ## Historical Evidence
 
 Command:

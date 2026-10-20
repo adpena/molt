@@ -766,7 +766,8 @@ class _StatePool:
         )
         static_values = (
             previous.static_values
-            if all(
+            if static_values is previous.static_values
+            or all(
                 same_python_static_value(new, old)
                 for new, old in zip(static_values, previous.static_values, strict=True)
             )
@@ -1006,11 +1007,14 @@ class _StatePool:
                 candidate_mask |= chunk.active_mask | chunk.clean_mask
             if not candidate_mask:
                 return _EMPTY_BINDING_CHUNK
-            identities = list(_EMPTY_BINDING_CHUNK.identities)
-            static_values = list(_EMPTY_BINDING_CHUNK.static_values)
-            results = list(_EMPTY_BINDING_CHUNK.results)
-            owner_tokens = list(_EMPTY_BINDING_CHUNK.owner_tokens)
-            clean_epochs = list(_EMPTY_BINDING_CHUNK.clean_epochs)
+            # Copy a field only when its joined value differs from the first
+            # parent. Every published slot has an active or clean bit, so fields
+            # outside candidate_mask retain their canonical empty values.
+            identities: list[IdentityMask] | None = None
+            static_values: list[PythonStaticValue] | None = None
+            results: list[StaticExpressionResult] | None = None
+            owner_tokens: list[int] | None = None
+            clean_epochs: list[int] | None = None
             active_mask = 0
             clean_mask = 0
             if len(chunks) == 2:
@@ -1044,11 +1048,6 @@ class _StatePool:
                         # Keep the left raw payload/custody. The state join itself
                         # is still interned: equal storage never erases path writes.
                         self.join_custody_identity_skips += 1
-                        identities[chunk_offset] = left.identities[chunk_offset]
-                        static_values[chunk_offset] = left.static_values[chunk_offset]
-                        results[chunk_offset] = left.results[chunk_offset]
-                        owner_tokens[chunk_offset] = left.owner_tokens[chunk_offset]
-                        clean_epochs[chunk_offset] = left.clean_epochs[chunk_offset]
                         active_mask |= left.active_mask & slot_bit
                         clean_mask |= left.clean_mask & slot_bit
                         continue
@@ -1124,15 +1123,32 @@ class _StatePool:
                     )
                     left_owner = left.owner_tokens[chunk_offset]
                     right_owner = right.owner_tokens[chunk_offset]
-                    identities[chunk_offset] = identity
-                    static_values[chunk_offset] = static_value
-                    results[chunk_offset] = result
-                    owner_tokens[chunk_offset] = (
+                    owner_token = (
                         left_owner
                         if clean and left_owner != 0 and left_owner == right_owner
                         else 0
                     )
-                    clean_epochs[chunk_offset] = joined_epoch if inside_clean else -1
+                    clean_epoch = joined_epoch if inside_clean else -1
+                    if identity != left_identity:
+                        if identities is None:
+                            identities = list(first.identities)
+                        identities[chunk_offset] = identity
+                    if static_value is not left_static:
+                        if static_values is None:
+                            static_values = list(first.static_values)
+                        static_values[chunk_offset] = static_value
+                    if result is not left_result:
+                        if results is None:
+                            results = list(first.results)
+                        results[chunk_offset] = result
+                    if owner_token != left_owner:
+                        if owner_tokens is None:
+                            owner_tokens = list(first.owner_tokens)
+                        owner_tokens[chunk_offset] = owner_token
+                    if clean_epoch != first.clean_epochs[chunk_offset]:
+                        if clean_epochs is None:
+                            clean_epochs = list(first.clean_epochs)
+                        clean_epochs[chunk_offset] = clean_epoch
                     if (
                         identity != UNBOUND_IDENTITY
                         or static_value is not None
@@ -1145,11 +1161,13 @@ class _StatePool:
                 if not (active_mask or clean_mask):
                     return _EMPTY_BINDING_CHUNK
                 return self._make_chunk(
-                    tuple(identities),
-                    tuple(static_values),
-                    tuple(results),
-                    tuple(owner_tokens),
-                    tuple(clean_epochs),
+                    first.identities if identities is None else tuple(identities),
+                    first.static_values
+                    if static_values is None
+                    else tuple(static_values),
+                    first.results if results is None else tuple(results),
+                    first.owner_tokens if owner_tokens is None else tuple(owner_tokens),
+                    first.clean_epochs if clean_epochs is None else tuple(clean_epochs),
                     active_mask,
                     clean_mask,
                     first,
@@ -1208,16 +1226,31 @@ class _StatePool:
                         if owner_token == candidate_owner
                         else 0
                     )
-                identities[chunk_offset] = identity
                 static_value, result = _join_binding_payloads(
                     alternatives, telemetry=self
                 )
-                static_values[chunk_offset] = static_value
-                results[chunk_offset] = result
-                owner_tokens[chunk_offset] = (
-                    owner_token if clean and owner_token is not None else 0
-                )
-                clean_epochs[chunk_offset] = joined_epoch if inside_clean else -1
+                owner_token = owner_token if clean and owner_token is not None else 0
+                clean_epoch = joined_epoch if inside_clean else -1
+                if identity != first.identities[chunk_offset]:
+                    if identities is None:
+                        identities = list(first.identities)
+                    identities[chunk_offset] = identity
+                if static_value is not first.static_values[chunk_offset]:
+                    if static_values is None:
+                        static_values = list(first.static_values)
+                    static_values[chunk_offset] = static_value
+                if result is not first.results[chunk_offset]:
+                    if results is None:
+                        results = list(first.results)
+                    results[chunk_offset] = result
+                if owner_token != first.owner_tokens[chunk_offset]:
+                    if owner_tokens is None:
+                        owner_tokens = list(first.owner_tokens)
+                    owner_tokens[chunk_offset] = owner_token
+                if clean_epoch != first.clean_epochs[chunk_offset]:
+                    if clean_epochs is None:
+                        clean_epochs = list(first.clean_epochs)
+                    clean_epochs[chunk_offset] = clean_epoch
                 if (
                     identity != UNBOUND_IDENTITY
                     or static_value is not None
@@ -1230,11 +1263,11 @@ class _StatePool:
             if not (active_mask or clean_mask):
                 return _EMPTY_BINDING_CHUNK
             return self._make_chunk(
-                tuple(identities),
-                tuple(static_values),
-                tuple(results),
-                tuple(owner_tokens),
-                tuple(clean_epochs),
+                first.identities if identities is None else tuple(identities),
+                first.static_values if static_values is None else tuple(static_values),
+                first.results if results is None else tuple(results),
+                first.owner_tokens if owner_tokens is None else tuple(owner_tokens),
+                first.clean_epochs if clean_epochs is None else tuple(clean_epochs),
                 active_mask,
                 clean_mask,
                 first,
