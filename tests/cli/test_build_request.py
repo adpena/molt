@@ -69,7 +69,7 @@ def full_payload():
         "bolt": True,
         "bolt_training_cmd": "training --flag",
         "fact_graph_request": {
-            "output_path": "graphs/f.json",
+            "output_path": str(Path("graphs/f.json")),
             "function_name": "f",
             "requested_target": "llvm",
         },
