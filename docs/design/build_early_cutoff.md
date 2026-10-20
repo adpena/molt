@@ -69,6 +69,17 @@ the recorder out of that fingerprint. `molt.build_record` is the recorder: the
 ledger, the key, the record, the check and trimming. Only `molt build`
 imports it.
 
+**Python startup.** [CPython's site hook](https://github.com/python/cpython/blob/v3.12.15/Lib/site.py)
+runs before the user command. Molt's existing hook classifies test invocations
+without initializing DX, temporary-artifact storage or toolchain identities.
+Those dependencies load at their actual test consumers; there is no additional
+import hook or cache. The leaf path functions remain bound before tests start:
+pytest phase reporting must survive tests that replace the imported package.
+Actual `-c`, `-m` and script controls exercise ordinary startup, while the owning
+guard and package-isolation controls exercise test admission and publication.
+This changes compiler/development startup only; emitted native and WASM programs
+acquire no checks or work.
+
 **Ledger.** One build records into one ledger. Only the first build of a
 process records: process-global caches can serve a later build without a read
 to report, whether or not the earlier build was eligible. Inputs reach the

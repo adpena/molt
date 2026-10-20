@@ -13,14 +13,7 @@ from typing import Any
 
 
 from molt._host_exit import process_returncode_for_direct_os_exit
-from molt.dx import (
-    PROOF_SCRATCH_ROOT_ENV,
-    RunContext,
-    checkout_component,
-    control_state_dir,
-)
 from molt.source_root import compiler_source_root
-from molt.temporary_artifacts import execution_scratch, windows_temporary_directory_mode
 from molt.process_spawn import (
     ProcessGroupKwargs,
     hidden_windows_process_group_kwargs,
@@ -34,6 +27,10 @@ from molt.memory_guard_paths import (
     pytest_custody_path_is_canonical as _pytest_custody_path_is_canonical,
     pytest_guard_summary_dir as _pytest_guard_summary_dir,
 )
+
+# sitecustomize imports this module in every Python process. Defer DX and
+# artifact setup to test consumers. Retain the leaf path helpers above: phase
+# reporting must also work while tests replace the imported Molt package.
 
 ROOT = Path(__file__).resolve().parents[2]
 # Test/guard inputs follow source selection; writable custody remains separate.
@@ -323,7 +320,11 @@ def guarded_pytest_cache_dir() -> Path:
     The queue owns each run's outputs. Direct worktrees keep separate caches,
     so sibling worktrees never overwrite each other's ``lastfailed``.
     """
+    from molt.dx import PROOF_SCRATCH_ROOT_ENV, checkout_component, control_state_dir
+
     if os.environ.get(PROOF_SCRATCH_ROOT_ENV, "").strip():
+        from molt.temporary_artifacts import execution_scratch
+
         return execution_scratch(os.environ) / "pytest-cache"
     return control_state_dir(
         ROOT, f"pytest-cache/{checkout_component(ROOT)}", os.environ
@@ -366,6 +367,8 @@ def _ensure_windows_readable_dir(path: Path) -> None:
 
 def guarded_pytest_temp_root() -> Path:
     """Share the executable-output owner used by all guarded test helpers."""
+    from molt.temporary_artifacts import execution_scratch
+
     return execution_scratch(os.environ)
 
 
@@ -389,6 +392,7 @@ def run_context_test_env(
     CLI's `<checkout>/target` default (HF-114). Every guarded test handoff
     and every pytest process applies it; explicit values stay.
     """
+    from molt.dx import RunContext
 
     return RunContext(repo_root, session_prefix="pytest").root_env(environ)
 
@@ -899,6 +903,8 @@ class _WindowsPytestTemporaryPath(WindowsPath):
     def mkdir(
         self, mode: int = 0o777, parents: bool = False, exist_ok: bool = False
     ) -> None:
+        from molt.temporary_artifacts import windows_temporary_directory_mode
+
         super().mkdir(
             mode=windows_temporary_directory_mode(mode),
             parents=parents,
@@ -909,6 +915,7 @@ class _WindowsPytestTemporaryPath(WindowsPath):
 def install_windows_pytest_tempdir_mode_patch() -> bool:
     if not _is_windows_process_model():
         return False
+    from molt.temporary_artifacts import windows_temporary_directory_mode
     import _pytest.pathlib as pytest_pathlib
     import _pytest.tmpdir as pytest_tmpdir
 
