@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+from typing import get_args
+from molt.cli.build_request import BuildProfile
+
 from contextlib import ExitStack, contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass, field
@@ -73,7 +76,7 @@ _DEPLOY_PROFILE_DEFAULTS: dict[str, dict[str, object]] = {
         "stdlib_profile": AUTO_STDLIB_PROFILE,
     },
 }
-_BUILD_PROFILE_CHOICES = ("dev", "release")
+_BUILD_PROFILE_CHOICES = get_args(BuildProfile)
 _DEPLOY_PROFILE_CHOICES = tuple(_DEPLOY_PROFILE_DEFAULTS)
 _BUILD_OR_DEPLOY_PROFILE_CHOICES = (*_BUILD_PROFILE_CHOICES, *_DEPLOY_PROFILE_CHOICES)
 

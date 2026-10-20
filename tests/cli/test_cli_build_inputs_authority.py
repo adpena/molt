@@ -18,8 +18,6 @@ from molt.cli.python_import_topology import (
 _BUILD_INPUT_NAMES = (
     "_VALID_AUDIT_SINKS",
     "_binary_image_kind",
-    "_build_args_lib_paths",
-    "_build_args_respect_pythonpath",
     "_build_config_entry_value",
     "_collect_env_overrides",
     "_is_stdlib_path",

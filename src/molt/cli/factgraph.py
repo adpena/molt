@@ -5,11 +5,12 @@ from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 import subprocess
 import sys
-from typing import Any
+from typing import Any, get_args
 from molt import file_publication
 from molt.artifact_publication import discard_staged_output
 from molt.backend_protocol import BACKEND_IR_LEASE_FORMAT
 from molt.cli.build_request import BuildRequest, FactGraphRequest
+from molt.type_facts import TypeHintPolicy
 from molt.cli.config_resolution import _select_codegen_backend
 from molt.cli.native_link_plan import NativeArtifactKind
 
@@ -60,7 +61,7 @@ def add_factgraph_parser(
     )
     parser.add_argument(
         "--type-hints",
-        choices=["ignore", "trust", "check"],
+        choices=get_args(TypeHintPolicy),
         default="check",
         help="Apply type annotations to guide lowering and specialization.",
     )

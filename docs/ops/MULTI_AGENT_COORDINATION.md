@@ -280,6 +280,18 @@ and reconcile semantic conflicts before advancing a baseline or pruning a tree.
 Regenerate projections from the merged authority. Only the integrator stages,
 proves the integrated result, and lands; a completed worker is not a landed arc.
 
+Assign each worker a complete contract family and its completion obligations in
+that same coordination record. The worker owns producer and consumer migration,
+retirement of replaced paths, independent regression controls, failure and
+resource ownership, documentation, self-review and cleanup. Its handoff lists
+exact evidence and unverified coordinates; source readiness is not completion.
+The integrator returns exposed failures to that owner and keeps the worker
+responsible through accepted qualification and landing. Shared expensive builds
+have one named proof owner; workers supply their selectors and oracles to that
+build instead of starting competing copies. Close ownership only after checking
+the landed source, accepted evidence and remaining obligations against the
+canonical findings ledger.
+
 ### Windows Host Traps
 
 On Windows, `python3` may resolve to a Microsoft Store `WindowsApps` execution

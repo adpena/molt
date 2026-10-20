@@ -63,6 +63,15 @@ In-process calls construct a slotted request without JSON, interpreter probing o
 process creation; schema validation and serialization occur only at transport.
 This is compiler-side work and adds no emitted-program work.
 
+Direct builds and run/deploy wrappers use the same build grammar and effective
+request resolver. Repeated scalar options use their final value, including
+`--target`, `--python-version`, `--emit` and `--output`. Entry discovery, import
+admission, graph construction, runtime routing and cache identity consume that
+selection together with project configuration. Stdlib profile precedence keeps
+its documented option/environment/configuration policy. Command-specific build
+defaults remain distinct: `run` and `compare` default to `dev`, while `build`
+defaults to `release`.
+
 Outputs:
 - A typed application archive (`.a`/`.lib`) + linked binary (native, unless `--emit obj`)
 - `cli/backend_artifact_contract.py` owns the requested artifact kind and target:

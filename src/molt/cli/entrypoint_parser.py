@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import argparse
+from typing import Never, get_args
+from molt.cli.build_request import BuildProfile, ParseCodec, TypeHintPolicy, EmitMode
 
 from molt.backend_executable_names import CODEGEN_BACKENDS
 from molt.debug import DebugSubcommand
@@ -35,30 +37,29 @@ _VALIDATE_SUITE_CHOICES = (
 _CODEGEN_BACKEND_CHOICES = (*CODEGEN_BACKENDS, "auto")
 
 
-def _build_entrypoint_parser() -> argparse.ArgumentParser:
-    from molt import __version__
-
-    parser = argparse.ArgumentParser(
-        prog="molt",
-        usage="molt [-h] [--version] <command> [options]",
-        description="The Molt Python compiler",
-        formatter_class=_MoltHelpFormatter,
-        epilog=(
-            "Run 'molt <command> --help' for more information on a command.\n"
-            "\n"
-            "Examples:\n"
-            "  molt build app.py                  Build a Python program\n"
-            "  molt run app.py                    Build and run\n"
-            "  molt run app.py --release          Build optimized and run\n"
-            "  molt build app.py --target wasm    Build for WebAssembly\n"
-            "  molt deploy cloudflare app.py      Deploy to Cloudflare Workers\n"
-            "  molt test                          Run test suites\n"
-        ),
+def _add_build_presentation(command_parser: argparse.ArgumentParser) -> None:
+    command_parser.add_argument(
+        "--progress",
+        choices=("auto", "plain", "off"),
+        default="auto",
+        help="Build progress: terminal animation, plain phase lines, or off.",
     )
-    parser.add_argument("--version", action="version", version=f"molt {__version__}")
-    # Don't require command; show help when no args (like `go` with no args).
-    subparsers = parser.add_subparsers(dest="command", title="commands")
+    command_parser.add_argument(
+        "--headless",
+        action="store_true",
+        help="Use plain build progress without terminal control codes.",
+    )
+    command_parser.add_argument(
+        "-q",
+        "--quiet",
+        action="store_true",
+        help="Hide build progress and success messages; retain errors.",
+    )
 
+
+def _add_build_parser(
+    subparsers: argparse._SubParsersAction,
+) -> argparse.ArgumentParser:
     build_parser = subparsers.add_parser(
         "build",
         help="Build a Python program",
@@ -95,13 +96,13 @@ def _build_entrypoint_parser() -> argparse.ArgumentParser:
     )
     build_parser.add_argument(
         "--codec",
-        choices=["msgpack", "cbor", "json"],
+        choices=get_args(ParseCodec),
         default=None,
         help="Structured codec for parse calls (default from config or msgpack).",
     )
     build_parser.add_argument(
         "--type-hints",
-        choices=["ignore", "trust", "check"],
+        choices=get_args(TypeHintPolicy),
         default=None,
         help="Apply type annotations to guide lowering and specialization.",
     )
@@ -172,7 +173,7 @@ def _build_entrypoint_parser() -> argparse.ArgumentParser:
     )
     build_parser.add_argument(
         "--emit",
-        choices=["bin", "obj", "wasm"],
+        choices=get_args(EmitMode),
         default=None,
         help="Select which artifact to emit (native: bin/obj, wasm: wasm).",
     )
@@ -208,7 +209,7 @@ def _build_entrypoint_parser() -> argparse.ArgumentParser:
     build_parser.add_argument(
         "--precompile",
         action="store_true",
-        default=False,
+        default=None,
         help=(
             "After canonical manifest production, ask molt-wasm-host to publish "
             "a source-bound precompiled container for faster startup."
@@ -240,7 +241,7 @@ def _build_entrypoint_parser() -> argparse.ArgumentParser:
     build_parser.add_argument(
         "--wasm-profile",
         choices=["auto", "full", "pure"],
-        default="auto",
+        default=None,
         help=(
             "WASM import profile: auto (default) plans imports from observed IR; "
             "full registers all host imports; pure uses the same planner and "
@@ -420,6 +421,50 @@ def _build_entrypoint_parser() -> argparse.ArgumentParser:
     build_parser.add_argument(
         "--verbose", action="store_true", help="Emit verbose diagnostics."
     )
+
+    _add_build_presentation(build_parser)
+    return build_parser
+
+
+def _build_build_parser() -> argparse.ArgumentParser:
+    """Project the public build grammar without constructing unrelated commands."""
+
+    class RequestArgumentParser(argparse.ArgumentParser):
+        def error(self, message: str) -> Never:
+            # Wrapper callers own text/JSON diagnostics; argparse must not exit
+            # their process or write an additional usage block to stderr.
+            raise ValueError(message)
+
+    parser = RequestArgumentParser(prog="molt")
+    _add_build_parser(parser.add_subparsers(dest="command"))
+    return parser
+
+
+def _build_entrypoint_parser() -> argparse.ArgumentParser:
+    from molt import __version__
+
+    parser = argparse.ArgumentParser(
+        prog="molt",
+        usage="molt [-h] [--version] <command> [options]",
+        description="The Molt Python compiler",
+        formatter_class=_MoltHelpFormatter,
+        epilog=(
+            "Run 'molt <command> --help' for more information on a command.\n"
+            "\n"
+            "Examples:\n"
+            "  molt build app.py                  Build a Python program\n"
+            "  molt run app.py                    Build and run\n"
+            "  molt run app.py --release          Build optimized and run\n"
+            "  molt build app.py --target wasm    Build for WebAssembly\n"
+            "  molt deploy cloudflare app.py      Deploy to Cloudflare Workers\n"
+            "  molt test                          Run test suites\n"
+        ),
+    )
+    parser.add_argument("--version", action="version", version=f"molt {__version__}")
+    # Don't require command; show help when no args (like `go` with no args).
+    subparsers = parser.add_subparsers(dest="command", title="commands")
+
+    _add_build_parser(subparsers)
 
     _factgraph.add_factgraph_parser(
         subparsers,
@@ -1168,7 +1213,7 @@ def _build_entrypoint_parser() -> argparse.ArgumentParser:
     run_parser.add_argument(
         "--profile",
         "--build-profile",
-        choices=["dev", "release"],
+        choices=get_args(BuildProfile),
         default=None,
         help="Build profile passed to `molt build` (default: dev).",
     )
@@ -1300,7 +1345,7 @@ def _build_entrypoint_parser() -> argparse.ArgumentParser:
     compare_parser.add_argument(
         "--profile",
         "--build-profile",
-        choices=["dev", "release"],
+        choices=get_args(BuildProfile),
         default=None,
         help="Build profile passed to `molt build` (default: dev).",
     )
@@ -1398,7 +1443,7 @@ def _build_entrypoint_parser() -> argparse.ArgumentParser:
     test_parser.add_argument(
         "--profile",
         "--build-profile",
-        choices=["dev", "release"],
+        choices=get_args(BuildProfile),
         default=None,
         help="Build profile for Molt builds in suite=diff (default: dev).",
     )
@@ -1440,7 +1485,7 @@ def _build_entrypoint_parser() -> argparse.ArgumentParser:
     diff_parser.add_argument(
         "--profile",
         "--build-profile",
-        choices=["dev", "release"],
+        choices=get_args(BuildProfile),
         default=None,
         help="Build profile for Molt builds in the diff harness (default: dev).",
     )
@@ -2131,7 +2176,7 @@ def _build_entrypoint_parser() -> argparse.ArgumentParser:
     )
     deploy_parser.add_argument(
         "--build-profile",
-        choices=["dev", "release"],
+        choices=get_args(BuildProfile),
         default=None,
         help="Build profile for backend/runtime (default: release).",
     )
@@ -2195,22 +2240,5 @@ def _build_entrypoint_parser() -> argparse.ArgumentParser:
         "--verbose", action="store_true", help="Emit verbose diagnostics."
     )
 
-    for command_parser in (build_parser, run_parser):
-        command_parser.add_argument(
-            "--progress",
-            choices=("auto", "plain", "off"),
-            default="auto",
-            help="Build progress: terminal animation, plain phase lines, or off.",
-        )
-        command_parser.add_argument(
-            "--headless",
-            action="store_true",
-            help="Use plain build progress without terminal control codes.",
-        )
-        command_parser.add_argument(
-            "-q",
-            "--quiet",
-            action="store_true",
-            help="Hide build progress and success messages; retain errors.",
-        )
+    _add_build_presentation(run_parser)
     return parser

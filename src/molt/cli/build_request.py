@@ -10,9 +10,9 @@ from typing import Any, Literal
 from molt.backend_executable_names import CodegenBackend, DEFAULT_CODEGEN_BACKEND
 from molt.capability_policy import CapabilityInput
 from molt.cli.config_resolution import StdlibProfile
+from molt.type_facts import TypeHintPolicy
 
 ParseCodec = Literal["msgpack", "cbor", "json"]
-TypeHintPolicy = Literal["ignore", "trust", "check"]
 BuildProfile = Literal["dev", "release"]
 EmitMode = Literal["bin", "obj", "wasm"]
 Target = str

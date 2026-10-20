@@ -1,3 +1,4 @@
+from molt.cli.build_request import BuildRequest
 import ast
 from collections import namedtuple
 from pathlib import Path
@@ -216,12 +217,16 @@ def test_wrapper_build_entry_uses_python_version_build_arg(tmp_path: Path) -> No
 def test_wrapper_target_python_reads_build_arg_without_host_parse(
     tmp_path: Path,
 ) -> None:
-    target = cli_wrapper_build._wrapper_target_python(
+    from molt.cli.build_request_resolution import resolve_build_arguments
+
+    request = resolve_build_arguments(
         ["--python-version", "3.14"],
         project_root=tmp_path,
+        file_path=None,
+        module=None,
+        env={},
     )
-
-    assert target.short == "3.14"
+    assert request.python_version == "3.14"
 
 
 def test_backend_cache_variant_changes_with_target_python() -> None:
@@ -312,12 +317,22 @@ def test_wrapper_cache_manifest_input_changes_with_target_python(
     assert entry314 is not None
 
     payload312, key312 = cli_wrapper_build._wrapper_build_cache_input(
+        request=BuildRequest(
+            file_path=None,
+            stdlib_profile="auto",
+            python_version=entry312.target_python.short,
+        ),
         resolved_build_entry=entry312,
         build_args=["--python-version", "3.12"],
         env={},
         project_root=tmp_path,
     ) or ({}, "")
     payload314, key314 = cli_wrapper_build._wrapper_build_cache_input(
+        request=BuildRequest(
+            file_path=None,
+            stdlib_profile="auto",
+            python_version=entry314.target_python.short,
+        ),
         resolved_build_entry=entry314,
         build_args=["--python-version", "3.14"],
         env={},
@@ -367,7 +382,16 @@ def test_wrapper_cache_key_binds_the_child_build_rust_cpu_policy(
             build_args=build_args,
         )
         assert error is None and entry is not None
+        from molt.cli.build_request_resolution import resolve_build_arguments
+
         cache_input = cli_wrapper_build._wrapper_build_cache_input(
+            request=resolve_build_arguments(
+                build_args,
+                file_path=str(source_path),
+                module=None,
+                project_root=tmp_path,
+                env=env,
+            ),
             resolved_build_entry=entry,
             build_args=build_args,
             env=env,

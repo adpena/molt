@@ -25,7 +25,6 @@ from molt.cli.arg_helpers import (
     _build_args_has_capabilities_flag,
     _build_args_has_profile_flag,
     _build_args_has_trusted_flag,
-    _extract_emit_arg,
     _resolve_binary_output,
 )
 from molt.cli.atomic_io import (
@@ -69,6 +68,7 @@ from molt.cli.project_roots import (
 )
 from molt.target_python import (
     _parse_target_python_version,
+    _resolve_target_python_version,
 )
 from molt.node_runtime import resolve_node_runtime
 from molt.python_interpreter import (
@@ -88,34 +88,25 @@ from molt.cli.process_execution import (
 
 
 def _wasm_run_build_args(build_args: list[str]) -> list[str]:
-    """Require the linked, manifest-bearing artifact consumed by the Node host."""
+    """Require the effective linked artifact, using the public build grammar."""
+    from molt.cli.build_request_resolution import (
+        parse_build_arguments,
+        resolve_build_request,
+    )
 
-    if any(
-        arg in {"--no-linked", "--no-require-linked", "--split-runtime"}
-        for arg in build_args
-    ):
+    args = parse_build_arguments(build_args)
+    request = resolve_build_request(args, build_cfg={}, cfg_capabilities=None, env={})
+    if args.linked is False or args.require_linked is False or request.split_runtime:
         raise ValueError(
             "molt run --target wasm requires a linked WASM artifact; "
             "--no-linked, --no-require-linked, and --split-runtime are incompatible"
         )
-    for index, arg in enumerate(build_args):
-        if arg == "--target" and index + 1 < len(build_args):
-            selected_target = build_args[index + 1]
-        elif arg.startswith("--target="):
-            selected_target = arg.split("=", 1)[1]
-        else:
-            continue
-        if selected_target != "wasm":
-            raise ValueError(
-                "molt run --target wasm cannot use a different build target: "
-                f"{selected_target}"
-            )
-    result = list(build_args)
-    if "--linked" not in result:
-        result.append("--linked")
-    if "--require-linked" not in result:
-        result.append("--require-linked")
-    return result
+    if args.target is not None and request.target != "wasm":
+        raise ValueError(
+            "molt run --target wasm cannot use a different build target: "
+            + request.target
+        )
+    return ["--target", "wasm", *build_args, "--linked", "--require-linked"]
 
 
 def _wasm_node_runner(molt_root: Path) -> Path:
@@ -284,20 +275,25 @@ def _run_script_cross(
         wasm_host_command = [str(node.path), str(runner)]
 
     capabilities_tmp: Path | None = None
-    if build_profile is not None and not _build_args_has_profile_flag(build_args):
-        build_args.extend(["--build-profile", build_profile])
+    try:
+        if build_profile is not None and not _build_args_has_profile_flag(build_args):
+            build_args.extend(["--build-profile", build_profile])
+    except ValueError as exc:
+        return _fail(str(exc), json_output, command="run")
     if trusted and not _build_args_has_trusted_flag(build_args):
         build_args.append("--trusted")
-    if capabilities is not None and not _build_args_has_capabilities_flag(build_args):
-        cap_arg, capabilities_tmp = materialize_capability_input(capabilities)
-        build_args.extend(["--capabilities", cap_arg])
-
-    if not json_output:
-        target_label = (
-            "WASM" if target == "wasm" else "MLIR" if target == "mlir" else "Luau"
-        )
-        _notice(f"Building for {target_label}...")
     try:
+        if capabilities is not None and not _build_args_has_capabilities_flag(
+            build_args
+        ):
+            cap_arg, capabilities_tmp = materialize_capability_input(capabilities)
+            build_args.extend(["--capabilities", cap_arg])
+
+        if not json_output:
+            target_label = (
+                "WASM" if target == "wasm" else "MLIR" if target == "mlir" else "Luau"
+            )
+            _notice(f"Building for {target_label}...")
         build_contract, t_build, build_error = _run_wrapper_build(
             file_path=file_path,
             module=module,
@@ -481,8 +477,11 @@ def _deploy(
         if not any(a.startswith("--target") for a in build_cmd_args):
             build_cmd_args.extend(["--target", "luau"])
 
-    if build_profile and not _build_args_has_profile_flag(build_cmd_args):
-        build_cmd_args.extend(["--build-profile", build_profile])
+    try:
+        if build_profile and not _build_args_has_profile_flag(build_cmd_args):
+            build_cmd_args.extend(["--build-profile", build_profile])
+    except ValueError as exc:
+        return _fail(str(exc), json_output, command="deploy")
     if output:
         build_cmd_args.extend(["--output", output])
     if out_dir:
@@ -686,14 +685,19 @@ def run_script(
     env = ProcessEnvironment(env)
 
     capabilities_tmp: Path | None = None
-    if build_profile is not None and not _build_args_has_profile_flag(build_args):
-        build_args.extend(["--build-profile", build_profile])
+    try:
+        if build_profile is not None and not _build_args_has_profile_flag(build_args):
+            build_args.extend(["--build-profile", build_profile])
+    except ValueError as exc:
+        return _fail(str(exc), json_output, command="run")
     if trusted and not _build_args_has_trusted_flag(build_args):
         build_args.append("--trusted")
-    if capabilities is not None and not _build_args_has_capabilities_flag(build_args):
-        cap_arg, capabilities_tmp = materialize_capability_input(capabilities)
-        build_args.extend(["--capabilities", cap_arg])
     try:
+        if capabilities is not None and not _build_args_has_capabilities_flag(
+            build_args
+        ):
+            cap_arg, capabilities_tmp = materialize_capability_input(capabilities)
+            build_args.extend(["--capabilities", cap_arg])
         build_contract, build_duration_s, build_error = _run_wrapper_build(
             file_path=file_path,
             module=module,
@@ -715,13 +719,6 @@ def run_script(
     if build_error is not None:
         return build_error
     assert build_contract is not None
-    emit_arg = _extract_emit_arg(build_args)
-    if emit_arg and emit_arg != "bin":
-        return _fail(
-            f"Compiled run requires emit=bin (got {emit_arg})",
-            json_output,
-            command="run",
-        )
     output_binary = _resolve_binary_output(str(build_contract.consumer_output))
     if output_binary is None:
         return _fail(
@@ -836,66 +833,88 @@ def compare(
             requested_target_python = _parse_target_python_version(
                 requested_python_selector
             )
-    try:
-        python_command = resolve_python_selector(
-            python_exe,
-            env=env,
-            cwd=project_root,
-        )
-    except (PythonInterpreterError, ValueError) as exc:
-        return _fail(str(exc), json_output, command="compare")
-    if module:
-        cpy_cmd = [*python_command, "-m", module, *script_args]
-    else:
-        cpy_cmd = [*python_command, str(source_path), *script_args]
-    cpy_res = _run_command_timed(
-        cpy_cmd,
-        env=env,
-        cwd=project_root,
-        verbose=verbose,
-        capture_output=True,
-        memory_guard_prefix=_DIFF_MEMORY_GUARD_PREFIX,
-    )
-
     build_args = list(build_args or [])
     if requested_target_python is not None and not _build_args_has_python_version_flag(
         build_args
     ):
         build_args.extend(["--python-version", requested_target_python.short])
     capabilities_tmp: Path | None = None
-    if build_profile is not None and not _build_args_has_profile_flag(build_args):
-        build_args.extend(["--build-profile", build_profile])
+    try:
+        if build_profile is not None and not _build_args_has_profile_flag(build_args):
+            build_args.extend(["--build-profile", build_profile])
+    except ValueError as exc:
+        return _fail(str(exc), json_output, command="compare")
     if rebuild and not _build_args_has_cache_flag(build_args):
         build_args.append("--no-cache")
     if trusted and not _build_args_has_trusted_flag(build_args):
         build_args.append("--trusted")
-    if capabilities is not None and not _build_args_has_capabilities_flag(build_args):
-        cap_arg, capabilities_tmp = materialize_capability_input(capabilities)
-        build_args.extend(["--capabilities", cap_arg])
-    emit_arg = _extract_emit_arg(build_args)
-    if emit_arg and emit_arg != "bin":
-        return _fail(
-            f"Compare requires emit=bin (got {emit_arg})",
-            json_output,
-            command="compare",
-        )
-    build_python_command = (
-        python_command if requested_target_python is not None else (sys.executable,)
-    )
-    build_cmd = [
-        *build_python_command,
-        "-m",
-        "molt.cli",
-        "build",
-        "--json",
-        *build_args,
-    ]
-    if module:
-        build_cmd.extend(["--module", module])
-    else:
-        assert file_path is not None
-        build_cmd.append(file_path)
     try:
+        if capabilities is not None and not _build_args_has_capabilities_flag(
+            build_args
+        ):
+            cap_arg, capabilities_tmp = materialize_capability_input(capabilities)
+            build_args.extend(["--capabilities", cap_arg])
+        from molt.cli.build_request_resolution import resolve_build_arguments
+
+        try:
+            compare_request = resolve_build_arguments(
+                build_args,
+                file_path=file_path,
+                module=module,
+                project_root=project_root,
+                env=env,
+            )
+            _resolve_target_python_version(
+                explicit=compare_request.python_version,
+                build_config=compare_request.build_config,
+                project_root=project_root,
+            )
+        except ValueError as exc:
+            return _fail(str(exc), json_output, command="compare")
+        emit_arg = compare_request.emit
+        if emit_arg and emit_arg != "bin":
+            return _fail(
+                f"Compare requires emit=bin (got {emit_arg})",
+                json_output,
+                command="compare",
+            )
+        try:
+            python_command = resolve_python_selector(
+                python_exe,
+                env=env,
+                cwd=project_root,
+            )
+        except (PythonInterpreterError, ValueError) as exc:
+            return _fail(str(exc), json_output, command="compare")
+        if module:
+            cpy_cmd = [*python_command, "-m", module, *script_args]
+        else:
+            cpy_cmd = [*python_command, str(source_path), *script_args]
+        cpy_res = _run_command_timed(
+            cpy_cmd,
+            env=env,
+            cwd=project_root,
+            verbose=verbose,
+            capture_output=True,
+            memory_guard_prefix=_DIFF_MEMORY_GUARD_PREFIX,
+        )
+
+        build_python_command = (
+            python_command if requested_target_python is not None else (sys.executable,)
+        )
+        build_cmd = [
+            *build_python_command,
+            "-m",
+            "molt.cli",
+            "build",
+            "--json",
+            *build_args,
+        ]
+        if module:
+            build_cmd.extend(["--module", module])
+        else:
+            assert file_path is not None
+            build_cmd.append(file_path)
         build_res = _run_command_timed(
             build_cmd,
             env=env,

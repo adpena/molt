@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from molt.cli.build_request import BuildRequest
+from molt.cli.build_request_resolution import resolve_build_arguments
 from molt.process_environment import ProcessEnvironment
 
 import hashlib
@@ -8,7 +10,7 @@ import os
 import shlex
 import sys
 import time
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, fields, replace
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
@@ -30,15 +32,10 @@ from molt.cli.cache_fingerprints import (
 )
 from molt.cli.compiler_identity import CompilerIdentityError
 from molt.cli.rust_cpu_policy import resolve_rust_cpu_policy
-from molt.backend_executable_names import CodegenBackend, backend_features_for_target
+from molt.backend_executable_names import backend_features_for_target
 from molt.cli.command_runtime import _CLI_MEMORY_GUARD_PREFIX, _run_completed_command
 from molt.cli.config_resolution import (
-    _load_molt_config,
     STATIC_IMPORT_MODULES_ENV,
-    _resolve_build_config,
-    _select_codegen_backend,
-    resolve_stdlib_profile,
-    runtime_target,
 )
 from molt.default_paths import _default_molt_bin
 from molt.cli.env_overrides import temporary_env_overrides
@@ -66,11 +63,6 @@ from molt.cli.output import (
     fail as _fail,
     json_payload as _json_payload,
 )
-from molt.target_python import (
-    TargetPythonVersion,
-    _parse_target_python_version,
-    _resolve_target_python_version,
-)
 from molt.file_hashing import _sha256_file
 
 
@@ -92,76 +84,7 @@ def _build_args_has_python_version_flag(args: Sequence[str]) -> bool:
     )
 
 
-def _wrapper_target_python(
-    build_args: Sequence[str],
-    *,
-    project_root: Path,
-) -> TargetPythonVersion:
-    for index, arg in enumerate(build_args):
-        if arg == "--python-version" and index + 1 < len(build_args):
-            return _parse_target_python_version(build_args[index + 1])
-        if arg.startswith("--python-version="):
-            return _parse_target_python_version(arg.split("=", 1)[1])
-    return _resolve_target_python_version(
-        explicit=None,
-        build_config=_resolve_build_config(_load_molt_config(project_root)),
-        project_root=project_root,
-    )
-
-
-def _wrapper_stdlib_profile(
-    build_args: Sequence[str],
-    *,
-    project_root: Path,
-    env: Mapping[str, str],
-) -> str:
-    """The stdlib profile the child ``molt build`` resolves from its inputs."""
-    flag: str | None = None
-    for index, arg in enumerate(build_args):
-        if arg == "--stdlib-profile" and index + 1 < len(build_args):
-            flag = build_args[index + 1]
-        elif arg.startswith("--stdlib-profile="):
-            flag = arg.split("=", 1)[1]
-    profile, _source = resolve_stdlib_profile(
-        flag=flag,
-        build_cfg=_resolve_build_config(_load_molt_config(project_root)),
-        env=env,
-    )
-    return profile
-
-
-def _wrapper_build_target(build_args: Sequence[str]) -> str:
-    for index, arg in enumerate(build_args):
-        if arg == "--target" and index + 1 < len(build_args):
-            return runtime_target(build_args[index + 1])
-        if arg.startswith("--target="):
-            return runtime_target(arg.split("=", 1)[1])
-    return "native"
-
-
-def _wrapper_codegen_backend(build_args: Sequence[str]) -> CodegenBackend:
-    """The codegen backend the child ``molt build`` selects from its flags.
-
-    The child resolves ``--backend``/``--target llvm`` itself; its environment
-    never selects the backend. A conflicting pair fails in the child before it
-    builds, so the key computed here is never published.
-    """
-    target, backend = "native", "auto"
-    for index, arg in enumerate(build_args):
-        value = build_args[index + 1] if index + 1 < len(build_args) else None
-        if arg == "--target" and value is not None:
-            target = value
-        elif arg.startswith("--target="):
-            target = arg.split("=", 1)[1]
-        elif arg == "--backend" and value is not None:
-            backend = value
-        elif arg.startswith("--backend="):
-            backend = arg.split("=", 1)[1]
-    _target, codegen_backend, _error = _select_codegen_backend(target, backend)
-    return codegen_backend
-
-
-_WRAPPER_BUILD_CACHE_SCHEMA_VERSION = 3
+_WRAPPER_BUILD_CACHE_SCHEMA_VERSION = 4
 _WRAPPER_BUILD_CACHE_ENV_KEYS = (
     "MOLT_CAPABILITIES",
     "MOLT_CAPABILITY_TIER",
@@ -203,16 +126,19 @@ def _wrapper_build_dependency_fingerprints(
     *,
     resolved_build_entry: _ResolvedBuildEntry,
     build_args: Sequence[str],
+    request: BuildRequest,
     env: Mapping[str, str],
     project_root: Path,
 ) -> tuple[list[dict[str, Any]], dict[str, Any]] | None:
+    # Only resolved wrapper requests reach graph construction.
+    assert request.stdlib_profile is not None
     stdlib_root = _stdlib_root_path()
     module_reasons: dict[str, set[str]] = {}
     # The child build reads these ambient inputs from its own environment;
     # predicting its module graph in process applies the same mapping for the
     # prediction only (see molt.cli.env_overrides).
     with temporary_env_overrides(env):
-        target = _wrapper_build_target(build_args)
+        target = request.target
         import_admission_policy, admission_error = _resolve_import_admission_policy(
             external_module_roots=resolved_build_entry.external_module_roots,
             json_output=False,
@@ -239,9 +165,7 @@ def _wrapper_build_dependency_fingerprints(
                     import_admission_policy=import_admission_policy,
                     target_python=resolved_build_entry.target_python,
                     image_scope=resolved_build_entry.image_scope,
-                    stdlib_profile=_wrapper_stdlib_profile(
-                        build_args, project_root=project_root, env=env
-                    ),
+                    stdlib_profile=request.stdlib_profile,
                 )
             )
         except (OSError, SyntaxError, UnicodeDecodeError):
@@ -335,6 +259,7 @@ def _wrapper_build_cache_input(
     *,
     resolved_build_entry: _ResolvedBuildEntry,
     build_args: Sequence[str],
+    request: BuildRequest,
     env: Mapping[str, str],
     project_root: Path,
 ) -> tuple[dict[str, Any], str] | None:
@@ -349,7 +274,7 @@ def _wrapper_build_cache_input(
     capability_config_digest = (
         resolve_runtime_policy_from_env(env).digest().removeprefix("sha256:")
     )
-    target = _wrapper_build_target(build_args)
+    target = request.target
     try:
         # The child build resolves the same policy from the same request.
         rust_cpu, _rust_cpu_warning = resolve_rust_cpu_policy(target, env)
@@ -358,6 +283,7 @@ def _wrapper_build_cache_input(
     closure_fingerprints = _wrapper_build_dependency_fingerprints(
         resolved_build_entry=resolved_build_entry,
         build_args=build_args,
+        request=request,
         env=env,
         project_root=project_root,
     )
@@ -382,18 +308,23 @@ def _wrapper_build_cache_input(
                 is_wasm=target.startswith("wasm"),
                 is_luau_transpile=target == "luau",
                 is_rust_transpile=target == "rust",
-                codegen_backend=_wrapper_codegen_backend(build_args),
+                codegen_backend=request.codegen_backend,
             ),
             rust_cpu=rust_cpu,
         ),
         "frontend_tooling_fingerprint": _cache_tooling_fingerprint(),
         "python_cache_tag": sys.implementation.cache_tag,
-        "target_python": _wrapper_target_python(
-            build_args,
-            project_root=project_root,
-        ).tag,
+        "target_python": resolved_build_entry.target_python.tag,
+        "request": {
+            field.name: getattr(request, field.name) for field in fields(request)
+        },
     }
-    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    try:
+        encoded = json.dumps(
+            payload, sort_keys=True, separators=(",", ":"), allow_nan=False
+        ).encode("utf-8")
+    except (TypeError, ValueError):
+        return None  # Non-JSON caller config cannot own a persistent JSON cache key.
     return payload, hashlib.sha256(encoded).hexdigest()
 
 
@@ -625,21 +556,39 @@ def _run_wrapper_build(
     # Keep symlinks unresolved so each fence observes live selector resolution.
     if file_path is not None:
         file_path = os.fspath(Path(file_path).absolute())
-    wrapper_cache_enabled = (
-        resolved_build_entry is not None
-        and "--no-cache" not in build_args
-        and "--rebuild" not in build_args
-    )
-    cache_input = None
-    if wrapper_cache_enabled:
-        assert resolved_build_entry is not None
-        selected_entry, selection_error = _build_inputs._resolve_wrapper_build_entry(
+    try:
+        request = resolve_build_arguments(
+            build_args,
             file_path=file_path,
             module=module,
             project_root=project_root,
+            env=env,
+        )
+    except ValueError as exc:
+        return None, 0.0, _fail(str(exc), json_output, command=command)
+    if (
+        command == "run"
+        and request.target not in {"wasm", "luau", "mlir"}
+        and request.emit not in {None, "bin"}
+    ):
+        return (
+            None,
+            0.0,
+            _fail(
+                f"Compiled run requires emit=bin (got {request.emit})",
+                json_output,
+                command=command,
+            ),
+        )
+    wrapper_cache_enabled = resolved_build_entry is not None and request.cache
+    cache_input = None
+    if wrapper_cache_enabled:
+        assert resolved_build_entry is not None
+        selected_entry, selection_error = _build_inputs._resolve_request_entry(
+            request=request,
+            project_root=project_root,
             json_output=json_output,
             command=command,
-            build_args=build_args,
             env=env,
             source_cwd=project_root,
         )
@@ -665,6 +614,7 @@ def _run_wrapper_build(
             cache_input = _wrapper_build_cache_input(
                 resolved_build_entry=resolved_build_entry,
                 build_args=build_args,
+                request=request,
                 env=env,
                 project_root=project_root,
             )
@@ -741,13 +691,21 @@ def _run_wrapper_build(
     assert contract is not None
     if cache_input is not None:
         assert resolved_build_entry is not None
-        current_entry, selection_error = _build_inputs._resolve_wrapper_build_entry(
-            file_path=file_path,
-            module=module,
+        try:
+            request = resolve_build_arguments(
+                build_args,
+                file_path=file_path,
+                module=module,
+                project_root=project_root,
+                env=env,
+            )
+        except ValueError as exc:
+            return None, duration, _fail(str(exc), json_output, command=command)
+        current_entry, selection_error = _build_inputs._resolve_request_entry(
+            request=request,
             project_root=project_root,
             json_output=json_output,
             command=command,
-            build_args=build_args,
             env=env,
             source_cwd=project_root,
         )
@@ -759,6 +717,7 @@ def _run_wrapper_build(
                 current_input = _wrapper_build_cache_input(
                     resolved_build_entry=current_entry,
                     build_args=build_args,
+                    request=request,
                     env=env,
                     project_root=project_root,
                 )

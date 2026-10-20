@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from molt.cli.build_request import BuildRequest
+
 from molt.process_environment import ProcessEnvironment
 
 from tests.runtime_build_identity_helper import native_runtime_build_inputs
@@ -190,7 +192,6 @@ import socket
 import tracemalloc
 from molt.cli import backend_cache as cli_backend_cache
 from molt.cli import build_command as cli_build_command
-from molt.cli.build_request import BuildRequest
 from molt.cli import artifact_sync as cli_artifact_sync
 from molt.cli import backend_daemon_config as cli_backend_daemon_config
 from molt.cli import backend_daemon_logs as cli_backend_daemon_logs
@@ -27131,7 +27132,7 @@ def test_run_wrapper_build_rejects_child_time_source_mutation(
         ([source_zero] if prior_receipt else []) + [source_a, source_b]
     )
     receipt = json.loads(manifest_path.read_text(encoding="utf-8"))
-    assert receipt["version"] == 3
+    assert receipt["version"] == 4
     assert (
         receipt["binary_sha256"] == hashlib.sha256(b"compiled:" + source_b).hexdigest()
     )
@@ -27201,14 +27202,30 @@ def test_wrapper_cache_input_rejects_expired_source_admission(
 
     with pytest.raises(cli_module_source.PythonSourceChangedError, match="custody"):
         cli_wrapper_build._wrapper_build_cache_input(
-            resolved_build_entry=admitted, build_args=[], env={}, project_root=project
+            request=BuildRequest(
+                file_path=None,
+                stdlib_profile="auto",
+                python_version=admitted.target_python.short,
+            ),
+            resolved_build_entry=admitted,
+            build_args=[],
+            env={},
+            project_root=project,
         )
     fresh, fresh_error = cli_build_inputs._resolve_wrapper_build_entry(**resolve_kwargs)
     assert fresh_error is None and fresh is not None
     assert fresh.entry_snapshot is not None
     assert fresh.entry_snapshot.content == source_b
     current_input = cli_wrapper_build._wrapper_build_cache_input(
-        resolved_build_entry=fresh, build_args=[], env={}, project_root=project
+        request=BuildRequest(
+            file_path=None,
+            stdlib_profile="auto",
+            python_version=fresh.target_python.short,
+        ),
+        resolved_build_entry=fresh,
+        build_args=[],
+        env={},
+        project_root=project,
     )
     assert current_input is not None
     input_payload, _ = current_input
@@ -34314,6 +34331,11 @@ def test_run_wrapper_build_rejects_original_module_selector_drift(
     assert admitted.source_path == entry.resolve()
     assert (
         cli_wrapper_build._wrapper_build_cache_input(
+            request=BuildRequest(
+                file_path=None,
+                stdlib_profile="auto",
+                python_version=admitted.target_python.short,
+            ),
             resolved_build_entry=admitted,
             build_args=[],
             env=child_env,
