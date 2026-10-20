@@ -15714,6 +15714,145 @@ def test_proof_queue_named_spec_closes_connection_when_dispatch_raises(
     assert closed == [True]
 
 
+@pytest.mark.parametrize(
+    "owner",
+    [
+        "exec",
+        "cargo",
+        "submit",
+        "run",
+        "prune_stale",
+        "note",
+        "link",
+        "notebook",
+        "queue_one",
+        "run_one",
+    ],
+)
+@pytest.mark.parametrize("failure", [RuntimeError, KeyboardInterrupt])
+def test_queue_connection_owners_close_on_failure(
+    tmp_path, monkeypatch, owner, failure
+):
+    from tools.proof_queue_pkg import commands
+
+    db = tmp_path / "queue.sqlite3"
+    opened = []
+    original_connect = state._connect
+
+    def capture_connection(*args, **kwargs):
+        connection = original_connect(*args, **kwargs)
+        opened.append(connection)  # Retain it: GC must not satisfy this oracle.
+        return connection
+
+    def fail(*args, **kwargs):
+        raise failure("connection-owner sentinel")
+
+    args = argparse.Namespace(
+        db=str(db),
+        logs_root=str(tmp_path / "runs"),
+        repo_root=str(state.ROOT),
+        env=[],
+        note=["ownership fixture"],
+        command=["python", "-m", "pytest"],
+        cargo_args=["test", "--workspace"],
+        allow_warm_single_test=False,
+        detach=True,
+        id="owner",
+        reason="ownership fixture",
+        resource_family="python",
+        contention_key="owner",
+        scope=[],
+        depends_on=[],
+        edge_kind=state.DEFAULT_EDGE_KIND,
+        edge_note=None,
+        timeout=1,
+        queue_size=1,
+        run_id="absent",
+        kind="note",
+        author="fixture",
+        no_notebook=True,
+        parent="absent",
+        child_run_id="absent",
+    )
+    monkeypatch.setattr(state, "_connect", capture_connection)
+    if owner in {"exec", "cargo"}:
+        monkeypatch.setattr(runner, "_queue_one", lambda *a, **kw: (0, "queued"))
+        monkeypatch.setattr(runner, "_dispatch_detached_runner", fail)
+    elif owner == "submit":
+        args.dsl = str(tmp_path / "unused.toml")
+
+        class InterruptedSpecs(list):
+            def __iter__(self):
+                fail()
+
+        monkeypatch.setattr(commands, "_load_specs", lambda path: InterruptedSpecs())
+    elif owner == "run":
+        monkeypatch.setattr(scheduling, "_active_running_rows", fail)
+    elif owner in {"prune_stale", "notebook"}:
+        monkeypatch.setattr(scheduling, "_refresh_blocked_queued_runs", fail)
+    elif owner == "note":
+        monkeypatch.setattr(state, "_insert_note", fail)
+    elif owner == "link":
+        monkeypatch.setattr(state, "_insert_edge", fail)
+    else:
+        monkeypatch.setattr(scheduling, "_lane_maturity_admission", fail)
+
+    with pytest.raises(failure, match="connection-owner sentinel"):
+        if owner in {"queue_one", "run_one"}:
+            kwargs = dict(
+                logical_id="owner",
+                reason="ownership fixture",
+                command=args.command,
+                resource_family="python",
+                contention_key="owner",
+                scopes=[],
+                env_overrides={},
+                initial_notes=["ownership fixture"],
+            )
+            if owner == "run_one":
+                kwargs["timeout"] = 1
+            getattr(runner, "_" + owner)(args, **kwargs)
+        else:
+            getattr(commands, "_cmd_" + owner)(args)
+    assert len(opened) == 1
+    with pytest.raises(sqlite3.ProgrammingError, match="closed"):
+        opened[0].cursor()
+    db.rename(db.with_suffix(".retired"))
+
+
+@pytest.mark.parametrize("access", ["read", "write"])
+@pytest.mark.parametrize("failure", [sqlite3.OperationalError, KeyboardInterrupt])
+def test_queue_connection_factory_closes_failed_initialization(
+    tmp_path, monkeypatch, access, failure
+):
+    db = tmp_path / "queue.sqlite3"
+    with closing(state._connect(db)):
+        pass
+    opened = []
+
+    class FailingConnection(sqlite3.Connection):
+        def execute(self, *args, **kwargs):
+            raise failure("initialization sentinel")
+
+    def connect(*args, **kwargs):
+        connection = sqlite3.connect(*args, **kwargs, factory=FailingConnection)
+        opened.append(connection)
+        return connection
+
+    install_module_view(monkeypatch, "sqlite3", sqlite3, state, connect=connect)
+    expected = (
+        state.QueueInspectionError
+        if access == "read" and failure is sqlite3.OperationalError
+        else failure
+    )
+    with pytest.raises(expected, match="initialization sentinel"):
+        state._connect(db, access=access)
+    assert len(opened) == 1
+    with pytest.raises(sqlite3.ProgrammingError, match="closed"):
+        opened[0].cursor()
+    db.rename(db.with_suffix(".retired"))
+
+
 def test_proof_queue_named_spec_requires_launch_value_for_every_locked_name() -> None:
     spec = {
         "logical_id": "generic-missing-locked-value",

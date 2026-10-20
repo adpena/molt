@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+from contextlib import closing
 import hashlib
 import json
 import os
@@ -1178,110 +1179,120 @@ def _queue_one(
     db = state._db_path(args)
     logs_root = state._logs_root(args)
     repo_root = state._repo_root(args)
-    conn = state._connect(db)
-    for parent_run_id in depends_on or []:
-        if state._edge_kind_requires_local_parent(edge_kind) and not state._run_exists(
-            conn, parent_run_id
-        ):
-            raise SystemExit(f"unknown parent proof run {parent_run_id!r}")
-    if edge_kind not in state.EDGE_KINDS:
-        allowed = ", ".join(sorted(state.EDGE_KINDS))
-        raise SystemExit(f"unknown proof edge kind {edge_kind!r}; allowed: {allowed}")
-    scheduling._refresh_blocked_queued_runs(args, conn)
-    maturity = scheduling._lane_maturity_admission(
-        conn=conn,
-        repo_root=repo_root,
-        logical_id=logical_id,
-        resource_family=resource_family,
-        depends_on=depends_on or (),
-        edge_kind=edge_kind,
-    )
-    if not maturity.allow:
-        print(f"lane maturity refused {logical_id}: {maturity.reason}", file=sys.stderr)
-        return 2, None
-    run_id = f"{state._compact_utc()}-{state._slug(logical_id)}-{uuid.uuid4().hex[:16]}"
-    logs_root.mkdir(parents=True, exist_ok=True)
-    log_path = logs_root / f"{run_id}.log"
-    active = scheduling._admit_run(
-        conn,
-        run_id=run_id,
-        logical_id=logical_id,
-        reason=reason,
-        command=command,
-        cargo_output_lifetime=cargo_output_lifetime,
-        cargo_output_root=cargo_output_root,
-        cwd=repo_root,
-        resource_family=resource_family,
-        contention_key=contention_key,
-        scopes=scopes,
-        env_overrides=env_overrides,
-        log_path=log_path,
-        summary_json=logs_root / f"{run_id}.memory_guard.json",
-    )
-    if active is not None:
-        print(
-            f"contention key {contention_key!r} already has active run(s):",
-            file=sys.stderr,
-        )
-        for row in active:
-            print(f"- {row['status']} {row['run_id']} {row['reason']}", file=sys.stderr)
-        return 2, None
-    try:
+    with closing(state._connect(db)) as conn:
         for parent_run_id in depends_on or []:
-            state._insert_edge(
+            if state._edge_kind_requires_local_parent(
+                edge_kind
+            ) and not state._run_exists(conn, parent_run_id):
+                raise SystemExit(f"unknown parent proof run {parent_run_id!r}")
+        if edge_kind not in state.EDGE_KINDS:
+            allowed = ", ".join(sorted(state.EDGE_KINDS))
+            raise SystemExit(
+                f"unknown proof edge kind {edge_kind!r}; allowed: {allowed}"
+            )
+        scheduling._refresh_blocked_queued_runs(args, conn)
+        maturity = scheduling._lane_maturity_admission(
+            conn=conn,
+            repo_root=repo_root,
+            logical_id=logical_id,
+            resource_family=resource_family,
+            depends_on=depends_on or (),
+            edge_kind=edge_kind,
+        )
+        if not maturity.allow:
+            print(
+                f"lane maturity refused {logical_id}: {maturity.reason}",
+                file=sys.stderr,
+            )
+            return 2, None
+        run_id = (
+            f"{state._compact_utc()}-{state._slug(logical_id)}-{uuid.uuid4().hex[:16]}"
+        )
+        logs_root.mkdir(parents=True, exist_ok=True)
+        log_path = logs_root / f"{run_id}.log"
+        active = scheduling._admit_run(
+            conn,
+            run_id=run_id,
+            logical_id=logical_id,
+            reason=reason,
+            command=command,
+            cargo_output_lifetime=cargo_output_lifetime,
+            cargo_output_root=cargo_output_root,
+            cwd=repo_root,
+            resource_family=resource_family,
+            contention_key=contention_key,
+            scopes=scopes,
+            env_overrides=env_overrides,
+            log_path=log_path,
+            summary_json=logs_root / f"{run_id}.memory_guard.json",
+        )
+        if active is not None:
+            print(
+                f"contention key {contention_key!r} already has active run(s):",
+                file=sys.stderr,
+            )
+            for row in active:
+                print(
+                    f"- {row['status']} {row['run_id']} {row['reason']}",
+                    file=sys.stderr,
+                )
+            return 2, None
+        try:
+            for parent_run_id in depends_on or []:
+                state._insert_edge(
+                    conn,
+                    parent_run_id=parent_run_id,
+                    child_run_id=run_id,
+                    kind=edge_kind,
+                    note=edge_note,
+                )
+            for note in initial_notes or []:
+                state._insert_note(
+                    conn, run_id=run_id, body=note, kind=state.SUBMISSION_NOTE_KIND
+                )
+        except Exception as exc:
+            rc = evidence._fail_preexecution_run(
+                args,
                 conn,
-                parent_run_id=parent_run_id,
-                child_run_id=run_id,
-                kind=edge_kind,
-                note=edge_note,
+                run_id=run_id,
+                logical_id=logical_id,
+                reason=reason,
+                repo_root=repo_root,
+                command=command,
+                log_path=log_path,
+                exc=exc,
+                phase="submission metadata",
             )
-        for note in initial_notes or []:
-            state._insert_note(
-                conn, run_id=run_id, body=note, kind=state.SUBMISSION_NOTE_KIND
+            return rc, run_id
+        policy_error = (
+            policy_error
+            or policy._proof_command_policy_error(command)
+            or policy._proof_env_policy_error(env_overrides)
+        )
+        if policy_error is not None:
+            rc = _record_policy_rejection(
+                args,
+                conn,
+                run_id=run_id,
+                logical_id=logical_id,
+                reason=reason,
+                repo_root=repo_root,
+                command=command,
+                log_path=log_path,
+                policy_error=policy_error,
             )
-    except Exception as exc:
-        rc = evidence._fail_preexecution_run(
-            args,
-            conn,
-            run_id=run_id,
-            logical_id=logical_id,
-            reason=reason,
-            repo_root=repo_root,
-            command=command,
-            log_path=log_path,
-            exc=exc,
-            phase="submission metadata",
-        )
-        return rc, run_id
-    policy_error = (
-        policy_error
-        or policy._proof_command_policy_error(command)
-        or policy._proof_env_policy_error(env_overrides)
-    )
-    if policy_error is not None:
-        rc = _record_policy_rejection(
-            args,
-            conn,
-            run_id=run_id,
-            logical_id=logical_id,
-            reason=reason,
-            repo_root=repo_root,
-            command=command,
-            log_path=log_path,
-            policy_error=policy_error,
-        )
-        return rc, run_id
-    evidence._write_queued_submission_log(conn, run_id)
-    if initial_notes or depends_on:
-        evidence._try_write_marimo_notebook(
-            args,
-            conn,
-            run_id,
-            log_path=log_path,
-            phase="submission projection",
-        )
-    print(f"queued {run_id}")
-    return 0, run_id
+            return rc, run_id
+        evidence._write_queued_submission_log(conn, run_id)
+        if initial_notes or depends_on:
+            evidence._try_write_marimo_notebook(
+                args,
+                conn,
+                run_id,
+                log_path=log_path,
+                phase="submission projection",
+            )
+        print(f"queued {run_id}")
+        return 0, run_id
 
 
 def _claim_detached_run(
@@ -1498,83 +1509,240 @@ def _run_one(
     db = state._db_path(args)
     logs_root = state._logs_root(args)
     repo_root = state._repo_root(args)
-    conn = state._connect(db)
-    if edge_kind not in state.EDGE_KINDS:
-        allowed = ", ".join(sorted(state.EDGE_KINDS))
-        raise SystemExit(f"unknown proof edge kind {edge_kind!r}; allowed: {allowed}")
-    for parent_run_id in depends_on or []:
-        if state._edge_kind_requires_local_parent(edge_kind) and not state._run_exists(
-            conn, parent_run_id
-        ):
-            raise SystemExit(f"unknown parent proof run {parent_run_id!r}")
-    maturity = scheduling._lane_maturity_admission(
-        conn=conn,
-        repo_root=repo_root,
-        logical_id=logical_id,
-        resource_family=resource_family,
-        depends_on=depends_on or (),
-        edge_kind=edge_kind,
-        existing_run_id=existing_run_id,
-    )
-    if not maturity.allow:
-        print(f"lane maturity refused {logical_id}: {maturity.reason}", file=sys.stderr)
-        return 2
-    active = scheduling._active_contention_conflicts(
-        conn,
-        resource_family=resource_family,
-        contention_key=contention_key,
-        command=command,
-        existing_run_id=existing_run_id,
-    )
-    if active:
-        scheduling._print_active_contention_conflicts(active)
-        return 2
-    suffix = uuid.uuid4().hex[:16]
-    run_id = (
-        existing_run_id or f"{state._compact_utc()}-{state._slug(logical_id)}-{suffix}"
-    )
-    logs_root.mkdir(parents=True, exist_ok=True)
-    log_path = existing_log_path or logs_root / f"{run_id}.log"
-    summary_json = existing_summary_json or logs_root / f"{run_id}.memory_guard.json"
-    inserted_run = existing_run_id is None
-    try:
-        cargo_output_lifecycle.resume_declared_successes(db)
-    except (OSError, ValueError, RuntimeError, sqlite3.Error) as exc:
-        print(
-            f"Cargo output recovery could not inspect pending finalizations: {exc}",
-            file=sys.stderr,
-        )
-    if existing_run_id is None:
-        scheduling._insert_run(
-            conn,
-            run_id=run_id,
+    with closing(state._connect(db)) as conn:
+        if edge_kind not in state.EDGE_KINDS:
+            allowed = ", ".join(sorted(state.EDGE_KINDS))
+            raise SystemExit(
+                f"unknown proof edge kind {edge_kind!r}; allowed: {allowed}"
+            )
+        for parent_run_id in depends_on or []:
+            if state._edge_kind_requires_local_parent(
+                edge_kind
+            ) and not state._run_exists(conn, parent_run_id):
+                raise SystemExit(f"unknown parent proof run {parent_run_id!r}")
+        maturity = scheduling._lane_maturity_admission(
+            conn=conn,
+            repo_root=repo_root,
             logical_id=logical_id,
-            reason=reason,
-            command=command,
-            cargo_output_lifetime=cargo_output_lifetime,
-            cargo_output_root=cargo_output_root,
-            cwd=repo_root,
+            resource_family=resource_family,
+            depends_on=depends_on or (),
+            edge_kind=edge_kind,
+            existing_run_id=existing_run_id,
+        )
+        if not maturity.allow:
+            print(
+                f"lane maturity refused {logical_id}: {maturity.reason}",
+                file=sys.stderr,
+            )
+            return 2
+        active = scheduling._active_contention_conflicts(
+            conn,
             resource_family=resource_family,
             contention_key=contention_key,
-            scopes=scopes,
-            env_overrides=env_overrides,
-            log_path=log_path,
-            summary_json=summary_json,
+            command=command,
+            existing_run_id=existing_run_id,
         )
-    if inserted_run:
+        if active:
+            scheduling._print_active_contention_conflicts(active)
+            return 2
+        suffix = uuid.uuid4().hex[:16]
+        run_id = (
+            existing_run_id
+            or f"{state._compact_utc()}-{state._slug(logical_id)}-{suffix}"
+        )
+        logs_root.mkdir(parents=True, exist_ok=True)
+        log_path = existing_log_path or logs_root / f"{run_id}.log"
+        summary_json = (
+            existing_summary_json or logs_root / f"{run_id}.memory_guard.json"
+        )
+        inserted_run = existing_run_id is None
         try:
-            for parent_run_id in depends_on or []:
-                state._insert_edge(
+            cargo_output_lifecycle.resume_declared_successes(db)
+        except (OSError, ValueError, RuntimeError, sqlite3.Error) as exc:
+            print(
+                f"Cargo output recovery could not inspect pending finalizations: {exc}",
+                file=sys.stderr,
+            )
+        if existing_run_id is None:
+            scheduling._insert_run(
+                conn,
+                run_id=run_id,
+                logical_id=logical_id,
+                reason=reason,
+                command=command,
+                cargo_output_lifetime=cargo_output_lifetime,
+                cargo_output_root=cargo_output_root,
+                cwd=repo_root,
+                resource_family=resource_family,
+                contention_key=contention_key,
+                scopes=scopes,
+                env_overrides=env_overrides,
+                log_path=log_path,
+                summary_json=summary_json,
+            )
+        if inserted_run:
+            try:
+                for parent_run_id in depends_on or []:
+                    state._insert_edge(
+                        conn,
+                        parent_run_id=parent_run_id,
+                        child_run_id=run_id,
+                        kind=edge_kind,
+                        note=edge_note,
+                    )
+                for note in initial_notes or []:
+                    state._insert_note(
+                        conn, run_id=run_id, body=note, kind=state.SUBMISSION_NOTE_KIND
+                    )
+            except Exception as exc:
+                return evidence._fail_preexecution_run(
+                    args,
                     conn,
-                    parent_run_id=parent_run_id,
-                    child_run_id=run_id,
-                    kind=edge_kind,
-                    note=edge_note,
+                    run_id=run_id,
+                    logical_id=logical_id,
+                    reason=reason,
+                    repo_root=repo_root,
+                    command=command,
+                    log_path=log_path,
+                    exc=exc,
+                    phase="submission metadata",
                 )
-            for note in initial_notes or []:
-                state._insert_note(
-                    conn, run_id=run_id, body=note, kind=state.SUBMISSION_NOTE_KIND
+            if initial_notes or depends_on:
+                evidence._try_write_marimo_notebook(
+                    args,
+                    conn,
+                    run_id,
+                    log_path=log_path,
+                    phase="submission projection",
                 )
+        policy_error = (
+            policy_error
+            or policy._proof_command_policy_error(command)
+            or policy._proof_env_policy_error(env_overrides)
+        )
+        if policy_error is not None:
+            return _record_policy_rejection(
+                args,
+                conn,
+                run_id=run_id,
+                logical_id=logical_id,
+                reason=reason,
+                repo_root=repo_root,
+                command=command,
+                log_path=log_path,
+                policy_error=policy_error,
+            )
+        env: ProcessEnvironmentBuilder | None = None
+        capacity_admission = None
+        try:
+            session_id = state._proof_session_id(resource_family, contention_key)
+            admitted_row = state._row_by_run_id(conn, run_id)
+            if admitted_row is None:
+                raise ValueError("admitted proof run disappeared before launch")
+            admitted_envelope = loads_exact(admitted_row["command_envelope_json"])
+            if not isinstance(admitted_envelope, dict):
+                raise ValueError("admitted command envelope must be an object")
+            command_admission.validate_envelope(admitted_envelope, command)
+            requested_toolchains = admitted_envelope.get("toolchains")
+            if not _is_string_list(requested_toolchains):
+                raise ValueError("admitted command has malformed toolchain names")
+            uses_cargo = "cargo" in requested_toolchains
+            output_layout = cargo_output_layout.CargoOutputLayout.for_envelope(
+                admitted_envelope,
+                result_root=logs_root,
+                source_root=repo_root
+                if admitted_envelope.get("cargo_output_root") is not None
+                else None,
+            )
+            requested_environment = ProcessEnvironmentBuilder(os.environ)
+            requested_environment.update(env_overrides)
+            output_layout.validate_environment(requested_environment)
+            if uses_cargo:
+                # The queue owns Cargo and derived output below the result root.
+                # Reject before environment provisioning, capture, or child launch.
+                output_layout.admit_target_path()
+                capacity_admission = disk_capacity.require_build_capacity(
+                    output_layout.capacity_paths()
+                    if output_layout.declaration is not None
+                    else (logs_root,),
+                    env=requested_environment,
+                ).as_dict()
+            env = ProcessEnvironmentBuilder(
+                development_artifact_env(
+                    repo_root,
+                    requested_environment,
+                    session_prefix=f"proof-{resource_family}",
+                    session_id=session_id,
+                    create_dirs=uses_cargo and output_layout.declaration is None,
+                )
+            )
+            if not uses_cargo:
+                # A non-Cargo proof owns no Cargo artifact lane.  The native proof
+                # supervisor has its separate result-root target, so retaining a
+                # repo-local session target here only dirties admitted source.
+                env.pop("CARGO_TARGET_DIR", None)
+            proof_tmp = (logs_root / "tmp").resolve()
+            payload_tmp = (
+                output_layout.temporary
+                if output_layout.declaration is not None
+                else proof_tmp
+            )
+            if output_layout.declaration is not None:
+                custody_cas._durable_makedirs(payload_tmp)
+            env.update(
+                {
+                    "MOLT_MEMORY_GUARD_STATE_ROOT": str(proof_tmp / "memory_guard"),
+                    "PYTHONPYCACHEPREFIX": str(payload_tmp / "pycache"),
+                    "TEMP": str(payload_tmp),
+                    "TMP": str(payload_tmp),
+                    "TMPDIR": str(payload_tmp),
+                }
+            )
+            bind_repo_src_pythonpath(repo_root, env)
+            env["MOLT_PROOF_QUEUE"] = "1"
+            env["MOLT_PROOF_QUEUE_DB"] = str(db)
+            env["MOLT_PROOF_QUEUE_RUN_ID"] = run_id
+            env.update(env_overrides)
+            if guard_repro_context._command_requests_test_custody(
+                command,
+                cwd=repo_root,
+                root=repo_root,
+            ):
+                pytest_root = pytest_guard_summary_dir(repo_root, env)
+                env["MOLT_PYTEST_CURRENT_TEST_FILE"] = str(
+                    pytest_root / f"{state._slug(run_id)}_current-test.json"
+                )
+            row = state._row_by_run_id(conn, run_id)
+            if row is None:
+                raise ValueError(f"proof run {run_id!r} disappeared before execution")
+            request_path, execution_path, envelope, execution_nonce = (
+                _write_execution_request(
+                    row=row,
+                    command=command,
+                    repo_root=repo_root,
+                    resource_family=resource_family,
+                    run_id=run_id,
+                    env_override_names=list(env_overrides),
+                    log_path=log_path,
+                    summary_path=summary_json,
+                    timeout_seconds=timeout,
+                )
+            )
+            memory_limits = custody._proof_queue_memory_limits(env_overrides)
+            poll_interval = str(memory_limits.poll_interval)
+            env[custody.MEMORY_GUARD_POLL_SEC_ENV] = poll_interval
+            guarded_command = [
+                sys.executable,
+                str(state.ROOT / "tools" / "proof_queue_pkg" / "guarded_execution.py"),
+                "--request",
+                str(request_path),
+            ]
+            wrapped = custody._memory_guard_command(
+                command=guarded_command,
+                summary_json=summary_json,
+                timeout=timeout,
+                limits=memory_limits,
+            )
         except Exception as exc:
             return evidence._fail_preexecution_run(
                 args,
@@ -1586,369 +1754,230 @@ def _run_one(
                 command=command,
                 log_path=log_path,
                 exc=exc,
-                phase="submission metadata",
+                phase="execution environment setup",
             )
-        if initial_notes or depends_on:
+        start = time.monotonic()
+        started_at = state._utc_now()
+        state._update_run(conn, run_id, status="running", started_at=started_at)
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            log = log_path.open("a", encoding="utf-8")
+            if log.tell() > 0:
+                print("\n--- proof_queue command execution ---", file=log)
+            print(f"proof_queue run_id={run_id}", file=log)
+            print(f"logical_id={logical_id}", file=log)
+            print(f"reason={reason}", file=log)
+            print(f"cwd={repo_root}", file=log)
+            print("memory_guard_prefix=MOLT_PROOF_QUEUE", file=log)
+            print(f"command={shlex.join(command)}", file=log)
+            if env_overrides:
+                print(
+                    "env_override_names="
+                    + json.dumps(sorted(env_overrides, key=str.casefold)),
+                    file=log,
+                )
+            print(f"proof_session_id={session_id}", file=log)
+            if capacity_admission is not None:
+                print(
+                    "disk_capacity_admission="
+                    + json.dumps(capacity_admission, sort_keys=True),
+                    file=log,
+                )
+            print(
+                f"requested_cargo_target_dir={env.get('CARGO_TARGET_DIR', '')}",
+                file=log,
+            )
+            print(
+                "command_envelope=" + json.dumps(envelope, sort_keys=True),
+                file=log,
+            )
+            print(f"memory_guard_poll_sec={poll_interval}", file=log)
+            print(f"memory_guard_summary_json={summary_json}", file=log)
+            print(f"memory_guard_command={shlex.join(wrapped)}", file=log)
+            print("", file=log, flush=True)
+            proc = custody._launch_queued_command(
+                wrapped,
+                cwd=repo_root,
+                env=ProcessEnvironment(env),
+                stdout=log,
+            )
+        except Exception as exc:
+            try:
+                log.close()
+            except NameError:
+                pass
+            return evidence._fail_preexecution_run(
+                args,
+                conn,
+                run_id=run_id,
+                logical_id=logical_id,
+                reason=reason,
+                repo_root=repo_root,
+                command=command,
+                log_path=log_path,
+                exc=exc,
+                phase="process launch",
+            )
+        try:
+            state._update_run(
+                conn,
+                run_id,
+                guard_pid=proc.pid,
+                guard_identity=custody._process_identity(proc.pid),
+            )
+            status, rc, elapsed = _wait_for_guard_completion_or_stale(
+                conn,
+                run_id=run_id,
+                proc=proc,
+                log=log,
+                start=start,
+            )
+            rc_text = "?" if rc is None else str(rc)
+            print(
+                f"\nproof_queue finished status={status} exit_code={rc_text} "
+                f"elapsed={elapsed:.3f}s",
+                file=log,
+            )
+        finally:
+            log.close()
+        receipt_context: dict[str, object] | None = None
+        execution_error: str | None = None
+        execution_record: dict[str, object] | None = None
+        process_cleanup_safe = False
+        guard_infrastructure_failure: GuardInfrastructureFailure | None = None
+        try:
+            execution_record = _read_execution_record(execution_path)
+            if execution_record.get("run_id") != run_id:
+                raise ValueError("guarded execution record run identity mismatch")
+            if execution_record.get("execution_nonce") != execution_nonce:
+                raise ValueError("guarded execution record nonce mismatch")
+            if execution_record.get("envelope") != envelope:
+                raise ValueError(
+                    "guarded execution record changed the admitted envelope"
+                )
+            raw_context = execution_record.get("receipt_context")
+            if _is_receipt_object(raw_context):
+                receipt_context = raw_context
+            if execution_record.get("phase") == "complete":
+                command_rc = execution_record.get("command_returncode")
+                if type(command_rc) is not int or type(rc) is not int:
+                    raise ValueError("guard/command return-code custody is incomplete")
+                _, guard_infrastructure_failure = _validated_guard_outcome(
+                    summary_json,
+                    guarded_command=guarded_command,
+                    returncode=rc,
+                    child_returncode=command_rc,
+                )
+                if receipt_context is None:
+                    raise ValueError(
+                        "complete guarded execution has no receipt context"
+                    )
+                _validated_execution_context(
+                    receipt_context,
+                    execution_path=execution_path,
+                    envelope=envelope,
+                    run_id=run_id,
+                    execution_nonce=execution_nonce,
+                    returncode=command_rc,
+                )
+                guard_receipt = _validated_guard_receipt(
+                    summary_json,
+                    guarded_command=guarded_command,
+                    returncode=rc,
+                    child_returncode=command_rc,
+                    run_id=run_id,
+                    execution_nonce=execution_nonce,
+                    guard_pid=proc.pid,
+                )
+                receipt_context["guard_receipt"] = guard_receipt
+                process_cleanup_safe = True
+            elif status == "passed":
+                raise ValueError(
+                    "memory guard passed without a complete command execution record"
+                )
+            if isinstance(execution_record.get("error"), str):
+                execution_error = str(execution_record["error"])
+        except Exception as exc:
+            execution_error = f"{type(exc).__name__}: {exc}"
+            if status == "passed":
+                status = "failed"
+                rc = 2
+        try:
+            outcome, receipt_context = _finalize_execution_receipt(
+                execution_record=execution_record,
+                execution_path=execution_path,
+                run_id=run_id,
+                execution_nonce=execution_nonce,
+                receipt_context=receipt_context,
+                process_cleanup_safe=process_cleanup_safe,
+                status=status,
+                returncode=rc,
+                execution_error=execution_error,
+                guard_infrastructure_failure=guard_infrastructure_failure,
+            )
+            status = str(outcome["status"])
+            rc = outcome["returncode"]
+            execution_error = outcome["execution_error"]
+        except Exception as exc:
+            # A partial publication is retained, never rebound under a second
+            # result. Without the exact terminal context no consumer may reclaim it.
+            detail = f"terminal custody publication failed: {type(exc).__name__}: {exc}"
+            execution_error = (
+                f"{execution_error}; {detail}" if execution_error else detail
+            )
+            status, rc = "failed", 2
+            receipt_context = dict(
+                state._unattested_receipt_context(
+                    status="non-evidence",
+                    phase="terminal custody publication",
+                    reason=execution_error,
+                )
+            )
+        if execution_error:
+            with log_path.open("a", encoding="utf-8") as terminal_log:
+                print(
+                    f"proof_queue execution custody: {execution_error}",
+                    file=terminal_log,
+                )
+        state._update_run(
+            conn,
+            run_id,
+            status=status,
+            returncode=rc,
+            finished_at=state._utc_now(),
+            elapsed_s=elapsed,
+            receipt_context_json=json.dumps(receipt_context, sort_keys=True),
+        )
+        disposition_failed = False
+        try:
+            disposition = cargo_output_lifecycle.finalize_declared_success(db, run_id)
+            if disposition is not None:
+                print(
+                    f"Cargo output disposition: {json.dumps(disposition, sort_keys=True)}"
+                )
+        except (OSError, ValueError, RuntimeError, sqlite3.Error) as exc:
+            disposition_failed = True
+            detail = f"Cargo output finalization failed (persisted proof result unchanged): {type(exc).__name__}: {exc}"
+            print(detail, file=sys.stderr)
+            with log_path.open("a", encoding="utf-8") as terminal_log:
+                print(detail, file=terminal_log)
+        if state._notes_for_run_ids(conn, [run_id]).get(run_id):
             evidence._try_write_marimo_notebook(
                 args,
                 conn,
                 run_id,
                 log_path=log_path,
-                phase="submission projection",
+                phase="completion projection",
             )
-    policy_error = (
-        policy_error
-        or policy._proof_command_policy_error(command)
-        or policy._proof_env_policy_error(env_overrides)
-    )
-    if policy_error is not None:
-        return _record_policy_rejection(
-            args,
-            conn,
-            run_id=run_id,
-            logical_id=logical_id,
-            reason=reason,
-            repo_root=repo_root,
-            command=command,
-            log_path=log_path,
-            policy_error=policy_error,
-        )
-    env: ProcessEnvironmentBuilder | None = None
-    capacity_admission = None
-    try:
-        session_id = state._proof_session_id(resource_family, contention_key)
-        admitted_row = state._row_by_run_id(conn, run_id)
-        if admitted_row is None:
-            raise ValueError("admitted proof run disappeared before launch")
-        admitted_envelope = loads_exact(admitted_row["command_envelope_json"])
-        if not isinstance(admitted_envelope, dict):
-            raise ValueError("admitted command envelope must be an object")
-        command_admission.validate_envelope(admitted_envelope, command)
-        requested_toolchains = admitted_envelope.get("toolchains")
-        if not _is_string_list(requested_toolchains):
-            raise ValueError("admitted command has malformed toolchain names")
-        uses_cargo = "cargo" in requested_toolchains
-        output_layout = cargo_output_layout.CargoOutputLayout.for_envelope(
-            admitted_envelope,
-            result_root=logs_root,
-            source_root=repo_root
-            if admitted_envelope.get("cargo_output_root") is not None
-            else None,
-        )
-        requested_environment = ProcessEnvironmentBuilder(os.environ)
-        requested_environment.update(env_overrides)
-        output_layout.validate_environment(requested_environment)
-        if uses_cargo:
-            # The queue owns Cargo and derived output below the result root.
-            # Reject before environment provisioning, capture, or child launch.
-            output_layout.admit_target_path()
-            capacity_admission = disk_capacity.require_build_capacity(
-                output_layout.capacity_paths()
-                if output_layout.declaration is not None
-                else (logs_root,),
-                env=requested_environment,
-            ).as_dict()
-        env = ProcessEnvironmentBuilder(
-            development_artifact_env(
-                repo_root,
-                requested_environment,
-                session_prefix=f"proof-{resource_family}",
-                session_id=session_id,
-                create_dirs=uses_cargo and output_layout.declaration is None,
-            )
-        )
-        if not uses_cargo:
-            # A non-Cargo proof owns no Cargo artifact lane.  The native proof
-            # supervisor has its separate result-root target, so retaining a
-            # repo-local session target here only dirties admitted source.
-            env.pop("CARGO_TARGET_DIR", None)
-        proof_tmp = (logs_root / "tmp").resolve()
-        payload_tmp = (
-            output_layout.temporary
-            if output_layout.declaration is not None
-            else proof_tmp
-        )
-        if output_layout.declaration is not None:
-            custody_cas._durable_makedirs(payload_tmp)
-        env.update(
-            {
-                "MOLT_MEMORY_GUARD_STATE_ROOT": str(proof_tmp / "memory_guard"),
-                "PYTHONPYCACHEPREFIX": str(payload_tmp / "pycache"),
-                "TEMP": str(payload_tmp),
-                "TMP": str(payload_tmp),
-                "TMPDIR": str(payload_tmp),
-            }
-        )
-        bind_repo_src_pythonpath(repo_root, env)
-        env["MOLT_PROOF_QUEUE"] = "1"
-        env["MOLT_PROOF_QUEUE_DB"] = str(db)
-        env["MOLT_PROOF_QUEUE_RUN_ID"] = run_id
-        env.update(env_overrides)
-        if guard_repro_context._command_requests_test_custody(
-            command,
-            cwd=repo_root,
-            root=repo_root,
-        ):
-            pytest_root = pytest_guard_summary_dir(repo_root, env)
-            env["MOLT_PYTEST_CURRENT_TEST_FILE"] = str(
-                pytest_root / f"{state._slug(run_id)}_current-test.json"
-            )
-        row = state._row_by_run_id(conn, run_id)
-        if row is None:
-            raise ValueError(f"proof run {run_id!r} disappeared before execution")
-        request_path, execution_path, envelope, execution_nonce = (
-            _write_execution_request(
-                row=row,
-                command=command,
-                repo_root=repo_root,
-                resource_family=resource_family,
-                run_id=run_id,
-                env_override_names=list(env_overrides),
-                log_path=log_path,
-                summary_path=summary_json,
-                timeout_seconds=timeout,
-            )
-        )
-        memory_limits = custody._proof_queue_memory_limits(env_overrides)
-        poll_interval = str(memory_limits.poll_interval)
-        env[custody.MEMORY_GUARD_POLL_SEC_ENV] = poll_interval
-        guarded_command = [
-            sys.executable,
-            str(state.ROOT / "tools" / "proof_queue_pkg" / "guarded_execution.py"),
-            "--request",
-            str(request_path),
-        ]
-        wrapped = custody._memory_guard_command(
-            command=guarded_command,
-            summary_json=summary_json,
-            timeout=timeout,
-            limits=memory_limits,
-        )
-    except Exception as exc:
-        return evidence._fail_preexecution_run(
-            args,
-            conn,
-            run_id=run_id,
-            logical_id=logical_id,
-            reason=reason,
-            repo_root=repo_root,
-            command=command,
-            log_path=log_path,
-            exc=exc,
-            phase="execution environment setup",
-        )
-    start = time.monotonic()
-    started_at = state._utc_now()
-    state._update_run(conn, run_id, status="running", started_at=started_at)
-    log_path.parent.mkdir(parents=True, exist_ok=True)
-    try:
-        log = log_path.open("a", encoding="utf-8")
-        if log.tell() > 0:
-            print("\n--- proof_queue command execution ---", file=log)
-        print(f"proof_queue run_id={run_id}", file=log)
-        print(f"logical_id={logical_id}", file=log)
-        print(f"reason={reason}", file=log)
-        print(f"cwd={repo_root}", file=log)
-        print("memory_guard_prefix=MOLT_PROOF_QUEUE", file=log)
-        print(f"command={shlex.join(command)}", file=log)
-        if env_overrides:
-            print(
-                "env_override_names="
-                + json.dumps(sorted(env_overrides, key=str.casefold)),
-                file=log,
-            )
-        print(f"proof_session_id={session_id}", file=log)
-        if capacity_admission is not None:
-            print(
-                "disk_capacity_admission="
-                + json.dumps(capacity_admission, sort_keys=True),
-                file=log,
-            )
-        print(f"requested_cargo_target_dir={env.get('CARGO_TARGET_DIR', '')}", file=log)
-        print(
-            "command_envelope=" + json.dumps(envelope, sort_keys=True),
-            file=log,
-        )
-        print(f"memory_guard_poll_sec={poll_interval}", file=log)
-        print(f"memory_guard_summary_json={summary_json}", file=log)
-        print(f"memory_guard_command={shlex.join(wrapped)}", file=log)
-        print("", file=log, flush=True)
-        proc = custody._launch_queued_command(
-            wrapped,
-            cwd=repo_root,
-            env=ProcessEnvironment(env),
-            stdout=log,
-        )
-    except Exception as exc:
-        try:
-            log.close()
-        except NameError:
-            pass
-        return evidence._fail_preexecution_run(
-            args,
-            conn,
-            run_id=run_id,
-            logical_id=logical_id,
-            reason=reason,
-            repo_root=repo_root,
-            command=command,
-            log_path=log_path,
-            exc=exc,
-            phase="process launch",
-        )
-    try:
-        state._update_run(
-            conn,
-            run_id,
-            guard_pid=proc.pid,
-            guard_identity=custody._process_identity(proc.pid),
-        )
-        status, rc, elapsed = _wait_for_guard_completion_or_stale(
-            conn,
-            run_id=run_id,
-            proc=proc,
-            log=log,
-            start=start,
-        )
         rc_text = "?" if rc is None else str(rc)
-        print(
-            f"\nproof_queue finished status={status} exit_code={rc_text} "
-            f"elapsed={elapsed:.3f}s",
-            file=log,
+        print(f"{status} {run_id} rc={rc_text} elapsed={elapsed:.1f}s")
+        print(f"log: {log_path}")
+        _apply_automatic_retention(db=db, logs_root=logs_root)
+        return (
+            2
+            if disposition_failed
+            else (rc if rc is not None else custody.PROOF_QUEUE_STALE_EXIT_CODE)
         )
-    finally:
-        log.close()
-    receipt_context: dict[str, object] | None = None
-    execution_error: str | None = None
-    execution_record: dict[str, object] | None = None
-    process_cleanup_safe = False
-    guard_infrastructure_failure: GuardInfrastructureFailure | None = None
-    try:
-        execution_record = _read_execution_record(execution_path)
-        if execution_record.get("run_id") != run_id:
-            raise ValueError("guarded execution record run identity mismatch")
-        if execution_record.get("execution_nonce") != execution_nonce:
-            raise ValueError("guarded execution record nonce mismatch")
-        if execution_record.get("envelope") != envelope:
-            raise ValueError("guarded execution record changed the admitted envelope")
-        raw_context = execution_record.get("receipt_context")
-        if _is_receipt_object(raw_context):
-            receipt_context = raw_context
-        if execution_record.get("phase") == "complete":
-            command_rc = execution_record.get("command_returncode")
-            if type(command_rc) is not int or type(rc) is not int:
-                raise ValueError("guard/command return-code custody is incomplete")
-            _, guard_infrastructure_failure = _validated_guard_outcome(
-                summary_json,
-                guarded_command=guarded_command,
-                returncode=rc,
-                child_returncode=command_rc,
-            )
-            if receipt_context is None:
-                raise ValueError("complete guarded execution has no receipt context")
-            _validated_execution_context(
-                receipt_context,
-                execution_path=execution_path,
-                envelope=envelope,
-                run_id=run_id,
-                execution_nonce=execution_nonce,
-                returncode=command_rc,
-            )
-            guard_receipt = _validated_guard_receipt(
-                summary_json,
-                guarded_command=guarded_command,
-                returncode=rc,
-                child_returncode=command_rc,
-                run_id=run_id,
-                execution_nonce=execution_nonce,
-                guard_pid=proc.pid,
-            )
-            receipt_context["guard_receipt"] = guard_receipt
-            process_cleanup_safe = True
-        elif status == "passed":
-            raise ValueError(
-                "memory guard passed without a complete command execution record"
-            )
-        if isinstance(execution_record.get("error"), str):
-            execution_error = str(execution_record["error"])
-    except Exception as exc:
-        execution_error = f"{type(exc).__name__}: {exc}"
-        if status == "passed":
-            status = "failed"
-            rc = 2
-    try:
-        outcome, receipt_context = _finalize_execution_receipt(
-            execution_record=execution_record,
-            execution_path=execution_path,
-            run_id=run_id,
-            execution_nonce=execution_nonce,
-            receipt_context=receipt_context,
-            process_cleanup_safe=process_cleanup_safe,
-            status=status,
-            returncode=rc,
-            execution_error=execution_error,
-            guard_infrastructure_failure=guard_infrastructure_failure,
-        )
-        status = str(outcome["status"])
-        rc = outcome["returncode"]
-        execution_error = outcome["execution_error"]
-    except Exception as exc:
-        # A partial publication is retained, never rebound under a second
-        # result. Without the exact terminal context no consumer may reclaim it.
-        detail = f"terminal custody publication failed: {type(exc).__name__}: {exc}"
-        execution_error = f"{execution_error}; {detail}" if execution_error else detail
-        status, rc = "failed", 2
-        receipt_context = dict(
-            state._unattested_receipt_context(
-                status="non-evidence",
-                phase="terminal custody publication",
-                reason=execution_error,
-            )
-        )
-    if execution_error:
-        with log_path.open("a", encoding="utf-8") as terminal_log:
-            print(
-                f"proof_queue execution custody: {execution_error}", file=terminal_log
-            )
-    state._update_run(
-        conn,
-        run_id,
-        status=status,
-        returncode=rc,
-        finished_at=state._utc_now(),
-        elapsed_s=elapsed,
-        receipt_context_json=json.dumps(receipt_context, sort_keys=True),
-    )
-    disposition_failed = False
-    try:
-        disposition = cargo_output_lifecycle.finalize_declared_success(db, run_id)
-        if disposition is not None:
-            print(
-                f"Cargo output disposition: {json.dumps(disposition, sort_keys=True)}"
-            )
-    except (OSError, ValueError, RuntimeError, sqlite3.Error) as exc:
-        disposition_failed = True
-        detail = f"Cargo output finalization failed (persisted proof result unchanged): {type(exc).__name__}: {exc}"
-        print(detail, file=sys.stderr)
-        with log_path.open("a", encoding="utf-8") as terminal_log:
-            print(detail, file=terminal_log)
-    if state._notes_for_run_ids(conn, [run_id]).get(run_id):
-        evidence._try_write_marimo_notebook(
-            args,
-            conn,
-            run_id,
-            log_path=log_path,
-            phase="completion projection",
-        )
-    rc_text = "?" if rc is None else str(rc)
-    print(f"{status} {run_id} rc={rc_text} elapsed={elapsed:.1f}s")
-    print(f"log: {log_path}")
-    _apply_automatic_retention(db=db, logs_root=logs_root)
-    return (
-        2
-        if disposition_failed
-        else (rc if rc is not None else custody.PROOF_QUEUE_STALE_EXIT_CODE)
-    )
 
 
 def _apply_automatic_retention(*, db: Path, logs_root: Path) -> None:
