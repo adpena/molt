@@ -14,6 +14,11 @@ and warm timings, native+LLVM backend parity, repeat-CI classification,
 quiescence, provenance, and stale-tree status. It is the only lane allowed to
 publish `authoritative=true`.
 
+Methodology v7 routes benchmark build targets through the compiler's admitted
+target authority. Exact WASI and freestanding targets retain their distinct
+deployment rules. This can change selected builds or admission outcomes, so v6
+boards remain a separate comparison class.
+
 Methodology v6 includes complete typed build requests, validation before compiler
 service startup and lazy benchmark-service creation. The first batch build's
 timing now includes that startup, and invalid requests retain build-admission failure classification.

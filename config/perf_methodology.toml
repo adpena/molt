@@ -4,8 +4,8 @@
 # files; when they change, run `python3 tools/perf_methodology.py --bump` if the
 # change can move a number or a verdict, else `--relock`.
 schema = "molt-perf-methodology-v1"
-version = 6
-content_sha256 = "ea65dfe47965ba6a7d39bed0bdb8e061170bdcee47f8811d33008ad4b225540f"
+version = 7
+content_sha256 = "d2cb3c71016f53b84634ccab6f90406a53804b3d1a797f5207a8d5e515dc4606"
 
 [[methodology]]
 path = "tools/safe_run.py"
@@ -213,6 +213,10 @@ reason = "formats build diagnostics and artifact destinations; never supplies sa
 [[mechanics]]
 path = "src/molt/cli/build_request.py"
 reason = "compiler build-request transport outside guest sampling; selected compiler, runtime and deployment identities are recorded separately"
+
+[[mechanics]]
+path = "src/molt/compilation_target.py"
+reason = "compiler target admission outside guest sampling; emitted deployment and compiler/runtime identities are recorded separately"
 
 [[mechanics]]
 path = "src/molt/cli/config_resolution.py"
