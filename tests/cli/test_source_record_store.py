@@ -368,24 +368,271 @@ def test_old_four_column_store_migrates_without_losing_opaque_payload(
         assert connection.execute("PRAGMA auto_vacuum").fetchone() == (2,)
 
 
-def test_concurrent_connections_keep_all_record_kinds(tmp_path: Path) -> None:
+def _write_concurrent_record(arguments):
+    root, index = arguments
     kinds: tuple[records.RecordKind, ...] = (
         "import-scan",
         "intrinsic-facts",
         "module-analysis",
         "module-lowering",
     )
+    store = _store(Path(root))
+    return store.put(kinds[index % 4], str(index), str(index).encode(), generation="g")
 
-    def write(index):
+
+@pytest.mark.parametrize("executor", ["threads", "spawn"])
+@pytest.mark.parametrize("initial", ["virgin", "legacy", "current"])
+def test_concurrent_connections_keep_all_record_kinds(
+    tmp_path: Path, executor: str, initial: str
+) -> None:
+    path = tmp_path / records.STORE_NAME
+    if initial == "legacy":
+        with closing(sqlite3.connect(path, isolation_level=None)) as connection:
+            connection.executescript(
+                "CREATE TABLE records(kind TEXT NOT NULL, key TEXT NOT NULL,"
+                " generation TEXT NOT NULL, payload BLOB NOT NULL,"
+                " PRIMARY KEY(kind,key)) WITHOUT ROWID;"
+                "CREATE TABLE generations(generation TEXT PRIMARY KEY,"
+                " used_ns INTEGER NOT NULL) WITHOUT ROWID;"
+            )
+            connection.execute(
+                "INSERT INTO generations VALUES ('g', ?)", (time.time_ns(),)
+            )
+            connection.execute(
+                "INSERT INTO records VALUES ('import-scan','old','g',X'00FF')"
+            )
+    elif initial == "current":
         store = _store(tmp_path)
-        return store.put(
-            kinds[index % 4], str(index), str(index).encode(), generation="g"
+        assert store.put("import-scan", "old", b"\x00\xff", generation="g")
+        store.close()
+    arguments = [(str(tmp_path), index) for index in range(20)]
+    if executor == "threads":
+        with ThreadPoolExecutor(max_workers=4) as pool:
+            outcomes = list(pool.map(_write_concurrent_record, arguments))
+    else:
+        with multiprocessing.get_context("spawn").Pool(4) as pool:
+            outcomes = pool.map(_write_concurrent_record, arguments)
+    assert all(outcomes), outcomes
+    # Raw SQLite is the independent payload/schema oracle, including the old
+    # opaque row. It does not use the store's read or maintenance projection.
+    kinds = ("import-scan", "intrinsic-facts", "module-analysis", "module-lowering")
+    expected = {(kinds[i % 4], str(i), str(i).encode()) for i in range(20)}
+    if initial != "virgin":
+        expected.add(("import-scan", "old", b"\x00\xff"))
+    with closing(sqlite3.connect(path)) as connection:
+        assert (
+            set(connection.execute("SELECT kind,key,payload FROM records")) == expected
         )
+        assert connection.execute("PRAGMA integrity_check").fetchone() == ("ok",)
+        assert connection.execute("PRAGMA journal_mode").fetchone() == ("wal",)
+        assert connection.execute(
+            "SELECT count(*) FROM records WHERE length(revision)!=16 OR used_ns<=0"
+        ).fetchone() == (0,)
 
-    with ThreadPoolExecutor(max_workers=4) as pool:
-        assert all(pool.map(write, range(20)))
-    with _store(tmp_path).maintenance(dry_run=True) as maintenance:
-        assert maintenance.inventory().entries == 20
+
+def test_ready_opens_do_not_write_or_wait_for_a_writer(tmp_path, monkeypatch):
+    store = _store(tmp_path)
+    assert store.put("import-scan", "k", b"preserved", generation="g")
+    store.close()
+    monkeypatch.setattr(records, "_BUSY_TIMEOUT_SECONDS", 0)
+    with closing(sqlite3.connect(store.path, isolation_level=None)) as peer:
+        peer.execute("BEGIN IMMEDIATE").close()
+        try:
+            observed = store.get("import-scan", "k", generation="g", max_bytes=None)
+            assert observed is not None and observed.payload == b"preserved"
+            with store.maintenance(dry_run=False) as maintenance:
+                assert maintenance.inventory().entries == 1
+                assert maintenance.remove(list(maintenance.iter_lru())) == ("busy",)
+            assert not store.put("import-scan", "blocked", b"no", generation="g")
+        finally:
+            peer.execute("ROLLBACK").close()
+    assert not store._unavailable
+    assert store.put("import-scan", "after", b"yes", generation="g")
+
+
+def test_initialization_lock_is_nonwaiting_for_maintenance(tmp_path, monkeypatch):
+    from molt.file_locks import _release_file_lock, _try_acquire_file_lock
+
+    store = _store(tmp_path)
+    with closing(sqlite3.connect(store.path)):
+        pass
+    handle = _try_acquire_file_lock(
+        store.path.with_name(store.path.name + ".initialize.lock")
+    )
+    assert handle is not None
+    monkeypatch.setattr(records, "_BUSY_TIMEOUT_SECONDS", 0)
+    try:
+        with pytest.raises(records.SourceRecordBusy):
+            with store.maintenance(dry_run=False):
+                pytest.fail(
+                    "a cold maintenance owner cannot bypass bootstrap ownership"
+                )
+        assert not store.put("import-scan", "blocked", b"no", generation="g")
+        assert not store._unavailable
+    finally:
+        _release_file_lock(handle)
+    assert store.put("import-scan", "after", b"yes", generation="g")
+
+
+def _probe_cold_bootstrap(root):
+    records._BUSY_TIMEOUT_SECONDS = 0
+    store = _store(Path(root))
+    try:
+        return store.put("import-scan", "child", b"opaque", generation="g")
+    finally:
+        store.close()
+
+
+@pytest.mark.parametrize("executor", ["threads", "spawn"])
+def test_cold_peer_cannot_bypass_initialization_owner(tmp_path, executor):
+    from molt.file_locks import _release_file_lock, _try_acquire_file_lock
+
+    path = tmp_path / records.STORE_NAME
+    handle = _try_acquire_file_lock(path.with_name(path.name + ".initialize.lock"))
+    assert handle is not None
+    old_timeout = records._BUSY_TIMEOUT_SECONDS
+    try:
+        # The OS lock establishes the schedule across both ownership domains;
+        # the contender uses real SQLite and cannot publish partial schema.
+        if executor == "threads":
+            with ThreadPoolExecutor(max_workers=1) as pool:
+                outcome = pool.submit(_probe_cold_bootstrap, str(tmp_path)).result(10)
+        else:
+            with multiprocessing.get_context("spawn").Pool(1) as pool:
+                outcome = pool.apply_async(_probe_cold_bootstrap, (str(tmp_path),)).get(
+                    10
+                )
+        assert outcome is False
+        with closing(sqlite3.connect(path)) as peer:
+            assert peer.execute("SELECT name FROM sqlite_schema").fetchall() == []
+            assert peer.execute("PRAGMA user_version").fetchone() == (0,)
+    finally:
+        records._BUSY_TIMEOUT_SECONDS = old_timeout
+        _release_file_lock(handle)
+    assert _write_concurrent_record((str(tmp_path), 0))
+
+
+def test_ready_connection_trace_contains_no_persistent_setup(tmp_path, monkeypatch):
+    store = _store(tmp_path)
+    assert store.put("import-scan", "k", b"opaque", generation="g")
+    store.close()
+    statements = []
+    original_connect = sqlite3.connect
+
+    def connect(*args, **kwargs):
+        connection = original_connect(*args, **kwargs)
+        connection.set_trace_callback(statements.append)
+        return connection
+
+    def no_bootstrap_lock(*args, **kwargs):
+        pytest.fail("a ready database must not acquire a bootstrap lock")
+
+    install_module_view(monkeypatch, "sqlite3", sqlite3, records, connect=connect)
+    monkeypatch.setattr(records, "_acquire_file_lock", no_bootstrap_lock)
+    monkeypatch.setattr(records, "_try_acquire_file_lock", no_bootstrap_lock)
+    assert (
+        store.get("import-scan", "k", generation="g", max_bytes=None).payload
+        == b"opaque"
+    )
+    with store.maintenance(dry_run=False) as maintenance:
+        assert maintenance.inventory().entries == 1
+    assert all(
+        not sql.upper().startswith(("CREATE", "ALTER", "INSERT", "UPDATE", "DELETE"))
+        and "auto_vacuum" not in sql
+        and "journal_mode" not in sql
+        and not ("user_version" in sql and "=" in sql)
+        for sql in statements
+    )
+
+
+def test_schema_failure_rolls_back_the_whole_bootstrap(tmp_path):
+    store = _store(tmp_path)
+    with closing(sqlite3.connect(store.path, isolation_level=None)) as connection:
+        connection.execute("PRAGMA auto_vacuum = INCREMENTAL").close()
+        connection.execute("PRAGMA journal_mode = WAL").close()
+        connection.set_authorizer(
+            lambda action, name, *_args: (
+                sqlite3.SQLITE_DENY
+                if action == sqlite3.SQLITE_CREATE_INDEX and name == "records_recency"
+                else sqlite3.SQLITE_OK
+            )
+        )
+        with pytest.raises(sqlite3.DatabaseError):
+            store._initialize(connection)
+        connection.set_authorizer(None)
+        assert not connection.in_transaction
+        assert connection.execute("PRAGMA user_version").fetchone() == (0,)
+        assert (
+            connection.execute(
+                "SELECT name FROM sqlite_schema WHERE type='table'"
+            ).fetchall()
+            == []
+        )
+    assert store.put("import-scan", "after", b"yes", generation="g")
+
+
+@pytest.mark.parametrize("version", [-1, 2])
+@pytest.mark.parametrize("dry_run", [False, True])
+def test_unknown_schema_is_unavailable_without_downgrade(tmp_path, version, dry_run):
+    store = _store(tmp_path)
+    assert store.put("import-scan", "k", b"preserved", generation="g")
+    store.close()
+    with closing(sqlite3.connect(store.path, isolation_level=None)) as peer:
+        peer.execute(f"PRAGMA user_version = {version}").close()
+        original = list(peer.iterdump())
+        assert not store.put("import-scan", "new", b"no", generation="g")
+        with pytest.raises(records.SourceRecordUnavailable, match="unsupported"):
+            with store.maintenance(dry_run=dry_run):
+                pytest.fail("unsupported schema must not be migrated")
+        assert list(peer.iterdump()) == original
+        assert peer.execute("PRAGMA user_version").fetchone() == (version,)
+        assert peer.execute("SELECT payload FROM records").fetchall() == [
+            (b"preserved",)
+        ]
+
+
+def test_dry_run_refuses_uninitialized_schema_without_bootstrap(tmp_path):
+    store = _store(tmp_path)
+    with closing(sqlite3.connect(store.path, isolation_level=None)) as peer:
+        peer.execute("CREATE TABLE sentinel(value BLOB)").close()
+        original = list(peer.iterdump())
+        with pytest.raises(records.SourceRecordUnavailable, match="not initialized"):
+            with store.maintenance(dry_run=True):
+                pytest.fail("dry-run cannot bootstrap a legacy database")
+        assert peer.execute("PRAGMA user_version").fetchone() == (0,)
+        assert list(peer.iterdump()) == original
+    assert not store.path.with_name(store.path.name + ".initialize.lock").exists()
+
+
+@pytest.mark.parametrize("dry_run", [False, True])
+def test_maintenance_admits_its_independently_opened_snapshot(
+    tmp_path, monkeypatch, dry_run
+):
+    store = _store(tmp_path)
+    assert store.put("import-scan", "k", b"preserved", generation="g")
+    store.close()
+    original_connect = sqlite3.connect
+    opens = 0
+
+    def connect(*args, **kwargs):
+        nonlocal opens
+        opens += 1
+        if opens == 2:
+            # An independently opened handle must qualify the actual snapshot,
+            # even after the first handle admitted the previous schema version.
+            with closing(original_connect(store.path, isolation_level=None)) as peer:
+                peer.execute("PRAGMA user_version = 2").close()
+        return original_connect(*args, **kwargs)
+
+    install_module_view(monkeypatch, "sqlite3", sqlite3, records, connect=connect)
+    with pytest.raises(records.SourceRecordUnavailable, match="unsupported"):
+        with store.maintenance(dry_run=dry_run):
+            pytest.fail("unadmitted snapshot cannot be exposed")
+    with closing(original_connect(store.path)) as peer:
+        assert peer.execute("SELECT payload FROM records").fetchall() == [
+            (b"preserved",)
+        ]
+        assert peer.execute("PRAGMA user_version").fetchone() == (2,)
 
 
 def test_database_error_closes_only_owned_connection_and_preserves_live_peer(

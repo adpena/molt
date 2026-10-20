@@ -24,6 +24,11 @@ from pathlib import Path
 from typing import Any, Literal
 from weakref import WeakValueDictionary, finalize
 
+from molt.file_locks import (
+    _acquire_file_lock,
+    _release_file_lock,
+    _try_acquire_file_lock,
+)
 from molt.default_paths import (
     CACHE_MAINTENANCE_INTERVAL_SECONDS,
     SHARED_SOURCE_RECORDS_DIRECTORY,
@@ -37,26 +42,27 @@ STORE_NAME = "source_records.sqlite"
 SOURCE_RECORD_BATCH_MAX_RECORDS = 256
 SOURCE_RECORD_BATCH_MAX_BYTES = 1 << 20
 
-_SCHEMA = """
-CREATE TABLE IF NOT EXISTS records (
-    kind TEXT NOT NULL,
-    key TEXT NOT NULL,
-    generation TEXT NOT NULL,
-    payload BLOB NOT NULL,
-    revision BLOB NOT NULL,
-    used_ns INTEGER NOT NULL,
-    PRIMARY KEY (kind, key)
-) WITHOUT ROWID;
-CREATE INDEX IF NOT EXISTS records_generation ON records (generation);
-CREATE TABLE IF NOT EXISTS generations (
-    generation TEXT PRIMARY KEY,
-    used_ns INTEGER NOT NULL
-) WITHOUT ROWID;
-CREATE TABLE IF NOT EXISTS trims (
-    singleton INTEGER PRIMARY KEY CHECK (singleton = 0),
-    trimmed_ns INTEGER NOT NULL
-);
-"""
+_SCHEMA_VERSION = 1
+_SCHEMA = (
+    """CREATE TABLE IF NOT EXISTS records (
+        kind TEXT NOT NULL,
+        key TEXT NOT NULL,
+        generation TEXT NOT NULL,
+        payload BLOB NOT NULL,
+        revision BLOB NOT NULL,
+        used_ns INTEGER NOT NULL,
+        PRIMARY KEY (kind, key)
+    ) WITHOUT ROWID""",
+    "CREATE INDEX IF NOT EXISTS records_generation ON records (generation)",
+    """CREATE TABLE IF NOT EXISTS generations (
+        generation TEXT PRIMARY KEY,
+        used_ns INTEGER NOT NULL
+    ) WITHOUT ROWID""",
+    """CREATE TABLE IF NOT EXISTS trims (
+        singleton INTEGER PRIMARY KEY CHECK (singleton = 0),
+        trimmed_ns INTEGER NOT NULL
+    )""",
+)
 _HOUR_NS = 3600 * 1_000_000_000
 _UNUSED_LIMIT_NS = 7 * 24 * _HOUR_NS
 _REFRESH_INTERVAL_NS = _HOUR_NS
@@ -447,13 +453,16 @@ class SourceRecordStore:
             return None
         try:
             self._initialize(connection)
-        except sqlite3.OperationalError:
+        except (OSError, SourceRecordUnavailable, sqlite3.OperationalError):
             connection.close()
             return None
         except sqlite3.DatabaseError:
             connection.close()
             self._disable()
             return None
+        except BaseException:
+            connection.close()
+            raise
         self._connection = connection
         # The callback owns no reference to this store. Weak references have
         # already cleared when it runs, so a concurrent factory lookup cannot
@@ -463,42 +472,81 @@ class SourceRecordStore:
         )
         return connection
 
-    def _initialize(self, connection: sqlite3.Connection) -> None:
-        connection.execute("PRAGMA auto_vacuum = INCREMENTAL").close()
-        connection.execute("PRAGMA journal_mode = WAL").close()
+    def _initialize(self, connection: sqlite3.Connection, *, wait: bool = True) -> None:
         connection.execute("PRAGMA synchronous = NORMAL").close()
-        connection.executescript(_SCHEMA)
-        self._migrate(connection)
+        if self._schema_ready(connection):
+            return
+        # WAL conversion needs an exclusive database lock outside a transaction.
+        # Competing conversions can return BUSY without invoking SQLite's busy
+        # handler. Serialize only this cold transition with the existing portable
+        # lock authority; normal opens and all record operations use SQLite alone.
+        lock_path = self.path.with_name(self.path.name + ".initialize.lock")
+        if wait:
+            try:
+                handle = _acquire_file_lock(
+                    lock_path,
+                    timeout_s=_BUSY_TIMEOUT_SECONDS,
+                    timeout_message="source record initialization is busy",
+                )
+            except RuntimeError as exc:
+                if str(exc) != "source record initialization is busy":
+                    raise
+                raise SourceRecordBusy(str(exc)) from exc
+        else:
+            handle = _try_acquire_file_lock(lock_path)
+            if handle is None:
+                raise SourceRecordBusy("source record initialization is busy")
+        try:
+            if self._schema_ready(connection):
+                return
+            connection.execute("PRAGMA auto_vacuum = INCREMENTAL").close()
+            with closing(connection.execute("PRAGMA journal_mode = WAL")) as cursor:
+                if cursor.fetchone() != ("wal",):
+                    raise SourceRecordUnavailable("source record WAL is unavailable")
+            connection.execute("BEGIN IMMEDIATE").close()
+            try:
+                for statement in _SCHEMA:
+                    connection.execute(statement).close()
+                self._migrate(connection)
+                connection.execute(f"PRAGMA user_version = {_SCHEMA_VERSION}").close()
+                connection.execute("COMMIT").close()
+            except BaseException:
+                if connection.in_transaction:
+                    connection.execute("ROLLBACK").close()
+                raise
+        finally:
+            _release_file_lock(handle)
+
+    @staticmethod
+    def _schema_ready(connection: sqlite3.Connection) -> bool:
+        with closing(connection.execute("PRAGMA user_version")) as cursor:
+            version = cursor.fetchone()[0]
+        if version not in (0, _SCHEMA_VERSION):
+            raise SourceRecordUnavailable("source record schema version is unsupported")
+        return version == _SCHEMA_VERSION
 
     def _migrate(self, connection: sqlite3.Connection) -> None:
-        columns = {row[1] for row in connection.execute("PRAGMA table_info(records)")}
-        if not {"revision", "used_ns"} <= columns:
-            connection.execute("BEGIN IMMEDIATE")
-            try:
-                columns = {
-                    row[1] for row in connection.execute("PRAGMA table_info(records)")
-                }
-                if "revision" not in columns:
-                    connection.execute(
-                        "ALTER TABLE records ADD COLUMN revision BLOB NOT NULL DEFAULT X''"
-                    )
-                    connection.execute("UPDATE records SET revision = randomblob(16)")
-                if "used_ns" not in columns:
-                    connection.execute(
-                        "ALTER TABLE records ADD COLUMN used_ns INTEGER NOT NULL DEFAULT 0"
-                    )
-                    connection.execute(
-                        "UPDATE records SET used_ns = coalesce((SELECT used_ns FROM generations"
-                        " WHERE generations.generation = records.generation), ?)",
-                        (time.time_ns(),),
-                    )
-                connection.execute("COMMIT")
-            except BaseException:
-                connection.execute("ROLLBACK")
-                raise
+        # The initialization owner holds one write transaction for schema,
+        # legacy row migration, indexes and the version's publication.
+        with closing(connection.execute("PRAGMA table_info(records)")) as cursor:
+            columns = {row[1] for row in cursor}
+        if "revision" not in columns:
+            connection.execute(
+                "ALTER TABLE records ADD COLUMN revision BLOB NOT NULL DEFAULT X''"
+            ).close()
+            connection.execute("UPDATE records SET revision = randomblob(16)").close()
+        if "used_ns" not in columns:
+            connection.execute(
+                "ALTER TABLE records ADD COLUMN used_ns INTEGER NOT NULL DEFAULT 0"
+            ).close()
+            connection.execute(
+                "UPDATE records SET used_ns = coalesce((SELECT used_ns FROM generations"
+                " WHERE generations.generation = records.generation), ?)",
+                (time.time_ns(),),
+            ).close()
         connection.execute(
             "CREATE INDEX IF NOT EXISTS records_recency ON records (used_ns, kind, key)"
-        )
+        ).close()
 
     def _refresh_generation(
         self, connection: sqlite3.Connection, generation: str, now: int
@@ -567,8 +615,13 @@ class SourceRecordStore:
                 timeout=0,
                 isolation_level=None,
             )
-            if not dry_run:
-                self._initialize(current)
+            if dry_run:
+                if not self._schema_ready(current):
+                    raise SourceRecordUnavailable(
+                        "source record schema is not initialized"
+                    )
+            else:
+                self._initialize(current, wait=False)
             snapshot = sqlite3.connect(
                 self.path.absolute().as_uri() + "?mode=ro",
                 uri=True,
@@ -576,6 +629,8 @@ class SourceRecordStore:
                 isolation_level=None,
             )
             snapshot.execute("BEGIN").close()
+            if not self._schema_ready(snapshot):
+                raise SourceRecordUnavailable("source record schema is not initialized")
             maintenance = SourceRecordMaintenance(snapshot, current, dry_run=dry_run)
             yield maintenance
         except SourceRecordUnavailable as exc:
@@ -586,6 +641,10 @@ class SourceRecordStore:
                 with self._lock:
                     self._disable()
             raise
+        except OSError as exc:
+            raise SourceRecordUnavailable(
+                "source record initialization is unavailable"
+            ) from exc
         except sqlite3.OperationalError as exc:
             raise _maintenance_error(exc) from exc
         except sqlite3.DatabaseError as exc:
