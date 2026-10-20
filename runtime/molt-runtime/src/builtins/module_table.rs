@@ -2303,14 +2303,12 @@ mod tests {
             let (info, _) = crate::object::ops_sys::current_sys_version_info(runtime_state(py));
             let release =
                 MoltObject::from_ptr(alloc_string(py, info.releaselevel.as_bytes())).bits();
-            let version = crate::molt_sys_version();
             crate::molt_sys_set_version_info(
                 MoltObject::from_int(info.major).bits(),
                 MoltObject::from_int(info.minor).bits(),
                 MoltObject::from_int(info.micro).bits(),
                 release,
                 MoltObject::from_int(info.serial).bits(),
-                version,
             );
             assert!(!exception_pending(py));
             unsafe {
@@ -2336,7 +2334,6 @@ mod tests {
                 );
             }
             for bits in [
-                version,
                 release,
                 marker,
                 version_key,

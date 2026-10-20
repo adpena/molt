@@ -1049,20 +1049,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn compiler_version_publication_admits_type_annotate_without_environment() {
-        struct RestoreEnvironment(Vec<(&'static str, Option<std::ffi::OsString>)>);
-        impl Drop for RestoreEnvironment {
-            fn drop(&mut self) {
-                for (key, value) in &self.0 {
-                    unsafe {
-                        match value {
-                            Some(value) => std::env::set_var(key, value),
-                            None => std::env::remove_var(key),
-                        }
-                    }
-                }
-            }
-        }
+    fn compiler_version_publication_admits_type_annotate_atomically() {
         static WATCH_CALLS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
         static WATCH_COHERENT: std::sync::atomic::AtomicBool =
             std::sync::atomic::AtomicBool::new(true);
@@ -1104,21 +1091,6 @@ mod tests {
         // startup order (builtins first, compiled version second) are exercised.
         for minor in [12, 14, 12, 14] {
             crate::test_support::RuntimeTestTransaction::with_cold_runtime_lifecycle(|| {
-                let _environment = RestoreEnvironment(
-                    [
-                        "MOLT_PYTHON_VERSION",
-                        "MOLT_SYS_VERSION_INFO",
-                        "MOLT_SYS_VERSION",
-                    ]
-                    .into_iter()
-                    .map(|key| (key, std::env::var_os(key)))
-                    .collect(),
-                );
-                for (key, _) in &_environment.0 {
-                    unsafe {
-                        std::env::remove_var(key);
-                    }
-                }
                 assert_eq!(crate::state::runtime_state::molt_runtime_init(), 1);
                 crate::with_gil_entry_nopanic!(py, {
                     unsafe {
@@ -1132,11 +1104,6 @@ mod tests {
                         let release = attr_name_bits_from_bytes(py, b"final").unwrap();
                         let _release_owner =
                             crate::builtins::exceptions::ExceptionValue::adopt(py, release);
-                        let version =
-                            attr_name_bits_from_bytes(py, format!("3.{minor}.0").as_bytes())
-                                .unwrap();
-                        let _version_owner =
-                            crate::builtins::exceptions::ExceptionValue::adopt(py, version);
                         assert!(
                             dict_get_in_place(py, dictionary, name)
                                 .expect("dictionary lookup succeeds")
@@ -1265,7 +1232,6 @@ mod tests {
                                 MoltObject::from_int(0).bits(),
                                 release,
                                 MoltObject::from_int(0).bits(),
-                                version,
                             )
                         };
                         if minor >= 14 {
@@ -1408,17 +1374,12 @@ mod tests {
                         );
                         // A rejected startup update cannot publish staged root
                         // descriptors or advance the version receipt.
-                        let conflicting =
-                            attr_name_bits_from_bytes(py, b"conflicting version").unwrap();
-                        let _conflicting_owner =
-                            crate::builtins::exceptions::ExceptionValue::adopt(py, conflicting);
                         crate::object::ops_sys::molt_sys_set_version_info(
                             MoltObject::from_int(3).bits(),
                             MoltObject::from_int(13).bits(),
                             MoltObject::from_int(0).bits(),
                             release,
                             MoltObject::from_int(0).bits(),
-                            conflicting,
                         );
                         assert!(exception_pending(py));
                         molt_exception_clear();

@@ -519,6 +519,7 @@
         "tests/tools/test_fs_delete.py/**",
         "tests/tools/test_fuzz_compiler_cli.py/**",
         "tests/tools/test_gen_stdlib_module_union_memory_guard.py/**",
+        "tests/tools/test_gen_token_metadata.py/**",
         "tests/tools/test_generator_io.py/**",
         "tests/tools/test_guard_sampling_pacing.py/**",
         "tests/tools/test_guarded_exec.py/**",
@@ -3545,6 +3546,7 @@
         "tests/tools/test_fs_delete.py",
         "tests/tools/test_fuzz_compiler_cli.py",
         "tests/tools/test_gen_stdlib_module_union_memory_guard.py",
+        "tests/tools/test_gen_token_metadata.py",
         "tests/tools/test_generator_io.py",
         "tests/tools/test_guard_sampling_pacing.py",
         "tests/tools/test_guarded_exec.py",
@@ -3667,7 +3669,8 @@
         "python",
         "uv",
         "rustc",
-        "cargo"
+        "cargo",
+        "rustfmt"
       ]
     },
     {
@@ -9388,7 +9391,7 @@
       "local.suite-honesty.0": "python tools/check_differential_suite_layout.py",
       "local.suite-honesty.1": "python tools/check_suite_honesty.py",
       "local.table-drift.0": "python tools/check_table_drift.py --check",
-      "local.table-drift.pytest": "python -m pytest -q -n auto --molt-worker-memory-gb=0.5 tests/test_table_drift_gate.py",
+      "local.table-drift.pytest": "python -m pytest -q -n auto --molt-worker-memory-gb=0.75 tests/test_table_drift_gate.py tests/tools/test_gen_token_metadata.py tests/tools/test_gen_stdlib_module_union_memory_guard.py",
       "local.timing-ratio-authority.pytest": "python -m pytest -q -n auto --molt-worker-memory-gb=0.75 tests/tools/test_signed_ratio.py",
       "local.tinygrad-op-contract.0": "python tools/check_tinygrad_pin.py --check",
       "local.tinygrad-op-contract.1": "python tools/gen_gpu_op_contract.py --check",
@@ -9815,6 +9818,8 @@
           "tools/gen_host_capabilities.py",
           "src/molt/_host_capabilities_generated.py",
           "runtime/molt-runtime-core/src/host_capabilities_generated.rs",
+          "runtime/molt-backend-luau/src/python_version_policy_generated.rs",
+          "src/molt/target_python.py",
           "wasm/host_capabilities_generated.js",
           "docs/spec/areas/security/host_capabilities.generated.md",
           "tests/test_gen_host_capabilities.py"
@@ -10684,7 +10689,7 @@
           "local.table-drift.0",
           "local.table-drift.pytest"
         ],
-        "description": "Cross-language tables (type tags, exception ordinals/names, target-Python versions, C-API module slots): bind actual declarative owners.",
+        "description": "Cross-language tables (type tags, exception ordinals/names, target-Python versions and token metadata, C-API module slots): bind actual declarative owners.",
         "gates": [
           "python tools/check_table_drift.py --check"
         ],
@@ -10699,15 +10704,24 @@
           "src/molt/target_python.py",
           "tools/stdlib_module_union.py",
           "tools/gen_stdlib_module_union.py",
+          "config/cpython_stdlib_snapshot.json",
+          "config/cpython_regrtest_sources.toml",
+          "tools/gen_token_metadata.py",
+          "runtime/molt-stdlib-text/src/token_metadata_generated.rs",
+          "tests/tools/test_gen_token_metadata.py",
+          "tests/tools/test_gen_stdlib_module_union_memory_guard.py",
           "tools/check_table_drift.py",
           "tests/test_table_drift_gate.py"
         ],
         "name": "table-drift",
         "pytest": [
-          "tests/test_table_drift_gate.py"
+          "tests/test_table_drift_gate.py",
+          "tests/tools/test_gen_token_metadata.py",
+          "tests/tools/test_gen_stdlib_module_union_memory_guard.py"
         ],
         "toolchains": [
-          "python"
+          "python",
+          "rustfmt"
         ]
       },
       {
@@ -12544,10 +12558,12 @@
         "python"
       ],
       "local.table-drift.0": [
-        "python"
+        "python",
+        "rustfmt"
       ],
       "local.table-drift.pytest": [
-        "python"
+        "python",
+        "rustfmt"
       ],
       "local.timing-ratio-authority.pytest": [
         "python"

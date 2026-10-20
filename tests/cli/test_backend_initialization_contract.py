@@ -12,6 +12,7 @@ from molt.cli.backend_ir import (
     _build_entry_main_ops,
     _build_isolate_bootstrap_ops,
     _build_isolate_import_ops,
+    _build_version_info_ops,
     _guard_initialization_ops,
     _prepare_backend_ir,
 )
@@ -119,6 +120,9 @@ def test_entry_guards_include_late_insertions() -> None:
 def test_import_setup_and_each_module_call_share_one_failure_exit() -> None:
     ops = _build_isolate_import_ops(
         code_slot_count=17,
+        version_ops=_build_version_info_ops(
+            target_python=_SUPPORTED_TARGET_PYTHON_BY_SHORT["3.13"]
+        ),
         module_init_symbols=[("sys", "molt_init_sys"), ("json", "molt_init_json")],
     )
     assert not any(op["kind"] == "exception_clear" for op in ops)
@@ -132,6 +136,35 @@ def test_import_setup_and_each_module_call_share_one_failure_exit() -> None:
         left == right and left["kind"] == "check_exception"
         for left, right in zip(ops, ops[1:])
     )
+
+
+@pytest.mark.parametrize("minor", [12, 13, 14])
+def test_import_commits_target_before_module_access_with_unique_values(
+    minor: int,
+) -> None:
+    version = _SUPPORTED_TARGET_PYTHON_BY_SHORT[f"3.{minor}"]
+    version_ops = _build_version_info_ops(target_python=version)
+    ops = _build_isolate_import_ops(
+        code_slot_count=17,
+        version_ops=version_ops,
+        module_init_symbols=[("token", "molt_init_token")],
+    )
+    setter = next(
+        i
+        for i, op in enumerate(ops)
+        if op.get("s_value") == "molt_sys_set_version_info"
+    )
+    assert len(ops[setter]["args"]) == 5
+    values = {op["out"]: op for op in ops if "out" in op}
+    assert values[values[ops[setter]["args"][1]]["args"][0]]["value"] == minor
+    assert setter < next(
+        i for i, op in enumerate(ops) if op["kind"] == "module_cache_get"
+    )
+    assert setter < next(
+        i for i, op in enumerate(ops) if op.get("s_value") == "molt_init_token"
+    )
+    outputs = [op["out"] for op in ops if "out" in op]
+    assert len(outputs) == len(set(outputs))
 
 
 def test_guard_preserves_control_structure_and_uses_fresh_exit_label() -> None:

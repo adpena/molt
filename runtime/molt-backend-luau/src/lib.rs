@@ -11,4 +11,6 @@
 pub use molt_ir::{ExecutionContextPolicy, FunctionIR, OpIR, SimpleIR, ir, repr};
 pub use molt_tir::{representation_plan, tir};
 
+mod python_version_policy_generated;
+
 pub mod luau;

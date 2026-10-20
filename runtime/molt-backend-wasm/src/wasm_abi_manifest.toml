@@ -1817,9 +1817,9 @@ runtime_name = "molt_runtime_shutdown"
 
 [[import]]
 name = "sys_set_version_info"
-type = 8
+type = 10
 runtime_name = "molt_sys_set_version_info"
-callable_arity = 6
+callable_arity = 5
 
 [[import]]
 name = "print_builtin"

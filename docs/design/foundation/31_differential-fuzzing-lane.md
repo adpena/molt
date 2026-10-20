@@ -34,7 +34,12 @@ boundaries, nonlocal-augassign, membership variants). -->
   them under its explicitly selected coordinate rather than inventing a second
   metadata dialect.
 - **`# MOLT_ENV:` annotations**: per-file env overrides. Generated programs never emit these — the fuzzer uses a fixed deterministic env (PYTHONHASHSEED=0, MOLT_DETERMINISTIC=1).
-- **`_molt_sys_env_for_python_exe`** at molt_diff.py:251: derives MOLT_PYTHON_VERSION + MOLT_SYS_VERSION_INFO from the CPython baseline being run. The fuzzer must call this path when using a non-default CPython (3.13, 3.14) so molt's version-gated messages align.
+- **Target selection**: `_resolve_molt_target_python` derives the explicit
+  `TargetPythonVersion` from the selected CPython oracle and rejects a
+  conflicting build target. Every backend receives that value in the shared
+  execution context and forwards it as `--python-version`; the runtime freezes
+  it before imports. The oracle's executable path remains process metadata via
+  `MOLT_SYS_EXECUTABLE`. Ambient version/implementation overrides are retired.
 - **`MOLT_DIFF_RESULTS_JSONL`** (molt_diff.py:519): per-test JSONL sink for the suite-honesty ratchet (#46). Fuzzer must write to this file so every generated failure is visible to `tools/check_suite_honesty.py`.
 - **`BatchCompileServerClient`** (tools/batch_compile_client.py): optional batch-compile server; the fuzzer should support this path but not require it, because fuzz programs are single-shot and not cached usefully.
 
@@ -463,7 +468,7 @@ Mitigation: PYTHONHASHSEED=0 and MOLT_DETERMINISTIC=1 are set globally. The `sor
 
 **Risk 2 — CPython version drift in generated programs**
 
-Mitigation: the `MinVersionGate` in `FeaturePolicy` gates syntax features on the detected baseline version. The `_molt_sys_env_for_python_exe` call at run time ensures molt's version-gated messages match the baseline. Any remaining drift is a genuine parity bug, not a false positive.
+Mitigation: the `MinVersionGate` in `FeaturePolicy` gates syntax features on the detected baseline version. The shared execution context carries the oracle-matched `TargetPythonVersion` to every backend build, so runtime version-gated messages use the compiled target. Any remaining drift is a genuine parity bug, not a false positive.
 
 **Risk 3 — Generation bias blind spots**
 

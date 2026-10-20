@@ -70,29 +70,6 @@ class _PreparedBackendIR:
     module_registry: Any | None = None
 
 
-def _python_version_display(
-    target_python: TargetPythonVersion,
-) -> tuple[str, str, int]:
-    # Use Molt's selected target version, not the host Python version, so
-    # compiled binaries report the semantics they were parsed and lowered for.
-    major = target_python.major
-    minor = target_python.minor
-    micro = target_python.micro
-    release = target_python.release
-    serial = target_python.serial
-    version_suffix = ""
-    if release == "alpha":
-        version_suffix = f"a{serial}"
-    elif release == "beta":
-        version_suffix = f"b{serial}"
-    elif release == "candidate":
-        version_suffix = f"rc{serial}"
-    elif release != "final":
-        version_suffix = f"{release}{serial}"
-    version_str = f"{major}.{minor}.{micro}{version_suffix} (molt)"
-    return release, version_str, serial
-
-
 def _build_version_info_ops(
     *,
     target_python: TargetPythonVersion,
@@ -102,7 +79,6 @@ def _build_version_info_ops(
     micro = target_python.micro
     version_release = target_python.release
     version_serial = target_python.serial
-    _, version_str, _ = _python_version_display(target_python)
     return [
         {"kind": "const", "value": major, "out": "v3_raw"},
         {"kind": "box", "args": ["v3_raw"], "out": "v3"},
@@ -113,12 +89,11 @@ def _build_version_info_ops(
         {"kind": "const_str", "s_value": version_release, "out": "v6"},
         {"kind": "const", "value": version_serial, "out": "v7_raw"},
         {"kind": "box", "args": ["v7_raw"], "out": "v7"},
-        {"kind": "const_str", "s_value": version_str, "out": "v8"},
         {
             "kind": "call",
             "s_value": "molt_sys_set_version_info",
-            "args": ["v3", "v4", "v5", "v6", "v7", "v8"],
-            "out": "v9",
+            "args": ["v3", "v4", "v5", "v6", "v7"],
+            "out": "v8",
         },
     ]
 
@@ -344,21 +319,23 @@ def _build_isolate_bootstrap_ops(
 def _build_isolate_import_ops(
     *,
     code_slot_count: int,
+    version_ops: Sequence[dict[str, Any]],
     module_init_symbols: Sequence[tuple[str, str]],
 ) -> list[dict[str, Any]]:
     # Runtime-side module imports can reach this function before either
     # `molt_main` or `molt_isolate_bootstrap` has initialized the global
-    # code-slot table. The import dispatcher owns table allocation only; each
-    # module init body owns its module-frame CODE_NEW/CODE_SLOT_SET sequence.
+    # code-slot table or committed the compiler target. Establish both before
+    # accessing a module; each body owns its CODE_NEW/CODE_SLOT_SET sequence.
     import_ops: list[dict[str, Any]] = [
         {"kind": "code_slots_init", "value": code_slot_count},
+        *version_ops,
     ]
     # Module-frame code metadata has one authority: each `molt_init_*` body emits
     # its own CODE_NEW/CODE_SLOT_SET immediately before TRACE_ENTER_SLOT.  The
     # import dispatcher must not replay a second synthetic code object for the
     # same symbol, because that turns code slots into replaceable roots and makes
     # frame/trace ownership harder to reason about.
-    import_var_idx = 0
+    import_var_idx = _next_tir_var_index(import_ops)
 
     def import_var() -> str:
         nonlocal import_var_idx
@@ -2330,6 +2307,7 @@ def _prepare_backend_ir(
         )
         import_ops = _build_isolate_import_ops(
             code_slot_count=len(global_code_ids),
+            version_ops=version_ops,
             module_init_symbols=tuple(
                 (name, SimpleTIRGenerator.module_init_symbol(name))
                 for name in legacy_module_order

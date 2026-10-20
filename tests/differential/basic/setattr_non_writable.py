@@ -5,8 +5,8 @@ Covers the SETATTR/DELATTR-failure path for every target kind that has no
 ``__dict__`` and no matching slot: tagged scalars (int/str/float/bool/None),
 tuple, a ``__slots__`` instance, and a builtin/immutable type. CPython 3.13+
 appends ``and no __dict__ for setting new attributes`` to the SET/DEL message on
-these targets; 3.12 omits it (the test is version-gated through the differential
-harness's ``MOLT_PYTHON_VERSION``).
+these targets; 3.12 omits it (the differential harness selects the compiled
+``TargetPythonVersion`` from its CPython oracle).
 
 Regression for: ``typing.final(42)`` SIGSEGV (a tagged-int receiver flowing into
 the direct ``set_attr_generic_ptr`` path, which unboxed the tag as a pointer and

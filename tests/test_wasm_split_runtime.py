@@ -208,6 +208,7 @@ def test_build_isolate_import_ops_initializes_code_slots() -> None:
 
     ops = _build_isolate_import_ops(
         code_slot_count=17,
+        version_ops=[],
         module_init_symbols=[("sys", "molt_init_sys")],
     )
 

@@ -46,13 +46,18 @@ def _zip_read_entry(archive, inner):
 
 
 install_registry({{
-    "molt_token_payload_312": lambda: {{
-        "_payload_schema": "molt.token_payload.312.v1",
-        "_python_minor": "3.12",
-        "constants": {{"ENDMARKER": 0, "NAME": 1, "NT_OFFSET": 256}},
-        "constant_order": ["ENDMARKER", "NAME", "NT_OFFSET"],
-        "tok_name": {{"0": "ENDMARKER", "1": "NAME", "256": "NT_OFFSET"}},
-        "EXACT_TOKEN_TYPES": {{"+": 1}},
+    "molt_token_payload": lambda: {{
+        "ENDMARKER": 0, "NAME": 1, "NUMBER": 2, "NEWLINE": 4,
+        "PLUS": 14, "EQUAL": 22, "OP": 55, "COMMENT": 64, "NL": 65,
+        "ENCODING": 67, "N_TOKENS": 68, "NT_OFFSET": 256,
+        "tok_name": {{0: "ENDMARKER", 1: "NAME", 2: "NUMBER", 4: "NEWLINE",
+                     14: "PLUS", 22: "EQUAL", 55: "OP", 64: "COMMENT", 65: "NL",
+                     67: "ENCODING", 68: "N_TOKENS", 256: "NT_OFFSET"}},
+        "EXACT_TOKEN_TYPES": {{"+": 14, "=": 22}},
+        "__all__": ["tok_name", "ISTERMINAL", "ISNONTERMINAL", "ISEOF",
+                    "EXACT_TOKEN_TYPES", "ENDMARKER", "NAME", "NUMBER", "NEWLINE",
+                    "PLUS", "EQUAL", "OP", "COMMENT", "NL", "ENCODING",
+                    "N_TOKENS", "NT_OFFSET"],
     }},
     "molt_this_payload": lambda: ("enc", {{"a": "b"}}, "Zen line", 1, 2),
     "molt_importlib_find_in_path_package_context": lambda fullname, roots: {{
@@ -122,8 +127,17 @@ windows_native_data = windows_importer.get_data(
 checks = {{
     "token": (
         token_mod.ENDMARKER == 0
-        and token_mod.EXACT_TOKEN_TYPES["+"] == 1
-        and "molt_token_payload_312" not in token_mod.__dict__
+        and token_mod.EXACT_TOKEN_TYPES["+"] == token_mod.PLUS == 14
+        and token_mod.tok_name[55] == "OP"
+        and token_mod.OP == 55
+        and token_mod.ISTERMINAL(255) and not token_mod.ISTERMINAL(256)
+        and token_mod.ISNONTERMINAL(256) and not token_mod.ISNONTERMINAL(0)
+        and token_mod.ISEOF(0) and not token_mod.ISEOF(1)
+        and token_mod.__all__[:5] == ["tok_name", "ISTERMINAL", "ISNONTERMINAL",
+                                     "ISEOF", "EXACT_TOKEN_TYPES"]
+        and "PLUS" in token_mod.__all__
+        and "molt_token_payload" not in token_mod.__dict__
+        and "_require_intrinsic" not in token_mod.__dict__
     ),
     "this": (
         getattr(this_mod, "s") == "enc"

@@ -3,9 +3,9 @@
 #[cold]
 pub(super) fn resolve_symbol(symbol: &str) -> Option<u64> {
     match symbol {
-        "molt_token_payload_312" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_token_payload_312",
-            crate::molt_token_payload_312 as *const (),
+        "molt_token_payload" => Some(crate::builtins::functions::runtime_fn_addr(
+            "crate::molt_token_payload",
+            crate::molt_token_payload as *const (),
         )),
         "molt_tokenize_scan" => Some(crate::builtins::functions::runtime_fn_addr(
             "crate::molt_tokenize_scan",

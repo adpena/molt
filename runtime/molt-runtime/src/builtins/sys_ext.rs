@@ -1424,7 +1424,7 @@ mod tests {
     }
 
     #[test]
-    fn sys_metadata_environment_fields_preserve_full_width_integer_values() {
+    fn sys_process_flags_preserve_full_width_integer_values() {
         struct RestoreEnvironment(Vec<(&'static str, Option<std::ffi::OsString>)>);
         impl Drop for RestoreEnvironment {
             fn drop(&mut self) {
@@ -1439,7 +1439,7 @@ mod tests {
             }
         }
         let _transaction = crate::test_support::RuntimeTestTransaction::new();
-        let keys = ["MOLT_SYS_API_VERSION", "PYTHONOPTIMIZE"];
+        let keys = ["PYTHONOPTIMIZE"];
         let _environment = RestoreEnvironment(keys.map(|key| (key, std::env::var_os(key))).into());
         for key in keys {
             unsafe {
@@ -1447,9 +1447,6 @@ mod tests {
             }
         }
         crate::with_gil_entry_nopanic!(py, {
-            let api = crate::molt_sys_api_version();
-            assert_eq!(to_i64(obj_from_bits(api)), Some(i64::MAX));
-            dec_ref_bits(py, api);
             let flags = crate::molt_sys_flags_payload();
             assert!(!exception_pending(py));
             let key = str_bits(py, "optimize");

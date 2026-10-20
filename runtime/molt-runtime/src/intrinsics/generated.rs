@@ -8788,7 +8788,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
     IntrinsicSpec {
         name: "molt_sys_set_version_info",
         symbol: "molt_sys_set_version_info",
-        arity: 6,
+        arity: 5,
         defaults: &[],
         python_name: None,
     },
@@ -9829,8 +9829,8 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         python_name: None,
     },
     IntrinsicSpec {
-        name: "molt_token_payload_312",
-        symbol: "molt_token_payload_312",
+        name: "molt_token_payload",
+        symbol: "molt_token_payload",
         arity: 0,
         defaults: &[],
         python_name: None,

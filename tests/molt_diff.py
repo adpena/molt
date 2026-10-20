@@ -313,94 +313,60 @@ def _apply_metadata_env_overrides(
     return None
 
 
-def _python_command_version(
+@dataclass(frozen=True, slots=True)
+class _PythonOracleMetadata:
+    feature_version: tuple[int, int]
+    executable: str
+
+
+def _python_command_metadata(
     command: tuple[str, ...], *, budget: compat_backends.ItemBudget | None = None
-) -> tuple[int, int] | None:
-    result = _run_metadata_probe(
-        [*command, "-c", "import sys; print(sys.version_info[:2])"], budget=budget
-    )
-    if result is None:
-        return None
-    if result.returncode != 0:
-        return None
-    raw = result.stdout.strip().strip("()")
-    if not raw:
-        return None
-    parts = raw.split(",")
-    if len(parts) < 2:
-        return None
-    try:
-        return int(parts[0]), int(parts[1])
-    except ValueError:
-        return None
-
-
-def _molt_sys_env_for_python_command(
-    command: tuple[str, ...], *, budget: compat_backends.ItemBudget | None = None
-) -> dict[str, str]:
-    """Derive Molt sys/version environment from the CPython under test.
-
-    Differential runs compare Molt output against a chosen CPython version
-    (3.12/3.13/3.14). When semantics differ across those versions, Molt must be
-    configured to match the CPython baseline version for that run.
-    """
+) -> _PythonOracleMetadata | None:
+    """Observe the oracle's target minor and executable in one cached probe."""
 
     if not command:
-        return {}
+        return None
     code = (
         "import json,sys;"
-        "vi=sys.version_info;"
         "print(json.dumps({"
         "'executable':sys.executable,"
-        "'version':sys.version,"
-        "'version_info':[vi.major,vi.minor,vi.micro,vi.releaselevel,vi.serial]"
+        "'version_info':list(sys.version_info[:2])"
         "}))"
     )
     result = _run_metadata_probe([*command, "-c", code], budget=budget)
     if result is None:
-        return {}
+        return None
     if result.returncode != 0:
-        return {}
+        return None
     raw = (result.stdout or "").strip().splitlines()
     if not raw:
-        return {}
+        return None
     try:
         payload = json.loads(raw[-1])
     except json.JSONDecodeError:
-        return {}
+        return None
     if not isinstance(payload, dict):
-        return {}
+        return None
     version_info = payload.get("version_info")
+    executable = payload.get("executable")
     if (
         not isinstance(version_info, list)
-        or len(version_info) != 5
-        or not isinstance(version_info[0], int)
-        or not isinstance(version_info[1], int)
-        or not isinstance(version_info[2], int)
-        or not isinstance(version_info[3], str)
-        or not isinstance(version_info[4], int)
+        or len(version_info) != 2
+        or not all(type(part) is int for part in version_info)
+        or not isinstance(executable, str)
+        or not executable
     ):
-        return {}
-    major, minor, micro, releaselevel, serial = version_info
-    executable = payload.get("executable")
-    version = payload.get("version")
-    env: dict[str, str] = {
-        "MOLT_PYTHON_VERSION": f"{major}.{minor}",
-        "MOLT_SYS_VERSION_INFO": f"{major},{minor},{micro},{releaselevel},{serial}",
-    }
-    if isinstance(executable, str) and executable:
-        env["MOLT_SYS_EXECUTABLE"] = executable
-    if isinstance(version, str) and version:
-        env["MOLT_SYS_VERSION"] = version
-    return env
+        return None
+    return _PythonOracleMetadata((version_info[0], version_info[1]), executable)
 
 
 def _python_exe_version(
     python_exe: PythonCommand, *, budget: compat_backends.ItemBudget | None = None
 ) -> tuple[int, int] | None:
-    return _python_command_version(
+    metadata = _python_command_metadata(
         _resolve_python_command(python_exe, budget=budget), budget=budget
     )
+    return None if metadata is None else metadata.feature_version
 
 
 def _resolve_molt_target_python(
@@ -411,14 +377,6 @@ def _resolve_molt_target_python(
 ) -> TargetPythonVersion:
     return resolve_target_python_for_oracle(
         _python_exe_version(python_exe, budget=budget), explicit
-    )
-
-
-def _molt_sys_env_for_python_exe(
-    python_exe: PythonCommand, *, budget: compat_backends.ItemBudget | None = None
-) -> dict[str, str]:
-    return _molt_sys_env_for_python_command(
-        _resolve_python_command(python_exe, budget=budget), budget=budget
     )
 
 
@@ -1091,7 +1049,11 @@ def _backend_execution_context(
     )
     if metadata_error is not None:
         raise ValueError(metadata_error)
-    env.update(_molt_sys_env_for_python_exe(python_exe, budget=budget))
+    oracle = _python_command_metadata(
+        _resolve_python_command(python_exe, budget=budget), budget=budget
+    )
+    if oracle is not None:
+        env["MOLT_SYS_EXECUTABLE"] = oracle.executable
     diff_output_layout.enforce_child(env, repo_root=_repo_root())
     return compat_backends.BackendExecutionContext(
         target_python=resolved_target,
@@ -2947,12 +2909,6 @@ def _run_molt_owned(
             status="build_invalid_stdlib_profile",
         )
         return compat_backends.BackendResult(None, str(exc), 2, build_failed=True)
-    ver = sys.version_info
-    env.setdefault(
-        "MOLT_SYS_VERSION_INFO",
-        f"{ver.major},{ver.minor},{ver.micro},{ver.releaselevel},{ver.serial}",
-    )
-    env.setdefault("MOLT_SYS_VERSION", sys.version)
     timeout = budget.policy.phase("native", "run")
     build_timeout = budget.policy.phase("native", "build")
     rss_limit_kb = _diff_fail_rss_kb()

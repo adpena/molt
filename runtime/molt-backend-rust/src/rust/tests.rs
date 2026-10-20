@@ -2357,10 +2357,6 @@ mod preview_source {
         serial.args = Some(vec!["serial_raw".to_string()]);
         serial.out = Some("serial".to_string());
 
-        let mut version = op("const_str");
-        version.s_value = Some("3.13.0 (molt)".to_string());
-        version.out = Some("version".to_string());
-
         let mut set_version = op("call");
         set_version.s_value = Some("molt_sys_set_version_info".to_string());
         set_version.args = Some(vec![
@@ -2369,7 +2365,6 @@ mod preview_source {
             "micro".to_string(),
             "releaselevel".to_string(),
             "serial".to_string(),
-            "version".to_string(),
         ]);
         set_version.out = Some("set_result".to_string());
 
@@ -2403,7 +2398,6 @@ mod preview_source {
                     releaselevel,
                     serial_raw,
                     serial,
-                    version,
                     set_version,
                     get_version_info,
                     get_version,
@@ -2443,7 +2437,7 @@ mod preview_source {
         );
         assert!(source.contains("fn molt_sys_version(_args: &mut Vec<MoltValue>) -> MoltValue"));
         assert!(source.contains("fn molt_sys_hexversion(_args: &mut Vec<MoltValue>) -> MoltValue"));
-        assert!(source.contains("MoltValue::Str(state.version.clone().into())"));
+        assert!(source.contains("MoltValue::Str(state.formatted_version().into())"));
         assert!(source.contains("MoltValue::List(vec!["));
     }
 

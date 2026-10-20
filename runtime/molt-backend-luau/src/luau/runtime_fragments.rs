@@ -1,4 +1,7 @@
 use super::*;
+use crate::python_version_policy_generated::{
+    DEFAULT_TARGET_PYTHON_VERSION, SUPPORTED_TARGET_PYTHON_VERSIONS,
+};
 
 // These are the executable providers. Selection, dependencies and binding
 // hoists are derived from their source by runtime_prelude; there is no second
@@ -31,74 +34,122 @@ pub(super) fn fragments() -> Vec<(&'static str, String)> {
     fragments.push(("equality and repr", std::mem::take(&mut source)));
     source.push_str(dict_runtime::CALLARGS_RUNTIME);
     fragments.push(("call arguments", std::mem::take(&mut source)));
-    source.push_str(concat!(
-                "local molt_sys_version_info = {3, 12, 0, \"final\", 0}\n",
-                "local molt_sys_version = \"3.12.0 (molt)\"\n",
-                "local molt_sys_hexversion = 0x030c00f0\n\n",
-                "local function molt_sys_release_nibble(releaselevel)\n",
-                "\tif releaselevel == \"alpha\" then return 0xA end\n",
-                "\tif releaselevel == \"beta\" then return 0xB end\n",
-                "\tif releaselevel == \"candidate\" then return 0xC end\n",
-                "\treturn 0xF\n",
-                "end\n\n",
-                "local function molt_sys_format_version(major, minor, micro, releaselevel, serial)\n",
-                "\tlocal suffix = \"\"\n",
-                "\tif releaselevel == \"alpha\" then suffix = \"a\" .. tostring(serial) end\n",
-                "\tif releaselevel == \"beta\" then suffix = \"b\" .. tostring(serial) end\n",
-                "\tif releaselevel == \"candidate\" then suffix = \"rc\" .. tostring(serial) end\n",
-                "\tif releaselevel ~= \"final\" and releaselevel ~= \"\" and suffix == \"\" then suffix = tostring(releaselevel) .. tostring(serial) end\n",
-                "\treturn tostring(major) .. \".\" .. tostring(minor) .. \".\" .. tostring(micro) .. suffix .. \" (molt)\"\n",
-                "end\n\n",
-                "local function molt_sys_compute_hexversion(major, minor, micro, releaselevel, serial)\n",
-                "\treturn major * 0x1000000 + minor * 0x10000 + micro * 0x100 + molt_sys_release_nibble(releaselevel) * 0x10 + serial\n",
-                "end\n\n",
-                "local function molt_sys_seed_module()\n",
-                "\tlocal sys_module = {\n",
-                "\t\tversion_info = molt_sys_version_info,\n",
-                "\t\tversion = molt_sys_version,\n",
-                "\t\thexversion = molt_sys_hexversion,\n",
-                "\t}\n",
-                "\tmolt_module_cache[\"sys\"] = sys_module\n",
-                "\treturn sys_module\n",
-                "end\n\n",
-                "local function molt_sys_set_version_info(major, minor, micro, releaselevel, serial, version)\n",
-                "\tmajor = major or 3\n",
-                "\tminor = minor or 12\n",
-                "\tmicro = micro or 0\n",
-                "\treleaselevel = releaselevel or \"final\"\n",
-                "\tserial = serial or 0\n",
-                "\tif version == nil or version == \"\" then\n",
-                "\t\tversion = molt_sys_format_version(major, minor, micro, releaselevel, serial)\n",
-                "\tend\n",
-                "\tmolt_sys_version_info = {major, minor, micro, releaselevel, serial}\n",
-                "\tmolt_sys_version = version\n",
-                "\tmolt_sys_hexversion = molt_sys_compute_hexversion(major, minor, micro, releaselevel, serial)\n",
-                "\tmolt_sys_seed_module()\n",
-                "\treturn nil\n",
-                "end\n\n",
-            ));
+    let (major, minor, micro, releaselevel, serial) = DEFAULT_TARGET_PYTHON_VERSION;
+    let _ = writeln!(
+        source,
+        "local molt_sys_default_version_info = table.freeze({{{major}, {minor}, {micro}, {releaselevel:?}, {serial}}})"
+    );
+    let mut supported_targets = BTreeMap::<i64, Vec<i64>>::new();
+    for &(major, minor) in SUPPORTED_TARGET_PYTHON_VERSIONS {
+        supported_targets.entry(major).or_default().push(minor);
+    }
+    source.push_str("local molt_sys_supported_versions = {\n");
+    for (&major, minors) in &supported_targets {
+        let _ = writeln!(source, "\t[{major}] = {{");
+        for minor in minors {
+            let _ = writeln!(source, "\t\t[{minor}] = true,");
+        }
+        source.push_str("\t},\n");
+    }
+    source.push_str(
+        r#"}
+local molt_sys_version_info = nil
+local function molt_sys_target_version_info()
+	return molt_sys_version_info or molt_sys_default_version_info
+end
+local function molt_sys_release_nibble(releaselevel)
+	if releaselevel == "alpha" then return 0xA end
+	if releaselevel == "beta" then return 0xB end
+	if releaselevel == "candidate" then return 0xC end
+	return 0xF
+end
+local function molt_sys_format_version(info)
+	local suffix = ""
+	if info[4] == "alpha" then suffix = "a" .. tostring(info[5]) end
+	if info[4] == "beta" then suffix = "b" .. tostring(info[5]) end
+	if info[4] == "candidate" then suffix = "rc" .. tostring(info[5]) end
+	return tostring(info[1]) .. "." .. tostring(info[2]) .. "." .. tostring(info[3]) .. suffix .. " (molt)"
+end
+local function molt_sys_compute_hexversion(info)
+	return (info[1] % 256) * 0x1000000 + (info[2] % 256) * 0x10000 + (info[3] % 256) * 0x100 + molt_sys_release_nibble(info[4]) * 0x10 + info[5] % 16
+end
+local function molt_sys_seed_module()
+	local info = molt_sys_target_version_info()
+	local sys_module = molt_module_cache["sys"]
+	if sys_module == nil then
+		sys_module = {}
+		molt_module_cache["sys"] = sys_module
+	end
+	sys_module.version_info = info
+	sys_module.version = molt_sys_format_version(info)
+	sys_module.hexversion = molt_sys_compute_hexversion(info)
+	return sys_module
+end
+local function molt_sys_require_version_int(value, name)
+	if type(value) ~= "number" or value ~= value or value == math.huge or value == -math.huge or value ~= math.floor(value) then
+		error({__type="TypeError", __msg=name .. " must be int"})
+	end
+	return value
+end
+local function molt_sys_set_version_info(major, minor, micro, releaselevel, serial)
+	major = molt_sys_require_version_int(major, "major")
+	minor = molt_sys_require_version_int(minor, "minor")
+	micro = molt_sys_require_version_int(micro, "micro")
+	serial = molt_sys_require_version_int(serial, "serial")
+	if major < 0 or minor < 0 or micro < 0 or serial < 0 then
+		error({__type="ValueError", __msg="sys.version_info must be non-negative integers"})
+	end
+	if type(releaselevel) ~= "string" then
+		error({__type="TypeError", __msg="sys.version_info releaselevel must be str"})
+	end
+	if releaselevel ~= "alpha" and releaselevel ~= "beta" and releaselevel ~= "candidate" and releaselevel ~= "final" then
+		error({__type="ValueError", __msg="sys.version_info releaselevel must be alpha, beta, candidate or final"})
+	end
+	local supported_minors = molt_sys_supported_versions[major]
+	if supported_minors == nil or supported_minors[minor] ~= true then
+		error({__type="ValueError", __msg="unsupported compiled Python target " .. tostring(major) .. "." .. tostring(minor)})
+	end
+	local committed = molt_sys_version_info
+	if committed ~= nil then
+		if committed[1] == major and committed[2] == minor and committed[3] == micro and committed[4] == releaselevel and committed[5] == serial then return nil end
+		error({__type="RuntimeError", __msg="compiled Python target is already set"})
+	end
+	molt_sys_version_info = table.freeze({major, minor, micro, releaselevel, serial})
+	molt_sys_seed_module()
+	return nil
+end
+
+"#,
+    );
     fragments.push(("sys", std::mem::take(&mut source)));
     source.push_str(numeric_error_policy_generated::FLOAT_DIVMOD_LUA);
     fragments.push(("float divmod", std::mem::take(&mut source)));
     source.push_str("local molt_numeric_error_policy = {\n");
     for context in numeric_error_policy_generated::NumericErrorContext::ALL {
-        let messages =
-            [12, 13, 14].map(|minor| context.message(3, minor).expect("admitted target"));
-        source.push_str(&format!(
-            "\t[{:?}] = {{class={:?}, [12]={:?}, [13]={:?}, [14]={:?}}},\n",
+        let _ = writeln!(
+            source,
+            "\t[{:?}] = {{class={:?},",
             context.wire_key(),
-            context.error_class(),
-            messages[0],
-            messages[1],
-            messages[2]
-        ));
+            context.error_class()
+        );
+        for (&major, minors) in &supported_targets {
+            let _ = writeln!(source, "\t\t[{major}] = {{");
+            for &minor in minors {
+                let message = context.message(major, minor).expect("admitted target");
+                let _ = writeln!(source, "\t\t\t[{minor}]={message:?},");
+            }
+            source.push_str("\t\t},\n");
+        }
+        source.push_str("\t},\n");
     }
     source.push_str(concat!(
         "}\nlocal function molt_numeric_error(context)\n",
         "\tlocal row = molt_numeric_error_policy[context]\n",
-        "\tlocal minor = molt_sys_version_info[2]\n",
-        "\tif molt_sys_version_info[1] ~= 3 or row == nil or row[minor] == nil then error({__type=\"RuntimeError\", __msg=\"unsupported numeric exception target version\"}) end\n",
-        "\terror({__type=row.class, __msg=row[minor]})\nend\n\n",
+        "\tlocal info = molt_sys_target_version_info()\n",
+        "\tlocal by_major = row and row[info[1]]\n",
+        "\tlocal message = by_major and by_major[info[2]]\n",
+        "\tif message == nil then error({__type=\"RuntimeError\", __msg=\"unsupported numeric exception target version\"}) end\n",
+        "\terror({__type=row.class, __msg=message})\nend\n\n",
     ));
     fragments.push(("numeric error policy", std::mem::take(&mut source)));
     // These lifecycle intrinsics already have no-op semantics on this target.
@@ -213,7 +264,7 @@ end
         ),
         (
             "molt_bool",
-            "local function molt_bool(x: any): boolean\n\tif x == molt_not_implemented then\n\t\tif molt_sys_version_info[1] > 3 or (molt_sys_version_info[1] == 3 and molt_sys_version_info[2] >= 14) then error({__type=\"TypeError\", __msg=\"NotImplemented should not be used in a boolean context\"}) end\n\t\treturn true\n\tend\n\tif x == molt_ellipsis then return true end\n\tif x == nil or x == false or x == 0 or x == \"\" then return false end\n\tif type(x) == \"table\" then local binary = molt_binary_metadata[x]; if binary ~= nil then return #binary.value > 0 end; if molt_dict_is_ordered(x) then return molt_dict_len(x) > 0 end; if molt_dict_view_is(x) then return molt_dict_view_len(x) > 0 end; if molt_set_is(x) then return molt_set_len(x) > 0 end; local packed = rawget(x, molt_sequence_length_key); if type(packed) == \"number\" then return packed > 0 end end\n\treturn true\nend\n",
+            "local function molt_bool(x: any): boolean\n\tif x == molt_not_implemented then\n\t\tlocal info = molt_sys_target_version_info()\n\t\tif info[1] > 3 or (info[1] == 3 and info[2] >= 14) then error({__type=\"TypeError\", __msg=\"NotImplemented should not be used in a boolean context\"}) end\n\t\treturn true\n\tend\n\tif x == molt_ellipsis then return true end\n\tif x == nil or x == false or x == 0 or x == \"\" then return false end\n\tif type(x) == \"table\" then local binary = molt_binary_metadata[x]; if binary ~= nil then return #binary.value > 0 end; if molt_dict_is_ordered(x) then return molt_dict_len(x) > 0 end; if molt_dict_view_is(x) then return molt_dict_view_len(x) > 0 end; if molt_set_is(x) then return molt_set_len(x) > 0 end; local packed = rawget(x, molt_sequence_length_key); if type(packed) == \"number\" then return packed > 0 end end\n\treturn true\nend\n",
         ),
         (
             "molt_builtin_type",

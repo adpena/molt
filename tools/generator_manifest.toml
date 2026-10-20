@@ -218,10 +218,11 @@ tool = "tools/gen_host_capabilities.py"
 outputs = [
   "src/molt/_host_capabilities_generated.py",
   "runtime/molt-runtime-core/src/host_capabilities_generated.rs",
+  "runtime/molt-backend-luau/src/python_version_policy_generated.rs",
   "wasm/host_capabilities_generated.js",
   "docs/spec/areas/security/host_capabilities.generated.md",
 ]
-source = "runtime/host_capabilities.toml + tools/generator_io.py"
+source = "runtime/host_capabilities.toml + src/molt/target_python.py + tools/generator_io.py"
 check_mode = true
 check_command = "tools/gen_host_capabilities.py --check"
 toolchains = ["rustfmt"]
@@ -521,7 +522,7 @@ discovery_only = false
 tool = "tools/gen_stdlib_module_union.py"
 outputs = []
 output_family = "tools/stdlib_module_union.py and tools/stdlib_module_union_<major>_<minor>.py for the canonical admitted target catalog; pending source pins produce no module baseline"
-source = "config/cpython_stdlib_snapshot.json (stdlib, AST, startup, ABI and release-note source inputs at config/cpython_regrtest_sources.toml revisions; pending source evidence is distinct from admitted target projections) + tools/generator_io.py"
+source = "config/cpython_stdlib_snapshot.json (stdlib, AST, startup, ABI, release-note and token source inputs at config/cpython_regrtest_sources.toml revisions; pending source evidence is distinct from admitted target projections) + tools/generator_io.py"
 check_mode = true
 toolchains = []
 check_command = "tools/gen_stdlib_module_union.py --check"
@@ -531,6 +532,26 @@ idempotent = true
 sync_test = "tests/tools/test_gen_stdlib_module_union_memory_guard.py"
 closed_domains = []
 discovery_only = false
+
+[[generator]]
+tool = "tools/gen_token_metadata.py"
+outputs = ["runtime/molt-stdlib-text/src/token_metadata_generated.rs"]
+source = "config/cpython_stdlib_snapshot.json (receipted CPython Grammar/Tokens, Lib/token.py and Tools/build/generate_token.py at config/cpython_regrtest_sources.toml revisions) + src/molt/target_python.py + tools/gen_stdlib_module_union.py + tools/generator_io.py"
+check_mode = true
+toolchains = ["rustfmt"]
+check_command = "tools/gen_token_metadata.py --check"
+idempotent = true
+sync_test = "tests/tools/test_gen_token_metadata.py"
+closed_domains = ["TokenConstant"]
+discovery_only = false
+
+[[closed_domain]]
+name = "TokenConstant"
+enum_file = "runtime/molt-stdlib-text/src/token_metadata_generated.rs"
+enum_name = "TokenConstant"
+owned_by = "tools/gen_token_metadata.py"
+source_table = "config/cpython_stdlib_snapshot.json"
+audited_defaults = []
 
 [[generator]]
 tool = "tools/gen_stdlib_stubs.py"

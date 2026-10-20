@@ -60,7 +60,6 @@ define_interned_names! {
     flush_name,
     readline_name,
     sys_version_info,
-    sys_version,
     stdout_name,
     stdin_name,
     modules_name,

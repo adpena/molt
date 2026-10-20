@@ -262,71 +262,21 @@ pub(crate) fn trace_sys_version() -> bool {
     runtime_flags::enabled(RuntimeFlag::MOLT_TRACE_SYS_VERSION)
 }
 
-pub(crate) fn env_sys_version_info() -> Option<PythonVersionInfo> {
-    let raw = std::env::var("MOLT_SYS_VERSION_INFO").ok()?;
-    if trace_sys_version() {
-        eprintln!("molt sys version: env raw={raw}");
-    }
-    let mut parts = raw.split(',');
-    let major = parts.next()?.trim().parse::<i64>().ok()?;
-    let minor = parts.next()?.trim().parse::<i64>().ok()?;
-    let micro = parts.next()?.trim().parse::<i64>().ok()?;
-    let releaselevel = parts.next()?.trim().to_string();
-    let serial = parts.next()?.trim().parse::<i64>().ok()?;
-    if major < 0 || minor < 0 || micro < 0 || serial < 0 {
-        return None;
-    }
-    if releaselevel.is_empty() {
-        return None;
-    }
-    let info = PythonVersionInfo {
-        major,
-        minor,
-        micro,
-        releaselevel,
-        serial,
-    };
-    if trace_sys_version() {
-        eprintln!(
-            "molt sys version: parsed {}.{}.{} {} {}",
-            info.major, info.minor, info.micro, info.releaselevel, info.serial
-        );
-    }
-    Some(info)
-}
-
-pub(crate) fn env_target_python_info() -> Option<PythonVersionInfo> {
-    if let Some(info) = env_sys_version_info() {
-        return Some(info);
-    }
-    let raw = std::env::var("MOLT_PYTHON_VERSION").ok()?;
-    let mut parts = raw.trim().split('.');
-    let major = parts.next()?.trim().parse::<i64>().ok()?;
-    let minor = parts.next()?.trim().parse::<i64>().ok()?;
-    let micro = parts
-        .next()
-        .and_then(|part| part.trim().parse::<i64>().ok())
-        .unwrap_or(0);
-    if major < 0 || minor < 0 || micro < 0 {
-        return None;
-    }
-    Some(PythonVersionInfo {
-        major,
-        minor,
-        micro,
-        releaselevel: "final".to_string(),
-        serial: 0,
-    })
-}
-
-pub(crate) fn default_sys_version_info() -> PythonVersionInfo {
-    env_target_python_info().unwrap_or_else(|| PythonVersionInfo {
-        major: 3,
-        minor: 12,
-        micro: 0,
-        releaselevel: "final".to_string(),
-        serial: 0,
-    })
+/// Immutable bootstrap projection of the compiler's canonical default. Reading
+/// this value never commits a target; only the compiled startup setter does.
+fn default_sys_version_info() -> &'static PythonVersionInfo {
+    static DEFAULT: std::sync::LazyLock<PythonVersionInfo> = std::sync::LazyLock::new(|| {
+        let (major, minor, micro, releaselevel, serial) =
+            molt_runtime_core::host_capabilities_generated::DEFAULT_TARGET_PYTHON_VERSION;
+        PythonVersionInfo {
+            major,
+            minor,
+            micro,
+            releaselevel: releaselevel.to_owned(),
+            serial,
+        }
+    });
+    &DEFAULT
 }
 
 fn push_i64_decimal(out: &mut String, value: i64) {
@@ -408,29 +358,19 @@ pub(crate) fn sys_hexversion_from_info(info: &PythonVersionInfo) -> i64 {
 }
 
 pub(crate) fn sys_api_version() -> i64 {
-    std::env::var("MOLT_SYS_API_VERSION")
-        .ok()
-        .and_then(|raw| raw.trim().parse::<i64>().ok())
-        .filter(|value| *value >= 0)
-        .unwrap_or(DEFAULT_SYS_API_VERSION)
+    DEFAULT_SYS_API_VERSION
 }
 
-pub(crate) fn sys_abiflags() -> String {
-    std::env::var("MOLT_SYS_ABIFLAGS").unwrap_or_default()
+pub(crate) fn sys_abiflags() -> &'static str {
+    ""
 }
 
-pub(crate) fn sys_implementation_name() -> String {
-    match std::env::var("MOLT_SYS_IMPLEMENTATION_NAME") {
-        Ok(raw) if !raw.trim().is_empty() => raw,
-        _ => "molt".to_string(),
-    }
+pub(crate) fn sys_implementation_name() -> &'static str {
+    "molt"
 }
 
 pub(crate) fn sys_cache_tag(name: &str, info: &PythonVersionInfo) -> String {
-    match std::env::var("MOLT_SYS_CACHE_TAG") {
-        Ok(raw) if !raw.is_empty() => raw,
-        _ => format!("{name}-{}{}", info.major, info.minor),
-    }
+    format!("{name}-{}{}", info.major, info.minor)
 }
 
 pub(crate) const DEFAULT_SYS_FLAGS_INT_MAX_STR_DIGITS: i64 = 0;
@@ -476,25 +416,28 @@ fn project_sys_version_info<T>(
     state: &RuntimeState,
     project: impl FnOnce(&PythonVersionInfo, bool) -> T,
 ) -> T {
-    let mut guard = state.sys_version_info.lock().unwrap();
-    let initialized = guard.is_none();
+    let guard = state.sys_version_info.lock().unwrap();
     project(
-        guard.get_or_insert_with(default_sys_version_info),
-        initialized,
+        guard.as_ref().unwrap_or_else(|| default_sys_version_info()),
+        guard.is_none(),
     )
 }
 
 pub(crate) fn current_sys_version_info(state: &RuntimeState) -> (PythonVersionInfo, bool) {
-    project_sys_version_info(state, |info, initialized| (info.clone(), initialized))
+    project_sys_version_info(state, |info, provisional| (info.clone(), provisional))
 }
 
 pub(crate) fn runtime_target_python_info(state: &RuntimeState) -> PythonVersionInfo {
     current_sys_version_info(state).0
 }
 
+pub(crate) fn runtime_target_version(_py: &PyToken<'_>) -> (i64, i64) {
+    project_sys_version_info(runtime_state(_py), |info, _| (info.major, info.minor))
+}
+
 pub(crate) fn runtime_target_minor(_py: &PyToken<'_>) -> i64 {
-    // Scalar policy checks (including dictionary allocation) must not clone
-    // the owned release-level string. Initialization still has one authority.
+    // Scalar policy checks (including dictionary allocation) neither clone
+    // the release-level string nor commit the provisional bootstrap target.
     project_sys_version_info(runtime_state(_py), |info, _| info.minor)
 }
 
@@ -1843,7 +1786,6 @@ pub extern "C" fn molt_sys_set_version_info(
     micro_bits: u64,
     releaselevel_bits: u64,
     serial_bits: u64,
-    version_bits: u64,
 ) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         // Compiler/runtime ABI note:
@@ -1904,53 +1846,50 @@ pub extern "C" fn molt_sys_set_version_info(
         };
         let releaselevel = String::from_utf8_lossy(release_bytes).into_owned();
 
-        let Some(version_ptr) = obj_from_bits(version_bits).as_ptr() else {
-            return raise_exception::<_>(_py, "TypeError", "sys.version must be str");
-        };
-        unsafe {
-            if object_type_id(version_ptr) != TYPE_ID_STRING {
-                return raise_exception::<_>(_py, "TypeError", "sys.version must be str");
-            }
+        if !matches!(
+            releaselevel.as_str(),
+            "alpha" | "beta" | "candidate" | "final"
+        ) {
+            return raise_exception::<_>(
+                _py,
+                "ValueError",
+                "sys.version_info releaselevel must be alpha, beta, candidate or final",
+            );
         }
-        let version_bytes = unsafe {
-            std::slice::from_raw_parts(string_bytes(version_ptr), string_len(version_ptr))
-        };
-        let mut version = String::from_utf8_lossy(version_bytes).into_owned();
-
-        let mut info = PythonVersionInfo {
+        let target = format!("{major}.{minor}");
+        if !molt_runtime_core::host_capabilities_generated::SUPPORTED_TARGET_PYTHON_VERSIONS
+            .contains(&target.as_str())
+        {
+            return raise_exception::<_>(
+                _py,
+                "ValueError",
+                &format!("unsupported compiled Python target {target}"),
+            );
+        }
+        let info = PythonVersionInfo {
             major,
             minor,
             micro,
             releaselevel,
             serial,
         };
-        let mut info_overridden_from_env = false;
-        if let Some(env_info) = env_target_python_info() {
-            if env_info != info {
-                info_overridden_from_env = true;
-                if trace_sys_version() {
-                    eprintln!(
-                        "molt sys version: overriding set payload with env {}.{}.{} {} {}",
-                        env_info.major,
-                        env_info.minor,
-                        env_info.micro,
-                        env_info.releaselevel,
-                        env_info.serial
-                    );
-                }
+        let state = runtime_state(_py);
+        let committed = state
+            .sys_version_info
+            .lock()
+            .unwrap()
+            .as_ref()
+            .map(|existing| existing == &info);
+        match committed {
+            Some(true) => return MoltObject::none().bits(),
+            Some(false) => {
+                return raise_exception::<_>(
+                    _py,
+                    "RuntimeError",
+                    "compiled Python target is already set",
+                );
             }
-            info = env_info;
-        }
-
-        let mut version_from_env = false;
-        if let Ok(env_version) = std::env::var("MOLT_SYS_VERSION")
-            && !env_version.is_empty()
-        {
-            version = env_version;
-            version_from_env = true;
-        }
-        if !version_from_env && (version.is_empty() || info_overridden_from_env) {
-            version = format_sys_version(&info);
+            None => {}
         }
         if trace_sys_version() {
             eprintln!(
@@ -1959,8 +1898,6 @@ pub extern "C" fn molt_sys_set_version_info(
             );
         }
 
-        let state = runtime_state(_py);
-        let default_info = default_sys_version_info();
         if let Some(namespace) = crate::builtins::modules::interpreter_sys_module(_py)
             && !crate::builtins::module_table::module_execution_owns_initializing_namespace(
                 _py, "sys", namespace,
@@ -1973,37 +1910,41 @@ pub extern "C" fn molt_sys_set_version_info(
                 "Python target cannot change after sys initialization",
             );
         }
-        // Stage version-gated wrapper and type namespaces before changing either sys
-        // fact. Allocation failure leaves the old version and descriptors intact.
+        // Stage version-gated wrapper and type namespaces before committing the
+        // target. Allocation failure leaves provisional state and descriptors intact.
         let Some(publication) =
             crate::builtins::attributes::prepare_wrapper_members(_py, info.major, info.minor)
         else {
             return MoltObject::none().bits();
         };
-        let conflict = {
-            let mut info_guard = state.sys_version_info.lock().unwrap();
-            let mut version_guard = state.sys_version.lock().unwrap();
-            if let Some(existing) = info_guard.as_ref()
-                && existing != &info
-                && existing != &default_info
-            {
-                Some("sys.version_info already set")
-            } else if let Some(existing) = version_guard.as_ref()
-                && existing != &version
-            {
-                Some("sys.version already set")
-            } else {
-                *info_guard = Some(info.clone());
-                *version_guard = Some(version.clone());
-                None
+        let published = {
+            let mut guard = state.sys_version_info.lock().unwrap();
+            match guard.as_ref() {
+                Some(existing) if existing == &info => Ok(false),
+                Some(_) => Err(()),
+                None => {
+                    *guard = Some(info);
+                    Ok(true)
+                }
             }
         };
-        if let Some(message) = conflict {
-            drop(publication);
-            return raise_exception::<_>(_py, "RuntimeError", message);
+        match published {
+            Ok(true) => {}
+            Ok(false) => {
+                drop(publication);
+                return MoltObject::none().bits();
+            }
+            Err(()) => {
+                drop(publication);
+                return raise_exception::<_>(
+                    _py,
+                    "RuntimeError",
+                    "compiled Python target is already set",
+                );
+            }
         }
         // Infallible publication advances all class versions before displaced
-        // values can run finalizers. Neither sys mutex is held across a release.
+        // values can run finalizers. The target mutex is not held across a release.
         publication.commit(_py);
         // Only an active initializer may refresh its unfinished public shapes.
         // Repeated host setup after initialization must not replace Python views
@@ -2035,11 +1976,11 @@ pub extern "C" fn molt_sys_set_version_info(
 pub extern "C" fn molt_sys_version_info() -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         let state = runtime_state(_py);
-        let (info, initialized) = current_sys_version_info(state);
+        let (info, provisional) = current_sys_version_info(state);
         if trace_sys_version() {
             eprintln!(
-                "molt sys version: get info {}.{}.{} {} {} init={}",
-                info.major, info.minor, info.micro, info.releaselevel, info.serial, initialized
+                "molt sys version: get info {}.{}.{} {} {} provisional={}",
+                info.major, info.minor, info.micro, info.releaselevel, info.serial, provisional
             );
         }
         alloc_sys_version_info_tuple(_py, &info).unwrap_or_else(|| MoltObject::none().bits())
@@ -2051,16 +1992,7 @@ pub extern "C" fn molt_sys_version() -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         let state = runtime_state(_py);
         let (info, _) = current_sys_version_info(state);
-        let version = {
-            let mut guard = state.sys_version.lock().unwrap();
-            if let Some(existing) = guard.as_ref() {
-                existing.clone()
-            } else {
-                let computed = format_sys_version(&info);
-                *guard = Some(computed.clone());
-                computed
-            }
-        };
+        let version = format_sys_version(&info);
         let ptr = alloc_string(_py, version.as_bytes());
         if ptr.is_null() {
             return MoltObject::none().bits();
@@ -2122,7 +2054,7 @@ pub extern "C" fn molt_sys_implementation_payload() -> u64 {
         let state = runtime_state(_py);
         let (info, _) = current_sys_version_info(state);
         let name = sys_implementation_name();
-        let cache_tag = sys_cache_tag(&name, &info);
+        let cache_tag = sys_cache_tag(name, &info);
         let hexversion_bits = MoltObject::from_int(sys_hexversion_from_info(&info)).bits();
 
         let name_ptr = alloc_string(_py, name.as_bytes());
@@ -3353,3 +3285,7 @@ pub extern "C" fn molt_int_from_bytes(
         unsafe { call_callable1(_py, class_bits, integer.bits()) }
     })
 }
+
+#[cfg(test)]
+#[path = "ops_sys_version_tests.rs"]
+mod version_tests;

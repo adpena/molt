@@ -1976,7 +1976,7 @@ pub(crate) enum WasmRuntimeImport {
     EmailQuoprimimeBodyEncode,
     EmailQuoprimimeDecode,
     OpcodePayload312Json,
-    TokenPayload312,
+    TokenPayload,
     OpcodeMetadataPayload314Json,
     OpcodeGetSpecializationStats,
     OpcodeStackEffect,

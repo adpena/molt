@@ -970,30 +970,19 @@ def cpython_oracle(monkeypatch) -> TargetPythonVersion:
     """Declare the stubbed CPython oracle's identity instead of probing one.
 
     run_cpython is stubbed, so no live interpreter answers for the oracle; the
-    real probe is a guarded subprocess whose result, failures included, is
-    cached for the whole process. The declared minor is supported but differs
+    real probe is a guarded subprocess whose successful result is cached for
+    the whole process. The declared minor is supported but differs
     from the interpreter running pytest, so a target derived from the host
     rather than the oracle cannot pass. Target admission itself stays real.
     """
     oracle = TargetPythonVersion(3, 12 if sys.version_info[:2] == (3, 13) else 13, 0)
     command = molt_diff._resolve_python_command(sys.executable)
 
-    def version(probed: tuple[str, ...], *, budget=None) -> tuple[int, int]:
+    def metadata(probed: tuple[str, ...], *, budget=None):
         assert probed == command, f"probed {probed}, not the oracle {command}"
-        return oracle.feature_version
+        return molt_diff._PythonOracleMetadata(oracle.feature_version, "oracle-python")
 
-    def sys_env(probed: tuple[str, ...], *, budget=None) -> dict[str, str]:
-        assert probed == command, f"probed {probed}, not the oracle {command}"
-        return {
-            "MOLT_PYTHON_VERSION": oracle.short,
-            "MOLT_SYS_VERSION_INFO": (
-                f"{oracle.major},{oracle.minor},{oracle.micro},"
-                f"{oracle.release},{oracle.serial}"
-            ),
-        }
-
-    monkeypatch.setattr(molt_diff, "_python_command_version", version)
-    monkeypatch.setattr(molt_diff, "_molt_sys_env_for_python_command", sys_env)
+    monkeypatch.setattr(molt_diff, "_python_command_metadata", metadata)
     return oracle
 
 
@@ -1072,11 +1061,13 @@ def test_all_backends_receive_one_stdlib_profile(
     assert all(row["stdlib_profile"] == "full" for row in backend_rows)
 
 
-def test_native_and_wasm_receive_one_explicit_untrusted_test_context(
+@pytest.mark.parametrize("inherited_target_overrides", [False, True])
+def test_all_backends_receive_one_explicit_untrusted_test_context(
     fake_test_file: Path,
     install_fake_registry,
     cpython_oracle: TargetPythonVersion,
     monkeypatch: pytest.MonkeyPatch,
+    inherited_target_overrides: bool,
 ) -> None:
     fake_test_file.write_text(
         "# MOLT_ENV: MOLT_CAPABILITIES=net\nprint(42)\n",
@@ -1084,30 +1075,53 @@ def test_native_and_wasm_receive_one_explicit_untrusted_test_context(
     )
     monkeypatch.setenv("MOLT_CAPABILITY_TIER", "full")
     monkeypatch.setenv("MOLT_CAPABILITIES", "poison.inherited")
+    retired_overrides = {
+        "MOLT_PYTHON_VERSION": "9.99",
+        "MOLT_SYS_VERSION_INFO": "not,a,version",
+        "MOLT_SYS_VERSION": "ambient version",
+        "MOLT_SYS_API_VERSION": "9999",
+        "MOLT_SYS_ABIFLAGS": "ambient flags",
+        "MOLT_SYS_IMPLEMENTATION_NAME": "ambient implementation",
+        "MOLT_SYS_CACHE_TAG": "ambient tag",
+    }
+    for name, value in retired_overrides.items():
+        if inherited_target_overrides:
+            monkeypatch.setenv(name, value)
+        else:
+            monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv("PYTHONOPTIMIZE", "2")
+    targets = ("native", "wasm", "llvm", "luau")
     registry, native_contexts = install_fake_registry(
         {
-            "native": compat_backends.BackendResult("42\n", "", 0),
-            "wasm": compat_backends.BackendResult("42\n", "", 0),
+            target: compat_backends.BackendResult("42\n", "", 0)
+            for target in targets
         }
     )
 
     status = molt_diff.diff_test(
         str(fake_test_file),
-        targets=("native", "wasm"),
+        targets=targets,
         target_python=cpython_oracle.short,
     )["resolved_status"]
 
     assert status == "pass"
-    wasm_contexts = registry["wasm"].contexts
-    assert len(native_contexts) == len(wasm_contexts) == 1
-    assert native_contexts[0] == wasm_contexts[0]
-    assert native_contexts[0].target_python == cpython_oracle
-    assert native_contexts[0].environment["MOLT_PYTHON_VERSION"] == (
-        cpython_oracle.short
+    assert len(native_contexts) == 1
+    context = native_contexts[0]
+    for target in targets[1:]:
+        assert registry[target].contexts == [context]
+    assert context.target_python == cpython_oracle
+    assert context.environment["MOLT_SYS_EXECUTABLE"] == "oracle-python"
+    assert context.environment["PYTHONOPTIMIZE"] == "2"
+    assert {
+        name: context.environment[name]
+        for name in retired_overrides
+        if name in context.environment
+    } == (
+        retired_overrides if inherited_target_overrides else {}
     )
-    assert native_contexts[0].environment["MOLT_CAPABILITY_TIER"] == "none"
-    assert native_contexts[0].capabilities == "net"
-    assert "poison.inherited" not in native_contexts[0].capabilities
+    assert context.environment["MOLT_CAPABILITY_TIER"] == "none"
+    assert context.capabilities == "net"
+    assert "poison.inherited" not in context.capabilities
 
 
 def test_target_mismatching_the_oracle_fails_before_any_execution(

@@ -22,6 +22,7 @@ pub mod codec_registry;
 pub mod html;
 pub mod punycode;
 pub mod textwrap;
+pub mod token_metadata_generated;
 pub mod tokenize;
 #[cfg(feature = "stdlib_text")]
 pub mod unicodedata_mod;

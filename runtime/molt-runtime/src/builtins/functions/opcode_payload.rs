@@ -3,12 +3,10 @@
 // no longer share the function-object runtime compilation unit.
 
 use super::*;
-use serde_json::Value as JsonValue;
 
 const OPCODE_PAYLOAD_312_JSON: &str = include_str!("../../intrinsics/data/opcode_payload_312.json");
 const OPCODE_METADATA_PAYLOAD_314_JSON: &str =
     include_str!("../../intrinsics/data/opcode_metadata_payload_314.json");
-const TOKEN_PAYLOAD_312_JSON: &str = include_str!("../../intrinsics/data/token_payload_312.json");
 
 fn alloc_runtime_payload_str(_py: &crate::PyToken<'_>, value: &str) -> u64 {
     let ptr = crate::alloc_string(_py, value.as_bytes());
@@ -333,129 +331,10 @@ fn opcode_stack_effect_core_312(opcode: i64, oparg: i64) -> Option<i64> {
     pushed.checked_sub(popped)
 }
 
-fn token_payload_json_value_to_bits(
-    _py: &crate::PyToken<'_>,
-    value: &JsonValue,
-) -> Result<u64, u64> {
-    match value {
-        JsonValue::Null => Ok(MoltObject::none().bits()),
-        JsonValue::Bool(flag) => Ok(MoltObject::from_bool(*flag).bits()),
-        JsonValue::Number(number) => {
-            if let Some(integer) = number.as_i64() {
-                return Ok(MoltObject::from_int(integer).bits());
-            }
-            if let Some(integer) = number.as_u64() {
-                let Ok(integer_i64) = i64::try_from(integer) else {
-                    return Err(raise_exception::<u64>(
-                        _py,
-                        "RuntimeError",
-                        "token payload number is out of range",
-                    ));
-                };
-                return Ok(MoltObject::from_int(integer_i64).bits());
-            }
-            if let Some(float_value) = number.as_f64() {
-                return Ok(MoltObject::from_float(float_value).bits());
-            }
-            Err(raise_exception::<u64>(
-                _py,
-                "RuntimeError",
-                "token payload number is invalid",
-            ))
-        }
-        JsonValue::String(text) => {
-            let ptr = alloc_string(_py, text.as_bytes());
-            if ptr.is_null() {
-                Err(MoltObject::none().bits())
-            } else {
-                Ok(MoltObject::from_ptr(ptr).bits())
-            }
-        }
-        JsonValue::Array(items) => {
-            let mut item_bits: Vec<u64> = Vec::with_capacity(items.len());
-            for item in items {
-                let bits = match token_payload_json_value_to_bits(_py, item) {
-                    Ok(bits) => bits,
-                    Err(err_bits) => {
-                        for owned in item_bits {
-                            dec_ref_bits(_py, owned);
-                        }
-                        return Err(err_bits);
-                    }
-                };
-                item_bits.push(bits);
-            }
-            let list_ptr = alloc_list_with_capacity(_py, item_bits.as_slice(), item_bits.len());
-            for bits in item_bits {
-                dec_ref_bits(_py, bits);
-            }
-            if list_ptr.is_null() {
-                Err(MoltObject::none().bits())
-            } else {
-                Ok(MoltObject::from_ptr(list_ptr).bits())
-            }
-        }
-        JsonValue::Object(entries) => {
-            let mut pairs: Vec<u64> = Vec::with_capacity(entries.len() * 2);
-            let mut owned_bits: Vec<u64> = Vec::with_capacity(entries.len() * 2);
-            for (key, item) in entries {
-                let key_ptr = alloc_string(_py, key.as_bytes());
-                if key_ptr.is_null() {
-                    for owned in owned_bits {
-                        dec_ref_bits(_py, owned);
-                    }
-                    return Err(MoltObject::none().bits());
-                }
-                let key_bits = MoltObject::from_ptr(key_ptr).bits();
-                let value_bits = match token_payload_json_value_to_bits(_py, item) {
-                    Ok(bits) => bits,
-                    Err(err_bits) => {
-                        dec_ref_bits(_py, key_bits);
-                        for owned in owned_bits {
-                            dec_ref_bits(_py, owned);
-                        }
-                        return Err(err_bits);
-                    }
-                };
-                pairs.push(key_bits);
-                pairs.push(value_bits);
-                owned_bits.push(key_bits);
-                owned_bits.push(value_bits);
-            }
-            let dict_ptr = alloc_dict_with_pairs(_py, &pairs);
-            for bits in owned_bits {
-                dec_ref_bits(_py, bits);
-            }
-            if dict_ptr.is_null() {
-                Err(MoltObject::none().bits())
-            } else {
-                Ok(MoltObject::from_ptr(dict_ptr).bits())
-            }
-        }
-    }
-}
-
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_opcode_payload_312_json() -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         alloc_runtime_payload_str(_py, OPCODE_PAYLOAD_312_JSON)
-    })
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_token_payload_312() -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
-        let parsed: JsonValue = match serde_json::from_str(TOKEN_PAYLOAD_312_JSON) {
-            Ok(value) => value,
-            Err(err) => {
-                let msg = format!("invalid token payload json: {err}");
-                return raise_exception::<u64>(_py, "RuntimeError", msg.as_str());
-            }
-        };
-        match token_payload_json_value_to_bits(_py, &parsed) {
-            Ok(bits) => bits,
-            Err(bits) => bits,
-        }
     })
 }
 

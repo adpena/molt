@@ -50,11 +50,12 @@ this artifact). Unbounded/raw-binary execution still goes through `safe_run.py`.
     kwarg-binding layer; `molt_file_reconfigure` (io.rs:5678) only receives
     already-bound args. The fix is in the right place.
 
-  > Knob note for future agents: molt's **default target is 3.12**.
-  > `sys.version_info` only flips via `--python-version=N` (or the project
-  > config / `MOLT_TARGET_PYTHON_*` env that `env_target_python_info`
-  > [ops_sys.rs:304] reads). `MOLT_PYTHON_VERSION` is **not** that knob — a
-  > version-gated parity message will look "broken" if tested with it.
+  > Current target authority: `--python-version=N` and the project build
+  > configuration select the compiled `TargetPythonVersion`. Runtime startup
+  > freezes that target before imports; version-gated behavior and target-owned
+  > `sys` metadata use the same value. The former `MOLT_PYTHON_VERSION` and
+  > `MOLT_SYS_*` version/implementation overrides have been retired. Differential
+  > runs derive the explicit build target from the selected CPython oracle.
 
 ---
 

@@ -69,7 +69,7 @@ fn lune_oracle_checked_singletons_preserve_repr_alias_identity_and_versioned_tru
     };
     // The version setter is private to its provider unless a guest uses it.
     // Exercise that emitted consumer instead of reaching into private storage.
-    let version_params: Vec<String> = ["major", "minor", "micro", "level", "serial", "version"]
+    let version_params: Vec<String> = ["major", "minor", "micro", "level", "serial"]
         .into_iter()
         .map(str::to_string)
         .collect();
@@ -91,11 +91,15 @@ fn lune_oracle_checked_singletons_preserve_repr_alias_identity_and_versioned_tru
         ],
         ..FunctionIR::default()
     });
-    let mut source = LuauBackend::new()
-        .compile_checked(&ir)
-        .expect("neutral singleton and alias wires");
-    source.push_str(
-        r#"
+    for minor in [12, 13, 14] {
+        let mut source = LuauBackend::new()
+            .compile_checked(&ir)
+            .expect("neutral singleton and alias wires");
+        source.push_str(&format!(
+            "\nset_singleton_target_version(3, {minor}, 0, \"final\", 0)\n"
+        ));
+        source.push_str(
+            r#"
 assert(molt_str(molt_not_implemented) == "NotImplemented")
 assert(molt_repr(molt_not_implemented) == "NotImplemented")
 assert(molt_str(molt_ellipsis) == "Ellipsis")
@@ -103,27 +107,29 @@ assert(molt_repr(molt_ellipsis) == "Ellipsis")
 assert(molt_not_implemented ~= molt_ellipsis)
 assert(molt_equal(molt_not_implemented, molt_not_implemented))
 assert(not molt_equal(molt_not_implemented, molt_ellipsis))
-for _, minor in {12, 13} do
-    set_singleton_target_version(3, minor, 0, "final", 0, nil)
-    assert(molt_bool(molt_not_implemented))
-    assert(molt_bool(molt_ellipsis))
-end
-set_singleton_target_version(3, 14, 0, "final", 0, nil)
-local ok, err = pcall(function() return molt_bool(molt_not_implemented) end)
+assert(molt_bool(molt_ellipsis))
+"#,
+        );
+        if minor < 14 {
+            source.push_str("assert(molt_bool(molt_not_implemented))\n");
+        } else {
+            source.push_str(
+                r#"local ok, err = pcall(function() return molt_bool(molt_not_implemented) end)
 assert(not ok and err.__type == "TypeError")
 assert(err.__msg == "NotImplemented should not be used in a boolean context")
-assert(molt_bool(molt_ellipsis))
-print("singleton values preserved")
 "#,
-    );
-    execute_lune_oracle(
-        "singleton_values",
-        &source,
-        LuneStdout::Contains(&[
-            "NotImplemented NotImplemented Ellipsis True",
-            "singleton values preserved",
-        ]),
-    );
+            );
+        }
+        source.push_str("print(\"singleton values preserved\")\n");
+        execute_lune_oracle(
+            &format!("singleton_values_3{minor}"),
+            &source,
+            LuneStdout::Contains(&[
+                "NotImplemented NotImplemented Ellipsis True",
+                "singleton values preserved",
+            ]),
+        );
+    }
 }
 
 #[test]
