@@ -14,9 +14,9 @@ import sys
 from dataclasses import dataclass
 from pathlib import Path
 
-_ROOT = Path(__file__).resolve().parents[1]
-if str(_ROOT) not in sys.path:
-    sys.path.insert(0, str(_ROOT))
+_REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
 
 from tools.import_file import bind_repository_imports  # noqa: E402
 
@@ -26,7 +26,7 @@ from molt.target_python import SUPPORTED_TARGET_PYTHON_SHORT_VERSIONS  # noqa: E
 from tools import gen_stdlib_module_union as sources  # noqa: E402
 from tools.generator_io import generator_main, rustfmt_source  # noqa: E402
 
-OUTPUT = _ROOT / "runtime/molt-stdlib-text/src/token_metadata_generated.rs"
+OUTPUT = _REPO_ROOT / "runtime/molt-stdlib-text/src/token_metadata_generated.rs"
 _NAME = re.compile(r"[A-Z][A-Z0-9_]*")
 
 
