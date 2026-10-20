@@ -897,6 +897,9 @@ def run_gate(cmd: str | tuple[str, ...], repo: Path, env: ProcessEnvironment) ->
                         f"virtualenv command {head!r} not executable under "
                         f"{venv_exec.venv_bin_dir(venv)}; use the project Python alias"
                     )
+                if not isinstance(cmd, str):
+                    # Windows direct spawn does not resolve Python using child PATH.
+                    cmd = (os.fspath(executable), *cmd[1:])
             env = venv_exec.venv_env(venv=venv, env=env).updated(
                 {"MOLT_VENV": str(venv)}
             )

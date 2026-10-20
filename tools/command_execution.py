@@ -339,8 +339,10 @@ class CommandExecutor:
             command,
             env,
         )
+        from molt.process_spawn import native_popen_command
+
         return subprocess.Popen(
-            command,
+            native_popen_command(command),
             cwd=cwd,
             env=None if env is None else env.child_block(),
             stdin=stdin,

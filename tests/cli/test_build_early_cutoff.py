@@ -155,6 +155,12 @@ def test_a_guarded_child_leaves_the_recorded_build_current(
     # generation when the child ends; none of it is an input of the binary.
     from molt import process_guard
 
+    # This oracle concerns guard scratch, not prefixed-bytecode admission.
+    # Windows cache prefixes discard the source drive, which intentionally
+    # prevents record reuse (covered by test_build_record). Keep lazy guard
+    # imports unambiguous without writing bytecode into the source checkout.
+    monkeypatch.setattr(sys, "pycache_prefix", None)
+    monkeypatch.setattr(sys, "dont_write_bytecode", True)
     monkeypatch.setattr(build_record, "_BUILDS_ENTERED", 0)
     _judge_changes_during_the_build(monkeypatch)
     calls: list[str] = []

@@ -140,8 +140,8 @@ def _run_live_gate(
     if not isinstance(cmd, str):
         argv = list(cmd)
     elif os.name == "nt":
-        shell = os.environ.get("COMSPEC") or "cmd.exe"
-        argv = [shell, "/d", "/c", cmd]
+        shell = env.get("COMSPEC") or "cmd.exe"
+        argv = [shell, "/d", "/s", "/c", cmd]
     else:
         argv = ["/bin/sh", "-c", cmd]
     proc = harness_memory_guard.guarded_completed_process(

@@ -16,6 +16,7 @@ from .cargo_execution_policy import cargo_subprocess_environment
 from .process_environment import NameRule as NameRule
 from .process_environment import ProcessEnvironment, ProcessEnvironmentBuilder
 from .source_root import compiler_source_root
+from .process_spawn import native_popen_command
 
 
 CLI_MEMORY_GUARD_PREFIX = "MOLT_CLI"
@@ -233,7 +234,7 @@ def run_completed_command(
             DEFAULT_UNGUARDED_PROBE_TIMEOUT_SECONDS if timeout is None else timeout
         )
         return subprocess.run(
-            command,
+            native_popen_command(command),
             env=env.child_block() if env is not None else None,
             cwd=cwd,
             input=input,
