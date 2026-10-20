@@ -3753,26 +3753,22 @@ def test_guard_exports_its_tree_cap_as_the_memory_slice() -> None:
 def test_available_memory_bytes_reads_the_host_capacity_authority(
     monkeypatch,
 ) -> None:
-    # The guard reads the one host probe; on macOS that is one Mach call,
-    # never a vm_stat subprocess.
-    install_module_os_view(monkeypatch, host_capacity, name="posix")
-    install_module_view(monkeypatch, "sys", sys, host_capacity, platform="darwin")
+    # Host-specific page accounting belongs to test_host_capacity. This
+    # consumer forwards the exact request and reads the available field.
+    requests = []
+
+    def capacity(environ=None):
+        requests.append(environ)
+        return host_capacity.MemoryCapacity(91 * 4096, 17 * 4096, 5 * 4096)
+
     monkeypatch.setattr(
         host_capacity,
-        "darwin_vm_pages",
-        lambda: (
-            4096,
-            {
-                "Pages free": 2,
-                "Pages inactive": 3,
-                "Pages speculative": 5,
-                "Pages purgeable": 7,
-                "Pages active": 11,
-            },
-        ),
+        "memory_capacity",
+        current_thread_only(capacity, host_capacity.memory_capacity),
     )
-
-    assert memory_guard.available_memory_bytes(environ={}) == 17 * 4096
+    environment = {}
+    assert memory_guard.available_memory_bytes(environ=environment) == 17 * 4096
+    assert len(requests) == 1 and requests[0] is environment
 
 
 def test_resolve_memory_limits_refreshes_dynamic_caps() -> None:
