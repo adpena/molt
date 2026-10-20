@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from molt.process_environment import ProcessEnvironment
+from molt.compilation_target import TargetKind
 
 import json
 import hashlib
@@ -93,12 +94,16 @@ def test_wrapper_converts_compiler_identity_rejection(
     entry = SimpleNamespace(
         image_scope="project", target_python="3.12", entry_source="source"
     )
+
+    def resolve_entry(*, request, **kw):
+        assert request.target is TargetKind.NATIVE
+        return entry, None
+
     monkeypatch.setattr(
-        wrapper_build._build_inputs,
-        "_resolve_wrapper_build_entry",
-        lambda **kw: (entry, None),
+        wrapper_build._build_inputs, "_resolve_request_entry", resolve_entry
     )
     calls = 0
+    launches = []
 
     def reject(**kw):
         nonlocal calls
@@ -111,11 +116,12 @@ def test_wrapper_converts_compiler_identity_rejection(
     monkeypatch.setattr(
         wrapper_build, "_read_wrapper_build_cache_contract", lambda **kw: None
     )
-    monkeypatch.setattr(
-        wrapper_build,
-        "_run_completed_command",
-        lambda command, **kw: subprocess.CompletedProcess(command, 0, "{}", ""),
-    )
+
+    def launch(command, **kw):
+        launches.append(command)
+        return subprocess.CompletedProcess(command, 0, "{}", "")
+
+    monkeypatch.setattr(wrapper_build, "_run_completed_command", launch)
     monkeypatch.setattr(
         wrapper_build,
         "_parse_wrapper_build_contract_payload",
@@ -133,6 +139,8 @@ def test_wrapper_converts_compiler_identity_rejection(
         resolved_build_entry=entry,
     )
     assert result[0] is None and result[2] is not None
+    assert calls == (1 if stage == "before" else 2)
+    assert len(launches) == (0 if stage == "before" else 1)
     output = capsys.readouterr().out
     assert "reachable dependency is missing" in output
     assert "Traceback" not in output
