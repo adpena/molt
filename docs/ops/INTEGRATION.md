@@ -69,6 +69,14 @@ fetch  →  rebase  →  verify-commits  →  markers  →  gates  →  push  �
    fabricate an unavailable image path. Relative interpreter aliases preserve the
    selected entrypoint and canonicalize against the declared probe directory
    without changing the validated executable image.
+   Declared source, metadata and compilation gates run before the selected
+   Python consumer cohorts. A stable linear partition preserves each phase's
+   prior order, exact commands, prerequisite unions and de-duplication. This
+   uses the existing gate/cohort declarations and replaces the Clippy-name
+   special case. Already-required Cargo controls also move before consumers;
+   no gate, build, scheduler or result cache is added. A stale methodology lock
+   therefore refuses before a multi-minute Python cohort. Review measurement
+   changes and update their existing lock before freezing a candidate.
 6. **push** — `git push origin <captured-commit>:refs/heads/main`. Foreign Git
    hooks remain active and both rejection streams are retained. Git identity
    reads ignore local replacement refs. The push command's **exit code is

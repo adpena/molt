@@ -273,14 +273,39 @@ def _posix_custody_boundary(monkeypatch: pytest.MonkeyPatch) -> types.SimpleName
 def test_posix_custody_boundary_keeps_native_dispatch_for_other_consumers(
     monkeypatch: pytest.MonkeyPatch, host_name: str
 ) -> None:
-    install_module_os_view(monkeypatch, process_model, name=host_name)
-    native_predicate = process_model.is_windows_process_model
+    from tests.process_guard_common import ModuleView
+
+    native_model = process_model
+    native_os = native_model.os
+    native_predicate = native_model.is_windows_process_model
+    native_result = native_predicate()
     real_os_name = os.name
+    # Only this test module's helper sees the synthetic baseline. Its
+    # non-owner-thread dispatch still forwards to the real host predicate.
+    monkeypatch.setitem(
+        globals(),
+        "process_model",
+        ModuleView(
+            native_model,
+            is_windows_process_model=current_thread_only(
+                lambda: host_name == "nt", native_predicate
+            ),
+        ),
+    )
+    assert process_model.is_windows_process_model() is (host_name == "nt")
+    # Seed the callers too: omitting the helper's dispatch override must fail
+    # the synthetic Windows case even when this test runs on a POSIX host.
+    for caller in (memory_guard, process_custody):
+        monkeypatch.setattr(caller, "_process_model", process_model)
     custody_signal = _posix_custody_boundary(monkeypatch)
-    seen: list[bool] = []
+    seen: list[tuple[bool, bool, bool]] = []
     worker = threading.Thread(
         target=lambda: seen.append(
-            process_custody._process_model.is_windows_process_model()
+            (
+                process_custody._process_model.is_windows_process_model(),
+                memory_guard._process_model.is_windows_process_model(),
+                native_model.is_windows_process_model(),
+            )
         )
     )
     worker.start()
@@ -289,9 +314,12 @@ def test_posix_custody_boundary_keeps_native_dispatch_for_other_consumers(
     assert not worker.is_alive()
     assert not process_custody._process_model.is_windows_process_model()
     assert not memory_guard._process_model.is_windows_process_model()
-    assert process_model.is_windows_process_model is native_predicate
-    assert native_predicate() is (host_name == "nt")
-    assert seen == [host_name == "nt"]
+    assert native_model.is_windows_process_model is native_predicate
+    assert native_predicate() is native_result
+    assert native_result is (real_os_name == "nt")
+    assert native_model.os is native_os
+    assert native_os.name == real_os_name
+    assert seen == [(native_result, native_result, native_result)]
     assert os.name == real_os_name
     assert custody_signal.Signals(9).name == "SIGKILL"
 

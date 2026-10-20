@@ -561,10 +561,11 @@ toolchains = ["python"]
     gates, matched = cfg.select(["src/a/x.py", "src/b/y.py"])
     gates = [gate.command for gate in gates]
     assert [rule.name for rule in matched] == ["first", "second"]
-    # One pytest run at the first contributing rule's place, each target once.
+    # Explicit gates precede the merged consumer run, each target once.
     assert gates == [
         "python tools/check_a.py",
         "python tools/check_first.py",
+        "cargo test -p b",
         (
             "python",
             "-m",
@@ -577,7 +578,6 @@ toolchains = ["python"]
             "tests/test_shared.py",
             "tests/test_b.py::test_one",
         ),
-        "cargo test -p b",
     ]
 
 
@@ -1038,7 +1038,12 @@ def test_committed_source_checks_precede_complete_native_build_selection(drv):
     # Clippy fails a lint after the source checks and before any build.
     assert max(gates.index(gate) for gate in source_gates) < gates.index(lint_gate)
     assert gates.index(lint_gate) < min(gates.index(gate) for gate in build_gates)
-    assert gates[-len(build_gates) :] == build_gates
+    assert [gate for gate in gates if gate in build_gates] == build_gates
+    consumers = [gate for gate in gates if isinstance(gate, tuple)]
+    assert consumers
+    assert max(gates.index(gate) for gate in build_gates) < min(
+        gates.index(gate) for gate in consumers
+    )
     assert len(gates) == len(set(gates))
 
 
@@ -3598,6 +3603,16 @@ globs = ["src/**"]
 gates = ["sdk-command"]
 toolchains = ["sdk"]
 [[rule]]
+name = "compile-controls"
+globs = ["src/**"]
+gates = ["cargo test -p tiny", "python tools/check_changed_clippy.py"]
+toolchains = ["rust"]
+[[rule]]
+name = "late-metadata"
+globs = ["src/**"]
+gates = ["python tools/perf_methodology.py --check", "shared"]
+toolchains = ["python"]
+[[rule]]
 name = "unmatched"
 globs = ["other/**"]
 gates = ["explicit-extra"]
@@ -3607,16 +3622,39 @@ toolchains = ["extra"]
         "tool custody fixture",
         root=tmp_path,
     )
-    gates, _ = cfg.select(["src/a.py"], extra=["explicit-extra", "shared"])
-    assert [gate.command for gate in gates if isinstance(gate.command, str)] == [
+    gates, matched = cfg.select(["src/a.py"], extra=["explicit-extra", "shared"])
+    prefix = (
+        "python",
+        "-m",
+        "pytest",
+        "-q",
+        "-n",
+        "auto",
+        "--molt-worker-memory-gb=2.5",
+    )
+    assert [gate.command for gate in gates] == [
         "shared",
         "sdk-command",
+        "cargo test -p tiny",
+        "python tools/check_changed_clippy.py",
+        "python tools/perf_methodology.py --check",
         "explicit-extra",
+        (*prefix, "tests/test_a.py", "tests/test_b.py"),
+        (*prefix, "-k", "chosen", "tests/test_b.py"),
+    ]
+    assert len(gates) == len({gate.command for gate in gates}) == 8
+    assert [rule.name for rule in matched] == [
+        "first",
+        "second",
+        "sdk",
+        "compile-controls",
+        "late-metadata",
     ]
     assert next(gate.toolchains for gate in gates if gate.command == "shared") == (
         "base",
         "first",
         "second",
+        "python",
     )
     assert next(
         gate.toolchains for gate in gates if gate.command == "explicit-extra"
