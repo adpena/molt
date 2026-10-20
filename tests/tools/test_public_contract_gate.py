@@ -169,3 +169,40 @@ def test_positional_requiredness_is_derived_from_nargs_not_argparse_version() ->
     assert pcg._action_record(rest)["required"] is False
     assert pcg._action_record(some)["required"] is True
     assert pcg._action_record(flag)["required"] is True
+
+
+@pytest.mark.parametrize(
+    "flags,expected",
+    [
+        ([], (False, "auto")),
+        (["--precompile"], (True, "auto")),
+        (["--platform=cloudflare"], (False, "pure")),
+        (["--platform=cloudflare", "--wasm-profile=auto"], (False, "auto")),
+        (
+            ["--platform=cloudflare", "--precompile", "--wasm-profile=full"],
+            (True, "full"),
+        ),
+    ],
+)
+def test_parser_omission_markers_preserve_effective_public_defaults(
+    monkeypatch, flags, expected
+):
+    from molt.cli.build_request_resolution import resolve_build_request
+
+    args = pcg._build_entrypoint_parser().parse_args(["build", "app.py", *flags])
+    if "--precompile" not in flags:
+        assert args.precompile is None
+    if not any(flag.startswith("--wasm-profile=") for flag in flags):
+        assert args.wasm_profile is None
+    # The actual parsed request, not a different process invocation, owns presence.
+    monkeypatch.setattr(
+        "sys.argv", ["molt", "build", "--precompile", "--wasm-profile=full"]
+    )
+    request = resolve_build_request(args, build_cfg={}, cfg_capabilities=None, env={})
+    assert (request.precompile, request.wasm_profile) == expected
+    surface = pcg.cli_surface()["build"]["arguments"]
+    assert {
+        row["dest"]: row["default"]
+        for row in surface
+        if row["dest"] in {"precompile", "wasm_profile"}
+    } == {"precompile": None, "wasm_profile": None}

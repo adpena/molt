@@ -15,6 +15,15 @@ this page explains them and never restates their content.
   refuses an untiered command, so no command can ship without a stability
   decision. The snapshot records each command's full argparse surface (flags,
   destinations, arity, choices, scalar defaults, required-ness).
+  Scalar defaults here are parser values before configuration resolution. A
+  `null` marks an omitted option when the request resolver must distinguish
+  omission from an explicitly supplied value; it does not promise a null
+  effective compilation setting. The shared build request resolver owns those
+  effective settings. For example, omitted `--precompile` and `--wasm-profile`
+  resolve to `false` and `auto` without a deployment profile, while an explicit
+  `--wasm-profile auto` overrides a deployment profile's `pure` default. The
+  snapshot records their omission markers and the owning contract tests verify
+  these effective defaults and explicit-option precedence together.
 - **Target Python range.** The supported target versions are generated from
   `src/molt/target_python.py` into `molt.release_matrix` and snapshotted.
 - **Release targets.** Operating system, architecture, Rust target, and archive
