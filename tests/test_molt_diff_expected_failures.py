@@ -822,6 +822,44 @@ def test_diff_batch_compile_server_env_flags(monkeypatch) -> None:
     assert module._diff_batch_compile_server_enabled() is True
 
 
+@pytest.mark.parametrize(
+    "platform,os_name", [("darwin", "posix"), ("linux", "posix"), ("win32", "nt")]
+)
+@pytest.mark.parametrize(
+    "diff,compiler,expected",
+    [
+        (None, None, None),
+        (None, "0", False),
+        (None, "1", None),
+        ("0", "1", False),
+        ("1", "0", True),
+        ("invalid", None, None),
+    ],
+)
+def test_diff_daemon_uses_supported_compiler_default_and_explicit_override(
+    monkeypatch, platform, os_name, diff, compiler, expected
+) -> None:
+    from molt.cli import backend_daemon_config
+
+    module = _load_diff_module()
+    for key, value in (
+        ("MOLT_DIFF_BACKEND_DAEMON", diff),
+        ("MOLT_BACKEND_DAEMON", compiler),
+    ):
+        if value is None:
+            monkeypatch.delenv(key, raising=False)
+        else:
+            monkeypatch.setenv(key, value)
+    monkeypatch.setattr(module, "sys", SimpleNamespace(platform=platform))
+    monkeypatch.setattr(
+        backend_daemon_config, "os", SimpleNamespace(name=os_name, environ=os.environ)
+    )
+
+    assert module._diff_backend_daemon_default() is (
+        os_name == "posix" if expected is None else expected
+    )
+
+
 def test_diff_batch_compile_server_timeout_env(monkeypatch) -> None:
     module = _load_diff_module()
     monkeypatch.delenv("MOLT_DIFF_BATCH_COMPILE_SERVER_TIMEOUT_SEC", raising=False)

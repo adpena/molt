@@ -17,6 +17,14 @@ the same way. Two concurrent compiles would read each other's values.
 
 ## Design
 
+Differential runs use the compiler's platform policy: the daemon is enabled on
+POSIX, including macOS, and unavailable on Windows. `MOLT_BACKEND_DAEMON` selects
+the compiler mode; `MOLT_DIFF_BACKEND_DAEMON` can override it for a differential
+run. The harness has no separate platform workaround or automatic retry in
+one-shot mode. Mach-O validation and actual guest execution retain their first
+failure instead of treating daemon selection as a binary-validity check. This
+is development/compiler work and adds no work to emitted programs.
+
 ### Request-scoped settings
 
 - `src/molt/backend_environment.json` is the one membership authority. `runtime/molt-ir/build.rs`

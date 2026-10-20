@@ -2971,7 +2971,7 @@ _REGISTRY_JSON = r"""{
       "name": "MOLT_DIFF_BACKEND_DAEMON",
       "output_neutral": false,
       "owner": "tests/molt_diff.py",
-      "summary": "Forces backend daemon mode on (1, true, yes, on) or off (0, false, no, off) for differential runs; unset falls back to MOLT_BACKEND_DAEMON, then to off on macOS and on elsewhere.",
+      "summary": "Forces backend daemon mode on (1, true, yes, on) or off (0, false, no, off) for differential runs; unset uses the compiler's MOLT_BACKEND_DAEMON policy: enabled on POSIX and unavailable on Windows.",
       "values": []
     },
     {
