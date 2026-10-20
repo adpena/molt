@@ -14,8 +14,11 @@ and warm timings, native+LLVM backend parity, repeat-CI classification,
 quiescence, provenance, and stale-tree status. It is the only lane allowed to
 publish `authoritative=true`.
 
-Methodology v4 includes the declared host-tool names and their classifier in
-the content lock. Both POSIX discovery and Windows classification include the
+Methodology v5 includes environment-name semantics and the complete typed
+invocation-environment migration in its content lock. These can change sample
+execution or selection and therefore start a new comparability class; existing
+v4 boards remain historical. The v4 declaration of host-tool names and their
+classifier remains in the lock. Both POSIX discovery and Windows classification include the
 standalone WASM inspector when determining quiescence. This can change authority
 decisions, so earlier methodology versions remain separate comparison classes.
 

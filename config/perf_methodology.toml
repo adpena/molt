@@ -4,8 +4,8 @@
 # files; when they change, run `python3 tools/perf_methodology.py --bump` if the
 # change can move a number or a verdict, else `--relock`.
 schema = "molt-perf-methodology-v1"
-version = 4
-content_sha256 = "7025ca92e2e82b4585a38cd392bbbf41a495a8bb36f6e4075de908a541d22685"
+version = 5
+content_sha256 = "5259fca1e942c35478f650b8cd7030a0d2f0fdc86f43e7ac3ad5a69165380146"
 
 [[methodology]]
 path = "tools/safe_run.py"
@@ -58,6 +58,10 @@ role = "binds historical comparisons to execution engine bytes and version"
 [[methodology]]
 path = "src/molt/node_runtime.py"
 role = "admits the selected WASM execution engine and fences sample invocations"
+
+[[methodology]]
+path = "src/molt/process_environment.py"
+role = "preserves environment-name semantics in measured invocation environments"
 
 [[methodology]]
 path = "src/molt/metric_ratios.py"

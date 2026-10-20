@@ -639,35 +639,17 @@ class GateConfig:
             add(command, tuple(pytest_tools))
             if len(selected) != size:
                 selected.insert(pytest_index, selected.pop())
-        # Preserve declared source-check and Cargo command order. Only early
-        # consumer cohorts move behind the selected Rust compilation check.
-        lint_commands = {
-            command
-            for rule in matched_rules
-            if rule.name == "rust-clippy-changed"
-            for command in rule.gates
-        }
-        lint_positions = [
-            index
-            for index, gate in enumerate(selected)
-            if command_key(gate.command) in lint_commands
-        ]
-        if lint_positions:
-            boundary = max(lint_positions) + 1
-            prelude, remainder = selected[:boundary], selected[boundary:]
-            selected = (
-                [
-                    gate
-                    for gate in prelude
-                    if command_key(gate.command) not in pytest_commands
-                ]
-                + [
-                    gate
-                    for gate in prelude
-                    if command_key(gate.command) in pytest_commands
-                ]
-                + remainder
+        # Run declared source/metadata and compilation controls before Python
+        # consumers. This also moves already-required Cargo gates earlier; it
+        # adds no commands or builds and preserves each phase's relative order.
+        explicit: list[SelectedGate] = []
+        consumers: list[SelectedGate] = []
+        for gate in selected:
+            phase = (
+                consumers if command_key(gate.command) in pytest_commands else explicit
             )
+            phase.append(gate)
+        selected = explicit + consumers
         return selected, matched_rules
 
     def environments(
