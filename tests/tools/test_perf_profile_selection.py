@@ -6,6 +6,8 @@ from pathlib import Path
 
 import pytest
 
+from molt.process_environment import NameRule, ProcessEnvironment
+
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "tools"))
 
 from tools import perf_scoreboard as scoreboard
@@ -169,7 +171,7 @@ def test_perfscore_lets_the_canonical_env_place_its_session_target(
 
     def canonical(base):
         received.append(dict(base))
-        return dict(base)
+        return ProcessEnvironment(base)
 
     monkeypatch.setattr(measure.bench, "_canonical_bench_env", canonical)
     measure._perfscore_build_env(NATIVE_CRANELIFT, "release-fast")
@@ -193,7 +195,7 @@ def test_backend_resolver_uses_controlled_host_profile(monkeypatch, tmp_path, pr
     monkeypatch.setattr(
         scoreboard,
         "_perfscore_build_env",
-        lambda spec, profile: {"CARGO_TARGET_DIR": str(controlled)},
+        lambda spec, profile: ProcessEnvironment({"CARGO_TARGET_DIR": str(controlled)}),
     )
     assert (
         scoreboard._resolve_backend_binary_path(NATIVE_CRANELIFT, profile) == expected
@@ -555,11 +557,12 @@ def test_profile_regressions_and_producer_closure_are_mandatory_proofs():
 
 
 @pytest.mark.parametrize("minor", ["3.12", "3.13", "3.14"])
+@pytest.mark.parametrize("rule", [NameRule.EXACT, NameRule.WINDOWS])
 @pytest.mark.parametrize(
     "profile", ["release-fast", "release-output", "release-size", "dev-fast"]
 )
 def test_profiling_rebuild_preserves_minor_and_profile_over_conflicting_defaults(
-    monkeypatch, tmp_path, minor, profile
+    monkeypatch, tmp_path, minor, rule, profile
 ):
     from tools import bench
     from tools import perf_scoreboard_profile as profiling
@@ -580,6 +583,11 @@ def test_profiling_rebuild_preserves_minor_and_profile_over_conflicting_defaults
     monkeypatch.setattr(profiling, "_profiling_tmp_root", lambda env: tmp_path)
     monkeypatch.setattr(bench, "prepare_molt_binary", prepare)
     monkeypatch.setenv("MOLT_RELEASE_CARGO_PROFILE", "ambient-wrong-profile")
+    environment = ProcessEnvironment(
+        measure._perfscore_build_env(NATIVE_CRANELIFT, profile), rule=rule
+    ).updated({"MOLT_KEEP_SYMBOLS": "0"})
+    before = dict(environment)
+    monkeypatch.setattr(profiling, "_perfscore_build_env", lambda *_: environment)
     script = Path(__file__).resolve().parents[2] / "tests/benchmarks/bench_fib.py"
     _, metadata = profiling.build_profiling_binary(
         script,
@@ -590,6 +598,10 @@ def test_profiling_rebuild_preserves_minor_and_profile_over_conflicting_defaults
         log_lines=[],
     )
     assert metadata["target_python"] == minor
+    assert isinstance(captured["env"], ProcessEnvironment)
+    assert captured["env"].rule is rule
+    assert captured["env"]["MOLT_KEEP_SYMBOLS"] == "1"
+    assert dict(environment) == before
     assert captured["env"]["MOLT_RELEASE_CARGO_PROFILE"] == profile
     params = bench._molt_build_params(
         script=str(script),
@@ -799,8 +811,9 @@ def test_wasm_build_refuses_source_scratch_before_guard(
     from molt.dx import DxConfigError
 
     source, _custody = source_only_perf_checkout
-    env = measure._perfscore_build_env(WASM, "wasm-release")
-    env["MOLT_BENCH_TMP_ROOT"] = str(source / "forbidden-wasm")
+    env = measure._perfscore_build_env(WASM, "wasm-release").updated(
+        {"MOLT_BENCH_TMP_ROOT": str(source / "forbidden-wasm")}
+    )
     monkeypatch.setattr(
         measure.bench.harness_memory_guard,
         "guarded_completed_process",
