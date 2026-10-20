@@ -57,9 +57,7 @@ from molt.cli.command_runtime import (
     _run_completed_command,
 )
 from molt.cli.env_paths import _base_env
-from molt.cli.models import (
-    BuildProfile,
-)
+from molt.cli.build_request import BuildProfile
 from molt.cli.output import emit_json as _emit_json
 from molt.cli.output import fail as _fail
 from molt.cli.output import json_payload as _json_payload

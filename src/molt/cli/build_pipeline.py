@@ -10,7 +10,7 @@ from molt.cli import backend_ir_analysis_cache as _backend_ir_analysis_cache
 from molt.cli import backend_pipeline as _backend_pipeline
 from molt.cli import frontend_pipeline as _frontend_pipeline
 from molt.cli import progress as _progress
-from molt.cli import factgraph as _factgraph
+from molt.cli.build_request import FactGraphRequest
 from molt.backend_daemon_paths import (
     _unix_socket_path_exceeds_limit as _unix_socket_path_exceeds_limit,
 )
@@ -30,8 +30,8 @@ from molt.cli.output import (
 from molt.cli.extension_manifest import (
     _abi_version_error as _abi_version_error,
 )
+from molt.cli.build_request import BuildProfile
 from molt.cli.models import (
-    BuildProfile,
     _PreparedBuildConfig,
     _PreparedBuildPreamble,
     _PreparedBuildRoots,
@@ -72,7 +72,7 @@ def _run_build_pipeline(
     stdlib_profile: str | None = DEFAULT_STDLIB_PROFILE,
     bolt_requested: bool = False,
     bolt_training_cmd: str | None = None,
-    fact_graph_request: _factgraph.FactGraphRequest | None = None,
+    fact_graph_request: FactGraphRequest | None = None,
 ) -> int:
     def return_after_build_diagnostics(result: int) -> int:
         return _emit_build_diagnostics_for_result(

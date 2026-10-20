@@ -36,6 +36,7 @@ from molt.cli import (
     entrypoint_parser,
     quality_commands,
 )
+from molt.cli.build_request import BuildRequest, build_request_to_payload
 from molt.cli.backend_artifact_contract import resolve_backend_artifact_contract
 from molt.cli.config_resolution import _select_codegen_backend
 from molt.cli.project_roots import _find_project_root
@@ -122,8 +123,8 @@ def test_a_later_build_cannot_observe_the_previous_backend(
     monkeypatch.chdir(tmp_path)
     seen: list[tuple[str, str | None]] = []
 
-    def build_fn(*_args: Any, **kwargs: Any) -> int:
-        seen.append((kwargs["codegen_backend"], os.environ.get("MOLT_BACKEND")))
+    def build_fn(request: BuildRequest) -> int:
+        seen.append((request.codegen_backend, os.environ.get("MOLT_BACKEND")))
         return 0
 
     assert _dispatch_build(["build", "app.py", "--target", "llvm"], build_fn) == 0
@@ -147,15 +148,17 @@ def test_build_passes_every_selection_explicitly(
     monkeypatch.setattr(build_inputs, "_prepare_build_inputs", fake_prepare_inputs)
 
     rc = cli_build_command.build(
-        "app.py",
-        target="wasm",
-        trusted=True,
-        portable=True,
-        wasm_profile="pure",
-        audit_log="jsonl:stderr",
-        io_mode="virtual",
-        stdlib_profile="full",
-        codegen_backend="llvm",
+        BuildRequest(
+            file_path="app.py",
+            target="wasm",
+            trusted=True,
+            portable=True,
+            wasm_profile="pure",
+            audit_log="jsonl:stderr",
+            io_mode="virtual",
+            stdlib_profile="full",
+            codegen_backend="llvm",
+        )
     )
 
     assert rc == 9
@@ -282,10 +285,8 @@ def test_batch_server_refuses_retired_fallback_before_environment_or_build(
         {
             "id": 17,
             "op": "build",
-            "params": {
-                "fallback": policy,
-                "env_overrides": {"MOLT_RETIRED_POLICY_PROBE": "must-not-apply"},
-            },
+            "params": {"file_path": "app.py", "fallback": policy},
+            "env_overrides": {"MOLT_RETIRED_POLICY_PROBE": "must-not-apply"},
         },
         {"id": 18, "op": "shutdown"},
     ]
@@ -304,7 +305,7 @@ def test_batch_server_refuses_retired_fallback_before_environment_or_build(
         {
             "id": 17,
             "ok": False,
-            "error": "build parameter 'fallback' was removed; unsupported constructs fail at compile time",
+            "error": "BuildRequest: unknown fields: fallback",
         },
         {"id": 18, "ok": True, "shutdown": True},
     ]
@@ -318,12 +319,12 @@ def test_batch_server_selects_each_request_backend_explicitly(
 ) -> None:
     seen: list[dict[str, Any]] = []
 
-    def build_fn(**kwargs: Any) -> int:
+    def build_fn(request: BuildRequest) -> int:
         seen.append(
             {
-                "target": kwargs["target"],
-                "backend": kwargs["codegen_backend"],
-                "stdlib_profile": kwargs["stdlib_profile"],
+                "target": request.target,
+                "backend": request.codegen_backend,
+                "stdlib_profile": request.stdlib_profile,
                 "environ_backend": os.environ.get("MOLT_BACKEND"),
                 "environ_profile": os.environ.get("MOLT_STDLIB_PROFILE"),
             }
@@ -334,11 +335,19 @@ def test_batch_server_selects_each_request_backend_explicitly(
         {
             "id": 1,
             "op": "build",
-            "params": {"target": "llvm", "stdlib_profile": "full"},
+            "params": build_request_to_payload(
+                BuildRequest(
+                    file_path="app.py", codegen_backend="llvm", stdlib_profile="full"
+                )
+            ),
         },
-        {"id": 2, "op": "build", "params": {"backend": "llvm"}},
-        {"id": 3, "op": "build", "params": {}},
-        {"id": 4, "op": "build", "params": {"target": "llvm", "backend": "cranelift"}},
+        {
+            "id": 2,
+            "op": "build",
+            "params": {"file_path": "app.py", "codegen_backend": "llvm"},
+        },
+        {"id": 3, "op": "build", "params": {"file_path": "app.py"}},
+        {"id": 4, "op": "build", "params": {"file_path": "app.py", "backend": "llvm"}},
         {"id": 5, "op": "shutdown"},
     ]
     monkeypatch.setattr(
@@ -358,21 +367,21 @@ def test_batch_server_selects_each_request_backend_explicitly(
         {
             "target": "native",
             "backend": "llvm",
-            "stdlib_profile": "auto",
+            "stdlib_profile": None,
             "environ_backend": None,
             "environ_profile": None,
         },
         {
             "target": "native",
             "backend": "cranelift",
-            "stdlib_profile": "auto",
+            "stdlib_profile": None,
             "environ_backend": None,
             "environ_profile": None,
         },
     ]
     responses = [json.loads(line) for line in capsys.readouterr().out.splitlines()]
     assert [r["ok"] for r in responses] == [True, True, True, False, True]
-    assert "--target native --backend llvm" in responses[3]["error"]
+    assert responses[3]["error"] == "BuildRequest: unknown fields: backend"
 
 
 # --- the native-arch Rust CPU policy (MOLT_PERF_PROFILE) --------------------

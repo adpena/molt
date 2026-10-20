@@ -16,7 +16,7 @@ from typing import Any, Mapping, cast
 
 from molt.cli import script_commands as _script_commands
 from molt.capability_policy import split_capability_tokens
-from molt.cli.models import BuildProfile
+from molt.cli.build_request import BuildProfile
 from molt.dx import development_artifact_env
 
 from molt.debug import (

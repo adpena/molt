@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import hashlib
-import inspect
 import json
 import os
 import sys
@@ -11,7 +10,7 @@ from types import SimpleNamespace
 import pytest
 
 from tools import dx_build_timer
-from molt.cli import build_command as cli_build_command
+from molt.cli.build_request import BuildRequest
 
 # Cargo runs in this file are fakes; build capacity is not under test.
 pytestmark = pytest.mark.usefixtures("admitted_build_capacity")
@@ -385,13 +384,8 @@ def test_trial_cache_overrides_project_config_through_real_dispatch(
     )
     resolved = []
 
-    def observe_build(*args, **kwargs):
-        selected = (
-            inspect.signature(cli_build_command.build)
-            .bind(*args, **kwargs)
-            .arguments["cache_dir"]
-        )
-        resolved.append(_resolve_cache_root(tmp_path, selected))
+    def observe_build(request: BuildRequest) -> int:
+        resolved.append(_resolve_cache_root(tmp_path, request.cache_dir))
         return 0
 
     # Negative control: environment-only isolation loses to this project config.

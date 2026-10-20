@@ -34,7 +34,7 @@ from molt.capability_manifest import CapabilityManifest
 from molt.cli import backend_binary as cli_backend_binary
 from molt.cli import backend_cache_setup as cli_backend_cache_setup
 from molt.cli import backend_compile as cli_backend_compile
-from molt.cli import quality_commands as cli_commands
+from molt.cli.build_request import BuildRequest, build_request_from_payload
 from molt.cli import link_pipeline as cli_link_pipeline
 from molt.cli import link_fingerprints as cli_link_fingerprints
 from molt.cli.native_link_plan import (
@@ -1070,28 +1070,20 @@ def test_prepare_backend_setup_enables_source_loader_for_native_artifacts(
 
 
 def test_internal_batch_build_stdlib_profile_is_explicit_and_validated() -> None:
-    assert cli_commands._normalize_internal_batch_stdlib_profile({}) == ("auto", None)
-    assert cli_commands._normalize_internal_batch_stdlib_profile(
-        {"stdlib_profile": "standard"}
-    ) == (
-        "standard",
-        None,
+    assert BuildRequest(file_path=None).stdlib_profile is None
+    assert build_request_from_payload({"file_path": None}).stdlib_profile is None
+    assert (
+        build_request_from_payload(
+            {"file_path": None, "stdlib_profile": "standard"}
+        ).stdlib_profile
+        == "standard"
     )
 
-    missing_value, type_error = cli_commands._normalize_internal_batch_stdlib_profile(
-        {"stdlib_profile": 1}
-    )
-    assert missing_value is None
-    assert type_error == "stdlib_profile must be a string"
-
-    invalid_value, choice_error = cli_commands._normalize_internal_batch_stdlib_profile(
-        {"stdlib_profile": "nonsense"}
-    )
-    assert invalid_value is None
-    assert choice_error == (
-        "stdlib_profile must be one of "
-        "'auto', 'micro', 'edge', 'standard', 'server', 'full'"
-    )
+    for invalid_profile in (1, "nonsense"):
+        with pytest.raises(ValueError, match="stdlib_profile"):
+            build_request_from_payload(
+                {"file_path": None, "stdlib_profile": invalid_profile}
+            )
 
 
 def test_backend_fingerprint_reuses_stored_hash_when_inputs_unchanged(

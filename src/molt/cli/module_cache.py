@@ -40,12 +40,11 @@ from molt.cli.function_references import (
 from molt.cli.json_cache import (
     SOURCE_ANALYSIS_CACHE_MAX_BYTES,
 )
+from molt.cli.build_request import ParseCodec, TypeHintPolicy
 from molt.cli.models import (
     _RuntimeImportScanCustody,
     ImportScanMode,
     ModuleExecutionKind,
-    ParseCodec,
-    TypeHintPolicy,
     _ModuleGraphMetadata,
     _ScopedLoweringInputView,
     _ScopedLoweringInputs,

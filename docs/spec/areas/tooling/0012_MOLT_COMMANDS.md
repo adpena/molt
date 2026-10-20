@@ -46,6 +46,23 @@ Key flags:
 - `--capabilities <file|profile|list>` (capability manifest or profiles/tokens)
 - `--pgo-profile <molt_profile.json>` (profile-guided optimization hints; expects MPA v0.1)
 
+The CLI dispatcher, library build entry, factgraph and internal batch server
+share `cli/build_request.py:BuildRequest`. Its typed fields own option names and
+defaults; batch encoding and strict decoding derive from that dataclass rather
+than maintaining a second option map. Unknown fields, replaced aliases and
+wrong scalar types fail before environment overrides or compilation. Environment
+overrides belong to the invocation envelope, separate from semantic build options.
+Stdlib choices project from the closed profile types in `config_resolution`.
+Benchmark, differential and conformance producers validate before starting their
+compiler services; invalid requests retain configuration/build-failure classification
+and existing scratch cleanup. Services start lazily after request admission.
+This follows [Clang's `CompilerInvocation`](https://clang.llvm.org/doxygen/classclang_1_1CompilerInvocation.html)
+and the [rustc driver/interface boundary](https://rustc-dev-guide.rust-lang.org/rustc-driver/intro.html):
+command syntax resolves to one compilation request before the pipeline runs.
+In-process calls construct a slotted request without JSON, interpreter probing or
+process creation; schema validation and serialization occur only at transport.
+This is compiler-side work and adds no emitted-program work.
+
 Outputs:
 - A typed application archive (`.a`/`.lib`) + linked binary (native, unless `--emit obj`)
 - `cli/backend_artifact_contract.py` owns the requested artifact kind and target:

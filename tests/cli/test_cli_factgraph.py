@@ -17,6 +17,7 @@ from molt.cli.rust_cpu_policy import RustCpuPolicy
 from molt.cli import config_resolution as cli_config_resolution
 from molt.cli import output as cli_output
 from molt.cli import build_command as cli_build_command
+from molt.cli.build_request import BuildRequest, FactGraphRequest
 
 
 @pytest.mark.parametrize("mutation", [None, "rewrite", "delete"])
@@ -50,7 +51,7 @@ def test_factgraph_source_fence_preserves_previous_publication(
         return subprocess.CompletedProcess(command, 0, b"", b"")
 
     result = factgraph_module.execute_backend_fact_graph(
-        request=factgraph_module.FactGraphRequest(output, "main", "native"),
+        request=FactGraphRequest(output, "main", "native"),
         is_luau_transpile=False,
         is_rust_transpile=False,
         is_wasm=False,
@@ -81,11 +82,10 @@ def test_factgraph_cli_dispatches_typed_backend_request(
     source = tmp_path / "app.py"
     source.write_text("def main():\n    return 1\n", encoding="utf-8")
     output = tmp_path / "graph.json"
-    captured: dict[str, Any] = {}
+    captured: list[BuildRequest] = []
 
-    def fake_build(*args: object, **kwargs: Any) -> int:
-        assert args == ()
-        captured.update(kwargs)
+    def fake_build(request: BuildRequest) -> int:
+        captured.append(request)
         return 0
 
     monkeypatch.setattr(cli_build_command, "build", fake_build)
@@ -113,20 +113,21 @@ def test_factgraph_cli_dispatches_typed_backend_request(
 
     assert cli.main() == 0
 
-    request = captured["fact_graph_request"]
-    assert captured["file_path"] == str(source)
-    assert captured["module"] is None
-    assert captured["target"] == "native"
-    assert captured["profile"] == "release"
-    assert captured["cache"] is False
-    assert captured["json_output"] is True
-    assert captured["python_version"] == "3.12"
-    assert "build_config" in captured
+    [build_request] = captured
+    request = build_request.fact_graph_request
+    assert build_request.file_path == str(source)
+    assert build_request.module is None
+    assert build_request.target == "native"
+    assert build_request.profile == "release"
+    assert build_request.cache is False
+    assert build_request.json_output is True
+    assert build_request.python_version == "3.12"
+    assert build_request.build_config is not None
     # The selection is a typed parameter; the process environment never
     # carries it into later in-process work (HF-60).
-    assert captured["codegen_backend"] == "llvm"
+    assert build_request.codegen_backend == "llvm"
     assert "MOLT_BACKEND" not in os.environ
-    assert isinstance(request, factgraph_module.FactGraphRequest)
+    assert isinstance(request, FactGraphRequest)
     assert request.output_path == output
     assert request.function_name == "main"
     assert request.requested_target == "llvm"
@@ -134,11 +135,10 @@ def test_factgraph_cli_dispatches_typed_backend_request(
 
 def test_factgraph_cli_dispatches_module_entry(tmp_path: Path, monkeypatch) -> None:
     output = tmp_path / "module-graph.json"
-    captured: dict[str, Any] = {}
+    captured: list[BuildRequest] = []
 
-    def fake_build(*args: object, **kwargs: Any) -> int:
-        assert args == ()
-        captured.update(kwargs)
+    def fake_build(request: BuildRequest) -> int:
+        captured.append(request)
         return 0
 
     monkeypatch.setattr(cli_build_command, "build", fake_build)
@@ -159,17 +159,18 @@ def test_factgraph_cli_dispatches_module_entry(tmp_path: Path, monkeypatch) -> N
 
     assert cli.main() == 0
 
-    request = captured["fact_graph_request"]
-    assert captured["file_path"] is None
-    assert captured["module"] == "pkg.app"
-    assert captured["target"] == "native"
-    assert captured["profile"] == "release"
-    assert "build_config" in captured
-    assert isinstance(request, factgraph_module.FactGraphRequest)
+    [build_request] = captured
+    request = build_request.fact_graph_request
+    assert build_request.file_path is None
+    assert build_request.module == "pkg.app"
+    assert build_request.target == "native"
+    assert build_request.profile == "release"
+    assert build_request.build_config is not None
+    assert isinstance(request, FactGraphRequest)
     assert request.output_path == output
     assert request.function_name == "entry"
     assert request.requested_target == "native"
-    assert captured["codegen_backend"] == "cranelift"
+    assert build_request.codegen_backend == "cranelift"
 
 
 # A named output need not carry an extension; its stage still needs a name.
@@ -200,7 +201,7 @@ def test_execute_backend_fact_graph_uses_target_prefix_and_ir_lease(
         return subprocess.CompletedProcess(cmd, 0, b"", b"")
 
     error = factgraph_module.execute_backend_fact_graph(
-        request=factgraph_module.FactGraphRequest(
+        request=FactGraphRequest(
             output_path=output,
             function_name="molt_main",
             requested_target="wasm",
@@ -347,7 +348,7 @@ def test_emit_pipeline_fact_graph_reports_requested_target_and_backend(
             raise ValueError("owned producer did not exit")
 
     rc = factgraph_module.emit_pipeline_fact_graph(
-        request=factgraph_module.FactGraphRequest(
+        request=FactGraphRequest(
             output_path=output,
             function_name="main",
             requested_target="llvm",

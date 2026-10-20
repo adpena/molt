@@ -762,6 +762,8 @@ def test_bench_batch_server_starts_in_guarded_process_group(monkeypatch) -> None
     monkeypatch.setattr(bench_tool, "BatchCompileServerClient", FakeClient)
 
     server = bench_tool._BenchBatchBuildServer({})
+    assert captured == {}
+    server.start()
     server.close()
 
     guard_context = captured["guard_context"]
@@ -1013,13 +1015,13 @@ def test_prepare_molt_binary_uses_batch_build_server(
 ) -> None:
     script = tmp_path / "bench_sample.py"
     script.write_text("print(1)\n", encoding="utf-8")
-    requests: list[tuple[dict[str, object], float]] = []
+    requests: list[tuple[dict[str, object], object, float]] = []
 
     class _FakeBatchServer:
         def request_build(
-            self, params: dict[str, object], *, timeout_s: float
+            self, params: dict[str, object], *, env_overrides, timeout_s: float
         ) -> dict[str, object]:
-            requests.append((params, timeout_s))
+            requests.append((params, env_overrides, timeout_s))
             out_dir = Path(str(params["out_dir"]))
             output = out_dir / "bench_sample_molt"
             output.write_bytes(b"binary")
@@ -1046,16 +1048,18 @@ def test_prepare_molt_binary_uses_batch_build_server(
     try:
         assert binary.path.read_bytes() == b"binary"
         assert binary.size_kb > 0
-        params, timeout_s = requests[0]
+        params, env_overrides, timeout_s = requests[0]
         assert timeout_s == 12.5
         assert params["file_path"] == str(script)
         assert params["profile"] == "release"
-        assert params["type_hints"] == "trust"
+        assert params["type_hint_policy"] == "trust"
         assert params["stdlib_profile"] == "full"
         assert params["trusted"] is True
         assert params["json_output"] is True
         assert params["cache"] is True
-        assert params["env_overrides"] == {"BASE": "1"}
+        assert env_overrides == {"BASE": "1"}
+        assert "env_overrides" not in params
+        assert not {"codec", "type_hints", "type_facts", "backend"} & params.keys()
     finally:
         binary.temp_dir.cleanup()
 
@@ -1069,7 +1073,7 @@ def test_prepare_molt_binary_passes_cache_policy_to_batch_build_server(
 
     class _FakeBatchServer:
         def request_build(
-            self, params: dict[str, object], *, timeout_s: float
+            self, params: dict[str, object], *, env_overrides, timeout_s: float
         ) -> dict[str, object]:
             del timeout_s
             requests.append(params)
@@ -1108,7 +1112,7 @@ def test_prepare_molt_binary_classifies_batch_build_timeout(
 
     class _TimeoutBatchServer:
         def request_build(
-            self, params: dict[str, object], *, timeout_s: float
+            self, params: dict[str, object], *, env_overrides, timeout_s: float
         ) -> dict[str, object]:
             del params, timeout_s
             raise TimeoutError("batch compile server response timed out")
@@ -1138,6 +1142,46 @@ def test_prepare_molt_binary_classifies_batch_build_timeout(
     assert failure.detail == "batch_server_response_timeout"
 
 
+@pytest.mark.parametrize("build_target", ["native", "wasm"])
+@pytest.mark.parametrize("batched", [False, True])
+def test_prepare_molt_binary_rejects_invalid_codec_before_dispatch(
+    monkeypatch, tmp_path: Path, build_target: str, batched: bool
+) -> None:
+    environment = {"MOLT_CODEC": "invalid-codec"}
+    monkeypatch.setattr(bench_tool, "_canonical_bench_env", lambda env: environment)
+    monkeypatch.setattr(bench_tool, "_prune_backend_daemons", lambda env: None)
+    monkeypatch.setattr(bench_tool, "_bench_tmp_root", lambda env: tmp_path)
+
+    def unexpected_dispatch(*args, **kwargs):
+        pytest.fail("invalid build configuration reached compiler dispatch")
+
+    monkeypatch.setattr(bench_tool, "BatchCompileServerClient", unexpected_dispatch)
+    monkeypatch.setattr(
+        bench_tool.harness_memory_guard,
+        "guarded_completed_process",
+        unexpected_dispatch,
+    )
+    owner = bench_tool._BenchBatchBuildServer(environment) if batched else None
+    try:
+        failure = bench_tool.prepare_molt_binary(
+            str(tmp_path / "program.py"),
+            env=environment,
+            batch_server=owner,
+            build_target=build_target,
+        )
+    finally:
+        if owner is not None:
+            owner.close()
+
+    assert isinstance(failure, bench_tool.MoltFailure)
+    assert failure.phase == "build" and failure.status == "build_failed"
+    assert failure.returncode == 2
+    assert not failure.timed_out
+    assert failure.infrastructure_failure is None
+    assert "parse_codec" in failure.stderr and "invalid-codec" in failure.stderr
+    assert list(tmp_path.iterdir()) == []
+
+
 def test_prepare_molt_binary_restarts_batch_server_after_protocol_desync(
     monkeypatch, tmp_path: Path
 ) -> None:
@@ -1148,7 +1192,7 @@ def test_prepare_molt_binary_restarts_batch_server_after_protocol_desync(
 
     class _DesyncThenSuccessBatchServer:
         def request_build(
-            self, params: dict[str, object], *, timeout_s: float
+            self, params: dict[str, object], *, env_overrides, timeout_s: float
         ) -> dict[str, object]:
             del timeout_s
             requests.append(params)
@@ -1207,7 +1251,7 @@ def test_prepare_molt_binary_logs_and_restarts_after_classified_retry(
 
     class _DaemonFailureThenSuccessBatchServer:
         def request_build(
-            self, params: dict[str, object], *, timeout_s: float
+            self, params: dict[str, object], *, env_overrides, timeout_s: float
         ) -> dict[str, object]:
             del timeout_s
             requests.append(params)
@@ -1276,7 +1320,7 @@ def test_prepare_molt_binary_classifies_backend_daemon_empty_response(
 
     class _DaemonFailureBatchServer:
         def request_build(
-            self, params: dict[str, object], *, timeout_s: float
+            self, params: dict[str, object], *, env_overrides, timeout_s: float
         ) -> dict[str, object]:
             del timeout_s
             requests.append(params)
@@ -1326,7 +1370,7 @@ def test_prepare_molt_binary_preserves_native_runtime_failure_without_retry(
 
     class _CargoFailureBatchServer:
         def request_build(
-            self, params: dict[str, object], *, timeout_s: float
+            self, params: dict[str, object], *, env_overrides, timeout_s: float
         ) -> dict[str, object]:
             del timeout_s
             requests.append(params)

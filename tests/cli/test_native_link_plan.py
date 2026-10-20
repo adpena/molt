@@ -34,6 +34,7 @@ from molt.cli.source_extension_link_requirements import (
 )
 from tests.process_guard_common import install_module_view
 from molt.cli import build_command as cli_build_command
+from molt.cli.build_request import BuildRequest
 
 
 _COMMANDS = CommandExecutor.for_file(__file__)
@@ -814,10 +815,10 @@ def test_cli_threads_bolt_intent_into_the_single_build_pipeline(
 ) -> None:
     entry = tmp_path / "main.py"
     entry.write_text("print('ok')\n", encoding="utf-8")
-    received: dict[str, object] = {}
+    received: list[BuildRequest] = []
 
-    def fake_build(*_args: object, **kwargs: object) -> int:
-        received.update(kwargs)
+    def fake_build(request: BuildRequest) -> int:
+        received.append(request)
         return 0
 
     monkeypatch.setattr(cli_build_command, "build", fake_build)
@@ -836,8 +837,9 @@ def test_cli_threads_bolt_intent_into_the_single_build_pipeline(
     )
 
     assert cli.main() == 0
-    assert received["bolt"] is True
-    assert received["bolt_training_cmd"] == "{binary} --train"
+    [request] = received
+    assert request.bolt is True
+    assert request.bolt_training_cmd == "{binary} --train"
 
 
 def test_planned_release_strip_failure_is_loud(

@@ -23,8 +23,8 @@ from molt.cli.external_native import (
     _external_native_link_requirements,
     _stage_external_package_native_artifacts_for_build,
 )
+from molt.cli.build_request import BuildProfile
 from molt.cli.models import (
-    BuildProfile,
     _ExternalPackageNativeArtifactPlan,
     _EMPTY_EXTERNAL_PACKAGE_NATIVE_ARTIFACT_PLAN,
     _StagedExternalPackageNativeArtifact,

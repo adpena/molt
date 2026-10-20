@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import argparse
 from collections.abc import Callable, Mapping, Sequence
-from dataclasses import dataclass
 from pathlib import Path
 import subprocess
 import sys
@@ -10,15 +9,9 @@ from typing import Any
 from molt import file_publication
 from molt.artifact_publication import discard_staged_output
 from molt.backend_protocol import BACKEND_IR_LEASE_FORMAT
+from molt.cli.build_request import BuildRequest, FactGraphRequest
 from molt.cli.config_resolution import _select_codegen_backend
 from molt.cli.native_link_plan import NativeArtifactKind
-
-
-@dataclass(frozen=True)
-class FactGraphRequest:
-    output_path: Path
-    function_name: str
-    requested_target: str
 
 
 def add_factgraph_parser(
@@ -404,7 +397,7 @@ def emit_pipeline_fact_graph(
 def run_factgraph_command(
     *,
     args: argparse.Namespace,
-    build: Callable[..., int],
+    build: Callable[[BuildRequest], int],
     build_config: Mapping[str, Any],
     config_capabilities: Any,
     coerce_bool: Callable[[Any, bool], bool],
@@ -430,29 +423,33 @@ def run_factgraph_command(
     if backend_error:
         return fail(backend_error, args.json, command="factgraph")
     return build(
-        file_path=args.file,
-        target=target,
-        type_hint_policy=args.type_hints,
-        output=None,
-        json_output=args.json,
-        verbose=args.verbose,
-        trusted=(
-            coerce_bool(build_config.get("trusted"), False)
-            if args.trusted is None
-            else args.trusted
-        ),
-        capabilities=(
-            args.capabilities or build_config.get("capabilities") or config_capabilities
-        ),
-        cache=False,
-        module=args.module,
-        profile=args.profile,
-        python_version=args.python_version,
-        fact_graph_request=FactGraphRequest(
-            output_path=Path(args.output),
-            function_name=args.function,
-            requested_target=args.target,
-        ),
-        build_config=build_config,
-        codegen_backend=codegen_backend,
+        BuildRequest(
+            file_path=args.file,
+            target=target,
+            type_hint_policy=args.type_hints,
+            output=None,
+            json_output=args.json,
+            verbose=args.verbose,
+            trusted=(
+                coerce_bool(build_config.get("trusted"), False)
+                if args.trusted is None
+                else args.trusted
+            ),
+            capabilities=(
+                args.capabilities
+                or build_config.get("capabilities")
+                or config_capabilities
+            ),
+            cache=False,
+            module=args.module,
+            profile=args.profile,
+            python_version=args.python_version,
+            fact_graph_request=FactGraphRequest(
+                output_path=Path(args.output),
+                function_name=args.function,
+                requested_target=args.target,
+            ),
+            build_config=build_config,
+            codegen_backend=codegen_backend,
+        )
     )

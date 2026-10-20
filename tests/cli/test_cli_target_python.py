@@ -512,5 +512,5 @@ def test_defective_compiler_host_cli_refuses_before_dispatch(monkeypatch, capsys
         raise AssertionError("unsupported host entered argument dispatch")
 
     monkeypatch.setattr(entrypoint, "_build_entrypoint_parser", unexpected_dispatch)
-    assert entrypoint.main(build_fn=lambda **kwargs: 0) == 2
+    assert entrypoint.main(build_fn=lambda _request: 0) == 2
     assert "3.14.1+" in capsys.readouterr().err

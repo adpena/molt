@@ -4,37 +4,26 @@
 preparation (`build_inputs`), the frontend (`frontend_pipeline`) and the
 backend and link (`build_pipeline`). It imports them only when it builds: a
 request whose recorded inputs are unchanged ends before any of them loads.
-`molt.cli` re-exports `build` lazily.
+The entrypoint loads `build` only for commands that compile.
 """
 
 from __future__ import annotations
 
 import functools
-import inspect
+from dataclasses import fields
 import os
 import sys
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Callable, Mapping
+from typing import Callable
 
 from molt.backend_environment import CodegenSelection
 from molt.backend_executable_names import DEFAULT_CODEGEN_BACKEND
 from molt import build_record as _build_record
 from molt import input_report as _input_report
+from molt.cli.build_request import BuildRequest
 from molt.cli.output import fail as _fail
 from molt.cli.output import success as _success
 from molt.default_paths import _default_molt_cache
-
-if TYPE_CHECKING:
-    from molt.backend_executable_names import CodegenBackend
-    from molt.capability_policy import CapabilityInput
-    from molt.cli import factgraph as _factgraph
-    from molt.cli.models import (
-        BuildProfile,
-        EmitMode,
-        ParseCodec,
-        Target,
-        TypeHintPolicy,
-    )
 
 
 # How much a build prints does not change what it builds. The output path and
@@ -86,7 +75,7 @@ def _cpu_model() -> str:
         return platform.processor() or "unknown-cpu"
 
 
-def _early_cutoff_request(arguments: Mapping[str, Any]) -> tuple[str, Path] | None:
+def _early_cutoff_request(request: BuildRequest) -> tuple[str, Path] | None:
     """(key, record path) when this request may reuse a recorded build.
 
     Only a native binary build with an explicit absolute output file and the
@@ -94,39 +83,39 @@ def _early_cutoff_request(arguments: Mapping[str, Any]) -> tuple[str, Path] | No
     binary, or reads an input no authority reports to the build record, never
     cuts off.
     """
-    output = arguments["output"]
-    capabilities = arguments["capabilities"]
+    output = request.output
+    capabilities = request.capabilities
     if (
-        arguments["target"] != "native"
-        or not arguments["cache"]
-        or arguments["json_output"]
+        request.target != "native"
+        or not request.cache
+        or request.json_output
         or output is None
         or not Path(output).is_absolute()
         # A directory output names the binary after the entry module.
         or output.endswith(("/", os.sep))
         or Path(output).is_dir()
-        or arguments["emit"] not in (None, "bin")
-        or arguments["emit_ir"] is not None
-        or arguments["linked"]
-        or arguments["linked_output"] is not None
-        or arguments["split_runtime"]
-        or arguments["snapshot"]
-        or arguments["bolt"]
-        or arguments["fact_graph_request"] is not None
-        or arguments["diagnostics"]
-        or arguments["diagnostics_file"] is not None
-        or arguments["cache_report"]
-        or arguments["audit_log"] is not None
-        or arguments["codegen_backend"] != DEFAULT_CODEGEN_BACKEND
+        or request.emit not in (None, "bin")
+        or request.emit_ir is not None
+        or request.linked
+        or request.linked_output is not None
+        or request.split_runtime
+        or request.snapshot
+        or request.bolt
+        or request.fact_graph_request is not None
+        or request.diagnostics
+        or request.diagnostics_file is not None
+        or request.cache_report
+        or request.audit_log is not None
+        or request.codegen_backend != DEFAULT_CODEGEN_BACKEND
         # Inputs named by path whose loaders do not yet report to the record.
-        or arguments["type_facts_path"] is not None
-        or arguments["pgo_profile"] is not None
-        or arguments["runtime_feedback"] is not None
-        or arguments["capability_manifest"] is not None
-        or arguments["sysroot"] is not None
+        or request.type_facts_path is not None
+        or request.pgo_profile is not None
+        or request.runtime_feedback is not None
+        or request.capability_manifest is not None
+        or request.sysroot is not None
         or (isinstance(capabilities, str) and Path(capabilities).exists())
         # `ty` under the trust policy is never cached as a compiler proof.
-        or arguments["type_hint_policy"] == "trust"
+        or request.type_hint_policy == "trust"
         or os.environ.get("MOLT_BUILD_DIAGNOSTICS")
         or os.environ.get("MOLT_BUILD_DIAGNOSTICS_FILE")
         or os.environ.get("MOLT_EXTERNAL_STATIC_PACKAGES")
@@ -134,15 +123,15 @@ def _early_cutoff_request(arguments: Mapping[str, Any]) -> tuple[str, Path] | No
         return None
     key = _build_record.request_key(
         {
-            name: value
-            for name, value in arguments.items()
-            if name not in _RECORD_PRESENTATION_ARGUMENTS
+            field.name: getattr(request, field.name)
+            for field in fields(request)
+            if field.name not in _RECORD_PRESENTATION_ARGUMENTS
         },
         environment=os.environ,
         cwd=os.getcwd(),
         interpreter=sys.executable,
         interpreter_version=sys.version,
-        host=_host_identity(bool(arguments["portable"])),
+        host=_host_identity(request.portable),
     )
     if key is None:
         return None
@@ -157,7 +146,7 @@ def _report_executed_code(ledger: _build_record.InputLedger) -> None:
             ledger.file(filename, _input_report.stat_token(filename), None)
 
 
-def _excluded_read_roots(arguments: Mapping[str, Any]) -> tuple[Path, ...]:
+def _excluded_read_roots(request: BuildRequest) -> tuple[Path, ...]:
     """Directories that hold only content-verified caches, scratch files and
     build products, never inputs. Each is a named product root. A source
     checkout, a user directory, the temporary directory and the shared scratch
@@ -169,7 +158,7 @@ def _excluded_read_roots(arguments: Mapping[str, Any]) -> tuple[Path, ...]:
     from molt.cli.project_roots import _find_project_root
     from molt.source_root import compiler_source_root
 
-    entry = arguments["file_path"]
+    entry = request.file_path
     project_root = _find_project_root(Path(entry) if entry else Path.cwd())
     # The compiler checkout owns product roots of its own: the runtime builds
     # into its Cargo target, and module caches live in its build state. A
@@ -190,9 +179,9 @@ def _excluded_read_roots(arguments: Mapping[str, Any]) -> tuple[Path, ...]:
     ]
     if os.environ.get("MOLT_CACHE"):
         roots.append(Path(os.environ["MOLT_CACHE"]))
-    if arguments["cache_dir"]:
-        roots.append(Path(arguments["cache_dir"]).expanduser())
-    out_dir = arguments["out_dir"]
+    if request.cache_dir:
+        roots.append(Path(request.cache_dir).expanduser())
+    out_dir = request.out_dir
     if out_dir:
         roots.append(Path(out_dir).expanduser() / ".molt_build")
     else:
@@ -205,14 +194,14 @@ def _record_build(
     record: Path,
     key: str,
     ledger: _build_record.InputLedger,
-    arguments: Mapping[str, Any],
+    request: BuildRequest,
     output: Path,
 ) -> str | None:
     """Write the record of a successful build; returns why none was written.
     A record never fails the build it describes."""
     try:
         _report_executed_code(ledger)
-        capabilities = arguments["capabilities"]
+        capabilities = request.capabilities
         if isinstance(capabilities, str):
             # Inline capabilities name a file only when one exists there.
             ledger.probe(capabilities, _input_report.resolved_probe(capabilities))
@@ -222,43 +211,43 @@ def _record_build(
             selection = "/var/db/xcode_select_link"
             ledger.probe(selection, _input_report.resolved_probe(selection))
         _build_record.resolve_observed(
-            ledger, _excluded_read_roots(arguments), published_output=output
+            ledger, _excluded_read_roots(request), published_output=output
         )
         return _build_record.write_record(record, key, ledger, output=output)
     except Exception as error:  # noqa: BLE001 - the build already succeeded
         return f"record failed: {type(error).__name__}: {error}"
 
 
-def _with_early_cutoff(build_function: Callable[..., int]) -> Callable[..., int]:
+def _with_early_cutoff(
+    build_function: Callable[[BuildRequest], int],
+) -> Callable[[BuildRequest], int]:
     """Finish at once when the recorded build of this request is current;
     otherwise build, recording what the build read."""
-    signature = inspect.signature(build_function)
 
     @functools.wraps(build_function)
-    def build(*args: Any, **kwargs: Any) -> int:
+    def build(request: BuildRequest) -> int:
         first = _build_record.enter_build()
-        bound = signature.bind(*args, **kwargs)
-        bound.apply_defaults()
-        cutoff = _early_cutoff_request(bound.arguments)
+        cutoff = _early_cutoff_request(request)
         if cutoff is None:
-            return build_function(*args, **kwargs)
+            return build_function(request)
         key, record = cutoff
-        output = Path(bound.arguments["output"])
+        assert request.output is not None
+        output = Path(request.output)
         change = _build_record.check(record, key, output)
         if change is None:
             _success(f"Successfully built {output} (inputs unchanged)", file=sys.stderr)
             return 0
-        verbose = bool(bound.arguments["verbose"])
+        verbose = request.verbose
         if verbose:
             print(f"Build record: {change}", file=sys.stderr)
         if not first:
-            return build_function(*args, **kwargs)
+            return build_function(request)
         with _build_record.recording(
             _build_record.transient_root(_default_molt_cache())
         ) as ledger:
-            result = build_function(*args, **kwargs)
+            result = build_function(request)
         if result == 0:
-            reason = _record_build(record, key, ledger, bound.arguments, output)
+            reason = _record_build(record, key, ledger, request, output)
             if reason is not None and verbose:
                 print(f"Build record not written: {reason}", file=sys.stderr)
         return result
@@ -266,72 +255,24 @@ def _with_early_cutoff(build_function: Callable[..., int]) -> Callable[..., int]
     return build
 
 
-def _in_build_scope(build_function: Callable[..., int]) -> Callable[..., int]:
+def _in_build_scope(
+    build_function: Callable[[BuildRequest], int],
+) -> Callable[[BuildRequest], int]:
     """Hold the build's claim on its artifacts root for exactly this build."""
 
     @functools.wraps(build_function)
-    def build(*args: Any, **kwargs: Any) -> int:
+    def build(request: BuildRequest) -> int:
         from molt.cli.build_output_layout import build_scope
 
         with build_scope():
-            return build_function(*args, **kwargs)
+            return build_function(request)
 
     return build
 
 
 @_with_early_cutoff
 @_in_build_scope
-def build(
-    file_path: str | None,
-    target: Target = "native",
-    parse_codec: ParseCodec = "msgpack",
-    type_hint_policy: TypeHintPolicy = "check",
-    type_facts_path: str | None = None,
-    pgo_profile: str | None = None,
-    runtime_feedback: str | None = None,
-    output: str | None = None,
-    json_output: bool = False,
-    verbose: bool = False,
-    deterministic: bool = True,
-    deterministic_warn: bool = False,
-    trusted: bool = False,
-    capabilities: CapabilityInput | None = None,
-    cache: bool = True,
-    cache_dir: str | None = None,
-    cache_report: bool = False,
-    sysroot: str | None = None,
-    emit_ir: str | None = None,
-    emit: EmitMode | None = None,
-    out_dir: str | None = None,
-    profile: BuildProfile = "release",
-    linked: bool = False,
-    linked_output: str | None = None,
-    require_linked: bool = False,
-    respect_pythonpath: bool = False,
-    module: str | None = None,
-    diagnostics: bool | None = None,
-    diagnostics_file: str | None = None,
-    diagnostics_verbosity: str | None = None,
-    portable: bool = False,
-    wasm_opt_level: str = "Oz",
-    precompile: bool = False,
-    wasm_profile: str = "auto",
-    snapshot: bool = False,
-    stdlib_profile: str | None = None,
-    tree_shake: bool = True,
-    lib_paths: list[str] | None = None,
-    split_runtime: bool = False,
-    capability_manifest: str | None = None,
-    require_signed_manifest: bool = False,
-    audit_log: str | None = None,
-    io_mode: str | None = None,
-    python_version: str | None = None,
-    build_config: Mapping[str, Any] | None = None,
-    bolt: bool = False,
-    bolt_training_cmd: str | None = None,
-    fact_graph_request: _factgraph.FactGraphRequest | None = None,
-    codegen_backend: CodegenBackend = DEFAULT_CODEGEN_BACKEND,
-) -> int:
+def build(request: BuildRequest) -> int:
     from molt.cli import build_inputs as _build_inputs
     from molt.cli import build_pipeline as _build_pipeline
     from molt.cli import frontend_pipeline as _frontend_pipeline
@@ -341,26 +282,34 @@ def build(
         resolve_stdlib_profile,
     )
 
-    if isinstance(profile, bool):
-        profile = "release"
-    if profile not in {"dev", "release"}:
-        return _fail(f"Invalid build profile: {profile}", json_output, command="build")
-    if bolt_training_cmd is not None and not bolt:
+    if request.profile not in {"dev", "release"}:
+        return _fail(
+            f"Invalid build profile: {request.profile}",
+            request.json_output,
+            command="build",
+        )
+    if request.bolt_training_cmd is not None and not request.bolt:
         return _fail(
             "BOLT training command requires BOLT optimization.",
-            json_output,
+            request.json_output,
             command="build",
         )
-    if bolt and profile != "release":
+    if request.bolt and request.profile != "release":
         return _fail(
             "BOLT requires the release build profile.",
-            json_output,
+            request.json_output,
             command="build",
         )
-    if bolt and target in {"wasm", "wasm-freestanding", "rust", "luau", "mlir"}:
+    if request.bolt and request.target in {
+        "wasm",
+        "wasm-freestanding",
+        "rust",
+        "luau",
+        "mlir",
+    }:
         return _fail(
-            f"BOLT requires a native Linux ELF target, not {target!r}.",
-            json_output,
+            f"BOLT requires a native Linux ELF target, not {request.target!r}.",
+            request.json_output,
             command="build",
         )
     # Resolve `stdlib_profile` through the ONE config authority. The CLI
@@ -371,10 +320,10 @@ def build(
     # construction and to the runtime build, so the closure reader and the
     # staticlib selector can never disagree.
     stdlib_profile, _ = resolve_stdlib_profile(
-        flag=stdlib_profile,
+        flag=request.stdlib_profile,
         build_cfg=(
-            _resolve_build_config(dict(build_config))
-            if build_config is not None
+            _resolve_build_config(dict(request.build_config))
+            if request.build_config is not None
             else None
         ),
     )
@@ -384,44 +333,46 @@ def build(
     # in-process caller (library use, the batch build server, a test) cannot
     # leak one build's choices into later work.
     codegen = CodegenSelection(
-        backend=codegen_backend,
-        portable=portable,
+        backend=request.codegen_backend,
+        portable=request.portable,
         wasm_profile=(
-            wasm_profile
-            if target in {"wasm", "wasm-freestanding"} and wasm_profile
+            request.wasm_profile
+            if request.target in {"wasm", "wasm-freestanding"} and request.wasm_profile
             else None
         ),
     )
     with _source_tree_fingerprint_transaction():
-        if file_path and module:
+        if request.file_path and request.module:
             return _fail(
-                "Use a file path or --module, not both.", json_output, command="build"
+                "Use a file path or --module, not both.",
+                request.json_output,
+                command="build",
             )
         prepared_build_inputs, prepared_build_inputs_error = (
             _build_inputs._prepare_build_inputs(
-                file_path=file_path,
-                module=module,
-                diagnostics=diagnostics,
-                diagnostics_file=diagnostics_file,
-                diagnostics_verbosity=diagnostics_verbosity,
-                json_output=json_output,
-                target=target,
-                deterministic=deterministic,
-                deterministic_warn=deterministic_warn,
-                sysroot=sysroot,
-                profile=profile,
-                pgo_profile=pgo_profile,
-                runtime_feedback=runtime_feedback,
-                capabilities=capabilities,
-                capability_manifest=capability_manifest,
-                require_signed_manifest=require_signed_manifest,
-                trusted=trusted,
-                audit_log=audit_log,
-                io_mode=io_mode,
-                respect_pythonpath=respect_pythonpath,
-                lib_paths=lib_paths or [],
-                python_version=python_version,
-                build_config=build_config,
+                file_path=request.file_path,
+                module=request.module,
+                diagnostics=request.diagnostics,
+                diagnostics_file=request.diagnostics_file,
+                diagnostics_verbosity=request.diagnostics_verbosity,
+                json_output=request.json_output,
+                target=request.target,
+                deterministic=request.deterministic,
+                deterministic_warn=request.deterministic_warn,
+                sysroot=request.sysroot,
+                profile=request.profile,
+                pgo_profile=request.pgo_profile,
+                runtime_feedback=request.runtime_feedback,
+                capabilities=request.capabilities,
+                capability_manifest=request.capability_manifest,
+                require_signed_manifest=request.require_signed_manifest,
+                trusted=request.trusted,
+                audit_log=request.audit_log,
+                io_mode=request.io_mode,
+                respect_pythonpath=request.respect_pythonpath,
+                lib_paths=request.lib_paths or [],
+                python_version=request.python_version,
+                build_config=request.build_config,
                 codegen=codegen,
             )
         )
@@ -440,23 +391,23 @@ def build(
                 prepared_build_roots=prepared_build_roots,
                 prepared_build_config=prepared_build_config,
                 resolved_build_entry=resolved_build_entry,
-                parse_codec=parse_codec,
-                type_hint_policy=type_hint_policy,
-                profile=profile,
-                json_output=json_output,
-                target=target,
-                verbose=verbose,
-                out_dir=out_dir,
-                trusted=trusted,
-                split_runtime=split_runtime,
-                require_linked=require_linked,
-                linked=linked,
-                linked_output=linked_output,
-                emit=emit,
-                output=output,
-                emit_ir=emit_ir,
-                type_facts_path=type_facts_path,
-                tree_shake=tree_shake,
+                parse_codec=request.parse_codec,
+                type_hint_policy=request.type_hint_policy,
+                profile=request.profile,
+                json_output=request.json_output,
+                target=request.target,
+                verbose=request.verbose,
+                out_dir=request.out_dir,
+                trusted=request.trusted,
+                split_runtime=request.split_runtime,
+                require_linked=request.require_linked,
+                linked=request.linked,
+                linked_output=request.linked_output,
+                emit=request.emit,
+                output=request.output,
+                emit_ir=request.emit_ir,
+                type_facts_path=request.type_facts_path,
+                tree_shake=request.tree_shake,
                 stdlib_profile=stdlib_profile,
             )
         )
@@ -469,21 +420,21 @@ def build(
             prepared_build_config=prepared_build_config,
             resolved_build_entry=resolved_build_entry,
             prepared_frontend_pipeline_bundle=prepared_frontend_pipeline_bundle,
-            profile=profile,
-            json_output=json_output,
-            target=target,
-            cache_dir=cache_dir,
-            cache=cache,
-            cache_report=cache_report,
-            deterministic=deterministic,
-            trusted=trusted,
-            verbose=verbose,
-            require_linked=require_linked,
-            wasm_opt_level=wasm_opt_level,
-            precompile=precompile,
-            snapshot=snapshot,
+            profile=request.profile,
+            json_output=request.json_output,
+            target=request.target,
+            cache_dir=request.cache_dir,
+            cache=request.cache,
+            cache_report=request.cache_report,
+            deterministic=request.deterministic,
+            trusted=request.trusted,
+            verbose=request.verbose,
+            require_linked=request.require_linked,
+            wasm_opt_level=request.wasm_opt_level,
+            precompile=request.precompile,
+            snapshot=request.snapshot,
             stdlib_profile=stdlib_profile,
-            bolt_requested=bolt,
-            bolt_training_cmd=bolt_training_cmd,
-            fact_graph_request=fact_graph_request,
+            bolt_requested=request.bolt,
+            bolt_training_cmd=request.bolt_training_cmd,
+            fact_graph_request=request.fact_graph_request,
         )

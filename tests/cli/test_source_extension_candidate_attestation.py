@@ -134,7 +134,7 @@ def _dispatch(
     return entrypoint_dispatch._dispatch_entrypoint_command(
         args,
         parser=parser,
-        build_fn=lambda **_: 0,
+        build_fn=lambda _request: 0,
         config_root=tmp_path,
         config={},
         build_cfg={},

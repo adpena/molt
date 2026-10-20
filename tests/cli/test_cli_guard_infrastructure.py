@@ -259,7 +259,7 @@ def test_entrypoint_reports_a_guard_failure_with_the_guard_exit_code(
     monkeypatch.setattr(sys, "argv", argv)
     monkeypatch.setattr(sys, "stdin", io.StringIO(""))
 
-    rc = entrypoint.main(build_fn=lambda *_a, **_k: 0)
+    rc = entrypoint.main(build_fn=lambda _request: 0)
 
     assert rc == process_guard.guard_infrastructure_exit_code() == 125
     captured = capsys.readouterr()
@@ -291,7 +291,7 @@ def test_cli_profile_writes_one_stats_file_per_process(
     monkeypatch.setattr(sys, "argv", ["molt", "build", str(entry)])
     monkeypatch.setenv("MOLT_CLI_PROFILE", str(tmp_path / "profiles" / "{pid}.prof"))
 
-    assert entrypoint.main(build_fn=lambda *_a, **_k: 0) == 0
+    assert entrypoint.main(build_fn=lambda _request: 0) == 0
 
     written = tmp_path / "profiles" / f"{os.getpid()}.prof"
     functions = {name for _file, _line, name in pstats.Stats(str(written)).stats}

@@ -8,7 +8,6 @@ from __future__ import annotations
 
 from molt.process_environment import ProcessEnvironment
 
-import inspect
 import os
 import sys
 import tempfile
@@ -21,40 +20,12 @@ import pytest
 from molt import build_record
 from molt.file_hashing import DIGEST_RACY_WINDOW_NS
 from molt.cli import build_command
+from molt.cli.build_request import BuildRequest
 
 
 def _fake_build(calls: list[str]):
-    def build(
-        file_path: str | None,
-        target: str = "native",
-        type_hint_policy: str = "check",
-        type_facts_path: str | None = None,
-        pgo_profile: str | None = None,
-        runtime_feedback: str | None = None,
-        output: str | None = None,
-        json_output: bool = False,
-        verbose: bool = False,
-        capabilities: Any = None,
-        cache: bool = True,
-        cache_dir: str | None = None,
-        cache_report: bool = False,
-        sysroot: str | None = None,
-        emit_ir: str | None = None,
-        emit: str | None = None,
-        out_dir: str | None = None,
-        linked: bool = False,
-        linked_output: str | None = None,
-        diagnostics: bool | None = None,
-        diagnostics_file: str | None = None,
-        portable: bool = False,
-        snapshot: bool = False,
-        split_runtime: bool = False,
-        capability_manifest: str | None = None,
-        audit_log: str | None = None,
-        bolt: bool = False,
-        fact_graph_request: Any = None,
-        codegen_backend: str = build_command.DEFAULT_CODEGEN_BACKEND,
-    ) -> int:
+    def build(request: BuildRequest) -> int:
+        file_path, output = request.file_path, request.output
         assert file_path is not None and output is not None
         calls.append(file_path)
         source = Path(file_path).read_text(encoding="utf-8")
@@ -86,7 +57,13 @@ def _run(build, project: Path, output: Path, *, first: bool = True) -> None:
     # Each call is the first build of a new process.
     build_record._BUILDS_ENTERED = 0 if first else 1
     assert (
-        build(os.fspath(project / "app.py"), output=os.fspath(output), verbose=True)
+        build(
+            BuildRequest(
+                file_path=os.fspath(project / "app.py"),
+                output=os.fspath(output),
+                verbose=True,
+            )
+        )
         == 0
     )
 
@@ -139,7 +116,6 @@ def test_temporary_files_leave_the_recorded_build_current(
             pass
         return fake(*args, **kwargs)
 
-    build_with_temporary_file.__signature__ = inspect.signature(fake)  # type: ignore[attr-defined]
     build = build_command._with_early_cutoff(build_with_temporary_file)
     output = tmp_path / "app"
     _run(build, project, output)
@@ -175,7 +151,6 @@ def test_a_guarded_child_leaves_the_recorded_build_current(
         assert child.returncode == 0
         return fake(*args, **kwargs)
 
-    guarded_build.__signature__ = inspect.signature(fake)  # type: ignore[attr-defined]
     build = build_command._with_early_cutoff(guarded_build)
     output = tmp_path / "app"
     _run(build, project, output)
@@ -214,13 +189,6 @@ def test_a_directory_output_never_cuts_off(
     project: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setattr(build_record, "_BUILDS_ENTERED", 0)
-    arguments = {
-        name: parameter.default
-        for name, parameter in __import__("inspect")
-        .signature(_fake_build([]))
-        .parameters.items()
-    }
-    arguments.update(file_path=os.fspath(project / "app.py"))
     for output in (os.fspath(tmp_path) + os.sep, os.fspath(tmp_path)):
-        arguments["output"] = output
-        assert build_command._early_cutoff_request(arguments) is None
+        request = BuildRequest(file_path=os.fspath(project / "app.py"), output=output)
+        assert build_command._early_cutoff_request(request) is None

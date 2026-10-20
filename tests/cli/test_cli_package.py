@@ -108,7 +108,7 @@ def test_build_reaches_its_build_function_without_other_commands() -> None:
     loaded = _molt_modules_loaded_by(
         "from molt.cli import entrypoint\n"
         "sys.argv = ['molt', 'build', 'probe.py']\n"
-        "assert entrypoint.main(build_fn=lambda *args, **kwargs: 0) == 0"
+        "assert entrypoint.main(build_fn=lambda _request: 0) == 0"
     )
     assert "molt.cli.entrypoint_dispatch" in loaded
     assert not loaded & _BUILD_STAGES

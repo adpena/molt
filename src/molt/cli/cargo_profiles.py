@@ -4,7 +4,7 @@ import functools
 import os
 import re
 
-from molt.cli.models import BuildProfile
+from molt.cli.build_request import BuildProfile
 from molt.cli.runtime_paths import _cargo_profile_dir
 
 _CARGO_PROFILE_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]*$")

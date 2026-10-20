@@ -9,25 +9,19 @@ import json
 import shlex
 import sys
 from contextlib import redirect_stderr, redirect_stdout
-from typing import Any, Mapping, cast
+from typing import Any, Callable
 from molt.source_root import compiler_source_root
 from molt.dx import DEFAULT_UV_PROJECT_PYTHON, DxConfigError, DxProject
 from molt.cli.command_runtime import (
     _CLI_MEMORY_GUARD_PREFIX,
     _run_completed_command,
 )
-from molt.cli.config_resolution import (
-    DEFAULT_STDLIB_PROFILE,
-    STDLIB_PROFILE_CHOICES,
-    _select_codegen_backend,
-)
 from molt.cli.env_overrides import temporary_env_overrides as _temporary_env_overrides
 from molt.cli.env_paths import _base_env
-from molt.cli.models import (
+from molt.cli.build_request import (
     BuildProfile,
-    EmitMode,
-    ParseCodec,
-    TypeHintPolicy,
+    BuildRequest,
+    build_request_from_payload,
 )
 from molt.cli.output import emit_json as _emit_json
 from molt.cli.output import json_payload as _json_payload
@@ -39,23 +33,11 @@ from molt._host_capabilities_generated import MAXIMUM_BUILTIN_CAPABILITY_TIER
 from molt.cli.process_execution import _run_command
 
 
-def _normalize_internal_batch_stdlib_profile(
-    params: Mapping[str, Any],
-) -> tuple[str | None, str | None]:
-    raw = params.get("stdlib_profile", DEFAULT_STDLIB_PROFILE)
-    if not isinstance(raw, str):
-        return None, "stdlib_profile must be a string"
-    if raw not in STDLIB_PROFILE_CHOICES:
-        choices = "', '".join(STDLIB_PROFILE_CHOICES)
-        return None, f"stdlib_profile must be one of '{choices}'"
-    return raw, None
-
-
 def _internal_batch_build_server(
     *,
     json_output: bool = False,
     verbose: bool = False,
-    build_fn: Any | None = None,
+    build_fn: Callable[[BuildRequest], int] | None = None,
 ) -> int:
     del json_output
     del verbose
@@ -102,16 +84,12 @@ def _internal_batch_build_server(
         if not isinstance(params, dict):
             _emit_response({"id": req_id, "ok": False, "error": "missing build params"})
             continue
-        if "fallback" in params:
-            _emit_response(
-                {
-                    "id": req_id,
-                    "ok": False,
-                    "error": "build parameter 'fallback' was removed; unsupported constructs fail at compile time",
-                }
-            )
+        try:
+            build_request = build_request_from_payload(params)
+        except (TypeError, ValueError) as exc:
+            _emit_response({"id": req_id, "ok": False, "error": str(exc)})
             continue
-        env_overrides_raw = params.get("env_overrides", {})
+        env_overrides_raw = request.get("env_overrides", {})
         if not isinstance(env_overrides_raw, dict) or any(
             not isinstance(key, str) or not isinstance(value, str)
             for key, value in env_overrides_raw.items()
@@ -125,27 +103,6 @@ def _internal_batch_build_server(
             )
             continue
         env_overrides: dict[str, str] = dict(env_overrides_raw)
-        stdlib_profile, stdlib_profile_error = _normalize_internal_batch_stdlib_profile(
-            params
-        )
-        if stdlib_profile_error is not None:
-            _emit_response(
-                {
-                    "id": req_id,
-                    "ok": False,
-                    "error": stdlib_profile_error,
-                }
-            )
-            continue
-        assert stdlib_profile is not None
-        # The request selects the backend as a typed parameter, like the CLI's
-        # --backend; an env_overrides MOLT_BACKEND selects nothing.
-        target, codegen_backend, backend_error = _select_codegen_backend(
-            str(params.get("target", "native")), str(params.get("backend", "auto"))
-        )
-        if backend_error is not None:
-            _emit_response({"id": req_id, "ok": False, "error": backend_error})
-            continue
         stdout_buf = io.StringIO()
         stderr_buf = io.StringIO()
         try:
@@ -157,45 +114,7 @@ def _internal_batch_build_server(
                         active_build_fn = build_command.build
                     else:
                         active_build_fn = build_fn
-                    rc = active_build_fn(
-                        file_path=params.get("file_path"),
-                        target=target,
-                        codegen_backend=codegen_backend,
-                        parse_codec=cast(ParseCodec, params.get("codec", "msgpack")),
-                        type_hint_policy=cast(
-                            TypeHintPolicy, params.get("type_hints", "check")
-                        ),
-                        type_facts_path=params.get("type_facts"),
-                        pgo_profile=params.get("pgo_profile"),
-                        runtime_feedback=params.get("runtime_feedback"),
-                        output=params.get("output"),
-                        json_output=bool(params.get("json_output", False)),
-                        verbose=bool(params.get("verbose", False)),
-                        deterministic=bool(params.get("deterministic", True)),
-                        deterministic_warn=bool(
-                            params.get("deterministic_warn", False)
-                        ),
-                        trusted=bool(params.get("trusted", False)),
-                        capabilities=params.get("capabilities"),
-                        cache=bool(params.get("cache", True)),
-                        cache_dir=params.get("cache_dir"),
-                        cache_report=bool(params.get("cache_report", False)),
-                        sysroot=params.get("sysroot"),
-                        emit_ir=params.get("emit_ir"),
-                        emit=cast(EmitMode | None, params.get("emit")),
-                        out_dir=params.get("out_dir"),
-                        profile=cast(BuildProfile, params.get("profile", "dev")),
-                        linked=bool(params.get("linked", False)),
-                        linked_output=params.get("linked_output"),
-                        require_linked=bool(params.get("require_linked", False)),
-                        respect_pythonpath=bool(
-                            params.get("respect_pythonpath", False)
-                        ),
-                        module=params.get("module"),
-                        diagnostics_verbosity=params.get("diagnostics_verbosity"),
-                        python_version=params.get("python_version"),
-                        stdlib_profile=stdlib_profile,
-                    )
+                    rc = active_build_fn(build_request)
         except Exception as exc:  # pragma: no cover - defensive server hardening
             _emit_response(
                 {

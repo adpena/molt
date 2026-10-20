@@ -19,8 +19,8 @@ from molt.cli.build_results import (
 )
 from molt.cli.config_resolution import DEFAULT_RUNTIME_STDLIB_PROFILE
 from molt.cli.rust_cpu_policy import RustCpuPolicy
+from molt.cli.build_request import BuildProfile
 from molt.cli.models import (
-    BuildProfile,
     _ExternalPackageNativeArtifactPlan,
     _PreparedBackendCompile,
     _PreparedBackendRuntimeContext,

@@ -1,11 +1,9 @@
 from __future__ import annotations
 
-import inspect
 import json
 import subprocess
 import sys
 from pathlib import Path
-from typing import Any, cast
 
 import pytest
 
@@ -18,6 +16,7 @@ from molt.cli import wrapper_build
 from molt.cli import output as cli_output
 from molt.cli import build_command as cli_build_command
 from molt.cli import arg_helpers as cli_arg_helpers
+from molt.cli.build_request import BuildRequest
 
 
 def test_prepare_build_config_uses_dev_runtime_profile_for_dev_builds(
@@ -181,11 +180,9 @@ def test_build_profile_flag_routes_to_build_profile(
     entry = tmp_path / "main.py"
     entry.write_text("print('ok')\n", encoding="utf-8")
     seen_profiles: list[str] = []
-    build_signature = inspect.signature(cli_build_command.build)
 
-    def fake_build(*args: Any, **kwargs: Any) -> int:
-        bound = build_signature.bind_partial(*args, **kwargs)
-        seen_profiles.append(cast(str, bound.arguments["profile"]))
+    def fake_build(request: BuildRequest) -> int:
+        seen_profiles.append(request.profile)
         return 0
 
     monkeypatch.setattr(cli_build_command, "build", fake_build)

@@ -4,8 +4,10 @@ import json
 import shutil
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import molt.dx as molt_dx
+import pytest
 from molt import custody_layout
 from tests.process_guard_common import install_module_view
 
@@ -270,7 +272,14 @@ def test_stats_summary_contains_required_fields():
     }
 
 
-def test_batch_build_params_are_native_and_canonical_env():
+def test_batch_build_params_are_native_and_canonical_env(monkeypatch):
+    install_module_view(
+        monkeypatch,
+        "time",
+        run_molt_conformance.time,
+        run_molt_conformance,
+        monotonic=lambda: 0.0,
+    )
     src = Path("/tmp/corpus/alpha.py")
     out = Path("/tmp/out/alpha")
     env = {
@@ -287,7 +296,18 @@ def test_batch_build_params_are_native_and_canonical_env():
         "MOLT_CODEC": "json",
     }
 
-    params = run_molt_conformance._molt_batch_build_params(src, out, env)
+    captured = {}
+
+    class Client:
+        def request(self, op, *, params, env_overrides, timeout):
+            assert op == "build" and timeout == 12.0
+            captured.update(params=params, env_overrides=env_overrides)
+            return {"ok": True, "returncode": 0}
+
+    compiler = run_molt_conformance.ConformanceBatchCompiler(["molt"], env)
+    compiler._client = Client()
+    assert compiler.build(src, out, timeout=12.0) == {"ok": True, "returncode": 0}
+    params = captured["params"]
 
     assert params["file_path"] == str(src)
     assert params["output"] == str(out)
@@ -295,8 +315,11 @@ def test_batch_build_params_are_native_and_canonical_env():
     assert "fallback" not in params
     assert params["trusted"] is False
     assert params["profile"] == "release"
-    assert params["codec"] == "json"
-    assert params["env_overrides"] == {
+    assert params["parse_codec"] == "json"
+    assert params["type_hint_policy"] == "check"
+    assert "env_overrides" not in params
+    assert not {"codec", "type_hints", "type_facts", "backend"} & params.keys()
+    assert captured["env_overrides"] == {
         key: env[key]
         for key in (
             "MOLT_EXT_ROOT",
@@ -323,7 +346,7 @@ def test_conformance_batch_server_starts_in_guarded_process_group(
             captured["cmd"] = cmd
             captured.update(kwargs)
 
-        def request(self, op: str, *, timeout: float, params=None):
+        def request(self, op: str, *, timeout: float, params=None, env_overrides=None):
             return {"ok": True, "pong": True, "id": 1, "op": op}
 
         def close(self, *, force: bool = False, timeout: float = 60.0) -> None:
@@ -417,6 +440,198 @@ def test_compile_file_reports_batch_error_without_host_fallback(tmp_path: Path):
     assert not out.exists()
 
 
+def test_compile_file_rejects_invalid_codec_before_batch_startup(monkeypatch, tmp_path):
+    def unexpected_start(*args, **kwargs):
+        pytest.fail("invalid conformance configuration started the batch client")
+
+    monkeypatch.setattr(
+        run_molt_conformance, "BatchCompileServerClient", unexpected_start
+    )
+    out = tmp_path / "program_molt"
+    with run_molt_conformance.ConformanceBatchCompiler(
+        ["molt"], {"MOLT_CODEC": "invalid-codec"}
+    ) as compiler:
+        result = run_molt_conformance.compile_file(
+            compiler, tmp_path / "program.py", out
+        )
+
+    assert not result.ok and not result.timed_out
+    assert "rc=2" in result.detail
+    assert "parse_codec" in result.detail and "invalid-codec" in result.detail
+    assert not out.exists()
+
+
+@pytest.mark.parametrize("explicit_ping", [False, True])
+def test_conformance_batch_startup_follows_validation_and_pings_once(
+    monkeypatch, tmp_path, explicit_ping
+):
+    events = []
+
+    class Client:
+        def __init__(self, command, **kwargs):
+            events.append("start")
+
+        def request(self, op, *, params=None, env_overrides=None, timeout):
+            events.append(op)
+            if op == "ping":
+                return {"ok": True, "pong": True}
+            assert params["file_path"] == str(tmp_path / "program.py")
+            assert params["parse_codec"] == "json"
+            return {"ok": True, "returncode": 0}
+
+        def close(self, *, force=False, timeout):
+            events.append("close")
+
+    monkeypatch.setattr(run_molt_conformance, "BatchCompileServerClient", Client)
+    with run_molt_conformance.ConformanceBatchCompiler(
+        ["molt"], {"MOLT_CODEC": "json"}
+    ) as compiler:
+        assert events == []
+        if explicit_ping:
+            compiler.ping()
+        for _ in range(2):
+            response = compiler.build(
+                tmp_path / "program.py", tmp_path / "program_molt", timeout=5.0
+            )
+            assert response == {"ok": True, "returncode": 0}
+
+    assert events == ["start", "ping", "build", "build", "close"]
+
+
+@pytest.mark.parametrize(
+    "budget,startup_elapsed,ping_elapsed,ping_budget,build_budget",
+    [
+        (5.0, 1.0, 1.25, 4.0, 2.75),
+        (30.0, 2.0, 3.0, 10.0, 25.0),
+        (5.0, 1.0, 4.0, 4.0, None),
+        (5.0, 1.0, 7.0, 4.0, None),
+        (5.0, 5.0, 0.0, None, None),
+    ],
+)
+def test_conformance_first_build_spends_one_deadline(
+    monkeypatch,
+    tmp_path,
+    budget,
+    startup_elapsed,
+    ping_elapsed,
+    ping_budget,
+    build_budget,
+):
+    clock = SimpleNamespace(now=100.0)
+    install_module_view(
+        monkeypatch,
+        "time",
+        run_molt_conformance.time,
+        run_molt_conformance,
+        monotonic=lambda: clock.now,
+    )
+    requests = []
+    closes = []
+
+    class Client:
+        def __init__(self, command, **kwargs):
+            clock.now += startup_elapsed
+
+        def request(self, op, *, params=None, env_overrides=None, timeout):
+            requests.append((op, timeout))
+            if op == "ping":
+                clock.now += ping_elapsed
+                return {"ok": True, "pong": True}
+            return {"ok": True, "returncode": 0}
+
+        def close(self, *, force=False, timeout):
+            closes.append(force)
+
+    monkeypatch.setattr(run_molt_conformance, "BatchCompileServerClient", Client)
+    with run_molt_conformance.ConformanceBatchCompiler(["molt"], {}) as compiler:
+        if build_budget is None:
+            with pytest.raises(TimeoutError, match="budget exhausted"):
+                compiler.build(
+                    tmp_path / "program.py", tmp_path / "program", timeout=budget
+                )
+            assert compiler._client is None
+        else:
+            assert compiler.build(
+                tmp_path / "program.py", tmp_path / "program", timeout=budget
+            ) == {"ok": True, "returncode": 0}
+
+    expected_requests = [] if ping_budget is None else [("ping", ping_budget)]
+    if build_budget is not None:
+        expected_requests.append(("build", build_budget))
+    assert requests == expected_requests
+    assert closes == [build_budget is None]
+
+
+def test_explicit_conformance_ping_retains_its_timeout_error(monkeypatch):
+    requests = []
+    closes = []
+
+    class Client:
+        def __init__(self, command, **kwargs):
+            pass
+
+        def request(self, op, *, params=None, env_overrides=None, timeout):
+            requests.append((op, timeout))
+            raise TimeoutError("fixture ping deadline")
+
+        def close(self, *, force=False, timeout):
+            closes.append(force)
+
+    monkeypatch.setattr(run_molt_conformance, "BatchCompileServerClient", Client)
+    compiler = run_molt_conformance.ConformanceBatchCompiler(["molt"], {})
+    with pytest.raises(
+        run_molt_conformance.BatchBuildServerError, match="ping timed out"
+    ) as error:
+        compiler.ping()
+
+    assert isinstance(error.value.__cause__, TimeoutError)
+    assert requests == [("ping", 10.0)]
+    assert closes == [True]
+    assert compiler._client is None
+
+
+def test_first_ping_timeout_is_a_compile_timeout_with_owned_cleanup(
+    monkeypatch, tmp_path
+):
+    clock = SimpleNamespace(now=100.0)
+    install_module_view(
+        monkeypatch,
+        "time",
+        run_molt_conformance.time,
+        run_molt_conformance,
+        monotonic=lambda: clock.now,
+    )
+    requests = []
+    closes = []
+    clients = []
+
+    class Client:
+        def __init__(self, command, **kwargs):
+            clients.append(self)
+
+        def request(self, op, *, params=None, env_overrides=None, timeout):
+            requests.append((op, timeout))
+            clock.now += timeout
+            raise TimeoutError("fixture ping exhausted compile deadline")
+
+        def close(self, *, force=False, timeout):
+            closes.append(force)
+
+    monkeypatch.setattr(run_molt_conformance, "BatchCompileServerClient", Client)
+    with run_molt_conformance.ConformanceBatchCompiler(["molt"], {}) as compiler:
+        result = run_molt_conformance.compile_file(
+            compiler, tmp_path / "program.py", tmp_path / "program", timeout=3.0
+        )
+
+    assert result == run_molt_conformance.CompileResult(
+        False, "compile timeout", timed_out=True
+    )
+    assert requests == [("ping", 3.0)]
+    assert len(clients) == 2
+    assert closes == [True, False]
+    assert compiler._client is None
+
+
 def test_compile_file_restarts_batch_server_after_timeout(tmp_path: Path):
     src = tmp_path / "slow.py"
     out = tmp_path / "slow_molt"
@@ -498,7 +713,7 @@ def test_main_writes_json_summary_for_requested_suite(tmp_path: Path, monkeypatc
     assert len(batch_instances) == 1
     assert batch_instances[0].molt_cmd == ["molt"]
     assert batch_instances[0].entered
-    assert batch_instances[0].pinged
+    assert not batch_instances[0].pinged
     assert batch_instances[0].exited
 
 

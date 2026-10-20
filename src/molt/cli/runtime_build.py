@@ -22,10 +22,8 @@ from molt.cli.config_resolution import (
     DEFAULT_RUNTIME_STDLIB_PROFILE,
     DEFAULT_STDLIB_PROFILE,
 )
-from molt.cli.models import (
-    BuildProfile,
-    _RuntimeArtifactState,
-)
+from molt.cli.build_request import BuildProfile
+from molt.cli.models import _RuntimeArtifactState
 from molt.cli.runtime_features import (
     runtime_stdlib_profile_for_required_features,
 )

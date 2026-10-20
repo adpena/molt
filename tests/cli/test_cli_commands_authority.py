@@ -32,7 +32,6 @@ _COMMAND_AUTHORITIES = {
     ),
     quality_commands: (
         "_internal_batch_build_server",
-        "_normalize_internal_batch_stdlib_profile",
         "bench",
         "lint",
         "profile",

@@ -22,6 +22,7 @@ from molt.cli.atomic_io import _atomic_write_json
 from molt.cli.artifact_sync import _artifact_sync_state_path
 from molt.cli import backend_output_pipeline as _backend_output_pipeline
 from molt.cli import factgraph as _factgraph
+from molt.cli.build_request import FactGraphRequest
 from molt.cli import frontend_pipeline as _frontend_pipeline
 from molt.cli import runtime_features as _runtime_features
 from molt.cli.backend_execution import _write_backend_ir_lease
@@ -30,8 +31,8 @@ from molt.cli.build_diagnostics import _emit_build_diagnostics_for_result
 from molt.cli.config_resolution import DEFAULT_STDLIB_PROFILE, ENTRY_OVERRIDE_ENV
 from molt.cli.cache_keys import FunctionDigests
 from molt.cli.external_native import _external_native_artifact_output_custody_error
+from molt.cli.build_request import BuildProfile
 from molt.cli.models import (
-    BuildProfile,
     _PreparedBuildConfig,
     _PreparedBuildPreamble,
     _PreparedBuildRoots,
@@ -98,7 +99,7 @@ def _run_backend_pipeline(
     stdlib_profile: str | None = DEFAULT_STDLIB_PROFILE,
     bolt_requested: bool = False,
     bolt_training_cmd: str | None = None,
-    fact_graph_request: _factgraph.FactGraphRequest | None = None,
+    fact_graph_request: FactGraphRequest | None = None,
 ) -> int:
     build_python_admission: BuildPythonAdmission | None = None
 
