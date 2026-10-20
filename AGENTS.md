@@ -79,9 +79,6 @@ prefer live code, tests, measurements and explicit user direction over stale pro
   useful diagnostics.
 - Portability covers compiler/runtime, CLI, tests, build/release tooling, and developer apparatus
   alike; host-specific assumptions must not leak into target semantics or shared infrastructure.
-- Source commands select the compiler frontend with `uv run --python VERSION`; differential
-  tooling inherits that interpreter. Keep the compiled language target under its existing
-  CLI/project authority, and use a frontend new enough to parse it. See `docs/getting-started.md`.
 
 ## Performance is part of correctness
 
@@ -120,8 +117,8 @@ prefer live code, tests, measurements and explicit user direction over stale pro
   landed.
 - Generated files are projections. Change their declarative source or generator and regenerate them
   in the same arc.
-- Prefer existing project commands and helpers when they express the current contract. Improve or
-  replace them when live evidence shows they are stale, ambiguous, duplicated, or wasteful.
+- Reuse project commands, repairing stale, ambiguous or wasteful helpers. Select the CPython 3.12+ frontend
+  through uv; record its version separately from the CLI/project target (`docs/getting-started.md`).
 - Keep operational history, incidents, long procedures and tutorials out of this always-loaded file;
   put durable detail in the owning design, spec, runbook, skill, test or live board. Keep per-run
   logs, scratch plans and worker handoffs out of tracked source (`docs/ROOT_LAYOUT.md`); preserve

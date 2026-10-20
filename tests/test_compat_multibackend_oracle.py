@@ -1092,10 +1092,7 @@ def test_all_backends_receive_one_explicit_untrusted_test_context(
     monkeypatch.setenv("PYTHONOPTIMIZE", "2")
     targets = ("native", "wasm", "llvm", "luau")
     registry, native_contexts = install_fake_registry(
-        {
-            target: compat_backends.BackendResult("42\n", "", 0)
-            for target in targets
-        }
+        {target: compat_backends.BackendResult("42\n", "", 0) for target in targets}
     )
 
     status = molt_diff.diff_test(
@@ -1116,9 +1113,7 @@ def test_all_backends_receive_one_explicit_untrusted_test_context(
         name: context.environment[name]
         for name in retired_overrides
         if name in context.environment
-    } == (
-        retired_overrides if inherited_target_overrides else {}
-    )
+    } == (retired_overrides if inherited_target_overrides else {})
     assert context.environment["MOLT_CAPABILITY_TIER"] == "none"
     assert context.capabilities == "net"
     assert "poison.inherited" not in context.capabilities
