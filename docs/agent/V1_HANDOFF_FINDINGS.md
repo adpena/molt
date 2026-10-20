@@ -970,8 +970,9 @@ differential and conformance producers consume it; wire admission rejects stale
 aliases and invalid types before applying invocation environment overrides.
 Producer admission preserves configuration/build-failure classification; benchmark
 and conformance services start only after a valid request, with existing lifecycle
-and scratch owners retained. The replaced type definitions and reflective per-call signature binding are
-removed. Full request transport and unchanged-build cache controls are qualified
+and scratch owners retained. Benchmark methodology v6 records the changed startup
+measurement and admission semantics; v5 boards remain historical. The replaced
+type definitions and reflective per-call signature binding are removed. Full request transport and unchanged-build cache controls are qualified
 separately from the still-open automatic frontend-selection obligation above.
 The development runner now schedules directly from the canonical target catalog;
 its copied three-version registry is deleted. Independent synthetic schedules

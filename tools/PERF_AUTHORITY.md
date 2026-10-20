@@ -14,6 +14,13 @@ and warm timings, native+LLVM backend parity, repeat-CI classification,
 quiescence, provenance, and stale-tree status. It is the only lane allowed to
 publish `authoritative=true`.
 
+Methodology v6 includes complete typed build requests, validation before compiler
+service startup and lazy benchmark-service creation. The first batch build's
+timing now includes that startup, and invalid requests retain build-admission failure classification.
+These can move recorded build numbers or verdicts, so v5 boards remain historical.
+Request transport and compiler option admission retain their compiler-source owners;
+concrete compiler/runtime/deployment identities remain separately recorded.
+
 Methodology v5 includes environment-name semantics and the complete typed
 invocation-environment migration in its content lock. These can change sample
 execution or selection and therefore start a new comparability class; existing
