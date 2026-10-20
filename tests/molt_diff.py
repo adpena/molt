@@ -53,6 +53,7 @@ from molt import compiler_process, host_capacity  # noqa: E402
 from molt.file_publication import resolve_owned_path  # noqa: E402
 from molt.portable_paths import portable_relative_path  # noqa: E402
 from molt import backend_daemon_custody as daemon_custody  # noqa: E402
+from molt.cli.backend_daemon_config import _backend_daemon_enabled  # noqa: E402
 from molt import file_locks  # noqa: E402
 from molt import python_interpreter  # noqa: E402
 from molt.target_python import (  # noqa: E402
@@ -1155,12 +1156,7 @@ def _diff_backend_daemon_default() -> bool:
     explicit = _bool_env("MOLT_DIFF_BACKEND_DAEMON")
     if explicit is not None:
         return explicit
-    inherited = _bool_env("MOLT_BACKEND_DAEMON")
-    if inherited is not None:
-        return inherited
-    # dyld "unknown imports format" has been observed repeatedly on macOS
-    # daemon lanes; defaulting to off keeps diff runs stable.
-    return sys.platform != "darwin"
+    return _backend_daemon_enabled()
 
 
 def _diff_batch_compile_server_enabled() -> bool:
