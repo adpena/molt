@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import Enum
 import platform
 import re
@@ -58,10 +58,21 @@ _BOLT_ARCHES = frozenset({"x86_64", "aarch64"})
 @dataclass(frozen=True, slots=True)
 class NativeTargetSpec:
     triple: str
-    os: str
-    arch: str
-    object_format: NativeObjectFormat
-    is_host: bool
+    is_host: bool = False
+    os: str = field(init=False)
+    arch: str = field(init=False)
+    object_format: NativeObjectFormat = field(init=False)
+
+    def __post_init__(self) -> None:
+        if type(self.is_host) is not bool:
+            raise TypeError("native target is_host must be a bool")
+        triple, target_os, arch = _admit_native_triple(self.triple)
+        object.__setattr__(self, "triple", triple)
+        object.__setattr__(self, "os", target_os)
+        object.__setattr__(self, "arch", arch)
+        object.__setattr__(
+            self, "object_format", native_object_format_for_os(target_os)
+        )
 
     @property
     def cargo_target(self) -> str | None:
@@ -141,6 +152,12 @@ def resolve_native_target_spec(
             host_platform=host_platform, host_arch=host_arch
         )
     assert target_triple is not None
+    return NativeTargetSpec(target_triple, is_host=is_host)
+
+
+def _admit_native_triple(target_triple: str) -> tuple[str, str, str]:
+    if type(target_triple) is not str:
+        raise TypeError("native target triple must be a string")
     triple = target_triple.strip().lower()
     parts = triple.split("-")
     # Classify target components, never substrings (e.g. notlinux, apple-ios,
@@ -163,17 +180,11 @@ def resolve_native_target_spec(
             "android",
         }
         if os_parts == {"windows"}:
-            return NativeTargetSpec(
-                triple, "windows", arch, native_object_format_for_os("windows"), is_host
-            )
+            return triple, "windows", arch
         if os_parts in ({"darwin"}, {"macos"}):
-            return NativeTargetSpec(
-                triple, "macos", arch, native_object_format_for_os("macos"), is_host
-            )
+            return triple, "macos", arch
         if os_parts == {"linux"} and not set(parts[1:]) & {"msvc", "mingw32"}:
-            return NativeTargetSpec(
-                triple, "linux", arch, native_object_format_for_os("linux"), is_host
-            )
+            return triple, "linux", arch
     raise RuntimeError(
         f"Native linking has no object-format policy for target {target_triple!r}."
     )
