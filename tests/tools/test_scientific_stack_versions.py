@@ -203,7 +203,7 @@ def test_scientific_variants_use_target_resolver_and_both_registered_identities(
         _write_configs(tmp_path, numpy_targets=targets, scipy_targets=targets)
     )
     monkeypatch.setattr(
-        "molt.cli.source_extension_target._host_target_triple",
+        "molt.native_target._host_target_triple",
         lambda **_facts: "x86_64-pc-windows-msvc",
     )
     wasm = scientific_extension_variant("wasm", stack=stack)

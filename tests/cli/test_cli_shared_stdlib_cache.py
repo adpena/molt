@@ -485,7 +485,7 @@ def test_dense_slot_rebinding_invalidates_app_keys_but_preserves_shared_payload(
         keys = [
             key_builder(
                 program,
-                "native",
+                TargetKind.NATIVE,
                 None,
                 variant,
                 compiler_fingerprint="compiler-fixture",
