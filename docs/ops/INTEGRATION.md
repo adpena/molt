@@ -133,6 +133,15 @@ and the `setsid` respawn died at sandbox teardown the same way. The state-dir
 `rc` file is the only trustworthy completion signal; its absence with a dead
 pid is a *diagnosis*, not a mystery.
 
+Detached custody cannot protect a process from an independent host service
+that sends signals. Process cancellation belongs to the supervisor that
+created the child, with verified ownership and identity. Global reapers
+must not infer abandonment from command-line names or checkout paths,
+elapsed time, a missing TTY, pipes, or `/dev/null` stdin: these are normal
+properties of healthy supervised builds. When a proof is interrupted,
+correlate its recorded PIDs and signal timestamps with host service logs
+before changing the payload, increasing timeouts, or repeating the campaign.
+
 ## The proof-plan manifest (`tools/proof_plan.toml`)
 
 `integrate` selects gates by matching the touched paths of the integrated
