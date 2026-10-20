@@ -263,6 +263,21 @@ semantic inputs, and import requests complete against the current project
 roots and custody after reuse. SQL applies each reader's byte bound before
 payload allocation; lowering explicitly retains its uncapped role. There is
 one decode per hit, no retained parsed-document cache, and no per-project copy.
+Source-record initialization is a versioned database transition. Schema version
+zero enters one cold bootstrap owner through the existing portable file lock;
+that owner rechecks admission, establishes incremental vacuum and WAL, then
+publishes schema, legacy-row migration, indexes and the version in one SQL
+transaction. An unknown version refuses the optional store. Ordinary opens
+read the admitted version and set connection-local synchronous mode; they
+do not repeat persistent pragmas, DDL or the bootstrap file lock. Write maintenance
+tries cold ownership once and preserves its nonwaiting refusal contract.
+Read-only maintenance admits the same version inside its read snapshot and
+never bootstraps or migrates the database.
+This distinction follows [SQLite’s busy-handler contract](https://sqlite.org/c3ref/busy_handler.html):
+a deadlock-prone lock upgrade may return `SQLITE_BUSY` without calling the
+configured handler, so a larger timeout cannot serialize competing WAL
+conversions. See [WAL busy cases](https://sqlite.org/wal.html#sometimes_queries_return_sqlite_busy_in_wal_mode)
+and [application schema versions](https://sqlite.org/pragma.html#pragma_user_version).
 The frontend operation owns its store connection; admitted record observations
 and concurrent operations pin that same owner. A weak identity registry holds no
 abandoned root alive, and the last owner closes its connection and statement
