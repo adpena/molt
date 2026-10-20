@@ -10,6 +10,8 @@ from pathlib import Path
 
 import pytest
 
+from molt.process_environment import ProcessEnvironment
+
 from tools import memory_guard
 from tools.memory_guard_core import process_custody
 
@@ -931,6 +933,41 @@ def test_process_spawn_is_single_windows_hidden_group_authority() -> None:
     }
 
 
+@pytest.mark.parametrize(
+    ("command", "expected"),
+    [
+        (
+            ["cmd.exe", "/d", "/s", "/c", 'python -c "raise SystemExit(23)"'],
+            'cmd.exe /d /s /c "python -c "raise SystemExit(23)""',
+        ),
+        (
+            [r"C:\Program Files\cmd.exe", "/C", '"tool path.exe" "%NAME%" && exit 7'],
+            '"C:\\Program Files\\cmd.exe" /C ""tool path.exe" "%NAME%" && exit 7"',
+        ),
+    ],
+)
+def test_native_shell_serialization_preserves_shell_source(command, expected):
+    from molt.process_spawn import native_popen_command
+
+    assert native_popen_command(command, windows=True) == expected
+    assert native_popen_command(command, windows=False) is command
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        ["python.exe", "-c", 'print("quotes & percent %")'],
+        ["cmd.exe", "/d"],
+        ["cmd.exe", "/c", "echo", "literal argument"],
+        ["tool.exe", "/c", 'source "quotes"'],
+    ],
+)
+def test_native_argv_serialization_remains_cpython_owned(command):
+    from molt.process_spawn import native_popen_command
+
+    assert native_popen_command(command, windows=True) is command
+
+
 def test_pytest_bootstrap_process_group_kwargs_hide_windows_console(
     monkeypatch,
 ) -> None:
@@ -1012,7 +1049,7 @@ def test_pytest_bootstrap_handoff_preserves_stdio_under_hidden_console(
     with pytest.raises(SystemExit) as exc:
         pytest_memory_guard_bootstrap.handoff_to_outer_guard(
             ["python", "-m", "pytest"],
-            {"PYTEST_CURRENT_TEST": "demo"},
+            ProcessEnvironment({"PYTEST_CURRENT_TEST": "demo"}),
         )
 
     assert exc.value.code == 7

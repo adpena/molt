@@ -12,8 +12,18 @@ from tests.process_guard_common import install_module_view
 
 @pytest.mark.parametrize("rule", list(NameRule))
 def test_guard_environment_inheritance_respects_caller_rule(monkeypatch, rule):
-    monkeypatch.setenv("MOLT_TEST_MAX_RSS_GB", "9")
-    monkeypatch.setenv("molt_test_max_total_rss_gb", "11")
+    # A literal parent block exercises both policies on every host. Windows'
+    # os.environ would fold the lowercase spelling before the guard saw it.
+    install_module_view(
+        monkeypatch,
+        "os",
+        process_guard.os,
+        process_guard,
+        environ={
+            "MOLT_TEST_MAX_RSS_GB": "9",
+            "molt_test_max_total_rss_gb": "11",
+        },
+    )
     original = ProcessEnvironment(
         {"molt_test_max_rss_gb": "7", "Path": "first", "PATH": "second"},
         rule=rule,

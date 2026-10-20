@@ -5115,14 +5115,14 @@ def test_build_python_cargo_selection_signature_and_unicode_custody(
         return identity
 
     first = capture()
-    assert first["content_path"] == str(selected)
+    assert first["content_path"] == custody_spelling(selected)
     assert first["content_path"] != sys.executable
     bound = toolchain_capture.bind_build_python_environment(
         first, policy=policy, env=env, cwd=tmp_path, cargo_command=command
     )
     assert isinstance(bound, ProcessEnvironment)
     assert bound.rule is NameRule.host()
-    assert bound["MOLT_BUILD_PYTHON"] == str(selected)
+    assert bound["MOLT_BUILD_PYTHON"] == custody_spelling(selected)
     assert len(bound["MOLT_BUILD_PYTHON_SIGNATURE"]) == 64
     projected, _updates = command_admission._supervised_execution_command(
         command_admission.envelope_for_command(command),
@@ -5136,7 +5136,7 @@ def test_build_python_cargo_selection_signature_and_unicode_custody(
     )
     assert isinstance(effective_child, ProcessEnvironment)
     assert effective_child.rule is bound.rule
-    assert effective_child["MOLT_BUILD_PYTHON"] == str(selected)
+    assert effective_child["MOLT_BUILD_PYTHON"] == custody_spelling(selected)
     # The full capture consumer must repeat the isolated startup fence in the
     # same effective Cargo environment, even though the ambient selector differs.
     full = execution_environment._capture_toolchains(

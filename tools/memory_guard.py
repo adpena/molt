@@ -179,6 +179,7 @@ from molt.process_spawn import (  # noqa: E402
     ProcessSpawnKwargs,
     detached_process_group_kwargs,
     inherit_stdio_kwargs,
+    native_popen_command,
 )
 from molt import temporary_artifacts as _temporary_artifacts  # noqa: E402
 from molt.llvm_linker_roles import lexical_executable_path  # noqa: E402
@@ -1081,7 +1082,9 @@ def run_guarded(
             raise RuntimeError("cannot publish active guard child launch boundary")
         child_launch_started = time.perf_counter()
         try:
-            proc = subprocess.Popen(launch.command, **popen_kwargs)
+            proc = subprocess.Popen(
+                native_popen_command(launch.command), **popen_kwargs
+            )
         except Exception as exc:
             if guard_job is not None:
                 _win_job.close_job(guard_job)

@@ -260,7 +260,7 @@ def test_run_one_derives_dx_environment_from_requested_overrides_before_launch(
     )
 
     assert rc == 2
-    assert len(launch_observations) == 1
+    assert len(launch_observations) == 1, log.read_text(encoding="utf-8")
     derivation_input = observed["derivation_input"]
     assert isinstance(derivation_input, dict)
     assert {name: derivation_input.get(name) for name in overrides} == overrides

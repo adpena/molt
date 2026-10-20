@@ -92,6 +92,14 @@ tool-role and secret-redaction comparisons have separate semantics.
   no filesystem search path. It neither imports an ambient Molt installation
   nor executes an unverified dependency. Both source digests define its locked
   environment generation.
+- Development gates bind structured Python commands to their admitted virtual
+  environment executable before spawning. Windows CreateProcess searches the
+  parent's PATH, not the child's block ([CPython subprocess contract](https://docs.python.org/3/library/subprocess.html#subprocess.Popen)).
+  Shell gates keep source text as a single custody field through to the native
+  spawn boundary. `process_spawn.native_popen_command` applies CPython's outer
+  shell quoting to explicit `cmd.exe /c` or `/k` source; ordinary argv retains
+  CRT serialization. Guards, direct probes and owned children share this one
+  encoding. No additional process, temporary script or guest work is needed.
 
 ## Costs
 

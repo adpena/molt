@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import ntpath
 import subprocess
 import sys
 from collections.abc import Callable, Mapping, Sequence
@@ -32,6 +33,29 @@ class ProcessSpawnKwargs(ProcessGroupKwargs, total=False):
     stdout: int | IO[str] | IO[bytes] | None
     stderr: int | IO[str] | IO[bytes] | None
     pass_fds: tuple[int, ...]
+
+
+def native_popen_command(
+    command: Sequence[str], *, windows: bool | None = None
+) -> Sequence[str] | str:
+    """Serialize an explicit cmd.exe /c payload using its shell grammar.
+
+    Ordinary argv retains CPython's CRT serialization. The single final field
+    after cmd.exe /c (or /k) is shell source, not a CRT argument: escaping its
+    quotes with list2cmdline changes the program. Match CPython's shell=True
+    outer quoting here, at the native spawn boundary, while custody continues
+    to carry the original argument vector. No shell is inferred or added.
+    """
+    if windows is None:
+        windows = os.name == "nt"
+    if (
+        windows
+        and len(command) >= 3
+        and ntpath.basename(command[0]).lower() in {"cmd", "cmd.exe"}
+        and command[-2].lower() in {"/c", "/k"}
+    ):
+        return subprocess.list2cmdline(command[:-1]) + ' "' + command[-1] + '"'
+    return command
 
 
 def _subprocess_flag(module: ModuleType | Any, name: str) -> int:
@@ -126,7 +150,9 @@ def forward_command(
         raise ValueError("command is required")
     child_env = dict(env)
     if os.name == "nt":
-        return subprocess.run(argv, cwd=cwd, env=child_env, check=False).returncode
+        return subprocess.run(
+            native_popen_command(argv), cwd=cwd, env=child_env, check=False
+        ).returncode
     if cwd is None:
         os.execvpe(argv[0], argv, child_env)
     else:
