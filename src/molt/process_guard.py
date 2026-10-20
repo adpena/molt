@@ -233,7 +233,7 @@ def run_completed_command(
         probe_timeout = (
             DEFAULT_UNGUARDED_PROBE_TIMEOUT_SECONDS if timeout is None else timeout
         )
-        return subprocess.run(
+        result = subprocess.run(
             native_popen_command(command),
             env=env.child_block() if env is not None else None,
             cwd=cwd,
@@ -247,6 +247,8 @@ def run_completed_command(
             encoding=encoding,
             errors=errors,
         )
+        result.args = command
+        return result
     if stderr == subprocess.STDOUT:
         raise ValueError(
             "guarded completed commands preserve stdout/stderr separately; "
