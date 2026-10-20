@@ -1,4 +1,5 @@
 import ast
+from collections import Counter
 from pathlib import Path
 
 import pytest
@@ -50,6 +51,29 @@ def _ops_by_func_suffix(ir: dict, suffix: str) -> list[dict]:
 
 def _all_ops(ir: dict) -> list[dict]:
     return [op for func in ir["functions"] for op in func["ops"]]
+
+
+def _attribute_call_names(src: str) -> Counter[str]:
+    """The attribute names ``src`` calls, counted from its AST: the oracle."""
+    return Counter(
+        node.func.attr
+        for node in ast.walk(ast.parse(src))
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+    )
+
+
+def _loaded_method_call_names(ir: dict, func_name: str = "molt_main") -> Counter[str]:
+    """The attribute names of the dynamic method calls in ``func_name``.
+
+    A dynamic attribute call loads the attribute as CPython's two-value pair
+    and calls that pair: each ``call_loaded_method`` consumes one
+    ``load_method``, whose ``s_value`` names the attribute.
+    """
+    ops = next(func for func in ir["functions"] if func["name"] == func_name)["ops"]
+    loads = {op["out"]: op["s_value"] for op in ops if op["kind"] == "load_method"}
+    return Counter(
+        loads[op["args"][1]] for op in ops if op["kind"] == "call_loaded_method"
+    )
 
 
 def _assert_control_values_are_ints(ir: dict) -> None:
@@ -1250,7 +1274,9 @@ c = molt_buffer.matmul(a, b)
 """
     ir = compile_to_tir(src)
     kinds = _op_kinds(ir)
-    assert "call_func" in kinds
+    # Each molt_buffer attribute call stays a dynamic call of the loaded
+    # attribute; the public module's objects never become raw storage ops.
+    assert _loaded_method_call_names(ir) == _attribute_call_names(src)
     assert not any(kind.startswith("buffer2d_") for kind in kinds)
 
 
@@ -1270,7 +1296,9 @@ for i in range(2):
     ir = compile_to_tir(src)
     kinds = _op_kinds(ir)
     assert "buffer2d_matmul" not in kinds
-    assert "call_func" in kinds
+    # Every get and set in the loop body stays a dynamic call of the loaded
+    # attribute, as do the three constructors: nothing fuses into a matmul.
+    assert _loaded_method_call_names(ir) == _attribute_call_names(src)
 
 
 def test_range_lowering():
