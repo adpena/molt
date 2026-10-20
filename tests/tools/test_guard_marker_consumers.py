@@ -60,7 +60,9 @@ def test_reconciled_marker_is_terminal_for_every_reader(tmp_path):
 
     custody.reconcile_active_guard_markers(
         marker.parent,
-        lambda: {99: SimpleNamespace(pid=99, started_at_ns=999, pgid=None)},
+        lambda: {
+            99: SimpleNamespace(pid=99, started_at_ns=999, pgid=None, elapsed_sec=None)
+        },
         apply=True,
     )
     assert not bootstrap._active_guard_marker_valid(env, guard_pid=10)

@@ -11,10 +11,12 @@ import json
 import os
 import shutil
 import sys
+import time
 import weakref
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 from dataclasses import replace
+from datetime import datetime, timezone
 from threading import Event
 from types import SimpleNamespace
 
@@ -36,8 +38,8 @@ from tools.memory_guard_core import process_model, windows_snapshot
 pytestmark = pytest.mark.usefixtures("session_sentinel_paused")
 
 
-def _sample(pid=99, birth=9900, pgid=None):
-    return SimpleNamespace(pid=pid, started_at_ns=birth, pgid=pgid)
+def _sample(pid=99, birth=9900, pgid=None, age=None):
+    return SimpleNamespace(pid=pid, started_at_ns=birth, pgid=pgid, elapsed_sec=age)
 
 
 def _snapshot(*samples):
@@ -1333,6 +1335,60 @@ def test_unclosed_completion_waits_for_every_orphaned_group(tmp_path):
     # The child's own group and both orphaned groups were seen empty.
     assert receipt["empty_process_groups"] == [20, 30, 40]
     assert not custody.has_active_guard_marker(active)
+
+
+def _updated(seconds_ago):
+    stamp = datetime.fromtimestamp(time.time() - seconds_ago, timezone.utc)
+    return stamp.isoformat(timespec="seconds").replace("+00:00", "Z")
+
+
+DAY = 86_400
+
+
+def test_a_reused_orphaned_group_id_proves_the_old_group_closed(tmp_path):
+    active = _active(tmp_path)
+    marker = _completion(active, closed=False, groups=[30])
+    _rewrite(marker, lambda p: p.update(updated_at=_updated(2 * DAY)))
+    # Pid 30 now names a process born an hour ago, and leads a new group 30.
+    samples = (_sample(30, 3000, pgid=30, age=3600), _sample(31, 3100, pgid=30))
+    report = custody.reconcile_active_guard_markers(
+        active, _snapshot(*samples), apply=True
+    )
+    assert report.terminalized == 1 and report.retired == 1
+    receipt = _payload(_retired(tmp_path) / marker.name)["reconciliation"]
+    assert receipt["empty_process_groups"] == [20, 30]
+    assert not custody.has_active_guard_marker(active)
+
+
+@pytest.mark.parametrize(
+    "updated_ago,samples",
+    [
+        # The holder of pid 30 is older than the record: it may be the leader.
+        (2 * DAY, (_sample(30, 3000, pgid=30, age=3 * DAY),)),
+        # Born after the update, but within the clock margin.
+        (200, (_sample(30, 3000, pgid=30, age=10),)),
+        # Leaderless members of group 30 may be the recorded orphans.
+        (2 * DAY, (_sample(31, 3100, pgid=30),)),
+        (2 * DAY, (_sample(30, 3000, pgid=30, age=None),)),
+        (None, (_sample(30, 3000, pgid=30, age=3600),)),
+        ("naive", (_sample(30, 3000, pgid=30, age=3600),)),
+    ],
+    ids=["older-holder", "within-margin", "leaderless", "no-age", "no-update", "naive"],
+)
+def test_an_orphaned_group_without_reuse_proof_stays_live(
+    tmp_path, updated_ago, samples
+):
+    active = _active(tmp_path)
+    marker = _completion(active, closed=False, groups=[30])
+    updated_at = {None: None, "naive": "2026-10-10T05:58:35"}.get(updated_ago)
+    if isinstance(updated_ago, int):
+        updated_at = _updated(updated_ago)
+    _rewrite(marker, lambda p: p.update(updated_at=updated_at))
+    report = custody.reconcile_active_guard_markers(
+        active, _snapshot(*samples), apply=True
+    )
+    assert report.decisions[0].reason == "orphaned_process_group_still_present"
+    assert marker.exists() and custody.has_active_guard_marker(active)
 
 
 @pytest.mark.parametrize(

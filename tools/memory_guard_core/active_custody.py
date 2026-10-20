@@ -12,9 +12,11 @@ capability. Process identity is (pid, birth). A pid that a complete native
 snapshot does not hold is dead, whatever its recorded birth. A pid that now
 names another birth was reused, and its recorded process group closed before
 the reuse: a kernel never gives a new process a pid that still names a live
-group. A pid that is present without two comparable births is ambiguous.
-Neither a path, a timestamp, nor a parent's watched-PID list establishes
-process identity. Unreadable and ambiguous records stay protective, and the
+group. A recorded orphaned group carries no leader birth, so a process that now
+holds the group's pid proves the group closed only when it was born after the
+record's last update. A pid that is present without two comparable births is
+ambiguous. Neither a path, a timestamp, nor a parent's watched-PID list
+establishes process identity. Unreadable and ambiguous records stay protective, and the
 reconciliation report names each one with the command that resolves it.
 """
 
@@ -23,10 +25,12 @@ from __future__ import annotations
 from collections.abc import Callable, Collection, Generator, Mapping
 from contextlib import closing, contextmanager
 from dataclasses import asdict, dataclass, replace
+from datetime import datetime
 import os
 from pathlib import Path
 import re
 import stat
+import time
 from typing import Protocol
 
 from molt import temporary_artifacts as _scratch
@@ -116,6 +120,9 @@ class ProcessSampleView(Protocol):
 
     @property
     def started_at_ns(self) -> int | None: ...
+
+    @property
+    def elapsed_sec(self) -> int | None: ...
 
 
 @dataclass(frozen=True, slots=True)
@@ -641,10 +648,54 @@ def _process_evidence(
     return ProcessCustodyEvidence(role, identity.pid, expected, observed, state)
 
 
+# A process born after its record's last update cannot be a process the record
+# saw. Ages are whole seconds on the sampler's own clock and the update time is
+# wall time, so the margin also bounds a backward wall-clock step.
+GROUP_REUSE_MARGIN_S = 300
+
+
+def _wall_seconds(value: object) -> float | None:
+    if not isinstance(value, str):
+        return None
+    try:
+        parsed = datetime.fromisoformat(value)
+    except ValueError:
+        return None
+    return None if parsed.tzinfo is None else parsed.timestamp()
+
+
+def _reborn_groups(
+    record: MarkerRecord,
+    groups: Collection[int],
+    samples: Mapping[int, ProcessSampleView],
+    now_s: float,
+) -> frozenset[int]:
+    """Recorded groups whose pid a process born after the record now holds.
+
+    The kernel gave that process the pid only after the recorded group had no
+    member, so every member of a present group with that id is new.
+    """
+    updated = None if record.payload is None else record.payload.get("updated_at")
+    updated_s = _wall_seconds(updated)
+    if not groups or updated_s is None:
+        return frozenset()
+    newer_than = now_s - updated_s - GROUP_REUSE_MARGIN_S
+    return frozenset(
+        group
+        for group in groups
+        if (holder := samples.get(group)) is not None
+        and type(holder.elapsed_sec) is int
+        and 0 <= holder.elapsed_sec < newer_than
+    )
+
+
 def observe_custody(
-    record: MarkerRecord, samples: Mapping[int, ProcessSampleView]
+    record: MarkerRecord, samples: Mapping[int, ProcessSampleView], *, now_s: float
 ) -> CustodyObservation:
-    """Judge a parsed record's guard, child and child group in one snapshot."""
+    """Judge a parsed record's guard, child and child group in one snapshot.
+
+    ``now_s`` is the wall time just before the snapshot.
+    """
     assert record.error is None and record.guard is not None
     identities = [("guard", record.guard)]
     if record.child is not None:
@@ -670,16 +721,18 @@ def observe_custody(
                 "live", "child_process_group_still_present", evidence
             )
     # Groups the producer saw outlive its child, while its closure is open.
-    # Their leaders are not recorded, so only an empty group proves closure.
+    # Their leaders are not recorded, so only an empty group, or one whose id a
+    # process born after the record holds, proves closure.
     open_groups = () if record.terminal else record.orphaned_groups
-    if present_groups.intersection(open_groups):
+    reborn = _reborn_groups(record, open_groups, samples, now_s)
+    if present_groups.intersection(open_groups) - reborn:
         return CustodyObservation(
             "live", "orphaned_process_group_still_present", evidence
         )
     recorded_groups = set(open_groups)
     if child is not None and child.pgid is not None:
         recorded_groups.add(child.pgid)
-    empty_groups = tuple(sorted(recorded_groups - present_groups))
+    empty_groups = tuple(sorted(recorded_groups - (present_groups - reborn)))
     if record.payload is not None and (
         record.payload.get("child_launch_state") == "pending"
     ):
@@ -920,6 +973,7 @@ def _reconcile_record(
     apply: bool,
     operator: bool,
     timestamp: str,
+    now_s: float,
 ) -> ReconciliationDecision:
     path = str(record.path)
     if record.error is not None:
@@ -933,7 +987,7 @@ def _reconcile_record(
                 )
             return _release_invalid(record, replace(decision, disposition="release"))
         return decision
-    observation = observe_custody(record, samples)
+    observation = observe_custody(record, samples, now_s=now_s)
     closure = None
     if observation.state == "closed" or (operator and observation.state == "ambiguous"):
         closure = _scratch_closure(
@@ -1101,11 +1155,17 @@ def reconcile_active_guard_markers(
             sorted(iter_marker_records(active_dir), key=lambda record: record.path)
         )
     )
+    now_s = time.time()
     samples = _validated_snapshot(snapshot)
     timestamp = utc_timestamp()
     decisions = tuple(
         _reconcile_record(
-            record, samples, apply=apply, operator=bool(release), timestamp=timestamp
+            record,
+            samples,
+            apply=apply,
+            operator=bool(release),
+            timestamp=timestamp,
+            now_s=now_s,
         )
         for record in records
     )

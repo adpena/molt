@@ -1116,7 +1116,7 @@ def test_spawn_failure_records_that_no_child_exists(tmp_path: Path) -> None:
     assert payload["spawn_error_type"] == "FileNotFoundError"
     record = active_custody.read_marker_record(marker)
     # Once the guard pid is gone, nothing can still hold its launch.
-    observation = active_custody.observe_custody(record, {})
+    observation = active_custody.observe_custody(record, {}, now_s=time.time())
     assert observation.state == "closed"
 
 
