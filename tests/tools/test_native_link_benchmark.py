@@ -22,9 +22,9 @@ from molt.cli.native_link_plan import (
     NativeLinkPlan,
     NativeLinkSidecar,
     NativeLinkPolicy,
-    NativeObjectFormat,
-    NativeTargetSpec,
 )
+from molt.native_target import NativeTargetSpec
+from molt.native_target_shape import NativeObjectFormat
 from molt.cli.rust_cpu_policy import RustCpuPolicy
 from molt.process_environment import NameRule, ProcessEnvironment
 from tools import native_link_benchmark as benchmark

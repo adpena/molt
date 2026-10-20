@@ -257,7 +257,7 @@ def wasm_runtime_import_names_for_features(
             if target_triple in {"wasm32-wasip1", "wasm32-unknown-unknown"}:
                 target_os = "wasi" if target_triple == "wasm32-wasip1" else "none"
             else:
-                from molt.cli.native_link_plan import resolve_native_target_spec
+                from molt.native_target import resolve_native_target_spec
 
                 target_os = resolve_native_target_spec(target_triple).os
         if not runtime_symbol_available_on_target(

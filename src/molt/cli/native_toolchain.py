@@ -1,5 +1,11 @@
 from __future__ import annotations
 
+from molt.compilation_target import (
+    native_target_spec,
+    target_triple as project_target_triple,
+    Target,
+)
+
 import contextlib
 from molt import file_publication
 from molt.artifact_publication import discard_staged_output
@@ -13,7 +19,7 @@ from collections.abc import Callable
 from molt.cli.compiler_metadata import _compiler_root
 from molt.cli.config_resolution import _coerce_bool
 from molt.cli.link_fingerprints import FinalLinkReceiptRequest
-from molt.cli.native_link_plan import NativeTargetSpec, resolve_native_target_spec
+from molt.native_target import NativeTargetSpec, resolve_native_target_spec
 from molt.cli.command_runtime import _run_completed_command
 
 
@@ -53,7 +59,7 @@ def _run_bolt_post_link(
     *,
     bolt_requested: bool,
     bolt_training_cmd: str | None,
-    target: str,
+    target: Target,
     input_binary: str | None = None,
     output: str | None,
     out_dir: str | None,
@@ -141,13 +147,9 @@ def _run_bolt_post_link(
                 print(f"BOLT: {exc}", file=sys.stderr)
             return 1
 
-        target_triple = None if target == "native" else target
+        target_triple = project_target_triple(target)
         try:
-            target_spec = resolve_native_target_spec(
-                target_triple,
-                host_platform=sys.platform,
-                host_arch=platform.machine(),
-            )
+            target_spec = native_target_spec(target)
             host_spec = resolve_native_target_spec(
                 None,
                 host_platform=sys.platform,

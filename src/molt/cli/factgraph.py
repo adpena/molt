@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+from molt.backend_executable_names import CODEGEN_BACKENDS
+
+from molt.compilation_target import Target, TargetKind, target_name
+
 import argparse
 from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
@@ -12,7 +16,7 @@ from molt.backend_protocol import BACKEND_IR_LEASE_FORMAT
 from molt.cli.build_request import BuildRequest, FactGraphRequest
 from molt.type_facts import TypeHintPolicy
 from molt.cli.config_resolution import _select_codegen_backend
-from molt.cli.native_link_plan import NativeArtifactKind
+from molt.native_target import NativeArtifactKind
 
 
 def add_factgraph_parser(
@@ -43,13 +47,18 @@ def add_factgraph_parser(
     )
     parser.add_argument(
         "--target",
-        choices=["native", "wasm", "luau", "llvm"],
-        default="native",
+        choices=[
+            TargetKind.NATIVE.value,
+            TargetKind.WASM.value,
+            TargetKind.LUAU.value,
+            "llvm",
+        ],
+        default=TargetKind.NATIVE.value,
         help="Target semantics used by the TIR pipeline (default: native).",
     )
     parser.add_argument(
         "--backend",
-        choices=["cranelift", "llvm", "auto"],
+        choices=[*CODEGEN_BACKENDS, "auto"],
         default="auto",
         help="Native backend facts to select when --target is native.",
     )
@@ -279,7 +288,7 @@ def emit_pipeline_fact_graph(
     build_preamble: Any,
     json_output: bool,
     verbose: bool,
-    target: str,
+    target: Target,
     entry_module: str,
     prepare_backend_dispatch: Callable[..., tuple[Any | None, int | None]],
     ensure_backend_ir_file_path: Callable[[], Path],
@@ -383,7 +392,7 @@ def emit_pipeline_fact_graph(
                         "function": request.function_name,
                         "target": request.requested_target,
                         "backend": build_config.codegen.backend,
-                        "pipeline_target": target,
+                        "pipeline_target": target_name(target),
                         "profile": profile,
                     },
                     warnings=build_preamble.warnings,

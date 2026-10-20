@@ -8,6 +8,8 @@ Ensures that:
 
 from __future__ import annotations
 
+from molt.compilation_target import admit_target
+
 import base64
 import copy
 import io
@@ -74,7 +76,7 @@ def _executable_ir_record(ir: dict) -> dict:
         "cache_digest": digest,
         "cache_key": cache_keys._cache_key_for_payload_ir(
             payload,
-            target="native",
+            target=admit_target("native"),
             target_triple=None,
             variant="dev",
             schema_version=cache_keys._CACHE_KEY_SCHEMA_VERSION,

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from molt.compilation_target import Target, TargetKind
+
 from molt.process_environment import NameRule, ProcessEnvironment
 
 import contextlib
@@ -140,7 +142,7 @@ def _backend_bin_path(
 
 def _backend_features_for_build_target(
     *,
-    target: str,
+    target: Target,
     is_wasm: bool,
     codegen_backend: CodegenBackend,
 ) -> tuple[str, ...]:
@@ -153,8 +155,8 @@ def _backend_features_for_build_target(
     """
     return _backend_features_for_target(
         is_wasm=is_wasm,
-        is_luau_transpile=target == "luau",
-        is_rust_transpile=target in {"rust", "luau"},
+        is_luau_transpile=target is TargetKind.LUAU,
+        is_rust_transpile=target in {TargetKind.RUST, TargetKind.LUAU},
         codegen_backend=codegen_backend,
     )
 

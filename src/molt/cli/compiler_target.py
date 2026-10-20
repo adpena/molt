@@ -7,7 +7,8 @@ from pathlib import Path
 from enum import StrEnum
 from typing import Literal
 
-from molt.cli.native_link_plan import _normalize_arch, is_zig_compiler_command
+from molt.cli.native_link_plan import is_zig_compiler_command
+from molt.native_target_shape import normalize_native_architecture as _normalize_arch
 from molt.llvm_linker_roles import executable_entrypoint_name
 
 

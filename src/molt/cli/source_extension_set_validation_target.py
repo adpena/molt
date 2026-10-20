@@ -1,6 +1,8 @@
 """Host-independent target facts and canonical compiler-command custody."""
 
 from __future__ import annotations
+
+from molt.compilation_target import TargetKind, target_name
 import hashlib
 import json
 from dataclasses import dataclass
@@ -156,7 +158,7 @@ def validate_source_extension_target_metadata(
             f"extension-set target metadata requested target is invalid: {exc}"
         ) from exc
     expected_target_facts = {
-        "requested": target_plan.requested,
+        "requested": target_name(target_plan.requested),
         "compiler_target_triple": target_plan.compiler_target_triple,
         "artifact_kind": target_plan.artifact_kind,
     }
@@ -258,7 +260,7 @@ def validate_source_extension_target_metadata(
         raise SourceExtensionSetValidationError(
             f"extension-set build-machine toolchain is invalid: {exc}"
         ) from exc
-    if target_plan.requested == "native" and (
+    if target_plan.requested is TargetKind.NATIVE and (
         build_triple != target_plan.target_triple
         or build_toolchain["tools"] != target_metadata["toolchain"]["tools"]
         or build_toolchain["commands"] != target_metadata["toolchain"]["commands"]

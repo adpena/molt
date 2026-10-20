@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+
+from molt.compilation_target import target_name
+from molt.compilation_target import admit_target
 from molt.llvm_toolchain import capture_wasi_sdk_selection
 
 from collections.abc import Mapping
@@ -299,8 +302,8 @@ def capture_identity(
     requested = typed.get("target")
     if not isinstance(requested, str):
         raise ValueError("source-extension producer has no target authority")
-    target = resolve_source_extension_target_plan(requested)
-    if requested != target.requested:
+    target = resolve_source_extension_target_plan(admit_target(requested))
+    if requested != target_name(target.requested):
         raise ValueError("source-extension producer target is not canonical")
     # One actual resolver owns discovery and target command materialization.
     # Its compiler probes are capture-time work, never receipt validation.
@@ -347,7 +350,7 @@ def capture_identity(
         "schema": SOURCE_EXTENSION_SCHEMA,
         "identity_kind": "target-derived",
         "version": SOURCE_EXTENSION_VERSION,
-        "target": target.requested,
+        "target": target_name(target.requested),
         "target_triple": target.target_triple,
         "tools": tools,
         "commands": commands,

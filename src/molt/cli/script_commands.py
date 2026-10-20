@@ -2,6 +2,10 @@
 
 from __future__ import annotations
 
+from molt.compilation_target import target_name
+
+from molt.compilation_target import Target, TargetKind
+
 from molt.process_environment import ProcessEnvironment, ProcessEnvironmentBuilder
 
 import contextlib
@@ -101,12 +105,16 @@ def _wasm_run_build_args(build_args: list[str]) -> list[str]:
             "molt run --target wasm requires a linked WASM artifact; "
             "--no-linked, --no-require-linked, and --split-runtime are incompatible"
         )
-    if args.target is not None and request.target != "wasm":
+    if args.target is not None and request.target not in {
+        TargetKind.WASM,
+        TargetKind.WASI,
+    }:
         raise ValueError(
             "molt run --target wasm cannot use a different build target: "
-            + request.target
+            + target_name(request.target)
         )
-    return ["--target", "wasm", *build_args, "--linked", "--require-linked"]
+    target_args = ["--target", "wasm"] if args.target is None else []
+    return [*target_args, *build_args, "--linked", "--require-linked"]
 
 
 def _wasm_node_runner(molt_root: Path) -> Path:
@@ -183,7 +191,7 @@ def _apply_run_capability_policy(
 
 
 def _run_script_cross(
-    target: str,
+    target: Target,
     file_path: str | None,
     module: str | None,
     script_args: list[str],
@@ -215,7 +223,7 @@ def _run_script_cross(
         else _find_project_root(Path.cwd())
     )
     build_args = list(build_args or [])
-    if target == "wasm":
+    if target in {TargetKind.WASM, TargetKind.WASI}:
         try:
             build_args = _wasm_run_build_args(build_args)
         except ValueError as exc:
@@ -258,7 +266,7 @@ def _run_script_cross(
     env = ProcessEnvironment(env)
 
     wasm_host_command: list[str] | None = None
-    if target == "wasm":
+    if target in {TargetKind.WASM, TargetKind.WASI}:
         try:
             node = resolve_node_runtime(
                 source_root=molt_root,
@@ -291,7 +299,11 @@ def _run_script_cross(
 
         if not json_output:
             target_label = (
-                "WASM" if target == "wasm" else "MLIR" if target == "mlir" else "Luau"
+                "WASM"
+                if target in {TargetKind.WASM, TargetKind.WASI}
+                else "MLIR"
+                if target is TargetKind.MLIR
+                else "Luau"
             )
             _notice(f"Building for {target_label}...")
         build_contract, t_build, build_error = _run_wrapper_build(
@@ -316,7 +328,7 @@ def _run_script_cross(
         return build_error
     assert build_contract is not None
 
-    if target == "wasm":
+    if target in {TargetKind.WASM, TargetKind.WASI}:
         linked_wasm = build_contract.artifacts.get("linked_wasm")
         manifest = build_contract.artifacts.get("manifest")
         if (
@@ -339,7 +351,7 @@ def _run_script_cross(
             str(manifest),
             *script_args,
         ]
-    elif target == "luau":
+    elif target is TargetKind.LUAU:
         luau_artifact = build_contract.artifacts.get(
             "luau", build_contract.consumer_output
         )
@@ -360,7 +372,7 @@ def _run_script_cross(
                 command="run",
             )
         run_cmd = [lune, "run", str(luau_artifact), "--", *script_args]
-    elif target == "mlir":
+    elif target is TargetKind.MLIR:
         # MLIR target: the build phase produces .mlir text. There is no
         # separate run phase -- the MLIR output is the artifact.
         mlir_artifact = build_contract.consumer_output
@@ -381,7 +393,11 @@ def _run_script_cross(
             )
         return 0
     else:
-        return _fail(f"Unsupported cross target: {target}", json_output, command="run")
+        return _fail(
+            f"Unsupported cross target: {target_name(target)}",
+            json_output,
+            command="run",
+        )
 
     if not json_output and verbose:
         print(f"Running: {shlex.join(run_cmd)}", file=sys.stderr)

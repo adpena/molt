@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from molt.compilation_target import admit_target
+
 import datetime as dt
 import hashlib
 import json
@@ -138,7 +140,7 @@ def extension_metadata(
     assert root is not None
     try:
         target_plan = resolve_source_extension_target_plan(
-            "native" if target is None else target,
+            admit_target("native" if target is None else target),
             host_platform=sys.platform,
             host_arch=platform.machine(),
         )
@@ -611,7 +613,7 @@ def extension_build(
 
     try:
         target_plan = resolve_source_extension_target_plan(
-            "native" if target is None else target,
+            admit_target("native" if target is None else target),
             host_platform=sys.platform,
             host_arch=platform.machine(),
         )

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from molt.compilation_target import admit_target
+
 from tests.runtime_build_identity_helper import native_runtime_build_inputs
 
 from molt.cli.cache_keys import FunctionDigests
@@ -605,9 +607,9 @@ def test_callable_dispatch_and_all_cache_tiers_are_operation_owned(
             backend_bin=backend,
             cache_enabled=True,
             ir={"functions": []},
-            target="native",
+            target=admit_target("native"),
             artifact_contract=resolve_backend_artifact_contract(
-                target="native", emit_mode="bin", target_triple=None
+                target=admit_target("native"), emit_mode="bin"
             ),
             profile="dev",
             runtime_cargo_profile="dev-fast",
@@ -700,7 +702,7 @@ def test_callable_dispatch_and_all_cache_tiers_are_operation_owned(
             ir_path=None if probe else Path("backend-ir.msgpack"),
             backend_output=tmp_path / "out.a",
             artifact_contract=resolve_backend_artifact_contract(
-                target="native", emit_mode="bin"
+                target=admit_target("native"), emit_mode="bin"
             ),
             wasm_link=False,
             wasm_data_base=None,
@@ -807,7 +809,7 @@ def test_absent_binding_cannot_inherit_ambient_callable_inputs(tmp_path, monkeyp
         ir_path=Path("backend-ir.msgpack"),
         backend_output=tmp_path / "probe.o",
         artifact_contract=resolve_backend_artifact_contract(
-            target="native", emit_mode="obj"
+            target=admit_target("native"), emit_mode="obj"
         ),
         wasm_link=False,
         wasm_data_base=None,
@@ -884,7 +886,7 @@ def test_native_object_output_rejects_runtime_generation_drift(
     cache_setup = _BackendCacheSetup(
         backend_environment={},
         artifact_contract=resolve_backend_artifact_contract(
-            target="native", emit_mode="obj"
+            target=admit_target("native"), emit_mode="obj"
         ),
         cache_enabled=False,
         cache_key=None,
@@ -977,7 +979,7 @@ def test_native_object_output_rejects_runtime_generation_drift(
         resolved_modules=frozenset(),
         build_diagnostics_payload=lambda: (None, None),
         pipeline_stage_ms=None,
-        target="native",
+        target=admit_target("native"),
         deterministic=True,
         trusted=False,
         verbose=False,

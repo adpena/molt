@@ -9,7 +9,7 @@ import sys
 import pytest
 import molt.cli as cli
 from molt.cli import native_binary, build_results, atomic_io
-from molt.cli import native_link_plan
+from molt import native_target
 from tests.native_artifact_fixtures import (
     elf_header,
     pe_header,
@@ -147,9 +147,9 @@ def test_expected_binary_format_for_explicit_targets() -> None:
 
 
 def test_smoke_probe_requires_exact_host_shape_and_does_not_assume_rosetta(monkeypatch):
-    install_module_view(monkeypatch, "sys", sys, native_link_plan, platform="darwin")
+    install_module_view(monkeypatch, "sys", sys, native_target, platform="darwin")
     install_module_view(
-        monkeypatch, "platform", platform, native_link_plan, machine=lambda: "arm64"
+        monkeypatch, "platform", platform, native_target, machine=lambda: "arm64"
     )
     assert native_binary._target_is_host_executable("aarch64-apple-darwin")
     assert not native_binary._target_is_host_executable("x86_64-apple-darwin")

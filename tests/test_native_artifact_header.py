@@ -10,10 +10,8 @@ from types import SimpleNamespace
 
 import pytest
 
-from molt.cli.native_link_plan import (
-    resolve_native_target_spec,
-    validate_native_object_artifact,
-)
+from molt.cli.native_link_plan import validate_native_object_artifact
+from molt.native_target import resolve_native_target_spec
 from molt.cli.source_extension_toolchain import _source_extension_meson_host_machine
 from molt.native_artifact_header import (
     LINKED_IMAGE_KINDS,

@@ -1,4 +1,6 @@
 from __future__ import annotations
+
+from molt.compilation_target import Target, is_wasm_target
 from molt.compiler_analysis import python_import_scan as _source_import_scan
 
 import ast
@@ -1792,7 +1794,7 @@ def _augment_module_graph_for_entry_and_runtime(
     module_reasons: MutableMapping[str, set[str]],
     diagnostics_enabled: bool,
     json_output: bool,
-    target: str,
+    target: Target,
     import_admission_policy: _ImportAdmissionPolicy | None = None,
     target_python: TargetPythonVersion = _DEFAULT_TARGET_PYTHON_VERSION,
     stdlib_profile: str = DEFAULT_STDLIB_PROFILE,
@@ -1837,7 +1839,7 @@ def _augment_module_graph_for_entry_and_runtime(
         name for name in core_module_names if name in module_graph
     }
     spawn_enabled = False
-    spawn_required = target != "wasm" and _requires_spawn_entry_override(
+    spawn_required = not is_wasm_target(target) and _requires_spawn_entry_override(
         module_graph, explicit_imports
     )
     if spawn_required:
@@ -1906,7 +1908,7 @@ def _prepare_entry_module_graph(
     diagnostics_enabled: bool,
     module_reasons: MutableMapping[str, set[str]],
     json_output: bool,
-    target: str,
+    target: Target,
     import_admission_policy: _ImportAdmissionPolicy | None = None,
     target_python: TargetPythonVersion = _DEFAULT_TARGET_PYTHON_VERSION,
     image_scope: _BinaryImageScope | None = None,

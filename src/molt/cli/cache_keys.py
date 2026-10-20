@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+from molt.compilation_target import target_name
+
+from molt.compilation_target import Target
+
 import ast
 import hashlib
 import json
@@ -357,14 +361,14 @@ def _cache_payload_digest(
 def _cache_key_for_payload_digest(
     payload_digest: str,
     *,
-    target: str,
+    target: Target,
     target_triple: str | None,
     variant: str,
     schema_version: str,
     compiler_fingerprint: str | None = None,
     tooling_fingerprint: str | None = None,
 ) -> str:
-    suffix = target_triple or target
+    suffix = target_triple or target_name(target)
     if variant:
         suffix = f"{suffix}:{variant}"
     if compiler_fingerprint is None:
@@ -390,14 +394,14 @@ def _cache_key_for_payload_digest(
 def _cache_key_for_json_payload_bytes(
     payload_chunks: Iterable[bytes],
     *,
-    target: str,
+    target: Target,
     target_triple: str | None,
     variant: str,
     schema_version: str,
     compiler_fingerprint: str | None = None,
     tooling_fingerprint: str | None = None,
 ) -> str:
-    suffix = target_triple or target
+    suffix = target_triple or target_name(target)
     if variant:
         suffix = f"{suffix}:{variant}"
     if compiler_fingerprint is None:
@@ -422,7 +426,7 @@ def _cache_key_for_json_payload_bytes(
 def _cache_key_for_payload_ir(
     payload_ir: Mapping[str, Any],
     *,
-    target: str,
+    target: Target,
     target_triple: str | None,
     variant: str,
     schema_version: str,
@@ -446,7 +450,7 @@ def _cache_key_for_payload_ir(
 
 def _cache_key(
     ir: Mapping[str, Any],
-    target: str,
+    target: Target,
     target_triple: str | None,
     variant: str = "",
     payload_ir: Mapping[str, Any] | None = None,
@@ -532,7 +536,7 @@ def _backend_ir_bytes(ir: Mapping[str, Any]) -> bytes:
 
 def _function_cache_key(
     ir: Mapping[str, Any],
-    target: str,
+    target: Target,
     target_triple: str | None,
     variant: str = "",
     payload_ir: Mapping[str, Any] | None = None,

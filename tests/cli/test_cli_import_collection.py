@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+from molt import native_target
+
+from molt.compilation_target import admit_target
+
 from molt.cli.build_request import BuildRequest
 
 from molt.process_environment import ProcessEnvironment
@@ -109,7 +113,7 @@ from molt.compiler_analysis.python_imports import (
     _ImportScanRequests,
     _StaticSourceExecutionRequest,
 )
-from molt.cli.native_link_plan import resolve_native_target_spec
+from molt.native_target import resolve_native_target_spec
 from molt.cli.python_source_closure import LocalPythonSourceClosure
 from molt.cli.runtime_cargo_plan import RuntimeCargoPlan
 from molt.cli.source_extension_link_requirements import (
@@ -182,7 +186,6 @@ from molt.cli import env_paths as cli_env_paths
 from molt.cli import extension_manifest as cli_extension_manifest
 from molt.cli import json_cache as cli_json_cache
 from molt.cli import models as cli_models
-from molt.cli import native_link_plan as cli_native_link_plan
 from molt.cli import output as cli_output
 from molt import default_paths as molt_default_paths
 from molt import file_hashing as molt_file_hashing
@@ -1001,7 +1004,7 @@ def test_prepare_entry_module_graph_adds_runtime_import_support_once(
         diagnostics_enabled=True,
         module_reasons=module_reasons,
         json_output=False,
-        target=target,
+        target=admit_target(target),
     )
 
     assert error is None
@@ -1041,7 +1044,7 @@ def test_materialize_import_plan_does_not_rescan_importlib_support(
         diagnostics_enabled=False,
         module_reasons=module_reasons,
         json_output=False,
-        target="native",
+        target=admit_target("native"),
     )
     assert error is None
     assert prepared is not None
@@ -1105,7 +1108,7 @@ def test_materialize_import_plan_retains_external_native_artifact_plan(
         diagnostics_enabled=False,
         module_reasons=module_reasons,
         json_output=False,
-        target="native",
+        target=admit_target("native"),
         import_admission_policy=policy,
     )
     assert error is None
@@ -1165,7 +1168,7 @@ def test_materialize_import_plan_keeps_runtime_dispatch_native_artifact(
         diagnostics_enabled=False,
         module_reasons=module_reasons,
         json_output=False,
-        target="native",
+        target=admit_target("native"),
         import_admission_policy=policy,
     )
     assert error is None
@@ -1362,7 +1365,7 @@ def test_materialize_import_plan_adds_native_runtime_python_import_closure(
     policy, policy_error = cli_external_native._resolve_import_admission_policy(
         external_module_roots=(external_root,),
         json_output=False,
-        target="wasm",
+        target=admit_target("wasm"),
     )
     assert policy_error is None
     assert policy is not None
@@ -1381,7 +1384,7 @@ def test_materialize_import_plan_adds_native_runtime_python_import_closure(
         diagnostics_enabled=False,
         module_reasons=module_reasons,
         json_output=False,
-        target="native",
+        target=admit_target("native"),
         import_admission_policy=policy,
     )
     assert error is None
@@ -1498,7 +1501,7 @@ def test_sealed_manifest_runtime_import_field_is_self_contained_without_source(
     policy, policy_error = cli_external_native._resolve_import_admission_policy(
         external_module_roots=(external_root,),
         json_output=False,
-        target="wasm",
+        target=admit_target("wasm"),
         target_python=selected_target,
     )
     assert parsed_targets and set(parsed_targets) == {selected_target}
@@ -1589,7 +1592,7 @@ def test_attested_runtime_module_without_python_source_survives_admission(
     plan, errors = cli_external_native._resolve_external_package_native_artifact_plan(
         external_module_roots=(external_root,),
         admitted_packages={"nativepkg"},
-        target="native",
+        target=admit_target("native"),
     )
     assert errors == []
     assert plan is not None
@@ -1698,7 +1701,7 @@ def test_materialize_import_plan_adds_reachable_native_support_source_closure(
     policy, policy_error = cli_external_native._resolve_import_admission_policy(
         external_module_roots=(external_root,),
         json_output=False,
-        target="wasm",
+        target=admit_target("wasm"),
     )
     assert policy_error is None
     assert policy is not None
@@ -1713,7 +1716,7 @@ def test_materialize_import_plan_adds_reachable_native_support_source_closure(
         diagnostics_enabled=False,
         module_reasons=module_reasons,
         json_output=False,
-        target="native",
+        target=admit_target("native"),
         import_admission_policy=policy,
     )
     assert error is None
@@ -1837,7 +1840,7 @@ def test_materialize_import_plan_closes_cross_package_native_support_source(
     policy, policy_error = cli_external_native._resolve_import_admission_policy(
         external_module_roots=(external_root,),
         json_output=False,
-        target="wasm",
+        target=admit_target("wasm"),
     )
     assert policy_error is None
     assert policy is not None
@@ -1852,7 +1855,7 @@ def test_materialize_import_plan_closes_cross_package_native_support_source(
         diagnostics_enabled=False,
         module_reasons=module_reasons,
         json_output=False,
-        target="native",
+        target=admit_target("native"),
         import_admission_policy=policy,
     )
     assert error is None
@@ -1953,7 +1956,7 @@ def test_materialize_import_plan_preserves_source_and_lowers_selected_native_sup
     policy, policy_error = cli_external_native._resolve_import_admission_policy(
         external_module_roots=(external_root,),
         json_output=False,
-        target="wasm",
+        target=admit_target("wasm"),
     )
     assert policy_error is None
     assert policy is not None
@@ -1968,7 +1971,7 @@ def test_materialize_import_plan_preserves_source_and_lowers_selected_native_sup
         diagnostics_enabled=False,
         module_reasons=module_reasons,
         json_output=False,
-        target="native",
+        target=admit_target("native"),
         import_admission_policy=policy,
     )
     assert error is None
@@ -2223,7 +2226,7 @@ def test_materialize_import_plan_adds_capsule_provider_runtime_import_closure(
     policy, policy_error = cli_external_native._resolve_import_admission_policy(
         external_module_roots=(external_root,),
         json_output=False,
-        target="wasm",
+        target=admit_target("wasm"),
     )
     assert policy_error is None
     assert policy is not None
@@ -2238,7 +2241,7 @@ def test_materialize_import_plan_adds_capsule_provider_runtime_import_closure(
         diagnostics_enabled=False,
         module_reasons=module_reasons,
         json_output=False,
-        target="native",
+        target=admit_target("native"),
         import_admission_policy=policy,
     )
     assert error is None
@@ -2369,7 +2372,7 @@ def test_materialize_import_plan_compiles_native_runtime_package_import_init(
     policy, policy_error = cli_external_native._resolve_import_admission_policy(
         external_module_roots=(external_root,),
         json_output=False,
-        target="wasm",
+        target=admit_target("wasm"),
     )
     assert policy_error is None
     assert policy is not None
@@ -2394,7 +2397,7 @@ def test_materialize_import_plan_compiles_native_runtime_package_import_init(
         diagnostics_enabled=False,
         module_reasons=module_reasons,
         json_output=False,
-        target="native",
+        target=admit_target("native"),
         import_admission_policy=policy,
     )
     assert error is None
@@ -2473,7 +2476,7 @@ def test_entry_native_package_import_compiles_package_init_closure(
     policy, policy_error = cli_external_native._resolve_import_admission_policy(
         external_module_roots=(external_root,),
         json_output=False,
-        target="wasm",
+        target=admit_target("wasm"),
     )
     assert policy_error is None
     assert policy is not None
@@ -2495,7 +2498,7 @@ def test_entry_native_package_import_compiles_package_init_closure(
         diagnostics_enabled=False,
         module_reasons=module_reasons,
         json_output=False,
-        target="native",
+        target=admit_target("native"),
         import_admission_policy=policy,
     )
     assert error is None
@@ -2557,7 +2560,7 @@ def test_materialize_import_plan_does_not_compile_package_init_support_without_r
     policy, policy_error = cli_external_native._resolve_import_admission_policy(
         external_module_roots=(external_root,),
         json_output=False,
-        target="wasm",
+        target=admit_target("wasm"),
     )
     assert policy_error is None
     assert policy is not None
@@ -2575,7 +2578,7 @@ def test_materialize_import_plan_does_not_compile_package_init_support_without_r
         diagnostics_enabled=False,
         module_reasons=module_reasons,
         json_output=False,
-        target="native",
+        target=admit_target("native"),
         import_admission_policy=policy,
     )
     assert error is None
@@ -2663,7 +2666,7 @@ def test_materialize_import_plan_rejects_missing_native_support_artifact(
     policy, policy_error = cli_external_native._resolve_import_admission_policy(
         external_module_roots=(external_root,),
         json_output=False,
-        target="wasm",
+        target=admit_target("wasm"),
     )
     assert policy_error is None
     assert policy is not None
@@ -2678,7 +2681,7 @@ def test_materialize_import_plan_rejects_missing_native_support_artifact(
         diagnostics_enabled=False,
         module_reasons=module_reasons,
         json_output=False,
-        target="native",
+        target=admit_target("native"),
         import_admission_policy=policy,
     )
     assert error is None
@@ -2818,7 +2821,7 @@ def test_materialize_import_plan_accepts_relocated_object_closure_source_custody
     policy, policy_error = cli_external_native._resolve_import_admission_policy(
         external_module_roots=(external_root,),
         json_output=False,
-        target="wasm",
+        target=admit_target("wasm"),
     )
     assert policy_error is None
     assert policy is not None
@@ -2833,7 +2836,7 @@ def test_materialize_import_plan_accepts_relocated_object_closure_source_custody
         diagnostics_enabled=False,
         module_reasons=module_reasons,
         json_output=False,
-        target="native",
+        target=admit_target("native"),
         import_admission_policy=policy,
     )
     assert error is None
@@ -2913,7 +2916,7 @@ def test_materialize_import_plan_rejects_manifest_mutation_after_plan_validation
     policy, policy_error = cli_external_native._resolve_import_admission_policy(
         external_module_roots=(external_root,),
         json_output=False,
-        target="wasm",
+        target=admit_target("wasm"),
     )
     assert policy_error is None
     assert policy is not None
@@ -2931,7 +2934,7 @@ def test_materialize_import_plan_rejects_manifest_mutation_after_plan_validation
         diagnostics_enabled=False,
         module_reasons=module_reasons,
         json_output=False,
-        target="native",
+        target=admit_target("native"),
         import_admission_policy=policy,
     )
     assert error is None
@@ -3055,7 +3058,7 @@ def test_native_support_source_stdlib_imports_join_compile_closure(
     policy, policy_error = cli_external_native._resolve_import_admission_policy(
         external_module_roots=(external_root,),
         json_output=False,
-        target="wasm",
+        target=admit_target("wasm"),
     )
     assert policy_error is None
     assert policy is not None
@@ -3070,7 +3073,7 @@ def test_native_support_source_stdlib_imports_join_compile_closure(
         diagnostics_enabled=False,
         module_reasons=module_reasons,
         json_output=False,
-        target="native",
+        target=admit_target("native"),
         import_admission_policy=policy,
     )
     assert error is None
@@ -3131,7 +3134,7 @@ def test_entry_collections_closure_preserves_demanded_body_import_edges(
         diagnostics_enabled=True,
         module_reasons=module_reasons,
         json_output=False,
-        target="native",
+        target=admit_target("native"),
     )
 
     assert error is None
@@ -3165,7 +3168,7 @@ def test_collections_demanded_body_copy_reaches_backend_symbol_contract(
         diagnostics_enabled=True,
         module_reasons=module_reasons,
         json_output=False,
-        target="native",
+        target=admit_target("native"),
     )
 
     assert error is None
@@ -3211,9 +3214,9 @@ def test_collections_demanded_body_copy_reaches_backend_symbol_contract(
         backend_bin=tmp_path / "molt-backend",
         cache_enabled=False,
         ir={"functions": []},
-        target="native",
+        target=admit_target("native"),
         artifact_contract=resolve_backend_artifact_contract(
-            target="native", emit_mode="bin", target_triple=None
+            target=admit_target("native"), emit_mode="bin"
         ),
         profile="dev",
         runtime_cargo_profile="dev-fast",
@@ -3257,7 +3260,7 @@ def test_prepare_entry_module_graph_marks_source_import_syntax_runtime_supported
         diagnostics_enabled=False,
         module_reasons={},
         json_output=False,
-        target="native",
+        target=admit_target("native"),
     )
 
     assert error is None
@@ -3289,7 +3292,7 @@ def test_prepare_entry_module_graph_marks_dynamic_import_entry_as_runtime_suppor
         diagnostics_enabled=False,
         module_reasons={},
         json_output=False,
-        target="native",
+        target=admit_target("native"),
     )
 
     assert error is None
@@ -3329,7 +3332,7 @@ def test_prepare_entry_module_graph_keeps_dependency_function_dynamic_import_laz
         diagnostics_enabled=False,
         module_reasons={},
         json_output=False,
-        target="native",
+        target=admit_target("native"),
     )
 
     assert error is None
@@ -3372,7 +3375,7 @@ def test_prepare_entry_module_graph_admits_declared_static_runtime_import(
         diagnostics_enabled=False,
         module_reasons={},
         json_output=False,
-        target="native",
+        target=admit_target("native"),
         import_admission_policy=cli_models._ImportAdmissionPolicy(
             external_roots=(tmp_path,),
             admitted_external_packages=frozenset({"pkg"}),
@@ -3418,7 +3421,7 @@ def test_prepare_entry_module_graph_full_scans_declared_static_module(
         diagnostics_enabled=False,
         module_reasons={},
         json_output=False,
-        target="native",
+        target=admit_target("native"),
         import_admission_policy=cli_models._ImportAdmissionPolicy(
             external_roots=(tmp_path,),
             admitted_external_packages=frozenset({"pkg"}),
@@ -3458,7 +3461,7 @@ def test_prepare_entry_module_graph_rejects_unadmitted_static_runtime_import(
         diagnostics_enabled=False,
         module_reasons={},
         json_output=False,
-        target="native",
+        target=admit_target("native"),
         import_admission_policy=cli_models._ImportAdmissionPolicy(
             external_roots=(tmp_path,)
         ),
@@ -3500,7 +3503,7 @@ def test_prepare_entry_module_graph_marks_dependency_module_init_dynamic_import(
         diagnostics_enabled=False,
         module_reasons={},
         json_output=False,
-        target="native",
+        target=admit_target("native"),
     )
 
     assert error is None
@@ -3528,7 +3531,7 @@ def test_prepare_entry_module_graph_collects_literal_dunder_import_targets(
         diagnostics_enabled=False,
         module_reasons={},
         json_output=False,
-        target="native",
+        target=admit_target("native"),
     )
 
     assert error is None
@@ -3583,7 +3586,7 @@ def test_prepare_entry_module_graph_closes_added_package_parent_imports(
         diagnostics_enabled=True,
         module_reasons=module_reasons,
         json_output=False,
-        target="native",
+        target=admit_target("native"),
     )
 
     assert error is None
@@ -3621,7 +3624,7 @@ def test_prepare_entry_module_graph_marks_generated_importer_references_explicit
         diagnostics_enabled=False,
         module_reasons={},
         json_output=False,
-        target="native",
+        target=admit_target("native"),
     )
 
     assert error is None
@@ -3648,7 +3651,7 @@ def test_materialize_import_plan_does_not_mutate_prepared_entry_graph(
         diagnostics_enabled=False,
         module_reasons={},
         json_output=False,
-        target="native",
+        target=admit_target("native"),
     )
 
     assert error is None
@@ -3688,7 +3691,7 @@ def test_import_plan_freezes_graph_and_allowlist(tmp_path: Path) -> None:
         diagnostics_enabled=False,
         module_reasons={},
         json_output=False,
-        target="native",
+        target=admit_target("native"),
     )
 
     assert error is None
@@ -3733,7 +3736,7 @@ def test_generated_importer_import_plan_includes_runtime_support_modules(
         diagnostics_enabled=False,
         module_reasons={},
         json_output=False,
-        target="native",
+        target=admit_target("native"),
     )
 
     assert error is None
@@ -3999,7 +4002,7 @@ def test_backend_ir_isolate_import_initializes_static_native_artifacts(
         runtime_feedback_summary=None,
         emit_ir_path=None,
         target_python=TARGET_PYTHON._DEFAULT_TARGET_PYTHON_VERSION,
-        target="wasm",
+        target=admit_target("wasm"),
         native_artifact_plan=native_artifact_plan,
         validate_inputs=lambda: None,
     )
@@ -4241,7 +4244,7 @@ def test_prepare_entry_module_graph_marks_getattr_runtime_import_entry_as_suppor
         diagnostics_enabled=False,
         module_reasons={},
         json_output=False,
-        target="native",
+        target=admit_target("native"),
     )
 
     assert error is None
@@ -4660,7 +4663,7 @@ def test_external_package_parent_closure_cannot_backdoor_children(
         diagnostics_enabled=True,
         module_reasons={},
         json_output=False,
-        target="native",
+        target=admit_target("native"),
         import_admission_policy=policy,
     )
 
@@ -4805,7 +4808,7 @@ def _libmolt_source_manifest_fields(
     init_symbol = f"PyInit_{module_leaf}"
     object_name = f"{module_leaf}.o"
     digest = hashlib.sha256(artifact_bytes).hexdigest()
-    resolved_target_triple = target_triple or cli_native_link_plan._host_target_triple()
+    resolved_target_triple = target_triple or native_target._host_target_triple()
     resolved_artifact_kind = artifact_kind or (
         "wasm_relocatable_object"
         if artifact_name.endswith(".molt.wasm")
@@ -5523,9 +5526,9 @@ def test_native_archive_fixture_data_sections_match_target_contract(
             target_triple=target_triple,
         )
     )
-    resolve_backend_artifact_contract(target=target_triple, emit_mode="bin").validate(
-        artifact_path
-    )
+    resolve_backend_artifact_contract(
+        target=admit_target(target_triple), emit_mode="bin"
+    ).validate(artifact_path)
 
 
 @pytest.mark.parametrize("masquerade", ["init", "direct"])
@@ -5652,7 +5655,7 @@ def test_external_native_plan_rejects_manifest_mutation_after_snapshot(
     plan, errors = cli_external_native._resolve_external_package_native_artifact_plan(
         external_module_roots=(external_root,),
         admitted_packages={"nativepkg"},
-        target="native",
+        target=admit_target("native"),
     )
 
     assert plan is None
@@ -5681,7 +5684,7 @@ def test_external_static_package_wasm_artifact_plan_is_manifest_led(
     policy, error = cli_external_native._resolve_import_admission_policy(
         external_module_roots=(external_root,),
         json_output=False,
-        target="wasm",
+        target=admit_target("wasm"),
     )
 
     assert error is None
@@ -5726,7 +5729,7 @@ def test_external_static_package_wasm_support_archives_require_typed_link_custod
     policy, error = cli_external_native._resolve_import_admission_policy(
         external_module_roots=(external_root,),
         json_output=False,
-        target="wasm",
+        target=admit_target("wasm"),
     )
 
     assert error is None
@@ -5785,7 +5788,7 @@ def test_external_static_package_manifest_support_python_source_is_staged_not_li
     policy, error = cli_external_native._resolve_import_admission_policy(
         external_module_roots=(external_root,),
         json_output=False,
-        target="wasm",
+        target=admit_target("wasm"),
     )
 
     assert error is None
@@ -5836,7 +5839,7 @@ def test_external_package_artifact_specific_manifests_allow_same_directory_modul
     plan, errors = cli_external_native._resolve_external_package_native_artifact_plan(
         external_module_roots=(external_root,),
         admitted_packages={"nativepkg"},
-        target="wasm",
+        target=admit_target("wasm"),
         required_modules={
             "nativepkg.ndimage._nd_image",
             "nativepkg.ndimage._ni_label",
@@ -5883,7 +5886,7 @@ def test_external_native_artifact_plan_selects_python_exported_imports(
     plan, errors = cli_external_native._resolve_external_package_native_artifact_plan(
         external_module_roots=(external_root,),
         admitted_packages={"nativepkg"},
-        target="wasm",
+        target=admit_target("wasm"),
         required_modules={"nativepkg.ndimage.distance_transform_edt"},
     )
 
@@ -5944,7 +5947,7 @@ def test_external_native_artifact_plan_selects_callable_exported_imports(
     plan, errors = cli_external_native._resolve_external_package_native_artifact_plan(
         external_module_roots=(external_root,),
         admitted_packages={"nativepkg"},
-        target="wasm",
+        target=admit_target("wasm"),
         required_modules={"nativepkg.ndimage.distance_transform_edt"},
     )
 
@@ -6020,7 +6023,7 @@ def test_external_native_artifact_plan_selects_module_attr_callable_exports(
     plan, errors = cli_external_native._resolve_external_package_native_artifact_plan(
         external_module_roots=(external_root,),
         admitted_packages={"nativepkg"},
-        target="wasm",
+        target=admit_target("wasm"),
         required_modules={"nativepkg.ndimage.gaussian_filter"},
     )
 
@@ -6101,7 +6104,7 @@ def test_external_native_artifact_plan_rejects_fake_module_attr_export(
     plan, errors = cli_external_native._resolve_external_package_native_artifact_plan(
         external_module_roots=(external_root,),
         admitted_packages={"nativepkg"},
-        target="wasm",
+        target=admit_target("wasm"),
         required_modules={"nativepkg.ndimage.gaussian_filter"},
     )
 
@@ -6158,7 +6161,7 @@ def test_external_native_artifact_plan_publishes_support_source_module_attr(
     plan, errors = cli_external_native._resolve_external_package_native_artifact_plan(
         external_module_roots=(external_root,),
         admitted_packages={"nativepkg"},
-        target="wasm",
+        target=admit_target("wasm"),
         required_modules={"nativepkg.ndimage.gaussian_filter"},
     )
 
@@ -6283,7 +6286,7 @@ def test_external_native_artifact_plan_rejects_duplicate_module_roots(
     plan, errors = cli_external_native._resolve_external_package_native_artifact_plan(
         external_module_roots=(staged_root, source_root),
         admitted_packages={"nativepkg"},
-        target="wasm",
+        target=admit_target("wasm"),
     )
 
     assert plan is None
@@ -6522,7 +6525,7 @@ def test_external_native_artifact_plan_rejects_missing_wasm_callable_symbol(
     plan, errors = cli_external_native._resolve_external_package_native_artifact_plan(
         external_module_roots=(external_root,),
         admitted_packages={"nativepkg"},
-        target="wasm",
+        target=admit_target("wasm"),
         required_modules={"nativepkg.ndimage.distance_transform_edt"},
     )
 
@@ -6571,7 +6574,7 @@ def test_external_native_artifact_plan_rejects_archive_callable_symbol_without_c
     plan, errors = cli_external_native._resolve_external_package_native_artifact_plan(
         external_module_roots=(external_root,),
         admitted_packages={"nativepkg"},
-        target="native",
+        target=admit_target("native"),
         required_modules={"nativepkg.ndimage.distance_transform_edt"},
     )
 
@@ -6616,7 +6619,7 @@ def test_external_native_artifact_plan_accepts_archive_callable_defined_symbol(
     plan, errors = cli_external_native._resolve_external_package_native_artifact_plan(
         external_module_roots=(external_root,),
         admitted_packages={"nativepkg"},
-        target="native",
+        target=admit_target("native"),
         required_modules={"nativepkg.ndimage.distance_transform_edt"},
     )
 
@@ -6693,7 +6696,7 @@ def test_external_native_artifact_plan_records_c_api_symbol_board(
     plan, errors = cli_external_native._resolve_external_package_native_artifact_plan(
         external_module_roots=(external_root,),
         admitted_packages={"nativepkg"},
-        target="wasm",
+        target=admit_target("wasm"),
         required_modules={"nativepkg.ndimage._nd_image"},
     )
 
@@ -6742,7 +6745,7 @@ def test_external_native_artifact_plan_ignores_declaration_only_c_api_requiremen
     plan, errors = cli_external_native._resolve_external_package_native_artifact_plan(
         external_module_roots=(external_root,),
         admitted_packages={"nativepkg"},
-        target="native",
+        target=admit_target("native"),
     )
 
     assert errors == []
@@ -6788,7 +6791,7 @@ def test_external_native_artifact_plan_records_required_only_numpy_c_api_board(
     plan, errors = cli_external_native._resolve_external_package_native_artifact_plan(
         external_module_roots=(external_root,),
         admitted_packages={"nativepkg"},
-        target="wasm",
+        target=admit_target("wasm"),
         required_modules={"nativepkg.core._multiarray_umath"},
     )
 
@@ -6852,7 +6855,7 @@ def test_external_native_artifact_plan_records_imported_cpython_c_api_link(
     plan, errors = cli_external_native._resolve_external_package_native_artifact_plan(
         external_module_roots=(external_root,),
         admitted_packages={"nativepkg"},
-        target="wasm",
+        target=admit_target("wasm"),
         required_modules={"nativepkg.core._multiarray_umath"},
     )
 
@@ -6900,7 +6903,7 @@ def test_external_native_artifact_plan_rejects_wasm_import_missing_from_sidecar(
     plan, errors = cli_external_native._resolve_external_package_native_artifact_plan(
         external_module_roots=(external_root,),
         admitted_packages={"nativepkg"},
-        target="wasm",
+        target=admit_target("wasm"),
         required_modules={"nativepkg.ndimage._nd_image"},
     )
 
@@ -6978,7 +6981,7 @@ def test_external_native_artifact_plan_allows_object_local_resolved_undefineds(
     plan, errors = cli_external_native._resolve_external_package_native_artifact_plan(
         external_module_roots=(external_root,),
         admitted_packages={"nativepkg"},
-        target="wasm",
+        target=admit_target("wasm"),
         required_modules={"nativepkg.ndimage._nd_image"},
     )
 
@@ -7018,7 +7021,7 @@ def test_external_native_artifact_plan_rejects_sidecar_undefined_symbol_not_impo
     plan, errors = cli_external_native._resolve_external_package_native_artifact_plan(
         external_module_roots=(external_root,),
         admitted_packages={"nativepkg"},
-        target="wasm",
+        target=admit_target("wasm"),
         required_modules={"nativepkg.ndimage._nd_image"},
     )
 
@@ -7064,7 +7067,7 @@ def test_external_native_artifact_plan_records_runtime_abi_symbol_board(
     plan, errors = cli_external_native._resolve_external_package_native_artifact_plan(
         external_module_roots=(external_root,),
         admitted_packages={"nativepkg"},
-        target="wasm",
+        target=admit_target("wasm"),
         required_modules={"nativepkg.ndimage._nd_image"},
     )
 
@@ -7138,7 +7141,7 @@ def test_external_native_artifact_plan_records_external_link_symbol_board(
     plan, errors = cli_external_native._resolve_external_package_native_artifact_plan(
         external_module_roots=(external_root,),
         admitted_packages={"nativepkg"},
-        target="wasm",
+        target=admit_target("wasm"),
         required_modules={"nativepkg.ndimage._nd_image"},
     )
 
@@ -7192,7 +7195,7 @@ def test_external_native_artifact_plan_records_libcxx_link_symbol_board(
     plan, errors = cli_external_native._resolve_external_package_native_artifact_plan(
         external_module_roots=(external_root,),
         admitted_packages={"nativepkg"},
-        target="wasm",
+        target=admit_target("wasm"),
         required_modules={"nativepkg.core._multiarray_umath"},
     )
 
@@ -7253,7 +7256,7 @@ def test_external_native_artifact_plan_records_cpython_abi_link_symbol_board(
     plan, errors = cli_external_native._resolve_external_package_native_artifact_plan(
         external_module_roots=(external_root,),
         admitted_packages={"nativepkg"},
-        target="wasm",
+        target=admit_target("wasm"),
         required_modules={"nativepkg.core._multiarray_umath"},
     )
 
@@ -7323,7 +7326,7 @@ def test_external_native_artifact_plan_rejects_package_native_symbol_without_own
     plan, errors = cli_external_native._resolve_external_package_native_artifact_plan(
         external_module_roots=(external_root,),
         admitted_packages={"nativepkg"},
-        target="wasm",
+        target=admit_target("wasm"),
         required_modules={"nativepkg.core._multiarray_umath"},
     )
 
@@ -7374,7 +7377,7 @@ def test_external_native_artifact_plan_rejects_runtime_abi_without_custody(
     plan, errors = cli_external_native._resolve_external_package_native_artifact_plan(
         external_module_roots=(external_root,),
         admitted_packages={"nativepkg"},
-        target="wasm",
+        target=admit_target("wasm"),
         required_modules={"nativepkg.ndimage._nd_image"},
     )
 
@@ -7425,7 +7428,7 @@ def test_external_native_artifact_plan_rejects_unknown_runtime_abi_symbol(
     plan, errors = cli_external_native._resolve_external_package_native_artifact_plan(
         external_module_roots=(external_root,),
         admitted_packages={"nativepkg"},
-        target="wasm",
+        target=admit_target("wasm"),
         required_modules={"nativepkg.ndimage._nd_image"},
     )
 
@@ -7462,7 +7465,7 @@ def test_external_native_artifact_plan_rejects_missing_c_api_symbol(
     plan, errors = cli_external_native._resolve_external_package_native_artifact_plan(
         external_module_roots=(external_root,),
         admitted_packages={"nativepkg"},
-        target="wasm",
+        target=admit_target("wasm"),
         required_modules={"nativepkg.ndimage._nd_image"},
     )
 
@@ -7513,7 +7516,7 @@ def test_external_native_artifact_plan_uses_cpython_abi_header_surface(
     plan, errors = cli_external_native._resolve_external_package_native_artifact_plan(
         external_module_roots=(external_root,),
         admitted_packages={"nativepkg"},
-        target="wasm",
+        target=admit_target("wasm"),
         required_modules={"nativepkg.ndimage._ni_label"},
     )
 
@@ -7558,7 +7561,7 @@ def test_external_native_artifact_plan_rejects_undefined_numpy_c_api_symbol(
     plan, errors = cli_external_native._resolve_external_package_native_artifact_plan(
         external_module_roots=(external_root,),
         admitted_packages={"nativepkg"},
-        target="wasm",
+        target=admit_target("wasm"),
         required_modules={"nativepkg.ndimage._nd_image"},
     )
 
@@ -7603,7 +7606,7 @@ def test_external_native_artifact_plan_rejects_unknown_callable_export_abi(
     plan, errors = cli_external_native._resolve_external_package_native_artifact_plan(
         external_module_roots=(external_root,),
         admitted_packages={"nativepkg"},
-        target="wasm",
+        target=admit_target("wasm"),
         required_modules={"nativepkg.ndimage._nd_image"},
     )
 
@@ -7712,7 +7715,7 @@ def test_admitted_external_native_package_does_not_close_source_only_ndimage_ini
         external_module_roots=(external_root,),
         json_output=False,
         defer_native_artifacts=True,
-        target="wasm",
+        target=admit_target("wasm"),
     )
     assert policy_error is None
     assert policy is not None
@@ -7727,7 +7730,7 @@ def test_admitted_external_native_package_does_not_close_source_only_ndimage_ini
         diagnostics_enabled=True,
         module_reasons={},
         json_output=False,
-        target="wasm",
+        target=admit_target("wasm"),
         import_admission_policy=policy,
     )
 
@@ -7745,7 +7748,7 @@ def test_admitted_external_native_package_does_not_close_source_only_ndimage_ini
         cli_external_native._resolve_external_package_native_artifact_plan(
             external_module_roots=policy.external_roots,
             admitted_packages=policy.admitted_external_packages,
-            target="wasm",
+            target=admit_target("wasm"),
             required_modules=(
                 set(prepared.module_graph)
                 | set(prepared.explicit_imports)
@@ -7793,7 +7796,7 @@ def test_native_artifact_plan_rejects_source_recompiled_package_without_candidat
     plan, errors = cli_external_native._resolve_external_package_native_artifact_plan(
         external_module_roots=(external_root,),
         admitted_packages={"numpy"},
-        target="native",
+        target=admit_target("native"),
     )
 
     assert plan is None
@@ -7890,7 +7893,7 @@ def test_external_native_artifact_plan_rejects_target_python_mismatch(
     plan, errors = cli_external_native._resolve_external_package_native_artifact_plan(
         external_module_roots=(external_root,),
         admitted_packages={"nativepkg"},
-        target="native",
+        target=admit_target("native"),
         target_python=TargetPythonVersion(3, 12, 0),
         required_modules={"nativepkg._native"},
     )
@@ -7979,7 +7982,7 @@ def test_external_native_artifact_plan_filters_to_required_modules(
         cli_external_native._resolve_external_package_native_artifact_plan(
             external_module_roots=(external_root,),
             admitted_packages={"nativepkg"},
-            target="native",
+            target=admit_target("native"),
             required_modules={"nativepkg.unused"},
         )
     )
@@ -7987,7 +7990,7 @@ def test_external_native_artifact_plan_filters_to_required_modules(
         cli_external_native._resolve_external_package_native_artifact_plan(
             external_module_roots=(external_root,),
             admitted_packages={"nativepkg"},
-            target="native",
+            target=admit_target("native"),
             required_modules={"nativepkg._native"},
         )
     )
@@ -8023,7 +8026,7 @@ def test_external_native_artifact_plan_does_not_expand_package_root_to_children(
         cli_external_native._resolve_external_package_native_artifact_plan(
             external_module_roots=(external_root,),
             admitted_packages={"scipy"},
-            target="wasm",
+            target=admit_target("wasm"),
             required_modules={"scipy"},
         )
     )
@@ -8031,7 +8034,7 @@ def test_external_native_artifact_plan_does_not_expand_package_root_to_children(
         cli_external_native._resolve_external_package_native_artifact_plan(
             external_module_roots=(external_root,),
             admitted_packages={"scipy"},
-            target="wasm",
+            target=admit_target("wasm"),
             required_modules={"scipy.ndimage"},
         )
     )
@@ -8068,7 +8071,7 @@ def test_external_native_artifact_plan_does_not_expand_package_root_to_children(
         cli_external_native._resolve_external_package_native_artifact_plan(
             external_module_roots=(owned_root,),
             admitted_packages={"scipy"},
-            target="wasm",
+            target=admit_target("wasm"),
             required_modules={"scipy"},
         )
     )
@@ -8116,8 +8119,12 @@ def test_external_static_package_admission_can_defer_native_artifact_validation(
     assert deferred_policy.native_artifact_plan.artifacts == ()
 
 
+@pytest.mark.parametrize(
+    "target", ["wasm", "wasm-freestanding", "wasm32-wasip1", "wasm32-unknown-unknown"]
+)
 def test_wasm_external_static_package_with_native_source_requires_static_artifact(
     tmp_path: Path,
+    target: str,
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
@@ -8133,7 +8140,7 @@ def test_wasm_external_static_package_with_native_source_requires_static_artifac
         external_module_roots=(external_root,),
         json_output=False,
         defer_native_artifacts=True,
-        target="wasm",
+        target=admit_target(target),
     )
 
     assert policy is None
@@ -8145,9 +8152,13 @@ def test_wasm_external_static_package_with_native_source_requires_static_artifac
     assert "python_exports" in stderr
 
 
+@pytest.mark.parametrize(
+    "target", ["wasm", "wasm-freestanding", "wasm32-wasip1", "wasm32-unknown-unknown"]
+)
 def test_wasm_source_recompiled_static_package_requires_export_custody(
     native_archives: NativeArchiveFixtureCatalog,
     tmp_path: Path,
+    target: str,
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
@@ -8171,7 +8182,7 @@ def test_wasm_source_recompiled_static_package_requires_export_custody(
         external_module_roots=(external_root,),
         json_output=False,
         defer_native_artifacts=True,
-        target="wasm",
+        target=admit_target(target),
     )
 
     assert policy is None
@@ -8206,7 +8217,7 @@ def test_source_recompiled_package_root_import_requires_export_owner(
     plan, errors = cli_external_native._resolve_external_package_native_artifact_plan(
         external_module_roots=(external_root,),
         admitted_packages={"numpy"},
-        target="wasm",
+        target=admit_target("wasm"),
         required_modules={"numpy"},
     )
 
@@ -8253,7 +8264,7 @@ def test_wasm_external_static_package_accepts_merged_source_and_artifact_roots(
         external_module_roots=(source_root, artifact_root),
         json_output=False,
         defer_native_artifacts=True,
-        target="wasm",
+        target=admit_target("wasm"),
     )
 
     assert error is None
@@ -8261,8 +8272,12 @@ def test_wasm_external_static_package_accepts_merged_source_and_artifact_roots(
     assert policy.native_artifact_plan.artifacts == ()
 
 
+@pytest.mark.parametrize(
+    "target", ["wasm", "wasm-freestanding", "wasm32-wasip1", "wasm32-unknown-unknown"]
+)
 def test_wasm_external_static_package_allows_pure_python_source_closure(
     tmp_path: Path,
+    target: str,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     external_root = tmp_path / "site"
@@ -8275,7 +8290,7 @@ def test_wasm_external_static_package_allows_pure_python_source_closure(
         external_module_roots=(external_root,),
         json_output=False,
         defer_native_artifacts=True,
-        target="wasm",
+        target=admit_target(target),
     )
 
     assert error is None
@@ -8311,7 +8326,7 @@ def test_wasm_external_static_package_allows_deferred_static_link_artifact(
         external_module_roots=(external_root,),
         json_output=False,
         defer_native_artifacts=True,
-        target="wasm",
+        target=admit_target("wasm"),
     )
 
     assert error is None
@@ -8359,7 +8374,7 @@ def test_external_native_artifact_plan_closes_over_capsule_providers(
     plan, errors = cli_external_native._resolve_external_package_native_artifact_plan(
         external_module_roots=(external_root,),
         admitted_packages={"nativepkg"},
-        target="wasm",
+        target=admit_target("wasm"),
         required_modules={"nativepkg.consumer"},
     )
 
@@ -8413,7 +8428,7 @@ def test_reachable_native_artifact_plan_keeps_capsule_providers(
     plan, errors = cli_external_native._resolve_external_package_native_artifact_plan(
         external_module_roots=(external_root,),
         admitted_packages={"nativepkg"},
-        target="wasm",
+        target=admit_target("wasm"),
         required_modules={"nativepkg.run"},
     )
     assert errors == []
@@ -8547,7 +8562,7 @@ def test_reachable_native_artifact_plan_keeps_child_callable_exports(
     plan, errors = cli_external_native._resolve_external_package_native_artifact_plan(
         external_module_roots=(external_root,),
         admitted_packages={"nativepkg"},
-        target="native",
+        target=admit_target("native"),
         required_modules={"nativepkg.ndimage"},
     )
     assert errors == []
@@ -10000,7 +10015,7 @@ def test_source_recompiled_package_callable_export_reaches_frontend_scope(
         external_module_roots=(external_root,),
         json_output=False,
         defer_native_artifacts=True,
-        target="wasm",
+        target=admit_target("wasm"),
     )
     assert policy_error is None
     assert policy is not None
@@ -10017,7 +10032,7 @@ def test_source_recompiled_package_callable_export_reaches_frontend_scope(
         diagnostics_enabled=True,
         module_reasons=module_reasons,
         json_output=False,
-        target="wasm",
+        target=admit_target("wasm"),
         import_admission_policy=policy,
     )
     assert prepared_error is None
@@ -10026,7 +10041,7 @@ def test_source_recompiled_package_callable_export_reaches_frontend_scope(
         cli_external_native._resolve_external_package_native_artifact_plan(
             external_module_roots=policy.external_roots,
             admitted_packages=policy.admitted_external_packages,
-            target="wasm",
+            target=admit_target("wasm"),
             required_modules=(
                 set(prepared.module_graph)
                 | set(prepared.explicit_imports)
@@ -10151,7 +10166,7 @@ def test_external_native_artifact_plan_closes_over_object_capsule_requirements(
     plan, errors = cli_external_native._resolve_external_package_native_artifact_plan(
         external_module_roots=(external_root,),
         admitted_packages={"numpy", "scipy"},
-        target="wasm",
+        target=admit_target("wasm"),
         required_modules={"scipy.ndimage"},
     )
 
@@ -10194,7 +10209,7 @@ def test_external_native_artifact_plan_publishes_capsule_owner_alias_modules(
     plan, errors = cli_external_native._resolve_external_package_native_artifact_plan(
         external_module_roots=(external_root,),
         admitted_packages={"numpy"},
-        target="wasm",
+        target=admit_target("wasm"),
         required_modules={"numpy"},
     )
 
@@ -10245,7 +10260,7 @@ def test_external_native_artifact_plan_rejects_source_capsule_manifest_drift(
     plan, errors = cli_external_native._resolve_external_package_native_artifact_plan(
         external_module_roots=(external_root,),
         admitted_packages={"scipy"},
-        target="wasm",
+        target=admit_target("wasm"),
         required_modules={"scipy.ndimage"},
     )
 
@@ -10301,7 +10316,7 @@ def test_external_native_artifact_plan_accepts_source_capsule_manifest_custody(
     plan, errors = cli_external_native._resolve_external_package_native_artifact_plan(
         external_module_roots=(external_root,),
         admitted_packages={"numpy", "scipy"},
-        target="wasm",
+        target=admit_target("wasm"),
         required_modules={"scipy.ndimage"},
     )
 
@@ -10385,7 +10400,7 @@ def test_external_native_artifact_plan_does_not_guess_stale_source_plan_manifest
     plan, errors = cli_external_native._resolve_external_package_native_artifact_plan(
         external_module_roots=(external_root,),
         admitted_packages={"numpy", "scipy"},
-        target="wasm",
+        target=admit_target("wasm"),
         required_modules={"scipy.ndimage"},
     )
 
@@ -10468,7 +10483,7 @@ def test_external_native_artifact_plan_does_not_guess_stale_source_plan_build_so
     plan, errors = cli_external_native._resolve_external_package_native_artifact_plan(
         external_module_roots=(external_root,),
         admitted_packages={"numpy", "scipy"},
-        target="wasm",
+        target=admit_target("wasm"),
         required_modules={"scipy.ndimage"},
     )
 
@@ -10557,7 +10572,7 @@ def test_external_native_artifact_plan_rejects_sealed_missing_sources_without_ru
     plan, errors = cli_external_native._resolve_external_package_native_artifact_plan(
         external_module_roots=(external_root,),
         admitted_packages={"numpy", "scipy"},
-        target="wasm",
+        target=admit_target("wasm"),
         required_modules={"scipy.ndimage"},
     )
 
@@ -10616,7 +10631,7 @@ def test_external_native_artifact_plan_rejects_unsealed_missing_sources(
     plan, errors = cli_external_native._resolve_external_package_native_artifact_plan(
         external_module_roots=(external_root,),
         admitted_packages={"numpy", "scipy"},
-        target="wasm",
+        target=admit_target("wasm"),
         required_modules={"scipy.ndimage"},
     )
 
@@ -10679,7 +10694,7 @@ def test_external_native_artifact_plan_rejects_declared_source_hash_mismatch(
     plan, errors = cli_external_native._resolve_external_package_native_artifact_plan(
         external_module_roots=(external_root,),
         admitted_packages={"scipy"},
-        target="wasm",
+        target=admit_target("wasm"),
         required_modules={"scipy.ndimage"},
     )
 
@@ -10725,7 +10740,7 @@ def test_external_native_artifact_plan_rejects_sealed_source_checksum_mismatch(
     plan, errors = cli_external_native._resolve_external_package_native_artifact_plan(
         external_module_roots=(external_root,),
         admitted_packages={"scipy"},
-        target="wasm",
+        target=admit_target("wasm"),
         required_modules={"scipy.ndimage"},
     )
 
@@ -10769,7 +10784,7 @@ def test_external_native_artifact_plan_closes_over_wasm_static_capsule_providers
     plan, errors = cli_external_native._resolve_external_package_native_artifact_plan(
         external_module_roots=(external_root,),
         admitted_packages={"nativepkg"},
-        target="wasm",
+        target=admit_target("wasm"),
         required_modules={"nativepkg.consumer"},
     )
 
@@ -10813,7 +10828,7 @@ def test_external_native_artifact_plan_rejects_target_skewed_capsule_provider(
     plan, errors = cli_external_native._resolve_external_package_native_artifact_plan(
         external_module_roots=(external_root,),
         admitted_packages={"nativepkg"},
-        target="wasm",
+        target=admit_target("wasm"),
         required_modules={"nativepkg.consumer"},
     )
 
@@ -10822,7 +10837,7 @@ def test_external_native_artifact_plan_rejects_target_skewed_capsule_provider(
     assert "target-compatible validated provider artifact" in errors[0]
     assert (
         "nativepkg.core._multiarray_umath="
-        f"static_link/{cli_native_link_plan._host_target_triple()}" in errors[0]
+        f"static_link/{native_target._host_target_triple()}" in errors[0]
     )
 
 
@@ -10850,7 +10865,7 @@ def test_external_native_artifact_plan_rejects_missing_capsule_provider(
     plan, errors = cli_external_native._resolve_external_package_native_artifact_plan(
         external_module_roots=(external_root,),
         admitted_packages={"nativepkg"},
-        target="wasm",
+        target=admit_target("wasm"),
         required_modules={"nativepkg.consumer"},
     )
 
@@ -10913,7 +10928,7 @@ def test_external_native_artifact_plan_rejects_ambiguous_capsule_provider(
     plan, errors = cli_external_native._resolve_external_package_native_artifact_plan(
         external_module_roots=(external_root,),
         admitted_packages={"nativepkg"},
-        target="wasm",
+        target=admit_target("wasm"),
         required_modules={"nativepkg.consumer"},
     )
 
@@ -10960,7 +10975,7 @@ def test_external_native_artifact_output_custody_accepts_native_binary(
         cli_external_native._external_native_artifact_output_custody_error(
             native_artifact_plan=policy.native_artifact_plan,
             output_layout=output_layout,
-            target="native",
+            target=admit_target("native"),
         )
         is None
     )
@@ -11024,7 +11039,7 @@ def test_external_native_artifact_output_custody_rejects_unpublished_outputs(
             "Linked WASM external static packages require wasm32 static_link",
             (
                 "nativepkg._native=static_link/static_archive/"
-                f"{cli_native_link_plan._host_target_triple()}"
+                f"{native_target._host_target_triple()}"
             ),
             None,
         ),
@@ -11098,7 +11113,7 @@ def test_external_native_artifact_output_custody_rejects_unpublished_outputs(
             cli_external_native._external_native_artifact_output_custody_error(
                 native_artifact_plan=policy.native_artifact_plan,
                 output_layout=output_layout,
-                target=target,
+                target=admit_target(target),
             )
         )
         assert error_message is not None
@@ -12699,10 +12714,8 @@ def test_prepare_native_link_uses_owned_stdlib_object_for_link_command(
     assert error is None
     assert prepared is not None
     staged_stdlib = artifacts_root / "shared-stdlib-link" / stdlib_obj.name
-    from molt.cli.native_link_plan import (
-        resolve_link_dialect,
-        whole_archive_link_arguments,
-    )
+    from molt.cli.native_link_plan import whole_archive_link_arguments
+    from molt.compilation_target import resolve_link_dialect
 
     forced_stdlib = list(
         whole_archive_link_arguments(
@@ -13040,7 +13053,7 @@ def test_build_native_link_success_data_reports_external_native_artifacts(
     )
 
     data = cli_build_results._build_native_link_success_data(
-        target="native",
+        target=admit_target("native"),
         target_triple=None,
         source_path=tmp_path / "demo.py",
         output_binary=tmp_path / "app",
@@ -13550,7 +13563,7 @@ def test_cache_keys_use_payload_digest_authority() -> None:
     module_payload_digest = CACHE_KEYS._cache_payload_digest(module_payload_ir)
     backend_payload_digest = CACHE_KEYS._cache_payload_digest(backend_payload_ir)
     assert CACHE_KEYS._cache_key(
-        ir, "native", None, "variant"
+        ir, admit_target("native"), None, "variant"
     ) == _payload_digest_cache_key(
         module_payload_digest,
         target="native",
@@ -13559,7 +13572,7 @@ def test_cache_keys_use_payload_digest_authority() -> None:
         schema_version=CACHE_KEYS._CACHE_KEY_SCHEMA_VERSION,
     )
     assert CACHE_KEYS._function_cache_key(
-        ir, "native", None, "variant"
+        ir, admit_target("native"), None, "variant"
     ) == _payload_digest_cache_key(
         backend_payload_digest,
         target="native",
@@ -19644,7 +19657,7 @@ def _compile_with_backend_daemon_non_wasm(
         ir=ir,
         backend_output=backend_output,
         artifact_contract=resolve_backend_artifact_contract(
-            target="native", emit_mode="bin", target_triple=target_triple
+            target=admit_target(target_triple or "native"), emit_mode="bin"
         ),
         wasm_link=False,
         wasm_data_base=None,
@@ -20413,7 +20426,7 @@ def test_augment_module_graph_does_not_add_entry_alias_as_second_module(
         module_reasons={},
         diagnostics_enabled=False,
         json_output=False,
-        target="native",
+        target=admit_target("native"),
     )
 
     assert error is None
@@ -20422,7 +20435,10 @@ def test_augment_module_graph_does_not_add_entry_alias_as_second_module(
     assert list(module_graph.values()) == [source_path]
 
 
-@pytest.mark.parametrize("target", ["native", "wasm"])
+@pytest.mark.parametrize(
+    "target",
+    ["native", "wasm", "wasm-freestanding", "wasm32-wasip1", "wasm32-unknown-unknown"],
+)
 @pytest.mark.parametrize("with_spawn", [False, True])
 def test_augmentation_preserves_initializer_closure_without_eager_import_seeds(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, target: str, with_spawn: bool
@@ -20490,7 +20506,7 @@ def test_augmentation_preserves_initializer_closure_without_eager_import_seeds(
         module_reasons={},
         diagnostics_enabled=False,
         json_output=False,
-        target=target,
+        target=admit_target(target),
     )
     assert error is None
     imports = {"bootstrap_dep", "bootstrap_leaf", "provider_dep"}
@@ -22042,7 +22058,7 @@ def test_prepare_backend_setup_materializes_backend_before_cache_key(
             target_triple=None,
             json_output=True,
             cargo_timeout=1.0,
-            target="wasm" if is_wasm else "native",
+            target=admit_target("wasm" if is_wasm else "native"),
             profile="dev",
             backend_cargo_profile="dev-fast",
             linked=False,
@@ -22106,7 +22122,7 @@ def test_prepare_backend_setup_stages_runtime_callables_before_native_cache_hit(
         return cli_models._BackendCacheSetup(
             backend_environment={},
             artifact_contract=resolve_backend_artifact_contract(
-                target="native", emit_mode="obj", target_triple=None
+                target=admit_target("native"), emit_mode="obj"
             ),
             cache_enabled=True,
             cache_key="module-cache",
@@ -22172,7 +22188,7 @@ def test_prepare_backend_setup_stages_runtime_callables_before_native_cache_hit(
             target_triple=None,
             json_output=True,
             cargo_timeout=1.0,
-            target="native",
+            target=admit_target("native"),
             profile="dev",
             backend_cargo_profile="dev",
             linked=False,
@@ -22236,7 +22252,7 @@ def test_prepare_backend_setup_stages_runtime_callables_before_native_cache_miss
         return cli_models._BackendCacheSetup(
             backend_environment={},
             artifact_contract=resolve_backend_artifact_contract(
-                target="native", emit_mode="obj", target_triple=None
+                target=admit_target("native"), emit_mode="obj"
             ),
             cache_enabled=True,
             cache_key="module-cache",
@@ -22302,7 +22318,7 @@ def test_prepare_backend_setup_stages_runtime_callables_before_native_cache_miss
             target_triple=None,
             json_output=True,
             cargo_timeout=1.0,
-            target="native",
+            target=admit_target("native"),
             profile="dev",
             backend_cargo_profile="dev",
             linked=False,
@@ -22362,7 +22378,7 @@ def test_prepare_backend_setup_uses_runtime_callable_digest_instead_of_native_as
         return cli_models._BackendCacheSetup(
             backend_environment={},
             artifact_contract=resolve_backend_artifact_contract(
-                target="native", emit_mode="obj", target_triple=None
+                target=admit_target("native"), emit_mode="obj"
             ),
             cache_enabled=True,
             cache_key="module-cache",
@@ -22434,7 +22450,7 @@ def test_prepare_backend_setup_uses_runtime_callable_digest_instead_of_native_as
             target_triple=None,
             json_output=True,
             cargo_timeout=1.0,
-            target="native",
+            target=admit_target("native"),
             profile="release",
             backend_cargo_profile="release-fast",
             linked=False,
@@ -22495,7 +22511,7 @@ def test_prepare_backend_setup_stages_runtime_callables_for_object_emit_without_
             or cli_models._BackendCacheSetup(
                 backend_environment={},
                 artifact_contract=resolve_backend_artifact_contract(
-                    target="native", emit_mode="obj", target_triple=None
+                    target=admit_target("native"), emit_mode="obj"
                 ),
                 cache_enabled=True,
                 cache_key="module-cache",
@@ -22557,7 +22573,7 @@ def test_prepare_backend_setup_stages_runtime_callables_for_object_emit_without_
             target_triple=None,
             json_output=True,
             cargo_timeout=1.0,
-            target="native",
+            target=admit_target("native"),
             profile="release",
             backend_cargo_profile="release-fast",
             linked=False,
@@ -22713,7 +22729,7 @@ def test_prepare_backend_runtime_context_closes_native_exports_for_atomic_pair(
         cache_setup=cli_models._BackendCacheSetup(
             backend_environment={},
             artifact_contract=resolve_backend_artifact_contract(
-                target="native", emit_mode="obj", target_triple=None
+                target=admit_target("native"), emit_mode="obj"
             ),
             cache_enabled=True,
             cache_key=None,
@@ -22794,7 +22810,7 @@ def test_prepare_backend_runtime_context_reuses_setup_callable_symbols_digest(
     cache_setup = cli_models._BackendCacheSetup(
         backend_environment={},
         artifact_contract=resolve_backend_artifact_contract(
-            target="native", emit_mode="obj", target_triple=None
+            target=admit_target("native"), emit_mode="obj"
         ),
         cache_enabled=True,
         cache_key=None,
@@ -22856,7 +22872,7 @@ def test_prepare_backend_runtime_context_stages_callable_symbols_without_setup_d
     cache_setup = cli_models._BackendCacheSetup(
         backend_environment={},
         artifact_contract=resolve_backend_artifact_contract(
-            target="native", emit_mode="obj", target_triple=None
+            target=admit_target("native"), emit_mode="obj"
         ),
         cache_enabled=True,
         cache_key=None,
@@ -25373,7 +25389,7 @@ def test_run_backend_pipeline_defers_native_runtime_readiness_until_after_codege
         cache_setup = cli_models._BackendCacheSetup(
             backend_environment={},
             artifact_contract=resolve_backend_artifact_contract(
-                target="native", emit_mode="obj", target_triple=None
+                target=admit_target("native"), emit_mode="obj"
             ),
             cache_enabled=True,
             cache_key="module-cache",
@@ -25471,7 +25487,7 @@ def test_run_backend_pipeline_defers_native_runtime_readiness_until_after_codege
         prepared_frontend_pipeline_bundle=frontend_bundle,
         profile="dev",
         json_output=True,
-        target="native",
+        target=admit_target("native"),
         cache_dir=None,
         cache=True,
         cache_report=False,
@@ -26017,7 +26033,7 @@ def test_build_rust_target_uses_rust_backend_feature_and_skips_daemon(
     rc = cli_build_command.build(
         BuildRequest(
             file_path=str(entry),
-            target="rust",
+            target=admit_target("rust"),
             output=str(backend_output),
             profile="dev",
             deterministic=False,
@@ -26170,7 +26186,7 @@ def test_build_release_rust_target_uses_release_backend_profile_by_default(
     rc = cli_build_command.build(
         BuildRequest(
             file_path=str(entry),
-            target="rust",
+            target=admit_target("rust"),
             output=str(backend_output),
             profile="release",
             deterministic=False,
@@ -26379,7 +26395,7 @@ def test_build_scopes_pipeline_env_updates(
         BuildRequest(
             file_path=str(entry),
             module="demo.main",
-            target="wasm",
+            target=admit_target("wasm"),
             portable=True,
             split_runtime=True,
             wasm_profile="full",
@@ -27393,7 +27409,7 @@ def test_run_script_cross_respects_pythonpath_for_module_artifact_resolution(
     monkeypatch.setenv("PYTHONPATH", str(pythonpath_root))
 
     rc = cli_commands._run_script_cross(
-        "luau",
+        admit_target("luau"),
         None,
         "demo",
         [],
@@ -27496,7 +27512,7 @@ def test_run_script_cross_wasm_honors_build_json_output_and_linked_artifact(
     )
 
     rc = cli_commands._run_script_cross(
-        "wasm",
+        admit_target("wasm"),
         str(entry),
         None,
         ["--sample", "value"],
@@ -27511,6 +27527,8 @@ def test_run_script_cross_wasm_honors_build_json_output_and_linked_artifact(
         "molt.cli",
         "build",
         "--json",
+        "--target",
+        "wasm",
         "--out-dir",
         str(out_dir),
         "--linked",
@@ -27566,7 +27584,9 @@ def test_wasm_run_rejects_unavailable_node_before_build(
         ),
     )
 
-    rc = cli_commands._run_script_cross("wasm", str(entry), None, [], json_output=False)
+    rc = cli_commands._run_script_cross(
+        admit_target("wasm"), str(entry), None, [], json_output=False
+    )
 
     assert rc != 0
     output = capsys.readouterr()
@@ -27863,7 +27883,7 @@ def test_run_script_cross_reports_run_command_on_resolution_failure_json(
     monkeypatch.setattr(cli_commands, "_find_project_root", lambda start: project)
 
     rc = cli_commands._run_script_cross(
-        "luau",
+        admit_target("luau"),
         None,
         "missing_module",
         [],
@@ -27941,7 +27961,7 @@ def test_native_backend_compile_routes_stdlib_object_env(
         assert (
             cmd[cmd.index("--target-triple") + 1]
             == resolve_backend_artifact_contract(
-                target="native", emit_mode="bin"
+                target=admit_target("native"), emit_mode="bin"
             ).target_triple
         )
         assert cmd[cmd.index("--ir-format") + 1] == "msgpack"
@@ -27982,7 +28002,7 @@ def test_native_backend_compile_routes_stdlib_object_env(
         cache_setup=cli_models._BackendCacheSetup(
             backend_environment={},
             artifact_contract=resolve_backend_artifact_contract(
-                target="native", emit_mode="bin", target_triple=None
+                target=admit_target("native"), emit_mode="bin"
             ),
             cache_enabled=False,
             cache_key=None,
@@ -28084,7 +28104,7 @@ def test_native_backend_compile_overrides_stale_ambient_partition_env(
         cache_setup=cli_models._BackendCacheSetup(
             backend_environment={},
             artifact_contract=resolve_backend_artifact_contract(
-                target="native", emit_mode="bin", target_triple=None
+                target=admit_target("native"), emit_mode="bin"
             ),
             cache_enabled=False,
             cache_key=None,
@@ -28185,7 +28205,7 @@ def test_native_backend_compile_clears_stale_partition_env_without_split(
         cache_setup=cli_models._BackendCacheSetup(
             backend_environment={},
             artifact_contract=resolve_backend_artifact_contract(
-                target="native", emit_mode="obj", target_triple=None
+                target=admit_target("native"), emit_mode="obj"
             ),
             cache_enabled=False,
             cache_key=None,
@@ -28287,7 +28307,7 @@ def test_backend_compile_stages_one_shot_output_into_cache(
         cache_setup=cli_models._BackendCacheSetup(
             backend_environment={},
             artifact_contract=resolve_backend_artifact_contract(
-                target="wasm", emit_mode="wasm", target_triple=None
+                target=admit_target("wasm"), emit_mode="wasm"
             ),
             cache_enabled=True,
             cache_key="cache-key",
@@ -28424,7 +28444,7 @@ def test_execute_backend_compile_defers_full_daemon_request_encode_until_probe_m
         cache_setup=cli_models._BackendCacheSetup(
             backend_environment={},
             artifact_contract=resolve_backend_artifact_contract(
-                target="native", emit_mode="bin", target_triple=None
+                target=admit_target("native"), emit_mode="bin"
             ),
             cache_enabled=True,
             cache_key="cache-key",
@@ -28565,7 +28585,7 @@ def test_execute_backend_compile_keeps_probe_path_across_daemon_restart(
         cache_setup=cli_models._BackendCacheSetup(
             backend_environment={},
             artifact_contract=resolve_backend_artifact_contract(
-                target="native", emit_mode="obj", target_triple=None
+                target=admit_target("native"), emit_mode="obj"
             ),
             cache_enabled=True,
             cache_key="cache-key",
@@ -28692,7 +28712,7 @@ def test_execute_backend_compile_does_not_retry_after_full_daemon_request(
         cache_setup=cli_models._BackendCacheSetup(
             backend_environment={},
             artifact_contract=resolve_backend_artifact_contract(
-                target="native", emit_mode="obj", target_triple=None
+                target=admit_target("native"), emit_mode="obj"
             ),
             cache_enabled=False,
             cache_key=None,
@@ -28802,7 +28822,7 @@ def test_execute_backend_compile_fails_closed_after_daemon_failure(
         cache_setup=cli_models._BackendCacheSetup(
             backend_environment={},
             artifact_contract=resolve_backend_artifact_contract(
-                target="native", emit_mode="obj", target_triple=None
+                target=admit_target("native"), emit_mode="obj"
             ),
             cache_enabled=False,
             cache_key=None,
@@ -28910,7 +28930,7 @@ def test_execute_backend_compile_verbose_prints_only_fresh_daemon_log(
         cache_setup=cli_models._BackendCacheSetup(
             backend_environment={},
             artifact_contract=resolve_backend_artifact_contract(
-                target="native", emit_mode="obj", target_triple=None
+                target=admit_target("native"), emit_mode="obj"
             ),
             cache_enabled=False,
             cache_key=None,
@@ -28997,7 +29017,7 @@ def test_execute_backend_compile_rejects_unsynced_daemon_output_skip(
         cache_setup=cli_models._BackendCacheSetup(
             backend_environment={},
             artifact_contract=resolve_backend_artifact_contract(
-                target="native", emit_mode="obj", target_triple=None
+                target=admit_target("native"), emit_mode="obj"
             ),
             cache_enabled=True,
             cache_key="cache-key",
@@ -29066,7 +29086,7 @@ def test_backend_daemon_compile_request_partition_env_obeys_artifact_contract(
         ir_path=Path("backend-ir.msgpack"),
         backend_output=backend_output,
         artifact_contract=resolve_backend_artifact_contract(
-            target="native", emit_mode=emit_mode, target_triple=None
+            target=admit_target("native"), emit_mode=emit_mode
         ),
         wasm_link=False,
         wasm_data_base=None,
@@ -29130,7 +29150,7 @@ def test_backend_daemon_compile_request_uses_canonical_split_table_boundary(
         ir_path=Path("backend-ir.msgpack"),
         backend_output=tmp_path / "output.wasm",
         artifact_contract=resolve_backend_artifact_contract(
-            target="wasm", emit_mode="wasm", target_triple=None
+            target=admit_target("wasm"), emit_mode="wasm"
         ),
         wasm_link=True,
         wasm_data_base=67_108_864,
@@ -29162,7 +29182,7 @@ def test_backend_daemon_compile_request_can_use_path_backed_ir_lease(
         ir_path=ir_path,
         backend_output=backend_output,
         artifact_contract=resolve_backend_artifact_contract(
-            target="native", emit_mode="obj", target_triple=None
+            target=admit_target("native"), emit_mode="obj"
         ),
         wasm_link=False,
         wasm_data_base=None,
@@ -29194,7 +29214,7 @@ def test_backend_daemon_compile_request_selects_exact_compile_or_probe_state(
         ir_path=None if probe else tmp_path / "backend-ir.msgpack",
         backend_output=tmp_path / "output.o",
         artifact_contract=resolve_backend_artifact_contract(
-            target="native", emit_mode="obj", target_triple=None
+            target=admit_target("native"), emit_mode="obj"
         ),
         wasm_link=False,
         wasm_data_base=None,
@@ -29235,7 +29255,7 @@ def test_backend_daemon_compile_request_includes_batch_op_budget_env(
         ir_path=Path("backend-ir.msgpack"),
         backend_output=backend_output,
         artifact_contract=resolve_backend_artifact_contract(
-            target="native", emit_mode="bin", target_triple=None
+            target=admit_target("native"), emit_mode="bin"
         ),
         wasm_link=False,
         wasm_data_base=None,
@@ -29275,7 +29295,7 @@ def test_backend_daemon_compile_request_includes_resource_env_without_codegen_di
         ir_path=Path("backend-ir.msgpack"),
         backend_output=backend_output,
         artifact_contract=resolve_backend_artifact_contract(
-            target="native", emit_mode="obj", target_triple=None
+            target=admit_target("native"), emit_mode="obj"
         ),
         wasm_link=False,
         wasm_data_base=None,
@@ -29772,9 +29792,15 @@ def test_function_cache_key_tracks_top_level_ir_extras() -> None:
         "meta": {"x": 1},
         "profile": None,
     }
-    key_base = CACHE_KEYS._function_cache_key(ir_base, "native", None, "variant")
-    key_extra_a = CACHE_KEYS._function_cache_key(ir_extra_a, "native", None, "variant")
-    key_extra_b = CACHE_KEYS._function_cache_key(ir_extra_b, "native", None, "variant")
+    key_base = CACHE_KEYS._function_cache_key(
+        ir_base, admit_target("native"), None, "variant"
+    )
+    key_extra_a = CACHE_KEYS._function_cache_key(
+        ir_extra_a, admit_target("native"), None, "variant"
+    )
+    key_extra_b = CACHE_KEYS._function_cache_key(
+        ir_extra_b, admit_target("native"), None, "variant"
+    )
     assert key_extra_a != key_base
     assert key_extra_a == key_extra_b
 
@@ -30118,7 +30144,7 @@ def test_compile_with_backend_daemon_lazily_encodes_full_request_once(
         assert (
             job["target_triple"]
             == resolve_backend_artifact_contract(
-                target="native", emit_mode="bin"
+                target=admit_target("native"), emit_mode="bin"
             ).target_triple
         )
         lease = Path(job["ir_path"])
@@ -31312,7 +31338,7 @@ def test_backend_daemon_skip_output_sync_flags_track_artifact_state(
             "module-key",
             stdlib_object_cache_key=None,
             artifact_contract=resolve_backend_artifact_contract(
-                target="native", emit_mode="obj", target_triple=None
+                target=admit_target("native"), emit_mode="obj"
             ),
         ),
         tier="module",
@@ -31324,7 +31350,7 @@ def test_backend_daemon_skip_output_sync_flags_track_artifact_state(
             tmp_path,
             output_artifact,
             artifact_contract=resolve_backend_artifact_contract(
-                target="native", emit_mode="obj", target_triple=None
+                target=admit_target("native"), emit_mode="obj"
             ),
             cache_key="module-key",
             function_cache_key="function-key",
@@ -31349,7 +31375,7 @@ def test_backend_daemon_skip_output_sync_flags_uses_known_sync_state_without_rer
             "module-key",
             stdlib_object_cache_key=None,
             artifact_contract=resolve_backend_artifact_contract(
-                target="native", emit_mode="obj", target_triple=None
+                target=admit_target("native"), emit_mode="obj"
             ),
         ),
         tier="module",
@@ -31369,7 +31395,7 @@ def test_backend_daemon_skip_output_sync_flags_uses_known_sync_state_without_rer
             tmp_path,
             output_artifact,
             artifact_contract=resolve_backend_artifact_contract(
-                target="native", emit_mode="obj", target_triple=None
+                target=admit_target("native"), emit_mode="obj"
             ),
             cache_key="module-key",
             function_cache_key="function-key",
@@ -31399,7 +31425,7 @@ def test_backend_daemon_skip_output_sync_flags_rejects_missing_shared_stdlib(
             "module-key",
             stdlib_object_cache_key=None,
             artifact_contract=resolve_backend_artifact_contract(
-                target="native", emit_mode="bin", target_triple=None
+                target=admit_target("native"), emit_mode="bin"
             ),
         ),
         tier="module",
@@ -31411,7 +31437,7 @@ def test_backend_daemon_skip_output_sync_flags_rejects_missing_shared_stdlib(
             tmp_path,
             output_artifact,
             artifact_contract=resolve_backend_artifact_contract(
-                target="native", emit_mode="bin", target_triple=None
+                target=admit_target("native"), emit_mode="bin"
             ),
             cache_key="module-key",
             function_cache_key="function-key",
@@ -32004,7 +32030,7 @@ def test_stage_backend_output_and_caches_promotes_module_cache(
         backend_output,
         output_artifact,
         artifact_contract=resolve_backend_artifact_contract(
-            target="native", emit_mode="obj", target_triple=None
+            target=admit_target("native"), emit_mode="obj"
         ),
         cache_path=cache_path,
         cache_key="module-key",
@@ -32040,7 +32066,7 @@ def test_stage_backend_output_and_caches_refuses_an_evictable_cache_as_required_
         cache_path,
         output_artifact,
         artifact_contract=resolve_backend_artifact_contract(
-            target="native", emit_mode="obj", target_triple=None
+            target=admit_target("native"), emit_mode="obj"
         ),
         cache_path=cache_path,
         cache_key="module-key",
@@ -32074,7 +32100,7 @@ def test_stage_backend_output_and_caches_preserves_existing_module_cache(
         backend_output,
         output_artifact,
         artifact_contract=resolve_backend_artifact_contract(
-            target="native", emit_mode="obj", target_triple=None
+            target=admit_target("native"), emit_mode="obj"
         ),
         cache_path=cache_path,
         cache_key="module-key",
@@ -32109,7 +32135,7 @@ def test_stage_backend_output_and_caches_preserves_existing_function_cache(
         backend_output,
         output_artifact,
         artifact_contract=resolve_backend_artifact_contract(
-            target="native", emit_mode="obj", target_triple=None
+            target=admit_target("native"), emit_mode="obj"
         ),
         cache_path=cache_path,
         cache_key="module-key",
@@ -32146,7 +32172,7 @@ def test_stage_backend_output_and_caches_skips_output_recopy_when_module_key_is_
             "module-key",
             stdlib_object_cache_key=None,
             artifact_contract=resolve_backend_artifact_contract(
-                target="native", emit_mode="obj", target_triple=None
+                target=admit_target("native"), emit_mode="obj"
             ),
         ),
         tier="module",
@@ -32166,7 +32192,7 @@ def test_stage_backend_output_and_caches_skips_output_recopy_when_module_key_is_
         backend_output,
         output_artifact,
         artifact_contract=resolve_backend_artifact_contract(
-            target="native", emit_mode="obj", target_triple=None
+            target=admit_target("native"), emit_mode="obj"
         ),
         cache_path=cache_path,
         cache_key="module-key",
@@ -32206,7 +32232,7 @@ def test_stage_backend_output_and_caches_skips_state_rewrite_when_synced(
             "module-key",
             stdlib_object_cache_key=None,
             artifact_contract=resolve_backend_artifact_contract(
-                target="native", emit_mode="obj", target_triple=None
+                target=admit_target("native"), emit_mode="obj"
             ),
         ),
         tier="module",
@@ -32223,7 +32249,7 @@ def test_stage_backend_output_and_caches_skips_state_rewrite_when_synced(
         backend_output,
         output_artifact,
         artifact_contract=resolve_backend_artifact_contract(
-            target="native", emit_mode="obj", target_triple=None
+            target=admit_target("native"), emit_mode="obj"
         ),
         cache_path=cache_path,
         cache_key="module-key",
@@ -32251,7 +32277,9 @@ def test_stage_backend_output_and_caches_uses_known_sync_state_without_reread(
     output_artifact.write_bytes(native_relocatable_object(symbols=("molt_main",)))
     cache_path = tmp_path / "cache" / "module.o"
     warnings: list[str] = []
-    contract = resolve_backend_artifact_contract(target="native", emit_mode="obj")
+    contract = resolve_backend_artifact_contract(
+        target=admit_target("native"), emit_mode="obj"
+    )
     state_path = cli_artifact_sync._artifact_sync_state_path(tmp_path, output_artifact)
     cli_artifact_sync._write_artifact_sync_state(
         state_path,
@@ -32273,7 +32301,7 @@ def test_stage_backend_output_and_caches_uses_known_sync_state_without_reread(
         backend_output,
         output_artifact,
         artifact_contract=resolve_backend_artifact_contract(
-            target="native", emit_mode="obj", target_triple=None
+            target=admit_target("native"), emit_mode="obj"
         ),
         cache_path=cache_path,
         cache_key="module-key",
@@ -32319,7 +32347,7 @@ def test_stage_backend_output_and_caches_isolates_mutable_output_from_immutable_
         backend_output,
         output_artifact,
         artifact_contract=resolve_backend_artifact_contract(
-            target="native", emit_mode="obj", target_triple=None
+            target=admit_target("native"), emit_mode="obj"
         ),
         cache_path=cache_path,
         cache_key="module-key",
@@ -32359,7 +32387,7 @@ def test_stage_backend_output_and_caches_without_cache_moves_output(
         backend_output,
         output_artifact,
         artifact_contract=resolve_backend_artifact_contract(
-            target="native", emit_mode="obj", target_triple=None
+            target=admit_target("native"), emit_mode="obj"
         ),
         cache_path=None,
         cache_key=None,
@@ -32411,7 +32439,7 @@ def test_stage_backend_output_and_caches_warns_on_function_cache_failure(
         backend_output,
         output_artifact,
         artifact_contract=resolve_backend_artifact_contract(
-            target="native", emit_mode="obj", target_triple=None
+            target=admit_target("native"), emit_mode="obj"
         ),
         cache_path=cache_path,
         cache_key="module-key",
@@ -32443,7 +32471,7 @@ def test_materialize_cached_backend_artifact_promotes_module_cache_from_function
         candidate,
         output_artifact,
         artifact_contract=resolve_backend_artifact_contract(
-            target="native", emit_mode="obj", target_triple=None
+            target=admit_target("native"), emit_mode="obj"
         ),
         tier="function",
         source_key="function-key",
@@ -32464,9 +32492,11 @@ def test_backend_cache_artifact_path_uses_native_stdlib_context(
 ) -> None:
     cache_root = tmp_path / "cache"
     native_contract = resolve_backend_artifact_contract(
-        target="native", emit_mode="bin"
+        target=admit_target("native"), emit_mode="bin"
     )
-    wasm_contract = resolve_backend_artifact_contract(target="wasm", emit_mode="wasm")
+    wasm_contract = resolve_backend_artifact_contract(
+        target=admit_target("wasm"), emit_mode="wasm"
+    )
 
     native_path = cli_backend_cache._backend_cache_artifact_path(
         cache_root,
@@ -32513,7 +32543,7 @@ def test_try_cached_backend_candidates_promoted_function_hit_marks_module_synced
         cache_candidates=[("function", candidate)],
         output_artifact=output_artifact,
         artifact_contract=resolve_backend_artifact_contract(
-            target="native", emit_mode="obj", target_triple=None
+            target=admit_target("native"), emit_mode="obj"
         ),
         cache_key="module-key",
         function_cache_key="function-key",
@@ -32531,7 +32561,7 @@ def test_try_cached_backend_candidates_promoted_function_hit_marks_module_synced
             tmp_path,
             output_artifact,
             artifact_contract=resolve_backend_artifact_contract(
-                target="native", emit_mode="obj", target_triple=None
+                target=admit_target("native"), emit_mode="obj"
             ),
             cache_key="module-key",
             function_cache_key="function-key",
@@ -32563,7 +32593,7 @@ def test_try_cached_backend_candidates_promoted_native_function_hit_marks_contex
         cache_candidates=[("function", candidate)],
         output_artifact=output_artifact,
         artifact_contract=resolve_backend_artifact_contract(
-            target="native", emit_mode="bin", target_triple=None
+            target=admit_target("native"), emit_mode="bin"
         ),
         cache_key="module-key",
         function_cache_key="function-key",
@@ -32582,7 +32612,7 @@ def test_try_cached_backend_candidates_promoted_native_function_hit_marks_contex
             tmp_path,
             output_artifact,
             artifact_contract=resolve_backend_artifact_contract(
-                target="native", emit_mode="bin", target_triple=None
+                target=admit_target("native"), emit_mode="bin"
             ),
             cache_key="module-key",
             function_cache_key="function-key",
@@ -32602,7 +32632,7 @@ def test_try_cached_backend_candidates_promoted_native_function_hit_marks_contex
             "module-key",
             stdlib_object_cache_key="stdlib-key",
             artifact_contract=resolve_backend_artifact_contract(
-                target="native", emit_mode="bin", target_triple=None
+                target=admit_target("native"), emit_mode="bin"
             ),
         ),
         tier="module",
@@ -32614,7 +32644,7 @@ def test_try_cached_backend_candidates_promoted_native_function_hit_marks_contex
             "module-key",
             stdlib_object_cache_key=None,
             artifact_contract=resolve_backend_artifact_contract(
-                target="native", emit_mode="bin", target_triple=None
+                target=admit_target("native"), emit_mode="bin"
             ),
         ),
         tier="module",
@@ -32636,7 +32666,7 @@ def test_try_cached_backend_candidates_preserves_invalid_candidate(
         cache_candidates=[("module", candidate)],
         output_artifact=output_artifact,
         artifact_contract=resolve_backend_artifact_contract(
-            target="native", emit_mode="obj", target_triple=None
+            target=admit_target("native"), emit_mode="obj"
         ),
         cache_key="module-key",
         function_cache_key=None,
@@ -32669,7 +32699,7 @@ def test_try_cached_backend_candidates_rejects_native_hit_without_shared_stdlib(
         cache_candidates=[("module", candidate)],
         output_artifact=output_artifact,
         artifact_contract=resolve_backend_artifact_contract(
-            target="native", emit_mode="bin", target_triple=None
+            target=admit_target("native"), emit_mode="bin"
         ),
         cache_key="module-key",
         function_cache_key=None,
@@ -32698,7 +32728,7 @@ def test_materialize_cached_backend_artifact_skips_recopy_when_synced(
         candidate,
         output_artifact,
         artifact_contract=resolve_backend_artifact_contract(
-            target="native", emit_mode="obj", target_triple=None
+            target=admit_target("native"), emit_mode="obj"
         ),
         tier="module",
         source_key="module-key",
@@ -32717,7 +32747,7 @@ def test_materialize_cached_backend_artifact_skips_recopy_when_synced(
         candidate,
         output_artifact,
         artifact_contract=resolve_backend_artifact_contract(
-            target="native", emit_mode="obj", target_triple=None
+            target=admit_target("native"), emit_mode="obj"
         ),
         tier="module",
         source_key="module-key",
@@ -32752,7 +32782,7 @@ def test_materialize_cached_backend_artifact_isolates_mutable_output_from_immuta
         candidate,
         output_artifact,
         artifact_contract=resolve_backend_artifact_contract(
-            target="native", emit_mode="obj", target_triple=None
+            target=admit_target("native"), emit_mode="obj"
         ),
         tier="module",
         source_key="module-key",
@@ -32802,7 +32832,7 @@ def test_materialize_cached_backend_artifact_uses_known_sync_state_without_rerea
         candidate,
         output_artifact,
         artifact_contract=resolve_backend_artifact_contract(
-            target="native", emit_mode="obj", target_triple=None
+            target=admit_target("native"), emit_mode="obj"
         ),
         tier="module",
         source_key="module-key",
@@ -32820,7 +32850,9 @@ def test_materialize_cached_backend_artifact_uses_known_sync_state_without_rerea
 def test_temporary_backend_output_path_uses_expected_suffix_and_cleans_up(
     tmp_path: Path,
 ) -> None:
-    contract = resolve_backend_artifact_contract(target="native", emit_mode="obj")
+    contract = resolve_backend_artifact_contract(
+        target=admit_target("native"), emit_mode="obj"
+    )
     with cli_backend_cache._temporary_backend_output_path(
         tmp_path,
         artifact_contract=contract,
@@ -32833,7 +32865,7 @@ def test_temporary_backend_output_path_uses_expected_suffix_and_cleans_up(
     with cli_backend_cache._temporary_backend_output_path(
         tmp_path,
         artifact_contract=resolve_backend_artifact_contract(
-            target="wasm", emit_mode="wasm", target_triple=None
+            target=admit_target("wasm"), emit_mode="wasm"
         ),
     ) as path:
         assert path.suffix == ".wasm"
@@ -32848,7 +32880,7 @@ def test_cached_backend_artifact_validity_guard(tmp_path: Path) -> None:
     assert not cli_backend_cache._is_valid_cached_backend_artifact(
         wasm_bad,
         artifact_contract=resolve_backend_artifact_contract(
-            target="wasm", emit_mode="wasm", target_triple=None
+            target=admit_target("wasm"), emit_mode="wasm"
         ),
     )
 
@@ -32857,7 +32889,7 @@ def test_cached_backend_artifact_validity_guard(tmp_path: Path) -> None:
     assert cli_backend_cache._is_valid_cached_backend_artifact(
         wasm_good,
         artifact_contract=resolve_backend_artifact_contract(
-            target="wasm", emit_mode="wasm", target_triple=None
+            target=admit_target("wasm"), emit_mode="wasm"
         ),
     )
 
@@ -32866,7 +32898,7 @@ def test_cached_backend_artifact_validity_guard(tmp_path: Path) -> None:
     assert not cli_backend_cache._is_valid_cached_backend_artifact(
         native_empty,
         artifact_contract=resolve_backend_artifact_contract(
-            target="native", emit_mode="obj", target_triple=None
+            target=admit_target("native"), emit_mode="obj"
         ),
     )
 
@@ -32882,7 +32914,7 @@ def test_cached_backend_artifact_validity_guard(tmp_path: Path) -> None:
     assert not cli_backend_cache._is_valid_cached_backend_artifact(
         empty_object,
         artifact_contract=resolve_backend_artifact_contract(
-            target="native", emit_mode="obj", target_triple=None
+            target=admit_target("native"), emit_mode="obj"
         ),
     )
 
@@ -32898,7 +32930,7 @@ def test_cached_backend_artifact_validity_guard(tmp_path: Path) -> None:
     assert cli_backend_cache._is_valid_cached_backend_artifact(
         native_nonempty,
         artifact_contract=resolve_backend_artifact_contract(
-            target="native", emit_mode="obj", target_triple=None
+            target=admit_target("native"), emit_mode="obj"
         ),
     )
 
@@ -32947,7 +32979,7 @@ def test_try_cached_backend_candidates_rejects_native_hit_with_unresolved_user_m
         cache_candidates=[("module", candidate)],
         output_artifact=output_artifact,
         artifact_contract=resolve_backend_artifact_contract(
-            target="native", emit_mode="bin", target_triple=None
+            target=admit_target("native"), emit_mode="bin"
         ),
         cache_key="module-key",
         function_cache_key=None,
@@ -33074,7 +33106,7 @@ def test_backend_daemon_skip_output_sync_flags_rejects_synced_native_output_with
             "module-key",
             stdlib_object_cache_key="stdlib-key",
             artifact_contract=resolve_backend_artifact_contract(
-                target="native", emit_mode="bin", target_triple=None
+                target=admit_target("native"), emit_mode="bin"
             ),
         ),
         tier="module",
@@ -33086,7 +33118,7 @@ def test_backend_daemon_skip_output_sync_flags_rejects_synced_native_output_with
             tmp_path,
             output_artifact,
             artifact_contract=resolve_backend_artifact_contract(
-                target="native", emit_mode="bin", target_triple=None
+                target=admit_target("native"), emit_mode="bin"
             ),
             cache_key="module-key",
             function_cache_key=None,
@@ -33310,7 +33342,7 @@ def test_cache_variant_differs_when_stdlib_split_toggles(tmp_path: Path) -> None
     common = dict(
         cache_enabled=True,
         ir=tiny_ir,
-        target="native",
+        target=admit_target("native"),
         profile="release",
         runtime_cargo_profile="release",
         backend_cargo_profile="release",
@@ -33332,7 +33364,7 @@ def test_cache_variant_differs_when_stdlib_split_toggles(tmp_path: Path) -> None
         backend_bin=tmp_path / "molt-backend",
         emit_mode="bin",
         artifact_contract=resolve_backend_artifact_contract(
-            target="native", emit_mode="bin"
+            target=admit_target("native"), emit_mode="bin"
         ),
         output_artifact=tmp_path / "dummy_split.a",
         **common,
@@ -33344,7 +33376,7 @@ def test_cache_variant_differs_when_stdlib_split_toggles(tmp_path: Path) -> None
         backend_bin=tmp_path / "molt-backend",
         emit_mode="obj",
         artifact_contract=resolve_backend_artifact_contract(
-            target="native", emit_mode="obj"
+            target=admit_target("native"), emit_mode="obj"
         ),
         output_artifact=tmp_path / "dummy_mono.o",
         **common,
@@ -33367,7 +33399,7 @@ def test_prepare_backend_cache_setup_routes_stdlib_object_to_explicit_cache_dir(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, requested_target: str | None
 ) -> None:
     monkeypatch.setattr(
-        "molt.cli.native_link_plan._host_target_triple",
+        "molt.native_target._host_target_triple",
         lambda **_kwargs: "x86_64-unknown-linux-gnu",
     )
     monkeypatch.setenv("MOLT_CACHE", str(tmp_path / "ambient-cache"))
@@ -33395,9 +33427,9 @@ def test_prepare_backend_cache_setup_routes_stdlib_object_to_explicit_cache_dir(
         backend_bin=tmp_path / "molt-backend",
         cache_enabled=True,
         ir=tiny_ir,
-        target="native",
+        target=admit_target("native"),
         artifact_contract=resolve_backend_artifact_contract(
-            target="native", emit_mode="bin", target_triple=requested_target
+            target=admit_target(requested_target or "native"), emit_mode="bin"
         ),
         profile="dev",
         runtime_cargo_profile="dev-fast",
@@ -33445,7 +33477,7 @@ def test_prepare_backend_cache_setup_routes_no_cache_stdlib_object_to_explicit_c
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, requested_target: str | None
 ) -> None:
     monkeypatch.setattr(
-        "molt.cli.native_link_plan._host_target_triple",
+        "molt.native_target._host_target_triple",
         lambda **_kwargs: "x86_64-unknown-linux-gnu",
     )
     monkeypatch.setenv("MOLT_CACHE", str(tmp_path / "ambient-cache"))
@@ -33473,9 +33505,9 @@ def test_prepare_backend_cache_setup_routes_no_cache_stdlib_object_to_explicit_c
         backend_bin=tmp_path / "molt-backend",
         cache_enabled=False,
         ir=tiny_ir,
-        target="native",
+        target=admit_target("native"),
         artifact_contract=resolve_backend_artifact_contract(
-            target="native", emit_mode="bin", target_triple=requested_target
+            target=admit_target(requested_target or "native"), emit_mode="bin"
         ),
         profile="dev",
         runtime_cargo_profile="dev-fast",
@@ -33872,7 +33904,7 @@ def test_external_native_artifact_plan_reads_data_requirements_from_linking_sect
     plan, errors = cli_external_native._resolve_external_package_native_artifact_plan(
         external_module_roots=(external_root,),
         admitted_packages={"nativepkg"},
-        target="wasm",
+        target=admit_target("wasm"),
         required_modules={"nativepkg.ndimage._nd_image"},
     )
 
@@ -33929,7 +33961,7 @@ def test_external_native_artifact_plan_resolves_symbols_from_package_sibling(
     plan, errors = cli_external_native._resolve_external_package_native_artifact_plan(
         external_module_roots=(external_root,),
         admitted_packages={"nativepkg"},
-        target="wasm",
+        target=admit_target("wasm"),
         required_modules={"nativepkg.linalg._umath_linalg"},
     )
     assert plan is None
@@ -33977,7 +34009,7 @@ def test_external_native_artifact_plan_resolves_symbols_from_package_sibling(
     plan, errors = cli_external_native._resolve_external_package_native_artifact_plan(
         external_module_roots=(external_root,),
         admitted_packages={"nativepkg"},
-        target="wasm",
+        target=admit_target("wasm"),
         required_modules={"nativepkg.linalg._umath_linalg"},
     )
     assert errors == []
@@ -34063,7 +34095,7 @@ def test_external_native_package_symbol_closure_selects_transitive_providers(
     plan, errors = cli_external_native._resolve_external_package_native_artifact_plan(
         external_module_roots=(root,),
         admitted_packages={"nativepkg"},
-        target="wasm",
+        target=admit_target("wasm"),
         required_modules={"nativepkg.consumer"},
     )
     assert errors == []
@@ -34109,7 +34141,7 @@ def test_external_native_package_symbol_closure_requires_exact_binary_kind(
     plan, errors = cli_external_native._resolve_external_package_native_artifact_plan(
         external_module_roots=(root,),
         admitted_packages={"nativepkg"},
-        target="wasm",
+        target=admit_target("wasm"),
         required_modules={"nativepkg.consumer"},
     )
     if consumer_kind != provider_kind:
@@ -34178,7 +34210,7 @@ def test_external_native_package_symbol_closure_checks_function_import_contract(
     plan, errors = cli_external_native._resolve_external_package_native_artifact_plan(
         external_module_roots=(root,),
         admitted_packages={"nativepkg"},
-        target="wasm",
+        target=admit_target("wasm"),
         required_modules={"nativepkg.consumer"},
     )
     assert plan is None
@@ -34233,7 +34265,7 @@ def test_external_native_package_symbol_closure_rejects_invalid_provider(
     plan, errors = cli_external_native._resolve_external_package_native_artifact_plan(
         external_module_roots=(root, provider_root) if defect == "root" else (root,),
         admitted_packages={"nativepkg", "otherpkg"},
-        target="wasm",
+        target=admit_target("wasm"),
         required_modules={"nativepkg.consumer"},
     )
     assert plan is None
@@ -34275,7 +34307,7 @@ def test_external_native_package_symbol_closure_rejects_runtime_authority_collis
     plan, errors = cli_external_native._resolve_external_package_native_artifact_plan(
         external_module_roots=(root,),
         admitted_packages={"nativepkg"},
-        target="wasm",
+        target=admit_target("wasm"),
         required_modules={"nativepkg.consumer"},
     )
     assert plan is None

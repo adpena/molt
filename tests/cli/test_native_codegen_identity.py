@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from molt.compilation_target import admit_target
+
 from molt.cli.cache_keys import FunctionDigests
 
 import json
@@ -120,7 +122,9 @@ def test_effective_cpu_features_separate_all_outer_native_cache_keys(
         frontend_module_costs=None,
         stdlib_like_by_module={"sys": True},
     )
-    contract = resolve_backend_artifact_contract(target="native", emit_mode="bin")
+    contract = resolve_backend_artifact_contract(
+        target=admit_target("native"), emit_mode="bin"
+    )
 
     def setup():
         return backend_cache_setup._prepare_backend_cache_setup(
@@ -129,7 +133,7 @@ def test_effective_cpu_features_separate_all_outer_native_cache_keys(
             backend_bin=backend,
             cache_enabled=True,
             ir={"functions": [], "module": "__main__", "ops": []},
-            target="native",
+            target=admit_target("native"),
             artifact_contract=contract,
             profile="dev",
             runtime_cargo_profile="dev-fast",

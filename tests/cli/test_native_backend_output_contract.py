@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from molt.compilation_target import admit_target
+
 from tests.cli.native_link_test_support import transport_codegen_binding
 
 import copy
@@ -19,7 +21,7 @@ from molt.cli.backend_ir_transport import write_backend_ir
 
 from molt.cli import backend_cache, backend_execution, build_output_layout, factgraph
 from molt.cli.backend_artifact_contract import resolve_backend_artifact_contract
-from molt.cli.native_link_plan import NativeArtifactKind
+from molt.native_target import NativeArtifactKind
 
 
 @pytest.mark.parametrize("kind", list(NativeArtifactKind))
@@ -28,9 +30,8 @@ def test_native_output_kind_is_explicit_in_full_and_probe_requests(
     tmp_path, kind, probe
 ):
     contract = resolve_backend_artifact_contract(
-        target="native",
+        target=admit_target("x86_64-pc-windows-msvc" or "native"),
         emit_mode="obj" if kind is NativeArtifactKind.OBJECT else "bin",
-        target_triple="x86_64-pc-windows-msvc",
     )
     stdlib_key = "stdlib-key" if kind is NativeArtifactKind.ARCHIVE else None
     payload, error = backend_execution._backend_daemon_compile_request_bytes(
@@ -76,7 +77,7 @@ def test_native_output_kind_is_explicit_in_full_and_probe_requests(
 @pytest.mark.parametrize("probe", [False, True])
 def test_wasm_requests_omit_native_output_kind(target: str, probe: bool) -> None:
     contract = resolve_backend_artifact_contract(
-        target=target, emit_mode="wasm", target_triple=None
+        target=admit_target(target), emit_mode="wasm"
     )
     payload, error = backend_execution._backend_daemon_compile_request_bytes(
         ir_path=None if probe else Path("backend-ir.msgpack"),
@@ -129,7 +130,9 @@ def test_wasm_requests_omit_native_output_kind(target: str, probe: bool) -> None
 def test_daemon_probe_and_full_request_preserve_cache_setup_contract(
     tmp_path, monkeypatch, target, emit
 ):
-    contract = resolve_backend_artifact_contract(target=target, emit_mode=emit)
+    contract = resolve_backend_artifact_contract(
+        target=admit_target(target), emit_mode=emit
+    )
     output = tmp_path / "output_with_unrelated.suffix"
     output.write_bytes(b"existing output; transport fixture only")
     jobs = []
@@ -194,7 +197,9 @@ def test_daemon_probe_and_full_request_preserve_cache_setup_contract(
 def test_daemon_rejects_text_contract_before_ir_lease_or_transport(
     tmp_path, monkeypatch, target
 ):
-    contract = resolve_backend_artifact_contract(target=target, emit_mode="bin")
+    contract = resolve_backend_artifact_contract(
+        target=admit_target(target), emit_mode="bin"
+    )
 
     def forbidden(*args, **kwargs):
         pytest.fail("text output must not reach daemon lease creation or transport")
@@ -268,7 +273,7 @@ def test_native_output_filename_matches_requested_format(
     tmp_path, target, emit, suffix
 ):
     layout = build_output_layout._resolve_build_output_layout(
-        target=target,
+        target=admit_target(target),
         trusted=False,
         require_linked=False,
         linked=False,
@@ -286,9 +291,8 @@ def test_native_output_filename_matches_requested_format(
     assert layout.output_artifact.suffix == suffix
     assert (
         build_output_layout._backend_artifact_suffix(
-            target=target,
+            target=admit_target(target),
             emit_mode=layout.emit_mode,
-            target_triple=layout.target_triple,
         )
         == suffix
     )
@@ -296,10 +300,10 @@ def test_native_output_filename_matches_requested_format(
 
 def test_object_request_keeps_complete_stdlib_in_compilation_unit():
     assert not backend_cache._native_stdlib_object_split_enabled(
-        target="native", emit_mode="obj"
+        target=admit_target("native"), emit_mode="obj"
     )
     assert backend_cache._native_stdlib_object_split_enabled(
-        target="native", emit_mode="bin"
+        target=admit_target("native"), emit_mode="bin"
     )
 
 

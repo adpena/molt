@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from molt.compilation_target import Target, is_wasm_target
+
 from molt.cli.native_symbol_inspection import (
     NativeSymbolInspectionError,
 )
@@ -85,7 +87,7 @@ def _run_backend_pipeline(
     prepared_frontend_pipeline_bundle: _frontend_pipeline._PreparedFrontendPipelineBundle,
     profile: BuildProfile,
     json_output: bool,
-    target: str,
+    target: Target,
     cache_dir: str | None,
     cache: bool,
     cache_report: bool,
@@ -219,17 +221,13 @@ def _run_backend_pipeline(
                 app_export_contract,
                 indent=2,
             )
-    is_wasm_target = (
-        output_layout.is_wasm
-        or target in {"wasm", "wasm-freestanding"}
-        or (output_layout.target_triple or "").startswith("wasm32")
-    )
+    wasm_target = is_wasm_target(target)
     runtime_stdlib_profile = (
         _runtime_features.runtime_stdlib_profile_for_required_features(
             stdlib_profile,
             required_link_features,
             target_triple="wasm32-wasip1"
-            if is_wasm_target
+            if wasm_target
             else output_layout.target_triple,
         )
     )

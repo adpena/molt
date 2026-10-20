@@ -9,6 +9,8 @@ feature lane, binary path, Cargo timeout, or Rust CPU policy fails here.
 
 from __future__ import annotations
 
+from molt.compilation_target import admit_target
+
 from molt.cli.cache_keys import FunctionDigests
 
 from collections.abc import Mapping
@@ -203,7 +205,7 @@ def _record_backend_admission(
 
 def _build_layout(target: str, tmp_path: Path, project_root: Path) -> Any:
     return _resolve_build_output_layout(
-        target=target,
+        target=admit_target(target),
         trusted=False,
         require_linked=False,
         linked=False,
@@ -230,7 +232,7 @@ def _build_backend_setup(
         diagnostics_file=None,
         diagnostics_verbosity=None,
         json_output=True,
-        target=target,
+        target=admit_target(target),
     )
     assert error is None and preamble is not None
     roots, error = cli_build_inputs._prepare_build_roots(
@@ -246,7 +248,7 @@ def _build_backend_setup(
         project_root=roots.project_root,
         warnings=preamble.warnings,
         json_output=True,
-        target=target,
+        target=admit_target(target),
         profile="dev",
         pgo_profile=None,
         runtime_feedback=None,
@@ -268,7 +270,7 @@ def _build_backend_setup(
         target_triple=layout.target_triple,
         json_output=True,
         cargo_timeout=config.cargo_timeout,
-        target=target,
+        target=admit_target(target),
         profile="dev",
         backend_cargo_profile=config.backend_cargo_profile,
         linked=layout.linked,
@@ -384,7 +386,7 @@ def _stub_backend_cache_setup(
     cache_setup = _BackendCacheSetup(
         backend_environment={},
         artifact_contract=resolve_backend_artifact_contract(
-            target=target, emit_mode="bin"
+            target=admit_target(target), emit_mode="bin"
         ),
         cache_enabled=False,
         cache_key=None,

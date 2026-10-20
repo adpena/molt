@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from molt.compilation_target import admit_target
+
 from tests.runtime_build_identity_helper import native_runtime_build_inputs
 
 import json
@@ -97,7 +99,9 @@ def test_native_object_publication_is_one_admitted_transaction(
     cache_path = tmp_path / "cache.o"
     if cache_hit:
         cache_path.write_bytes(object_bytes)
-    contract = resolve_backend_artifact_contract(target="native", emit_mode="obj")
+    contract = resolve_backend_artifact_contract(
+        target=admit_target("native"), emit_mode="obj"
+    )
 
     runtime_root = tmp_path / "dev-fast"
     runtime_root.mkdir()
@@ -391,7 +395,7 @@ def test_native_object_publication_is_one_admitted_transaction(
         prepared_frontend_pipeline_bundle=bundle,
         profile="dev",
         json_output=True,
-        target="native",
+        target=admit_target("native"),
         cache_dir=None,
         cache=True,
         cache_report=False,
@@ -467,7 +471,7 @@ def test_backend_cache_recency_requires_admitted_owned_copy(
             cache_path=candidate,
             warnings=warnings,
             artifact_contract=resolve_backend_artifact_contract(
-                target="native", emit_mode="obj"
+                target=admit_target("native"), emit_mode="obj"
             ),
         )
         is valid

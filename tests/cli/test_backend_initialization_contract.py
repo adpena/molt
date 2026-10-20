@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+from molt.cli.config_resolution import _select_codegen_backend
+
+
 import ast
 from copy import deepcopy
 from pathlib import Path
@@ -313,7 +316,7 @@ def test_module_initializers_solely_own_code_and_globals_publication(
         emit_ir_path=None,
         target_python=version,
         stdlib_profile=stdlib_profile,
-        target=target,
+        target=_select_codegen_backend(target, "auto")[0],
     )
     assert error is None
     assert prepared is not None

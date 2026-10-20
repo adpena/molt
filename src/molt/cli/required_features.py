@@ -215,7 +215,7 @@ def reachability_profile_feature_refusal(
         if target_triple in {"wasm32-wasip1", "wasm32-unknown-unknown"}:
             target_os = "wasi" if target_triple == "wasm32-wasip1" else "none"
         else:
-            from molt.cli.native_link_plan import resolve_native_target_spec
+            from molt.native_target import resolve_native_target_spec
 
             target_os = resolve_native_target_spec(target_triple).os
     unavailable_symbols: list[str] = []

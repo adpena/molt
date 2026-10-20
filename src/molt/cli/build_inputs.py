@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from molt.compilation_target import is_wasm_target
+
 from collections.abc import Mapping, MutableMapping, Sequence
 import os
 from dataclasses import dataclass, replace
@@ -43,11 +45,9 @@ from molt.cli.cargo_profiles import (
     _resolve_cargo_profile_name,
 )
 from molt.cli.command_runtime import _resolve_timeout_env
-from molt.cli.config_resolution import (
-    runtime_target,
-)
 from molt.cli.lockfiles import _check_lockfiles
-from molt.cli.build_request import BuildProfile, BuildRequest, Target
+from molt.cli.build_request import BuildProfile, BuildRequest
+from molt.compilation_target import Target, TargetKind, native_target_spec
 from molt.cli.models import (
     BinaryImageKind,
     BuildEntrySelectorOrigin,
@@ -71,7 +71,6 @@ from molt.cli.module_resolution import (
     _stdlib_root_path,
 )
 from molt.cli.module_source import PythonSourceSnapshot
-from molt.cli.native_link_plan import resolve_native_target_spec
 from molt.cli.python_import_topology import PythonImportTopology
 from molt.cli.output import CliFailure as _CliFailure, fail as _fail
 from molt.cli.profile_feedback import _load_pgo_profile, _load_runtime_feedback
@@ -625,7 +624,7 @@ def _prepare_build_config(
     if backend_profile_err:
         return None, _fail(backend_profile_err, json_output, command="build")
     runtime_cargo_profile, runtime_profile_err = _resolve_cargo_profile_name(
-        profile, wasm=target in {"wasm", "wasm-freestanding"}
+        profile, wasm=is_wasm_target(target)
     )
     if runtime_profile_err:
         return None, _fail(runtime_profile_err, json_output, command="build")
@@ -1263,14 +1262,13 @@ def _runtime_policy_flag_environment(
 
 def _target_sys_platform(target: Target) -> str | None:
     """Use the runtime's platform value for the admitted compiler target."""
-    normalized = runtime_target(target.strip().lower())
     # Source backends have no selected runtime OS. Preserve that unknown fact
     # instead of parsing a backend name as a native triple or using the host.
-    if normalized in {"rust", "luau", "mlir"}:
+    if target in {TargetKind.RUST, TargetKind.LUAU, TargetKind.MLIR}:
         return None
-    if normalized in {"wasm", "wasm-freestanding"} or normalized.startswith("wasm32"):
+    if is_wasm_target(target):
         return "wasi"
-    spec = resolve_native_target_spec(None if normalized == "native" else normalized)
+    spec = native_target_spec(target)
     match spec.os:
         case "windows":
             return "win32"

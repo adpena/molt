@@ -1,4 +1,6 @@
 from __future__ import annotations
+
+from molt.compilation_target import Target
 from molt.compiler_analysis.python_imports import (
     SourceImportSite,
     SourceAllExports,
@@ -1651,7 +1653,7 @@ class _PreparedEntryModuleGraph:
     discovery: "_ModuleGraphDiscovery"
     module_graph: dict[str, Path]
     scan_authority: _ModuleGraphScanAuthority
-    target: str
+    target: Target
     explicit_imports: set[str]
     runtime_import_dispatch_roots: frozenset[str]
     stub_parents: set[str]

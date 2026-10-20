@@ -63,6 +63,20 @@ In-process calls construct a slotted request without JSON, interpreter probing o
 process creation; schema validation and serialization occur only at transport.
 This is compiler-side work and adds no emitted-program work.
 
+Compilation target identity comes from `molt.compilation_target`: closed
+`TargetKind` values and admitted open `NativeTargetSpec` triples. CLI and batch
+JSON retain public target strings; internal build, graph, artifact, CPU policy,
+source-extension and cache consumers carry typed targets. `llvm` remains syntax
+for native host intent plus the LLVM codegen backend. Native host intent stays
+symbolic during request construction; an explicit host triple keeps explicit
+Cargo and CPU-policy custody. WASM aliases and explicit WASI/freestanding triples
+retain their ABI selection. Target kind, backend choice, emitted artifact kind
+and guest Python version are independent dimensions.
+`run` rejects freestanding WASM and Rust source targets before building or
+executing a workload; use `build` to produce those artifacts. Generic WASM and
+explicit WASI targets use the WASI runner, while all WASM variants exclude the
+native subprocess entry override.
+
 Direct builds and run/deploy wrappers use the same build grammar and effective
 request resolver. Repeated scalar options use their final value, including
 `--target`, `--python-version`, `--emit` and `--output`. Entry discovery, import

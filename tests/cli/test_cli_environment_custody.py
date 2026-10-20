@@ -17,6 +17,8 @@ structural test keeps the family closed for every module under ``src/molt``.
 
 from __future__ import annotations
 
+from molt.compilation_target import admit_target, target_name
+
 import ast
 import io
 import json
@@ -86,14 +88,15 @@ def test_backend_selection_returns_the_backend_and_writes_nothing(
 ) -> None:
     before = dict(os.environ)
 
-    assert _select_codegen_backend(target, choice) == expected
+    selected, backend, error = _select_codegen_backend(target, choice)
+    assert (target_name(selected), backend, error) == expected
     assert dict(os.environ) == before
 
 
 def test_backend_selection_reports_conflicts_without_selecting() -> None:
     target, backend, error = _select_codegen_backend("llvm", "cranelift")
 
-    assert (target, backend) == ("llvm", "cranelift")
+    assert backend == "cranelift"
     assert error is not None and "--target native --backend llvm" in error
 
 
@@ -150,7 +153,7 @@ def test_build_passes_every_selection_explicitly(
     rc = cli_build_command.build(
         BuildRequest(
             file_path="app.py",
-            target="wasm",
+            target=admit_target("wasm"),
             trusted=True,
             portable=True,
             wasm_profile="pure",
@@ -225,7 +228,7 @@ def test_daemon_requests_carry_the_selection_not_the_process_environment(
         ir_path=Path("backend-ir.msgpack"),
         backend_output=Path("out.wasm"),
         artifact_contract=resolve_backend_artifact_contract(
-            target="wasm", emit_mode="wasm"
+            target=admit_target("wasm"), emit_mode="wasm"
         ),
         wasm_link=False,
         wasm_data_base=None,
@@ -255,7 +258,7 @@ def test_luau_layout_leaves_the_chunk_size_to_the_frontend(
     clean_selection_env: None, tmp_path: Path
 ) -> None:
     layout = build_output_layout._resolve_build_output_layout(
-        target="luau",
+        target=admit_target("luau"),
         trusted=False,
         require_linked=False,
         linked=False,
@@ -322,7 +325,7 @@ def test_batch_server_selects_each_request_backend_explicitly(
     def build_fn(request: BuildRequest) -> int:
         seen.append(
             {
-                "target": request.target,
+                "target": target_name(request.target),
                 "backend": request.codegen_backend,
                 "stdlib_profile": request.stdlib_profile,
                 "environ_backend": os.environ.get("MOLT_BACKEND"),
@@ -395,7 +398,7 @@ def _prepare_preamble(target: str) -> Any:
         diagnostics_file=None,
         diagnostics_verbosity=None,
         json_output=True,
-        target=target,
+        target=admit_target(target),
     )
     assert error is None and preamble is not None
     return preamble
@@ -423,8 +426,13 @@ def test_a_native_arch_build_leaves_no_rust_flags_for_a_later_wasm_build(
 
 @pytest.mark.parametrize("target", ["native", "wasm", "luau", "aarch64-apple-darwin"])
 def test_an_unset_perf_profile_selects_the_baseline_cpu(target: str) -> None:
-    assert resolve_rust_cpu_policy(target, {}) == (RustCpuPolicy.BASELINE, None)
-    assert resolve_rust_cpu_policy(target, {"MOLT_PERF_PROFILE": " "}) == (
+    assert resolve_rust_cpu_policy(admit_target(target), {}) == (
+        RustCpuPolicy.BASELINE,
+        None,
+    )
+    assert resolve_rust_cpu_policy(
+        admit_target(target), {"MOLT_PERF_PROFILE": " "}
+    ) == (
         RustCpuPolicy.BASELINE,
         None,
     )
@@ -437,12 +445,14 @@ def test_only_the_registered_perf_profile_value_is_accepted() -> None:
     assert variable is not None and variable.values == ("native-arch",)
     for value in variable.values:
         policy, warning = resolve_rust_cpu_policy(
-            "native", {"MOLT_PERF_PROFILE": value}
+            admit_target("native"), {"MOLT_PERF_PROFILE": value}
         )
         assert (policy, warning) == (RustCpuPolicy.NATIVE, None)
     for value in ("native", "native_arch", "NATIVE-ARCH", "1", "portable"):
         with pytest.raises(ValueError, match="MOLT_PERF_PROFILE"):
-            resolve_rust_cpu_policy("native", {"MOLT_PERF_PROFILE": value})
+            resolve_rust_cpu_policy(
+                admit_target("native"), {"MOLT_PERF_PROFILE": value}
+            )
 
 
 def test_one_registered_knob_selects_the_native_cpu() -> None:
@@ -472,7 +482,7 @@ def test_an_invalid_perf_profile_fails_the_build_preamble(
         diagnostics_file=None,
         diagnostics_verbosity=None,
         json_output=True,
-        target="native",
+        target=admit_target("native"),
     )
 
     assert preamble is None and error is not None

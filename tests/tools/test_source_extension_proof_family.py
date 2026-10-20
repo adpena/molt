@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from molt.compilation_target import admit_target
+
 from molt.llvm_toolchain import capture_wasi_sdk_selection
 
 from dataclasses import replace
@@ -292,7 +294,7 @@ def test_named_native_intent_reaches_host_compiler_selection(
     actual = SourceExtensionSetInvocation.from_arguments(spec["command"][4:])
     assert actual.target == "native"
     typed = admission.envelope_for_command(spec["command"])["typed_command"]
-    target = resolve_source_extension_target_plan(actual.target)
+    target = resolve_source_extension_target_plan(admit_target(actual.target))
     assert typed["target"] == "native"
     assert typed["target_triple"] == target.target_triple
     assert target.compiler_target_triple is None

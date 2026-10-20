@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+from molt.native_target import NativeTargetSpec
+from molt.compilation_target import target_name, Target, TargetKind, is_wasm_target
+
 from typing import get_args
 from molt.cli.build_request import BuildProfile
 
@@ -120,7 +123,7 @@ def _default_build_base() -> Path:
 
 
 def artifacts_identity(
-    *, project_root: Path, source_path: Path, target: str, profile: str
+    *, project_root: Path, source_path: Path, target: Target, profile: str
 ) -> str:
     """Name one build configuration's intermediates.
 
@@ -134,7 +137,7 @@ def artifacts_identity(
             "profile": profile,
             "project": os.fspath(project_root.resolve()),
             "source": os.fspath(source_path.resolve()),
-            "target": target,
+            "target": target_name(target),
         },
         sort_keys=True,
     )
@@ -336,20 +339,16 @@ def _resolve_output_path(
     return path
 
 
-def _backend_artifact_suffix(
-    *, target: str, emit_mode: str, target_triple: str | None
-) -> str:
+def _backend_artifact_suffix(*, target: Target, emit_mode: str) -> str:
     """Name producer bytes consistently in user outputs and backend caches."""
     from molt.cli.backend_artifact_contract import resolve_backend_artifact_contract
 
-    return resolve_backend_artifact_contract(
-        target=target, emit_mode=emit_mode, target_triple=target_triple
-    ).suffix
+    return resolve_backend_artifact_contract(target=target, emit_mode=emit_mode).suffix
 
 
 def _resolve_build_output_layout(
     *,
-    target: str,
+    target: Target,
     trusted: bool,
     split_runtime: bool = False,
     require_linked: bool,
@@ -365,11 +364,14 @@ def _resolve_build_output_layout(
     out_dir_path: Path | None,
     project_root: Path,
 ) -> _BuildOutputLayout:
-    is_wasm = target in {"wasm", "wasm-freestanding"}
-    is_wasm_freestanding = target == "wasm-freestanding"
-    is_rust_transpile = target in {"rust", "luau"}
-    is_luau_transpile = target == "luau"
-    is_mlir_emit = target == "mlir"
+    is_wasm = is_wasm_target(target)
+    is_wasm_freestanding = target in {
+        TargetKind.WASM_FREESTANDING,
+        TargetKind.WASM_UNKNOWN,
+    }
+    is_rust_transpile = target in {TargetKind.RUST, TargetKind.LUAU}
+    is_luau_transpile = target is TargetKind.LUAU
+    is_mlir_emit = target is TargetKind.MLIR
     if trusted and is_wasm:
         raise ValueError("Trusted mode is not supported for wasm targets")
     if require_linked and not is_wasm:
@@ -389,9 +391,11 @@ def _resolve_build_output_layout(
         if wasm_linked_env not in {"0", "false", "no", "off"}:
             linked = True
     target_triple = (
-        None
-        if target in {"native", "wasm", "wasm-freestanding", "rust", "luau", "mlir"}
-        else target
+        target.triple
+        if isinstance(target, NativeTargetSpec)
+        else target.value
+        if target in {TargetKind.WASI, TargetKind.WASM_UNKNOWN}
+        else None
     )
     is_transpile = is_rust_transpile or is_luau_transpile
     emit_mode = (
@@ -410,9 +414,7 @@ def _resolve_build_output_layout(
     if not is_wasm and not is_transpile and not is_mlir_emit and emit_mode == "wasm":
         raise ValueError("emit=wasm requires --target wasm")
 
-    artifact_suffix = _backend_artifact_suffix(
-        target=target, emit_mode=emit_mode, target_triple=target_triple
-    )
+    artifact_suffix = _backend_artifact_suffix(target=target, emit_mode=emit_mode)
     output_binary: Path | None = None
     linked_output_path: Path | None = None
     if is_mlir_emit:

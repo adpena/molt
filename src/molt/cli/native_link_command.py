@@ -32,20 +32,22 @@ from molt.cli.native_link_deps import _collect_cargo_native_link_deps
 from molt.cli.runtime_native_codegen import NativeRuntimeCodegenBinding
 from molt.cli.runtime_identity_schema import RuntimeBuildIdentity
 from molt.cli.native_link_plan import (
-    LinkDialect,
-    NativeArtifactKind,
     NativeLinkPlan,
     NativeLinkSidecar,
-    NativeObjectFormat,
-    NativeTargetSpec,
     native_link_capabilities,
     native_artifact_link_arguments,
     native_link_output_flags,
     native_link_policy_flags,
     native_linker_name_from_driver_command,
     native_link_policy,
+)
+from molt.native_target import (
+    LinkDialect,
+    NativeArtifactKind,
+    NativeTargetSpec,
     resolve_native_target_spec,
 )
+from molt.native_target_shape import NativeObjectFormat
 from molt.cli.source_extension_link_requirements import (
     SourceExtensionLinkRequirements,
     merge_source_extension_link_requirements,

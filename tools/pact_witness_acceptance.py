@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 
+
 import argparse
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
@@ -22,6 +23,7 @@ from tools.import_file import bind_repository_imports  # noqa: E402
 
 bind_repository_imports(__file__)
 
+from molt.compilation_target import admit_target  # noqa: E402
 from molt.cli.source_build_environment import source_build_environment  # noqa: E402
 from molt.cli.source_extension_set_registry import SourceExtensionVariant  # noqa: E402
 from molt.cli.source_extension_target import resolve_source_extension_target_plan  # noqa: E402
@@ -411,7 +413,7 @@ def _build_target(
         raise SystemExit("Pact witness build did not report a successful JSON result")
     data = _wrapper_build_payload_data(payload)
     effective_plan = resolve_source_extension_target_plan(
-        data.get("target_triple") or str(data.get("target"))
+        admit_target(data.get("target_triple") or str(data.get("target")))
     )
     raw_entry = data.get("entry")
     if (
@@ -591,7 +593,7 @@ def _find_extension_manifests(
     target: str,
 ) -> tuple[Path, ...]:
     leaf = module_name.rsplit(".", 1)[-1]
-    suffix = resolve_source_extension_target_plan(target).artifact_suffix
+    suffix = resolve_source_extension_target_plan(admit_target(target)).artifact_suffix
     sidecar_name = f"{leaf}{suffix}.extension_manifest.json"
     direct_rel: Path | None = None
     if "." in module_name:

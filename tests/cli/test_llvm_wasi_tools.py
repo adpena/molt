@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from molt.compilation_target import admit_target
+
 import hashlib
 import os
 import re
@@ -277,7 +279,7 @@ def test_archive_role_requires_llvm_entrypoint_for_automatic_discovery(
     if target_family == "native":
         tools["cc"].chmod(0o755)
         plan = source_extension_target.resolve_source_extension_target_plan(
-            "native", host_platform="linux", host_arch="x86_64"
+            admit_target("native"), host_platform="linux", host_arch="x86_64"
         )
         with pytest.raises(ValueError, match="tool family is incomplete; missing: ar"):
             source_extension_toolchain._resolve_source_extension_native_toolchain(
@@ -812,7 +814,7 @@ def test_native_source_extension_default_and_explicit_compiler_share_target_poli
     if configured_cc is not None:
         environment["CC"] = '"' + str(sdk["cc"]) + '"' if configured_cc else ""
     plan = source_extension_target.resolve_source_extension_target_plan(
-        "native", host_platform="linux", host_arch="x86_64"
+        admit_target("native"), host_platform="linux", host_arch="x86_64"
     )
     resolved = source_extension_toolchain._resolve_source_extension_native_toolchain(
         plan, environment=environment
@@ -886,7 +888,7 @@ def test_sdk_source_compilers_disable_hidden_config_before_probe_and_materializa
         monkeypatch, "subprocess", subprocess, source_extension_toolchain, run=run
     )
     plan = source_extension_target.resolve_source_extension_target_plan(
-        requested, host_platform="linux", host_arch="x86_64"
+        admit_target(requested), host_platform="linux", host_arch="x86_64"
     )
     if requested == "wasm" and selection == "file-alias":
         with pytest.raises(ValueError, match="admitted WASI SDK clang"):
@@ -1496,7 +1498,7 @@ def test_source_commands_share_family_and_never_duplicate_target(
     )
 
     target_plan = source_extension_target.resolve_source_extension_target_plan(
-        "wasm",
+        admit_target("wasm"),
         host_platform="linux",
         host_arch="x86_64",
     )
@@ -1583,7 +1585,7 @@ def test_explicit_wasm_compiler_preserves_validated_sysroot_custody(
         lambda _command, *, target_plan, environment: None,
     )
     target_plan = source_extension_target.resolve_source_extension_target_plan(
-        "wasm",
+        admit_target("wasm"),
         host_platform="linux",
         host_arch="x86_64",
     )
@@ -1937,7 +1939,9 @@ def test_managed_extension_family_uses_receipt_without_sdk_reads_or_probes(
                 "ordinary resolver compiled a capability probe"
             ),
         )
-        target = source_extension_target.resolve_source_extension_target_plan("wasm")
+        target = source_extension_target.resolve_source_extension_target_plan(
+            admit_target("wasm")
+        )
         resolved = source_extension_toolchain._resolve_source_extension_wasm_toolchain(
             target, environment=environment
         )
@@ -2198,7 +2202,7 @@ def test_freestanding_explicit_family_does_not_select_unused_sdk_state(
         source_extension_toolchain, "_probe_wasm_source_extension_compiler", probe
     )
     target = source_extension_target.resolve_source_extension_target_plan(
-        "wasm32-unknown-unknown"
+        admit_target("wasm32-unknown-unknown")
     )
     resolved = source_extension_toolchain._resolve_source_extension_wasm_toolchain(
         target, environment=environment
@@ -2212,7 +2216,9 @@ def test_freestanding_explicit_family_does_not_select_unused_sdk_state(
         )
     assert versions == list(paths.values())
     assert probes == [((str(paths["cc"]),), "wasm32-unknown-unknown")]
-    wasi = source_extension_target.resolve_source_extension_target_plan("wasm")
+    wasi = source_extension_target.resolve_source_extension_target_plan(
+        admit_target("wasm")
+    )
     with pytest.raises(
         llvm_toolchain.LlvmToolchainConfigError, match="toolchain custody is unresolved"
     ):

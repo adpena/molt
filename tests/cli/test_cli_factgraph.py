@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from molt.compilation_target import admit_target
+
 import os
 import subprocess
 import sys
@@ -386,7 +388,7 @@ def test_emit_pipeline_fact_graph_reports_requested_target_and_backend(
         ),
         json_output=True,
         verbose=False,
-        target="native",
+        target=admit_target("native"),
         entry_module="app",
         prepare_backend_dispatch=backend_compile._prepare_backend_dispatch,
         ensure_backend_ir_file_path=lambda: ir_file,

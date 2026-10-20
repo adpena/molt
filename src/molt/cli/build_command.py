@@ -9,8 +9,11 @@ The entrypoint loads `build` only for commands that compile.
 
 from __future__ import annotations
 
+from molt.compilation_target import target_name
+
+from molt.compilation_target import TargetKind, is_wasm_target
+
 import functools
-from dataclasses import fields
 import os
 import sys
 from pathlib import Path
@@ -20,7 +23,7 @@ from molt.backend_environment import CodegenSelection
 from molt.backend_executable_names import DEFAULT_CODEGEN_BACKEND
 from molt import build_record as _build_record
 from molt import input_report as _input_report
-from molt.cli.build_request import BuildRequest
+from molt.cli.build_request import BuildRequest, build_request_values
 from molt.cli.output import fail as _fail
 from molt.cli.output import success as _success
 from molt.default_paths import _default_molt_cache
@@ -86,7 +89,7 @@ def _early_cutoff_request(request: BuildRequest) -> tuple[str, Path] | None:
     output = request.output
     capabilities = request.capabilities
     if (
-        request.target != "native"
+        request.target is not TargetKind.NATIVE
         or not request.cache
         or request.json_output
         or output is None
@@ -123,9 +126,9 @@ def _early_cutoff_request(request: BuildRequest) -> tuple[str, Path] | None:
         return None
     key = _build_record.request_key(
         {
-            field.name: getattr(request, field.name)
-            for field in fields(request)
-            if field.name not in _RECORD_PRESENTATION_ARGUMENTS
+            name: value
+            for name, value in build_request_values(request).items()
+            if name not in _RECORD_PRESENTATION_ARGUMENTS
         },
         environment=os.environ,
         cwd=os.getcwd(),
@@ -300,15 +303,12 @@ def build(request: BuildRequest) -> int:
             request.json_output,
             command="build",
         )
-    if request.bolt and request.target in {
-        "wasm",
-        "wasm-freestanding",
-        "rust",
-        "luau",
-        "mlir",
-    }:
+    if request.bolt and (
+        is_wasm_target(request.target)
+        or request.target in {TargetKind.RUST, TargetKind.LUAU, TargetKind.MLIR}
+    ):
         return _fail(
-            f"BOLT requires a native Linux ELF target, not {request.target!r}.",
+            f"BOLT requires a native Linux ELF target, not {target_name(request.target)!r}.",
             request.json_output,
             command="build",
         )
@@ -337,7 +337,7 @@ def build(request: BuildRequest) -> int:
         portable=request.portable,
         wasm_profile=(
             request.wasm_profile
-            if request.target in {"wasm", "wasm-freestanding"} and request.wasm_profile
+            if is_wasm_target(request.target) and request.wasm_profile
             else None
         ),
     )

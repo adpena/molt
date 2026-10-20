@@ -1,3 +1,4 @@
+from molt.compilation_target import admit_target
 import base64
 import importlib
 import json
@@ -297,7 +298,7 @@ def test_resolve_output_roots_defaults_final_outputs_to_dist(
     identity = cli_build_output_layout.artifacts_identity(
         project_root=tmp_path,
         source_path=tmp_path / "app.py",
-        target="native",
+        target=admit_target("native"),
         profile="dev",
     )
     with cli_build_output_layout.build_scope():
@@ -341,7 +342,7 @@ def test_resolve_build_output_layout_defaults_wasm_outputs_to_dist(
     tmp_path: Path,
 ) -> None:
     layout = cli_build_output_layout._resolve_build_output_layout(
-        target="wasm",
+        target=admit_target("wasm"),
         trusted=False,
         require_linked=False,
         linked=False,
@@ -365,7 +366,7 @@ def test_resolve_build_output_layout_defaults_object_output_to_dist(
     tmp_path: Path,
 ) -> None:
     layout = cli_build_output_layout._resolve_build_output_layout(
-        target="native",
+        target=admit_target("native"),
         trusted=False,
         require_linked=False,
         linked=False,
@@ -388,7 +389,7 @@ def test_resolve_build_output_layout_allows_linked_output_for_default_wasm_linki
     tmp_path: Path,
 ) -> None:
     layout = cli_build_output_layout._resolve_build_output_layout(
-        target="wasm-freestanding",
+        target=admit_target("wasm-freestanding"),
         trusted=False,
         require_linked=False,
         linked=False,

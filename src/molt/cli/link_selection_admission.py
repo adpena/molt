@@ -20,7 +20,8 @@ from molt.c_api_symbols import (
 from molt.cli.extension_scan_surface import _load_c_api_scan_surface
 from molt.cli.extension_scan_surface import _ExtensionScanSurface
 from molt.cli.extension_scan_surface import runtime_owned_link_symbol
-from molt.cli.native_link_plan import NativeLinkPlan, NativeLinkerKind, LinkDialect
+from molt.cli.native_link_plan import NativeLinkPlan, NativeLinkerKind
+from molt.native_target import LinkDialect
 from molt.cli.link_member_selection import selected_archive_members
 from molt.cli.native_symbol_inspection import (
     _NativeGlobalSymbolFacts,

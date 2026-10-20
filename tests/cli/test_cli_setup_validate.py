@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from molt.compilation_target import admit_target
+
 from molt.cli import wasm_link_inputs
 from molt.cli.backend_artifact_contract import resolve_backend_artifact_contract
 
@@ -753,7 +755,7 @@ def test_cli_build_toolchain_probes_use_memory_guard(
         cli_backend_cache._is_valid_cached_backend_artifact(
             obj_path,
             artifact_contract=resolve_backend_artifact_contract(
-                target="native", emit_mode="obj", target_triple=None
+                target=admit_target("native"), emit_mode="obj"
             ),
         )
         is False
@@ -948,7 +950,7 @@ def test_cli_cross_run_uses_cross_memory_guard(
     )
 
     rc = script_commands._run_script_cross(
-        "wasm",
+        admit_target("wasm"),
         str(entry),
         None,
         [],

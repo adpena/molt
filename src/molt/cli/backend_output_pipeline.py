@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+from molt.compilation_target import target_name
+
+from molt.compilation_target import Target
+
 import os
 from pathlib import Path
 from dataclasses import replace
@@ -56,7 +60,7 @@ def _emit_backend_pipeline_outputs(
     resolved_modules: frozenset[str],
     build_diagnostics_payload: Callable[[], tuple[dict[str, Any] | None, Path | None]],
     pipeline_stage_ms: dict[str, float] | None,
-    target: str,
+    target: Target,
     deterministic: bool,
     trusted: bool,
     verbose: bool,
@@ -85,7 +89,7 @@ def _emit_backend_pipeline_outputs(
             if output_layout.is_wasm
             else prepared_build_config.runtime_cargo_profile
         ),
-        "target": target,
+        "target": target_name(target),
     }
     runtime_state = prepared_backend_runtime_context.runtime_state
     ensure_runtime_wasm_both = prepared_backend_runtime_context.ensure_runtime_wasm_both
@@ -228,7 +232,7 @@ def _emit_backend_pipeline_outputs(
             try:
                 _non_native_output._generate_snapshot_header(
                     output_wasm=prepared_non_native_result.primary_output,
-                    target_profile=target,
+                    target_profile=target_name(target),
                     resolved_capability_policy=prepared_build_config.resolved_capability_policy,
                     verbose=verbose,
                 )
@@ -476,7 +480,7 @@ def _emit_backend_pipeline_outputs(
         bolt_rc = _run_bolt_post_link(
             bolt_requested=True,
             bolt_training_cmd=bolt_training_cmd,
-            target=output_layout.target_triple or "native",
+            target=target,
             input_binary=str(prepared_native_link.link_output),
             output=str(prepared_native_link.output_binary),
             out_dir=None,

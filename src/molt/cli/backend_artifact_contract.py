@@ -14,21 +14,29 @@ selection while sharing the same artifact target identity.
 
 from __future__ import annotations
 
+from molt.compilation_target import (
+    Target,
+    TargetKind,
+    is_wasm_target,
+    native_target_spec,
+    target_triple as project_target_triple,
+)
+
 import codecs
 from contextlib import nullcontext
-from dataclasses import dataclass, field
+from dataclasses import InitVar, dataclass, field
 from enum import Enum
 import hashlib
 import json
 from pathlib import Path
 from typing import BinaryIO
 
-from molt.cli.native_link_plan import (
+from molt.native_target import (
     NativeArtifactKind,
     NativeTargetSpec,
     resolve_native_target_spec,
-    target_is_wasm,
 )
+from molt.compilation_target import target_is_wasm
 from molt.cli.static_archive_identity import (
     StaticArchiveMember,
     visit_static_archive_members,
@@ -66,9 +74,10 @@ class BackendArtifactValidationError(OSError):
 class BackendArtifactContract:
     kind: BackendArtifactKind
     target_triple: str | None = None
+    admitted_native: InitVar[NativeTargetSpec | None] = None
     _native_target: NativeTargetSpec | None = field(init=False, repr=False)
 
-    def __post_init__(self) -> None:
+    def __post_init__(self, admitted_native: NativeTargetSpec | None) -> None:
         if not isinstance(self.kind, BackendArtifactKind):
             raise ValueError(f"Invalid backend artifact kind: {self.kind!r}")
         triple = self.target_triple
@@ -84,10 +93,16 @@ class BackendArtifactContract:
                 )
         try:
             native_target = (
-                resolve_native_target_spec(triple) if self.is_native else None
+                (admitted_native or resolve_native_target_spec(triple))
+                if self.is_native
+                else None
             )
         except RuntimeError as error:
             raise ValueError(str(error)) from error
+        if admitted_native is not None and (
+            not self.is_native or triple not in (None, admitted_native.triple)
+        ):
+            raise ValueError("Backend artifact and admitted native target disagree")
         if native_target is not None:
             # Bind every later consumer to the same resolved host/target that
             # owns cache identity; None must not re-resolve ambient host state.
@@ -257,49 +272,35 @@ class BackendArtifactContract:
 
 
 def resolve_backend_artifact_contract(
-    *, target: str, emit_mode: str, target_triple: str | None = None
+    *, target: Target, emit_mode: str
 ) -> BackendArtifactContract:
-    """Resolve requested bytes without inferring anything from an output path."""
-    target = target.strip().lower()
-    text_kind = {
-        "rust": BackendArtifactKind.RUST,
-        "luau": BackendArtifactKind.LUAU,
-        "mlir": BackendArtifactKind.MLIR,
-    }.get(target)
+    """Project admitted compilation intent into the emitted-byte contract."""
+    match target:
+        case TargetKind.RUST:
+            text_kind = BackendArtifactKind.RUST
+        case TargetKind.LUAU:
+            text_kind = BackendArtifactKind.LUAU
+        case TargetKind.MLIR:
+            text_kind = BackendArtifactKind.MLIR
+        case _:
+            text_kind = None
     if text_kind is not None:
         if emit_mode != "bin":
             raise ValueError(
-                f"Textual backend {target} does not support emit mode {emit_mode!r}"
+                f"Textual backend {text_kind.value} does not support emit mode {emit_mode!r}"
             )
-        return BackendArtifactContract(text_kind, target_triple)
-    wasm_alias = target in {"wasm", "wasm-freestanding"}
-    if wasm_alias or (target.startswith("wasm") and target_is_wasm(target)):
+        return BackendArtifactContract(text_kind)
+    if is_wasm_target(target):
         if emit_mode != "wasm":
             raise ValueError(f"WASM backend does not support emit mode {emit_mode!r}")
-        triple = target_triple or (
-            "wasm32-unknown-unknown"
-            if target == "wasm-freestanding"
-            else "wasm32-wasip1"
-            if target == "wasm"
-            else target
-        )
-        if (
-            not wasm_alias
-            and target_triple is not None
-            and target_triple.strip().lower() != target
-        ):
-            raise ValueError("Backend target and explicit target triple disagree")
+        triple = project_target_triple(target)
         return BackendArtifactContract(BackendArtifactKind.WASM, triple)
-    if target == "native":
-        triple = target_triple
-    else:
-        if target_triple is not None and target_triple.strip().lower() != target:
-            raise ValueError("Backend target and explicit target triple disagree")
-        triple = target
+    spec = native_target_spec(target)
     native_kind = NativeArtifactKind.for_emit_mode(emit_mode)
     return BackendArtifactContract(
         BackendArtifactKind.NATIVE_OBJECT
         if native_kind is NativeArtifactKind.OBJECT
         else BackendArtifactKind.NATIVE_ARCHIVE,
-        triple,
+        spec.triple,
+        admitted_native=spec,
     )

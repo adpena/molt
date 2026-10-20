@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from molt.compilation_target import Target
+
 import time
 
 from molt.cli.build_diagnostics import _emit_build_diagnostics_for_result
@@ -58,7 +60,7 @@ def _run_build_pipeline(
     prepared_frontend_pipeline_bundle: _frontend_pipeline._PreparedFrontendPipelineBundle,
     profile: BuildProfile,
     json_output: bool,
-    target: str,
+    target: Target,
     cache_dir: str | None,
     cache: bool,
     cache_report: bool,

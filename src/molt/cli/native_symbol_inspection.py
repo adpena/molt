@@ -693,7 +693,8 @@ class _SymbolTargetPolicy:
 
 
 def _symbol_target_policy(target_triple: str | None) -> _SymbolTargetPolicy:
-    from molt.cli.native_link_plan import resolve_native_target_spec, target_is_wasm
+    from molt.native_target import resolve_native_target_spec
+    from molt.compilation_target import target_is_wasm
 
     if target_triple is not None and target_is_wasm(target_triple):
         return _SymbolTargetPolicy(target_triple.strip().lower(), False, None)

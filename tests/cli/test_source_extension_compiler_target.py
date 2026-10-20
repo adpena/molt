@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from molt.compilation_target import admit_target
+
 from pathlib import Path
 import shlex
 
@@ -186,7 +188,7 @@ def test_native_toolchain_rejects_each_foreign_compiler_target(
     if role != "discovered_cpp":
         monkeypatch.setenv(cc_name if role == "c" else cpp_name, " ".join(foreign))
     plan = source_extension_target.resolve_source_extension_target_plan(
-        requested, host_platform="linux", host_arch="x86_64"
+        admit_target(requested), host_platform="linux", host_arch="x86_64"
     )
     with pytest.raises(ValueError, match="target conflicts"):
         source_extension_toolchain._resolve_source_extension_native_toolchain(plan)
@@ -222,7 +224,7 @@ def test_native_toolchain_preserves_each_matching_compiler_projection(
     for name, compiler in ((cc_name, c), (cpp_name, cpp)):
         monkeypatch.setenv(name, " ".join((compiler, *selector)))
     plan = source_extension_target.resolve_source_extension_target_plan(
-        triple if explicit_request else "native",
+        admit_target(triple if explicit_request else "native"),
         host_platform=host_platform,
         host_arch=host_arch,
     )
@@ -310,7 +312,7 @@ def test_configured_zig_native_compilers_use_per_driver_target_spelling(
     elif cpp_driver == "clang":
         monkeypatch.setenv(cpp_name, "clang++ --target=x86_64-unknown-linux-gnu")
     plan = source_extension_target.resolve_source_extension_target_plan(
-        requested, host_platform="linux", host_arch="x86_64"
+        admit_target(requested), host_platform="linux", host_arch="x86_64"
     )
     resolved = source_extension_toolchain._resolve_source_extension_native_toolchain(
         plan
@@ -333,7 +335,7 @@ def test_windows_default_uses_one_clang_cl_driver_for_both_languages(monkeypatch
 
     monkeypatch.setattr(source_extension_toolchain, "llvm_tool_candidates", candidates)
     plan = source_extension_target.resolve_source_extension_target_plan(
-        "native", host_platform="win32", host_arch="AMD64"
+        admit_target("native"), host_platform="win32", host_arch="AMD64"
     )
     resolved = source_extension_toolchain._resolve_source_extension_native_toolchain(
         plan
@@ -465,7 +467,7 @@ def test_derived_cpp_preserves_common_options_without_c_language_policy(
     if explicit_cpp:
         monkeypatch.setenv("CXX", shlex.join((*cpp_command, "-std=c++20", "-O3")))
     plan = source_extension_target.resolve_source_extension_target_plan(
-        "native",
+        admit_target("native"),
         host_platform="win32" if windows else "linux",
         host_arch="x86_64",
     )
@@ -513,7 +515,7 @@ def test_freestanding_cpp_derives_common_options_from_c_without_role_change(
     commands = source_extension_toolchain._source_extension_c_commands(
         toolchain=toolchain,
         target_plan=source_extension_target.resolve_source_extension_target_plan(
-            "wasm-freestanding"
+            admit_target("wasm-freestanding")
         ),
         environment={},
     )

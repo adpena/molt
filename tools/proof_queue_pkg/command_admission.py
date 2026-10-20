@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+
 from dataclasses import dataclass
 import argparse
 import functools
@@ -10,6 +11,8 @@ from pathlib import Path
 import re
 from typing import Literal, Mapping, Sequence, cast
 
+from molt.compilation_target import target_name
+from molt.compilation_target import admit_target
 from molt.exact_json import canonical_json_bytes
 from molt.rust_toolchain import rust_flag_spans
 from tools import proof_plan
@@ -1915,7 +1918,7 @@ def _typed_python_command_family(
         producer.module_set,
         registry=registry,
     )
-    target_plan = resolve_source_extension_target_plan(producer.target)
+    target_plan = resolve_source_extension_target_plan(admit_target(producer.target))
     variant = SourceExtensionVariant(
         target_python=_parse_target_python_version(producer.python_version),
         abi_tier=producer.abi_tier,
@@ -1952,7 +1955,7 @@ def _typed_python_command_family(
         "family": "source-extension-producer",
         "prepared": producer.prepared,
         "environment_root": str(environment_root),
-        "target": target_plan.requested,
+        "target": target_name(target_plan.requested),
         "target_triple": target_plan.target_triple,
         "source": producer.source,
         "build_root": producer.build_root,

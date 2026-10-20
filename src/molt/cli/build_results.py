@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+from molt.compilation_target import target_name
+
+from molt.compilation_target import Target
+
 from collections.abc import Callable, Generator, Mapping, MutableMapping, Sequence
 from contextlib import contextmanager
 from pathlib import Path
@@ -41,10 +45,8 @@ from molt.file_publication import (
     staged_file_path,
 )
 from molt.link_outputs import validate_link_output_paths
-from molt.cli.native_link_plan import (
-    native_strip_flags,
-    resolve_native_target_spec,
-)
+from molt.cli.native_link_plan import native_strip_flags
+from molt.native_target import resolve_native_target_spec
 from molt.native_artifact_header import read_macho_code_signature
 from molt.native_target_shape import NativeObjectFormat
 from molt.cli.output import emit_json as _emit_json
@@ -152,7 +154,7 @@ def _attach_build_metadata(
 
 def _build_common_build_json_data(
     *,
-    target: str,
+    target: Target,
     target_triple: str | None,
     source_path: Path,
     output: Path,
@@ -167,7 +169,7 @@ def _build_common_build_json_data(
     native_arch_perf_enabled: bool,
 ) -> dict[str, Any]:
     return {
-        "target": target,
+        "target": target_name(target),
         "target_triple": target_triple,
         "entry": str(source_path),
         "output": str(output),
@@ -240,7 +242,7 @@ def _emit_build_result_json(
 
 def _build_native_link_success_data(
     *,
-    target: str,
+    target: Target,
     target_triple: str | None,
     source_path: Path,
     output_binary: Path,
@@ -302,7 +304,7 @@ def _build_native_link_success_data(
 
 def _build_native_link_error_data(
     *,
-    target: str,
+    target: Target,
     source_path: Path,
     returncode: int,
     emit_mode: str,
@@ -312,7 +314,7 @@ def _build_native_link_error_data(
     cache_info: Mapping[str, Any],
 ) -> dict[str, Any]:
     return {
-        "target": target,
+        "target": target_name(target),
         "entry": str(source_path),
         "returncode": returncode,
         "emit": emit_mode,
@@ -545,7 +547,7 @@ def _emit_native_link_result(
     backend_daemon_cached: bool | None,
     backend_daemon_cache_tier: str | None,
     backend_daemon_config_digest: str | None,
-    target: str,
+    target: Target,
     target_triple: str | None,
     source_path: Path,
     output_binary: Path,
@@ -586,7 +588,10 @@ def _emit_native_link_result(
             verbosity=resolved_diagnostics_verbosity,
         )
         if json_output:
-            data: dict[str, Any] = {"output": str(output_binary), "target": target}
+            data: dict[str, Any] = {
+                "output": str(output_binary),
+                "target": target_name(target),
+            }
             _attach_build_metadata(
                 data,
                 diagnostics_payload=diagnostics_payload,
@@ -786,7 +791,7 @@ def _emit_non_native_build_result(
     backend_daemon_cached: bool | None,
     backend_daemon_cache_tier: str | None,
     backend_daemon_config_digest: str | None,
-    target: str,
+    target: Target,
     target_triple: str | None,
     source_path: Path,
     deterministic: bool,
@@ -817,7 +822,7 @@ def _emit_non_native_build_result(
         json_output=json_output,
         verbosity=resolved_diagnostics_verbosity,
         artifact_analysis=lambda: _non_native_artifact_binary_image_analysis_payload(
-            kind=target,
+            kind=target_name(target),
             output=output,
             consumer_output=consumer_output,
             artifacts=artifacts,

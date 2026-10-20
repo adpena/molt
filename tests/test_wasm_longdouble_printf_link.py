@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from molt.compilation_target import admit_target
+
 import os
 from pathlib import Path
 import sys
@@ -184,7 +186,7 @@ int main() {
     cross = tmp_path / "cross.ini"
     cross.write_text(
         _meson_cross_text(
-            target_plan=resolve_source_extension_target_plan("wasm"),
+            target_plan=resolve_source_extension_target_plan(admit_target("wasm")),
             pkg_config_dir=tmp_path / "pkgconfig",
             commands={
                 "c": c,

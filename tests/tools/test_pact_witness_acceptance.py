@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from molt.compilation_target import admit_target
+
 import json
 from pathlib import Path
 import subprocess
@@ -553,7 +555,9 @@ def _acceptance_build_variant(target: str) -> SourceExtensionVariant:
     return SourceExtensionVariant(
         target_python=TargetPythonVersion(3, 13, 0),
         abi_tier="cpython-abi",
-        target_triple=resolve_source_extension_target_plan(target).target_triple,
+        target_triple=resolve_source_extension_target_plan(
+            admit_target(target)
+        ).target_triple,
     )
 
 
@@ -642,7 +646,7 @@ def test_acceptance_build_rejects_misreported_effective_facts(
         bad_value = "native" if target == "wasm" else "wasm"
     elif field == "target_triple":
         bad_value = (
-            resolve_source_extension_target_plan("native").target_triple
+            resolve_source_extension_target_plan(admit_target("native")).target_triple
             if target == "wasm"
             else "wasm32-wasip1"
         )

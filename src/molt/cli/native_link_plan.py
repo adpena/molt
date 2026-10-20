@@ -1,13 +1,12 @@
 from __future__ import annotations
 
+from molt.native_target import LinkDialect, NativeArtifactKind, NativeTargetSpec
+
 from contextlib import contextmanager
 from dataclasses import dataclass
 from enum import Enum
 import hashlib
 from pathlib import Path
-import platform
-import re
-import sys
 from typing import TYPE_CHECKING, Generator, Sequence
 
 if TYPE_CHECKING:
@@ -17,54 +16,16 @@ if TYPE_CHECKING:
     )
 
 from molt import file_publication
-from molt.llvm_linker_roles import LlvmLinkerRole, executable_entrypoint_name
+from molt.llvm_linker_roles import executable_entrypoint_name
 from molt.native_artifact_header import (
     NativeArtifactError,
     OBJECT_KINDS,
     read_native_artifact,
 )
 from molt.native_target_shape import (
-    NativeObjectFormat as NativeObjectFormat,
+    NativeObjectFormat,
     native_artifact_shape,
-    native_object_format_for_os,
-    normalize_native_architecture as _normalize_arch,
 )
-
-
-class LinkDialect(str, Enum):
-    ELF_GNU = "elf-gnu"
-    MACHO = "macho"
-    COFF_GNU = "coff-gnu"
-    COFF_MSVC = "coff-msvc"
-    WASM = "wasm"
-
-    @property
-    def llvm_linker_role(self) -> LlvmLinkerRole:
-        if self is LinkDialect.WASM:
-            return "wasm-ld"
-        if self is LinkDialect.MACHO:
-            return "ld64.lld"
-        if self is LinkDialect.COFF_MSVC:
-            return "lld-link"
-        return "ld.lld"
-
-
-class NativeArtifactKind(str, Enum):
-    OBJECT = "object"
-    ARCHIVE = "archive"
-
-    @classmethod
-    def for_emit_mode(cls, emit_mode: str) -> NativeArtifactKind:
-        if emit_mode == "obj":
-            return cls.OBJECT
-        if emit_mode == "bin":
-            return cls.ARCHIVE
-        raise ValueError(f"Native artifacts do not support emit mode {emit_mode!r}.")
-
-    def suffix(self, target: NativeTargetSpec) -> str:
-        if target.object_format is NativeObjectFormat.COFF:
-            return ".obj" if self is NativeArtifactKind.OBJECT else ".lib"
-        return ".o" if self is NativeArtifactKind.OBJECT else ".a"
 
 
 class NativeLinkerKind(str, Enum):
@@ -74,54 +35,6 @@ class NativeLinkerKind(str, Enum):
     # `zig cc` links with zig's own linker, which runs no identical-code
     # folding and rejects the system linkers' flags that disable it.
     ZIG = "zig"
-
-
-_BOLT_ARCHES = frozenset({"x86_64", "aarch64"})
-
-
-@dataclass(frozen=True, slots=True)
-class NativeTargetSpec:
-    triple: str
-    os: str
-    arch: str
-    object_format: NativeObjectFormat
-    is_host: bool
-
-    @property
-    def cargo_target(self) -> str | None:
-        """Cargo's native selection wire value; artifact identity uses triple.
-
-        An explicit --target remains an explicit Cargo/toolchain selection,
-        even when it spells the host triple. This is request custody, not an
-        executable-on-host or CPU-feature predicate.
-        """
-        return None if self.is_host else self.triple
-
-    @property
-    def link_dialect(self) -> LinkDialect:
-        if self.object_format is NativeObjectFormat.ELF:
-            return LinkDialect.ELF_GNU
-        if self.object_format is NativeObjectFormat.MACHO:
-            return LinkDialect.MACHO
-        return (
-            LinkDialect.COFF_GNU
-            if self.triple.split("-")[-1] in {"gnu", "gnullvm"}
-            else LinkDialect.COFF_MSVC
-        )
-
-    @property
-    def bolt_support_error(self) -> str | None:
-        if self.os != "linux" or self.object_format is not NativeObjectFormat.ELF:
-            return (
-                "BOLT requires a Linux ELF target; "
-                f"resolved {self.os}/{self.object_format.value}"
-            )
-        if self.arch not in _BOLT_ARCHES:
-            return (
-                "BOLT supports Molt Linux targets only on x86_64 and aarch64; "
-                f"resolved {self.arch}"
-            )
-        return None
 
 
 @dataclass(frozen=True, slots=True)
@@ -260,32 +173,6 @@ def whole_archive_link_arguments(
     raise ValueError(f"Unknown archive link dialect: {dialect!r}.")
 
 
-def target_is_wasm(target_triple: str) -> bool:
-    normalized = target_triple.strip().lower()
-    if normalized in {"wasm32-wasip1", "wasm32-unknown-unknown"}:
-        return True
-    if normalized.startswith("wasm"):
-        raise ValueError(f"Unsupported WASM target: {target_triple!r}")
-    try:
-        resolve_native_target_spec(normalized)
-    except RuntimeError as exc:
-        raise ValueError(str(exc)) from exc
-    return False
-
-
-def resolve_link_dialect(
-    target_triple: str | None,
-    *,
-    host_platform: str | None = None,
-    host_arch: str | None = None,
-) -> LinkDialect:
-    if target_triple is not None and target_is_wasm(target_triple):
-        return LinkDialect.WASM
-    return resolve_native_target_spec(
-        target_triple, host_platform=host_platform, host_arch=host_arch
-    ).link_dialect
-
-
 def validate_native_object_artifact(path: Path, target: NativeTargetSpec) -> None:
     """Admit one relocatable header with the exact requested target shape."""
     try:
@@ -392,85 +279,6 @@ def native_link_output_flags(
     if not capabilities.signs_as_final_output:
         return ()
     return ("-Wl,-adhoc_codesign", "-Xlinker", "-final_output", "-Xlinker", str(output))
-
-
-def _host_target_triple(
-    *, host_platform: str | None = None, host_arch: str | None = None
-) -> str:
-    """Resolve the native host ABI without invoking a build toolchain."""
-    host_platform = sys.platform if host_platform is None else host_platform
-    arch = _normalize_arch(platform.machine() if host_arch is None else host_arch)
-    if host_platform == "win32":
-        suffix = "pc-windows-msvc"
-    elif host_platform == "darwin":
-        suffix = "apple-darwin"
-    elif host_platform.startswith("linux"):
-        # sysconfig carries the interpreter's configured ABI even where libc_ver
-        # cannot identify musl's loader. Both facts come from the running host.
-        import sysconfig
-
-        multiarch = str(sysconfig.get_config_var("MULTIARCH") or "").lower()
-        libc = platform.libc_ver()[0].lower()
-        suffix = (
-            "unknown-linux-musl"
-            if "musl" in multiarch or libc == "musl"
-            else "unknown-linux-gnu"
-        )
-    else:
-        raise RuntimeError(
-            f"Native linking is unsupported on host platform {host_platform!r}."
-        )
-    return f"{arch}-{suffix}"
-
-
-def resolve_native_target_spec(
-    target_triple: str | None,
-    *,
-    host_platform: str | None = None,
-    host_arch: str | None = None,
-) -> NativeTargetSpec:
-    is_host = target_triple is None
-    if is_host:
-        target_triple = _host_target_triple(
-            host_platform=host_platform, host_arch=host_arch
-        )
-    assert target_triple is not None
-    triple = target_triple.strip().lower()
-    parts = triple.split("-")
-    # Classify target components, never substrings (e.g. notlinux, apple-ios,
-    # or a conflicting linux/windows triple). Toolchains own arch support.
-    if (
-        len(parts) >= 3
-        and not parts[0].startswith("wasm")
-        and all(re.fullmatch(r"[a-z0-9_+.]+", p) for p in parts)
-    ):
-        arch = _normalize_arch(parts[0])
-        os_parts = set(parts[1:]) & {
-            "linux",
-            "windows",
-            "darwin",
-            "macos",
-            "ios",
-            "tvos",
-            "watchos",
-            "visionos",
-            "android",
-        }
-        if os_parts == {"windows"}:
-            return NativeTargetSpec(
-                triple, "windows", arch, native_object_format_for_os("windows"), is_host
-            )
-        if os_parts in ({"darwin"}, {"macos"}):
-            return NativeTargetSpec(
-                triple, "macos", arch, native_object_format_for_os("macos"), is_host
-            )
-        if os_parts == {"linux"} and not set(parts[1:]) & {"msvc", "mingw32"}:
-            return NativeTargetSpec(
-                triple, "linux", arch, native_object_format_for_os("linux"), is_host
-            )
-    raise RuntimeError(
-        f"Native linking has no object-format policy for target {target_triple!r}."
-    )
 
 
 def native_link_capabilities(

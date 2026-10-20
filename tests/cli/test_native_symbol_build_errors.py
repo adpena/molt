@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from molt.compilation_target import admit_target
+
 from molt.cli.backend_artifact_contract import resolve_backend_artifact_contract
 
 import json
@@ -85,7 +87,7 @@ def test_symbol_reader_failure_is_a_build_error_and_releases_ir_lease(
     cache_setup = _BackendCacheSetup(
         backend_environment={},
         artifact_contract=resolve_backend_artifact_contract(
-            target="native", emit_mode="obj", target_triple=None
+            target=admit_target("native"), emit_mode="obj"
         ),
         cache_enabled=True,
         cache_key="module-key",
@@ -248,7 +250,7 @@ def test_symbol_reader_failure_is_a_build_error_and_releases_ir_lease(
         prepared_frontend_pipeline_bundle=bundle,
         profile="dev",
         json_output=json_output,
-        target="native",
+        target=admit_target("native"),
         cache_dir=None,
         cache=True,
         cache_report=False,

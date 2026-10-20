@@ -8,6 +8,8 @@ a source module is not link authority.
 
 from __future__ import annotations
 
+from molt.compilation_target import admit_target
+
 import tomllib
 
 import pytest
@@ -277,12 +279,12 @@ def test_wasm_micro_excludes_crypto_so_reached_hashlib_refuses() -> None:
 def test_reached_windows_locale_provider_uses_explicit_target(
     target_triple: str, available: bool, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from molt.cli import native_link_plan
+    from molt import native_target
 
     # A Windows host must not grant its API to a cross-target, and a Linux
     # host must not hide the API for a real Windows cross-target.
     monkeypatch.setattr(
-        native_link_plan,
+        native_target,
         "_host_target_triple",
         lambda **_kwargs: (
             "x86_64-unknown-linux-gnu" if available else "x86_64-pc-windows-msvc"
@@ -310,7 +312,7 @@ def test_reached_windows_locale_provider_uses_explicit_target(
 def test_reached_windows_locale_provider_resolves_implicit_native_host(
     host_triple: str, available: bool, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from molt.cli import native_link_plan
+    from molt import native_target
 
     calls = []
 
@@ -318,7 +320,7 @@ def test_reached_windows_locale_provider_resolves_implicit_native_host(
         calls.append(host_triple)
         return host_triple
 
-    monkeypatch.setattr(native_link_plan, "_host_target_triple", host_target)
+    monkeypatch.setattr(native_target, "_host_target_triple", host_target)
     message = _refusal_for_reached_symbols(
         "molt_locale_getdefaultlocale", profile="full", target_triple=None
     )
@@ -329,7 +331,7 @@ def test_reached_windows_locale_provider_resolves_implicit_native_host(
 def test_unreached_windows_locale_provider_needs_no_target_os_resolution(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from molt.cli import native_link_plan
+    from molt import native_target
 
     def unexpected_resolution(*_args, **_kwargs):
         pytest.fail(
@@ -337,7 +339,7 @@ def test_unreached_windows_locale_provider_needs_no_target_os_resolution(
         )
 
     monkeypatch.setattr(
-        native_link_plan, "resolve_native_target_spec", unexpected_resolution
+        native_target, "resolve_native_target_spec", unexpected_resolution
     )
     functions = _functions_reaching("molt_locale_getencoding")
     functions.append(
@@ -388,7 +390,7 @@ def test_backend_refusal_combines_missing_target_and_profile_requirements(
             )
         ),
         stdlib_profile="micro",
-        target=target,
+        target=admit_target(target),
     )
 
     assert message is not None
@@ -654,7 +656,7 @@ def test_backend_reachability_uses_resolved_cross_native_target_triple(
         BACKEND_IR._reachability_feature_refusal(
             frozenset(),
             stdlib_profile="full",
-            target="native",
+            target=admit_target("native"),
             target_triple=target_triple,
         )
         is None

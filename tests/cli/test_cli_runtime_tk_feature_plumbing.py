@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from molt.compilation_target import admit_target
+
 from tests.compiler_identity_helper import compiler_environment_inputs
 from molt.process_environment import ProcessEnvironment
 
@@ -38,11 +40,13 @@ from molt.cli.build_request import BuildRequest, build_request_from_payload
 from molt.cli import link_pipeline as cli_link_pipeline
 from molt.cli import link_fingerprints as cli_link_fingerprints
 from molt.cli.native_link_plan import (
-    NativeArtifactKind,
     NativeLinkCapabilities,
     NativeLinkerKind,
     NativeLinkPlan,
     NativeLinkPolicy,
+)
+from molt.native_target import (
+    NativeArtifactKind,
     NativeTargetSpec,
     resolve_native_target_spec,
 )
@@ -772,7 +776,7 @@ def test_prepare_backend_setup_warms_native_runtime_with_requested_stdlib_profil
     cache_setup = cli_models._BackendCacheSetup(
         backend_environment={},
         artifact_contract=resolve_backend_artifact_contract(
-            target="native", emit_mode="obj", target_triple=None
+            target=admit_target("native"), emit_mode="obj"
         ),
         cache_enabled=True,
         cache_key=None,
@@ -826,7 +830,7 @@ def test_prepare_backend_setup_warms_native_runtime_with_requested_stdlib_profil
         target_triple=None,
         json_output=True,
         cargo_timeout=1.0,
-        target="native",
+        target=admit_target("native"),
         profile="release",
         backend_cargo_profile="dev-fast",
         linked=False,
@@ -859,7 +863,7 @@ def test_prepare_backend_setup_records_backend_stage_timings(
     cache_setup = cli_models._BackendCacheSetup(
         backend_environment={},
         artifact_contract=resolve_backend_artifact_contract(
-            target="native", emit_mode="obj", target_triple=None
+            target=admit_target("native"), emit_mode="obj"
         ),
         cache_enabled=True,
         cache_key=None,
@@ -924,7 +928,7 @@ def test_prepare_backend_setup_records_backend_stage_timings(
         target_triple=None,
         json_output=True,
         cargo_timeout=1.0,
-        target="native",
+        target=admit_target("native"),
         profile="release",
         backend_cargo_profile="dev-fast",
         linked=False,
@@ -968,7 +972,7 @@ def test_prepare_backend_setup_enables_source_loader_for_native_artifacts(
     cache_setup = cli_models._BackendCacheSetup(
         backend_environment={},
         artifact_contract=resolve_backend_artifact_contract(
-            target="native", emit_mode="obj", target_triple=None
+            target=admit_target("native"), emit_mode="obj"
         ),
         cache_enabled=True,
         cache_key=None,
@@ -1044,7 +1048,7 @@ def test_prepare_backend_setup_enables_source_loader_for_native_artifacts(
         target_triple=None,
         json_output=True,
         cargo_timeout=1.0,
-        target="native",
+        target=admit_target("native"),
         profile="release",
         backend_cargo_profile="dev-fast",
         linked=False,

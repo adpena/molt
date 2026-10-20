@@ -11,11 +11,17 @@ from molt.backend_executable_names import CodegenBackend, DEFAULT_CODEGEN_BACKEN
 from molt.capability_policy import CapabilityInput
 from molt.cli.config_resolution import StdlibProfile
 from molt.type_facts import TypeHintPolicy
+from molt.compilation_target import (
+    Target,
+    TargetKind,
+    admit_target,
+    target_name,
+    validate_target,
+)
 
 ParseCodec = Literal["msgpack", "cbor", "json"]
 BuildProfile = Literal["dev", "release"]
 EmitMode = Literal["bin", "obj", "wasm"]
-Target = str
 
 
 @dataclass(frozen=True, slots=True)
@@ -28,7 +34,7 @@ class FactGraphRequest:
 @dataclass(frozen=True, slots=True, kw_only=True)
 class BuildRequest:
     file_path: str | None
-    target: Target = "native"
+    target: Target = TargetKind.NATIVE
     parse_codec: ParseCodec = "msgpack"
     type_hint_policy: TypeHintPolicy = "check"
     type_facts_path: str | None = None
@@ -76,6 +82,9 @@ class BuildRequest:
     bolt_training_cmd: str | None = None
     fact_graph_request: FactGraphRequest | None = None
     codegen_backend: CodegenBackend = DEFAULT_CODEGEN_BACKEND
+
+    def __post_init__(self) -> None:
+        validate_target(self.target)
 
 
 def _require_json_value(value: object, location: str = "$") -> None:
@@ -130,16 +139,20 @@ def build_request_from_payload(payload: object) -> BuildRequest:
     graph = payload.get("fact_graph_request")
     if isinstance(graph, dict):
         _reject_unknown_fields(graph, FactGraphRequest)
-    return msgspec.convert(payload, BuildRequest, strict=True, dec_hook=_decode_path)
+    admitted = dict(payload)
+    if "target" in admitted:
+        admitted["target"] = admit_target(admitted["target"])
+    return msgspec.convert(admitted, BuildRequest, strict=True, dec_hook=_decode_path)
 
 
-def build_request_to_payload(request: BuildRequest) -> dict[str, Any]:
-    """Project every dataclass field, validating only at the process boundary."""
+def build_request_values(request: BuildRequest) -> dict[str, Any]:
+    """Project the complete request into scalar cache/transport field values."""
     from dataclasses import fields
 
     payload = {
         field.name: getattr(request, field.name) for field in fields(BuildRequest)
     }
+    payload["target"] = target_name(request.target)
     graph = request.fact_graph_request
     if graph is not None:
         if not isinstance(graph, FactGraphRequest) or not isinstance(
@@ -152,5 +165,11 @@ def build_request_to_payload(request: BuildRequest) -> dict[str, Any]:
             else getattr(graph, field.name)
             for field in fields(FactGraphRequest)
         }
+    return payload
+
+
+def build_request_to_payload(request: BuildRequest) -> dict[str, Any]:
+    """Validate the canonical field projection at the process boundary."""
+    payload = build_request_values(request)
     build_request_from_payload(payload)
     return payload

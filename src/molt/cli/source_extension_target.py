@@ -1,17 +1,23 @@
 from __future__ import annotations
 
+from molt.compilation_target import (
+    Target,
+    TargetKind,
+    admit_target,
+    is_wasm_target,
+    native_target_spec,
+    target_triple as project_target_triple,
+)
+
 from dataclasses import dataclass, replace
 from pathlib import Path
 
-from molt.cli.native_link_plan import (
-    LinkDialect,
-    NativeObjectFormat,
-    NativeTargetSpec,
-    _host_target_triple,
-    resolve_native_target_spec,
+from molt.native_target import LinkDialect, NativeTargetSpec, resolve_native_target_spec
+from molt.compilation_target import (
     resolve_link_dialect,
     target_is_wasm as source_extension_target_is_wasm,
 )
+from molt.native_target_shape import NativeObjectFormat
 
 SourceExtensionLinkDialect = LinkDialect
 source_extension_link_dialect = resolve_link_dialect
@@ -20,7 +26,7 @@ SOURCE_EXTENSION_TARGET_METADATA_SCHEMA_VERSION = 6
 
 @dataclass(frozen=True, slots=True)
 class SourceExtensionTargetPlan:
-    requested: str
+    requested: Target
     target_triple: str
     compiler_target_triple: str | None
     native_target: NativeTargetSpec | None
@@ -64,46 +70,32 @@ def source_extension_artifact_suffix(target_triple: str) -> str:
 
 
 def resolve_source_extension_target_plan(
-    requested: str,
+    requested: Target,
     *,
     host_platform: str | None = None,
     host_arch: str | None = None,
 ) -> SourceExtensionTargetPlan:
-    if not isinstance(requested, str) or not requested.strip():
-        raise ValueError("target must be an explicit name or target triple")
-    raw = requested.strip().lower()
-    if any(character.isspace() for character in raw):
-        raise ValueError("target must be 'native', 'wasm', or a Rust target triple")
-    normalized = raw
-    if normalized == "native":
+    if is_wasm_target(requested):
+        triple = project_target_triple(requested)
+        assert triple is not None
+        native_target = None
+        compiler_target_triple = triple
+    else:
         try:
-            target_triple = _host_target_triple(
-                host_platform=host_platform, host_arch=host_arch
+            native_target = (
+                resolve_native_target_spec(
+                    None, host_platform=host_platform, host_arch=host_arch
+                )
+                if requested is TargetKind.NATIVE
+                else native_target_spec(requested)
             )
         except RuntimeError as exc:
             raise ValueError(str(exc)) from exc
-        compiler_target_triple = None
-    elif normalized == "wasm":
-        target_triple = "wasm32-wasip1"
-        compiler_target_triple = target_triple
-    elif normalized == "wasm-freestanding":
-        target_triple = "wasm32-unknown-unknown"
-        compiler_target_triple = target_triple
-    else:
-        target_triple = normalized
-        compiler_target_triple = target_triple
-    native_target = (
-        None
-        if source_extension_target_is_wasm(target_triple)
-        else resolve_native_target_spec(
-            compiler_target_triple,
-            host_platform=host_platform,
-            host_arch=host_arch,
-        )
-    )
+        triple = native_target.triple
+        compiler_target_triple = native_target.cargo_target
     return SourceExtensionTargetPlan(
-        requested=normalized,
-        target_triple=target_triple,
+        requested=requested,
+        target_triple=triple,
         compiler_target_triple=compiler_target_triple,
         native_target=native_target,
     )
@@ -127,7 +119,7 @@ def source_extension_recorded_target_plan(
         raise ValueError("recorded target must be a canonical explicit target triple")
     if requested != requested.strip().lower():
         raise ValueError("recorded requested target must be canonical lowercase")
-    artifact = resolve_source_extension_target_plan(target_triple)
+    artifact = resolve_source_extension_target_plan(admit_target(target_triple))
     if (
         artifact.target_triple != target_triple
         or artifact.compiler_target_triple is None
@@ -136,8 +128,11 @@ def source_extension_recorded_target_plan(
     if requested == "native":
         if artifact.is_wasm:
             raise ValueError("recorded native target cannot describe a WASM artifact")
-        return replace(artifact, requested="native", compiler_target_triple=None)
-    plan = resolve_source_extension_target_plan(requested)
-    if plan.requested != requested or plan.target_triple != target_triple:
+        return replace(
+            artifact, requested=TargetKind.NATIVE, compiler_target_triple=None
+        )
+    admitted = admit_target(requested)
+    plan = resolve_source_extension_target_plan(admitted)
+    if plan.requested != admitted or plan.target_triple != target_triple:
         raise ValueError("recorded requested target differs from the artifact target")
     return plan

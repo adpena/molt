@@ -1,3 +1,5 @@
+from molt.compilation_target import Target, TargetKind, admit_target
+from molt import native_target
 from molt.cli.cache_keys import FunctionDigests
 
 import os
@@ -13,7 +15,7 @@ import traceback
 from typing import Any, Iterator, Mapping
 
 from molt.backend_environment import CodegenSelection
-from molt.cli import native_link_plan, native_symbol_inspection
+from molt.cli import native_symbol_inspection
 import pytest
 import msgspec
 
@@ -23,7 +25,7 @@ from molt.cli.native_main_stub import _render_native_main_stub
 from molt.cli import backend_binary as cli_backend_binary
 from molt.cli import backend_cache_setup as cli_backend_cache_setup
 from molt.cli.backend_artifact_contract import resolve_backend_artifact_contract
-from molt.cli.native_link_plan import resolve_native_target_spec
+from molt.native_target import resolve_native_target_spec
 from molt.exact_json import canonical_json_sha256
 from molt.cli.rust_cpu_policy import RustCpuPolicy
 from tests.cli.process_guard import run_cli_test_process
@@ -549,9 +551,9 @@ def test_shared_stdlib_cache_key_uses_payload_digest_authority() -> None:
         compiler_fingerprint="compiler-fingerprint",
     ) == _payload_digest_cache_key(
         payload_ir,
-        target="native-stdlib",
+        target="native",
         target_triple="aarch64-apple-darwin",
-        variant=variant,
+        variant=f"native-stdlib:{variant}",
         schema_version=CACHE_KEYS._CACHE_KEY_SCHEMA_VERSION,
     )
 
@@ -686,9 +688,9 @@ def test_backend_code_reuse_keeps_final_runtime_policies_distinct(
         rust_cpu=RustCpuPolicy.BASELINE,
         cache_enabled=True,
         ir=ir,
-        target="native",
+        target=admit_target("native"),
         artifact_contract=resolve_backend_artifact_contract(
-            target="native", emit_mode="bin", target_triple=None
+            target=admit_target("native"), emit_mode="bin"
         ),
         profile="dev",
         runtime_cargo_profile="dev-fast",
@@ -856,9 +858,9 @@ def test_prepare_backend_cache_setup_reuses_cache_fingerprints_for_backend_keys(
         backend_bin=tmp_path / "molt-backend",
         cache_enabled=True,
         ir=ir,
-        target="native",
+        target=admit_target("native"),
         artifact_contract=resolve_backend_artifact_contract(
-            target="native", emit_mode="bin", target_triple=None
+            target=admit_target("native"), emit_mode="bin"
         ),
         profile="dev",
         runtime_cargo_profile="dev-fast",
@@ -916,9 +918,9 @@ def test_prepare_backend_cache_setup_custodies_free_threaded_mode_end_to_end(
     seen: list[tuple[str, ...]] = []
 
     def selected_features(
-        *, target: str, is_wasm: bool, codegen_backend: str
+        *, target: Target, is_wasm: bool, codegen_backend: str
     ) -> tuple[str, ...]:
-        assert target == "native"
+        assert target is TargetKind.NATIVE
         assert not is_wasm
         assert codegen_backend == "cranelift"
         return selected
@@ -961,9 +963,9 @@ def test_prepare_backend_cache_setup_custodies_free_threaded_mode_end_to_end(
         rust_cpu=RustCpuPolicy.BASELINE,
         cache_enabled=True,
         ir=ir,
-        target="native",
+        target=admit_target("native"),
         artifact_contract=resolve_backend_artifact_contract(
-            target="native", emit_mode="bin", target_triple=None
+            target=admit_target("native"), emit_mode="bin"
         ),
         profile="dev",
         runtime_cargo_profile="dev-fast",
@@ -1066,9 +1068,9 @@ def test_prepare_backend_cache_setup_caches_stdlib_key_material(
         rust_cpu=RustCpuPolicy.BASELINE,
         cache_enabled=True,
         ir=ir,
-        target="native",
+        target=admit_target("native"),
         artifact_contract=resolve_backend_artifact_contract(
-            target="native", emit_mode="bin", target_triple=None
+            target=admit_target("native"), emit_mode="bin"
         ),
         profile="dev",
         runtime_cargo_profile="dev-fast",
@@ -1157,9 +1159,9 @@ def test_prepare_backend_cache_setup_encodes_each_function_once(
         rust_cpu=RustCpuPolicy.BASELINE,
         cache_enabled=True,
         ir=ir,
-        target="native",
+        target=admit_target("native"),
         artifact_contract=resolve_backend_artifact_contract(
-            target="native", emit_mode="bin", target_triple=None
+            target=admit_target("native"), emit_mode="bin"
         ),
         profile="dev",
         runtime_cargo_profile="dev-fast",
@@ -1268,9 +1270,9 @@ def test_prepare_backend_cache_setup_uses_verified_backend_compiler_fingerprint(
             backend_bin=tmp_path / "molt-backend",
             cache_enabled=True,
             ir=ir,
-            target="native",
+            target=admit_target("native"),
             artifact_contract=resolve_backend_artifact_contract(
-                target="native", emit_mode="bin", target_triple=None
+                target=admit_target("native"), emit_mode="bin"
             ),
             profile="dev",
             runtime_cargo_profile="dev-fast",
@@ -2331,7 +2333,9 @@ finally:
 def test_try_cached_backend_candidates_skips_mismatched_stdlib_without_unlink(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    contract = resolve_backend_artifact_contract(target="native", emit_mode="bin")
+    contract = resolve_backend_artifact_contract(
+        target=admit_target("native"), emit_mode="bin"
+    )
     stdlib_object = tmp_path / ".molt_cache" / f"stdlib_shared_active{contract.suffix}"
     stdlib_object.parent.mkdir(parents=True)
     stdlib_object.write_bytes(b"stdlib")
@@ -2578,7 +2582,9 @@ def test_try_cached_backend_candidates_reuses_prevalidated_stdlib_contract_token
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    contract = resolve_backend_artifact_contract(target="native", emit_mode="bin")
+    contract = resolve_backend_artifact_contract(
+        target=admit_target("native"), emit_mode="bin"
+    )
     candidate = tmp_path / "cache" / f"module{contract.suffix}"
     candidate.parent.mkdir(parents=True)
     application_bytes = static_archive_bytes(
@@ -2636,7 +2642,9 @@ def test_try_cached_backend_candidates_reuses_synced_output_without_candidate_pr
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    contract = resolve_backend_artifact_contract(target="native", emit_mode="obj")
+    contract = resolve_backend_artifact_contract(
+        target=admit_target("native"), emit_mode="obj"
+    )
     output_artifact = tmp_path / "dist" / f"out{contract.suffix}"
     output_artifact.parent.mkdir(parents=True)
     output_artifact.write_bytes(
@@ -2693,7 +2701,9 @@ def test_try_cached_backend_candidates_rejects_synced_output_with_bad_stdlib_con
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    contract = resolve_backend_artifact_contract(target="native", emit_mode="bin")
+    contract = resolve_backend_artifact_contract(
+        target=admit_target("native"), emit_mode="bin"
+    )
     output_artifact = tmp_path / "dist" / f"out{contract.suffix}"
     output_artifact.parent.mkdir(parents=True)
     output_artifact.write_bytes(
@@ -2761,7 +2771,9 @@ def test_try_cached_backend_candidates_revalidates_stale_stdlib_contract_token(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    contract = resolve_backend_artifact_contract(target="native", emit_mode="bin")
+    contract = resolve_backend_artifact_contract(
+        target=admit_target("native"), emit_mode="bin"
+    )
     candidate = tmp_path / "cache" / f"module{contract.suffix}"
     candidate.parent.mkdir(parents=True)
     application_bytes = static_archive_bytes(
@@ -2896,7 +2908,9 @@ def test_native_object_symbol_sets_reuse_content_bound_result_across_admission_s
             undefined_symbols=("molt_runtime_symbol",),
         )
     )
-    contract = resolve_backend_artifact_contract(target="native", emit_mode="obj")
+    contract = resolve_backend_artifact_contract(
+        target=admit_target("native"), emit_mode="obj"
+    )
     reads = _counted_symbol_reads(monkeypatch)
 
     assert cli_backend_cache._is_valid_cached_backend_artifact(
@@ -3049,9 +3063,8 @@ def test_stage_backend_output_warms_native_cache_symbol_facts(
         function_cache_path=function_cache_path,
         warnings=[],
         artifact_contract=resolve_backend_artifact_contract(
-            target="native",
+            target=admit_target(target_triple or "native"),
             emit_mode="bin" if archive else "obj",
-            target_triple=target_triple,
         ),
     )
 
@@ -3081,7 +3094,7 @@ def test_native_symbol_normalization_is_platform_explicit(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     # The host target triple is the only platform read on this path.
-    install_module_view(monkeypatch, "sys", sys, native_link_plan, platform="win32")
+    install_module_view(monkeypatch, "sys", sys, native_target, platform="win32")
     assert (
         native_symbol_inspection._normalize_native_symbol_name(
             "__future_____Feature___init__"
@@ -3089,7 +3102,7 @@ def test_native_symbol_normalization_is_platform_explicit(
         == "__future_____Feature___init__"
     )
 
-    monkeypatch.setattr(native_link_plan.sys, "platform", "darwin")
+    monkeypatch.setattr(native_target.sys, "platform", "darwin")
     assert (
         native_symbol_inspection._normalize_native_symbol_name(
             "___future_____Feature___init__"
@@ -3108,7 +3121,7 @@ def test_cached_native_artifact_validation_reads_symbols_in_process(
     assert cli_backend_cache._is_valid_cached_backend_artifact(
         obj,
         artifact_contract=resolve_backend_artifact_contract(
-            target="native", emit_mode="obj", target_triple=None
+            target=admit_target("native"), emit_mode="obj"
         ),
     )
     assert reads == [obj.stat().st_size]
@@ -3329,16 +3342,16 @@ def test_backend_features_for_target_single_source_of_truth(
         )
     # The target-string wrapper derives the booleans purely from `target`.
     assert BACKEND_EXECUTION._backend_features_for_build_target(
-        target="native", is_wasm=False, codegen_backend="cranelift"
+        target=admit_target("native"), is_wasm=False, codegen_backend="cranelift"
     ) == ("native-backend",)
     assert BACKEND_EXECUTION._backend_features_for_build_target(
-        target="luau", is_wasm=False, codegen_backend="cranelift"
+        target=admit_target("luau"), is_wasm=False, codegen_backend="cranelift"
     ) == ("luau-backend",)
     assert BACKEND_EXECUTION._backend_features_for_build_target(
-        target="rust", is_wasm=False, codegen_backend="cranelift"
+        target=admit_target("rust"), is_wasm=False, codegen_backend="cranelift"
     ) == ("rust-backend",)
     assert BACKEND_EXECUTION._backend_features_for_build_target(
-        target="wasm", is_wasm=True, codegen_backend="cranelift"
+        target=admit_target("wasm"), is_wasm=True, codegen_backend="cranelift"
     ) == ("wasm-backend",)
 
 
@@ -3346,7 +3359,9 @@ def test_backend_features_for_target_single_source_of_truth(
 def test_optional_native_candidate_loss_is_a_miss_but_reader_failure_is_not(
     tmp_path, monkeypatch, failure
 ):
-    contract = resolve_backend_artifact_contract(target="native", emit_mode="bin")
+    contract = resolve_backend_artifact_contract(
+        target=admit_target("native"), emit_mode="bin"
+    )
     candidate = tmp_path / "candidate.a"
     candidate.write_bytes(
         static_archive_bytes(
@@ -3401,7 +3416,9 @@ def test_hydrated_required_stdlib_survives_optional_cache_eviction(tmp_path):
     from molt import cache_eviction
     from molt.default_paths import shared_stdlib_cache_entry
 
-    contract = resolve_backend_artifact_contract(target="native", emit_mode="bin")
+    contract = resolve_backend_artifact_contract(
+        target=admit_target("native"), emit_mode="bin"
+    )
     cache = tmp_path / "cache"
     entry, _lock = shared_stdlib_cache_entry(cache, "a" * 64)
     source = entry / "stdlib.a"
@@ -3562,7 +3579,9 @@ def test_shared_archive_hydration_refreshes_only_optional_entry_owner(tmp_path):
     from molt import cache_eviction
     from molt.default_paths import shared_stdlib_cache_entry
 
-    contract = resolve_backend_artifact_contract(target="native", emit_mode="bin")
+    contract = resolve_backend_artifact_contract(
+        target=admit_target("native"), emit_mode="bin"
+    )
     cache = tmp_path / "cache"
     hot, _ = shared_stdlib_cache_entry(cache, "a" * 64)
     cold, _ = shared_stdlib_cache_entry(cache, "b" * 64)

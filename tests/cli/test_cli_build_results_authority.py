@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from molt.compilation_target import admit_target
+
 import inspect
 import json
 import subprocess
@@ -158,7 +160,7 @@ def _emit_link_result(
         backend_daemon_cached=None,
         backend_daemon_cache_tier=None,
         backend_daemon_config_digest=None,
-        target="native",
+        target=admit_target("native"),
         target_triple=None,
         source_path=tmp_path / "app.py",
         output_binary=tmp_path / "app.exe",
@@ -301,7 +303,7 @@ def test_input_custody_failure_prevents_success_result(
             backend_daemon_cached=None,
             backend_daemon_cache_tier=None,
             backend_daemon_config_digest=None,
-            target="wasm",
+            target=admit_target("wasm"),
             target_triple="wasm32-wasip1",
             source_path=tmp_path / "app.py",
             deterministic=False,

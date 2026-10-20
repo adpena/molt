@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from molt.compilation_target import admit_target
+
 import hashlib
 import json
 import os
@@ -80,7 +82,7 @@ def _source_extension_target_plan(
     requested: str,
 ) -> cli_source_extension_target.SourceExtensionTargetPlan:
     return cli_source_extension_target.resolve_source_extension_target_plan(
-        requested,
+        admit_target(requested),
         host_platform="linux",
         host_arch="x86_64",
     )
@@ -179,7 +181,7 @@ def _select_native_extension_fixture_compiler(
 ) -> Path:
     """Fake tool discovery only; preserve real compiler dialect/target admission."""
     target_plan = cli_source_extension_target.resolve_source_extension_target_plan(
-        target
+        admit_target(target)
     )
     msvc = target_plan.target_triple.endswith("-windows-msvc")
     compiler = RuntimeFixtureRoot(tmp_path).native_executable(
@@ -2291,7 +2293,9 @@ def test_extension_build_compiles_iterator_mapping_surface_without_subprocess_mo
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    plan = cli_source_extension_target.resolve_source_extension_target_plan("native")
+    plan = cli_source_extension_target.resolve_source_extension_target_plan(
+        admit_target("native")
+    )
     if not cli_llvm_wasi_tools.llvm_tool_candidates(
         "cc", target_triple=plan.target_triple
     ):
@@ -3679,7 +3683,7 @@ def test_native_target_metadata_commands_drive_real_extension_build(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     target_plan = cli_source_extension_target.resolve_source_extension_target_plan(
-        "native",
+        admit_target("native"),
         host_platform=cli_commands.sys.platform,
         host_arch=cli_commands.platform.machine(),
     )
@@ -5033,7 +5037,7 @@ def test_extension_seal_publishes_package_root_export_for_existing_static_artifa
     plan, errors = cli_external_native._resolve_external_package_native_artifact_plan(
         external_module_roots=(sealed_root,),
         admitted_packages={"numpy"},
-        target="wasm",
+        target=admit_target("wasm"),
         required_modules={"numpy"},
     )
 
@@ -5941,7 +5945,7 @@ def test_extension_seal_publishes_provider_module_support_source(
     plan, errors = cli_external_native._resolve_external_package_native_artifact_plan(
         external_module_roots=(sealed_root,),
         admitted_packages={"scipy"},
-        target="wasm",
+        target=admit_target("wasm"),
         required_modules={"scipy.ndimage.distance_transform_edt"},
     )
     assert errors == []

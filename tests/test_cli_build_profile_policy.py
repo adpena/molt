@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+from molt.compilation_target import admit_target
+from molt.cli.config_resolution import _select_codegen_backend
+
 import json
 import subprocess
 import sys
@@ -26,7 +29,7 @@ def test_prepare_build_config_uses_dev_runtime_profile_for_dev_builds(
         project_root=tmp_path,
         warnings=[],
         json_output=False,
-        target="native",
+        target=admit_target("native"),
         profile="dev",
         pgo_profile=None,
         runtime_feedback=None,
@@ -46,7 +49,7 @@ def test_prepare_build_config_uses_release_runtime_profile_for_release_builds(
         project_root=tmp_path,
         warnings=[],
         json_output=False,
-        target="native",
+        target=admit_target("native"),
         profile="release",
         pgo_profile=None,
         runtime_feedback=None,
@@ -86,7 +89,7 @@ def test_public_runtime_profile_request_preserves_target_policy(
         codegen=CodegenSelection(),
         warnings=[],
         json_output=False,
-        target=target,
+        target=_select_codegen_backend(target, "auto")[0],
         profile=profile,
         pgo_profile=None,
         runtime_feedback=None,
@@ -132,7 +135,7 @@ def test_explicit_runtime_profile_survives_public_selection(
         codegen=CodegenSelection(),
         warnings=[],
         json_output=False,
-        target=target,
+        target=_select_codegen_backend(target, "auto")[0],
         profile="release",
         pgo_profile=None,
         runtime_feedback=None,
@@ -157,7 +160,7 @@ def test_invalid_public_runtime_profile_is_rejected_for_every_target(
         codegen=CodegenSelection(),
         warnings=[],
         json_output=False,
-        target=target,
+        target=_select_codegen_backend(target, "auto")[0],
         profile="release",
         pgo_profile=None,
         runtime_feedback=None,

@@ -1,6 +1,8 @@
 from __future__ import annotations
 
-from molt.cli.native_link_plan import resolve_native_target_spec
+from molt import native_target
+
+from molt.native_target import resolve_native_target_spec
 
 from types import SimpleNamespace
 
@@ -19,7 +21,8 @@ from molt.cli import build_results, link_pipeline, native_link_command, native_l
 from molt.cli import atomic_io
 from molt.cli import link_fingerprints
 from molt import file_publication
-from molt.cli.native_link_plan import NativeArtifactKind, NativeObjectFormat
+from molt.native_target import NativeArtifactKind
+from molt.native_target_shape import NativeObjectFormat
 from tests.cli.native_link_test_support import (
     RUNTIME_BUILD_IDENTITY,
     write_test_darwin_sdk,
@@ -130,7 +133,7 @@ def test_native_link_sidecars_are_private_for_overlapping_plans(
         tmp_path,
         host_platform="linux",
         # The simulated host is x86_64 Linux (_plan default), not this machine.
-        external_target=native_link_plan._host_target_triple(
+        external_target=native_target._host_target_triple(
             host_platform="linux", host_arch="x86_64"
         ),
         external_inputs=(source_extension_link_file(extension),),
@@ -1127,7 +1130,7 @@ def test_native_identity_flags_are_driver_ready(
     cc: tuple[str, ...],
     expected: tuple[str, ...],
 ) -> None:
-    target = native_link_plan.resolve_native_target_spec(
+    target = native_target.resolve_native_target_spec(
         None, host_platform=host_platform, host_arch="x86_64"
     )
     capabilities = native_link_plan.native_link_capabilities(

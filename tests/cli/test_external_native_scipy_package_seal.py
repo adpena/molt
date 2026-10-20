@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from molt.compilation_target import admit_target
+
 import hashlib
 import json
 from pathlib import Path
@@ -183,7 +185,7 @@ def _resolved_modules(root: Path) -> dict[str, str]:
     plan, errors = _resolve_external_package_native_artifact_plan(
         external_module_roots=[root / "files"],
         admitted_packages={"scipy"},
-        target="wasm",
+        target=admit_target("wasm"),
         required_modules={extension.module for extension in extension_set.extensions},
     )
     assert errors == [], errors
@@ -229,7 +231,7 @@ def test_identical_duplicate_package_roots_are_order_independent(
     plan, errors = _resolve_external_package_native_artifact_plan(
         external_module_roots=[first / "files", second / "files"],
         admitted_packages={"scipy"},
-        target="wasm",
+        target=admit_target("wasm"),
         required_modules={extension.module for extension in extension_set.extensions},
     )
 
@@ -258,7 +260,7 @@ def test_conflicting_duplicate_package_roots_fail_before_order_can_choose(
     plan, errors = _resolve_external_package_native_artifact_plan(
         external_module_roots=[first / "files", second / "files"],
         admitted_packages={"scipy"},
-        target="wasm",
+        target=admit_target("wasm"),
         required_modules={extension.module for extension in extension_set.extensions},
     )
 

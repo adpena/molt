@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+
 import argparse
 import contextlib
 from dataclasses import dataclass
@@ -11,6 +12,8 @@ import os
 from pathlib import Path
 from typing import Mapping, NotRequired, Sequence, TypedDict
 
+from molt.compilation_target import target_name
+from molt.compilation_target import admit_target
 from molt.browser_asset_closure import wasm_loader_asset_scope_paths
 from molt.cli.source_extension_set_registry import (
     SourceExtensionSet,
@@ -142,7 +145,7 @@ def _source_extension_producer_plan(
         module_set,
         registry=registry,
     )
-    target_plan = resolve_source_extension_target_plan(target)
+    target_plan = resolve_source_extension_target_plan(admit_target(target))
     variant = SourceExtensionVariant(
         target_python=_parse_target_python_version(python_version),
         abi_tier=abi_tier,
@@ -229,7 +232,7 @@ def _source_extension_producer_spec_from_plan(
         # A frozen triple must not turn host CC/CXX selection into the explicit
         # cross-target MOLT_CROSS_CC/Zig lane. The envelope records both facts.
         target=(
-            target_plan.requested
+            target_name(target_plan.requested)
             if target_plan.compiler_target_triple is None
             else target_plan.target_triple
         ),

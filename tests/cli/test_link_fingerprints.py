@@ -1,6 +1,9 @@
 from __future__ import annotations
 
-from molt.cli.native_link_plan import NativeObjectFormat, resolve_native_target_spec
+from molt.compilation_target import admit_target
+
+from molt.native_target import resolve_native_target_spec
+from molt.native_target_shape import NativeObjectFormat
 
 from tests.cli.native_link_test_support import native_codegen_binding
 from tests.native_artifact_fixtures import signed_macho_image
@@ -503,7 +506,7 @@ def test_native_consumer_reuses_published_bytes_and_relinks_tampering(
         backend_daemon_cached=None,
         backend_daemon_cache_tier=None,
         backend_daemon_config_digest=None,
-        target="native",
+        target=admit_target("native"),
         target_triple=target,
         source_path=tmp_path / "app.py",
         deterministic=True,

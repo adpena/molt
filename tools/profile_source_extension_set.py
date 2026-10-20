@@ -8,6 +8,7 @@ directly comparable without weakening producer custody.
 
 from __future__ import annotations
 
+
 import argparse
 import json
 import platform
@@ -22,6 +23,7 @@ from tools.import_file import bind_repository_imports  # noqa: E402
 
 bind_repository_imports(__file__)
 
+from molt.compilation_target import admit_target  # noqa: E402
 from molt.cli.source_package_seal import verify_source_package_seal  # noqa: E402
 from molt.cli.source_extension_set_registry import (  # noqa: E402
     SourceExtensionVariant,
@@ -84,7 +86,7 @@ def main(argv: list[str] | None = None) -> int:
         registry=registry,
     )
     target_plan = resolve_source_extension_target_plan(
-        args.target,
+        admit_target(args.target),
         host_platform=sys.platform,
         host_arch=platform.machine(),
     )

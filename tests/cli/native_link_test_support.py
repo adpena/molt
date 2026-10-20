@@ -31,7 +31,7 @@ from molt.cli.native_link_manifest import (
     write_native_link_dependency_manifest,
 )
 from molt.cli.runtime_identity_schema import RuntimeBuildIdentity
-from molt.cli.native_link_plan import _host_target_triple, resolve_native_target_spec
+from molt.native_target import _host_target_triple, resolve_native_target_spec
 from tests.runtime_build_identity_helper import (
     native_runtime_staticlib_identity,
     runtime_cargo_environment_inputs,

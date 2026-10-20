@@ -2,6 +2,10 @@
 
 from __future__ import annotations
 
+from molt.compilation_target import target_name
+
+from molt.compilation_target import admit_target
+
 from molt.llvm_toolchain import capture_wasi_sdk_selection
 
 from dataclasses import replace
@@ -68,7 +72,7 @@ def _native_tool(root, role, name):
 
 def _resolved(root, requested="native", *, host_platform=None, host_arch=None):
     target = resolve_source_extension_target_plan(
-        requested, host_platform=host_platform, host_arch=host_arch
+        admit_target(requested), host_platform=host_platform, host_arch=host_arch
     )
     msvc = target.target_triple.endswith("-msvc")
     names = {
@@ -174,7 +178,7 @@ def _capture(monkeypatch, resolved, *, environment=None):
             {
                 "typed_command": {
                     "family": "source-extension-producer",
-                    "target": resolved.target_plan.requested,
+                    "target": target_name(resolved.target_plan.requested),
                 }
             },
             environment=environment,
@@ -798,7 +802,7 @@ def test_canonical_wasm_resolver_passes_environment_to_every_selection(
 
 def test_compiler_probe_subprocess_receives_exact_environment(tmp_path, monkeypatch):
     selected = {"PATH": str(tmp_path), "MOLT_PROBE_TEST": "selected"}
-    target = resolve_source_extension_target_plan("wasm-freestanding")
+    target = resolve_source_extension_target_plan(admit_target("wasm-freestanding"))
     calls = []
 
     def run(command, **kwargs):
@@ -951,7 +955,7 @@ def test_wasi_compiler_user_sysroot_uses_same_selected_path_for_probe_and_identi
     monkeypatch.setattr(
         source_extension_toolchain, "_probe_wasm_source_extension_compiler", probe
     )
-    target = resolve_source_extension_target_plan("wasm")
+    target = resolve_source_extension_target_plan(admit_target("wasm"))
     actual = source_extension_toolchain._resolve_source_extension_wasm_toolchain(
         target, environment=selected
     )
