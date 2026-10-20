@@ -46,6 +46,10 @@ folded map.
 One module, `molt.process_environment`, owns environment-name comparison.
 Consumers select its explicit host or portable declaration rule; filename,
 tool-role and secret-redaction comparisons have separate semantics.
+Hidden compiler override removal uses the portable declaration rule on every
+host, while retained SDK/search variables keep the input snapshot's own rule.
+A POSIX `Path` and `PATH` therefore remain distinct even when mixed-case
+compiler-control names are removed.
 
 - `NameRule`: `EXACT` (POSIX) or `WINDOWS`. `NameRule.host()` is the rule of
   the host that will run the child. A test may pass `WINDOWS` on any host, as

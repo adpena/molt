@@ -1321,7 +1321,7 @@ def backend_daemon_socket_dir(repo_root: Path, env: Mapping[str, str]) -> Path:
     ).resolve()
     if env.get("MOLT_BACKEND_DAEMON_SOCKET_ROOT", "").strip():
         return directory
-    from molt.cli.backend_daemon_paths import _short_backend_daemon_socket_dir
+    from molt.backend_daemon_paths import _short_backend_daemon_socket_dir
 
     return _short_backend_daemon_socket_dir(directory)
 

@@ -11,7 +11,7 @@ from molt.cli import backend_pipeline as _backend_pipeline
 from molt.cli import frontend_pipeline as _frontend_pipeline
 from molt.cli import progress as _progress
 from molt.cli import factgraph as _factgraph
-from molt.cli.backend_daemon_paths import (
+from molt.backend_daemon_paths import (
     _unix_socket_path_exceeds_limit as _unix_socket_path_exceeds_limit,
 )
 from molt.cli.backend_diagnostics import (

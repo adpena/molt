@@ -243,12 +243,23 @@ def _complete_sampling_telemetry() -> memory_guard.GuardSamplingTelemetry:
     )
 
 
-def _posix_custody_signal(monkeypatch: pytest.MonkeyPatch) -> types.SimpleNamespace:
-    """Give process custody POSIX signal numbers and names on every host.
+def _posix_custody_boundary(monkeypatch: pytest.MonkeyPatch) -> types.SimpleNamespace:
+    """Select POSIX custody and its signal vocabulary on every host.
 
     Windows has no SIGKILL, and its ``signal.Signals`` cannot name 9, so the
     emulation carries its own enum for the names custody records (HF-49).
+    Platform dispatch belongs to process_model; changing custody's local
+    ``os`` observations alone does not select that model. Other consumers
+    and threads keep the canonical host predicate.
     """
+    install_thread_module_view(
+        monkeypatch,
+        "_process_model",
+        process_model,
+        memory_guard,
+        process_custody,
+        is_windows_process_model=lambda: False,
+    )
     custody_signal = types.SimpleNamespace(**vars(signal))
     custody_signal.SIGKILL = 9
     custody_signal.Signals = enum.IntEnum(
@@ -256,6 +267,33 @@ def _posix_custody_signal(monkeypatch: pytest.MonkeyPatch) -> types.SimpleNamesp
     )
     monkeypatch.setattr(process_custody, "signal", custody_signal)
     return custody_signal
+
+
+@pytest.mark.parametrize("host_name", ["nt", "posix"])
+def test_posix_custody_boundary_keeps_native_dispatch_for_other_consumers(
+    monkeypatch: pytest.MonkeyPatch, host_name: str
+) -> None:
+    install_module_os_view(monkeypatch, process_model, name=host_name)
+    native_predicate = process_model.is_windows_process_model
+    real_os_name = os.name
+    custody_signal = _posix_custody_boundary(monkeypatch)
+    seen: list[bool] = []
+    worker = threading.Thread(
+        target=lambda: seen.append(
+            process_custody._process_model.is_windows_process_model()
+        )
+    )
+    worker.start()
+    worker.join(5)
+
+    assert not worker.is_alive()
+    assert not process_custody._process_model.is_windows_process_model()
+    assert not memory_guard._process_model.is_windows_process_model()
+    assert process_model.is_windows_process_model is native_predicate
+    assert native_predicate() is (host_name == "nt")
+    assert seen == [host_name == "nt"]
+    assert os.name == real_os_name
+    assert custody_signal.Signals(9).name == "SIGKILL"
 
 
 def _guarded_child(
@@ -3717,6 +3755,7 @@ def test_available_memory_bytes_reads_the_host_capacity_authority(
 ) -> None:
     # The guard reads the one host probe; on macOS that is one Mach call,
     # never a vm_stat subprocess.
+    install_module_os_view(monkeypatch, host_capacity, name="posix")
     install_module_view(monkeypatch, "sys", sys, host_capacity, platform="darwin")
     monkeypatch.setattr(
         host_capacity,
@@ -4794,7 +4833,7 @@ def test_reaped_root_cleanup_composes_with_scratch_closure(
             getsid=absent_pid,
         ),
     )
-    _posix_custody_signal(monkeypatch)
+    _posix_custody_boundary(monkeypatch)
     root = process_custody.ProcessSample(
         101, 999, 10, "python root.py", pgid=101, started_at_ns=11
     )
@@ -4959,7 +4998,7 @@ def test_escalation_reconciles_only_proven_terminal_exit(
         "os",
         types.SimpleNamespace(name="posix", getpid=lambda: 999, getpgrp=lambda: 999),
     )
-    custody_signal = _posix_custody_signal(monkeypatch)
+    custody_signal = _posix_custody_boundary(monkeypatch)
     root = process_custody.ProcessSample(
         101, 999, 10, "python root.py", pgid=101, started_at_ns=11
     )
@@ -5902,7 +5941,7 @@ def test_refused_group_signal_resolves_only_by_an_observed_exit(
             sleep=lambda seconds: now.__setitem__(0, now[0] + seconds),
         ),
     )
-    custody_signal = _posix_custody_signal(monkeypatch)
+    custody_signal = _posix_custody_boundary(monkeypatch)
     root = process_custody.ProcessSample(
         101, 999, 10, "python root.py", pgid=101, started_at_ns=11
     )
@@ -9401,7 +9440,7 @@ def test_sigkilled_target_gets_time_to_leave_under_zero_grace(
         "os",
         types.SimpleNamespace(name="posix", getpid=lambda: 999, getpgrp=lambda: 999),
     )
-    custody_signal = _posix_custody_signal(monkeypatch)
+    custody_signal = _posix_custody_boundary(monkeypatch)
     root = process_custody.ProcessSample(
         101, 999, 10, "python root.py", pgid=101, started_at_ns=11
     )

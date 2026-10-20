@@ -3,6 +3,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from molt.process_environment import NameRule, ProcessEnvironment
 from tools import nightly_prepare
 
 
@@ -61,7 +62,9 @@ def test_prepare_owns_runtime_cpython_plan_and_matrix_projection(
         nightly_prepare.nightly_sharding, "build_plan", lambda *_args, **_kwargs: plan
     )
 
-    build_env = {"CARGO_TARGET_DIR": str(target_root), "MOLT_SESSION_ID": "nightly-1"}
+    build_env = ProcessEnvironment(
+        {"CARGO_TARGET_DIR": str(target_root), "MOLT_SESSION_ID": "nightly-1"}
+    )
     summary = nightly_prepare.prepare(
         output_root=output_root,
         cpython_dir=cpython_dir,
@@ -74,6 +77,7 @@ def test_prepare_owns_runtime_cpython_plan_and_matrix_projection(
     # the runtime generation and backend that build admitted.
     assert build_kwargs["env"] is build_env
     assert pack_kwargs["env"] is build_env
+    assert build_env.rule is NameRule.host()
     # The pack runs through the same launcher as the build, so the runtime
     # identity it captures sees the same interpreter and environment.
     assert pack_argv[:3] == build_argv[:3] == ["uv", "run", "python"]
@@ -95,9 +99,11 @@ def test_main_bundles_from_the_dx_resolved_target(tmp_path: Path, monkeypatch) -
 
     def fake_env(root, **kwargs):
         seen["session_prefix"] = kwargs.get("session_prefix")
-        return {"CARGO_TARGET_DIR": str(resolved_target)}
+        return ProcessEnvironment({"CARGO_TARGET_DIR": str(resolved_target)})
 
     def fake_prepare(**kwargs):
+        assert isinstance(kwargs["build_env"], ProcessEnvironment)
+        assert kwargs["build_env"].rule is NameRule.host()
         seen["build_env"] = kwargs["build_env"]
         return {"schema": "molt.nightly-prepare.v1"}
 
@@ -147,6 +153,8 @@ def test_prepare_reports_why_packing_failed(tmp_path: Path, monkeypatch) -> None
         nightly_prepare.prepare(
             output_root=tmp_path / "out",
             cpython_dir=tmp_path / "cpython",
-            build_env={"CARGO_TARGET_DIR": str(tmp_path / "target")},
+            build_env=ProcessEnvironment(
+                {"CARGO_TARGET_DIR": str(tmp_path / "target")}
+            ),
             github_output=None,
         )

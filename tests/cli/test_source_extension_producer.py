@@ -16,6 +16,7 @@ from typing import Any
 import pytest
 
 from molt import python_environment_identity
+from molt.process_environment import NameRule, ProcessEnvironment
 from molt.python_file_node_custody import VerifiedTreeFile, _semantic_access
 from molt.toolchain_identity import stable_regular_file_identity
 from molt.exact_json import canonical_json_sha256
@@ -488,8 +489,9 @@ def _write_meson_metadata(
     }
 
 
+@pytest.mark.parametrize("rule", [NameRule.EXACT, NameRule.WINDOWS])
 def test_producer_process_environment_preserves_sdk_but_removes_compiler_overrides(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, rule: NameRule
 ) -> None:
     observed: dict[str, Any] = {}
 
@@ -510,10 +512,15 @@ def test_producer_process_environment_preserves_sdk_but_removes_compiler_overrid
         "INCLUDE": "C:/SDK/include",
         "LIB": "C:/SDK/lib",
     }
-    producer._run_process(["meson"], cwd=tmp_path, env=selected)
+    producer._run_process(
+        ["meson"], cwd=tmp_path, env=ProcessEnvironment(selected, rule=rule)
+    )
 
     assert observed["argv"] == ["meson"]
-    assert observed["environment"] == {
+    environment = observed["environment"]
+    assert isinstance(environment, ProcessEnvironment)
+    assert environment.rule is rule
+    assert dict(environment) == {
         "CC": "owned-clang",
         "CXX": "owned-clang++",
         "INCLUDE": "C:/SDK/include",
@@ -1613,7 +1620,8 @@ def test_distribution_probe_sanitizes_python_import_authority(
     ]
     assert observed["argv"] == expected_argv
     environment = observed["env"]
-    assert isinstance(environment, dict)
+    assert isinstance(environment, ProcessEnvironment)
+    assert environment.rule is NameRule.host()
     assert "PYTHONHOME" not in environment
     assert "PYTHONPATH" not in environment
     assert environment["PYTHONNOUSERSITE"] == "1"
@@ -2048,7 +2056,8 @@ def test_source_build_reexec_uses_typed_args_and_invoking_worktree_src(
     assert observed["check"] is False
     assert "capture_output" not in observed
     child_environment = observed["env"]
-    assert isinstance(child_environment, dict)
+    assert isinstance(child_environment, ProcessEnvironment)
+    assert child_environment.rule is NameRule.host()
     assert child_environment["PYTHONPATH"] == str(
         Path(__file__).resolve().parents[2] / "src"
     )

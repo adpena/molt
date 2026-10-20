@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from molt.process_environment import ProcessEnvironment, ProcessEnvironmentBuilder
+from molt.process_environment import NameRule, ProcessEnvironment
 
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
@@ -49,10 +49,14 @@ def source_extension_compiler_environment(
     including captured Meson/native generator commands. Generic subprocesses
     and non-Darwin targets perform no Apple SDK discovery here.
     """
-    selected = ProcessEnvironmentBuilder(environment)
-    for name in _IMPLICIT_COMPILER_OVERRIDES:
-        selected.pop(name, None)
-    return ProcessEnvironment(selected)
+    selected = ProcessEnvironment(environment)
+    # Hidden compiler controls are portable declarations. Their removal policy
+    # is independent of the host's rule for unrelated SDK/search names.
+    return selected.without(
+        name
+        for name in selected
+        if NameRule.WINDOWS.key(name) in _IMPLICIT_COMPILER_OVERRIDES
+    )
 
 
 @dataclass(frozen=True)
