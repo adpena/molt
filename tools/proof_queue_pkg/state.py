@@ -251,26 +251,29 @@ def _connect(
                 "e.author, e.kind, e.note "
                 "FROM proof_runs p, proof_notes n, proof_run_edges e LIMIT 0"
             )
-        except (OSError, sqlite3.Error) as exc:
+        except BaseException as exc:
             if conn is not None:
                 conn.close()
-            raise QueueInspectionError(db, exc) from exc
+            if isinstance(exc, (OSError, sqlite3.Error)):
+                raise QueueInspectionError(db, exc) from exc
+            raise
         return conn
     if access != "write":
         raise ValueError(f"unknown queue database access mode: {access!r}")
     db.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(db)
-    conn.execute("PRAGMA journal_mode=WAL")
-    conn.execute("PRAGMA foreign_keys=ON")
-    # WAL serializes writers, so a slow write under concurrent detached
-    # runners and host I/O pressure can hold the write lock for
-    # seconds. Without a busy timeout SQLite returns SQLITE_BUSY immediately
-    # ("database is locked"), which strands the terminal status write and loses
-    # the run result. Wait up to 30s (in milliseconds per PRAGMA busy_timeout)
-    # for a contended writer before surfacing the error.
-    conn.execute(f"PRAGMA busy_timeout={PROOF_QUEUE_SQLITE_BUSY_TIMEOUT_MS}")
-    conn.execute(
-        """
+    try:
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("PRAGMA foreign_keys=ON")
+        # WAL serializes writers, so a slow write under concurrent detached
+        # runners and host I/O pressure can hold the write lock for
+        # seconds. Without a busy timeout SQLite returns SQLITE_BUSY immediately
+        # ("database is locked"), which strands the terminal status write and loses
+        # the run result. Wait up to 30s (in milliseconds per PRAGMA busy_timeout)
+        # for a contended writer before surfacing the error.
+        conn.execute(f"PRAGMA busy_timeout={PROOF_QUEUE_SQLITE_BUSY_TIMEOUT_MS}")
+        conn.execute(
+            """
         CREATE TABLE IF NOT EXISTS proof_runs (
             run_id TEXT PRIMARY KEY,
             logical_id TEXT NOT NULL,
@@ -296,51 +299,51 @@ def _connect(
             elapsed_s REAL
         )
         """
-    )
-    conn.execute(
-        """
+        )
+        conn.execute(
+            """
         CREATE TABLE IF NOT EXISTS proof_note_kinds (
             kind TEXT PRIMARY KEY,
             description TEXT NOT NULL
         )
         """
-    )
-    placeholders = ",".join("?" for _ in NOTE_KINDS)
-    conn.execute(
-        f"DELETE FROM proof_note_kinds WHERE kind NOT IN ({placeholders})",
-        tuple(sorted(NOTE_KINDS)),
-    )
-    conn.executemany(
-        """
+        )
+        placeholders = ",".join("?" for _ in NOTE_KINDS)
+        conn.execute(
+            f"DELETE FROM proof_note_kinds WHERE kind NOT IN ({placeholders})",
+            tuple(sorted(NOTE_KINDS)),
+        )
+        conn.executemany(
+            """
         INSERT INTO proof_note_kinds (kind, description)
         VALUES (?, ?)
         ON CONFLICT(kind) DO UPDATE SET description = excluded.description
         """,
-        sorted(NOTE_KIND_DESCRIPTIONS.items()),
-    )
-    conn.execute(
-        """
+            sorted(NOTE_KIND_DESCRIPTIONS.items()),
+        )
+        conn.execute(
+            """
         CREATE TABLE IF NOT EXISTS proof_edge_kinds (
             kind TEXT PRIMARY KEY,
             description TEXT NOT NULL
         )
         """
-    )
-    edge_placeholders = ",".join("?" for _ in EDGE_KINDS)
-    conn.execute(
-        f"DELETE FROM proof_edge_kinds WHERE kind NOT IN ({edge_placeholders})",
-        tuple(sorted(EDGE_KINDS)),
-    )
-    conn.executemany(
-        """
+        )
+        edge_placeholders = ",".join("?" for _ in EDGE_KINDS)
+        conn.execute(
+            f"DELETE FROM proof_edge_kinds WHERE kind NOT IN ({edge_placeholders})",
+            tuple(sorted(EDGE_KINDS)),
+        )
+        conn.executemany(
+            """
         INSERT INTO proof_edge_kinds (kind, description)
         VALUES (?, ?)
         ON CONFLICT(kind) DO UPDATE SET description = excluded.description
         """,
-        sorted(EDGE_KIND_DESCRIPTIONS.items()),
-    )
-    conn.execute(
-        """
+            sorted(EDGE_KIND_DESCRIPTIONS.items()),
+        )
+        conn.execute(
+            """
         CREATE TABLE IF NOT EXISTS proof_notes (
             note_id INTEGER PRIMARY KEY AUTOINCREMENT,
             run_id TEXT NOT NULL,
@@ -351,12 +354,12 @@ def _connect(
             FOREIGN KEY(run_id) REFERENCES proof_runs(run_id)
         )
         """
-    )
-    conn.execute(
-        "CREATE INDEX IF NOT EXISTS proof_notes_run_id_note_id ON proof_notes(run_id, note_id)"
-    )
-    conn.execute(
-        """
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS proof_notes_run_id_note_id ON proof_notes(run_id, note_id)"
+        )
+        conn.execute(
+            """
         CREATE TABLE IF NOT EXISTS proof_run_edges (
             edge_id INTEGER PRIMARY KEY AUTOINCREMENT,
             parent_run_id TEXT NOT NULL,
@@ -369,34 +372,34 @@ def _connect(
             UNIQUE(parent_run_id, child_run_id, kind)
         )
         """
-    )
-    _migrate_proof_run_edges_for_external_lineage(conn)
-    conn.execute(
-        "CREATE INDEX IF NOT EXISTS proof_run_edges_child_edge_id ON proof_run_edges(child_run_id, edge_id)"
-    )
-    conn.execute(
-        "CREATE INDEX IF NOT EXISTS proof_run_edges_parent_edge_id ON proof_run_edges(parent_run_id, edge_id)"
-    )
-    conn.execute(
-        """
+        )
+        _migrate_proof_run_edges_for_external_lineage(conn)
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS proof_run_edges_child_edge_id ON proof_run_edges(child_run_id, edge_id)"
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS proof_run_edges_parent_edge_id ON proof_run_edges(parent_run_id, edge_id)"
+        )
+        conn.execute(
+            """
         CREATE TRIGGER IF NOT EXISTS proof_notes_append_only_no_update
         BEFORE UPDATE ON proof_notes
         BEGIN
             SELECT RAISE(ABORT, 'proof_notes is append-only');
         END
         """
-    )
-    conn.execute(
-        """
+        )
+        conn.execute(
+            """
         CREATE TRIGGER IF NOT EXISTS proof_notes_append_only_no_delete
         BEFORE DELETE ON proof_notes
         BEGIN
             SELECT RAISE(ABORT, 'proof_notes is append-only');
         END
         """
-    )
-    conn.execute(
-        """
+        )
+        conn.execute(
+            """
         CREATE TRIGGER IF NOT EXISTS proof_notes_known_kind
         BEFORE INSERT ON proof_notes
         WHEN NOT EXISTS (
@@ -406,27 +409,27 @@ def _connect(
             SELECT RAISE(ABORT, 'unknown proof note kind');
         END
         """
-    )
-    conn.execute(
-        """
+        )
+        conn.execute(
+            """
         CREATE TRIGGER IF NOT EXISTS proof_run_edges_append_only_no_update
         BEFORE UPDATE ON proof_run_edges
         BEGIN
             SELECT RAISE(ABORT, 'proof_run_edges is append-only');
         END
         """
-    )
-    conn.execute(
-        """
+        )
+        conn.execute(
+            """
         CREATE TRIGGER IF NOT EXISTS proof_run_edges_append_only_no_delete
         BEFORE DELETE ON proof_run_edges
         BEGIN
             SELECT RAISE(ABORT, 'proof_run_edges is append-only');
         END
         """
-    )
-    conn.execute(
-        """
+        )
+        conn.execute(
+            """
         CREATE TRIGGER IF NOT EXISTS proof_run_edges_known_kind
         BEFORE INSERT ON proof_run_edges
         WHEN NOT EXISTS (
@@ -436,54 +439,55 @@ def _connect(
             SELECT RAISE(ABORT, 'unknown proof edge kind');
         END
         """
-    )
-    columns = {row[1] for row in conn.execute("PRAGMA table_info(proof_runs)")}
-    if "env_json" not in columns:
-        conn.execute(
-            "ALTER TABLE proof_runs ADD COLUMN env_json TEXT NOT NULL DEFAULT '{}'"
         )
-    if "git_json" not in columns:
-        conn.execute(
-            "ALTER TABLE proof_runs ADD COLUMN git_json TEXT NOT NULL DEFAULT '{}'"
-        )
-    migrated_legacy_envelope = (
-        "command_envelope_json" not in columns and "python_interpreter_json" in columns
-    )
-    if migrated_legacy_envelope:
-        conn.execute(
-            "ALTER TABLE proof_runs RENAME COLUMN python_interpreter_json "
-            "TO command_envelope_json"
-        )
-        columns.remove("python_interpreter_json")
-        columns.add("command_envelope_json")
-    envelope_column_added = "command_envelope_json" not in columns
-    if envelope_column_added:
-        conn.execute(
-            "ALTER TABLE proof_runs ADD COLUMN command_envelope_json "
-            "TEXT NOT NULL DEFAULT '{}'"
-        )
-    receipt_context_added = "receipt_context_json" not in columns
-    if receipt_context_added:
-        conn.execute("ALTER TABLE proof_runs ADD COLUMN receipt_context_json TEXT")
-    # Admission is immutable.  Derive it exactly once only while upgrading a
-    # schema that had no command-envelope column; normal connections must never
-    # rewrite queued or terminal rows from today's proof plan.
-    if envelope_column_added or migrated_legacy_envelope:
-        for run_id, command_json in conn.execute(
-            "SELECT run_id, command_json FROM proof_runs"
-        ).fetchall():
-            command = json.loads(str(command_json))
-            if not isinstance(command, list):
-                raise ValueError(f"proof run {run_id!r} command is not a list")
-            authority = command_admission.admission_envelope(
-                [str(value) for value in command]
-            )
+        columns = {row[1] for row in conn.execute("PRAGMA table_info(proof_runs)")}
+        if "env_json" not in columns:
             conn.execute(
-                "UPDATE proof_runs SET command_envelope_json = ? WHERE run_id = ?",
-                (dumps_exact(authority), run_id),
+                "ALTER TABLE proof_runs ADD COLUMN env_json TEXT NOT NULL DEFAULT '{}'"
             )
-    conn.execute(
-        """
+        if "git_json" not in columns:
+            conn.execute(
+                "ALTER TABLE proof_runs ADD COLUMN git_json TEXT NOT NULL DEFAULT '{}'"
+            )
+        migrated_legacy_envelope = (
+            "command_envelope_json" not in columns
+            and "python_interpreter_json" in columns
+        )
+        if migrated_legacy_envelope:
+            conn.execute(
+                "ALTER TABLE proof_runs RENAME COLUMN python_interpreter_json "
+                "TO command_envelope_json"
+            )
+            columns.remove("python_interpreter_json")
+            columns.add("command_envelope_json")
+        envelope_column_added = "command_envelope_json" not in columns
+        if envelope_column_added:
+            conn.execute(
+                "ALTER TABLE proof_runs ADD COLUMN command_envelope_json "
+                "TEXT NOT NULL DEFAULT '{}'"
+            )
+        receipt_context_added = "receipt_context_json" not in columns
+        if receipt_context_added:
+            conn.execute("ALTER TABLE proof_runs ADD COLUMN receipt_context_json TEXT")
+        # Admission is immutable.  Derive it exactly once only while upgrading a
+        # schema that had no command-envelope column; normal connections must never
+        # rewrite queued or terminal rows from today's proof plan.
+        if envelope_column_added or migrated_legacy_envelope:
+            for run_id, command_json in conn.execute(
+                "SELECT run_id, command_json FROM proof_runs"
+            ).fetchall():
+                command = json.loads(str(command_json))
+                if not isinstance(command, list):
+                    raise ValueError(f"proof run {run_id!r} command is not a list")
+                authority = command_admission.admission_envelope(
+                    [str(value) for value in command]
+                )
+                conn.execute(
+                    "UPDATE proof_runs SET command_envelope_json = ? WHERE run_id = ?",
+                    (dumps_exact(authority), run_id),
+                )
+        conn.execute(
+            """
         CREATE TRIGGER IF NOT EXISTS proof_runs_admission_immutable
         BEFORE UPDATE OF command_json, command_envelope_json, cwd ON proof_runs
         WHEN OLD.command_json != NEW.command_json
@@ -493,46 +497,52 @@ def _connect(
             SELECT RAISE(ABORT, 'proof run admission is immutable');
         END
         """
-    )
-    if receipt_context_added or migrated_legacy_envelope:
-        unattested = json.dumps(
-            _unattested_receipt_context(
-                status="legacy-unattested",
-                phase="schema-migration",
-                reason=("run predates guarded command-envelope receipt custody"),
-            ),
-            sort_keys=True,
         )
-        placeholders = ",".join("?" for _ in RUNNING | {"blocked"})
+        if receipt_context_added or migrated_legacy_envelope:
+            unattested = json.dumps(
+                _unattested_receipt_context(
+                    status="legacy-unattested",
+                    phase="schema-migration",
+                    reason=("run predates guarded command-envelope receipt custody"),
+                ),
+                sort_keys=True,
+            )
+            placeholders = ",".join("?" for _ in RUNNING | {"blocked"})
+            conn.execute(
+                "UPDATE proof_runs SET receipt_context_json = ? "
+                f"WHERE status NOT IN ({placeholders}) "
+                + (
+                    ""
+                    if migrated_legacy_envelope
+                    else "AND receipt_context_json IS NULL"
+                ),
+                (unattested, *sorted(RUNNING | {"blocked"})),
+            )
+        for run_id, status in conn.execute(
+            "SELECT run_id, status FROM proof_runs WHERE receipt_context_json IS NULL"
+        ).fetchall():
+            state_payload = _unattested_receipt_context(
+                status="not-executed",
+                phase=f"reconciled-{status}",
+                reason="execution-host receipt capture has not completed",
+            )
+            conn.execute(
+                "UPDATE proof_runs SET receipt_context_json = ? WHERE run_id = ?",
+                (json.dumps(state_payload, sort_keys=True), run_id),
+            )
+        if "guard_identity" not in columns:
+            conn.execute("ALTER TABLE proof_runs ADD COLUMN guard_identity TEXT")
+        if "resource_mutex_key" not in columns:
+            conn.execute("ALTER TABLE proof_runs ADD COLUMN resource_mutex_key TEXT")
+        if "evidence_retention_json" not in columns:
+            conn.execute(
+                "ALTER TABLE proof_runs ADD COLUMN evidence_retention_json TEXT"
+            )
+        # A claim is the point of no return: lookups treat the files as gone from
+        # the moment the record exists. The record only moves forward, and the
+        # outcome and evidence paths of a claimed run stay fixed.
         conn.execute(
-            "UPDATE proof_runs SET receipt_context_json = ? "
-            f"WHERE status NOT IN ({placeholders}) "
-            + ("" if migrated_legacy_envelope else "AND receipt_context_json IS NULL"),
-            (unattested, *sorted(RUNNING | {"blocked"})),
-        )
-    for run_id, status in conn.execute(
-        "SELECT run_id, status FROM proof_runs WHERE receipt_context_json IS NULL"
-    ).fetchall():
-        state_payload = _unattested_receipt_context(
-            status="not-executed",
-            phase=f"reconciled-{status}",
-            reason="execution-host receipt capture has not completed",
-        )
-        conn.execute(
-            "UPDATE proof_runs SET receipt_context_json = ? WHERE run_id = ?",
-            (json.dumps(state_payload, sort_keys=True), run_id),
-        )
-    if "guard_identity" not in columns:
-        conn.execute("ALTER TABLE proof_runs ADD COLUMN guard_identity TEXT")
-    if "resource_mutex_key" not in columns:
-        conn.execute("ALTER TABLE proof_runs ADD COLUMN resource_mutex_key TEXT")
-    if "evidence_retention_json" not in columns:
-        conn.execute("ALTER TABLE proof_runs ADD COLUMN evidence_retention_json TEXT")
-    # A claim is the point of no return: lookups treat the files as gone from
-    # the moment the record exists. The record only moves forward, and the
-    # outcome and evidence paths of a claimed run stay fixed.
-    conn.execute(
-        """
+            """
         CREATE TRIGGER IF NOT EXISTS proof_runs_evidence_retention_monotonic
         BEFORE UPDATE OF evidence_retention_json ON proof_runs
         WHEN OLD.evidence_retention_json IS NOT NULL AND (
@@ -543,9 +553,9 @@ def _connect(
             SELECT RAISE(ABORT, 'proof run evidence retention only moves forward');
         END
         """
-    )
-    conn.execute(
-        """
+        )
+        conn.execute(
+            """
         CREATE TRIGGER IF NOT EXISTS proof_runs_reclaimed_evidence_immutable
         BEFORE UPDATE OF status, returncode, log_path, summary_json ON proof_runs
         WHEN OLD.evidence_retention_json IS NOT NULL
@@ -557,78 +567,81 @@ def _connect(
             SELECT RAISE(ABORT, 'proof run with reclaimed evidence is immutable');
         END
         """
-    )
-    claimed_active_mutexes: set[str] = set()
-    for row in conn.execute(
-        """
+        )
+        claimed_active_mutexes: set[str] = set()
+        for row in conn.execute(
+            """
         SELECT run_id, resource_family, contention_key, command_json, status
         FROM proof_runs
         WHERE resource_mutex_key IS NULL
         ORDER BY rowid
         """
-    ):
-        try:
-            command = json.loads(row[3])
-        except (TypeError, json.JSONDecodeError):
-            command = []
-        if not isinstance(command, list):
-            command = []
-        resource_mutex_key = _resource_mutex_key(
-            resource_family=str(row[1]),
-            contention_key=str(row[2]),
-            command=[str(part) for part in command],
-        )
-        if resource_mutex_key is not None:
-            if row[4] in LAUNCHED and resource_mutex_key in claimed_active_mutexes:
-                continue
-            if row[4] in LAUNCHED:
-                claimed_active_mutexes.add(resource_mutex_key)
-            conn.execute(
-                "UPDATE proof_runs SET resource_mutex_key = ? WHERE run_id = ?",
-                (resource_mutex_key, row[0]),
+        ):
+            try:
+                command = json.loads(row[3])
+            except (TypeError, json.JSONDecodeError):
+                command = []
+            if not isinstance(command, list):
+                command = []
+            resource_mutex_key = _resource_mutex_key(
+                resource_family=str(row[1]),
+                contention_key=str(row[2]),
+                command=[str(part) for part in command],
             )
-    # At most one active launched run per contention key. A partial UNIQUE index makes
-    # SQLite itself enforce the hard serialization invariant, closing the
-    # check-then-insert / transition TOCTOU where two concurrent admissions each
-    # see zero running rows and both reach status='running' (two heavy builds
-    # contending for the resource the key exists to serialize). Multiple QUEUED
-    # rows per key remain legal: dependency chains (a parent proof plus a
-    # dependent child on the same resource) submit several queued rows and the
-    # DAG plus the application-level active gate serialize which one runs.
-    # Callers handle the resulting IntegrityError as "already active".
-    conn.execute(
-        """
+            if resource_mutex_key is not None:
+                if row[4] in LAUNCHED and resource_mutex_key in claimed_active_mutexes:
+                    continue
+                if row[4] in LAUNCHED:
+                    claimed_active_mutexes.add(resource_mutex_key)
+                conn.execute(
+                    "UPDATE proof_runs SET resource_mutex_key = ? WHERE run_id = ?",
+                    (resource_mutex_key, row[0]),
+                )
+        # At most one active launched run per contention key. A partial UNIQUE index makes
+        # SQLite itself enforce the hard serialization invariant, closing the
+        # check-then-insert / transition TOCTOU where two concurrent admissions each
+        # see zero running rows and both reach status='running' (two heavy builds
+        # contending for the resource the key exists to serialize). Multiple QUEUED
+        # rows per key remain legal: dependency chains (a parent proof plus a
+        # dependent child on the same resource) submit several queued rows and the
+        # DAG plus the application-level active gate serialize which one runs.
+        # Callers handle the resulting IntegrityError as "already active".
+        conn.execute(
+            """
         CREATE UNIQUE INDEX IF NOT EXISTS proof_runs_one_running_per_contention_key
         ON proof_runs(contention_key)
         WHERE status = 'running'
         """
-    )
-    conn.execute(
-        """
+        )
+        conn.execute(
+            """
         CREATE UNIQUE INDEX IF NOT EXISTS proof_runs_one_launched_per_contention_key
         ON proof_runs(contention_key)
         WHERE status IN ('dispatched', 'running')
         """
-    )
-    conn.execute(
-        """
+        )
+        conn.execute(
+            """
         CREATE UNIQUE INDEX IF NOT EXISTS proof_runs_one_launched_per_resource_mutex
         ON proof_runs(resource_mutex_key)
         WHERE resource_mutex_key IS NOT NULL
           AND status IN ('dispatched', 'running')
         """
-    )
-    # Pending-key lookups must not walk retained terminal history. SQLite's
-    # implicit rowid order within this one-key index preserves oldest admission.
-    conn.execute(
-        """
+        )
+        # Pending-key lookups must not walk retained terminal history. SQLite's
+        # implicit rowid order within this one-key index preserves oldest admission.
+        conn.execute(
+            """
         CREATE INDEX IF NOT EXISTS proof_runs_pending_per_contention_key
         ON proof_runs(contention_key)
         WHERE status IN ('queued', 'dispatched', 'running', 'stale')
         """
-    )
-    conn.commit()
-    return conn
+        )
+        conn.commit()
+        return conn
+    except BaseException:
+        conn.close()
+        raise
 
 
 def _proof_run_edges_has_parent_fk(conn: sqlite3.Connection) -> bool:

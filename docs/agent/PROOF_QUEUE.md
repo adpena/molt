@@ -656,6 +656,15 @@ on both success and failure. Process cleanup lives in
 `memory_guard_core.process_custody`; guard entrypoints must not rebind that
 module's callbacks. Tests inject samplers or patch the owning module directly.
 
+Every queue connection opener owns its complete lifetime with `closing`,
+including early returns, dispatch failures and interrupts. SQLite's
+[transaction context manager](https://docs.python.org/3/library/sqlite3.html#how-to-use-the-connection-context-manager)
+does not close the connection. `_connect` closes failed initialization before
+transferring ownership; helpers receiving a borrowed connection leave it open.
+This releases each handle at its scope boundary instead of retaining database
+files until garbage collection, including Windows file locks. It adds no work
+to emitted programs.
+
 Native supervisor capability v4 owns the required launch environment. The queue
 reads it from the captured supervisor binary before toolchain, process-image,
 and source capture; both inventory and proof policies seal the effective values.
