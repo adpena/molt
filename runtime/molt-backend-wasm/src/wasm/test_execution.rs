@@ -1,9 +1,10 @@
 //! Test-only execution of compiled WASM through real hosts and linkers.
 
 use std::fs;
-use std::io::Read;
+use std::io::{self, Read};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 /// Honor the explicit SDK linker without promoting its compiler directory to PATH.
@@ -13,6 +14,9 @@ pub(crate) fn wasm_ld_path() -> PathBuf {
         .unwrap_or_else(|| PathBuf::from("wasm-ld"))
 }
 
+/// Custody of one directory that `allocate_wasm_test_temp_dir` created
+/// exclusively. Only that allocator builds a guard, so a guard never removes
+/// a directory another owner made.
 pub(in crate::wasm) struct WasmTestTempGuard(PathBuf);
 
 impl Drop for WasmTestTempGuard {
@@ -33,17 +37,50 @@ impl Drop for WasmTestTempGuard {
     }
 }
 
+/// Allocate one test's private execution directory under the temp root.
+///
+/// A test binary runs its tests as threads of one pid, and the macOS clock
+/// ticks in microseconds, so pid and clock alone once named one directory for
+/// two tests. `create_dir_all` adopted it, and the first guard removed it
+/// under the other test (HF-55). The process sequence makes each name unique
+/// in this process, and exclusive creation never adopts a directory that
+/// another process, PID namespace or host made under the same name.
 pub(in crate::wasm) fn wasm_test_temp_dir() -> (PathBuf, WasmTestTempGuard) {
-    let path = std::env::temp_dir().join(format!(
-        "molt-wasm-test-execution-{}-{}",
-        std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .expect("system clock after epoch")
-            .as_nanos()
-    ));
-    fs::create_dir_all(&path).expect("create WASM test execution temp dir");
-    (path.clone(), WasmTestTempGuard(path))
+    static SEQUENCE: AtomicU64 = AtomicU64::new(0);
+    let stamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .expect("system clock after epoch")
+        .as_nanos();
+    allocate_wasm_test_temp_dir(&std::env::temp_dir(), stamp, &SEQUENCE)
+}
+
+fn allocate_wasm_test_temp_dir(
+    root: &Path,
+    stamp: u128,
+    sequence: &AtomicU64,
+) -> (PathBuf, WasmTestTempGuard) {
+    fs::create_dir_all(root).expect("create WASM test execution temp root");
+    // The same attempt bound as molt.temporary_artifacts.new_temporary_directory.
+    for _attempt in 0..100 {
+        let path = root.join(format!(
+            "molt-wasm-test-execution-{}-{stamp}-{}",
+            std::process::id(),
+            sequence.fetch_add(1, Ordering::Relaxed)
+        ));
+        match fs::create_dir(&path) {
+            Ok(()) => return (path.clone(), WasmTestTempGuard(path)),
+            // Another owner holds this name: never adopt or remove it.
+            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => continue,
+            Err(error) => panic!(
+                "create WASM test execution temp dir {}: {error}",
+                path.display()
+            ),
+        }
+    }
+    panic!(
+        "cannot allocate a unique WASM test execution temp dir under {}",
+        root.display()
+    )
 }
 
 pub(in crate::wasm) fn run_execution_command(command: &mut Command, purpose: &str) {
@@ -243,5 +280,53 @@ fn process_deadline_reaps_owned_host_loop_outside_guest_vm() {
     assert!(
         message.contains(READY),
         "deadline must exercise the running child, not just startup: {message}"
+    );
+}
+
+#[test]
+fn equal_clock_readings_allocate_independent_owners() {
+    // HF-55: two tests in one pid read one macOS clock tick. Each must own
+    // its directory; a finished owner's guard must leave the live one intact.
+    let (root, _root) = wasm_test_temp_dir();
+    let sequence = AtomicU64::new(0);
+    let (finished, finished_guard) = allocate_wasm_test_temp_dir(&root, 7, &sequence);
+    let (live, live_guard) = allocate_wasm_test_temp_dir(&root, 7, &sequence);
+    assert_ne!(
+        finished, live,
+        "one clock reading named one directory twice"
+    );
+    let live_file = live.join("cases.json");
+    fs::write(&live_file, b"live owner").expect("write the live owner's file");
+    drop(finished_guard);
+    assert!(!finished.exists(), "a guard removes its own directory");
+    assert_eq!(
+        fs::read(&live_file).expect("the live owner's directory must survive"),
+        b"live owner"
+    );
+    drop(live_guard);
+    assert!(
+        !live.exists(),
+        "the owner reclaims its directory when it ends"
+    );
+}
+
+#[test]
+fn allocation_never_adopts_an_existing_directory_with_its_name() {
+    // A process in another PID namespace or on another host can carry this
+    // pid. Its directory is foreign custody even when the name matches.
+    let (root, _root) = wasm_test_temp_dir();
+    let (foreign, probe) = allocate_wasm_test_temp_dir(&root, 7, &AtomicU64::new(0));
+    drop(probe);
+    fs::create_dir(&foreign).expect("create the foreign owner's directory");
+    let foreign_file = foreign.join("owner");
+    fs::write(&foreign_file, b"foreign owner").expect("write the foreign owner's file");
+    // The same inputs name the foreign directory first.
+    let (own, guard) = allocate_wasm_test_temp_dir(&root, 7, &AtomicU64::new(0));
+    assert_ne!(own, foreign, "allocation adopted an existing directory");
+    drop(guard);
+    assert!(!own.exists(), "a guard removes its own directory");
+    assert_eq!(
+        fs::read(&foreign_file).expect("the foreign directory must survive"),
+        b"foreign owner"
     );
 }
