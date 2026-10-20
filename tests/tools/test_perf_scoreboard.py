@@ -26,6 +26,7 @@ for _p in (REPO_ROOT / "tools", REPO_ROOT / "src"):
         sys.path.insert(0, str(_p))
 
 from tools import harness_memory_guard  # noqa: E402
+from molt.process_environment import ProcessEnvironment  # noqa: E402
 from tools import perf_schema as schema  # noqa: E402
 from tools import perf_scoreboard as ps  # noqa: E402
 from tools import perf_scoreboard_measure as measure  # noqa: E402
@@ -531,7 +532,9 @@ def test_measure_cell_records_molt_failure_payload_without_live_build(
     )
 
     monkeypatch.setattr(measure, "REPO_ROOT", tmp_path)
-    monkeypatch.setattr(measure, "_perfscore_build_env", lambda spec, profile: {})
+    monkeypatch.setattr(
+        measure, "_perfscore_build_env", lambda spec, profile: ProcessEnvironment({})
+    )
     monkeypatch.setattr(
         measure.bench_suites,
         "canonical_benchmark_key",
@@ -599,8 +602,10 @@ def test_measure_cell_includes_existing_warmups_in_output_parity(
     run_labels: list[str] = []
 
     monkeypatch.setattr(measure, "REPO_ROOT", tmp_path)
-    monkeypatch.setattr(measure, "_perfscore_build_env", lambda spec, profile: {})
-    monkeypatch.setattr(measure, "_cpython_run_env", lambda: {})
+    monkeypatch.setattr(
+        measure, "_perfscore_build_env", lambda spec, profile: ProcessEnvironment({})
+    )
+    monkeypatch.setattr(measure, "_cpython_run_env", lambda: ProcessEnvironment({}))
     monkeypatch.setattr(
         measure.bench_suites,
         "canonical_benchmark_key",
@@ -968,7 +973,7 @@ def test_backend_binary_resolver_probes_controlled_compiler_root(
     monkeypatch.setattr(
         ps,
         "_perfscore_build_env",
-        lambda spec, profile: {"CARGO_TARGET_DIR": str(cargo)},
+        lambda spec, profile: ProcessEnvironment({"CARGO_TARGET_DIR": str(cargo)}),
     )
     assert ps._resolve_backend_binary_path(ps.NATIVE_CRANELIFT, "release-fast") is None
     name = "molt-backend.exe" if os.name == "nt" else "molt-backend"
@@ -2521,7 +2526,7 @@ def test_cli_admits_one_engine_before_cells_and_retains_checkpoints(
             pass
 
     monkeypatch.setattr(ps.bench, "_BenchBatchBuildServer", Batch)
-    api["_perfscore_build_env"] = lambda *a: {}
+    api["_perfscore_build_env"] = lambda *a: ProcessEnvironment({})
 
     def measure_fixture(**kwargs):
         assert available, "unavailable Node must refuse before any cell/build"
@@ -2583,7 +2588,9 @@ def test_cli_admits_one_engine_before_cells_and_retains_checkpoints(
 def test_direct_wasm_cell_refuses_missing_node_before_build(monkeypatch, tmp_path):
     from molt.node_runtime import NodeRuntimeError
 
-    monkeypatch.setattr(measure, "_perfscore_build_env", lambda *a: {})
+    monkeypatch.setattr(
+        measure, "_perfscore_build_env", lambda *a: ProcessEnvironment({})
+    )
 
     def absent(env):
         raise NodeRuntimeError("independent missing Node")

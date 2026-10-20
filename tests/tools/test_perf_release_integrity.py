@@ -8,6 +8,7 @@ import pytest
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "tools"))
 from tools.perf_authority import release_cell_problems, CANONICAL_PERF_BENCHMARKS  # noqa: E402
+from molt.process_environment import NameRule, ProcessEnvironment  # noqa: E402
 
 
 def winning_cell():
@@ -215,7 +216,9 @@ def test_native_measurement_passes_oracle_minor_to_build(monkeypatch, tmp_path):
         return None
 
     monkeypatch.setattr(measure, "REPO_ROOT", tmp_path)
-    monkeypatch.setattr(measure, "_perfscore_build_env", lambda spec, profile: {})
+    monkeypatch.setattr(
+        measure, "_perfscore_build_env", lambda spec, profile: ProcessEnvironment({})
+    )
     monkeypatch.setattr(measure.bench, "prepare_molt_binary", build)
     script = tmp_path / "bench_probe.py"
     script.write_text("print(1)", encoding="utf-8")
@@ -403,12 +406,17 @@ def test_oracle_runtime_probe_uses_selected_command_and_baseline_environment(
         return subprocess.CompletedProcess(command, 0, '{"captured": true}', "")
 
     monkeypatch.setattr(cli.harness_memory_guard, "guarded_completed_process", run)
-    monkeypatch.setattr(cli, "_cpython_run_env", lambda: {"ORACLE_ENV": "matched"})
+    monkeypatch.setattr(
+        cli, "_cpython_run_env", lambda: ProcessEnvironment({"ORACLE_ENV": "matched"})
+    )
     monkeypatch.setattr(cli, "validate_python_runtime_identity", lambda value: value)
     assert cli._observe_cpython_runtime(("selected-python",)) == {"captured": True}
     assert seen["command"][0] == "selected-python"
     assert "capture_current_python_runtime" in seen["command"][-1]
-    assert seen["kwargs"]["env"] == {"ORACLE_ENV": "matched"}
+    environment = seen["kwargs"]["env"]
+    assert isinstance(environment, ProcessEnvironment)
+    assert environment.rule is NameRule.host()
+    assert dict(environment) == {"ORACLE_ENV": "matched"}
     assert seen["kwargs"]["timeout"] == 180.0
 
 
@@ -551,8 +559,10 @@ def test_measure_cell_closes_actual_binary_owner_on_every_exit(
         },
     )
     monkeypatch.setattr(measure, "REPO_ROOT", tmp_path)
-    monkeypatch.setattr(measure, "_perfscore_build_env", lambda spec, profile: {})
-    monkeypatch.setattr(measure, "_cpython_run_env", lambda: {})
+    monkeypatch.setattr(
+        measure, "_perfscore_build_env", lambda spec, profile: ProcessEnvironment({})
+    )
+    monkeypatch.setattr(measure, "_cpython_run_env", lambda: ProcessEnvironment({}))
     monkeypatch.setattr(measure.bench, "prepare_molt_binary", lambda *a, **kw: binary)
     monkeypatch.setattr(measure.bench, "resolve_benchmark_run_args", lambda path: [])
 
@@ -636,7 +646,9 @@ def test_measure_cell_preserves_replaced_allocation_and_original_error(
     original = OSError("independent binding failure")
     binary = measure.bench.MoltBinary(artifact, owner, 0.1, 1.0, None)
     monkeypatch.setattr(measure, "REPO_ROOT", tmp_path)
-    monkeypatch.setattr(measure, "_perfscore_build_env", lambda spec, profile: {})
+    monkeypatch.setattr(
+        measure, "_perfscore_build_env", lambda spec, profile: ProcessEnvironment({})
+    )
     monkeypatch.setattr(measure.bench, "prepare_molt_binary", lambda *a, **kw: binary)
 
     def log(*args):

@@ -7,6 +7,7 @@ import sys
 import subprocess
 from pathlib import Path
 
+from molt.process_environment import ProcessEnvironment
 from tools import harness_memory_guard
 from tools.sample_profile import read_self_time
 from tools import bench
@@ -36,7 +37,7 @@ def _profiling_popen(*args, **kwargs):
     return _facade()._profiling_popen(*args, **kwargs)
 
 
-def _perfscore_build_env(spec, profile):
+def _perfscore_build_env(spec: BackendSpec, profile: str) -> ProcessEnvironment:
     return _facade()._perfscore_build_env(spec, profile)
 
 
@@ -147,7 +148,7 @@ def top_in_binary_frames(
     return out
 
 
-def _profiling_tmp_root(env: dict[str, str]) -> Path:
+def _profiling_tmp_root(env: ProcessEnvironment) -> Path:
     """Profiling scratch follows the build's admitted artifact root."""
     return bench._bench_tmp_root(env)
 
@@ -228,8 +229,9 @@ def build_profiling_binary(
         return None, meta
     meta["looped"] = True
 
-    build_env = _perfscore_build_env(spec, profile)
-    build_env[MOLT_KEEP_SYMBOLS_ENV] = "1"
+    build_env = _perfscore_build_env(spec, profile).updated(
+        {MOLT_KEEP_SYMBOLS_ENV: "1"}
+    )
     from tools.perf_scoreboard_build_profiles import profile_selection
 
     selection = profile_selection(spec, profile)
@@ -293,7 +295,7 @@ def build_profiling_binary(
 
 
 def _time_one_run(
-    cmd: list[str], *, env: dict[str, str], rss_mb: int, timeout_s: float
+    cmd: list[str], *, env: ProcessEnvironment, rss_mb: int, timeout_s: float
 ) -> "RunOutcome":
     """Wall-time ONE run of ``cmd`` under safe_run (for sizing the sample window).
 
@@ -314,7 +316,7 @@ def capture_hot_only_profile(
     binary_path: Path,
     *,
     run_args: list[str],
-    env: dict[str, str],
+    env: ProcessEnvironment,
     rss_mb: int,
     inner_loops: int,
     warmup_s: float = HOT_SAMPLE_WARMUP_S,

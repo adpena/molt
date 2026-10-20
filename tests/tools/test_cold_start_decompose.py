@@ -4,11 +4,14 @@ from pathlib import Path
 from types import SimpleNamespace
 import shutil
 import tempfile
+import pytest
+from molt.process_environment import NameRule, ProcessEnvironment
 from tests.process_guard_common import install_module_view
 from tools import cold_start_decompose
 
 
-def test_safe_run_elapsed_uses_typed_shared_measurement(monkeypatch):
+@pytest.mark.parametrize("rule", [NameRule.EXACT, NameRule.WINDOWS])
+def test_safe_run_elapsed_uses_typed_shared_measurement(monkeypatch, rule):
     from tools.safe_run import RunOutcome
 
     calls = []
@@ -18,9 +21,10 @@ def test_safe_run_elapsed_uses_typed_shared_measurement(monkeypatch):
         return RunOutcome(True, 0.042, 3, "ok", 0, stderr="guest stderr")
 
     monkeypatch.setattr(cold_start_decompose, "_run_measured_command", measure)
+    environment = ProcessEnvironment({"BASE": "1", "Extra": "old"}, rule=rule)
     elapsed, stderr = cold_start_decompose._safe_run_elapsed(
         ["subject"],
-        env={"BASE": "1"},
+        env=environment,
         rss_mb=64,
         timeout_s=2,
         label="probe",
@@ -29,7 +33,14 @@ def test_safe_run_elapsed_uses_typed_shared_measurement(monkeypatch):
     assert elapsed == 0.042 and stderr == "guest stderr"
     cmd, kwargs = calls[0]
     assert cmd == ["subject"] and kwargs["timeout_s"] == 2
-    assert kwargs["env"] == {"BASE": "1", "EXTRA": "2"}
+    assert isinstance(kwargs["env"], ProcessEnvironment)
+    assert kwargs["env"].rule is rule
+    assert dict(kwargs["env"]) == (
+        {"BASE": "1", "Extra": "old", "EXTRA": "2"}
+        if rule is NameRule.EXACT
+        else {"BASE": "1", "Extra": "2"}
+    )
+    assert dict(environment) == {"BASE": "1", "Extra": "old"}
     assert kwargs["prefix"] == "MOLT_COLD_START"
 
 
