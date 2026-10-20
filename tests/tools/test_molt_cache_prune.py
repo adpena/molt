@@ -668,7 +668,7 @@ def test_frontend_retention_evicts_old_immutable_leaves_to_budget(tmp_path, fami
 
 @pytest.fixture
 def retention_cache(tmp_path):
-    from tools.proof_queue_pkg import cache_retention
+    from molt import cache_eviction
 
     cache = tmp_path / "cache"
     (cache / "module_lowering").mkdir(parents=True)
@@ -681,14 +681,14 @@ def retention_cache(tmp_path):
         "MOLT_CACHE_MAX_GB": "0",
         "MOLT_CACHE_MAX_AGE_DAYS": "30",
     }
-    return cache_retention, cache, entry, env
+    return cache_eviction, cache, entry, env
 
 
 def test_retention_coalesces_under_canonical_lock_and_explicit_prune_is_unthrottled(
     retention_cache, monkeypatch
 ):
     module, cache, entry, env = retention_cache
-    first = module.prune_after_payload(env)
+    first = module.automatic_retention(env)
     assert first["status"] == "completed" and first["entries_removed"] == 1
     assert not entry.exists()
     entry.write_bytes(b"published after the sweep")
@@ -700,12 +700,39 @@ def test_retention_coalesces_under_canonical_lock_and_explicit_prune_is_unthrott
                 "recent automatic sweep must not inventory"
             ),
         )
-        assert module.prune_after_payload(dict(env))["status"] == "recent"
+        assert module.automatic_retention(dict(env))["status"] == "recent"
     assert entry.exists()
     result = _load_molt_cache_prune()._prune(
         cache, max_bytes=0, max_age_days=None, dry_run=False
     )
     assert result["entries_removed"] == 1 and not entry.exists()
+
+
+def test_retention_interval_is_the_callers_staleness_tolerance(retention_cache):
+    # One stamp serves every automatic caller. A CLI build tolerates a day-old
+    # sweep (CLI_CACHE_RETENTION_INTERVAL_SECONDS); the proof queue sweeps again
+    # after five minutes.
+    from molt.default_paths import (
+        CACHE_MAINTENANCE_INTERVAL_SECONDS,
+        CLI_CACHE_RETENTION_INTERVAL_SECONDS,
+        shared_cache_lock_path,
+    )
+
+    module, cache, entry, env = retention_cache
+    stamp = shared_cache_lock_path(cache, "prune")
+    stamp.parent.mkdir(parents=True)
+    stamp.write_text(str(time.time() - 3600), encoding="ascii")
+    assert (
+        CACHE_MAINTENANCE_INTERVAL_SECONDS < 3600 < CLI_CACHE_RETENTION_INTERVAL_SECONDS
+    )
+    daily = module.automatic_retention(
+        env, min_interval_seconds=CLI_CACHE_RETENTION_INTERVAL_SECONDS
+    )
+    assert daily["status"] == "recent" and entry.exists()
+    queue = module.automatic_retention(env)
+    assert queue["status"] == "completed" and queue["entries_removed"] == 1
+    assert queue["bytes_removed"] == len(b"old immutable cache payload")
+    assert not entry.exists()
 
 
 def test_retention_protects_home_and_bin_from_its_supplied_environment(
@@ -730,7 +757,7 @@ def test_retention_protects_home_and_bin_from_its_supplied_environment(
         "MOLT_HOME": str(home_entry.parent),
         "MOLT_BIN": str(bin_root),
     }
-    result = module.prune_after_payload(selected)
+    result = module.automatic_retention(selected)
     assert result["entries_removed"] == 1
     assert not evictable.exists()
     assert home_entry.read_bytes() == b"old immutable cache payload"
@@ -753,11 +780,11 @@ def test_retention_busy_custody_never_waits_or_inventories(
                 "_collect_entries",
                 lambda *_args, **_kwargs: pytest.fail("busy sweep must not inventory"),
             )
-            assert module.prune_after_payload(env)["status"] == "busy"
+            assert module.automatic_retention(env)["status"] == "busy"
         assert entry.exists()
     finally:
         _release_file_lock(lock)
-    assert module.prune_after_payload(env)["entries_removed"] == 1
+    assert module.automatic_retention(env)["entries_removed"] == 1
 
 
 def test_retention_throttles_failed_attempt_and_obeys_optout(
@@ -774,13 +801,13 @@ def test_retention_throttles_failed_attempt_and_obeys_optout(
             raise OSError("inventory unavailable")
 
         patch.setattr(pruner, "_collect_entries", fail)
-        first = module.prune_after_payload(env)
+        first = module.automatic_retention(env)
     assert first == {"status": "failed", "error": "OSError: inventory unavailable"}
-    assert module.prune_after_payload(env)["status"] == "recent"
+    assert module.automatic_retention(env)["status"] == "recent"
     clock.time = lambda: now + pruner.AUTOMATIC_PRUNE_INTERVAL_SECONDS
-    assert module.prune_after_payload({**env, "MOLT_CACHE_PRUNE": "0"}) is None
+    assert module.automatic_retention({**env, "MOLT_CACHE_PRUNE": "0"}) is None
     assert entry.exists()
-    assert module.prune_after_payload(env)["entries_removed"] == 1
+    assert module.automatic_retention(env)["entries_removed"] == 1
 
 
 @pytest.mark.parametrize("failure", [MemoryError, KeyboardInterrupt])
@@ -794,7 +821,7 @@ def test_retention_does_not_swallow_resource_or_cancellation_failure(
 
     monkeypatch.setattr(_load_molt_cache_prune(), "_collect_entries", fail)
     with pytest.raises(failure, match="guarded operation interrupted"):
-        module.prune_after_payload(env)
+        module.automatic_retention(env)
 
 
 def test_pruner_selects_completed_backend_files_and_preserves_mutable_namespaces(
@@ -1314,6 +1341,43 @@ def test_source_record_busy_migration_is_reported_separately(tmp_path: Path) -> 
         assert database.stat().st_ino == identity
     finally:
         connection.close()
+
+
+def test_dry_run_reports_an_unmigrated_store_without_failing(tmp_path: Path) -> None:
+    # A dry run opens the store read-only, so it cannot migrate a historical
+    # schema; that is an unmigrated store to report, not a failed entry. The
+    # writing sweep migrates it and manages its rows.
+    import sqlite3
+    from molt.cli.source_record_store import STORE_NAME
+    from molt.default_paths import SHARED_SOURCE_RECORDS_DIRECTORY
+
+    cache = tmp_path / "cache"
+    record_root = cache / SHARED_SOURCE_RECORDS_DIRECTORY
+    record_root.mkdir(parents=True)
+    connection = sqlite3.connect(record_root / STORE_NAME, isolation_level=None)
+    try:
+        connection.executescript("""
+            CREATE TABLE records(kind TEXT,key TEXT,generation TEXT,payload BLOB,
+                PRIMARY KEY(kind,key)) WITHOUT ROWID;
+            CREATE TABLE generations(generation TEXT PRIMARY KEY,used_ns INTEGER) WITHOUT ROWID;
+            CREATE TABLE trims(singleton INTEGER PRIMARY KEY,trimmed_ns INTEGER);
+            INSERT INTO records VALUES('module-lowering','old','g',X'616263');
+        """)
+    finally:
+        connection.close()
+    module = _load_molt_cache_prune()
+
+    dry = module._prune(cache, max_bytes=0, max_age_days=None, dry_run=True)
+    assert dry["source_record_store_unmigrated"] is True
+    assert dry["source_record_maintenance_failed"] is False
+    assert dry["entries_failed"] == 0
+    assert "source_records.unmigrated=True" in module.prune_report_lines(
+        cache, dry, max_gb=0, max_age_days=30, dry_run=True
+    )
+
+    swept = module._prune(cache, max_bytes=0, max_age_days=None, dry_run=False)
+    assert swept["source_record_store_unmigrated"] is False
+    assert swept["entries_failed"] == 0 and swept["source_records_removed"] == 1
 
 
 def test_row_batches_commit_before_interleaved_file_eviction(tmp_path, monkeypatch):

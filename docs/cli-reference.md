@@ -342,6 +342,23 @@ molt clean --apply --kill-processes      # Drain live-proved Molt workers before
 molt clean --list-paths                  # Show default cleanup and excluded stateful roots
 ```
 
+#### `molt cache prune`
+
+Apply the build cache budget now: remove inactive entries older than
+`MOLT_CACHE_MAX_AGE_DAYS` (default 30), then the least recently used entries
+until the evictable bytes fit `MOLT_CACHE_MAX_GB` (default 30 GiB). Entries in
+use, durable state and protected legacy generations stay. A successful
+`molt build` applies the same budget to the cache it used at most once a day,
+as Go and Cargo trim their caches; `MOLT_CACHE_PRUNE=0` turns that off. The
+report gives the bytes before, removed and remaining.
+
+```bash
+molt cache prune --dry-run               # Report what the budget would remove
+molt cache prune                         # Apply MOLT_CACHE_MAX_GB / MOLT_CACHE_MAX_AGE_DAYS
+molt cache prune --max-gb 10 --json      # A smaller budget, as JSON
+molt cache prune --cache-dir PATH        # Another cache root (default: MOLT_CACHE)
+```
+
 #### `molt doctor`
 
 Check that the Molt toolchain is installed and configured correctly.

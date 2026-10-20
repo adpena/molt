@@ -4243,7 +4243,7 @@ def test_guarded_retention_reuses_closed_payload_controller(
     prune_error: bool,
 ) -> None:
     from molt import cache_eviction, default_paths, file_locks, file_publication
-    from tools.proof_queue_pkg import cache_retention, supervisor_generation
+    from tools.proof_queue_pkg import supervisor_generation
 
     repo = tmp_path / "retention-repo"
     _initialize_clean_git_repo(repo)
@@ -4261,7 +4261,7 @@ def test_guarded_retention_reuses_closed_payload_controller(
     events = []
     provision = supervisor_generation.provision
     validate = supervisor_custody._validated_supervisor_receipt
-    prune = cache_retention._prune
+    prune = cache_eviction._prune
     snapshot = execution_environment._git_snapshot
 
     def provision_once(**kwargs):
@@ -4299,7 +4299,7 @@ def test_guarded_retention_reuses_closed_payload_controller(
     monkeypatch.setattr(
         supervisor_custody, "_validated_supervisor_receipt", closed_receipt
     )
-    monkeypatch.setattr(cache_retention, "_prune", sweep)
+    monkeypatch.setattr(cache_eviction, "_prune", sweep)
     monkeypatch.setattr(execution_environment, "_git_snapshot", observed_snapshot)
     monkeypatch.setattr(scheduling, "_insert_run", no_queue)
     monkeypatch.setattr(runner, "_dispatch_detached_runner", no_queue)
@@ -4326,7 +4326,6 @@ def test_guarded_retention_reuses_closed_payload_controller(
     assert {
         Path(module.__file__).resolve()
         for module in (
-            cache_retention,
             cache_eviction,
             default_paths,
             file_locks,
@@ -5287,7 +5286,7 @@ def test_guarded_rust_capture_failure_preserves_primary_error_and_durable_detail
         pytest.fail("a prelaunch failure has no closed payload to follow with cleanup")
 
     monkeypatch.setattr(
-        guarded_execution.cache_retention, "prune_after_payload", no_retention
+        guarded_execution.cache_eviction, "automatic_retention", no_retention
     )
     # Exercise the real guarded failure boundary before unrelated Git/Python
     # capture and supervisor provisioning. Publication itself is never mocked
